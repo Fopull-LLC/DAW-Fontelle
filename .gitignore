@@ -1,0 +1,14 @@
+/target
+/xtask/target
+.cargo/config.toml
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+.DS_Store
+
+# Project bundles opened locally during development (TDD §17.1)
+*.fontelle/cache/
+*.fontelle/backups/

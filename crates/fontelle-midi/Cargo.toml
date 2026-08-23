@@ -1,0 +1,15 @@
+[package]
+name = "fontelle-midi"
+description = "MIDI device abstraction, routing, and mapping. Device-agnostic, RT-safe event pipeline feeding the same sample-accurate event stream as notes and automation."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+fontelle-types = { path = "../fontelle-types" }
+midir = "0.11.0"
+midly = "0.5.3"
+rtrb = "0.4.0"

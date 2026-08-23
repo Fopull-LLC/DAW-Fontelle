@@ -1,0 +1,25 @@
+[package]
+name = "fontelle-app"
+description = "The Fontelle DAW binary."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "fontelle"
+path = "src/main.rs"
+
+[dependencies]
+fontelle-types = { path = "../fontelle-types" }
+fontelle-core = { path = "../fontelle-core" }
+fontelle-dsp = { path = "../fontelle-dsp" }
+fontelle-fx = { path = "../fontelle-fx" }
+fontelle-model = { path = "../fontelle-model" }
+fontelle-sequencer = { path = "../fontelle-sequencer" }
+fontelle-engine = { path = "../fontelle-engine" }
+fontelle-midi = { path = "../fontelle-midi" }
+fontelle-assets = { path = "../fontelle-assets" }
+fontelle-ui = { path = "../fontelle-ui" }

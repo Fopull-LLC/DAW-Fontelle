@@ -1,0 +1,20 @@
+[package]
+name = "fontelle-plugin"
+description = "nice-plug wrapper exporting the sampler as a standalone CLAP (and, licensing permitting, VST3) plugin."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fontelle-types = { path = "../fontelle-types" }
+fontelle-core = { path = "../fontelle-core" }
+fontelle-dsp = { path = "../fontelle-dsp" }
+fontelle-ui = { path = "../fontelle-ui" }
+nice-plug = "0.3.0"
+baseview = "0.3.2"

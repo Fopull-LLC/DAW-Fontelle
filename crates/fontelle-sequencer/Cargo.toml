@@ -1,0 +1,14 @@
+[package]
+name = "fontelle-sequencer"
+description = "Compiles the document model into a flat, immutable, sample-timestamped event timeline that the RT thread reads linearly (INVARIANT 3)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+fontelle-types = { path = "../fontelle-types" }
+fontelle-model = { path = "../fontelle-model" }
+triple_buffer = "9.0.0"

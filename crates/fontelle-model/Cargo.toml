@@ -1,0 +1,16 @@
+[package]
+name = "fontelle-model"
+description = "The document model: Project, channels, mixer, lanes, clips, prefabs, commands and undo, serialisation. Depends on nothing in the workspace except shared id types (INVARIANT 8)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+fontelle-types = { path = "../fontelle-types" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+slotmap = { version = "1.1.1", features = ["serde"] }
+uuid = { version = "1.25.0", features = ["v7", "serde"] }

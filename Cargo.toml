@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/fontelle-types",
+    "crates/fontelle-dsp",
+    "crates/fontelle-core",
+    "crates/fontelle-fx",
+    "crates/fontelle-model",
+    "crates/fontelle-sequencer",
+    "crates/fontelle-engine",
+    "crates/fontelle-midi",
+    "crates/fontelle-assets",
+    "crates/fontelle-ui",
+    "crates/fontelle-plugin",
+    "crates/fontelle-app",
+    "xtask",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88.0"
+license = "MIT OR Apache-2.0"
+authors = ["Fopull LLC"]
+repository = "https://github.com/Fopull-LLC/DAW-Fontelle"
+publish = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1

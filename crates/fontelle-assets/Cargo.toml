@@ -1,0 +1,15 @@
+[package]
+name = "fontelle-assets"
+description = "SF2/sf3/sfz and audio-clip sample loading, streaming, peak generation, and soundfont library indexing."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+fontelle-types = { path = "../fontelle-types" }
+notify = "8.2.0"
+soundfont = "0.1.0"
+symphonia = { version = "0.6.1", features = ["wav", "flac", "mp3", "vorbis"] }

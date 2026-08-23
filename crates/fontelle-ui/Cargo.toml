@@ -1,0 +1,17 @@
+[package]
+name = "fontelle-ui"
+description = "Custom widget layer over wgpu, windowed by winit (app) or baseview (plugin editor). Retained tree, dirty-region invalidation, virtualised timeline/piano-roll canvases."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+baseview = "0.3.2"
+cosmic-text = "0.17.0"
+fontelle-types = { path = "../fontelle-types" }
+vello = "0.10.0"
+wgpu = "30.0.1"
+winit = "0.30.13"
