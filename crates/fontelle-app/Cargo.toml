@@ -23,3 +23,4 @@ fontelle-engine = { path = "../fontelle-engine" }
 fontelle-midi = { path = "../fontelle-midi" }
 fontelle-assets = { path = "../fontelle-assets" }
 fontelle-ui = { path = "../fontelle-ui" }
+slotmap = "1.1.1"

@@ -14,5 +14,5 @@ pub use mod_matrix::{Curve, ModDest, ModMatrix, ModRoute, ModSource};
 pub use patch::{FilterSlot, Layer, Lfo, Patch, Source, ZoneId};
 pub use playback::{LoopMode, PlaybackConfig};
 pub use sampler::{PrepareContext, Sampler, SamplerContext};
-pub use streaming::{SampleResidency, SampleStore};
+pub use streaming::{SampleBuffer, SampleStore};
 pub use voice::{RetriggerMode, StealPolicy, UnisonConfig, Voice, VoiceConfig, VoicePool};

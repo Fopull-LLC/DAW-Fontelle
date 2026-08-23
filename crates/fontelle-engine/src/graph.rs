@@ -79,14 +79,171 @@ pub struct CompiledGraph {
 impl CompiledGraph {
     /// RT: walks `schedule` in order, feeding each node its assigned buffer
     /// indices. No allocation, no traversal beyond a linear scan (INVARIANT 1).
+    ///
+    /// **M0 scope:** only source nodes are wired up — an empty `input_buffers`
+    /// and at most one entry in `output_buffers` — enough for the vertical
+    /// slice's one `SamplerNode`. A node declared outside that shape panics
+    /// rather than silently mixing the wrong thing. Real multi-node buffer
+    /// routing (an effect reading another node's output, disjoint-borrowing
+    /// several buffers per node for a mixer send) is M4 work; see
+    /// `PROGRESS.md`.
     pub fn process_block(
         &mut self,
-        _events: &[TimedEvent],
-        _transport: TransportSnapshot,
-        _sample_range: Range<Sample>,
+        events: &[TimedEvent],
+        transport: TransportSnapshot,
+        sample_range: Range<Sample>,
     ) {
-        todo!(
-            "walk self.schedule in compiled order, wiring buffer_pool slices into each node's ProcessContext"
-        )
+        for scheduled in self.schedule.iter_mut() {
+            assert!(
+                scheduled.input_buffers.is_empty(),
+                "CompiledGraph::process_block only supports source nodes for now (TDD M0 scope) \
+                 — node {:?} declares {} input buffer(s)",
+                scheduled.id,
+                scheduled.input_buffers.len()
+            );
+            assert!(
+                scheduled.output_buffers.len() <= 1,
+                "CompiledGraph::process_block only supports a single output buffer per node for \
+                 now (TDD M0 scope) — node {:?} declares {}",
+                scheduled.id,
+                scheduled.output_buffers.len()
+            );
+
+            let mut outputs: Vec<&mut [f32]> = Vec::new();
+            if let Some(&idx) = scheduled.output_buffers.first() {
+                outputs.push(self.buffer_pool.buffer_mut(idx));
+            }
+
+            let mut ctx = ProcessContext {
+                inputs: &[],
+                outputs: &mut outputs,
+                events,
+                transport,
+                sample_range: sample_range.clone(),
+            };
+            scheduled.node.process(&mut ctx);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use fontelle_core::{
+        FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, SampleStore,
+        Sampler, Source, VoiceConfig,
+    };
+    use fontelle_dsp::{EnvelopeConfig, Interpolation, SvfMode};
+    use fontelle_types::EventPayload;
+    use slotmap::Key;
+
+    use super::*;
+    use crate::nodes::SamplerNode;
+    use crate::transport::TransportState;
+
+    const SR: f32 = 48_000.0;
+
+    fn one_sampler_graph() -> CompiledGraph {
+        let mut store = SampleStore::new();
+        let asset = store.insert(SampleBuffer {
+            data: Arc::from(vec![1.0; 10_000]),
+            sample_rate: SR as u32,
+        });
+        let disabled_filter = FilterSlot {
+            mode: SvfMode::Lowpass,
+            cutoff_hz: 20_000.0,
+            resonance: 0.0,
+            enabled: false,
+        };
+        let instant = EnvelopeConfig {
+            delay_s: 0.0,
+            attack_s: 0.0,
+            hold_s: 0.0,
+            decay_s: 0.0,
+            sustain_level: 1.0,
+            release_s: 0.01,
+        };
+        let patch = Patch {
+            layers: vec![Layer {
+                source: Source::Sample { file: asset },
+                key_range: (0, 127),
+                vel_range: (0, 127),
+                root_key: 60,
+                fine_tune_cents: 0.0,
+                playback: PlaybackConfig {
+                    loop_mode: LoopMode::Off,
+                    interpolation: Interpolation::Draft,
+                    end_offset: 10_000.0,
+                    ..PlaybackConfig::default()
+                },
+                gain_db: 0.0,
+                pan: 0.0,
+            }],
+            filters: [disabled_filter, disabled_filter],
+            envelopes: vec![instant, instant],
+            lfos: Vec::new(),
+            mod_matrix: ModMatrix::default(),
+            voice_config: VoiceConfig::default(),
+        };
+
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&fontelle_core::PrepareContext {
+            sample_rate: SR,
+            max_block_size: 128,
+        });
+        let node = SamplerNode::new(sampler, Arc::new(store));
+
+        CompiledGraph {
+            schedule: vec![ScheduledNode {
+                id: NodeId::null(),
+                node: Box::new(node),
+                input_buffers: Vec::new(),
+                output_buffers: vec![0],
+            }],
+            buffer_pool: BufferPool::with_capacity(1, 128),
+        }
+    }
+
+    fn rms(buf: &[f32]) -> f32 {
+        (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn a_note_on_reaches_the_sampler_node_and_produces_sound() {
+        let mut graph = one_sampler_graph();
+        let events = [TimedEvent {
+            sample: 0,
+            target: NodeId::null(),
+            payload: EventPayload::NoteOn {
+                key: 60,
+                velocity: 127,
+                voice_context: 0,
+            },
+        }];
+        let transport = TransportSnapshot {
+            state: TransportState::Playing,
+            position_sample: 0,
+        };
+
+        graph.process_block(&events, transport, 0..128);
+
+        assert!(
+            rms(graph.buffer_pool.buffer_mut(0)) > 0.5,
+            "the compiled graph must carry a NoteOn through to real sampler output"
+        );
+    }
+
+    #[test]
+    fn silence_with_no_events() {
+        let mut graph = one_sampler_graph();
+        let transport = TransportSnapshot {
+            state: TransportState::Playing,
+            position_sample: 0,
+        };
+
+        graph.process_block(&[], transport, 0..128);
+
+        assert_eq!(rms(graph.buffer_pool.buffer_mut(0)), 0.0);
     }
 }

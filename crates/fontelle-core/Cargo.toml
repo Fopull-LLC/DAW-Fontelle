@@ -11,3 +11,4 @@ repository.workspace = true
 [dependencies]
 fontelle-types = { path = "../fontelle-types" }
 fontelle-dsp = { path = "../fontelle-dsp" }
+slotmap = "1.1.1"

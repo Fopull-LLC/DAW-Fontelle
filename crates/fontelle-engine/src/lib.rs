@@ -9,7 +9,7 @@ mod nodes;
 mod rt_guard;
 mod transport;
 
-pub use device::AudioDevice;
+pub use device::{AudioDevice, BLOCK_SIZE, DeviceError};
 pub use graph::{
     AudioNode, BufferPool, CompiledGraph, ParamSet, PrepareContext, ProcessContext, ScheduledNode,
 };

@@ -906,12 +906,15 @@ dependencies = [
  "fontelle-sequencer",
  "fontelle-types",
  "fontelle-ui",
+ "slotmap",
 ]
 
 [[package]]
 name = "fontelle-assets"
 version = "0.0.0"
 dependencies = [
+ "fontelle-core",
+ "fontelle-dsp",
  "fontelle-types",
  "notify",
  "soundfont",
@@ -924,6 +927,7 @@ version = "0.0.0"
 dependencies = [
  "fontelle-dsp",
  "fontelle-types",
+ "slotmap",
 ]
 
 [[package]]
@@ -939,12 +943,14 @@ version = "0.0.0"
 dependencies = [
  "audio_thread_priority",
  "cpal",
+ "fontelle-assets",
  "fontelle-core",
  "fontelle-dsp",
  "fontelle-fx",
  "fontelle-types",
  "rtrb",
  "rubato",
+ "slotmap",
  "triple_buffer",
 ]
 

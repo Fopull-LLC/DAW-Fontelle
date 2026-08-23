@@ -18,3 +18,7 @@ rtrb = "0.4.0"
 triple_buffer = "9.0.0"
 audio_thread_priority = "0.37.0"
 rubato = "5.0.0"
+
+[dev-dependencies]
+fontelle-assets = { path = "../fontelle-assets" }
+slotmap = "1.1.1"
