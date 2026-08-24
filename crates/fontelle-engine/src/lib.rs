@@ -14,5 +14,7 @@ pub use graph::{
     AudioNode, BufferPool, CompiledGraph, ParamSet, PrepareContext, ProcessContext, ScheduledNode,
 };
 pub use nodes::{AudioClipNode, EffectNode, MasterNode, MixerTrackNode, SamplerNode, SendNode};
-pub use rt_guard::{RtGuardAllocator, current_thread_is_rt, mark_current_thread_rt};
+pub use rt_guard::{
+    RtGuardAllocator, current_thread_is_rt, mark_current_thread_rt, unmark_current_thread_rt,
+};
 pub use transport::{Transport, TransportSnapshot, TransportState};

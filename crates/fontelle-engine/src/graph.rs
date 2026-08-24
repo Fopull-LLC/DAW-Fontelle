@@ -109,19 +109,33 @@ impl CompiledGraph {
                 scheduled.output_buffers.len()
             );
 
-            let mut outputs: Vec<&mut [f32]> = Vec::new();
-            if let Some(&idx) = scheduled.output_buffers.first() {
-                outputs.push(self.buffer_pool.buffer_mut(idx));
+            // A fixed-size stack array, not a `Vec` — `Vec::push` on an empty
+            // `Vec` allocates, and this runs once per block on the RT thread.
+            // That's exactly the bug this file's `no_allocation_during_render`
+            // test exists to catch (it did, against this earlier version).
+            match scheduled.output_buffers.first() {
+                Some(&idx) => {
+                    let mut outputs = [self.buffer_pool.buffer_mut(idx)];
+                    let mut ctx = ProcessContext {
+                        inputs: &[],
+                        outputs: &mut outputs,
+                        events,
+                        transport,
+                        sample_range: sample_range.clone(),
+                    };
+                    scheduled.node.process(&mut ctx);
+                }
+                None => {
+                    let mut ctx = ProcessContext {
+                        inputs: &[],
+                        outputs: &mut [],
+                        events,
+                        transport,
+                        sample_range: sample_range.clone(),
+                    };
+                    scheduled.node.process(&mut ctx);
+                }
             }
-
-            let mut ctx = ProcessContext {
-                inputs: &[],
-                outputs: &mut outputs,
-                events,
-                transport,
-                sample_range: sample_range.clone(),
-            };
-            scheduled.node.process(&mut ctx);
         }
     }
 }

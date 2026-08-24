@@ -50,8 +50,57 @@ after. Bug (1) doesn't have an automated test — it's specifically about real
 inspect_sf2 -- <path>`, kept as a permanent dev tool) to rule out an
 SF2-import-side cause first, silently and without touching audio.
 
-**Not yet re-verified by ear** — the fix is real and the reasoning is solid, but
-only Ty running `--play-sf2` again on real hardware actually confirms it.
+**Update — Ty re-ran it, with permission for me to run it too:** the "rtkit
+allocates" theory (bug 1) was wrong, or at least incomplete. With Ty's explicit
+go-ahead I ran `--play-sf2` myself several times to chase this down. Findings,
+in the order they happened:
+
+3. Same crash, byte-for-byte identical (`dealloc … size=16, align=4`), even
+   with the `audio_thread_priority::promote_current_thread_to_real_time` call
+   temporarily disabled entirely — ruling out rtkit as the cause of *this*
+   specific violation. And a new `no_allocation_during_render.rs` test run for
+   800 blocks (~2.1s, matching the real playback duration) with the same
+   **synthetic** single-layer patch passed clean — so it isn't just "steady
+   state for long enough" either. A throwaway diagnostic
+   (`FONTELLE_TEST_SF2=<real path> cargo test … zz_scratch_diag`, since
+   deleted per the tests-first-strict rule: learn the shape, then delete) that
+   imports the **real** Square.sf2 file (7 layers) and drives `process_block`
+   in a direct loop for 800 blocks — no `cpal`, no real device — *also* passed
+   clean. So neither "real file" nor "real duration" alone reproduces it
+   off-hardware; only the real `cpal`/ALSA callback path does.
+4. **The bigger, structural finding:** on Linux, ALSA calls the audio callback
+   through a C function pointer, and a Rust panic unwinding across that
+   boundary is undefined behaviour — the runtime detects it and hard-aborts
+   the whole process, independent of *why* the panic happened or how clean its
+   message is. This explains why `RUST_BACKTRACE=1` never printed a backtrace
+   on real hardware even after fix (2) stopped the double-panic: the abort was
+   happening for an unrelated reason (the FFI-unwind guard), not because
+   backtrace capture itself panicked.
+5. **Fix:** the entire callback body now runs inside `catch_unwind`
+   (unconditionally, not just in debug builds — this is standard practice for
+   audio callbacks generally, not an INVARIANT-1-specific aid). On a caught
+   panic: report once via `eprintln!`, then output silence for the rest of the
+   stream's life instead of letting anything reach ALSA's C boundary.
+   **Confirmed working:** `cargo run -p fontelle-app -- --play-sf2 <real
+   file>` now runs its full ~2.16s and exits 0 — no more `SIGABRT`, timed with
+   `time` to be sure it wasn't exiting early. (Curiosity, not yet chased
+   further: adding `RUST_BACKTRACE=1` back *does* still crash the process —
+   backtrace capture itself appears to misbehave in this FFI-adjacent
+   context, a separate, lower-priority issue a normal run without that env
+   var doesn't hit.)
+
+**The root allocation itself (bug 3) is still not found.** It's real — the
+panic message and size/align are exactly reproducible — but every attempt to
+reproduce it through direct, off-hardware simulation (synthetic patch, real
+imported patch, both at matching or exceeding real playback duration) failed
+to trigger it; only the genuine `cpal`→ALSA callback path does. That strongly
+suggests it originates inside `cpal`'s ALSA backend itself (a one-time lazy
+buffer/conversion setup under real hardware conditions our simulation can't
+recreate), not in Fontelle's own code — which has now been checked
+exhaustively off-hardware and found clean. Its *impact* is fully contained by
+fix 5 regardless of where it turns out to live: one bad/silent block, not a
+crash. Worth a proper native-debugger (gdb, break on `malloc`) session
+eventually; not blocking further work.
 
 ## Where things stand — 2026-08-23
 

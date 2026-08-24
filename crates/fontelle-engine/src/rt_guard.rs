@@ -16,6 +16,18 @@ pub fn current_thread_is_rt() -> bool {
     IS_RT_THREAD.with(|f| f.get())
 }
 
+/// The inverse of `mark_current_thread_rt`. **There is no production call site
+/// for this yet** — dropping heap-owning audio-graph state (a `CompiledGraph`,
+/// its `Patch`es, their sample buffers) safely on RT-thread teardown needs a
+/// deferred-drop / trash-bin mechanism (hand the old graph to a channel a
+/// non-RT thread actually drops), which isn't built. This exists so tests can
+/// scope the RT-tagged region honestly — clear it before letting RT-owned
+/// state fall out of scope, the way real playback never drops it mid-stream.
+/// See `PROGRESS.md`.
+pub fn unmark_current_thread_rt() {
+    IS_RT_THREAD.with(|f| f.set(false));
+}
+
 /// INVARIANT 1 enforcement (TDD §20.4): in debug/test builds, panics if the RT
 /// thread allocates, reallocates, or deallocates. Release builds fall straight
 /// through to the system allocator with no overhead. Install it as the app
