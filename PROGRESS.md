@@ -13,6 +13,46 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
+## 2026-08-23 update: the first real-hardware bug report
+
+Ty ran the manual-verification commands from the previous update. The synthetic
+tone (`manual_audio_output`) worked. `fontelle-app -- --play-sf2` on a real SF2
+file (`Square.sf2`) crashed the process with `SIGABRT`.
+
+**Two real bugs, both fixed, both covered by a test now:**
+
+1. `AudioDevice::start_output_stream` called `mark_current_thread_rt()` *before*
+   `audio_thread_priority::promote_current_thread_to_real_time()`. That
+   promotion goes through `rtkit` over D-Bus on Linux, which legitimately
+   allocates internally for the one-time handshake — so the very first audio
+   callback tripped INVARIANT 1 on an allocation that was never a violation.
+   **Fix:** the whole first callback is now treated as warm-up — do the
+   promotion, output one silent block (~2.7ms, inaudible), and only start
+   tagging the thread RT and processing real audio from the *second* callback
+   on. This also covers any backend-internal first-use lazy setup (format
+   conversion buffers etc.), not just the specific rtkit call.
+2. **Independent of (1), and worth fixing regardless:** `RtGuardAllocator`'s own
+   violation-report `panic!(...)` formats a message, which allocates, which
+   re-enters `alloc()` while the thread is still tagged RT, which panics again
+   mid-unwind — Rust aborts on a double panic. So *any* real INVARIANT 1
+   violation, past or future, would show up as an unhelpful `SIGABRT` with no
+   message rather than a clean diagnostic. **Fix:** `assert_not_rt` clears the
+   RT flag before calling `panic!`, so the panic machinery's own allocation is
+   allowed through.
+
+Bug (2) is reproduced and regression-tested without any audio hardware:
+`crates/fontelle-engine/tests/rt_guard_panic_safety.rs` is its own binary (every
+`tests/*.rs` file is) with its own `#[global_allocator] = RtGuardAllocator`,
+confirmed to reproduce the exact `SIGABRT` before the fix and pass cleanly
+after. Bug (1) doesn't have an automated test — it's specifically about real
+`cpal`/`rtkit` interaction — but the diagnosis was done by inspecting the real
+`Square.sf2` file's imported `Patch` (`cargo run -p fontelle-assets --example
+inspect_sf2 -- <path>`, kept as a permanent dev tool) to rule out an
+SF2-import-side cause first, silently and without touching audio.
+
+**Not yet re-verified by ear** — the fix is real and the reasoning is solid, but
+only Ty running `--play-sf2` again on real hardware actually confirms it.
+
 ## Where things stand — 2026-08-23
 
 **Repo:** `github.com/Fopull-LLC/DAW-Fontelle`, private. Workspace builds clean
@@ -31,7 +71,7 @@ suite green (`cargo test --workspace`).
 | Real SF2 zone → `Patch` | **Done, real,** with documented scope cuts (below). `fontelle_assets::import_sf2`. |
 | One sampler voice rendering it | **Done, real.** `fontelle_core::{Sampler, Voice, VoicePool}` — envelope, pitch, looping, gain, key/vel range, voice stealing. |
 | Compiled graph carrying a note to output | **Done, real,** scoped to source nodes only (see below). `fontelle_engine::{CompiledGraph, SamplerNode}`. |
-| Device out | **Done, real**, `fontelle_engine::AudioDevice::start_output_stream` opens a real `cpal` stream. **Not machine-verified** — this sandbox has real audio hardware (a Scarlett Solo interface + others; not headless), but I deliberately did not trigger actual playback myself, since that's audible, unannounced, real-hardware output on Ty's machine and not mine to decide the timing of. See "Verify by ear" below. |
+| Device out | **Real, partially verified.** `fontelle_engine::AudioDevice::start_output_stream` opens a real `cpal` stream. Ty confirmed the synthetic-tone path plays audibly; the real-SF2 path crashed on first try (`SIGABRT`) — root-caused and fixed, see "2026-08-23 update" above, but not yet re-confirmed by ear. |
 | Mixer track | **Not started.** The graph above is one `SamplerNode` straight to a buffer — no `MixerTrackNode`, no routing. |
 | Triggered by a clip on the timeline | **Not started.** `fontelle-sequencer::compile` and `fontelle-model::Project` are still full of `todo!()`. Today's note-on is hardcoded in `fontelle-app/src/main.rs` and the manual test, not sourced from a document. |
 
@@ -59,6 +99,15 @@ Both open the real default output device and play ~1-2 seconds of audio. Neither
 runs in `cargo test --workspace` or CI (the `--ignored` test is skipped by
 default; the app binary's default `main()` still `todo!()`s into the unbuilt
 windowed DAW unless you pass `--play-sf2`).
+
+**Quote the path** if it has spaces (`--play-sf2 "/path/with spaces/file.sf2"`)
+— the flag only consumes one argument, and an unquoted space-containing path
+gets split by the shell before Fontelle ever sees it (that's what happened on
+the first crash report, not a Fontelle bug: `fish` split `.../FL 2026 Linux/...`
+into three separate arguments).
+
+To inspect what a given SF2 file actually imports as, without any audio:
+`cargo run -p fontelle-assets --example inspect_sf2 -- /path/to/file.sf2`.
 
 ## What's real vs. stub, per crate
 

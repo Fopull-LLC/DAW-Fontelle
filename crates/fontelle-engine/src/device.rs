@@ -72,7 +72,7 @@ impl AudioDevice {
         config.buffer_size = cpal::BufferSize::Fixed(BLOCK_SIZE as u32);
         let channels = config.channels as usize;
 
-        let mut rt_marked = false;
+        let mut first_callback = true;
         let mut rt_handle: Option<audio_thread_priority::RtPriorityHandle> = None;
         let mut sample_counter: i64 = 0;
 
@@ -80,15 +80,27 @@ impl AudioDevice {
             .build_output_stream(
                 config,
                 move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
-                    if !rt_marked {
-                        mark_current_thread_rt();
+                    if first_callback {
+                        // Treat the very first callback as warm-up, not
+                        // steady-state RT processing: promoting priority goes
+                        // through rtkit over D-Bus on Linux, which legitimately
+                        // allocates for the one-time handshake, and some
+                        // backends do their own first-use lazy setup (format
+                        // conversion buffers etc.) on this call too. None of
+                        // that is what INVARIANT 1 is meant to catch. Do the
+                        // promotion, output one silent block, and only start
+                        // tagging/enforcing RT from the second callback on —
+                        // ~2.7ms of silence at 128 samples/48kHz, not audible.
                         rt_handle = audio_thread_priority::promote_current_thread_to_real_time(
                             BLOCK_SIZE as u32,
                             sample_rate,
                         )
                         .ok();
-                        rt_marked = true;
+                        first_callback = false;
+                        data.fill(0.0);
+                        return;
                     }
+                    mark_current_thread_rt();
 
                     let frames_total = data.len() / channels.max(1);
                     let mut written = 0;

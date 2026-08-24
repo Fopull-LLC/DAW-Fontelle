@@ -25,6 +25,15 @@ pub struct RtGuardAllocator;
 #[cfg(debug_assertions)]
 fn assert_not_rt(op: &str, layout: Layout) {
     if current_thread_is_rt() {
+        // Panicking allocates (formatting this message, unwinding, an
+        // optional backtrace) — all of it would otherwise re-enter this exact
+        // check while still flagged RT, panic again mid-unwind, and abort the
+        // whole process before anyone sees why. Un-flag first: by this point
+        // INVARIANT 1 is already violated and the RT thread is not staying
+        // real-time-safe regardless, so it's more useful to let this one
+        // report cleanly than to preserve the flag for a report that never
+        // arrives.
+        IS_RT_THREAD.with(|f| f.set(false));
         panic!(
             "INVARIANT 1 violated: {op} on the RT thread (size={}, align={})",
             layout.size(),
