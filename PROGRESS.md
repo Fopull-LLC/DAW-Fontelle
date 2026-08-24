@@ -120,7 +120,7 @@ suite green (`cargo test --workspace`).
 | Real SF2 zone → `Patch` | **Done, real,** with documented scope cuts (below). `fontelle_assets::import_sf2`. |
 | One sampler voice rendering it | **Done, real.** `fontelle_core::{Sampler, Voice, VoicePool}` — envelope, pitch, looping, gain, key/vel range, voice stealing. |
 | Compiled graph carrying a note to output | **Done, real,** scoped to source nodes only (see below). `fontelle_engine::{CompiledGraph, SamplerNode}`. |
-| Device out | **Real, partially verified.** `fontelle_engine::AudioDevice::start_output_stream` opens a real `cpal` stream. Ty confirmed the synthetic-tone path plays audibly; the real-SF2 path crashed on first try (`SIGABRT`) — root-caused and fixed, see "2026-08-23 update" above, but not yet re-confirmed by ear. |
+| Device out | **Real, verified working end-to-end.** `fontelle_engine::AudioDevice::start_output_stream` opens a real `cpal` stream. Confirmed on Ty's real hardware: synthetic tone plays audibly, and `--play-sf2` on a real file runs its full duration and exits 0 (timed, not just eyeballed) after three real crash-fix rounds — see "2026-08-23 update" above. **Caveat:** one specific allocation is still unroot-caused (very likely inside `cpal`'s ALSA backend, not Fontelle's code) and produces one bad/silent block early in playback before a `catch_unwind` safety net silences the rest of that stream — contained, not invisible. Listed in "Next steps" below. |
 | Mixer track | **Not started.** The graph above is one `SamplerNode` straight to a buffer — no `MixerTrackNode`, no routing. |
 | Triggered by a clip on the timeline | **Not started.** `fontelle-sequencer::compile` and `fontelle-model::Project` are still full of `todo!()`. Today's note-on is hardcoded in `fontelle-app/src/main.rs` and the manual test, not sourced from a document. |
 
@@ -291,3 +291,12 @@ crash the process).
 3. Only after 1–2 are done should M1-onward feature work (full interpolation
    modes, streaming, more of the mod matrix, effects) start — the TDD's own
    staging (§22) puts the vertical slice before feature breadth on purpose.
+4. **Lower priority, not blocking:** root-cause the still-unidentified
+   allocation from the "2026-08-23 update" section above (`dealloc size=16,
+   align=4`, real on hardware, not reproducible through any off-hardware
+   simulation attempted so far — very likely inside `cpal`'s ALSA backend).
+   Its impact is contained (one bad block, then that stream goes silent for
+   the rest of its life via the `catch_unwind` safety net) but it's still a
+   real defect worth an actual fix — a native debugger session (gdb, break on
+   `malloc`/`calloc`/`realloc` while running `--play-sf2`) is the next
+   escalation past what's been tried. Don't let this block 1–2 above.
