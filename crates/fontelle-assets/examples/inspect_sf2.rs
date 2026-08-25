@@ -3,15 +3,37 @@
 //! resulting amp envelope. No audio, no device access.
 //!
 //! ```text
-//! cargo run -p fontelle-assets --example inspect_sf2 -- /path/to/file.sf2
+//! cargo run -p fontelle-assets --example inspect_sf2 -- /path/to/file.sf2 [preset_index]
 //! ```
+//!
+//! With no index it inspects preset 0 — which, since SF2 files store presets
+//! in arbitrary order, is regularly *not* the instrument you want. The preset
+//! list is printed first so you can pick.
 
 fn main() {
     let path = std::env::args()
         .nth(1)
-        .expect("usage: inspect_sf2 <path.sf2>");
+        .expect("usage: inspect_sf2 <path.sf2> [preset_index]");
+    let preset: usize = std::env::args()
+        .nth(2)
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(0);
+    let path = std::path::Path::new(&path);
+
+    let presets =
+        fontelle_assets::list_presets(path).unwrap_or_else(|e| panic!("could not read: {e}"));
+    println!("{} presets:", presets.len());
+    for p in &presets {
+        let marker = if p.index == preset { "->" } else { "  " };
+        println!(
+            "{marker} [{:>3}] prog={:<3} bank={:<3} {}",
+            p.index, p.program, p.bank, p.name
+        );
+    }
+    println!();
+
     let mut store = fontelle_core::SampleStore::new();
-    let patch = fontelle_assets::import_sf2(std::path::Path::new(&path), &mut store)
+    let patch = fontelle_assets::import_sf2_preset(path, preset, &mut store)
         .unwrap_or_else(|e| panic!("import failed: {e}"));
 
     println!("layers: {}", patch.layers.len());
@@ -39,6 +61,27 @@ fn main() {
             buf.data.len(),
             buf.sample_rate
         );
+    }
+
+    // A fingerprint of the decoded PCM, for checking our decode against an
+    // independent extraction of the same file. A byte-offset or alignment
+    // mistake in the sample reader shows up here immediately and is otherwise
+    // very hard to distinguish from "the soundfont just sounds like that".
+    if let Some(fontelle_core::Source::Sample { file }) = patch.layers.first().map(|l| &l.source) {
+        let buf = store.get(*file).unwrap();
+        let sum: f64 = buf.data.iter().map(|s| *s as f64).sum();
+        let abs_sum: f64 = buf.data.iter().map(|s| s.abs() as f64).sum();
+        let peak = buf.data.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        println!(
+            "layer 0 pcm: len={} peak={peak:.6} sum={sum:.6} abs_sum={abs_sum:.6}",
+            buf.data.len()
+        );
+        let mid = buf.data.len() / 2;
+        let window: Vec<i32> = buf.data[mid..(mid + 12).min(buf.data.len())]
+            .iter()
+            .map(|s| (s * 32768.0).round() as i32)
+            .collect();
+        println!("layer 0 pcm[{mid}..]: {window:?}");
     }
 
     println!("envelopes: {}", patch.envelopes.len());

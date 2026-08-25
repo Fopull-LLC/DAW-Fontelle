@@ -7,7 +7,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use fontelle_assets::import_sf2;
+use fontelle_assets::{import_sf2, import_sf2_preset};
 use fontelle_core::{LoopMode, SampleStore, Source};
 
 /// SF2 generator amounts are either a plain `i16`, or (for KeyRange/VelRange only)
@@ -418,6 +418,236 @@ fn imports_loop_points_gain_pan_and_volume_envelope() {
         (amp.sustain_level - expected_sustain).abs() < 1e-4,
         "sustain: got {}, want {expected_sustain}",
         amp.sustain_level
+    );
+}
+
+/// TDD §20.3: a malformed SF2 must "either import correctly or fail with a
+/// clear message. Neither crashing nor silent misbehaviour is acceptable."
+/// A sample header whose `end` runs past the actual `smpl` chunk is a
+/// realistic form of corruption (truncated download, bad authoring tool), and
+/// it must not take the process down.
+#[test]
+fn a_sample_header_pointing_past_the_end_of_the_pcm_data_fails_cleanly() {
+    let fixture = Sf2Fixture {
+        samples: vec![100, 200, 300, 400],
+        sample_rate: 44_100,
+        header_start: 0,
+        // The file only holds 4 samples; claim 5000. Nothing in the parser
+        // cross-checks this against the smpl chunk's real length.
+        header_end: 5_000,
+        header_loop_start: 0,
+        header_loop_end: 4,
+        origpitch: 60,
+        pitchadj: 0,
+        zone: ZoneSpec {
+            generators: vec![
+                gen_range(GEN_KEY_RANGE, 0, 127),
+                gen_range(GEN_VEL_RANGE, 0, 127),
+            ],
+        },
+    };
+    let path = write_fixture_to_temp_file("truncated-pcm", &build_sf2(&fixture));
+
+    let mut store = SampleStore::new();
+    let result = import_sf2(&path, &mut store);
+    std::fs::remove_file(&path).ok();
+
+    assert!(
+        result.is_err(),
+        "a sample header running past the smpl chunk must produce an ImportError, \
+         not an out-of-bounds panic"
+    );
+}
+
+/// Builds an SF2 with several presets, each with its own instrument and its
+/// own single-zone sample, so preset *selection* can be tested rather than
+/// just preset *parsing*. Mirrors `build_sf2`'s structure; kept separate so
+/// the single-preset fixture above stays easy to read.
+fn build_multi_preset_sf2(presets: &[(&str, u16, u16, i16)]) -> Vec<u8> {
+    let n = presets.len();
+    let mut sfbk = Vec::new();
+    sfbk.extend_from_slice(b"sfbk");
+
+    write_list(&mut sfbk, b"INFO", |buf| {
+        write_chunk(buf, b"ifil", &[2, 0, 1, 0]);
+        write_chunk(buf, b"isng", b"EMU8000\0");
+        write_chunk(buf, b"INAM", b"Fontelle Multi Bank\0");
+    });
+
+    // Each sample is 4 frames long, distinguishable by its constant value.
+    write_list(&mut sfbk, b"sdta", |buf| {
+        let mut pcm = Vec::new();
+        for (i, _) in presets.iter().enumerate() {
+            for _ in 0..4 {
+                pcm.extend_from_slice(&(((i as i16) + 1) * 1000).to_le_bytes());
+            }
+        }
+        write_chunk(buf, b"smpl", &pcm);
+    });
+
+    write_list(&mut sfbk, b"pdta", |buf| {
+        let mut phdr = Vec::new();
+        for (i, (name, program, bank, _)) in presets.iter().enumerate() {
+            phdr.extend_from_slice(&zstr(name, 20));
+            phdr.extend_from_slice(&program.to_le_bytes());
+            phdr.extend_from_slice(&bank.to_le_bytes());
+            phdr.extend_from_slice(&(i as u16).to_le_bytes()); // bag_id
+            phdr.extend_from_slice(&[0u8; 12]);
+        }
+        phdr.extend_from_slice(&zstr("EOP", 20));
+        phdr.extend_from_slice(&0u16.to_le_bytes());
+        phdr.extend_from_slice(&0u16.to_le_bytes());
+        phdr.extend_from_slice(&(n as u16).to_le_bytes());
+        phdr.extend_from_slice(&[0u8; 12]);
+        write_chunk(buf, b"phdr", &phdr);
+
+        // One preset zone each, whose single generator is Instrument=i.
+        let mut pbag = Vec::new();
+        for i in 0..=n {
+            pbag.extend_from_slice(&(i as u16).to_le_bytes()); // gen_id
+            pbag.extend_from_slice(&0u16.to_le_bytes()); // mod_id
+        }
+        write_chunk(buf, b"pbag", &pbag);
+        write_chunk(buf, b"pmod", &[0u8; 10]);
+
+        let mut pgen = Vec::new();
+        for i in 0..n {
+            write_gen(&mut pgen, &gen_val(41, i as i16)); // Instrument -> i
+        }
+        pgen.extend_from_slice(&[0u8; 4]);
+        write_chunk(buf, b"pgen", &pgen);
+
+        let mut inst = Vec::new();
+        for (i, (name, ..)) in presets.iter().enumerate() {
+            inst.extend_from_slice(&zstr(&format!("{name} inst"), 20));
+            inst.extend_from_slice(&(i as u16).to_le_bytes());
+        }
+        inst.extend_from_slice(&zstr("EOS", 20));
+        inst.extend_from_slice(&(n as u16).to_le_bytes());
+        write_chunk(buf, b"inst", &inst);
+
+        // Each instrument zone carries two generators: root-key override then
+        // SampleID, so `ibag` advances by 2 per instrument.
+        let mut ibag = Vec::new();
+        for i in 0..=n {
+            ibag.extend_from_slice(&((i * 2) as u16).to_le_bytes());
+            ibag.extend_from_slice(&0u16.to_le_bytes());
+        }
+        write_chunk(buf, b"ibag", &ibag);
+        write_chunk(buf, b"imod", &[0u8; 10]);
+
+        let mut igen = Vec::new();
+        for (i, (_, _, _, root)) in presets.iter().enumerate() {
+            write_gen(&mut igen, &gen_val(GEN_OVERRIDING_ROOT_KEY, *root));
+            write_gen(&mut igen, &gen_val(53, i as i16)); // SampleID -> i
+        }
+        igen.extend_from_slice(&[0u8; 4]);
+        write_chunk(buf, b"igen", &igen);
+
+        let mut shdr = Vec::new();
+        for (i, (name, ..)) in presets.iter().enumerate() {
+            let start = (i * 4) as u32;
+            shdr.extend_from_slice(&zstr(&format!("{name} smp"), 20));
+            shdr.extend_from_slice(&start.to_le_bytes());
+            shdr.extend_from_slice(&(start + 4).to_le_bytes());
+            shdr.extend_from_slice(&start.to_le_bytes());
+            shdr.extend_from_slice(&(start + 4).to_le_bytes());
+            shdr.extend_from_slice(&(8_000u32 + i as u32).to_le_bytes());
+            shdr.push(60);
+            shdr.push(0);
+            shdr.extend_from_slice(&0u16.to_le_bytes());
+            shdr.extend_from_slice(&1u16.to_le_bytes());
+        }
+        shdr.extend_from_slice(&zstr("EOS", 20));
+        shdr.extend_from_slice(&[0u8; 26]);
+        write_chunk(buf, b"shdr", &shdr);
+    });
+
+    let mut riff = Vec::new();
+    write_chunk(&mut riff, b"RIFF", &sfbk);
+    riff
+}
+
+/// The presets in the fixture below are deliberately *not* in program order,
+/// the way real banks often aren't — `Secret_of_Mana.sf2` opens with a whale
+/// sound effect and keeps its piano at index 27.
+const MULTI: &[(&str, u16, u16, i16)] = &[
+    ("Orca", 123, 0, 55),
+    ("Bells", 14, 0, 60),
+    ("Piano", 0, 0, 69),
+];
+
+#[test]
+fn list_presets_reports_every_preset_in_file_order_without_the_terminator() {
+    let path = write_fixture_to_temp_file("multi-list", &build_multi_preset_sf2(MULTI));
+    let listed = fontelle_assets::list_presets(&path).expect("fixture must parse");
+    std::fs::remove_file(&path).ok();
+
+    assert_eq!(
+        listed.len(),
+        3,
+        "the mandatory EOP terminator record must not be reported as a preset"
+    );
+    let names: Vec<&str> = listed.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["Orca", "Bells", "Piano"]);
+    assert_eq!(listed[0].index, 0);
+    assert_eq!(listed[2].index, 2);
+    assert_eq!(listed[0].program, 123, "program order != file order");
+    assert_eq!(listed[2].program, 0);
+}
+
+#[test]
+fn import_sf2_preset_selects_the_requested_preset_not_the_first() {
+    let path = write_fixture_to_temp_file("multi-pick", &build_multi_preset_sf2(MULTI));
+
+    let mut store = SampleStore::new();
+    let piano = import_sf2_preset(&path, 2, &mut store).expect("preset 2 must import");
+    let mut store0 = SampleStore::new();
+    let orca = import_sf2_preset(&path, 0, &mut store0).expect("preset 0 must import");
+    std::fs::remove_file(&path).ok();
+
+    // Each fixture preset has a distinct root key, so this proves selection
+    // reached a different instrument rather than re-importing preset 0.
+    assert_eq!(piano.layers[0].root_key, 69, "preset 2 is the 'Piano' zone");
+    assert_eq!(orca.layers[0].root_key, 55, "preset 0 is the 'Orca' zone");
+
+    let Source::Sample { file } = piano.layers[0].source else {
+        panic!("expected a Sample source");
+    };
+    let buffer = store.get(file).unwrap();
+    assert_eq!(
+        buffer.sample_rate, 8_002,
+        "preset 2 must decode its own sample, not preset 0's"
+    );
+}
+
+#[test]
+fn import_sf2_defaults_to_preset_zero() {
+    let path = write_fixture_to_temp_file("multi-default", &build_multi_preset_sf2(MULTI));
+    let mut a = SampleStore::new();
+    let mut b = SampleStore::new();
+    let default = import_sf2(&path, &mut a).unwrap();
+    let explicit = import_sf2_preset(&path, 0, &mut b).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    assert_eq!(default.layers[0].root_key, explicit.layers[0].root_key);
+}
+
+#[test]
+fn an_out_of_range_preset_index_fails_with_a_message_naming_the_real_count() {
+    let path = write_fixture_to_temp_file("multi-oob", &build_multi_preset_sf2(MULTI));
+    let mut store = SampleStore::new();
+    let err = import_sf2_preset(&path, 99, &mut store).expect_err("99 is out of range");
+    std::fs::remove_file(&path).ok();
+
+    let text = err.to_string();
+    assert!(
+        text.contains("99"),
+        "message should name the bad index: {text}"
+    );
+    assert!(
+        text.contains('3'),
+        "message should name the real preset count: {text}"
     );
 }
 

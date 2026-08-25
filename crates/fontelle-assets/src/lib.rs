@@ -8,5 +8,8 @@ mod sfz_import;
 
 pub use library::{LibraryEntry, SoundfontLibrary};
 pub use peaks::{PeakData, generate_peaks};
-pub use sf2_import::{ImportError, ImportedZone, ImportedZones, import_sf2};
+pub use sf2_import::{
+    ImportError, ImportedZone, ImportedZones, PresetInfo, import_sf2, import_sf2_preset,
+    list_presets,
+};
 pub use sfz_import::import_sfz;

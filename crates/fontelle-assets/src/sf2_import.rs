@@ -59,7 +59,7 @@ fn build_layer(
     store: &mut SampleStore,
     pcm_bytes: &[u8],
     smpl_offset: u64,
-) -> Layer {
+) -> Result<Layer, ImportError> {
     let start_delta = offset_samples(
         zone,
         GeneratorType::StartAddrsOffset,
@@ -81,8 +81,26 @@ fn build_layer(
         GeneratorType::EndloopAddrsCoarseOffset,
     );
 
-    let buffer_len = (header.end - header.start) as usize;
+    // A corrupt or truncated file can carry a sample header whose range runs
+    // past the real `smpl` chunk — nothing in the parser cross-checks the two.
+    // Indexing on trust would panic out of bounds and take the process with
+    // it; TDD §20.3 requires a clear failure instead. Validated up front so
+    // the decode loop below can stay a plain indexed read.
+    let buffer_len = (header.end.saturating_sub(header.start)) as usize;
     let byte_start = smpl_offset as usize + header.start as usize * 2;
+    let byte_end = byte_start
+        .checked_add(buffer_len * 2)
+        .ok_or_else(|| ImportError("sample header range overflows".into()))?;
+    if byte_end > pcm_bytes.len() {
+        return Err(ImportError(format!(
+            "sample header range [{}, {}) runs past the end of the file's sample data \
+             ({} bytes) — the file is truncated or corrupt",
+            header.start,
+            header.end,
+            pcm_bytes.len()
+        )));
+    }
+
     let mut data = Vec::with_capacity(buffer_len);
     for i in 0..buffer_len {
         let b0 = pcm_bytes[byte_start + i * 2];
@@ -109,7 +127,7 @@ fn build_layer(
         _ => LoopMode::Off,
     };
 
-    Layer {
+    Ok(Layer {
         source: Source::Sample { file: asset },
         key_range: gen_range(zone, GeneratorType::KeyRange).unwrap_or((0, 127)),
         vel_range: gen_range(zone, GeneratorType::VelRange).unwrap_or((0, 127)),
@@ -126,7 +144,7 @@ fn build_layer(
         },
         gain_db: -(gen_i16(zone, GeneratorType::InitialAttenuation).unwrap_or(0) as f32) / 10.0,
         pan: gen_i16(zone, GeneratorType::Pan).unwrap_or(0) as f32 / 500.0,
-    }
+    })
 }
 
 /// Imports the first preset of the SF2 file at `path` into a `Patch`, decoding
@@ -144,30 +162,83 @@ fn build_layer(
 /// cut, not an oversight — read `soundfont`'s `Generator`/`GeneratorType` and
 /// extend `build_layer` to close any of them.
 pub fn import_sf2(path: &Path, store: &mut SampleStore) -> Result<Patch, ImportError> {
-    let bytes = std::fs::read(path).map_err(|e| ImportError(e.to_string()))?;
+    import_sf2_preset(path, 0, store)
+}
 
-    // `soundfont::SoundFont2::load` uses a bare `assert_eq!` on the RIFF/sfbk
-    // header instead of returning `Err` for malformed input — a real defect in
-    // that crate (verified by reading its source), and one that would let an
-    // untrusted file crash the process. TDD §20.3 requires malformed SF2 files
-    // to fail with a clear message, never crash, so this boundary must not let
-    // a panic from a dependency escape it.
-    let sf2 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut cursor = Cursor::new(&bytes);
+/// One preset's identity within an SF2 file, as reported by [`list_presets`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresetInfo {
+    /// Position in the file — what [`import_sf2_preset`] takes.
+    pub index: usize,
+    pub name: String,
+    /// General MIDI program number.
+    pub program: u16,
+    pub bank: u16,
+}
+
+/// Lists the presets in `path`, in file order, without decoding any audio.
+///
+/// Worth having as its own operation because **SF2 files store presets in
+/// arbitrary order** — a bank's "main" instrument is very often not first.
+/// (A real example that cost real confusion: `Secret_of_Mana.sf2` opens with
+/// `SOM Orca`, a whale sound effect at 1824 Hz, and keeps `SOM Piano` at
+/// index 27.) Anything that imports "the" preset without letting the user see
+/// this list is guessing.
+pub fn list_presets(path: &Path) -> Result<Vec<PresetInfo>, ImportError> {
+    let bytes = std::fs::read(path).map_err(|e| ImportError(e.to_string()))?;
+    let sf2 = load_sf2(&bytes)?;
+    Ok(sf2
+        .presets
+        .iter()
+        .enumerate()
+        .map(|(index, preset)| PresetInfo {
+            index,
+            name: preset.header.name.clone(),
+            program: preset.header.preset,
+            bank: preset.header.bank,
+        })
+        .collect())
+}
+
+/// Shared by [`list_presets`] and [`import_sf2_preset`].
+///
+/// `soundfont::SoundFont2::load` uses a bare `assert_eq!` on the RIFF/sfbk
+/// header instead of returning `Err` for malformed input — a real defect in
+/// that crate (verified by reading its source), and one that would let an
+/// untrusted file crash the process. TDD §20.3 requires malformed SF2 files
+/// to fail with a clear message, never crash, so this boundary must not let
+/// a panic from a dependency escape it.
+fn load_sf2(bytes: &[u8]) -> Result<SoundFont2, ImportError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut cursor = Cursor::new(bytes);
         SoundFont2::load(&mut cursor)
     }))
     .map_err(|_| ImportError("not a valid SF2 file (parser panicked)".into()))?
-    .map_err(|e| ImportError(format!("{e:?}")))?;
+    .map_err(|e| ImportError(format!("{e:?}")))
+}
+
+/// Imports the preset at `preset_index` (see [`list_presets`]) into a `Patch`,
+/// decoding its sample data into `store`. [`import_sf2`] is this with index 0.
+pub fn import_sf2_preset(
+    path: &Path,
+    preset_index: usize,
+    store: &mut SampleStore,
+) -> Result<Patch, ImportError> {
+    let bytes = std::fs::read(path).map_err(|e| ImportError(e.to_string()))?;
+
+    let sf2 = load_sf2(&bytes)?;
 
     let smpl = sf2
         .sample_data
         .smpl
         .ok_or_else(|| ImportError("SF2 file has no sample data (smpl chunk)".into()))?;
 
-    let preset = sf2
-        .presets
-        .first()
-        .ok_or_else(|| ImportError("SF2 file has no presets".into()))?;
+    let preset = sf2.presets.get(preset_index).ok_or_else(|| {
+        ImportError(format!(
+            "preset index {preset_index} out of range — this file has {} preset(s)",
+            sf2.presets.len()
+        ))
+    })?;
 
     let instrument_id = preset
         .zones
@@ -209,7 +280,7 @@ pub fn import_sf2(path: &Path, store: &mut SampleStore) -> Result<Patch, ImportE
             });
         }
 
-        layers.push(build_layer(zone, header, store, &bytes, smpl.offset));
+        layers.push(build_layer(zone, header, store, &bytes, smpl.offset)?);
     }
 
     if layers.is_empty() {
