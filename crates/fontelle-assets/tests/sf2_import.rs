@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use fontelle_assets::{import_sf2, import_sf2_preset};
 use fontelle_core::{LoopMode, SampleStore, Source};
+use fontelle_dsp::EnvelopeCurve;
 
 /// SF2 generator amounts are either a plain `i16`, or (for KeyRange/VelRange only)
 /// a `(low, high)` byte pair — see `soundfont::raw::GeneratorAmount`.
@@ -418,6 +419,22 @@ fn imports_loop_points_gain_pan_and_volume_envelope() {
         (amp.sustain_level - expected_sustain).abs() < 1e-4,
         "sustain: got {}, want {expected_sustain}",
         amp.sustain_level
+    );
+    // The stage times above are only meaningful alongside the curve they are
+    // defined against: SF2 writes volume-envelope decay and release as a
+    // constant dB rate over a 100 dB span, so importing the numbers but
+    // playing them back as linear amplitude ramps stretches every decay by
+    // more than an order of magnitude. The modulation envelope keeps the
+    // linear curve, which is what SF2 defines for it.
+    assert_eq!(
+        amp.curve,
+        EnvelopeCurve::Decibel,
+        "the volume envelope must import on the SF2 decibel curve"
+    );
+    assert_eq!(
+        patch.envelopes[1].curve,
+        EnvelopeCurve::Linear,
+        "the modulation envelope is linear in SF2, not in dB"
     );
 }
 

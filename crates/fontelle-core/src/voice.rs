@@ -216,6 +216,7 @@ impl Voice {
                     decay_s: 0.0,
                     sustain_level: 1.0,
                     release_s: 0.0,
+                    curve: fontelle_dsp::EnvelopeCurve::Linear,
                 });
 
         // Per-layer constants resolved once, not once per sample: a fixed-size
@@ -362,7 +363,7 @@ mod tests {
     use crate::patch::{FilterSlot, Layer, Patch, Source};
     use crate::playback::{LoopMode, PlaybackConfig};
     use crate::streaming::{SampleBuffer, SampleStore};
-    use fontelle_dsp::{EnvelopeConfig, Interpolation, SvfMode};
+    use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 
     const SR: f32 = 48_000.0;
 
@@ -374,6 +375,7 @@ mod tests {
             decay_s: 0.0,
             sustain_level: sustain,
             release_s: 0.01,
+            curve: EnvelopeCurve::Linear,
         }
     }
 

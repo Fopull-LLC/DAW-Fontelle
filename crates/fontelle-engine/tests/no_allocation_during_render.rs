@@ -18,7 +18,7 @@ use fontelle_core::{
     FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, SampleStore,
     Sampler, Source, VoiceConfig,
 };
-use fontelle_dsp::{EnvelopeConfig, Interpolation, SvfMode};
+use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 use fontelle_engine::{
     BufferPool, CompiledGraph, MixerTrackNode, RtGuardAllocator, SamplerNode, ScheduledNode,
 };
@@ -63,6 +63,7 @@ fn build_graph_with(stereo_mixer: bool) -> CompiledGraph {
         decay_s: 0.001,
         sustain_level: 1.0,
         release_s: 0.001,
+        curve: EnvelopeCurve::Linear,
     };
     let patch = Patch {
         layers: vec![Layer {

@@ -199,7 +199,7 @@ mod tests {
     use fontelle_core::{
         FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, Source, VoiceConfig,
     };
-    use fontelle_dsp::{EnvelopeConfig, Interpolation, SvfMode};
+    use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
     use fontelle_types::{EventPayload, TimedEvent};
 
     use crate::transport::{TransportSnapshot, TransportState};
@@ -224,6 +224,7 @@ mod tests {
             decay_s: 0.0,
             sustain_level: 1.0,
             release_s: 0.01,
+            curve: EnvelopeCurve::Linear,
         };
         Patch {
             layers: vec![Layer {

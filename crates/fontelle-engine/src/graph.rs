@@ -209,7 +209,7 @@ mod tests {
         FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, SampleStore,
         Sampler, Source, VoiceConfig,
     };
-    use fontelle_dsp::{EnvelopeConfig, Interpolation, SvfMode};
+    use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
     use fontelle_types::EventPayload;
     use slotmap::Key;
 
@@ -238,6 +238,7 @@ mod tests {
             decay_s: 0.0,
             sustain_level: 1.0,
             release_s: 0.01,
+            curve: EnvelopeCurve::Linear,
         };
         let patch = Patch {
             layers: vec![Layer {
@@ -437,6 +438,7 @@ mod tests {
             decay_s: 0.0,
             sustain_level: 1.0,
             release_s: 10.0,
+            curve: EnvelopeCurve::Linear,
         };
         let patch = Patch {
             layers: vec![Layer {

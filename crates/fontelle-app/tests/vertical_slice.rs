@@ -16,7 +16,7 @@ use fontelle_core::{
     FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, SampleStore,
     Sampler, Source, VoiceConfig,
 };
-use fontelle_dsp::{EnvelopeConfig, Interpolation, SvfMode};
+use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 use fontelle_engine::{BufferPool, CompiledGraph, SamplerNode, ScheduledNode};
 use fontelle_model::{Channel, Clip, ClipSource, Lane, Note, NoteData, Project, TempoMap};
 use fontelle_types::{ChannelId, NodeId};
@@ -43,6 +43,7 @@ fn synthetic_patch(store: &mut SampleStore) -> Patch {
         decay_s: 0.0,
         sustain_level: 1.0,
         release_s: 0.01,
+        curve: EnvelopeCurve::Linear,
     };
     Patch {
         layers: vec![Layer {

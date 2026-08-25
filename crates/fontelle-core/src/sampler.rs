@@ -74,7 +74,7 @@ mod tests {
     use crate::patch::{FilterSlot, Layer, Source};
     use crate::playback::{LoopMode, PlaybackConfig};
     use crate::voice::{StealPolicy, VoiceConfig};
-    use fontelle_dsp::{EnvelopeConfig, Interpolation, SvfMode};
+    use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 
     const SR: f32 = 48_000.0;
 
@@ -95,6 +95,7 @@ mod tests {
             decay_s: 0.0,
             sustain_level: 1.0,
             release_s: 0.01,
+            curve: EnvelopeCurve::Linear,
         }
     }
 

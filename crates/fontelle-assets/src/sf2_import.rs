@@ -5,7 +5,7 @@ use fontelle_core::{
     FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, SampleStore,
     Source, VoiceConfig,
 };
-use fontelle_dsp::{EnvelopeConfig, Interpolation, SvfMode};
+use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 use soundfont::raw::{Generator, GeneratorType};
 use soundfont::{SoundFont2, Zone};
 
@@ -277,6 +277,12 @@ pub fn import_sf2_preset(
                     GeneratorType::SustainVolEnv,
                 )),
                 release_s: timecents_to_seconds(gen_i16(zone, GeneratorType::ReleaseVolEnv)),
+                // SF2 2.04 defines the volume envelope's decay and release as a
+                // constant dB rate, not a constant amplitude rate, and defines
+                // the times above against a 100 dB span rather than as stage
+                // durations. `EnvelopeCurve::Decibel` is what makes the numbers
+                // mean what the file's author intended.
+                curve: EnvelopeCurve::Decibel,
             });
         }
 
@@ -301,6 +307,7 @@ pub fn import_sf2_preset(
         decay_s: 0.0,
         sustain_level: 1.0,
         release_s: 0.0,
+        curve: EnvelopeCurve::Linear,
     };
 
     Ok(Patch {

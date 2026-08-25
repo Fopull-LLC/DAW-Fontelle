@@ -29,7 +29,7 @@ use fontelle_core::{
     FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, SampleStore,
     Sampler, Source, VoiceConfig,
 };
-use fontelle_dsp::{EnvelopeConfig, Interpolation, SvfMode};
+use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 use fontelle_engine::{
     AudioDevice, BufferPool, CompiledGraph, MixerTrackNode, SamplerNode, ScheduledNode,
 };
@@ -67,6 +67,7 @@ fn synthetic_patch(store: &mut SampleStore) -> Patch {
         decay_s: 0.05,
         sustain_level: 0.6,
         release_s: 0.2,
+        curve: EnvelopeCurve::Linear,
     };
 
     Patch {

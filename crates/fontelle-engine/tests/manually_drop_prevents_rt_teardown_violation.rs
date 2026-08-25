@@ -27,7 +27,7 @@ use fontelle_core::{
     FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, SampleStore,
     Sampler, Source, VoiceConfig,
 };
-use fontelle_dsp::{EnvelopeConfig, Interpolation, SvfMode};
+use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 use fontelle_engine::RtGuardAllocator;
 
 #[global_allocator]
@@ -47,6 +47,7 @@ fn heap_owning_patch() -> Patch {
         decay_s: 0.0,
         sustain_level: 1.0,
         release_s: 0.0,
+        curve: EnvelopeCurve::Linear,
     };
     // Several layers, several distinct sample buffers -- matches the shape
     // that actually crashed (Square.sf2 imports as 7 layers/7 store entries),
