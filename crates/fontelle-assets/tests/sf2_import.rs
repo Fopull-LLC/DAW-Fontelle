@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use fontelle_assets::{import_sf2, import_sf2_preset};
-use fontelle_core::{LoopMode, Patch, SampleStore, Source};
+use fontelle_core::{Curve, LoopMode, ModDest, ModSource, Patch, SampleStore, Source};
 use fontelle_dsp::{EnvelopeCurve, SvfMode};
 
 /// SF2 generator amounts are either a plain `i16`, or (for KeyRange/VelRange only)
@@ -774,5 +774,50 @@ fn a_zone_with_no_resonance_imports_at_butterworth_q() {
         (patch.filters[0].resonance - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.01,
         "0 cB of resonance is Butterworth, got {}",
         patch.filters[0].resonance
+    );
+}
+
+#[test]
+fn seeds_the_sf2_default_velocity_to_filter_cutoff_modulator() {
+    // SF2 2.04 §8.4.2: a modulator present on every zone unless the file
+    // overrides it, velocity -> initial filter cutoff, linear, negative
+    // direction, -2400 cents. Full velocity leaves the cutoff where the file
+    // put it and it falls two octaves toward silence, which is why real
+    // soundfonts get darker as you play softer. Without it, velocity changes
+    // level and nothing else.
+    let patch = import_filter_fixture("velfilter", vec![gen_val(GEN_INITIAL_FILTER_FC, 7_200)]);
+
+    let route = patch
+        .mod_matrix
+        .routes
+        .iter()
+        .find(|r| r.destination == ModDest::FilterCutoff(0))
+        .expect("a filtered zone should carry the default velocity route");
+
+    assert_eq!(route.source, ModSource::Velocity);
+    assert!(
+        route.invert,
+        "the default modulator uses the negative direction"
+    );
+    assert_eq!(route.curve, Curve::Linear);
+    let expected_depth = -2400.0 / ModDest::FilterCutoff(0).full_scale();
+    assert!(
+        (route.depth - expected_depth).abs() < 1e-6,
+        "depth should be -2400 cents in the destination's units: got {}, want {expected_depth}",
+        route.depth
+    );
+}
+
+#[test]
+fn a_zone_with_no_filter_gets_no_cutoff_modulation() {
+    // Routing velocity at a filter that is switched off is dead weight in the
+    // matrix and misleading to anyone reading the patch.
+    let patch = import_filter_fixture("novelfilter", vec![]);
+    assert!(
+        !patch
+            .mod_matrix
+            .routes
+            .iter()
+            .any(|r| r.destination == ModDest::FilterCutoff(0))
     );
 }

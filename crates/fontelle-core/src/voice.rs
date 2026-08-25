@@ -123,6 +123,11 @@ pub struct Voice {
     /// Fixed for the life of the note, from `velocity_to_gain`. Folded into
     /// each layer's gain at the top of `render` so it costs nothing per sample.
     velocity_gain: f32,
+    /// Note-on velocity and key as the mod matrix sees them: normalised to
+    /// 0..1, captured once so evaluating a route never has to reach back into
+    /// the event that started the note.
+    velocity_norm: f32,
+    key_norm: f32,
     amp_env: fontelle_dsp::EnvelopeGenerator,
 }
 
@@ -136,6 +141,8 @@ impl Voice {
             layers: [LayerPlayback::default(); MAX_LAYERS],
             filters: [fontelle_dsp::SvfFilter::new(); 2],
             velocity_gain: 0.0,
+            velocity_norm: 0.0,
+            key_norm: 0.0,
             amp_env: fontelle_dsp::EnvelopeGenerator::new(),
         }
     }
@@ -157,6 +164,8 @@ impl Voice {
         self.key = key;
         self.voice_context = voice_context;
         self.velocity_gain = velocity_to_gain(velocity);
+        self.velocity_norm = velocity as f32 / 127.0;
+        self.key_norm = key as f32 / 127.0;
         // A voice comes back out of the pool carrying the last note's filter
         // memory. Left alone, that discharges into the new note as a transient
         // belonging to a note that already ended — a click that only shows up
@@ -273,16 +282,34 @@ impl Voice {
         // (`ModMatrix::evaluate` is still unimplemented). When something does,
         // this moves inside the sample loop — the zero-delay-feedback topology
         // exists precisely so that it can.
-        let filter_coeffs = patch.filters.map(|slot| {
-            slot.enabled.then(|| {
-                fontelle_dsp::SvfFilter::coeffs(
-                    slot.mode,
-                    slot.cutoff_hz,
-                    slot.resonance,
-                    0.0,
-                    sample_rate,
-                )
-            })
+        // The mod matrix's view of this voice. Only the note-on sources are
+        // live: LFOs aren't built, and envelopes are not yet exposed as
+        // sources (`Envelope(0)` drives the amp stage directly). Everything
+        // else reads as at-rest rather than as a plausible-looking number.
+        let sources = |source: crate::mod_matrix::ModSource| match source {
+            crate::mod_matrix::ModSource::Velocity => self.velocity_norm,
+            crate::mod_matrix::ModSource::Key => self.key_norm,
+            _ => 0.0,
+        };
+
+        let filter_coeffs: [Option<fontelle_dsp::SvfCoeffs>; 2] = std::array::from_fn(|index| {
+            let slot = patch.filters[index];
+            if !slot.enabled {
+                return None;
+            }
+            // Cutoff modulation is in cents, so it scales the corner rather
+            // than shifting it — an octave down means the same thing at 200 Hz
+            // as at 8 kHz, which a linear offset would not.
+            let dest = crate::mod_matrix::ModDest::FilterCutoff(index as u8);
+            let cents = patch.mod_matrix.evaluate(dest, &sources) * dest.full_scale();
+            let cutoff = slot.cutoff_hz * 2f32.powf(cents / 1200.0);
+            Some(fontelle_dsp::SvfFilter::coeffs(
+                slot.mode,
+                cutoff,
+                slot.resonance,
+                0.0,
+                sample_rate,
+            ))
         });
 
         for out_sample in out.iter_mut() {
@@ -879,5 +906,102 @@ mod tests {
                 one * 2.0
             );
         }
+    }
+
+    fn cutoff_route(depth: f32, invert: bool) -> crate::mod_matrix::ModMatrix {
+        crate::mod_matrix::ModMatrix {
+            routes: vec![crate::mod_matrix::ModRoute {
+                source: crate::mod_matrix::ModSource::Velocity,
+                destination: crate::mod_matrix::ModDest::FilterCutoff(0),
+                depth,
+                curve: crate::mod_matrix::Curve::Linear,
+                via: None,
+                invert,
+            }],
+        }
+    }
+
+    /// Brightness independent of loudness: velocity scales amplitude too, so a
+    /// raw level comparison would measure the velocity curve rather than the
+    /// filter. Dividing by the known velocity gain isolates the cutoff.
+    fn brightness_at(patch: &Patch, store: &SampleStore, velocity: u8) -> f32 {
+        let mut voice = Voice::new();
+        voice.trigger(patch, 60, velocity, 0);
+        let mut out = vec![0.0; 512];
+        voice.render(patch, store, SR, Interpolation::Draft, &mut out);
+        rms(&out[256..]) / velocity_to_gain(velocity)
+    }
+
+    #[test]
+    fn a_velocity_to_cutoff_route_makes_soft_notes_darker() {
+        // What every sampler does and Fontelle did not: play quietly and the
+        // tone closes down, not just the level.
+        let mut store = SampleStore::new();
+        let mut patch = tone_patch(&mut store, 6_000.0, 4000);
+        patch.filters[0] = FilterSlot {
+            mode: SvfMode::Lowpass,
+            cutoff_hz: 6_000.0,
+            resonance: std::f32::consts::FRAC_1_SQRT_2,
+            enabled: true,
+        };
+        // SF2's own default: full velocity leaves the cutoff alone, and it
+        // falls away as velocity drops.
+        patch.mod_matrix = cutoff_route(-0.25, true);
+
+        let loud = brightness_at(&patch, &store, 127);
+        let soft = brightness_at(&patch, &store, 20);
+        assert!(
+            soft < loud * 0.5,
+            "a soft note must be audibly darker once the cutoff is modulated: \
+             {soft} against {loud}"
+        );
+    }
+
+    #[test]
+    fn without_a_route_velocity_leaves_the_cutoff_alone() {
+        let mut store = SampleStore::new();
+        let mut patch = tone_patch(&mut store, 6_000.0, 4000);
+        patch.filters[0] = FilterSlot {
+            mode: SvfMode::Lowpass,
+            cutoff_hz: 6_000.0,
+            resonance: std::f32::consts::FRAC_1_SQRT_2,
+            enabled: true,
+        };
+
+        let loud = brightness_at(&patch, &store, 127);
+        let soft = brightness_at(&patch, &store, 20);
+        assert!(
+            (soft - loud).abs() < loud * 0.02,
+            "with no route, velocity must change loudness only: {soft} against {loud}"
+        );
+    }
+
+    #[test]
+    fn an_uninverted_route_brightens_hard_notes_instead() {
+        // The same route without SF2's negative direction: the modulation
+        // rises with velocity rather than falling away from full scale, so a
+        // hard note opens up past the patch's own cutoff.
+        let mut store = SampleStore::new();
+        let mut patch = tone_patch(&mut store, 6_000.0, 4000);
+        patch.filters[0] = FilterSlot {
+            mode: SvfMode::Lowpass,
+            cutoff_hz: 1_500.0,
+            resonance: std::f32::consts::FRAC_1_SQRT_2,
+            enabled: true,
+        };
+        patch.mod_matrix = cutoff_route(0.25, false);
+
+        assert!(brightness_at(&patch, &store, 127) > brightness_at(&patch, &store, 20) * 2.0);
+    }
+
+    #[test]
+    fn cutoff_modulation_is_ignored_when_the_filter_is_off() {
+        let mut store = SampleStore::new();
+        let mut patch = tone_patch(&mut store, 6_000.0, 4000);
+        patch.mod_matrix = cutoff_route(-0.25, true);
+        assert!(
+            (brightness_at(&patch, &store, 20) - brightness_at(&patch, &store, 127)).abs() < 1e-3,
+            "a disabled filter slot has no cutoff to modulate"
+        );
     }
 }

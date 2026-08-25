@@ -2,8 +2,8 @@ use std::io::Cursor;
 use std::path::Path;
 
 use fontelle_core::{
-    FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, SampleStore,
-    Source, VoiceConfig,
+    Curve, FilterSlot, Layer, LoopMode, ModDest, ModMatrix, ModRoute, ModSource, Patch,
+    PlaybackConfig, SampleBuffer, SampleStore, Source, VoiceConfig,
 };
 use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, SvfMode};
 use soundfont::raw::{Generator, GeneratorType};
@@ -47,6 +47,9 @@ fn offset_samples(zone: &Zone, fine: GeneratorType, coarse: GeneratorType) -> f6
 /// filter would usefully shape. A zone at or past it gets no filter at all,
 /// rather than one that costs every voice work to do nothing.
 const FILTER_BYPASS_CENTS: i16 = 13_500;
+
+/// The amount of SF2's default velocity-to-filter-cutoff modulator, in cents.
+const DEFAULT_VEL_TO_FILTER_CENTS: f32 = -2400.0;
 
 /// Absolute cents to Hz. SF2 anchors the scale at 8.176 Hz (MIDI note 0), so
 /// `initialFilterFc` of 13500 is ~19912 Hz and 7200 is ~523 Hz.
@@ -346,6 +349,28 @@ pub fn import_sf2_preset(
         enabled: false,
     };
     let filter = filter.unwrap_or(disabled_filter);
+
+    // SF2 2.04 §8.4.2's second always-present default modulator: velocity to
+    // initial filter cutoff, linear, negative direction, -2400 cents. It is
+    // what makes a soundfont darken as you play softer rather than merely get
+    // quieter. Seeded only when there is a filter for it to move; a route
+    // aimed at a disabled slot is dead weight in the matrix.
+    //
+    // Its sibling, velocity to initial attenuation, is applied directly in
+    // `fontelle_core::velocity_to_gain` rather than routed here — see the note
+    // there. Both become ordinary editable routes once the UI can show them.
+    let mut mod_matrix = ModMatrix::default();
+    if filter.enabled {
+        let destination = ModDest::FilterCutoff(0);
+        mod_matrix.routes.push(ModRoute {
+            source: ModSource::Velocity,
+            destination,
+            depth: DEFAULT_VEL_TO_FILTER_CENTS / destination.full_scale(),
+            curve: Curve::Linear,
+            via: None,
+            invert: true,
+        });
+    }
     let amp = amp_envelope.unwrap();
     let mod_env = EnvelopeConfig {
         delay_s: 0.0,
@@ -362,7 +387,7 @@ pub fn import_sf2_preset(
         filters: [filter, disabled_filter],
         envelopes: vec![amp, mod_env],
         lfos: Vec::new(),
-        mod_matrix: ModMatrix::default(),
+        mod_matrix,
         voice_config: VoiceConfig::default(),
     })
 }
