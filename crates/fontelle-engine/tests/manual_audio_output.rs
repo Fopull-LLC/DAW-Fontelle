@@ -9,10 +9,18 @@
 //! ```text
 //! cargo test -p fontelle-engine --test manual_audio_output -- --ignored --nocapture
 //! ```
-//! You should hear roughly one second of a plain tone (a triangle-ish wave
-//! built from a synthetic sample buffer, not yet a real SF2 file — pass
-//! `FONTELLE_TEST_SF2=/path/to/file.sf2` to import a real one instead and
-//! hear *that* play, which is the literal M0 claim).
+//! You should hear about 3.5 seconds: a root/third/fifth run in quarter
+//! notes, then all three held together as a chord. By default that's a
+//! triangle-ish wave built from a synthetic sample buffer; pass
+//! `FONTELLE_TEST_SF2=/path/to/file.sf2` to import a real soundfont instead
+//! and hear *that* play, which is the literal M0 claim.
+//!
+//! **What to listen for:** the chord. Three simultaneous voices is the case
+//! that exposed the voice-mixing bug where each new voice re-applied its
+//! envelope to the ones already mixed into the shared buffer — audibly, held
+//! notes ducking every time another note started. If the chord swells
+//! smoothly and the earlier notes don't dip as it arrives, that path is
+//! healthy.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,8 +30,10 @@ use fontelle_core::{
     Sampler, Source, VoiceConfig,
 };
 use fontelle_dsp::{EnvelopeConfig, Interpolation, SvfMode};
-use fontelle_engine::{AudioDevice, BufferPool, CompiledGraph, SamplerNode, ScheduledNode};
-use fontelle_types::NodeId;
+use fontelle_engine::{
+    AudioDevice, BufferPool, CompiledGraph, MixerTrackNode, SamplerNode, ScheduledNode,
+};
+use fontelle_types::{CompiledTimeline, EventPayload, NodeId, TimedEvent};
 use slotmap::Key;
 
 const SAMPLE_RATE: u32 = 48_000;
@@ -102,25 +112,85 @@ fn plays_a_note_through_the_real_output_device() {
         sample_rate: SAMPLE_RATE as f32,
         max_block_size: fontelle_engine::BLOCK_SIZE as u32,
     });
-    sampler.note_on(60, 100, 0);
 
-    let node = SamplerNode::new(sampler, Arc::new(store));
+    // Notes come from a real event timeline, not a direct `sampler.note_on()`
+    // — the point of listening to this is to hear the path that actually
+    // ships, event cursor and all. A three-note run then the triad held
+    // together, mirroring `fontelle-app`'s demo phrase; the chord is the part
+    // worth listening closely to, since simultaneous voices are what the
+    // voice-mixing bug (see PROGRESS.md) made sound wrong.
+    let timeline = arpeggio_then_chord(60);
+
     let graph = CompiledGraph {
-        schedule: vec![ScheduledNode {
-            id: NodeId::null(),
-            node: Box::new(node),
-            input_buffers: Vec::new(),
-            output_buffers: vec![0],
-        }],
-        buffer_pool: BufferPool::with_capacity(1, fontelle_engine::BLOCK_SIZE),
+        schedule: vec![
+            ScheduledNode {
+                id: NodeId::null(),
+                node: Box::new(SamplerNode::new(sampler, Arc::new(store))),
+                input_buffers: Vec::new(),
+                output_buffers: vec![0, 1],
+            },
+            ScheduledNode {
+                id: NodeId::null(),
+                node: Box::new(MixerTrackNode::new()),
+                input_buffers: vec![0, 1],
+                output_buffers: vec![0, 1],
+            },
+        ],
+        buffer_pool: BufferPool::with_capacity(2, fontelle_engine::BLOCK_SIZE),
     };
 
     let mut device = AudioDevice::default_host();
     eprintln!("output device: {:?}", device.default_output_name());
+    eprintln!("playing {} events", timeline.events.len());
     device
-        .start_output_stream(graph, SAMPLE_RATE)
+        .start_output_stream(graph, timeline, SAMPLE_RATE)
         .expect("failed to open the default output device");
 
-    std::thread::sleep(Duration::from_millis(1200));
+    std::thread::sleep(Duration::from_millis(3500));
     device.stop();
+}
+
+/// Root/third/fifth as quarter notes, then all three held together — built
+/// directly as sample-timestamped events, since `fontelle-engine` can't
+/// depend on `fontelle-sequencer` (TDD §4.1). `fontelle-app`'s
+/// `demo_song` produces the equivalent phrase through the real document →
+/// sequencer path; this is the same music, one layer lower.
+fn arpeggio_then_chord(root: u8) -> CompiledTimeline {
+    let quarter = SAMPLE_RATE as i64 / 2; // 0.5s at 120bpm
+    let mut events = Vec::new();
+    let mut push = |sample: i64, key: u8, on: bool| {
+        events.push(TimedEvent {
+            sample,
+            target: NodeId::null(),
+            payload: if on {
+                EventPayload::NoteOn {
+                    key,
+                    velocity: 100,
+                    voice_context: 0,
+                }
+            } else {
+                EventPayload::NoteOff {
+                    key,
+                    voice_context: 0,
+                }
+            },
+        });
+    };
+
+    for (step, interval) in [0u8, 4, 7].iter().enumerate() {
+        let start = step as i64 * quarter;
+        push(start, root + interval, true);
+        push(start + quarter, root + interval, false);
+    }
+    let chord_start = 3 * quarter;
+    for interval in [0u8, 4, 7] {
+        push(chord_start, root + interval, true);
+        push(chord_start + quarter * 3, root + interval, false);
+    }
+
+    events.sort_by_key(|e| e.sample);
+    CompiledTimeline {
+        events,
+        index: Vec::new(),
+    }
 }

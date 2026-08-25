@@ -1,4 +1,4 @@
-//! Confirms the fix for the second real crash Ty hit: `cpal` drops the audio
+//! Confirms the fix for the second real-hardware crash: `cpal` drops the audio
 //! callback closure — and everything it owns — *on the audio thread itself*
 //! during stream teardown (`AudioDevice::stop`; the panic named thread
 //! `cpal_alsa_out`, not the caller's thread). That thread is still tagged RT

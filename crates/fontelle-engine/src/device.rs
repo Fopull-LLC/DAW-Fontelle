@@ -1,9 +1,10 @@
 use std::mem::ManuallyDrop;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use fontelle_types::CompiledTimeline;
 
 use crate::graph::CompiledGraph;
-use crate::rt_guard::mark_current_thread_rt;
+use crate::rt_guard::with_rt_thread;
 use crate::transport::{TransportSnapshot, TransportState};
 
 /// The fixed block size the M0 vertical slice targets (TDD §22: "128 frames /
@@ -72,21 +73,31 @@ impl AudioDevice {
     /// real hardware) it tears down the callback closure *on the audio thread
     /// itself*, which is still tagged RT at that point. Dropping `graph`
     /// there — freeing its `Patch`es, sample buffers, everything — would
-    /// violate INVARIANT 1 just as surely as allocating would. `graph` and
-    /// the RT-priority handle are therefore wrapped in `ManuallyDrop` so that
-    /// implicit teardown drop does nothing. This is a real, deliberate leak —
-    /// acceptable for now because every current caller (`fontelle-app
-    /// --play-sf2`, the manual test) exits the whole process shortly after
-    /// `stop()`, so the OS reclaims the memory anyway. A long-running DAW
-    /// process needs a proper deferred-drop ("trash bin": hand the old graph
-    /// to a channel a non-RT thread actually frees) instead — not built yet,
-    /// see `PROGRESS.md`.
+    /// violate INVARIANT 1 just as surely as allocating would. `graph`,
+    /// `timeline`, and the RT-priority handle are therefore wrapped in
+    /// `ManuallyDrop` so that implicit teardown drop does nothing. This is a
+    /// real, deliberate leak — acceptable for now because every current
+    /// caller (`fontelle-app --play-sf2`, the manual test) exits the whole
+    /// process shortly after `stop()`, so the OS reclaims the memory anyway.
+    /// A long-running DAW process needs a proper deferred-drop ("trash bin":
+    /// hand the old graph to a channel a non-RT thread actually frees)
+    /// instead — not built yet, see `PROGRESS.md`.
+    ///
+    /// `timeline` is walked by sample position each block via
+    /// `CompiledTimeline::events_for_block` — a monotonically-advancing
+    /// cursor into its already-sorted `events`, no allocation, no traversal
+    /// beyond a linear scan (same RT-safety shape as `CompiledGraph::
+    /// process_block` itself). Passing `CompiledTimeline::empty()` plays
+    /// silence unless a node already has an active voice from some other
+    /// trigger (the manual hardware test still does its note-on that way).
     pub fn start_output_stream(
         &mut self,
         graph: CompiledGraph,
+        timeline: CompiledTimeline,
         sample_rate: u32,
     ) -> Result<(), DeviceError> {
         let mut graph = ManuallyDrop::new(graph);
+        let timeline = ManuallyDrop::new(timeline);
         let device = self
             .host
             .default_output_device()
@@ -104,6 +115,7 @@ impl AudioDevice {
         let mut rt_handle: ManuallyDrop<Option<audio_thread_priority::RtPriorityHandle>> =
             ManuallyDrop::new(None);
         let mut sample_counter: i64 = 0;
+        let mut event_cursor: usize = 0;
         let mut poisoned = false;
 
         let stream = device
@@ -139,33 +151,50 @@ impl AudioDevice {
                             data.fill(0.0);
                             return;
                         }
-                        mark_current_thread_rt();
+                        // The tag covers exactly our own processing and no
+                        // more. The backend owns this thread between
+                        // callbacks and legitimately allocates on it —
+                        // notably, cpal's ALSA worker drops its
+                        // `StreamWorkerContext` (a `Box<[pollfd]>`) here as it
+                        // exits. Leaving the tag set turned that teardown into
+                        // a phantom INVARIANT 1 violation that looked for a
+                        // long time like a per-block allocation; see
+                        // `rt_guard::with_rt_thread` and `PROGRESS.md`.
+                        with_rt_thread(|| {
+                            let frames_total = data.len() / channels.max(1);
+                            let mut written = 0;
+                            while written < frames_total {
+                                let chunk = (frames_total - written).min(BLOCK_SIZE);
+                                let transport = TransportSnapshot {
+                                    state: TransportState::Playing,
+                                    position_sample: sample_counter,
+                                };
+                                let block_range = sample_counter..sample_counter + chunk as i64;
+                                let events = timeline
+                                    .events_for_block(&mut event_cursor, block_range.clone());
+                                graph.process_block(events, transport, block_range);
 
-                        let frames_total = data.len() / channels.max(1);
-                        let mut written = 0;
-                        while written < frames_total {
-                            let chunk = (frames_total - written).min(BLOCK_SIZE);
-                            let transport = TransportSnapshot {
-                                state: TransportState::Playing,
-                                position_sample: sample_counter,
-                            };
-                            graph.process_block(
-                                &[],
-                                transport,
-                                sample_counter..sample_counter + chunk as i64,
-                            );
-
-                            let block = graph.buffer_pool.buffer_mut(0);
-                            for i in 0..chunk {
-                                let s = block[i];
+                                // Interleave the graph's planar buses into the
+                                // device's frame layout — the one and only
+                                // place format conversion happens (TDD §5.2).
+                                // Device channel `c` reads bus `c`, clamped to
+                                // whatever the pool actually holds: a stereo
+                                // graph into a mono device drops the right
+                                // bus, and a mono graph into a multi-channel
+                                // device duplicates across all of them.
+                                let buses = graph.buffer_pool.len();
                                 for c in 0..channels {
-                                    data[(written + i) * channels + c] = s;
+                                    let bus = c.min(buses.saturating_sub(1));
+                                    let block = graph.buffer_pool.buffer_mut(bus);
+                                    for i in 0..chunk {
+                                        data[(written + i) * channels + c] = block[i];
+                                    }
                                 }
-                            }
 
-                            written += chunk;
-                            sample_counter += chunk as i64;
-                        }
+                                written += chunk;
+                                sample_counter += chunk as i64;
+                            }
+                        });
 
                         let _ = &rt_handle; // held for the stream's life; never dropped (see doc comment above)
                     }));

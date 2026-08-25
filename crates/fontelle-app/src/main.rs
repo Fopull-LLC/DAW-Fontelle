@@ -1,11 +1,9 @@
 use std::sync::Arc;
 
+use fontelle_app::{build_graph, demo_song};
 use fontelle_core::{PrepareContext, SampleStore, Sampler};
-use fontelle_engine::{
-    AudioDevice, BLOCK_SIZE, BufferPool, CompiledGraph, SamplerNode, ScheduledNode,
-};
-use fontelle_types::NodeId;
-use slotmap::Key;
+use fontelle_engine::{AudioDevice, BLOCK_SIZE};
+use fontelle_types::PPQN;
 
 // INVARIANT 1 enforcement (FONTELLE_TDD.md §20.4): only the final binary can set
 // the process's global allocator, so it's installed here rather than in
@@ -14,65 +12,146 @@ use slotmap::Key;
 static ALLOCATOR: fontelle_engine::RtGuardAllocator = fontelle_engine::RtGuardAllocator;
 
 const SAMPLE_RATE: u32 = 48_000;
+const BPM: f64 = 120.0;
 
 /// The M0 vertical slice (TDD §22), runnable for real: audio callback ->
-/// compiled graph -> one sampler voice reading a real SF2 zone -> device out,
-/// with the zero-allocation debug assertion above active. Not yet triggered by
-/// a clip on a timeline — there's no timeline UI or `fontelle-sequencer` wiring
-/// here yet, just a hardcoded note-on. See `PROGRESS.md`.
-fn play_sf2(path: &str, key: u8, hold_seconds: u64) {
+/// compiled graph -> sampler voices reading a real SF2 zone -> mixer track ->
+/// device out, every note triggered from a clip on a timeline, with the
+/// zero-allocation debug assertion above active.
+///
+/// **Scope cut, honestly:** the `Project` is built in code by
+/// `fontelle_app::demo_song`, not loaded from disk or drawn in a UI (neither
+/// exists yet), and `Channel.patch_data` is left empty — the real `Patch`
+/// comes straight from the SF2 import below rather than round-tripping
+/// through the model's serialised form, which is work for whenever project
+/// save/load lands. What *is* real: the document, its tempo map, the
+/// sequencer compiling it to a `CompiledTimeline`, the engine reading events
+/// out of that timeline block by block, and a mixer track in the signal path.
+/// See `PROGRESS.md`.
+fn play_sf2(
+    path: &std::path::Path,
+    root_key: u8,
+    preset: usize,
+    render_wav: Option<&std::path::Path>,
+) -> Result<(), String> {
+    // SF2 files store presets in arbitrary order, so "preset 0" is regularly
+    // not the instrument anyone wants — `Secret_of_Mana.sf2` opens with a
+    // whale sound effect and keeps its piano at index 27. Show the list
+    // rather than silently picking one and letting it sound broken.
+    let presets = fontelle_assets::list_presets(path)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    println!("{} presets in {}:", presets.len(), path.display());
+    for p in &presets {
+        let marker = if p.index == preset { "->" } else { "  " };
+        println!(
+            "{marker} [{:>3}] prog={:<3} bank={:<3} {}",
+            p.index, p.program, p.bank, p.name
+        );
+    }
+    println!("  (choose another with --preset <index>)\n");
+
     let mut store = SampleStore::new();
-    let patch = fontelle_assets::import_sf2(std::path::Path::new(path), &mut store)
-        .unwrap_or_else(|e| panic!("failed to import {path}: {e}"));
+    let patch = fontelle_assets::import_sf2_preset(path, preset, &mut store)
+        .map_err(|e| format!("failed to import {}: {e}", path.display()))?;
 
     let mut sampler = Sampler::new(patch);
     sampler.prepare(&PrepareContext {
         sample_rate: SAMPLE_RATE as f32,
         max_block_size: BLOCK_SIZE as u32,
     });
-    sampler.note_on(key, 100, 0);
 
-    let node = SamplerNode::new(sampler, Arc::new(store));
-    let graph = CompiledGraph {
-        schedule: vec![ScheduledNode {
-            id: NodeId::null(),
-            node: Box::new(node),
-            input_buffers: Vec::new(),
-            output_buffers: vec![0],
-        }],
-        buffer_pool: BufferPool::with_capacity(1, BLOCK_SIZE),
-    };
+    let song = demo_song(root_key, BPM, SAMPLE_RATE);
+    let timeline = song.compile();
 
+    // One beat of tail so the final chord's release rings out instead of
+    // being chopped off when the stream stops.
+    let duration_samples = song.duration_samples(PPQN);
+    let duration = std::time::Duration::from_secs_f64(duration_samples as f64 / SAMPLE_RATE as f64);
+
+    // Offline bounce instead of the device: renders the identical signal
+    // path, so the WAV is what you'd have heard — inspectable without a
+    // sound card.
+    if let Some(out) = render_wav {
+        let mut graph = build_graph(&song, sampler, Arc::new(store));
+        let pcm = fontelle_app::render_offline(&song, &mut graph, duration_samples);
+        let clipped = fontelle_app::write_wav16(out, &pcm, 2, SAMPLE_RATE)
+            .map_err(|e| format!("failed to write {}: {e}", out.display()))?;
+        let peak = pcm.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        println!(
+            "wrote {} ({} frames, peak {:.3}{})",
+            out.display(),
+            pcm.len() / 2,
+            peak,
+            if clipped > 0 {
+                format!(", {clipped} CLIPPED samples")
+            } else {
+                String::new()
+            }
+        );
+        return Ok(());
+    }
+
+    let graph = build_graph(&song, sampler, Arc::new(store));
     let mut device = AudioDevice::default_host();
     println!(
-        "Fontelle: playing key {key} from {path} on {:?}",
+        "Fontelle: {} note events from {} on {:?}",
+        timeline.events.len(),
+        path.display(),
         device.default_output_name()
     );
-    device
-        .start_output_stream(graph, SAMPLE_RATE)
-        .unwrap_or_else(|e| panic!("failed to open the default output device: {e}"));
+    println!("  root key {root_key} at {BPM} bpm — a root/third/fifth run, then the triad held.");
+    println!("  {:.2}s", duration.as_secs_f64());
 
-    std::thread::sleep(std::time::Duration::from_secs(hold_seconds));
+    device
+        .start_output_stream(graph, timeline, SAMPLE_RATE)
+        .map_err(|e| format!("failed to open the default output device: {e}"))?;
+
+    std::thread::sleep(duration);
     device.stop();
+    Ok(())
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if let Some(pos) = args.iter().position(|a| a == "--play-sf2") {
-        let path = args
-            .get(pos + 1)
-            .expect("--play-sf2 requires a file path argument");
-        play_sf2(path, 60, 2);
+    if args.iter().any(|a| a == "--play-sf2") {
+        // A bad path is ordinary user error, not a bug — report it and exit
+        // non-zero rather than dumping a panic and a backtrace hint.
+        let path = match fontelle_app::resolve_sf2_path(&args, |p| p.exists()) {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("Fontelle: {e}");
+                std::process::exit(1);
+            }
+        };
+        let numeric_flag = |name: &str| {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1))
+                .and_then(|v| v.parse::<usize>().ok())
+        };
+        let root_key = numeric_flag("--key").unwrap_or(60).min(127) as u8;
+        let preset = numeric_flag("--preset").unwrap_or(0);
+
+        let render_wav = args
+            .iter()
+            .position(|a| a == "--render-wav")
+            .and_then(|i| args.get(i + 1))
+            .map(std::path::PathBuf::from);
+
+        if let Err(e) = play_sf2(&path, root_key, preset, render_wav.as_deref()) {
+            eprintln!("Fontelle: {e}");
+            std::process::exit(1);
+        }
         return;
     }
 
     // The full DAW: docked panels, timeline, transport. Not built yet — see
-    // PROGRESS.md for what's real (the audio/sampler path above) versus what
-    // this still needs (fontelle-ui windowing, fontelle-sequencer wiring the
-    // engine to a real document instead of one hardcoded note-on).
+    // PROGRESS.md for what's real (the audio/sampler/sequencer path above)
+    // versus what this still needs (fontelle-ui windowing, a document loaded
+    // from disk rather than built in code).
     todo!(
         "winit event loop -> fontelle-ui docked panels -> fontelle-engine::AudioDevice \
          -> fontelle-sequencer::compile -> CompiledTimeline over triple_buffer \
-         (run with `--play-sf2 <path>` for the M0 vertical slice instead)"
+         (run with `--play-sf2 <path> [--preset <n>] [--key <note>] [--render-wav <out>]` for the M0 vertical slice instead)"
     )
 }

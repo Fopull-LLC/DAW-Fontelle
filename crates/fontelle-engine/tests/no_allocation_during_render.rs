@@ -19,8 +19,10 @@ use fontelle_core::{
     Sampler, Source, VoiceConfig,
 };
 use fontelle_dsp::{EnvelopeConfig, Interpolation, SvfMode};
-use fontelle_engine::{BufferPool, CompiledGraph, RtGuardAllocator, SamplerNode, ScheduledNode};
-use fontelle_types::{EventPayload, NodeId, TimedEvent};
+use fontelle_engine::{
+    BufferPool, CompiledGraph, MixerTrackNode, RtGuardAllocator, SamplerNode, ScheduledNode,
+};
+use fontelle_types::{CompiledTimeline, EventPayload, NodeId, TimedEvent};
 use slotmap::Key;
 
 #[global_allocator]
@@ -30,6 +32,16 @@ const SR: f32 = 48_000.0;
 const BLOCK: usize = 128;
 
 fn build_graph() -> CompiledGraph {
+    build_graph_with(false)
+}
+
+/// The two-node stereo shape real playback now uses: sampler writing a bus
+/// pair, then a `MixerTrackNode` processing them in place.
+fn build_stereo_graph_with_mixer() -> CompiledGraph {
+    build_graph_with(true)
+}
+
+fn build_graph_with(stereo_mixer: bool) -> CompiledGraph {
     let mut store = SampleStore::new();
     // A real-shaped, non-looping, multi-thousand-sample buffer — the same
     // shape that exposed the bug (a real SF2 layer), not the tiny looped
@@ -81,14 +93,29 @@ fn build_graph() -> CompiledGraph {
         max_block_size: BLOCK as u32,
     });
 
-    CompiledGraph {
-        schedule: vec![ScheduledNode {
+    let buses: Vec<usize> = if stereo_mixer { vec![0, 1] } else { vec![0] };
+    let mut schedule = vec![ScheduledNode {
+        id: NodeId::null(),
+        node: Box::new(SamplerNode::new(sampler, Arc::new(store))),
+        input_buffers: Vec::new(),
+        output_buffers: buses.clone(),
+    }];
+    if stereo_mixer {
+        schedule.push(ScheduledNode {
             id: NodeId::null(),
-            node: Box::new(SamplerNode::new(sampler, Arc::new(store))),
-            input_buffers: Vec::new(),
-            output_buffers: vec![0],
-        }],
-        buffer_pool: BufferPool::with_capacity(1, BLOCK),
+            node: Box::new(MixerTrackNode {
+                gain_db: -3.0,
+                pan: 0.25,
+                ..MixerTrackNode::new()
+            }),
+            input_buffers: buses.clone(),
+            output_buffers: buses.clone(),
+        });
+    }
+
+    CompiledGraph {
+        schedule,
+        buffer_pool: BufferPool::with_capacity(buses.len(), BLOCK),
     }
 }
 
@@ -130,5 +157,79 @@ fn process_block_does_not_allocate_across_many_real_blocks() {
     // `unmark_current_thread_rt`'s doc comment and PROGRESS.md), not the
     // steady-state rendering this test checks. Un-tag before `graph`'s own
     // drop so *that* known gap doesn't fail *this* test.
+    fontelle_engine::unmark_current_thread_rt();
+}
+
+/// The same INVARIANT 1 check against the shape playback *actually* uses now:
+/// a two-node stereo schedule (sampler → mixer track, processing in place),
+/// driven from a real `CompiledTimeline` through
+/// `CompiledTimeline::events_for_block` — exactly what
+/// `AudioDevice`'s callback does per block, including the event-cursor walk
+/// the single-node test above never touches.
+///
+/// Written as a regression guard *after* the code it covers, unlike the
+/// red-first tests for the mixer's behaviour: the paths it protects
+/// (`get_disjoint_mut` for the bus pair, `split_at_mut` in the mixer,
+/// `split_first_mut` + `copy_from_slice` in the sampler node, the slice
+/// return from `events_for_block`) are all ones where a careless later edit
+/// could reintroduce a per-block `Vec`, which is precisely the bug this
+/// file's original test caught on real hardware.
+#[test]
+fn the_stereo_sampler_into_mixer_chain_does_not_allocate_per_block() {
+    let mut graph = build_stereo_graph_with_mixer();
+
+    // A real timeline with events spread across many blocks, so the cursor
+    // advances mid-run rather than being consumed entirely on block one.
+    let mut events = Vec::new();
+    for i in 0..16 {
+        let sample = i * BLOCK as i64 * 7;
+        events.push(TimedEvent {
+            sample,
+            target: NodeId::null(),
+            payload: EventPayload::NoteOn {
+                key: 60 + (i % 12) as u8,
+                velocity: 100,
+                voice_context: 0,
+            },
+        });
+        events.push(TimedEvent {
+            sample: sample + BLOCK as i64 * 3,
+            target: NodeId::null(),
+            payload: EventPayload::NoteOff {
+                key: 60 + (i % 12) as u8,
+                voice_context: 0,
+            },
+        });
+    }
+    events.sort_by_key(|e| e.sample);
+    let timeline = CompiledTimeline {
+        events,
+        index: Vec::new(),
+    };
+
+    let transport = fontelle_engine::TransportSnapshot {
+        state: fontelle_engine::TransportState::Playing,
+        position_sample: 0,
+    };
+
+    // Everything above is off-RT setup and may allocate freely.
+    fontelle_engine::mark_current_thread_rt();
+
+    let mut cursor = 0usize;
+    for i in 0..800 {
+        let start = (i * BLOCK) as i64;
+        let range = start..start + BLOCK as i64;
+        let block_events = timeline.events_for_block(&mut cursor, range.clone());
+        graph.process_block(block_events, transport, range);
+    }
+
+    assert_eq!(
+        cursor,
+        timeline.events.len(),
+        "the run must be long enough to consume the whole timeline"
+    );
+
+    // Same teardown caveat as the test above: real playback never drops the
+    // graph mid-stream.
     fontelle_engine::unmark_current_thread_rt();
 }
