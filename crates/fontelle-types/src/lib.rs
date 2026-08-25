@@ -1,6 +1,7 @@
 mod asset;
 mod event;
 mod id;
+mod pan;
 mod param;
 mod time;
 
@@ -10,5 +11,6 @@ pub use id::{
     AssetId, AudioInputId, ChannelId, ClipId, LaneId, MarkerId, MixerTrackId, NodeId, NoteId,
     PersistentId, PointId, PrefabId,
 };
+pub use pan::PanLaw;
 pub use param::ParamAddress;
 pub use time::{PPQN, Sample, Tick};

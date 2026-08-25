@@ -1,13 +1,8 @@
 use fontelle_types::{AudioInputId, MixerTrackId, ParamAddress};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum PanLaw {
-    /// -3dB, the default.
-    Minus3Db,
-    Minus4_5Db,
-    Minus6Db,
-    Linear,
-}
+// `PanLaw` lives in `fontelle-types` so `fontelle-engine`'s `MixerTrackNode`
+// can share this exact type — the engine can't depend on this crate (TDD §4.1).
+pub use fontelle_types::PanLaw;
 
 /// A document-level reference to one effect instance in an insert chain. The DSP
 /// itself (`fontelle-fx`) is instantiated and processed by `fontelle-engine`; the
