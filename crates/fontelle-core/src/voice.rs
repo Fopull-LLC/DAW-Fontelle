@@ -193,11 +193,14 @@ impl Voice {
     /// Advancing the envelope once per output sample and scaling only this
     /// voice's own mixed sample before adding it is what keeps the additive
     /// contract honest.
+    /// `quality`, when set, replaces every layer's own interpolation mode for
+    /// this render — see `Sampler::set_render_quality`.
     pub fn render(
         &mut self,
         patch: &crate::Patch,
         store: &crate::SampleStore,
         sample_rate: f32,
+        quality: Option<fontelle_dsp::Interpolation>,
         out: &mut [f32],
     ) {
         if !self.active {
@@ -251,7 +254,7 @@ impl Voice {
                 looping: matches!(layer.playback.loop_mode, crate::LoopMode::Forward)
                     && loop_len > 0.0,
                 end_offset: layer.playback.end_offset,
-                interpolation: layer.playback.interpolation,
+                interpolation: quality.unwrap_or(layer.playback.interpolation),
             });
         }
 
@@ -432,7 +435,7 @@ mod tests {
         assert!(!voice.is_active());
 
         let mut out = vec![0.0; 128];
-        voice.render(&patch, &store, SR, &mut out);
+        voice.render(&patch, &store, SR, None, &mut out);
         assert_eq!(rms(&out), 0.0);
     }
 
@@ -446,7 +449,7 @@ mod tests {
         assert!(voice.is_active());
 
         let mut out = vec![0.0; 128];
-        voice.render(&patch, &store, SR, &mut out);
+        voice.render(&patch, &store, SR, None, &mut out);
         assert!(
             rms(&out) > 0.5,
             "expected near-full-scale output, got rms {}",
@@ -464,7 +467,7 @@ mod tests {
         voice.trigger(&patch, 40, 127, 0);
 
         let mut out = vec![0.0; 128];
-        voice.render(&patch, &store, SR, &mut out);
+        voice.render(&patch, &store, SR, None, &mut out);
         assert_eq!(
             rms(&out),
             0.0,
@@ -479,14 +482,14 @@ mod tests {
         let mut voice_full = Voice::new();
         voice_full.trigger(&patch_full, 60, 127, 0);
         let mut out_full = vec![0.0; 64];
-        voice_full.render(&patch_full, &store_full, SR, &mut out_full);
+        voice_full.render(&patch_full, &store_full, SR, None, &mut out_full);
 
         let mut store_quiet = SampleStore::new();
         let patch_quiet = flat_patch(&mut store_quiet, 1.0, 1000, -6.0);
         let mut voice_quiet = Voice::new();
         voice_quiet.trigger(&patch_quiet, 60, 127, 0);
         let mut out_quiet = vec![0.0; 64];
-        voice_quiet.render(&patch_quiet, &store_quiet, SR, &mut out_quiet);
+        voice_quiet.render(&patch_quiet, &store_quiet, SR, None, &mut out_quiet);
 
         let ratio = rms(&out_quiet) / rms(&out_full);
         let expected = 10f32.powf(-6.0 / 20.0); // -6dB ~= 0.5012
@@ -510,7 +513,7 @@ mod tests {
         let mut scratch = vec![0.0; 256];
         for _ in 0..10 {
             scratch.fill(0.0);
-            voice.render(&patch, &store, SR, &mut scratch);
+            voice.render(&patch, &store, SR, None, &mut scratch);
         }
         assert!(voice.is_active());
 
@@ -518,7 +521,7 @@ mod tests {
         // release_s = 0.01s @ 48kHz = 480 samples; render well past that.
         for _ in 0..20 {
             scratch.fill(0.0);
-            voice.render(&patch, &store, SR, &mut scratch);
+            voice.render(&patch, &store, SR, None, &mut scratch);
         }
         assert!(
             !voice.is_active(),
@@ -569,7 +572,7 @@ mod tests {
         voice.trigger(&patch, 60, 127, 0);
 
         let mut out = vec![0.0; 256]; // 8x the buffer length
-        voice.render(&patch, &store, SR, &mut out);
+        voice.render(&patch, &store, SR, None, &mut out);
         assert!(
             voice.is_active(),
             "a Forward-looped voice must not stop at the buffer's natural end"
@@ -594,7 +597,7 @@ mod tests {
             let mut voice = Voice::new();
             voice.trigger(&patch, 60, velocity, 0);
             let mut out = vec![0.0; 64];
-            voice.render(&patch, &store, SR, &mut out);
+            voice.render(&patch, &store, SR, None, &mut out);
             rms(&out)
         };
 
@@ -618,7 +621,7 @@ mod tests {
         let mut voice = Voice::new();
         voice.trigger(&patch, 60, 127, 0);
         let mut out = vec![0.0; 64];
-        voice.render(&patch, &store, SR, &mut out);
+        voice.render(&patch, &store, SR, None, &mut out);
         assert!(
             (rms(&out) - 1.0).abs() < 1e-4,
             "velocity 127 must be unity gain, got {}",

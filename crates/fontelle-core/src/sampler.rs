@@ -15,6 +15,7 @@ pub struct Sampler {
     patch: Patch,
     voices: VoicePool,
     sample_rate: f32,
+    render_quality: Option<fontelle_dsp::Interpolation>,
 }
 
 impl Sampler {
@@ -24,6 +25,7 @@ impl Sampler {
             patch,
             voices: VoicePool::with_capacity(capacity),
             sample_rate: 48_000.0,
+            render_quality: None,
         }
     }
 
@@ -33,6 +35,21 @@ impl Sampler {
     /// since pitch/loop math is computed per-render from it.
     pub fn prepare(&mut self, ctx: &PrepareContext) {
         self.sample_rate = ctx.sample_rate;
+    }
+
+    /// Overrides every layer's own interpolation mode for subsequent renders.
+    ///
+    /// TDD §7.6 makes playback and render quality independent settings, so a
+    /// bounce can run at a higher quality than the session was played at
+    /// without editing the document — the caller sets this to `High` for an
+    /// export pass and leaves it `None` the rest of the time. This is
+    /// engine-side state deliberately: the patch is document data and an
+    /// export must not mutate it.
+    ///
+    /// Off-RT. `None` means each layer's `PlaybackConfig::interpolation`
+    /// decides, which is the authored intent.
+    pub fn set_render_quality(&mut self, quality: Option<fontelle_dsp::Interpolation>) {
+        self.render_quality = quality;
     }
 
     pub fn note_on(&mut self, key: u8, velocity: u8, voice_context: u32) {
@@ -53,8 +70,9 @@ impl Sampler {
         out.fill(0.0);
         let patch = &self.patch;
         let sample_rate = self.sample_rate;
+        let quality = self.render_quality;
         for voice in self.voices.iter_active_mut() {
-            voice.render(patch, store, sample_rate, out);
+            voice.render(patch, store, sample_rate, quality, out);
         }
     }
 
@@ -312,5 +330,112 @@ mod tests {
         let mut out = vec![0.0; 128];
         sampler.render(&store, &mut out);
         assert!(rms(&out) > 0.0, "the stolen-in third note must still sound");
+    }
+
+    /// A sample whose content sits high enough in the spectrum that the choice
+    /// of interpolation kernel is measurable — the point of the setting.
+    fn sine_patch(store: &mut SampleStore, cycles_per_sample: f64, len: usize) -> Patch {
+        let data: Vec<f32> = (0..len)
+            .map(|i| (std::f64::consts::TAU * cycles_per_sample * i as f64).sin() as f32)
+            .collect();
+        let asset = store.insert(crate::streaming::SampleBuffer {
+            data: std::sync::Arc::from(data),
+            sample_rate: SR as u32,
+        });
+        Patch {
+            layers: vec![Layer {
+                source: Source::Sample { file: asset },
+                key_range: (0, 127),
+                vel_range: (0, 127),
+                root_key: 60,
+                // Read at a fractional rate so every output sample lands
+                // between two stored ones; at an integer rate every kernel
+                // returns the same thing and the test proves nothing.
+                fine_tune_cents: 30.0,
+                playback: PlaybackConfig {
+                    loop_mode: LoopMode::Off,
+                    interpolation: Interpolation::Normal,
+                    end_offset: len as f64,
+                    ..PlaybackConfig::default()
+                },
+                gain_db: 0.0,
+                pan: 0.0,
+            }],
+            filters: [disabled_filter(), disabled_filter()],
+            envelopes: vec![instant_envelope(), instant_envelope()],
+            lfos: Vec::new(),
+            mod_matrix: ModMatrix::default(),
+            voice_config: VoiceConfig {
+                polyphony: 4,
+                steal_policy: StealPolicy::Oldest,
+                ..VoiceConfig::default()
+            },
+        }
+    }
+
+    #[test]
+    fn render_quality_override_replaces_the_patchs_own_interpolation() {
+        // TDD §7.6: playback and render quality are independent settings, so a
+        // bounce can run at a higher quality than the session was played at
+        // without editing the document. The override is engine-side state, not
+        // document data — the patch is untouched.
+        let mut store = SampleStore::new();
+        let patch = sine_patch(&mut store, 0.2, 4000);
+
+        let render = |quality: Option<Interpolation>| {
+            let mut sampler = Sampler::new(patch.clone());
+            sampler.prepare(&PrepareContext {
+                sample_rate: SR,
+                max_block_size: 512,
+            });
+            sampler.set_render_quality(quality);
+            sampler.note_on(72, 127, 0);
+            let mut out = vec![0.0; 512];
+            sampler.render(&store, &mut out);
+            out
+        };
+
+        let as_authored = render(None);
+        let overridden = render(Some(Interpolation::High));
+
+        assert!(
+            as_authored.iter().any(|s| *s != 0.0),
+            "the fixture should make sound"
+        );
+        let difference: f32 = as_authored
+            .iter()
+            .zip(overridden.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(
+            difference > 0.1,
+            "overriding Normal with High must actually change the rendered audio, \
+             total absolute difference was {difference}"
+        );
+    }
+
+    #[test]
+    fn no_render_quality_override_leaves_the_patch_in_charge() {
+        let mut store = SampleStore::new();
+        let mut patch = sine_patch(&mut store, 0.2, 4000);
+        patch.layers[0].playback.interpolation = Interpolation::High;
+
+        let render = |quality: Option<Interpolation>| {
+            let mut sampler = Sampler::new(patch.clone());
+            sampler.prepare(&PrepareContext {
+                sample_rate: SR,
+                max_block_size: 512,
+            });
+            sampler.set_render_quality(quality);
+            sampler.note_on(72, 127, 0);
+            let mut out = vec![0.0; 512];
+            sampler.render(&store, &mut out);
+            out
+        };
+
+        // Overriding with the mode the patch already asks for is a no-op, which
+        // is the property that makes `None` mean "the patch decides" rather
+        // than "some hidden default decides".
+        assert_eq!(render(None), render(Some(Interpolation::High)));
     }
 }

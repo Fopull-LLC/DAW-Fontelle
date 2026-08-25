@@ -151,3 +151,81 @@ fn wav16_writes_a_well_formed_header_and_reports_clipping() {
     let last = i16::from_le_bytes([bytes[50], bytes[51]]);
     assert!(last > 32_000, "2.0 must clamp to +full scale, got {last}");
 }
+
+/// TDD §7.6: playback and render quality are independent, and export defaults
+/// to a better kernel than playback does. This checks the setting is actually
+/// live all the way through `SamplerNode` and the compiled graph, not just
+/// stored on the `Sampler` — a quality that a node quietly drops on the floor
+/// is worse than one that was never wired up, because it looks correct.
+#[test]
+fn the_render_quality_override_reaches_the_graph() {
+    let render_at = |quality: Option<Interpolation>| {
+        let song = demo_song(60, 120.0, SR);
+        let mut store = SampleStore::new();
+        // Deliberately not `synthetic_patch`: its 100-sample cycle is 0.01
+        // cycles per sample, where every kernel agrees to four decimal places.
+        // A test of the interpolation setting needs content high enough in the
+        // spectrum for the kernel to matter.
+        let patch = bright_patch(&mut store);
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&fontelle_core::PrepareContext {
+            sample_rate: SR as f32,
+            max_block_size: fontelle_engine::BLOCK_SIZE as u32,
+        });
+        sampler.set_render_quality(quality);
+        let mut graph = build_graph(&song, sampler, Arc::new(store));
+        render_offline(&song, &mut graph, 24_000)
+    };
+
+    let as_authored = render_at(None);
+    let high = render_at(Some(Interpolation::High));
+
+    assert!(
+        as_authored.iter().any(|s| *s != 0.0),
+        "the fixture should make sound"
+    );
+    // Relative to the signal, not absolute: the demo's velocities and its
+    // -12 dB track gain scale everything down, so an absolute threshold would
+    // be measuring the fader rather than the kernel.
+    let mean_level: f32 =
+        as_authored.iter().map(|s| s.abs()).sum::<f32>() / as_authored.len() as f32;
+    let mean_difference: f32 = as_authored
+        .iter()
+        .zip(high.iter())
+        .map(|(a, b)| (a - b).abs())
+        .sum::<f32>()
+        / as_authored.len() as f32;
+    let relative = mean_difference / mean_level;
+    assert!(
+        relative > 0.01,
+        "the override must measurably change the rendered audio; difference was \
+         {relative:.4} of the signal level ({mean_difference} against {mean_level})"
+    );
+}
+
+/// `synthetic_patch` with its cycle shortened to five samples — 0.2 cycles per
+/// sample, ordinary upper-mid content once transposed, and the region where a
+/// windowed sinc is measurably more accurate than Hermite.
+fn bright_patch(store: &mut SampleStore) -> Patch {
+    let cycle = 5;
+    let cycles = 102;
+    let data: Vec<f32> = (0..cycle * cycles)
+        .map(|i| (i as f32 / cycle as f32 * std::f32::consts::TAU).sin())
+        .collect();
+    let len = data.len() as f64;
+    let asset = store.insert(SampleBuffer {
+        data: Arc::from(data),
+        sample_rate: SR,
+    });
+    let mut patch = synthetic_patch(&mut SampleStore::new());
+    patch.layers[0].source = Source::Sample { file: asset };
+    patch.layers[0].playback.loop_end = len;
+    patch.layers[0].playback.end_offset = len;
+    patch
+}
+
+/// And `fontelle-app`'s export path has to actually ask for it.
+#[test]
+fn the_offline_bounce_renders_at_export_quality() {
+    assert_eq!(fontelle_app::RENDER_QUALITY, Interpolation::High);
+}

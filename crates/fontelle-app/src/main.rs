@@ -72,13 +72,16 @@ fn play_sf2(
     // path, so the WAV is what you'd have heard — inspectable without a
     // sound card.
     if let Some(out) = render_wav {
+        // An offline bounce is not real-time, so it renders at export quality
+        // rather than at whatever the patch asks for during playback.
+        sampler.set_render_quality(Some(fontelle_app::RENDER_QUALITY));
         let mut graph = build_graph(&song, sampler, Arc::new(store));
         let pcm = fontelle_app::render_offline(&song, &mut graph, duration_samples);
         let clipped = fontelle_app::write_wav16(out, &pcm, 2, SAMPLE_RATE)
             .map_err(|e| format!("failed to write {}: {e}", out.display()))?;
         let peak = pcm.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         println!(
-            "wrote {} ({} frames, peak {:.3}{})",
+            "wrote {} ({} frames, peak {:.3}{}) at {:?} interpolation",
             out.display(),
             pcm.len() / 2,
             peak,
@@ -86,7 +89,8 @@ fn play_sf2(
                 format!(", {clipped} CLIPPED samples")
             } else {
                 String::new()
-            }
+            },
+            fontelle_app::RENDER_QUALITY
         );
         return Ok(());
     }

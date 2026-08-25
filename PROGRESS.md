@@ -99,7 +99,7 @@ hear the feature is to edit the source. The held chord stays at 100.
 `DEMO_TRACK_GAIN_DB` is unchanged at -12 dB; on `F-Zero.sf2` preset 0 the demo
 now peaks at 0.296 rather than 0.477, which is quieter but has honest headroom.
 
-**Where the demo stands:** 102 tests, clippy and fmt clean, played on real
+**Where the demo stands:** 110 tests, clippy and fmt clean, played on real
 hardware from both a 97 KB soundfont and a 325 MB one.
 
 ```sh
@@ -107,6 +107,59 @@ cargo run -p fontelle-app -- --play-sf2 "<path.sf2>" --preset <n>
 cargo run -p fontelle-app -- --play-sf2 "<path.sf2>" --preset <n> --render-wav /tmp/out.wav
 cargo run -p fontelle-assets --example inspect_sf2 -- "<path.sf2>" <n>
 ```
+
+### Interpolation: the windowed-sinc kernel, and an export-quality path
+
+**A correction to the previous entry's next-steps list, which claimed
+"everything currently runs on `Draft` (linear)".** That was wrong. Both
+`PlaybackConfig::default()` and the SF2 importer already set
+`Interpolation::Normal`, so playback has been on 4-point Hermite all along;
+every `Draft` in the tree is in a test fixture. The claim was written from a
+call-site grep without checking the defaults it was asserting about.
+
+The real gap in TDD §7.6 was that `High` and `Ultra` were `todo!()` — they
+panicked if selected — and that nothing implemented the "playback and render
+quality are independent settings" half of the section.
+
+`High` is now an 8-point Blackman-windowed sinc. RMS error against an analytic
+sine, sampled across fractional positions:
+
+| content (cycles/sample) | Draft | Normal | High |
+|---|---|---|---|
+| 0.05 | 0.006372 | 0.000272 | 0.000194 |
+| 0.10 | 0.025422 | 0.002595 | 0.000463 |
+| 0.20 | 0.098284 | 0.028565 | 0.002011 |
+| 0.30 | 0.212150 | 0.114248 | 0.038362 |
+| 0.40 | 0.351865 | 0.276654 | 0.195752 |
+
+At 0.2 cycles per sample — ordinary upper-mid content — it is 14x more accurate
+than Hermite. The advantage narrows near Nyquist (0.4) because an 8-tap
+Blackman window has real passband droop up there; content that high is already
+compromised by then, and widening the kernel is what `Ultra` is for.
+
+Two implementation notes worth keeping:
+
+- The kernel is evaluated directly rather than from a precomputed phase table.
+  A table would be faster, but it has to be built somewhere, and building it
+  lazily would put an allocation on the audio thread. If `High` ever needs to
+  run at playback rates the table belongs in `prepare()`, not behind a
+  `LazyLock`.
+- The taps are normalised to sum to unity. They don't naturally at an arbitrary
+  phase, and the residue is a periodic amplitude ripple on steady material —
+  audible as a whine. There's a test for it.
+
+`Ultra` stays unimplemented, and deliberately: "16-point sinc + 2x oversample"
+is not expressible in a point-interpolator, because oversampling is a property
+of a stream of output samples. It needs a stateful resampler. The `todo!()`
+now says so rather than implying the kernel was merely unwritten.
+
+For the quality split, `Sampler::set_render_quality` overrides every layer's
+mode for a render pass. It is engine-side state, not document data — an export
+must not mutate the patch — and `None` means the patch decides. `fontelle-app`
+sets it to `High` for `--render-wav`, which now reports the mode it rendered
+at. On the F-Zero electric piano the bounce differs from a `Normal` render by
+1.19% of signal level; that sample is transposed *downward*, where
+interpolation error is small, so this is the quiet end of the effect.
 
 ### Still wrong, found while doing the above
 
@@ -814,15 +867,10 @@ crash the process).
 3. ~~Velocity → loudness.~~ **Done** — see the 2026-08-25 section. The
    remaining piece is the mod matrix honouring a file's *override* of the
    default modulator, which is part of item 4.
-4. **Interpolation quality (TDD §7.6).** Everything currently runs on `Draft`
-   (linear). The TDD makes 4-point Hermite the playback default and windowed
-   sinc the render default, and calls this "what determines whether the
-   sampler sounds good". `Interpolation::Normal` (Hermite) is *already
-   implemented and tested* in `fontelle-dsp/src/interpolation.rs` — nothing
-   selects it, which makes flipping the default the cheapest remaining win on
-   sound quality. `High`/`Ultra` are `todo!()` (the windowed-sinc kernel) and
-   would panic if selected, so they need writing before the independent
-   playback-vs-render quality settings the TDD asks for can exist.
+4. ~~Interpolation quality (TDD §7.6).~~ **Mostly done** — see the 2026-08-25
+   section. `Ultra` is still unimplemented and needs a stateful resampler
+   rather than a point-interpolator; the per-layer/global quality precedence
+   is an open question, below.
 5. **`ModMatrix::evaluate`** is still `todo!()`. Needed for velocity→filter,
    LFOs, and for a file overriding the SF2 default modulators.
 6. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
@@ -833,6 +881,19 @@ crash the process).
 7. ~~Root-cause the `dealloc size=16, align=4` allocation.~~ **Done** — it
    was our RT tag outliving the callback, not a per-block allocation. See the
    "hardware run" section at the top.
+
+## Open questions against the TDD (2026-08-25 additions)
+
+- **Per-layer vs global interpolation quality.** TDD §7.3 gives every layer its
+  own `PlaybackConfig::interpolation`, and §7.6 says playback and render
+  quality are independent global settings. Both can't be the last word. The
+  current split is deliberate but partial: the layer's value is the authored
+  intent, and `Sampler::set_render_quality` overrides it wholesale for an
+  export pass. What is *not* decided is how a global **playback** quality
+  setting should interact with a layer that names its own — override it, or
+  act as a default the layer can depart from? The second reading needs
+  `PlaybackConfig::interpolation` to become an `Option`, which changes the
+  saved project schema, so it isn't a change to make on a guess.
 
 ## Open questions against the TDD (2026-08-24 additions)
 
