@@ -2,8 +2,8 @@
 //! own `#[global_allocator]` here without affecting any other test suite.
 //!
 //! This reproduces, silently and without any audio hardware, the exact crash
-//! Ty hit running `fontelle-app --play-sf2`: an allocation on the RT-tagged
-//! thread aborted the whole process (SIGABRT) instead of producing a single
+//! seen running `fontelle-app --play-sf2` on real hardware: an allocation on the
+//! RT-tagged thread aborted the whole process (SIGABRT) instead of producing a single
 //! clean panic. Root cause: `RtGuardAllocator::alloc`'s own violation-report
 //! `panic!(...)` formats a message, which allocates, which re-enters `alloc`
 //! while the thread is still tagged RT, which panics *again* mid-unwind —

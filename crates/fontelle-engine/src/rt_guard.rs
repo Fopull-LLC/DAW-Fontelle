@@ -54,6 +54,33 @@ fn assert_not_rt(op: &str, layout: Layout) {
     }
 }
 
+/// Runs `f` with the current thread tagged RT, and **always** clears the tag
+/// afterward — including when `f` unwinds.
+///
+/// This scoping is the point, not a convenience. The audio backend owns the
+/// callback thread and does its own work on it *between* our invocations:
+/// cpal's ALSA worker, for one, drops its `StreamWorkerContext` (a
+/// `Box<[pollfd]>`) on that thread as the worker exits. That deallocation is
+/// legitimate and none of our business, but a tag left set after our callback
+/// body returns turns it into a spurious INVARIANT 1 violation at stream
+/// teardown — which is exactly what it did, and what cost a long time to
+/// track down (see `PROGRESS.md`). INVARIANT 1 is about *our* processing, so
+/// the tag lives exactly as long as our processing does.
+pub fn with_rt_thread<R>(f: impl FnOnce() -> R) -> R {
+    struct ClearOnDrop;
+    impl Drop for ClearOnDrop {
+        fn drop(&mut self) {
+            unmark_current_thread_rt();
+        }
+    }
+
+    // Constructed before the tag is set, so it runs on every exit path —
+    // normal return or unwind.
+    let _clear = ClearOnDrop;
+    mark_current_thread_rt();
+    f()
+}
+
 unsafe impl GlobalAlloc for RtGuardAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         #[cfg(debug_assertions)]
