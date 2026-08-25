@@ -49,6 +49,29 @@ impl Default for VoiceConfig {
     }
 }
 
+/// The gain a note-on velocity contributes, as a linear amplitude multiplier.
+///
+/// SF2 2.04 §8.4.1 specifies a default modulator that is present on every zone
+/// unless the file overrides it: MIDI note-on velocity -> initial attenuation,
+/// concave curve, negative direction, amount 960 centibels. Feeding the
+/// concave curve's 96 dB span through that amount works out to amplitude
+/// proportional to the *square* of normalised velocity — velocity 64 lands
+/// ~12 dB down, not 6 — which is why soundfonts played with a linear velocity
+/// response sound flat and undynamic.
+///
+/// This is the default modulator's net effect computed directly, not the
+/// general modulator machinery: `ModMatrix::evaluate` is still unimplemented,
+/// so a file that *overrides* this default is not honoured yet. Every file
+/// that doesn't (the overwhelming majority) is now correct. See `PROGRESS.md`.
+pub fn velocity_to_gain(velocity: u8) -> f32 {
+    // Velocity 0 is a note-off in MIDI, never a very quiet note.
+    if velocity == 0 {
+        return 0.0;
+    }
+    let normalised = velocity as f32 / 127.0;
+    normalised * normalised
+}
+
 /// TDD §7.2: "up to 16" layers. A fixed array, not a `Vec` — per-layer playback
 /// state is allocated once with the voice, at pool-construction time, never on
 /// note-on (INVARIANT 1, INVARIANT 6).
@@ -94,6 +117,9 @@ pub struct Voice {
     /// clock (INVARIANT 1: no syscalls on the RT thread).
     age: u64,
     layers: [LayerPlayback; MAX_LAYERS],
+    /// Fixed for the life of the note, from `velocity_to_gain`. Folded into
+    /// each layer's gain at the top of `render` so it costs nothing per sample.
+    velocity_gain: f32,
     amp_env: fontelle_dsp::EnvelopeGenerator,
 }
 
@@ -105,6 +131,7 @@ impl Voice {
             voice_context: 0,
             age: 0,
             layers: [LayerPlayback::default(); MAX_LAYERS],
+            velocity_gain: 0.0,
             amp_env: fontelle_dsp::EnvelopeGenerator::new(),
         }
     }
@@ -125,6 +152,7 @@ impl Voice {
         self.active = true;
         self.key = key;
         self.voice_context = voice_context;
+        self.velocity_gain = velocity_to_gain(velocity);
         self.amp_env.note_on();
 
         for (slot, layer) in self.layers.iter_mut().zip(patch.layers.iter()) {
@@ -214,7 +242,7 @@ impl Voice {
             prepared[index] = Some(PreparedLayer {
                 data: &buffer.data,
                 step: (pitch_ratio * rate_ratio) as f64,
-                gain: 10f32.powf(layer.gain_db / 20.0),
+                gain: 10f32.powf(layer.gain_db / 20.0) * self.velocity_gain,
                 loop_end: layer.playback.loop_end,
                 loop_len,
                 // `loop_len > 0.0` also guards the wrap loop below against
@@ -551,4 +579,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn velocity_scales_output_on_the_sf2_default_curve() {
+        // Two identical patches, two velocities. SF2's always-present default
+        // velocity -> initial-attenuation modulator makes amplitude scale with
+        // the square of normalised velocity, so half velocity is roughly a
+        // quarter of the amplitude (-12 dB), not half and certainly not the
+        // same.
+        let render_at = |velocity: u8| {
+            let mut store = SampleStore::new();
+            let patch = flat_patch(&mut store, 1.0, 1000, 0.0);
+            let mut voice = Voice::new();
+            voice.trigger(&patch, 60, velocity, 0);
+            let mut out = vec![0.0; 64];
+            voice.render(&patch, &store, SR, &mut out);
+            rms(&out)
+        };
+
+        let full = render_at(127);
+        let half = render_at(64);
+        let ratio = half / full;
+        let expected = (64.0f32 / 127.0).powi(2);
+        assert!(
+            (ratio - expected).abs() < 0.01,
+            "velocity 64 against 127 should be ~{expected} of the amplitude, got {ratio}"
+        );
+    }
+
+    #[test]
+    fn full_velocity_is_unity_gain() {
+        // The velocity curve must not quietly attenuate everything: 127 is the
+        // reference point, so a full-scale sample at velocity 127 and 0 dB
+        // layer gain still comes out at full scale.
+        let mut store = SampleStore::new();
+        let patch = flat_patch(&mut store, 1.0, 1000, 0.0);
+        let mut voice = Voice::new();
+        voice.trigger(&patch, 60, 127, 0);
+        let mut out = vec![0.0; 64];
+        voice.render(&patch, &store, SR, &mut out);
+        assert!(
+            (rms(&out) - 1.0).abs() < 1e-4,
+            "velocity 127 must be unity gain, got {}",
+            rms(&out)
+        );
+    }
+
+    #[test]
+    fn velocity_to_gain_spans_the_full_sf2_attenuation_range() {
+        assert_eq!(velocity_to_gain(127), 1.0);
+        assert!((velocity_to_gain(64) - 0.253_9).abs() < 1e-3);
+        assert_eq!(
+            velocity_to_gain(0),
+            0.0,
+            "velocity 0 is a note-off in MIDI and must never make sound"
+        );
+        assert!(
+            velocity_to_gain(1) < 1e-4,
+            "the default modulator's 960 cB amount puts velocity 1 ~84 dB down"
+        );
+    }
 }

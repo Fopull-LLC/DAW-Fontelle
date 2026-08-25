@@ -15,4 +15,6 @@ pub use patch::{FilterSlot, Layer, Lfo, Patch, Source, ZoneId};
 pub use playback::{LoopMode, PlaybackConfig};
 pub use sampler::{PrepareContext, Sampler, SamplerContext};
 pub use streaming::{SampleBuffer, SampleStore};
-pub use voice::{RetriggerMode, StealPolicy, UnisonConfig, Voice, VoiceConfig, VoicePool};
+pub use voice::{
+    RetriggerMode, StealPolicy, UnisonConfig, Voice, VoiceConfig, VoicePool, velocity_to_gain,
+};
