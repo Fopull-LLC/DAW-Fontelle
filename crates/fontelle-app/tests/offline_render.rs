@@ -51,7 +51,7 @@ fn synthetic_patch(store: &mut SampleStore) -> Patch {
                 loop_start: 0.0,
                 loop_end: cycle as f64,
                 end_offset: cycle as f64,
-                interpolation: Interpolation::Normal,
+                interpolation: Some(Interpolation::Normal),
                 ..PlaybackConfig::default()
             },
             gain_db: 0.0,
@@ -159,7 +159,7 @@ fn wav16_writes_a_well_formed_header_and_reports_clipping() {
 /// is worse than one that was never wired up, because it looks correct.
 #[test]
 fn the_render_quality_override_reaches_the_graph() {
-    let render_at = |quality: Option<Interpolation>| {
+    let render_at = |quality: Interpolation| {
         let song = demo_song(60, 120.0, SR);
         let mut store = SampleStore::new();
         // Deliberately not `synthetic_patch`: its 100-sample cycle is 0.01
@@ -172,13 +172,13 @@ fn the_render_quality_override_reaches_the_graph() {
             sample_rate: SR as f32,
             max_block_size: fontelle_engine::BLOCK_SIZE as u32,
         });
-        sampler.set_render_quality(quality);
+        sampler.set_quality(quality);
         let mut graph = build_graph(&song, sampler, Arc::new(store));
         render_offline(&song, &mut graph, 24_000)
     };
 
-    let as_authored = render_at(None);
-    let high = render_at(Some(Interpolation::High));
+    let as_authored = render_at(fontelle_app::PLAYBACK_QUALITY);
+    let high = render_at(fontelle_app::RENDER_QUALITY);
 
     assert!(
         as_authored.iter().any(|s| *s != 0.0),
@@ -219,6 +219,9 @@ fn bright_patch(store: &mut SampleStore) -> Patch {
     });
     let mut patch = synthetic_patch(&mut SampleStore::new());
     patch.layers[0].source = Source::Sample { file: asset };
+    // Unpinned, so the session quality is what decides — which is the thing
+    // under test.
+    patch.layers[0].playback.interpolation = None;
     patch.layers[0].playback.loop_end = len;
     patch.layers[0].playback.end_offset = len;
     patch
@@ -227,5 +230,7 @@ fn bright_patch(store: &mut SampleStore) -> Patch {
 /// And `fontelle-app`'s export path has to actually ask for it.
 #[test]
 fn the_offline_bounce_renders_at_export_quality() {
+    assert_eq!(fontelle_app::PLAYBACK_QUALITY, Interpolation::Normal);
     assert_eq!(fontelle_app::RENDER_QUALITY, Interpolation::High);
+    assert_ne!(fontelle_app::PLAYBACK_QUALITY, fontelle_app::RENDER_QUALITY);
 }

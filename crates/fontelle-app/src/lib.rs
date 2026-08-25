@@ -263,13 +263,14 @@ pub fn build_graph(song: &DemoSong, sampler: Sampler, store: Arc<SampleStore>) -
     }
 }
 
-/// The interpolation quality an offline bounce renders at.
+/// The two halves of TDD §7.6's independent quality settings.
 ///
-/// TDD §7.6 makes playback and render quality independent settings so a user
-/// can work at `Normal` and bounce at `High` without thinking about it. An
-/// export is not real-time, so it can afford the better kernel; playback keeps
-/// whatever the patch asks for. Applied via `Sampler::set_render_quality`,
-/// which overrides the layers without mutating the document.
+/// A user works at `PLAYBACK_QUALITY` and bounces at `RENDER_QUALITY` without
+/// thinking about it: an export is not real-time, so it can afford the better
+/// kernel. Applied via `Sampler::set_quality`, which is session state — the
+/// document is never touched, and a layer that pins its own mode keeps it.
+pub const PLAYBACK_QUALITY: fontelle_dsp::Interpolation = fontelle_dsp::Interpolation::Normal;
+/// See [`PLAYBACK_QUALITY`].
 pub const RENDER_QUALITY: fontelle_dsp::Interpolation = fontelle_dsp::Interpolation::High;
 
 /// Enough headroom for the demo's three-voice chord not to clip. Not a general

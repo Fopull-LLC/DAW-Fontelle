@@ -82,7 +82,7 @@ fn synthetic_patch(store: &mut SampleStore) -> Patch {
                 loop_start: 0.0,
                 loop_end: cycle as f64,
                 end_offset: cycle as f64,
-                interpolation: Interpolation::Normal,
+                interpolation: Some(Interpolation::Normal),
                 ..PlaybackConfig::default()
             },
             gain_db: -6.0,

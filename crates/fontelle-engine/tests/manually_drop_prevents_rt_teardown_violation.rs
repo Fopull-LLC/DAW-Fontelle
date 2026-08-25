@@ -67,7 +67,7 @@ fn heap_owning_patch() -> Patch {
                 fine_tune_cents: 0.0,
                 playback: PlaybackConfig {
                     loop_mode: LoopMode::Off,
-                    interpolation: Interpolation::Normal,
+                    interpolation: Some(Interpolation::Normal),
                     ..PlaybackConfig::default()
                 },
                 gain_db: 0.0,

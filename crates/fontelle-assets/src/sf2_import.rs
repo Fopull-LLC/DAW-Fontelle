@@ -5,7 +5,7 @@ use fontelle_core::{
     FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, SampleStore,
     Source, VoiceConfig,
 };
-use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
+use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, SvfMode};
 use soundfont::raw::{Generator, GeneratorType};
 use soundfont::{SoundFont2, Zone};
 
@@ -139,7 +139,9 @@ fn build_layer(
             loop_mode,
             loop_start: (header.loop_start as f64 - header.start as f64) + loop_start_delta,
             loop_end: (header.loop_end as f64 - header.start as f64) + loop_end_delta,
-            interpolation: Interpolation::Normal,
+            // SF2 has no interpolation generator, so the layer names no
+            // kernel and follows the session quality (TDD §7.6).
+            interpolation: None,
             ..PlaybackConfig::default()
         },
         gain_db: -(gen_i16(zone, GeneratorType::InitialAttenuation).unwrap_or(0) as f32) / 10.0,

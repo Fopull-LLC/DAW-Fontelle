@@ -54,7 +54,7 @@ fn synthetic_patch(store: &mut SampleStore) -> Patch {
             fine_tune_cents: 0.0,
             playback: PlaybackConfig {
                 loop_mode: LoopMode::Off,
-                interpolation: Interpolation::Draft,
+                interpolation: Some(Interpolation::Draft),
                 end_offset: 10_000.0,
                 ..PlaybackConfig::default()
             },

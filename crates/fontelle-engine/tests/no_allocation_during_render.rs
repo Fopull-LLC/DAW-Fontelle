@@ -74,7 +74,7 @@ fn build_graph_with(stereo_mixer: bool) -> CompiledGraph {
             fine_tune_cents: 0.0,
             playback: PlaybackConfig {
                 loop_mode: LoopMode::Off,
-                interpolation: Interpolation::Normal,
+                interpolation: Some(Interpolation::Normal),
                 end_offset: 21_573.0,
                 ..PlaybackConfig::default()
             },

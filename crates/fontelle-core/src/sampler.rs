@@ -15,7 +15,7 @@ pub struct Sampler {
     patch: Patch,
     voices: VoicePool,
     sample_rate: f32,
-    render_quality: Option<fontelle_dsp::Interpolation>,
+    quality: fontelle_dsp::Interpolation,
 }
 
 impl Sampler {
@@ -25,7 +25,7 @@ impl Sampler {
             patch,
             voices: VoicePool::with_capacity(capacity),
             sample_rate: 48_000.0,
-            render_quality: None,
+            quality: fontelle_dsp::Interpolation::Normal,
         }
     }
 
@@ -37,19 +37,19 @@ impl Sampler {
         self.sample_rate = ctx.sample_rate;
     }
 
-    /// Overrides every layer's own interpolation mode for subsequent renders.
+    /// Sets the session's interpolation quality — the kernel used by every
+    /// layer that does not name one of its own.
     ///
     /// TDD §7.6 makes playback and render quality independent settings, so a
-    /// bounce can run at a higher quality than the session was played at
-    /// without editing the document — the caller sets this to `High` for an
-    /// export pass and leaves it `None` the rest of the time. This is
-    /// engine-side state deliberately: the patch is document data and an
-    /// export must not mutate it.
+    /// bounce can run at a better kernel than the session was played at
+    /// without editing the document: the caller sets `High` for an export pass
+    /// and leaves it at the `Normal` default the rest of the time. This is
+    /// session state, not document data, because an export must not mutate the
+    /// patch. A layer with `Some(mode)` in its `PlaybackConfig` ignores this.
     ///
-    /// Off-RT. `None` means each layer's `PlaybackConfig::interpolation`
-    /// decides, which is the authored intent.
-    pub fn set_render_quality(&mut self, quality: Option<fontelle_dsp::Interpolation>) {
-        self.render_quality = quality;
+    /// Off-RT.
+    pub fn set_quality(&mut self, quality: fontelle_dsp::Interpolation) {
+        self.quality = quality;
     }
 
     pub fn note_on(&mut self, key: u8, velocity: u8, voice_context: u32) {
@@ -70,7 +70,7 @@ impl Sampler {
         out.fill(0.0);
         let patch = &self.patch;
         let sample_rate = self.sample_rate;
-        let quality = self.render_quality;
+        let quality = self.quality;
         for voice in self.voices.iter_active_mut() {
             voice.render(patch, store, sample_rate, quality, out);
         }
@@ -143,7 +143,7 @@ mod tests {
                 fine_tune_cents: 0.0,
                 playback: PlaybackConfig {
                     loop_mode: LoopMode::Off,
-                    interpolation: Interpolation::Draft,
+                    interpolation: Some(Interpolation::Draft),
                     end_offset: 100_000.0,
                     ..PlaybackConfig::default()
                 },
@@ -354,7 +354,7 @@ mod tests {
                 fine_tune_cents: 30.0,
                 playback: PlaybackConfig {
                     loop_mode: LoopMode::Off,
-                    interpolation: Interpolation::Normal,
+                    interpolation: Some(Interpolation::Normal),
                     end_offset: len as f64,
                     ..PlaybackConfig::default()
                 },
@@ -374,68 +374,80 @@ mod tests {
     }
 
     #[test]
-    fn render_quality_override_replaces_the_patchs_own_interpolation() {
-        // TDD §7.6: playback and render quality are independent settings, so a
-        // bounce can run at a higher quality than the session was played at
-        // without editing the document. The override is engine-side state, not
-        // document data — the patch is untouched.
+    fn a_layer_with_no_interpolation_of_its_own_follows_the_session_quality() {
+        // TDD §7.6: playback and render quality are independent session
+        // settings, so a bounce runs at a better kernel than the session was
+        // played at without the document being edited. A layer that names no
+        // mode of its own is what makes that possible.
         let mut store = SampleStore::new();
-        let patch = sine_patch(&mut store, 0.2, 4000);
+        let mut patch = sine_patch(&mut store, 0.2, 4000);
+        patch.layers[0].playback.interpolation = None;
 
-        let render = |quality: Option<Interpolation>| {
-            let mut sampler = Sampler::new(patch.clone());
-            sampler.prepare(&PrepareContext {
-                sample_rate: SR,
-                max_block_size: 512,
-            });
-            sampler.set_render_quality(quality);
-            sampler.note_on(72, 127, 0);
-            let mut out = vec![0.0; 512];
-            sampler.render(&store, &mut out);
-            out
-        };
+        let normal = render_with(&patch, &store, Interpolation::Normal);
+        let high = render_with(&patch, &store, Interpolation::High);
 
-        let as_authored = render(None);
-        let overridden = render(Some(Interpolation::High));
-
-        assert!(
-            as_authored.iter().any(|s| *s != 0.0),
-            "the fixture should make sound"
-        );
-        let difference: f32 = as_authored
+        assert!(normal.iter().any(|s| *s != 0.0), "fixture should sound");
+        let difference: f32 = normal
             .iter()
-            .zip(overridden.iter())
+            .zip(high.iter())
             .map(|(a, b)| (a - b).abs())
             .sum();
         assert!(
             difference > 0.1,
-            "overriding Normal with High must actually change the rendered audio, \
-             total absolute difference was {difference}"
+            "session quality must reach an unpinned layer, difference was {difference}"
         );
     }
 
     #[test]
-    fn no_render_quality_override_leaves_the_patch_in_charge() {
+    fn a_layer_that_names_its_own_interpolation_keeps_it_at_any_session_quality() {
+        // A pinned layer is honoured exactly, in playback and in render alike,
+        // and is never quietly "upgraded" for a bounce. Draft's aliasing is a
+        // legitimate character choice in a sampler, so treating the modes as a
+        // quality ladder the export may climb would silently change how a
+        // deliberately lo-fi patch sounds in the mix it ships in.
         let mut store = SampleStore::new();
         let mut patch = sine_patch(&mut store, 0.2, 4000);
-        patch.layers[0].playback.interpolation = Interpolation::High;
+        patch.layers[0].playback.interpolation = Some(Interpolation::Draft);
 
-        let render = |quality: Option<Interpolation>| {
-            let mut sampler = Sampler::new(patch.clone());
-            sampler.prepare(&PrepareContext {
-                sample_rate: SR,
-                max_block_size: 512,
-            });
-            sampler.set_render_quality(quality);
-            sampler.note_on(72, 127, 0);
-            let mut out = vec![0.0; 512];
-            sampler.render(&store, &mut out);
-            out
-        };
+        assert_eq!(
+            render_with(&patch, &store, Interpolation::Normal),
+            render_with(&patch, &store, Interpolation::High),
+            "a pinned layer must ignore the session quality entirely"
+        );
+    }
 
-        // Overriding with the mode the patch already asks for is a no-op, which
-        // is the property that makes `None` mean "the patch decides" rather
-        // than "some hidden default decides".
-        assert_eq!(render(None), render(Some(Interpolation::High)));
+    #[test]
+    fn an_unpinned_layer_defaults_to_normal_without_a_session_setting() {
+        let mut store = SampleStore::new();
+        let mut patch = sine_patch(&mut store, 0.2, 4000);
+        patch.layers[0].playback.interpolation = None;
+
+        let mut sampler = Sampler::new(patch.clone());
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 512,
+        });
+        sampler.note_on(72, 127, 0);
+        let mut untouched = vec![0.0; 512];
+        sampler.render(&store, &mut untouched);
+
+        assert_eq!(
+            untouched,
+            render_with(&patch, &store, Interpolation::Normal),
+            "a fresh Sampler should play at Normal, the TDD's playback default"
+        );
+    }
+
+    fn render_with(patch: &Patch, store: &SampleStore, quality: Interpolation) -> Vec<f32> {
+        let mut sampler = Sampler::new(patch.clone());
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 512,
+        });
+        sampler.set_quality(quality);
+        sampler.note_on(72, 127, 0);
+        let mut out = vec![0.0; 512];
+        sampler.render(store, &mut out);
+        out
     }
 }

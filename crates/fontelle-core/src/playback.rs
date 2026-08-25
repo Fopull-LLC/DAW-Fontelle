@@ -23,7 +23,13 @@ pub struct PlaybackConfig {
     /// highest-value fix for "soundfonts sound clicky" (TDD §7.3, §7.8.1).
     pub loop_crossfade_ms: f32,
     pub reverse: bool,
-    pub interpolation: Interpolation,
+    /// `None` — the default, and what SF2 import produces, since the format has
+    /// no interpolation generator — means this layer follows the session's
+    /// playback or render quality (TDD §7.6). `Some` pins the layer to one
+    /// kernel, honoured in playback and export alike: `Draft`'s aliasing is a
+    /// legitimate character choice in a sampler, so a pinned layer is never
+    /// silently upgraded for a bounce.
+    pub interpolation: Option<Interpolation>,
 }
 
 impl Default for PlaybackConfig {
@@ -36,7 +42,7 @@ impl Default for PlaybackConfig {
             loop_end: 0.0,
             loop_crossfade_ms: 5.0,
             reverse: false,
-            interpolation: Interpolation::Normal,
+            interpolation: None,
         }
     }
 }

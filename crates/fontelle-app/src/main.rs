@@ -74,7 +74,7 @@ fn play_sf2(
     if let Some(out) = render_wav {
         // An offline bounce is not real-time, so it renders at export quality
         // rather than at whatever the patch asks for during playback.
-        sampler.set_render_quality(Some(fontelle_app::RENDER_QUALITY));
+        sampler.set_quality(fontelle_app::RENDER_QUALITY);
         let mut graph = build_graph(&song, sampler, Arc::new(store));
         let pcm = fontelle_app::render_offline(&song, &mut graph, duration_samples);
         let clipped = fontelle_app::write_wav16(out, &pcm, 2, SAMPLE_RATE)
