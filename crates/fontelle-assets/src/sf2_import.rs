@@ -43,6 +43,28 @@ fn offset_samples(zone: &Zone, fine: GeneratorType, coarse: GeneratorType) -> f6
 /// `2^(timecents / 1200)` seconds. SF2's absent-generator default for every
 /// time-based volume-envelope generator is -12000 timecents (~1ms, i.e.
 /// effectively instant) per the spec's generator default table.
+/// SF2's wide-open cutoff: 13500 absolute cents is ~19.9 kHz, above anything a
+/// filter would usefully shape. A zone at or past it gets no filter at all,
+/// rather than one that costs every voice work to do nothing.
+const FILTER_BYPASS_CENTS: i16 = 13_500;
+
+/// Absolute cents to Hz. SF2 anchors the scale at 8.176 Hz (MIDI note 0), so
+/// `initialFilterFc` of 13500 is ~19912 Hz and 7200 is ~523 Hz.
+fn absolute_cents_to_hz(cents: i16) -> f32 {
+    8.176 * 2f32.powf(cents as f32 / 1200.0)
+}
+
+/// `initialFilterQ` to a filter Q.
+///
+/// The generator is "the height above DC gain in centibels which the filter
+/// resonance exhibits at the cutoff frequency", and SF2 2.01 defines 0 as *no*
+/// resonance. No resonance is Butterworth, not unity Q, so the 3.01 dB has to
+/// come off before converting — otherwise every unresonant zone in every file
+/// gets a 3 dB bump at its corner.
+fn filter_q_centibels_to_q(centibels: i16) -> f32 {
+    10f32.powf((centibels as f32 / 10.0 - 3.01) / 20.0)
+}
+
 fn timecents_to_seconds(tc: Option<i16>) -> f32 {
     2f32.powf(tc.unwrap_or(-12_000) as f32 / 1200.0)
 }
@@ -258,6 +280,7 @@ pub fn import_sf2_preset(
 
     let mut layers = Vec::new();
     let mut amp_envelope = None;
+    let mut filter = None;
 
     for zone in &instrument.zones {
         let Some(sample_id) = zone.sample() else {
@@ -288,6 +311,24 @@ pub fn import_sf2_preset(
             });
         }
 
+        // SF2 puts the filter on every zone; TDD §7.4's fixed voice topology
+        // puts it after the layer mix, so a multi-zone preset with differing
+        // filters can't be represented exactly. Take the first zone's, which is
+        // what the amp envelope above already does, and record the limit rather
+        // than averaging into something no zone asked for.
+        if filter.is_none() {
+            let cutoff_cents =
+                gen_i16(zone, GeneratorType::InitialFilterFc).unwrap_or(FILTER_BYPASS_CENTS);
+            filter = Some(FilterSlot {
+                mode: SvfMode::Lowpass,
+                cutoff_hz: absolute_cents_to_hz(cutoff_cents),
+                resonance: filter_q_centibels_to_q(
+                    gen_i16(zone, GeneratorType::InitialFilterQ).unwrap_or(0),
+                ),
+                enabled: cutoff_cents < FILTER_BYPASS_CENTS,
+            });
+        }
+
         layers.push(build_layer(zone, header, store, &bytes, smpl.offset)?);
     }
 
@@ -295,12 +336,16 @@ pub fn import_sf2_preset(
         return Err(ImportError("instrument has no zones with a sample".into()));
     }
 
+    // Filter2 stays free for the user: SF2 describes a single lowpass, so
+    // importing into both slots would spend the second one reproducing the
+    // first rather than leaving it available.
     let disabled_filter = FilterSlot {
         mode: SvfMode::Lowpass,
         cutoff_hz: 20_000.0,
-        resonance: 0.0,
+        resonance: std::f32::consts::FRAC_1_SQRT_2,
         enabled: false,
     };
+    let filter = filter.unwrap_or(disabled_filter);
     let amp = amp_envelope.unwrap();
     let mod_env = EnvelopeConfig {
         delay_s: 0.0,
@@ -314,7 +359,7 @@ pub fn import_sf2_preset(
 
     Ok(Patch {
         layers,
-        filters: [disabled_filter, disabled_filter],
+        filters: [filter, disabled_filter],
         envelopes: vec![amp, mod_env],
         lfos: Vec::new(),
         mod_matrix: ModMatrix::default(),

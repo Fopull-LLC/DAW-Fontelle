@@ -84,6 +84,17 @@ fn main() {
         println!("layer 0 pcm[{mid}..]: {window:?}");
     }
 
+    for (i, f) in patch.filters.iter().enumerate() {
+        println!(
+            "  filter {}: {}  mode={:?} cutoff={:.1}Hz q={:.3}",
+            i + 1,
+            if f.enabled { "ON " } else { "off" },
+            f.mode,
+            f.cutoff_hz,
+            f.resonance
+        );
+    }
+
     println!("envelopes: {}", patch.envelopes.len());
     for (i, e) in patch.envelopes.iter().enumerate() {
         println!("  env {i}: {e:?}");

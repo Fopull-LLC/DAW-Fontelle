@@ -104,9 +104,7 @@ struct PreparedLayer<'a> {
 /// cost, zero allocation on note-on, no graph compilation on the audio thread.
 ///
 /// **M0 scope note:** only `Source::Sample` layers render (`Source::Sf2Zone` and
-/// `Source::Oscillator` are silent no-ops for now); Filter1/Filter2 pass straight
-/// through unless disabled is honoured as pass-through only (the SVF itself isn't
-/// implemented yet, see `fontelle_dsp::SvfFilter`); output is a single (mono)
+/// `Source::Oscillator` are silent no-ops for now); output is a single (mono)
 /// buffer, so `Layer::pan` has no effect yet. All tracked in `PROGRESS.md`.
 pub struct Voice {
     active: bool,
@@ -117,6 +115,11 @@ pub struct Voice {
     /// clock (INVARIANT 1: no syscalls on the RT thread).
     age: u64,
     layers: [LayerPlayback; MAX_LAYERS],
+    /// Filter1 and Filter2 of the fixed voice topology (TDD §7.4). Per voice,
+    /// not per patch: two notes sounding at once each need their own filter
+    /// memory, and sharing one would make a voice's output depend on which
+    /// other voices happened to render before it.
+    filters: [fontelle_dsp::SvfFilter; 2],
     /// Fixed for the life of the note, from `velocity_to_gain`. Folded into
     /// each layer's gain at the top of `render` so it costs nothing per sample.
     velocity_gain: f32,
@@ -131,6 +134,7 @@ impl Voice {
             voice_context: 0,
             age: 0,
             layers: [LayerPlayback::default(); MAX_LAYERS],
+            filters: [fontelle_dsp::SvfFilter::new(); 2],
             velocity_gain: 0.0,
             amp_env: fontelle_dsp::EnvelopeGenerator::new(),
         }
@@ -153,6 +157,13 @@ impl Voice {
         self.key = key;
         self.voice_context = voice_context;
         self.velocity_gain = velocity_to_gain(velocity);
+        // A voice comes back out of the pool carrying the last note's filter
+        // memory. Left alone, that discharges into the new note as a transient
+        // belonging to a note that already ended — a click that only shows up
+        // once voices start being reused.
+        for filter in &mut self.filters {
+            filter.reset();
+        }
         self.amp_env.note_on();
 
         for (slot, layer) in self.layers.iter_mut().zip(patch.layers.iter()) {
@@ -258,6 +269,22 @@ impl Voice {
             });
         }
 
+        // Resolved once per block: nothing modulates cutoff or resonance yet
+        // (`ModMatrix::evaluate` is still unimplemented). When something does,
+        // this moves inside the sample loop — the zero-delay-feedback topology
+        // exists precisely so that it can.
+        let filter_coeffs = patch.filters.map(|slot| {
+            slot.enabled.then(|| {
+                fontelle_dsp::SvfFilter::coeffs(
+                    slot.mode,
+                    slot.cutoff_hz,
+                    slot.resonance,
+                    0.0,
+                    sample_rate,
+                )
+            })
+        });
+
         for out_sample in out.iter_mut() {
             let env = self.amp_env.advance(&amp_env_config, sample_rate);
 
@@ -284,6 +311,15 @@ impl Voice {
                 mixed += fontelle_dsp::interpolate(prep.data, slot.position, prep.interpolation)
                     * prep.gain;
                 slot.position += prep.step;
+            }
+
+            // Layers -> mix -> Filter1 -> Filter2 -> Amp (TDD §7.4). The
+            // filters sit ahead of the amp stage, and operate on this voice's
+            // own mixed sample rather than on the shared output buffer.
+            for (coeffs, filter) in filter_coeffs.iter().zip(self.filters.iter_mut()) {
+                if let Some(coeffs) = coeffs {
+                    mixed = filter.process(mixed, coeffs);
+                }
             }
 
             *out_sample += mixed * env;
@@ -654,5 +690,194 @@ mod tests {
             velocity_to_gain(1) < 1e-4,
             "the default modulator's 960 cB amount puts velocity 1 ~84 dB down"
         );
+    }
+
+    /// A buffer alternating +1/-1: content sitting exactly at Nyquist, which no
+    /// lowpass worth the name lets through.
+    fn bright_patch(store: &mut SampleStore, len: usize) -> Patch {
+        let data: Vec<f32> = (0..len)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        let asset = store.insert(SampleBuffer {
+            data: std::sync::Arc::from(data),
+            sample_rate: SR as u32,
+        });
+        Patch {
+            layers: vec![Layer {
+                source: Source::Sample { file: asset },
+                key_range: (0, 127),
+                vel_range: (0, 127),
+                root_key: 60,
+                fine_tune_cents: 0.0,
+                playback: PlaybackConfig {
+                    loop_mode: LoopMode::Off,
+                    interpolation: Some(Interpolation::Draft),
+                    end_offset: len as f64,
+                    ..PlaybackConfig::default()
+                },
+                gain_db: 0.0,
+                pan: 0.0,
+            }],
+            filters: [disabled_filter(), disabled_filter()],
+            envelopes: vec![instant_envelope(1.0), instant_envelope(1.0)],
+            lfos: Vec::new(),
+            mod_matrix: crate::mod_matrix::ModMatrix::default(),
+            voice_config: VoiceConfig::default(),
+        }
+    }
+
+    /// A steady tone at `freq_hz`, for measuring a rolloff. Unlike the
+    /// alternating-sample fixture above this sits *below* Nyquist, where a
+    /// bilinear-transform lowpass has a finite response — the bilinear map puts
+    /// a double zero exactly at Nyquist, so Nyquist content is annihilated by
+    /// the first filter and says nothing about the second.
+    fn tone_patch(store: &mut SampleStore, freq_hz: f32, len: usize) -> Patch {
+        let data: Vec<f32> = (0..len)
+            .map(|i| (std::f32::consts::TAU * freq_hz * i as f32 / SR).sin())
+            .collect();
+        let asset = store.insert(SampleBuffer {
+            data: std::sync::Arc::from(data),
+            sample_rate: SR as u32,
+        });
+        let mut patch = bright_patch(&mut SampleStore::new(), len);
+        patch.layers[0].source = Source::Sample { file: asset };
+        patch
+    }
+
+    fn render_patch(patch: &Patch, store: &SampleStore, len: usize) -> Vec<f32> {
+        let mut voice = Voice::new();
+        voice.trigger(patch, 60, 127, 0);
+        let mut out = vec![0.0; len];
+        voice.render(patch, store, SR, Interpolation::Draft, &mut out);
+        out
+    }
+
+    #[test]
+    fn an_enabled_lowpass_removes_high_frequency_content() {
+        let mut store = SampleStore::new();
+        let mut patch = bright_patch(&mut store, 1000);
+        let unfiltered = rms(&render_patch(&patch, &store, 256));
+
+        patch.filters[0] = FilterSlot {
+            mode: SvfMode::Lowpass,
+            cutoff_hz: 500.0,
+            resonance: std::f32::consts::FRAC_1_SQRT_2,
+            enabled: true,
+        };
+        let filtered = rms(&render_patch(&patch, &store, 256));
+
+        assert!(unfiltered > 0.9, "the fixture should be full scale");
+        assert!(
+            filtered < unfiltered * 0.05,
+            "a 500 Hz lowpass should all but remove Nyquist content: {filtered} vs {unfiltered}"
+        );
+    }
+
+    #[test]
+    fn a_disabled_filter_slot_changes_nothing() {
+        // `enabled` has to be a real bypass, not a filter set wide open — an
+        // "off" filter that still runs costs CPU on every voice and colours
+        // the signal at the top of the band.
+        let mut store = SampleStore::new();
+        let mut patch = bright_patch(&mut store, 1000);
+        let baseline = render_patch(&patch, &store, 256);
+
+        patch.filters[0] = FilterSlot {
+            mode: SvfMode::Lowpass,
+            cutoff_hz: 500.0,
+            resonance: 4.0,
+            enabled: false,
+        };
+        assert_eq!(baseline, render_patch(&patch, &store, 256));
+    }
+
+    #[test]
+    fn both_filter_slots_are_applied_in_series() {
+        let mut store = SampleStore::new();
+        // Two octaves above the corner: about -24 dB through one 2-pole
+        // section and -48 dB through the pair, both comfortably measurable.
+        let mut patch = tone_patch(&mut store, 6_000.0, 4000);
+        let slot = FilterSlot {
+            mode: SvfMode::Lowpass,
+            cutoff_hz: 1_500.0,
+            resonance: std::f32::consts::FRAC_1_SQRT_2,
+            enabled: true,
+        };
+        patch.filters[0] = slot;
+        let one_pole_pair = rms(&render_patch(&patch, &store, 256)[128..]);
+        patch.filters[1] = slot;
+        let two_pole_pairs = rms(&render_patch(&patch, &store, 256)[128..]);
+
+        assert!(
+            two_pole_pairs < one_pole_pair * 0.5,
+            "a second identical lowpass must steepen the rolloff: \
+             {two_pole_pairs} vs {one_pole_pair}"
+        );
+    }
+
+    #[test]
+    fn filter_state_does_not_leak_from_the_previous_note() {
+        // A voice is reused from the pool, so a note that inherits the last
+        // note's filter memory starts with a transient that has nothing to do
+        // with it — a click, and one that only appears under voice reuse.
+        let mut store = SampleStore::new();
+        let mut patch = bright_patch(&mut store, 1000);
+        patch.filters[0] = FilterSlot {
+            mode: SvfMode::Lowpass,
+            cutoff_hz: 800.0,
+            resonance: 6.0,
+            enabled: true,
+        };
+
+        let mut voice = Voice::new();
+        voice.trigger(&patch, 60, 127, 0);
+        let mut first = vec![0.0; 256];
+        voice.render(&patch, &store, SR, Interpolation::Draft, &mut first);
+
+        // Same voice, second note.
+        voice.trigger(&patch, 60, 127, 1);
+        let mut second = vec![0.0; 256];
+        voice.render(&patch, &store, SR, Interpolation::Draft, &mut second);
+
+        assert_eq!(
+            first, second,
+            "a retriggered voice must start from a clean filter, not the last note's tail"
+        );
+    }
+
+    #[test]
+    fn each_voice_filters_only_its_own_contribution() {
+        // The same shared-output-buffer trap the amp envelope fell into: the
+        // filter must run on this voice's mixed sample, not on whatever is
+        // already sitting in `out`.
+        let mut store = SampleStore::new();
+        let mut patch = bright_patch(&mut store, 1000);
+        patch.filters[0] = FilterSlot {
+            mode: SvfMode::Lowpass,
+            cutoff_hz: 500.0,
+            resonance: std::f32::consts::FRAC_1_SQRT_2,
+            enabled: true,
+        };
+
+        let mut alone = vec![0.0; 256];
+        let mut voice_a = Voice::new();
+        voice_a.trigger(&patch, 60, 127, 0);
+        voice_a.render(&patch, &store, SR, Interpolation::Draft, &mut alone);
+
+        let mut together = vec![0.0; 256];
+        let mut first = Voice::new();
+        let mut second = Voice::new();
+        first.trigger(&patch, 60, 127, 0);
+        second.trigger(&patch, 60, 127, 1);
+        first.render(&patch, &store, SR, Interpolation::Draft, &mut together);
+        second.render(&patch, &store, SR, Interpolation::Draft, &mut together);
+
+        for (i, (one, two)) in alone.iter().zip(together.iter()).enumerate() {
+            assert!(
+                (two - one * 2.0).abs() < 1e-4,
+                "sample {i}: two identical voices should sum to twice one, got {two} vs {}",
+                one * 2.0
+            );
+        }
     }
 }

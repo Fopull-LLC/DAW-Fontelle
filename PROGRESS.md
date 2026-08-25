@@ -99,7 +99,7 @@ hear the feature is to edit the source. The held chord stays at 100.
 `DEMO_TRACK_GAIN_DB` is unchanged at -12 dB; on `F-Zero.sf2` preset 0 the demo
 now peaks at 0.296 rather than 0.477, which is quieter but has honest headroom.
 
-**Where the demo stands:** 110 tests, clippy and fmt clean, played on real
+**Where the demo stands:** 132 tests, clippy and fmt clean, played on real
 hardware from both a 97 KB soundfont and a 325 MB one.
 
 ```sh
@@ -160,6 +160,75 @@ sets it to `High` for `--render-wav`, which now reports the mode it rendered
 at. On the F-Zero electric piano the bounce differs from a `Normal` render by
 1.19% of signal level; that sample is transposed *downward*, where
 interpolation error is small, so this is the quiet end of the effect.
+
+### The voice filter is real, and SF2 files that use it are now honoured
+
+`SvfFilter::coeffs` and `process` were both `todo!()`, `DcBlocker::process` too,
+and `Voice` never ran a filter at all — TDD §7.4's fixed topology
+(`layers -> mix -> Filter1 -> Filter2 -> Amp -> Pan`) was missing its middle.
+The importer also disabled both slots unconditionally, so a file's
+`initialFilterFc` and `initialFilterQ` were discarded on the way in. A patch
+authored as a dark resonant pad played back wide open, which sounds like a bad
+soundfont rather than like a missing feature.
+
+**The filter.** A Cytomic-form TPT state-variable filter with zero-delay
+feedback. Two decisions worth recording:
+
+- The mode lives in output-mix coefficients (`m0`/`m1`/`m2`) rather than in
+  `process`, so the per-sample path has no branch on mode and a mod route that
+  moves cutoff only has to rebuild the coefficient struct. All seven modes are
+  implemented, including bell and both shelves, which fold their gain into the
+  damping and the corner respectively.
+- `FilterSlot::resonance` is **Q**, not a normalised dial. At the Butterworth
+  value of `1/sqrt(2)` a lowpass is exactly -3 dB at its cutoff, and above that
+  the magnitude at the corner *is* Q — so the parameter is checkable, and it
+  matches both `EqBand::q` and SF2, whose `initialFilterQ` is defined as peak
+  height above DC gain.
+
+Coefficients are pre-warped with `tan()`. Without that the actual corner drifts
+from the requested one, increasingly so toward Nyquist; there's a test at 100 Hz,
+1 kHz, and 10 kHz for exactly that.
+
+**In the voice.** Filter state is per voice, not per patch — two notes sounding
+at once each need their own memory, and sharing one would make a voice's output
+depend on which other voices happened to render first. The filters reset on
+`trigger`, because a voice comes back out of the pool carrying the last note's
+memory and would otherwise discharge it into the new note as a click. Both are
+covered by tests, and both are the same class of bug as the shared-buffer
+envelope fault fixed earlier.
+
+**In the importer.** `initialFilterFc` is absolute cents against SF2's 8.176 Hz
+anchor; `initialFilterQ` is centibels of peak height, with 3.01 dB taken off
+first because the spec defines 0 as *no* resonance and no resonance is
+Butterworth rather than unity Q. Skipping that offset would put a 3 dB bump at
+the corner of every unresonant zone in every file. A cutoff at or above the
+spec's wide-open 13500 cents imports disabled rather than as a filter that costs
+every voice work to do nothing.
+
+Verified against real files. `F-Zero.sf2` uses no filtering anywhere — every
+preset sits at the default and imports disabled, correctly. `SGM-v2.01` does:
+"Synth Vox" is a 599 Hz lowpass, and "Halo Pad" a 579 Hz lowpass at Q 2.72.
+Rendering Halo Pad with and without the filter, the ratio of 2-8 kHz to
+100-600 Hz energy goes from 0.031 to effectively zero — that content was never
+meant to be there.
+
+`inspect_sf2` now prints both filter slots, so whether a file uses this is
+visible without reading the code.
+
+### Two smaller things closed alongside it
+
+- **Interpolation precedence** (the open question from the previous entry).
+  `PlaybackConfig::interpolation` is now `Option<Interpolation>`: `None` — the
+  default, and what SF2 import produces, since the format has no interpolation
+  generator — follows the session's quality, and `Some` pins the layer.
+  `Sampler::set_quality` sets the session value, defaulting to `Normal`, and
+  `fontelle-app` uses `PLAYBACK_QUALITY`/`RENDER_QUALITY`. A pinned layer is
+  honoured in playback and export alike and is never silently upgraded for a
+  bounce: `Draft`'s aliasing is a legitimate character choice in a sampler, so
+  treating the modes as a ladder the export may climb would quietly change how
+  a deliberately lo-fi patch sounds in the mix it ships in.
+- **`DcBlocker`** is implemented (one-pole/one-zero, corner placed from
+  `cutoff_hz`), so TDD §7.8.4's import-time DC removal has its primitive.
 
 ### Still wrong, found while doing the above
 
@@ -871,29 +940,29 @@ crash the process).
    section. `Ultra` is still unimplemented and needs a stateful resampler
    rather than a point-interpolator; the per-layer/global quality precedence
    is an open question, below.
-5. **`ModMatrix::evaluate`** is still `todo!()`. Needed for velocity→filter,
-   LFOs, and for a file overriding the SF2 default modulators.
+5. **`ModMatrix::evaluate`** is still `todo!()`. Now the biggest remaining
+   gap: the filter it would modulate is real, so velocity→cutoff, envelope→
+   cutoff, and LFOs are all reachable from here. Also what a file needs to
+   override the SF2 default modulators.
 6. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
-   soundfonts in memory), effects, and the SVF filter — note `SvfFilter`'s
-   coefficient derivation and process step are both `todo!()`, i.e. they
-   panic; nothing reaches them today only because `Voice` skips disabled
-   filter slots and the importer always imports them disabled.
+   soundfonts in memory) and effects. `ParametricEq::process` is still
+   `todo!()`, though `fontelle-dsp` now gives it everything it needs.
 7. ~~Root-cause the `dealloc size=16, align=4` allocation.~~ **Done** — it
    was our RT tag outliving the callback, not a per-block allocation. See the
    "hardware run" section at the top.
 
 ## Open questions against the TDD (2026-08-25 additions)
 
-- **Per-layer vs global interpolation quality.** TDD §7.3 gives every layer its
-  own `PlaybackConfig::interpolation`, and §7.6 says playback and render
-  quality are independent global settings. Both can't be the last word. The
-  current split is deliberate but partial: the layer's value is the authored
-  intent, and `Sampler::set_render_quality` overrides it wholesale for an
-  export pass. What is *not* decided is how a global **playback** quality
-  setting should interact with a layer that names its own — override it, or
-  act as a default the layer can depart from? The second reading needs
-  `PlaybackConfig::interpolation` to become an `Option`, which changes the
-  saved project schema, so it isn't a change to make on a guess.
+- **~~Per-layer vs global interpolation quality.~~ Settled**: the layer's value
+  became `Option<Interpolation>`, `None` follows the session. See the
+  2026-08-25 section for the reasoning.
+- **SF2's per-zone filter against our per-voice one.** SF2 puts
+  `initialFilterFc`/`initialFilterQ` on every zone; TDD §7.4's fixed topology
+  puts the filter after the layer mix, so a multi-zone preset whose zones
+  disagree cannot be represented exactly. The importer takes the first zone's,
+  matching what it already does for the amp envelope. Averaging would produce a
+  setting no zone asked for; per-layer filters would be a real change to §7.4's
+  topology and its per-voice cost.
 
 ## Open questions against the TDD (2026-08-24 additions)
 

@@ -8,8 +8,8 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use fontelle_assets::{import_sf2, import_sf2_preset};
-use fontelle_core::{LoopMode, SampleStore, Source};
-use fontelle_dsp::EnvelopeCurve;
+use fontelle_core::{LoopMode, Patch, SampleStore, Source};
+use fontelle_dsp::{EnvelopeCurve, SvfMode};
 
 /// SF2 generator amounts are either a plain `i16`, or (for KeyRange/VelRange only)
 /// a `(low, high)` byte pair — see `soundfont::raw::GeneratorAmount`.
@@ -43,6 +43,8 @@ const GEN_START_ADDRS_OFFSET: u16 = 0;
 const GEN_END_ADDRS_OFFSET: u16 = 1;
 const GEN_STARTLOOP_ADDRS_OFFSET: u16 = 2;
 const GEN_ENDLOOP_ADDRS_OFFSET: u16 = 3;
+const GEN_INITIAL_FILTER_FC: u16 = 8;
+const GEN_INITIAL_FILTER_Q: u16 = 9;
 const GEN_PAN: u16 = 17;
 const GEN_DELAY_VOL_ENV: u16 = 33;
 const GEN_ATTACK_VOL_ENV: u16 = 34;
@@ -677,5 +679,100 @@ fn rejects_a_file_that_is_not_a_valid_sf2() {
     assert!(
         result.is_err(),
         "a non-SF2 file must fail to import, not panic or silently succeed"
+    );
+}
+
+/// A minimal fixture that varies only the filter generators.
+fn filter_fixture(generators: Vec<Gen>) -> Sf2Fixture {
+    let mut all = vec![
+        gen_range(GEN_KEY_RANGE, 0, 127),
+        gen_range(GEN_VEL_RANGE, 0, 127),
+    ];
+    all.extend(generators);
+    Sf2Fixture {
+        samples: vec![100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],
+        sample_rate: 22_050,
+        header_start: 0,
+        header_end: 10,
+        header_loop_start: 3,
+        header_loop_end: 9,
+        origpitch: 60,
+        pitchadj: 0,
+        zone: ZoneSpec { generators: all },
+    }
+}
+
+fn import_filter_fixture(name: &str, generators: Vec<Gen>) -> Patch {
+    let path = write_fixture_to_temp_file(name, &build_sf2(&filter_fixture(generators)));
+    let mut store = SampleStore::new();
+    let patch = import_sf2(&path, &mut store).unwrap();
+    std::fs::remove_file(&path).ok();
+    patch
+}
+
+#[test]
+fn imports_the_lowpass_filter_generators() {
+    // initialFilterFc is absolute cents (8.176 Hz * 2^(cents/1200)) and
+    // initialFilterQ is the peak height above DC gain in centibels. A file that
+    // sets them and is played without them sounds bright and wrong, which is
+    // hard to attribute to the importer rather than to the soundfont.
+    let cutoff_cents: i16 = 7_200; // 8.176 * 2^6 = ~523 Hz
+    let q_centibels: i16 = 120; // 12 dB of peak
+    let patch = import_filter_fixture(
+        "filter",
+        vec![
+            gen_val(GEN_INITIAL_FILTER_FC, cutoff_cents),
+            gen_val(GEN_INITIAL_FILTER_Q, q_centibels),
+        ],
+    );
+
+    let filter = patch.filters[0];
+    assert!(
+        filter.enabled,
+        "a zone that sets a cutoff must get a filter"
+    );
+    assert!(matches!(filter.mode, SvfMode::Lowpass));
+
+    let expected_hz = 8.176 * 2f32.powf(cutoff_cents as f32 / 1200.0);
+    assert!(
+        (filter.cutoff_hz - expected_hz).abs() < expected_hz * 0.001,
+        "cutoff: got {}, want {expected_hz}",
+        filter.cutoff_hz
+    );
+    // SF2 2.01 defines 0 cB as "no resonance", which is Butterworth rather
+    // than unity Q — hence the 3.01 dB offset before converting.
+    let expected_q = 10f32.powf((q_centibels as f32 / 10.0 - 3.01) / 20.0);
+    assert!(
+        (filter.resonance - expected_q).abs() < expected_q * 0.01,
+        "resonance: got {}, want {expected_q}",
+        filter.resonance
+    );
+}
+
+#[test]
+fn a_zone_with_no_filter_generators_imports_the_filter_disabled() {
+    // The SF2 default cutoff of 13500 cents is ~19.9 kHz: a filter that does
+    // nothing except cost every voice two biquads per sample.
+    let patch = import_filter_fixture("nofilter", vec![]);
+    assert!(!patch.filters[0].enabled);
+    assert!(!patch.filters[1].enabled);
+}
+
+#[test]
+fn an_explicitly_wide_open_cutoff_also_imports_disabled() {
+    let patch = import_filter_fixture("wideopen", vec![gen_val(GEN_INITIAL_FILTER_FC, 13_500)]);
+    assert!(
+        !patch.filters[0].enabled,
+        "13500 cents is the spec's wide-open default and means no filtering"
+    );
+}
+
+#[test]
+fn a_zone_with_no_resonance_imports_at_butterworth_q() {
+    let patch = import_filter_fixture("butterworth", vec![gen_val(GEN_INITIAL_FILTER_FC, 7_200)]);
+    assert!(
+        (patch.filters[0].resonance - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.01,
+        "0 cB of resonance is Butterworth, got {}",
+        patch.filters[0].resonance
     );
 }
