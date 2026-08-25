@@ -1,7 +1,7 @@
 # Scaffolding notes
 
 Judgment calls made while scaffolding the workspace (2026-08-23) that aren't spelled out
-in `FONTELLE_TDD.md`. Flag any of these to Ty for correction if they don't match intent —
+in `FONTELLE_TDD.md`. Each is a decision that could reasonably have gone the other way;
 they're documented here specifically so they're easy to revisit, not because they're
 assumed correct.
 
