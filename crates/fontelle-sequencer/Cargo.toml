@@ -12,3 +12,6 @@ repository.workspace = true
 fontelle-types = { path = "../fontelle-types" }
 fontelle-model = { path = "../fontelle-model" }
 triple_buffer = "9.0.0"
+
+[dev-dependencies]
+slotmap = "1.1.1"

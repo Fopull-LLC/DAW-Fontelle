@@ -1001,6 +1001,7 @@ version = "0.0.0"
 dependencies = [
  "fontelle-model",
  "fontelle-types",
+ "slotmap",
  "triple_buffer",
 ]
 

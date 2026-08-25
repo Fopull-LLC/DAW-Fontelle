@@ -1,4 +1,4 @@
-use fontelle_types::{ChannelId, ClipId, LaneId, PrefabId, Tick};
+use fontelle_types::{ChannelId, ClipId, LaneId, PPQN, PrefabId, Sample, Tick};
 use slotmap::SlotMap;
 
 use crate::asset_table::AssetTable;
@@ -20,22 +20,54 @@ pub struct ProjectMeta {
 /// directions of tick/sample conversion are O(log n) (TDD §6.2). Automatable —
 /// the tempo map is itself a compiled artefact of tempo automation, not an
 /// independent structure kept in sync by hand.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+///
+/// **Scope cut:** only a single constant-tempo segment is implemented right
+/// now — `bpm` never changes across the project. The full piecewise
+/// segment list + prefix-sum cache (ramps, a time-signature track) is real
+/// work that lands with M3's timeline; this is enough for `fontelle-sequencer`
+/// to convert a note's tick position to samples honestly (not by ad-hoc
+/// arithmetic elsewhere) for the M0 vertical slice. See `PROGRESS.md`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TempoMap {
-    // Segment list + prefix-sum cache land with the sequencer compiler (M3).
+    bpm: f64,
+    /// Not project data — the runtime audio device's rate. Kept here (rather
+    /// than threaded through every call site) because both conversion
+    /// directions need it and this is the one piece of state both share.
+    /// `#[serde(skip)]`: never belongs in a saved project.
+    #[serde(skip, default = "default_sample_rate_hz")]
+    sample_rate_hz: f64,
+}
+
+fn default_sample_rate_hz() -> f64 {
+    48_000.0
 }
 
 impl TempoMap {
-    pub fn tick_to_sample(&self, _tick: Tick) -> fontelle_types::Sample {
-        todo!("integrate over tempo segments, TDD §6.2")
+    pub fn new(bpm: f64, sample_rate_hz: f64) -> Self {
+        Self {
+            bpm,
+            sample_rate_hz,
+        }
     }
 
-    pub fn sample_to_tick(&self, _sample: fontelle_types::Sample) -> Tick {
-        todo!("inverse of tick_to_sample via the same prefix-sum table")
+    pub fn tick_to_sample(&self, tick: Tick) -> Sample {
+        let samples_per_tick = self.sample_rate_hz * 60.0 / (self.bpm * PPQN as f64);
+        (tick as f64 * samples_per_tick).round() as Sample
+    }
+
+    pub fn sample_to_tick(&self, sample: Sample) -> Tick {
+        let ticks_per_sample = self.bpm * PPQN as f64 / (self.sample_rate_hz * 60.0);
+        (sample as f64 * ticks_per_sample).round() as Tick
     }
 
     pub fn tempo_at(&self, _tick: Tick) -> f64 {
-        todo!("BPM at a tick, accounting for ramp segments")
+        self.bpm
+    }
+}
+
+impl Default for TempoMap {
+    fn default() -> Self {
+        Self::new(120.0, default_sample_rate_hz())
     }
 }
 
@@ -60,9 +92,7 @@ pub struct Project {
     pub channels: SlotMap<ChannelId, Channel>,
     pub mixer: Mixer,
     /// Visual only — TDD §10.3.
-    pub lanes: Vec<Lane>,
-    #[serde(skip)]
-    pub lane_ids: Vec<LaneId>,
+    pub lanes: SlotMap<LaneId, Lane>,
     pub clips: SlotMap<ClipId, Clip>,
     pub prefabs: SlotMap<PrefabId, Prefab>,
     pub assets: AssetTable,
@@ -82,13 +112,48 @@ impl Project {
             tempo_map: TempoMap::default(),
             channels: SlotMap::default(),
             mixer: Mixer::default(),
-            lanes: Vec::new(),
-            lane_ids: Vec::new(),
+            lanes: SlotMap::default(),
             clips: SlotMap::default(),
             prefabs: SlotMap::default(),
             assets: AssetTable::default(),
             markers: Vec::new(),
             view_state: ViewState::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_quarter_note_at_120bpm_48khz_is_exactly_half_a_second() {
+        let map = TempoMap::new(120.0, 48_000.0);
+        assert_eq!(map.tick_to_sample(PPQN), 24_000);
+    }
+
+    #[test]
+    fn tick_zero_is_sample_zero() {
+        let map = TempoMap::new(120.0, 48_000.0);
+        assert_eq!(map.tick_to_sample(0), 0);
+    }
+
+    #[test]
+    fn round_trip_is_exact_across_many_ticks_at_120bpm_48khz() {
+        // At this particular (bpm, sample_rate) pair, samples-per-tick is an
+        // exact integer (25), so the round trip has no rounding error to
+        // paper over — a stronger claim than "close enough" property tests
+        // usually get to make.
+        let map = TempoMap::new(120.0, 48_000.0);
+        for tick in (0..100_000).step_by(37) {
+            assert_eq!(map.sample_to_tick(map.tick_to_sample(tick)), tick);
+        }
+    }
+
+    #[test]
+    fn tempo_at_returns_the_constant_bpm_regardless_of_tick() {
+        let map = TempoMap::new(140.0, 44_100.0);
+        assert_eq!(map.tempo_at(0), 140.0);
+        assert_eq!(map.tempo_at(1_000_000), 140.0);
     }
 }
