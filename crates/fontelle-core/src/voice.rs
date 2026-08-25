@@ -61,6 +61,21 @@ struct LayerPlayback {
     position: f64,
 }
 
+/// One layer's per-render constants, resolved once before the sample loop in
+/// `Voice::render` rather than recomputed per sample. Borrows the layer's PCM
+/// straight out of the `SampleStore` — no copy, no allocation.
+#[derive(Clone, Copy)]
+struct PreparedLayer<'a> {
+    data: &'a [f32],
+    step: f64,
+    gain: f32,
+    loop_end: f64,
+    loop_len: f64,
+    looping: bool,
+    end_offset: f64,
+    interpolation: fontelle_dsp::Interpolation,
+}
+
 /// One playing note. Fixed-topology (INVARIANT 6): Layers → mix → Filter 1 → Filter 2
 /// → Amp → Pan → out, with the mod matrix feeding every stage. Predictable per-voice
 /// cost, zero allocation on note-on, no graph compilation on the audio thread.
@@ -137,6 +152,19 @@ impl Voice {
     /// looping, per-layer gain, and the patch's amp envelope (`envelopes[0]`).
     /// Adds into `out` rather than overwriting it — callers mixing multiple
     /// voices into one buffer must clear it first.
+    ///
+    /// **The loop is sample-major, not layer-major, and that is load-bearing.**
+    /// The obvious layer-major shape — add every layer across the whole
+    /// buffer, then multiply the buffer by the envelope — applies this voice's
+    /// envelope to whatever *other* voices already mixed into `out`, since
+    /// `out` is shared. With N voices the first one's output ends up
+    /// multiplied by all N envelopes; audibly, holding a chord and adding a
+    /// note ducks the held notes for the length of the new note's attack.
+    /// That was a real bug here, caught by
+    /// `sampler::tests::a_new_notes_attack_does_not_duck_already_sounding_voices`.
+    /// Advancing the envelope once per output sample and scaling only this
+    /// voice's own mixed sample before adding it is what keeps the additive
+    /// contract honest.
     pub fn render(
         &mut self,
         patch: &crate::Patch,
@@ -162,7 +190,10 @@ impl Voice {
                     release_s: 0.0,
                 });
 
-        for (slot, layer) in self.layers.iter_mut().zip(patch.layers.iter()) {
+        // Per-layer constants resolved once, not once per sample: a fixed-size
+        // stack array (INVARIANT 1 — no `Vec`, nothing heap-touching).
+        let mut prepared: [Option<PreparedLayer<'_>>; MAX_LAYERS] = [None; MAX_LAYERS];
+        for (index, (slot, layer)) in self.layers.iter().zip(patch.layers.iter()).enumerate() {
             if !slot.active {
                 continue;
             }
@@ -178,34 +209,52 @@ impl Voice {
                 (self.key as f32 - layer.root_key as f32) + layer.fine_tune_cents / 100.0;
             let pitch_ratio = 2f32.powf(semitones / 12.0);
             let rate_ratio = buffer.sample_rate as f32 / sample_rate;
-            let step = (pitch_ratio * rate_ratio) as f64;
-            let layer_gain = 10f32.powf(layer.gain_db / 20.0);
-
             let loop_len = layer.playback.loop_end - layer.playback.loop_start;
-            let looping =
-                matches!(layer.playback.loop_mode, crate::LoopMode::Forward) && loop_len > 0.0;
 
-            for out_sample in out.iter_mut() {
-                if looping && slot.position >= layer.playback.loop_end {
-                    slot.position -= loop_len;
-                }
-                if !looping && slot.position >= layer.playback.end_offset {
-                    slot.active = false;
-                    break;
-                }
-
-                let value = fontelle_dsp::interpolate(
-                    &buffer.data,
-                    slot.position,
-                    layer.playback.interpolation,
-                );
-                *out_sample += value * layer_gain;
-                slot.position += step;
-            }
+            prepared[index] = Some(PreparedLayer {
+                data: &buffer.data,
+                step: (pitch_ratio * rate_ratio) as f64,
+                gain: 10f32.powf(layer.gain_db / 20.0),
+                loop_end: layer.playback.loop_end,
+                loop_len,
+                // `loop_len > 0.0` also guards the wrap loop below against
+                // spinning forever on a degenerate zero-length loop.
+                looping: matches!(layer.playback.loop_mode, crate::LoopMode::Forward)
+                    && loop_len > 0.0,
+                end_offset: layer.playback.end_offset,
+                interpolation: layer.playback.interpolation,
+            });
         }
 
-        for sample in out.iter_mut() {
-            *sample *= self.amp_env.advance(&amp_env_config, sample_rate);
+        for out_sample in out.iter_mut() {
+            let env = self.amp_env.advance(&amp_env_config, sample_rate);
+
+            let mut mixed = 0.0;
+            for (index, prep) in prepared.iter().enumerate() {
+                let Some(prep) = prep else { continue };
+                let slot = &mut self.layers[index];
+                if !slot.active {
+                    continue;
+                }
+
+                if prep.looping {
+                    // `while`, not `if`: one subtraction isn't enough when the
+                    // playback step exceeds the loop length, which real
+                    // extreme upward transposition of a short loop does.
+                    while slot.position >= prep.loop_end {
+                        slot.position -= prep.loop_len;
+                    }
+                } else if slot.position >= prep.end_offset {
+                    slot.active = false;
+                    continue;
+                }
+
+                mixed += fontelle_dsp::interpolate(prep.data, slot.position, prep.interpolation)
+                    * prep.gain;
+                slot.position += prep.step;
+            }
+
+            *out_sample += mixed * env;
         }
 
         let any_layer_active = self.layers.iter().any(|s| s.active);
@@ -501,4 +550,5 @@ mod tests {
             rms(&out)
         );
     }
+
 }

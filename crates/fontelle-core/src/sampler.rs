@@ -99,6 +99,18 @@ mod tests {
     }
 
     fn one_voice_patch(store: &mut SampleStore, polyphony: u16) -> Patch {
+        patch_with_envelope(store, polyphony, instant_envelope())
+    }
+
+    /// Same flat, always-1.0 sample as `one_voice_patch`, but with a
+    /// caller-chosen amp envelope — the polyphony-mixing tests below need an
+    /// envelope whose level *isn't* 1.0, since multiplying by 1.0 hides
+    /// exactly the class of bug they exist to catch.
+    fn patch_with_envelope(
+        store: &mut SampleStore,
+        polyphony: u16,
+        envelope: EnvelopeConfig,
+    ) -> Patch {
         let asset = store.insert(crate::streaming::SampleBuffer {
             data: std::sync::Arc::from(vec![1.0; 100_000]),
             sample_rate: SR as u32,
@@ -120,7 +132,7 @@ mod tests {
                 pan: 0.0,
             }],
             filters: [disabled_filter(), disabled_filter()],
-            envelopes: vec![instant_envelope(), instant_envelope()],
+            envelopes: vec![envelope, instant_envelope()],
             lfos: Vec::new(),
             mod_matrix: ModMatrix::default(),
             voice_config: VoiceConfig {
@@ -195,6 +207,88 @@ mod tests {
         assert!(
             rms(&out) > 0.5,
             "a note-off with a non-matching voice_context must not release the real voice"
+        );
+    }
+
+    /// Each voice must apply its *own* amp envelope to its *own* contribution
+    /// only. The natural-looking implementation — every voice adds its layers
+    /// into the shared output buffer, then multiplies the whole buffer by its
+    /// envelope — silently re-envelopes every voice mixed in before it, so
+    /// with N voices the first one's output gets multiplied by all N
+    /// envelopes. Every earlier test missed this because they all used
+    /// `sustain_level: 1.0`, where multiplying is a no-op.
+    #[test]
+    fn each_voice_applies_its_envelope_only_to_its_own_contribution() {
+        let mut store = SampleStore::new();
+        let half = EnvelopeConfig {
+            sustain_level: 0.5,
+            ..instant_envelope()
+        };
+        let patch = patch_with_envelope(&mut store, 8, half);
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 512,
+        });
+
+        // Two voices, each rendering a constant 1.0 sample through a constant
+        // 0.5 envelope: 0.5 + 0.5 = 1.0.
+        sampler.note_on(60, 127, 0);
+        sampler.note_on(64, 127, 1);
+
+        let mut out = vec![0.0; 128];
+        sampler.render(&store, &mut out);
+
+        let got = rms(&out);
+        assert!(
+            (got - 1.0).abs() < 1e-3,
+            "two voices at 0.5 envelope each must sum to 1.0, got {got} \
+             (0.75 means the second voice's envelope was applied to the first's output too)"
+        );
+    }
+
+    /// The audible symptom of the bug above: hold a chord, play another note
+    /// on top, and the held notes duck for the duration of the new note's
+    /// attack — because the new voice multiplies the whole shared buffer,
+    /// including the held notes already mixed into it, by its own
+    /// near-zero attack level.
+    #[test]
+    fn a_new_notes_attack_does_not_duck_already_sounding_voices() {
+        let mut store = SampleStore::new();
+        let slow_attack = EnvelopeConfig {
+            attack_s: 1.0,
+            sustain_level: 1.0,
+            ..instant_envelope()
+        };
+        let patch = patch_with_envelope(&mut store, 8, slow_attack);
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 512,
+        });
+
+        // Voice A: triggered and rendered well into its attack so it's loud.
+        sampler.note_on(60, 127, 0);
+        let mut out = vec![0.0; 128];
+        for _ in 0..300 {
+            sampler.render(&store, &mut out);
+        }
+        let before = rms(&out);
+        assert!(
+            before > 0.5,
+            "voice A should be well into its attack by now, got {before}"
+        );
+
+        // Voice B: brand new, so its envelope is ~0 for this block. Voice A's
+        // contribution must be unaffected — the total can only go up.
+        sampler.note_on(64, 127, 1);
+        sampler.render(&store, &mut out);
+        let after = rms(&out);
+
+        assert!(
+            after >= before - 1e-3,
+            "adding a note must not reduce the output: {before} -> {after} \
+             (the new voice's near-zero attack envelope ducked the already-sounding one)"
         );
     }
 
