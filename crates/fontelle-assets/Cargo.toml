@@ -11,7 +11,10 @@ repository.workspace = true
 [dependencies]
 fontelle-core = { version = "0.0.0", path = "../fontelle-core" }
 fontelle-dsp = { version = "0.0.0", path = "../fontelle-dsp" }
+fontelle-model = { version = "0.0.0", path = "../fontelle-model" }
 fontelle-types = { path = "../fontelle-types" }
+midly = { version = "0.5.3", default-features = false, features = ["std"] }
 notify = "8.2.0"
+slotmap = "1.1.1"
 soundfont = "0.1.0"
 symphonia = { version = "0.6.1", features = ["wav", "flac", "mp3", "vorbis"] }

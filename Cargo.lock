@@ -915,8 +915,11 @@ version = "0.0.0"
 dependencies = [
  "fontelle-core",
  "fontelle-dsp",
+ "fontelle-model",
  "fontelle-types",
+ "midly",
  "notify",
+ "slotmap",
  "soundfont",
  "symphonia",
 ]
