@@ -13,6 +13,150 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
+## 2026-08-26: the mix becomes a mix, and patches learn to move
+
+Four pieces, in the order they were built. Each closes a gap where a whole
+feature existed as data with nothing reading it.
+
+### `Layer::pan` finally does something
+
+The importer has read every SF2 zone's `pan` generator since it was written
+and **nothing applied it**: `Voice::render` wrote one mono buffer and
+`SamplerNode` copied it across the bus. Every instrument was dead centre, and
+a stereo SF2 sample — which the format stores as two mono zones panned hard
+apart — folded to the middle.
+
+`Voice::render` takes planar output now (`[left, right]`, or `[mono]`) and pans
+each layer through the constant-power taper *before* the mix. Pan is per
+**layer**, not per voice, because that is where the format puts it; panning
+after the mix is exactly what collapses the stereo-pair case.
+
+Three consequences worth naming:
+
+- **Two filters per slot, one per channel.** Once layers are panned apart the
+  channels carry different signals, and one shared filter state lets each
+  side's history bleed into the other.
+- **A mono render ignores pan** rather than folding it down. The centre
+  pan-law gain on a signal with nowhere to pan is 3 dB of attenuation the
+  caller never asked for — the same call `MixerTrackNode` already makes for a
+  mono track.
+- **The demo's mixer track became a balance control** (`PanLaw::Linear`). What
+  reaches it is genuinely stereo, and a pan law is for placing a *mono* source.
+  Applying one on top of the voice's own placement pulled a second 3 dB out of
+  every centred track.
+
+### Every part gets its own mixer track
+
+A song had one fader. Whatever balance an arrangement asked for was discarded,
+and muting anything muted the song.
+
+**The graph now supports a node whose inputs are a different set from its
+outputs** — the one shape `process_block` refused, and the reason a mixer could
+not exist. `BufferPool::buffers_mut` takes them all in one disjoint borrow and
+the input half is demoted to `&[f32]` afterwards; asking for them one at a
+time borrows the pool twice. Both sides must be the same width, because a
+width change is a downmix and that is a node's decision rather than the
+graph's.
+
+`BusSumNode` is the compiled form of `MixerTrack::output` (TDD §13.1): it adds
+one bus into another and leaves its source alone, because a bus may be routed
+*and* tapped by a send. A send (§13.2) is this plus a level and a pan.
+`build_graph` lays the buses out as `[0, 1]` master and `[2 + 2i, 3 + 2i]` per
+part.
+
+**Where each control is applied is the part worth recording.** MIDI CC10 goes
+to `Sampler::set_pan`, not to the part's mixer track. A track fader is a
+*balance* control over a bus the voice has already placed on the
+constant-power taper; a pan law is for putting an essentially-mono source
+somewhere. Applying the track's law on top of the voice's placement pulls a
+second 3 dB out of every centred part, and panning a track hard over throws
+away half the signal instead of moving it. Channel pan is read per block rather
+than captured at note-on, so moving a part moves the notes already sounding.
+
+CC7 goes through the GM2/DLS curve `40 * log10(v / 127)`, and a channel that
+sends none takes MIDI's own reset value of 100 — about -4 dB, not unity.
+Reading the absent case as unity would put every silent channel above the ones
+that spelled the default out. CC7 of 0 lands on a -96 dB floor rather than
+`-inf`, which no fader can hold. First value per channel wins, exactly as for a
+program change; a swept controller is an automation curve and there is nowhere
+to put one yet. The channel listing prints both, so a part that arrives silent
+because its file said so is visible rather than a mystery.
+
+Verified end to end: two parts hard-panned apart render fully decorrelated
+(rms(L-R) 0.081 against 0.057/0.055 a side, where it was exactly 0 before), and
+a 15-part arrangement reports each part's pan and level and peaks at 0.190.
+
+### Envelopes and LFOs become modulation sources
+
+The matrix had two live sources — velocity and key — both fixed for the length
+of a note. Nothing in a patch could move while it sounded, which rules out
+every filter envelope, every vibrato and every tremolo.
+
+**`Oscillator::next_sample` was a `todo!()`** and would have panicked on
+anything that reached it. It is PolyBLEP-corrected for `Saw` and `Square`,
+naive for `Sine` (no harmonics to alias), `Triangle` (harmonics fall off as
+1/n² and are at the noise floor by Nyquist) and `Noise` (broadband on purpose).
+Every shape is phase-aligned with the sine, so changing an LFO's shape moves
+the waveform without jumping its position.
+
+The aliasing test measures **energy below the fundamental**, where a correct
+oscillator has none at all — a naive saw at 5 kHz folds its 9th, 10th and 19th
+harmonics down there, and that is precisely the metallic ringing a naive
+digital oscillator is recognisable by. Hann-windowed, or the fundamental's
+leakage drowns what is being measured.
+
+**Modulation runs at block rate** — 375 Hz at the engine's 128-frame blocks,
+the same order as every hardware sampler ever shipped. The amp envelope stays
+per-sample, because it is a gain rather than a control value and a stepped one
+buzzes on fast attacks. Only the sources some route actually names are
+advanced; `via` counts as much as `source`.
+
+Newly reachable, since a moving source is what makes them worth having:
+`LayerPitch` (cents, so a route is the same interval wherever the note sits),
+`LayerGain` (decibels, so a tremolo is symmetric in loudness) and
+`FilterResonance`. `Envelope(0)` reads the amp envelope as well as driving the
+amp stage.
+
+A note on testing: the first amp-envelope test **passed with the feature
+absent**. On a single-frequency tone a lowpass changes amplitude and not shape,
+so every proxy for brightness is really a proxy for level, and the envelope
+moves the level either way. It now compares against the same patch *without*
+the route, which is the only form that isolates what the route did.
+
+### And the importer reads SF2's modulation half
+
+Both LFOs, the modulation envelope, and the six amounts connecting them to
+pitch, cutoff and volume. Three unit conversions each produce a
+plausible-sounding wrong result:
+
+- **`sustainModEnv` is a decrease in 0.1% units, not centibels of
+  attenuation** — `sustainVolEnv` is the latter, one generator away in the same
+  table. Read as centibels, a half-sustained filter envelope collapses to
+  nothing.
+- **`decayModEnv` is the time for a 100% change**, the same rule the volume
+  envelope's stage times follow. Read as a stage duration it stretches every
+  filter envelope's decay by 1/(1 - sustain).
+- **`modLfoToVolume` is in centibels** while every other amount here is in
+  cents.
+
+**One route per layer** for the per-layer destinations: an SF2 modulation
+generator applies to the whole voice, while §7.5's pitch/gain/pan destinations
+are addressed by layer index, so a key-split instrument routed only at layer 0
+plays its upper half unmodulated.
+
+`Lfo` gained `delay_s` and the voice honours it — `delayVibLFO` exists because
+vibrato from the note's first sample is the most recognisable way a sampled
+string section gives itself away. The oscillator keeps turning through the
+delay; one that only started afterwards would always emerge at the same point
+in its cycle as one with no delay at all.
+
+`inspect_sf2` prints the LFOs and the matrix. Checked against the five
+soundfonts on this machine: **none of them uses a single modulation
+generator**, which is worth knowing — plain sample-playback fonts are the
+common case, and this feature is for the ones that aren't.
+
+**Where things stand:** 208 tests, clippy and fmt clean.
+
 ## 2026-08-27: multi-timbral playback, and three graph faults it exposed
 
 A MIDI file now plays with **one instrument per part**, chosen from the file's
@@ -952,20 +1096,26 @@ To inspect what a given SF2 file actually imports as, without any audio:
   reproduce a linear ramp exactly, and to pass through control points),
   `EnvelopeGenerator` (full delay/attack/hold/decay/sustain/release state
   machine, early-release-from-any-stage, float-accumulation-robust stage
-  timing) are real and tested. `SvfFilter`, `Oscillator`, `PeakRmsMeter`,
-  `DcBlocker` are still `todo!()` — not on the M0 critical path (filters are
-  bypassable via `FilterSlot::enabled`, so `Voice::render` never calls them yet).
+  timing), `SvfFilter` and `Oscillator` (PolyBLEP saw/square, plus
+  `advance_block` for control-rate LFO use) are real and tested.
+  `PeakRmsMeter` and `DcBlocker` are still `todo!()` — neither is on the
+  critical path yet.
 - **fontelle-core** — real: `SampleStore` (insert/get, `AssetId`-keyed, only the
   fully-resident case — no disk streaming yet, see below), `Voice::render` (pitch
   from root-key+fine-tune, per-sample interpolated playback, forward looping,
   per-layer gain, patch-wide amp envelope, auto-deactivation), `VoicePool`
   (free-voice search then age-based stealing — `Quietest`/`LowestPriority`
   currently alias `Oldest`, no level/priority tracking exists yet), `Sampler`
-  (`note_on`/`note_off` via voice-context matching, `render`). Only
-  `Source::Sample` layers render — `Source::Sf2Zone` is effectively unused
-  (import always produces `Sample` layers) and `Source::Oscillator` is silently
-  skipped, not wired to `fontelle_dsp::Oscillator` yet. Output is mono-summed;
-  `Layer::pan` has no effect. Tests: `crates/fontelle-core/src/{streaming,voice,sampler}.rs`.
+  (`note_on`/`note_off` via voice-context matching, `render`, `set_pan`).
+  Output is **stereo**: every layer is placed by `Layer::pan` plus the
+  channel's own pan on the constant-power taper, with one filter per channel
+  per slot. The matrix's live sources are velocity, key, the amp envelope, up
+  to three modulation envelopes and up to four LFOs, sampled once per block;
+  its live destinations are layer pitch/gain/pan and filter
+  cutoff/resonance. Only `Source::Sample` layers render — `Source::Sf2Zone` is
+  effectively unused (import always produces `Sample` layers) and
+  `Source::Oscillator` is silently skipped, not wired to
+  `fontelle_dsp::Oscillator` yet. Tests: `crates/fontelle-core/src/{streaming,voice,sampler}.rs`.
 - **fontelle-fx** — pure stub, unchanged since scaffolding. Not on the M0 path.
 - **fontelle-model** — mostly still stub, but no longer *pure* stub.
   `TempoMap` is real for constant tempo (see the "2026-08-23 update" above for
@@ -1034,9 +1184,11 @@ oversight — extend `build_layer` in `sf2_import.rs` when one of these matters)
   gives one shared amp envelope per patch, not one per layer, so a multi-zone
   instrument with per-zone envelope generators loses everything past the first
   zone's. This is an architecture constraint (INVARIANT 6), not a shortcut.
-- **No filter/LFO/mod-matrix generators are read** — `InitialFilterFc`,
-  `InitialFilterQ`, every `*LfoTo*` generator, `ModEnvTo*`. Filters stay
-  disabled; the mod matrix stays empty.
+- ~~**No filter/LFO/mod-matrix generators are read.**~~ Now read: the filter
+  (2026-08-25), and both LFOs, the modulation envelope and all six `*LfoTo*` /
+  `ModEnvTo*` amounts (2026-08-26). Still not read: `keynumToModEnvHold` and
+  `keynumToModEnvDecay`, and SF2's *modulator* records (as opposed to its
+  generators) — only the two always-present defaults are seeded, by hand.
 - **Instrument global zones aren't merged.** A zone with no `sample()` id inside
   an instrument (its global zone, carrying defaults for the other zones) is
   silently skipped rather than merged into the local zones that follow it.
@@ -1078,6 +1230,18 @@ crash the process).
   this is the scope-cut, single-segment `TempoMap`'s way of knowing it. Revisit
   once real ramp segments land — TDD §6.2's design doesn't visibly address
   where the sample rate comes from either.
+- **The mixer is built in `fontelle-app`, not compiled from `Project::mixer`.**
+  The model has a full `Mixer`/`MixerTrack` (TDD §13.1) and nothing reads it:
+  `build_graph` assigns buses and faders from `Song::channels`, and a MIDI
+  file's CC7 lands there rather than on a document mixer track. The fix is the
+  same "build the graph from the project" step that would own `channel_nodes`
+  below, and it is what has to exist before a UI can show a mixer at all.
+- **MIDI CC10 is applied at the sampler, CC7 at the mixer track**, which is a
+  real distinction (constant-power placement of a mono-ish source versus
+  balance over a stereo bus) but means a part's pan is not visible anywhere in
+  the document. `fontelle_model::Channel` has no `pan`; TDD §13.1 notes that
+  several channels may share a mixer track, which is the case that would
+  require one.
 - **`fontelle_sequencer::compile` takes a `channel_nodes: &HashMap<ChannelId,
   NodeId>` parameter** not implied by the TDD's prose (§11.1 gives no Rust
   signature for `compile`). Needed because the crate can't depend on
@@ -1100,18 +1264,30 @@ crash the process).
    section. `Ultra` is still unimplemented and needs a stateful resampler
    rather than a point-interpolator; the per-layer/global quality precedence
    is an open question, below.
-5. ~~`ModMatrix::evaluate`~~ **Done** — see the 2026-08-26 section. What is
-   still missing is *sources* to route: LFOs are not built (`Lfo` is a data
-   shape with no oscillator behind it) and envelopes are not exposed as mod
-   sources, so only velocity and key can currently drive anything. That is the
-   natural next piece — envelope-to-cutoff is what makes a filter sing.
+5. ~~`ModMatrix::evaluate`, then sources to route.~~ **Done** — the matrix
+   in the 2026-08-26 (first) section, envelopes and LFOs in the 2026-08-26
+   (second) one, and the SF2 generators that drive them alongside.
 6. ~~Multi-timbral playback.~~ **Done** — see the 2026-08-27 section.
-7. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
-   soundfonts in memory) and effects. `ParametricEq::process` is still
-   `todo!()`, though `fontelle-dsp` now gives it everything it needs.
+7. ~~Per-voice panning, and a fader per part.~~ **Done** — see the 2026-08-26
+   section.
 8. ~~Root-cause the `dealloc size=16, align=4` allocation.~~ **Done** — it
    was our RT tag outliving the callback, not a per-block allocation. See the
    "hardware run" section at the top.
+9. **Tempo changes.** Only the first tempo event of a MIDI file is read, and
+   `TempoMap` holds one constant. A piece that changes tempo plays at its
+   opening tempo throughout — the rhythm drifts further out the longer it
+   runs. Needs the piecewise map (TDD §6.2) that M3 assumes.
+10. **A master limiter.** `DEMO_TRACK_GAIN_DB` is headroom picked by hand,
+    which is why `--gain-db` exists. A limiter on the master is the real
+    answer, and it is what makes "play any file and it does not clip" true
+    without a judgement about the material.
+11. **Transport.** `SamplerNode::reset` is still `todo!()` — nothing calls it,
+    and the first thing that will is transport stop or seek. Play/stop/seek is
+    also the smallest thing that makes the CLI feel like a DAW rather than a
+    one-shot renderer.
+12. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
+    soundfonts in memory) and effects. `ParametricEq::process` is still
+    `todo!()`, though `fontelle-dsp` now gives it everything it needs.
 
 ## Open questions against the TDD (2026-08-25 additions)
 
