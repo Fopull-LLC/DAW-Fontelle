@@ -1233,9 +1233,12 @@ To inspect what a given SF2 file actually imports as, without any audio:
   `rt_guard::mark_current_thread_rt`, chunks the callback into `BLOCK_SIZE`
   (128-frame) pieces regardless of what the backend delivers, walks the
   `CompiledTimeline` by sample range, and interleaves bus *N* into device
-  channel *N*. `EffectNode`/`SendNode`/`AudioClipNode`/`MasterNode` are still
-  empty placeholder structs — M4/M6 work. `SamplerNode::reset` is still
-  `todo!()` (nothing calls it yet; transport stop/seek will).
+  channel *N*. `MasterNode` is real: a brickwall limiter, peak/RMS metering per
+  channel, and a `MasterMeter` handle publishing peaks and gain reduction as
+  atomics for anything off the RT thread. `EffectNode`/`SendNode`/
+  `AudioClipNode` are still empty placeholder structs — M4/M6 work. Nothing
+  reads `Transport` yet, so there is no play/stop/seek — but the `reset` path
+  those need is real and tested (`SamplerNode::reset` was a `todo!()`).
 - **fontelle-assets** — `import_sf2` is real, see "SF2 import scope" below.
   `import_sfz`, `SoundfontLibrary`, peak generation are pure stub.
 - **fontelle-ui**, **fontelle-plugin**, **fontelle-midi** — pure stub, unchanged
