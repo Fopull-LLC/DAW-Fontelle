@@ -1366,11 +1366,13 @@ crash the process).
 9. ~~Tempo changes.~~ **Done** — see the 2026-08-26 (later) section. Ramps
    remain, and cannot be created by anything yet.
 10. ~~A master limiter.~~ **Done** — see the 2026-08-26 (later) section.
-11. **Transport.** `SamplerNode::reset` is still `todo!()` — nothing calls it,
-    and the first thing that will is transport stop or seek. Play/stop/seek is
-    also the smallest thing that makes the CLI feel like a DAW rather than a
-    one-shot renderer, and `MasterNode::reset` is already written against the
-    assumption that something eventually will.
+11. **Transport.** Half done: `Voice`/`Sampler`/`SamplerNode`/`CompiledGraph`
+    all have a real `reset` now (`SamplerNode`'s was a `todo!()`, a panic
+    waiting for whatever stopped or seeked first), and `Sampler::release_all`
+    is the graceful counterpart. What is missing is anything *calling* them —
+    `Transport` exists and `AudioDevice` never reads it, so there is no
+    play/stop/seek. That is the smallest thing left that would make the CLI
+    feel like a DAW rather than a one-shot renderer.
 12. **Live MIDI input** (TDD §14). `fontelle-midi` is a pure stub, and the
     staging note in `device.rs` is the constraint that matters: it has to feed
     the same RT-safe sample-accurate `TimedEvent` pipeline as notes and
