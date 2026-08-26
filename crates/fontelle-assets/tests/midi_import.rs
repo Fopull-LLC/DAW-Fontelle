@@ -55,6 +55,24 @@ fn build_midi_with_controls(
     programs: &[(u8, u8)],
     controls: &[(u8, u8, u8)],
 ) -> Vec<u8> {
+    build_midi_with_tempos(
+        ticks_per_quarter,
+        &[(0, us_per_quarter)],
+        notes,
+        programs,
+        controls,
+    )
+}
+
+/// As `build_midi_with_controls`, with `(tick, us_per_quarter)` tempo events
+/// on the tempo track instead of a single one at time zero.
+fn build_midi_with_tempos(
+    ticks_per_quarter: u16,
+    tempos: &[(u32, u32)],
+    notes: &[TestNote],
+    programs: &[(u8, u8)],
+    controls: &[(u8, u8, u8)],
+) -> Vec<u8> {
     let mut file = Vec::new();
     file.extend_from_slice(b"MThd");
     file.extend_from_slice(&6u32.to_be_bytes());
@@ -63,9 +81,13 @@ fn build_midi_with_controls(
     file.extend_from_slice(&ticks_per_quarter.to_be_bytes());
 
     let mut tempo = Vec::new();
-    varint(0, &mut tempo);
-    tempo.extend_from_slice(&[0xff, 0x51, 0x03]);
-    tempo.extend_from_slice(&us_per_quarter.to_be_bytes()[1..]); // 24-bit
+    let mut previous_tempo_tick = 0;
+    for (tick, us) in tempos {
+        varint(tick - previous_tempo_tick, &mut tempo);
+        tempo.extend_from_slice(&[0xff, 0x51, 0x03]);
+        tempo.extend_from_slice(&us.to_be_bytes()[1..]); // 24-bit
+        previous_tempo_tick = *tick;
+    }
     varint(0, &mut tempo);
     tempo.extend_from_slice(&[0xff, 0x2f, 0x00]); // end of track
     file.extend_from_slice(b"MTrk");
@@ -637,4 +659,75 @@ fn a_silent_channel_volume_is_reported_as_silence_rather_than_minus_infinity() {
         gain.is_finite() && gain <= -96.0,
         "CC7 0 must land on a finite floor a fader can hold, got {gain}"
     );
+}
+
+/// A piece that changes tempo played at its opening tempo throughout drifts
+/// further out of time the longer it runs, and nothing about the result says
+/// "the importer dropped something" — it just sounds wrong from the change on.
+#[test]
+fn reads_every_tempo_change_not_just_the_first() {
+    // 120 bpm for one bar, then 60.
+    let bytes = build_midi_with_tempos(
+        480,
+        &[(0, 500_000), (480 * 4, 1_000_000)],
+        &[TestNote {
+            channel: 0,
+            key: 60,
+            velocity: 100,
+            start: 480 * 5,
+            length: 480,
+        }],
+        &[],
+        &[],
+    );
+    let path = write_temp("tempo_changes", &bytes);
+    let import = import_midi(&path, MidiChannels::All).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    let segments = import.project.tempo_map.segments();
+    assert_eq!(segments.len(), 2, "both tempo events must survive import");
+    assert_eq!(segments[0].start_tick, 0);
+    assert!((segments[0].bpm - 120.0).abs() < 1e-9);
+    assert_eq!(
+        segments[1].start_tick,
+        PPQN * 4,
+        "the change must be converted to the project's own resolution"
+    );
+    assert!((segments[1].bpm - 60.0).abs() < 1e-9);
+
+    assert_eq!(
+        import.bpm, 120.0,
+        "`bpm` stays the opening tempo, for reporting"
+    );
+    assert_eq!(import.tempo_changes, 2);
+
+    // Four quarter notes at 120 bpm, then one at 60.
+    let map = &import.project.tempo_map;
+    assert_eq!(map.tick_to_sample(PPQN * 5), 96_000 + 48_000);
+}
+
+#[test]
+fn a_file_whose_tempo_events_live_in_a_later_track_still_finds_them() {
+    // Format 1 conventionally puts tempo in track 0, but nothing requires it,
+    // and a per-track walk that stopped at the first event would miss the
+    // rest.
+    let bytes = build_midi_with_tempos(
+        480,
+        &[(0, 500_000), (480, 400_000), (960, 300_000)],
+        &[TestNote {
+            channel: 0,
+            key: 60,
+            velocity: 100,
+            start: 0,
+            length: 480,
+        }],
+        &[],
+        &[],
+    );
+    let path = write_temp("tempo_many", &bytes);
+    let import = import_midi(&path, MidiChannels::All).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    assert_eq!(import.project.tempo_map.segments().len(), 3);
+    assert!((import.project.tempo_map.tempo_at(PPQN * 2) - 200.0).abs() < 1e-6);
 }

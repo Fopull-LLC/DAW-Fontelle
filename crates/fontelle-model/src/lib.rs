@@ -24,4 +24,4 @@ pub use lane::Lane;
 pub use mixer::{EffectSlot, Mixer, MixerTrack, PanLaw, Send};
 pub use note::{Note, NoteData};
 pub use prefab::{ElementId, OverrideMap, Prefab, PrefabLink, PropKey, PropValue, resolve};
-pub use project::{Marker, Project, ProjectMeta, TempoMap, ViewState};
+pub use project::{Marker, Project, ProjectMeta, TempoMap, TempoSegment, ViewState};

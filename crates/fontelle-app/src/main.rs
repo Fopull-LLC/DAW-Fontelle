@@ -109,8 +109,13 @@ fn play_sf2(
                 );
             }
             println!(
-                "  {:.1} bpm  (--midi-channel <n> to isolate one, 1-based)\n",
-                import.bpm
+                "  {:.1} bpm{}  (--midi-channel <n> to isolate one, 1-based)\n",
+                import.bpm,
+                match import.tempo_changes - 1 {
+                    0 => String::new(),
+                    1 => " to start, then 1 tempo change".to_string(),
+                    n => format!(" to start, then {n} tempo changes"),
+                }
             );
             midi_pans = Some(import.channels.iter().map(|c| c.pan).collect());
             (Song::from_midi(import, SAMPLE_RATE), patches)

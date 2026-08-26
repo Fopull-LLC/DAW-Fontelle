@@ -139,7 +139,10 @@ impl Song {
     /// different sounds.
     pub fn from_midi(import: fontelle_assets::MidiImport, sample_rate: u32) -> Self {
         let mut project = import.project;
-        project.tempo_map = TempoMap::new(import.bpm, sample_rate as f64);
+        // `set_sample_rate`, not a fresh `TempoMap`: the import carries the
+        // file's whole tempo curve, and building a constant map from
+        // `import.bpm` would throw every tempo change away again.
+        project.tempo_map.set_sample_rate(sample_rate as f64);
         Self {
             channels: import
                 .channels

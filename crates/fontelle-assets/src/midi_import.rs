@@ -18,7 +18,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use fontelle_model::{Channel, Clip, ClipSource, Lane, Note, NoteData, Project, TempoMap};
+use fontelle_model::{
+    Channel, Clip, ClipSource, Lane, Note, NoteData, Project, TempoMap, TempoSegment,
+};
 use fontelle_types::{ChannelId, NoteId, PPQN, Tick};
 use midly::{MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 use slotmap::SlotMap;
@@ -145,7 +147,12 @@ pub struct MidiImport {
     /// say what it skipped rather than leaving the user to wonder where the
     /// drums went.
     pub skipped: Vec<MidiChannelSummary>,
+    /// The file's **opening** tempo, for reporting. The whole curve is in
+    /// `project.tempo_map`; a piece that changes tempo is not summarised by
+    /// any single number, and averaging would be worse than being clear.
     pub bpm: f64,
+    /// How many tempo segments the file produced. One means constant tempo.
+    pub tempo_changes: usize,
 }
 
 /// A note-on waiting for its note-off.
@@ -196,7 +203,11 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
         ((midi_tick * PPQN as u64 + tpq / 2) / tpq) as Tick
     };
 
-    let mut us_per_quarter = None;
+    // Every tempo event, with the tick it takes effect at. A file may put
+    // them in any track, and a walk that kept only the first plays the whole
+    // piece at its opening tempo — the rhythm drifts further out the longer it
+    // runs, and nothing about the result says the importer dropped anything.
+    let mut tempo_events: Vec<(u64, u32)> = Vec::new();
     // Notes are collected per MIDI channel, so each becomes an instrument of
     // its own rather than being merged into one stream that has to share a
     // patch — a bass part and a lead part are different sounds.
@@ -218,7 +229,7 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
             absolute += event.delta.as_int() as u64;
             match event.kind {
                 TrackEventKind::Meta(MetaMessage::Tempo(us)) => {
-                    us_per_quarter.get_or_insert(us.as_int());
+                    tempo_events.push((absolute, us.as_int()));
                 }
                 TrackEventKind::Midi { channel, message } => {
                     let channel = channel.as_int();
@@ -270,15 +281,31 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
         }
     }
 
-    let us_per_quarter = us_per_quarter.unwrap_or(DEFAULT_US_PER_QUARTER);
-    let bpm = 60_000_000.0 / us_per_quarter as f64;
+    // Sorted by tick, and by file order within a tick — `TempoMap` resolves a
+    // tie by taking the last, which is what a sequencer writing over its own
+    // event means.
+    tempo_events.sort_by_key(|(tick, _)| *tick);
+    if tempo_events.is_empty() {
+        tempo_events.push((0, DEFAULT_US_PER_QUARTER));
+    }
+    let segments: Vec<TempoSegment> = tempo_events
+        .iter()
+        .map(|(tick, us)| TempoSegment {
+            start_tick: to_project_ticks(*tick),
+            bpm: 60_000_000.0 / *us as f64,
+        })
+        .collect();
+    let bpm = segments[0].bpm;
 
     let name = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Imported MIDI".to_string());
     let mut project = Project::new(&name);
-    project.tempo_map = TempoMap::new(bpm, 48_000.0);
+    // 48 kHz is a placeholder: the rate belongs to the audio device, and the
+    // caller replaces it with `TempoMap::set_sample_rate` once it knows one.
+    project.tempo_map = TempoMap::from_segments(segments, 48_000.0);
+    let tempo_changes = project.tempo_map.segments().len();
 
     let mut midi_channels: Vec<u8> = per_channel.keys().copied().collect();
     midi_channels.sort_unstable();
@@ -355,6 +382,7 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
         channels: imported,
         skipped,
         bpm,
+        tempo_changes,
     })
 }
 
