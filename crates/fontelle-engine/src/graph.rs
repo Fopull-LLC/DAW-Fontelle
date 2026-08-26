@@ -80,15 +80,19 @@ impl BufferPool {
         &mut self.buffers[index]
     }
 
-    /// Two buffers at once, mutably. `indices` must be distinct — the
+    /// Several buffers at once, mutably. `indices` must be distinct — the
     /// scheduler guarantees that at compile time, and `get_disjoint_mut`
     /// enforces it here rather than trusting it.
-    pub fn buffer_pair_mut(&mut self, indices: [usize; 2]) -> [&mut [f32]; 2] {
-        let [a, b] = self
-            .buffers
+    ///
+    /// This is what lets a node read one set of buses and write another: the
+    /// caller takes every buffer it needs in one call and demotes the input
+    /// half to `&[f32]` afterwards. Asking for them one at a time would
+    /// borrow the pool twice.
+    pub fn buffers_mut<const N: usize>(&mut self, indices: [usize; N]) -> [&mut [f32]; N] {
+        self.buffers
             .get_disjoint_mut(indices)
-            .expect("buffer pool indices must be distinct and in range");
-        [a.as_mut_slice(), b.as_mut_slice()]
+            .expect("buffer pool indices must be distinct and in range")
+            .map(|b| b.as_mut_slice())
     }
 
     pub fn len(&self) -> usize {
@@ -128,13 +132,16 @@ impl CompiledGraph {
     /// pool slot. A source node (the sampler) declares no inputs and simply
     /// overwrites its outputs.
     ///
-    /// **Still scoped:** at most two buffers per node — enough for a mono or
-    /// stereo bus, which is what M0's sampler → mixer track → device chain
-    /// needs. A node wanting a *different* set of inputs than outputs (a
-    /// mixer send tapping one bus into another, a sidechain input) needs real
-    /// disjoint multi-set borrowing and belongs to M4 alongside sends and
-    /// insert chains. Anything outside the supported shape panics with a
-    /// clear message rather than silently processing the wrong buffer.
+    /// **A node may also declare a different set of inputs than outputs**, and
+    /// then it reads one bus and writes another: the compiled form of a
+    /// track's `output` routing (TDD §13.1). Both sides must be the same
+    /// width, since a width change is a downmix and that is a node's decision
+    /// rather than the graph's.
+    ///
+    /// **Still scoped:** at most two buffers per side — enough for a mono or
+    /// stereo bus, which is every bus in the mixer today. Anything outside the
+    /// supported shape panics with a clear message rather than silently
+    /// processing the wrong buffer.
     /// Off-RT. Gives every node the sample rate and maximum block size it needs
     /// to size its internal buffers, so `process_block` never has to allocate
     /// (INVARIANT 1).
@@ -174,16 +181,6 @@ impl CompiledGraph {
 
         for scheduled in self.schedule.iter_mut() {
             assert!(
-                scheduled.input_buffers.is_empty()
-                    || scheduled.input_buffers == scheduled.output_buffers,
-                "CompiledGraph::process_block requires a node's inputs to either be empty (a \
-                 source) or identical to its outputs (in-place) — node {:?} declares inputs {:?} \
-                 against outputs {:?}. Distinct input/output sets are M4 work; see PROGRESS.md.",
-                scheduled.id,
-                scheduled.input_buffers,
-                scheduled.output_buffers
-            );
-            assert!(
                 scheduled.output_buffers.len() <= 2,
                 "CompiledGraph::process_block supports at most 2 buffers per node (mono or \
                  stereo) for now — node {:?} declares {}",
@@ -208,6 +205,69 @@ impl CompiledGraph {
             // thread. That's exactly the bug this file's
             // `no_allocation_during_render` test exists to catch (it did,
             // against an earlier version of this function).
+            // A node whose inputs are a *different* set from its outputs
+            // reads one bus and writes another — the compiled form of a
+            // track's `output` routing (TDD §13.1) and, later, of a send
+            // (§13.2). Both sides must be the same width: a bus route is
+            // stereo-to-stereo or mono-to-mono, and a width change is a
+            // downmix, which is a node's job rather than the graph's.
+            if !scheduled.input_buffers.is_empty()
+                && scheduled.input_buffers != scheduled.output_buffers
+            {
+                assert_eq!(
+                    scheduled.input_buffers.len(),
+                    scheduled.output_buffers.len(),
+                    "CompiledGraph::process_block routes between buses of the same channel \
+                     count — node {:?} declares inputs {:?} against outputs {:?}",
+                    scheduled.id,
+                    scheduled.input_buffers,
+                    scheduled.output_buffers
+                );
+                match (
+                    scheduled.input_buffers.as_slice(),
+                    scheduled.output_buffers.as_slice(),
+                ) {
+                    ([source], [dest]) => {
+                        let [source, dest] = self.buffer_pool.buffers_mut([*source, *dest]);
+                        let frames = frames.min(source.len()).min(dest.len());
+                        let inputs: [&[f32]; 1] = [&source[..frames]];
+                        let mut outputs = [&mut dest[..frames]];
+                        let mut ctx = ProcessContext {
+                            inputs: &inputs,
+                            outputs: &mut outputs,
+                            all_events: events,
+                            node: scheduled.id,
+                            transport,
+                            sample_range: sample_range.clone(),
+                        };
+                        scheduled.node.process(&mut ctx);
+                    }
+                    ([source_l, source_r], [dest_l, dest_r]) => {
+                        let [source_l, source_r, dest_l, dest_r] = self
+                            .buffer_pool
+                            .buffers_mut([*source_l, *source_r, *dest_l, *dest_r]);
+                        let frames = frames
+                            .min(source_l.len())
+                            .min(source_r.len())
+                            .min(dest_l.len())
+                            .min(dest_r.len());
+                        let inputs: [&[f32]; 2] = [&source_l[..frames], &source_r[..frames]];
+                        let mut outputs = [&mut dest_l[..frames], &mut dest_r[..frames]];
+                        let mut ctx = ProcessContext {
+                            inputs: &inputs,
+                            outputs: &mut outputs,
+                            all_events: events,
+                            node: scheduled.id,
+                            transport,
+                            sample_range: sample_range.clone(),
+                        };
+                        scheduled.node.process(&mut ctx);
+                    }
+                    _ => unreachable!("width equality and the <= 2 cap are asserted above"),
+                }
+                continue;
+            }
+
             match scheduled.output_buffers.as_slice() {
                 [] => {
                     let mut ctx = ProcessContext {
@@ -235,7 +295,7 @@ impl CompiledGraph {
                     scheduled.node.process(&mut ctx);
                 }
                 [left, right] => {
-                    let [a, b] = self.buffer_pool.buffer_pair_mut([*left, *right]);
+                    let [a, b] = self.buffer_pool.buffers_mut([*left, *right]);
                     let frames = frames.min(a.len()).min(b.len());
                     let mut outputs = [&mut a[..frames], &mut b[..frames]];
                     let mut ctx = ProcessContext {
@@ -770,5 +830,231 @@ mod tests {
             .iter()
             .fold(0.0f32, |m, s| m.max(s.abs()));
         assert_eq!(peak, 0.0, "a silent block must be silent, got {peak}");
+    }
+
+    // --- Distinct input and output buffer sets -------------------------------
+
+    /// A sampler on its own bus, routed into the master pair — the smallest
+    /// schedule in which a node reads one buffer set and writes another.
+    fn routed_sampler_graph() -> (CompiledGraph, NodeId) {
+        let mut store = SampleStore::new();
+        let patch = flat_patch(&mut store, 0.5);
+        let id = NodeId::from(slotmap::KeyData::from_ffi(1));
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&fontelle_core::PrepareContext {
+            sample_rate: SR,
+            max_block_size: 128,
+        });
+
+        let mut graph = CompiledGraph {
+            schedule: vec![
+                ScheduledNode {
+                    id,
+                    node: Box::new(SamplerNode::new(sampler, Arc::new(store))),
+                    input_buffers: Vec::new(),
+                    output_buffers: vec![2, 3],
+                },
+                ScheduledNode {
+                    id: NodeId::null(),
+                    node: Box::new(crate::nodes::BusSumNode),
+                    input_buffers: vec![2, 3],
+                    output_buffers: vec![0, 1],
+                },
+            ],
+            buffer_pool: BufferPool::with_capacity(4, 128),
+        };
+        graph.prepare(SR, 128);
+        (graph, id)
+    }
+
+    #[test]
+    fn a_node_may_read_one_buffer_set_and_write_another() {
+        let (mut graph, id) = routed_sampler_graph();
+        graph.process_block(&[note_on_for(id, 0)], playing(), 0..64);
+
+        // A centred layer is 0.707 a side, so a 0.5 patch reads 0.354.
+        let expected = 0.5 * std::f32::consts::FRAC_1_SQRT_2;
+        let master = graph.buffer_pool.buffer_mut(0)[0];
+        assert!(
+            (master - expected).abs() < 1e-4,
+            "the track bus must reach the master: expected {expected}, got {master}"
+        );
+        let track = graph.buffer_pool.buffer_mut(2)[0];
+        assert!(
+            (track - expected).abs() < 1e-4,
+            "a route must leave its source alone — a send taps a bus, it does \
+             not consume it; track bus reads {track}"
+        );
+    }
+
+    /// The master pair is the one buffer a route adds to rather than
+    /// overwrites: every track in the song lands there.
+    #[test]
+    fn a_route_adds_into_its_destination_rather_than_replacing_it() {
+        let (mut graph, id) = routed_sampler_graph();
+        // A second route from the same track bus stands in for a second track
+        // arriving at the master.
+        graph.schedule.push(ScheduledNode {
+            id: NodeId::null(),
+            node: Box::new(crate::nodes::BusSumNode),
+            input_buffers: vec![2, 3],
+            output_buffers: vec![0, 1],
+        });
+        graph.process_block(&[note_on_for(id, 0)], playing(), 0..64);
+
+        let expected = 2.0 * 0.5 * std::f32::consts::FRAC_1_SQRT_2;
+        let master = graph.buffer_pool.buffer_mut(0)[0];
+        assert!(
+            (master - expected).abs() < 1e-4,
+            "two routes into one bus must sum: expected {expected}, got {master}"
+        );
+    }
+
+    /// Two independent tracks, each with its own bus, fader and route to the
+    /// master. **Deliberately unequal:** with both tracks at the same gain, a
+    /// fader applied to the wrong bus would be invisible.
+    fn two_track_graph(gain_a_db: f32, gain_b_db: f32) -> (CompiledGraph, NodeId, NodeId) {
+        let mut store = SampleStore::new();
+        let patch_a = flat_patch(&mut store, 1.0);
+        let patch_b = flat_patch(&mut store, 1.0);
+        let store = Arc::new(store);
+        let id_a = NodeId::from(slotmap::KeyData::from_ffi(1));
+        let id_b = NodeId::from(slotmap::KeyData::from_ffi(2));
+        let prepared = |patch| {
+            let mut sampler = Sampler::new(patch);
+            sampler.prepare(&fontelle_core::PrepareContext {
+                sample_rate: SR,
+                max_block_size: 128,
+            });
+            sampler
+        };
+        let track = |id, sampler, bus: [usize; 2], gain_db| {
+            vec![
+                ScheduledNode {
+                    id,
+                    node: Box::new(SamplerNode::new(sampler, store.clone())),
+                    input_buffers: Vec::new(),
+                    output_buffers: bus.to_vec(),
+                },
+                ScheduledNode {
+                    id: NodeId::null(),
+                    node: Box::new(MixerTrackNode {
+                        gain_db,
+                        pan_law: fontelle_types::PanLaw::Linear,
+                        ..MixerTrackNode::new()
+                    }),
+                    input_buffers: bus.to_vec(),
+                    output_buffers: bus.to_vec(),
+                },
+                ScheduledNode {
+                    id: NodeId::null(),
+                    node: Box::new(crate::nodes::BusSumNode),
+                    input_buffers: bus.to_vec(),
+                    output_buffers: vec![0, 1],
+                },
+            ]
+        };
+
+        let mut schedule = track(id_a, prepared(patch_a), [2, 3], gain_a_db);
+        schedule.extend(track(id_b, prepared(patch_b), [4, 5], gain_b_db));
+
+        let mut graph = CompiledGraph {
+            schedule,
+            buffer_pool: BufferPool::with_capacity(6, 128),
+        };
+        graph.prepare(SR, 128);
+        (graph, id_a, id_b)
+    }
+
+    #[test]
+    fn each_track_has_its_own_fader_before_the_master_sums_them() {
+        let (mut graph, id_a, id_b) = two_track_graph(0.0, -20.0);
+        graph.process_block(
+            &[note_on_for(id_a, 0), note_on_for(id_b, 0)],
+            playing(),
+            0..64,
+        );
+
+        // Both patches are centred, so each arrives at 0.707 of its level.
+        let centred = std::f32::consts::FRAC_1_SQRT_2;
+        let expected = centred * (1.0 + 10f32.powf(-20.0 / 20.0));
+        let got = graph.buffer_pool.buffer_mut(0)[0];
+        assert!(
+            (got - expected).abs() < 1e-4,
+            "a track 20 dB down must reach the master 20 dB down: expected \
+             {expected}, got {got}"
+        );
+    }
+
+    #[test]
+    fn muting_one_track_leaves_the_other_alone() {
+        // The point of per-track buses: before this, one fader was the only
+        // fader, and muting it muted the song.
+        let (mut graph, id_a, id_b) = two_track_graph(0.0, 0.0);
+        graph.schedule[4] = ScheduledNode {
+            id: NodeId::null(),
+            node: Box::new(MixerTrackNode {
+                mute: true,
+                ..MixerTrackNode::new()
+            }),
+            input_buffers: vec![4, 5],
+            output_buffers: vec![4, 5],
+        };
+        graph.process_block(
+            &[note_on_for(id_a, 0), note_on_for(id_b, 0)],
+            playing(),
+            0..64,
+        );
+
+        let centred = std::f32::consts::FRAC_1_SQRT_2;
+        let got = graph.buffer_pool.buffer_mut(0)[0];
+        assert!(
+            (got - centred).abs() < 1e-4,
+            "muting track B must leave exactly track A at the master: \
+             expected {centred}, got {got}"
+        );
+    }
+
+    #[test]
+    fn tracks_panned_apart_reach_opposite_sides_of_the_master() {
+        let (mut graph, id_a, id_b) = two_track_graph(0.0, 0.0);
+        for (index, pan) in [(1usize, -1.0f32), (4usize, 1.0f32)] {
+            let bus = graph.schedule[index].input_buffers.clone();
+            graph.schedule[index] = ScheduledNode {
+                id: NodeId::null(),
+                node: Box::new(MixerTrackNode {
+                    pan,
+                    pan_law: fontelle_types::PanLaw::Linear,
+                    ..MixerTrackNode::new()
+                }),
+                input_buffers: bus.clone(),
+                output_buffers: bus,
+            };
+        }
+        graph.process_block(
+            &[note_on_for(id_a, 0), note_on_for(id_b, 0)],
+            playing(),
+            0..64,
+        );
+
+        // Balance-style: hard left keeps its own left channel and silences its
+        // right, so each track lands wholly on one side of the master.
+        let centred = std::f32::consts::FRAC_1_SQRT_2;
+        let left = graph.buffer_pool.buffer_mut(0)[0];
+        let right = graph.buffer_pool.buffer_mut(1)[0];
+        assert!(
+            (left - centred).abs() < 1e-4 && (right - centred).abs() < 1e-4,
+            "one track a side: expected {centred} each, got {left} / {right}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "same channel count")]
+    fn a_route_between_buses_of_different_widths_is_rejected() {
+        let (mut graph, _) = routed_sampler_graph();
+        // A stereo bus routed into a single mono destination: the graph has no
+        // business inventing a downmix, so it refuses rather than guessing.
+        graph.schedule[1].output_buffers = vec![0];
+        graph.process_block(&[], playing(), 0..64);
     }
 }

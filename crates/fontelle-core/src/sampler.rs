@@ -16,6 +16,7 @@ pub struct Sampler {
     voices: VoicePool,
     sample_rate: f32,
     quality: fontelle_dsp::Interpolation,
+    pan: f32,
 }
 
 impl Sampler {
@@ -26,6 +27,7 @@ impl Sampler {
             voices: VoicePool::with_capacity(capacity),
             sample_rate: 48_000.0,
             quality: fontelle_dsp::Interpolation::Normal,
+            pan: 0.0,
         }
     }
 
@@ -50,6 +52,22 @@ impl Sampler {
     /// Off-RT.
     pub fn set_quality(&mut self, quality: fontelle_dsp::Interpolation) {
         self.quality = quality;
+    }
+
+    /// Places the whole part in the stereo field: -1.0 hard left, 0.0 centre,
+    /// +1.0 hard right. The compiled form of MIDI CC10.
+    ///
+    /// This is a channel control, not a patch edit — it adds to whatever pan
+    /// each layer carries of its own rather than replacing it, and it is read
+    /// per block, so moving it moves the notes already sounding.
+    ///
+    /// RT-safe: a plain field write, no allocation.
+    pub fn set_pan(&mut self, pan: f32) {
+        self.pan = pan;
+    }
+
+    pub fn pan(&self) -> f32 {
+        self.pan
     }
 
     pub fn note_on(&mut self, key: u8, velocity: u8, voice_context: u32) {
@@ -79,8 +97,9 @@ impl Sampler {
         let patch = &self.patch;
         let sample_rate = self.sample_rate;
         let quality = self.quality;
+        let pan = self.pan;
         for voice in self.voices.iter_active_mut() {
-            voice.render(patch, store, sample_rate, quality, out);
+            voice.render_with_pan(patch, store, sample_rate, quality, pan, out);
         }
     }
 
@@ -457,5 +476,35 @@ mod tests {
         let mut out = vec![0.0; 512];
         sampler.render(store, &mut [&mut out[..]]);
         out
+    }
+
+    /// The channel pan has to reach notes that are *already sounding* — it is
+    /// a live control, not a note-on value. Setting it after the note-on and
+    /// hearing nothing move is the bug this pins down.
+    #[test]
+    fn setting_the_channel_pan_moves_notes_that_are_already_sounding() {
+        let mut store = SampleStore::new();
+        let patch = one_voice_patch(&mut store, 8);
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 128,
+        });
+
+        sampler.note_on(60, 127, 0);
+        let mut left = vec![0.0; 64];
+        let mut right = vec![0.0; 64];
+        sampler.render(&store, &mut [&mut left[..], &mut right[..]]);
+        let centred = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((left[0] - centred).abs() < 1e-5, "starts centred");
+
+        sampler.set_pan(1.0);
+        sampler.render(&store, &mut [&mut left[..], &mut right[..]]);
+        assert!(
+            left[0].abs() < 1e-5 && (right[0] - 1.0).abs() < 1e-5,
+            "the held note must move with the channel pan, got {} / {}",
+            left[0],
+            right[0]
+        );
     }
 }

@@ -241,6 +241,29 @@ impl Voice {
         quality: fontelle_dsp::Interpolation,
         out: &mut [&mut [f32]],
     ) {
+        self.render_with_pan(patch, store, sample_rate, quality, 0.0, out)
+    }
+
+    /// As [`Voice::render`], with the channel's own pan folded into every
+    /// layer's placement.
+    ///
+    /// `channel_pan` is the compiled form of MIDI CC10 — a control over the
+    /// whole part, distinct from the `pan` an SF2 zone carries for itself.
+    /// The two **add**, then clamp: that is what a soundfont player does, and
+    /// it is the only reading under which a hard-left zone on a channel panned
+    /// right ends up between them rather than at whichever was consulted last.
+    ///
+    /// It is read here rather than captured at note-on because it is live:
+    /// moving a part's pan has to move the notes already sounding.
+    pub fn render_with_pan(
+        &mut self,
+        patch: &crate::Patch,
+        store: &crate::SampleStore,
+        sample_rate: f32,
+        quality: fontelle_dsp::Interpolation,
+        channel_pan: f32,
+        out: &mut [&mut [f32]],
+    ) {
         if !self.active || out.is_empty() {
             return;
         }
@@ -305,7 +328,9 @@ impl Voice {
             // all the way to one side.
             let pan_gain = if stereo {
                 let dest = crate::mod_matrix::ModDest::LayerPan(index as u8);
-                let pan = layer.pan + patch.mod_matrix.evaluate(dest, &sources) * dest.full_scale();
+                let pan = layer.pan
+                    + channel_pan
+                    + patch.mod_matrix.evaluate(dest, &sources) * dest.full_scale();
                 fontelle_types::PanLaw::Minus3Db.gains(pan)
             } else {
                 (1.0, 0.0)
@@ -1312,6 +1337,81 @@ mod tests {
         assert!(
             leak < 1e-6,
             "a hard-left voice must stay silent on the right through the filter, got {leak}"
+        );
+    }
+
+    #[test]
+    fn a_channel_pan_places_a_centred_layer() {
+        let mut store = SampleStore::new();
+        let patch = flat_patch(&mut store, 1.0, 1000, 0.0);
+        let mut voice = Voice::new();
+        voice.trigger(&patch, 60, 127, 0);
+        let mut left = vec![0.0; 64];
+        let mut right = vec![0.0; 64];
+        voice.render_with_pan(
+            &patch,
+            &store,
+            SR,
+            Interpolation::Draft,
+            -1.0,
+            &mut [&mut left[..], &mut right[..]],
+        );
+        assert!((left[0] - 1.0).abs() < 1e-5, "left {}", left[0]);
+        assert!(right[0].abs() < 1e-5, "right {}", right[0]);
+    }
+
+    /// MIDI CC10 and an SF2 zone's own `pan` generator are two different
+    /// controls over one placement, and a soundfont player adds them: a hard-
+    /// left zone on a channel panned right should end up somewhere in
+    /// between, not at whichever of the two was consulted last.
+    #[test]
+    fn a_channel_pan_and_a_layer_pan_combine() {
+        let mut store = SampleStore::new();
+        let mut patch = flat_patch(&mut store, 1.0, 1000, 0.0);
+        patch.layers[0].pan = -1.0;
+        let mut voice = Voice::new();
+        voice.trigger(&patch, 60, 127, 0);
+        let mut left = vec![0.0; 64];
+        let mut right = vec![0.0; 64];
+        voice.render_with_pan(
+            &patch,
+            &store,
+            SR,
+            Interpolation::Draft,
+            1.0,
+            &mut [&mut left[..], &mut right[..]],
+        );
+        let centred = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(
+            (left[0] - centred).abs() < 1e-5 && (right[0] - centred).abs() < 1e-5,
+            "hard left plus hard right is centre, got {} / {}",
+            left[0],
+            right[0]
+        );
+    }
+
+    #[test]
+    fn a_channel_pan_past_the_ends_of_the_field_clamps() {
+        let mut store = SampleStore::new();
+        let mut patch = flat_patch(&mut store, 1.0, 1000, 0.0);
+        patch.layers[0].pan = -1.0;
+        let mut voice = Voice::new();
+        voice.trigger(&patch, 60, 127, 0);
+        let mut left = vec![0.0; 64];
+        let mut right = vec![0.0; 64];
+        voice.render_with_pan(
+            &patch,
+            &store,
+            SR,
+            Interpolation::Draft,
+            -1.0,
+            &mut [&mut left[..], &mut right[..]],
+        );
+        assert!(
+            (left[0] - 1.0).abs() < 1e-5 && right[0].abs() < 1e-5,
+            "-2.0 of combined pan is still hard left, not past it, got {} / {}",
+            left[0],
+            right[0]
         );
     }
 }

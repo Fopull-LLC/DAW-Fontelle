@@ -58,6 +58,7 @@ fn play_sf2(
     // `--preset`; for a MIDI file it is whatever each channel's program change
     // asked for, which is what makes an arrangement play as written rather
     // than every part on one sound.
+    let mut midi_pans: Option<Vec<f32>> = None;
     let (song, samplers) = match midi {
         Some((midi_path, channels)) => {
             let import = fontelle_assets::import_midi(midi_path, channels)
@@ -77,10 +78,18 @@ fn play_sf2(
                     .unwrap_or_else(|| " (no program change)".to_string());
                 // Zero-based internally, one-based here: every DAW and every
                 // piece of MIDI documentation counts channels from 1.
+                // Pan and level are printed because they change what you
+                // hear and the file is the only place they came from: a part
+                // that arrives silent because its CC7 said so should be
+                // visible here rather than a mystery.
                 println!(
-                    "  channel {:<2} {:>6} notes{asked} -> preset {chosen} \"{name}\"",
+                    "  channel {:<2} {:>6} notes{asked} -> preset {chosen} \"{name}\"\n\
+                     {:>16} {:+.2} pan  {:+.1} dB",
                     part.midi_channel + 1,
-                    part.notes
+                    part.notes,
+                    "",
+                    part.pan,
+                    part.volume_db,
                 );
                 patches.push(
                     fontelle_assets::import_sf2_preset(path, chosen, &mut store)
@@ -103,6 +112,7 @@ fn play_sf2(
                 "  {:.1} bpm  (--midi-channel <n> to isolate one, 1-based)\n",
                 import.bpm
             );
+            midi_pans = Some(import.channels.iter().map(|c| c.pan).collect());
             (Song::from_midi(import, SAMPLE_RATE), patches)
         }
         None => {
@@ -119,15 +129,26 @@ fn play_sf2(
     } else {
         fontelle_app::PLAYBACK_QUALITY
     };
+    // Where each part sits in the stereo field. Applied at the sampler rather
+    // than at its mixer track because the track fader is a balance control
+    // over an already-placed stereo bus, while this is the constant-power
+    // placement of a part that is essentially mono — the same distinction a
+    // DAW draws between a mono and a stereo track.
+    let pans: Vec<f32> = match &midi_pans {
+        Some(pans) => pans.clone(),
+        None => vec![0.0; samplers.len()],
+    };
     let samplers: Vec<Sampler> = samplers
         .into_iter()
-        .map(|patch| {
+        .zip(pans)
+        .map(|(patch, pan)| {
             let mut sampler = Sampler::new(patch);
             sampler.prepare(&PrepareContext {
                 sample_rate: SAMPLE_RATE as f32,
                 max_block_size: BLOCK_SIZE as u32,
             });
             sampler.set_quality(quality);
+            sampler.set_pan(pan);
             sampler
         })
         .collect();

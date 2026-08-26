@@ -13,7 +13,9 @@ pub use device::{AudioDevice, BLOCK_SIZE, DeviceError};
 pub use graph::{
     AudioNode, BufferPool, CompiledGraph, ParamSet, PrepareContext, ProcessContext, ScheduledNode,
 };
-pub use nodes::{AudioClipNode, EffectNode, MasterNode, MixerTrackNode, SamplerNode, SendNode};
+pub use nodes::{
+    AudioClipNode, BusSumNode, EffectNode, MasterNode, MixerTrackNode, SamplerNode, SendNode,
+};
 pub use rt_guard::{
     RtGuardAllocator, current_thread_is_rt, mark_current_thread_rt, unmark_current_thread_rt,
     with_rt_thread,

@@ -24,6 +24,16 @@ fn tiny_midi(us_per_quarter: u32, notes: &[(u8, u8, u32, u32)]) -> Vec<u8> {
 
 /// As `tiny_midi`, with an explicit MIDI channel per note.
 fn tiny_midi_on(us_per_quarter: u32, notes: &[(u8, u8, u8, u32, u32)]) -> Vec<u8> {
+    tiny_midi_with_controls(us_per_quarter, notes, &[])
+}
+
+/// As `tiny_midi_on`, plus `(channel, controller, value)` control changes at
+/// time zero.
+fn tiny_midi_with_controls(
+    us_per_quarter: u32,
+    notes: &[(u8, u8, u8, u32, u32)],
+    controls: &[(u8, u8, u8)],
+) -> Vec<u8> {
     fn varint(mut value: u32, out: &mut Vec<u8>) {
         let mut buffer = vec![(value & 0x7f) as u8];
         value >>= 7;
@@ -41,6 +51,9 @@ fn tiny_midi_on(us_per_quarter: u32, notes: &[(u8, u8, u8, u32, u32)]) -> Vec<u8
     track.extend_from_slice(&us_per_quarter.to_be_bytes()[1..]);
 
     let mut events: Vec<(u32, [u8; 3])> = Vec::new();
+    for (channel, controller, value) in controls {
+        events.push((0, [0xb0 | channel, *controller, *value]));
+    }
     for (channel, key, velocity, start, length) in notes {
         events.push((*start, [0x90 | channel, *key, *velocity]));
         events.push((start + length, [0x80 | channel, *key, 0]));
@@ -143,7 +156,7 @@ fn every_midi_channel_gets_its_own_node_in_the_song() {
     let song = Song::from_midi(import, SR);
     assert_eq!(song.channels.len(), 2);
     assert_ne!(
-        song.channels[0].1, song.channels[1].1,
+        song.channels[0].node, song.channels[1].node,
         "each part needs a node of its own"
     );
 
@@ -174,8 +187,8 @@ fn each_part_is_addressed_to_the_node_holding_its_own_instrument() {
 
     // MIDI channels come back in order, and `Song` keeps that order.
     let song = Song::from_midi(import, SR);
-    let node_for_channel_1 = song.channels[0].1;
-    let node_for_channel_3 = song.channels[1].1;
+    let node_for_channel_1 = song.channels[0].node;
+    let node_for_channel_3 = song.channels[1].node;
 
     let timeline = song.compile();
     for event in &timeline.events {
@@ -188,4 +201,38 @@ fn each_part_is_addressed_to_the_node_holding_its_own_instrument() {
             assert_eq!(event.target, expected, "key {key} went to the wrong node");
         }
     }
+}
+
+#[test]
+fn each_part_gets_its_own_fader_from_the_files_own_volume_controller() {
+    // A General MIDI file balances its parts with CC7. Before this the whole
+    // song went through one fader, so the file's balance was discarded and
+    // every part played at whatever level its instrument happened to have.
+    let bytes = tiny_midi_with_controls(
+        500_000,
+        &[(0, 72, 100, 0, 240), (2, 36, 90, 0, 240)],
+        &[(0, 7, 127), (2, 7, 40)],
+    );
+    let path = write_temp("faders", &bytes);
+    let import = import_midi(&path, MidiChannels::Melodic).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    let quiet_part = import
+        .channels
+        .iter()
+        .find(|c| c.midi_channel == 2)
+        .unwrap()
+        .volume_db;
+    let song = Song::from_midi(import, SR);
+    assert_eq!(song.channels.len(), 2);
+    assert!(
+        (song.channels[1].gain_db - quiet_part).abs() < 1e-6,
+        "the part's fader must carry the level the file asked for: expected \
+         {quiet_part}, got {}",
+        song.channels[1].gain_db
+    );
+    assert!(
+        song.channels[0].gain_db > song.channels[1].gain_db,
+        "and the two parts must not end up at the same level"
+    );
 }

@@ -211,6 +211,37 @@ impl AudioNode for MixerTrackNode {
     }
 }
 
+/// Adds one bus into another — the compiled form of `MixerTrack::output`
+/// (TDD §13.1), which is how every track in the song reaches the master.
+///
+/// The only node in the graph whose inputs are a different set from its
+/// outputs, and the reason `CompiledGraph::process_block` supports that shape
+/// at all. It **adds** rather than overwrites, because a destination bus has
+/// as many tracks arriving at it as the user routed there, and it leaves its
+/// source untouched, because a bus may be routed *and* tapped by a send.
+///
+/// Stateless and parameterless on purpose: a send (§13.2) is this plus a level
+/// and a pan, and that is M4 work along with the rest of the send system.
+pub struct BusSumNode;
+
+impl AudioNode for BusSumNode {
+    fn prepare(&mut self, _ctx: &PrepareContext) {}
+
+    fn process(&mut self, ctx: &mut ProcessContext) {
+        for (source, dest) in ctx.inputs.iter().zip(ctx.outputs.iter_mut()) {
+            for (sample, out) in source.iter().zip(dest.iter_mut()) {
+                *out += *sample;
+            }
+        }
+    }
+
+    fn reset(&mut self) {}
+
+    fn params(&self) -> &dyn ParamSet {
+        &EmptyParams
+    }
+}
+
 pub struct SendNode {
     // Pre/post-fader tap to another track. TDD §13.2.
 }

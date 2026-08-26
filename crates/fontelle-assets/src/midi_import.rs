@@ -39,6 +39,45 @@ const DEFAULT_US_PER_QUARTER: u32 = 500_000;
 /// obviously-arbitrary length.
 const STUCK_NOTE_LENGTH: Tick = PPQN;
 
+/// MIDI controller numbers. Only these two are read; the rest are ignored, and
+/// the channel listing reports what was found so nothing vanishes silently.
+const CC_CHANNEL_VOLUME: u8 = 7;
+const CC_PAN: u8 = 10;
+
+/// A channel that sends no CC7 is not at full scale — MIDI's reset value for
+/// channel volume is 100. Every part in a file that sends none is then equally
+/// ~4 dB down, which is a uniform offset rather than a balance error.
+const DEFAULT_VOLUME_CC: u8 = 100;
+/// CC10's centre. 0 and 127 are the ends of the field.
+const CENTRE_PAN_CC: u8 = 64;
+
+/// The floor a CC7 of 0 lands on. Real silence is `-inf` dB, which no fader can
+/// hold and no arithmetic downstream survives; -96 dB is below the noise floor
+/// of 16-bit audio and is a number.
+const SILENT_DB: f32 = -96.0;
+
+/// MIDI channel volume in decibels, on the curve GM2 and DLS both specify:
+/// `40 * log10(value / 127)`. A linear reading of the controller would make
+/// every balance in every General MIDI file wrong by the difference.
+fn volume_cc_to_db(value: u8) -> f32 {
+    if value == 0 {
+        return SILENT_DB;
+    }
+    (40.0 * (value as f32 / 127.0).log10()).max(SILENT_DB)
+}
+
+/// CC10 to Fontelle's -1.0..=1.0 pan. 64 is centre; the two halves are scaled
+/// by 63 and 64 respectively so that 0 and 127 both reach the ends exactly
+/// rather than one of them stopping just short.
+fn pan_cc_to_pan(value: u8) -> f32 {
+    let centre = CENTRE_PAN_CC as f32;
+    if value >= CENTRE_PAN_CC {
+        (value as f32 - centre) / (127.0 - centre)
+    } else {
+        (value as f32 - centre) / centre
+    }
+}
+
 /// Which of the file's channels to bring in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MidiChannels {
@@ -87,6 +126,14 @@ pub struct ImportedMidiChannel {
     /// pitches. Carried through import so whoever assigns instruments doesn't
     /// have to rediscover it.
     pub is_percussion: bool,
+    /// Where the file asks for this part in the stereo field, from its first
+    /// CC10: -1.0 hard left, 0.0 centre, +1.0 hard right.
+    pub pan: f32,
+    /// The part's level in decibels, from its first CC7 through the GM2/DLS
+    /// curve. A channel that sends none takes MIDI's own default of 100,
+    /// which is about -4 dB — not unity, and reading it as unity would put
+    /// every silent channel above the ones that spelled the default out.
+    pub volume_db: f32,
 }
 
 pub struct MidiImport {
@@ -157,6 +204,11 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
     let mut pending: HashMap<(u8, u8), Pending> = HashMap::new();
     let mut counts: HashMap<u8, usize> = HashMap::new();
     let mut programs: HashMap<u8, u8> = HashMap::new();
+    // First value wins, exactly as for a program change: a file that sweeps a
+    // controller is describing an automation curve, and Fontelle has nowhere
+    // to put one yet. The channel listing prints what was read, so a part that
+    // starts at zero is visible rather than mysteriously silent.
+    let mut controllers: HashMap<(u8, u8), u8> = HashMap::new();
 
     for track in &smf.tracks {
         // Delta times are per track and restart at zero, so a format-1 file's
@@ -173,6 +225,11 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
                     match message {
                         MidiMessage::ProgramChange { program } => {
                             programs.entry(channel).or_insert(program.as_int());
+                        }
+                        MidiMessage::Controller { controller, value } => {
+                            controllers
+                                .entry((channel, controller.as_int()))
+                                .or_insert(value.as_int());
                         }
                         // A note-on with zero velocity is a note-off. Almost
                         // every real file uses it in place of an explicit one,
@@ -265,12 +322,20 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
             muted: false,
         });
 
+        let controller = |number: u8, default: u8| {
+            controllers
+                .get(&(midi_channel, number))
+                .copied()
+                .unwrap_or(default)
+        };
         imported.push(ImportedMidiChannel {
             midi_channel,
             channel,
             notes: note_count,
             program: programs.get(&midi_channel).copied(),
             is_percussion,
+            pan: pan_cc_to_pan(controller(CC_PAN, CENTRE_PAN_CC)),
+            volume_db: volume_cc_to_db(controller(CC_CHANNEL_VOLUME, DEFAULT_VOLUME_CC)),
         });
     }
 

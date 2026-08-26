@@ -43,6 +43,18 @@ fn build_midi_with_programs(
     notes: &[TestNote],
     programs: &[(u8, u8)],
 ) -> Vec<u8> {
+    build_midi_with_controls(ticks_per_quarter, us_per_quarter, notes, programs, &[])
+}
+
+/// As `build_midi_with_programs`, plus `(channel, controller, value)` control
+/// changes emitted at time zero.
+fn build_midi_with_controls(
+    ticks_per_quarter: u16,
+    us_per_quarter: u32,
+    notes: &[TestNote],
+    programs: &[(u8, u8)],
+    controls: &[(u8, u8, u8)],
+) -> Vec<u8> {
     let mut file = Vec::new();
     file.extend_from_slice(b"MThd");
     file.extend_from_slice(&6u32.to_be_bytes());
@@ -67,6 +79,9 @@ fn build_midi_with_programs(
     let mut events: Vec<(u32, usize, [u8; 3])> = Vec::new();
     for (channel, program) in programs {
         events.push((0, 2, [0xc0 | channel, *program, 0]));
+    }
+    for (channel, controller, value) in controls {
+        events.push((0, 3, [0xb0 | channel, *controller, *value]));
     }
     for n in notes {
         events.push((n.start, 3, [0x90 | n.channel, n.key, n.velocity]));
@@ -501,4 +516,125 @@ fn channels_present_but_filtered_out_are_still_reported() {
     assert_eq!(import.skipped.len(), 1);
     assert_eq!(import.skipped[0].channel, 9);
     assert_eq!(import.skipped[0].notes, 1);
+}
+
+/// MIDI CC10. 64 is centre, 0 hard left, 127 hard right — and a channel that
+/// never sends one is centred, not silently placed somewhere.
+#[test]
+fn a_channels_pan_controller_places_the_part() {
+    let notes: Vec<TestNote> = (0u8..3)
+        .map(|c| TestNote {
+            channel: c,
+            key: 60,
+            velocity: 100,
+            start: 0,
+            length: 480,
+        })
+        .collect();
+    let bytes = build_midi_with_controls(
+        480,
+        500_000,
+        &notes,
+        &[],
+        // Channel 2 sends nothing, so it must come out centred.
+        &[(0, 10, 0), (1, 10, 127)],
+    );
+    let path = write_temp("pan_cc", &bytes);
+    let import = import_midi(&path, MidiChannels::All).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    let pan = |midi_channel: u8| {
+        import
+            .channels
+            .iter()
+            .find(|c| c.midi_channel == midi_channel)
+            .unwrap()
+            .pan
+    };
+    assert!(
+        (pan(0) + 1.0).abs() < 1e-6,
+        "CC10 0 is hard left, got {}",
+        pan(0)
+    );
+    assert!(
+        (pan(1) - 1.0).abs() < 1e-6,
+        "CC10 127 is hard right, got {}",
+        pan(1)
+    );
+    assert_eq!(pan(2), 0.0, "a channel with no CC10 is centred");
+}
+
+/// MIDI CC7, through the GM2/DLS curve `40 * log10(value / 127)` — not a
+/// linear reading of the controller, which would make every balance in every
+/// General MIDI file wrong by the difference between the two.
+#[test]
+fn a_channels_volume_controller_sets_its_level() {
+    let notes: Vec<TestNote> = (0u8..3)
+        .map(|c| TestNote {
+            channel: c,
+            key: 60,
+            velocity: 100,
+            start: 0,
+            length: 480,
+        })
+        .collect();
+    let bytes = build_midi_with_controls(480, 500_000, &notes, &[], &[(0, 7, 127), (1, 7, 64)]);
+    let path = write_temp("volume_cc", &bytes);
+    let import = import_midi(&path, MidiChannels::All).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    let gain = |midi_channel: u8| {
+        import
+            .channels
+            .iter()
+            .find(|c| c.midi_channel == midi_channel)
+            .unwrap()
+            .volume_db
+    };
+    assert!(
+        gain(0).abs() < 1e-4,
+        "CC7 at full scale is unity, got {}",
+        gain(0)
+    );
+    let expected = 40.0 * (64.0f32 / 127.0).log10();
+    assert!(
+        (gain(1) - expected).abs() < 1e-3,
+        "CC7 64 should be {expected} dB, got {}",
+        gain(1)
+    );
+    // MIDI's own default channel volume is 100, not 127: a file that sends no
+    // CC7 still means something specific, and reading it as unity would put
+    // every silent channel 4 dB above the ones that spelled 100 out.
+    let default = 40.0 * (100.0f32 / 127.0).log10();
+    assert!(
+        (gain(2) - default).abs() < 1e-3,
+        "a channel with no CC7 takes MIDI's default of 100 ({default} dB), got {}",
+        gain(2)
+    );
+}
+
+#[test]
+fn a_silent_channel_volume_is_reported_as_silence_rather_than_minus_infinity() {
+    let bytes = build_midi_with_controls(
+        480,
+        500_000,
+        &[TestNote {
+            channel: 0,
+            key: 60,
+            velocity: 100,
+            start: 0,
+            length: 480,
+        }],
+        &[],
+        &[(0, 7, 0)],
+    );
+    let path = write_temp("volume_zero", &bytes);
+    let import = import_midi(&path, MidiChannels::All).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    let gain = import.channels[0].volume_db;
+    assert!(
+        gain.is_finite() && gain <= -96.0,
+        "CC7 0 must land on a finite floor a fader can hold, got {gain}"
+    );
 }

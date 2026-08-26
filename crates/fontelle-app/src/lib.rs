@@ -104,12 +104,28 @@ fn node_id(index: usize) -> NodeId {
     NodeId::from(slotmap::KeyData::from_ffi(index as u64 + 1))
 }
 
+/// One part of a song: a document channel, the engine node that renders it,
+/// and the mixer track that carries it to the master.
+///
+/// **Not the document's own mixer.** `Project::mixer` exists and is where this
+/// belongs, but nothing compiles a graph from a `Project` yet — `fontelle-app`
+/// hand-assigns node ids and buses, and this carries what that step needs. See
+/// PROGRESS.md; the fix is the same "build the graph from the project" step
+/// that would own `channel_nodes` too.
+#[derive(Debug, Clone, Copy)]
+pub struct SongChannel {
+    pub channel: ChannelId,
+    pub node: NodeId,
+    /// The part's fader, in decibels. From the file's own CC7 for an imported
+    /// song; unity for the built-in phrase.
+    pub gain_db: f32,
+}
+
 pub struct Song {
     pub project: Project,
-    /// Each document channel and the engine node that renders it, in a stable
-    /// order. One entry for the built-in phrase; one per part for an imported
-    /// file.
-    pub channels: Vec<(ChannelId, NodeId)>,
+    /// Each part of the song, in a stable order. One entry for the built-in
+    /// phrase; one per part for an imported file.
+    pub channels: Vec<SongChannel>,
 }
 
 impl Song {
@@ -129,7 +145,15 @@ impl Song {
                 .channels
                 .iter()
                 .enumerate()
-                .map(|(index, imported)| (imported.channel, node_id(index)))
+                .map(|(index, imported)| SongChannel {
+                    channel: imported.channel,
+                    node: node_id(index),
+                    // The file's own balance between its parts. Discarding it
+                    // and playing every part at its instrument's level is how
+                    // an arrangement ends up with the drums on top of the
+                    // melody.
+                    gain_db: imported.volume_db,
+                })
                 .collect(),
             project,
         }
@@ -138,7 +162,7 @@ impl Song {
     /// The mapping `fontelle_sequencer::compile` needs to turn document
     /// channels into engine node targets.
     pub fn channel_nodes(&self) -> HashMap<ChannelId, NodeId> {
-        self.channels.iter().copied().collect()
+        self.channels.iter().map(|c| (c.channel, c.node)).collect()
     }
 
     pub fn compile(&self) -> CompiledTimeline {
@@ -253,15 +277,22 @@ pub fn demo_song(root_key: u8, bpm: f64, sample_rate: u32) -> Song {
 
     Song {
         project,
-        channels: vec![(channel, node_id(0))],
+        channels: vec![SongChannel {
+            channel,
+            node: node_id(0),
+            gain_db: 0.0,
+        }],
     }
 }
 
-/// Assembles the M0 signal chain for `song`: sampler -> mixer track -> stereo
-/// bus pair, ready to hand to `AudioDevice::start_output_stream`.
 /// Builds the audio graph for `song`: one sampler per entry in
-/// `song.channels`, in the same order, all summing onto one stereo bus and
-/// through a single mixer track.
+/// `song.channels`, in the same order, **each on a mixer track of its own**,
+/// every track summing into a stereo master pair.
+///
+/// The buses are laid out as `[0, 1]` for the master and `[2 + 2i, 3 + 2i]`
+/// for part *i*, so a part's fader, mute and pan act on that part alone. One
+/// shared fader was all there was before, which meant a song's balance could
+/// only be set by editing the instruments.
 ///
 /// # Panics
 ///
@@ -272,62 +303,72 @@ pub fn build_graph(song: &Song, samplers: Vec<Sampler>, store: Arc<SampleStore>)
     build_graph_with_gain(song, samplers, store, DEMO_TRACK_GAIN_DB)
 }
 
-/// As [`build_graph`], with the mixer track's fader set explicitly.
+/// As [`build_graph`], with the **master** fader set explicitly. Each part
+/// keeps its own fader from `song.channels`.
 pub fn build_graph_with_gain(
     song: &Song,
     samplers: Vec<Sampler>,
     store: Arc<SampleStore>,
-    gain_db: f32,
+    master_gain_db: f32,
 ) -> CompiledGraph {
     assert_eq!(
         samplers.len(),
         song.channels.len(),
         "build_graph needs exactly one sampler per song channel"
     );
-    let mut schedule: Vec<ScheduledNode> = song
-        .channels
-        .iter()
-        .zip(samplers)
-        .map(|((_, node), sampler)| ScheduledNode {
-            id: *node,
+
+    // A track fader is a *balance* control here, not a pan law: what reaches
+    // it is already placed in the field by the voice, on the constant-power
+    // taper, and a second pan law on top would pull another 3 dB out of every
+    // centred track. Placing a part is `Sampler::set_pan`'s job; this is for
+    // riding the levels between them.
+    let track_fader = |gain_db: f32| MixerTrackNode {
+        gain_db,
+        pan_law: fontelle_types::PanLaw::Linear,
+        ..MixerTrackNode::new()
+    };
+
+    let mut schedule: Vec<ScheduledNode> = Vec::new();
+    for (index, (part, sampler)) in song.channels.iter().zip(samplers).enumerate() {
+        let bus = vec![MASTER_BUSES + index * 2, MASTER_BUSES + index * 2 + 1];
+        schedule.push(ScheduledNode {
+            id: part.node,
             node: Box::new(SamplerNode::new(sampler, store.clone())),
             input_buffers: Vec::new(),
-            // Every instrument writes the same pair: the graph clears the bus
-            // each block and sources add into it.
+            output_buffers: bus.clone(),
+        });
+        schedule.push(ScheduledNode {
+            id: NodeId::default(),
+            node: Box::new(track_fader(part.gain_db)),
+            // Same buffers in and out: the fader processes in place.
+            input_buffers: bus.clone(),
+            output_buffers: bus.clone(),
+        });
+        schedule.push(ScheduledNode {
+            id: NodeId::default(),
+            node: Box::new(fontelle_engine::BusSumNode),
+            input_buffers: bus,
             output_buffers: vec![0, 1],
-        })
-        .collect();
+        });
+    }
+
     schedule.push(ScheduledNode {
         id: NodeId::default(),
-        node: Box::new(MixerTrackNode {
-            // Headroom, deliberately. Coincident voices sum well past full
-            // scale — three at whatever gain the SF2's own InitialAttenuation
-            // gave them, often 0 dB — which clips at the device and reads as a
-            // bug in the sampler. With a whole arrangement summing here rather
-            // than one part, the fader matters more, not less. Velocity pulls
-            // its weight now, but a fader with headroom is the correct place
-            // to solve this, not a velocity value chosen to hide it.
-            gain_db,
-            // A *balance* control, not a pan law. The signal reaching this
-            // track is genuinely stereo now — the voice places each layer in
-            // the field on the constant-power taper — and a pan law is for
-            // putting a mono source somewhere. Applying one to an
-            // already-placed stereo signal just pulls another 3 dB out of a
-            // centred track for nothing.
-            pan_law: fontelle_types::PanLaw::Linear,
-            ..MixerTrackNode::new()
-        }),
-        // Same buffers in and out: processes in place.
+        node: Box::new(track_fader(master_gain_db)),
         input_buffers: vec![0, 1],
         output_buffers: vec![0, 1],
     });
+
     let mut graph = CompiledGraph {
         schedule,
-        buffer_pool: BufferPool::with_capacity(2, BLOCK_SIZE),
+        buffer_pool: BufferPool::with_capacity(MASTER_BUSES + song.channels.len() * 2, BLOCK_SIZE),
     };
     graph.prepare(SAMPLE_RATE as f32, BLOCK_SIZE as u32);
     graph
 }
+
+/// Buffers 0 and 1 are the master pair; every part's bus starts after them.
+const MASTER_BUSES: usize = 2;
 
 /// The rate everything in the demo path runs at: the device is asked for it,
 /// the tempo map converts against it, and offline renders match it exactly.
@@ -343,13 +384,14 @@ pub const PLAYBACK_QUALITY: fontelle_dsp::Interpolation = fontelle_dsp::Interpol
 /// See [`PLAYBACK_QUALITY`].
 pub const RENDER_QUALITY: fontelle_dsp::Interpolation = fontelle_dsp::Interpolation::High;
 
-/// Enough headroom for the demo's three-voice chord not to clip.
+/// Enough headroom on the **master** for the demo's three-voice chord not to
+/// clip.
 ///
 /// Explicitly not a general answer. A whole arrangement summing through this
-/// fader lands around 20 dB down, which is why it is a default rather than a
-/// constant: `--gain-db` overrides it, and the render reports its peak so the
-/// choice can be made on evidence. The real answer is a master limiter, which
-/// is later work.
+/// fader lands well down, which is why it is a default rather than a constant:
+/// `--gain-db` overrides it, and the render reports its peak so the choice can
+/// be made on evidence. The real answer is a master limiter, which is later
+/// work.
 pub const DEMO_TRACK_GAIN_DB: f32 = -12.0;
 
 /// Renders `song` through `graph` offline, as fast as the CPU allows, into
