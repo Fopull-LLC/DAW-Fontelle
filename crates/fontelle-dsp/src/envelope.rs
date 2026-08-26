@@ -89,12 +89,25 @@ impl EnvelopeGenerator {
     pub fn note_on(&mut self) {
         self.stage = Some(EnvelopeStage::Delay);
         self.time_in_stage = 0.0;
+        // An envelope starts at zero, and [`EnvelopeGenerator::level`] can be
+        // read before the first `advance`. Left alone, the last note's final
+        // level would be what a modulation destination saw for one block.
+        self.level = 0.0;
     }
 
     pub fn note_off(&mut self) {
         self.release_start_level = self.level;
         self.stage = Some(EnvelopeStage::Release);
         self.time_in_stage = 0.0;
+    }
+
+    /// The level the last `advance` produced, without advancing.
+    ///
+    /// What a modulation destination reads: an envelope used as a source is
+    /// sampled once per block and held, so the destination needs the current
+    /// value rather than the next one.
+    pub fn level(&self) -> f32 {
+        self.level
     }
 
     pub fn is_active(&self) -> bool {

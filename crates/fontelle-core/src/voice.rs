@@ -77,6 +77,21 @@ pub fn velocity_to_gain(velocity: u8) -> f32 {
 /// note-on (INVARIANT 1, INVARIANT 6).
 pub const MAX_LAYERS: usize = 16;
 
+/// Modulation envelopes per voice, on top of `patch.envelopes[0]` — the amp
+/// envelope, which every voice always has and which drives the amp stage
+/// directly rather than through the matrix.
+///
+/// A fixed array, like the layers, because a voice's cost has to be knowable
+/// before it sounds (INVARIANT 6) and note-on must not allocate (INVARIANT 1).
+/// Three is one more than any SF2 file can ask for, which defines exactly one
+/// modulation envelope.
+pub const MAX_MOD_ENVELOPES: usize = 3;
+
+/// LFOs per voice, for the same reason. SF2 defines two (vibrato and
+/// modulation); four leaves room for a patch built in Fontelle rather than
+/// imported.
+pub const MAX_LFOS: usize = 4;
+
 #[derive(Debug, Clone, Copy, Default)]
 struct LayerPlayback {
     active: bool,
@@ -138,6 +153,14 @@ pub struct Voice {
     velocity_norm: f32,
     key_norm: f32,
     amp_env: fontelle_dsp::EnvelopeGenerator,
+    /// `patch.envelopes[1..]`, as modulation sources. Per voice, because two
+    /// notes are at different points in their envelopes.
+    mod_envs: [fontelle_dsp::EnvelopeGenerator; MAX_MOD_ENVELOPES],
+    /// `patch.lfos`, retriggered on every note-on: a free-running LFO makes
+    /// the same note sound different depending on when it was played, which is
+    /// a character an instrument can want but not a default anyone can
+    /// predict.
+    lfos: [fontelle_dsp::Oscillator; MAX_LFOS],
 }
 
 impl Voice {
@@ -153,6 +176,8 @@ impl Voice {
             velocity_norm: 0.0,
             key_norm: 0.0,
             amp_env: fontelle_dsp::EnvelopeGenerator::new(),
+            mod_envs: [fontelle_dsp::EnvelopeGenerator::new(); MAX_MOD_ENVELOPES],
+            lfos: [fontelle_dsp::Oscillator::new(); MAX_LFOS],
         }
     }
 
@@ -185,6 +210,12 @@ impl Voice {
             }
         }
         self.amp_env.note_on();
+        for env in &mut self.mod_envs {
+            env.note_on();
+        }
+        for lfo in &mut self.lfos {
+            lfo.reset();
+        }
 
         for (slot, layer) in self.layers.iter_mut().zip(patch.layers.iter()) {
             let in_key_range = key >= layer.key_range.0 && key <= layer.key_range.1;
@@ -204,6 +235,12 @@ impl Voice {
     /// normal note-off; a shorter, dedicated steal-ramp is a later refinement.
     pub fn release(&mut self) {
         self.amp_env.note_off();
+        // A modulation envelope releases with the note too: a filter envelope
+        // that stayed open through the release would keep the tail brighter
+        // than the note that produced it.
+        for env in &mut self.mod_envs {
+            env.note_off();
+        }
     }
 
     /// RT: no allocation. Mixes every active layer into `out`, applying pitch
@@ -285,18 +322,67 @@ impl Voice {
                     curve: fontelle_dsp::EnvelopeCurve::Linear,
                 });
 
-        // The mod matrix's view of this voice. Only the note-on sources are
-        // live: LFOs aren't built, and envelopes are not yet exposed as
-        // sources (`Envelope(0)` drives the amp stage directly). Everything
-        // else reads as at-rest rather than as a plausible-looking number.
+        // Modulation runs at block rate: every source is sampled once here and
+        // held for the whole block, and every destination is resolved from it
+        // before the sample loop. At the engine's 128-frame blocks that is a
+        // 375 Hz control rate — the same order as every hardware sampler ever
+        // shipped, and cheap enough that a filter envelope costs a handful of
+        // operations per block rather than per sample.
         //
-        // Bound to locals rather than reaching through `self`, so the closure
-        // holds no borrow of the voice and the sample loop below is free to
-        // take `self.layers` mutably.
+        // The amp envelope is the exception: it advances per sample, because
+        // it is a gain rather than a control value and a stepped one is
+        // audible as a buzz on fast attacks.
+        let mut env_levels = [0.0f32; MAX_MOD_ENVELOPES];
+        let mut lfo_values = [0.0f32; MAX_LFOS];
+        if !patch.mod_matrix.routes.is_empty() {
+            // Skipped entirely when nothing routes anywhere, which is most
+            // imported soundfonts: an envelope nobody reads costs a `Vec`
+            // check rather than a stage advance per sample.
+            for (index, config) in patch
+                .envelopes
+                .iter()
+                .skip(1)
+                .take(MAX_MOD_ENVELOPES)
+                .enumerate()
+            {
+                let env = &mut self.mod_envs[index];
+                // Read before advancing: the value a destination uses this
+                // block is the one at its start, not its end.
+                env_levels[index] = env.level();
+                for _ in 0..frames {
+                    env.advance(config, sample_rate);
+                }
+            }
+            for (index, lfo) in patch.lfos.iter().take(MAX_LFOS).enumerate() {
+                lfo_values[index] =
+                    self.lfos[index].advance_block(lfo.shape, lfo.rate_hz, sample_rate, frames)
+                        * lfo.depth;
+            }
+        }
+
+        // The mod matrix's view of this voice, bound to locals rather than
+        // reaching through `self`, so the closure holds no borrow of the voice
+        // and the sample loop below is free to take `self.layers` mutably.
+        //
+        // Aftertouch, the mod wheel, pitch bend, `Random` and `NoteOnCounter`
+        // read as at-rest: no MIDI controller state reaches a voice yet, and a
+        // plausible-looking number would be worse than an honest zero.
         let (velocity_norm, key_norm) = (self.velocity_norm, self.key_norm);
+        let amp_level = self.amp_env.level();
         let sources = move |source: crate::mod_matrix::ModSource| match source {
             crate::mod_matrix::ModSource::Velocity => velocity_norm,
             crate::mod_matrix::ModSource::Key => key_norm,
+            // Envelope 0 is the amp envelope. It drives the amp stage
+            // directly, and is readable here as well because "louder means
+            // brighter" is a route a patch legitimately wants and there is no
+            // reason to make it add a second envelope to get it.
+            crate::mod_matrix::ModSource::Envelope(0) => amp_level,
+            crate::mod_matrix::ModSource::Envelope(index) => {
+                env_levels.get(index as usize - 1).copied().unwrap_or(0.0)
+            }
+            crate::mod_matrix::ModSource::Lfo(index) => {
+                lfo_values.get(index as usize).copied().unwrap_or(0.0)
+            }
             _ => 0.0,
         };
 
@@ -315,8 +401,13 @@ impl Voice {
                 continue;
             };
 
-            let semitones =
-                (self.key as f32 - layer.root_key as f32) + layer.fine_tune_cents / 100.0;
+            // Pitch modulation is in cents, like the tuning it adds to, so a
+            // route means the same interval wherever the note sits.
+            let pitch_dest = crate::mod_matrix::ModDest::LayerPitch(index as u8);
+            let pitch_cents =
+                patch.mod_matrix.evaluate(pitch_dest, &sources) * pitch_dest.full_scale();
+            let semitones = (self.key as f32 - layer.root_key as f32)
+                + (layer.fine_tune_cents + pitch_cents) / 100.0;
             let pitch_ratio = 2f32.powf(semitones / 12.0);
             let rate_ratio = buffer.sample_rate as f32 / sample_rate;
             let loop_len = layer.playback.loop_end - layer.playback.loop_start;
@@ -326,6 +417,11 @@ impl Voice {
             // across the field. `ModDest::LayerPan`'s full scale is 1.0 —
             // half the field — so a full-depth route moves a centred layer
             // all the way to one side.
+            // Gain modulation is in decibels, so a tremolo is symmetric in
+            // loudness rather than lopsided the way a linear one would be.
+            let gain_dest = crate::mod_matrix::ModDest::LayerGain(index as u8);
+            let gain_db = patch.mod_matrix.evaluate(gain_dest, &sources) * gain_dest.full_scale();
+
             let pan_gain = if stereo {
                 let dest = crate::mod_matrix::ModDest::LayerPan(index as u8);
                 let pan = layer.pan
@@ -339,7 +435,7 @@ impl Voice {
             prepared[index] = Some(PreparedLayer {
                 data: &buffer.data,
                 step: (pitch_ratio * rate_ratio) as f64,
-                gain: 10f32.powf(layer.gain_db / 20.0) * self.velocity_gain,
+                gain: 10f32.powf((layer.gain_db + gain_db) / 20.0) * self.velocity_gain,
                 pan_gain,
                 loop_end: layer.playback.loop_end,
                 loop_len,
@@ -367,10 +463,16 @@ impl Voice {
             let dest = crate::mod_matrix::ModDest::FilterCutoff(index as u8);
             let cents = patch.mod_matrix.evaluate(dest, &sources) * dest.full_scale();
             let cutoff = slot.cutoff_hz * 2f32.powf(cents / 1200.0);
+            // Resonance is a Q, and a route offsets it directly: full scale is
+            // 1.0 because the useful span between "barely damped" and "on the
+            // edge of self-oscillation" is a couple of units, not decades.
+            let q_dest = crate::mod_matrix::ModDest::FilterResonance(index as u8);
+            let resonance =
+                slot.resonance + patch.mod_matrix.evaluate(q_dest, &sources) * q_dest.full_scale();
             Some(fontelle_dsp::SvfFilter::coeffs(
                 slot.mode,
                 cutoff,
-                slot.resonance,
+                resonance,
                 0.0,
                 sample_rate,
             ))
@@ -1412,6 +1514,219 @@ mod tests {
             "-2.0 of combined pan is still hard left, not past it, got {} / {}",
             left[0],
             right[0]
+        );
+    }
+
+    // --- Envelopes and LFOs as modulation sources ----------------------------
+
+    use crate::mod_matrix::{Curve, ModDest, ModMatrix, ModRoute, ModSource};
+
+    fn mod_route(source: ModSource, destination: ModDest, depth: f32) -> ModMatrix {
+        ModMatrix {
+            routes: vec![ModRoute {
+                source,
+                destination,
+                depth,
+                curve: Curve::Linear,
+                via: None,
+                invert: false,
+            }],
+        }
+    }
+
+    /// Renders `frames` into one mono buffer, block by block at `block`, the
+    /// way the engine drives it — modulation is sampled per block, so a test
+    /// that renders one giant buffer would see exactly one modulation value
+    /// and prove nothing about anything that moves.
+    fn render_blocks(patch: &Patch, store: &SampleStore, frames: usize, block: usize) -> Vec<f32> {
+        let mut voice = Voice::new();
+        voice.trigger(patch, 60, 127, 0);
+        let mut out = vec![0.0; frames];
+        let mut at = 0;
+        while at < frames {
+            let n = block.min(frames - at);
+            voice.render(
+                patch,
+                store,
+                SR,
+                Interpolation::Draft,
+                &mut [&mut out[at..at + n]],
+            );
+            at += n;
+        }
+        out
+    }
+
+    /// Envelope-to-cutoff is what makes a filter sing, and until the matrix had
+    /// an envelope to read it was unreachable: a patch could only be as bright
+    /// as its velocity made it, fixed for the length of the note.
+    #[test]
+    fn a_modulation_envelope_opens_the_filter_over_the_length_of_a_note() {
+        let mut store = SampleStore::new();
+        let mut patch = tone_patch(&mut store, 6_000.0, 48_000);
+        patch.filters[0] = FilterSlot {
+            mode: SvfMode::Lowpass,
+            cutoff_hz: 400.0,
+            resonance: std::f32::consts::FRAC_1_SQRT_2,
+            enabled: true,
+        };
+        // Envelope 1 is the modulation envelope: a slow attack to full, held
+        // there.
+        patch.envelopes = vec![
+            instant_envelope(1.0),
+            EnvelopeConfig {
+                delay_s: 0.0,
+                attack_s: 0.2,
+                hold_s: 0.0,
+                decay_s: 0.0,
+                sustain_level: 1.0,
+                release_s: 0.01,
+                curve: EnvelopeCurve::Linear,
+            },
+        ];
+        // Four octaves up at full envelope.
+        patch.mod_matrix = mod_route(ModSource::Envelope(1), ModDest::FilterCutoff(0), 0.5);
+
+        let out = render_blocks(&patch, &store, 19_200, 128);
+        let early = rms(&out[..2_400]);
+        let late = rms(&out[14_400..]);
+        assert!(
+            late > early * 4.0,
+            "the envelope must open the filter as the note develops: {early} \
+             at the start against {late} at the end"
+        );
+    }
+
+    /// The amp envelope is readable as `Envelope(0)` as well as driving the
+    /// amp stage, so "louder means brighter" needs no second envelope.
+    ///
+    /// Measured against the *same patch without the route*, because the amp
+    /// envelope raises the level either way: on a single-frequency tone a
+    /// lowpass changes amplitude and not shape, so any proxy for brightness is
+    /// really a proxy for level, and only the difference between the two
+    /// renders isolates what the route did.
+    #[test]
+    fn the_amp_envelope_is_available_as_a_modulation_source() {
+        let swell = EnvelopeConfig {
+            delay_s: 0.0,
+            attack_s: 0.2,
+            hold_s: 0.0,
+            decay_s: 0.0,
+            sustain_level: 1.0,
+            release_s: 0.01,
+            curve: EnvelopeCurve::Linear,
+        };
+        let growth = |routed: bool| {
+            let mut store = SampleStore::new();
+            let mut patch = tone_patch(&mut store, 6_000.0, 48_000);
+            patch.filters[0] = FilterSlot {
+                mode: SvfMode::Lowpass,
+                cutoff_hz: 400.0,
+                resonance: std::f32::consts::FRAC_1_SQRT_2,
+                enabled: true,
+            };
+            patch.envelopes = vec![swell];
+            if routed {
+                patch.mod_matrix = mod_route(ModSource::Envelope(0), ModDest::FilterCutoff(0), 0.5);
+            }
+            let out = render_blocks(&patch, &store, 19_200, 128);
+            rms(&out[14_400..16_800]) / rms(&out[2_400..4_800]).max(1e-9)
+        };
+
+        let (with_route, without) = (growth(true), growth(false));
+        assert!(
+            with_route > without * 4.0,
+            "routing the amp envelope to the cutoff must open the tone well \
+             past what the envelope's own level explains: {with_route} against \
+             {without}"
+        );
+    }
+
+    /// Tremolo. An LFO that reaches nothing is a data shape, which is what
+    /// `Lfo` was until now.
+    #[test]
+    fn an_lfo_makes_a_layers_gain_rise_and_fall_at_its_own_rate() {
+        let mut store = SampleStore::new();
+        let mut patch = flat_patch(&mut store, 1.0, 96_000, 0.0);
+        patch.lfos = vec![crate::patch::Lfo {
+            rate_hz: 4.0,
+            depth: 1.0,
+            shape: fontelle_dsp::OscKind::Sine,
+        }];
+        // ±12 dB: unmistakable, and well short of the 96 dB full scale.
+        patch.mod_matrix = mod_route(ModSource::Lfo(0), ModDest::LayerGain(0), 12.0 / 96.0);
+
+        // One LFO cycle at 4 Hz is 12 000 samples; the peak is a quarter of the
+        // way in and the trough three quarters.
+        let out = render_blocks(&patch, &store, 24_000, 128);
+        let peak = rms(&out[2_600..3_400]);
+        let trough = rms(&out[8_600..9_400]);
+        let ratio = peak / trough;
+        // 24 dB between them, less whatever the window averages away.
+        assert!(
+            ratio > 8.0,
+            "a ±12 dB tremolo should swing about 16x peak to trough, got {ratio}"
+        );
+        // And it must come back: a one-way ramp would pass the check above.
+        let second_peak = rms(&out[14_600..15_400]);
+        assert!(
+            (second_peak / peak - 1.0).abs() < 0.1,
+            "the LFO must be periodic: {peak} then {second_peak}"
+        );
+    }
+
+    /// Vibrato. Measured as the pitch itself rather than the level, since a
+    /// pitch route that quietly did nothing would still pass a loudness check.
+    #[test]
+    fn an_lfo_bends_a_layers_pitch_both_ways() {
+        let mut store = SampleStore::new();
+        let mut patch = tone_patch(&mut store, 1_000.0, 96_000);
+        patch.lfos = vec![crate::patch::Lfo {
+            rate_hz: 2.0,
+            depth: 1.0,
+            shape: fontelle_dsp::OscKind::Sine,
+        }];
+        // ±1200 cents: an octave each way, so the zero-crossing count moves
+        // far enough to read off a short window.
+        patch.mod_matrix = mod_route(ModSource::Lfo(0), ModDest::LayerPitch(0), 1200.0 / 9600.0);
+
+        let out = render_blocks(&patch, &store, 24_000, 128);
+        let crossings = |window: &[f32]| {
+            window
+                .windows(2)
+                .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+                .count()
+        };
+        // A 2 Hz LFO cycles in 24 000 samples: sharp a quarter in, flat three
+        // quarters in.
+        let sharp = crossings(&out[5_600..6_400]);
+        let flat = crossings(&out[17_600..18_400]);
+        assert!(
+            sharp > flat * 3,
+            "an octave of vibrato should roughly quadruple the crossing rate \
+             between the two extremes: {sharp} against {flat}"
+        );
+    }
+
+    /// Nothing routed anywhere means nothing moves — and, just as importantly,
+    /// nothing is advanced: an envelope no route reads costs a `Vec` emptiness
+    /// check rather than a stage advance per sample per voice.
+    #[test]
+    fn a_patch_with_no_routes_is_unmodulated() {
+        let mut store = SampleStore::new();
+        let mut patch = flat_patch(&mut store, 1.0, 96_000, 0.0);
+        patch.lfos = vec![crate::patch::Lfo {
+            rate_hz: 4.0,
+            depth: 1.0,
+            shape: fontelle_dsp::OscKind::Sine,
+        }];
+
+        let out = render_blocks(&patch, &store, 24_000, 128);
+        let first = rms(&out[2_600..3_400]);
+        let later = rms(&out[8_600..9_400]);
+        assert!(
+            (first - later).abs() < 1e-5,
+            "an LFO nothing routes must not reach the output: {first} against {later}"
         );
     }
 }
