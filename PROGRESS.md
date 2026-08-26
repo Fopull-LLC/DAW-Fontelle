@@ -13,6 +13,101 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
+## 2026-08-26: Fontelle plays music
+
+The headline: `--play-midi` imports a `.mid` file and plays it through the same
+document -> sequencer -> timeline -> engine path the built-in phrase uses. That
+is the first time the project has produced music rather than a test phrase, and
+it is what makes the rest of it judgeable by ear.
+
+```sh
+cargo run -p fontelle-app -- --play-sf2 "<path.sf2>" --preset <n> \
+    --play-midi "<file.mid>" [--midi-channel <1-16> | --midi-all] \
+    [--render-wav <out.wav>]
+```
+
+Verified on real files: a 83-note piece at 105 bpm read from the file's own
+tempo event, and a 5780-event one played live through the device with the
+zero-allocation guard active, exit 0, no violation. A 7830-note file bounces to
+124 s at peak 0.138 with zero clipped samples.
+
+### What MIDI import does and does not do
+
+TDD §14.6 asks for tracks mapped to instrument channels, tempo and time
+signature into the tempo map, and no silent discarding of channel/CC data. What
+landed is notes, their timing converted to the project's resolution, and the
+file's initial tempo. Stated plainly, because each of these is a missing
+feature rather than a wrong result:
+
+- Every selected MIDI channel lands on **one** document channel, so playback is
+  monotimbral. Multi-timbral needs a patch per channel, which needs the user to
+  have chosen an instrument per channel — UI work, not import work.
+- Only the **first** tempo event is read. Tempo changes need the piecewise
+  `TempoMap` that lands with M3; a single constant is what the map can hold
+  today, and averaging would be worse than being clear.
+- Time signature, program changes and CC are read far enough to *report* but do
+  not affect the document yet. The channel listing prints each channel's note
+  count and program so nothing vanishes silently.
+
+Three details that would each have produced a plausible-sounding wrong result:
+
+- **A note-on with zero velocity is a note-off.** Almost every real file uses
+  it in place of an explicit one. Read literally it starts a silent note that
+  never ends, and the piece plays as one endless chord.
+- **Channel 10 is percussion** — note numbers select drums, not pitches.
+  Excluded by default (`MidiChannels::Melodic`), because arriving by accident
+  through a melodic patch is noise; reachable with `--midi-all` or
+  `--midi-channel 10`, because it is real content in the file.
+- **Tick conversion rounds to nearest.** Truncating drags every note early and
+  rounding up drags every note late; either bias is systematic, so at a source
+  resolution that does not divide 960 the result is a rhythm consistently
+  wrong rather than randomly jittered.
+
+SMPTE-timecode files are refused with a message explaining why, rather than
+imported with wrong rhythm: their timing is in real seconds, and placing a note
+on a musical grid from that needs the tempo map inverted.
+
+Channels are 1-based on the command line and 0-based in the file, because that
+is how every DAW and every piece of MIDI documentation numbers them.
+
+### The mod matrix (next-steps item 5 — now closed)
+
+`ModMatrix::evaluate` was a `todo!()`, so TDD §7.5's "flexibility that a
+free-form patch graph would otherwise provide" provided none, and the filter
+had nothing able to move it.
+
+`evaluate` sums the routes aimed at one destination, each shaped by its curve
+and scaled by depth and optional `via`. The result is deliberately unclamped:
+what a sum of contributions means belongs to the destination — cents for pitch
+and cutoff, decibels for gain — and clamping here would cap combinations the
+destination represents perfectly well. `ModDest::full_scale` is where each
+destination declares its unit range, since depth is normalised.
+
+Every curve is an identity at 0 and ±1, so a full-depth route still reaches
+full depth whatever curve it carries, and every curve preserves sign so a
+bipolar source is shaped symmetrically rather than folded to one side.
+`Curve::Quantised` carries its own step count: there is no single count right
+for both a two-position switch and a 24-note arpeggio.
+
+**`ModRoute` gained an `invert` flag that TDD §7.5's field list does not have.**
+The format the importer must represent does: an SF2 modulator carries a
+direction bit, and both of its always-present defaults use the negative
+direction. "Velocity to filter cutoff, -2400 cents" means full cutoff at full
+velocity falling two octaves toward silence — an offset from full scale, which
+a plain product of source and depth cannot express at any depth.
+
+Cutoff modulation is applied in cents so it scales the corner rather than
+shifting it: an octave down means the same thing at 200 Hz as at 8 kHz. Only
+the note-on sources are live — LFOs are not built, envelopes are not yet
+exposed as sources — and the rest read as at-rest rather than as
+plausible-looking numbers.
+
+Measured on SGM-v2.01's "Halo Pad" (a 579 Hz lowpass at Q 2.72), the demo's
+40/80/120 crescendo now opens the tone as well as the level: a high-frequency
+energy proxy reads 0.0346 / 0.0429 / 0.0514 across the three notes.
+
+**Where things stand:** 156 tests, clippy and fmt clean.
+
 ## 2026-08-25: the sampler starts behaving like an instrument
 
 Two fixes, both from the "Next steps" list, both audible, both test-first.
@@ -940,14 +1035,19 @@ crash the process).
    section. `Ultra` is still unimplemented and needs a stateful resampler
    rather than a point-interpolator; the per-layer/global quality precedence
    is an open question, below.
-5. **`ModMatrix::evaluate`** is still `todo!()`. Now the biggest remaining
-   gap: the filter it would modulate is real, so velocity→cutoff, envelope→
-   cutoff, and LFOs are all reachable from here. Also what a file needs to
-   override the SF2 default modulators.
-6. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
+5. ~~`ModMatrix::evaluate`~~ **Done** — see the 2026-08-26 section. What is
+   still missing is *sources* to route: LFOs are not built (`Lfo` is a data
+   shape with no oscillator behind it) and envelopes are not exposed as mod
+   sources, so only velocity and key can currently drive anything. That is the
+   natural next piece — envelope-to-cutoff is what makes a filter sing.
+6. **Multi-timbral playback.** MIDI import merges every channel onto one
+   instrument, which is the single biggest gap between "plays a file" and
+   "plays the file as written". Needs a patch per channel, one `SamplerNode`
+   each, and a way to choose them.
+7. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
    soundfonts in memory) and effects. `ParametricEq::process` is still
    `todo!()`, though `fontelle-dsp` now gives it everything it needs.
-7. ~~Root-cause the `dealloc size=16, align=4` allocation.~~ **Done** — it
+8. ~~Root-cause the `dealloc size=16, align=4` allocation.~~ **Done** — it
    was our RT tag outliving the callback, not a per-block allocation. See the
    "hardware run" section at the top.
 
