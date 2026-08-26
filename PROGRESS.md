@@ -13,6 +13,92 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
+## 2026-08-26 (later): tempo that changes, and a master bus
+
+### `TempoMap` is piecewise
+
+It held one constant BPM and the importer kept only a file's first tempo event.
+A piece that changes tempo played at its opening tempo throughout, and the
+rhythm drifted further out the longer it ran — a failure that says nothing
+about where it came from, it just sounds wrong from the change on.
+
+Now a sorted segment list with a prefix-sum table, so both conversion
+directions are a binary search plus one multiply (TDD §6.2). Three decisions:
+
+- **The prefix is in seconds, not samples.** The sample rate belongs to the
+  audio device, so a rate-independent cache means `set_sample_rate` rescales
+  every answer without rebuilding anything.
+- **The cache is never serialised.** `#[serde(from/into)]` reconstructs it from
+  the segments, because a cache that can disagree with its source is a bug
+  waiting to happen.
+- **A tempo of zero is clamped.** A malformed file can carry one, and dividing
+  by it gives an infinite sample position that poisons every conversion after
+  it — including notes *before* the bad segment, once a prefix sum picks it up.
+
+`from_segments` sorts (a MIDI file may put tempo events in any track, so they
+arrive in file order), resolves same-tick ties by taking the last, and reaches
+the first segment back to tick 0 if the file has none there — a count-in then
+runs backwards at the opening tempo rather than collapsing onto the downbeat.
+
+`MidiImport::bpm` stays the *opening* tempo, for reporting, and
+`tempo_changes` says how many segments there are: a piece that changes tempo is
+not summarised by any single number. `Song::from_midi` calls `set_sample_rate`
+rather than building a fresh map — that is exactly the line that would have
+thrown the curve away again.
+
+**Ramps are still not built**, and deliberately: nothing can create one. MIDI
+carries only constant tempo events and tempo automation (§12) does not exist.
+The doc comment carries the closed form (`(1/m) * ln(b1/b0)` and its inverse)
+so it stays a bounded addition rather than a redesign.
+
+Verified: eight quarter notes, four at 120 bpm and four at 30, render to
+exactly 12.0 s. At the old constant tempo it was 4.5 s.
+
+### A master bus, so the fader is a fader
+
+`DEMO_TRACK_GAIN_DB` was -12 dB of headroom picked by hand, and this document
+said twice that a limiter was the real answer. It is. The master fader is at
+unity now.
+
+**Why the limiter is a brickwall and not a hope.** Let `t[n]` be the gain that
+puts input frame *n* exactly on the ceiling, `m[n]` the minimum of `t` over the
+last `W` frames, and `g[n]` the average of `m` over the last `W`. Every `m` in
+that average covers a window containing frame `n - W + 1`, so
+`g[n] <= t[n - W + 1]`. Delaying the audio by exactly `W - 1` frames therefore
+guarantees the output never exceeds the ceiling — no clipping stage, no
+dependence on how fast the gain "can" move. The averaging is what keeps it
+clean: a sliding minimum alone steps the gain down the instant a peak enters
+the window, and a step in gain on quiet material is a click.
+
+The sliding minimum is a monotonic deque over a preallocated ring; scanning the
+window per sample is a couple of hundred operations per sample per channel,
+which an RT thread cannot spend on a safety net. Stereo-linked, because
+limiting one channel by its own peak pulls the image toward the other every
+time it fires. The ceiling is -0.3 dBFS: an inter-sample peak can exceed the
+samples either side of it, and a converter reconstructing the waveform
+overshoots a signal limited to exactly 1.0.
+
+`PeakRmsMeter` was a `todo!()` too. Peak is *held* until reset — a meter
+reporting only the last block's peak flickers past anything shorter than a UI
+refresh, which is every transient worth seeing. `MasterNode` owns both and
+publishes peaks and gain reduction through plain atomics rather than §13.3's
+downsampled ring, because these are three scalars rather than a waveform. The
+handle has to be taken before the graph goes to the audio callback, since after
+that nothing owns the node.
+
+Metering happens **after** the limiter: what a master meter is for is showing
+what left the machine.
+
+The RT-allocation test grew a third case covering the full chain — `BusSumNode`
+and `MasterNode` were both newer than anything it checked.
+
+Verified on a 15-part arrangement: unity master, peak 0.755, no limiting, where
+the old -12 dB fader put it at 0.190. Pushed to +6 and +18 dB the peak sits at
+exactly the 0.966 ceiling with zero clipped samples, and the render reports
+3.9 dB and 15.9 dB of reduction at its hardest.
+
+**Where things stand:** 234 tests, clippy and fmt clean.
+
 ## 2026-08-26: the mix becomes a mix, and patches learn to move
 
 Four pieces, in the order they were built. Each closes a gap where a whole
@@ -1096,10 +1182,10 @@ To inspect what a given SF2 file actually imports as, without any audio:
   reproduce a linear ramp exactly, and to pass through control points),
   `EnvelopeGenerator` (full delay/attack/hold/decay/sustain/release state
   machine, early-release-from-any-stage, float-accumulation-robust stage
-  timing), `SvfFilter` and `Oscillator` (PolyBLEP saw/square, plus
-  `advance_block` for control-rate LFO use) are real and tested.
-  `PeakRmsMeter` and `DcBlocker` are still `todo!()` — neither is on the
-  critical path yet.
+  timing), `SvfFilter`, `Oscillator` (PolyBLEP saw/square, plus
+  `advance_block` for control-rate LFO use) and `PeakRmsMeter` (held peak,
+  block RMS, latching clip indicator) are real and tested. `DcBlocker` is
+  still `todo!()`.
 - **fontelle-core** — real: `SampleStore` (insert/get, `AssetId`-keyed, only the
   fully-resident case — no disk streaming yet, see below), `Voice::render` (pitch
   from root-key+fine-tune, per-sample interpolated playback, forward looping,
@@ -1116,7 +1202,11 @@ To inspect what a given SF2 file actually imports as, without any audio:
   effectively unused (import always produces `Sample` layers) and
   `Source::Oscillator` is silently skipped, not wired to
   `fontelle_dsp::Oscillator` yet. Tests: `crates/fontelle-core/src/{streaming,voice,sampler}.rs`.
-- **fontelle-fx** — pure stub, unchanged since scaffolding. Not on the M0 path.
+- **fontelle-fx** — `Limiter` is real (look-ahead brickwall, monotonic-deque
+  sliding minimum, stereo-linked; see the 2026-08-26 section for why it cannot
+  overshoot). Everything else is still the scaffolded shape —
+  `ParametricEq::process` and `Compressor::process` are the two that
+  `fontelle-dsp` could already support.
 - **fontelle-model** — mostly still stub, but no longer *pure* stub.
   `TempoMap` is real for constant tempo (see the "2026-08-23 update" above for
   the scope cut). `Project::lanes` is a `SlotMap<LaneId, Lane>` now (was an
@@ -1273,21 +1363,26 @@ crash the process).
 8. ~~Root-cause the `dealloc size=16, align=4` allocation.~~ **Done** — it
    was our RT tag outliving the callback, not a per-block allocation. See the
    "hardware run" section at the top.
-9. **Tempo changes.** Only the first tempo event of a MIDI file is read, and
-   `TempoMap` holds one constant. A piece that changes tempo plays at its
-   opening tempo throughout — the rhythm drifts further out the longer it
-   runs. Needs the piecewise map (TDD §6.2) that M3 assumes.
-10. **A master limiter.** `DEMO_TRACK_GAIN_DB` is headroom picked by hand,
-    which is why `--gain-db` exists. A limiter on the master is the real
-    answer, and it is what makes "play any file and it does not clip" true
-    without a judgement about the material.
+9. ~~Tempo changes.~~ **Done** — see the 2026-08-26 (later) section. Ramps
+   remain, and cannot be created by anything yet.
+10. ~~A master limiter.~~ **Done** — see the 2026-08-26 (later) section.
 11. **Transport.** `SamplerNode::reset` is still `todo!()` — nothing calls it,
     and the first thing that will is transport stop or seek. Play/stop/seek is
     also the smallest thing that makes the CLI feel like a DAW rather than a
-    one-shot renderer.
-12. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
-    soundfonts in memory) and effects. `ParametricEq::process` is still
-    `todo!()`, though `fontelle-dsp` now gives it everything it needs.
+    one-shot renderer, and `MasterNode::reset` is already written against the
+    assumption that something eventually will.
+12. **Live MIDI input** (TDD §14). `fontelle-midi` is a pure stub, and the
+    staging note in `device.rs` is the constraint that matters: it has to feed
+    the same RT-safe sample-accurate `TimedEvent` pipeline as notes and
+    automation, not poll on the UI thread. Playing a soundfont from a keyboard
+    is the first thing that would make this feel like an instrument.
+13. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
+    soundfonts in memory) and effects. `ParametricEq::process` and
+    `Compressor::process` are the two `fontelle-dsp` could already support.
+14. **Latency compensation.** The master limiter is the first node in the tree
+    with real latency (`AudioNode::latency_samples` reports it and nothing
+    reads it). With one bus that is a uniform delay nobody can hear; with a
+    send path or a track that bypasses it, it is a phase error.
 
 ## Open questions against the TDD (2026-08-25 additions)
 
