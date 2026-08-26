@@ -250,8 +250,165 @@ pub struct AudioClipNode {
     // TDD §15 (M6).
 }
 
+/// What the master bus publishes for a meter to read: peak per channel and
+/// the most gain reduction the limiter applied, in positive decibels.
+///
+/// Shared with the RT thread as plain atomics rather than through the
+/// downsampled ring TDD §13.3 describes, because these are three scalars
+/// rather than a waveform: a relaxed store per block is cheaper than a ring,
+/// and there is nothing here whose *history* matters. Reading a value takes
+/// it — the reader is the one that knows when it has drawn what it read.
+#[derive(Debug, Default)]
+pub struct MasterMeter {
+    peaks: [std::sync::atomic::AtomicU32; MAX_CHANNELS],
+    max_reduction_db: std::sync::atomic::AtomicU32,
+}
+
+impl MasterMeter {
+    /// The highest peak since this was last called, per channel, and resets.
+    pub fn take_peaks(&self) -> [f32; MAX_CHANNELS] {
+        std::array::from_fn(|index| {
+            f32::from_bits(self.peaks[index].swap(0, std::sync::atomic::Ordering::Relaxed))
+        })
+    }
+
+    /// The most gain reduction since this was last called, in positive
+    /// decibels, and resets. Zero means the limiter never engaged.
+    pub fn take_max_reduction_db(&self) -> f32 {
+        f32::from_bits(
+            self.max_reduction_db
+                .swap(0, std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    /// RT: a load, a compare and a store. Single writer, so the read-modify-
+    /// write needs no compare-exchange loop.
+    fn record(&self, index: usize, value: f32) {
+        let Some(slot) = self.peaks.get(index) else {
+            return;
+        };
+        let current = f32::from_bits(slot.load(std::sync::atomic::Ordering::Relaxed));
+        if value > current {
+            slot.store(value.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn record_reduction(&self, value: f32) {
+        let current = f32::from_bits(
+            self.max_reduction_db
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
+        if value > current {
+            self.max_reduction_db
+                .store(value.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// The master bus: a brickwall limiter, then peak/RMS metering (TDD §13.3).
+///
+/// **Processes in place**, at the end of the schedule, after every track has
+/// summed into the master pair.
+///
+/// The limiter is here rather than in an insert slot because it is not an
+/// effect the user chose — it is the thing that makes "play any file and it
+/// does not clip" true without a judgement about the material. Bypassable, for
+/// when a mix is going somewhere that wants the peaks intact.
+///
+/// **Not yet:** LUFS-M/S/I and true-peak metering, which §13.3 also asks of
+/// the master. Both need their own filters and an oversampled peak detector;
+/// the peak/RMS pair is what a fader needs to be usable.
 pub struct MasterNode {
-    // Metering (peak/RMS + LUFS/true-peak) lives here. TDD §13.3.
+    limiter: fontelle_fx::Limiter,
+    pub limiter_config: fontelle_fx::LimiterConfig,
+    pub limiter_enabled: bool,
+    meters: [fontelle_dsp::PeakRmsMeter; MAX_CHANNELS],
+    /// The half of the metering anything off the RT thread can read.
+    published: Arc<MasterMeter>,
+    /// Kept from `prepare` so `reset` can rebuild the limiter without being
+    /// handed a `PrepareContext` it has no way to obtain.
+    sample_rate: f32,
+}
+
+impl MasterNode {
+    pub fn new() -> Self {
+        Self {
+            limiter: fontelle_fx::Limiter::new(),
+            limiter_config: fontelle_fx::LimiterConfig::default(),
+            limiter_enabled: true,
+            meters: [fontelle_dsp::PeakRmsMeter::new(); MAX_CHANNELS],
+            published: Arc::new(MasterMeter::default()),
+            sample_rate: 48_000.0,
+        }
+    }
+
+    /// A handle on the master's levels that outlives handing this node to the
+    /// RT thread — which is the only way anything can read them once the graph
+    /// is in the audio callback.
+    pub fn meter(&self) -> Arc<MasterMeter> {
+        self.published.clone()
+    }
+
+    /// Peak and RMS per channel, for a meter. The peak is held until
+    /// [`MasterNode::reset_peaks`].
+    pub fn channel_meter(&self, channel: usize) -> Option<&fontelle_dsp::PeakRmsMeter> {
+        self.meters.get(channel)
+    }
+
+    pub fn reset_peaks(&mut self) {
+        for meter in &mut self.meters {
+            meter.reset_peak();
+            meter.clear_clip_latch();
+        }
+    }
+}
+
+impl Default for MasterNode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AudioNode for MasterNode {
+    fn prepare(&mut self, ctx: &PrepareContext) {
+        self.sample_rate = ctx.sample_rate;
+        self.limiter.prepare(ctx.sample_rate, &self.limiter_config);
+    }
+
+    fn process(&mut self, ctx: &mut ProcessContext) {
+        if self.limiter_enabled {
+            self.limiter.process(ctx.outputs, &self.limiter_config);
+        }
+        // Metered *after* the limiter, because what the meter is for is
+        // showing what left the machine.
+        for (index, (meter, channel)) in self.meters.iter_mut().zip(ctx.outputs.iter()).enumerate()
+        {
+            meter.process_block(channel);
+            self.published.record(index, meter.peak());
+        }
+        self.published
+            .record_reduction(self.limiter.take_max_reduction_db());
+    }
+
+    fn reset(&mut self) {
+        // Re-preparing is what clears the delay line and the gain state; a
+        // separate "flush" would be one more thing to keep in step with it.
+        let config = self.limiter_config;
+        self.limiter.prepare(self.sample_rate, &config);
+        self.reset_peaks();
+    }
+
+    fn latency_samples(&self) -> u32 {
+        if self.limiter_enabled {
+            self.limiter.latency_samples()
+        } else {
+            0
+        }
+    }
+
+    fn params(&self) -> &dyn ParamSet {
+        &EmptyParams
+    }
 }
 
 #[cfg(test)]
@@ -499,5 +656,138 @@ mod tests {
             "expected near-full-scale output from the NoteOn, got rms {}",
             rms(&channel)
         );
+    }
+
+    /// Drives a `MasterNode` over buffers pre-filled with `input`.
+    fn run_master(node: &mut MasterNode, frames: usize, input: f32) -> Vec<Vec<f32>> {
+        let mut buffers: Vec<Vec<f32>> = (0..2).map(|_| vec![input; frames]).collect();
+        {
+            let mut slices: Vec<&mut [f32]> =
+                buffers.iter_mut().map(|b| b.as_mut_slice()).collect();
+            let mut ctx = ProcessContext {
+                inputs: &[],
+                outputs: &mut slices,
+                all_events: &[],
+                node: fontelle_types::NodeId::default(),
+                transport: TransportSnapshot {
+                    state: TransportState::Playing,
+                    position_sample: 0,
+                },
+                sample_range: 0..frames as i64,
+            };
+            node.process(&mut ctx);
+        }
+        buffers
+    }
+
+    /// The whole reason the master track exists: an arrangement summing onto
+    /// one bus peaks wherever the material puts it, and a fader set by hand
+    /// either clips or throws away headroom.
+    #[test]
+    fn the_master_holds_the_bus_under_full_scale() {
+        let mut node = MasterNode::new();
+        node.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 4_096,
+        });
+        let out = run_master(&mut node, 4_096, 3.0);
+        let peak = out.iter().flatten().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(
+            peak <= node.limiter_config.ceiling + 1e-4,
+            "3x full scale in should come out at the ceiling, got {peak}"
+        );
+    }
+
+    #[test]
+    fn a_bypassed_master_limiter_is_transparent() {
+        let mut node = MasterNode {
+            limiter_enabled: false,
+            ..MasterNode::new()
+        };
+        node.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 256,
+        });
+        let out = run_master(&mut node, 256, 0.5);
+        assert!(out[0].iter().all(|&s| s == 0.5));
+        assert_eq!(node.latency_samples(), 0, "and it costs no latency either");
+    }
+
+    /// Metered after the limiter, because what a master meter is for is
+    /// showing what left the machine.
+    #[test]
+    fn the_master_meters_what_it_actually_output() {
+        let mut node = MasterNode::new();
+        node.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 4_096,
+        });
+        run_master(&mut node, 4_096, 3.0);
+
+        let meter = node
+            .channel_meter(0)
+            .expect("a stereo master has a left meter");
+        assert!(
+            meter.peak() <= node.limiter_config.ceiling + 1e-4,
+            "the meter must read the limited signal, not the 3.0 that arrived: \
+             {}",
+            meter.peak()
+        );
+        assert!(
+            !meter.clip_latched(),
+            "and nothing should have clipped in the first place"
+        );
+        // The published handle is the only way to read this once the node is
+        // inside the graph on the RT thread, so it is what the test reads.
+        let published = node.meter();
+        assert!(
+            published.take_max_reduction_db() > 5.0,
+            "the limiter worked hard and must be able to say so"
+        );
+        assert_eq!(
+            published.take_max_reduction_db(),
+            0.0,
+            "reading it resets it, or a meter shows the loudest moment of the \
+             session forever"
+        );
+    }
+
+    /// The meter handle has to be taken *before* the node is boxed into the
+    /// schedule and handed to the audio thread, and keep working afterwards.
+    #[test]
+    fn the_master_meter_handle_outlives_handing_the_node_to_the_graph() {
+        let mut node = MasterNode::new();
+        node.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 256,
+        });
+        let meter = node.meter();
+
+        let mut boxed: Box<dyn AudioNode> = Box::new(node);
+        let mut buffers: Vec<Vec<f32>> = (0..2).map(|_| vec![0.5; 256]).collect();
+        {
+            let mut slices: Vec<&mut [f32]> =
+                buffers.iter_mut().map(|b| b.as_mut_slice()).collect();
+            let mut ctx = ProcessContext {
+                inputs: &[],
+                outputs: &mut slices,
+                all_events: &[],
+                node: fontelle_types::NodeId::default(),
+                transport: TransportSnapshot {
+                    state: TransportState::Playing,
+                    position_sample: 0,
+                },
+                sample_range: 0..256,
+            };
+            boxed.process(&mut ctx);
+        }
+
+        let peaks = meter.take_peaks();
+        assert!(
+            (peaks[0] - 0.5).abs() < 1e-6,
+            "the handle must still be reading the node's output, got {}",
+            peaks[0]
+        );
+        assert_eq!(meter.take_peaks()[0], 0.0, "and reading it resets it");
     }
 }

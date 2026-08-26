@@ -20,7 +20,8 @@ use fontelle_core::{
 };
 use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 use fontelle_engine::{
-    BufferPool, CompiledGraph, MixerTrackNode, RtGuardAllocator, SamplerNode, ScheduledNode,
+    BufferPool, BusSumNode, CompiledGraph, MasterNode, MixerTrackNode, RtGuardAllocator,
+    SamplerNode, ScheduledNode,
 };
 use fontelle_types::{CompiledTimeline, EventPayload, NodeId, TimedEvent};
 use slotmap::Key;
@@ -232,5 +233,80 @@ fn the_stereo_sampler_into_mixer_chain_does_not_allocate_per_block() {
 
     // Same teardown caveat as the test above: real playback never drops the
     // graph mid-stream.
+    fontelle_engine::unmark_current_thread_rt();
+}
+
+/// The full mixer shape playback uses now: a sampler on its own bus pair, its
+/// track fader in place, a `BusSumNode` routing that pair into the master, the
+/// master fader, and a `MasterNode` running a look-ahead limiter and the
+/// meters.
+///
+/// Three of those nodes are newer than the two tests above and none of them is
+/// covered by either. `BusSumNode` is the first node in the tree whose inputs
+/// are a different set from its outputs, which is a whole new branch of
+/// `process_block`'s buffer handling; `MasterNode` owns a delay line and a
+/// ring buffer, and a limiter that sized either of them per block would be the
+/// exact bug this file exists to catch.
+fn build_full_mixer_graph() -> CompiledGraph {
+    let source = build_graph_with(true);
+    let mut schedule = source.schedule;
+    // The sampler moves onto a track bus of its own.
+    schedule[0].output_buffers = vec![2, 3];
+    schedule[1].input_buffers = vec![2, 3];
+    schedule[1].output_buffers = vec![2, 3];
+    schedule.push(ScheduledNode {
+        id: NodeId::null(),
+        node: Box::new(BusSumNode),
+        input_buffers: vec![2, 3],
+        output_buffers: vec![0, 1],
+    });
+    schedule.push(ScheduledNode {
+        id: NodeId::null(),
+        node: Box::new(MixerTrackNode {
+            pan_law: fontelle_types::PanLaw::Linear,
+            ..MixerTrackNode::new()
+        }),
+        input_buffers: vec![0, 1],
+        output_buffers: vec![0, 1],
+    });
+    schedule.push(ScheduledNode {
+        id: NodeId::null(),
+        node: Box::new(MasterNode::new()),
+        input_buffers: vec![0, 1],
+        output_buffers: vec![0, 1],
+    });
+
+    let mut graph = CompiledGraph {
+        schedule,
+        buffer_pool: BufferPool::with_capacity(4, BLOCK),
+    };
+    graph.prepare(SR, BLOCK as u32);
+    graph
+}
+
+#[test]
+fn the_full_track_to_master_chain_does_not_allocate_per_block() {
+    let mut graph = build_full_mixer_graph();
+
+    let events = [TimedEvent {
+        sample: 0,
+        target: NodeId::null(),
+        payload: EventPayload::NoteOn {
+            key: 60,
+            velocity: 127,
+            voice_context: 0,
+        },
+    }];
+    let transport = fontelle_engine::TransportSnapshot {
+        state: fontelle_engine::TransportState::Playing,
+        position_sample: 0,
+    };
+
+    fontelle_engine::mark_current_thread_rt();
+    graph.process_block(&events, transport, 0..BLOCK as i64);
+    for i in 1..800 {
+        let start = (i * BLOCK) as i64;
+        graph.process_block(&[], transport, start..start + BLOCK as i64);
+    }
     fontelle_engine::unmark_current_thread_rt();
 }

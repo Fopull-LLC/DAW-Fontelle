@@ -169,17 +169,23 @@ fn play_sf2(
     // path, so the WAV is what you'd have heard — inspectable without a
     // sound card.
     if let Some(out) = render_wav {
-        let mut graph =
-            fontelle_app::build_graph_with_gain(&song, samplers, Arc::new(store), gain_db);
+        let built = fontelle_app::build_graph_with_gain(&song, samplers, Arc::new(store), gain_db);
+        let mut graph = built.graph;
         let pcm = fontelle_app::render_offline(&song, &mut graph, duration_samples);
+        let reduction_db = built.master.take_max_reduction_db();
         let clipped = fontelle_app::write_wav16(out, &pcm, 2, SAMPLE_RATE)
             .map_err(|e| format!("failed to write {}: {e}", out.display()))?;
         let peak = pcm.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         println!(
-            "wrote {} ({} frames, peak {:.3}{}) at {:?} interpolation",
+            "wrote {} ({} frames, peak {:.3}{}{}) at {:?} interpolation",
             out.display(),
             pcm.len() / 2,
             peak,
+            if reduction_db > 0.01 {
+                format!(", limiter took {reduction_db:.1} dB at its hardest")
+            } else {
+                String::new()
+            },
             if clipped > 0 {
                 format!(", {clipped} CLIPPED samples")
             } else {
@@ -190,7 +196,8 @@ fn play_sf2(
         return Ok(());
     }
 
-    let graph = fontelle_app::build_graph_with_gain(&song, samplers, Arc::new(store), gain_db);
+    let graph =
+        fontelle_app::build_graph_with_gain(&song, samplers, Arc::new(store), gain_db).graph;
     let mut device = AudioDevice::default_host();
     println!(
         "Fontelle: {} note events from {} on {:?}",

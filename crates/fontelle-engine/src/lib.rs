@@ -10,11 +10,13 @@ mod rt_guard;
 mod transport;
 
 pub use device::{AudioDevice, BLOCK_SIZE, DeviceError};
+pub use fontelle_fx::LimiterConfig;
 pub use graph::{
     AudioNode, BufferPool, CompiledGraph, ParamSet, PrepareContext, ProcessContext, ScheduledNode,
 };
 pub use nodes::{
-    AudioClipNode, BusSumNode, EffectNode, MasterNode, MixerTrackNode, SamplerNode, SendNode,
+    AudioClipNode, BusSumNode, EffectNode, MasterMeter, MasterNode, MixerTrackNode, SamplerNode,
+    SendNode,
 };
 pub use rt_guard::{
     RtGuardAllocator, current_thread_is_rt, mark_current_thread_rt, unmark_current_thread_rt,

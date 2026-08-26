@@ -303,7 +303,15 @@ pub fn demo_song(root_key: u8, bpm: f64, sample_rate: u32) -> Song {
 /// instrument would be silent and an instrument with no part would never be
 /// addressed; both are far easier to diagnose here than by ear.
 pub fn build_graph(song: &Song, samplers: Vec<Sampler>, store: Arc<SampleStore>) -> CompiledGraph {
-    build_graph_with_gain(song, samplers, store, DEMO_TRACK_GAIN_DB)
+    build_graph_with_gain(song, samplers, store, DEMO_TRACK_GAIN_DB).graph
+}
+
+/// A built graph and the master levels anything off the RT thread can read
+/// from it. The handle has to be taken before the graph goes to the audio
+/// callback, because after that nothing owns the node any more.
+pub struct BuiltGraph {
+    pub graph: CompiledGraph,
+    pub master: Arc<fontelle_engine::MasterMeter>,
 }
 
 /// As [`build_graph`], with the **master** fader set explicitly. Each part
@@ -313,7 +321,7 @@ pub fn build_graph_with_gain(
     samplers: Vec<Sampler>,
     store: Arc<SampleStore>,
     master_gain_db: f32,
-) -> CompiledGraph {
+) -> BuiltGraph {
     assert_eq!(
         samplers.len(),
         song.channels.len(),
@@ -361,13 +369,29 @@ pub fn build_graph_with_gain(
         input_buffers: vec![0, 1],
         output_buffers: vec![0, 1],
     });
+    // Last in the schedule, after every track has arrived: a brickwall
+    // limiter and the master meters. This is what lets the master fader sit at
+    // unity — the peaks an arrangement reaches are a property of the material,
+    // and picking a gain that neither clips nor throws away 20 dB was a
+    // judgement the tool could not make.
+    let master = fontelle_engine::MasterNode::new();
+    let master_meter = master.meter();
+    schedule.push(ScheduledNode {
+        id: NodeId::default(),
+        node: Box::new(master),
+        input_buffers: vec![0, 1],
+        output_buffers: vec![0, 1],
+    });
 
     let mut graph = CompiledGraph {
         schedule,
         buffer_pool: BufferPool::with_capacity(MASTER_BUSES + song.channels.len() * 2, BLOCK_SIZE),
     };
     graph.prepare(SAMPLE_RATE as f32, BLOCK_SIZE as u32);
-    graph
+    BuiltGraph {
+        graph,
+        master: master_meter,
+    }
 }
 
 /// Buffers 0 and 1 are the master pair; every part's bus starts after them.
@@ -387,15 +411,15 @@ pub const PLAYBACK_QUALITY: fontelle_dsp::Interpolation = fontelle_dsp::Interpol
 /// See [`PLAYBACK_QUALITY`].
 pub const RENDER_QUALITY: fontelle_dsp::Interpolation = fontelle_dsp::Interpolation::High;
 
-/// Enough headroom on the **master** for the demo's three-voice chord not to
-/// clip.
+/// The master fader's default: **unity**.
 ///
-/// Explicitly not a general answer. A whole arrangement summing through this
-/// fader lands well down, which is why it is a default rather than a constant:
-/// `--gain-db` overrides it, and the render reports its peak so the choice can
-/// be made on evidence. The real answer is a master limiter, which is later
-/// work.
-pub const DEMO_TRACK_GAIN_DB: f32 = -12.0;
+/// It was -12 dB of headroom chosen by hand, because a whole arrangement
+/// summing onto one bus peaks wherever the material puts it and a gain that
+/// neither clips nor throws away 20 dB is a judgement about the piece. The
+/// master limiter makes that judgement unnecessary, so the fader is a fader
+/// again. `--gain-db` still overrides it, and the render reports both its peak
+/// and how hard the limiter had to work.
+pub const DEMO_TRACK_GAIN_DB: f32 = 0.0;
 
 /// Renders `song` through `graph` offline, as fast as the CPU allows, into
 /// interleaved stereo `f32`.

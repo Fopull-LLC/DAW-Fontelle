@@ -251,7 +251,8 @@ fn the_track_gain_scales_the_render() {
             max_block_size: fontelle_engine::BLOCK_SIZE as u32,
         });
         let mut graph =
-            fontelle_app::build_graph_with_gain(&song, vec![sampler], Arc::new(store), gain_db);
+            fontelle_app::build_graph_with_gain(&song, vec![sampler], Arc::new(store), gain_db)
+                .graph;
         render_offline(&song, &mut graph, 24_000)
     };
 
