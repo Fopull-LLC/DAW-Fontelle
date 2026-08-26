@@ -307,6 +307,13 @@ fn the_full_track_to_master_chain_does_not_allocate_per_block() {
     for i in 1..800 {
         let start = (i * BLOCK) as i64;
         graph.process_block(&[], transport, start..start + BLOCK as i64);
+        // Interleaved with the render, because `CompiledGraph::reset` claims
+        // to be RT-safe so the callback can act on a transport change itself
+        // rather than scheduling one off-thread. A `reset` that allocated
+        // would violate INVARIANT 1 exactly where it is hardest to notice.
+        if i % 97 == 0 {
+            graph.reset();
+        }
     }
     fontelle_engine::unmark_current_thread_rt();
 }

@@ -103,6 +103,26 @@ impl Sampler {
         }
     }
 
+    /// Silences every voice at once, with no release tail — what transport
+    /// stop and seek need. See `Voice::reset`; `release_all` is the graceful
+    /// counterpart.
+    ///
+    /// RT-safe: touches only preallocated state.
+    pub fn reset(&mut self) {
+        self.voices.reset();
+    }
+
+    /// Note-offs every sounding voice, so each rings out through its own
+    /// release. The right answer for a stuck-note panic, or for stopping at
+    /// the end of a phrase rather than mid-note.
+    ///
+    /// RT-safe.
+    pub fn release_all(&mut self) {
+        for voice in self.voices.iter_active_mut() {
+            voice.release();
+        }
+    }
+
     pub fn patch(&self) -> &Patch {
         &self.patch
     }
@@ -506,5 +526,137 @@ mod tests {
             left[0],
             right[0]
         );
+    }
+
+    /// Transport stop and seek both need every voice gone *now*: the audio
+    /// after a seek belongs to a different part of the song, and a release
+    /// tail from before it would play over the top.
+    #[test]
+    fn reset_silences_every_sounding_voice_immediately() {
+        let mut store = SampleStore::new();
+        let patch = patch_with_envelope(
+            &mut store,
+            8,
+            EnvelopeConfig {
+                // A long release, so a voice that merely got a note-off would
+                // still be plainly audible.
+                release_s: 5.0,
+                ..instant_envelope()
+            },
+        );
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 128,
+        });
+        sampler.note_on(60, 127, 0);
+        sampler.note_on(64, 127, 0);
+
+        let mut out = vec![0.0; 128];
+        sampler.render(&store, &mut [&mut out[..]]);
+        assert!(out[0] > 0.5, "the notes must be sounding first");
+
+        sampler.reset();
+        let mut out = vec![0.0; 128];
+        sampler.render(&store, &mut [&mut out[..]]);
+        assert!(
+            out.iter().all(|&s| s == 0.0),
+            "reset must leave nothing at all, got {}",
+            out[0]
+        );
+    }
+
+    /// `release_all` is the other half: every note gets a note-off and rings
+    /// out. A "stop at the end of the bar" or a stuck-note panic wants this,
+    /// not the hard cut above.
+    #[test]
+    fn release_all_lets_notes_ring_out_instead_of_cutting_them() {
+        let mut store = SampleStore::new();
+        let patch = patch_with_envelope(
+            &mut store,
+            8,
+            EnvelopeConfig {
+                release_s: 1.0,
+                ..instant_envelope()
+            },
+        );
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 128,
+        });
+        sampler.note_on(60, 127, 0);
+
+        let mut out = vec![0.0; 128];
+        sampler.render(&store, &mut [&mut out[..]]);
+        sampler.release_all();
+        let mut out = vec![0.0; 128];
+        sampler.render(&store, &mut [&mut out[..]]);
+        assert!(
+            out[0] > 0.5,
+            "a one-second release has barely started after 128 samples, got {}",
+            out[0]
+        );
+        assert!(
+            out[127] < out[0],
+            "but it must be on its way down: {} then {}",
+            out[0],
+            out[127]
+        );
+    }
+
+    /// A voice comes back out of the pool carrying whatever the last note left
+    /// in its filter. After a reset that memory belongs to a note that no
+    /// longer exists, and it discharges into the next one as a click.
+    #[test]
+    fn reset_clears_filter_memory_rather_than_carrying_it_into_the_next_note() {
+        let mut store = SampleStore::new();
+        let mut patch = patch_with_envelope(&mut store, 1, instant_envelope());
+        patch.filters[0] = FilterSlot {
+            mode: SvfMode::Lowpass,
+            cutoff_hz: 200.0,
+            resonance: 4.0,
+            enabled: true,
+        };
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 512,
+        });
+
+        // Charge the filter up on a note, then reset and start a fresh one.
+        sampler.note_on(60, 127, 0);
+        let mut scratch = vec![0.0; 512];
+        sampler.render(&store, &mut [&mut scratch[..]]);
+        sampler.reset();
+        sampler.note_on(60, 127, 1);
+        let mut after_reset = vec![0.0; 512];
+        sampler.render(&store, &mut [&mut after_reset[..]]);
+
+        // And the same note from a sampler that never played anything.
+        let mut fresh_store = SampleStore::new();
+        let mut fresh_patch = patch_with_envelope(&mut fresh_store, 1, instant_envelope());
+        fresh_patch.filters[0] = FilterSlot {
+            mode: SvfMode::Lowpass,
+            cutoff_hz: 200.0,
+            resonance: 4.0,
+            enabled: true,
+        };
+        let mut fresh = Sampler::new(fresh_patch);
+        fresh.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 512,
+        });
+        fresh.note_on(60, 127, 0);
+        let mut untouched = vec![0.0; 512];
+        fresh.render(&fresh_store, &mut [&mut untouched[..]]);
+
+        for (i, (a, b)) in after_reset.iter().zip(untouched.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-5,
+                "sample {i}: a note after a reset must be identical to the \
+                 first note a sampler ever plays, got {a} against {b}"
+            );
+        }
     }
 }

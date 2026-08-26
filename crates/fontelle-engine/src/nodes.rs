@@ -106,7 +106,11 @@ impl AudioNode for SamplerNode {
     }
 
     fn reset(&mut self) {
-        todo!("silence all active voices")
+        // A hard cut, not a release: `AudioNode::reset` is transport stop and
+        // seek, and after a seek the audio belongs to a different part of the
+        // song. A release tail from before it would play over the top.
+        self.sampler.reset();
+        self.scratch.fill(0.0);
     }
 
     fn params(&self) -> &dyn ParamSet {

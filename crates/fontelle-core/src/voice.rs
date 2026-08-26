@@ -267,6 +267,37 @@ impl Voice {
         }
     }
 
+    /// Silences the voice at once and returns it to the state it had before
+    /// it ever played: no tail, no filter memory, no envelope position.
+    ///
+    /// This is what transport stop and seek need. **It is a hard cut**, and on
+    /// a sounding note that is a click — which is right when the audio after
+    /// the cut belongs to a different part of the song, and wrong as a way to
+    /// end a note. `Sampler::release_all` is the graceful one.
+    ///
+    /// The filter state matters as much as the envelope: left alone it
+    /// discharges into the next note as a transient belonging to one that no
+    /// longer exists.
+    pub fn reset(&mut self) {
+        self.active = false;
+        self.key = 0;
+        self.voice_context = 0;
+        self.age = 0;
+        self.layers = [LayerPlayback::default(); MAX_LAYERS];
+        for slot in &mut self.filters {
+            for filter in slot {
+                filter.reset();
+            }
+        }
+        self.velocity_gain = 0.0;
+        self.velocity_norm = 0.0;
+        self.key_norm = 0.0;
+        self.amp_env = fontelle_dsp::EnvelopeGenerator::new();
+        self.mod_envs = [fontelle_dsp::EnvelopeGenerator::new(); MAX_MOD_ENVELOPES];
+        self.lfos = [fontelle_dsp::Oscillator::new(); MAX_LFOS];
+        self.age_samples = 0;
+    }
+
     /// Voice stealing always ramps out over a short release rather than cutting
     /// hard (TDD §7.4) — never a click. Uses the same envelope release as a
     /// normal note-off; a shorter, dedicated steal-ramp is a later refinement.
@@ -667,6 +698,19 @@ impl VoicePool {
 
     pub fn iter_active_mut(&mut self) -> impl Iterator<Item = &mut Voice> {
         self.voices.iter_mut().filter(|v| v.is_active())
+    }
+
+    /// Silences every voice at once, including the inactive ones — an inactive
+    /// voice still carries the filter and envelope state of whatever it last
+    /// played, and that is exactly what a reset is for.
+    ///
+    /// The age counter is left alone: it only orders voices against each
+    /// other, and restarting it would make the first voice allocated after a
+    /// reset look older than one allocated before it.
+    pub fn reset(&mut self) {
+        for voice in &mut self.voices {
+            voice.reset();
+        }
     }
 }
 

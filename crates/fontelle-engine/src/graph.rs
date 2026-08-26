@@ -161,6 +161,24 @@ impl CompiledGraph {
         }
     }
 
+    /// Silences every node and clears every bus — transport stop and seek.
+    ///
+    /// The buffers matter as much as the nodes: a bus still holds the last
+    /// block that had sound in it, and a node that only adds into its output
+    /// (every source does) would let that block through once more before the
+    /// clear at the top of `process_block` caught up.
+    ///
+    /// RT-safe, so it can be called from the audio callback when it observes a
+    /// transport change rather than having to be scheduled off-thread.
+    pub fn reset(&mut self) {
+        for scheduled in self.schedule.iter_mut() {
+            scheduled.node.reset();
+        }
+        for index in 0..self.buffer_pool.len() {
+            self.buffer_pool.buffer_mut(index).fill(0.0);
+        }
+    }
+
     pub fn process_block(
         &mut self,
         events: &[TimedEvent],
@@ -1056,5 +1074,42 @@ mod tests {
         // business inventing a downmix, so it refuses rather than guessing.
         graph.schedule[1].output_buffers = vec![0];
         graph.process_block(&[], playing(), 0..64);
+    }
+
+    /// `SamplerNode::reset` was a `todo!()` — a panic waiting for the first
+    /// thing that stopped or seeked the transport, on the audio thread.
+    #[test]
+    fn resetting_the_graph_silences_every_node_and_clears_every_bus() {
+        let (mut graph, id_a, id_b) = two_sampler_graph(1.0, 0.5);
+        graph.process_block(
+            &[note_on_for(id_a, 0), note_on_for(id_b, 0)],
+            playing(),
+            0..64,
+        );
+        assert!(
+            graph.buffer_pool.buffer_mut(0)[..64]
+                .iter()
+                .any(|s| *s != 0.0)
+        );
+
+        graph.reset();
+        assert!(
+            graph.buffer_pool.buffer_mut(0)[..64]
+                .iter()
+                .all(|s| *s == 0.0),
+            "the bus must be cleared too, or the last block plays once more"
+        );
+
+        // And the voices are gone, not merely released: a further block with
+        // no events must be silent even though the one-shot samples had plenty
+        // left to play.
+        graph.process_block(&[], playing(), 64..128);
+        let peak = graph.buffer_pool.buffer_mut(0)[..64]
+            .iter()
+            .fold(0.0f32, |m, s| m.max(s.abs()));
+        assert_eq!(
+            peak, 0.0,
+            "a reset sampler must have nothing left, got {peak}"
+        );
     }
 }
