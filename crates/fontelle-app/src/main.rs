@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use fontelle_app::{build_graph, demo_song};
+use fontelle_app::{Song, build_graph, demo_song};
 use fontelle_core::{PrepareContext, SampleStore, Sampler};
 use fontelle_engine::{AudioDevice, BLOCK_SIZE};
 use fontelle_types::PPQN;
@@ -33,6 +33,7 @@ fn play_sf2(
     root_key: u8,
     preset: usize,
     render_wav: Option<&std::path::Path>,
+    midi: Option<(&std::path::Path, fontelle_assets::MidiChannels)>,
 ) -> Result<(), String> {
     // SF2 files store presets in arbitrary order, so "preset 0" is regularly
     // not the instrument anyone wants — `Secret_of_Mana.sf2` opens with a
@@ -60,7 +61,37 @@ fn play_sf2(
         max_block_size: BLOCK_SIZE as u32,
     });
 
-    let song = demo_song(root_key, BPM, SAMPLE_RATE);
+    let song = match midi {
+        Some((midi_path, channels)) => {
+            let import = fontelle_assets::import_midi(midi_path, channels)
+                .map_err(|e| format!("failed to import {}: {e}", midi_path.display()))?;
+            println!("{}:", midi_path.display());
+            for summary in &import.source_channels {
+                // Zero-based internally, one-based here: every DAW and every
+                // piece of MIDI documentation counts channels from 1.
+                let taken = if channels_accept(channels, summary.channel) {
+                    "playing"
+                } else {
+                    "skipped"
+                };
+                let program = summary
+                    .program
+                    .map(|p| format!(" program={p}"))
+                    .unwrap_or_default();
+                println!(
+                    "  {taken}  channel {:<2} {:>6} notes{program}",
+                    summary.channel + 1,
+                    summary.notes
+                );
+            }
+            println!(
+                "  {:.1} bpm  (--midi-channel <n> to isolate one, 1-based)\n",
+                import.bpm
+            );
+            Song::from_midi(import, SAMPLE_RATE)
+        }
+        None => demo_song(root_key, BPM, SAMPLE_RATE),
+    };
     let timeline = song.compile();
 
     // One beat of tail so the final chord's release rings out instead of
@@ -103,7 +134,11 @@ fn play_sf2(
         path.display(),
         device.default_output_name()
     );
-    println!("  root key {root_key} at {BPM} bpm — a root/third/fifth run, then the triad held.");
+    if midi.is_none() {
+        println!(
+            "  root key {root_key} at {BPM} bpm — a root/third/fifth run, then the triad held."
+        );
+    }
     println!("  {:.2}s", duration.as_secs_f64());
 
     device
@@ -113,6 +148,15 @@ fn play_sf2(
     std::thread::sleep(duration);
     device.stop();
     Ok(())
+}
+
+/// Mirrors `MidiChannels`' own rule so the listing can say what it skipped.
+fn channels_accept(channels: fontelle_assets::MidiChannels, channel: u8) -> bool {
+    match channels {
+        fontelle_assets::MidiChannels::Melodic => channel != 9,
+        fontelle_assets::MidiChannels::All => true,
+        fontelle_assets::MidiChannels::Only(wanted) => channel == wanted,
+    }
 }
 
 fn main() {
@@ -142,7 +186,25 @@ fn main() {
             .and_then(|i| args.get(i + 1))
             .map(std::path::PathBuf::from);
 
-        if let Err(e) = play_sf2(&path, root_key, preset, render_wav.as_deref()) {
+        let midi_path = args
+            .iter()
+            .position(|a| a == "--play-midi")
+            .and_then(|i| args.get(i + 1))
+            .map(std::path::PathBuf::from);
+        // 1-based on the command line, 0-based in the file, because that is
+        // how every DAW and every piece of MIDI documentation numbers them.
+        let midi_channels = match numeric_flag("--midi-channel") {
+            Some(n) if n >= 1 => fontelle_assets::MidiChannels::Only(n as u8 - 1),
+            Some(_) => {
+                eprintln!("Fontelle: --midi-channel is 1-based; channel 10 is percussion");
+                std::process::exit(1);
+            }
+            None if args.iter().any(|a| a == "--midi-all") => fontelle_assets::MidiChannels::All,
+            None => fontelle_assets::MidiChannels::Melodic,
+        };
+        let midi = midi_path.as_deref().map(|p| (p, midi_channels));
+
+        if let Err(e) = play_sf2(&path, root_key, preset, render_wav.as_deref(), midi) {
             eprintln!("Fontelle: {e}");
             std::process::exit(1);
         }
@@ -156,6 +218,8 @@ fn main() {
     todo!(
         "winit event loop -> fontelle-ui docked panels -> fontelle-engine::AudioDevice \
          -> fontelle-sequencer::compile -> CompiledTimeline over triple_buffer \
-         (run with `--play-sf2 <path> [--preset <n>] [--key <note>] [--render-wav <out>]` for the M0 vertical slice instead)"
+         (run with `--play-sf2 <path.sf2> [--preset <n>] [--key <note>] \
+         [--play-midi <file.mid>] [--midi-channel <1-16> | --midi-all] \
+         [--render-wav <out.wav>]` for the M0 vertical slice instead)"
     )
 }

@@ -93,13 +93,31 @@ pub fn resolve_sf2_path(
 
 /// A demo document plus the identities needed to drive it: what
 /// `fontelle-sequencer` compiles, and which engine node its events target.
-pub struct DemoSong {
+pub struct Song {
     pub project: Project,
     pub channel: ChannelId,
     pub node: NodeId,
 }
 
-impl DemoSong {
+impl Song {
+    /// Wraps an imported MIDI file so it plays through the same document ->
+    /// sequencer -> timeline path the built-in phrase does. A second playback
+    /// route for files would be a second route none of this project's
+    /// invariants cover.
+    ///
+    /// The import puts every selected MIDI channel's notes on one document
+    /// channel, so this is monotimbral: one instrument for the whole file. See
+    /// `fontelle_assets::midi_import` for why.
+    pub fn from_midi(import: fontelle_assets::MidiImport, sample_rate: u32) -> Self {
+        let mut project = import.project;
+        project.tempo_map = TempoMap::new(import.bpm, sample_rate as f64);
+        Self {
+            project,
+            channel: import.channel,
+            node: NodeId::default(),
+        }
+    }
+
     /// The mapping `fontelle_sequencer::compile` needs to turn document
     /// channels into engine node targets.
     pub fn channel_nodes(&self) -> HashMap<ChannelId, NodeId> {
@@ -140,7 +158,7 @@ impl DemoSong {
 /// tick is the case that exercises real polyphony, and it's what caught the
 /// voice-mixing bug where each new voice re-enveloped the ones already mixed
 /// into the shared output buffer.
-pub fn demo_song(root_key: u8, bpm: f64, sample_rate: u32) -> DemoSong {
+pub fn demo_song(root_key: u8, bpm: f64, sample_rate: u32) -> Song {
     let eighth = PPQN / 2;
     let major_third = 4;
     let fifth = 7;
@@ -222,7 +240,7 @@ pub fn demo_song(root_key: u8, bpm: f64, sample_rate: u32) -> DemoSong {
     let mut node_ids: SlotMap<NodeId, ChannelId> = SlotMap::default();
     let node = node_ids.insert(channel);
 
-    DemoSong {
+    Song {
         project,
         channel,
         node,
@@ -231,7 +249,7 @@ pub fn demo_song(root_key: u8, bpm: f64, sample_rate: u32) -> DemoSong {
 
 /// Assembles the M0 signal chain for `song`: sampler -> mixer track -> stereo
 /// bus pair, ready to hand to `AudioDevice::start_output_stream`.
-pub fn build_graph(song: &DemoSong, sampler: Sampler, store: Arc<SampleStore>) -> CompiledGraph {
+pub fn build_graph(song: &Song, sampler: Sampler, store: Arc<SampleStore>) -> CompiledGraph {
     CompiledGraph {
         schedule: vec![
             ScheduledNode {
@@ -286,7 +304,7 @@ pub const DEMO_TRACK_GAIN_DB: f32 = -12.0;
 /// the audio inspectable (and diffable, and testable) without a sound card,
 /// which is the only practical way to debug "it sounds wrong" and the
 /// foundation of the offline bounce in TDD §22's M6.
-pub fn render_offline(song: &DemoSong, graph: &mut CompiledGraph, total_samples: i64) -> Vec<f32> {
+pub fn render_offline(song: &Song, graph: &mut CompiledGraph, total_samples: i64) -> Vec<f32> {
     let timeline = song.compile();
     let transport = fontelle_engine::TransportSnapshot {
         state: fontelle_engine::TransportState::Playing,
