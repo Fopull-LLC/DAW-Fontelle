@@ -308,6 +308,13 @@ pub fn build_graph_with_gain(
             // its weight now, but a fader with headroom is the correct place
             // to solve this, not a velocity value chosen to hide it.
             gain_db,
+            // A *balance* control, not a pan law. The signal reaching this
+            // track is genuinely stereo now — the voice places each layer in
+            // the field on the constant-power taper — and a pan law is for
+            // putting a mono source somewhere. Applying one to an
+            // already-placed stereo signal just pulls another 3 dB out of a
+            // centred track for nothing.
+            pan_law: fontelle_types::PanLaw::Linear,
             ..MixerTrackNode::new()
         }),
         // Same buffers in and out: processes in place.

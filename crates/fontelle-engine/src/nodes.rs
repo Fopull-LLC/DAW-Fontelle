@@ -5,6 +5,11 @@ use fontelle_types::{PanLaw, ParamAddress};
 
 use crate::graph::{AudioNode, ParamSet, PrepareContext, ProcessContext};
 
+/// The widest render `SamplerNode` performs: a stereo pair. Surround is not a
+/// feature yet, and a fixed width is what keeps the scratch allocation in
+/// `prepare` (INVARIANT 1).
+const MAX_CHANNELS: usize = 2;
+
 struct EmptyParams;
 impl ParamSet for EmptyParams {
     fn get(&self, _addr: &ParamAddress) -> Option<f64> {
@@ -28,9 +33,12 @@ impl ParamSet for EmptyParams {
 pub struct SamplerNode {
     sampler: Sampler,
     store: Arc<SampleStore>,
+    /// Two channels' worth, laid out back to back and split in `process`.
     /// Sized in `prepare`, so `process` never allocates (INVARIANT 1). See the
     /// note in `process` for why the render can't go straight to the bus.
     scratch: Vec<f32>,
+    /// Frames per channel in `scratch` — its length is twice this.
+    scratch_frames: usize,
 }
 
 impl SamplerNode {
@@ -39,6 +47,7 @@ impl SamplerNode {
             sampler,
             store,
             scratch: Vec::new(),
+            scratch_frames: 0,
         }
     }
 }
@@ -49,7 +58,8 @@ impl AudioNode for SamplerNode {
             sample_rate: ctx.sample_rate,
             max_block_size: ctx.max_block_size,
         });
-        self.scratch.resize(ctx.max_block_size as usize, 0.0);
+        self.scratch_frames = ctx.max_block_size as usize;
+        self.scratch.resize(self.scratch_frames * MAX_CHANNELS, 0.0);
     }
 
     fn process(&mut self, ctx: &mut ProcessContext) {
@@ -68,24 +78,29 @@ impl AudioNode for SamplerNode {
                 _ => {}
             }
         }
-        // `fontelle-core` renders mono today (`Layer::pan` isn't applied
-        // per-voice yet — see PROGRESS.md). Render once into the first
-        // channel, then copy it across the rest, which is exactly what
-        // feeding a mono source into a stereo bus means. When the sampler
-        // grows real per-voice panning this becomes a true stereo render
-        // rather than a duplicate.
         // Rendered into scratch and added, not written straight to the bus:
         // several instruments share one output, and `Sampler::render` clears
         // what it is given because that is the contract a plugin host expects
-        // of `fontelle-core`'s boundary (TDD §8.1). The scratch buffer is
+        // of `fontelle-core`'s boundary (TDD §8.1). The scratch buffers are
         // allocated in `prepare`, never here (INVARIANT 1).
+        //
+        // The sampler renders as many channels as the bus has, up to a stereo
+        // pair, so a panned layer arrives placed rather than centred. A bus
+        // wider than two gets the pair fanned across it — which is what
+        // feeding a stereo source into a wider bus means, and is the only
+        // thing this node can honestly do until surround is a real feature.
         let frames = ctx.outputs.first().map_or(0, |o| o.len());
-        let frames = frames.min(self.scratch.len());
-        let scratch = &mut self.scratch[..frames];
-        self.sampler.render(&self.store, scratch);
-        for channel in ctx.outputs.iter_mut() {
-            for (out, rendered) in channel[..frames].iter_mut().zip(scratch.iter()) {
-                *out += *rendered;
+        let frames = frames.min(self.scratch_frames);
+        let channels = ctx.outputs.len().min(MAX_CHANNELS);
+        let (first, second) = self.scratch.split_at_mut(self.scratch_frames);
+        let mut rendered: [&mut [f32]; MAX_CHANNELS] =
+            [&mut first[..frames], &mut second[..frames]];
+        self.sampler.render(&self.store, &mut rendered[..channels]);
+
+        for (index, channel) in ctx.outputs.iter_mut().enumerate() {
+            let source = &rendered[index.min(channels.saturating_sub(1))];
+            for (out, sample) in channel[..frames].iter_mut().zip(source.iter()) {
+                *out += *sample;
             }
         }
     }

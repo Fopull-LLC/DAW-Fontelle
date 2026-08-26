@@ -66,8 +66,16 @@ impl Sampler {
 
     /// RT. No allocation (INVARIANT 1). Zeroes `out` first, then mixes every
     /// active voice into it.
-    pub fn render(&mut self, store: &SampleStore, out: &mut [f32]) {
-        out.fill(0.0);
+    ///
+    /// `out` is planar and channel-major: `[left, right]` for stereo, `[mono]`
+    /// for one channel. Clearing what it is handed is deliberate and is the
+    /// contract a plugin host expects of `fontelle-core`'s boundary (TDD
+    /// §8.1); a DAW host that needs several instruments summed onto one bus
+    /// renders into scratch and adds, which is what `SamplerNode` does.
+    pub fn render(&mut self, store: &SampleStore, out: &mut [&mut [f32]]) {
+        for channel in out.iter_mut() {
+            channel.fill(0.0);
+        }
         let patch = &self.patch;
         let sample_rate = self.sample_rate;
         let quality = self.quality;
@@ -178,7 +186,7 @@ mod tests {
 
         sampler.note_on(60, 127, 0);
         let mut out = vec![0.0; 128];
-        sampler.render(&store, &mut out);
+        sampler.render(&store, &mut [&mut out[..]]);
         assert!(rms(&out) > 0.5);
     }
 
@@ -194,12 +202,12 @@ mod tests {
 
         sampler.note_on(60, 127, 0);
         let mut scratch = vec![0.0; 256];
-        sampler.render(&store, &mut scratch); // settle in
+        sampler.render(&store, &mut [&mut scratch[..]]); // settle in
 
         sampler.note_off(60, 0);
         // release_s = 0.01s @ 48kHz = 480 samples; render well past that.
         for _ in 0..10 {
-            sampler.render(&store, &mut scratch);
+            sampler.render(&store, &mut [&mut scratch[..]]);
         }
         assert_eq!(
             rms(&scratch),
@@ -222,7 +230,7 @@ mod tests {
         sampler.note_off(60, 999); // wrong voice_context — TDD §11.4 per-clip tagging
 
         let mut out = vec![0.0; 128];
-        sampler.render(&store, &mut out);
+        sampler.render(&store, &mut [&mut out[..]]);
         assert!(
             rms(&out) > 0.5,
             "a note-off with a non-matching voice_context must not release the real voice"
@@ -256,7 +264,7 @@ mod tests {
         sampler.note_on(64, 127, 1);
 
         let mut out = vec![0.0; 128];
-        sampler.render(&store, &mut out);
+        sampler.render(&store, &mut [&mut out[..]]);
 
         let got = rms(&out);
         assert!(
@@ -290,7 +298,7 @@ mod tests {
         sampler.note_on(60, 127, 0);
         let mut out = vec![0.0; 128];
         for _ in 0..300 {
-            sampler.render(&store, &mut out);
+            sampler.render(&store, &mut [&mut out[..]]);
         }
         let before = rms(&out);
         assert!(
@@ -301,7 +309,7 @@ mod tests {
         // Voice B: brand new, so its envelope is ~0 for this block. Voice A's
         // contribution must be unaffected — the total can only go up.
         sampler.note_on(64, 127, 1);
-        sampler.render(&store, &mut out);
+        sampler.render(&store, &mut [&mut out[..]]);
         let after = rms(&out);
 
         assert!(
@@ -328,7 +336,7 @@ mod tests {
         sampler.note_on(62, 127, 2);
 
         let mut out = vec![0.0; 128];
-        sampler.render(&store, &mut out);
+        sampler.render(&store, &mut [&mut out[..]]);
         assert!(rms(&out) > 0.0, "the stolen-in third note must still sound");
     }
 
@@ -429,7 +437,7 @@ mod tests {
         });
         sampler.note_on(72, 127, 0);
         let mut untouched = vec![0.0; 512];
-        sampler.render(&store, &mut untouched);
+        sampler.render(&store, &mut [&mut untouched[..]]);
 
         assert_eq!(
             untouched,
@@ -447,7 +455,7 @@ mod tests {
         sampler.set_quality(quality);
         sampler.note_on(72, 127, 0);
         let mut out = vec![0.0; 512];
-        sampler.render(store, &mut out);
+        sampler.render(store, &mut [&mut out[..]]);
         out
     }
 }

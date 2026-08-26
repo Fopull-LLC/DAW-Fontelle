@@ -713,11 +713,16 @@ mod tests {
         let (mut graph, id_a, _id_b) = two_sampler_graph(1.0, 0.25);
         graph.process_block(&[note_on_for(id_a, 0)], playing(), 0..64);
 
+        // A centred layer is 0.707 a side on the constant-power pan law, so
+        // full scale from the addressed node reads as that, not 1.0 — the
+        // numbers to rule out are 0.884 (both summed) and 0.177 (the wrong
+        // one overwriting).
+        let centred = std::f32::consts::FRAC_1_SQRT_2;
         let peak = graph.buffer_pool.buffer_mut(0)[..64]
             .iter()
             .fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(
-            (peak - 1.0).abs() < 1e-4,
+            (peak - centred).abs() < 1e-4,
             "only the addressed node should have sounded: full scale from the \
              addressed node, not 1.25 summed or 0.25 overwritten; got {peak}"
         );
@@ -738,9 +743,11 @@ mod tests {
         let peak = graph.buffer_pool.buffer_mut(0)[..64]
             .iter()
             .fold(0.0f32, |m, s| m.max(s.abs()));
+        // Both patches are centred, so each arrives at 0.707 of its level.
+        let expected = 1.5 * std::f32::consts::FRAC_1_SQRT_2;
         assert!(
-            (peak - 1.5).abs() < 1e-3,
-            "1.0 and 0.5 on the same bus should sum to 1.5, got {peak}"
+            (peak - expected).abs() < 1e-3,
+            "1.0 and 0.5 on the same bus should sum to {expected}, got {peak}"
         );
     }
 

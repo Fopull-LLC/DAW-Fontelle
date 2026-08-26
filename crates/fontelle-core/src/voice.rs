@@ -92,6 +92,10 @@ struct PreparedLayer<'a> {
     data: &'a [f32],
     step: f64,
     gain: f32,
+    /// This layer's place in the stereo field, already through the pan law.
+    /// `(1.0, 0.0)` on a mono render: nothing goes to a channel that isn't
+    /// there, and the one that is carries the layer unattenuated.
+    pan_gain: (f32, f32),
     loop_end: f64,
     loop_len: f64,
     looping: bool,
@@ -115,11 +119,16 @@ pub struct Voice {
     /// clock (INVARIANT 1: no syscalls on the RT thread).
     age: u64,
     layers: [LayerPlayback; MAX_LAYERS],
-    /// Filter1 and Filter2 of the fixed voice topology (TDD §7.4). Per voice,
-    /// not per patch: two notes sounding at once each need their own filter
-    /// memory, and sharing one would make a voice's output depend on which
-    /// other voices happened to render before it.
-    filters: [fontelle_dsp::SvfFilter; 2],
+    /// Filter1 and Filter2 of the fixed voice topology (TDD §7.4), each with
+    /// one filter per output channel: `filters[slot][channel]`.
+    ///
+    /// Per voice, not per patch: two notes sounding at once each need their
+    /// own filter memory, and sharing one would make a voice's output depend
+    /// on which other voices happened to render before it. Per channel for
+    /// the same reason one step down — once layers are panned apart the two
+    /// channels carry different signals, and one shared state would let each
+    /// side's history bleed into the other, collapsing the image.
+    filters: [[fontelle_dsp::SvfFilter; 2]; 2],
     /// Fixed for the life of the note, from `velocity_to_gain`. Folded into
     /// each layer's gain at the top of `render` so it costs nothing per sample.
     velocity_gain: f32,
@@ -139,7 +148,7 @@ impl Voice {
             voice_context: 0,
             age: 0,
             layers: [LayerPlayback::default(); MAX_LAYERS],
-            filters: [fontelle_dsp::SvfFilter::new(); 2],
+            filters: [[fontelle_dsp::SvfFilter::new(); 2]; 2],
             velocity_gain: 0.0,
             velocity_norm: 0.0,
             key_norm: 0.0,
@@ -170,8 +179,10 @@ impl Voice {
         // memory. Left alone, that discharges into the new note as a transient
         // belonging to a note that already ended — a click that only shows up
         // once voices start being reused.
-        for filter in &mut self.filters {
-            filter.reset();
+        for slot in &mut self.filters {
+            for filter in slot {
+                filter.reset();
+            }
         }
         self.amp_env.note_on();
 
@@ -215,17 +226,26 @@ impl Voice {
     /// contract honest.
     /// `quality` is the session's interpolation setting, used by any layer
     /// that names none of its own — see `Sampler::set_quality`.
+    ///
+    /// `out` is planar: `[left, right]` for stereo, `[mono]` for one channel,
+    /// and anything past the second slice is left alone. **A mono render
+    /// ignores `Layer::pan` rather than folding it down**, because the centre
+    /// pan-law gain applied to a signal with nowhere to pan is just a
+    /// uniform 3 dB of attenuation the caller never asked for — the same call
+    /// `MixerTrackNode` makes for a mono track.
     pub fn render(
         &mut self,
         patch: &crate::Patch,
         store: &crate::SampleStore,
         sample_rate: f32,
         quality: fontelle_dsp::Interpolation,
-        out: &mut [f32],
+        out: &mut [&mut [f32]],
     ) {
-        if !self.active {
+        if !self.active || out.is_empty() {
             return;
         }
+        let stereo = out.len() >= 2;
+        let frames = out.iter().take(2).map(|c| c.len()).min().unwrap_or(0);
 
         let amp_env_config =
             patch
@@ -241,6 +261,21 @@ impl Voice {
                     release_s: 0.0,
                     curve: fontelle_dsp::EnvelopeCurve::Linear,
                 });
+
+        // The mod matrix's view of this voice. Only the note-on sources are
+        // live: LFOs aren't built, and envelopes are not yet exposed as
+        // sources (`Envelope(0)` drives the amp stage directly). Everything
+        // else reads as at-rest rather than as a plausible-looking number.
+        //
+        // Bound to locals rather than reaching through `self`, so the closure
+        // holds no borrow of the voice and the sample loop below is free to
+        // take `self.layers` mutably.
+        let (velocity_norm, key_norm) = (self.velocity_norm, self.key_norm);
+        let sources = move |source: crate::mod_matrix::ModSource| match source {
+            crate::mod_matrix::ModSource::Velocity => velocity_norm,
+            crate::mod_matrix::ModSource::Key => key_norm,
+            _ => 0.0,
+        };
 
         // Per-layer constants resolved once, not once per sample: a fixed-size
         // stack array (INVARIANT 1 — no `Vec`, nothing heap-touching).
@@ -263,10 +298,24 @@ impl Voice {
             let rate_ratio = buffer.sample_rate as f32 / sample_rate;
             let loop_len = layer.playback.loop_end - layer.playback.loop_start;
 
+            // SF2 pans a zone on a constant-power taper, and that is also
+            // what keeps a layer's loudness steady as a route sweeps it
+            // across the field. `ModDest::LayerPan`'s full scale is 1.0 —
+            // half the field — so a full-depth route moves a centred layer
+            // all the way to one side.
+            let pan_gain = if stereo {
+                let dest = crate::mod_matrix::ModDest::LayerPan(index as u8);
+                let pan = layer.pan + patch.mod_matrix.evaluate(dest, &sources) * dest.full_scale();
+                fontelle_types::PanLaw::Minus3Db.gains(pan)
+            } else {
+                (1.0, 0.0)
+            };
+
             prepared[index] = Some(PreparedLayer {
                 data: &buffer.data,
                 step: (pitch_ratio * rate_ratio) as f64,
                 gain: 10f32.powf(layer.gain_db / 20.0) * self.velocity_gain,
+                pan_gain,
                 loop_end: layer.playback.loop_end,
                 loop_len,
                 // `loop_len > 0.0` also guards the wrap loop below against
@@ -278,20 +327,10 @@ impl Voice {
             });
         }
 
-        // Resolved once per block: nothing modulates cutoff or resonance yet
-        // (`ModMatrix::evaluate` is still unimplemented). When something does,
-        // this moves inside the sample loop — the zero-delay-feedback topology
-        // exists precisely so that it can.
-        // The mod matrix's view of this voice. Only the note-on sources are
-        // live: LFOs aren't built, and envelopes are not yet exposed as
-        // sources (`Envelope(0)` drives the amp stage directly). Everything
-        // else reads as at-rest rather than as a plausible-looking number.
-        let sources = |source: crate::mod_matrix::ModSource| match source {
-            crate::mod_matrix::ModSource::Velocity => self.velocity_norm,
-            crate::mod_matrix::ModSource::Key => self.key_norm,
-            _ => 0.0,
-        };
-
+        // Resolved once per block: nothing modulates cutoff or resonance
+        // faster than that yet. When something does, this moves inside the
+        // sample loop — the zero-delay-feedback topology exists precisely so
+        // that it can.
         let filter_coeffs: [Option<fontelle_dsp::SvfCoeffs>; 2] = std::array::from_fn(|index| {
             let slot = patch.filters[index];
             if !slot.enabled {
@@ -312,10 +351,22 @@ impl Voice {
             ))
         });
 
-        for out_sample in out.iter_mut() {
+        // Split once, outside the loop: `out[0]` and `out[1]` are distinct
+        // slices, and taking both mutably per sample would be a reborrow the
+        // compiler can't see through.
+        let (left, rest) = out.split_at_mut(1);
+        let left = &mut *left[0];
+        let mut right = rest.first_mut();
+
+        for frame in 0..frames {
             let env = self.amp_env.advance(&amp_env_config, sample_rate);
 
-            let mut mixed = 0.0;
+            // Layers -> pan -> mix: the pan is per layer because that is where
+            // the format puts it (SF2's `pan` is a zone generator), and a
+            // stereo SF2 sample is a pair of mono zones panned hard apart —
+            // panning after the mix would fold every such instrument to the
+            // centre.
+            let mut mixed = (0.0f32, 0.0f32);
             for (index, prep) in prepared.iter().enumerate() {
                 let Some(prep) = prep else { continue };
                 let slot = &mut self.layers[index];
@@ -335,21 +386,32 @@ impl Voice {
                     continue;
                 }
 
-                mixed += fontelle_dsp::interpolate(prep.data, slot.position, prep.interpolation)
-                    * prep.gain;
+                let sample =
+                    fontelle_dsp::interpolate(prep.data, slot.position, prep.interpolation)
+                        * prep.gain;
+                mixed.0 += sample * prep.pan_gain.0;
+                mixed.1 += sample * prep.pan_gain.1;
                 slot.position += prep.step;
             }
 
-            // Layers -> mix -> Filter1 -> Filter2 -> Amp (TDD §7.4). The
-            // filters sit ahead of the amp stage, and operate on this voice's
-            // own mixed sample rather than on the shared output buffer.
-            for (coeffs, filter) in filter_coeffs.iter().zip(self.filters.iter_mut()) {
+            // mix -> Filter1 -> Filter2 -> Amp (TDD §7.4). The filters sit
+            // ahead of the amp stage, and operate on this voice's own mixed
+            // sample rather than on the shared output buffer. One filter per
+            // channel per slot: the two channels carry different signals the
+            // moment layers are panned apart.
+            for (coeffs, filters) in filter_coeffs.iter().zip(self.filters.iter_mut()) {
                 if let Some(coeffs) = coeffs {
-                    mixed = filter.process(mixed, coeffs);
+                    mixed.0 = filters[0].process(mixed.0, coeffs);
+                    if right.is_some() {
+                        mixed.1 = filters[1].process(mixed.1, coeffs);
+                    }
                 }
             }
 
-            *out_sample += mixed * env;
+            left[frame] += mixed.0 * env;
+            if let Some(right) = right.as_deref_mut() {
+                right[frame] += mixed.1 * env;
+            }
         }
 
         let any_layer_active = self.layers.iter().any(|s| s.active);
@@ -498,7 +560,13 @@ mod tests {
         assert!(!voice.is_active());
 
         let mut out = vec![0.0; 128];
-        voice.render(&patch, &store, SR, Interpolation::Normal, &mut out);
+        voice.render(
+            &patch,
+            &store,
+            SR,
+            Interpolation::Normal,
+            &mut [&mut out[..]],
+        );
         assert_eq!(rms(&out), 0.0);
     }
 
@@ -512,7 +580,13 @@ mod tests {
         assert!(voice.is_active());
 
         let mut out = vec![0.0; 128];
-        voice.render(&patch, &store, SR, Interpolation::Normal, &mut out);
+        voice.render(
+            &patch,
+            &store,
+            SR,
+            Interpolation::Normal,
+            &mut [&mut out[..]],
+        );
         assert!(
             rms(&out) > 0.5,
             "expected near-full-scale output, got rms {}",
@@ -530,7 +604,13 @@ mod tests {
         voice.trigger(&patch, 40, 127, 0);
 
         let mut out = vec![0.0; 128];
-        voice.render(&patch, &store, SR, Interpolation::Normal, &mut out);
+        voice.render(
+            &patch,
+            &store,
+            SR,
+            Interpolation::Normal,
+            &mut [&mut out[..]],
+        );
         assert_eq!(
             rms(&out),
             0.0,
@@ -550,7 +630,7 @@ mod tests {
             &store_full,
             SR,
             Interpolation::Normal,
-            &mut out_full,
+            &mut [&mut out_full[..]],
         );
 
         let mut store_quiet = SampleStore::new();
@@ -563,7 +643,7 @@ mod tests {
             &store_quiet,
             SR,
             Interpolation::Normal,
-            &mut out_quiet,
+            &mut [&mut out_quiet[..]],
         );
 
         let ratio = rms(&out_quiet) / rms(&out_full);
@@ -588,7 +668,13 @@ mod tests {
         let mut scratch = vec![0.0; 256];
         for _ in 0..10 {
             scratch.fill(0.0);
-            voice.render(&patch, &store, SR, Interpolation::Normal, &mut scratch);
+            voice.render(
+                &patch,
+                &store,
+                SR,
+                Interpolation::Normal,
+                &mut [&mut scratch[..]],
+            );
         }
         assert!(voice.is_active());
 
@@ -596,7 +682,13 @@ mod tests {
         // release_s = 0.01s @ 48kHz = 480 samples; render well past that.
         for _ in 0..20 {
             scratch.fill(0.0);
-            voice.render(&patch, &store, SR, Interpolation::Normal, &mut scratch);
+            voice.render(
+                &patch,
+                &store,
+                SR,
+                Interpolation::Normal,
+                &mut [&mut scratch[..]],
+            );
         }
         assert!(
             !voice.is_active(),
@@ -647,7 +739,13 @@ mod tests {
         voice.trigger(&patch, 60, 127, 0);
 
         let mut out = vec![0.0; 256]; // 8x the buffer length
-        voice.render(&patch, &store, SR, Interpolation::Normal, &mut out);
+        voice.render(
+            &patch,
+            &store,
+            SR,
+            Interpolation::Normal,
+            &mut [&mut out[..]],
+        );
         assert!(
             voice.is_active(),
             "a Forward-looped voice must not stop at the buffer's natural end"
@@ -672,7 +770,13 @@ mod tests {
             let mut voice = Voice::new();
             voice.trigger(&patch, 60, velocity, 0);
             let mut out = vec![0.0; 64];
-            voice.render(&patch, &store, SR, Interpolation::Normal, &mut out);
+            voice.render(
+                &patch,
+                &store,
+                SR,
+                Interpolation::Normal,
+                &mut [&mut out[..]],
+            );
             rms(&out)
         };
 
@@ -696,7 +800,13 @@ mod tests {
         let mut voice = Voice::new();
         voice.trigger(&patch, 60, 127, 0);
         let mut out = vec![0.0; 64];
-        voice.render(&patch, &store, SR, Interpolation::Normal, &mut out);
+        voice.render(
+            &patch,
+            &store,
+            SR,
+            Interpolation::Normal,
+            &mut [&mut out[..]],
+        );
         assert!(
             (rms(&out) - 1.0).abs() < 1e-4,
             "velocity 127 must be unity gain, got {}",
@@ -775,7 +885,7 @@ mod tests {
         let mut voice = Voice::new();
         voice.trigger(patch, 60, 127, 0);
         let mut out = vec![0.0; len];
-        voice.render(patch, store, SR, Interpolation::Draft, &mut out);
+        voice.render(patch, store, SR, Interpolation::Draft, &mut [&mut out[..]]);
         out
     }
 
@@ -859,12 +969,24 @@ mod tests {
         let mut voice = Voice::new();
         voice.trigger(&patch, 60, 127, 0);
         let mut first = vec![0.0; 256];
-        voice.render(&patch, &store, SR, Interpolation::Draft, &mut first);
+        voice.render(
+            &patch,
+            &store,
+            SR,
+            Interpolation::Draft,
+            &mut [&mut first[..]],
+        );
 
         // Same voice, second note.
         voice.trigger(&patch, 60, 127, 1);
         let mut second = vec![0.0; 256];
-        voice.render(&patch, &store, SR, Interpolation::Draft, &mut second);
+        voice.render(
+            &patch,
+            &store,
+            SR,
+            Interpolation::Draft,
+            &mut [&mut second[..]],
+        );
 
         assert_eq!(
             first, second,
@@ -889,15 +1011,33 @@ mod tests {
         let mut alone = vec![0.0; 256];
         let mut voice_a = Voice::new();
         voice_a.trigger(&patch, 60, 127, 0);
-        voice_a.render(&patch, &store, SR, Interpolation::Draft, &mut alone);
+        voice_a.render(
+            &patch,
+            &store,
+            SR,
+            Interpolation::Draft,
+            &mut [&mut alone[..]],
+        );
 
         let mut together = vec![0.0; 256];
         let mut first = Voice::new();
         let mut second = Voice::new();
         first.trigger(&patch, 60, 127, 0);
         second.trigger(&patch, 60, 127, 1);
-        first.render(&patch, &store, SR, Interpolation::Draft, &mut together);
-        second.render(&patch, &store, SR, Interpolation::Draft, &mut together);
+        first.render(
+            &patch,
+            &store,
+            SR,
+            Interpolation::Draft,
+            &mut [&mut together[..]],
+        );
+        second.render(
+            &patch,
+            &store,
+            SR,
+            Interpolation::Draft,
+            &mut [&mut together[..]],
+        );
 
         for (i, (one, two)) in alone.iter().zip(together.iter()).enumerate() {
             assert!(
@@ -928,7 +1068,7 @@ mod tests {
         let mut voice = Voice::new();
         voice.trigger(patch, 60, velocity, 0);
         let mut out = vec![0.0; 512];
-        voice.render(patch, store, SR, Interpolation::Draft, &mut out);
+        voice.render(patch, store, SR, Interpolation::Draft, &mut [&mut out[..]]);
         rms(&out[256..]) / velocity_to_gain(velocity)
     }
 
@@ -1002,6 +1142,176 @@ mod tests {
         assert!(
             (brightness_at(&patch, &store, 20) - brightness_at(&patch, &store, 127)).abs() < 1e-3,
             "a disabled filter slot has no cutoff to modulate"
+        );
+    }
+
+    // --- Stereo: `Layer::pan` becomes real -----------------------------------
+
+    /// Renders one block of `frames` into a fresh stereo pair.
+    fn render_stereo(
+        patch: &Patch,
+        store: &SampleStore,
+        key: u8,
+        frames: usize,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let mut voice = Voice::new();
+        voice.trigger(patch, key, 127, 0);
+        let mut left = vec![0.0; frames];
+        let mut right = vec![0.0; frames];
+        voice.render(
+            patch,
+            store,
+            SR,
+            Interpolation::Draft,
+            &mut [&mut left[..], &mut right[..]],
+        );
+        (left, right)
+    }
+
+    #[test]
+    fn a_hard_left_layer_is_silent_on_the_right() {
+        let mut store = SampleStore::new();
+        let mut patch = flat_patch(&mut store, 1.0, 1000, 0.0);
+        patch.layers[0].pan = -1.0;
+
+        let (left, right) = render_stereo(&patch, &store, 60, 64);
+        assert!(
+            (left[0] - 1.0).abs() < 1e-5,
+            "hard left keeps the left channel at full scale, got {}",
+            left[0]
+        );
+        assert!(
+            right[0].abs() < 1e-5,
+            "hard left must silence the right channel, got {}",
+            right[0]
+        );
+    }
+
+    /// SF2 pans a zone on a constant-power taper, so a centred layer reads
+    /// 0.707 a side rather than 1.0 — the total power, not the per-channel
+    /// level, is what stays put as it sweeps.
+    #[test]
+    fn a_centred_layer_splits_at_constant_power() {
+        let mut store = SampleStore::new();
+        let patch = flat_patch(&mut store, 1.0, 1000, 0.0);
+
+        let (left, right) = render_stereo(&patch, &store, 60, 64);
+        let expected = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((left[0] - expected).abs() < 1e-5, "left {}", left[0]);
+        assert!((right[0] - expected).abs() < 1e-5, "right {}", right[0]);
+        let power = left[0] * left[0] + right[0] * right[0];
+        assert!((power - 1.0).abs() < 1e-5, "total power {power}");
+    }
+
+    /// Two layers of one patch pointed opposite ways. **Deliberately unequal
+    /// levels:** with both at the same level a layer that ignored its own pan
+    /// and took the other's would be indistinguishable from correct.
+    #[test]
+    fn layers_panned_apart_land_in_different_channels() {
+        let mut store = SampleStore::new();
+        let mut patch = flat_patch(&mut store, 1.0, 1000, 0.0);
+        let quiet = store.insert(SampleBuffer {
+            data: std::sync::Arc::from(vec![0.25; 1000]),
+            sample_rate: SR as u32,
+        });
+        patch.layers[0].pan = -1.0;
+        let mut second = patch.layers[0].clone();
+        second.source = Source::Sample { file: quiet };
+        second.pan = 1.0;
+        patch.layers.push(second);
+
+        let (left, right) = render_stereo(&patch, &store, 60, 64);
+        assert!(
+            (left[0] - 1.0).abs() < 1e-5,
+            "the loud layer belongs on the left alone, got {}",
+            left[0]
+        );
+        assert!(
+            (right[0] - 0.25).abs() < 1e-5,
+            "the quiet layer belongs on the right alone, got {}",
+            right[0]
+        );
+    }
+
+    /// A mono caller has nowhere to pan to. Applying the centre pan-law gain
+    /// anyway would drop every mono render 3 dB for no reason it can see —
+    /// the same call `MixerTrackNode` makes for a mono track.
+    #[test]
+    fn a_mono_render_ignores_pan_rather_than_attenuating() {
+        let mut store = SampleStore::new();
+        let mut patch = flat_patch(&mut store, 1.0, 1000, 0.0);
+        patch.layers[0].pan = -1.0;
+
+        let mut voice = Voice::new();
+        voice.trigger(&patch, 60, 127, 0);
+        let mut out = vec![0.0; 64];
+        voice.render(
+            &patch,
+            &store,
+            SR,
+            Interpolation::Draft,
+            &mut [&mut out[..]],
+        );
+        assert!(
+            (out[0] - 1.0).abs() < 1e-5,
+            "a mono render must carry the layer at full level whatever its pan, got {}",
+            out[0]
+        );
+    }
+
+    #[test]
+    fn the_mod_matrix_can_move_a_layers_pan() {
+        use crate::mod_matrix::{Curve, ModDest, ModMatrix, ModRoute, ModSource};
+
+        let mut store = SampleStore::new();
+        let mut patch = flat_patch(&mut store, 1.0, 1000, 0.0);
+        patch.mod_matrix = ModMatrix {
+            routes: vec![ModRoute {
+                source: ModSource::Velocity,
+                destination: ModDest::LayerPan(0),
+                depth: 1.0,
+                curve: Curve::Linear,
+                via: None,
+                invert: false,
+            }],
+        };
+
+        // Velocity 127 is 1.0 normalised, so a full-depth route sweeps a
+        // centred layer the whole way to hard right.
+        let (left, right) = render_stereo(&patch, &store, 60, 64);
+        assert!(
+            left[0].abs() < 1e-4,
+            "the route should have emptied the left channel, got {}",
+            left[0]
+        );
+        assert!(
+            (right[0] - 1.0).abs() < 1e-4,
+            "and filled the right, got {}",
+            right[0]
+        );
+    }
+
+    /// Both channels of a stereo voice must filter independently. Sharing one
+    /// filter's state between them makes each channel's output depend on the
+    /// other's — an image that collapses and smears the moment the filter is
+    /// on and the layers are panned apart.
+    #[test]
+    fn each_channel_carries_its_own_filter_state() {
+        let mut store = SampleStore::new();
+        let mut patch = tone_patch(&mut store, 6_000.0, 4000);
+        patch.layers[0].pan = -1.0;
+        patch.filters[0] = FilterSlot {
+            mode: SvfMode::Lowpass,
+            cutoff_hz: 1_000.0,
+            resonance: std::f32::consts::FRAC_1_SQRT_2,
+            enabled: true,
+        };
+
+        let (_left, right) = render_stereo(&patch, &store, 60, 2048);
+        let leak = rms(&right);
+        assert!(
+            leak < 1e-6,
+            "a hard-left voice must stay silent on the right through the filter, got {leak}"
         );
     }
 }
