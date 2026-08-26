@@ -74,7 +74,7 @@ fn render(total: i64) -> Vec<f32> {
         sample_rate: SR as f32,
         max_block_size: fontelle_engine::BLOCK_SIZE as u32,
     });
-    let mut graph = build_graph(&song, sampler, Arc::new(store));
+    let mut graph = build_graph(&song, vec![sampler], Arc::new(store));
     render_offline(&song, &mut graph, total)
 }
 
@@ -173,7 +173,7 @@ fn the_render_quality_override_reaches_the_graph() {
             max_block_size: fontelle_engine::BLOCK_SIZE as u32,
         });
         sampler.set_quality(quality);
-        let mut graph = build_graph(&song, sampler, Arc::new(store));
+        let mut graph = build_graph(&song, vec![sampler], Arc::new(store));
         render_offline(&song, &mut graph, 24_000)
     };
 
@@ -233,4 +233,36 @@ fn the_offline_bounce_renders_at_export_quality() {
     assert_eq!(fontelle_app::PLAYBACK_QUALITY, Interpolation::Normal);
     assert_eq!(fontelle_app::RENDER_QUALITY, Interpolation::High);
     assert_ne!(fontelle_app::PLAYBACK_QUALITY, fontelle_app::RENDER_QUALITY);
+}
+
+/// The track fader has to be a fader. It was a constant chosen for the demo
+/// phrase's three-voice chord, which leaves a whole arrangement about 20 dB
+/// too quiet — different material needs different headroom, and until there is
+/// a master limiter the fader is the only place to say so.
+#[test]
+fn the_track_gain_scales_the_render() {
+    let render_at = |gain_db: f32| {
+        let song = demo_song(60, 120.0, SR);
+        let mut store = SampleStore::new();
+        let patch = synthetic_patch(&mut store);
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&fontelle_core::PrepareContext {
+            sample_rate: SR as f32,
+            max_block_size: fontelle_engine::BLOCK_SIZE as u32,
+        });
+        let mut graph =
+            fontelle_app::build_graph_with_gain(&song, vec![sampler], Arc::new(store), gain_db);
+        render_offline(&song, &mut graph, 24_000)
+    };
+
+    let quiet = render_at(-12.0);
+    let loud = render_at(-6.0);
+    let peak = |pcm: &[f32]| pcm.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+
+    let ratio = peak(&loud) / peak(&quiet);
+    let expected = 10f32.powf(6.0 / 20.0);
+    assert!(
+        (ratio - expected).abs() < 0.02,
+        "6 dB more fader should be {expected}x the peak, got {ratio}"
+    );
 }

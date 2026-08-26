@@ -33,6 +33,16 @@ struct TestNote {
 
 /// A complete format-1 file: a tempo track plus one note track.
 fn build_midi(ticks_per_quarter: u16, us_per_quarter: u32, notes: &[TestNote]) -> Vec<u8> {
+    build_midi_with_programs(ticks_per_quarter, us_per_quarter, notes, &[])
+}
+
+/// As `build_midi`, plus a program change per channel emitted at time zero.
+fn build_midi_with_programs(
+    ticks_per_quarter: u16,
+    us_per_quarter: u32,
+    notes: &[TestNote],
+    programs: &[(u8, u8)],
+) -> Vec<u8> {
     let mut file = Vec::new();
     file.extend_from_slice(b"MThd");
     file.extend_from_slice(&6u32.to_be_bytes());
@@ -52,18 +62,24 @@ fn build_midi(ticks_per_quarter: u16, us_per_quarter: u32, notes: &[TestNote]) -
 
     // Absolute-time event list, then sorted and delta-encoded, so the fixture
     // can be written in the order a human thinks in.
-    let mut events: Vec<(u32, [u8; 3])> = Vec::new();
-    for n in notes {
-        events.push((n.start, [0x90 | n.channel, n.key, n.velocity]));
-        events.push((n.start + n.length, [0x80 | n.channel, n.key, 0]));
+    // Two-byte messages are padded and their real length tracked, so a program
+    // change and a note-on can share one ordered list.
+    let mut events: Vec<(u32, usize, [u8; 3])> = Vec::new();
+    for (channel, program) in programs {
+        events.push((0, 2, [0xc0 | channel, *program, 0]));
     }
-    events.sort_by_key(|(t, _)| *t);
+    for n in notes {
+        events.push((n.start, 3, [0x90 | n.channel, n.key, n.velocity]));
+        events.push((n.start + n.length, 3, [0x80 | n.channel, n.key, 0]));
+    }
+    // Stable sort, so a program change written before a note stays before it.
+    events.sort_by_key(|(t, _, _)| *t);
 
     let mut track = Vec::new();
     let mut previous = 0;
-    for (time, bytes) in events {
+    for (time, len, bytes) in events {
         varint(time - previous, &mut track);
-        track.extend_from_slice(&bytes);
+        track.extend_from_slice(&bytes[..len]);
         previous = time;
     }
     varint(0, &mut track);
@@ -88,6 +104,29 @@ fn notes_of(import: &fontelle_assets::MidiImport) -> Vec<fontelle_model::Note> {
         .values()
         .filter_map(|clip| match &clip.source {
             ClipSource::Notes(data) => Some(data.notes.values().copied()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    out.sort_by_key(|n| (n.start, n.key));
+    out
+}
+
+/// The notes on one imported channel, by its MIDI channel number.
+fn notes_on(import: &fontelle_assets::MidiImport, midi_channel: u8) -> Vec<fontelle_model::Note> {
+    let imported = import
+        .channels
+        .iter()
+        .find(|c| c.midi_channel == midi_channel)
+        .unwrap_or_else(|| panic!("channel {midi_channel} was not imported"));
+    let mut out: Vec<_> = import
+        .project
+        .clips
+        .values()
+        .filter_map(|clip| match &clip.source {
+            ClipSource::Notes(data) if data.channel == imported.channel => {
+                Some(data.notes.values().copied())
+            }
             _ => None,
         })
         .flatten()
@@ -272,15 +311,15 @@ fn reports_what_each_source_channel_contained() {
     let import = import_midi(&path, MidiChannels::All).unwrap();
     std::fs::remove_file(&path).ok();
 
-    let summary = &import.source_channels;
+    let summary = &import.channels;
     assert_eq!(
         summary.len(),
         2,
         "only channels with notes should be listed"
     );
-    assert_eq!(summary[0].channel, 0);
+    assert_eq!(summary[0].midi_channel, 0);
     assert_eq!(summary[0].notes, 2);
-    assert_eq!(summary[1].channel, 3);
+    assert_eq!(summary[1].midi_channel, 3);
     assert_eq!(summary[1].notes, 1);
 }
 
@@ -322,4 +361,144 @@ fn an_unfinished_note_still_ends_somewhere() {
             assert!(note.length > 0, "a stuck note must still have a length");
         }
     }
+}
+
+#[test]
+fn each_midi_channel_becomes_its_own_instrument() {
+    // The difference between playing a file and playing it as written: a bass
+    // part and a lead part are separate instruments, not one merged stream of
+    // notes that has to share a patch.
+    let path = write_temp(
+        "multi",
+        &build_midi(
+            480,
+            500_000,
+            &[
+                TestNote {
+                    channel: 0,
+                    key: 72,
+                    velocity: 100,
+                    start: 0,
+                    length: 240,
+                },
+                TestNote {
+                    channel: 2,
+                    key: 36,
+                    velocity: 90,
+                    start: 0,
+                    length: 480,
+                },
+            ],
+        ),
+    );
+    let import = import_midi(&path, MidiChannels::Melodic).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    assert_eq!(import.channels.len(), 2);
+    let lead = notes_on(&import, 0);
+    let bass = notes_on(&import, 2);
+    assert_eq!(lead.len(), 1);
+    assert_eq!(lead[0].key, 72);
+    assert_eq!(bass.len(), 1);
+    assert_eq!(bass[0].key, 36);
+    assert_ne!(
+        import.channels[0].channel, import.channels[1].channel,
+        "two MIDI channels must not land on one document channel"
+    );
+}
+
+#[test]
+fn a_channels_program_change_is_carried_through_to_the_instrument() {
+    // What lets an importer pick the right preset per part instead of playing
+    // the whole file on one sound.
+    let path = write_temp(
+        "program",
+        &build_midi_with_programs(
+            480,
+            500_000,
+            &[TestNote {
+                channel: 0,
+                key: 60,
+                velocity: 100,
+                start: 0,
+                length: 240,
+            }],
+            &[(0, 42)],
+        ),
+    );
+    let import = import_midi(&path, MidiChannels::All).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    assert_eq!(import.channels[0].program, Some(42));
+}
+
+#[test]
+fn percussion_channels_are_marked_as_such() {
+    // A drum channel needs a drum kit, not a transposed melodic patch, so the
+    // distinction has to survive import rather than being rediscovered by
+    // whoever assigns instruments.
+    let path = write_temp(
+        "percflag",
+        &build_midi(
+            480,
+            500_000,
+            &[
+                TestNote {
+                    channel: 0,
+                    key: 60,
+                    velocity: 100,
+                    start: 0,
+                    length: 240,
+                },
+                TestNote {
+                    channel: 9,
+                    key: 36,
+                    velocity: 100,
+                    start: 0,
+                    length: 240,
+                },
+            ],
+        ),
+    );
+    let import = import_midi(&path, MidiChannels::All).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    assert!(!import.channels[0].is_percussion);
+    assert!(import.channels[1].is_percussion);
+}
+
+#[test]
+fn channels_present_but_filtered_out_are_still_reported() {
+    // "Where did the drums go" should be answerable from the import, not from
+    // reading the source.
+    let path = write_temp(
+        "skipped",
+        &build_midi(
+            480,
+            500_000,
+            &[
+                TestNote {
+                    channel: 0,
+                    key: 60,
+                    velocity: 100,
+                    start: 0,
+                    length: 240,
+                },
+                TestNote {
+                    channel: 9,
+                    key: 36,
+                    velocity: 100,
+                    start: 0,
+                    length: 240,
+                },
+            ],
+        ),
+    );
+    let import = import_midi(&path, MidiChannels::Melodic).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    assert_eq!(import.channels.len(), 1);
+    assert_eq!(import.skipped.len(), 1);
+    assert_eq!(import.skipped[0].channel, 9);
+    assert_eq!(import.skipped[0].notes, 1);
 }

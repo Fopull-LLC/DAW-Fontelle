@@ -214,7 +214,7 @@ fn the_full_m0_chain_renders_the_demo_song_through_a_mixer_track() {
         max_block_size: BLOCK as u32,
     });
 
-    let mut graph = fontelle_app::build_graph(&song, sampler, Arc::new(store));
+    let mut graph = fontelle_app::build_graph(&song, vec![sampler], Arc::new(store));
 
     let transport = fontelle_engine::TransportSnapshot {
         state: fontelle_engine::TransportState::Playing,

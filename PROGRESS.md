@@ -13,6 +13,71 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
+## 2026-08-27: multi-timbral playback, and three graph faults it exposed
+
+A MIDI file now plays with **one instrument per part**, chosen from the file's
+own program changes. On a five-part arrangement:
+
+```
+  channel 1     279 notes program=0  -> preset 279 "Grand Piano"
+  channel 3     132 notes program=60 -> preset 54  "French Horns"
+  channel 5     118 notes program=10 -> preset 7   "Music Box"
+```
+
+Preset lookup matches **bank and program together**. General MIDI puts melodic
+programs in bank 0 and drum kits in bank 128, and matching on program alone
+would hand a drum channel whichever melodic instrument shared its number. A
+part whose program the soundfont doesn't contain falls back to `--preset`: a
+soundfont is under no obligation to be a complete GM set, and playing the part
+on something beats dropping it silently.
+
+### Three faults in the graph, all invisible with one instrument
+
+Going multi-timbral turned up three things that had been wrong all along and
+could not show while the graph held a single source node.
+
+1. **Events went to every node.** `TimedEvent::target` has existed since the
+   type was written and the sequencer has always filled it in, but
+   `process_block` handed every event to every node. With one sampler that
+   changes nothing; with two it means every instrument plays every part. The
+   filter now lives in `ProcessContext::events()` rather than in each node, so
+   the routing rule has one home, and it returns an iterator rather than a
+   slice because a node's events are not contiguous — the timeline is ordered
+   by time, not by target. The raw slice is still reachable as `all_events`,
+   renamed so that reaching for it is deliberate.
+
+2. **Source nodes overwrote their output.** Two instruments on one bus meant
+   whichever ran last was the only one anybody heard. Buses are now cleared
+   once per block by the graph and sources add into them. `SamplerNode` renders
+   into scratch and adds rather than `Sampler::render` becoming additive:
+   clearing what it is given is the contract a plugin host expects of
+   `fontelle-core`'s boundary (TDD §8.1), and that boundary should not bend to
+   suit the DAW that happens to be its first host.
+
+3. **`AudioNode::prepare` was never called by anything.** The trait declared
+   it, every node implemented it, and the only call site in the tree was inside
+   a test. The one source node was built from an already-prepared `Sampler`, so
+   the omission stayed invisible until a node needed internal storage of its
+   own — at which point it produced silence rather than an error.
+   `CompiledGraph::prepare` now walks the schedule, and the device and offline
+   paths both call it.
+
+A note on the test for (1): it passed while the bug was present. Both fixture
+patches were at the same level, so a node that wrongly played an event was
+indistinguishable from one that correctly ignored it. Equal fixtures are worth
+suspecting whenever a test is about *which* thing acted.
+
+### The track fader is a fader now
+
+`DEMO_TRACK_GAIN_DB` was chosen so the demo phrase's three coincident voices
+would not clip. A whole arrangement through the same -12 dB lands about 20 dB
+down: the five-part piece above peaked at 0.082. It is now a default rather
+than a constant, `--gain-db` overrides it, and the render reports its peak so
+the choice can be made on evidence — the same piece at unity peaks 0.328 with
+no clipped samples. The real answer is a master limiter, which is M4 work.
+
+**Where things stand:** 166 tests, clippy and fmt clean.
+
 ## 2026-08-26: Fontelle plays music
 
 The headline: `--play-midi` imports a `.mid` file and plays it through the same
@@ -1040,10 +1105,7 @@ crash the process).
    shape with no oscillator behind it) and envelopes are not exposed as mod
    sources, so only velocity and key can currently drive anything. That is the
    natural next piece — envelope-to-cutoff is what makes a filter sing.
-6. **Multi-timbral playback.** MIDI import merges every channel onto one
-   instrument, which is the single biggest gap between "plays a file" and
-   "plays the file as written". Needs a patch per channel, one `SamplerNode`
-   each, and a way to choose them.
+6. ~~Multi-timbral playback.~~ **Done** — see the 2026-08-27 section.
 7. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
    soundfonts in memory) and effects. `ParametricEq::process` is still
    `todo!()`, though `fontelle-dsp` now gives it everything it needs.

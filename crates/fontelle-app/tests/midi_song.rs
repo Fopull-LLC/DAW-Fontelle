@@ -13,6 +13,17 @@ const SR: u32 = 48_000;
 
 /// The smallest complete format-0 file: one track, one tempo, two notes.
 fn tiny_midi(us_per_quarter: u32, notes: &[(u8, u8, u32, u32)]) -> Vec<u8> {
+    tiny_midi_on(
+        us_per_quarter,
+        &notes
+            .iter()
+            .map(|n| (0u8, n.0, n.1, n.2, n.3))
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// As `tiny_midi`, with an explicit MIDI channel per note.
+fn tiny_midi_on(us_per_quarter: u32, notes: &[(u8, u8, u8, u32, u32)]) -> Vec<u8> {
     fn varint(mut value: u32, out: &mut Vec<u8>) {
         let mut buffer = vec![(value & 0x7f) as u8];
         value >>= 7;
@@ -30,9 +41,9 @@ fn tiny_midi(us_per_quarter: u32, notes: &[(u8, u8, u32, u32)]) -> Vec<u8> {
     track.extend_from_slice(&us_per_quarter.to_be_bytes()[1..]);
 
     let mut events: Vec<(u32, [u8; 3])> = Vec::new();
-    for (key, velocity, start, length) in notes {
-        events.push((*start, [0x90, *key, *velocity]));
-        events.push((start + length, [0x80, *key, 0]));
+    for (channel, key, velocity, start, length) in notes {
+        events.push((*start, [0x90 | channel, *key, *velocity]));
+        events.push((start + length, [0x80 | channel, *key, 0]));
     }
     events.sort_by_key(|(t, _)| *t);
     let mut previous = 0;
@@ -115,4 +126,66 @@ fn the_files_own_tempo_drives_the_timeline() {
         .map(|e| e.sample)
         .unwrap();
     assert_eq!(first, 12_000, "a quarter note at 240 bpm is 12000 samples");
+}
+
+#[test]
+fn every_midi_channel_gets_its_own_node_in_the_song() {
+    // Multi-timbral playback rests on this: one document channel per part, one
+    // engine node each, and a distinct target on every event. Sharing a node
+    // would put both parts through one instrument again.
+    let path = write_temp(
+        "multi",
+        &tiny_midi_on(500_000, &[(0, 72, 100, 0, 240), (2, 36, 90, 0, 240)]),
+    );
+    let import = import_midi(&path, MidiChannels::Melodic).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    let song = Song::from_midi(import, SR);
+    assert_eq!(song.channels.len(), 2);
+    assert_ne!(
+        song.channels[0].1, song.channels[1].1,
+        "each part needs a node of its own"
+    );
+
+    let timeline = song.compile();
+    let targets: std::collections::HashSet<_> = timeline
+        .events
+        .iter()
+        .filter(|e| matches!(e.payload, EventPayload::NoteOn { .. }))
+        .map(|e| e.target)
+        .collect();
+    assert_eq!(
+        targets.len(),
+        2,
+        "the two parts must be addressed separately"
+    );
+}
+
+#[test]
+fn each_part_is_addressed_to_the_node_holding_its_own_instrument() {
+    // The mapping has to be right, not merely one-to-one: the bass notes must
+    // reach the bass node.
+    let path = write_temp(
+        "addressing",
+        &tiny_midi_on(500_000, &[(0, 72, 100, 0, 240), (2, 36, 90, 0, 240)]),
+    );
+    let import = import_midi(&path, MidiChannels::Melodic).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    // MIDI channels come back in order, and `Song` keeps that order.
+    let song = Song::from_midi(import, SR);
+    let node_for_channel_1 = song.channels[0].1;
+    let node_for_channel_3 = song.channels[1].1;
+
+    let timeline = song.compile();
+    for event in &timeline.events {
+        if let EventPayload::NoteOn { key, .. } = event.payload {
+            let expected = if key == 72 {
+                node_for_channel_1
+            } else {
+                node_for_channel_3
+            };
+            assert_eq!(event.target, expected, "key {key} went to the wrong node");
+        }
+    }
 }

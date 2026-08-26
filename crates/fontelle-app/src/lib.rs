@@ -93,10 +93,23 @@ pub fn resolve_sf2_path(
 
 /// A demo document plus the identities needed to drive it: what
 /// `fontelle-sequencer` compiles, and which engine node its events target.
+/// Mints a distinct engine node id for the nth instrument in a song.
+///
+/// A real graph compiler would allocate these from the document; until one
+/// exists, minting them deterministically here keeps them distinct, which is
+/// all the event routing needs. Index 0 is deliberately skipped, because a
+/// slotmap's zero key is its null key and a null target would match any node
+/// that had not been given an id of its own.
+fn node_id(index: usize) -> NodeId {
+    NodeId::from(slotmap::KeyData::from_ffi(index as u64 + 1))
+}
+
 pub struct Song {
     pub project: Project,
-    pub channel: ChannelId,
-    pub node: NodeId,
+    /// Each document channel and the engine node that renders it, in a stable
+    /// order. One entry for the built-in phrase; one per part for an imported
+    /// file.
+    pub channels: Vec<(ChannelId, NodeId)>,
 }
 
 impl Song {
@@ -105,23 +118,27 @@ impl Song {
     /// route for files would be a second route none of this project's
     /// invariants cover.
     ///
-    /// The import puts every selected MIDI channel's notes on one document
-    /// channel, so this is monotimbral: one instrument for the whole file. See
-    /// `fontelle_assets::midi_import` for why.
+    /// Each of the file's channels becomes a node of its own, so the caller
+    /// supplies one instrument per entry in `channels` and the parts play on
+    /// different sounds.
     pub fn from_midi(import: fontelle_assets::MidiImport, sample_rate: u32) -> Self {
         let mut project = import.project;
         project.tempo_map = TempoMap::new(import.bpm, sample_rate as f64);
         Self {
+            channels: import
+                .channels
+                .iter()
+                .enumerate()
+                .map(|(index, imported)| (imported.channel, node_id(index)))
+                .collect(),
             project,
-            channel: import.channel,
-            node: NodeId::default(),
         }
     }
 
     /// The mapping `fontelle_sequencer::compile` needs to turn document
     /// channels into engine node targets.
     pub fn channel_nodes(&self) -> HashMap<ChannelId, NodeId> {
-        HashMap::from([(self.channel, self.node)])
+        self.channels.iter().copied().collect()
     }
 
     pub fn compile(&self) -> CompiledTimeline {
@@ -234,49 +251,71 @@ pub fn demo_song(root_key: u8, bpm: f64, sample_rate: u32) -> Song {
         muted: false,
     });
 
-    // The engine-side identity the compiled events target. Nothing builds a
-    // real graph-from-project step yet (engine work past this slice — see
-    // PROGRESS.md), so it's minted here alongside the graph in `build_graph`.
-    let mut node_ids: SlotMap<NodeId, ChannelId> = SlotMap::default();
-    let node = node_ids.insert(channel);
-
     Song {
         project,
-        channel,
-        node,
+        channels: vec![(channel, node_id(0))],
     }
 }
 
 /// Assembles the M0 signal chain for `song`: sampler -> mixer track -> stereo
 /// bus pair, ready to hand to `AudioDevice::start_output_stream`.
-pub fn build_graph(song: &Song, sampler: Sampler, store: Arc<SampleStore>) -> CompiledGraph {
+/// Builds the audio graph for `song`: one sampler per entry in
+/// `song.channels`, in the same order, all summing onto one stereo bus and
+/// through a single mixer track.
+///
+/// # Panics
+///
+/// If `samplers` and `song.channels` differ in length. A part with no
+/// instrument would be silent and an instrument with no part would never be
+/// addressed; both are far easier to diagnose here than by ear.
+pub fn build_graph(song: &Song, samplers: Vec<Sampler>, store: Arc<SampleStore>) -> CompiledGraph {
+    build_graph_with_gain(song, samplers, store, DEMO_TRACK_GAIN_DB)
+}
+
+/// As [`build_graph`], with the mixer track's fader set explicitly.
+pub fn build_graph_with_gain(
+    song: &Song,
+    samplers: Vec<Sampler>,
+    store: Arc<SampleStore>,
+    gain_db: f32,
+) -> CompiledGraph {
+    assert_eq!(
+        samplers.len(),
+        song.channels.len(),
+        "build_graph needs exactly one sampler per song channel"
+    );
+    let mut schedule: Vec<ScheduledNode> = song
+        .channels
+        .iter()
+        .zip(samplers)
+        .map(|((_, node), sampler)| ScheduledNode {
+            id: *node,
+            node: Box::new(SamplerNode::new(sampler, store.clone())),
+            input_buffers: Vec::new(),
+            // Every instrument writes the same pair: the graph clears the bus
+            // each block and sources add into it.
+            output_buffers: vec![0, 1],
+        })
+        .collect();
+    schedule.push(ScheduledNode {
+        id: NodeId::default(),
+        node: Box::new(MixerTrackNode {
+            // Headroom, deliberately. Coincident voices sum well past full
+            // scale — three at whatever gain the SF2's own InitialAttenuation
+            // gave them, often 0 dB — which clips at the device and reads as a
+            // bug in the sampler. With a whole arrangement summing here rather
+            // than one part, the fader matters more, not less. Velocity pulls
+            // its weight now, but a fader with headroom is the correct place
+            // to solve this, not a velocity value chosen to hide it.
+            gain_db,
+            ..MixerTrackNode::new()
+        }),
+        // Same buffers in and out: processes in place.
+        input_buffers: vec![0, 1],
+        output_buffers: vec![0, 1],
+    });
     let mut graph = CompiledGraph {
-        schedule: vec![
-            ScheduledNode {
-                id: song.node,
-                node: Box::new(SamplerNode::new(sampler, store)),
-                input_buffers: Vec::new(),
-                output_buffers: vec![0, 1],
-            },
-            ScheduledNode {
-                id: NodeId::default(),
-                node: Box::new(MixerTrackNode {
-                    // Headroom, deliberately. The demo's chord is three voices
-                    // at whatever gain the SF2's own InitialAttenuation gave
-                    // them — often 0 dB — and three coincident voices sum well
-                    // past full scale, which clips at the device and reads as a
-                    // bug in the sampler. Velocity now pulls its weight (the
-                    // chord's velocity of 100 is already about -4 dB), but a
-                    // fader with headroom is the correct place to solve this,
-                    // not a velocity value chosen to hide it.
-                    gain_db: DEMO_TRACK_GAIN_DB,
-                    ..MixerTrackNode::new()
-                }),
-                // Same buffers in and out: processes in place.
-                input_buffers: vec![0, 1],
-                output_buffers: vec![0, 1],
-            },
-        ],
+        schedule,
         buffer_pool: BufferPool::with_capacity(2, BLOCK_SIZE),
     };
     graph.prepare(SAMPLE_RATE as f32, BLOCK_SIZE as u32);
@@ -297,8 +336,13 @@ pub const PLAYBACK_QUALITY: fontelle_dsp::Interpolation = fontelle_dsp::Interpol
 /// See [`PLAYBACK_QUALITY`].
 pub const RENDER_QUALITY: fontelle_dsp::Interpolation = fontelle_dsp::Interpolation::High;
 
-/// Enough headroom for the demo's three-voice chord not to clip. Not a general
-/// answer — a real project needs a master limiter, which is later work.
+/// Enough headroom for the demo's three-voice chord not to clip.
+///
+/// Explicitly not a general answer. A whole arrangement summing through this
+/// fader lands around 20 dB down, which is why it is a default rather than a
+/// constant: `--gain-db` overrides it, and the render reports its peak so the
+/// choice can be made on evidence. The real answer is a master limiter, which
+/// is later work.
 pub const DEMO_TRACK_GAIN_DB: f32 = -12.0;
 
 /// Renders `song` through `graph` offline, as fast as the CPU allows, into

@@ -9,7 +9,9 @@ mod sf2_import;
 mod sfz_import;
 
 pub use library::{LibraryEntry, SoundfontLibrary};
-pub use midi_import::{MidiChannelSummary, MidiChannels, MidiImport, import_midi};
+pub use midi_import::{
+    ImportedMidiChannel, MidiChannelSummary, MidiChannels, MidiImport, import_midi,
+};
 pub use peaks::{PeakData, generate_peaks};
 pub use sf2_import::{
     ImportError, ImportedZone, ImportedZones, PresetInfo, import_sf2, import_sf2_preset,

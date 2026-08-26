@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use fontelle_app::{Song, build_graph, demo_song};
+use fontelle_app::{Song, demo_song};
 use fontelle_core::{PrepareContext, SampleStore, Sampler};
 use fontelle_engine::{AudioDevice, BLOCK_SIZE};
 use fontelle_types::PPQN;
@@ -34,6 +34,7 @@ fn play_sf2(
     preset: usize,
     render_wav: Option<&std::path::Path>,
     midi: Option<(&std::path::Path, fontelle_assets::MidiChannels)>,
+    gain_db: f32,
 ) -> Result<(), String> {
     // SF2 files store presets in arbitrary order, so "preset 0" is regularly
     // not the instrument anyone wants — `Secret_of_Mana.sf2` opens with a
@@ -52,46 +53,85 @@ fn play_sf2(
     println!("  (choose another with --preset <index>)\n");
 
     let mut store = SampleStore::new();
-    let patch = fontelle_assets::import_sf2_preset(path, preset, &mut store)
-        .map_err(|e| format!("failed to import {}: {e}", path.display()))?;
 
-    let mut sampler = Sampler::new(patch);
-    sampler.prepare(&PrepareContext {
-        sample_rate: SAMPLE_RATE as f32,
-        max_block_size: BLOCK_SIZE as u32,
-    });
-
-    let song = match midi {
+    // One instrument per part. For the built-in phrase that is a single
+    // `--preset`; for a MIDI file it is whatever each channel's program change
+    // asked for, which is what makes an arrangement play as written rather
+    // than every part on one sound.
+    let (song, samplers) = match midi {
         Some((midi_path, channels)) => {
             let import = fontelle_assets::import_midi(midi_path, channels)
                 .map_err(|e| format!("failed to import {}: {e}", midi_path.display()))?;
             println!("{}:", midi_path.display());
-            for summary in &import.source_channels {
-                // Zero-based internally, one-based here: every DAW and every
-                // piece of MIDI documentation counts channels from 1.
-                let taken = if channels_accept(channels, summary.channel) {
-                    "playing"
-                } else {
-                    "skipped"
-                };
-                let program = summary
+
+            let mut patches = Vec::new();
+            for part in &import.channels {
+                let chosen = choose_preset(&presets, part, preset);
+                let name = presets
+                    .get(chosen)
+                    .map(|p| p.name.as_str())
+                    .unwrap_or("<unknown>");
+                let asked = part
                     .program
                     .map(|p| format!(" program={p}"))
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| " (no program change)".to_string());
+                // Zero-based internally, one-based here: every DAW and every
+                // piece of MIDI documentation counts channels from 1.
                 println!(
-                    "  {taken}  channel {:<2} {:>6} notes{program}",
-                    summary.channel + 1,
-                    summary.notes
+                    "  channel {:<2} {:>6} notes{asked} -> preset {chosen} \"{name}\"",
+                    part.midi_channel + 1,
+                    part.notes
+                );
+                patches.push(
+                    fontelle_assets::import_sf2_preset(path, chosen, &mut store)
+                        .map_err(|e| format!("failed to import preset {chosen}: {e}"))?,
+                );
+            }
+            for skipped in &import.skipped {
+                println!(
+                    "  channel {:<2} {:>6} notes  skipped{}",
+                    skipped.channel + 1,
+                    skipped.notes,
+                    if skipped.channel == 9 {
+                        " (percussion — --midi-all to include it)"
+                    } else {
+                        ""
+                    }
                 );
             }
             println!(
                 "  {:.1} bpm  (--midi-channel <n> to isolate one, 1-based)\n",
                 import.bpm
             );
-            Song::from_midi(import, SAMPLE_RATE)
+            (Song::from_midi(import, SAMPLE_RATE), patches)
         }
-        None => demo_song(root_key, BPM, SAMPLE_RATE),
+        None => {
+            let patch = fontelle_assets::import_sf2_preset(path, preset, &mut store)
+                .map_err(|e| format!("failed to import {}: {e}", path.display()))?;
+            (demo_song(root_key, BPM, SAMPLE_RATE), vec![patch])
+        }
     };
+
+    let quality = if render_wav.is_some() {
+        // An offline bounce is not real-time, so it renders at export quality
+        // rather than at whatever the patch asks for during playback.
+        fontelle_app::RENDER_QUALITY
+    } else {
+        fontelle_app::PLAYBACK_QUALITY
+    };
+    let samplers: Vec<Sampler> = samplers
+        .into_iter()
+        .map(|patch| {
+            let mut sampler = Sampler::new(patch);
+            sampler.prepare(&PrepareContext {
+                sample_rate: SAMPLE_RATE as f32,
+                max_block_size: BLOCK_SIZE as u32,
+            });
+            sampler.set_quality(quality);
+            sampler
+        })
+        .collect();
+
     let timeline = song.compile();
 
     // One beat of tail so the final chord's release rings out instead of
@@ -103,10 +143,8 @@ fn play_sf2(
     // path, so the WAV is what you'd have heard — inspectable without a
     // sound card.
     if let Some(out) = render_wav {
-        // An offline bounce is not real-time, so it renders at export quality
-        // rather than at whatever the patch asks for during playback.
-        sampler.set_quality(fontelle_app::RENDER_QUALITY);
-        let mut graph = build_graph(&song, sampler, Arc::new(store));
+        let mut graph =
+            fontelle_app::build_graph_with_gain(&song, samplers, Arc::new(store), gain_db);
         let pcm = fontelle_app::render_offline(&song, &mut graph, duration_samples);
         let clipped = fontelle_app::write_wav16(out, &pcm, 2, SAMPLE_RATE)
             .map_err(|e| format!("failed to write {}: {e}", out.display()))?;
@@ -126,7 +164,7 @@ fn play_sf2(
         return Ok(());
     }
 
-    let graph = build_graph(&song, sampler, Arc::new(store));
+    let graph = fontelle_app::build_graph_with_gain(&song, samplers, Arc::new(store), gain_db);
     let mut device = AudioDevice::default_host();
     println!(
         "Fontelle: {} note events from {} on {:?}",
@@ -150,13 +188,43 @@ fn play_sf2(
     Ok(())
 }
 
-/// Mirrors `MidiChannels`' own rule so the listing can say what it skipped.
-fn channels_accept(channels: fontelle_assets::MidiChannels, channel: u8) -> bool {
-    match channels {
-        fontelle_assets::MidiChannels::Melodic => channel != 9,
-        fontelle_assets::MidiChannels::All => true,
-        fontelle_assets::MidiChannels::Only(wanted) => channel == wanted,
-    }
+/// Picks the SF2 preset a MIDI part asked for.
+///
+/// General MIDI puts melodic programs in bank 0 and drum kits in bank 128, and
+/// a program change names the program within that bank. Matching on both is
+/// what lets a file's bass part come out as a bass; matching on program alone
+/// would hand a drum channel whichever melodic instrument shared its number.
+///
+/// Falls back to `default_preset` when the part named no program, or named one
+/// the file does not contain — a soundfont is under no obligation to be a
+/// complete General MIDI set, and playing the part on something is better than
+/// dropping it silently.
+fn choose_preset(
+    presets: &[fontelle_assets::PresetInfo],
+    part: &fontelle_assets::ImportedMidiChannel,
+    default_preset: usize,
+) -> usize {
+    const PERCUSSION_BANK: u16 = 128;
+    let bank = if part.is_percussion {
+        PERCUSSION_BANK
+    } else {
+        0
+    };
+    part.program
+        .and_then(|program| {
+            presets
+                .iter()
+                .find(|p| p.bank == bank && p.program == program as u16)
+        })
+        // A percussion part with no program change still wants a kit, and
+        // every General MIDI bank 128 starts with one.
+        .or_else(|| {
+            part.is_percussion
+                .then(|| presets.iter().find(|p| p.bank == PERCUSSION_BANK))
+                .flatten()
+        })
+        .map(|p| p.index)
+        .unwrap_or(default_preset)
 }
 
 fn main() {
@@ -204,7 +272,25 @@ fn main() {
         };
         let midi = midi_path.as_deref().map(|p| (p, midi_channels));
 
-        if let Err(e) = play_sf2(&path, root_key, preset, render_wav.as_deref(), midi) {
+        // The demo phrase's three coincident voices need the default headroom;
+        // a whole arrangement through the same fader lands about 20 dB down.
+        // Until there is a master limiter, that is a judgement about the
+        // material rather than something the tool can settle.
+        let gain_db = args
+            .iter()
+            .position(|a| a == "--gain-db")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(fontelle_app::DEMO_TRACK_GAIN_DB);
+
+        if let Err(e) = play_sf2(
+            &path,
+            root_key,
+            preset,
+            render_wav.as_deref(),
+            midi,
+            gain_db,
+        ) {
             eprintln!("Fontelle: {e}");
             std::process::exit(1);
         }
@@ -220,6 +306,6 @@ fn main() {
          -> fontelle-sequencer::compile -> CompiledTimeline over triple_buffer \
          (run with `--play-sf2 <path.sf2> [--preset <n>] [--key <note>] \
          [--play-midi <file.mid>] [--midi-channel <1-16> | --midi-all] \
-         [--render-wav <out.wav>]` for the M0 vertical slice instead)"
+         [--gain-db <db>] [--render-wav <out.wav>]` for the M0 vertical slice instead)"
     )
 }

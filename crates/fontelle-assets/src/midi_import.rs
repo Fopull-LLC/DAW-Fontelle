@@ -6,10 +6,6 @@
 //! timing converted to the project's resolution, and the file's initial tempo.
 //! What is not, and is not pretended to be:
 //!
-//! - Every selected MIDI channel's notes land on **one** Fontelle channel, so
-//!   playback is monotimbral. Multi-timbral playback needs a patch per channel,
-//!   which needs an instrument the user has chosen per channel — that is UI
-//!   work, not import work.
 //! - Only the **first** tempo event is read. Tempo changes need the piecewise
 //!   `TempoMap` that lands with M3; a single constant is what the map can
 //!   currently hold, and inventing an average would be worse than being clear.
@@ -66,7 +62,7 @@ impl MidiChannels {
     }
 }
 
-/// What one of the file's channels held, whether or not it was imported.
+/// A channel present in the file but left out of the import.
 #[derive(Debug, Clone)]
 pub struct MidiChannelSummary {
     /// Zero-based, so channel 10 in a DAW's UI is 9 here.
@@ -76,14 +72,32 @@ pub struct MidiChannelSummary {
     pub program: Option<u8>,
 }
 
+/// One of the file's channels, as a document channel of its own.
+#[derive(Debug, Clone)]
+pub struct ImportedMidiChannel {
+    /// Zero-based, so channel 10 in a DAW's UI is 9 here.
+    pub midi_channel: u8,
+    pub channel: ChannelId,
+    pub notes: usize,
+    /// From the channel's first program-change event. A caller with a General
+    /// MIDI soundfont can use it to choose the preset the file asked for
+    /// instead of playing every part on one sound.
+    pub program: Option<u8>,
+    /// True for MIDI channel 10, whose note numbers select drums rather than
+    /// pitches. Carried through import so whoever assigns instruments doesn't
+    /// have to rediscover it.
+    pub is_percussion: bool,
+}
+
 pub struct MidiImport {
     pub project: Project,
-    /// The single document channel every imported note was placed on.
-    pub channel: ChannelId,
-    /// Every channel in the file that carried notes, in channel order —
-    /// including ones this import filtered out, so a caller can say what it
-    /// skipped rather than leaving the user to wonder where the drums went.
-    pub source_channels: Vec<MidiChannelSummary>,
+    /// One document channel per MIDI channel that carried notes, in channel
+    /// order.
+    pub channels: Vec<ImportedMidiChannel>,
+    /// Channels the file contained that this import left out, so a caller can
+    /// say what it skipped rather than leaving the user to wonder where the
+    /// drums went.
+    pub skipped: Vec<MidiChannelSummary>,
     pub bpm: f64,
 }
 
@@ -136,7 +150,10 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
     };
 
     let mut us_per_quarter = None;
-    let mut notes: SlotMap<NoteId, Note> = SlotMap::with_key();
+    // Notes are collected per MIDI channel, so each becomes an instrument of
+    // its own rather than being merged into one stream that has to share a
+    // patch — a bass part and a lead part are different sounds.
+    let mut per_channel: HashMap<u8, SlotMap<NoteId, Note>> = HashMap::new();
     let mut pending: HashMap<(u8, u8), Pending> = HashMap::new();
     let mut counts: HashMap<u8, usize> = HashMap::new();
     let mut programs: HashMap<u8, u8> = HashMap::new();
@@ -176,7 +193,7 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
                         MidiMessage::NoteOff { key, .. } | MidiMessage::NoteOn { key, .. } => {
                             if let Some(start) = pending.remove(&(channel, key.as_int())) {
                                 push_note(
-                                    &mut notes,
+                                    per_channel.entry(channel).or_default(),
                                     key.as_int(),
                                     &start,
                                     to_project_ticks(absolute),
@@ -190,24 +207,14 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
             }
         }
         // Anything still held at the end of a track never got its note-off.
-        for ((_, key), start) in pending.drain() {
+        for ((channel, key), start) in pending.drain() {
             let end = start.start + STUCK_NOTE_LENGTH;
-            push_note(&mut notes, key, &start, end);
+            push_note(per_channel.entry(channel).or_default(), key, &start, end);
         }
     }
 
     let us_per_quarter = us_per_quarter.unwrap_or(DEFAULT_US_PER_QUARTER);
     let bpm = 60_000_000.0 / us_per_quarter as f64;
-
-    let mut source_channels: Vec<MidiChannelSummary> = counts
-        .into_iter()
-        .map(|(channel, notes)| MidiChannelSummary {
-            channel,
-            notes,
-            program: programs.get(&channel).copied(),
-        })
-        .collect();
-    source_channels.sort_by_key(|s| s.channel);
 
     let name = path
         .file_stem()
@@ -216,42 +223,88 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
     let mut project = Project::new(&name);
     project.tempo_map = TempoMap::new(bpm, 48_000.0);
 
-    let channel = project.channels.insert(Channel {
-        name: name.clone(),
-        color: [0x4f, 0x8f, 0xd0, 0xff],
-        mixer_track: Default::default(),
-        patch_data: Vec::new(),
-    });
-    let lane = project.lanes.insert(Lane {
-        name,
-        height: 32.0,
-        color: [0x4f, 0x8f, 0xd0, 0xff],
-        muted: false,
-        locked: false,
-    });
+    let mut midi_channels: Vec<u8> = per_channel.keys().copied().collect();
+    midi_channels.sort_unstable();
 
-    let length = notes
-        .values()
-        .map(|n| n.start + n.length)
-        .max()
-        .unwrap_or(0);
-    project.clips.insert(Clip {
-        lane,
-        start: 0,
-        length,
-        source: ClipSource::Notes(NoteData { channel, notes }),
-        prefab_link: None,
-        color: None,
-        muted: false,
-    });
+    let mut imported = Vec::new();
+    for midi_channel in midi_channels {
+        let notes = per_channel.remove(&midi_channel).unwrap_or_default();
+        let is_percussion = midi_channel == PERCUSSION_CHANNEL;
+        let label = if is_percussion {
+            format!("{name} — drums")
+        } else {
+            format!("{name} — channel {}", midi_channel + 1)
+        };
+
+        let channel = project.channels.insert(Channel {
+            name: label.clone(),
+            color: CHANNEL_COLOURS[midi_channel as usize % CHANNEL_COLOURS.len()],
+            mixer_track: Default::default(),
+            patch_data: Vec::new(),
+        });
+        let lane = project.lanes.insert(Lane {
+            name: label,
+            height: 32.0,
+            color: CHANNEL_COLOURS[midi_channel as usize % CHANNEL_COLOURS.len()],
+            muted: false,
+            locked: false,
+        });
+        let length = notes
+            .values()
+            .map(|n| n.start + n.length)
+            .max()
+            .unwrap_or(0);
+        let note_count = notes.len();
+        project.clips.insert(Clip {
+            lane,
+            start: 0,
+            length,
+            source: ClipSource::Notes(NoteData { channel, notes }),
+            prefab_link: None,
+            color: None,
+            muted: false,
+        });
+
+        imported.push(ImportedMidiChannel {
+            midi_channel,
+            channel,
+            notes: note_count,
+            program: programs.get(&midi_channel).copied(),
+            is_percussion,
+        });
+    }
+
+    let mut skipped: Vec<MidiChannelSummary> = counts
+        .into_iter()
+        .filter(|(channel, _)| !channels.accepts(*channel))
+        .map(|(channel, notes)| MidiChannelSummary {
+            channel,
+            notes,
+            program: programs.get(&channel).copied(),
+        })
+        .collect();
+    skipped.sort_by_key(|s| s.channel);
 
     Ok(MidiImport {
         project,
-        channel,
-        source_channels,
+        channels: imported,
+        skipped,
         bpm,
     })
 }
+
+/// Enough distinct lane colours that an imported file does not arrive as
+/// sixteen identical rows.
+const CHANNEL_COLOURS: [[u8; 4]; 8] = [
+    [0x4f, 0x8f, 0xd0, 0xff],
+    [0xd0, 0x7f, 0x4f, 0xff],
+    [0x6f, 0xc0, 0x7f, 0xff],
+    [0xc0, 0x6f, 0xb0, 0xff],
+    [0xd0, 0xc0, 0x5f, 0xff],
+    [0x5f, 0xc0, 0xc0, 0xff],
+    [0x9f, 0x8f, 0xd0, 0xff],
+    [0xa0, 0xa0, 0xa0, 0xff],
+];
 
 fn push_note(notes: &mut SlotMap<NoteId, Note>, key: u8, start: &Pending, end: Tick) {
     notes.insert(Note {
