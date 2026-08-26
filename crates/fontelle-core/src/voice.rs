@@ -92,6 +92,38 @@ pub const MAX_MOD_ENVELOPES: usize = 3;
 /// imported.
 pub const MAX_LFOS: usize = 4;
 
+/// Which envelopes and LFOs at least one route reads, as `(envelopes, lfos)`.
+/// Index 0 of `envelopes` is the amp envelope, which is advanced regardless
+/// because it drives the amp stage; the flag is there so the indices line up
+/// with `ModSource::Envelope`.
+///
+/// `via` counts as much as `source` does: a route whose depth is scaled by an
+/// LFO needs that LFO turning even though it is not the thing being shaped.
+fn sources_in_use(
+    matrix: &crate::mod_matrix::ModMatrix,
+) -> ([bool; MAX_MOD_ENVELOPES + 1], [bool; MAX_LFOS]) {
+    let mut envelopes = [false; MAX_MOD_ENVELOPES + 1];
+    let mut lfos = [false; MAX_LFOS];
+    for route in &matrix.routes {
+        for source in [Some(route.source), route.via].into_iter().flatten() {
+            match source {
+                crate::mod_matrix::ModSource::Envelope(index) => {
+                    if let Some(slot) = envelopes.get_mut(index as usize) {
+                        *slot = true;
+                    }
+                }
+                crate::mod_matrix::ModSource::Lfo(index) => {
+                    if let Some(slot) = lfos.get_mut(index as usize) {
+                        *slot = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    (envelopes, lfos)
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct LayerPlayback {
     active: bool,
@@ -161,6 +193,9 @@ pub struct Voice {
     /// a character an instrument can want but not a default anyone can
     /// predict.
     lfos: [fontelle_dsp::Oscillator; MAX_LFOS],
+    /// Samples since this note started, for `Lfo::delay_s`. One counter for
+    /// the voice rather than one per LFO: they all start together.
+    age_samples: u64,
 }
 
 impl Voice {
@@ -178,6 +213,7 @@ impl Voice {
             amp_env: fontelle_dsp::EnvelopeGenerator::new(),
             mod_envs: [fontelle_dsp::EnvelopeGenerator::new(); MAX_MOD_ENVELOPES],
             lfos: [fontelle_dsp::Oscillator::new(); MAX_LFOS],
+            age_samples: 0,
         }
     }
 
@@ -216,6 +252,7 @@ impl Voice {
         for lfo in &mut self.lfos {
             lfo.reset();
         }
+        self.age_samples = 0;
 
         for (slot, layer) in self.layers.iter_mut().zip(patch.layers.iter()) {
             let in_key_range = key >= layer.key_range.0 && key <= layer.key_range.1;
@@ -334,10 +371,14 @@ impl Voice {
         // audible as a buzz on fast attacks.
         let mut env_levels = [0.0f32; MAX_MOD_ENVELOPES];
         let mut lfo_values = [0.0f32; MAX_LFOS];
-        if !patch.mod_matrix.routes.is_empty() {
-            // Skipped entirely when nothing routes anywhere, which is most
-            // imported soundfonts: an envelope nobody reads costs a `Vec`
-            // check rather than a stage advance per sample.
+        // Only the sources some route actually names are advanced. An SF2
+        // import gives every patch a modulation envelope and two LFOs whether
+        // it uses them or not, and one unread envelope is a stage advance per
+        // sample per voice — the same order as the amp envelope, for nothing.
+        // Scanning the routes to find out is O(routes) per block against
+        // O(frames) saved.
+        let (env_used, lfo_used) = sources_in_use(&patch.mod_matrix);
+        {
             for (index, config) in patch
                 .envelopes
                 .iter()
@@ -345,6 +386,9 @@ impl Voice {
                 .take(MAX_MOD_ENVELOPES)
                 .enumerate()
             {
+                if !env_used[index + 1] {
+                    continue;
+                }
                 let env = &mut self.mod_envs[index];
                 // Read before advancing: the value a destination uses this
                 // block is the one at its start, not its end.
@@ -354,9 +398,21 @@ impl Voice {
                 }
             }
             for (index, lfo) in patch.lfos.iter().take(MAX_LFOS).enumerate() {
-                lfo_values[index] =
-                    self.lfos[index].advance_block(lfo.shape, lfo.rate_hz, sample_rate, frames)
-                        * lfo.depth;
+                if !lfo_used[index] {
+                    continue;
+                }
+                let value =
+                    self.lfos[index].advance_block(lfo.shape, lfo.rate_hz, sample_rate, frames);
+                // Held at rest until the delay elapses, and the oscillator is
+                // advanced regardless — one that only started turning after
+                // its delay would always begin at the same point in its cycle
+                // as one with no delay at all, which is not what a delay is.
+                let delay_samples = (lfo.delay_s.max(0.0) * sample_rate) as u64;
+                lfo_values[index] = if self.age_samples >= delay_samples {
+                    value * lfo.depth
+                } else {
+                    0.0
+                };
             }
         }
 
@@ -540,6 +596,8 @@ impl Voice {
                 right[frame] += mixed.1 * env;
             }
         }
+
+        self.age_samples += frames as u64;
 
         let any_layer_active = self.layers.iter().any(|s| s.active);
         if !self.amp_env.is_active() || !any_layer_active {
@@ -1652,6 +1710,7 @@ mod tests {
             rate_hz: 4.0,
             depth: 1.0,
             shape: fontelle_dsp::OscKind::Sine,
+            delay_s: 0.0,
         }];
         // ±12 dB: unmistakable, and well short of the 96 dB full scale.
         patch.mod_matrix = mod_route(ModSource::Lfo(0), ModDest::LayerGain(0), 12.0 / 96.0);
@@ -1685,6 +1744,7 @@ mod tests {
             rate_hz: 2.0,
             depth: 1.0,
             shape: fontelle_dsp::OscKind::Sine,
+            delay_s: 0.0,
         }];
         // ±1200 cents: an octave each way, so the zero-crossing count moves
         // far enough to read off a short window.
@@ -1719,6 +1779,7 @@ mod tests {
             rate_hz: 4.0,
             depth: 1.0,
             shape: fontelle_dsp::OscKind::Sine,
+            delay_s: 0.0,
         }];
 
         let out = render_blocks(&patch, &store, 24_000, 128);
@@ -1727,6 +1788,75 @@ mod tests {
         assert!(
             (first - later).abs() < 1e-5,
             "an LFO nothing routes must not reach the output: {first} against {later}"
+        );
+    }
+
+    /// Vibrato that begins on the note's first sample is the single most
+    /// recognisable way a sampled string section sounds synthetic.
+    #[test]
+    fn an_lfos_delay_holds_it_at_rest_before_it_starts() {
+        let mut store = SampleStore::new();
+        let mut patch = flat_patch(&mut store, 1.0, 96_000, 0.0);
+        patch.lfos = vec![crate::patch::Lfo {
+            rate_hz: 4.0,
+            depth: 1.0,
+            shape: fontelle_dsp::OscKind::Sine,
+            // Half a second: past the LFO's first two peaks.
+            delay_s: 0.5,
+        }];
+        patch.mod_matrix = mod_route(ModSource::Lfo(0), ModDest::LayerGain(0), 12.0 / 96.0);
+
+        let out = render_blocks(&patch, &store, 48_000, 128);
+        // The LFO's first peak is 3 000 samples in and its first trough 9 000.
+        let early_peak = rms(&out[2_600..3_400]);
+        let early_trough = rms(&out[8_600..9_400]);
+        assert!(
+            (early_peak / early_trough - 1.0).abs() < 0.05,
+            "nothing may move before the delay elapses: {early_peak} against \
+             {early_trough}"
+        );
+
+        // 0.5 s is 24 000 samples, and the LFO's phase has kept turning: two
+        // full cycles at 4 Hz, so it emerges where it would have been anyway.
+        let late_peak = rms(&out[26_600..27_400]);
+        let late_trough = rms(&out[32_600..33_400]);
+        assert!(
+            late_peak / late_trough > 8.0,
+            "and it must be at full depth after: {late_peak} against {late_trough}"
+        );
+    }
+
+    /// An LFO used only as a route's `via` still has to turn. It is not the
+    /// thing being shaped, so a scan that looked at `source` alone would leave
+    /// it parked at rest — and a route scaled by a source that never moves is
+    /// a route that never fires.
+    #[test]
+    fn an_lfo_used_only_to_scale_another_route_still_runs() {
+        let mut store = SampleStore::new();
+        let mut patch = flat_patch(&mut store, 1.0, 96_000, 0.0);
+        patch.lfos = vec![crate::patch::Lfo {
+            rate_hz: 4.0,
+            depth: 1.0,
+            shape: fontelle_dsp::OscKind::Sine,
+            delay_s: 0.0,
+        }];
+        patch.mod_matrix = ModMatrix {
+            routes: vec![ModRoute {
+                source: ModSource::Velocity,
+                destination: ModDest::LayerGain(0),
+                depth: 12.0 / 96.0,
+                curve: Curve::Linear,
+                via: Some(ModSource::Lfo(0)),
+                invert: false,
+            }],
+        };
+
+        let out = render_blocks(&patch, &store, 24_000, 128);
+        let peak = rms(&out[2_600..3_400]);
+        let trough = rms(&out[8_600..9_400]);
+        assert!(
+            peak / trough > 8.0,
+            "the via LFO must be running: {peak} against {trough}"
         );
     }
 }

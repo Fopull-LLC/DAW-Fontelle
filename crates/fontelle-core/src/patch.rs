@@ -35,6 +35,13 @@ pub struct Lfo {
     pub rate_hz: f32,
     pub depth: f32,
     pub shape: fontelle_dsp::OscKind,
+    /// How long after note-on before the LFO starts, in seconds.
+    ///
+    /// Not cosmetic: vibrato that begins on the note's first sample is the
+    /// single most recognisable way a sampled string section sounds synthetic.
+    /// Every real player leans into it, and SF2 has a generator
+    /// (`delayVibLFO`) for exactly this.
+    pub delay_s: f32,
 }
 
 #[derive(Debug, Clone, Copy)]

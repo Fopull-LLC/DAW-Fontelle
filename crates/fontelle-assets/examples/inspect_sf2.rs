@@ -100,6 +100,36 @@ fn main() {
         println!("  env {i}: {e:?}");
     }
 
+    println!("lfos: {}", patch.lfos.len());
+    for (i, l) in patch.lfos.iter().enumerate() {
+        // SF2 names them: 0 is the modulation LFO, 1 the vibrato LFO.
+        let name = match i {
+            0 => " (mod)",
+            1 => " (vib)",
+            _ => "",
+        };
+        println!(
+            "  lfo {i}{name}: {:.3} Hz  delay {:.3}s  depth {:.3}  {:?}",
+            l.rate_hz, l.delay_s, l.depth, l.shape
+        );
+    }
+
+    // The routes are what actually make a patch move; a file whose modulation
+    // generators were dropped on the way in reads as an empty matrix here
+    // rather than as a patch that merely sounds a bit flat.
+    println!("mod matrix: {} route(s)", patch.mod_matrix.routes.len());
+    for r in &patch.mod_matrix.routes {
+        println!(
+            "  {:?} -> {:?}  depth {:+.4} ({:+.1} in the destination's units)              curve={:?}{}",
+            r.source,
+            r.destination,
+            r.depth,
+            r.depth * r.destination.full_scale(),
+            r.curve,
+            if r.invert { " inverted" } else { "" }
+        );
+    }
+
     println!(
         "voice_config: polyphony={} steal={:?}",
         patch.voice_config.polyphony, patch.voice_config.steal_policy

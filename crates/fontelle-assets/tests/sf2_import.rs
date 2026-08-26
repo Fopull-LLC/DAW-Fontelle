@@ -43,9 +43,23 @@ const GEN_START_ADDRS_OFFSET: u16 = 0;
 const GEN_END_ADDRS_OFFSET: u16 = 1;
 const GEN_STARTLOOP_ADDRS_OFFSET: u16 = 2;
 const GEN_ENDLOOP_ADDRS_OFFSET: u16 = 3;
+const GEN_MOD_LFO_TO_PITCH: u16 = 5;
+const GEN_VIB_LFO_TO_PITCH: u16 = 6;
+const GEN_MOD_ENV_TO_PITCH: u16 = 7;
 const GEN_INITIAL_FILTER_FC: u16 = 8;
 const GEN_INITIAL_FILTER_Q: u16 = 9;
+const GEN_MOD_LFO_TO_FILTER_FC: u16 = 10;
+const GEN_MOD_ENV_TO_FILTER_FC: u16 = 11;
+const GEN_MOD_LFO_TO_VOLUME: u16 = 13;
 const GEN_PAN: u16 = 17;
+const GEN_DELAY_MOD_LFO: u16 = 21;
+const GEN_FREQ_MOD_LFO: u16 = 22;
+const GEN_DELAY_VIB_LFO: u16 = 23;
+const GEN_FREQ_VIB_LFO: u16 = 24;
+const GEN_ATTACK_MOD_ENV: u16 = 26;
+const GEN_DECAY_MOD_ENV: u16 = 28;
+const GEN_SUSTAIN_MOD_ENV: u16 = 29;
+const GEN_RELEASE_MOD_ENV: u16 = 30;
 const GEN_DELAY_VOL_ENV: u16 = 33;
 const GEN_ATTACK_VOL_ENV: u16 = 34;
 const GEN_HOLD_VOL_ENV: u16 = 35;
@@ -108,6 +122,10 @@ struct Sf2Fixture {
     origpitch: u8,
     pitchadj: i8,
     zone: ZoneSpec,
+    /// Instrument zones after the first. A real multi-zone instrument is how
+    /// a key split or a stereo sample pair is written, and the per-layer
+    /// modulation destinations only mean anything against more than one.
+    extra_zones: Vec<ZoneSpec>,
 }
 
 /// Assembles a complete, spec-valid single-preset/single-instrument/single-sample
@@ -178,25 +196,38 @@ fn build_sf2(fixture: &Sf2Fixture) -> Vec<u8> {
         inst.extend_from_slice(&zstr("TestInst", 20));
         inst.extend_from_slice(&0u16.to_le_bytes());
         inst.extend_from_slice(&zstr("EOS", 20));
-        inst.extend_from_slice(&1u16.to_le_bytes());
+        inst.extend_from_slice(&(fixture.extra_zones.len() as u16 + 1).to_le_bytes());
         write_chunk(buf, b"inst", &inst);
 
-        // ibag: instrument zone 0 points at generator 0, plus the terminator.
+        // ibag: one entry per instrument zone, each naming where its
+        // generators start, plus the terminator entry that names the end of
+        // the last zone's.
+        let zones: Vec<&ZoneSpec> = std::iter::once(&fixture.zone)
+            .chain(fixture.extra_zones.iter())
+            .collect();
         let mut ibag = Vec::new();
-        ibag.extend_from_slice(&0u16.to_le_bytes());
-        ibag.extend_from_slice(&0u16.to_le_bytes());
-        ibag.extend_from_slice(&(fixture.zone.generators.len() as u16 + 1).to_le_bytes());
+        let mut generator_index = 0u16;
+        for zone in &zones {
+            ibag.extend_from_slice(&generator_index.to_le_bytes());
+            ibag.extend_from_slice(&0u16.to_le_bytes());
+            // +1 for the SampleID generator every zone ends with.
+            generator_index += zone.generators.len() as u16 + 1;
+        }
+        ibag.extend_from_slice(&generator_index.to_le_bytes());
         ibag.extend_from_slice(&0u16.to_le_bytes());
         write_chunk(buf, b"ibag", &ibag);
 
         write_chunk(buf, b"imod", &[0u8; 10]);
 
-        // igen: the zone's generators, ending with SampleID=0, plus the terminator.
+        // igen: every zone's generators, each ending with SampleID=0, plus the
+        // terminator.
         let mut igen = Vec::new();
-        for g in &fixture.zone.generators {
-            write_gen(&mut igen, g);
+        for zone in &zones {
+            for g in &zone.generators {
+                write_gen(&mut igen, g);
+            }
+            write_gen(&mut igen, &gen_val(53, 0)); // GeneratorType::SampleID -> sample 0
         }
-        write_gen(&mut igen, &gen_val(53, 0)); // GeneratorType::SampleID -> sample 0
         igen.extend_from_slice(&[0u8; 4]); // terminator
         write_chunk(buf, b"igen", &igen);
 
@@ -251,6 +282,7 @@ fn imports_key_vel_range_root_key_and_tuning() {
                 gen_val(GEN_SAMPLE_MODES, 0), // no loop
             ],
         },
+        extra_zones: Vec::new(),
     };
     let path = write_fixture_to_temp_file("basic", &build_sf2(&fixture));
 
@@ -314,6 +346,7 @@ fn note_outside_the_fixtures_key_range_would_be_silent() {
                 gen_range(GEN_VEL_RANGE, 0, 127),
             ],
         },
+        extra_zones: Vec::new(),
     };
     let path = write_fixture_to_temp_file("range", &build_sf2(&fixture));
 
@@ -368,6 +401,7 @@ fn imports_loop_points_gain_pan_and_volume_envelope() {
                 gen_val(GEN_END_ADDRS_OFFSET, 0),
             ],
         },
+        extra_zones: Vec::new(),
     };
     let path = write_fixture_to_temp_file("env", &build_sf2(&fixture));
 
@@ -464,6 +498,7 @@ fn a_sample_header_pointing_past_the_end_of_the_pcm_data_fails_cleanly() {
                 gen_range(GEN_VEL_RANGE, 0, 127),
             ],
         },
+        extra_zones: Vec::new(),
     };
     let path = write_fixture_to_temp_file("truncated-pcm", &build_sf2(&fixture));
 
@@ -699,6 +734,7 @@ fn filter_fixture(generators: Vec<Gen>) -> Sf2Fixture {
         origpitch: 60,
         pitchadj: 0,
         zone: ZoneSpec { generators: all },
+        extra_zones: Vec::new(),
     }
 }
 
@@ -819,5 +855,219 @@ fn a_zone_with_no_filter_gets_no_cutoff_modulation() {
             .routes
             .iter()
             .any(|r| r.destination == ModDest::FilterCutoff(0))
+    );
+}
+
+// --- SF2 modulation: the LFOs, the modulation envelope, and their routes ---
+
+/// The route a source aims at a destination, if the imported patch has one.
+fn route_of(
+    patch: &Patch,
+    source: ModSource,
+    destination: ModDest,
+) -> Option<fontelle_core::ModRoute> {
+    patch
+        .mod_matrix
+        .routes
+        .iter()
+        .find(|r| r.source == source && r.destination == destination)
+        .copied()
+}
+
+/// SF2's `vibLfoToPitch` is what a string patch's vibrato is made of. Without
+/// it every sustained note is dead straight, which is the most recognisable
+/// way a sampled instrument gives itself away.
+#[test]
+fn imports_the_vibrato_lfo_and_its_route_to_pitch() {
+    // 8.176 * 2^(600/1200) = ~11.56 Hz; 0.5 s of delay is 2^(1200*log2(0.5))
+    // timecents = -1200.
+    let patch = import_filter_fixture(
+        "viblfo",
+        vec![
+            gen_val(GEN_VIB_LFO_TO_PITCH, 50), // +-50 cents
+            gen_val(GEN_FREQ_VIB_LFO, 600),
+            gen_val(GEN_DELAY_VIB_LFO, -1_200),
+        ],
+    );
+
+    // LFO 1 is the vibrato LFO; LFO 0 is the modulation LFO. Both always
+    // exist, because SF2 gives every zone both.
+    let lfo = patch.lfos[1];
+    let expected_hz = 8.176 * 2f32.powf(600.0 / 1200.0);
+    assert!(
+        (lfo.rate_hz - expected_hz).abs() < expected_hz * 0.001,
+        "rate: got {}, want {expected_hz}",
+        lfo.rate_hz
+    );
+    assert!(
+        (lfo.delay_s - 0.5).abs() < 0.001,
+        "delay: got {}, want 0.5",
+        lfo.delay_s
+    );
+
+    let route = route_of(&patch, ModSource::Lfo(1), ModDest::LayerPitch(0))
+        .expect("vibLfoToPitch must reach the layer's pitch");
+    let expected_depth = 50.0 / ModDest::LayerPitch(0).full_scale();
+    assert!(
+        (route.depth - expected_depth).abs() < 1e-6,
+        "depth should be 50 cents in the destination's units: got {}, want \
+         {expected_depth}",
+        route.depth
+    );
+    assert!(!route.invert, "a bipolar LFO needs no direction bit");
+}
+
+/// The modulation envelope's own destinations. `modEnvToFilterFc` is the
+/// filter envelope every synth-style soundfont patch is built on.
+#[test]
+fn imports_the_modulation_envelope_and_its_route_to_the_filter() {
+    let patch = import_filter_fixture(
+        "modenv",
+        vec![
+            gen_val(GEN_INITIAL_FILTER_FC, 7_200),
+            gen_val(GEN_MOD_ENV_TO_FILTER_FC, 3_600), // three octaves up
+            gen_val(GEN_ATTACK_MOD_ENV, 0),           // 2^0 timecents = 1 s
+            gen_val(GEN_DECAY_MOD_ENV, 0),
+            gen_val(GEN_SUSTAIN_MOD_ENV, 500), // 0.1% units of *decrease*
+            gen_val(GEN_RELEASE_MOD_ENV, 0),
+        ],
+    );
+
+    let env = patch.envelopes[1];
+    assert!(
+        (env.attack_s - 1.0).abs() < 0.001,
+        "attack: got {}",
+        env.attack_s
+    );
+    // SF2's sustainModEnv is the decrease from full scale in 0.1% units, not
+    // an attenuation in centibels the way the volume envelope's is. Reading it
+    // as centibels would make a half-sustained filter envelope collapse to
+    // nothing.
+    assert!(
+        (env.sustain_level - 0.5).abs() < 0.001,
+        "sustain: got {}, want 0.5",
+        env.sustain_level
+    );
+    // Decay is "the time for a 100% change", and this one only has to cover
+    // the 50% down to the sustain level.
+    assert!(
+        (env.decay_s - 0.5).abs() < 0.001,
+        "decay should be half of a 1 s full-span time: got {}",
+        env.decay_s
+    );
+    assert_eq!(
+        env.curve,
+        EnvelopeCurve::Linear,
+        "SF2's modulation envelope is linear in its own units, unlike the \
+         volume envelope"
+    );
+
+    let route = route_of(&patch, ModSource::Envelope(1), ModDest::FilterCutoff(0))
+        .expect("modEnvToFilterFc must reach the filter");
+    let expected_depth = 3_600.0 / ModDest::FilterCutoff(0).full_scale();
+    assert!(
+        (route.depth - expected_depth).abs() < 1e-6,
+        "{}",
+        route.depth
+    );
+}
+
+#[test]
+fn imports_the_modulation_lfos_routes_to_pitch_volume_and_cutoff() {
+    let patch = import_filter_fixture(
+        "modlfo",
+        vec![
+            gen_val(GEN_INITIAL_FILTER_FC, 7_200),
+            gen_val(GEN_FREQ_MOD_LFO, 0), // the default: 8.176 Hz
+            gen_val(GEN_DELAY_MOD_LFO, -12_000),
+            gen_val(GEN_MOD_LFO_TO_PITCH, 25),
+            gen_val(GEN_MOD_LFO_TO_FILTER_FC, 1_200),
+            gen_val(GEN_MOD_LFO_TO_VOLUME, 60), // centibels: 6 dB
+        ],
+    );
+
+    assert!((patch.lfos[0].rate_hz - 8.176).abs() < 0.01);
+    assert!(route_of(&patch, ModSource::Lfo(0), ModDest::LayerPitch(0)).is_some());
+    assert!(route_of(&patch, ModSource::Lfo(0), ModDest::FilterCutoff(0)).is_some());
+
+    // modLfoToVolume is in centibels and `LayerGain` is in decibels.
+    let route = route_of(&patch, ModSource::Lfo(0), ModDest::LayerGain(0))
+        .expect("modLfoToVolume must reach the layer's gain");
+    let expected_depth = 6.0 / ModDest::LayerGain(0).full_scale();
+    assert!(
+        (route.depth - expected_depth).abs() < 1e-6,
+        "6 dB in the destination's units: got {}, want {expected_depth}",
+        route.depth
+    );
+}
+
+/// The per-layer destinations are per *layer*, and an SF2 modulation
+/// generator applies to the whole voice. A zone-per-layer patch that routed
+/// only layer 0 would leave every other layer unmodulated.
+#[test]
+fn a_pitch_route_reaches_every_layer_not_just_the_first() {
+    let mut fixture = filter_fixture(vec![gen_val(GEN_VIB_LFO_TO_PITCH, 50)]);
+    // A second zone over the upper half of the keyboard.
+    fixture.extra_zones = vec![ZoneSpec {
+        generators: vec![
+            gen_range(GEN_KEY_RANGE, 64, 127),
+            gen_range(GEN_VEL_RANGE, 0, 127),
+            gen_val(GEN_VIB_LFO_TO_PITCH, 50),
+        ],
+    }];
+    let path = write_fixture_to_temp_file("multilayer_mod", &build_sf2(&fixture));
+    let mut store = SampleStore::new();
+    let patch = import_sf2(&path, &mut store).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    assert_eq!(patch.layers.len(), 2, "the fixture must have two layers");
+    for layer in 0..2u8 {
+        assert!(
+            route_of(&patch, ModSource::Lfo(1), ModDest::LayerPitch(layer)).is_some(),
+            "layer {layer} has no vibrato"
+        );
+    }
+}
+
+/// A zone that asks for no modulation must import with an empty matrix apart
+/// from the spec's own defaults — a route with zero depth is dead weight the
+/// voice pays for on every block.
+#[test]
+fn a_zone_with_no_modulation_generators_gets_no_modulation_routes() {
+    let patch = import_filter_fixture("nomod", vec![]);
+    for route in &patch.mod_matrix.routes {
+        assert!(
+            matches!(route.source, ModSource::Velocity),
+            "only SF2's own default modulators may be seeded, found {:?}",
+            route.source
+        );
+    }
+}
+
+/// `modEnvToPitch` is the pitch envelope: a kick drum's downward sweep, a
+/// synth lead's blip on the attack. It shares the modulation envelope with the
+/// filter route, so both must be able to read the same envelope at once.
+#[test]
+fn the_modulation_envelope_can_drive_pitch_and_the_filter_at_the_same_time() {
+    let patch = import_filter_fixture(
+        "modenvpitch",
+        vec![
+            gen_val(GEN_INITIAL_FILTER_FC, 7_200),
+            gen_val(GEN_MOD_ENV_TO_PITCH, -1_200), // an octave down over the decay
+            gen_val(GEN_MOD_ENV_TO_FILTER_FC, 2_400),
+        ],
+    );
+
+    let pitch = route_of(&patch, ModSource::Envelope(1), ModDest::LayerPitch(0))
+        .expect("modEnvToPitch must reach the layer's pitch");
+    let expected = -1_200.0 / ModDest::LayerPitch(0).full_scale();
+    assert!(
+        (pitch.depth - expected).abs() < 1e-6,
+        "a negative amount must stay negative: got {}, want {expected}",
+        pitch.depth
+    );
+    assert!(
+        route_of(&patch, ModSource::Envelope(1), ModDest::FilterCutoff(0)).is_some(),
+        "one envelope, two destinations"
     );
 }

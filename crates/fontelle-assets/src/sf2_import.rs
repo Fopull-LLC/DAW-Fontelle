@@ -72,6 +72,21 @@ fn timecents_to_seconds(tc: Option<i16>) -> f32 {
     2f32.powf(tc.unwrap_or(-12_000) as f32 / 1200.0)
 }
 
+/// SF2's `sustainModEnv`: the *decrease* from full scale in 0.1% units, not an
+/// attenuation in centibels the way `sustainVolEnv` is. Reading it as
+/// centibels makes a half-sustained filter envelope collapse to nothing —
+/// the same class of mistake as reading the volume envelope's stage times as
+/// stage durations.
+fn permille_decrease_to_level(permille: Option<i16>) -> f32 {
+    1.0 - (permille.unwrap_or(0) as f32 / 1000.0).clamp(0.0, 1.0)
+}
+
+/// Both of SF2's LFO frequency generators are in absolute cents, with an
+/// absent generator meaning 0 — which is 8.176 Hz, not silence.
+fn lfo_rate_hz(zone: &Zone, generator: GeneratorType) -> f32 {
+    absolute_cents_to_hz(gen_i16(zone, generator).unwrap_or(0))
+}
+
 /// Centibels of attenuation (0 = full volume, 1000 = silence) to a linear
 /// `0..1` level.
 fn centibels_attenuation_to_linear(cb: Option<i16>) -> f32 {
@@ -284,6 +299,7 @@ pub fn import_sf2_preset(
     let mut layers = Vec::new();
     let mut amp_envelope = None;
     let mut filter = None;
+    let mut modulation: Option<ZoneModulation> = None;
 
     for zone in &instrument.zones {
         let Some(sample_id) = zone.sample() else {
@@ -332,6 +348,10 @@ pub fn import_sf2_preset(
             });
         }
 
+        if modulation.is_none() {
+            modulation = Some(ZoneModulation::read(zone));
+        }
+
         layers.push(build_layer(zone, header, store, &bytes, smpl.offset)?);
     }
 
@@ -372,24 +392,190 @@ pub fn import_sf2_preset(
         });
     }
     let amp = amp_envelope.unwrap();
-    let mod_env = EnvelopeConfig {
-        delay_s: 0.0,
-        attack_s: 0.0,
-        hold_s: 0.0,
-        decay_s: 0.0,
-        sustain_level: 1.0,
-        release_s: 0.0,
-        curve: EnvelopeCurve::Linear,
-    };
+    let modulation = modulation.unwrap_or_default();
+    modulation.seed_routes(&mut mod_matrix, layers.len(), filter.enabled);
 
     Ok(Patch {
         layers,
         filters: [filter, disabled_filter],
-        envelopes: vec![amp, mod_env],
-        lfos: Vec::new(),
+        envelopes: vec![amp, modulation.envelope],
+        lfos: modulation.lfos.to_vec(),
         mod_matrix,
         voice_config: VoiceConfig::default(),
     })
+}
+
+/// The modulation half of an instrument zone: SF2's two LFOs, its modulation
+/// envelope, and the six generators that connect them to something.
+///
+/// Read from the first sample-bearing zone, which is what the amp envelope and
+/// the filter already do — Fontelle's fixed voice topology (TDD §7.4) has one
+/// of each per voice, not one per layer, so a multi-zone instrument whose
+/// zones disagree cannot be represented exactly and averaging would produce a
+/// setting no zone asked for.
+struct ZoneModulation {
+    /// `patch.envelopes[1]`.
+    envelope: EnvelopeConfig,
+    /// Index 0 is SF2's modulation LFO, index 1 its vibrato LFO. Both always
+    /// present, because SF2 gives every zone both; a patch that routes neither
+    /// never advances them (see `Voice::render`).
+    lfos: [fontelle_core::Lfo; 2],
+    mod_lfo_to_pitch_cents: f32,
+    vib_lfo_to_pitch_cents: f32,
+    mod_env_to_pitch_cents: f32,
+    mod_lfo_to_filter_cents: f32,
+    mod_env_to_filter_cents: f32,
+    mod_lfo_to_volume_db: f32,
+}
+
+/// SF2's modulation LFO, then its vibrato LFO.
+const MOD_LFO: u8 = 0;
+const VIB_LFO: u8 = 1;
+
+impl Default for ZoneModulation {
+    fn default() -> Self {
+        let idle_lfo = fontelle_core::Lfo {
+            rate_hz: 8.176,
+            depth: 1.0,
+            shape: fontelle_dsp::OscKind::Sine,
+            delay_s: 0.0,
+        };
+        Self {
+            envelope: EnvelopeConfig {
+                delay_s: 0.0,
+                attack_s: 0.0,
+                hold_s: 0.0,
+                decay_s: 0.0,
+                sustain_level: 1.0,
+                release_s: 0.0,
+                curve: EnvelopeCurve::Linear,
+            },
+            lfos: [idle_lfo; 2],
+            mod_lfo_to_pitch_cents: 0.0,
+            vib_lfo_to_pitch_cents: 0.0,
+            mod_env_to_pitch_cents: 0.0,
+            mod_lfo_to_filter_cents: 0.0,
+            mod_env_to_filter_cents: 0.0,
+            mod_lfo_to_volume_db: 0.0,
+        }
+    }
+}
+
+impl ZoneModulation {
+    fn read(zone: &Zone) -> Self {
+        // Both SF2 LFOs are plain sines. The format has no shape generator.
+        let lfo = |delay: GeneratorType, freq: GeneratorType| fontelle_core::Lfo {
+            rate_hz: lfo_rate_hz(zone, freq),
+            depth: 1.0,
+            shape: fontelle_dsp::OscKind::Sine,
+            delay_s: timecents_to_seconds(gen_i16(zone, delay)),
+        };
+        let cents = |ty| gen_i16(zone, ty).unwrap_or(0) as f32;
+
+        let sustain_level = permille_decrease_to_level(gen_i16(zone, GeneratorType::SustainModEnv));
+        Self {
+            envelope: EnvelopeConfig {
+                delay_s: timecents_to_seconds(gen_i16(zone, GeneratorType::DelayModEnv)),
+                attack_s: timecents_to_seconds(gen_i16(zone, GeneratorType::AttackModEnv)),
+                hold_s: timecents_to_seconds(gen_i16(zone, GeneratorType::HoldModEnv)),
+                // SF2 defines `decayModEnv` as the time for a 100% change, and
+                // a decay that only has to reach a sustain of 0.5 covers half
+                // of one. `EnvelopeCurve::Decibel` bakes that rule in for the
+                // volume envelope; the modulation envelope is linear, so the
+                // scaling is applied here instead. Reading the generator as a
+                // stage duration stretches every filter envelope's decay.
+                decay_s: timecents_to_seconds(gen_i16(zone, GeneratorType::DecayModEnv))
+                    * (1.0 - sustain_level),
+                sustain_level,
+                // Release is the same 100%-change rule, but a note released
+                // from somewhere other than its sustain level covers a
+                // different share of it, and that is only known at note-off.
+                // Taken as written; the error is bounded by the sustain level
+                // and only shows on an early release.
+                release_s: timecents_to_seconds(gen_i16(zone, GeneratorType::ReleaseModEnv)),
+                // SF2's modulation envelope is linear in its own units, unlike
+                // the volume envelope, which is a straight line in decibels.
+                curve: EnvelopeCurve::Linear,
+            },
+            lfos: [
+                lfo(GeneratorType::DelayModLFO, GeneratorType::FreqModLFO),
+                lfo(GeneratorType::DelayVibLFO, GeneratorType::FreqVibLFO),
+            ],
+            mod_lfo_to_pitch_cents: cents(GeneratorType::ModLfoToPitch),
+            vib_lfo_to_pitch_cents: cents(GeneratorType::VibLfoToPitch),
+            mod_env_to_pitch_cents: cents(GeneratorType::ModEnvToPitch),
+            mod_lfo_to_filter_cents: cents(GeneratorType::ModLfoToFilterFc),
+            mod_env_to_filter_cents: cents(GeneratorType::ModEnvToFilterFc),
+            // The only one of the six in centibels rather than cents.
+            mod_lfo_to_volume_db: cents(GeneratorType::ModLfoToVolume) / 10.0,
+        }
+    }
+
+    /// Turns the amounts into matrix routes.
+    ///
+    /// **One route per layer** for the per-layer destinations. An SF2
+    /// modulation generator applies to the whole voice, while TDD §7.5's
+    /// pitch, gain and pan destinations are addressed by layer index, so a
+    /// key-split instrument needs the route repeated or every layer but the
+    /// first plays unmodulated. A route with zero depth is never emitted: the
+    /// voice scans the matrix once per destination per block, and dead weight
+    /// there is paid for on every one.
+    fn seed_routes(&self, matrix: &mut ModMatrix, layers: usize, filter_enabled: bool) {
+        let mut push = |source: ModSource, destination: ModDest, amount: f32| {
+            if amount == 0.0 {
+                return;
+            }
+            matrix.routes.push(ModRoute {
+                source,
+                destination,
+                depth: amount / destination.full_scale(),
+                curve: Curve::Linear,
+                via: None,
+                // An LFO and a modulation envelope are already signed sources;
+                // the direction bit belongs to SF2's *modulators*, not to its
+                // generators.
+                invert: false,
+            });
+        };
+
+        for layer in 0..layers.min(u8::MAX as usize) as u8 {
+            push(
+                ModSource::Lfo(MOD_LFO),
+                ModDest::LayerPitch(layer),
+                self.mod_lfo_to_pitch_cents,
+            );
+            push(
+                ModSource::Lfo(VIB_LFO),
+                ModDest::LayerPitch(layer),
+                self.vib_lfo_to_pitch_cents,
+            );
+            push(
+                ModSource::Envelope(1),
+                ModDest::LayerPitch(layer),
+                self.mod_env_to_pitch_cents,
+            );
+            push(
+                ModSource::Lfo(MOD_LFO),
+                ModDest::LayerGain(layer),
+                self.mod_lfo_to_volume_db,
+            );
+        }
+
+        // A route aimed at a switched-off filter slot is dead weight in the
+        // matrix and misleading to anyone reading the patch.
+        if filter_enabled {
+            push(
+                ModSource::Lfo(MOD_LFO),
+                ModDest::FilterCutoff(0),
+                self.mod_lfo_to_filter_cents,
+            );
+            push(
+                ModSource::Envelope(1),
+                ModDest::FilterCutoff(0),
+                self.mod_env_to_filter_cents,
+            );
+        }
+    }
 }
 
 // Kept as unused-but-real types matching the TDD's §7.3 diagram
