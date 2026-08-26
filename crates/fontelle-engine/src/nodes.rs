@@ -28,11 +28,18 @@ impl ParamSet for EmptyParams {
 pub struct SamplerNode {
     sampler: Sampler,
     store: Arc<SampleStore>,
+    /// Sized in `prepare`, so `process` never allocates (INVARIANT 1). See the
+    /// note in `process` for why the render can't go straight to the bus.
+    scratch: Vec<f32>,
 }
 
 impl SamplerNode {
     pub fn new(sampler: Sampler, store: Arc<SampleStore>) -> Self {
-        Self { sampler, store }
+        Self {
+            sampler,
+            store,
+            scratch: Vec::new(),
+        }
     }
 }
 
@@ -42,10 +49,11 @@ impl AudioNode for SamplerNode {
             sample_rate: ctx.sample_rate,
             max_block_size: ctx.max_block_size,
         });
+        self.scratch.resize(ctx.max_block_size as usize, 0.0);
     }
 
     fn process(&mut self, ctx: &mut ProcessContext) {
-        for event in ctx.events {
+        for event in ctx.events() {
             match &event.payload {
                 fontelle_types::EventPayload::NoteOn {
                     key,
@@ -66,12 +74,19 @@ impl AudioNode for SamplerNode {
         // feeding a mono source into a stereo bus means. When the sampler
         // grows real per-voice panning this becomes a true stereo render
         // rather than a duplicate.
-        let Some((first, rest)) = ctx.outputs.split_first_mut() else {
-            return;
-        };
-        self.sampler.render(&self.store, first);
-        for channel in rest {
-            channel.copy_from_slice(first);
+        // Rendered into scratch and added, not written straight to the bus:
+        // several instruments share one output, and `Sampler::render` clears
+        // what it is given because that is the contract a plugin host expects
+        // of `fontelle-core`'s boundary (TDD §8.1). The scratch buffer is
+        // allocated in `prepare`, never here (INVARIANT 1).
+        let frames = ctx.outputs.first().map_or(0, |o| o.len());
+        let frames = frames.min(self.scratch.len());
+        let scratch = &mut self.scratch[..frames];
+        self.sampler.render(&self.store, scratch);
+        for channel in ctx.outputs.iter_mut() {
+            for (out, rendered) in channel[..frames].iter_mut().zip(scratch.iter()) {
+                *out += *rendered;
+            }
         }
     }
 
@@ -264,7 +279,8 @@ mod tests {
             let mut ctx = ProcessContext {
                 inputs: &[],
                 outputs: &mut slices,
-                events: &[],
+                all_events: &[],
+                node: fontelle_types::NodeId::default(),
                 transport: TransportSnapshot {
                     state: TransportState::Playing,
                     position_sample: 0,
@@ -421,7 +437,8 @@ mod tests {
             let mut ctx = ProcessContext {
                 inputs: &[],
                 outputs: &mut out_slices,
-                events: &events,
+                all_events: &events,
+                node: fontelle_types::NodeId::default(),
                 transport: TransportSnapshot {
                     state: TransportState::Playing,
                     position_sample: 0,

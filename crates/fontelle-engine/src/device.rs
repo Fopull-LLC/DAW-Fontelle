@@ -96,6 +96,10 @@ impl AudioDevice {
         timeline: CompiledTimeline,
         sample_rate: u32,
     ) -> Result<(), DeviceError> {
+        // Off-RT, before the stream exists: nodes size their internal buffers
+        // here so the callback never has to.
+        let mut graph = graph;
+        graph.prepare(sample_rate as f32, BLOCK_SIZE as u32);
         let mut graph = ManuallyDrop::new(graph);
         let timeline = ManuallyDrop::new(timeline);
         let device = self

@@ -152,6 +152,7 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
         }],
         buffer_pool: BufferPool::with_capacity(1, BLOCK),
     };
+    graph.prepare(SR, BLOCK as u32);
 
     // --- Drive the graph exactly like `AudioDevice`'s real callback does:
     //     block-by-block, slicing the compiled timeline by sample range. ---

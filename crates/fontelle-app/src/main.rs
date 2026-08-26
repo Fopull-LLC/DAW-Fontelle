@@ -11,7 +11,7 @@ use fontelle_types::PPQN;
 #[global_allocator]
 static ALLOCATOR: fontelle_engine::RtGuardAllocator = fontelle_engine::RtGuardAllocator;
 
-const SAMPLE_RATE: u32 = 48_000;
+use fontelle_app::SAMPLE_RATE;
 const BPM: f64 = 120.0;
 
 /// The M0 vertical slice (TDD §22), runnable for real: audio callback ->

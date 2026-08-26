@@ -17,9 +17,28 @@ pub struct PrepareContext {
 pub struct ProcessContext<'a> {
     pub inputs: &'a [&'a [f32]],
     pub outputs: &'a mut [&'a mut [f32]],
-    pub events: &'a [TimedEvent],
+    /// Every event in this block, for *all* nodes. Use [`ProcessContext::events`]
+    /// instead unless a node genuinely wants to see other nodes' traffic —
+    /// `TimedEvent::target` is what says who an event is for, and a node that
+    /// reads this field directly will play other instruments' parts.
+    pub all_events: &'a [TimedEvent],
+    /// The id of the node being processed, so it can pick its own events out.
+    pub node: NodeId,
     pub transport: TransportSnapshot,
     pub sample_range: Range<Sample>,
+}
+
+impl ProcessContext<'_> {
+    /// The events addressed to this node, in order.
+    ///
+    /// Filtering here rather than in each node keeps the routing rule in one
+    /// place, and returning an iterator rather than a slice keeps it
+    /// allocation-free: the events for one node are not contiguous, since the
+    /// timeline is ordered by time and not by target.
+    pub fn events(&self) -> impl Iterator<Item = &TimedEvent> {
+        let node = self.node;
+        self.all_events.iter().filter(move |e| e.target == node)
+    }
 }
 
 pub trait ParamSet: Send + Sync {
@@ -116,12 +135,43 @@ impl CompiledGraph {
     /// disjoint multi-set borrowing and belongs to M4 alongside sends and
     /// insert chains. Anything outside the supported shape panics with a
     /// clear message rather than silently processing the wrong buffer.
+    /// Off-RT. Gives every node the sample rate and maximum block size it needs
+    /// to size its internal buffers, so `process_block` never has to allocate
+    /// (INVARIANT 1).
+    ///
+    /// `AudioNode::prepare` existed from the start and nothing called it: the
+    /// only source node in the graph was built from an already-prepared
+    /// `Sampler`, so the omission was invisible until a node needed internal
+    /// storage of its own. Every path that renders a graph must call this
+    /// first.
+    pub fn prepare(&mut self, sample_rate: f32, max_block_size: u32) {
+        let ctx = PrepareContext {
+            sample_rate,
+            max_block_size,
+        };
+        for scheduled in self.schedule.iter_mut() {
+            scheduled.node.prepare(&ctx);
+        }
+    }
+
     pub fn process_block(
         &mut self,
         events: &[TimedEvent],
         transport: TransportSnapshot,
         sample_range: Range<Sample>,
     ) {
+        // Buses are cleared once, here, and source nodes add into them. That
+        // is what lets two instruments share an output: a source that
+        // overwrote would mean whichever node ran last was the only one
+        // anybody heard. The corollary is that without this clear, a block of
+        // silence would replay the last block that had sound.
+        let frames_to_clear = (sample_range.end - sample_range.start).max(0) as usize;
+        for index in 0..self.buffer_pool.len() {
+            let buffer = self.buffer_pool.buffer_mut(index);
+            let frames = frames_to_clear.min(buffer.len());
+            buffer[..frames].fill(0.0);
+        }
+
         for scheduled in self.schedule.iter_mut() {
             assert!(
                 scheduled.input_buffers.is_empty()
@@ -163,7 +213,8 @@ impl CompiledGraph {
                     let mut ctx = ProcessContext {
                         inputs: &[],
                         outputs: &mut [],
-                        events,
+                        all_events: events,
+                        node: scheduled.id,
                         transport,
                         sample_range: sample_range.clone(),
                     };
@@ -176,7 +227,8 @@ impl CompiledGraph {
                     let mut ctx = ProcessContext {
                         inputs: &[],
                         outputs: &mut outputs,
-                        events,
+                        all_events: events,
+                        node: scheduled.id,
                         transport,
                         sample_range: sample_range.clone(),
                     };
@@ -189,7 +241,8 @@ impl CompiledGraph {
                     let mut ctx = ProcessContext {
                         inputs: &[],
                         outputs: &mut outputs,
-                        events,
+                        all_events: events,
+                        node: scheduled.id,
                         transport,
                         sample_range: sample_range.clone(),
                     };
@@ -270,7 +323,7 @@ mod tests {
         });
         let node = SamplerNode::new(sampler, Arc::new(store));
 
-        CompiledGraph {
+        let mut graph = CompiledGraph {
             schedule: vec![ScheduledNode {
                 id: NodeId::null(),
                 node: Box::new(node),
@@ -278,6 +331,61 @@ mod tests {
                 output_buffers: vec![0],
             }],
             buffer_pool: BufferPool::with_capacity(1, 128),
+        };
+        graph.prepare(SR, 128);
+        graph
+    }
+
+    fn playing() -> TransportSnapshot {
+        TransportSnapshot {
+            state: TransportState::Playing,
+            position_sample: 0,
+        }
+    }
+
+    /// A one-shot buffer at a constant `level`, so a summed bus can be read
+    /// straight off the peak.
+    fn flat_patch(store: &mut SampleStore, level: f32) -> Patch {
+        let asset = store.insert(SampleBuffer {
+            data: Arc::from(vec![level; 10_000]),
+            sample_rate: SR as u32,
+        });
+        let disabled_filter = FilterSlot {
+            mode: SvfMode::Lowpass,
+            cutoff_hz: 20_000.0,
+            resonance: std::f32::consts::FRAC_1_SQRT_2,
+            enabled: false,
+        };
+        let instant = EnvelopeConfig {
+            delay_s: 0.0,
+            attack_s: 0.0,
+            hold_s: 0.0,
+            decay_s: 0.0,
+            sustain_level: 1.0,
+            release_s: 0.0,
+            curve: EnvelopeCurve::Linear,
+        };
+        Patch {
+            layers: vec![Layer {
+                source: Source::Sample { file: asset },
+                key_range: (0, 127),
+                vel_range: (0, 127),
+                root_key: 60,
+                fine_tune_cents: 0.0,
+                playback: PlaybackConfig {
+                    loop_mode: LoopMode::Off,
+                    interpolation: Some(Interpolation::Draft),
+                    end_offset: 64.0,
+                    ..PlaybackConfig::default()
+                },
+                gain_db: 0.0,
+                pan: 0.0,
+            }],
+            filters: [disabled_filter, disabled_filter],
+            envelopes: vec![instant, instant],
+            lfos: Vec::new(),
+            mod_matrix: ModMatrix::default(),
+            voice_config: VoiceConfig::default(),
         }
     }
 
@@ -326,10 +434,12 @@ mod tests {
             output_buffers: vec![0, 1],
         });
 
-        CompiledGraph {
+        let mut graph = CompiledGraph {
             schedule,
             buffer_pool: BufferPool::with_capacity(2, 128),
-        }
+        };
+        graph.prepare(SR, 128);
+        graph
     }
 
     fn note_on_events() -> [TimedEvent; 1] {
@@ -467,7 +577,7 @@ mod tests {
             sample_rate: SR,
             max_block_size: 128,
         });
-        CompiledGraph {
+        let mut graph = CompiledGraph {
             schedule: vec![ScheduledNode {
                 id: NodeId::null(),
                 node: Box::new(SamplerNode::new(sampler, Arc::new(store))),
@@ -475,7 +585,9 @@ mod tests {
                 output_buffers: vec![0],
             }],
             buffer_pool: BufferPool::with_capacity(1, 128),
-        }
+        };
+        graph.prepare(SR, 128);
+        graph
     }
 
     /// Renders `total` frames in `chunk`-sized calls, concatenating what each
@@ -535,5 +647,121 @@ mod tests {
         graph.process_block(&[], transport, 0..128);
 
         assert_eq!(rms(graph.buffer_pool.buffer_mut(0)), 0.0);
+    }
+
+    /// Two independent sampler nodes on the same stereo bus, so both the event
+    /// routing and the summing are under test at once.
+    fn two_sampler_graph(level_a: f32, level_b: f32) -> (CompiledGraph, NodeId, NodeId) {
+        let mut store = SampleStore::new();
+        let patch_a = flat_patch(&mut store, level_a);
+        let patch_b = flat_patch(&mut store, level_b);
+        let store = Arc::new(store);
+        let id_a = NodeId::from(slotmap::KeyData::from_ffi(1));
+        let id_b = NodeId::from(slotmap::KeyData::from_ffi(2));
+        let prepared = |patch| {
+            let mut sampler = Sampler::new(patch);
+            sampler.prepare(&fontelle_core::PrepareContext {
+                sample_rate: SR,
+                max_block_size: 128,
+            });
+            sampler
+        };
+
+        let graph = CompiledGraph {
+            schedule: vec![
+                ScheduledNode {
+                    id: id_a,
+                    node: Box::new(SamplerNode::new(prepared(patch_a), store.clone())),
+                    input_buffers: Vec::new(),
+                    output_buffers: vec![0, 1],
+                },
+                ScheduledNode {
+                    id: id_b,
+                    node: Box::new(SamplerNode::new(prepared(patch_b), store)),
+                    input_buffers: Vec::new(),
+                    output_buffers: vec![0, 1],
+                },
+            ],
+            buffer_pool: BufferPool::with_capacity(2, 128),
+        };
+        let mut graph = graph;
+        graph.prepare(SR, 128);
+        (graph, id_a, id_b)
+    }
+
+    fn note_on_for(target: NodeId, sample: i64) -> TimedEvent {
+        TimedEvent {
+            sample,
+            target,
+            payload: EventPayload::NoteOn {
+                key: 60,
+                velocity: 127,
+                voice_context: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn a_node_only_receives_events_addressed_to_it() {
+        // `TimedEvent::target` has always been there and the sequencer has
+        // always filled it in, but the graph handed every event to every node.
+        // With one sampler that is invisible; with two it means every
+        // instrument plays every part.
+        // Different levels, deliberately: with both at the same level a node
+        // that wrongly plays the event is indistinguishable from one that
+        // correctly ignores it.
+        let (mut graph, id_a, _id_b) = two_sampler_graph(1.0, 0.25);
+        graph.process_block(&[note_on_for(id_a, 0)], playing(), 0..64);
+
+        let peak = graph.buffer_pool.buffer_mut(0)[..64]
+            .iter()
+            .fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(
+            (peak - 1.0).abs() < 1e-4,
+            "only the addressed node should have sounded: full scale from the \
+             addressed node, not 1.25 summed or 0.25 overwritten; got {peak}"
+        );
+    }
+
+    #[test]
+    fn source_nodes_sharing_a_bus_sum_rather_than_overwrite() {
+        // Two instruments on one output is the ordinary case the moment a song
+        // has more than one part. A source that overwrites means whichever
+        // node runs last is the only one anybody hears.
+        let (mut graph, id_a, id_b) = two_sampler_graph(1.0, 0.5);
+        graph.process_block(
+            &[note_on_for(id_a, 0), note_on_for(id_b, 0)],
+            playing(),
+            0..64,
+        );
+
+        let peak = graph.buffer_pool.buffer_mut(0)[..64]
+            .iter()
+            .fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(
+            (peak - 1.5).abs() < 1e-3,
+            "1.0 and 0.5 on the same bus should sum to 1.5, got {peak}"
+        );
+    }
+
+    #[test]
+    fn a_bus_does_not_carry_its_previous_block_into_the_next() {
+        // The corollary of sources accumulating: something has to clear the
+        // bus, or a block of silence replays the last block that had sound.
+        let (mut graph, id_a, _) = two_sampler_graph(1.0, 0.25);
+        graph.process_block(&[note_on_for(id_a, 0)], playing(), 0..64);
+        assert!(
+            graph.buffer_pool.buffer_mut(0)[..64]
+                .iter()
+                .any(|s| *s != 0.0)
+        );
+
+        // Second block, no events, and the one-shot sample has run out.
+        graph.process_block(&[], playing(), 64..128);
+        graph.process_block(&[], playing(), 128..192);
+        let peak = graph.buffer_pool.buffer_mut(0)[..64]
+            .iter()
+            .fold(0.0f32, |m, s| m.max(s.abs()));
+        assert_eq!(peak, 0.0, "a silent block must be silent, got {peak}");
     }
 }

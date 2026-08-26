@@ -250,7 +250,7 @@ pub fn demo_song(root_key: u8, bpm: f64, sample_rate: u32) -> Song {
 /// Assembles the M0 signal chain for `song`: sampler -> mixer track -> stereo
 /// bus pair, ready to hand to `AudioDevice::start_output_stream`.
 pub fn build_graph(song: &Song, sampler: Sampler, store: Arc<SampleStore>) -> CompiledGraph {
-    CompiledGraph {
+    let mut graph = CompiledGraph {
         schedule: vec![
             ScheduledNode {
                 id: song.node,
@@ -278,8 +278,14 @@ pub fn build_graph(song: &Song, sampler: Sampler, store: Arc<SampleStore>) -> Co
             },
         ],
         buffer_pool: BufferPool::with_capacity(2, BLOCK_SIZE),
-    }
+    };
+    graph.prepare(SAMPLE_RATE as f32, BLOCK_SIZE as u32);
+    graph
 }
+
+/// The rate everything in the demo path runs at: the device is asked for it,
+/// the tempo map converts against it, and offline renders match it exactly.
+pub const SAMPLE_RATE: u32 = 48_000;
 
 /// The two halves of TDD §7.6's independent quality settings.
 ///
