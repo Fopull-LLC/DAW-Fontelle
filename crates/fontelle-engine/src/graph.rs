@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use fontelle_types::{NodeId, ParamAddress, Sample, TimedEvent};
+use fontelle_types::{NodeId, ParamAddress, Sample, TimedEvent, VoiceOrigin};
 
 use crate::transport::TransportSnapshot;
 
@@ -22,6 +22,13 @@ pub struct ProcessContext<'a> {
     /// `TimedEvent::target` is what says who an event is for, and a node that
     /// reads this field directly will play other instruments' parts.
     pub all_events: &'a [TimedEvent],
+    /// This block's live input — a MIDI keyboard, a controller, the UI's
+    /// on-screen keys (TDD §14.1). A second slice rather than a merged one
+    /// because merging means copying, and `EventPayload::ParamValue` owns a
+    /// `ParamAddress` whose clone allocates: building one combined `Vec` per
+    /// block would put a heap allocation on the audio thread for no gain
+    /// (INVARIANT 1). `events()` walks both.
+    pub live_events: &'a [TimedEvent],
     /// The id of the node being processed, so it can pick its own events out.
     pub node: NodeId,
     pub transport: TransportSnapshot,
@@ -29,15 +36,40 @@ pub struct ProcessContext<'a> {
 }
 
 impl ProcessContext<'_> {
-    /// The events addressed to this node, in order.
+    /// The events addressed to this node, in order: the timeline's first,
+    /// then this block's live input.
     ///
     /// Filtering here rather than in each node keeps the routing rule in one
     /// place, and returning an iterator rather than a slice keeps it
     /// allocation-free: the events for one node are not contiguous, since the
     /// timeline is ordered by time and not by target.
+    ///
+    /// Live events come last because they all carry the block's start sample
+    /// (see `LiveEventSource::drain`) and are therefore simultaneous with, or
+    /// earlier than, everything the timeline placed in this block. Ordering
+    /// them ahead of it would let a key pressed now cut off a note the song
+    /// starts on the same block, which is the wrong way round: the live player
+    /// is playing *over* the arrangement.
     pub fn events(&self) -> impl Iterator<Item = &TimedEvent> {
+        self.events_with_origin().map(|(_, event)| event)
+    }
+
+    /// This node's events, each tagged with where it came from.
+    ///
+    /// A source node that can be played by a person needs the tag: a voice
+    /// records its origin so that transport stop and seek can cut the
+    /// timeline's notes without cutting the player's.
+    pub fn events_with_origin(&self) -> impl Iterator<Item = (VoiceOrigin, &TimedEvent)> {
         let node = self.node;
-        self.all_events.iter().filter(move |e| e.target == node)
+        self.all_events
+            .iter()
+            .map(|event| (VoiceOrigin::Timeline, event))
+            .chain(
+                self.live_events
+                    .iter()
+                    .map(|event| (VoiceOrigin::Live, event)),
+            )
+            .filter(move |(_, e)| e.target == node)
     }
 }
 
@@ -53,8 +85,19 @@ pub trait ParamSet: Send + Sync {
 pub trait AudioNode: Send {
     fn prepare(&mut self, ctx: &PrepareContext);
     fn process(&mut self, ctx: &mut ProcessContext);
-    /// Silence tails, clear internal state — called on transport stop/seek.
+    /// Silence tails, clear internal state — a full stop, a device teardown,
+    /// a panic.
     fn reset(&mut self);
+    /// Silence only what the *timeline* started, leaving live voices alone —
+    /// what transport stop and seek actually want (TDD §6.3 against §14).
+    ///
+    /// Defaults to a full reset, which is right for every node that has no
+    /// notion of live input: an effect's tail belongs to the audio that was
+    /// flowing through it either way. Only a source node that can be played
+    /// by a person needs to override this.
+    fn reset_sequenced(&mut self) {
+        self.reset();
+    }
     fn latency_samples(&self) -> u32 {
         0
     }
@@ -174,14 +217,57 @@ impl CompiledGraph {
         for scheduled in self.schedule.iter_mut() {
             scheduled.node.reset();
         }
+        self.clear_buses();
+    }
+
+    /// Silences what the timeline started and leaves live voices sounding —
+    /// transport stop, seek, and the loop seam.
+    ///
+    /// This is what those three actually want. A full reset there cuts the
+    /// notes a player is holding, which leaves them on a silent keyboard until
+    /// they let go and press again — and the router still has those keys
+    /// marked down, so the note-off that eventually arrives matches a voice
+    /// that no longer exists.
+    ///
+    /// RT-safe, like `reset`: the audio callback calls it the moment it
+    /// observes the transport change.
+    pub fn reset_sequenced(&mut self) {
+        for scheduled in self.schedule.iter_mut() {
+            scheduled.node.reset_sequenced();
+        }
+        self.clear_buses();
+    }
+
+    /// A bus still holds the last block that had sound in it, and a node that
+    /// only adds into its output (every source does) would let that block
+    /// through once more before the clear at the top of `process_block` caught
+    /// up.
+    fn clear_buses(&mut self) {
         for index in 0..self.buffer_pool.len() {
             self.buffer_pool.buffer_mut(index).fill(0.0);
         }
     }
 
+    /// Renders one block from the timeline alone. Offline renders and every
+    /// test that isn't about live input use this; the device callback uses
+    /// [`CompiledGraph::process_block_with_live`].
     pub fn process_block(
         &mut self,
         events: &[TimedEvent],
+        transport: TransportSnapshot,
+        sample_range: Range<Sample>,
+    ) {
+        self.process_block_with_live(events, &[], transport, sample_range);
+    }
+
+    /// As [`CompiledGraph::process_block`], plus this block's live input
+    /// (TDD §14.1) — the events a keyboard or controller produced since the
+    /// last callback, already stamped and routed by
+    /// [`crate::LiveEventSource::drain`].
+    pub fn process_block_with_live(
+        &mut self,
+        events: &[TimedEvent],
+        live_events: &[TimedEvent],
         transport: TransportSnapshot,
         sample_range: Range<Sample>,
     ) {
@@ -254,6 +340,7 @@ impl CompiledGraph {
                             inputs: &inputs,
                             outputs: &mut outputs,
                             all_events: events,
+                            live_events,
                             node: scheduled.id,
                             transport,
                             sample_range: sample_range.clone(),
@@ -275,6 +362,7 @@ impl CompiledGraph {
                             inputs: &inputs,
                             outputs: &mut outputs,
                             all_events: events,
+                            live_events,
                             node: scheduled.id,
                             transport,
                             sample_range: sample_range.clone(),
@@ -292,6 +380,7 @@ impl CompiledGraph {
                         inputs: &[],
                         outputs: &mut [],
                         all_events: events,
+                        live_events,
                         node: scheduled.id,
                         transport,
                         sample_range: sample_range.clone(),
@@ -306,6 +395,7 @@ impl CompiledGraph {
                         inputs: &[],
                         outputs: &mut outputs,
                         all_events: events,
+                        live_events,
                         node: scheduled.id,
                         transport,
                         sample_range: sample_range.clone(),
@@ -320,6 +410,7 @@ impl CompiledGraph {
                         inputs: &[],
                         outputs: &mut outputs,
                         all_events: events,
+                        live_events,
                         node: scheduled.id,
                         transport,
                         sample_range: sample_range.clone(),
@@ -414,7 +505,7 @@ mod tests {
         graph
     }
 
-    fn playing() -> TransportSnapshot {
+    pub(super) fn playing() -> TransportSnapshot {
         TransportSnapshot {
             state: TransportState::Playing,
             position_sample: 0,
@@ -729,7 +820,7 @@ mod tests {
 
     /// Two independent sampler nodes on the same stereo bus, so both the event
     /// routing and the summing are under test at once.
-    fn two_sampler_graph(level_a: f32, level_b: f32) -> (CompiledGraph, NodeId, NodeId) {
+    pub(super) fn two_sampler_graph(level_a: f32, level_b: f32) -> (CompiledGraph, NodeId, NodeId) {
         let mut store = SampleStore::new();
         let patch_a = flat_patch(&mut store, level_a);
         let patch_b = flat_patch(&mut store, level_b);
@@ -1110,6 +1201,103 @@ mod tests {
         assert_eq!(
             peak, 0.0,
             "a reset sampler must have nothing left, got {peak}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod live_input_tests {
+    use slotmap::KeyData;
+
+    use super::tests::{playing, two_sampler_graph};
+    use super::*;
+    use fontelle_types::EventPayload;
+
+    fn node_id(index: u64) -> NodeId {
+        NodeId::from(KeyData::from_ffi(index))
+    }
+
+    /// Two samplers on one bus at distinguishable levels, so "which of them
+    /// played" is answerable from the peak rather than only "something did".
+    fn two_samplers() -> (CompiledGraph, NodeId, NodeId) {
+        two_sampler_graph(0.25, 0.5)
+    }
+
+    fn note_on(target: NodeId) -> TimedEvent {
+        TimedEvent {
+            sample: 0,
+            target,
+            payload: EventPayload::NoteOn {
+                key: 60,
+                velocity: 127,
+                voice_context: 0,
+            },
+        }
+    }
+
+    fn peak(buffer: &[f32]) -> f32 {
+        buffer.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+    }
+
+    #[test]
+    fn a_live_event_plays_the_node_it_targets() {
+        let (mut graph, first, _second) = two_samplers();
+        graph.process_block_with_live(&[], &[note_on(first)], playing(), 0..128);
+        assert!(
+            peak(graph.buffer_pool.buffer_mut(0)) > 0.0,
+            "a key pressed on a live device makes a sound"
+        );
+    }
+
+    #[test]
+    fn a_live_event_reaches_only_the_node_it_targets() {
+        // The same routing rule the timeline follows. It matters more for live
+        // input, not less: a keyboard is routed to one instrument, and an
+        // unrouted live event playing every instrument at once is the loudest
+        // possible bug.
+        let (mut graph, _first, second) = two_samplers();
+        let unrouted = node_id(9_999);
+        assert!(unrouted != second);
+
+        graph.process_block_with_live(&[], &[note_on(unrouted)], playing(), 0..128);
+        assert_eq!(
+            peak(graph.buffer_pool.buffer_mut(0)),
+            0.0,
+            "an event addressed to no node in the graph plays nothing"
+        );
+    }
+
+    #[test]
+    fn a_node_hears_the_timeline_and_the_live_input_together() {
+        // Playing along with the song: both sources reach the same instrument
+        // in the same block, and neither replaces the other.
+        let (mut graph, first, second) = two_samplers();
+
+        let mut only_timeline = two_samplers().0;
+        only_timeline.process_block(&[note_on(first)], playing(), 0..128);
+        let timeline_alone = peak(only_timeline.buffer_pool.buffer_mut(0));
+
+        graph.process_block_with_live(&[note_on(first)], &[note_on(second)], playing(), 0..128);
+        let together = peak(graph.buffer_pool.buffer_mut(0));
+
+        assert!(timeline_alone > 0.0);
+        assert!(
+            together > timeline_alone,
+            "the live note sums with the sequenced one ({together} against {timeline_alone})"
+        );
+    }
+
+    #[test]
+    fn no_live_input_is_the_same_render_as_before_live_input_existed() {
+        let (mut with_empty, first, _) = two_samplers();
+        let (mut without, _, _) = two_samplers();
+
+        with_empty.process_block_with_live(&[note_on(first)], &[], playing(), 0..128);
+        without.process_block(&[note_on(first)], playing(), 0..128);
+
+        assert_eq!(
+            with_empty.buffer_pool.buffer_mut(0),
+            without.buffer_pool.buffer_mut(0)
         );
     }
 }

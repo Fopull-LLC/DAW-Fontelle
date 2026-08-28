@@ -143,11 +143,18 @@ fn plays_a_note_through_the_real_output_device() {
     let mut device = AudioDevice::default_host();
     eprintln!("output device: {:?}", device.default_output_name());
     eprintln!("playing {} events", timeline.events.len());
+    let transport = std::sync::Arc::new(fontelle_engine::Transport::new());
+    transport.play();
     device
-        .start_output_stream(graph, timeline, SAMPLE_RATE)
+        .start_output_stream(graph, timeline, SAMPLE_RATE, transport.clone(), None)
         .expect("failed to open the default output device");
 
     std::thread::sleep(Duration::from_millis(3500));
+    // Stop through the transport rather than by yanking the stream: the
+    // callback cuts the voices and fills silence, so what the device gets last
+    // is silence rather than a block torn off mid-note.
+    transport.stop();
+    std::thread::sleep(Duration::from_millis(50));
     device.stop();
 }
 

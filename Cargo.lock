@@ -973,6 +973,7 @@ dependencies = [
  "midir",
  "midly",
  "rtrb",
+ "slotmap",
 ]
 
 [[package]]

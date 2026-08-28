@@ -1,11 +1,13 @@
 use std::mem::ManuallyDrop;
+use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use fontelle_types::CompiledTimeline;
+use fontelle_types::{CompiledTimeline, TimedEvent};
 
 use crate::graph::CompiledGraph;
+use crate::live::{IdleGate, LiveEventSource};
 use crate::rt_guard::with_rt_thread;
-use crate::transport::{TransportSnapshot, TransportState};
+use crate::transport::{Transport, TransportReader};
 
 /// The fixed block size the M0 vertical slice targets (TDD §22: "128 frames /
 /// 48 kHz"). `CompiledGraph`'s `BufferPool` is sized to this; a backend that
@@ -83,18 +85,32 @@ impl AudioDevice {
     /// hand the old graph to a channel a non-RT thread actually frees)
     /// instead — not built yet, see `PROGRESS.md`.
     ///
+    /// `transport` is the shared state the callback is driven *by*: play,
+    /// stop, seek and loop all reach the audio thread through it, and the
+    /// playhead comes back the same way. The whole per-block decision lives in
+    /// `TransportReader` rather than here, because code inside this closure
+    /// can only be run by a real sound card and therefore can only be tested
+    /// by ear. Everything below is the loop around it plus the interleave.
+    ///
+    /// `live` is the consumer end of the live-input channel (TDD §14.1) — a
+    /// MIDI keyboard's events, drained once per callback and handed to the
+    /// graph alongside the timeline's. Pass `None` for a pure playback stream.
+    ///
     /// `timeline` is walked by sample position each block via
-    /// `CompiledTimeline::events_for_block` — a monotonically-advancing
-    /// cursor into its already-sorted `events`, no allocation, no traversal
-    /// beyond a linear scan (same RT-safety shape as `CompiledGraph::
-    /// process_block` itself). Passing `CompiledTimeline::empty()` plays
-    /// silence unless a node already has an active voice from some other
-    /// trigger (the manual hardware test still does its note-on that way).
+    /// `CompiledTimeline::events_for_block` — a cursor into its already-sorted
+    /// `events`, no allocation, no traversal beyond a linear scan (same
+    /// RT-safety shape as `CompiledGraph::process_block` itself), repositioned
+    /// by binary search when the reader observes a seek. Passing
+    /// `CompiledTimeline::empty()` plays silence unless a node already has an
+    /// active voice from some other trigger (the manual hardware test still
+    /// does its note-on that way).
     pub fn start_output_stream(
         &mut self,
         graph: CompiledGraph,
         timeline: CompiledTimeline,
         sample_rate: u32,
+        transport: Arc<Transport>,
+        live: Option<LiveEventSource>,
     ) -> Result<(), DeviceError> {
         // Off-RT, before the stream exists: nodes size their internal buffers
         // here so the callback never has to.
@@ -118,8 +134,14 @@ impl AudioDevice {
         let mut first_callback = true;
         let mut rt_handle: ManuallyDrop<Option<audio_thread_priority::RtPriorityHandle>> =
             ManuallyDrop::new(None);
-        let mut sample_counter: i64 = 0;
-        let mut event_cursor: usize = 0;
+        // The caller keeps its own clone for the stream's life, so dropping
+        // this one on the audio thread at teardown is a refcount decrement and
+        // never a free — but it is wrapped like everything else the closure
+        // owns so that stays true no matter what the caller does with theirs.
+        let transport = ManuallyDrop::new(transport);
+        let mut live = ManuallyDrop::new(live);
+        let mut reader = TransportReader::new();
+        let mut gate = IdleGate::new();
         let mut poisoned = false;
 
         let stream = device
@@ -166,37 +188,98 @@ impl AudioDevice {
                         // `rt_guard::with_rt_thread` and `PROGRESS.md`.
                         with_rt_thread(|| {
                             let frames_total = data.len() / channels.max(1);
+
+                            // Drained once for the whole callback, not once
+                            // per step: these events arrived while the audio
+                            // thread was away, they belong to this callback,
+                            // and a loop seam splitting the callback in two
+                            // must not deliver them a second time — which
+                            // would retrigger every key currently going down.
+                            let live_events: &[TimedEvent] = match live.as_mut() {
+                                Some(source) => source.drain(reader.position()),
+                                None => &[],
+                            };
+                            let mut live_pending = !live_events.is_empty();
+
                             let mut written = 0;
                             while written < frames_total {
-                                let chunk = (frames_total - written).min(BLOCK_SIZE);
-                                let transport = TransportSnapshot {
-                                    state: TransportState::Playing,
-                                    position_sample: sample_counter,
-                                };
-                                let block_range = sample_counter..sample_counter + chunk as i64;
-                                let events = timeline
-                                    .events_for_block(&mut event_cursor, block_range.clone());
-                                graph.process_block(events, transport, block_range);
+                                // A stopped transport still has to make sound
+                                // when someone is playing the keyboard, and
+                                // still has to cost nothing when nobody is.
+                                let awake = gate.is_awake(usize::from(live_pending));
+                                let step = reader.next_step(
+                                    &transport,
+                                    &timeline,
+                                    frames_total - written,
+                                    BLOCK_SIZE,
+                                    awake,
+                                );
+                                let frames = step.frames;
 
-                                // Interleave the graph's planar buses into the
-                                // device's frame layout — the one and only
-                                // place format conversion happens (TDD §5.2).
-                                // Device channel `c` reads bus `c`, clamped to
-                                // whatever the pool actually holds: a stereo
-                                // graph into a mono device drops the right
-                                // bus, and a mono graph into a multi-channel
-                                // device duplicates across all of them.
-                                let buses = graph.buffer_pool.len();
-                                for c in 0..channels {
-                                    let bus = c.min(buses.saturating_sub(1));
-                                    let block = graph.buffer_pool.buffer_mut(bus);
-                                    for i in 0..chunk {
-                                        data[(written + i) * channels + c] = block[i];
-                                    }
+                                // Before processing, not after: a stop or a
+                                // seek means the audio that was in flight
+                                // belongs to a different moment in the song,
+                                // and letting its release tail ring over the
+                                // new position is the audible form of the bug.
+                                if step.reset {
+                                    // Scoped: a stop, a seek or a loop seam
+                                    // cuts the notes the *song* was playing
+                                    // and leaves the ones a player is holding.
+                                    // The gate is deliberately not cleared
+                                    // here — a live voice may well still be
+                                    // sounding through this, and the next
+                                    // block's own measurement is what decides
+                                    // whether anything still is.
+                                    graph.reset_sequenced();
                                 }
 
-                                written += chunk;
-                                sample_counter += chunk as i64;
+                                if step.process {
+                                    let this_step = if live_pending { live_events } else { &[] };
+                                    live_pending = false;
+                                    graph.process_block_with_live(
+                                        step.events,
+                                        this_step,
+                                        step.snapshot,
+                                        step.range.clone(),
+                                    );
+
+                                    // Interleave the graph's planar buses into
+                                    // the device's frame layout — the one and
+                                    // only place format conversion happens
+                                    // (TDD §5.2). Device channel `c` reads bus
+                                    // `c`, clamped to whatever the pool
+                                    // actually holds: a stereo graph into a
+                                    // mono device drops the right bus, and a
+                                    // mono graph into a multi-channel device
+                                    // duplicates across all of them.
+                                    let buses = graph.buffer_pool.len();
+                                    let mut peak = 0.0f32;
+                                    for c in 0..channels {
+                                        let bus = c.min(buses.saturating_sub(1));
+                                        let block = graph.buffer_pool.buffer_mut(bus);
+                                        for i in 0..frames {
+                                            let sample = block[i];
+                                            peak = peak.max(sample.abs());
+                                            data[(written + i) * channels + c] = sample;
+                                        }
+                                    }
+                                    // Measured off the samples already being
+                                    // copied, so knowing whether the graph is
+                                    // still making sound costs nothing beyond
+                                    // the compare. It is what lets a stopped
+                                    // transport go back to idle on its own
+                                    // once a live note has died away.
+                                    gate.observe(peak);
+                                } else {
+                                    // Stopped: no nodes run at all. This is
+                                    // the near-zero idle CPU target (TDD §6.3,
+                                    // §19) and the whole reason the check is
+                                    // here rather than inside the graph.
+                                    let from = written * channels;
+                                    data[from..from + frames * channels].fill(0.0);
+                                }
+
+                                written += frames;
                             }
                         });
 

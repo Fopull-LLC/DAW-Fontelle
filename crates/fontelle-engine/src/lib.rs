@@ -5,6 +5,7 @@
 
 mod device;
 mod graph;
+mod live;
 mod nodes;
 mod rt_guard;
 mod transport;
@@ -14,6 +15,10 @@ pub use fontelle_fx::LimiterConfig;
 pub use graph::{
     AudioNode, BufferPool, CompiledGraph, ParamSet, PrepareContext, ProcessContext, ScheduledNode,
 };
+pub use live::{
+    IdleGate, LIVE_PORT_CAPACITY, LIVE_PORT_COUNT, LiveEventPorts, LiveEventSource, LivePort,
+    live_event_channel,
+};
 pub use nodes::{
     AudioClipNode, BusSumNode, EffectNode, MasterMeter, MasterNode, MixerTrackNode, SamplerNode,
     SendNode,
@@ -22,4 +27,4 @@ pub use rt_guard::{
     RtGuardAllocator, current_thread_is_rt, mark_current_thread_rt, unmark_current_thread_rt,
     with_rt_thread,
 };
-pub use transport::{Transport, TransportSnapshot, TransportState};
+pub use transport::{Step, Transport, TransportReader, TransportSnapshot, TransportState};

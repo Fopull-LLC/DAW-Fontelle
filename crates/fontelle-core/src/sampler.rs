@@ -70,9 +70,29 @@ impl Sampler {
         self.pan
     }
 
+    /// Starts a note the timeline asked for. See [`Sampler::note_on_from`]
+    /// for one a player did.
     pub fn note_on(&mut self, key: u8, velocity: u8, voice_context: u32) {
+        self.note_on_from(
+            key,
+            velocity,
+            voice_context,
+            fontelle_types::VoiceOrigin::Timeline,
+        );
+    }
+
+    /// As [`Sampler::note_on`], recording where the note came from so that
+    /// transport stop and seek can cut the timeline's voices without cutting
+    /// the player's.
+    pub fn note_on_from(
+        &mut self,
+        key: u8,
+        velocity: u8,
+        voice_context: u32,
+        origin: fontelle_types::VoiceOrigin,
+    ) {
         if let Some(voice) = self.voices.allocate(self.patch.voice_config.steal_policy) {
-            voice.trigger(&self.patch, key, velocity, voice_context);
+            voice.trigger_from(&self.patch, key, velocity, voice_context, origin);
         }
     }
 
@@ -110,6 +130,15 @@ impl Sampler {
     /// RT-safe: touches only preallocated state.
     pub fn reset(&mut self) {
         self.voices.reset();
+    }
+
+    /// Silences only what the timeline started — transport stop and seek.
+    /// A note a player is holding keeps sounding, because they have not let
+    /// go of it. See [`fontelle_types::VoiceOrigin`].
+    ///
+    /// RT-safe.
+    pub fn reset_sequenced(&mut self) {
+        self.voices.reset_sequenced();
     }
 
     /// Note-offs every sounding voice, so each rings out through its own
@@ -211,6 +240,103 @@ mod tests {
 
     fn rms(buf: &[f32]) -> f32 {
         (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn a_note_on_defaults_to_being_the_timelines() {
+        // Anything that does not say otherwise is the sequencer, so the
+        // existing call sites keep their meaning.
+        let mut store = SampleStore::new();
+        let patch = one_voice_patch(&mut store, 8);
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 512,
+        });
+
+        sampler.note_on(60, 127, 0);
+        sampler.reset_sequenced();
+        let mut out = vec![0.0; 128];
+        sampler.render(&store, &mut [&mut out[..]]);
+        assert_eq!(
+            rms(&out),
+            0.0,
+            "a plain note_on is the timeline's, and a stop cuts it"
+        );
+    }
+
+    #[test]
+    fn a_stop_cuts_the_timelines_voices_and_spares_the_players() {
+        // The whole point of `VoiceOrigin`: transport stop is a statement
+        // about the sequencer, not about the person holding a key down.
+        let mut store = SampleStore::new();
+        let patch = one_voice_patch(&mut store, 8);
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 512,
+        });
+
+        sampler.note_on_from(60, 127, 0, fontelle_types::VoiceOrigin::Timeline);
+        sampler.note_on_from(67, 127, 1, fontelle_types::VoiceOrigin::Live);
+
+        let mut both = vec![0.0; 128];
+        sampler.render(&store, &mut [&mut both[..]]);
+        let with_both = rms(&both);
+
+        sampler.reset_sequenced();
+        let mut after = vec![0.0; 128];
+        sampler.render(&store, &mut [&mut after[..]]);
+        let after_stop = rms(&after);
+
+        assert!(after_stop > 0.0, "the held key must still sound");
+        assert!(
+            after_stop < with_both,
+            "the sequenced voice must be gone ({after_stop} against {with_both})"
+        );
+    }
+
+    #[test]
+    fn a_full_reset_still_takes_everything_including_live_voices() {
+        // Device teardown and the panic button are not transport stop: there
+        // is nobody left holding anything.
+        let mut store = SampleStore::new();
+        let patch = one_voice_patch(&mut store, 8);
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 512,
+        });
+
+        sampler.note_on_from(60, 127, 0, fontelle_types::VoiceOrigin::Live);
+        sampler.reset();
+        let mut out = vec![0.0; 128];
+        sampler.render(&store, &mut [&mut out[..]]);
+        assert_eq!(rms(&out), 0.0);
+    }
+
+    #[test]
+    fn a_voice_slot_reused_after_a_live_note_is_not_still_marked_live() {
+        // The pool reuses slots. If the origin survived into the next note,
+        // one live note would make every voice that later landed in that slot
+        // immune to transport stop — a note stuck through every stop and seek
+        // for the rest of the session.
+        let mut store = SampleStore::new();
+        let patch = one_voice_patch(&mut store, 8);
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 512,
+        });
+
+        sampler.note_on_from(60, 127, 0, fontelle_types::VoiceOrigin::Live);
+        sampler.reset();
+        sampler.note_on(60, 127, 0);
+        sampler.reset_sequenced();
+
+        let mut out = vec![0.0; 128];
+        sampler.render(&store, &mut [&mut out[..]]);
+        assert_eq!(rms(&out), 0.0, "the reused slot is the timeline's again");
     }
 
     #[test]

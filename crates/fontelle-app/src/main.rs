@@ -28,14 +28,31 @@ const BPM: f64 = 120.0;
 /// sequencer compiling it to a `CompiledTimeline`, the engine reading events
 /// out of that timeline block by block, and a mixer track in the signal path.
 /// See `PROGRESS.md`.
-fn play_sf2(
-    path: &std::path::Path,
+/// Everything `--play-sf2` was asked for beyond the soundfont itself.
+///
+/// A struct rather than eight positional parameters: the flags are all
+/// independent of each other, several are `Option`s, and two are booleans that
+/// would be indistinguishable at a call site.
+struct PlayOptions<'a> {
     root_key: u8,
     preset: usize,
-    render_wav: Option<&std::path::Path>,
-    midi: Option<(&std::path::Path, fontelle_assets::MidiChannels)>,
+    render_wav: Option<&'a std::path::Path>,
+    midi: Option<(&'a std::path::Path, fontelle_assets::MidiChannels)>,
     gain_db: f32,
-) -> Result<(), String> {
+    cue: Cue,
+    midi_in: bool,
+}
+
+fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), String> {
+    let PlayOptions {
+        root_key,
+        preset,
+        render_wav,
+        midi,
+        gain_db,
+        cue,
+        midi_in,
+    } = options;
     // SF2 files store presets in arbitrary order, so "preset 0" is regularly
     // not the instrument anyone wants — `Secret_of_Mana.sf2` opens with a
     // whale sound effect and keeps its piano at index 27. Show the list
@@ -162,7 +179,41 @@ fn play_sf2(
 
     // One beat of tail so the final chord's release rings out instead of
     // being chopped off when the stream stops.
-    let duration_samples = song.duration_samples(PPQN);
+    let song_end_samples = song.duration_samples(PPQN);
+
+    // Beats on the command line, ticks in the document, samples in the
+    // engine — and the conversion goes through the song's own `TempoMap`
+    // rather than by arithmetic on the BPM (INVARIANT 5). That matters here
+    // and not only on principle: a file with a tempo change has no single BPM
+    // to multiply by, so "loop bars 5 to 9" is only answerable by the map.
+    let transport = Arc::new(fontelle_engine::Transport::new());
+    let to_sample = |beats: f64| {
+        song.project
+            .tempo_map
+            .tick_to_sample((beats * PPQN as f64).round() as i64)
+    };
+    let start_sample = to_sample(cue.start_beat);
+    transport.seek(start_sample);
+    let looped = cue.loop_beats.map(|(from, to)| {
+        let ticks = (
+            (from * PPQN as f64).round() as i64,
+            (to * PPQN as f64).round() as i64,
+        );
+        let samples = (to_sample(from), to_sample(to));
+        transport.set_loop_range(ticks, samples);
+        transport.set_looping(true);
+        samples
+    });
+
+    // How much audio there is to play: to the end of the song, or `--repeat`
+    // passes of the loop, counted from wherever playback was cued.
+    let duration_samples = match looped {
+        Some((loop_start, loop_end)) => {
+            let pass = loop_end - loop_start;
+            (loop_end - start_sample.min(loop_end)) + pass * (cue.repeat.max(1) as i64 - 1)
+        }
+        None => (song_end_samples - start_sample).max(0),
+    };
     let duration = std::time::Duration::from_secs_f64(duration_samples as f64 / SAMPLE_RATE as f64);
 
     // Offline bounce instead of the device: renders the identical signal
@@ -171,7 +222,16 @@ fn play_sf2(
     if let Some(out) = render_wav {
         let built = fontelle_app::build_graph_with_gain(&song, samplers, Arc::new(store), gain_db);
         let mut graph = built.graph;
-        let pcm = fontelle_app::render_offline(&song, &mut graph, duration_samples);
+        // The same transport the device would be driven by, so a bounce of a
+        // looped section is the section as it plays rather than a second code
+        // path that has to be kept in step with the first.
+        transport.set_state(fontelle_engine::TransportState::Rendering);
+        let pcm = fontelle_app::render_offline_with_transport(
+            &song,
+            &mut graph,
+            duration_samples,
+            &transport,
+        );
         let reduction_db = built.master.take_max_reduction_db();
         let clipped = fontelle_app::write_wav16(out, &pcm, 2, SAMPLE_RATE)
             .map_err(|e| format!("failed to write {}: {e}", out.display()))?;
@@ -210,15 +270,249 @@ fn play_sf2(
             "  root key {root_key} at {BPM} bpm — a root/third/fifth run, then the triad held."
         );
     }
-    println!("  {:.2}s", duration.as_secs_f64());
+    match looped {
+        Some((from, to)) => println!(
+            "  looping {:.2}s-{:.2}s x{}  ({:.2}s total)",
+            from as f64 / SAMPLE_RATE as f64,
+            to as f64 / SAMPLE_RATE as f64,
+            cue.repeat.max(1),
+            duration.as_secs_f64()
+        ),
+        None if cue.start_beat > 0.0 => println!(
+            "  from {:.2}s  ({:.2}s to the end)",
+            start_sample as f64 / SAMPLE_RATE as f64,
+            duration.as_secs_f64()
+        ),
+        None => println!("  {:.2}s", duration.as_secs_f64()),
+    }
 
+    // Live input, if asked for. The channel is built here, off the audio
+    // thread: the consumer half goes into the callback and never leaves it,
+    // and each device that connects claims a producer.
+    let (live_source, mut live_ports) = fontelle_engine::live_event_channel(
+        fontelle_engine::LIVE_PORT_COUNT,
+        fontelle_engine::LIVE_PORT_CAPACITY,
+    );
+    let mut hub = if midi_in {
+        // The first part's instrument. There is no focus to follow yet
+        // (TDD §14.3's default), and playing the first instrument in the song
+        // is the answer that needs no UI.
+        let target = song.channels.first().map(|c| c.node).unwrap_or_default();
+        Some(fontelle_midi::MidiHub::new(fontelle_midi::RouteTo {
+            node: target,
+            // Distinct from anything the sequencer emits, so a sequenced
+            // note-off cannot cut a note the player is holding (TDD §11.4).
+            voice_context: LIVE_VOICE_CONTEXT,
+        }))
+    } else {
+        None
+    };
+
+    let finish = match looped {
+        Some(_) => Finish::LoopPasses(cue.repeat.max(1)),
+        None => Finish::AtSample(song_end_samples),
+    };
+
+    // Playback is a state on the transport now, rather than a consequence of
+    // the stream existing — which is what makes stop, seek and loop reachable
+    // at all, and what a UI will drive when there is one.
+    transport.play();
     device
-        .start_output_stream(graph, timeline, SAMPLE_RATE)
+        .start_output_stream(
+            graph,
+            timeline,
+            SAMPLE_RATE,
+            transport.clone(),
+            midi_in.then_some(live_source),
+        )
         .map_err(|e| format!("failed to open the default output device: {e}"))?;
 
-    std::thread::sleep(duration);
+    match hub.as_mut() {
+        Some(hub) => {
+            // Live input keeps the process alive on its own terms: the point
+            // of playing along is that you are still playing when the song
+            // ends. Stop it from the keyboard's own terminal, with Ctrl-C.
+            println!("\n  live MIDI in — play; Ctrl-C to stop.");
+            follow_midi_devices(hub, &mut live_ports, &transport, finish);
+        }
+        None => wait_for_playback(&transport, duration, finish),
+    }
+
+    // Before the stream goes away, so anything still held is released through
+    // a callback that is still running. Closing the devices afterwards would
+    // send those note-offs into a queue nobody drains.
+    if let Some(hub) = hub.as_mut() {
+        hub.shutdown();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    // Stopped through the transport first: the callback cuts the voices and
+    // fills silence, so the last thing the device is handed is silence rather
+    // than a block torn off mid-note. Then a moment for that block to reach
+    // the speakers before the stream goes away.
+    transport.stop();
+    std::thread::sleep(std::time::Duration::from_millis(50));
     device.stop();
+    println!(
+        "  stopped at {:.2}s",
+        transport.position_sample() as f64 / SAMPLE_RATE as f64
+    );
     Ok(())
+}
+
+/// Where playback starts and what, if anything, it repeats — the command-line
+/// half of the transport. Beats, because that is the unit a musician has in
+/// mind; the tempo map turns them into the samples the engine runs on.
+#[derive(Debug, Clone, Copy)]
+struct Cue {
+    start_beat: f64,
+    loop_beats: Option<(f64, f64)>,
+    repeat: u32,
+}
+
+impl Default for Cue {
+    fn default() -> Self {
+        Self {
+            start_beat: 0.0,
+            loop_beats: None,
+            repeat: 2,
+        }
+    }
+}
+
+/// The voice context every live note carries.
+///
+/// Anything but the sequencer's, which uses a clip's own id. A shared context
+/// would let the arrangement's note-off for the same key cut the note the
+/// player is holding, and vice versa (TDD §11.4).
+const LIVE_VOICE_CONTEXT: u32 = u32::MAX;
+
+/// Keeps live MIDI going for as long as the process runs: polls for devices
+/// coming and going, and reports each change.
+///
+/// Polling is not a choice — `midir` has no hot-plug notification on any of
+/// its backends, so re-enumeration is the only mechanism there is. 500 ms is
+/// slow enough to cost nothing and fast enough that plugging a keyboard in
+/// feels immediate.
+///
+/// It also keeps playing the song underneath, honouring the same finish
+/// condition the playback-only path uses — but it does not exit when the song
+/// ends, because the point of live input is that you are still playing after
+/// the arrangement stops.
+fn follow_midi_devices(
+    hub: &mut fontelle_midi::MidiHub,
+    ports: &mut fontelle_engine::LiveEventPorts,
+    transport: &fontelle_engine::Transport,
+    finish: Finish,
+) {
+    let mut announced = false;
+    let mut passes = 1;
+    let mut last_position = transport.position_sample();
+
+    loop {
+        match hub.poll(|| {
+            ports
+                .claim()
+                .map(|port| Box::new(port) as Box<dyn fontelle_types::EventSink>)
+        }) {
+            Ok(report) => {
+                for key in &report.connected {
+                    println!("  + {}", key.0);
+                }
+                for key in &report.disconnected {
+                    println!("  - {} (its notes released)", key.0);
+                }
+                for key in &report.failed {
+                    println!("  ! {} could not be opened", key.0);
+                }
+                if !announced && hub.connected_devices().is_empty() {
+                    println!("  (no MIDI inputs found — plug one in and it will be picked up)");
+                    announced = true;
+                }
+            }
+            Err(e) => {
+                eprintln!("  ! MIDI enumeration failed: {e}");
+                return;
+            }
+        }
+
+        // The song plays on underneath, finishing on the same condition the
+        // playback-only path uses. When it does, the transport stops — and the
+        // keyboard keeps working, which is the audition path in `IdleGate`.
+        let now = transport.position_sample();
+        let finished = match finish {
+            Finish::AtSample(target) => now >= target,
+            Finish::LoopPasses(wanted) => {
+                if now < last_position {
+                    passes += 1;
+                }
+                passes > wanted
+            }
+        };
+        last_position = now;
+        if finished && transport.is_playing() {
+            transport.stop();
+            println!("  (song finished — the keyboard is still live)");
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
+/// What playback is waiting for.
+#[derive(Debug, Clone, Copy)]
+enum Finish {
+    /// The playhead reaching a point in the song.
+    AtSample(i64),
+    /// A number of passes through the loop, counted by watching the playhead
+    /// wrap.
+    LoopPasses(u32),
+}
+
+/// Waits for playback to finish, watching the **playhead** rather than the
+/// clock.
+///
+/// Sleeping for the song's duration was close enough when a stream played once
+/// from the top and stopped. It is not close enough now: it assumes the device
+/// consumes audio at exactly the rate the arithmetic says, it cannot notice a
+/// stream that died, and with a loop running it has nothing to count passes
+/// with. `Transport::position_sample` is what the audio thread actually
+/// reached, and a wrap is visible as the playhead moving backwards — which is
+/// the only thing that can move it backwards while nothing is seeking.
+///
+/// The wall-clock timeout stays, generously padded, as the answer to "the
+/// device never called back at all": without it a dead stream hangs the
+/// process forever.
+fn wait_for_playback(
+    transport: &fontelle_engine::Transport,
+    timeout: std::time::Duration,
+    finish: Finish,
+) {
+    let deadline = std::time::Instant::now() + timeout + std::time::Duration::from_secs(2);
+    let mut passes = 1;
+    let mut last = transport.position_sample();
+
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let now = transport.position_sample();
+
+        match finish {
+            Finish::AtSample(target) => {
+                if now >= target {
+                    return;
+                }
+            }
+            Finish::LoopPasses(wanted) => {
+                if now < last {
+                    passes += 1;
+                    if passes > wanted {
+                        return;
+                    }
+                }
+            }
+        }
+        last = now;
+    }
 }
 
 /// Picks the SF2 preset a MIDI part asked for.
@@ -316,13 +610,60 @@ fn main() {
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or(fontelle_app::DEMO_TRACK_GAIN_DB);
 
+        let float_flag = |name: &str| {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1))
+                .and_then(|v| v.parse::<f64>().ok())
+        };
+        // `--loop <from>:<to>` in beats. A colon rather than two flags
+        // because a loop is one range: half of it given and half defaulted is
+        // never what anybody meant.
+        let loop_beats = match args.iter().position(|a| a == "--loop") {
+            Some(i) => match args.get(i + 1).and_then(|v| v.split_once(':')) {
+                Some((from, to)) => match (from.parse::<f64>(), to.parse::<f64>()) {
+                    (Ok(from), Ok(to)) if to > from && from >= 0.0 => Some((from, to)),
+                    _ => {
+                        eprintln!(
+                            "Fontelle: --loop takes a beat range as <from>:<to>, ending after \
+                             it starts — e.g. --loop 0:8 for the first two bars of 4/4"
+                        );
+                        std::process::exit(1);
+                    }
+                },
+                None => {
+                    eprintln!("Fontelle: --loop takes a beat range as <from>:<to>, e.g. 0:8");
+                    std::process::exit(1);
+                }
+            },
+            None => None,
+        };
+        let cue = Cue {
+            start_beat: float_flag("--start-beat").unwrap_or(0.0).max(0.0),
+            loop_beats,
+            repeat: numeric_flag("--repeat").unwrap_or(2).max(1) as u32,
+        };
+
+        let midi_in = args.iter().any(|a| a == "--midi-in");
+        if midi_in && render_wav.is_some() {
+            eprintln!(
+                "Fontelle: --midi-in is live playing and --render-wav is an offline bounce; \
+                 there is nothing for the keyboard to be recorded into yet"
+            );
+            std::process::exit(1);
+        }
+
         if let Err(e) = play_sf2(
             &path,
-            root_key,
-            preset,
-            render_wav.as_deref(),
-            midi,
-            gain_db,
+            PlayOptions {
+                root_key,
+                preset,
+                render_wav: render_wav.as_deref(),
+                midi,
+                gain_db,
+                cue,
+                midi_in,
+            },
         ) {
             eprintln!("Fontelle: {e}");
             std::process::exit(1);
@@ -339,6 +680,7 @@ fn main() {
          -> fontelle-sequencer::compile -> CompiledTimeline over triple_buffer \
          (run with `--play-sf2 <path.sf2> [--preset <n>] [--key <note>] \
          [--play-midi <file.mid>] [--midi-channel <1-16> | --midi-all] \
-         [--gain-db <db>] [--render-wav <out.wav>]` for the M0 vertical slice instead)"
+         [--gain-db <db>] [--start-beat <n>] [--loop <from>:<to>] [--repeat <n>] \
+         [--midi-in] [--render-wav <out.wav>]` for the M0 vertical slice instead)"
     )
 }

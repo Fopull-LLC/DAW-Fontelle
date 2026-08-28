@@ -63,14 +63,18 @@ impl AudioNode for SamplerNode {
     }
 
     fn process(&mut self, ctx: &mut ProcessContext) {
-        for event in ctx.events() {
+        for (origin, event) in ctx.events_with_origin() {
             match &event.payload {
                 fontelle_types::EventPayload::NoteOn {
                     key,
                     velocity,
                     voice_context,
                 } => {
-                    self.sampler.note_on(*key, *velocity, *voice_context);
+                    // The origin is recorded on the voice, so a transport stop
+                    // can cut what the song started without cutting what the
+                    // player is holding.
+                    self.sampler
+                        .note_on_from(*key, *velocity, *voice_context, origin);
                 }
                 fontelle_types::EventPayload::NoteOff { key, voice_context } => {
                     self.sampler.note_off(*key, *voice_context);
@@ -106,10 +110,17 @@ impl AudioNode for SamplerNode {
     }
 
     fn reset(&mut self) {
-        // A hard cut, not a release: `AudioNode::reset` is transport stop and
-        // seek, and after a seek the audio belongs to a different part of the
-        // song. A release tail from before it would play over the top.
+        // A hard cut, not a release: a release tail from before a seek would
+        // play over the top of wherever playback landed.
         self.sampler.reset();
+        self.scratch.fill(0.0);
+    }
+
+    fn reset_sequenced(&mut self) {
+        // Transport stop and seek. Same hard cut, but only for the voices the
+        // timeline started — the ones a player is holding belong to them, and
+        // stop is a statement about the sequencer.
+        self.sampler.reset_sequenced();
         self.scratch.fill(0.0);
     }
 
@@ -487,6 +498,7 @@ mod tests {
                 inputs: &[],
                 outputs: &mut slices,
                 all_events: &[],
+                live_events: &[],
                 node: fontelle_types::NodeId::default(),
                 transport: TransportSnapshot {
                     state: TransportState::Playing,
@@ -645,6 +657,7 @@ mod tests {
                 inputs: &[],
                 outputs: &mut out_slices,
                 all_events: &events,
+                live_events: &[],
                 node: fontelle_types::NodeId::default(),
                 transport: TransportSnapshot {
                     state: TransportState::Playing,
@@ -672,6 +685,7 @@ mod tests {
                 inputs: &[],
                 outputs: &mut slices,
                 all_events: &[],
+                live_events: &[],
                 node: fontelle_types::NodeId::default(),
                 transport: TransportSnapshot {
                     state: TransportState::Playing,
@@ -776,6 +790,7 @@ mod tests {
                 inputs: &[],
                 outputs: &mut slices,
                 all_events: &[],
+                live_events: &[],
                 node: fontelle_types::NodeId::default(),
                 transport: TransportSnapshot {
                     state: TransportState::Playing,

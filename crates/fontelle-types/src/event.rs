@@ -69,6 +69,58 @@ impl CompiledTimeline {
         }
         &self.events[start..*cursor]
     }
+
+    /// The cursor value `events_for_block` should start from to render the
+    /// block beginning at `sample` — the first event at or after it.
+    ///
+    /// This is what a seek needs and what a monotonically-advancing cursor
+    /// cannot give: after playing to the end of a piece the cursor sits past
+    /// every event in it, so seeking back to bar 1 without repositioning
+    /// plays silence. Binary search over the already-sorted `events`, so it
+    /// allocates nothing and is safe to call from the audio callback the
+    /// moment it observes a seek (INVARIANT 1).
+    pub fn cursor_at(&self, sample: Sample) -> usize {
+        self.events.partition_point(|event| event.sample < sample)
+    }
+}
+
+/// Where a note came from: the compiled timeline, or somebody playing.
+///
+/// The distinction exists for exactly one reason, and it is not cosmetic:
+/// **transport stop and seek must cut the timeline's voices and leave the
+/// player's alone.** A sequenced voice belongs to a moment in the song that
+/// the playhead has left, so carrying it across a seek plays the wrong music
+/// over the new position. A live voice belongs to a finger that is still on a
+/// key, and cutting it leaves the player holding a silent keyboard until they
+/// let go and press again.
+///
+/// It is a type rather than a reserved `voice_context` value on purpose. The
+/// sequencer's contexts are clip indices counting from zero (TDD §11.4), so a
+/// "live" sentinel would be a convention holding two unrelated numbering
+/// schemes apart by nothing but the unlikelihood of a collision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VoiceOrigin {
+    /// Started by the compiled timeline.
+    #[default]
+    Timeline,
+    /// Started by live input — a MIDI device, or the UI's keyboard.
+    Live,
+}
+
+/// Somewhere a live event can be put: a MIDI device's callback thread, a UI
+/// keyboard, anything generating events outside the compiled timeline.
+///
+/// It is a trait here, in the shared vocabulary crate, rather than a concrete
+/// queue, because of the dependency rule (TDD §4.1): the queue itself is an
+/// RT-thread structure and belongs to `fontelle-engine`, while the things that
+/// fill it — `fontelle-midi`, and later the UI — sit outside it and may not
+/// depend on it. Both sides can name this.
+pub trait EventSink: Send {
+    /// Queues one event. Returns `false` if it could not be taken, which for a
+    /// bounded queue means the far end has stopped reading. Implementations
+    /// must never block: a caller may be a device callback with a deadline of
+    /// its own.
+    fn send(&mut self, event: TimedEvent) -> bool;
 }
 
 #[cfg(test)]
@@ -85,6 +137,46 @@ mod tests {
                 voice_context: 0,
             },
         }
+    }
+
+    #[test]
+    fn cursor_at_finds_the_first_event_at_or_after_a_sample() {
+        let timeline = CompiledTimeline {
+            events: vec![note_on(0), note_on(100), note_on(100), note_on(300)],
+            index: Vec::new(),
+        };
+
+        assert_eq!(timeline.cursor_at(0), 0);
+        assert_eq!(
+            timeline.cursor_at(100),
+            1,
+            "an event exactly at the seek target has not happened yet — it plays"
+        );
+        assert_eq!(
+            timeline.cursor_at(101),
+            3,
+            "both events at 100 are behind us"
+        );
+        assert_eq!(timeline.cursor_at(1_000), 4, "past the end is the end");
+    }
+
+    #[test]
+    fn cursor_at_rewinds_a_cursor_that_had_run_to_the_end() {
+        let timeline = CompiledTimeline {
+            events: vec![note_on(0), note_on(200)],
+            index: Vec::new(),
+        };
+        let mut cursor = 0;
+        timeline.events_for_block(&mut cursor, 0..1_000);
+        assert_eq!(cursor, 2, "played through everything");
+
+        cursor = timeline.cursor_at(0);
+        let block = timeline.events_for_block(&mut cursor, 0..128);
+        assert_eq!(
+            block.len(),
+            1,
+            "seeking back to the start plays the piece again"
+        );
     }
 
     #[test]

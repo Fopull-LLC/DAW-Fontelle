@@ -23,7 +23,7 @@ use fontelle_engine::{
     BufferPool, BusSumNode, CompiledGraph, MasterNode, MixerTrackNode, RtGuardAllocator,
     SamplerNode, ScheduledNode,
 };
-use fontelle_types::{CompiledTimeline, EventPayload, NodeId, TimedEvent};
+use fontelle_types::{CompiledTimeline, EventPayload, EventSink, NodeId, TimedEvent};
 use slotmap::Key;
 
 #[global_allocator]
@@ -313,6 +313,131 @@ fn the_full_track_to_master_chain_does_not_allocate_per_block() {
         // would violate INVARIANT 1 exactly where it is hardest to notice.
         if i % 97 == 0 {
             graph.reset();
+        }
+    }
+    fontelle_engine::unmark_current_thread_rt();
+}
+
+#[test]
+fn driving_the_transport_through_stops_seeks_and_loops_does_not_allocate() {
+    // The device callback observes transport changes itself rather than
+    // scheduling them off-thread, so everything `TransportReader::next_step`
+    // does happens under INVARIANT 1 — including the binary search that
+    // rewinds the event cursor on a seek and the block split at a loop seam.
+    // A `Vec` anywhere in there is the same bug this file was written for,
+    // just one layer up.
+    let mut graph = build_full_mixer_graph();
+    let transport = fontelle_engine::Transport::new();
+    let mut reader = fontelle_engine::TransportReader::new();
+
+    // A timeline with real content, so `events_for_block` and `cursor_at`
+    // have something to scan rather than short-circuiting on an empty slice.
+    let timeline = CompiledTimeline {
+        events: (0..512)
+            .map(|i| TimedEvent {
+                sample: i as i64 * 371,
+                target: NodeId::null(),
+                payload: if i % 2 == 0 {
+                    EventPayload::NoteOn {
+                        key: 60,
+                        velocity: 127,
+                        voice_context: 0,
+                    }
+                } else {
+                    EventPayload::NoteOff {
+                        key: 60,
+                        voice_context: 0,
+                    }
+                },
+            })
+            .collect(),
+        index: Vec::new(),
+    };
+
+    transport.play();
+    transport.set_loop_range((0, 3_840), (0, 40_037));
+    transport.set_looping(true);
+
+    fontelle_engine::mark_current_thread_rt();
+    for i in 0..2_000 {
+        // Everything the model thread can do to the transport, at a rate no
+        // user could manage, so each branch is covered many times over.
+        match i % 211 {
+            50 => transport.stop(),
+            60 => transport.play(),
+            100 => transport.seek(1_000_000),
+            150 => transport.seek(0),
+            _ => {}
+        }
+
+        let mut written = 0;
+        while written < BLOCK {
+            let step = reader.next_step(&transport, &timeline, BLOCK - written, BLOCK, false);
+            if step.reset {
+                graph.reset();
+            }
+            if step.process {
+                graph.process_block(step.events, step.snapshot, step.range.clone());
+            }
+            written += step.frames.min(BLOCK - written);
+        }
+    }
+    fontelle_engine::unmark_current_thread_rt();
+}
+
+#[test]
+fn draining_live_input_does_not_allocate() {
+    // The live queue is drained inside the audio callback, once per block, so
+    // everything about it is under INVARIANT 1: the pop, the stamping, and the
+    // scratch it collects into. The scratch is sized for every port's full
+    // capacity at construction precisely so this holds — a `Vec` that grew on
+    // a busy block would allocate on the RT thread only when someone played
+    // hard, which is the worst possible time to find out.
+    let mut graph = build_full_mixer_graph();
+    let transport = fontelle_engine::Transport::new();
+    let mut reader = fontelle_engine::TransportReader::new();
+    let mut gate = fontelle_engine::IdleGate::new();
+    let (mut source, mut ports) = fontelle_engine::live_event_channel(4, 64);
+    let timeline = CompiledTimeline::empty();
+
+    let mut keyboards: Vec<fontelle_engine::LivePort> = (0..4)
+        .map(|_| ports.claim().expect("a free port"))
+        .collect();
+
+    fontelle_engine::mark_current_thread_rt();
+    for block in 0..1_000 {
+        // Filling the queues is the device thread's job and allocates
+        // nothing either — the ring is already there. Doing it inside the
+        // tagged region covers both halves at once.
+        for (index, keyboard) in keyboards.iter_mut().enumerate() {
+            let key = 36 + ((block + index) % 60) as u8;
+            keyboard.send(TimedEvent {
+                sample: 0,
+                target: NodeId::null(),
+                payload: if block % 2 == 0 {
+                    EventPayload::NoteOn {
+                        key,
+                        velocity: 100,
+                        voice_context: u32::MAX,
+                    }
+                } else {
+                    EventPayload::NoteOff {
+                        key,
+                        voice_context: u32::MAX,
+                    }
+                },
+            });
+        }
+
+        let live = source.drain(reader.position());
+        let awake = gate.is_awake(live.len());
+        let step = reader.next_step(&transport, &timeline, BLOCK, BLOCK, awake);
+        if step.reset {
+            graph.reset_sequenced();
+        }
+        if step.process {
+            graph.process_block_with_live(step.events, live, step.snapshot, step.range.clone());
+            gate.observe(0.5);
         }
     }
     fontelle_engine::unmark_current_thread_rt();

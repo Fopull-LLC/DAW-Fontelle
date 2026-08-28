@@ -161,6 +161,7 @@ pub struct Voice {
     active: bool,
     key: u8,
     voice_context: u32,
+    origin: fontelle_types::VoiceOrigin,
     /// Set from `VoicePool`'s monotonic counter on every `trigger`, so the pool
     /// can find the oldest active voice to steal without a separate timestamp
     /// clock (INVARIANT 1: no syscalls on the RT thread).
@@ -204,6 +205,7 @@ impl Voice {
             active: false,
             key: 0,
             voice_context: 0,
+            origin: fontelle_types::VoiceOrigin::Timeline,
             age: 0,
             layers: [LayerPlayback::default(); MAX_LAYERS],
             filters: [[fontelle_dsp::SvfFilter::new(); 2]; 2],
@@ -229,8 +231,41 @@ impl Voice {
         self.voice_context
     }
 
+    /// Whether the timeline or a player started this voice. See
+    /// [`fontelle_types::VoiceOrigin`] — transport stop and seek cut one and
+    /// spare the other.
+    pub fn origin(&self) -> fontelle_types::VoiceOrigin {
+        self.origin
+    }
+
+    /// Starts a note the timeline asked for. See [`Voice::trigger_from`] for
+    /// one a player did.
     pub fn trigger(&mut self, patch: &crate::Patch, key: u8, velocity: u8, voice_context: u32) {
+        self.trigger_from(
+            patch,
+            key,
+            velocity,
+            voice_context,
+            fontelle_types::VoiceOrigin::Timeline,
+        );
+    }
+
+    /// As [`Voice::trigger`], recording where the note came from.
+    ///
+    /// The origin is set here, in the same call that starts the voice, rather
+    /// than by a separate setter afterwards: a voice that is briefly active
+    /// with the wrong origin is a voice a reset landing in between would treat
+    /// as the wrong kind.
+    pub fn trigger_from(
+        &mut self,
+        patch: &crate::Patch,
+        key: u8,
+        velocity: u8,
+        voice_context: u32,
+        origin: fontelle_types::VoiceOrigin,
+    ) {
         self.active = true;
+        self.origin = origin;
         self.key = key;
         self.voice_context = voice_context;
         self.velocity_gain = velocity_to_gain(velocity);
@@ -282,6 +317,7 @@ impl Voice {
         self.active = false;
         self.key = 0;
         self.voice_context = 0;
+        self.origin = fontelle_types::VoiceOrigin::Timeline;
         self.age = 0;
         self.layers = [LayerPlayback::default(); MAX_LAYERS];
         for slot in &mut self.filters {
@@ -710,6 +746,20 @@ impl VoicePool {
     pub fn reset(&mut self) {
         for voice in &mut self.voices {
             voice.reset();
+        }
+    }
+
+    /// Silences only the voices the timeline started, leaving live ones
+    /// sounding — transport stop and seek (TDD §6.3 against §14).
+    ///
+    /// A sequenced voice belongs to a moment in the song the playhead has
+    /// left. A live voice belongs to a key somebody is still holding, and
+    /// stop is a statement about the sequencer rather than about the player.
+    pub fn reset_sequenced(&mut self) {
+        for voice in &mut self.voices {
+            if voice.origin() == fontelle_types::VoiceOrigin::Timeline {
+                voice.reset();
+            }
         }
     }
 }

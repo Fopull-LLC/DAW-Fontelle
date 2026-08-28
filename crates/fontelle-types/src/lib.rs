@@ -6,7 +6,7 @@ mod param;
 mod time;
 
 pub use asset::{AssetKind, AssetRef};
-pub use event::{CompiledTimeline, EventPayload, TimedEvent};
+pub use event::{CompiledTimeline, EventPayload, EventSink, TimedEvent, VoiceOrigin};
 pub use id::{
     AssetId, AudioInputId, ChannelId, ClipId, LaneId, MarkerId, MixerTrackId, NodeId, NoteId,
     PersistentId, PointId, PrefabId,

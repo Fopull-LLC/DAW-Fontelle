@@ -431,27 +431,54 @@ pub const DEMO_TRACK_GAIN_DB: f32 = 0.0;
 /// which is the only practical way to debug "it sounds wrong" and the
 /// foundation of the offline bounce in TDD §22's M6.
 pub fn render_offline(song: &Song, graph: &mut CompiledGraph, total_samples: i64) -> Vec<f32> {
+    let transport = fontelle_engine::Transport::new();
+    // `Rendering`, not `Playing`: same processing, and the difference is
+    // visible to any node that asks — a bounce is not real time, and a node
+    // that behaves differently when nobody is listening (a live input, a
+    // random source that should be reproducible) needs to be able to tell.
+    transport.set_state(fontelle_engine::TransportState::Rendering);
+    render_offline_with_transport(song, graph, total_samples, &transport)
+}
+
+/// [`render_offline`] driven by a caller-supplied transport, so an offline
+/// render can honour a loop, start from a cue point, or be stopped — the same
+/// controls the device path has, through the same code.
+///
+/// `total_samples` is how much audio to *produce*. With a loop enabled that is
+/// no longer the same thing as how far the playhead travels, which is the
+/// point: bouncing four bars of a one-bar loop is a render of 4x the loop
+/// length.
+pub fn render_offline_with_transport(
+    song: &Song,
+    graph: &mut CompiledGraph,
+    total_samples: i64,
+    transport: &fontelle_engine::Transport,
+) -> Vec<f32> {
     let timeline = song.compile();
-    let transport = fontelle_engine::TransportSnapshot {
-        state: fontelle_engine::TransportState::Playing,
-        position_sample: 0,
-    };
+    let mut reader = fontelle_engine::TransportReader::new();
 
     let mut out = Vec::with_capacity(total_samples as usize * 2);
-    let mut cursor = 0usize;
-    let mut sample = 0i64;
+    let mut produced = 0i64;
 
-    while sample < total_samples {
-        let chunk = BLOCK_SIZE.min((total_samples - sample) as usize);
-        let range = sample..sample + chunk as i64;
-        let events = timeline.events_for_block(&mut cursor, range.clone());
-        graph.process_block(events, transport, range);
-
-        for i in 0..chunk {
-            out.push(graph.buffer_pool.buffer_mut(0)[i]);
-            out.push(graph.buffer_pool.buffer_mut(1)[i]);
+    while produced < total_samples {
+        let remaining = (total_samples - produced) as usize;
+        let step = reader.next_step(transport, &timeline, remaining, BLOCK_SIZE, false);
+        // Silence is served whole, so it can be longer than a block; the graph
+        // never renders more than one.
+        let frames = step.frames.min(remaining);
+        if step.reset {
+            graph.reset_sequenced();
         }
-        sample += chunk as i64;
+        if step.process {
+            graph.process_block(step.events, step.snapshot, step.range.clone());
+            for i in 0..frames {
+                out.push(graph.buffer_pool.buffer_mut(0)[i]);
+                out.push(graph.buffer_pool.buffer_mut(1)[i]);
+            }
+        } else {
+            out.extend(std::iter::repeat_n(0.0, frames * 2));
+        }
+        produced += frames as i64;
     }
 
     out

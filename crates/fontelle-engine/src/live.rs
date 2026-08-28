@@ -1,0 +1,328 @@
+//! The live-input boundary: where events that did not come from the timeline —
+//! a MIDI keyboard, a controller, a UI keyboard — reach the audio thread
+//! (TDD §14.1).
+//!
+//! §14.1 is unusually specific about this, and it is worth repeating why: the
+//! scaffold must **already** be the RT-safe, device-agnostic pipeline, feeding
+//! the same sample-timestamped event stream as notes and automation. The
+//! tempting shortcut — poll MIDI on the UI thread and call `note_on` directly —
+//! works immediately and then has to be torn out, because everything built on
+//! top of it assumes events can arrive from anywhere at any time.
+//!
+//! **Why a fixed array of single-producer queues rather than one shared one.**
+//! `rtrb` is SPSC, and "all input devices are merged into one logical stream"
+//! (§14.2) means several device threads producing at once — which a single
+//! SPSC queue cannot take, and which a mutex could take only by letting a
+//! device thread block the audio thread. So each port gets a queue of its own
+//! and the merge happens at the drain. The array is allocated up front at a
+//! fixed size because the alternative is the audio thread walking a collection
+//! that hot-plug is mutating underneath it: claiming a port for a newly
+//! connected device is then a hand-off of an already-existing queue, and the
+//! consumer's structure never changes.
+
+use fontelle_types::{EventSink, Sample, TimedEvent};
+
+/// How many devices can be connected at once. Sixteen is far past what anyone
+/// plugs in and small enough that draining every slot per block is a handful
+/// of atomic loads.
+pub const LIVE_PORT_COUNT: usize = 16;
+
+/// Events a single port can hold between two audio blocks. At 128 frames /
+/// 48 kHz that is 2.7 ms; 256 events in 2.7 ms is ~95 000 messages a second,
+/// which no controller and no fast glissando comes close to.
+pub const LIVE_PORT_CAPACITY: usize = 256;
+
+/// Builds the live-input channel: the consumer half for the audio thread and
+/// the producer halves for whatever is generating events.
+pub fn live_event_channel(ports: usize, capacity: usize) -> (LiveEventSource, LiveEventPorts) {
+    let mut consumers = Vec::with_capacity(ports);
+    let mut producers = Vec::with_capacity(ports);
+    for _ in 0..ports {
+        let (producer, consumer) = rtrb::RingBuffer::new(capacity);
+        consumers.push(consumer);
+        producers.push(Some(producer));
+    }
+    (
+        LiveEventSource {
+            consumers,
+            scratch: Vec::with_capacity(ports * capacity),
+        },
+        LiveEventPorts { producers },
+    )
+}
+
+/// The audio thread's half. Owned by the callback, drained once per block.
+pub struct LiveEventSource {
+    consumers: Vec<rtrb::Consumer<TimedEvent>>,
+    /// Preallocated to hold every port's full capacity, so a drain can never
+    /// need to grow it (INVARIANT 1).
+    scratch: Vec<TimedEvent>,
+}
+
+impl LiveEventSource {
+    /// RT: collects everything every port has queued, stamped at `sample`.
+    ///
+    /// **All at the block's start, not at their true arrival time.** A live
+    /// event's real timestamp would have to be comparable with the audio
+    /// clock, and what a MIDI backend hands over is its own monotonic clock
+    /// with no published relationship to the one driving the callback.
+    /// Guessing at the conversion buys sample accuracy that is wrong by an
+    /// unknown offset; stamping at the block start is wrong by at most one
+    /// block — 2.7 ms at 128 frames — in a known direction, always late,
+    /// never early. Sample-accurate live input is a real feature and it needs
+    /// the device timestamps first.
+    pub fn drain(&mut self, sample: Sample) -> &[TimedEvent] {
+        self.scratch.clear();
+        for consumer in self.consumers.iter_mut() {
+            while self.scratch.len() < self.scratch.capacity() {
+                match consumer.pop() {
+                    Ok(mut event) => {
+                        event.sample = sample;
+                        self.scratch.push(event);
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+        &self.scratch
+    }
+}
+
+/// The non-RT half: a pool of unclaimed producers, one per port.
+pub struct LiveEventPorts {
+    producers: Vec<Option<rtrb::Producer<TimedEvent>>>,
+}
+
+impl LiveEventPorts {
+    /// Hands out one port's producer, or `None` when every port is in use.
+    pub fn claim(&mut self) -> Option<LivePort> {
+        self.producers
+            .iter_mut()
+            .find_map(|slot| slot.take())
+            .map(|producer| LivePort { producer })
+    }
+
+    /// How many ports are still free.
+    pub fn available(&self) -> usize {
+        self.producers.iter().filter(|p| p.is_some()).count()
+    }
+}
+
+/// One device's (or one source's) way in. `Send`, so it goes to whatever
+/// thread the device's callback runs on.
+pub struct LivePort {
+    producer: rtrb::Producer<TimedEvent>,
+}
+
+impl EventSink for LivePort {
+    /// Returns `false` when the port is full, which means the audio thread has
+    /// stopped draining — the device stream died, or the process is being torn
+    /// down. Dropping the event is the only option that does not block a
+    /// device callback, and a caller that cares can count the refusals.
+    fn send(&mut self, event: TimedEvent) -> bool {
+        self.producer.push(event).is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fontelle_types::{EventPayload, NodeId};
+
+    fn note_on(key: u8) -> TimedEvent {
+        TimedEvent {
+            // Deliberately wrong: the drain is what assigns a live event its
+            // place in the song, and a test that pre-stamped them correctly
+            // would not notice if it stopped.
+            sample: -1,
+            target: NodeId::default(),
+            payload: EventPayload::NoteOn {
+                key,
+                velocity: 100,
+                voice_context: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn an_event_sent_between_blocks_arrives_stamped_at_the_next_blocks_start() {
+        let (mut source, mut ports) = live_event_channel(4, 8);
+        let mut port = ports.claim().expect("a free port");
+
+        assert!(port.send(note_on(60)));
+        let events = source.drain(4_096);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].sample, 4_096);
+    }
+
+    #[test]
+    fn every_port_is_merged_into_one_stream() {
+        // TDD §14.2: all input devices merged automatically, no selection
+        // step. The merge happens here, at the drain.
+        let (mut source, mut ports) = live_event_channel(4, 8);
+        let mut first = ports.claim().unwrap();
+        let mut second = ports.claim().unwrap();
+
+        first.send(note_on(60));
+        second.send(note_on(64));
+        first.send(note_on(67));
+
+        let events = source.drain(0);
+        assert_eq!(events.len(), 3, "three keys down across two keyboards");
+    }
+
+    #[test]
+    fn a_drained_event_is_not_delivered_twice() {
+        let (mut source, mut ports) = live_event_channel(2, 8);
+        let mut port = ports.claim().unwrap();
+        port.send(note_on(60));
+
+        assert_eq!(source.drain(0).len(), 1);
+        assert_eq!(
+            source.drain(128).len(),
+            0,
+            "a note held down is one note-on, not one per block"
+        );
+    }
+
+    #[test]
+    fn a_full_port_refuses_rather_than_blocking_the_device_thread() {
+        let (_source, mut ports) = live_event_channel(1, 2);
+        let mut port = ports.claim().unwrap();
+
+        assert!(port.send(note_on(60)));
+        assert!(port.send(note_on(61)));
+        assert!(
+            !port.send(note_on(62)),
+            "the audio thread has stopped draining; a device callback must not wait for it"
+        );
+    }
+
+    #[test]
+    fn ports_run_out_rather_than_growing() {
+        let (_source, mut ports) = live_event_channel(2, 4);
+        assert_eq!(ports.available(), 2);
+        assert!(ports.claim().is_some());
+        assert!(ports.claim().is_some());
+        assert!(
+            ports.claim().is_none(),
+            "growing the pool would mean reallocating a structure the audio thread walks"
+        );
+        assert_eq!(ports.available(), 0);
+    }
+
+    #[test]
+    fn a_drain_never_returns_more_than_the_scratch_can_hold() {
+        // The scratch is sized for every port's full capacity, so this is the
+        // ceiling rather than a truncation anyone should hit — but the bound
+        // is what makes the drain allocation-free, so it is worth pinning.
+        let (mut source, mut ports) = live_event_channel(2, 4);
+        let mut a = ports.claim().unwrap();
+        let mut b = ports.claim().unwrap();
+        for key in 0..4 {
+            a.send(note_on(key));
+            b.send(note_on(key));
+        }
+        assert_eq!(source.drain(0).len(), 8);
+    }
+}
+
+/// Decides whether the graph has to run while the transport is stopped
+/// (TDD §6.3 against §14).
+///
+/// §6.3 says a stopped transport does not process the graph, and that is what
+/// delivers the near-zero idle CPU target. Taken literally it also means a
+/// keyboard makes no sound unless the song is rolling, which is not a DAW —
+/// auditioning an instrument with the transport stopped is most of what a
+/// sampler is *for*.
+///
+/// The reconciliation is that "stopped" should mean *idle*, and idle means
+/// nothing is making sound. A live event wakes the graph; after that it stays
+/// awake for exactly as long as its output is non-silent, which covers a note
+/// held indefinitely and a release tail alike, and returns to true idle on its
+/// own the moment the sound stops. The alternative — a fixed timeout after the
+/// last event — cuts a held pad off mid-note, and asking the nodes whether
+/// they are silent means every node has to answer honestly for this to work at
+/// all.
+pub struct IdleGate {
+    ringing: bool,
+}
+
+impl IdleGate {
+    pub fn new() -> Self {
+        Self { ringing: false }
+    }
+
+    /// Whether to run the graph despite a stopped transport.
+    pub fn is_awake(&self, live_events: usize) -> bool {
+        live_events > 0 || self.ringing
+    }
+
+    /// Records what the block just rendered actually produced. `peak` is the
+    /// largest absolute sample across the output buses.
+    ///
+    /// Measuring the output is the *only* input to this decision, deliberately.
+    /// A "the graph was just reset, so nothing can be ringing" shortcut is
+    /// wrong now that a reset is scoped: a stop cuts the sequenced voices and
+    /// leaves a held key sounding, and a gate cleared on that reset would put
+    /// the graph to sleep underneath the note it just spared.
+    ///
+    /// The threshold is -100 dBFS, below the noise floor of 16- and 24-bit
+    /// audio alike, so nothing audible is ever cut short — but a decaying
+    /// envelope that approaches zero asymptotically still crosses it, which a
+    /// test for exact zero would not.
+    pub fn observe(&mut self, peak: f32) {
+        const SILENCE: f32 = 1e-5;
+        self.ringing = peak > SILENCE;
+    }
+}
+
+impl Default for IdleGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod idle_gate_tests {
+    use super::*;
+
+    #[test]
+    fn nothing_playing_leaves_the_graph_asleep() {
+        let gate = IdleGate::new();
+        assert!(!gate.is_awake(0), "an idle stopped transport runs nothing");
+    }
+
+    #[test]
+    fn a_live_event_wakes_the_graph() {
+        let gate = IdleGate::new();
+        assert!(gate.is_awake(1));
+    }
+
+    #[test]
+    fn a_note_keeps_the_graph_awake_after_the_event_that_started_it() {
+        // The event arrives in one block and the note sounds for thousands.
+        let mut gate = IdleGate::new();
+        assert!(gate.is_awake(1));
+        gate.observe(0.4);
+        assert!(gate.is_awake(0), "the note is still sounding");
+    }
+
+    #[test]
+    fn a_note_that_has_died_away_lets_the_graph_sleep_again() {
+        let mut gate = IdleGate::new();
+        gate.observe(0.4);
+        assert!(gate.is_awake(0));
+        gate.observe(0.0);
+        assert!(!gate.is_awake(0), "idle CPU has to come back down");
+    }
+
+    #[test]
+    fn a_tail_below_the_noise_floor_counts_as_silence() {
+        // An exponential release approaches zero without reaching it. Waiting
+        // for exact zero would keep the graph awake forever after one note.
+        let mut gate = IdleGate::new();
+        gate.observe(1e-9);
+        assert!(!gate.is_awake(0));
+    }
+}
