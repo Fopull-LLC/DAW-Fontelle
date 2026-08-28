@@ -13,6 +13,270 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
+## 2026-08-28: the transport moves, and MIDI arrives from outside
+
+Two gaps closed, both of the same kind: a type that existed, was complete, and
+was wired to nothing.
+
+### `Transport` is finally read by something
+
+`Transport` had been written, tested and exported since the engine crate
+existed, and `AudioDevice` never looked at it. The callback hard-coded
+`TransportState::Playing` and counted samples from zero, so there was no play,
+no stop, no seek and no loop — playback was a consequence of the stream
+existing, and stopping meant tearing the stream down mid-note.
+
+**The whole decision lives in `TransportReader`, not in the callback.** That is
+the load-bearing choice here. Code inside a cpal closure can only be run by a
+real sound card, so anything put there is testable only by ear; `next_step`
+takes the transport, the timeline and a frame count and returns what to render,
+and the callback is a loop around it. Every behaviour below has a test as a
+result.
+
+Four things the design turns on:
+
+- **A seek is a request, not a write to the playhead.** The RT side publishes
+  `position_sample` every block, so a `seek` that stored into the same field
+  would be overwritten by the next callback before anything acted on it — a
+  transport that ignores about half the clicks on it. `seek` writes a target
+  plus a generation counter; the reader applies it and publishes the result.
+  The counter, rather than comparing positions, is also what makes "re-cue to
+  where I am stopped" a real seek.
+- **The event cursor has to go backwards.** `events_for_block` only ever
+  advanced, which is correct for playback and silent for a seek: after playing
+  to the end, the cursor sits past every event in the piece, so seeking back to
+  bar 1 plays nothing at all. `CompiledTimeline::cursor_at` is a binary search
+  over the already-sorted events — allocation-free, so the callback can do it
+  the moment it observes the seek.
+- **Loop points are ticks *and* samples, published together.** INVARIANT 5 says
+  the conversion goes through the `TempoMap`, and the RT thread cannot run a
+  lookup against a map the model thread may be editing. `set_loop_range` takes
+  both halves in one call, which is also what stops them drifting apart after a
+  tempo edit. The wrap is lazy — evaluated at the top of the step that would
+  have crossed the seam — so a wrap and a seek share one code path. A
+  degenerate range (`end <= start`, what a half-finished drag produces) plays
+  straight through, because honouring it literally yields zero-frame steps and
+  spins the audio callback forever.
+- **Playback starting *before* a loop runs into it** rather than jumping to the
+  loop start. That is a lead-in, and it is how you get a running start into the
+  section you are working on. Only a playhead *past* the loop end is pulled
+  back, because that stretch is genuinely unreachable.
+
+`render_offline` goes through the same reader, so the offline bounce and the
+device path are one implementation rather than two that have to be kept in
+step — and the existing offline tests still pass byte-for-byte through it.
+
+Reachable from the command line: `--start-beat <n>`, `--loop <from>:<to>` in
+beats, `--repeat <n>`. Playback now ends by watching the **playhead** rather
+than sleeping for the song's duration: a blind sleep assumes the device
+consumes audio at exactly the arithmetic rate, cannot notice a stream that
+died, and with a loop running has nothing to count passes with. A wrap is
+visible as the playhead moving backwards.
+
+Verified by ear and by file: three passes of a one-beat loop render
+**bit-identical** in the actual WAV, and a `--start-beat 1.5` render is exactly
+36 000 frames shorter than the straight one.
+
+### Live MIDI: bytes from a real port to a voice
+
+`fontelle-midi` was a stub whose every entry point was a `todo!()`. It is now
+the pipeline TDD §14.1 insists the scaffold must already be — and §14.1 is
+worth quoting, because it predicts exactly the shortcut that was available
+here: if the placeholder polls MIDI on the UI thread and injects notes
+directly, "the one complete pass later becomes a rewrite of the transport."
+
+The path is: `midir` callback thread -> `decode` -> `MidiRouter` -> a
+single-producer queue -> the audio thread drains it once per block -> the same
+`TimedEvent` stream the sequencer produces.
+
+**A fixed array of SPSC queues, not one shared queue.** `rtrb` is
+single-producer, and §14.2's "all input devices merged automatically" means
+several device threads producing at once. One shared queue cannot take that,
+and a mutex could take it only by letting a device thread block the audio
+thread. So each port gets a queue and the merge happens at the drain. The array
+is allocated up front because the alternative is the audio thread walking a
+collection that hot-plug is mutating underneath it — connecting a device is
+then a hand-off of an existing queue, and the consumer's structure never
+changes.
+
+**The queue lives in `fontelle-engine` and `fontelle-midi` may not depend on
+it** (§4.1). They meet through `EventSink`, a trait in `fontelle-types`: the
+queue is an RT structure and belongs to the engine, the things that fill it sit
+outside it, and both sides can name the trait.
+
+Details that each produce a plausible-sounding wrong result:
+
+- **A note-on at velocity zero is a note-off.** The same rule the file importer
+  needed. Read literally, every note played hangs forever.
+- **Active sensing and clock are ignored rather than misread.** Most keyboards
+  send active sensing several times a second for as long as they are plugged
+  in, so this is the common path, not an edge case.
+- **CC 120 and 123 are channel-mode messages, not controller values.** Passing
+  them through as CCs is how a panic button ends up setting a parameter to zero.
+- **Pitch bend is fourteen bits, low byte first, centred at 8192.** Swapped, a
+  small bend reads as a large one and the wheel never returns to centre.
+- **A truncated message returns `None` rather than indexing off the end.** This
+  decodes on a thread the backend owns, where a panic kills a thread nobody is
+  watching.
+
+**The router is where stuck notes are prevented.** §14.2 requires that
+unplugging a device release its notes, which is only possible if something
+remembers what it started — a bitset per channel. That same record is what
+makes the sustain pedal work (deferred note-offs, with a retriggered key
+correctly removed from the pedal's set, or lifting the pedal cuts the note the
+player is currently holding), and what makes a note-off for a note *this*
+device never played get dropped rather than releasing the arrangement's voice
+on the same key. `MidiHub` needs no lock to do the release: `midir`'s
+`close()` hands back the callback's state, and the router is in it.
+
+### The audition path, where §6.3 and §14 disagree
+
+§6.3 says a stopped transport does not process the graph, and that is what
+delivers the near-zero idle CPU target. Taken literally it also means a
+keyboard makes no sound unless the song is rolling, which is not a DAW.
+
+The reconciliation is that "stopped" should mean *idle*, and idle means nothing
+is making sound. `IdleGate` wakes the graph on a live event and keeps it awake
+for exactly as long as its output is non-silent — measured off the samples the
+callback is already copying, so it costs a compare. A held pad stays up
+indefinitely; a release tail rings out; idle CPU comes back down on its own.
+A fixed timeout after the last event would cut a held note off mid-sustain, and
+asking every node whether it is silent needs every node to answer honestly.
+
+The audition step runs the graph **without advancing the playhead and with no
+timeline events**: the song is stopped, so only what is being played live
+should sound, and the event cursor is left alone so pressing play afterwards
+still starts the song from the top.
+
+### Stop is a statement about the sequencer, not about the player
+
+Transport stop, seek and the loop seam called `CompiledGraph::reset`, which
+cut **every** voice. With live input that is wrong, and audibly so: hold a
+chord, press stop, and the notes die while your fingers are still on the keys.
+They do not come back until you let go and press again — and the router still
+has those keys marked down, so the note-off that eventually arrives matches a
+voice that no longer exists. Every DAW keeps those notes: stop is a statement
+about the sequencer.
+
+The fix is that a voice records **where it came from**. `VoiceOrigin` is a type
+in `fontelle-types` rather than a reserved `voice_context` value, because the
+sequencer's contexts are clip indices counting from zero (§11.4) and a "live"
+sentinel would be two unrelated numbering schemes held apart by nothing but the
+unlikelihood of a collision. `ProcessContext::events_with_origin` carries the
+tag — the node already knows which slice an event came from, and `events()`
+was throwing that away — and `Voice::trigger_from` records it in the same call
+that starts the voice, so no reset can land on a voice that is briefly active
+with the wrong origin.
+
+`AudioNode::reset_sequenced` is a defaulted trait method that falls back to a
+full reset, which is right for every node with no notion of live input: an
+effect's tail belongs to the audio that was flowing through it either way. Only
+`SamplerNode` overrides it. `CompiledGraph::reset` is still there and still
+takes everything — device teardown and the panic button are not transport stop,
+because by then nobody is holding anything.
+
+One consequence worth writing down: **`IdleGate` must not be cleared on a
+reset any more.** It was, on the reasoning that a just-silenced graph cannot be
+ringing. That is no longer true — a stop now deliberately spares a held note —
+and clearing the gate there puts the graph to sleep underneath the very note
+the reset just went out of its way to keep. Output measurement is the only
+input to that decision now.
+
+Verified: a held key survives both a stop and a seek for as long as it is held,
+the song's own voices are still cut by both, and a playback-only bounce is
+byte-identical to before the change.
+
+### On tests that pass with the feature absent
+
+This document has recorded that failure mode twice before, so this round each
+new behaviour was checked by breaking the implementation on purpose and
+confirming exactly one test noticed. One did not, and it was hiding the bug
+above:
+
+**"Stopping silences the output" passed with the reset removed entirely** — a
+stopped transport runs no nodes, so the output is silent whether or not
+anything was cut. The reset's only observable consequence is what happens on
+the *next* play, and the test that pins it holds a note with a four-second
+release, stops, and presses play again where the timeline has no note-on:
+anything audible is a voice that survived.
+
+Worse, the *first* attempt at a live-input test for this was named
+`a_live_note_survives_the_song_stopping_underneath_it` and its body re-sent the
+note-on to make the assertion pass, with a comment admitting the note did not
+in fact survive. A test whose name states the requirement and whose body works
+around it not being met is worse than no test: it reads, in a listing, as
+evidence for exactly the thing that is broken. That test is now two — one for
+the held note surviving, one for the sequenced notes still being cut — and both
+fail if `reset_sequenced` falls back to a full reset.
+
+Seven other mutations (the seek not rewinding the cursor, the loop not clamping
+to its end, the idle gate never staying awake, `events()` ignoring the live
+slice, `release_all` forgetting the sustained set, the stop transition not
+resetting, `reset_sequenced` resetting everything) were each caught by exactly
+one test.
+
+Two of my own test *assertions* were wrong rather than the code: a power
+velocity curve fixes 0 and 127, not 1, so `Soft(1) = 11` is the curve working;
+and a 128-frame block always contains a whole 100-sample cycle, so its peak is
+identical whether or not the voice retriggered — phase continuity is the real
+discriminator.
+
+### A real bug the new tests found
+
+`DeviceMapping` derived `Default`, which gives `velocity_range: (0, 0)`. The
+range is a window a note must fall inside, so the default mapping — the one
+every unconfigured device gets, and §14.3 says per-device config is "optional
+refinement, never required setup" — silently discarded every note from every
+device. A range is the one field whose identity value is not its zero.
+
+`fontelle-midi::import_midi_file` was also removed: a `todo!()` sharing an
+obvious name with `fontelle_assets::import_midi`, which has worked for weeks.
+Anyone reaching for it would have found the real one by panicking.
+
+### Verified against real hardware
+
+`crates/fontelle-midi/tests/hardware_loopback.rs` (ignored by default) sends
+into this machine's ALSA "Midi Through" port and receives it back through
+`MidiHub` — enumeration, `connect`, the backend's callback thread, the decode,
+the router, the queue, none of it simulated. Both a played note and a
+disconnect-while-holding arrive correctly. The two tests share one physical
+port and had to be serialised: run in parallel, one test's note-on was received
+by the other's hub, which showed up as three events received for the two sent.
+
+`cargo run -p fontelle-app -- --play-sf2 <file> --midi-in` opens every input,
+reports devices arriving and leaving, plays the song underneath, and keeps the
+keyboard live after it ends.
+
+### What is deliberately not built
+
+- **No note chase on seek.** Seeking into the middle of a held note starts
+  nothing: a note-on behind the playhead is not retriggered. Chasing needs the
+  timeline to answer "what is sounding at sample X", which is a table the
+  sequencer builds off-thread, not a scan the callback can afford.
+- **The loop seam is a hard cut.** A note sounding across it is cut and
+  restarted, because its note-off is on the far side. Measured, the seam's
+  largest sample-to-sample step is about 5% of full scale against 3% inside a
+  pass — a small step, not a bang, but it is a discontinuity. Crossfading it is
+  the fix.
+- **Live events are stamped at the block start**, not their true arrival time
+  — at most one block late (2.7 ms), always late, never early. Sample accuracy
+  needs the backend's timestamps to be comparable with the audio clock, and
+  guessing at that conversion buys accuracy that is wrong by an unknown offset.
+- **No CC is routed anywhere.** Sustain is handled inside the router; every
+  other controller is dropped. Routing a CC to a parameter is the MIDI-learn
+  table (§14.4) resolving it to a `ParamAddress`, and the nodes it would
+  address expose no parameters yet — emitting `ParamValue` events nothing reads
+  would look like a working feature.
+- **`ClockSync::on_midi_clock_tick` is still a `todo!()`** (§14.5), and MIDI
+  file *export* with it (§14.6). Clock bytes are decoded and discarded today.
+- **Device keys are port names.** `midir` exposes no portable route to USB
+  identifiers, and a key built from a port index would renumber whenever
+  anything else is plugged in — configuration would silently follow the wrong
+  device.
+
+**Where things stand:** 331 tests, clippy and fmt clean, plus three
+hardware-only tests run deliberately.
+
 ## 2026-08-26 (later): tempo that changes, and a master bus
 
 ### `TempoMap` is piecewise
