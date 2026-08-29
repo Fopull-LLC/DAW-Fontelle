@@ -13,7 +13,144 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
-## 2026-08-29 (last): play it, keep it — MIDI recording
+## 2026-08-29 (latest): the window opens
+
+Phase 2 item 6 of `docs/first-usable-plan.md`, and the first pixel this project
+has ever drawn. `fontelle` with no arguments was a `todo!()`; it is now a
+window.
+
+```sh
+cargo run -p fontelle-app                    # the dark default
+cargo run -p fontelle-app -- --light
+cargo run -p fontelle-app -- --theme mine.json
+cargo run -p fontelle-app -- --run-for 20    # closes itself, reports frames drawn
+```
+
+The §16.2 stack is real and works: `winit` -> `wgpu` surface -> `vello` scene,
+with `cosmic-text` shaping the chrome. **The `lyon` fallback was not needed and
+the timebox was not spent** — vello came up on the first serious attempt, which
+is worth recording because §16.2 calls this the highest-risk component in the
+project and budgeted for it going the other way.
+
+### The GUI answer to the test-first rule
+
+§2.5 of the plan is the rule this crate is shaped by: *everything that can be a
+pure function is one, and the tests live there.* So of the six modules, five
+have no window in them and are tested like any other code —
+
+| module | what it decides | tested by |
+|---|---|---|
+| `theme` | every colour, metric and font token; the file format | `tests/theme.rs` |
+| `layout` | where the window's rectangles are | `tests/layout.rs` |
+| `widget` | **whether a frame happens at all** | `tests/invalidation.rs` |
+| `text` | where each glyph goes | `tests/text_layout.rs` |
+| `render` | the scene, as a pure function of the three above | `tests/render_headless.rs` |
+| `app` | the event loop, and nothing else | run it |
+
+— and `app.rs` is left holding only the part that genuinely needs a window.
+331 tests before this stretch, 431 after Phase 1, **473 now**.
+
+### The pixels are checked by a machine too
+
+`render::Headless` renders a scene through the real vello pipeline into memory
+with no surface attached. It is to the window exactly what `render_offline` is
+to the audio path — the same code, driven without hardware, so the output can
+be asserted on rather than looked at. `tests/render_headless.rs` checks that the
+window corner is the theme's window colour, that the panel body and header are
+where `window_layout` put them, that the title actually has ink inside the
+header band (which catches text drawn at the wrong baseline, i.e. off the top of
+the window), and that the same scene renders identically twice.
+
+The load-bearing one is `a_different_theme_produces_different_pixels`. Every
+other assertion in that file would still pass if `draw_window` had the dark
+palette hard-coded in it — the trap this project keeps finding, most recently
+the pan test that passed with the feature absent.
+
+Setting `FONTELLE_UI_DUMP=<dir>` writes each frame out as a PNG. §2.5 makes
+"the pixels have been seen once by a human" half the done-criterion for every
+GUI item, and on a machine whose compositor an X11 screen-grabber cannot see,
+that is otherwise impossible to satisfy.
+
+### Zero frames when idle, built in and measured
+
+§16.3 requires that a stopped, unanimated window issue *no frames at all*, and
+the plan is explicit that this is far easier to build in than to retrofit. Three
+things make it true, and none of them is a heuristic:
+
+1. The event loop runs on `ControlFlow::Wait`. With nothing to do the thread
+   blocks in the compositor — not a timer, not a poll.
+2. `Redraw::take_dirty` returns `Option<Rect>`, and `None` *is* "issue no
+   frame". Nothing calls `request_redraw` except an actual change.
+3. Dirtiness and animation are separate questions. An animator (item 7's
+   playhead) keeps the loop awake but claims no pixels, so whatever moves still
+   has to say *where* — which is what makes §16.4's "the playhead moving must
+   not redirty the note geometry" true by construction rather than by care.
+
+`WindowApp::frames_drawn` counts what reached the GPU, so the claim is
+checkable. Measured on this machine, `--run-for 35` with nobody touching it:
+**1 frame drawn**, and **1 tick of CPU (10 ms) over a 20-second idle window —
+0.05% of one core**, against §19's target of under 0.5%.
+
+`Redraw` also coalesces: three widgets changing between two vsyncs is one frame
+over the union of their rectangles, not three. And `WidgetTree::set_bounds`
+dirties both the rectangle a widget left and the one it arrived at, because
+redrawing only the new one is the dirty-region bug everybody writes once.
+
+### The theme is a file, and it was written against contrast ratios
+
+§16.6 asked for a token set, a dark default, a light variant, and a documented
+file format. All four exist. Colours serialise as `#rrggbb` (or `#rrggbbaa`
+when they are not opaque) rather than as `[14, 14, 17, 255]`, because the whole
+reason "user themes are just files" works is that a person edits them.
+
+`format_version` is read before the body, so a theme from a newer build is
+refused *by version* rather than by whichever field happened to change shape
+first — the same rule, and the same `migrate` shape, as the project document.
+
+The palette was chosen against WCAG rather than by eye, and the test enforces
+it: text on its own panel is at least 4.5:1 in both variants and muted text at
+least 3:1. A DAW's chrome is small, dense, and looked at for hours.
+
+The token list covers the panels §16.1 names, not only the one panel item 6
+draws. Adding a token later is a format revision; the timeline, piano roll and
+mixer already know which colours they will ask for.
+
+### A real bug the first run found, and a dependency that was wrong
+
+Neither was visible from the tests, and both are the reason the plan makes
+running it part of the item.
+
+- **The surface view format.** Vello configures its surface with an empty
+  `view_formats` and builds its blitter for the plain format, so asking the
+  swapchain texture for an sRGB view of itself is a validation error, not a
+  colour space. It aborted on the first frame. Fixed by taking the surface's
+  own format.
+- **Two entire GPU stacks.** `fontelle-ui` declared `wgpu = "30.0.1"`
+  alongside `vello = "0.10.0"`, and vello 0.10 builds against wgpu **29**. Both
+  compiled, and every type crossing between them was a different type with the
+  same name. The direct dependency is gone; vello owns the wgpu version and the
+  crate uses `vello::wgpu`. The workspace now resolves exactly one wgpu, which
+  also clears a `cargo-deny` `multiple-versions` warning nobody had looked at.
+
+### What is deliberately not built
+
+- **One panel, and it is empty.** That is the item: a window, a surface, a
+  themed panel. The transport bar is item 7, the piano roll item 8, the docked
+  panel set item 9. There is no widget in the tree yet beyond the panel itself.
+- **Dirty regions are computed and not yet used to clip.** `take_dirty` returns
+  the union and the frame redraws the whole scene inside it. With one static
+  panel that is the same picture either way; the region is already threaded
+  through so the piano roll can clip to it when there is geometry worth
+  skipping.
+- **No `baseview` backend work.** `BaseviewBackend::request_redraw` is still a
+  `todo!()`. It is M2's, and M2 is deferred until after this gate per §2.2 of
+  the plan.
+- **No input.** No mouse, no keyboard, no keymap. The window closes and
+  resizes; that is all it responds to. Interaction arrives with the things to
+  interact with.
+- **No settings, no layout persistence.** Item 10.
+
+## 2026-08-29 (fifth): play it, keep it — MIDI recording
 
 Phase 1 item 5, and the one feature in this stretch that the TDD did not
 contain at all. `Transport` has had a `Recording` state since it was written
@@ -2056,8 +2193,20 @@ To inspect what a given SF2 file actually imports as, without any audio:
   `render_offline`, `write_wav16`, `demo_project` and `project_from_midi` are
   here too, and `open_project`/`save_project` (2026-08-29) are the folder
   bundle plus the sample reloading a reopened project needs.
-- **fontelle-ui**, **fontelle-plugin** — pure stub, unchanged since
-  scaffolding. Not on the M0 path.
+- **fontelle-ui** — real, as far as item 6 goes (2026-08-29). `theme` is a
+  full token set with a dark default, a light variant and a versioned JSON
+  format; `layout` is the window geometry; `widget::Redraw` is the §16.3
+  invalidation core that decides whether a frame happens at all; `text` turns
+  `cosmic-text` shaping into vello glyph runs; `render` holds `draw_window`
+  (a pure function of theme + layout + text) and `Headless`, which renders a
+  scene into memory with no surface; `app` is the winit/wgpu/vello event loop
+  and nothing else. Still stub: the `canvas` modules
+  (`TimelineCanvas::visible_tick_range` and friends are `todo!()`), and there
+  are no widgets in the tree beyond the panel. Tests:
+  `crates/fontelle-ui/tests/`.
+- **fontelle-plugin** — pure stub, unchanged since scaffolding.
+  `BaseviewBackend::request_redraw` is a `todo!()`; M2 is deferred until after
+  the first-usable gate (§2.2 of `docs/first-usable-plan.md`).
 - **xtask** — pure stub.
 
 ## SF2 import: what's real, what's deliberately cut
@@ -2186,15 +2335,23 @@ crash the process).
     verified against real hardware. Clock sync and MIDI file export remain.
 13. ~~Phase 1 of `docs/first-usable-plan.md`~~ **Done, 2026-08-29** — patch
     serialisation, the `Project` -> graph realisation step, commands and undo,
-    the project bundle, and MIDI recording. **Next is Phase 2, the walking GUI
-    skeleton**: read §2.5 and the Phase 2 preamble in the plan before writing
-    any UI code — pure view-model functions carry the tests, the widget layer
-    stays a thin shell, zero frames at idle is built in from the first window,
-    and the vello->lyon fallback is timeboxed per §16.2.
-14. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
+    the project bundle, and MIDI recording.
+14. **Phase 2 of `docs/first-usable-plan.md`, the walking GUI skeleton.**
+    Item 6 (window + surface + one panel) is **done, 2026-08-29** — see the
+    section at the top; the vello stack came up without needing the lyon
+    fallback, and zero-frames-at-idle is built in and measured. **Next is item
+    7, the transport bar over the real engine**: play/stop/seek/loop and a
+    playhead driven by the `position_sample` the RT side already publishes,
+    plus the `MasterMeter` atomics. It is the first moment the window and the
+    audio thread coexist, and the plan puts it before the piano roll on
+    purpose — prove the threading shape (commands down, atomics up, per §2.2)
+    on the simplest feature. The playhead is also the first user of
+    `Redraw::begin_animating`. Keep §2.5's rule: pure view-model functions
+    carry the tests, `app.rs` stays a thin shell.
+15. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
     soundfonts in memory) and effects. `ParametricEq::process` and
     `Compressor::process` are the two `fontelle-dsp` could already support.
-15. **Latency compensation.** The master limiter is the first node in the tree
+16. **Latency compensation.** The master limiter is the first node in the tree
     with real latency (`AudioNode::latency_samples` reports it and nothing
     reads it). With one bus that is a uniform delay nobody can hear; with a
     send path or a track that bypasses it, it is a phase error.

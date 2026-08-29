@@ -10,8 +10,16 @@ repository.workspace = true
 
 [dependencies]
 baseview = "0.3.2"
-cosmic-text = "0.17.0"
+cosmic-text = { version = "0.17.0", features = ["peniko"] }
 fontelle-types = { path = "../fontelle-types" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 vello = "0.10.0"
-wgpu = "30.0.1"
 winit = "0.30.13"
+
+[dev-dependencies]
+# Only so `FONTELLE_UI_DUMP` can write out what the headless renderer produced.
+# §2.5 of `docs/first-usable-plan.md` makes "seen once by a human" half of the
+# done-criterion for every GUI item, and on a machine with no display that is
+# otherwise impossible to satisfy.
+png = "0.18.1"

@@ -1560,6 +1560,35 @@ is the entire point.
 
 ---
 
+### 20.6 GUI tests
+
+§20.1–20.5 say nothing about `fontelle-ui`, which would leave the riskiest
+component in the project (§16.2 says so itself) as the only one without a
+testing answer. The rule, added 2026-08-29 with the first window:
+
+**Everything that can be a pure function is one, and the tests live there.**
+Theme tokens, visible-range math, hit-testing, geometry building, snap
+arithmetic, glyph positioning, keybind→command resolution, and the decision of
+*whether a frame is issued at all* are all pure, all tested without a window.
+The widget and backend layers stay a thin shell that calls them; a GUI module
+that needs a window to test is a module that has taken on work belonging
+somewhere else.
+
+Two things back that up:
+
+- **Headless rendering.** `fontelle_ui::render::Headless` runs a real `vello`
+  scene through a real GPU pipeline into memory with no surface attached, and
+  the pixels are asserted on — the same relationship `render_offline` has to
+  the audio device. It skips, loudly, where no adapter exists. Frames can be
+  dumped as PNGs (`FONTELLE_UI_DUMP`) for the human half below.
+- **A human looks once.** A GUI item is done when its view-model functions are
+  tested *and* the pixels have been seen by a person, mirroring the engine's
+  "tests plus a hardware listen" convention. Neither half substitutes for the
+  other: a headless test cannot tell you the window is ugly, and looking at it
+  cannot tell you the snap arithmetic is right.
+
+---
+
 ## 21. Build, packaging, distribution
 
 - **Linux (primary):** AppImage (works everywhere, zero install), Flatpak (Flathub reach), AUR

@@ -211,11 +211,14 @@ rendering at 60 fps dirty-region-only is not real within the timebox, take
 §16.2's own fallback (direct wgpu + lyon) rather than fighting vello.** Do
 not relitigate the toolkit choice beyond that documented fallback.
 
-6. **Window + surface + one panel.** winit event loop, wgpu surface, vello
-   scene, cosmic-text rendering the theme's token set (implement the dark
-   default while you're in there — it's a `todo!()`). Redraw only on
-   invalidation; **zero frames issued when idle** (§16.3 — build it in now,
-   it is the idle-CPU target and much harder to retrofit).
+6. ~~**Window + surface + one panel.**~~ **Done, 2026-08-29.** winit event
+   loop, wgpu surface, vello scene, cosmic-text rendering the theme's token
+   set (dark default *and* the light variant, plus the versioned file format
+   §16.6 asks for). Redraw only on invalidation; zero frames issued when idle,
+   measured at 1 frame and 0.05% of one core over a 35-second unattended run.
+   **The vello stack came up without needing the lyon fallback** — the
+   timebox was not spent, and §16.2's fallback stays unused. The §2.5 answer
+   is written into the TDD as §20.6. See PROGRESS.md's top section.
 
 7. **Transport bar over the real engine.** Play/stop/seek/loop controls and a
    playhead driven by the `position_sample` the RT side already publishes;

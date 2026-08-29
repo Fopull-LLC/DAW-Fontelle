@@ -944,17 +944,60 @@ fn main() {
         return;
     }
 
-    // The full DAW: docked panels, timeline, transport. Not built yet — see
-    // PROGRESS.md for what's real (the audio/sampler/sequencer path above)
-    // versus what this still needs (fontelle-ui windowing, a document loaded
-    // from disk rather than built in code).
-    todo!(
-        "winit event loop -> fontelle-ui docked panels -> fontelle-engine::AudioDevice \
-         -> fontelle-sequencer::compile -> CompiledTimeline over triple_buffer \
-         (run with `--play-sf2 <path.sf2> [--preset <n>] [--key <note>] \
-         [--play-midi <file.mid>] [--midi-channel <1-16> | --midi-all] \
-         [--gain-db <db>] [--start-beat <n>] [--loop <from>:<to>] [--repeat <n>] \
-         [--midi-in] [--save <project.fontelle>] [--render-wav <out.wav>]`, or \
-         `--open <project.fontelle>`, for the vertical slice instead)"
-    )
+    // The full DAW window. Item 6 of `docs/first-usable-plan.md`: a window, a
+    // wgpu surface, a vello scene and one themed panel — the walking skeleton
+    // the transport bar (item 7), the piano roll (item 8) and the docked panel
+    // set (item 9) grow inside. The audio path above is untouched by it.
+    let theme = match theme_for(&args) {
+        Ok(theme) => theme,
+        Err(e) => {
+            eprintln!("Fontelle: {e}");
+            std::process::exit(1);
+        }
+    };
+    // Seconds, then closes itself. There is no other way to run the window
+    // unattended, and "it opened, drew, and then sat there drawing nothing" is
+    // exactly the claim TDD §16.3 makes and §19 measures.
+    let run_for = args
+        .iter()
+        .position(|a| a == "--run-for")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(std::time::Duration::from_secs_f64);
+
+    match fontelle_ui::run_window(fontelle_ui::WindowOptions {
+        title: "Fontelle".to_string(),
+        panel_title: "Fontelle".to_string(),
+        theme,
+        size: (1280, 720),
+        run_for,
+    }) {
+        Ok(app) => {
+            if run_for.is_some() {
+                println!("{} frames drawn", app.frames_drawn());
+            }
+        }
+        Err(e) => {
+            eprintln!("Fontelle: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// The theme the window opens with: a file if one was named, otherwise the
+/// light or dark default (TDD §16.6).
+fn theme_for(args: &[String]) -> Result<fontelle_ui::Theme, String> {
+    if let Some(path) = args
+        .iter()
+        .position(|a| a == "--theme")
+        .and_then(|i| args.get(i + 1))
+    {
+        return fontelle_ui::Theme::load_from_file(std::path::Path::new(path))
+            .map_err(|e| e.to_string());
+    }
+    Ok(if args.iter().any(|a| a == "--light") {
+        fontelle_ui::Theme::light_default()
+    } else {
+        fontelle_ui::Theme::dark_default()
+    })
 }
