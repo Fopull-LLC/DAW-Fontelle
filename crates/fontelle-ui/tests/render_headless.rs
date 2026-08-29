@@ -11,9 +11,12 @@
 //! Every test here skips, loudly, on a machine with no usable adapter.
 
 use fontelle_ui::layout::{Rect, window_layout};
-use fontelle_ui::render::{Headless, draw_window};
+use fontelle_ui::render::{Chrome, Headless, TransportChrome, draw_window};
 use fontelle_ui::text::TextContext;
 use fontelle_ui::theme::{Color, Theme};
+use fontelle_ui::transport::{
+    Meter, TransportBarLayout, TransportView, format_readout, playhead_x, transport_bar_layout,
+};
 
 const W: u32 = 640;
 const H: u32 = 360;
@@ -22,6 +25,7 @@ struct Shot {
     pixels: Vec<u8>,
     theme: Theme,
     layout: fontelle_ui::layout::WindowLayout,
+    bar: TransportBarLayout,
 }
 
 impl Shot {
@@ -39,8 +43,22 @@ impl Shot {
     }
 }
 
+/// A transport with an engine behind it, stopped at the start.
+fn live_view() -> TransportView {
+    TransportView {
+        available: true,
+        length_samples: 480_000,
+        sample_rate: 48_000.0,
+        ..TransportView::unavailable()
+    }
+}
+
 /// `None` when this machine has no GPU adapter we can use.
 fn shoot(theme: Theme) -> Option<Shot> {
+    shoot_with(theme, TransportView::unavailable(), [Meter::new(); 2])
+}
+
+fn shoot_with(theme: Theme, view: TransportView, meters: [Meter; 2]) -> Option<Shot> {
     let mut headless = match Headless::new() {
         Ok(h) => h,
         Err(e) => {
@@ -52,8 +70,25 @@ fn shoot(theme: Theme) -> Option<Shot> {
     let mut text = TextContext::new();
     let title = text.layout("Fontelle", &theme.font, None);
 
+    let bar = transport_bar_layout(layout.transport, &theme.metrics);
+    let readout = text.layout(&format_readout(&view, 4), &theme.font, None);
+
     let mut scene = vello::Scene::new();
-    draw_window(&mut scene, &theme, &layout, &title);
+    draw_window(
+        &mut scene,
+        &theme,
+        &layout,
+        &Chrome {
+            panel_title: &title,
+            transport: TransportChrome {
+                layout: bar,
+                view,
+                meters,
+                readout: &readout,
+                hover: None,
+            },
+        },
+    );
     let pixels = headless
         .render(&scene, W, H, theme.palette.window)
         .expect("rendering a scene that fits in memory");
@@ -64,6 +99,7 @@ fn shoot(theme: Theme) -> Option<Shot> {
         pixels,
         theme,
         layout,
+        bar,
     })
 }
 
@@ -196,5 +232,127 @@ fn the_same_scene_renders_the_same_pixels_twice() {
     assert_eq!(
         a.pixels, b.pixels,
         "the same scene rendered differently twice — something in the pipeline is not deterministic"
+    );
+}
+
+// ------------------------------------------------- the transport bar -------
+
+#[test]
+fn the_transport_bar_is_drawn_across_the_top() {
+    let Some(shot) = shoot(Theme::dark_default()) else {
+        return;
+    };
+    // Sampled between the read-out and the ruler, where nothing else draws.
+    let gap = shot.at(
+        (shot.bar.readout.right() + 1.0) as u32,
+        (shot.bar.bar.y + 2.0) as u32,
+    );
+    assert!(
+        near(gap, shot.theme.palette.panel_header),
+        "the transport bar is {gap:?}, expected {:?}",
+        shot.theme.palette.panel_header
+    );
+    // And it is not the panel: the two are separate surfaces with a gap.
+    assert!(shot.layout.transport.bottom() < shot.layout.panel.frame.y);
+}
+
+#[test]
+fn the_playhead_is_drawn_where_the_engine_says_it_is() {
+    let view = TransportView {
+        position_sample: 480_000 / 4,
+        ..live_view()
+    };
+    let Some(shot) = shoot_with(Theme::dark_default(), view, [Meter::new(); 2]) else {
+        return;
+    };
+
+    // The playhead travels along the ruler's groove, which is inset from the
+    // ruler itself — ask the same function the renderer used.
+    let track = shot.bar.ruler.inset(shot.bar.ruler.height * 0.3);
+    let x = playhead_x(track, view.position_sample, view.length_samples);
+    let y = (shot.bar.ruler.y + shot.bar.ruler.height / 2.0) as u32;
+
+    let found =
+        (x as u32 - 2..=x as u32 + 2).any(|px| near(shot.at(px, y), shot.theme.palette.playhead));
+    assert!(
+        found,
+        "no playhead within two pixels of x={x}; found {:?}",
+        shot.at(x as u32, y)
+    );
+}
+
+#[test]
+fn a_playhead_at_a_quarter_is_not_a_playhead_at_a_half() {
+    // The assertion that fails if the position is ignored and the playhead is
+    // simply parked somewhere plausible.
+    let quarter = TransportView {
+        position_sample: 480_000 / 4,
+        ..live_view()
+    };
+    let half = TransportView {
+        position_sample: 480_000 / 2,
+        ..live_view()
+    };
+    let (Some(a), Some(b)) = (
+        shoot_with(Theme::dark_default(), quarter, [Meter::new(); 2]),
+        shoot_with(Theme::dark_default(), half, [Meter::new(); 2]),
+    ) else {
+        return;
+    };
+
+    let y = (a.bar.ruler.y + a.bar.ruler.height / 2.0) as u32;
+    let playhead_at = |shot: &Shot| {
+        (shot.bar.ruler.x as u32..shot.bar.ruler.right() as u32)
+            .find(|&px| near(shot.at(px, y), shot.theme.palette.playhead))
+    };
+    let (x0, x1) = (playhead_at(&a), playhead_at(&b));
+    assert!(x0.is_some() && x1.is_some(), "a playhead went missing");
+    assert!(
+        x1 > x0,
+        "the playhead did not move: {x0:?} at a quarter, {x1:?} at a half"
+    );
+}
+
+#[test]
+fn a_window_with_no_engine_draws_no_playhead() {
+    let Some(shot) = shoot(Theme::dark_default()) else {
+        return;
+    };
+    let y = (shot.bar.ruler.y + shot.bar.ruler.height / 2.0) as u32;
+    let any = (shot.bar.ruler.x as u32..shot.bar.ruler.right() as u32)
+        .any(|px| near(shot.at(px, y), shot.theme.palette.playhead));
+    assert!(
+        !any,
+        "a window with no audio device behind it drew a playhead anyway"
+    );
+}
+
+#[test]
+fn the_meter_fills_with_the_level_it_is_given() {
+    let mut loud = [Meter::new(); 2];
+    for meter in &mut loud {
+        meter.update(1.0, 1.0 / 60.0);
+    }
+    let (Some(quiet), Some(hot)) = (
+        shoot_with(Theme::dark_default(), live_view(), [Meter::new(); 2]),
+        shoot_with(Theme::dark_default(), live_view(), loud),
+    ) else {
+        return;
+    };
+
+    let y = (hot.bar.meter.y + hot.bar.meter.height * 0.35) as u32;
+    let lit = |shot: &Shot| {
+        (shot.bar.meter.x as u32..shot.bar.meter.right() as u32)
+            .filter(|&px| {
+                let c = shot.at(px, y);
+                near(c, shot.theme.palette.meter) || near(c, shot.theme.palette.meter_peak)
+            })
+            .count()
+    };
+    assert_eq!(lit(&quiet), 0, "a silent meter lit up");
+    assert!(
+        lit(&hot) > 20,
+        "a full-scale meter only lit {} pixels",
+        lit(&hot)
     );
 }

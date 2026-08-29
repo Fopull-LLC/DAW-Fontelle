@@ -52,6 +52,9 @@ struct Playback<'a> {
     /// How long to record for. `None` records until the song ends, which is
     /// the only bound a headless run has.
     record_seconds: Option<f64>,
+    /// Drive playback from the window's transport bar rather than playing
+    /// straight through and exiting (item 7 of `docs/first-usable-plan.md`).
+    window: bool,
     /// Printed once the graph is up, when there is something worth saying
     /// about how the project was built.
     announce: Option<String>,
@@ -208,6 +211,7 @@ fn play_or_render(
         midi_in,
         record,
         record_seconds,
+        window,
         announce,
     } = options;
     // An offline bounce is not real-time, so it renders at export quality
@@ -333,6 +337,9 @@ fn play_or_render(
         return Ok(());
     }
 
+    // Taken before the graph goes to the audio callback, because after that
+    // nothing on this side owns it.
+    let master = realised.master.clone();
     let graph = realised.graph;
     let mut device = AudioDevice::default_host();
     println!(
@@ -418,6 +425,36 @@ fn play_or_render(
             midi_in.then_some(live_source),
         )
         .map_err(|e| format!("failed to open the default output device: {e}"))?;
+
+    if window {
+        // The window owns the transport from here. It opens *stopped* and cued
+        // where `--start-beat` asked for: a DAW that starts playing the moment
+        // it opens is a DAW you have to race to the stop button.
+        transport.stop();
+        transport.seek(start_sample);
+        let host = fontelle_app::EngineHost::new(
+            transport.clone(),
+            master,
+            project.tempo_map.clone(),
+            song_end_samples,
+            SAMPLE_RATE,
+        );
+        let result = fontelle_ui::run_window(fontelle_ui::WindowOptions {
+            title: format!("{} — Fontelle", project.meta.name),
+            panel_title: project.meta.name.clone(),
+            theme: fontelle_ui::Theme::dark_default(),
+            size: (1280, 720),
+            run_for: None,
+            host: Some(Box::new(host)),
+        });
+        // Through the transport before the stream goes away, so the callback
+        // cuts its voices and hands the device silence rather than a buffer
+        // that stops mid-note.
+        transport.stop();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        device.stop();
+        return result.map(|_| ()).map_err(|e| e.to_string());
+    }
 
     // A recording has to end somewhere the process can act on, because what
     // comes after it — turning the take into a clip, writing the project — has
@@ -896,6 +933,24 @@ fn main() {
 
         let midi_in = args.iter().any(|a| a == "--midi-in");
         let record = args.iter().any(|a| a == "--record");
+        let window = args.iter().any(|a| a == "--window");
+        if window && render_wav.is_some() {
+            eprintln!(
+                "Fontelle: --window opens the transport for you to play with and \
+                 --render-wav is an offline bounce that exits when it is done; \
+                 pick one"
+            );
+            std::process::exit(1);
+        }
+        if window && record {
+            eprintln!(
+                "Fontelle: --record has to know when the take ends so it can be \
+                 written down, and the window has no record button yet (item 9). \
+                 Record headless with --record --save <project>, then --open it \
+                 --window"
+            );
+            std::process::exit(1);
+        }
         if midi_in && render_wav.is_some() {
             eprintln!(
                 "Fontelle: --midi-in is live playing and --render-wav is an offline bounce; \
@@ -917,6 +972,7 @@ fn main() {
             midi_in,
             record,
             record_seconds: float_flag("--record-seconds"),
+            window,
             announce: (midi.is_none() && !opening).then(|| {
                 format!(
                     "  root key {root_key} at {BPM} bpm — a root/third/fifth run, \
@@ -971,6 +1027,9 @@ fn main() {
         theme,
         size: (1280, 720),
         run_for,
+        // No project and no audio device yet: the transport bar is drawn, and
+        // inert, until item 9 gives the window a way to open one.
+        host: None,
     }) {
         Ok(app) => {
             if run_for.is_some() {

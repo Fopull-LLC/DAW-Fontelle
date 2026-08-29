@@ -33,13 +33,26 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 use crate::layout::{WindowLayout, window_layout};
-use crate::render::{RenderError, draw_window};
+use crate::render::{Chrome, RenderError, TransportChrome, draw_window};
 use crate::text::{TextContext, TextLayout};
 use crate::theme::Theme;
-use crate::widget::{WidgetId, WidgetTree};
+use crate::transport::{
+    Meter, TransportBarLayout, TransportHit, TransportHost, TransportView, apply, format_readout,
+    hit, transport_bar_layout,
+};
+use crate::widget::{Sleep, WidgetId, WidgetTree, sleep_budget};
 
 /// The one panel item 6 opens. Item 9 turns this into the docked set.
 const PANEL: WidgetId = WidgetId::new(0);
+/// The transport bar (item 7). Its own widget so a moving playhead dirties the
+/// bar and nothing else — §16.4's rule, applied before there is any geometry
+/// expensive enough for it to matter, because that is the only time it is
+/// cheap to get right.
+const TRANSPORT: WidgetId = WidgetId::new(1);
+
+/// Until the time signature is in the document, 4/4 — which is what the
+/// importer and the demo both assume anyway.
+const BEATS_PER_BAR: u32 = 4;
 
 /// What the window is opened with.
 pub struct WindowOptions {
@@ -54,6 +67,9 @@ pub struct WindowOptions {
     /// a duration is how an unattended run proves it started, drew, and idled
     /// without someone sitting there to close it.
     pub run_for: Option<std::time::Duration>,
+    /// The engine the transport bar drives. `None` opens a window with the bar
+    /// drawn but inert — no audio device, or no project yet.
+    pub host: Option<Box<dyn TransportHost>>,
 }
 
 impl Default for WindowOptions {
@@ -64,6 +80,7 @@ impl Default for WindowOptions {
             theme: Theme::dark_default(),
             size: (1280, 720),
             run_for: None,
+            host: None,
         }
     }
 }
@@ -120,6 +137,23 @@ pub struct WindowApp {
     frames: u64,
     started: std::time::Instant,
     failure: Option<WindowError>,
+
+    // --- the transport bar (item 7) ---
+    bar: TransportBarLayout,
+    /// The engine's state as of the last tick. Compared against the next one
+    /// to decide whether anything moved, which is what keeps a stopped,
+    /// silent window at zero frames.
+    view: TransportView,
+    meters: [Meter; 2],
+    readout: TextLayout,
+    cursor: (f32, f32),
+    hover: Option<TransportHit>,
+    last_tick: std::time::Instant,
+    /// Whether this window currently holds an animator on the tree's
+    /// [`crate::widget::Redraw`]. Kept so `begin`/`end` stay paired — the
+    /// counter is there so several moving things can coexist, and a caller
+    /// that begins twice for one thing defeats it.
+    animating: bool,
 }
 
 /// The window and its surface, which only exist between `resumed` and
@@ -151,6 +185,14 @@ impl WindowApp {
             frames: 0,
             started: std::time::Instant::now(),
             failure: None,
+            bar: transport_bar_layout(layout.transport, &options.theme.metrics),
+            view: TransportView::unavailable(),
+            meters: [Meter::new(); 2],
+            readout: TextLayout::default(),
+            cursor: (f32::MIN, f32::MIN),
+            hover: None,
+            last_tick: std::time::Instant::now(),
+            animating: false,
             options,
         }
     }
@@ -168,6 +210,8 @@ impl WindowApp {
             logical.1 as f32,
             &self.options.theme.metrics,
         );
+        self.bar = transport_bar_layout(self.layout.transport, &self.options.theme.metrics);
+        self.tree.insert(TRANSPORT, self.layout.transport);
         self.tree.insert(PANEL, self.layout.panel.frame);
         // Re-shaped against the header it has to fit in: a title wider than its
         // panel should wrap inside the header rather than run out over the
@@ -199,7 +243,16 @@ impl WindowApp {
             &mut self.scene,
             &self.options.theme,
             &self.layout,
-            &self.title,
+            &Chrome {
+                panel_title: &self.title,
+                transport: TransportChrome {
+                    layout: self.bar,
+                    view: self.view,
+                    meters: self.meters,
+                    readout: &self.readout,
+                    hover: self.hover,
+                },
+            },
         );
 
         let surface_texture = match live.surface.surface.get_current_texture() {
@@ -253,6 +306,78 @@ impl WindowApp {
         let _ = device.device.poll(wgpu::PollType::Poll);
 
         self.frames += 1;
+    }
+
+    /// Reads the engine once, folds it into the meters, and dirties only what
+    /// moved.
+    ///
+    /// This is the "state up" half of TDD §2.2, and the place the §16.3
+    /// promise is kept: it is called on every pass of the loop, and on a
+    /// stopped, silent window it finds nothing changed and marks nothing
+    /// dirty, so no frame is issued. The comparison is against the whole
+    /// view *and* the meter state, because a meter still falling after the
+    /// last note is something moving even though the transport is not.
+    fn tick(&mut self) {
+        let now = std::time::Instant::now();
+        // Clamped: a window that was dragged, minimised, or simply not
+        // scheduled for a second must not make the meters jump a second's
+        // worth of release in one step.
+        let dt = (now - self.last_tick).as_secs_f32().min(0.25);
+        self.last_tick = now;
+
+        let view = match &mut self.options.host {
+            Some(host) => host.view(),
+            None => TransportView::unavailable(),
+        };
+        let mut meters = self.meters;
+        for (index, meter) in meters.iter_mut().enumerate() {
+            meter.update(view.peaks.get(index).copied().unwrap_or(0.0), dt);
+        }
+
+        // Whether anything on screen will change without the user doing
+        // something: a rolling transport moves the playhead, and a meter above
+        // the floor is still falling. Held as an animator on the tree, which
+        // is what `arm_deadline` reads — one source of truth for "may the
+        // window sleep", rather than two that can disagree.
+        let moving = view.playing
+            || meters
+                .iter()
+                .any(|m| m.level_db > crate::transport::METER_FLOOR_DB);
+        if moving != self.animating {
+            if moving {
+                self.tree.redraw_mut().begin_animating();
+            } else {
+                self.tree.redraw_mut().end_animating();
+            }
+            self.animating = moving;
+        }
+
+        if view == self.view && meters == self.meters {
+            return;
+        }
+        // The read-out is re-shaped only when the position it shows actually
+        // changed, not once per frame: shaping allocates, and a stopped
+        // transport should not be doing it at all.
+        if view.position_sample != self.view.position_sample || !self.view.available {
+            self.readout = self.text.layout(
+                &format_readout(&view, BEATS_PER_BAR),
+                &self.options.theme.font,
+                None,
+            );
+        }
+        self.view = view;
+        self.meters = meters;
+        self.tree.invalidate(TRANSPORT);
+    }
+
+    /// Recomputes what the pointer is over, dirtying the bar only if it
+    /// changed.
+    fn update_hover(&mut self) {
+        let hover = hit(&self.bar, &self.view, self.cursor.0, self.cursor.1);
+        if hover != self.hover {
+            self.hover = hover;
+            self.tree.invalidate(TRANSPORT);
+        }
     }
 
     /// True once the `run_for` deadline has passed, if there is one.
@@ -362,6 +487,39 @@ impl ApplicationHandler for WindowApp {
                 }
             }
 
+            WindowEvent::CursorMoved { position, .. } => {
+                let Some(live) = &self.live else { return };
+                // Logical pixels, because that is what the layout is in.
+                let scale = live.window.scale_factor();
+                self.cursor = ((position.x / scale) as f32, (position.y / scale) as f32);
+                self.update_hover();
+                self.request_redraw_if_dirty();
+            }
+
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor = (f32::MIN, f32::MIN);
+                self.update_hover();
+                self.request_redraw_if_dirty();
+            }
+
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                if let Some(what) = hit(&self.bar, &self.view, self.cursor.0, self.cursor.1)
+                    && let Some(host) = &mut self.options.host
+                {
+                    // Commands down (TDD §2.2): one click, one call, which is
+                    // a handful of relaxed stores on the other side. Nothing
+                    // here waits for the audio thread to acknowledge it — the
+                    // next `tick` reads back what actually happened.
+                    apply(host.as_mut(), what);
+                    self.tick();
+                    self.request_redraw_if_dirty();
+                }
+            }
+
             // The compositor threw our pixels away, or is about to show them
             // again. Either way what we believe is on screen is no longer true.
             WindowEvent::Occluded(false) => {
@@ -391,25 +549,59 @@ impl ApplicationHandler for WindowApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.tick();
+        self.request_redraw_if_dirty();
         self.arm_deadline(event_loop);
     }
 }
 
 impl WindowApp {
-    /// Keeps the `run_for` countdown honest without turning the loop into a
-    /// poll: with a deadline the loop wakes once, at the deadline; without one
-    /// it goes back to [`ControlFlow::Wait`] and sleeps indefinitely.
-    fn arm_deadline(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(limit) = self.options.run_for else {
-            return;
-        };
-        if self.expired() {
-            event_loop.exit();
+    /// Asks for a frame only when there is one to draw.
+    ///
+    /// The counterpart to `Redraw::take_dirty` returning `None`: between them,
+    /// a window with nothing happening in it neither requests nor issues a
+    /// frame (§16.3).
+    fn request_redraw_if_dirty(&mut self) {
+        if !self.tree.has_dirty_regions() {
             return;
         }
-        event_loop.set_control_flow(ControlFlow::WaitUntil(
-            std::time::Instant::now() + (limit - self.started.elapsed()),
-        ));
+        if let Some(live) = &self.live {
+            live.window.request_redraw();
+        }
+    }
+
+    /// Decides when the loop is allowed to wake next.
+    ///
+    /// The policy itself is [`sleep_budget`], which is tested; this is the
+    /// three lines that hand it to winit, plus the `--run-for` deadline, which
+    /// only ever brings the wake-up *forward*.
+    ///
+    /// Note that even the animating case is `WaitUntil` and not `Poll`: the
+    /// thread sleeps between frames rather than spinning.
+    fn arm_deadline(&mut self, event_loop: &ActiveEventLoop) {
+        let now = std::time::Instant::now();
+
+        let mut wake = match sleep_budget(
+            self.tree.redraw().is_animating(),
+            self.options.host.is_some(),
+        ) {
+            Sleep::Forever => None,
+            Sleep::AtMost(budget) => Some(now + budget),
+        };
+
+        if let Some(limit) = self.options.run_for {
+            if self.expired() {
+                event_loop.exit();
+                return;
+            }
+            let deadline = now + (limit - self.started.elapsed());
+            wake = Some(wake.map_or(deadline, |w| w.min(deadline)));
+        }
+
+        event_loop.set_control_flow(match wake {
+            Some(at) => ControlFlow::WaitUntil(at),
+            None => ControlFlow::Wait,
+        });
     }
 }
 

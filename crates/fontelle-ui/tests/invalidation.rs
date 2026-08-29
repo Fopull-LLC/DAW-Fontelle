@@ -159,3 +159,47 @@ fn a_resize_dirties_the_whole_surface() {
     tree.invalidate_rect(Rect::new(0.0, 0.0, 1920.0, 1080.0));
     assert_eq!(tree.take_dirty(), Some(Rect::new(0.0, 0.0, 1920.0, 1080.0)));
 }
+
+// --------------------------------------------- how long may we sleep? ------
+
+use fontelle_ui::widget::{ENGINE_POLL, FRAME_INTERVAL, Sleep, sleep_budget};
+
+#[test]
+fn a_window_with_nothing_behind_it_sleeps_until_the_os_speaks() {
+    // No engine, nothing animating: there is no way for anything on this side
+    // to change, so waking up at all would be waking up for nothing. This is
+    // the §19 idle case and it is the common one.
+    assert_eq!(sleep_budget(false, false), Sleep::Forever);
+}
+
+#[test]
+fn a_window_watching_an_engine_looks_at_it_even_while_idle() {
+    // The bug this exists to prevent, found by running it: the transport is
+    // shared state that something *other than the window* can change — a
+    // MIDI-triggered record, a second view, the CLI that opened it. A window
+    // asleep in `Wait` never learns that playback started, and what the user
+    // sees is a frozen playhead and a dead meter over audio they can hear.
+    //
+    // Note what this is not: it is not a frame. The loop wakes, reads six
+    // atomics, finds nothing changed, marks nothing dirty and goes back to
+    // sleep without drawing. Zero frames at idle (§16.3) is about frames.
+    assert_eq!(sleep_budget(false, true), Sleep::AtMost(ENGINE_POLL));
+}
+
+#[test]
+fn something_moving_is_drawn_at_the_frame_rate_whatever_else_is_true() {
+    for watching in [false, true] {
+        assert_eq!(
+            sleep_budget(true, watching),
+            Sleep::AtMost(FRAME_INTERVAL),
+            "an animating window did not ask for the next frame"
+        );
+    }
+}
+
+#[test]
+fn polling_the_engine_is_far_slower_than_drawing() {
+    // If these ever cross, an idle window would be waking more often than a
+    // busy one.
+    assert!(ENGINE_POLL > FRAME_INTERVAL * 4);
+}

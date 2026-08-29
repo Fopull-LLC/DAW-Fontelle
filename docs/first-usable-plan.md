@@ -220,12 +220,14 @@ not relitigate the toolkit choice beyond that documented fallback.
    timebox was not spent, and §16.2's fallback stays unused. The §2.5 answer
    is written into the TDD as §20.6. See PROGRESS.md's top section.
 
-7. **Transport bar over the real engine.** Play/stop/seek/loop controls and a
-   playhead driven by the `position_sample` the RT side already publishes;
-   master meters from the `MasterMeter` atomics. This is the first moment
-   the window and the audio thread coexist — prove the threading shape
-   (commands down, atomics/triple-buffer up, per §2.2) on the simplest
-   feature, not on the piano roll.
+7. ~~**Transport bar over the real engine.**~~ **Done, 2026-08-29.**
+   Play/stop/loop and a click-to-seek playhead driven by `position_sample`,
+   with the master meters from the `MasterMeter` atomics, reached through
+   `fontelle_ui::TransportHost` — implemented in `fontelle-app` so the UI crate
+   never sees `fontelle-engine`. Run it with `--window`. The threading shape
+   held; what did not was the assumption that a window on `ControlFlow::Wait`
+   would notice an engine changing under it, which is now the tested
+   `widget::sleep_budget`. See PROGRESS.md's top section.
 
 8. **Piano roll MVP.** Virtualised canvas (§16.4: visible-window geometry
    only, instanced note quads, playhead on its own layer), and the core of

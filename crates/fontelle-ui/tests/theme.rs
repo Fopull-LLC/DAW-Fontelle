@@ -104,6 +104,32 @@ fn an_opaque_colour_round_trips_without_growing_an_alpha_pair() {
 }
 
 #[test]
+fn a_theme_written_by_an_older_build_is_migrated_rather_than_refused() {
+    // v0 had no `transport_bar_height` — the transport bar did not exist yet
+    // (item 7 of `docs/first-usable-plan.md`). A theme somebody wrote against
+    // v0 must still open, with the missing token filled in, because "your
+    // theme file stopped working" is not an acceptable cost of adding a
+    // panel. This is the migration chain's first real arm.
+    let mut json: serde_json::Value =
+        serde_json::from_str(&Theme::dark_default().to_json()).expect("valid JSON");
+    json["format_version"] = serde_json::json!(0);
+    json["metrics"]
+        .as_object_mut()
+        .expect("metrics is an object")
+        .remove("transport_bar_height")
+        .expect("v1 has the token v0 lacked");
+
+    let migrated = Theme::from_json(&json.to_string()).expect("a v0 theme must still open");
+    assert_eq!(
+        migrated.metrics.transport_bar_height,
+        Theme::dark_default().metrics.transport_bar_height
+    );
+    // Everything the old file *did* say is still its own.
+    assert_eq!(migrated.palette, Theme::dark_default().palette);
+    assert_eq!(migrated.format_version, THEME_FORMAT_VERSION);
+}
+
+#[test]
 fn a_theme_from_a_newer_build_is_refused_by_version_not_by_field() {
     let mut json: serde_json::Value =
         serde_json::from_str(&Theme::dark_default().to_json()).expect("valid JSON");

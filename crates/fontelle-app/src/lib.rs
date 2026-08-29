@@ -5,6 +5,7 @@
 mod bundle;
 mod library;
 mod realise;
+mod window;
 
 use std::path::{Path, PathBuf};
 
@@ -19,6 +20,7 @@ pub use library::SampleLibrary;
 pub use realise::{
     RealiseError, RealiseOptions, Realised, channel_nodes, realise, set_channel_patch,
 };
+pub use window::EngineHost;
 
 /// Why `--play-sf2` couldn't produce a usable path.
 #[derive(Debug, PartialEq, Eq)]

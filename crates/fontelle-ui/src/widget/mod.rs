@@ -170,3 +170,45 @@ impl WidgetTree {
         &mut self.redraw
     }
 }
+
+/// How often the window draws while something on it is moving.
+///
+/// Sixty a second: the §19 target, and the fastest anything here can usefully
+/// change.
+pub const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_micros(16_667);
+
+/// How often an idle window looks at the engine it is showing.
+///
+/// **This is not a frame rate.** The loop wakes, reads a handful of atomics,
+/// finds nothing changed and goes straight back to sleep having drawn nothing;
+/// §16.3's promise is about frames issued, and this issues none.
+///
+/// It exists because the transport is shared state that something other than
+/// the window can change — the CLI that opened the project, a record armed by
+/// a MIDI event, a second view later on. A window asleep in `Wait` never
+/// learns that playback started, and what the user gets is a frozen playhead
+/// over audio they can hear. That is not a hypothetical: it is what the first
+/// run of the transport bar did.
+pub const ENGINE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// How long the event loop may sleep before it has to look again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sleep {
+    /// Indefinitely — until the OS has something to say. Nothing on this side
+    /// will change on its own.
+    Forever,
+    AtMost(std::time::Duration),
+}
+
+/// The §16.3 decision, as a value rather than as a shape the event loop
+/// happens to have.
+///
+/// `watching_engine` is whether there is anything behind the window whose
+/// state can change without the user touching it.
+pub fn sleep_budget(animating: bool, watching_engine: bool) -> Sleep {
+    match (animating, watching_engine) {
+        (true, _) => Sleep::AtMost(FRAME_INTERVAL),
+        (false, true) => Sleep::AtMost(ENGINE_POLL),
+        (false, false) => Sleep::Forever,
+    }
+}

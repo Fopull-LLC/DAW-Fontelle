@@ -13,7 +13,141 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
-## 2026-08-29 (latest): the window opens
+## 2026-08-29 (latest): the transport bar, over the real engine
+
+Phase 2 item 7. The window and the audio thread now coexist, which is the
+whole point of doing this before the piano roll: the plan puts it here to
+prove the threading shape on the simplest feature there is.
+
+```sh
+cargo run --release -p fontelle-app -- --play-sf2 <file.sf2> --window
+cargo run --release -p fontelle-app -- --open <project.fontelle> --window
+```
+
+Play, stop, loop, a playhead you can click to seek, a bars/beats and clock
+read-out, and the master meters — all driven by the atomics the RT side was
+already publishing. Nothing in `fontelle-engine` changed.
+
+### Commands down, atomics up — as one trait
+
+TDD §2.2's shape is `fontelle_ui::TransportHost`, and both halves are literal:
+
+- **Down.** A click becomes exactly one call, which becomes one relaxed store.
+  `apply()` is the only place a hit turns into a write, so it is a function
+  with tests rather than a habit spread over an event handler. It reads the
+  view first, which is what makes the loop button a *toggle* — asking for the
+  opposite of what it last saw — rather than one that only ever turns looping
+  on.
+- **Up.** `TransportView` is a snapshot taken once per frame. Once, because
+  `MasterMeter::take_peaks` *resets* what it reads: asking twice in a frame
+  would hand half the picture to one caller and half to the other.
+
+The trait is also what keeps `fontelle-ui` off `fontelle-engine` entirely.
+`fontelle-app` is the layer allowed to see both (`src/window.rs`), so the UI
+crate's own tests run against a fake that records the commands, and
+`crates/fontelle-app/tests/window_host.rs` checks the real implementation
+against a real `Transport` and `MasterMeter` **with no audio device** — which
+is possible precisely because the interface is nothing but atomics.
+
+### The bug that only running it could find: a window asleep at the wheel
+
+The window was drawing correctly and following nothing. Playback rolled, the
+audio came out of the speakers, and the playhead sat at zero.
+
+`ControlFlow::Wait` blocks until the OS has something to say, and the engine
+starting is not something the OS says. The window had no way to *learn* that
+anything had happened. In normal use it is masked — the click that starts
+playback is itself the event that wakes the loop — which is exactly what makes
+it the kind of bug that ships.
+
+The fix is a value, `widget::sleep_budget`, and it has three answers:
+
+| animating | an engine to watch | sleep |
+|---|---|---|
+| yes | either | one frame (16.7 ms) |
+| no | yes | 100 ms |
+| no | no | forever |
+
+**A poll is not a frame.** The loop wakes, reads six atomics, finds nothing
+changed, marks nothing dirty and goes back to sleep having drawn nothing.
+§16.3's promise is about frames issued, and this issues none. Measured in
+release: the window thread costs **0.05% of one core** whether or not it is
+watching an engine — the same as item 6's genuinely-idle window.
+
+This will matter beyond the defensive case as soon as live audition lights the
+meters while the transport is stopped (item 9's record-arm).
+
+### A finding that is not ours, and is worth writing down
+
+While measuring the above, per-thread: with the transport **stopped** and an
+output stream open, `cpal_alsa_out` costs ~1.0% of a core and ALSA/PipeWire's
+own helper thread another ~0.95%, for ~2% total against §19's "idle CPU,
+transport stopped: < 0.5%". §6.3 says a stopped callback "fills silence and
+returns immediately, which is what delivers the near-zero idle-CPU target" —
+and the callback does exactly that, so the cost is the device period rate
+itself, not our work inside it. Out of scope here; added to the next-steps
+list, because §19 is measured on the app and not on the window.
+
+### Meter ballistics are a state machine, so they are tested like one
+
+Instant attack, 20 dB/s release, 1.5 s peak hold — PPM-ish, and a state
+machine rather than a formula because what it reads depends on what it read
+last. The floor is -60 dBFS: the bar is small, and spending a third of it on
+levels nobody can hear compresses the range that matters.
+
+Fed from `take_peaks`, which is itself a highest-since-last-read, so nothing
+between two frames is missed even when the frames are far apart.
+
+Verified against the real thing rather than by eye: the demo bounces at peak
+0.966 with the limiter taking 1.7 dB, so a meter pinned near full and red
+during the demo is correct, and one that empties 1.8 s after the last note is
+the 20 dB/s release doing its job. Both were read off the actual pixels.
+
+### The theme format has a migration now, and it is exercised
+
+The transport bar needed a `transport_bar_height` token, so the theme format
+went to **v1**. Rather than reaching for `serde(default)` — which would give
+up `deny_unknown_fields` everywhere to solve one problem in one place — v0
+files go through a real `migrate` arm that inserts the token. A test loads a
+v0 document with the field removed and checks both that the default lands and
+that everything the old file *did* say survives.
+
+The arm also stamps the current version onto the migrated document. That was
+not in the first draft, and the test caught it: a migrated theme that still
+claims v0 disagrees with what it now contains.
+
+### Verified
+
+- 473 tests before this, **511 now**; clippy and fmt clean.
+- Both reference bounces byte-identical (the demo still renders 108 000 frames
+  at peak 0.966). Nothing in the audio path was touched and the tests say so.
+- On real hardware, in a nested X server, against `F-Zero.sf2`: the window
+  opens stopped and cued at zero; playback moves the playhead, advances the
+  read-out through `1.4.333 / 0:01.673` and lights both meters; the play glyph
+  is the accent colour while rolling and the text colour when not — read out of
+  the framebuffer as `srgb(79,143,208)` and `srgb(230,230,235)` rather than
+  eyeballed; the meters empty after the song ends.
+- Clicking works, and I have the accident to prove it: a stray pointer event in
+  the nested X server landed on the stop button — hover highlight drawn, and the
+  transport stopped exactly where the probe said it did.
+
+### What is deliberately not built
+
+- **No record button.** `--window --record` is refused with a message saying
+  so. Turning a take into a clip has to happen before the process exits, and
+  the window has no "and then what" yet. Item 9.
+- **The transport does not stop at the end of the song.** It runs on with the
+  playhead clamped, which is what the engine has always done; making the end a
+  stop is a transport-behaviour decision, not a bar-drawing one.
+- **The ruler has no ticks, bars, or loop-drag.** Clicking it seeks and the
+  loop range is shaded when looping is on; setting that range from the bar is
+  item 8's snap arithmetic, reused.
+- **No keyboard.** Space does not play. The keymap is item 8 (§16.5), and one
+  binding hard-coded here is one binding to find and move later.
+- **Time signature is assumed 4/4** for the bars read-out — there is nowhere in
+  the document to put one yet.
+
+## 2026-08-29 (second to last): the window opens
 
 Phase 2 item 6 of `docs/first-usable-plan.md`, and the first pixel this project
 has ever drawn. `fontelle` with no arguments was a `todo!()`; it is now a
@@ -2192,17 +2326,24 @@ To inspect what a given SF2 file actually imports as, without any audio:
   between store ids and the file references a saved patch names them by.
   `render_offline`, `write_wav16`, `demo_project` and `project_from_midi` are
   here too, and `open_project`/`save_project` (2026-08-29) are the folder
-  bundle plus the sample reloading a reopened project needs.
-- **fontelle-ui** — real, as far as item 6 goes (2026-08-29). `theme` is a
+  bundle plus the sample reloading a reopened project needs. `EngineHost`
+  (`src/window.rs`, 2026-08-29) implements `fontelle_ui::TransportHost` over
+  `Arc<Transport>` and `Arc<MasterMeter>` — this crate is the one layer allowed
+  to see both sides, which is what keeps `fontelle-ui` off `fontelle-engine`.
+- **fontelle-ui** — real, as far as items 6 and 7 go (2026-08-29). `theme` is a
   full token set with a dark default, a light variant and a versioned JSON
-  format; `layout` is the window geometry; `widget::Redraw` is the §16.3
-  invalidation core that decides whether a frame happens at all; `text` turns
-  `cosmic-text` shaping into vello glyph runs; `render` holds `draw_window`
-  (a pure function of theme + layout + text) and `Headless`, which renders a
-  scene into memory with no surface; `app` is the winit/wgpu/vello event loop
-  and nothing else. Still stub: the `canvas` modules
-  (`TimelineCanvas::visible_tick_range` and friends are `todo!()`), and there
-  are no widgets in the tree beyond the panel. Tests:
+  format (v1, with a working migration from v0); `layout` is the window
+  geometry; `widget` holds the §16.3 invalidation core — `Redraw`, and
+  `sleep_budget`, which decides whether a frame happens at all and how long the
+  loop may sleep; `text` turns `cosmic-text` shaping into vello glyph runs;
+  `transport` is the transport bar's view-model (layout, hit-testing, playhead
+  mapping, meter ballistics, read-out formatting) behind the `TransportHost`
+  trait, which is the *only* thing this crate knows about an engine; `render`
+  holds `draw_window` (a pure function of theme + layout + chrome) and
+  `Headless`, which renders a scene into memory with no surface; `app` is the
+  winit/wgpu/vello event loop and nothing else. Still stub: the `canvas`
+  modules (`TimelineCanvas::visible_tick_range` and friends are `todo!()`), and
+  there are no widgets in the tree beyond the panel and the bar. Tests:
   `crates/fontelle-ui/tests/`.
 - **fontelle-plugin** — pure stub, unchanged since scaffolding.
   `BaseviewBackend::request_redraw` is a `todo!()`; M2 is deferred until after
@@ -2337,17 +2478,18 @@ crash the process).
     serialisation, the `Project` -> graph realisation step, commands and undo,
     the project bundle, and MIDI recording.
 14. **Phase 2 of `docs/first-usable-plan.md`, the walking GUI skeleton.**
-    Item 6 (window + surface + one panel) is **done, 2026-08-29** — see the
-    section at the top; the vello stack came up without needing the lyon
-    fallback, and zero-frames-at-idle is built in and measured. **Next is item
-    7, the transport bar over the real engine**: play/stop/seek/loop and a
-    playhead driven by the `position_sample` the RT side already publishes,
-    plus the `MasterMeter` atomics. It is the first moment the window and the
-    audio thread coexist, and the plan puts it before the piano roll on
-    purpose — prove the threading shape (commands down, atomics up, per §2.2)
-    on the simplest feature. The playhead is also the first user of
-    `Redraw::begin_animating`. Keep §2.5's rule: pure view-model functions
-    carry the tests, `app.rs` stays a thin shell.
+    Items 6 (window + surface + one panel) and 7 (the transport bar over the
+    real engine) are **done, 2026-08-29** — see the two sections at the top.
+    The vello stack came up without needing the lyon fallback; zero frames at
+    idle is built in and measured; and the window drives a live audio thread
+    through nothing but atomics. **Next is item 8, the piano roll MVP**:
+    virtualised canvas (§16.4 — visible-window geometry only), and §16.5's
+    core (draw/delete/select/move/resize, snap, right-click delete, Ctrl+Z/Y
+    through the real `History`, Ctrl+A/B/C/V/X). Every edit is a command from
+    Phase 1 item 3 — the roll is a view, never a mutator (INVARIANT 2). The
+    same §2.5 rule holds and matters more here than anywhere: visible-range
+    math, hit-testing, geometry building and snap arithmetic are all pure, and
+    all of it should be tested before a single note is drawn.
 15. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
     soundfonts in memory) and effects. `ParametricEq::process` and
     `Compressor::process` are the two `fontelle-dsp` could already support.
@@ -2355,6 +2497,14 @@ crash the process).
     with real latency (`AudioNode::latency_samples` reports it and nothing
     reads it). With one bus that is a uniform delay nobody can hear; with a
     send path or a track that bypasses it, it is a phase error.
+17. **Idle CPU with the device open (§19).** Measured 2026-08-29 in release,
+    per thread, with the transport **stopped** and an output stream open:
+    `cpal_alsa_out` ~1.0% of a core and ALSA/PipeWire's helper thread ~0.95%,
+    against §19's "< 0.5%". The window itself is 0.05%, and the callback does
+    fill silence and return as §6.3 says — so the cost is the device period
+    rate, not our work inside it. Worth a look at buffer size and at whether a
+    stopped transport should let the stream go idle; §19 is measured on the
+    app, not on the window.
 
 ## Open questions against the TDD (2026-08-25 additions)
 

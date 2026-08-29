@@ -154,23 +154,35 @@ pub struct PanelLayout {
 
 /// The window, and what is in it.
 ///
-/// One panel today (item 6 of `docs/first-usable-plan.md`). The transport bar
-/// is item 7 and the docked splits are item 9; this is the shape they grow out
-/// of, not a placeholder for it.
+/// A transport bar across the top and one panel under it (items 6 and 7 of
+/// `docs/first-usable-plan.md`). The docked splits are item 9; this is the
+/// shape they grow out of, not a placeholder for it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WindowLayout {
     pub window: Rect,
+    /// The strip carrying play/stop, the playhead and the master meter. See
+    /// [`crate::transport::transport_bar_layout`] for what is inside it.
+    pub transport: Rect,
     pub panel: PanelLayout,
 }
 
 /// Lays out a window of `width` x `height` logical pixels.
 pub fn window_layout(width: f32, height: f32, metrics: &Metrics) -> WindowLayout {
     let window = Rect::new(0.0, 0.0, width, height).clamped();
-    let frame = window.inset(metrics.panel_margin);
+    let content = window.inset(metrics.panel_margin);
+
+    let (transport, below_bar) = content.split_top(metrics.transport_bar_height);
+    // The same gap between the bar and the panel as between the panel and the
+    // window edge, so the chrome reads as evenly spaced rather than as a bar
+    // with a panel stuck to it.
+    let (_gap, rest) = below_bar.split_top(metrics.panel_margin);
+
+    let frame = rest;
     let (header, below) = frame.split_top(metrics.panel_header_height);
 
     WindowLayout {
         window,
+        transport,
         panel: PanelLayout {
             frame,
             header,

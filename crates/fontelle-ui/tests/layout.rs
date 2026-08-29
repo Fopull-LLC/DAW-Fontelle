@@ -9,20 +9,28 @@ fn metrics() -> fontelle_ui::theme::Metrics {
 }
 
 #[test]
-fn the_panel_is_the_window_inset_by_the_margin() {
+fn the_transport_bar_is_across_the_top_and_the_panel_is_under_it() {
     let m = metrics();
     let l = window_layout(1280.0, 720.0, &m);
 
     assert_eq!(l.window, Rect::new(0.0, 0.0, 1280.0, 720.0));
     assert_eq!(
-        l.panel.frame,
+        l.transport,
         Rect::new(
             m.panel_margin,
             m.panel_margin,
             1280.0 - 2.0 * m.panel_margin,
-            720.0 - 2.0 * m.panel_margin,
+            m.transport_bar_height,
         )
     );
+    assert_eq!(l.panel.frame.x, m.panel_margin);
+    assert_eq!(l.panel.frame.width, 1280.0 - 2.0 * m.panel_margin);
+    assert!(
+        l.panel.frame.y >= l.transport.bottom(),
+        "the panel starts above the transport bar"
+    );
+    assert_eq!(l.panel.frame.bottom(), 720.0 - m.panel_margin);
+    assert!(!l.transport.intersects(&l.panel.frame));
 }
 
 #[test]
@@ -52,6 +60,7 @@ fn growing_the_window_grows_only_the_body() {
 
     assert_eq!(small.panel.header.height, tall.panel.header.height);
     assert_eq!(small.panel.body.width, tall.panel.body.width);
+    assert_eq!(small.transport, tall.transport);
     assert_eq!(tall.panel.body.height, small.panel.body.height + 100.0);
 }
 
@@ -62,7 +71,7 @@ fn a_window_too_small_for_its_chrome_yields_empty_rects_never_negative_ones() {
     // negative width reaches the GPU as a panic or a garbage draw.
     for (w, h) in [(0.0, 0.0), (1.0, 1.0), (4.0, 900.0), (900.0, 4.0)] {
         let l = window_layout(w, h, &m);
-        for r in [l.panel.frame, l.panel.header, l.panel.body] {
+        for r in [l.transport, l.panel.frame, l.panel.header, l.panel.body] {
             assert!(
                 r.width >= 0.0 && r.height >= 0.0,
                 "{w}x{h} produced {r:?} with a negative dimension"

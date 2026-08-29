@@ -12,7 +12,7 @@
 //!
 //! ```json
 //! {
-//!   "format_version": 0,
+//!   "format_version": 1,
 //!   "name": "Fontelle Dark",
 //!   "palette": {
 //!     "window": "#0e0e11",
@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Its own number, separate from the project's and the patch's: a colour token
 /// added to the chrome has nothing to do with either.
-pub const THEME_FORMAT_VERSION: u32 = 0;
+pub const THEME_FORMAT_VERSION: u32 = 1;
 
 /// An 8-bit sRGB colour with alpha, written to file as hex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,6 +175,9 @@ pub struct Metrics {
     pub corner_radius: f32,
     /// One line in a list: channels, presets, the browser.
     pub row_height: f32,
+    /// The strip across the top of the window carrying play/stop and the
+    /// playhead. Added in theme format v1.
+    pub transport_bar_height: f32,
 }
 
 /// The chrome's typeface.
@@ -318,17 +321,45 @@ const METRICS: Metrics = Metrics {
     border_width: 1.0,
     corner_radius: 4.0,
     row_height: 22.0,
+    transport_bar_height: 34.0,
 };
 
-/// Brings a theme written by an older build up to [`THEME_FORMAT_VERSION`], one
-/// step per revision. There is nothing before v0, so the chain is empty — the
-/// shape is written down because the first migration is the one most likely to
-/// be added in a hurry. See `fontelle_model::storage`, which does the same.
-fn migrate(json: serde_json::Value, from: u32) -> Result<serde_json::Value, ThemeError> {
+/// Brings a theme written by an older build up to [`THEME_FORMAT_VERSION`],
+/// one step per revision, each rewriting the document from `N` to `N + 1`.
+///
+/// The rule this follows, and the reason it is not just `serde(default)`: a
+/// missing token is only allowed to be filled in *by a migration that says
+/// which version it is filling it in for*. `deny_unknown_fields` plus required
+/// fields is what makes a typo in a hand-edited theme an error rather than a
+/// silently ignored line, and defaulting everything would give that up
+/// everywhere to solve it in one place. See `fontelle_model::storage`, which
+/// does the same for the document.
+fn migrate(mut json: serde_json::Value, mut from: u32) -> Result<serde_json::Value, ThemeError> {
+    if from == 0 {
+        // v1 added the transport bar (item 7 of `docs/first-usable-plan.md`).
+        // A v0 file predates it and cannot have an opinion about its height.
+        if let Some(metrics) = json.get_mut("metrics").and_then(|m| m.as_object_mut()) {
+            metrics
+                .entry("transport_bar_height")
+                .or_insert_with(|| serde_json::json!(METRICS.transport_bar_height));
+        }
+        from = 1;
+    }
+
     if from != THEME_FORMAT_VERSION {
         return Err(ThemeError::Format(format!(
             "no migration from theme format version {from} to {THEME_FORMAT_VERSION}"
         )));
+    }
+    // A migrated theme *is* a current-version theme. Leaving the old stamp on
+    // it would make the loaded value disagree with what it now contains, and
+    // the next thing to write it out would silently claim a version it had
+    // already left.
+    if let Some(object) = json.as_object_mut() {
+        object.insert(
+            "format_version".to_string(),
+            serde_json::json!(THEME_FORMAT_VERSION),
+        );
     }
     Ok(json)
 }

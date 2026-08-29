@@ -23,6 +23,7 @@ pub mod layout;
 pub mod render;
 pub mod text;
 pub mod theme;
+pub mod transport;
 pub mod widget;
 
 pub use vello;
@@ -33,4 +34,5 @@ pub use layout::{PanelLayout, Rect, WindowLayout, window_layout};
 pub use render::{Headless, RenderError, draw_window};
 pub use text::{GlyphRun, TextContext, TextLayout};
 pub use theme::{Color, THEME_FORMAT_VERSION, Theme, ThemeError};
+pub use transport::{TransportBarLayout, TransportHit, TransportHost, TransportView};
 pub use widget::{Redraw, WidgetId, WidgetTree};

@@ -14,7 +14,7 @@
 //! separate from the device is also what would make that swap a rewrite of one
 //! function rather than of the crate.
 
-use vello::kurbo::{Affine, Rect as KRect, RoundedRect, RoundedRectRadii, Stroke};
+use vello::kurbo::{Affine, BezPath, Rect as KRect, RoundedRect, RoundedRectRadii, Stroke};
 use vello::peniko::Fill;
 use vello::util::RenderContext;
 use vello::wgpu;
@@ -23,13 +23,37 @@ use vello::{AaConfig, RenderParams, Renderer, RendererOptions, Scene};
 use crate::layout::{Rect, WindowLayout};
 use crate::text::TextLayout;
 use crate::theme::{Color, Theme};
+use crate::transport::{
+    Meter, TransportBarLayout, TransportHit, TransportView, meter_fill, playhead_x,
+};
+
+/// Everything the window draws that had to be shaped or measured first.
+///
+/// Text shaping needs a mutable `FontSystem`, and [`draw_window`] is a pure
+/// function of its inputs — so whatever needs shaping is shaped by the caller
+/// and handed over already positioned. That split is what keeps the whole
+/// picture testable off a GPU and off a window.
+pub struct Chrome<'a> {
+    pub panel_title: &'a TextLayout,
+    pub transport: TransportChrome<'a>,
+}
+
+pub struct TransportChrome<'a> {
+    pub layout: TransportBarLayout,
+    pub view: TransportView,
+    pub meters: [Meter; 2],
+    /// The position read-out, already shaped.
+    pub readout: &'a TextLayout,
+    /// What the pointer is over, so the control under it can light up.
+    pub hover: Option<TransportHit>,
+}
 
 /// Builds the whole window picture.
 ///
 /// Everything the window looks like is decided here, from data. That is what
 /// makes "the theme is ignored" and "the panel is in the wrong place" testable
 /// failures rather than things somebody has to notice.
-pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, title: &TextLayout) {
+pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chrome: &Chrome<'_>) {
     scene.reset();
 
     let p = &theme.palette;
@@ -39,6 +63,8 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, titl
     // here too is what keeps this function the whole picture — a partial
     // redraw clips to a dirty region and never gets a fresh base.
     fill_rect(scene, layout.window, p.window);
+
+    draw_transport_bar(scene, theme, &chrome.transport);
 
     if layout.panel.frame.is_empty() {
         return;
@@ -82,14 +108,200 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, titl
 
     draw_text(
         scene,
-        title,
+        chrome.panel_title,
         layout.panel.header.x + m.panel_padding,
         // Vertically centred in the header by its own measured height, so a
         // theme with a bigger font stays centred without a second number to
         // keep in sync.
-        layout.panel.header.y + (layout.panel.header.height - title.height) / 2.0,
+        layout.panel.header.y + (layout.panel.header.height - chrome.panel_title.height) / 2.0,
         p.text,
     );
+}
+
+/// The transport bar (item 7 of `docs/first-usable-plan.md`).
+///
+/// Drawn whether or not there is an engine behind it — a window that changes
+/// shape when the sound card goes away is worse than one that says so — but
+/// everything in it is muted and the playhead is absent when `view.available`
+/// is false.
+pub fn draw_transport_bar(scene: &mut Scene, theme: &Theme, chrome: &TransportChrome<'_>) {
+    let l = &chrome.layout;
+    let view = &chrome.view;
+    let p = &theme.palette;
+    let m = &theme.metrics;
+
+    if l.bar.is_empty() {
+        return;
+    }
+
+    let bar = rounded(l.bar, m.corner_radius);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        p.panel_header.to_peniko(),
+        None,
+        &bar,
+    );
+    if m.border_width > 0.0 {
+        scene.stroke(
+            &Stroke::new(m.border_width as f64),
+            Affine::IDENTITY,
+            p.border.to_peniko(),
+            None,
+            &bar,
+        );
+    }
+
+    // A control nobody can use is drawn in the muted ink, which is the same
+    // signal a disabled control gives everywhere else.
+    let ink = if view.available { p.text } else { p.text_muted };
+
+    for (rect, what) in [
+        (l.play, TransportHit::Play),
+        (l.stop, TransportHit::Stop),
+        (l.loop_toggle, TransportHit::ToggleLoop),
+    ] {
+        if rect.is_empty() {
+            continue;
+        }
+        if chrome.hover == Some(what) && view.available {
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                p.border.to_peniko(),
+                None,
+                &rounded(rect, m.corner_radius),
+            );
+        }
+        // Lit when the thing it controls is on: play while rolling, the loop
+        // button while looping. Recording takes the peak colour, because it is
+        // the one transport state with a consequence on disk.
+        let colour = match what {
+            TransportHit::Play if view.recording => p.meter_peak,
+            TransportHit::Play if view.playing => p.accent,
+            TransportHit::ToggleLoop if view.looping => p.accent,
+            _ => ink,
+        };
+        let glyph = rect.inset(rect.height * 0.3);
+        match what {
+            TransportHit::Play => scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                colour.to_peniko(),
+                None,
+                &triangle(glyph),
+            ),
+            TransportHit::Stop => fill_rect(scene, glyph, colour),
+            TransportHit::ToggleLoop => scene.stroke(
+                &Stroke::new((m.border_width * 2.0) as f64),
+                Affine::IDENTITY,
+                colour.to_peniko(),
+                None,
+                &rounded(glyph, glyph.height / 2.0),
+            ),
+            TransportHit::Scrub(_) => {}
+        }
+    }
+
+    draw_text(
+        scene,
+        chrome.readout,
+        l.readout.x,
+        l.readout.y + (l.readout.height - chrome.readout.height) / 2.0,
+        ink,
+    );
+
+    draw_ruler(scene, theme, l.ruler, view);
+    draw_meter(scene, theme, l.meter, view, &chrome.meters);
+}
+
+/// The song end to end, with the loop range shaded and the playhead on top.
+fn draw_ruler(scene: &mut Scene, theme: &Theme, ruler: Rect, view: &TransportView) {
+    if ruler.is_empty() {
+        return;
+    }
+    let p = &theme.palette;
+    // A groove rather than the bar's own colour, so the playhead has something
+    // to travel along even at position zero.
+    let track = ruler.inset(ruler.height * 0.3);
+    fill_rect(scene, track, p.grid_line);
+
+    if view.looping && view.length_samples > 0 {
+        let (from, to) = view.loop_range_samples;
+        let x0 = playhead_x(track, from, view.length_samples);
+        let x1 = playhead_x(track, to, view.length_samples);
+        fill_rect(
+            scene,
+            Rect::new(x0, track.y, (x1 - x0).max(0.0), track.height),
+            p.selection,
+        );
+    }
+
+    if !view.available {
+        return;
+    }
+
+    // Two logical pixels wide and drawn over everything: the playhead is the
+    // one thing in the bar you look for rather than at.
+    let x = playhead_x(track, view.position_sample, view.length_samples);
+    fill_rect(
+        scene,
+        Rect::new(x - 1.0, ruler.y, 2.0, ruler.height),
+        p.playhead,
+    );
+}
+
+/// One horizontal bar per channel, with the peak-hold marker over it.
+fn draw_meter(
+    scene: &mut Scene,
+    theme: &Theme,
+    meter: Rect,
+    view: &TransportView,
+    meters: &[Meter; 2],
+) {
+    if meter.is_empty() {
+        return;
+    }
+    let p = &theme.palette;
+    let box_ = meter.inset(meter.height * 0.25);
+    fill_rect(scene, box_, p.grid_line);
+    if !view.available || box_.is_empty() {
+        return;
+    }
+
+    let gap = 1.0;
+    let lane = ((box_.height - gap) / 2.0).max(0.0);
+    for (index, channel) in meters.iter().enumerate() {
+        let y = box_.y + index as f32 * (lane + gap);
+        let fill = meter_fill(channel.level_db);
+        // Green until it is nearly there, then red. The limiter means a peak
+        // is not a disaster, but it is still the thing worth seeing.
+        let colour = if channel.level_db >= -3.0 {
+            p.meter_peak
+        } else {
+            p.meter
+        };
+        fill_rect(scene, Rect::new(box_.x, y, box_.width * fill, lane), colour);
+
+        let hold = meter_fill(channel.hold_db);
+        if hold > 0.0 {
+            fill_rect(
+                scene,
+                Rect::new(box_.x + box_.width * hold - 1.0, y, 1.0, lane),
+                p.meter_peak,
+            );
+        }
+    }
+}
+
+/// A right-pointing triangle inscribed in `r` — the play glyph.
+fn triangle(r: Rect) -> BezPath {
+    let mut path = BezPath::new();
+    path.move_to((r.x as f64, r.y as f64));
+    path.line_to((r.right() as f64, (r.y + r.height / 2.0) as f64));
+    path.line_to((r.x as f64, r.bottom() as f64));
+    path.close_path();
+    path
 }
 
 /// Draws a laid-out string with its top-left at `(x, y)`.
