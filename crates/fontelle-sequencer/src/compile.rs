@@ -85,6 +85,7 @@ pub fn compile(project: &Project, channel_nodes: &HashMap<ChannelId, NodeId>) ->
 
 #[cfg(test)]
 mod tests {
+    use fontelle_model::Arena;
     use fontelle_model::{Clip, ClipSource, Lane, Note, NoteData, Project, TempoMap};
     use fontelle_types::EventPayload;
     use slotmap::SlotMap;
@@ -114,7 +115,7 @@ mod tests {
             locked: false,
         });
 
-        let mut notes = SlotMap::default();
+        let mut notes = Arena::default();
         notes.insert(Note {
             start: 0,
             length: fontelle_types::PPQN, // one quarter note

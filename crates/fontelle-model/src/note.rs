@@ -1,6 +1,6 @@
 use fontelle_types::Tick;
-use slotmap::SlotMap;
 
+use crate::arena::Arena;
 use fontelle_types::{ChannelId, NoteId};
 
 /// Per-note pan, fine pitch, release, and two free modulation values are cheap to
@@ -25,5 +25,5 @@ pub struct NoteData {
     /// The clip carries the instrument (TDD §10.3) — a lane has no instrument of
     /// its own.
     pub channel: ChannelId,
-    pub notes: SlotMap<NoteId, Note>,
+    pub notes: Arena<NoteId, Note>,
 }

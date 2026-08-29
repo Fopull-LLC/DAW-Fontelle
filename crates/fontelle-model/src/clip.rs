@@ -29,4 +29,4 @@ pub struct Clip {
     pub muted: bool,
 }
 
-pub type ClipMap = slotmap::SlotMap<ClipId, Clip>;
+pub type ClipMap = crate::arena::Arena<ClipId, Clip>;

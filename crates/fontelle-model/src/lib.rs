@@ -4,6 +4,7 @@
 //! a persistent, stable ID; indices are never identity and never serialised as
 //! references (INVARIANT 8).
 
+mod arena;
 mod asset_table;
 mod automation;
 mod channel;
@@ -15,6 +16,7 @@ mod note;
 mod prefab;
 mod project;
 
+pub use arena::Arena;
 pub use asset_table::AssetTable;
 pub use automation::{AutomationData, AutomationPoint, CurveShape};
 pub use channel::Channel;

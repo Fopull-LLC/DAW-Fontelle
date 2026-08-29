@@ -8,9 +8,9 @@ mod realise;
 use std::path::{Path, PathBuf};
 
 use fontelle_engine::{BLOCK_SIZE, CompiledGraph};
+use fontelle_model::Arena;
 use fontelle_model::{Channel, Clip, ClipSource, Lane, Note, NoteData, Project, TempoMap};
 use fontelle_types::{CompiledTimeline, PPQN, Tick};
-use slotmap::SlotMap;
 
 pub use library::SampleLibrary;
 pub use realise::{
@@ -132,7 +132,7 @@ pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
         locked: false,
     });
 
-    let mut notes = SlotMap::default();
+    let mut notes = Arena::default();
     let mut add = |start: Tick, length: Tick, key: u8, velocity: u8| {
         notes.insert(Note {
             start,

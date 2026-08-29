@@ -16,9 +16,9 @@ use fontelle_core::{
     VoiceConfig,
 };
 use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
+use fontelle_model::Arena;
 use fontelle_model::{Channel, Clip, ClipSource, Lane, MixerTrack, Note, NoteData, Project};
 use fontelle_types::{ChannelId, MixerTrackId, PPQN};
-use slotmap::SlotMap;
 
 const SR: u32 = 48_000;
 
@@ -132,7 +132,7 @@ impl Rig {
     }
 
     fn hold_a_note(&mut self, channel: ChannelId) {
-        let mut notes = SlotMap::default();
+        let mut notes = Arena::default();
         notes.insert(Note {
             start: 0,
             length: PPQN * 8,

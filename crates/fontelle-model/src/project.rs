@@ -1,5 +1,6 @@
 use fontelle_types::{ChannelId, ClipId, LaneId, PPQN, PrefabId, Sample, Tick};
-use slotmap::SlotMap;
+
+use crate::arena::Arena;
 
 use crate::asset_table::AssetTable;
 use crate::channel::Channel;
@@ -227,12 +228,12 @@ pub struct ViewState {
 pub struct Project {
     pub meta: ProjectMeta,
     pub tempo_map: TempoMap,
-    pub channels: SlotMap<ChannelId, Channel>,
+    pub channels: Arena<ChannelId, Channel>,
     pub mixer: Mixer,
     /// Visual only — TDD §10.3.
-    pub lanes: SlotMap<LaneId, Lane>,
-    pub clips: SlotMap<ClipId, Clip>,
-    pub prefabs: SlotMap<PrefabId, Prefab>,
+    pub lanes: Arena<LaneId, Lane>,
+    pub clips: Arena<ClipId, Clip>,
+    pub prefabs: Arena<PrefabId, Prefab>,
     pub assets: AssetTable,
     pub markers: Vec<Marker>,
     pub view_state: ViewState,
@@ -253,11 +254,11 @@ impl Project {
                 format_version: 0,
             },
             tempo_map: TempoMap::default(),
-            channels: SlotMap::default(),
+            channels: Arena::default(),
             mixer,
-            lanes: SlotMap::default(),
-            clips: SlotMap::default(),
-            prefabs: SlotMap::default(),
+            lanes: Arena::default(),
+            clips: Arena::default(),
+            prefabs: Arena::default(),
             assets: AssetTable::default(),
             markers: Vec::new(),
             view_state: ViewState::default(),

@@ -1,5 +1,6 @@
 use fontelle_types::{ParamAddress, PointId, Tick};
-use slotmap::SlotMap;
+
+use crate::arena::Arena;
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum CurveShape {
@@ -32,5 +33,5 @@ pub struct AutomationPoint {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AutomationData {
     pub target: ParamAddress,
-    pub points: SlotMap<PointId, AutomationPoint>,
+    pub points: Arena<PointId, AutomationPoint>,
 }

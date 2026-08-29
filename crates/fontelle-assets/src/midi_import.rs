@@ -18,12 +18,12 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use fontelle_model::Arena;
 use fontelle_model::{
     Channel, Clip, ClipSource, Lane, Note, NoteData, Project, TempoMap, TempoSegment,
 };
 use fontelle_types::{ChannelId, NoteId, PPQN, Tick};
 use midly::{MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
-use slotmap::SlotMap;
 
 use crate::ImportError;
 
@@ -211,7 +211,7 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
     // Notes are collected per MIDI channel, so each becomes an instrument of
     // its own rather than being merged into one stream that has to share a
     // patch — a bass part and a lead part are different sounds.
-    let mut per_channel: HashMap<u8, SlotMap<NoteId, Note>> = HashMap::new();
+    let mut per_channel: HashMap<u8, Arena<NoteId, Note>> = HashMap::new();
     let mut pending: HashMap<(u8, u8), Pending> = HashMap::new();
     let mut counts: HashMap<u8, usize> = HashMap::new();
     let mut programs: HashMap<u8, u8> = HashMap::new();
@@ -415,7 +415,7 @@ const CHANNEL_COLOURS: [[u8; 4]; 8] = [
     [0xa0, 0xa0, 0xa0, 0xff],
 ];
 
-fn push_note(notes: &mut SlotMap<NoteId, Note>, key: u8, start: &Pending, end: Tick) {
+fn push_note(notes: &mut Arena<NoteId, Note>, key: u8, start: &Pending, end: Tick) {
     notes.insert(Note {
         start: start.start,
         // A zero-length note is inaudible; the shortest thing the grid can

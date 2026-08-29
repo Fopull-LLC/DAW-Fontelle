@@ -20,6 +20,7 @@ use fontelle_core::{
 };
 use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 use fontelle_engine::{BufferPool, CompiledGraph, SamplerNode, ScheduledNode};
+use fontelle_model::Arena;
 use fontelle_model::{
     Channel, Clip, ClipSource, Lane, MixerTrack, Note, NoteData, Project, TempoMap,
 };
@@ -116,7 +117,7 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
     });
 
     let note_length_ticks = fontelle_types::PPQN; // one quarter note = 24000 samples @ 120bpm/48kHz
-    let mut notes = SlotMap::default();
+    let mut notes = Arena::default();
     notes.insert(Note {
         start: 0,
         length: note_length_ticks,

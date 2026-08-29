@@ -669,8 +669,18 @@ until §10.5: the prefab override system needs to say "in this instance, *that s
 transposed," and that statement must survive the source being edited, notes being inserted before
 it, and a save/load round trip. Indices cannot do this.
 
-- In-memory: `slotmap` keys (index + generation), cheap and cache-friendly.
+- In-memory: `slotmap`-style keys (index + generation), cheap and cache-friendly.
 - On disk: UUIDv7, time-ordered so diffs are readable and merges are tractable.
+
+**Correction, 2026-08-29: the container is `fontelle_model::Arena`, not `slotmap` itself.** A
+`slotmap` can only ever mint a *fresh* key, and undo needs the inverse of "delete note A" to put
+back *A* — the command above it in the history refers to it by that id, so a redo would otherwise
+move a note that no longer exists. `Arena` is a `slotmap` with one operation added, `insert_at`,
+and the same shape and costs: a dense `Vec` indexed by the key's index, a free list, and a version
+per slot so a stale key never reads a slot that has been reused. The keys are still `slotmap`'s own
+key types. Iteration is in index order and that is load-bearing: the sequencer numbers voice
+contexts by a clip's position in the collection and the realisation step numbers engine nodes by a
+channel's, so an unordered container would make two runs of one project render differently.
 
 ### 10.3 Lanes are visual only
 

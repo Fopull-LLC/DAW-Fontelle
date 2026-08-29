@@ -1,7 +1,8 @@
 use fontelle_types::{AssetId, AssetRef};
-use slotmap::SlotMap;
+
+use crate::arena::Arena;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AssetTable {
-    pub assets: SlotMap<AssetId, AssetRef>,
+    pub assets: Arena<AssetId, AssetRef>,
 }

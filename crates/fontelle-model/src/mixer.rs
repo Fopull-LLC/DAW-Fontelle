@@ -69,7 +69,7 @@ impl MixerTrack {
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Mixer {
-    pub tracks: slotmap::SlotMap<MixerTrackId, MixerTrack>,
+    pub tracks: crate::arena::Arena<MixerTrackId, MixerTrack>,
     pub master: Option<MixerTrackId>,
 }
 
