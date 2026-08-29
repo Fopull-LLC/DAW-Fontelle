@@ -1448,8 +1448,10 @@ To inspect what a given SF2 file actually imports as, without any audio:
   machine, early-release-from-any-stage, float-accumulation-robust stage
   timing), `SvfFilter`, `Oscillator` (PolyBLEP saw/square, plus
   `advance_block` for control-rate LFO use) and `PeakRmsMeter` (held peak,
-  block RMS, latching clip indicator) are real and tested. `DcBlocker` is
-  still `todo!()`.
+  block RMS, latching clip indicator) and `DcBlocker` (one-pole/one-zero,
+  corner placed from `cutoff_hz`) are real and tested. The `High`
+  windowed-sinc interpolation kernel is real too; only `Ultra` remains a
+  `todo!()` (it needs a stateful resampler, not a point-interpolator).
 - **fontelle-core** — real: `SampleStore` (insert/get, `AssetId`-keyed, only the
   fully-resident case — no disk streaming yet, see below), `Voice::render` (pitch
   from root-key+fine-tune, per-sample interpolated playback, forward looping,
@@ -1486,10 +1488,9 @@ To inspect what a given SF2 file actually imports as, without any audio:
   recompilation matters. Tests: `crates/fontelle-sequencer/src/compile.rs`.
 - **fontelle-engine** — `CompiledGraph::process_block` handles real multi-node
   chains via the in-place convention (a consuming node declares the same
-  buffers in and out; see the 2026-08-24 update). Capped at two buffers per
-  node — distinct input/output sets, which sends and sidechains need, remain
-  M4 and panic with a clear message rather than silently processing the wrong
-  buffer. `SamplerNode` is real (wraps `Sampler` + a shared `Arc<SampleStore>`;
+  buffers in and out; see the 2026-08-24 update), and since 2026-08-26 also
+  nodes whose inputs are a different set from their outputs (`BusSumNode`,
+  which is what a send needs too). `SamplerNode` is real (wraps `Sampler` + a shared `Arc<SampleStore>`;
   renders mono and fans out across its output channels). `MixerTrackNode` is
   real for the fader stage — gain/pan/mute/phase, stereo or mono.
   `AudioDevice` is real — opens a real `cpal` stream, promotes the callback
@@ -1500,13 +1501,19 @@ To inspect what a given SF2 file actually imports as, without any audio:
   channel *N*. `MasterNode` is real: a brickwall limiter, peak/RMS metering per
   channel, and a `MasterMeter` handle publishing peaks and gain reduction as
   atomics for anything off the RT thread. `EffectNode`/`SendNode`/
-  `AudioClipNode` are still empty placeholder structs — M4/M6 work. Nothing
-  reads `Transport` yet, so there is no play/stop/seek — but the `reset` path
-  those need is real and tested (`SamplerNode::reset` was a `todo!()`).
+  `AudioClipNode` are still empty placeholder structs — M4/M6 work.
+  `Transport` is read for real now (2026-08-28): `TransportReader::next_step`
+  drives both the device callback and `render_offline` — play, stop, seek,
+  loop, plus the `IdleGate` audition path and the live-event SPSC queues the
+  MIDI hub feeds.
 - **fontelle-assets** — `import_sf2` is real, see "SF2 import scope" below.
-  `import_sfz`, `SoundfontLibrary`, peak generation are pure stub.
-- **fontelle-ui**, **fontelle-plugin**, **fontelle-midi** — pure stub, unchanged
-  since scaffolding. Not on the M0 path.
+  `import_midi` is real (notes, piecewise tempo, per-channel program/CC
+  reporting). `import_sfz`, `SoundfontLibrary`, peak generation are pure stub.
+- **fontelle-midi** — real (2026-08-28): device enumeration and hot-plug via
+  `midir`, decode, `MidiRouter` (sustain, stuck-note release on disconnect),
+  `MidiHub`. Still stub: `ClockSync` (§14.5) and MIDI file *export* (§14.6).
+- **fontelle-ui**, **fontelle-plugin** — pure stub, unchanged since
+  scaffolding. Not on the M0 path.
 - **xtask** — pure stub.
 
 ## SF2 import: what's real, what's deliberately cut
@@ -1633,18 +1640,12 @@ crash the process).
 9. ~~Tempo changes.~~ **Done** — see the 2026-08-26 (later) section. Ramps
    remain, and cannot be created by anything yet.
 10. ~~A master limiter.~~ **Done** — see the 2026-08-26 (later) section.
-11. **Transport.** Half done: `Voice`/`Sampler`/`SamplerNode`/`CompiledGraph`
-    all have a real `reset` now (`SamplerNode`'s was a `todo!()`, a panic
-    waiting for whatever stopped or seeked first), and `Sampler::release_all`
-    is the graceful counterpart. What is missing is anything *calling* them —
-    `Transport` exists and `AudioDevice` never reads it, so there is no
-    play/stop/seek. That is the smallest thing left that would make the CLI
-    feel like a DAW rather than a one-shot renderer.
-12. **Live MIDI input** (TDD §14). `fontelle-midi` is a pure stub, and the
-    staging note in `device.rs` is the constraint that matters: it has to feed
-    the same RT-safe sample-accurate `TimedEvent` pipeline as notes and
-    automation, not poll on the UI thread. Playing a soundfont from a keyboard
-    is the first thing that would make this feel like an instrument.
+11. ~~Transport.~~ **Done** — see the 2026-08-28 section. Play, stop, seek,
+    loop, all decided in `TransportReader` rather than the callback. Note
+    chase on seek and a crossfaded loop seam are the documented cuts.
+12. ~~Live MIDI input (TDD §14).~~ **Done** — see the 2026-08-28 section.
+    Devices, hot-plug, decode, router, SPSC queues into the audio thread,
+    verified against real hardware. Clock sync and MIDI file export remain.
 13. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
     soundfonts in memory) and effects. `ParametricEq::process` and
     `Compressor::process` are the two `fontelle-dsp` could already support.
