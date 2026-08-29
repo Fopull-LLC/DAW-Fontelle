@@ -20,6 +20,10 @@ use vello::util::RenderContext;
 use vello::wgpu;
 use vello::{AaConfig, RenderParams, Renderer, RendererOptions, Scene};
 
+use fontelle_model::{Arena, Note};
+use fontelle_types::{NoteId, PPQN, Tick};
+
+use crate::canvas::{RollLayout, RollView, snap_unit, tick_to_x, visible_keys, visible_ticks};
 use crate::layout::{Rect, WindowLayout};
 use crate::text::TextLayout;
 use crate::theme::{Color, Theme};
@@ -36,6 +40,22 @@ use crate::transport::{
 pub struct Chrome<'a> {
     pub panel_title: &'a TextLayout,
     pub transport: TransportChrome<'a>,
+    /// The panel's contents. `None` draws an empty panel — which is what a
+    /// window with no clip open shows.
+    pub roll: Option<RollChrome<'a>>,
+}
+
+/// Everything the piano roll draws from. All of it is read-only: the roll is a
+/// view and never a mutator (INVARIANT 2).
+pub struct RollChrome<'a> {
+    pub layout: RollLayout,
+    pub view: RollView,
+    pub notes: &'a Arena<NoteId, Note>,
+    pub selection: &'a [NoteId],
+    /// Where the playhead is *within the clip*, or `None` when the transport
+    /// is somewhere this clip does not cover.
+    pub playhead_tick: Option<Tick>,
+    pub beats_per_bar: u32,
 }
 
 pub struct TransportChrome<'a> {
@@ -104,6 +124,10 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
             None,
             &frame,
         );
+    }
+
+    if let Some(roll) = &chrome.roll {
+        draw_piano_roll(scene, theme, roll);
     }
 
     draw_text(
@@ -292,6 +316,218 @@ fn draw_meter(
             );
         }
     }
+}
+
+/// The piano roll (TDD §16.4).
+///
+/// Four layers, drawn back to front: the row shading, the grid lines, the
+/// notes, the playhead. §16.4 wants those on independent invalidation so a
+/// moving playhead does not redirty note geometry; today they share a frame and
+/// the split lives in `WidgetTree`'s bounds, which is where it will be applied
+/// when the roll is big enough for it to pay.
+///
+/// **Only the visible window is built.** `visible_ticks` and `visible_keys`
+/// bound every loop here. The note scan is still linear in the clip's note
+/// count — filtering, not indexing — which is honest for the sizes this opens
+/// today and is the first thing to change when it is not.
+pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, chrome: &RollChrome<'_>) {
+    let p = &theme.palette;
+    let l = &chrome.layout;
+    let v = &chrome.view;
+    let grid = l.grid;
+
+    if grid.is_empty() {
+        return;
+    }
+    fill_rect(scene, grid, p.panel);
+
+    let keys = visible_keys(v, grid);
+    let ticks = visible_ticks(v, grid);
+
+    // Row shading: the accidentals sit a shade back, which is what makes an
+    // octave countable without a line for every one of them.
+    for key in keys.clone() {
+        let y = crate::canvas::key_to_y(v, grid, key as u8);
+        let row = Rect::new(grid.x, y, grid.width, v.key_height);
+        if is_accidental(key) {
+            fill_rect(scene, row.intersection(&grid), p.row_accidental);
+        }
+        // A stronger line under every C.
+        if key % 12 == 0 {
+            fill_rect(
+                scene,
+                Rect::new(grid.x, y + v.key_height - 1.0, grid.width, 1.0).intersection(&grid),
+                p.grid_line_strong,
+            );
+        }
+    }
+
+    // Vertical lines. Beats always; the snap division too when it is finer,
+    // so what you are snapping to is what you can see.
+    let bar = PPQN * Tick::from(chrome.beats_per_bar.max(1));
+    let step = snap_unit(v.snap, chrome.beats_per_bar);
+    for (unit, colour) in [
+        (step, p.grid_line),
+        (PPQN, p.grid_line),
+        (bar, p.grid_line_strong),
+    ] {
+        if unit <= 0 || (unit as f32) * v.pixels_per_tick < 4.0 {
+            // Lines closer together than a few pixels are a grey wash, not a
+            // grid.
+            continue;
+        }
+        let mut tick = ticks.start - ticks.start.rem_euclid(unit);
+        while tick < ticks.end {
+            let x = tick_to_x(v, grid, tick).floor();
+            fill_rect(
+                scene,
+                Rect::new(x, grid.y, 1.0, grid.height).intersection(&grid),
+                colour,
+            );
+            tick += unit;
+        }
+    }
+
+    // Notes.
+    for (id, note) in chrome.notes.iter() {
+        let key = i32::from(note.key);
+        if !keys.contains(&key) {
+            continue;
+        }
+        if note.start + note.length < ticks.start || note.start > ticks.end {
+            continue;
+        }
+        let x0 = tick_to_x(v, grid, note.start);
+        let x1 = tick_to_x(v, grid, note.start + note.length);
+        let block = Rect::new(
+            x0,
+            crate::canvas::key_to_y(v, grid, note.key),
+            // Always at least a pixel wide: a note too short to see is still a
+            // note, and one that vanishes at low zoom cannot be clicked to
+            // find out why.
+            (x1 - x0).max(1.0),
+            v.key_height,
+        )
+        .intersection(&grid);
+        if block.is_empty() {
+            continue;
+        }
+        let selected = chrome.selection.contains(&id);
+        let fill = if selected { p.note_selected } else { p.note };
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            fill.to_peniko(),
+            None,
+            &rounded(block.inset(0.5), 2.0),
+        );
+    }
+
+    if let Some(tick) = chrome.playhead_tick {
+        let x = tick_to_x(v, grid, tick);
+        if x >= grid.x && x <= grid.right() {
+            fill_rect(
+                scene,
+                Rect::new(x - 1.0, grid.y, 2.0, grid.height),
+                p.playhead,
+            );
+        }
+    }
+
+    draw_keyboard(scene, theme, l, v);
+    draw_ruler_strip(scene, theme, l, v, chrome.beats_per_bar);
+}
+
+/// The keyboard down the left-hand side.
+///
+/// Drawn the way a keyboard looks: the naturals run the full width and the
+/// accidentals sit short and dark on top of them. Painting the strip dark and
+/// the naturals light instead gives a ladder of pale bars with gaps, which
+/// reads as neither a keyboard nor an octave.
+fn draw_keyboard(scene: &mut Scene, theme: &Theme, l: &RollLayout, v: &RollView) {
+    let p = &theme.palette;
+    if l.keys.is_empty() {
+        return;
+    }
+    fill_rect(scene, l.keys, p.key_white);
+
+    for key in visible_keys(v, l.grid) {
+        let y = crate::canvas::key_to_y(v, l.grid, key as u8);
+        let row = Rect::new(l.keys.x, y, l.keys.width, v.key_height).intersection(&l.keys);
+        if row.is_empty() {
+            continue;
+        }
+        if is_accidental(key) {
+            fill_rect(
+                scene,
+                Rect::new(row.x, row.y, row.width * 0.62, row.height).intersection(&l.keys),
+                p.key_black,
+            );
+        } else {
+            // A hairline between naturals, so E/F and B/C do not merge into
+            // one double-height key.
+            fill_rect(
+                scene,
+                Rect::new(row.x, row.bottom() - 1.0, row.width, 1.0).intersection(&l.keys),
+                p.border,
+            );
+        }
+        // Every C gets the accent down its edge — the only orientation the
+        // roll offers until the ruler learns to write bar numbers.
+        if key % 12 == 0 {
+            fill_rect(
+                scene,
+                Rect::new(row.x, row.y, 3.0, row.height).intersection(&l.keys),
+                p.accent,
+            );
+        }
+    }
+    // A border between the keyboard and the grid, so they read as two things.
+    fill_rect(
+        scene,
+        Rect::new(l.keys.right() - 1.0, l.keys.y, 1.0, l.keys.height),
+        p.border,
+    );
+}
+
+/// The bar ruler across the top.
+fn draw_ruler_strip(
+    scene: &mut Scene,
+    theme: &Theme,
+    l: &RollLayout,
+    v: &RollView,
+    beats_per_bar: u32,
+) {
+    let p = &theme.palette;
+    if l.ruler.is_empty() {
+        return;
+    }
+    fill_rect(scene, l.ruler, p.panel_header);
+
+    let bar = PPQN * Tick::from(beats_per_bar.max(1));
+    let ticks = visible_ticks(v, l.grid);
+    let mut tick = ticks.start - ticks.start.rem_euclid(bar);
+    while tick < ticks.end {
+        let x = tick_to_x(v, l.grid, tick).floor();
+        if x >= l.grid.x {
+            fill_rect(
+                scene,
+                Rect::new(x, l.ruler.y, 1.0, l.ruler.height).intersection(&l.ruler),
+                p.grid_line_strong,
+            );
+        }
+        tick += bar;
+    }
+    fill_rect(
+        scene,
+        Rect::new(l.ruler.x, l.ruler.bottom() - 1.0, l.ruler.width, 1.0),
+        p.border,
+    );
+}
+
+/// Whether `key` is a black note. The pattern repeats every octave and C is 0.
+fn is_accidental(key: i32) -> bool {
+    matches!(key.rem_euclid(12), 1 | 3 | 6 | 8 | 10)
 }
 
 /// A right-pointing triangle inscribed in `r` — the play glyph.

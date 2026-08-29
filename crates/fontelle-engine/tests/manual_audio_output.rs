@@ -147,7 +147,13 @@ fn plays_a_note_through_the_real_output_device() {
     let transport = std::sync::Arc::new(fontelle_engine::Transport::new());
     transport.play();
     device
-        .start_output_stream(graph, timeline, SAMPLE_RATE, transport.clone(), None)
+        .start_output_stream(
+            graph,
+            fontelle_engine::timeline_channel(timeline).1,
+            SAMPLE_RATE,
+            transport.clone(),
+            None,
+        )
         .expect("failed to open the default output device");
 
     std::thread::sleep(Duration::from_millis(3500));

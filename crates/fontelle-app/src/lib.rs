@@ -5,6 +5,7 @@
 mod bundle;
 mod library;
 mod realise;
+mod session;
 mod window;
 
 use std::path::{Path, PathBuf};
@@ -20,6 +21,7 @@ pub use library::SampleLibrary;
 pub use realise::{
     RealiseError, RealiseOptions, Realised, channel_nodes, realise, set_channel_patch,
 };
+pub use session::Session;
 pub use window::EngineHost;
 
 /// Why `--play-sf2` couldn't produce a usable path.
@@ -184,6 +186,51 @@ pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
         start: 0,
         length: chord_start + chord_length,
         source: ClipSource::Notes(NoteData { channel, notes }),
+        prefab_link: None,
+        color: None,
+        muted: false,
+    })
+    .apply(&mut project)
+    .expect("a fresh project must take a clip");
+
+    project
+}
+
+/// An empty project with one channel and one empty clip, ready to be written
+/// in.
+///
+/// `demo_project` exists to *demonstrate* — it arrives with a phrase already on
+/// it, which is right for `--play-sf2` and wrong for someone who opened the
+/// window to write something. This is the same shape with nothing in it: one
+/// instrument, one clip long enough to fill the roll, and a piano roll pointed
+/// at it.
+pub fn blank_project(bars: i64, bpm: f64, sample_rate: u32) -> Project {
+    let mut project = Project::new("Untitled");
+    project.tempo_map = TempoMap::new(bpm, sample_rate as f64);
+
+    let mut add_channel = AddChannel::new("Channel 1", None);
+    add_channel
+        .apply(&mut project)
+        .expect("a fresh project must take a channel");
+    let channel = add_channel.channel().expect("just applied");
+
+    let lane = project.lanes.insert(Lane {
+        name: "Lane 1".to_string(),
+        height: 32.0,
+        color: [0x4f, 0x8f, 0xd0, 0xff],
+        muted: false,
+        locked: false,
+    });
+
+    // 4/4 until the document has somewhere to keep a time signature.
+    AddClip::new(Clip {
+        lane,
+        start: 0,
+        length: PPQN * 4 * bars.max(1),
+        source: ClipSource::Notes(NoteData {
+            channel,
+            notes: Arena::default(),
+        }),
         prefab_link: None,
         color: None,
         muted: false,

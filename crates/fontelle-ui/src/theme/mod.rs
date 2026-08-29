@@ -12,7 +12,7 @@
 //!
 //! ```json
 //! {
-//!   "format_version": 1,
+//!   "format_version": 2,
 //!   "name": "Fontelle Dark",
 //!   "palette": {
 //!     "window": "#0e0e11",
@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Its own number, separate from the project's and the patch's: a colour token
 /// added to the chrome has nothing to do with either.
-pub const THEME_FORMAT_VERSION: u32 = 1;
+pub const THEME_FORMAT_VERSION: u32 = 2;
 
 /// An 8-bit sRGB colour with alpha, written to file as hex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,6 +160,17 @@ pub struct Palette {
     pub meter: Color,
     /// A meter at or above it, and the limiter's gain-reduction readout.
     pub meter_peak: Color,
+
+    // --- the piano roll and the timeline (added in theme format v2) ---
+    /// A note block's default fill. Per-channel colours override it later.
+    pub note: Color,
+    pub note_selected: Color,
+    /// The natural keys down the side of the piano roll.
+    pub key_white: Color,
+    pub key_black: Color,
+    /// The roll's row behind a black key — a shade off the panel, so octaves
+    /// are countable without drawing a line for every one.
+    pub row_accidental: Color,
 }
 
 /// Sizes and radii, in logical pixels.
@@ -214,19 +225,37 @@ impl Theme {
             format_version: THEME_FORMAT_VERSION,
             name: "Fontelle Dark".to_string(),
             palette: Palette {
-                window: Color::rgb(0x0e, 0x0e, 0x11),
-                panel: Color::rgb(0x17, 0x17, 0x1c),
-                panel_header: Color::rgb(0x1f, 0x1f, 0x26),
-                border: Color::rgb(0x2c, 0x2c, 0x35),
-                text: Color::rgb(0xe6, 0xe6, 0xeb),
-                text_muted: Color::rgb(0x94, 0x94, 0xa2),
-                accent: Color::rgb(0x4f, 0x8f, 0xd0),
-                grid_line: Color::rgb(0x25, 0x25, 0x2d),
-                grid_line_strong: Color::rgb(0x3a, 0x3a, 0x46),
-                playhead: Color::rgb(0xf2, 0xc0, 0x4c),
-                selection: Color::rgba(0x4f, 0x8f, 0xd0, 0x59),
-                meter: Color::rgb(0x5c, 0xc9, 0x8a),
-                meter_peak: Color::rgb(0xe0, 0x5c, 0x5c),
+                // The primary ramp's dark end carries the structure. Kept
+                // near-neutral on purpose: a fully saturated teal UI reads as
+                // a skin, and the brief was FL Studio's newer look — neutral
+                // surfaces, colour reserved for things that mean something.
+                window: Color::rgb(0x06, 0x10, 0x13),
+                panel: Color::rgb(0x0e, 0x1f, 0x26),
+                panel_header: Color::rgb(0x11, 0x26, 0x2e),
+                border: Color::rgb(0x1f, 0x40, 0x4c),
+                text: Color::rgb(0xdc, 0xe8, 0xec),
+                text_muted: Color::rgb(0x6e, 0x93, 0xa0),
+                // The top of the primary ramp: the one colour that says
+                // Fontelle.
+                accent: Color::rgb(0x40, 0x85, 0x9c),
+                grid_line: Color::rgb(0x11, 0x26, 0x2e),
+                grid_line_strong: Color::rgb(0x1f, 0x40, 0x4c),
+                // Green, from the first secondary ramp, so the playhead never
+                // competes with the teal chrome it travels over.
+                playhead: Color::rgb(0x40, 0xa4, 0x88),
+                // Blue, from the second, translucent over whatever it covers.
+                selection: Color::rgba(0x49, 0x6f, 0xa4, 0x59),
+                meter: Color::rgb(0x40, 0xa4, 0x88),
+                // The one colour not in the three ramps, and deliberately so:
+                // clipping is a signal, not a brand. Nothing in a teal, green
+                // and blue palette can say "too loud", and a meter that cannot
+                // is not a meter.
+                meter_peak: Color::rgb(0xc4, 0x60, 0x5c),
+                note: Color::rgb(0x49, 0x6f, 0xa4),
+                note_selected: Color::rgb(0xa8, 0xc4, 0xe4),
+                key_white: Color::rgb(0xc9, 0xd6, 0xda),
+                key_black: Color::rgb(0x11, 0x26, 0x2e),
+                row_accidental: Color::rgb(0x0a, 0x18, 0x1e),
             },
             metrics: METRICS,
             font: FontTokens {
@@ -244,19 +273,25 @@ impl Theme {
             format_version: THEME_FORMAT_VERSION,
             name: "Fontelle Light".to_string(),
             palette: Palette {
-                window: Color::rgb(0xd8, 0xd8, 0xdd),
-                panel: Color::rgb(0xf2, 0xf2, 0xf5),
-                panel_header: Color::rgb(0xe4, 0xe4, 0xea),
-                border: Color::rgb(0xc2, 0xc2, 0xcc),
-                text: Color::rgb(0x1b, 0x1b, 0x22),
-                text_muted: Color::rgb(0x5e, 0x5e, 0x6b),
-                accent: Color::rgb(0x1f, 0x5f, 0xa8),
-                grid_line: Color::rgb(0xdc, 0xdc, 0xe3),
-                grid_line_strong: Color::rgb(0xbb, 0xbb, 0xc6),
-                playhead: Color::rgb(0xb8, 0x7d, 0x0a),
-                selection: Color::rgba(0x1f, 0x5f, 0xa8, 0x40),
-                meter: Color::rgb(0x2e, 0x8b, 0x57),
-                meter_peak: Color::rgb(0xc0, 0x2f, 0x2f),
+                // The same three ramps, read from the other end.
+                window: Color::rgb(0xc9, 0xd6, 0xda),
+                panel: Color::rgb(0xe4, 0xed, 0xef),
+                panel_header: Color::rgb(0xd3, 0xe0, 0xe4),
+                border: Color::rgb(0xa9, 0xc0, 0xc7),
+                text: Color::rgb(0x06, 0x10, 0x13),
+                text_muted: Color::rgb(0x31, 0x62, 0x72),
+                accent: Color::rgb(0x31, 0x62, 0x72),
+                grid_line: Color::rgb(0xc9, 0xd6, 0xda),
+                grid_line_strong: Color::rgb(0xa9, 0xc0, 0xc7),
+                playhead: Color::rgb(0x1e, 0x4f, 0x42),
+                selection: Color::rgba(0x49, 0x6f, 0xa4, 0x40),
+                meter: Color::rgb(0x31, 0x77, 0x64),
+                meter_peak: Color::rgb(0xa8, 0x43, 0x3f),
+                note: Color::rgb(0x37, 0x52, 0x78),
+                note_selected: Color::rgb(0x49, 0x6f, 0xa4),
+                key_white: Color::rgb(0xf5, 0xf9, 0xfa),
+                key_black: Color::rgb(0x23, 0x36, 0x50),
+                row_accidental: Color::rgb(0xd8, 0xe4, 0xe7),
             },
             metrics: METRICS,
             font: FontTokens {
@@ -344,6 +379,26 @@ fn migrate(mut json: serde_json::Value, mut from: u32) -> Result<serde_json::Val
                 .or_insert_with(|| serde_json::json!(METRICS.transport_bar_height));
         }
         from = 1;
+    }
+
+    if from == 1 {
+        // v2 added the piano roll's own colours (item 8). A v1 file was
+        // written before there was a roll to have an opinion about.
+        let dark = Theme::dark_default().palette;
+        if let Some(palette) = json.get_mut("palette").and_then(|p| p.as_object_mut()) {
+            for (key, value) in [
+                ("note", dark.note),
+                ("note_selected", dark.note_selected),
+                ("key_white", dark.key_white),
+                ("key_black", dark.key_black),
+                ("row_accidental", dark.row_accidental),
+            ] {
+                palette
+                    .entry(key)
+                    .or_insert_with(|| serde_json::json!(value.to_hex()));
+            }
+        }
+        from = 2;
     }
 
     if from != THEME_FORMAT_VERSION {

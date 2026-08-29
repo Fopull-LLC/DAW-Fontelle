@@ -13,7 +13,132 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
-## 2026-08-29 (latest): the transport bar, over the real engine
+## 2026-08-29 (latest): a piano roll you can write in
+
+Phase 2 item 8, most of item 6's remaining colour work, and the engine piece
+both of them needed. This is the first build that is a **tool** rather than a
+demonstration:
+
+```sh
+cargo run --release -p fontelle-app -- --play-sf2 <file.sf2> --window --blank
+```
+
+Eight empty bars over a real instrument. Left mouse draws, right deletes, drag
+moves, drag the right edge resizes, Space plays, Ctrl+Z/Y, Ctrl+S saves, B
+cycles snap, P/E/D pick draw/select/delete. What you draw you hear, while it
+plays.
+
+### The palette is the owner's, not mine
+
+Three ramps — a teal primary, a green and a blue secondary — mapped onto the
+token set. The dark end of the primary carries the structure and is kept
+near-neutral on purpose: a fully saturated teal UI reads as a skin, and the
+brief was FL Studio's newer look, where surfaces are neutral and colour is
+reserved for things that mean something. So the accent is the top of the
+primary ramp, the playhead is the green (it never competes with the chrome it
+travels over), selection and notes are the blue.
+
+**One colour is not from the palette, deliberately.** Nothing in teal, green
+and blue can say "too loud", so `meter_peak` is a red. Clipping is a signal,
+not a brand; a meter that cannot say it is not a meter. Easy to overrule — it
+is one token in a file.
+
+Theme format went to **v2** for five new tokens (`note`, `note_selected`,
+`key_white`, `key_black`, `row_accidental`). The migration chain now has two
+arms and a test that drives a v0 document through both of them, plus one
+checking the half that is easy to get wrong: a migration fills in what is
+*missing* and never overwrites what the old file actually said.
+
+### Edit while playing: the timeline is a channel now
+
+`AudioDevice::start_output_stream` took a `CompiledTimeline` by value and the
+callback kept it forever. It now takes a `TimelineSource` — the RT end of a
+`triple_buffer` (TDD §11.3) — and every INVARIANT 1 property is a property of
+the channel:
+
+- **No lock.** The RT thread swaps an index; it never waits for the writer.
+- **No deallocation on the RT thread.** `TimelineSource` hands out
+  `&CompiledTimeline` and nothing else, so the callback can never come to own
+  one and drop it. The old events are freed inside `publish`, on the thread
+  that published over them.
+- **No backlog.** Dragging a note publishes one of these per mouse-move. The
+  RT thread takes the newest; the rest are simply overwritten.
+
+The bug worth naming: the reader's event cursor is an *index into a `Vec` that
+no longer exists*. Carried across a swap it either replays notes already played
+or skips ones that have not been. `TransportReader::retarget` repositions it,
+and the device calls it only when `has_update` says something actually changed
+— repositioning every block is the per-block work a cursor exists to avoid.
+
+### The roll is a view, and the type system says so
+
+`fontelle-ui` now depends on `fontelle-model` — read-only — and on
+`fontelle-engine` not at all. The roll reads notes and emits `RollEdit` values;
+`fontelle-app`'s new `Session` turns each into a `Command`, puts it through
+`History`, recompiles and publishes. **There is no `&mut Project` reachable
+from the UI at all**, so INVARIANT 2 and INVARIANT 9 hold because there is
+nothing to hold them wrong with.
+
+`crates/fontelle-app/tests/session.rs` walks that whole chain with no window
+and no sound card: draw a note, and it is in the document *and* at the RT
+thread's end of the timeline channel; undo, and it is off both.
+
+### What §16.4 asked for, and what it did not get yet
+
+`visible_ticks` and `visible_keys` bound every loop in the renderer, so the
+geometry built per frame depends on the viewport and the zoom and on nothing
+else — the §16.4 promise, and a test says so directly. The note *scan* is still
+linear in the clip's note count: filtering, not indexing. Honest for the sizes
+this opens today, and the first thing to change when it is not.
+
+The four layers (row shading, grid, notes, playhead) share a frame rather than
+having independent invalidation. `WidgetTree`'s bounds are where that split
+goes when the roll is big enough for it to pay.
+
+### Two things found by looking at it
+
+- **The keyboard was black keys on a black ground.** It painted the strip dark
+  and the naturals light, which gives a ladder of pale bars with gaps — neither
+  a keyboard nor a countable octave. Now the naturals run full width and the
+  accidentals sit short and dark on top of them, the way a keyboard looks, with
+  the accent down every C. That marker is the roll's only orientation until the
+  ruler learns to write bar numbers.
+- **The headless render tests ran out of GPU memory** at the sixth one. Each
+  built its own `Headless` — a wgpu device plus vello's pipelines — and the
+  harness runs them in parallel. One shared device behind a `Mutex`, and the
+  file also got 8x faster.
+
+### Verified
+
+- 511 tests before this, **569 now**; clippy and fmt clean.
+- Both reference bounces byte-identical. The audio path was not touched; the
+  timeline simply arrives by a different route.
+- On hardware: the demo phrase renders in the roll exactly where the document
+  puts it, and `--blank` opens eight empty bars titled "Untitled".
+- Pixels asserted, not eyeballed: a note is drawn where the document puts it,
+  an empty row is not, a selected note differs from an unselected one, every C
+  is marked, and accidental rows are shaded differently from natural ones.
+
+### What is deliberately not built
+
+- **`--window` still needs `--play-sf2`.** There is no file picker, so the
+  window cannot yet open a soundfont by itself. That is item 9, and it is what
+  makes `fontelle` with no arguments self-sufficient.
+- **No marquee select, and no Ctrl+B/C/V/X.** Item 8's list includes them; what
+  landed is draw, delete, select-by-click, Ctrl+A, move, resize, snap,
+  right-click delete and Ctrl+Z/Y. The clipboard is a `Command` away.
+- **No bar numbers in the roll's ruler**, because that needs text shaped by the
+  caller and the plumbing for it is item 9's anyway.
+- **A timeline swap does not reset sequenced voices.** Editing away a note that
+  is *currently sounding* leaves it ringing until its next note-off. Resetting
+  instead would cut every voice on every keystroke, which is worse; the real
+  answer is to compare what was removed against what is sounding.
+- **Adding a channel while the stream runs.** The graph is realised once at
+  startup and lives in the callback; only the *timeline* is republishable. A
+  graph channel is item 9's, and it is the same `triple_buffer` shape.
+- **Every keybind is hard-coded.** §16.5 says all of them are remappable.
+
+## 2026-08-29 (second): the transport bar, over the real engine
 
 Phase 2 item 7. The window and the audio thread now coexist, which is the
 whole point of doing this before the piano roll: the plan puts it here to
@@ -147,7 +272,7 @@ claims v0 disagrees with what it now contains.
 - **Time signature is assumed 4/4** for the bars read-out — there is nowhere in
   the document to put one yet.
 
-## 2026-08-29 (second to last): the window opens
+## 2026-08-29 (third): the window opens
 
 Phase 2 item 6 of `docs/first-usable-plan.md`, and the first pixel this project
 has ever drawn. `fontelle` with no arguments was a `todo!()`; it is now a
@@ -284,7 +409,7 @@ running it part of the item.
   interact with.
 - **No settings, no layout persistence.** Item 10.
 
-## 2026-08-29 (fifth): play it, keep it — MIDI recording
+## 2026-08-29 (fourth): play it, keep it — MIDI recording
 
 Phase 1 item 5, and the one feature in this stretch that the TDD did not
 contain at all. `Transport` has had a `Recording` state since it was written
@@ -2328,23 +2453,29 @@ To inspect what a given SF2 file actually imports as, without any audio:
   here too, and `open_project`/`save_project` (2026-08-29) are the folder
   bundle plus the sample reloading a reopened project needs. `EngineHost`
   (`src/window.rs`, 2026-08-29) implements `fontelle_ui::TransportHost` over
-  `Arc<Transport>` and `Arc<MasterMeter>` — this crate is the one layer allowed
-  to see both sides, which is what keeps `fontelle-ui` off `fontelle-engine`.
-- **fontelle-ui** — real, as far as items 6 and 7 go (2026-08-29). `theme` is a
+  `Arc<Transport>` and `Arc<MasterMeter>`, and `Session` (`src/session.rs`,
+  2026-08-29) implements `fontelle_ui::DocumentHost` — command, history,
+  recompile, publish. This crate is the one layer allowed to see model, engine
+  and UI at once, which is what keeps `fontelle-ui` off `fontelle-engine`.
+  `blank_project` is the empty starting point `--blank` opens.
+- **fontelle-ui** — real, as far as items 6-8 go (2026-08-29). `theme` is a
   full token set with a dark default, a light variant and a versioned JSON
-  format (v1, with a working migration from v0); `layout` is the window
-  geometry; `widget` holds the §16.3 invalidation core — `Redraw`, and
+  format (**v2**, with working migrations from v0 and v1); `layout` is the
+  window geometry; `widget` holds the §16.3 invalidation core — `Redraw`, and
   `sleep_budget`, which decides whether a frame happens at all and how long the
   loop may sleep; `text` turns `cosmic-text` shaping into vello glyph runs;
-  `transport` is the transport bar's view-model (layout, hit-testing, playhead
-  mapping, meter ballistics, read-out formatting) behind the `TransportHost`
-  trait, which is the *only* thing this crate knows about an engine; `render`
-  holds `draw_window` (a pure function of theme + layout + chrome) and
-  `Headless`, which renders a scene into memory with no surface; `app` is the
-  winit/wgpu/vello event loop and nothing else. Still stub: the `canvas`
-  modules (`TimelineCanvas::visible_tick_range` and friends are `todo!()`), and
-  there are no widgets in the tree beyond the panel and the bar. Tests:
-  `crates/fontelle-ui/tests/`.
+  `transport` is the transport bar's view-model behind the `TransportHost`
+  trait; `canvas::piano_roll` is the roll's — geometry, virtualisation, snap,
+  hit-testing and the drag state machine — emitting `RollEdit` values through
+  the `DocumentHost` trait; `render` holds `draw_window` and `draw_piano_roll`
+  (pure functions of theme + layout + chrome) and `Headless`, which renders a
+  scene into memory with no surface; `app` is the winit/wgpu/vello event loop
+  and the input routing, and nothing else. It depends on `fontelle-model`
+  read-only and on `fontelle-engine` **not at all** — INVARIANT 2 and 9 hold
+  because no `&mut Project` is reachable from here. Still stub:
+  `canvas::{timeline, mixer}` (`TimelineCanvas::visible_tick_range` and friends
+  are `todo!()`), and there are no widgets in the tree beyond the panel, the
+  bar and the roll. Tests: `crates/fontelle-ui/tests/`.
 - **fontelle-plugin** — pure stub, unchanged since scaffolding.
   `BaseviewBackend::request_redraw` is a `todo!()`; M2 is deferred until after
   the first-usable gate (§2.2 of `docs/first-usable-plan.md`).
@@ -2482,14 +2613,18 @@ crash the process).
     real engine) are **done, 2026-08-29** — see the two sections at the top.
     The vello stack came up without needing the lyon fallback; zero frames at
     idle is built in and measured; and the window drives a live audio thread
-    through nothing but atomics. **Next is item 8, the piano roll MVP**:
-    virtualised canvas (§16.4 — visible-window geometry only), and §16.5's
-    core (draw/delete/select/move/resize, snap, right-click delete, Ctrl+Z/Y
-    through the real `History`, Ctrl+A/B/C/V/X). Every edit is a command from
-    Phase 1 item 3 — the roll is a view, never a mutator (INVARIANT 2). The
-    same §2.5 rule holds and matters more here than anywhere: visible-range
-    math, hit-testing, geometry building and snap arithmetic are all pure, and
-    all of it should be tested before a single note is drawn.
+    through nothing but atomics. Item 8 (the piano roll) is **mostly done,
+    2026-08-29** — draw, delete, select, move, resize, snap, right-click delete
+    and Ctrl+Z/Y all work against the real `History`, and what you draw you
+    hear while it plays. Missing from item 8: marquee select and Ctrl+B/C/V/X.
+    **Next is item 9**, whose first half is what turns this from a tool you
+    launch with a soundfont path into one that stands on its own: a channel
+    list that opens an SF2 from inside the window, with the preset list the CLI
+    already prints. That needs a *graph* channel alongside the timeline one —
+    the same `triple_buffer` shape, because the compiled graph lives in the
+    callback and adding a channel rebuilds it. Then the timeline canvas,
+    per-channel gain/pan/mute through commands, and record-arm wiring Phase 1
+    item 5 into the UI.
 15. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
     soundfonts in memory) and effects. `ParametricEq::process` and
     `Compressor::process` are the two `fontelle-dsp` could already support.

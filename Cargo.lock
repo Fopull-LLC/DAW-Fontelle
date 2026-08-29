@@ -1019,6 +1019,7 @@ version = "0.0.0"
 dependencies = [
  "baseview",
  "cosmic-text",
+ "fontelle-model",
  "fontelle-types",
  "png",
  "serde",

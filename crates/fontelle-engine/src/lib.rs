@@ -8,6 +8,7 @@ mod graph;
 mod live;
 mod nodes;
 mod rt_guard;
+mod timeline_channel;
 mod transport;
 
 pub use device::{AudioDevice, BLOCK_SIZE, DeviceError};
@@ -27,4 +28,5 @@ pub use rt_guard::{
     RtGuardAllocator, current_thread_is_rt, mark_current_thread_rt, unmark_current_thread_rt,
     with_rt_thread,
 };
+pub use timeline_channel::{TimelinePublisher, TimelineSource, timeline_channel};
 pub use transport::{Step, Transport, TransportReader, TransportSnapshot, TransportState};

@@ -32,8 +32,10 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
+use crate::canvas::{MouseButton, PianoRoll, RollLayout, SnapDivision, Tool, roll_layout};
+use crate::document::DocumentHost;
 use crate::layout::{WindowLayout, window_layout};
-use crate::render::{Chrome, RenderError, TransportChrome, draw_window};
+use crate::render::{Chrome, RenderError, RollChrome, TransportChrome, draw_window};
 use crate::text::{TextContext, TextLayout};
 use crate::theme::Theme;
 use crate::transport::{
@@ -70,6 +72,9 @@ pub struct WindowOptions {
     /// The engine the transport bar drives. `None` opens a window with the bar
     /// drawn but inert — no audio device, or no project yet.
     pub host: Option<Box<dyn TransportHost>>,
+    /// The document the piano roll shows and edits. `None` opens an empty
+    /// panel.
+    pub document: Option<Box<dyn DocumentHost>>,
 }
 
 impl Default for WindowOptions {
@@ -81,6 +86,7 @@ impl Default for WindowOptions {
             size: (1280, 720),
             run_for: None,
             host: None,
+            document: None,
         }
     }
 }
@@ -147,8 +153,11 @@ pub struct WindowApp {
     meters: [Meter; 2],
     readout: TextLayout,
     cursor: (f32, f32),
+    modifiers: winit::keyboard::ModifiersState,
     hover: Option<TransportHit>,
     last_tick: std::time::Instant,
+    roll: PianoRoll,
+    roll_layout: RollLayout,
     /// Whether this window currently holds an animator on the tree's
     /// [`crate::widget::Redraw`]. Kept so `begin`/`end` stay paired — the
     /// counter is there so several moving things can coexist, and a caller
@@ -190,8 +199,11 @@ impl WindowApp {
             meters: [Meter::new(); 2],
             readout: TextLayout::default(),
             cursor: (f32::MIN, f32::MIN),
+            modifiers: winit::keyboard::ModifiersState::empty(),
             hover: None,
             last_tick: std::time::Instant::now(),
+            roll: PianoRoll::new(Default::default()),
+            roll_layout: roll_layout(layout.panel.body, &options.theme.metrics),
             animating: false,
             options,
         }
@@ -211,6 +223,7 @@ impl WindowApp {
             &self.options.theme.metrics,
         );
         self.bar = transport_bar_layout(self.layout.transport, &self.options.theme.metrics);
+        self.roll_layout = roll_layout(self.layout.panel.body, &self.options.theme.metrics);
         self.tree.insert(TRANSPORT, self.layout.transport);
         self.tree.insert(PANEL, self.layout.panel.frame);
         // Re-shaped against the header it has to fit in: a title wider than its
@@ -252,6 +265,14 @@ impl WindowApp {
                     readout: &self.readout,
                     hover: self.hover,
                 },
+                roll: self.options.document.as_ref().map(|doc| RollChrome {
+                    layout: self.roll_layout,
+                    view: self.roll.view,
+                    notes: doc.notes(),
+                    selection: self.roll.selection(),
+                    playhead_tick: doc.playhead_tick(self.view.position_sample),
+                    beats_per_bar: doc.beats_per_bar(),
+                }),
             },
         );
 
@@ -493,6 +514,7 @@ impl ApplicationHandler for WindowApp {
                 let scale = live.window.scale_factor();
                 self.cursor = ((position.x / scale) as f32, (position.y / scale) as f32);
                 self.update_hover();
+                self.drag_roll();
                 self.request_redraw_if_dirty();
             }
 
@@ -504,10 +526,12 @@ impl ApplicationHandler for WindowApp {
 
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
+                button,
                 ..
             } => {
-                if let Some(what) = hit(&self.bar, &self.view, self.cursor.0, self.cursor.1)
+                let (x, y) = self.cursor;
+                if let Some(what) = hit(&self.bar, &self.view, x, y)
+                    && button == winit::event::MouseButton::Left
                     && let Some(host) = &mut self.options.host
                 {
                     // Commands down (TDD §2.2): one click, one call, which is
@@ -516,6 +540,45 @@ impl ApplicationHandler for WindowApp {
                     // next `tick` reads back what actually happened.
                     apply(host.as_mut(), what);
                     self.tick();
+                } else if let Some(button) = match button {
+                    winit::event::MouseButton::Left => Some(MouseButton::Left),
+                    winit::event::MouseButton::Right => Some(MouseButton::Right),
+                    _ => None,
+                } {
+                    self.press_roll(button, x, y);
+                }
+                self.request_redraw_if_dirty();
+            }
+
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
+                ..
+            } => {
+                self.roll.release();
+                // One drag, one undo entry (§10.6). Only the caller knows the
+                // mouse came up, which is exactly why `History` cannot decide
+                // this for itself.
+                if let Some(doc) = &mut self.options.document {
+                    doc.end_gesture();
+                }
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (dx, dy) = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => (x, y),
+                    winit::event::MouseScrollDelta::PixelDelta(p) => {
+                        (p.x as f32 / 40.0, p.y as f32 / 40.0)
+                    }
+                };
+                self.scroll_roll(dx, dy);
+                self.request_redraw_if_dirty();
+            }
+
+            WindowEvent::ModifiersChanged(state) => self.modifiers = state.state(),
+
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == winit::event::ElementState::Pressed {
+                    self.key(&event);
                     self.request_redraw_if_dirty();
                 }
             }
@@ -556,6 +619,196 @@ impl ApplicationHandler for WindowApp {
 }
 
 impl WindowApp {
+    /// A press that landed somewhere the transport bar did not want.
+    fn press_roll(&mut self, button: MouseButton, x: f32, y: f32) {
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let beats_per_bar = doc.beats_per_bar();
+        let edits = self.roll.press(
+            button,
+            x,
+            y,
+            self.roll_layout.grid,
+            doc.notes(),
+            beats_per_bar,
+        );
+        self.apply_roll_edits(edits);
+        // A press always changes the selection or the gesture, both of which
+        // are visible.
+        self.tree.invalidate(PANEL);
+    }
+
+    fn drag_roll(&mut self) {
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let beats_per_bar = doc.beats_per_bar();
+        let (x, y) = self.cursor;
+        let edits = self
+            .roll
+            .drag(x, y, self.roll_layout.grid, doc.notes(), beats_per_bar);
+        self.apply_roll_edits(edits);
+    }
+
+    /// The one place the roll's wishes become document changes.
+    ///
+    /// Note what is *not* here: any path from the roll to a `&mut Project`.
+    /// INVARIANT 2 holds because there is nothing to hold it wrong with.
+    fn apply_roll_edits(&mut self, edits: Vec<crate::canvas::RollEdit>) {
+        if edits.is_empty() {
+            return;
+        }
+        if let Some(doc) = &mut self.options.document {
+            for edit in edits {
+                doc.edit(edit);
+            }
+        }
+        self.tree.invalidate(PANEL);
+        self.refresh_title();
+    }
+
+    /// Vertical scroll moves through the keys; `Shift` scrolls the song;
+    /// `Ctrl` zooms. The FL habits, and the ones a mouse can express.
+    fn scroll_roll(&mut self, dx: f32, dy: f32) {
+        if self.options.document.is_none() {
+            return;
+        }
+        let v = &mut self.roll.view;
+        if self.modifiers.control_key() {
+            // Zoom about the left edge. Zooming about the pointer is better and
+            // is a later refinement; this one is at least predictable.
+            v.pixels_per_tick = (v.pixels_per_tick * 1.15_f32.powf(dy)).clamp(0.004, 4.0);
+        } else if self.modifiers.shift_key() || dx != 0.0 {
+            let by = if dx != 0.0 { dx } else { dy };
+            let step = (120.0 / v.pixels_per_tick.max(0.0001)) as fontelle_types::Tick;
+            v.scroll_tick = (v.scroll_tick - by as fontelle_types::Tick * step).max(0);
+        } else {
+            let rows = (dy * 3.0).round() as i32;
+            v.top_key = (i32::from(v.top_key) + rows).clamp(11, 127) as u8;
+        }
+        self.tree.invalidate(PANEL);
+    }
+
+    /// The subset of §16.5's keymap the gate needs. Every binding here is
+    /// hard-coded, and §16.5 says all of them are remappable — the map is a
+    /// later item, and one binding written down twice is one to find and move.
+    fn key(&mut self, event: &winit::event::KeyEvent) {
+        use winit::keyboard::{Key, NamedKey};
+
+        let ctrl = self.modifiers.control_key();
+        let shift = self.modifiers.shift_key();
+
+        match &event.logical_key {
+            Key::Named(NamedKey::Space) => {
+                if let Some(host) = &mut self.options.host {
+                    let view = host.view();
+                    if view.playing {
+                        host.stop();
+                    } else {
+                        host.play();
+                    }
+                    self.tick();
+                }
+            }
+            Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
+                let edits = self.roll.delete_selection();
+                self.apply_roll_edits(edits);
+                if let Some(doc) = &mut self.options.document {
+                    doc.end_gesture();
+                }
+            }
+            Key::Character(c) => {
+                let c = c.to_lowercase();
+                match c.as_str() {
+                    "z" if ctrl && !shift => self.undo(),
+                    "z" if ctrl && shift => self.redo(),
+                    "y" if ctrl => self.redo(),
+                    "a" if ctrl => {
+                        if let Some(doc) = &self.options.document {
+                            self.roll.select_all(doc.notes());
+                            self.tree.invalidate(PANEL);
+                        }
+                    }
+                    "s" if ctrl => self.save(),
+                    // Tools, from the FL keymap.
+                    "p" if !ctrl => self.set_tool(Tool::Draw),
+                    "e" if !ctrl => self.set_tool(Tool::Select),
+                    "d" if !ctrl => self.set_tool(Tool::Delete),
+                    // Snap, cycled rather than given four bindings nobody
+                    // would remember.
+                    "b" if !ctrl => self.cycle_snap(),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn set_tool(&mut self, tool: Tool) {
+        self.roll.tool = tool;
+        self.tree.invalidate(PANEL);
+    }
+
+    fn cycle_snap(&mut self) {
+        self.roll.view.snap = match self.roll.view.snap {
+            SnapDivision::Bar => SnapDivision::Beat,
+            SnapDivision::Beat => SnapDivision::Step,
+            SnapDivision::Step => SnapDivision::Triplet,
+            SnapDivision::Triplet => SnapDivision::None,
+            _ => SnapDivision::Bar,
+        };
+        self.tree.invalidate(PANEL);
+    }
+
+    fn undo(&mut self) {
+        if let Some(doc) = &mut self.options.document {
+            doc.undo();
+            self.roll.clear_selection();
+        }
+        self.tree.invalidate(PANEL);
+        self.refresh_title();
+    }
+
+    fn redo(&mut self) {
+        if let Some(doc) = &mut self.options.document {
+            doc.redo();
+            self.roll.clear_selection();
+        }
+        self.tree.invalidate(PANEL);
+        self.refresh_title();
+    }
+
+    fn save(&mut self) {
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        match doc.save() {
+            // Printed rather than shown: a message area is item 10's, and a
+            // save that failed silently is the one outcome that must not
+            // happen.
+            Ok(()) => println!("Fontelle: saved"),
+            Err(e) => eprintln!("Fontelle: could not save — {e}"),
+        }
+        self.refresh_title();
+    }
+
+    /// Keeps the dirty marker in the OS title bar honest (§17, item 10's
+    /// smallest useful half).
+    fn refresh_title(&mut self) {
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let title = format!(
+            "{}{} — Fontelle",
+            doc.name(),
+            if doc.is_dirty() { " •" } else { "" }
+        );
+        if let Some(live) = &self.live {
+            live.window.set_title(&title);
+        }
+    }
+
     /// Asks for a frame only when there is one to draw.
     ///
     /// The counterpart to `Redraw::take_dirty` returning `None`: between them,

@@ -130,6 +130,66 @@ fn a_theme_written_by_an_older_build_is_migrated_rather_than_refused() {
 }
 
 #[test]
+fn a_v0_theme_is_carried_through_every_arm_of_the_chain() {
+    // The whole point of a migration chain: a file from two revisions back
+    // goes through both steps, not just the last one. Strip everything each
+    // revision added and check it all comes back.
+    let mut json: serde_json::Value =
+        serde_json::from_str(&Theme::dark_default().to_json()).expect("valid JSON");
+    json["format_version"] = serde_json::json!(0);
+    json["metrics"]
+        .as_object_mut()
+        .expect("metrics is an object")
+        .remove("transport_bar_height")
+        .expect("v1 added this");
+    let palette = json["palette"]
+        .as_object_mut()
+        .expect("palette is an object");
+    for added_in_v2 in [
+        "note",
+        "note_selected",
+        "key_white",
+        "key_black",
+        "row_accidental",
+    ] {
+        palette.remove(added_in_v2).expect("v2 added this");
+    }
+
+    let migrated = Theme::from_json(&json.to_string()).expect("a v0 theme must still open");
+    let default = Theme::dark_default();
+    assert_eq!(migrated.format_version, THEME_FORMAT_VERSION);
+    assert_eq!(
+        migrated.metrics.transport_bar_height,
+        default.metrics.transport_bar_height
+    );
+    assert_eq!(migrated.palette.note, default.palette.note);
+    assert_eq!(migrated.palette.key_white, default.palette.key_white);
+    // And nothing the old file actually said was overwritten on the way.
+    assert_eq!(migrated.palette.window, default.palette.window);
+    assert_eq!(migrated.name, default.name);
+}
+
+#[test]
+fn a_migration_does_not_overwrite_what_the_old_file_did_say() {
+    // The `or_insert` half of the contract. A v1 theme with a hand-picked
+    // window colour must come out with *that* colour, not the default the
+    // migration would have supplied for a missing one.
+    let mut json: serde_json::Value =
+        serde_json::from_str(&Theme::dark_default().to_json()).expect("valid JSON");
+    json["format_version"] = serde_json::json!(1);
+    json["palette"]["window"] = serde_json::json!("#123456");
+    json["palette"]
+        .as_object_mut()
+        .expect("palette is an object")
+        .remove("note")
+        .expect("v2 added this");
+
+    let migrated = Theme::from_json(&json.to_string()).expect("a v1 theme must still open");
+    assert_eq!(migrated.palette.window, Color::rgb(0x12, 0x34, 0x56));
+    assert_eq!(migrated.palette.note, Theme::dark_default().palette.note);
+}
+
+#[test]
 fn a_theme_from_a_newer_build_is_refused_by_version_not_by_field() {
     let mut json: serde_json::Value =
         serde_json::from_str(&Theme::dark_default().to_json()).expect("valid JSON");

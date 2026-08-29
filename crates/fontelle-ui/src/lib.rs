@@ -19,6 +19,7 @@
 pub mod app;
 pub mod backend;
 pub mod canvas;
+pub mod document;
 pub mod layout;
 pub mod render;
 pub mod text;
@@ -30,8 +31,9 @@ pub use vello;
 
 pub use app::{WindowApp, WindowError, WindowOptions, run, run_window};
 pub use backend::WindowBackend;
+pub use document::DocumentHost;
 pub use layout::{PanelLayout, Rect, WindowLayout, window_layout};
-pub use render::{Headless, RenderError, draw_window};
+pub use render::{Chrome, Headless, RenderError, RollChrome, TransportChrome, draw_window};
 pub use text::{GlyphRun, TextContext, TextLayout};
 pub use theme::{Color, THEME_FORMAT_VERSION, Theme, ThemeError};
 pub use transport::{TransportBarLayout, TransportHit, TransportHost, TransportView};

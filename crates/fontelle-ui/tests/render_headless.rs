@@ -10,7 +10,11 @@
 //!
 //! Every test here skips, loudly, on a machine with no usable adapter.
 
+use fontelle_model::{Arena, Note};
+use fontelle_types::{NoteId, PPQN, Tick};
+use fontelle_ui::canvas::{RollView, roll_layout, tick_to_x};
 use fontelle_ui::layout::{Rect, window_layout};
+use fontelle_ui::render::RollChrome;
 use fontelle_ui::render::{Chrome, Headless, TransportChrome, draw_window};
 use fontelle_ui::text::TextContext;
 use fontelle_ui::theme::{Color, Theme};
@@ -18,8 +22,29 @@ use fontelle_ui::transport::{
     Meter, TransportBarLayout, TransportView, format_readout, playhead_x, transport_bar_layout,
 };
 
+use std::sync::{Mutex, OnceLock};
+
 const W: u32 = 640;
 const H: u32 = 360;
+
+/// One GPU device for the whole file.
+///
+/// Not an optimisation: `Headless::new` opens a wgpu device and compiles
+/// vello's pipelines, and a dozen of those at once — which is what the test
+/// harness's threads produce — exhausts the GPU and fails with "Out of
+/// Memory". Found the direct way.
+fn headless() -> Option<&'static Mutex<Headless>> {
+    static SHARED: OnceLock<Option<Mutex<Headless>>> = OnceLock::new();
+    SHARED
+        .get_or_init(|| match Headless::new() {
+            Ok(h) => Some(Mutex::new(h)),
+            Err(e) => {
+                eprintln!("skipping: no usable GPU adapter ({e})");
+                None
+            }
+        })
+        .as_ref()
+}
 
 struct Shot {
     pixels: Vec<u8>,
@@ -59,13 +84,7 @@ fn shoot(theme: Theme) -> Option<Shot> {
 }
 
 fn shoot_with(theme: Theme, view: TransportView, meters: [Meter; 2]) -> Option<Shot> {
-    let mut headless = match Headless::new() {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!("skipping: no usable GPU adapter ({e})");
-            return None;
-        }
-    };
+    let shared = headless()?;
     let layout = window_layout(W as f32, H as f32, &theme.metrics);
     let mut text = TextContext::new();
     let title = text.layout("Fontelle", &theme.font, None);
@@ -87,9 +106,12 @@ fn shoot_with(theme: Theme, view: TransportView, meters: [Meter; 2]) -> Option<S
                 readout: &readout,
                 hover: None,
             },
+            roll: None,
         },
     );
-    let pixels = headless
+    let pixels = shared
+        .lock()
+        .expect("the shared renderer")
         .render(&scene, W, H, theme.palette.window)
         .expect("rendering a scene that fits in memory");
 
@@ -354,5 +376,183 @@ fn the_meter_fills_with_the_level_it_is_given() {
         lit(&hot) > 20,
         "a full-scale meter only lit {} pixels",
         lit(&hot)
+    );
+}
+
+// ------------------------------------------------------ the piano roll -----
+
+fn note(start: Tick, length: Tick, key: u8) -> Note {
+    Note {
+        start,
+        length,
+        key,
+        velocity: 100,
+        pan: 0,
+        fine_pitch: 0,
+        release: 0,
+        mod_x: 0,
+        mod_y: 0,
+    }
+}
+
+struct RollShot {
+    pixels: Vec<u8>,
+    theme: Theme,
+    layout: fontelle_ui::canvas::RollLayout,
+    view: RollView,
+}
+
+impl RollShot {
+    fn at(&self, x: u32, y: u32) -> Color {
+        let i = ((y * W + x) * 4) as usize;
+        Color(self.pixels[i..i + 4].try_into().expect("four bytes"))
+    }
+}
+
+/// Renders a window whose panel is a piano roll holding `notes`.
+fn shoot_roll(notes: &Arena<NoteId, Note>, selection: &[NoteId]) -> Option<RollShot> {
+    let theme = Theme::dark_default();
+    let shared = headless()?;
+    let layout = window_layout(W as f32, H as f32, &theme.metrics);
+    let mut text = TextContext::new();
+    let title = text.layout("Roll", &theme.font, None);
+    let view = TransportView::unavailable();
+    let readout = text.layout(&format_readout(&view, 4), &theme.font, None);
+    let roll_l = roll_layout(layout.panel.body, &theme.metrics);
+    let roll_view = RollView {
+        top_key: 72,
+        ..RollView::default()
+    };
+
+    let mut scene = vello::Scene::new();
+    draw_window(
+        &mut scene,
+        &theme,
+        &layout,
+        &Chrome {
+            panel_title: &title,
+            transport: TransportChrome {
+                layout: transport_bar_layout(layout.transport, &theme.metrics),
+                view,
+                meters: [Meter::new(); 2],
+                readout: &readout,
+                hover: None,
+            },
+            roll: Some(RollChrome {
+                layout: roll_l,
+                view: roll_view,
+                notes,
+                selection,
+                playhead_tick: None,
+                beats_per_bar: 4,
+            }),
+        },
+    );
+    let pixels = shared
+        .lock()
+        .expect("the shared renderer")
+        .render(&scene, W, H, theme.palette.window)
+        .expect("rendering a scene that fits in memory");
+
+    Some(RollShot {
+        pixels,
+        theme,
+        layout: roll_l,
+        view: roll_view,
+    })
+}
+
+#[test]
+fn a_note_is_drawn_where_the_document_puts_it() {
+    let mut notes = Arena::default();
+    notes.insert(note(0, PPQN, 60));
+    let Some(shot) = shoot_roll(&notes, &[]) else {
+        return;
+    };
+
+    let x = tick_to_x(&shot.view, shot.layout.grid, PPQN / 2) as u32;
+    let y = (fontelle_ui::canvas::key_to_y(&shot.view, shot.layout.grid, 60)
+        + shot.view.key_height / 2.0) as u32;
+    let found = shot.at(x, y);
+    assert!(
+        near(found, shot.theme.palette.note),
+        "expected a note at ({x}, {y}), found {found:?}"
+    );
+}
+
+#[test]
+fn an_empty_row_is_not_a_note() {
+    // The assertion that fails if the roll paints notes everywhere, or nowhere
+    // and the one above happened to land on a grid line.
+    let mut notes = Arena::default();
+    notes.insert(note(0, PPQN, 60));
+    let Some(shot) = shoot_roll(&notes, &[]) else {
+        return;
+    };
+    let x = tick_to_x(&shot.view, shot.layout.grid, PPQN / 2) as u32;
+    let y = (fontelle_ui::canvas::key_to_y(&shot.view, shot.layout.grid, 65)
+        + shot.view.key_height / 2.0) as u32;
+    assert!(
+        !near(shot.at(x, y), shot.theme.palette.note),
+        "an empty row was painted as a note"
+    );
+}
+
+#[test]
+fn a_selected_note_looks_different_from_an_unselected_one() {
+    let mut notes = Arena::default();
+    let id = notes.insert(note(0, PPQN, 60));
+    let (Some(plain), Some(selected)) = (shoot_roll(&notes, &[]), shoot_roll(&notes, &[id])) else {
+        return;
+    };
+    let x = tick_to_x(&plain.view, plain.layout.grid, PPQN / 2) as u32;
+    let y = (fontelle_ui::canvas::key_to_y(&plain.view, plain.layout.grid, 60)
+        + plain.view.key_height / 2.0) as u32;
+    assert_ne!(
+        plain.at(x, y),
+        selected.at(x, y),
+        "selecting a note changed nothing on screen"
+    );
+    assert!(near(
+        selected.at(x, y),
+        selected.theme.palette.note_selected
+    ));
+}
+
+#[test]
+fn the_keyboard_marks_every_c_so_octaves_can_be_counted() {
+    let Some(shot) = shoot_roll(&Arena::default(), &[]) else {
+        return;
+    };
+    // C5 is key 60 + 12 = 72, the top of this view; C4 is 60.
+    for key in [60u8, 72] {
+        let y = (fontelle_ui::canvas::key_to_y(&shot.view, shot.layout.grid, key)
+            + shot.view.key_height / 2.0) as u32;
+        let x = shot.layout.keys.x as u32 + 1;
+        assert!(
+            near(shot.at(x, y), shot.theme.palette.accent),
+            "key {key} has no C marker; found {:?}",
+            shot.at(x, y)
+        );
+    }
+}
+
+#[test]
+fn an_accidental_row_is_shaded_differently_from_a_natural_one() {
+    let Some(shot) = shoot_roll(&Arena::default(), &[]) else {
+        return;
+    };
+    // Well right of the bar line at tick 0 so neither sample lands on a grid
+    // line: F (65, natural) against F# (66, accidental).
+    let x = tick_to_x(&shot.view, shot.layout.grid, PPQN / 8) as u32;
+    let sample = |key: u8| {
+        let y = (fontelle_ui::canvas::key_to_y(&shot.view, shot.layout.grid, key)
+            + shot.view.key_height / 2.0) as u32;
+        shot.at(x, y)
+    };
+    assert_ne!(
+        sample(65),
+        sample(66),
+        "the black-key rows are shaded the same as the white-key rows"
     );
 }

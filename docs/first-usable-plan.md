@@ -229,13 +229,14 @@ not relitigate the toolkit choice beyond that documented fallback.
    would notice an engine changing under it, which is now the tested
    `widget::sleep_budget`. See PROGRESS.md's top section.
 
-8. **Piano roll MVP.** Virtualised canvas (§16.4: visible-window geometry
-   only, instanced note quads, playhead on its own layer), and the core of
-   §16.5: draw/delete/select/move/resize, snap with the standard divisions,
-   right-click delete, Ctrl+Z/Y through the real `History`, Ctrl+A/B/C/V/X.
-   Every edit is a command from item 3 — the roll is a view, never a mutator
-   (INVARIANT 2). The full FL keymap document is gate-adjacent polish; the
-   subset above is the gate.
+8. ~~**Piano roll MVP.**~~ **Mostly done, 2026-08-29.** Virtualised canvas
+   (§16.4: `visible_ticks`/`visible_keys` bound every loop), draw, delete,
+   select, move, resize, snap with the standard divisions, right-click delete,
+   Ctrl+Z/Y through the real `History`, Ctrl+A. Every edit is a command: the
+   roll emits `RollEdit` values and `fontelle-app`'s `Session` applies them,
+   recompiles and publishes to the running stream, so what you draw you hear.
+   **Still missing:** marquee select and Ctrl+B/C/V/X. See PROGRESS.md's top
+   section.
 
 9. **Timeline + channels + mixer strip.** Arrangement canvas (clips as
    blocks: move/duplicate/delete/mute), a channel list that creates channels

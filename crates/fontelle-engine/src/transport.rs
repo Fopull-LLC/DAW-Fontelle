@@ -248,6 +248,17 @@ impl TransportReader {
     /// the timeline contributes nothing, because nothing is playing back. That
     /// is what makes a keyboard audible with the transport stopped without
     /// making the song creep forward under it.
+    /// Repositions the event cursor into `timeline` for the current playhead.
+    ///
+    /// Called when a **new** timeline has been published mid-playback: the old
+    /// cursor is an index into a `Vec` that no longer exists, and carrying it
+    /// across the swap either replays events already played or skips ones that
+    /// have not been. A binary search, once, only when something changed —
+    /// which is why [`crate::TimelineSource::has_update`] is asked separately.
+    pub fn retarget(&mut self, timeline: &CompiledTimeline) {
+        self.event_cursor = timeline.cursor_at(self.position);
+    }
+
     pub fn next_step<'t>(
         &mut self,
         transport: &Transport,

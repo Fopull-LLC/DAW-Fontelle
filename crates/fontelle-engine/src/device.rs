@@ -7,6 +7,7 @@ use fontelle_types::{CompiledTimeline, TimedEvent};
 use crate::graph::CompiledGraph;
 use crate::live::{IdleGate, LiveEventSource};
 use crate::rt_guard::with_rt_thread;
+use crate::timeline_channel::TimelineSource;
 use crate::transport::TransportState;
 use crate::transport::{Transport, TransportReader};
 
@@ -108,7 +109,7 @@ impl AudioDevice {
     pub fn start_output_stream(
         &mut self,
         graph: CompiledGraph,
-        timeline: CompiledTimeline,
+        timeline: TimelineSource,
         sample_rate: u32,
         transport: Arc<Transport>,
         live: Option<LiveEventSource>,
@@ -118,7 +119,7 @@ impl AudioDevice {
         let mut graph = graph;
         graph.prepare(sample_rate as f32, BLOCK_SIZE as u32);
         let mut graph = ManuallyDrop::new(graph);
-        let timeline = ManuallyDrop::new(timeline);
+        let mut timeline = ManuallyDrop::new(timeline);
         let device = self
             .host
             .default_output_device()
@@ -205,6 +206,20 @@ impl AudioDevice {
                             };
                             let mut live_pending = !live_events.is_empty();
 
+                            // Once per callback, not once per step: taking a
+                            // newly published timeline is a swap, but the
+                            // binary search that repositions the cursor into
+                            // it is not free, and nothing is republished
+                            // mid-callback.
+                            let republished = timeline.has_update();
+                            let timeline: &CompiledTimeline = timeline.current();
+                            if republished {
+                                // The cursor indexed into the events we just
+                                // stopped using. Without this the next block
+                                // either replays notes or skips them.
+                                reader.retarget(timeline);
+                            }
+
                             let mut written = 0;
                             while written < frames_total {
                                 // A stopped transport still has to make sound
@@ -213,7 +228,7 @@ impl AudioDevice {
                                 let awake = gate.is_awake(usize::from(live_pending));
                                 let step = reader.next_step(
                                     &transport,
-                                    &timeline,
+                                    timeline,
                                     frames_total - written,
                                     BLOCK_SIZE,
                                     awake,

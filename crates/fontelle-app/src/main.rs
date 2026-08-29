@@ -32,6 +32,9 @@ const BPM: f64 = 120.0;
 /// independent of each other, several are `Option`s, and two are booleans that
 /// would be indistinguishable at a call site.
 struct PlayOptions<'a> {
+    /// Start from an empty clip rather than the built-in demo phrase — the
+    /// difference between a demo you can poke and a tool you can write in.
+    blank: bool,
     root_key: u8,
     preset: usize,
     midi: Option<(&'a std::path::Path, fontelle_assets::MidiChannels)>,
@@ -62,6 +65,7 @@ struct Playback<'a> {
 
 fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), String> {
     let PlayOptions {
+        blank,
         root_key,
         preset,
         midi,
@@ -159,12 +163,16 @@ fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), Stri
             let patch = library
                 .import_sf2(path, preset)
                 .map_err(|e| format!("failed to import {}: {e}", path.display()))?;
-            let mut project = demo_project(root_key, BPM, SAMPLE_RATE);
+            let mut project = if blank {
+                fontelle_app::blank_project(8, BPM, SAMPLE_RATE)
+            } else {
+                demo_project(root_key, BPM, SAMPLE_RATE)
+            };
             let channel = project
                 .channels
                 .keys()
                 .next()
-                .expect("the demo project has one channel");
+                .expect("both starting projects have one channel");
             fontelle_app::set_channel_patch(&mut project, channel, &patch, &library)
                 .map_err(|e| format!("failed to store the imported patch: {e}"))?;
             project
@@ -176,7 +184,10 @@ fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), Stri
 
 /// Opens a saved project and plays or renders it — the same path
 /// `--play-sf2` takes once it has built one.
-fn open_and_play(bundle: &std::path::Path, playback: Playback<'_>) -> Result<(), String> {
+fn open_and_play<'a>(
+    bundle: &'a std::path::Path,
+    mut playback: Playback<'a>,
+) -> Result<(), String> {
     let opened = fontelle_app::open_project(bundle).map_err(|e| format!("{e}"))?;
     println!("{}: \"{}\"", bundle.display(), opened.project.meta.name);
     println!(
@@ -194,6 +205,12 @@ fn open_and_play(bundle: &std::path::Path, playback: Playback<'_>) -> Result<(),
             missing.why,
             missing.channels.len()
         );
+    }
+    // Opening a project in the window makes that bundle the place Ctrl+S
+    // writes to — anything else would be a "save" that quietly went somewhere
+    // else, or refused.
+    if playback.window && playback.save.is_none() {
+        playback.save = Some(bundle);
     }
     play_or_render(opened.project, opened.library, playback)
 }
@@ -254,7 +271,7 @@ fn play_or_render(
     // Written before anything is played: a bounce that takes two minutes
     // should not be standing between the user and their project being on
     // disk.
-    if let Some(bundle) = save {
+    if let Some(bundle) = save.filter(|_| !window) {
         fontelle_app::save_project(&project, bundle)
             .map_err(|e| format!("failed to save {}: {e}", bundle.display()))?;
         println!("  saved {}", bundle.display());
@@ -340,11 +357,17 @@ fn play_or_render(
     // Taken before the graph goes to the audio callback, because after that
     // nothing on this side owns it.
     let master = realised.master.clone();
+    // The stream reads the timeline through a channel from here on, so an edit
+    // made while it is running reaches the RT thread at the next block
+    // boundary (TDD §11.3). Nothing republishes it yet on the headless path;
+    // the window does.
+    let event_count = timeline.events.len();
+    let (timeline_publisher, timeline_source) = fontelle_engine::timeline_channel(timeline);
     let graph = realised.graph;
     let mut device = AudioDevice::default_host();
     println!(
         "Fontelle: {} note events, {} on {:?}",
-        timeline.events.len(),
+        event_count,
         project.meta.name,
         device.default_output_name()
     );
@@ -419,7 +442,7 @@ fn play_or_render(
     device
         .start_output_stream(
             graph,
-            timeline,
+            timeline_source,
             SAMPLE_RATE,
             transport.clone(),
             midi_in.then_some(live_source),
@@ -439,6 +462,18 @@ fn play_or_render(
             song_end_samples,
             SAMPLE_RATE,
         );
+        // The document the piano roll edits. Without a note clip there is
+        // nothing for a roll to show, so the panel simply stays empty rather
+        // than opening onto a clip that does not exist.
+        let document = fontelle_app::Session::first_clip(&project).map(|clip| {
+            Box::new(fontelle_app::Session::new(
+                project.clone(),
+                realised.channel_nodes.clone(),
+                timeline_publisher,
+                clip,
+                save.map(std::path::Path::to_path_buf),
+            )) as Box<dyn fontelle_ui::DocumentHost>
+        });
         let result = fontelle_ui::run_window(fontelle_ui::WindowOptions {
             title: format!("{} — Fontelle", project.meta.name),
             panel_title: project.meta.name.clone(),
@@ -446,6 +481,7 @@ fn play_or_render(
             size: (1280, 720),
             run_for: None,
             host: Some(Box::new(host)),
+            document,
         });
         // Through the transport before the stream goes away, so the callback
         // cuts its voices and hands the device silence rather than a buffer
@@ -934,6 +970,14 @@ fn main() {
         let midi_in = args.iter().any(|a| a == "--midi-in");
         let record = args.iter().any(|a| a == "--record");
         let window = args.iter().any(|a| a == "--window");
+        let blank = args.iter().any(|a| a == "--blank");
+        if blank && !window {
+            eprintln!(
+                "Fontelle: --blank opens an empty clip to draw in, which needs \
+                 the window — add --window"
+            );
+            std::process::exit(1);
+        }
         if window && render_wav.is_some() {
             eprintln!(
                 "Fontelle: --window opens the transport for you to play with and \
@@ -974,10 +1018,19 @@ fn main() {
             record_seconds: float_flag("--record-seconds"),
             window,
             announce: (midi.is_none() && !opening).then(|| {
-                format!(
-                    "  root key {root_key} at {BPM} bpm — a root/third/fifth run, \
-                     then the triad held."
-                )
+                if blank {
+                    format!(
+                        "  an empty 8 bars at {BPM} bpm — draw with the left mouse \
+                         button, delete with the right.\n  \
+                         Space plays, Ctrl+Z undoes, Ctrl+S saves, B cycles snap, \
+                         P/E/D pick draw/select/delete."
+                    )
+                } else {
+                    format!(
+                        "  root key {root_key} at {BPM} bpm — a root/third/fifth run, \
+                         then the triad held."
+                    )
+                }
             }),
         };
 
@@ -986,6 +1039,7 @@ fn main() {
             None => play_sf2(
                 &path,
                 PlayOptions {
+                    blank,
                     root_key,
                     preset,
                     midi,
@@ -1028,8 +1082,10 @@ fn main() {
         size: (1280, 720),
         run_for,
         // No project and no audio device yet: the transport bar is drawn, and
-        // inert, until item 9 gives the window a way to open one.
+        // inert, and the panel is empty, until item 9 gives the window a way
+        // to open a soundfont from inside itself.
         host: None,
+        document: None,
     }) {
         Ok(app) => {
             if run_for.is_some() {
