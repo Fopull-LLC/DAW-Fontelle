@@ -398,11 +398,18 @@ fn draining_live_input_does_not_allocate() {
     let mut reader = fontelle_engine::TransportReader::new();
     let mut gate = fontelle_engine::IdleGate::new();
     let (mut source, mut ports) = fontelle_engine::live_event_channel(4, 64);
+    // Armed, and drained with `recording` true below: mirroring a take into
+    // the capture ring happens on this thread too, and a `clone` of the wrong
+    // payload there would allocate.
+    let (writer, mut capture) = fontelle_engine::live_capture_channel(64);
+    source.arm_capture(writer);
     let timeline = CompiledTimeline::empty();
 
     let mut keyboards: Vec<fontelle_engine::LivePort> = (0..4)
         .map(|_| ports.claim().expect("a free port"))
         .collect();
+
+    let mut taken: Vec<TimedEvent> = Vec::with_capacity(4 * 64);
 
     fontelle_engine::mark_current_thread_rt();
     for block in 0..1_000 {
@@ -429,7 +436,16 @@ fn draining_live_input_does_not_allocate() {
             });
         }
 
-        let live = source.drain(reader.position());
+        // Emptied every few blocks, the way the model thread does, so the
+        // ring never sits full and the drop path is not the only one covered.
+        // Preallocated because it is being emptied inside the tagged region
+        // here; the real model thread is not RT and may grow whatever it likes.
+        if block % 8 == 0 {
+            taken.clear();
+            capture.drain_into(&mut taken);
+        }
+
+        let live = source.drain(reader.position(), true);
         let awake = gate.is_awake(live.len());
         let step = reader.next_step(&transport, &timeline, BLOCK, BLOCK, awake);
         if step.reset {

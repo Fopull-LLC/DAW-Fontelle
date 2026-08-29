@@ -46,6 +46,12 @@ struct Playback<'a> {
     gain_db: f32,
     cue: Cue,
     midi_in: bool,
+    /// Capture what is played into a new clip (TDD §14.7). Needs `--midi-in`;
+    /// there is nothing else for a keyboard to arrive through.
+    record: bool,
+    /// How long to record for. `None` records until the song ends, which is
+    /// the only bound a headless run has.
+    record_seconds: Option<f64>,
     /// Printed once the graph is up, when there is something worth saying
     /// about how the project was built.
     announce: Option<String>,
@@ -200,6 +206,8 @@ fn play_or_render(
         gain_db,
         cue,
         midi_in,
+        record,
+        record_seconds,
         announce,
     } = options;
     // An offline bounce is not real-time, so it renders at export quality
@@ -355,10 +363,19 @@ fn play_or_render(
     // Live input, if asked for. The channel is built here, off the audio
     // thread: the consumer half goes into the callback and never leaves it,
     // and each device that connects claims a producer.
-    let (live_source, mut live_ports) = fontelle_engine::live_event_channel(
+    let (mut live_source, mut live_ports) = fontelle_engine::live_event_channel(
         fontelle_engine::LIVE_PORT_COUNT,
         fontelle_engine::LIVE_PORT_CAPACITY,
     );
+    // Armed before the source goes to the callback, because after that nothing
+    // owns it. The transport state is what decides whether anything is
+    // actually written down, so arming costs nothing when not recording.
+    let mut capture = record.then(|| {
+        let (writer, reader) =
+            fontelle_engine::live_capture_channel(fontelle_engine::CAPTURE_CAPACITY);
+        live_source.arm_capture(writer);
+        reader
+    });
     let mut hub = if midi_in {
         // The first part's instrument. There is no focus to follow yet
         // (TDD §14.3's default), and playing the first instrument in the song
@@ -387,7 +404,11 @@ fn play_or_render(
     // Playback is a state on the transport now, rather than a consequence of
     // the stream existing — which is what makes stop, seek and loop reachable
     // at all, and what a UI will drive when there is one.
-    transport.play();
+    if record {
+        transport.set_state(fontelle_engine::TransportState::Recording);
+    } else {
+        transport.play();
+    }
     device
         .start_output_stream(
             graph,
@@ -398,16 +419,44 @@ fn play_or_render(
         )
         .map_err(|e| format!("failed to open the default output device: {e}"))?;
 
+    // A recording has to end somewhere the process can act on, because what
+    // comes after it — turning the take into a clip, writing the project — has
+    // to happen before anything exits. Ctrl-C cannot do that.
+    let mut take_events: Vec<fontelle_types::TimedEvent> = Vec::new();
+    let stop_at = record.then_some(match record_seconds {
+        Some(seconds) => (seconds * SAMPLE_RATE as f64) as i64,
+        None => song_end_samples,
+    });
+    if let Some(at) = stop_at {
+        println!(
+            "  recording {:.1}s — play now.",
+            at as f64 / SAMPLE_RATE as f64
+        );
+    }
+
     match hub.as_mut() {
         Some(hub) => {
             // Live input keeps the process alive on its own terms: the point
             // of playing along is that you are still playing when the song
             // ends. Stop it from the keyboard's own terminal, with Ctrl-C.
-            println!("\n  live MIDI in — play; Ctrl-C to stop.");
-            follow_midi_devices(hub, &mut live_ports, &transport, finish);
+            if stop_at.is_none() {
+                println!("\n  live MIDI in — play; Ctrl-C to stop.");
+            }
+            follow_midi_devices(
+                hub,
+                &mut live_ports,
+                &transport,
+                finish,
+                capture.as_mut().map(|capture| Recording {
+                    capture,
+                    events: &mut take_events,
+                }),
+                stop_at,
+            );
         }
         None => wait_for_playback(&transport, duration, finish),
     }
+    let recorded_until = transport.position_sample();
 
     // Before the stream goes away, so anything still held is released through
     // a callback that is still running. Closing the devices afterwards would
@@ -428,6 +477,86 @@ fn play_or_render(
         "  stopped at {:.2}s",
         transport.position_sample() as f64 / SAMPLE_RATE as f64
     );
+
+    // The take, turned into a clip by one command — which is also what makes
+    // it undoable the moment there is a UI to undo it from.
+    if let Some(capture) = capture.as_mut() {
+        capture.drain_into(&mut take_events);
+        if capture.dropped() > 0 {
+            // A recording that quietly lost notes is worse than one that
+            // failed, so it is said out loud.
+            println!(
+                "  ! {} events were dropped — the take has holes in it",
+                capture.dropped()
+            );
+        }
+        keep_the_take(&mut project, &take_events, recorded_until)?;
+    }
+
+    if let Some(bundle) = save
+        && record
+    {
+        // Saved again, now that the take is in it. The earlier save is what
+        // guarantees a project exists even if the recording goes wrong.
+        fontelle_app::save_project(&project, bundle)
+            .map_err(|e| format!("failed to save {}: {e}", bundle.display()))?;
+        println!("  saved {} with the take", bundle.display());
+    }
+    Ok(())
+}
+
+/// Turns a captured take into a clip on a lane of its own.
+///
+/// One `AddClip` command, per INVARIANT 9 — and because a take is exactly the
+/// kind of thing somebody wants to press Ctrl+Z on.
+fn keep_the_take(
+    project: &mut fontelle_model::Project,
+    events: &[fontelle_types::TimedEvent],
+    end_sample: i64,
+) -> Result<(), String> {
+    use fontelle_model::{AddClip, Clip, ClipSource, Command, Lane, NoteData};
+
+    let Some(channel) = project.channels.keys().next() else {
+        return Err("there is no channel for the take to play on".into());
+    };
+    let source = fontelle_model::notes_from_capture(events, &project.tempo_map, 0, end_sample);
+    let ClipSource::Notes(data) = source else {
+        unreachable!("a capture is always a note clip")
+    };
+    if data.notes.is_empty() {
+        println!("  (nothing was played, so no clip was added)");
+        return Ok(());
+    }
+    let count = data.notes.len();
+    let length = data
+        .notes
+        .values()
+        .map(|n| n.start + n.length)
+        .max()
+        .unwrap_or(0);
+
+    let lane = project.lanes.insert(Lane {
+        name: format!("Take {}", project.lanes.len() + 1),
+        height: 32.0,
+        color: [0xd0, 0x7f, 0x4f, 0xff],
+        muted: false,
+        locked: false,
+    });
+    AddClip::new(Clip {
+        lane,
+        start: 0,
+        length,
+        source: ClipSource::Notes(NoteData {
+            channel,
+            notes: data.notes,
+        }),
+        prefab_link: None,
+        color: None,
+        muted: false,
+    })
+    .apply(project)
+    .map_err(|e| format!("{e}"))?;
+    println!("  recorded {count} note(s)");
     Ok(())
 }
 
@@ -475,6 +604,8 @@ fn follow_midi_devices(
     ports: &mut fontelle_engine::LiveEventPorts,
     transport: &fontelle_engine::Transport,
     finish: Finish,
+    mut recording: Option<Recording<'_>>,
+    stop_at: Option<i64>,
 ) {
     let mut announced = false;
     let mut passes = 1;
@@ -507,27 +638,66 @@ fn follow_midi_devices(
             }
         }
 
-        // The song plays on underneath, finishing on the same condition the
-        // playback-only path uses. When it does, the transport stops — and the
-        // keyboard keeps working, which is the audition path in `IdleGate`.
-        let now = transport.position_sample();
-        let finished = match finish {
-            Finish::AtSample(target) => now >= target,
-            Finish::LoopPasses(wanted) => {
-                if now < last_position {
-                    passes += 1;
-                }
-                passes > wanted
-            }
-        };
-        last_position = now;
-        if finished && transport.is_playing() {
-            transport.stop();
-            println!("  (song finished — the keyboard is still live)");
+        // A recording is emptied every pass, so the ring never fills while
+        // somebody is playing a long take.
+        if let Some(recording) = recording.as_mut() {
+            recording.capture.drain_into(recording.events);
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // A recording ends where it was told to, because what comes after it —
+        // turning the take into a clip, writing the project — has to happen
+        // before anything exits, and Ctrl-C cannot do that.
+        let now = transport.position_sample();
+        if let Some(at) = stop_at
+            && now >= at
+        {
+            transport.stop();
+            // A last pass for whatever the callback wrote between the stop and
+            // here, including the note-offs a lifted key produced.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if let Some(recording) = recording.as_mut() {
+                recording.capture.drain_into(recording.events);
+            }
+            return;
+        }
+
+        // Not while recording. A take runs past the end of the arrangement as
+        // a matter of course — that is what recording onto empty bars is — and
+        // stopping the transport would freeze the playhead that `stop_at` is
+        // watching, so the take would never end at all.
+        if stop_at.is_none() {
+            let finished = match finish {
+                Finish::AtSample(target) => now >= target,
+                Finish::LoopPasses(wanted) => {
+                    if now < last_position {
+                        passes += 1;
+                    }
+                    passes > wanted
+                }
+            };
+            if finished && transport.is_playing() {
+                transport.stop();
+                println!("  (song finished — the keyboard is still live)");
+            }
+        }
+        last_position = now;
+
+        // Polled twice as often while recording: the deadline is only as
+        // accurate as this interval, and a take that runs half a second long
+        // has half a second of silence stitched onto the end of it.
+        std::thread::sleep(std::time::Duration::from_millis(if stop_at.is_some() {
+            50
+        } else {
+            500
+        }));
     }
+}
+
+/// The recording side of the live loop: the ring to empty, and the take being
+/// assembled out of it.
+struct Recording<'a> {
+    capture: &'a mut fontelle_engine::CaptureReader,
+    events: &'a mut Vec<fontelle_types::TimedEvent>,
 }
 
 /// What playback is waiting for.
@@ -725,11 +895,17 @@ fn main() {
         };
 
         let midi_in = args.iter().any(|a| a == "--midi-in");
+        let record = args.iter().any(|a| a == "--record");
         if midi_in && render_wav.is_some() {
             eprintln!(
                 "Fontelle: --midi-in is live playing and --render-wav is an offline bounce; \
-                 there is nothing for the keyboard to be recorded into yet"
+                 record the take first (--record --save <project>), then --open it and \
+                 --render-wav that"
             );
+            std::process::exit(1);
+        }
+        if record && !midi_in {
+            eprintln!("Fontelle: --record needs --midi-in; there is nothing else to record");
             std::process::exit(1);
         }
 
@@ -739,6 +915,8 @@ fn main() {
             gain_db,
             cue,
             midi_in,
+            record,
+            record_seconds: float_flag("--record-seconds"),
             announce: (midi.is_none() && !opening).then(|| {
                 format!(
                     "  root key {root_key} at {BPM} bpm — a root/third/fifth run, \

@@ -46,9 +46,65 @@ pub fn live_event_channel(ports: usize, capacity: usize) -> (LiveEventSource, Li
         LiveEventSource {
             consumers,
             scratch: Vec::with_capacity(ports * capacity),
+            capture: None,
         },
         LiveEventPorts { producers },
     )
+}
+
+/// Events a recording can hold before the model thread empties it. At 128
+/// frames / 48 kHz the model side gets a chance every 2.7 ms, so this is
+/// roughly a hundred blocks of the busiest playing anyone does — generous
+/// enough that a UI thread stalling on a file dialog does not cost a take.
+pub const CAPTURE_CAPACITY: usize = 8_192;
+
+/// Builds the recording channel: the half the audio thread writes into, and
+/// the half the model thread empties.
+///
+/// The other direction from [`live_event_channel`], and for the same reason —
+/// the audio thread must never block or allocate, so the ring is preallocated
+/// and a full one drops rather than waits.
+pub fn live_capture_channel(capacity: usize) -> (CaptureWriter, CaptureReader) {
+    let (producer, consumer) = rtrb::RingBuffer::new(capacity);
+    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    (
+        CaptureWriter {
+            producer,
+            dropped: dropped.clone(),
+        },
+        CaptureReader { consumer, dropped },
+    )
+}
+
+/// The audio thread's half of a recording.
+pub struct CaptureWriter {
+    producer: rtrb::Producer<TimedEvent>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// The model thread's half of a recording.
+pub struct CaptureReader {
+    consumer: rtrb::Consumer<TimedEvent>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl CaptureReader {
+    /// Moves everything captured so far into `out`, keeping what is already
+    /// there. Off the RT thread, so growing `out` is fine.
+    pub fn drain_into(&mut self, out: &mut Vec<TimedEvent>) {
+        while let Ok(event) = self.consumer.pop() {
+            out.push(event);
+        }
+    }
+
+    /// How many events the ring had to drop because nobody emptied it.
+    ///
+    /// Not zero is a take with holes in it, which the user has to be told
+    /// about — a recording that quietly lost notes is worse than one that
+    /// failed.
+    pub fn dropped(&self) -> usize {
+        self.dropped.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 /// The audio thread's half. Owned by the callback, drained once per block.
@@ -57,6 +113,11 @@ pub struct LiveEventSource {
     /// Preallocated to hold every port's full capacity, so a drain can never
     /// need to grow it (INVARIANT 1).
     scratch: Vec<TimedEvent>,
+    /// Armed while a recording is in progress. Every live event that reaches
+    /// the graph is mirrored into it, which is the whole of "record what I
+    /// play": the take is a copy of the stream that made the sound, not a
+    /// second reading of the device.
+    capture: Option<CaptureWriter>,
 }
 
 impl LiveEventSource {
@@ -71,7 +132,11 @@ impl LiveEventSource {
     /// block — 2.7 ms at 128 frames — in a known direction, always late,
     /// never early. Sample-accurate live input is a real feature and it needs
     /// the device timestamps first.
-    pub fn drain(&mut self, sample: Sample) -> &[TimedEvent] {
+    /// `recording` mirrors every event into the armed capture on the way
+    /// past. Deliberately the same events, already stamped: a take is a copy
+    /// of the stream that made the sound, so what is written down and what was
+    /// heard cannot drift apart.
+    pub fn drain(&mut self, sample: Sample, recording: bool) -> &[TimedEvent] {
         self.scratch.clear();
         for consumer in self.consumers.iter_mut() {
             while self.scratch.len() < self.scratch.capacity() {
@@ -84,8 +149,69 @@ impl LiveEventSource {
                 }
             }
         }
+        if recording && let Some(capture) = self.capture.as_mut() {
+            for event in &self.scratch {
+                let Some(copy) = rt_safe_copy(event) else {
+                    continue;
+                };
+                if capture.producer.push(copy).is_err() {
+                    // Nobody is emptying it. Dropping is the only option that
+                    // does not block the audio thread; counting is what lets
+                    // the user be told the take has holes in it.
+                    capture
+                        .dropped
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
         &self.scratch
     }
+
+    /// Starts mirroring live events into `writer`.
+    pub fn arm_capture(&mut self, writer: CaptureWriter) {
+        self.capture = Some(writer);
+    }
+
+    /// Stops mirroring, handing the writer back.
+    pub fn disarm_capture(&mut self) -> Option<CaptureWriter> {
+        self.capture.take()
+    }
+}
+
+/// Duplicates an event without allocating, or gives up.
+///
+/// `EventPayload::ParamValue` carries an owned `ParamAddress`, and cloning a
+/// `String` on the audio thread is an allocation — INVARIANT 1, and the guard
+/// would say so. Nothing live produces one today: CC routing beyond sustain is
+/// not built, by design, because the nodes it would address expose no
+/// parameters yet. When it is, the address wants to be a `Copy` handle rather
+/// than a string, which §8.2's stable-id table gives it anyway.
+fn rt_safe_copy(event: &TimedEvent) -> Option<TimedEvent> {
+    let payload = match &event.payload {
+        fontelle_types::EventPayload::NoteOn {
+            key,
+            velocity,
+            voice_context,
+        } => fontelle_types::EventPayload::NoteOn {
+            key: *key,
+            velocity: *velocity,
+            voice_context: *voice_context,
+        },
+        fontelle_types::EventPayload::NoteOff { key, voice_context } => {
+            fontelle_types::EventPayload::NoteOff {
+                key: *key,
+                voice_context: *voice_context,
+            }
+        }
+        fontelle_types::EventPayload::ClipStart => fontelle_types::EventPayload::ClipStart,
+        fontelle_types::EventPayload::ClipStop => fontelle_types::EventPayload::ClipStop,
+        fontelle_types::EventPayload::ParamValue { .. } => return None,
+    };
+    Some(TimedEvent {
+        sample: event.sample,
+        target: event.target,
+        payload,
+    })
 }
 
 /// The non-RT half: a pool of unclaimed producers, one per port.
@@ -150,7 +276,7 @@ mod tests {
         let mut port = ports.claim().expect("a free port");
 
         assert!(port.send(note_on(60)));
-        let events = source.drain(4_096);
+        let events = source.drain(4_096, false);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].sample, 4_096);
     }
@@ -167,7 +293,7 @@ mod tests {
         second.send(note_on(64));
         first.send(note_on(67));
 
-        let events = source.drain(0);
+        let events = source.drain(0, false);
         assert_eq!(events.len(), 3, "three keys down across two keyboards");
     }
 
@@ -177,12 +303,143 @@ mod tests {
         let mut port = ports.claim().unwrap();
         port.send(note_on(60));
 
-        assert_eq!(source.drain(0).len(), 1);
+        assert_eq!(source.drain(0, false).len(), 1);
         assert_eq!(
-            source.drain(128).len(),
+            source.drain(128, false).len(),
             0,
             "a note held down is one note-on, not one per block"
         );
+    }
+
+    // --- Recording (TDD §14.7) --------------------------------------------
+
+    #[test]
+    fn a_live_event_is_mirrored_into_the_capture_while_recording() {
+        // A take is a copy of the stream that made the sound, not a second
+        // reading of the device — so what was written down and what was heard
+        // cannot drift apart.
+        let (mut source, mut ports) = live_event_channel(2, 8);
+        let (writer, mut reader) = live_capture_channel(16);
+        source.arm_capture(writer);
+        let mut port = ports.claim().unwrap();
+
+        port.send(note_on(60));
+        let heard = source.drain(24_000, true);
+        assert_eq!(heard.len(), 1);
+
+        let mut captured = Vec::new();
+        reader.drain_into(&mut captured);
+        assert_eq!(captured.len(), 1);
+        assert_eq!(
+            captured[0].sample, 24_000,
+            "the take has to know where in the song the note was played"
+        );
+        assert!(matches!(
+            captured[0].payload,
+            EventPayload::NoteOn { key: 60, .. }
+        ));
+    }
+
+    #[test]
+    fn nothing_is_captured_when_the_transport_is_not_recording() {
+        // Playing along without the record button down must leave no take
+        // behind, or the next one starts with somebody else's warm-up in it.
+        let (mut source, mut ports) = live_event_channel(2, 8);
+        let (writer, mut reader) = live_capture_channel(16);
+        source.arm_capture(writer);
+        let mut port = ports.claim().unwrap();
+
+        port.send(note_on(60));
+        assert_eq!(source.drain(0, false).len(), 1, "it still sounds");
+
+        let mut captured = Vec::new();
+        reader.drain_into(&mut captured);
+        assert!(captured.is_empty());
+    }
+
+    #[test]
+    fn disarming_stops_the_capture_and_hands_the_writer_back() {
+        let (mut source, mut ports) = live_event_channel(2, 8);
+        let (writer, mut reader) = live_capture_channel(16);
+        source.arm_capture(writer);
+        let mut port = ports.claim().unwrap();
+
+        port.send(note_on(60));
+        source.drain(0, true);
+        assert!(source.disarm_capture().is_some());
+        port.send(note_on(64));
+        source.drain(128, true);
+
+        let mut captured = Vec::new();
+        reader.drain_into(&mut captured);
+        assert_eq!(captured.len(), 1, "only the note played while armed");
+    }
+
+    #[test]
+    fn a_full_capture_drops_and_counts_rather_than_blocking_the_audio_thread() {
+        // The same rule as the input side: an audio thread must never wait for
+        // a model thread. A take with holes in it is something the user has to
+        // be told about, though — a recording that quietly lost notes is worse
+        // than one that failed.
+        let (mut source, mut ports) = live_event_channel(1, 8);
+        let (writer, mut reader) = live_capture_channel(2);
+        source.arm_capture(writer);
+        let mut port = ports.claim().unwrap();
+
+        for key in 60..65 {
+            port.send(note_on(key));
+        }
+        source.drain(0, true);
+
+        let mut captured = Vec::new();
+        reader.drain_into(&mut captured);
+        assert_eq!(captured.len(), 2, "the ring held two");
+        assert_eq!(reader.dropped(), 3, "and said so about the other three");
+    }
+
+    #[test]
+    fn recording_does_not_change_what_the_audio_thread_is_handed() {
+        let (mut source, mut ports) = live_event_channel(2, 8);
+        let mut port = ports.claim().unwrap();
+        port.send(note_on(60));
+        let without: Vec<i64> = source.drain(0, true).iter().map(|e| e.sample).collect();
+
+        let (mut armed, mut ports) = live_event_channel(2, 8);
+        let (writer, _reader) = live_capture_channel(16);
+        armed.arm_capture(writer);
+        let mut port = ports.claim().unwrap();
+        port.send(note_on(60));
+        let with: Vec<i64> = armed.drain(0, true).iter().map(|e| e.sample).collect();
+
+        assert_eq!(without, with);
+    }
+
+    #[test]
+    fn a_parameter_event_is_left_out_rather_than_allocating_on_the_audio_thread() {
+        // `ParamValue` carries an owned address, and cloning a `String` on the
+        // audio thread is an allocation the guard would reject. Nothing live
+        // produces one today; this pins the reason so the next person to route
+        // a CC finds it.
+        let (mut source, mut ports) = live_event_channel(1, 8);
+        let (writer, mut reader) = live_capture_channel(16);
+        source.arm_capture(writer);
+        let mut port = ports.claim().unwrap();
+
+        port.send(TimedEvent {
+            sample: 0,
+            target: NodeId::default(),
+            payload: EventPayload::ParamValue {
+                target: fontelle_types::ParamAddress::new("transport/tempo"),
+                value: 128.0,
+            },
+        });
+        port.send(note_on(60));
+        source.drain(0, true);
+
+        let mut captured = Vec::new();
+        reader.drain_into(&mut captured);
+        assert_eq!(captured.len(), 1);
+        assert!(matches!(captured[0].payload, EventPayload::NoteOn { .. }));
     }
 
     #[test]
@@ -223,7 +480,7 @@ mod tests {
             a.send(note_on(key));
             b.send(note_on(key));
         }
-        assert_eq!(source.drain(0).len(), 8);
+        assert_eq!(source.drain(0, false).len(), 8);
     }
 }
 

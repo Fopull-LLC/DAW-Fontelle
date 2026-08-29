@@ -19,7 +19,7 @@ use fontelle_core::{
 use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 use fontelle_engine::{
     BLOCK_SIZE, CompiledGraph, IdleGate, LiveEventSource, Transport, TransportReader,
-    live_event_channel,
+    TransportState, live_event_channel,
 };
 use fontelle_midi::{DeviceMapping, MidiRouter};
 use fontelle_types::{CompiledTimeline, EventSink, NodeId};
@@ -119,7 +119,10 @@ struct Callback {
 impl Callback {
     /// Renders one block and returns its peak.
     fn block(&mut self, transport: &Transport) -> f32 {
-        let live = self.source.drain(self.reader.position());
+        let live = self.source.drain(
+            self.reader.position(),
+            transport.state() == TransportState::Recording,
+        );
         let awake = self.gate.is_awake(live.len());
         let step = self
             .reader

@@ -1141,6 +1141,46 @@ automation is disabled with a clear UI indication of why.
 resolved timeline. Both use `midly`. Import must handle tempo and time-signature meta events into
 the tempo map, and must not silently discard channel/CC data.
 
+### 14.7 Recording what you play
+
+**Added 2026-08-29.** This section did not exist. `Transport` has had a `Recording` state since it
+was written and §15.4 covers *audio* recording (M6), but nothing said how live MIDI input becomes
+a note clip — which for a soundfont instrument aimed at players is the core capture loop of making
+something. It is part of the first-usable gate.
+
+**A take is a copy of the stream that made the sound.** While the transport is `Recording`, every
+live event the audio thread drains is mirrored into a preallocated ring on its way to the graph.
+Not a second reading of the device, and not a parallel path that has to be kept in step: what was
+written down and what was heard cannot drift apart, and sustain, velocity curves, stuck-note
+release and the zero-velocity-note-on rule are all already applied by the router upstream of it.
+
+The ring is the same shape as the input side and for the same reasons (§14.1): preallocated, SPSC,
+and a full one drops and counts rather than blocking the audio thread. A non-zero drop count is a
+take with holes in it and the user must be told; a recording that quietly lost notes is worse than
+one that failed.
+
+**Turning the take into a clip is a `Command`** (§10.6), so it is undoable like every other edit,
+and the conversion itself is a pure function on the model thread:
+
+- Sample positions become ticks through the `TempoMap` (INVARIANT 5), rounded to nearest. A take
+  over a piece that changes tempo has no single bpm to divide by.
+- A key retriggered before its note-off ends the first note: two overlapping notes on one key is a
+  shape the piano roll cannot draw and the sampler cannot voice sensibly.
+- A key still held when recording stops ends there. Finishing on a held chord is normal playing.
+- A note-off with no note-on in front of it is ignored — recording started with a key already down.
+- A note shorter than one tick is given one tick, because a zero-length note is a note-on and a
+  note-off on the same sample and the fastest possible stab would silently vanish.
+
+**No quantisation beyond that rounding.** Quantise is a piano-roll command (§16.5) applied to a
+selection the user can see: doing it at capture throws the performance away before anyone has
+looked at it, and leaves nothing to undo back to.
+
+**Not in v1's first pass:** count-in and a metronome (Phase 2 of the first-usable plan), loop
+recording with take lanes, punch in/out, overdub-versus-replace as a choice (it overdubs — a new
+clip on a new lane, which nothing else has to be deleted for), and splitting one take across
+several record-armed channels, which means splitting by `TimedEvent::target` and needs the arm UI
+to exist first.
+
 ---
 
 ## 15. Audio clips and recording

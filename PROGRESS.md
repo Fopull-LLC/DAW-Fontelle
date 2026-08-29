@@ -13,6 +13,124 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
+## 2026-08-29 (last): play it, keep it — MIDI recording
+
+Phase 1 item 5, and the one feature in this stretch that the TDD did not
+contain at all. `Transport` has had a `Recording` state since it was written
+and §15.4 covers *audio* recording, but nothing said how live MIDI becomes a
+note clip — which for a soundfont instrument aimed at players is the whole
+capture loop. It is now TDD §14.7.
+
+```sh
+cargo run -p fontelle-app -- --play-sf2 <file.sf2> --midi-in --record \
+    --record-seconds 9 --save Take.fontelle
+cargo run -p fontelle-app -- --open Take.fontelle --render-wav take.wav
+```
+
+### A take is a copy of the stream that made the sound
+
+That is the design, and everything else follows from it. While the transport
+is `Recording`, every live event the audio thread drains is mirrored into a
+preallocated ring **on its way to the graph** — not read a second time from the
+device, and not a parallel path that has to be kept in step. So what was
+written down and what was heard cannot drift apart, and sustain, velocity
+curves, stuck-note release on disconnect and the zero-velocity-note-on rule are
+all already applied by the router upstream of it. There is nothing to
+reimplement.
+
+The mirroring lives in `LiveEventSource::drain`, not in the audio callback,
+for the reason this project keeps landing on: code inside a cpal closure can
+only be run by a sound card, so anything put there is testable only by ear.
+
+Two things it has to get right:
+
+- **A full ring drops and counts.** Same rule as the input side — an audio
+  thread must never wait for a model thread. But a take with holes in it is
+  something the user has to be *told* about, so the drop count is published and
+  the CLI prints it. A recording that quietly lost notes is worse than one that
+  failed.
+- **A `ParamValue` event is left out rather than cloned.** It carries an owned
+  `ParamAddress`, and cloning a `String` on the audio thread is an allocation —
+  INVARIANT 1, and the guard says so. Nothing live produces one today (CC
+  routing beyond sustain is deliberately not built), and when it does the
+  address wants to be a `Copy` handle, which §8.2's stable-id table gives it
+  anyway. `no_allocation_during_render` now arms a capture and drains with
+  `recording` true, so the guard covers this path.
+
+### What a recording *is*, decided in one pure function
+
+`notes_from_capture` is on the model thread and takes no I/O, which is what
+makes every rule below a test rather than a listening session:
+
+- Samples to ticks through the `TempoMap` (INVARIANT 5), rounded to nearest.
+  Truncating would drag every note in every take systematically early.
+- **A key retriggered before its note-off ends the first note.** Two
+  overlapping notes on one key is a shape the piano roll cannot draw and the
+  sampler cannot voice sensibly.
+- **A key still held when recording stops ends there.** Finishing on a held
+  chord is a normal way to stop playing; hanging forever or dropping it are
+  both worse.
+- A note-off with no note-on in front of it is ignored — recording started with
+  a key already down.
+- **A note shorter than one tick gets one tick.** A zero-length note is a
+  note-on and a note-off on the same sample: the sequencer emits both and the
+  sampler sounds nothing between them, so the fastest possible stab would
+  vanish from the take.
+- **No quantisation beyond that rounding.** Quantise is a piano-roll command
+  (§16.5) over a selection the user can see. Doing it at capture throws the
+  performance away before anyone has looked at it, and leaves nothing to undo
+  back to.
+
+The take becomes a clip through one `AddClip` command, on a new lane, so it is
+undoable the moment there is a UI to undo it from and nothing existing has to
+be deleted to make room for it.
+
+### Verified on real hardware
+
+Through this machine's ALSA "Midi Through" port, with `aplaymidi` playing four
+notes into it while Fontelle recorded:
+
+```
+  recording 9.0s — play now.
+  + Midi Through:Midi Through Port-0 14:0
+  stopped at 9.00s
+  recorded 4 note(s)
+  saved Take.fontelle with the take
+```
+
+The saved clip holds exactly what was sent — keys 60, 64, 67, 72 at 966 / 962 /
+962 / 1915 ticks, against the 960 and 1920 the file specified — and reopening
+the project renders the demo phrase followed by the take: peak 0.966 over the
+first 2.5 s, then 0.425 from 3 s on, where the arrangement is silent and only
+the recording is playing.
+
+Mutations, each caught by exactly one test: a retrigger not ending the previous
+note; a zero-length note kept at zero; a note still held at the stop dropped;
+samples converted by arithmetic instead of through the tempo map.
+
+One bug the hardware run found that no test would have: **stopping the
+transport when the song ends freezes the playhead the record deadline is
+watching**, so a take longer than the arrangement never ended at all. Recording
+past the end of the arrangement is not an edge case — it is what recording onto
+empty bars *is* — so the song-finished stop is skipped while a take is running.
+
+### What is deliberately not built
+
+- **No count-in and no metronome.** Both are Phase 2, with the transport bar.
+- **No loop recording, take lanes, or punch in/out.**
+- **Overdub is the only mode**: a take is a new clip on a new lane, so nothing
+  has to be deleted to make room for one. Replace is a choice that needs a UI
+  to offer it.
+- **One record-armed channel.** Splitting a take across several means splitting
+  by `TimedEvent::target`, which needs the arm UI first.
+- **`--record` needs a deadline, not Ctrl-C.** Turning a take into a clip and
+  writing the project both have to happen before the process exits, and a
+  signal handler cannot do that without a dependency. `--record-seconds`, or
+  the end of the song.
+
+**Where things stand:** 431 tests, clippy and fmt clean, plus the hardware run
+above.
+
 ## 2026-08-29 (later still): a project you can save and open again
 
 Phase 1 item 4. `MyTrack.fontelle/` is a folder bundle with `project.json` and
@@ -1924,6 +2042,10 @@ To inspect what a given SF2 file actually imports as, without any audio:
 - **fontelle-midi** — real (2026-08-28): device enumeration and hot-plug via
   `midir`, decode, `MidiRouter` (sustain, stuck-note release on disconnect),
   `MidiHub`. Still stub: `ClockSync` (§14.5) and MIDI file *export* (§14.6).
+  Recording a take is `fontelle-engine`'s capture ring plus
+  `fontelle_model::notes_from_capture` (2026-08-29, TDD §14.7) — nothing here
+  needed to change, because a take is a copy of the stream this crate already
+  produces.
 - **fontelle-app** — the DAW binary, plus a `lib.rs` holding what a
   `[[bin]]` cannot export. `realise` (2026-08-29) is the document -> graph
   step: it reads `Project::channels` and `Project::mixer` and returns the
@@ -2062,10 +2184,17 @@ crash the process).
 12. ~~Live MIDI input (TDD §14).~~ **Done** — see the 2026-08-28 section.
     Devices, hot-plug, decode, router, SPSC queues into the audio thread,
     verified against real hardware. Clock sync and MIDI file export remain.
-13. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
+13. ~~Phase 1 of `docs/first-usable-plan.md`~~ **Done, 2026-08-29** — patch
+    serialisation, the `Project` -> graph realisation step, commands and undo,
+    the project bundle, and MIDI recording. **Next is Phase 2, the walking GUI
+    skeleton**: read §2.5 and the Phase 2 preamble in the plan before writing
+    any UI code — pure view-model functions carry the tests, the widget layer
+    stays a thin shell, zero frames at idle is built in from the first window,
+    and the vello->lyon fallback is timeboxed per §16.2.
+14. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
     soundfonts in memory) and effects. `ParametricEq::process` and
     `Compressor::process` are the two `fontelle-dsp` could already support.
-14. **Latency compensation.** The master limiter is the first node in the tree
+15. **Latency compensation.** The master limiter is the first node in the tree
     with real latency (`AudioNode::latency_samples` reports it and nothing
     reads it). With one bus that is a uniform delay nobody can hear; with a
     send path or a track that bypasses it, it is a phase error.

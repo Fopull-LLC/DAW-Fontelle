@@ -16,6 +16,7 @@ mod mixer;
 mod note;
 mod prefab;
 mod project;
+mod recording;
 mod storage;
 
 pub use arena::Arena;
@@ -34,6 +35,7 @@ pub use mixer::{EffectSlot, Mixer, MixerTrack, PanLaw, Send};
 pub use note::{Note, NoteData};
 pub use prefab::{ElementId, OverrideMap, Prefab, PrefabLink, PropKey, PropValue, resolve};
 pub use project::{Marker, Project, ProjectMeta, TempoMap, TempoSegment, ViewState};
+pub use recording::notes_from_capture;
 pub use storage::{
     BUNDLE_DIRS, PROJECT_FILE, PROJECT_FORMAT_VERSION, StorageError, load_project, save_project,
 };

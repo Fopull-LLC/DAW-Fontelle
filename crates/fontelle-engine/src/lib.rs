@@ -16,8 +16,8 @@ pub use graph::{
     AudioNode, BufferPool, CompiledGraph, ParamSet, PrepareContext, ProcessContext, ScheduledNode,
 };
 pub use live::{
-    IdleGate, LIVE_PORT_CAPACITY, LIVE_PORT_COUNT, LiveEventPorts, LiveEventSource, LivePort,
-    live_event_channel,
+    CAPTURE_CAPACITY, CaptureReader, CaptureWriter, IdleGate, LIVE_PORT_CAPACITY, LIVE_PORT_COUNT,
+    LiveEventPorts, LiveEventSource, LivePort, live_capture_channel, live_event_channel,
 };
 pub use nodes::{
     AudioClipNode, BusSumNode, EffectNode, MasterMeter, MasterNode, MixerTrackNode, SamplerNode,

@@ -7,6 +7,7 @@ use fontelle_types::{CompiledTimeline, TimedEvent};
 use crate::graph::CompiledGraph;
 use crate::live::{IdleGate, LiveEventSource};
 use crate::rt_guard::with_rt_thread;
+use crate::transport::TransportState;
 use crate::transport::{Transport, TransportReader};
 
 /// The fixed block size the M0 vertical slice targets (TDD §22: "128 frames /
@@ -196,7 +197,10 @@ impl AudioDevice {
                             // must not deliver them a second time — which
                             // would retrigger every key currently going down.
                             let live_events: &[TimedEvent] = match live.as_mut() {
-                                Some(source) => source.drain(reader.position()),
+                                Some(source) => source.drain(
+                                    reader.position(),
+                                    transport.state() == TransportState::Recording,
+                                ),
                                 None => &[],
                             };
                             let mut live_pending = !live_events.is_empty();
