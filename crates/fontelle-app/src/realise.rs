@@ -18,7 +18,7 @@ use fontelle_core::{Patch, PatchFormatError, PrepareContext, Sampler, Unresolved
 use fontelle_engine::{
     BufferPool, CompiledGraph, MasterMeter, MixerTrackNode, SamplerNode, ScheduledNode,
 };
-use fontelle_model::{MixerTrack, Project};
+use fontelle_model::{Command, CommandError, MixerTrack, Project};
 use fontelle_types::{ChannelId, MixerTrackId, NodeId, PatchData, SampleRef};
 
 use crate::library::SampleLibrary;
@@ -106,18 +106,19 @@ fn node_id(index: usize) -> NodeId {
 ///
 /// The provenance comes from the library, because a stored layer names its
 /// audio by file and only the library knows which file each decoded sample
-/// came out of.
+/// came out of. The write itself goes through a `SetChannelPatch` command like
+/// every other mutation (INVARIANT 9) — this is the serialisation step, not a
+/// second way into the document.
 pub fn set_channel_patch(
     project: &mut Project,
     channel: ChannelId,
     patch: &Patch,
     library: &SampleLibrary,
-) -> Result<(), PatchFormatError> {
-    let data = patch.to_data(library.provenance())?;
-    if let Some(channel) = project.channels.get_mut(channel) {
-        channel.patch_data = Some(data);
-    }
-    Ok(())
+) -> Result<(), CommandError> {
+    let data = patch
+        .to_data(library.provenance())
+        .map_err(|e| CommandError(e.to_string()))?;
+    fontelle_model::SetChannelPatch::new(channel, Some(data)).apply(project)
 }
 
 /// How many steps from `track` to the master, following `output`.

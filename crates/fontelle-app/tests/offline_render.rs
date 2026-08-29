@@ -13,7 +13,8 @@ use fontelle_core::{
 };
 use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 
-use common::SR;
+use common::{SR, set_number};
+use fontelle_model::NumberTarget;
 
 fn synthetic_patch(library: &mut SampleLibrary) -> Patch {
     // A 100-sample sine cycle, looped: a signal with an obvious, checkable
@@ -244,7 +245,11 @@ fn the_track_gain_scales_the_render() {
         // The master fader is a document value now, not a parameter threaded
         // into a graph builder — which is the point of the realisation step.
         let master = project.mixer.master.unwrap();
-        project.mixer.tracks[master].gain_db = gain_db;
+        set_number(
+            &mut project,
+            NumberTarget::TrackGainDb(master),
+            gain_db as f64,
+        );
         let (mut realised, timeline) =
             common::realise_at(&project, &library, fontelle_app::PLAYBACK_QUALITY);
         render_offline(&timeline, &mut realised.graph, 24_000)

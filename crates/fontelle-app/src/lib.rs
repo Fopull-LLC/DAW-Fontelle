@@ -8,8 +8,9 @@ mod realise;
 use std::path::{Path, PathBuf};
 
 use fontelle_engine::{BLOCK_SIZE, CompiledGraph};
-use fontelle_model::Arena;
-use fontelle_model::{Channel, Clip, ClipSource, Lane, Note, NoteData, Project, TempoMap};
+use fontelle_model::{
+    AddChannel, AddClip, Arena, Clip, ClipSource, Command, Lane, Note, NoteData, Project, TempoMap,
+};
 use fontelle_types::{CompiledTimeline, PPQN, Tick};
 
 pub use library::SampleLibrary;
@@ -113,17 +114,16 @@ pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
     let mut project = Project::new("Fontelle demo");
     project.tempo_map = TempoMap::new(bpm, sample_rate as f64);
 
-    let track = project
-        .mixer
-        .tracks
-        .insert(fontelle_model::MixerTrack::new("Imported SF2"));
-    let channel = project.channels.insert(Channel {
-        name: "Imported SF2".to_string(),
-        color: [0x4f, 0x8f, 0xd0, 0xff],
-        mixer_track: track,
-        patch_data: None,
-        pan: 0.0,
-    });
+    // Through commands, like every other mutation (INVARIANT 9). There is no
+    // history to record into while a document is being built, but going
+    // through the same path is what keeps the command set honest about being
+    // able to express everything the app does.
+    let mut add_channel = AddChannel::new("Imported SF2", None);
+    add_channel
+        .apply(&mut project)
+        .expect("a fresh project must take a channel");
+    let channel = add_channel.channel().expect("just applied");
+
     let lane = project.lanes.insert(Lane {
         name: "Lane 1".to_string(),
         height: 32.0,
@@ -175,16 +175,17 @@ pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
         );
     }
 
-    let clip_length = chord_start + chord_length;
-    project.clips.insert(Clip {
+    AddClip::new(Clip {
         lane,
         start: 0,
-        length: clip_length,
+        length: chord_start + chord_length,
         source: ClipSource::Notes(NoteData { channel, notes }),
         prefab_link: None,
         color: None,
         muted: false,
-    });
+    })
+    .apply(&mut project)
+    .expect("a fresh project must take a clip");
 
     project
 }

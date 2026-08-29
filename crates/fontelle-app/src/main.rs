@@ -163,9 +163,16 @@ fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), Stri
     };
 
     // `--gain-db` is the master fader, and the master fader is a document
-    // value now rather than a parameter threaded into the graph builder.
+    // value now rather than a parameter threaded into the graph builder — set
+    // through a command like every other mutation (INVARIANT 9).
     if let Some(master) = project.mixer.master {
-        project.mixer.tracks[master].gain_db = gain_db;
+        use fontelle_model::Command;
+        fontelle_model::SetNumber::new(
+            fontelle_model::NumberTarget::TrackGainDb(master),
+            gain_db as f64,
+        )
+        .apply(&mut project)
+        .map_err(|e| format!("{e}"))?;
     }
 
     let mut realised = realise(

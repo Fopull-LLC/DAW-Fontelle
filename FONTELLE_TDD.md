@@ -357,6 +357,11 @@ automation system, not an independent data structure.
 States: `Stopped`, `Playing`, `Recording`, `Rendering`. Loop points are ticks. Transport state
 lives in an atomic struct read by the RT thread and written by the model thread.
 
+**The loop range is also document state** (`Project::loop_range`, added 2026-08-29): a project
+reopens to the section you were working on. The `Transport` holds the same range in samples as
+well, and the two halves are published together, because the RT thread cannot run a `TempoMap`
+lookup against a map the model thread may be editing.
+
 **Idle behaviour:** when `Stopped`, the graph is not processed. The audio callback fills silence
 and returns immediately. UI animation stops. This is what delivers the near-zero idle CPU target
 (§19) and it must be designed in, not optimised in later.
@@ -815,8 +820,38 @@ pub trait Command: Send {
     fn label(&self) -> &str;              // shown in the history list
     fn merge_with(&mut self, next: &dyn Command) -> bool;  // coalescing
     fn memory_cost(&self) -> usize;
+    fn as_any(&self) -> &dyn Any;         // added 2026-08-29; see below
 }
 ```
+
+**Four things this section leaves out, settled 2026-08-29 by implementing it.**
+
+1. **`merge_with` needs `as_any`.** Coalescing is only ever defined between two commands of the
+   same type — a fader move absorbs a fader move, not a note drag — and downcasting is the only
+   honest way for a `&dyn Command` to ask what arrived.
+
+2. **`History::break_gesture()`.** `merge_with` cannot tell a drag's four hundredth step from a
+   deliberate second nudge a minute later; only the caller knows the mouse came up. A time window
+   is guesswork that either splits a slow drag or swallows an edit the user meant to keep, so the
+   boundary is explicit. An undo or a redo also ends the gesture: resuming a drag across one is not
+   the same drag.
+
+3. **Redo re-applies the command, not the inverse of the inverse** — and a command that creates
+   something remembers what it created and puts it back under the *same* id. Without both halves,
+   drawing a note, dragging it, and pressing Ctrl+Z twice then Ctrl+Y twice fails on the second
+   redo, because the move refers to a note the redone insertion re-minted under a new id. This is
+   what `fontelle_model::Arena` exists for (§10.2).
+
+4. **Nothing is clamped; an out-of-range edit is refused.** Clamping is not invertible — undo would
+   put a note where the clamp left it rather than where it was. Bounding a gesture belongs to the
+   caller, which is the layer that knows what the pointer is doing. A command that cannot do its
+   whole job does nothing at all, for the same reason: half an edit is one whose inverse does not
+   describe it.
+
+**§8.2's `ParamAddress` is not yet the addressing scheme for undo targets.** That section names
+undo among the five systems one scheme should serve, and it will; it needs the `PersistentId` half
+of §10.2, which nothing in `Project` carries yet. Until then the value-setting commands take a
+typed target (`NumberTarget`, `FlagTarget`) rather than a string.
 
 Command-pattern with inverse operations, not snapshots. This is chosen because it is cheap in
 memory with large note data, and because it gives the history list **meaningful entry names for

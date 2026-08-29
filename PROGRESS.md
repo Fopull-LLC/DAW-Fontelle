@@ -13,6 +13,143 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
+## 2026-08-29 (later): every edit is a command, and it can be taken back
+
+Phase 1 item 3. `Command` was a trait with no implementations and
+`History::undo`/`redo` were `todo!()`. INVARIANT 9 — "every document mutation
+goes through a `Command`, including just this one small thing" — was
+unenforceable because there were no commands.
+
+### The prerequisite: a `slotmap` cannot give an id back
+
+This came out of writing the acceptance test the plan names, and it is the
+part worth remembering.
+
+Undo needs the inverse of "delete note A" to put back **A**. The command above
+it in the history refers to it by that id, so a restore that mints a fresh key
+breaks the next redo. Concretely: draw a note, drag it, Ctrl+Z twice, Ctrl+Y
+twice — the second redo moves a note that no longer exists. It also makes the
+plan's own test unpassable, because after apply-then-invert the document is
+*not* where it started: the id changed.
+
+`slotmap` has no way to insert at a chosen key. So `fontelle_model::Arena`
+replaces it in every id-addressed collection: the same dense `Vec` indexed by
+the key's index, the same free list, the same version per slot so a stale key
+never reads a slot that has been reused — plus `insert_at`. Keys stay
+`slotmap`'s own key types, so nothing about §10.2's on-disk story changes.
+
+Two details:
+
+- **Iteration is in index order, and that is load-bearing.** The sequencer
+  numbers voice contexts by a clip's position in the collection and the
+  realisation step numbers engine nodes by a channel's, so an unordered
+  container would make two runs of one project render differently. The
+  byte-identical demo bounce is the check that it did not.
+- **`insert_at` refuses an occupied slot** rather than overwriting. Under a
+  strictly last-in-first-out history it cannot happen — anything inserted after
+  the removal has itself been undone by then — so a refusal means something
+  mutated the document outside a command.
+
+### The command set
+
+`AddChannel`/`RemoveChannel`, `SetChannelPatch`, `AddNotes`/`RemoveNotes`/
+`MoveNotes`/`ResizeNotes`, `AddClip`/`RemoveClip`/`MoveClip`/`DuplicateClip`,
+`SetNumber`, `SetFlag`, `SetLoopRange`.
+
+Rules that hold across all of them:
+
+- **A command that cannot do its whole job does nothing.** Every note in a
+  selection is checked before any note moves, so one stale id does not leave
+  the rest half-dragged.
+- **Nothing is clamped.** A drag that would push a note off the keyboard or
+  behind the start of its clip is refused, because clamping is not invertible:
+  undo would put the note where the clamp left it. Bounding the gesture belongs
+  to the caller, which is the layer that knows what the pointer is doing.
+- **Moves and resizes are deltas, not absolutes.** That is what makes
+  coalescing "add them up" and inverting "negate", both exactly.
+- **`AddChannel` creates the channel and a mixer track together**, as one
+  entry. Choosing an instrument is one action; needing two presses of Ctrl+Z to
+  take it back would be a bug report.
+- **`RemoveChannel` takes its clips with it**, and its mixer track if no other
+  channel is using it. A clip left pointing at a channel that is gone is an
+  orphan: silent, and invisible to a user trying to work out why.
+- **`SetNumber(Tempo)` changes the opening tempo and leaves later changes
+  alone.** An imported file's tempo curve has to survive somebody nudging the
+  BPM box.
+- **`SetFlag` never coalesces.** A toggle is not a drag, and merging two
+  presses swallows one.
+
+`Project::loop_range` is new — the loop is document state, so a project reopens
+to the section you were working on. The `Transport` still holds the sample form
+for the RT thread, for the reason it always did.
+
+### `History::break_gesture`, and why merging needs a boundary
+
+§10.6 asks for one history entry per drag and gives `merge_with` as the
+mechanism, but `merge_with` cannot tell a drag's four hundredth step from a
+deliberate second nudge a minute later. Only the caller knows the mouse came
+up. A time window is guesswork that either splits a slow drag or swallows an
+edit somebody meant to keep, so the boundary is explicit. An undo or a redo
+also ends the gesture: resuming a drag across one is not the same drag.
+
+**Redo re-applies the command itself**, not the inverse of the inverse, which
+is the other half of the id story: the command remembers what it created and
+`Arena` lets it put it back under the same key.
+
+The memory ceiling §10.6 gives a default for is now read as well as stored —
+it always keeps one entry, or an edit larger than the ceiling would be
+unundoable the moment it happened.
+
+### Verified
+
+The property test the plan asks for, in two directions and over 39 seeds: 25
+random edits, then undo everything, and the serialised document has to equal
+the one it started from; and the same sequence undone and redone has to land
+back on the edited document. Serialised JSON rather than field-by-field,
+because that is what a saved project is and it leaves nothing out — the ids
+included, which is the half a slotmap could not have given back.
+
+Mutations. Caught by exactly one test: `MoveNotes` clamping instead of
+refusing; `RemoveChannel` leaving its clips behind; `SetNumber::merge_with`
+taking the later `previous`. Caught by several, all of them legitimately about
+the same thing: `AddNotes` re-minting ids on redo (3), `History` never
+coalescing (2), undo pushing the inverse onto the redo stack (4).
+
+Two findings from doing it:
+
+- **One mutation was not caught, and it turned out to be equivalent.**
+  Replacing `previous.get_or_insert(v)` with `previous = Some(v)` in
+  `SetNumber` passes every test — and it should, because under `History`'s
+  discipline the value before a re-apply is always the value the inverse just
+  restored. The comment claiming otherwise was wrong and has been fixed. What
+  the probe did reveal is that nothing covered a *coalesced* fader sweep
+  undoing to before the gesture, so that test now exists — and it catches the
+  real version of the bug (`merge_with` taking the later `previous`).
+- **A property test that hung instead of failing.** `while
+  history.undo(&mut doc).is_some() {}` spins forever when an undo fails,
+  because a failed undo puts its entry back rather than losing it. It reads the
+  result now and panics with the seed.
+
+The demo bounce is still byte-identical, which is what says routing the CLI's
+mutations through commands changed nothing about what comes out.
+
+### What is deliberately not built
+
+- **§8.2's `ParamAddress` is not the addressing scheme for undo targets yet.**
+  That section names undo as one of the five systems one scheme should serve.
+  It needs the `PersistentId` half of §10.2, which nothing in `Project`
+  carries; the value commands take a typed target until then.
+- **No copy/paste, no quantise, no split/join.** §16.5's piano-roll edits that
+  are not draw/move/resize/delete belong with the piano roll.
+- **Automation points have no commands** — automation is out of the gate.
+- **Construction is not a mutation.** `Project::new`, the MIDI importer and the
+  test fixtures build documents directly; there is no history to record into
+  while a document is being built. Everything that changes a document that
+  already exists goes through a command, including `--gain-db` and putting a
+  patch on a channel.
+
+**Where things stand:** 392 tests, clippy and fmt clean.
+
 ## 2026-08-29: the document becomes the source of truth
 
 Two items of `docs/first-usable-plan.md`'s Phase 1. Both are the same shape as
@@ -1646,9 +1783,12 @@ To inspect what a given SF2 file actually imports as, without any audio:
   `TempoMap` is piecewise and real. `Project::lanes` is a `SlotMap<LaneId,
   Lane>`. `Project::new` creates a master mixer track, `Channel` carries an
   `Option<PatchData>` and a `pan`, and `Mixer::has_cycle` is real (2026-08-29:
-  three-colour iterative DFS over `output` *and* `sends`). Still `todo!()`:
-  `Command`/`History::undo`/`redo` and `prefab::resolve`. Tests:
-  `crates/fontelle-model/src/{project,mixer}.rs`.
+  three-colour iterative DFS over `output` *and* `sends`). `Arena` replaces
+  `SlotMap` in every id-addressed collection, because undo needs to give an id
+  back. `Command`, `History::undo`/`redo` and fifteen commands are real
+  (2026-08-29). Still `todo!()`: `prefab::resolve`. Tests:
+  `crates/fontelle-model/src/{project,mixer,arena}.rs` and
+  `crates/fontelle-model/tests/commands.rs`.
 - **fontelle-sequencer** — `compile()` is real, scoped to `ClipSource::Notes`
   clips with no prefab resolution (see the "2026-08-23 update" above for the
   full scope-cut list). `collision::voice_context_for_clip` was already real

@@ -17,7 +17,10 @@ use fontelle_core::{
 };
 use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 use fontelle_model::Arena;
-use fontelle_model::{Channel, Clip, ClipSource, Lane, MixerTrack, Note, NoteData, Project};
+use fontelle_model::{
+    Channel, Clip, ClipSource, Command, FlagTarget, Lane, MixerTrack, Note, NoteData, NumberTarget,
+    Project, SetFlag, SetNumber,
+};
 use fontelle_types::{ChannelId, MixerTrackId, PPQN};
 
 const SR: u32 = 48_000;
@@ -164,6 +167,21 @@ impl Rig {
     }
 }
 
+/// Every mixer change below goes through a command (INVARIANT 9), which is
+/// also the shortest way to say that the command set covers what the mixer UI
+/// will need.
+fn set_number(project: &mut Project, target: NumberTarget, value: f64) {
+    SetNumber::new(target, value)
+        .apply(project)
+        .expect("the target must exist");
+}
+
+fn set_flag(project: &mut Project, target: FlagTarget, value: bool) {
+    SetFlag::new(target, value)
+        .apply(project)
+        .expect("the target must exist");
+}
+
 /// Peak of one channel of an interleaved stereo buffer, skipping the first
 /// block so a note-on that lands mid-block is not the thing being measured.
 fn peak(interleaved: &[f32], channel: usize) -> f32 {
@@ -213,7 +231,7 @@ fn two_channels_on_one_mixer_track_share_its_fader() {
     rig.add_channel("B", 0.2, shared);
     let together = peak_mono(&rig.render(4_000));
 
-    rig.project.mixer.tracks[shared].gain_db = -20.0;
+    set_number(&mut rig.project, NumberTarget::TrackGainDb(shared), -20.0);
     let pulled_down = peak_mono(&rig.render(4_000));
 
     let ratio = pulled_down / together;
@@ -235,8 +253,8 @@ fn a_track_routed_into_a_group_passes_through_both_faders() {
 
     let flat = peak_mono(&rig.render(4_000));
 
-    rig.project.mixer.tracks[part].gain_db = -6.0;
-    rig.project.mixer.tracks[group].gain_db = -6.0;
+    set_number(&mut rig.project, NumberTarget::TrackGainDb(part), -6.0);
+    set_number(&mut rig.project, NumberTarget::TrackGainDb(group), -6.0);
     let both = peak_mono(&rig.render(4_000));
 
     let ratio = both / flat;
@@ -255,11 +273,11 @@ fn a_muted_track_is_silent_and_its_neighbour_is_not() {
     rig.add_channel("A", 0.4, a_track);
     rig.add_channel("B", 0.4, b_track);
 
-    rig.project.mixer.tracks[a_track].mute = true;
+    set_flag(&mut rig.project, FlagTarget::TrackMute(a_track), true);
     let audio = rig.render(4_000);
 
     assert!(peak_mono(&audio) > 0.1, "B must still be heard");
-    rig.project.mixer.tracks[b_track].mute = true;
+    set_flag(&mut rig.project, FlagTarget::TrackMute(b_track), true);
     assert_eq!(
         peak_mono(&rig.render(4_000)),
         0.0,
@@ -279,7 +297,7 @@ fn soloing_one_track_silences_the_others_but_not_the_group_carrying_it() {
     rig.add_channel("Outside", 0.4, outside);
 
     let both = peak_mono(&rig.render(4_000));
-    rig.project.mixer.tracks[inside].solo = true;
+    set_flag(&mut rig.project, FlagTarget::TrackSolo(inside), true);
     let soloed = peak_mono(&rig.render(4_000));
 
     assert!(
@@ -375,8 +393,8 @@ fn the_channels_own_pan_places_it_in_the_stereo_field() {
     // a test built on that passes with the feature absent.
     let left = rig.add_channel("Left", 0.4, shared);
     let right = rig.add_channel("Right", 0.15, shared);
-    rig.project.channels[left].pan = -1.0;
-    rig.project.channels[right].pan = 1.0;
+    set_number(&mut rig.project, NumberTarget::ChannelPan(left), -1.0);
+    set_number(&mut rig.project, NumberTarget::ChannelPan(right), 1.0);
 
     let audio = rig.render(4_000);
     let (l, r) = (peak(&audio, 0), peak(&audio, 1));
@@ -385,8 +403,8 @@ fn the_channels_own_pan_places_it_in_the_stereo_field() {
 
     // Swap them and the picture mirrors; a pan that reached nothing would
     // leave the two renders identical.
-    rig.project.channels[left].pan = 1.0;
-    rig.project.channels[right].pan = -1.0;
+    set_number(&mut rig.project, NumberTarget::ChannelPan(left), 1.0);
+    set_number(&mut rig.project, NumberTarget::ChannelPan(right), -1.0);
     let swapped = rig.render(4_000);
     assert!(
         peak(&swapped, 1) > peak(&swapped, 0),

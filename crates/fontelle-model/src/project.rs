@@ -236,6 +236,14 @@ pub struct Project {
     pub prefabs: Arena<PrefabId, Prefab>,
     pub assets: AssetTable,
     pub markers: Vec<Marker>,
+    /// The loop region, in ticks (TDD §6.3: "loop points are ticks").
+    ///
+    /// Document state rather than transport state: a project reopens to the
+    /// section you were working on. The `Transport` holds the same range in
+    /// samples as well, because the RT thread cannot run a `TempoMap` lookup
+    /// against a map the model thread may be editing — the two halves are
+    /// published together for exactly that reason.
+    pub loop_range: Option<(Tick, Tick)>,
     pub view_state: ViewState,
 }
 
@@ -261,6 +269,7 @@ impl Project {
             prefabs: Arena::default(),
             assets: AssetTable::default(),
             markers: Vec::new(),
+            loop_range: None,
             view_state: ViewState::default(),
         }
     }

@@ -10,6 +10,7 @@ mod automation;
 mod channel;
 mod clip;
 mod command;
+mod commands;
 mod lane;
 mod mixer;
 mod note;
@@ -22,6 +23,11 @@ pub use automation::{AutomationData, AutomationPoint, CurveShape};
 pub use channel::Channel;
 pub use clip::{AudioClipData, Clip, ClipMap, ClipSource};
 pub use command::{Command, CommandError, History};
+pub use commands::{
+    AddChannel, AddClip, AddNotes, DuplicateClip, FlagTarget, MoveClip, MoveNotes, NumberTarget,
+    RemoveChannel, RemoveClip, RemoveNotes, ResizeNotes, SetChannelPatch, SetFlag, SetLoopRange,
+    SetNumber,
+};
 pub use lane::Lane;
 pub use mixer::{EffectSlot, Mixer, MixerTrack, PanLaw, Send};
 pub use note::{Note, NoteData};

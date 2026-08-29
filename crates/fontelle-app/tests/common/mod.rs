@@ -16,6 +16,15 @@ use fontelle_types::CompiledTimeline;
 pub const SR: u32 = 48_000;
 pub const BPM: f64 = 120.0;
 
+/// Every document change in a test goes through a command, the same as
+/// everywhere else (INVARIANT 9).
+pub fn set_number(project: &mut Project, target: fontelle_model::NumberTarget, value: f64) {
+    use fontelle_model::Command;
+    fontelle_model::SetNumber::new(target, value)
+        .apply(project)
+        .expect("the target must exist");
+}
+
 /// The demo phrase with `patch` on its one channel — the document a run of
 /// `--play-sf2` builds, minus the soundfont.
 ///
