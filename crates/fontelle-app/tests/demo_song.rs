@@ -4,16 +4,25 @@
 //! (the case that exercises polyphony), and that its reported duration
 //! actually covers the music.
 
-use fontelle_app::demo_song;
+use fontelle_app::{channel_nodes, demo_project};
+use fontelle_model::Project;
+use fontelle_types::CompiledTimeline;
 use fontelle_types::{EventPayload, PPQN};
+
+/// The demo document's own timeline. Compiling needs the channel->node map,
+/// which is the realisation step's to hand out even when no instrument has
+/// been chosen yet.
+fn compile(project: &Project) -> CompiledTimeline {
+    fontelle_sequencer::compile(project, &channel_nodes(project))
+}
 
 const SR: u32 = 48_000;
 const BPM: f64 = 120.0;
 
 #[test]
 fn the_demo_phrase_compiles_to_a_run_followed_by_a_chord() {
-    let song = demo_song(60, BPM, SR);
-    let timeline = song.compile();
+    let project = demo_project(60, BPM, SR);
+    let timeline = compile(&project);
 
     let note_ons: Vec<_> = timeline
         .events
@@ -60,8 +69,8 @@ fn the_demo_phrase_compiles_to_a_run_followed_by_a_chord() {
 
 #[test]
 fn the_chord_notes_all_start_on_the_same_sample() {
-    let song = demo_song(60, BPM, SR);
-    let timeline = song.compile();
+    let project = demo_project(60, BPM, SR);
+    let timeline = compile(&project);
 
     let chord: Vec<(i64, u8)> = timeline
         .events
@@ -89,8 +98,8 @@ fn the_chord_notes_all_start_on_the_same_sample() {
 
 #[test]
 fn the_transposed_song_shifts_every_key_but_keeps_the_rhythm() {
-    let base = demo_song(60, BPM, SR).compile();
-    let up = demo_song(67, BPM, SR).compile();
+    let base = compile(&demo_project(60, BPM, SR));
+    let up = compile(&demo_project(67, BPM, SR));
 
     let keys = |t: &fontelle_types::CompiledTimeline| -> Vec<u8> {
         t.events
@@ -117,8 +126,8 @@ fn the_transposed_song_shifts_every_key_but_keeps_the_rhythm() {
 
 #[test]
 fn reported_duration_covers_the_last_note_off_plus_its_tail() {
-    let song = demo_song(60, BPM, SR);
-    let timeline = song.compile();
+    let project = demo_project(60, BPM, SR);
+    let timeline = compile(&project);
     let tail = PPQN; // one beat of ring-out
 
     let last_event = timeline
@@ -128,7 +137,7 @@ fn reported_duration_covers_the_last_note_off_plus_its_tail() {
         .max()
         .expect("the demo song has events");
 
-    let duration = song.duration_samples(tail);
+    let duration = fontelle_app::project_duration_samples(&project, tail);
     assert!(
         duration > last_event,
         "duration {duration} must outlast the final event at {last_event}"
@@ -149,8 +158,8 @@ fn reported_duration_covers_the_last_note_off_plus_its_tail() {
 /// only way to hear the feature is to edit the source.
 #[test]
 fn the_opening_run_is_a_crescendo_so_velocity_response_is_audible() {
-    let song = demo_song(60, BPM, SR);
-    let timeline = song.compile();
+    let project = demo_project(60, BPM, SR);
+    let timeline = compile(&project);
 
     let velocities: Vec<u8> = timeline
         .events

@@ -24,4 +24,18 @@ pub struct Channel {
     /// a newer build can be refused by version rather than by a confusing
     /// field-level error.
     pub patch_data: Option<PatchData>,
+    /// Where this channel sits in the stereo field: -1.0 hard left, 0.0
+    /// centre, +1.0 hard right.
+    ///
+    /// **Not the same control as its mixer track's `pan`,** and the difference
+    /// is audible. This is constant-power *placement* of a source the voice
+    /// has not yet positioned; a track's pan is a *balance* control over a bus
+    /// whose contents are already placed. Applying a pan law twice pulls a
+    /// second 3 dB out of every centred part, and a balance control swung hard
+    /// over throws half the signal away instead of moving it.
+    ///
+    /// It lives on the channel rather than on the track because TDD §13.1
+    /// allows several channels to share one mixer track, and each of them
+    /// needs its own place in the field.
+    pub pan: f32,
 }

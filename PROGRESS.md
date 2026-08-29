@@ -13,6 +13,175 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
+## 2026-08-29: the document becomes the source of truth
+
+Two items of `docs/first-usable-plan.md`'s Phase 1. Both are the same shape as
+the last round's: a type that existed, was complete, and was consulted by
+nothing. `Project::mixer` was decorative, `Channel::patch_data` was an empty
+`Vec<u8>` with a comment saying the format was undesigned, and `fontelle-app`
+hand-built the graph from a private `Song` type that duplicated what the
+document already said. Three of this file's open questions were the same
+missing step.
+
+### A patch can be written down (TDD §8.3, §17.2)
+
+Serde derives are the easy half. The hard half is that **a layer cannot store
+the key its samples live under.**
+
+`Source::Sample` names audio by `AssetId`, which is the `slotmap` key whichever
+`SampleStore` happened to decode the file minted. INVARIANT 8 forbids putting
+an index on disk, and it would be useless there anyway — the same soundfont
+imported into a different store gets different keys. So a stored layer names
+its audio by `SampleRef`: the `AssetRef` of the file (§8.3's "presets embed
+asset references, not sample data") plus the index of the sample header inside
+it, because an `AssetRef` names a *file* and one soundfont holds hundreds of
+samples. Reading takes a resolver from `SampleRef` to a live id.
+
+The test that separates the two designs writes a patch against one store and
+reads it into another where the same audio sits under a different key. Nothing
+weaker can tell them apart, because in a single store the naive design works.
+
+Four more decisions:
+
+- **An unresolvable sample is reported, not raised.** §17.4 requires a project
+  with a broken link to open and play with placeholders. The layer gets a null
+  id — silent, because `SampleStore::get` has nothing under it — and the
+  reference comes back in `LoadedPatch::unresolved` for a relink dialog. A
+  layer written with *no* provenance at all is a distinct reported case rather
+  than a lie the relink dialog then chases.
+- **The body is untyped JSON behind a `format_version`.** A migration has to
+  read shapes this build's structs no longer describe, and the version has to
+  be legible without deserialising the patch so a file from a newer build reads
+  as "upgrade Fontelle" rather than as damage. The migration entry point exists
+  with an empty chain and its first arm written out in the doc comment; the
+  first migration is the one most likely to be added under time pressure.
+- **`Channel::patch_data` is `Option<PatchData>`.** `None` is a real state — a
+  channel with no instrument yet — and the typed form is also what keeps
+  `project.json` readable: `serde_json` writes a byte vector as an array of
+  decimal numbers, and §17.2 chose JSON precisely to be diffable, greppable and
+  hand-recoverable.
+- **The importer decodes a sample header once, not once per zone.** A key split
+  or a sustain layer regularly points several zones at one header and each was
+  getting its own copy of the audio. It also makes the provenance map a
+  bijection, which is what lets a reopened project get from a `SampleRef` back
+  to exactly one id.
+
+`import_sf2`/`import_sf2_preset` return `ImportedPatch` — the patch plus where
+each sample came from — because the importer is the only thing that knows, and
+without it there is nothing to write down.
+
+### `Project` -> graph: the step nothing owned
+
+`fontelle_app::realise` reads `Project::channels` and `Project::mixer` and
+returns the `CompiledGraph`, the bus layout and the `ChannelId -> NodeId` map
+`fontelle_sequencer::compile` takes. `Song`, `SongChannel`, `build_graph` and
+`build_graph_with_gain` are gone; `demo_project` and `project_from_midi` return
+plain `Project`s.
+
+It lives in `fontelle-app` because §4.1 makes that the only layer allowed to see
+both the model and the engine. `fontelle-sequencer` cannot name a `NodeId`'s
+owner, which is precisely why `compile` has taken the mapping as a parameter
+since it was written.
+
+What it turns on:
+
+- **Every channel gets a node id, instrument or not.** A compiled timeline's
+  shape then depends only on the notes, so choosing or changing an instrument
+  does not invalidate one — the events reach a node that is not in the schedule
+  and are heard by nobody. Tying the id to the patch would make an instrument
+  swap a timeline recompile, and it would make a channel briefly disappear from
+  its own arrangement.
+- **Tracks are scheduled deepest first.** A group's fader has to run after
+  everything feeding it has been summed in, so the schedule is: every sampler
+  (they only add, so their order among themselves is free), then each track by
+  decreasing distance to master, then the master fader and the limiter.
+  Reversing that sort is caught by two tests.
+- **A routing cycle is refused before the sort, not survived by it.**
+  `Mixer::has_cycle` was a `todo!()`; it is a three-colour iterative DFS over
+  `output` *and* `sends`. Three colours rather than a visited set, because a
+  track reachable by two paths is an ordinary two-into-one group and a plain
+  "seen" set calls it a cycle. Iterative, because the routing graph is
+  user-authored and a long chain must not overflow the stack on the way to
+  reporting that it is fine.
+- **Solo makes audible the soloed track, what feeds it, and what carries it.**
+  The last is the half that is easy to miss: muting "everything not soloed"
+  silences a soloed track routed into a group, because the group is not itself
+  soloed.
+- **A channel whose mixer track has been deleted lands on the master.** A part
+  you can hear and fix beats a part that vanished.
+
+**`Channel::pan` is new, and it is deliberately not the track's pan.** The plan
+said the MIDI importer's CC7 and CC10 should both land on `Project::mixer`; CC7
+does, and CC10 does not, because this document already recorded why. A track's
+pan is a *balance* control over a bus the voice has already placed on the
+constant-power taper, so putting CC10 there applies a pan law twice and throws
+half the signal away at the extremes. The open question was that a part's pan
+was "not visible anywhere in the document", and the answer this file already
+suggested is the right one: a channel field, because §13.1 lets several channels
+share one track and each needs its own place in the field. Closed, on the
+channel rather than on the track.
+
+**`--play-sf2` now round-trips every patch through the document on every run.**
+The imported patch goes onto `Channel::patch_data` in its serialised form and
+comes back out through `realise`. Save/load has no file yet and the round trip
+is already exercised by every run and every rendering test.
+
+### Verified
+
+The proof the plan asks for is the byte-identical bounce, and it is exact.
+Rendered before the change and after it, with `cmp`:
+
+```sh
+--play-sf2 F-Zero.sf2 --preset 0 --render-wav out.wav          # 108 000 frames
+--play-sf2 SGM-v2.01... --play-midi "Deltarune - Don't Forget.mid"  # 2 136 621 frames
+```
+
+Both **byte-identical** across the whole rewrite, including the trip through
+`PatchData`. `--gain-db -12` still peaks at 0.296, the same figure this file
+recorded for it in August, and `--loop 0:1 --repeat 3` still renders three
+passes.
+
+Mutations, each caught by exactly one test unless noted: dropping
+`voice_config` on write; removing the patch version guard; ignoring
+`Channel::pan`; solo forgetting the group carrying it; skipping the cycle
+check. Sorting tracks shallowest-first was caught by two, both of them about
+ordering.
+
+One test of mine was wrong rather than the code, and in the way this file keeps
+warning about: the first pan test panned two *identical* sources apart and then
+swapped them, which renders the same audio either way. It passed with the
+feature absent. The two parts are at different levels now, so the mirror is
+visible.
+
+### What is deliberately not built
+
+- **Inserts and sends are not compiled.** Effects are M4 and out of the gate; a
+  send is a `BusSumNode` with a level and a pan, so the shape is there when it
+  is wanted. `has_cycle` already counts send edges, because a loop through one
+  is the same feedback and harder to see in the UI.
+- **`AssetRef::id` is null in a stored `SampleRef`.** The field is a runtime
+  handle into the document's `AssetTable`, and a reference embedded in a preset
+  from another machine has no meaningful value for it. Relinking matches on
+  `AssetRef::same_content`, never on the id. There are two `AssetId` spaces in
+  play — a *file* in the asset table and a decoded *sample* in the store — and
+  they share a type, which is worth cleaning up when the asset table is
+  actually filled.
+- **No `Command` yet**, so `realise`'s tests and the CLI still write to
+  `Project` directly. That is Phase 1 item 3, and INVARIANT 9 starts being
+  enforced when it lands.
+
+TDD corrections written into the TDD, per its own rule: §3.1 had no hashing
+crate though §17.4 specifies xxhash (`twox-hash` added; `std`'s
+`DefaultHasher` is documented as unstable across releases and cannot back a
+value written to disk); §7.2 said `Source` holds an `AssetRef` when it holds an
+`AssetId`, because a `Layer` is read on the RT thread and an owned `PathBuf`
+does not belong in it; §8.3 did not say how a preset names one sample inside a
+soundfont; §10.1's `lanes` was still a `Vec`; §11.1 named nothing as the owner
+of the document-to-graph step; §13.1 had neither `Channel::pan` nor solo
+semantics.
+
+**Where things stand:** 360 tests, clippy and fmt clean.
+
 ## 2026-08-28: the transport moves, and MIDI arrives from outside
 
 Two gaps closed, both of the same kind: a type that existed, was complete, and
@@ -1473,13 +1642,13 @@ To inspect what a given SF2 file actually imports as, without any audio:
   overshoot). Everything else is still the scaffolded shape —
   `ParametricEq::process` and `Compressor::process` are the two that
   `fontelle-dsp` could already support.
-- **fontelle-model** — mostly still stub, but no longer *pure* stub.
-  `TempoMap` is real for constant tempo (see the "2026-08-23 update" above for
-  the scope cut). `Project::lanes` is a `SlotMap<LaneId, Lane>` now (was an
-  awkward `Vec<Lane>` + parallel `Vec<LaneId>`). Everything else —
-  `Command`/`History::undo`/`redo`, `Mixer::has_cycle`, `prefab::resolve` —
-  is still `todo!()`; none of it is on the M0 path. Tests:
-  `crates/fontelle-model/src/project.rs`.
+- **fontelle-model** — mostly real as data, still stub as behaviour.
+  `TempoMap` is piecewise and real. `Project::lanes` is a `SlotMap<LaneId,
+  Lane>`. `Project::new` creates a master mixer track, `Channel` carries an
+  `Option<PatchData>` and a `pan`, and `Mixer::has_cycle` is real (2026-08-29:
+  three-colour iterative DFS over `output` *and* `sends`). Still `todo!()`:
+  `Command`/`History::undo`/`redo` and `prefab::resolve`. Tests:
+  `crates/fontelle-model/src/{project,mixer}.rs`.
 - **fontelle-sequencer** — `compile()` is real, scoped to `ClipSource::Notes`
   clips with no prefab resolution (see the "2026-08-23 update" above for the
   full scope-cut list). `collision::voice_context_for_clip` was already real
@@ -1512,6 +1681,15 @@ To inspect what a given SF2 file actually imports as, without any audio:
 - **fontelle-midi** — real (2026-08-28): device enumeration and hot-plug via
   `midir`, decode, `MidiRouter` (sustain, stuck-note release on disconnect),
   `MidiHub`. Still stub: `ClockSync` (§14.5) and MIDI file *export* (§14.6).
+- **fontelle-app** — the DAW binary, plus a `lib.rs` holding what a
+  `[[bin]]` cannot export. `realise` (2026-08-29) is the document -> graph
+  step: it reads `Project::channels` and `Project::mixer` and returns the
+  `CompiledGraph`, the bus layout and the `ChannelId -> NodeId` map. It lives
+  here because §4.1 makes this the only layer allowed to see both the model and
+  the engine. `SampleLibrary` holds the decoded audio and the two-way mapping
+  between store ids and the file references a saved patch names them by.
+  `render_offline`, `write_wav16`, `demo_project` and `project_from_midi` are
+  here too.
 - **fontelle-ui**, **fontelle-plugin** — pure stub, unchanged since
   scaffolding. Not on the M0 path.
 - **xtask** — pure stub.
@@ -1580,13 +1758,11 @@ crash the process).
   implement TDD §7.7's streamed case (files over a threshold, first N ms resident,
   remainder streamed by a disk thread into per-voice ring buffers) — that needs
   `fontelle-engine` to own a disk thread first, which doesn't exist yet.
-- **`fontelle-model::Channel` stores a serialised `Vec<u8>` patch**, not a live
-  `fontelle_core::Patch` — the model crate can't depend on `fontelle-core`
-  (INVARIANT 4's model-side counterpart: model depends on nothing but
-  `fontelle-types`). Revisit once the project serialisation format (§17.2) is
-  actually designed; a dedicated intermediate type might be cleaner than an
-  opaque blob. `fontelle-app --play-sf2` currently leaves `patch_data` empty
-  for exactly this reason — see the "2026-08-23 update" above.
+- ~~**`fontelle-model::Channel` stores a serialised `Vec<u8>` patch.**~~
+  **Settled 2026-08-29:** it holds `Option<fontelle_types::PatchData>`, the
+  typed form the scaffolding note suggested. The format itself lives in
+  `fontelle-core` (§8.3) and the model still depends on nothing but
+  `fontelle-types`.
 - **`TempoMap` holds a runtime `sample_rate_hz` field** that's `#[serde(skip)]`
   — never saved with the project, since it's the audio device's rate, not
   document data. Not stated anywhere in the TDD (§6.2's method signatures take
@@ -1594,27 +1770,23 @@ crash the process).
   this is the scope-cut, single-segment `TempoMap`'s way of knowing it. Revisit
   once real ramp segments land — TDD §6.2's design doesn't visibly address
   where the sample rate comes from either.
-- **The mixer is built in `fontelle-app`, not compiled from `Project::mixer`.**
-  The model has a full `Mixer`/`MixerTrack` (TDD §13.1) and nothing reads it:
-  `build_graph` assigns buses and faders from `Song::channels`, and a MIDI
-  file's CC7 lands there rather than on a document mixer track. The fix is the
-  same "build the graph from the project" step that would own `channel_nodes`
-  below, and it is what has to exist before a UI can show a mixer at all.
-- **MIDI CC10 is applied at the sampler, CC7 at the mixer track**, which is a
-  real distinction (constant-power placement of a mono-ish source versus
-  balance over a stereo bus) but means a part's pan is not visible anywhere in
-  the document. `fontelle_model::Channel` has no `pan`; TDD §13.1 notes that
-  several channels may share a mixer track, which is the case that would
-  require one.
+- ~~**The mixer is built in `fontelle-app`, not compiled from
+  `Project::mixer`.**~~ **Settled 2026-08-29:** `fontelle_app::realise` builds
+  the graph, the bus layout and the channel->node map from `Project::channels`
+  and `Project::mixer`. A MIDI file's CC7 lands on a document mixer track.
+- ~~**MIDI CC10 is applied at the sampler, CC7 at the mixer track**, so a
+  part's pan is not visible anywhere in the document.~~ **Settled 2026-08-29:**
+  `Channel` has a `pan`, applied at the sampler by the realisation step. The
+  distinction it was drawing is real and stays — a track's pan is a balance
+  control over an already-placed bus — and a channel field is what §13.1's
+  "several channels may share a mixer track" requires.
 - **`fontelle_sequencer::compile` takes a `channel_nodes: &HashMap<ChannelId,
   NodeId>` parameter** not implied by the TDD's prose (§11.1 gives no Rust
   signature for `compile`). Needed because the crate can't depend on
   `fontelle-engine` to look up a channel's compiled `SamplerNode` identity
-  itself. See the "2026-08-23 update" above for the full reasoning — worth
-  revisiting once there's a real "build the graph from the project" step
-  somewhere (currently `fontelle-app` hand-assigns `NodeId`s), since that step
-  would be the natural owner of this mapping instead of a parameter threaded
-  in from outside.
+  itself. **The owner now exists** (2026-08-29): `fontelle_app::realise` hands
+  out the map, and §11.1 has been corrected to say so. The parameter stays,
+  because §4.1 still forbids the sequencer from discovering it.
 
 ## Next steps, in priority order
 

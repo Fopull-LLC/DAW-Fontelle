@@ -634,12 +634,28 @@ pub struct Project {
     pub tempo_map: TempoMap,
     pub channels: SlotMap<ChannelId, Channel>,   // instrument channels
     pub mixer: Mixer,                            // §13
-    pub lanes: Vec<Lane>,                        // visual only — see 10.3
+    pub lanes: SlotMap<LaneId, Lane>,            // visual only — see 10.3
     pub clips: SlotMap<ClipId, Clip>,            // all clips, flat
     pub prefabs: SlotMap<PrefabId, Prefab>,      // §10.5
     pub assets: AssetTable,                      // §17.4
     pub markers: Vec<Marker>,
     pub view_state: ViewState,                   // zoom, scroll, panel layout, selection
+}
+```
+
+**Correction, 2026-08-28:** `lanes` was written as `Vec<Lane>`. It is a `SlotMap` keyed by
+`LaneId`, like every other addressable collection here — a `Vec` plus a parallel `Vec<LaneId>`
+gave a `Lane` no way to recover its own id, which INVARIANT 8 rules out.
+
+`Channel` is not shown above and is worth stating, because two of its fields are decisions:
+
+```rust
+pub struct Channel {
+    pub name: String,
+    pub color: Color,
+    pub mixer_track: MixerTrackId,
+    pub patch_data: Option<PatchData>,  // §8.3; None = no instrument chosen yet
+    pub pan: f32,                       // see §13.1
 }
 ```
 
@@ -818,6 +834,18 @@ The sequencer turns the entire document — clips, prefab instances with overrid
 automation, the tempo map — into a **flat, immutable, sample-timestamped event list** that the RT
 thread reads linearly.
 
+**Who builds the graph from the document (added 2026-08-28).** This section, §5.1 and §13.1 all
+assume a `CompiledGraph` exists without naming what produces one from a `Project`. That step is
+`fontelle_app::realise`: it reads `Project::channels` and `Project::mixer` and returns the graph,
+the bus layout, and the `ChannelId -> NodeId` map that `compile` takes as a parameter. It lives in
+`fontelle-app` because §4.1 makes that the only layer allowed to see both the model and the
+engine — `fontelle-sequencer` may not name a `NodeId`'s owner, which is exactly why `compile`
+cannot work the mapping out for itself.
+
+Every channel gets a node id whether or not it has an instrument yet, so a compiled timeline's
+shape depends only on the notes. Choosing or changing an instrument therefore does not invalidate
+one; the events reach a node that is not in the schedule and are heard by nobody.
+
 ```rust
 pub struct CompiledTimeline {
     events: Vec<TimedEvent>,       // sorted by sample position
@@ -945,6 +973,19 @@ pub struct MixerTrack {
 
 Instrument channels route to mixer tracks by `ChannelId → MixerTrackId`. Multiple channels may
 share a mixer track.
+
+**A channel has a pan of its own, and it is not this one (added 2026-08-28).** `MixerTrack::pan`
+is a *balance* control over a bus whose contents the voice has already placed on the
+constant-power taper; `Channel::pan` is that placement. Applying a pan law twice pulls a second
+3 dB out of every centred part, and a balance control swung hard over throws half the signal away
+instead of moving it. The reason it cannot simply live on the track is the sentence above: several
+channels may share one, and each of them needs its own place in the field. A MIDI file's CC10
+lands on the channel and its CC7 on the track, for the same reason.
+
+**Solo (added 2026-08-28).** A solo makes audible: the soloed track, everything that feeds it, and
+everything that carries it to the master. The last of those is the half that is easy to miss —
+muting "everything not soloed" silences a soloed track routed into a group, because the group is
+not itself soloed.
 
 ### 13.2 Routing and cycle safety
 

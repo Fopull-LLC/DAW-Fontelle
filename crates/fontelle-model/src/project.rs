@@ -239,7 +239,12 @@ pub struct Project {
 }
 
 impl Project {
+    /// A new, empty document — with a master mixer track, because every
+    /// project has one (TDD §13.1) and a mixer with nothing to sum into is not
+    /// a state any command should have to handle.
     pub fn new(name: impl Into<String>) -> Self {
+        let mut mixer = Mixer::default();
+        mixer.master = Some(mixer.tracks.insert(crate::mixer::MixerTrack::new("Master")));
         Self {
             meta: ProjectMeta {
                 name: name.into(),
@@ -249,7 +254,7 @@ impl Project {
             },
             tempo_map: TempoMap::default(),
             channels: SlotMap::default(),
-            mixer: Mixer::default(),
+            mixer,
             lanes: SlotMap::default(),
             clips: SlotMap::default(),
             prefabs: SlotMap::default(),

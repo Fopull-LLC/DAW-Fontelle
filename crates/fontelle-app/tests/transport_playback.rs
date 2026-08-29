@@ -6,30 +6,37 @@
 //! the reason the per-block decision lives in a type of its own — every
 //! behaviour below would otherwise be checkable only by ear.
 
+mod common;
+
 use std::sync::Arc;
 
-use fontelle_app::{Song, build_graph, demo_song, render_offline_with_transport};
+use fontelle_app::{SampleLibrary, render_offline_with_transport};
 use fontelle_core::{
-    FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, SampleStore,
-    Sampler, Source, VoiceConfig,
+    FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, Source,
+    VoiceConfig,
 };
 use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 use fontelle_engine::{BLOCK_SIZE, CompiledGraph, Transport, TransportReader, TransportState};
+use fontelle_model::Project;
+use fontelle_types::CompiledTimeline;
 
-const SR: u32 = 48_000;
+use common::SR;
 
 /// A looped sine with a long release, so a note is still sounding — and would
 /// keep sounding — when the transport is stopped underneath it. A short
 /// release would make "stop silences it" true by accident.
-fn sustained_patch(store: &mut SampleStore) -> Patch {
+fn sustained_patch(library: &mut SampleLibrary) -> Patch {
     let cycle = 100;
     let data: Vec<f32> = (0..cycle)
         .map(|i| (i as f32 / cycle as f32 * std::f32::consts::TAU).sin())
         .collect();
-    let asset = store.insert(SampleBuffer {
-        data: Arc::from(data),
-        sample_rate: SR,
-    });
+    let asset = library.insert_synthetic(
+        "sustained",
+        SampleBuffer {
+            data: Arc::from(data),
+            sample_rate: SR,
+        },
+    );
     let disabled = FilterSlot {
         mode: SvfMode::Lowpass,
         cutoff_hz: 20_000.0,
@@ -71,17 +78,15 @@ fn sustained_patch(store: &mut SampleStore) -> Patch {
     }
 }
 
-fn song_and_graph() -> (Song, CompiledGraph) {
-    let song = demo_song(60, 120.0, SR);
-    let mut store = SampleStore::new();
-    let patch = sustained_patch(&mut store);
-    let mut sampler = Sampler::new(patch);
-    sampler.prepare(&fontelle_core::PrepareContext {
-        sample_rate: SR as f32,
-        max_block_size: BLOCK_SIZE as u32,
-    });
-    let graph = build_graph(&song, vec![sampler], Arc::new(store));
-    (song, graph)
+/// The demo document, its graph and its timeline — through the same
+/// realisation step the CLI uses, so what these tests drive is what a run of
+/// `--play-sf2` drives.
+fn song_and_graph() -> (Project, CompiledGraph, CompiledTimeline) {
+    let mut library = SampleLibrary::new();
+    let patch = sustained_patch(&mut library);
+    let (project, realised, timeline) =
+        common::demo_rig(&patch, &library, fontelle_app::PLAYBACK_QUALITY);
+    (project, realised.graph, timeline)
 }
 
 /// The device callback's loop, minus the interleave and the sound card.
@@ -115,8 +120,7 @@ fn peak(samples: &[f32]) -> f32 {
 
 #[test]
 fn a_stopped_transport_renders_silence_and_a_playing_one_does_not() {
-    let (song, mut graph) = song_and_graph();
-    let timeline = song.compile();
+    let (_project, mut graph, timeline) = song_and_graph();
     let transport = Transport::new();
     let mut reader = TransportReader::new();
 
@@ -144,8 +148,7 @@ fn stopping_silences_the_output_for_as_long_as_it_is_stopped() {
     // that the stop cut the voices: a stopped transport runs no nodes at all,
     // so this passes whether or not anything was silenced. What the reset
     // actually buys is the test below.
-    let (song, mut graph) = song_and_graph();
-    let timeline = song.compile();
+    let (_project, mut graph, timeline) = song_and_graph();
     let transport = Transport::new();
     transport.play();
     let mut reader = TransportReader::new();
@@ -179,8 +182,7 @@ fn a_note_sounding_at_the_stop_does_not_come_back_when_play_is_pressed_again() {
     // a voice that survived the stop is the only thing that could make sound
     // here. Written after the obvious version of this test — "stop produces
     // silence" — turned out to pass with the reset removed entirely.
-    let (song, mut graph) = song_and_graph();
-    let timeline = song.compile();
+    let (_project, mut graph, timeline) = song_and_graph();
     let transport = Transport::new();
     transport.play();
     let mut reader = TransportReader::new();
@@ -219,8 +221,7 @@ fn a_note_sounding_at_the_stop_does_not_come_back_when_play_is_pressed_again() {
 
 #[test]
 fn the_playhead_stops_where_playback_stopped_and_play_resumes_from_there() {
-    let (song, mut graph) = song_and_graph();
-    let timeline = song.compile();
+    let (_project, mut graph, timeline) = song_and_graph();
     let transport = Transport::new();
     transport.play();
     let mut reader = TransportReader::new();
@@ -257,8 +258,7 @@ fn seeking_back_to_the_start_replays_the_piece_identically() {
     // graph and rewinds the event cursor, so the second pass is the same
     // render as the first from the same starting state. Anything weaker would
     // pass with a cursor that had been left partway through the timeline.
-    let (song, mut graph) = song_and_graph();
-    let timeline = song.compile();
+    let (_project, mut graph, timeline) = song_and_graph();
     let transport = Transport::new();
     transport.play();
     let mut reader = TransportReader::new();
@@ -290,14 +290,12 @@ fn seeking_forwards_lands_in_the_middle_of_the_phrase() {
     // it plays it — a note whose note-on is behind the playhead is not
     // retriggered, which is exactly what makes this the interesting case: what
     // sounds is whatever the *next* events say, and there is one right after.
-    let (song, mut graph) = song_and_graph();
-    let timeline = song.compile();
+    let (project, mut graph, timeline) = song_and_graph();
     let transport = Transport::new();
     transport.play();
     let mut reader = TransportReader::new();
 
-    let chord_start = song
-        .project
+    let chord_start = project
         .tempo_map
         .tick_to_sample(3 * (fontelle_types::PPQN / 2));
     transport.seek(chord_start);
@@ -315,7 +313,7 @@ fn seeking_forwards_lands_in_the_middle_of_the_phrase() {
 
 #[test]
 fn a_loop_renders_its_second_pass_exactly_like_its_first() {
-    let (song, mut graph) = song_and_graph();
+    let (project, mut graph, timeline) = song_and_graph();
     let transport = Transport::new();
     transport.set_state(TransportState::Rendering);
 
@@ -323,11 +321,11 @@ fn a_loop_renders_its_second_pass_exactly_like_its_first() {
     // to cross several blocks, and not a whole multiple of the block size, so
     // the seam genuinely falls inside a block rather than tidily between two.
     let loop_end_tick = fontelle_types::PPQN * 2 + 37;
-    let loop_end = song.project.tempo_map.tick_to_sample(loop_end_tick);
+    let loop_end = project.tempo_map.tick_to_sample(loop_end_tick);
     transport.set_loop_range((0, loop_end_tick), (0, loop_end));
     transport.set_looping(true);
 
-    let audio = render_offline_with_transport(&song, &mut graph, loop_end * 2, &transport);
+    let audio = render_offline_with_transport(&timeline, &mut graph, loop_end * 2, &transport);
     let (first, second) = audio.split_at(loop_end as usize * 2);
 
     assert!(
@@ -344,19 +342,20 @@ fn a_loop_renders_its_second_pass_exactly_like_its_first() {
 fn a_loop_never_plays_material_from_past_its_end() {
     // The strong version of the same claim: render past the loop and compare
     // against a straight render, which diverges the moment the loop wraps.
-    let (song, mut graph) = song_and_graph();
+    let (project, mut graph, timeline) = song_and_graph();
     let looped = Transport::new();
     looped.set_state(TransportState::Rendering);
     let loop_end_tick = fontelle_types::PPQN;
-    let loop_end = song.project.tempo_map.tick_to_sample(loop_end_tick);
+    let loop_end = project.tempo_map.tick_to_sample(loop_end_tick);
     looped.set_loop_range((0, loop_end_tick), (0, loop_end));
     looped.set_looping(true);
-    let with_loop = render_offline_with_transport(&song, &mut graph, loop_end * 2, &looped);
+    let with_loop = render_offline_with_transport(&timeline, &mut graph, loop_end * 2, &looped);
 
-    let (song, mut graph) = song_and_graph();
+    let (_project, mut graph, timeline) = song_and_graph();
     let straight = Transport::new();
     straight.set_state(TransportState::Rendering);
-    let without_loop = render_offline_with_transport(&song, &mut graph, loop_end * 2, &straight);
+    let without_loop =
+        render_offline_with_transport(&timeline, &mut graph, loop_end * 2, &straight);
 
     assert_eq!(
         with_loop[..loop_end as usize * 2],

@@ -7,12 +7,14 @@
 //! stamping, the routing to a node, the audition path that lets a stopped
 //! transport make sound — is the same code the device path runs.
 
+mod common;
+
 use std::sync::Arc;
 
-use fontelle_app::{Song, build_graph, demo_song};
+use fontelle_app::SampleLibrary;
 use fontelle_core::{
-    FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, SampleStore,
-    Sampler, Source, VoiceConfig,
+    FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, Source,
+    VoiceConfig,
 };
 use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 use fontelle_engine::{
@@ -22,19 +24,23 @@ use fontelle_engine::{
 use fontelle_midi::{DeviceMapping, MidiRouter};
 use fontelle_types::{CompiledTimeline, EventSink, NodeId};
 
-const SR: u32 = 48_000;
+use common::SR;
+
 const NOTE_ON: u8 = 0x90;
 const NOTE_OFF: u8 = 0x80;
 
-fn patch(store: &mut SampleStore) -> Patch {
+fn patch(library: &mut SampleLibrary) -> Patch {
     let cycle = 100;
     let data: Vec<f32> = (0..cycle)
         .map(|i| (i as f32 / cycle as f32 * std::f32::consts::TAU).sin())
         .collect();
-    let asset = store.insert(SampleBuffer {
-        data: Arc::from(data),
-        sample_rate: SR,
-    });
+    let asset = library.insert_synthetic(
+        "cycle",
+        SampleBuffer {
+            data: Arc::from(data),
+            sample_rate: SR,
+        },
+    );
     let disabled = FilterSlot {
         mode: SvfMode::Lowpass,
         cutoff_hz: 20_000.0,
@@ -77,17 +83,20 @@ fn patch(store: &mut SampleStore) -> Patch {
     }
 }
 
-fn song_and_graph() -> (Song, CompiledGraph, NodeId) {
-    let song = demo_song(60, 120.0, SR);
-    let mut store = SampleStore::new();
-    let mut sampler = Sampler::new(patch(&mut store));
-    sampler.prepare(&fontelle_core::PrepareContext {
-        sample_rate: SR as f32,
-        max_block_size: BLOCK_SIZE as u32,
-    });
-    let node = song.channels[0].node;
-    let graph = build_graph(&song, vec![sampler], Arc::new(store));
-    (song, graph, node)
+fn song_and_graph() -> (CompiledGraph, CompiledTimeline, NodeId) {
+    let mut library = SampleLibrary::new();
+    let patch = patch(&mut library);
+    let (project, realised, timeline) =
+        common::demo_rig(&patch, &library, fontelle_app::PLAYBACK_QUALITY);
+    // Where a live note is sent: the first channel's node, which is what
+    // `--play-sf2 --midi-in` picks in the absence of any focus to follow.
+    let node = project
+        .channels
+        .keys()
+        .next()
+        .and_then(|c| realised.channel_nodes.get(&c).copied())
+        .expect("the demo project has one channel");
+    (realised.graph, timeline, node)
 }
 
 /// The audio callback, minus the sound card: drain, decide whether a stopped
@@ -155,7 +164,7 @@ impl Callback {
 }
 
 fn rig() -> (Callback, MidiRouter, Box<dyn EventSink>, Transport) {
-    let (song, graph, node) = song_and_graph();
+    let (graph, timeline, node) = song_and_graph();
     let (source, mut ports) = live_event_channel(4, 64);
     let port = ports.claim().expect("a free port");
     (
@@ -164,7 +173,7 @@ fn rig() -> (Callback, MidiRouter, Box<dyn EventSink>, Transport) {
             gate: IdleGate::new(),
             source,
             graph,
-            timeline: song.compile(),
+            timeline,
             first_sample: 0.0,
         },
         MidiRouter::new(node, u32::MAX, DeviceMapping::default()),

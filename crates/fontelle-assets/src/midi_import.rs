@@ -320,11 +320,33 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
             format!("{name} — channel {}", midi_channel + 1)
         };
 
+        let controller = |number: u8, default: u8| {
+            controllers
+                .get(&(midi_channel, number))
+                .copied()
+                .unwrap_or(default)
+        };
+        let pan = pan_cc_to_pan(controller(CC_PAN, CENTRE_PAN_CC));
+        let volume_db = volume_cc_to_db(controller(CC_CHANNEL_VOLUME, DEFAULT_VOLUME_CC));
+
+        // The file's balance between its parts, landing on the document
+        // rather than being reported and thrown away. CC7 is the part's
+        // fader, so it goes on a mixer track of its own; CC10 is where the
+        // part sits in the field, which is the channel's own placement and
+        // not a balance control over a bus (see `Channel::pan`).
+        let mixer_track = project
+            .mixer
+            .tracks
+            .insert(fontelle_model::MixerTrack::new(label.clone()));
+        project.mixer.tracks[mixer_track].gain_db = volume_db;
+        project.mixer.tracks[mixer_track].output = project.mixer.master;
+
         let channel = project.channels.insert(Channel {
             name: label.clone(),
             color: CHANNEL_COLOURS[midi_channel as usize % CHANNEL_COLOURS.len()],
-            mixer_track: Default::default(),
+            mixer_track,
             patch_data: None,
+            pan,
         });
         let lane = project.lanes.insert(Lane {
             name: label,
@@ -349,20 +371,14 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
             muted: false,
         });
 
-        let controller = |number: u8, default: u8| {
-            controllers
-                .get(&(midi_channel, number))
-                .copied()
-                .unwrap_or(default)
-        };
         imported.push(ImportedMidiChannel {
             midi_channel,
             channel,
             notes: note_count,
             program: programs.get(&midi_channel).copied(),
             is_percussion,
-            pan: pan_cc_to_pan(controller(CC_PAN, CENTRE_PAN_CC)),
-            volume_db: volume_cc_to_db(controller(CC_CHANNEL_VOLUME, DEFAULT_VOLUME_CC)),
+            pan,
+            volume_db,
         });
     }
 

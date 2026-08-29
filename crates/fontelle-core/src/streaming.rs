@@ -23,7 +23,11 @@ pub struct SampleBuffer {
 /// per-voice ring buffers). That needs `fontelle-engine`'s disk thread to exist
 /// first, so it isn't implemented yet — every `SampleBuffer` here is fully
 /// resident regardless of size. Tracked in `PROGRESS.md`.
-#[derive(Debug, Default)]
+/// `Clone` is cheap: the map holds `Arc` handles, so cloning it duplicates the
+/// index rather than the audio. That is what lets a library importing a new
+/// soundfont copy-on-write out from under a graph the audio thread is already
+/// holding, instead of having to stop playback first.
+#[derive(Debug, Default, Clone)]
 pub struct SampleStore {
     samples: slotmap::SlotMap<AssetId, SampleBuffer>,
 }

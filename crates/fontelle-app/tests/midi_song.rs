@@ -5,8 +5,10 @@
 
 use std::path::PathBuf;
 
-use fontelle_app::Song;
+use fontelle_app::{channel_nodes, project_from_midi};
 use fontelle_assets::{MidiChannels, import_midi};
+use fontelle_model::Project;
+use fontelle_types::CompiledTimeline;
 use fontelle_types::{EventPayload, PPQN};
 
 const SR: u32 = 48_000;
@@ -87,6 +89,15 @@ fn write_temp(name: &str, bytes: &[u8]) -> PathBuf {
     path
 }
 
+fn compile(project: &Project) -> CompiledTimeline {
+    fontelle_sequencer::compile(project, &channel_nodes(project))
+}
+
+/// The document channels an import produced, in MIDI-channel order.
+fn parts(project: &Project) -> Vec<fontelle_types::ChannelId> {
+    project.channels.keys().collect()
+}
+
 #[test]
 fn an_imported_midi_file_compiles_to_a_timeline_the_engine_can_play() {
     // 120 bpm, so a quarter note is 0.5s = 24000 samples at 48 kHz.
@@ -97,8 +108,8 @@ fn an_imported_midi_file_compiles_to_a_timeline_the_engine_can_play() {
     let import = import_midi(&path, MidiChannels::Melodic).unwrap();
     std::fs::remove_file(&path).ok();
 
-    let song = Song::from_midi(import, SR);
-    let timeline = song.compile();
+    let project = project_from_midi(import, SR);
+    let timeline = compile(&project);
 
     let note_ons: Vec<_> = timeline
         .events
@@ -118,7 +129,7 @@ fn an_imported_midi_file_compiles_to_a_timeline_the_engine_can_play() {
     );
 
     // And the reported duration must cover the music, or playback stops early.
-    assert!(song.duration_samples(PPQN) >= 48_000);
+    assert!(fontelle_app::project_duration_samples(&project, PPQN) >= 48_000);
 }
 
 #[test]
@@ -130,9 +141,8 @@ fn the_files_own_tempo_drives_the_timeline() {
     let import = import_midi(&path, MidiChannels::Melodic).unwrap();
     std::fs::remove_file(&path).ok();
 
-    let song = Song::from_midi(import, SR);
-    let first = song
-        .compile()
+    let project = project_from_midi(import, SR);
+    let first = compile(&project)
         .events
         .iter()
         .find(|e| matches!(e.payload, EventPayload::NoteOn { .. }))
@@ -153,14 +163,16 @@ fn every_midi_channel_gets_its_own_node_in_the_song() {
     let import = import_midi(&path, MidiChannels::Melodic).unwrap();
     std::fs::remove_file(&path).ok();
 
-    let song = Song::from_midi(import, SR);
-    assert_eq!(song.channels.len(), 2);
+    let project = project_from_midi(import, SR);
+    let nodes = channel_nodes(&project);
+    let parts = parts(&project);
+    assert_eq!(parts.len(), 2);
     assert_ne!(
-        song.channels[0].node, song.channels[1].node,
+        nodes[&parts[0]], nodes[&parts[1]],
         "each part needs a node of its own"
     );
 
-    let timeline = song.compile();
+    let timeline = compile(&project);
     let targets: std::collections::HashSet<_> = timeline
         .events
         .iter()
@@ -185,12 +197,14 @@ fn each_part_is_addressed_to_the_node_holding_its_own_instrument() {
     let import = import_midi(&path, MidiChannels::Melodic).unwrap();
     std::fs::remove_file(&path).ok();
 
-    // MIDI channels come back in order, and `Song` keeps that order.
-    let song = Song::from_midi(import, SR);
-    let node_for_channel_1 = song.channels[0].node;
-    let node_for_channel_3 = song.channels[1].node;
+    // MIDI channels come back in order, and the document keeps that order.
+    let project = project_from_midi(import, SR);
+    let nodes = channel_nodes(&project);
+    let parts = parts(&project);
+    let node_for_channel_1 = nodes[&parts[0]];
+    let node_for_channel_3 = nodes[&parts[1]];
 
-    let timeline = song.compile();
+    let timeline = compile(&project);
     for event in &timeline.events {
         if let EventPayload::NoteOn { key, .. } = event.payload {
             let expected = if key == 72 {
@@ -223,16 +237,60 @@ fn each_part_gets_its_own_fader_from_the_files_own_volume_controller() {
         .find(|c| c.midi_channel == 2)
         .unwrap()
         .volume_db;
-    let song = Song::from_midi(import, SR);
-    assert_eq!(song.channels.len(), 2);
+    let project = project_from_midi(import, SR);
+    let parts = parts(&project);
+    assert_eq!(parts.len(), 2);
+
+    // The fader is a document mixer track now, not a number carried alongside
+    // the project in a private type — which is what makes it something a UI
+    // can show and a command can change.
+    let gain = |channel: fontelle_types::ChannelId| {
+        project.mixer.tracks[project.channels[channel].mixer_track].gain_db
+    };
     assert!(
-        (song.channels[1].gain_db - quiet_part).abs() < 1e-6,
+        (gain(parts[1]) - quiet_part).abs() < 1e-6,
         "the part's fader must carry the level the file asked for: expected \
          {quiet_part}, got {}",
-        song.channels[1].gain_db
+        gain(parts[1])
     );
     assert!(
-        song.channels[0].gain_db > song.channels[1].gain_db,
+        gain(parts[0]) > gain(parts[1]),
         "and the two parts must not end up at the same level"
     );
+    assert_ne!(
+        project.channels[parts[0]].mixer_track, project.channels[parts[1]].mixer_track,
+        "one track per part, or a fader move would move both"
+    );
+}
+
+#[test]
+fn a_parts_pan_lands_on_its_channel_rather_than_on_its_fader() {
+    // CC10 is where a part sits in the field: constant-power placement of a
+    // source the voice has not positioned. A mixer track's pan is a balance
+    // control over a bus whose contents are already placed, and putting CC10
+    // there applies a pan law twice and throws half the signal away at the
+    // extremes. It also has to be per channel, because TDD §13.1 lets several
+    // channels share one track.
+    let bytes = tiny_midi_with_controls(
+        500_000,
+        &[(0, 72, 100, 0, 240), (2, 36, 90, 0, 240)],
+        &[(0, 10, 0), (2, 10, 127)],
+    );
+    let path = write_temp("pans", &bytes);
+    let import = import_midi(&path, MidiChannels::Melodic).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    let project = project_from_midi(import, SR);
+    let parts = parts(&project);
+    assert!(project.channels[parts[0]].pan < -0.9, "CC10 0 is hard left");
+    assert!(
+        project.channels[parts[1]].pan > 0.9,
+        "CC10 127 is hard right"
+    );
+    for part in &parts {
+        assert_eq!(
+            project.mixer.tracks[project.channels[*part].mixer_track].pan, 0.0,
+            "the track stays a balance control at centre"
+        );
+    }
 }

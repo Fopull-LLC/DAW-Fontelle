@@ -103,6 +103,7 @@ mod tests {
             color: [0, 0, 0, 255],
             mixer_track: Default::default(),
             patch_data: None,
+            pan: 0.0,
         });
 
         let lane_id = project.lanes.insert(Lane {

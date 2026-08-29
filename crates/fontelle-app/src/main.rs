@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use fontelle_app::{Song, demo_song};
-use fontelle_core::{PrepareContext, SampleStore, Sampler};
+use fontelle_app::{RealiseOptions, SampleLibrary, demo_project, project_from_midi, realise};
 use fontelle_engine::{AudioDevice, BLOCK_SIZE};
 use fontelle_types::PPQN;
 
@@ -20,14 +19,13 @@ const BPM: f64 = 120.0;
 /// zero-allocation debug assertion above active.
 ///
 /// **Scope cut, honestly:** the `Project` is built in code by
-/// `fontelle_app::demo_song`, not loaded from disk or drawn in a UI (neither
-/// exists yet), and `Channel.patch_data` is left empty — the real `Patch`
-/// comes straight from the SF2 import below rather than round-tripping
-/// through the model's serialised form, which is work for whenever project
-/// save/load lands. What *is* real: the document, its tempo map, the
-/// sequencer compiling it to a `CompiledTimeline`, the engine reading events
-/// out of that timeline block by block, and a mixer track in the signal path.
-/// See `PROGRESS.md`.
+/// `fontelle_app::demo_project` or imported from a MIDI file, not loaded from
+/// disk or drawn in a UI (neither exists yet). Everything after that is the
+/// real path: the imported patch goes *onto the document* in its serialised
+/// form and comes back out through `realise`, which builds the graph, the bus
+/// layout and the channel->node map from `Project::channels` and
+/// `Project::mixer`. So every run of this exercises the save/load round trip
+/// even before there is a file to save into.
 /// Everything `--play-sf2` was asked for beyond the soundfont itself.
 ///
 /// A struct rather than eight positional parameters: the flags are all
@@ -69,20 +67,26 @@ fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), Stri
     }
     println!("  (choose another with --preset <index>)\n");
 
-    let mut store = SampleStore::new();
+    let mut library = SampleLibrary::new();
 
     // One instrument per part. For the built-in phrase that is a single
     // `--preset`; for a MIDI file it is whatever each channel's program change
     // asked for, which is what makes an arrangement play as written rather
     // than every part on one sound.
-    let mut midi_pans: Option<Vec<f32>> = None;
-    let (song, samplers) = match midi {
+    let quality = if render_wav.is_some() {
+        // An offline bounce is not real-time, so it renders at export quality
+        // rather than at whatever the patch asks for during playback.
+        fontelle_app::RENDER_QUALITY
+    } else {
+        fontelle_app::PLAYBACK_QUALITY
+    };
+    let mut project = match midi {
         Some((midi_path, channels)) => {
             let import = fontelle_assets::import_midi(midi_path, channels)
                 .map_err(|e| format!("failed to import {}: {e}", midi_path.display()))?;
             println!("{}:", midi_path.display());
 
-            let mut patches = Vec::new();
+            let mut chosen_presets = Vec::new();
             for part in &import.channels {
                 let chosen = choose_preset(&presets, part, preset);
                 let name = presets
@@ -108,11 +112,7 @@ fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), Stri
                     part.pan,
                     part.volume_db,
                 );
-                patches.push(
-                    fontelle_assets::import_sf2_preset(path, chosen, &mut store)
-                        .map_err(|e| format!("failed to import preset {chosen}: {e}"))?
-                        .patch,
-                );
+                chosen_presets.push((part.channel, chosen));
             }
             for skipped in &import.skipped {
                 println!(
@@ -135,53 +135,58 @@ fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), Stri
                     n => format!(" to start, then {n} tempo changes"),
                 }
             );
-            midi_pans = Some(import.channels.iter().map(|c| c.pan).collect());
-            (Song::from_midi(import, SAMPLE_RATE), patches)
+
+            let mut project = project_from_midi(import, SAMPLE_RATE);
+            for (channel, chosen) in chosen_presets {
+                let patch = library
+                    .import_sf2(path, chosen)
+                    .map_err(|e| format!("failed to import preset {chosen}: {e}"))?;
+                fontelle_app::set_channel_patch(&mut project, channel, &patch, &library)
+                    .map_err(|e| format!("failed to store preset {chosen}: {e}"))?;
+            }
+            project
         }
         None => {
-            let patch = fontelle_assets::import_sf2_preset(path, preset, &mut store)
-                .map_err(|e| format!("failed to import {}: {e}", path.display()))?
-                .patch;
-            (demo_song(root_key, BPM, SAMPLE_RATE), vec![patch])
+            let patch = library
+                .import_sf2(path, preset)
+                .map_err(|e| format!("failed to import {}: {e}", path.display()))?;
+            let mut project = demo_project(root_key, BPM, SAMPLE_RATE);
+            let channel = project
+                .channels
+                .keys()
+                .next()
+                .expect("the demo project has one channel");
+            fontelle_app::set_channel_patch(&mut project, channel, &patch, &library)
+                .map_err(|e| format!("failed to store the imported patch: {e}"))?;
+            project
         }
     };
 
-    let quality = if render_wav.is_some() {
-        // An offline bounce is not real-time, so it renders at export quality
-        // rather than at whatever the patch asks for during playback.
-        fontelle_app::RENDER_QUALITY
-    } else {
-        fontelle_app::PLAYBACK_QUALITY
-    };
-    // Where each part sits in the stereo field. Applied at the sampler rather
-    // than at its mixer track because the track fader is a balance control
-    // over an already-placed stereo bus, while this is the constant-power
-    // placement of a part that is essentially mono — the same distinction a
-    // DAW draws between a mono and a stereo track.
-    let pans: Vec<f32> = match &midi_pans {
-        Some(pans) => pans.clone(),
-        None => vec![0.0; samplers.len()],
-    };
-    let samplers: Vec<Sampler> = samplers
-        .into_iter()
-        .zip(pans)
-        .map(|(patch, pan)| {
-            let mut sampler = Sampler::new(patch);
-            sampler.prepare(&PrepareContext {
-                sample_rate: SAMPLE_RATE as f32,
-                max_block_size: BLOCK_SIZE as u32,
-            });
-            sampler.set_quality(quality);
-            sampler.set_pan(pan);
-            sampler
-        })
-        .collect();
+    // `--gain-db` is the master fader, and the master fader is a document
+    // value now rather than a parameter threaded into the graph builder.
+    if let Some(master) = project.mixer.master {
+        project.mixer.tracks[master].gain_db = gain_db;
+    }
 
-    let timeline = song.compile();
+    let mut realised = realise(
+        &project,
+        &library,
+        RealiseOptions {
+            sample_rate: SAMPLE_RATE,
+            block_size: BLOCK_SIZE,
+            quality,
+        },
+    )
+    .map_err(|e| format!("{e}"))?;
+    for (_, missing) in &realised.unresolved {
+        println!("  ! layer {} has no audio", missing.layer);
+    }
+
+    let timeline = fontelle_sequencer::compile(&project, &realised.channel_nodes);
 
     // One beat of tail so the final chord's release rings out instead of
     // being chopped off when the stream stops.
-    let song_end_samples = song.duration_samples(PPQN);
+    let song_end_samples = fontelle_app::project_duration_samples(&project, PPQN);
 
     // Beats on the command line, ticks in the document, samples in the
     // engine — and the conversion goes through the song's own `TempoMap`
@@ -190,7 +195,7 @@ fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), Stri
     // to multiply by, so "loop bars 5 to 9" is only answerable by the map.
     let transport = Arc::new(fontelle_engine::Transport::new());
     let to_sample = |beats: f64| {
-        song.project
+        project
             .tempo_map
             .tick_to_sample((beats * PPQN as f64).round() as i64)
     };
@@ -222,19 +227,17 @@ fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), Stri
     // path, so the WAV is what you'd have heard — inspectable without a
     // sound card.
     if let Some(out) = render_wav {
-        let built = fontelle_app::build_graph_with_gain(&song, samplers, Arc::new(store), gain_db);
-        let mut graph = built.graph;
         // The same transport the device would be driven by, so a bounce of a
         // looped section is the section as it plays rather than a second code
         // path that has to be kept in step with the first.
         transport.set_state(fontelle_engine::TransportState::Rendering);
         let pcm = fontelle_app::render_offline_with_transport(
-            &song,
-            &mut graph,
+            &timeline,
+            &mut realised.graph,
             duration_samples,
             &transport,
         );
-        let reduction_db = built.master.take_max_reduction_db();
+        let reduction_db = realised.master.take_max_reduction_db();
         let clipped = fontelle_app::write_wav16(out, &pcm, 2, SAMPLE_RATE)
             .map_err(|e| format!("failed to write {}: {e}", out.display()))?;
         let peak = pcm.iter().fold(0.0f32, |m, s| m.max(s.abs()));
@@ -258,8 +261,7 @@ fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), Stri
         return Ok(());
     }
 
-    let graph =
-        fontelle_app::build_graph_with_gain(&song, samplers, Arc::new(store), gain_db).graph;
+    let graph = realised.graph;
     let mut device = AudioDevice::default_host();
     println!(
         "Fontelle: {} note events from {} on {:?}",
@@ -299,7 +301,12 @@ fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), Stri
         // The first part's instrument. There is no focus to follow yet
         // (TDD §14.3's default), and playing the first instrument in the song
         // is the answer that needs no UI.
-        let target = song.channels.first().map(|c| c.node).unwrap_or_default();
+        let target = project
+            .channels
+            .keys()
+            .next()
+            .and_then(|c| realised.channel_nodes.get(&c).copied())
+            .unwrap_or_default();
         Some(fontelle_midi::MidiHub::new(fontelle_midi::RouteTo {
             node: target,
             // Distinct from anything the sequencer emits, so a sequenced

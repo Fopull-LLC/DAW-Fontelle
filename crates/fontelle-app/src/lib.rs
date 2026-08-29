@@ -2,17 +2,20 @@
 //! can't be imported by an integration test, and "the thing we demo" deserves
 //! coverage as much as anything else does.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+mod library;
+mod realise;
 
-use fontelle_core::{SampleStore, Sampler};
-use fontelle_engine::{
-    BLOCK_SIZE, BufferPool, CompiledGraph, MixerTrackNode, SamplerNode, ScheduledNode,
-};
+use std::path::{Path, PathBuf};
+
+use fontelle_engine::{BLOCK_SIZE, CompiledGraph};
 use fontelle_model::{Channel, Clip, ClipSource, Lane, Note, NoteData, Project, TempoMap};
-use fontelle_types::{ChannelId, CompiledTimeline, NodeId, PPQN, Tick};
+use fontelle_types::{CompiledTimeline, PPQN, Tick};
 use slotmap::SlotMap;
+
+pub use library::SampleLibrary;
+pub use realise::{
+    RealiseError, RealiseOptions, Realised, channel_nodes, realise, set_channel_patch,
+};
 
 /// Why `--play-sf2` couldn't produce a usable path.
 #[derive(Debug, PartialEq, Eq)]
@@ -91,118 +94,18 @@ pub fn resolve_sf2_path(
     })
 }
 
-/// A demo document plus the identities needed to drive it: what
-/// `fontelle-sequencer` compiles, and which engine node its events target.
-/// Mints a distinct engine node id for the nth instrument in a song.
-///
-/// A real graph compiler would allocate these from the document; until one
-/// exists, minting them deterministically here keeps them distinct, which is
-/// all the event routing needs. Index 0 is deliberately skipped, because a
-/// slotmap's zero key is its null key and a null target would match any node
-/// that had not been given an id of its own.
-fn node_id(index: usize) -> NodeId {
-    NodeId::from(slotmap::KeyData::from_ffi(index as u64 + 1))
-}
-
-/// One part of a song: a document channel, the engine node that renders it,
-/// and the mixer track that carries it to the master.
-///
-/// **Not the document's own mixer.** `Project::mixer` exists and is where this
-/// belongs, but nothing compiles a graph from a `Project` yet — `fontelle-app`
-/// hand-assigns node ids and buses, and this carries what that step needs. See
-/// PROGRESS.md; the fix is the same "build the graph from the project" step
-/// that would own `channel_nodes` too.
-#[derive(Debug, Clone, Copy)]
-pub struct SongChannel {
-    pub channel: ChannelId,
-    pub node: NodeId,
-    /// The part's fader, in decibels. From the file's own CC7 for an imported
-    /// song; unity for the built-in phrase.
-    pub gain_db: f32,
-}
-
-pub struct Song {
-    pub project: Project,
-    /// Each part of the song, in a stable order. One entry for the built-in
-    /// phrase; one per part for an imported file.
-    pub channels: Vec<SongChannel>,
-}
-
-impl Song {
-    /// Wraps an imported MIDI file so it plays through the same document ->
-    /// sequencer -> timeline path the built-in phrase does. A second playback
-    /// route for files would be a second route none of this project's
-    /// invariants cover.
-    ///
-    /// Each of the file's channels becomes a node of its own, so the caller
-    /// supplies one instrument per entry in `channels` and the parts play on
-    /// different sounds.
-    pub fn from_midi(import: fontelle_assets::MidiImport, sample_rate: u32) -> Self {
-        let mut project = import.project;
-        // `set_sample_rate`, not a fresh `TempoMap`: the import carries the
-        // file's whole tempo curve, and building a constant map from
-        // `import.bpm` would throw every tempo change away again.
-        project.tempo_map.set_sample_rate(sample_rate as f64);
-        Self {
-            channels: import
-                .channels
-                .iter()
-                .enumerate()
-                .map(|(index, imported)| SongChannel {
-                    channel: imported.channel,
-                    node: node_id(index),
-                    // The file's own balance between its parts. Discarding it
-                    // and playing every part at its instrument's level is how
-                    // an arrangement ends up with the drums on top of the
-                    // melody.
-                    gain_db: imported.volume_db,
-                })
-                .collect(),
-            project,
-        }
-    }
-
-    /// The mapping `fontelle_sequencer::compile` needs to turn document
-    /// channels into engine node targets.
-    pub fn channel_nodes(&self) -> HashMap<ChannelId, NodeId> {
-        self.channels.iter().map(|c| (c.channel, c.node)).collect()
-    }
-
-    pub fn compile(&self) -> CompiledTimeline {
-        fontelle_sequencer::compile(&self.project, &self.channel_nodes())
-    }
-
-    /// How long the song runs, in samples, including a tail so the last
-    /// note's release isn't cut off mid-ring.
-    pub fn duration_samples(&self, release_tail: Tick) -> i64 {
-        let last_tick = self
-            .project
-            .clips
-            .values()
-            .filter_map(|clip| match &clip.source {
-                ClipSource::Notes(data) => data
-                    .notes
-                    .values()
-                    .map(|note| clip.start + note.start + note.length)
-                    .max(),
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0);
-        self.project
-            .tempo_map
-            .tick_to_sample(last_tick + release_tail)
-    }
-}
-
-/// Builds the phrase `--play-sf2` demos: an ascending root-third-fifth run in
-/// eighth notes, then the full triad held as a chord.
+/// The demo phrase `--play-sf2` plays, as a document: an ascending
+/// root-third-fifth run in eighth notes, then the full triad held as a chord.
 ///
 /// The chord matters more than it looks: three notes starting on the *same*
-/// tick is the case that exercises real polyphony, and it's what caught the
+/// tick is the case that exercises real polyphony, and it is what caught the
 /// voice-mixing bug where each new voice re-enveloped the ones already mixed
 /// into the shared output buffer.
-pub fn demo_song(root_key: u8, bpm: f64, sample_rate: u32) -> Song {
+///
+/// The one channel comes back with no instrument on it — `set_channel_patch`
+/// puts one there once the caller has imported a soundfont. That order is not
+/// an accident: it is the order the UI will do it in.
+pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
     let eighth = PPQN / 2;
     let major_third = 4;
     let fifth = 7;
@@ -210,11 +113,16 @@ pub fn demo_song(root_key: u8, bpm: f64, sample_rate: u32) -> Song {
     let mut project = Project::new("Fontelle demo");
     project.tempo_map = TempoMap::new(bpm, sample_rate as f64);
 
+    let track = project
+        .mixer
+        .tracks
+        .insert(fontelle_model::MixerTrack::new("Imported SF2"));
     let channel = project.channels.insert(Channel {
         name: "Imported SF2".to_string(),
         color: [0x4f, 0x8f, 0xd0, 0xff],
-        mixer_track: Default::default(),
+        mixer_track: track,
         patch_data: None,
+        pan: 0.0,
     });
     let lane = project.lanes.insert(Lane {
         name: "Lane 1".to_string(),
@@ -278,124 +186,44 @@ pub fn demo_song(root_key: u8, bpm: f64, sample_rate: u32) -> Song {
         muted: false,
     });
 
-    Song {
-        project,
-        channels: vec![SongChannel {
-            channel,
-            node: node_id(0),
-            gain_db: 0.0,
-        }],
-    }
+    project
 }
 
-/// Builds the audio graph for `song`: one sampler per entry in
-/// `song.channels`, in the same order, **each on a mixer track of its own**,
-/// every track summing into a stereo master pair.
+/// Wraps an imported MIDI file so it plays through the same document ->
+/// realisation -> sequencer -> engine path everything else does. A second
+/// playback route for files would be a second route none of this project's
+/// invariants cover.
 ///
-/// The buses are laid out as `[0, 1]` for the master and `[2 + 2i, 3 + 2i]`
-/// for part *i*, so a part's fader, mute and pan act on that part alone. One
-/// shared fader was all there was before, which meant a song's balance could
-/// only be set by editing the instruments.
-///
-/// # Panics
-///
-/// If `samplers` and `song.channels` differ in length. A part with no
-/// instrument would be silent and an instrument with no part would never be
-/// addressed; both are far easier to diagnose here than by ear.
-pub fn build_graph(song: &Song, samplers: Vec<Sampler>, store: Arc<SampleStore>) -> CompiledGraph {
-    build_graph_with_gain(song, samplers, store, DEMO_TRACK_GAIN_DB).graph
+/// All this has left to do is the sample rate: the importer builds the whole
+/// document, including a mixer track per part carrying the file's own CC7 and
+/// the channel pan from its CC10.
+pub fn project_from_midi(import: fontelle_assets::MidiImport, sample_rate: u32) -> Project {
+    let mut project = import.project;
+    // `set_sample_rate`, not a fresh `TempoMap`: the import carries the file's
+    // whole tempo curve, and building a constant map from `import.bpm` would
+    // throw every tempo change away again.
+    project.tempo_map.set_sample_rate(sample_rate as f64);
+    project
 }
 
-/// A built graph and the master levels anything off the RT thread can read
-/// from it. The handle has to be taken before the graph goes to the audio
-/// callback, because after that nothing owns the node any more.
-pub struct BuiltGraph {
-    pub graph: CompiledGraph,
-    pub master: Arc<fontelle_engine::MasterMeter>,
+/// How long a project runs, in samples, including a tail so the last note's
+/// release is not cut off mid-ring.
+pub fn project_duration_samples(project: &Project, release_tail: Tick) -> i64 {
+    let last_tick = project
+        .clips
+        .values()
+        .filter_map(|clip| match &clip.source {
+            ClipSource::Notes(data) => data
+                .notes
+                .values()
+                .map(|note| clip.start + note.start + note.length)
+                .max(),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    project.tempo_map.tick_to_sample(last_tick + release_tail)
 }
-
-/// As [`build_graph`], with the **master** fader set explicitly. Each part
-/// keeps its own fader from `song.channels`.
-pub fn build_graph_with_gain(
-    song: &Song,
-    samplers: Vec<Sampler>,
-    store: Arc<SampleStore>,
-    master_gain_db: f32,
-) -> BuiltGraph {
-    assert_eq!(
-        samplers.len(),
-        song.channels.len(),
-        "build_graph needs exactly one sampler per song channel"
-    );
-
-    // A track fader is a *balance* control here, not a pan law: what reaches
-    // it is already placed in the field by the voice, on the constant-power
-    // taper, and a second pan law on top would pull another 3 dB out of every
-    // centred track. Placing a part is `Sampler::set_pan`'s job; this is for
-    // riding the levels between them.
-    let track_fader = |gain_db: f32| MixerTrackNode {
-        gain_db,
-        pan_law: fontelle_types::PanLaw::Linear,
-        ..MixerTrackNode::new()
-    };
-
-    let mut schedule: Vec<ScheduledNode> = Vec::new();
-    for (index, (part, sampler)) in song.channels.iter().zip(samplers).enumerate() {
-        let bus = vec![MASTER_BUSES + index * 2, MASTER_BUSES + index * 2 + 1];
-        schedule.push(ScheduledNode {
-            id: part.node,
-            node: Box::new(SamplerNode::new(sampler, store.clone())),
-            input_buffers: Vec::new(),
-            output_buffers: bus.clone(),
-        });
-        schedule.push(ScheduledNode {
-            id: NodeId::default(),
-            node: Box::new(track_fader(part.gain_db)),
-            // Same buffers in and out: the fader processes in place.
-            input_buffers: bus.clone(),
-            output_buffers: bus.clone(),
-        });
-        schedule.push(ScheduledNode {
-            id: NodeId::default(),
-            node: Box::new(fontelle_engine::BusSumNode),
-            input_buffers: bus,
-            output_buffers: vec![0, 1],
-        });
-    }
-
-    schedule.push(ScheduledNode {
-        id: NodeId::default(),
-        node: Box::new(track_fader(master_gain_db)),
-        input_buffers: vec![0, 1],
-        output_buffers: vec![0, 1],
-    });
-    // Last in the schedule, after every track has arrived: a brickwall
-    // limiter and the master meters. This is what lets the master fader sit at
-    // unity — the peaks an arrangement reaches are a property of the material,
-    // and picking a gain that neither clips nor throws away 20 dB was a
-    // judgement the tool could not make.
-    let master = fontelle_engine::MasterNode::new();
-    let master_meter = master.meter();
-    schedule.push(ScheduledNode {
-        id: NodeId::default(),
-        node: Box::new(master),
-        input_buffers: vec![0, 1],
-        output_buffers: vec![0, 1],
-    });
-
-    let mut graph = CompiledGraph {
-        schedule,
-        buffer_pool: BufferPool::with_capacity(MASTER_BUSES + song.channels.len() * 2, BLOCK_SIZE),
-    };
-    graph.prepare(SAMPLE_RATE as f32, BLOCK_SIZE as u32);
-    BuiltGraph {
-        graph,
-        master: master_meter,
-    }
-}
-
-/// Buffers 0 and 1 are the master pair; every part's bus starts after them.
-const MASTER_BUSES: usize = 2;
 
 /// The rate everything in the demo path runs at: the device is asked for it,
 /// the tempo map converts against it, and offline renders match it exactly.
@@ -417,8 +245,8 @@ pub const RENDER_QUALITY: fontelle_dsp::Interpolation = fontelle_dsp::Interpolat
 /// summing onto one bus peaks wherever the material puts it and a gain that
 /// neither clips nor throws away 20 dB is a judgement about the piece. The
 /// master limiter makes that judgement unnecessary, so the fader is a fader
-/// again. `--gain-db` still overrides it, and the render reports both its peak
-/// and how hard the limiter had to work.
+/// again. `--gain-db` writes it onto the project's master track, and the
+/// render reports both its peak and how hard the limiter had to work.
 pub const DEMO_TRACK_GAIN_DB: f32 = 0.0;
 
 /// Renders `song` through `graph` offline, as fast as the CPU allows, into
@@ -430,14 +258,18 @@ pub const DEMO_TRACK_GAIN_DB: f32 = 0.0;
 /// the audio inspectable (and diffable, and testable) without a sound card,
 /// which is the only practical way to debug "it sounds wrong" and the
 /// foundation of the offline bounce in TDD §22's M6.
-pub fn render_offline(song: &Song, graph: &mut CompiledGraph, total_samples: i64) -> Vec<f32> {
+pub fn render_offline(
+    timeline: &CompiledTimeline,
+    graph: &mut CompiledGraph,
+    total_samples: i64,
+) -> Vec<f32> {
     let transport = fontelle_engine::Transport::new();
     // `Rendering`, not `Playing`: same processing, and the difference is
     // visible to any node that asks — a bounce is not real time, and a node
     // that behaves differently when nobody is listening (a live input, a
     // random source that should be reproducible) needs to be able to tell.
     transport.set_state(fontelle_engine::TransportState::Rendering);
-    render_offline_with_transport(song, graph, total_samples, &transport)
+    render_offline_with_transport(timeline, graph, total_samples, &transport)
 }
 
 /// [`render_offline`] driven by a caller-supplied transport, so an offline
@@ -449,12 +281,11 @@ pub fn render_offline(song: &Song, graph: &mut CompiledGraph, total_samples: i64
 /// point: bouncing four bars of a one-bar loop is a render of 4x the loop
 /// length.
 pub fn render_offline_with_transport(
-    song: &Song,
+    timeline: &CompiledTimeline,
     graph: &mut CompiledGraph,
     total_samples: i64,
     transport: &fontelle_engine::Transport,
 ) -> Vec<f32> {
-    let timeline = song.compile();
     let mut reader = fontelle_engine::TransportReader::new();
 
     let mut out = Vec::with_capacity(total_samples as usize * 2);
@@ -462,7 +293,7 @@ pub fn render_offline_with_transport(
 
     while produced < total_samples {
         let remaining = (total_samples - produced) as usize;
-        let step = reader.next_step(transport, &timeline, remaining, BLOCK_SIZE, false);
+        let step = reader.next_step(transport, timeline, remaining, BLOCK_SIZE, false);
         // Silence is served whole, so it can be longer than a block; the graph
         // never renders more than one.
         let frames = step.frames.min(remaining);

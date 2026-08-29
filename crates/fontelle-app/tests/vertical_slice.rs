@@ -9,6 +9,8 @@
 //! proves "triggered by a note from a clip on the timeline" is real, in a
 //! form CI can run without speakers.
 
+mod common;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -18,7 +20,9 @@ use fontelle_core::{
 };
 use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 use fontelle_engine::{BufferPool, CompiledGraph, SamplerNode, ScheduledNode};
-use fontelle_model::{Channel, Clip, ClipSource, Lane, Note, NoteData, Project, TempoMap};
+use fontelle_model::{
+    Channel, Clip, ClipSource, Lane, MixerTrack, Note, NoteData, Project, TempoMap,
+};
 use fontelle_types::{ChannelId, NodeId};
 use slotmap::SlotMap;
 
@@ -69,6 +73,22 @@ fn synthetic_patch(store: &mut SampleStore) -> Patch {
     }
 }
 
+/// The same fixture as `synthetic_patch`, registered in a library so the patch
+/// survives the trip through the document that `realise` puts it through.
+fn synthetic_patch_in(library: &mut fontelle_app::SampleLibrary) -> Patch {
+    let mut store = SampleStore::new();
+    let mut patch = synthetic_patch(&mut store);
+    let asset = library.insert_synthetic(
+        "flat",
+        SampleBuffer {
+            data: Arc::from(vec![1.0; 10_000]),
+            sample_rate: SR as u32,
+        },
+    );
+    patch.layers[0].source = Source::Sample { file: asset };
+    patch
+}
+
 fn rms(buf: &[f32]) -> f32 {
     (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt()
 }
@@ -79,11 +99,13 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
     let mut project = Project::new("vertical slice");
     project.tempo_map = TempoMap::new(120.0, SR as f64);
 
+    let track = project.mixer.tracks.insert(MixerTrack::new("ch"));
     let channel_id = project.channels.insert(Channel {
         name: "ch".into(),
         color: [0, 0, 0, 255],
-        mixer_track: Default::default(),
+        mixer_track: track,
         patch_data: None,
+        pan: 0.0,
     });
     let lane_id = project.lanes.insert(Lane {
         name: "lane".into(),
@@ -199,28 +221,21 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
 /// unrunnable in CI.
 #[test]
 fn the_full_m0_chain_renders_the_demo_song_through_a_mixer_track() {
-    let song = fontelle_app::demo_song(60, 120.0, SR as u32);
-    let timeline = song.compile();
+    let mut library = fontelle_app::SampleLibrary::new();
+    let patch = synthetic_patch_in(&mut library);
+    let (project, mut realised, timeline) =
+        common::demo_rig(&patch, &library, fontelle_app::PLAYBACK_QUALITY);
     assert!(
         !timeline.events.is_empty(),
         "the demo song must compile to real events"
     );
-
-    let mut store = SampleStore::new();
-    let patch = synthetic_patch(&mut store);
-    let mut sampler = Sampler::new(patch);
-    sampler.prepare(&fontelle_core::PrepareContext {
-        sample_rate: SR,
-        max_block_size: BLOCK as u32,
-    });
-
-    let mut graph = fontelle_app::build_graph(&song, vec![sampler], Arc::new(store));
+    let graph = &mut realised.graph;
 
     let transport = fontelle_engine::TransportSnapshot {
         state: fontelle_engine::TransportState::Playing,
         position_sample: 0,
     };
-    let total = song.duration_samples(fontelle_types::PPQN);
+    let total = fontelle_app::project_duration_samples(&project, fontelle_types::PPQN);
     let mut cursor = 0usize;
     let mut sample = 0i64;
     let mut peak_left: f32 = 0.0;

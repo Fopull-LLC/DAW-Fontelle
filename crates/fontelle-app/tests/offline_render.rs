@@ -2,28 +2,33 @@
 //! played, or it's useless for diagnosing "it sounds wrong" — which is what it
 //! was built for.
 
+mod common;
+
 use std::sync::Arc;
 
-use fontelle_app::{build_graph, demo_song, render_offline, write_wav16};
+use fontelle_app::{SampleLibrary, render_offline, write_wav16};
 use fontelle_core::{
-    FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, SampleStore,
-    Sampler, Source, VoiceConfig,
+    FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, Source,
+    VoiceConfig,
 };
 use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 
-const SR: u32 = 48_000;
+use common::SR;
 
-fn synthetic_patch(store: &mut SampleStore) -> Patch {
+fn synthetic_patch(library: &mut SampleLibrary) -> Patch {
     // A 100-sample sine cycle, looped: a signal with an obvious, checkable
     // shape, unlike a constant.
     let cycle = 100;
     let data: Vec<f32> = (0..cycle)
         .map(|i| (i as f32 / cycle as f32 * std::f32::consts::TAU).sin())
         .collect();
-    let asset = store.insert(SampleBuffer {
-        data: Arc::from(data),
-        sample_rate: SR,
-    });
+    let asset = library.insert_synthetic(
+        "cycle",
+        SampleBuffer {
+            data: Arc::from(data),
+            sample_rate: SR,
+        },
+    );
     let disabled = FilterSlot {
         mode: SvfMode::Lowpass,
         cutoff_hz: 20_000.0,
@@ -66,16 +71,11 @@ fn synthetic_patch(store: &mut SampleStore) -> Patch {
 }
 
 fn render(total: i64) -> Vec<f32> {
-    let song = demo_song(60, 120.0, SR);
-    let mut store = SampleStore::new();
-    let patch = synthetic_patch(&mut store);
-    let mut sampler = Sampler::new(patch);
-    sampler.prepare(&fontelle_core::PrepareContext {
-        sample_rate: SR as f32,
-        max_block_size: fontelle_engine::BLOCK_SIZE as u32,
-    });
-    let mut graph = build_graph(&song, vec![sampler], Arc::new(store));
-    render_offline(&song, &mut graph, total)
+    let mut library = SampleLibrary::new();
+    let patch = synthetic_patch(&mut library);
+    let (_project, mut realised, timeline) =
+        common::demo_rig(&patch, &library, fontelle_app::PLAYBACK_QUALITY);
+    render_offline(&timeline, &mut realised.graph, total)
 }
 
 #[test]
@@ -160,21 +160,14 @@ fn wav16_writes_a_well_formed_header_and_reports_clipping() {
 #[test]
 fn the_render_quality_override_reaches_the_graph() {
     let render_at = |quality: Interpolation| {
-        let song = demo_song(60, 120.0, SR);
-        let mut store = SampleStore::new();
+        let mut library = SampleLibrary::new();
         // Deliberately not `synthetic_patch`: its 100-sample cycle is 0.01
         // cycles per sample, where every kernel agrees to four decimal places.
         // A test of the interpolation setting needs content high enough in the
         // spectrum for the kernel to matter.
-        let patch = bright_patch(&mut store);
-        let mut sampler = Sampler::new(patch);
-        sampler.prepare(&fontelle_core::PrepareContext {
-            sample_rate: SR as f32,
-            max_block_size: fontelle_engine::BLOCK_SIZE as u32,
-        });
-        sampler.set_quality(quality);
-        let mut graph = build_graph(&song, vec![sampler], Arc::new(store));
-        render_offline(&song, &mut graph, 24_000)
+        let patch = bright_patch(&mut library);
+        let (_project, mut realised, timeline) = common::demo_rig(&patch, &library, quality);
+        render_offline(&timeline, &mut realised.graph, 24_000)
     };
 
     let as_authored = render_at(fontelle_app::PLAYBACK_QUALITY);
@@ -206,18 +199,21 @@ fn the_render_quality_override_reaches_the_graph() {
 /// `synthetic_patch` with its cycle shortened to five samples — 0.2 cycles per
 /// sample, ordinary upper-mid content once transposed, and the region where a
 /// windowed sinc is measurably more accurate than Hermite.
-fn bright_patch(store: &mut SampleStore) -> Patch {
+fn bright_patch(library: &mut SampleLibrary) -> Patch {
     let cycle = 5;
     let cycles = 102;
     let data: Vec<f32> = (0..cycle * cycles)
         .map(|i| (i as f32 / cycle as f32 * std::f32::consts::TAU).sin())
         .collect();
     let len = data.len() as f64;
-    let asset = store.insert(SampleBuffer {
-        data: Arc::from(data),
-        sample_rate: SR,
-    });
-    let mut patch = synthetic_patch(&mut SampleStore::new());
+    let asset = library.insert_synthetic(
+        "bright-cycle",
+        SampleBuffer {
+            data: Arc::from(data),
+            sample_rate: SR,
+        },
+    );
+    let mut patch = synthetic_patch(library);
     patch.layers[0].source = Source::Sample { file: asset };
     // Unpinned, so the session quality is what decides — which is the thing
     // under test.
@@ -242,18 +238,16 @@ fn the_offline_bounce_renders_at_export_quality() {
 #[test]
 fn the_track_gain_scales_the_render() {
     let render_at = |gain_db: f32| {
-        let song = demo_song(60, 120.0, SR);
-        let mut store = SampleStore::new();
-        let patch = synthetic_patch(&mut store);
-        let mut sampler = Sampler::new(patch);
-        sampler.prepare(&fontelle_core::PrepareContext {
-            sample_rate: SR as f32,
-            max_block_size: fontelle_engine::BLOCK_SIZE as u32,
-        });
-        let mut graph =
-            fontelle_app::build_graph_with_gain(&song, vec![sampler], Arc::new(store), gain_db)
-                .graph;
-        render_offline(&song, &mut graph, 24_000)
+        let mut library = SampleLibrary::new();
+        let patch = synthetic_patch(&mut library);
+        let mut project = common::demo_with(&patch, &library);
+        // The master fader is a document value now, not a parameter threaded
+        // into a graph builder — which is the point of the realisation step.
+        let master = project.mixer.master.unwrap();
+        project.mixer.tracks[master].gain_db = gain_db;
+        let (mut realised, timeline) =
+            common::realise_at(&project, &library, fontelle_app::PLAYBACK_QUALITY);
+        render_offline(&timeline, &mut realised.graph, 24_000)
     };
 
     let quiet = render_at(-12.0);
