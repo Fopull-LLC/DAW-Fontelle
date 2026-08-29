@@ -188,7 +188,7 @@ fn the_browser_is_a_search_box_over_a_file_list_over_a_preset_list() {
     assert!(l.presets.y >= l.files.bottom());
     assert!(!l.search.intersects(&l.files));
     assert!(!l.files.intersects(&l.presets));
-    assert!(l.presets.bottom() <= body.bottom() + 0.001);
+    assert!(l.presets.bottom() <= l.status.y + 0.001);
 
     assert!(!l.file_rows.is_empty());
     assert!(!l.preset_rows.is_empty());
@@ -242,12 +242,53 @@ fn clicking_the_browser_says_which_file_or_preset_was_clicked() {
     assert_eq!(browser_hit(&l, -100.0, -100.0), BrowserHit::Nothing);
 }
 
+/// The bank is a folder, and the two things a person needs to do with a folder
+/// are look in it and change which one it is. Neither of them should require
+/// knowing that `--soundfonts` exists.
+#[test]
+fn the_browser_has_a_way_to_open_the_bank_folder_and_a_way_to_change_it() {
+    let m = metrics();
+    let body = Rect::new(10.0, 20.0, 240.0, 400.0);
+    let l = browser_layout(body, &m, 20, 8, 0, 0);
+    let mid = |r: Rect| (r.x + r.width / 2.0, r.y + r.height / 2.0);
+
+    // Pinned to the bottom of the panel, under a line saying where the bank is,
+    // and never scrolled away by a long list.
+    assert!(!l.open_folder.is_empty());
+    assert!(!l.choose_folder.is_empty());
+    assert_eq!(
+        l.open_folder.bottom(),
+        body.bottom(),
+        "the buttons sit on the bottom edge of the panel"
+    );
+    assert_eq!(l.choose_folder.bottom(), l.open_folder.bottom());
+    assert!(!l.open_folder.intersects(&l.choose_folder));
+    assert!(l.choose_folder.right() <= body.right() + 0.001);
+
+    // The status line is above them, and the lists are above that.
+    assert!(l.status.bottom() <= l.open_folder.y + 0.001);
+    assert!(!l.status.intersects(&l.open_folder));
+    assert!(!l.presets.intersects(&l.status));
+
+    let (x, y) = mid(l.open_folder);
+    assert_eq!(browser_hit(&l, x, y), BrowserHit::OpenFolder);
+    let (x, y) = mid(l.choose_folder);
+    assert_eq!(browser_hit(&l, x, y), BrowserHit::ChooseFolder);
+}
+
 #[test]
 fn a_browser_with_no_room_still_produces_usable_geometry() {
     let m = metrics();
     for height in [0.0, 4.0, 20.0, m.row_height] {
         let l = browser_layout(Rect::new(0.0, 0.0, 240.0, height), &m, 10, 10, 0, 0);
-        for r in [l.search, l.files, l.presets] {
+        for r in [
+            l.search,
+            l.files,
+            l.presets,
+            l.status,
+            l.open_folder,
+            l.choose_folder,
+        ] {
             assert!(r.width >= 0.0 && r.height >= 0.0);
         }
         for (_, rect) in l.file_rows.iter().chain(&l.preset_rows) {

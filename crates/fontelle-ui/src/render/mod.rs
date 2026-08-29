@@ -24,7 +24,7 @@ use fontelle_model::{Arena, Note};
 use fontelle_types::{NoteId, PPQN, Tick};
 
 use crate::canvas::{
-    BrowserLayout, RackLayout, RollControl, RollLayout, RollView, SnapDivision, Tool,
+    BrowserHit, BrowserLayout, RackLayout, RollControl, RollLayout, RollView, SnapDivision, Tool,
     ToolbarLayout, snap_unit, tick_to_x, velocity_to_y, visible_keys, visible_ticks,
 };
 use crate::document::{ChannelInfo, LibraryEntry};
@@ -51,6 +51,9 @@ pub struct Chrome<'a> {
     /// the window at all.
     pub rack: Option<RackChrome<'a>>,
     pub browser: Option<BrowserChrome<'a>>,
+    /// The browser panel's heading, carrying the count of what is in the bank —
+    /// so "how many soundfonts have I got" needs no line of its own.
+    pub browser_title: &'a str,
     /// Everything that had to be shaped: bar numbers, key names, channel and
     /// soundfont names, the toolbar's captions. Looked up by the string being
     /// drawn, because that is the only key both sides can agree on without the
@@ -79,6 +82,8 @@ pub struct BrowserChrome<'a> {
     pub selected_file: Option<usize>,
     /// Whether the search box has the keyboard, so the caret is drawn.
     pub searching: bool,
+    /// What the pointer is over, so a button can light up.
+    pub hover: Option<BrowserHit>,
 }
 
 /// Everything the piano roll draws from. All of it is read-only: the roll is a
@@ -146,7 +151,7 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
         draw_label(
             scene,
             chrome.labels,
-            "Soundfonts",
+            chrome.browser_title,
             browser.panel.header,
             m,
             p.text,
@@ -864,34 +869,60 @@ fn draw_browser(
     list(l.files, &l.file_rows, chrome.files, chrome.selected_file);
     list(l.presets, &l.preset_rows, chrome.presets, None);
 
-    // The status line, over the bottom of the preset list: on a first run the
-    // bank is empty and where to put soundfonts is the only useful thing the
-    // panel can say.
+    // The status line: where the bank is, or what just went wrong. Its own row
+    // rather than a strip drawn over the bottom of the preset list, because a
+    // folder path on top of a list of presets is two things at once.
     if !status.is_empty()
         && let Some(text) = labels.get(status)
     {
-        let strip = Rect::new(
-            l.body.x,
-            (l.body.bottom() - text.height - 2.0).max(l.body.y),
-            l.body.width,
-            text.height + 2.0,
-        )
-        .intersection(&l.body);
-        fill_rect(scene, strip, p.panel_header);
         draw_text_clipped(
             scene,
             text,
-            strip,
-            strip.x + 4.0,
-            strip.y + 1.0,
+            l.status,
+            l.status.x + 4.0,
+            l.status.y + (l.status.height - text.height) / 2.0,
             p.text_muted,
         );
+    }
+
+    // And the two things a person needs to do with a folder: look in it, and
+    // change which one it is. Pinned to the bottom of the panel, because on a
+    // first run the bank is empty, the lists above are empty, and these are the
+    // only things worth clicking.
+    for (rect, caption, what) in [
+        (l.open_folder, OPEN_FOLDER, BrowserHit::OpenFolder),
+        (l.choose_folder, CHOOSE_FOLDER, BrowserHit::ChooseFolder),
+    ] {
+        if rect.is_empty() {
+            continue;
+        }
+        let lit = chrome.hover == Some(what);
+        fill_rect_rounded(
+            scene,
+            rect,
+            theme.metrics.corner_radius,
+            if lit { p.accent } else { p.border },
+        );
+        if let Some(text) = labels.get(caption) {
+            draw_text_clipped(
+                scene,
+                text,
+                rect,
+                rect.x + ((rect.width - text.width) / 2.0).max(2.0),
+                rect.y + (rect.height - text.height) / 2.0,
+                if lit { p.panel } else { p.text },
+            );
+        }
     }
 }
 
 /// The placeholder in the empty search box, in one place for the same reason
 /// [`ADD_CHANNEL`] is.
 pub const SEARCH_HINT: &str = "search soundfonts\u{2026}";
+
+/// The browser footer's captions, in one place for the same reason.
+pub const OPEN_FOLDER: &str = "Open folder";
+pub const CHOOSE_FOLDER: &str = "Change\u{2026}";
 
 /// The keyboard down the left-hand side.
 ///

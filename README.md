@@ -22,9 +22,15 @@ cargo run --release -p fontelle-app
 ```
 
 That opens a window with a channel rack, a soundfont browser and a piano roll,
-over a real audio device. Put your `.sf2` files in
-`~/.local/share/fontelle/soundfonts` — Fontelle creates it on first run and says
-so — or point it somewhere else once and it remembers:
+over a real audio device.
+
+Your soundfonts live in a folder Fontelle scans, shown at the bottom of the
+browser. **Open folder** shows you that folder in your file manager, creating it
+if it is not there yet — drop your `.sf2` files in and they appear.
+**Change…** picks a different folder (`Ctrl`+click to add one alongside rather
+than replace), and the choice is remembered. The default is
+`~/.local/share/fontelle/soundfonts`; there is a command-line equivalent if you
+prefer:
 
 ```sh
 cargo run --release -p fontelle-app -- --soundfonts /path/to/your/soundfonts

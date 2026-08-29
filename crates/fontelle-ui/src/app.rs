@@ -40,8 +40,8 @@ use crate::canvas::{
 use crate::document::{ChannelInfo, LibraryEntry, StudioHost};
 use crate::layout::{WindowLayout, window_layout};
 use crate::render::{
-    ADD_CHANNEL, BrowserChrome, Chrome, RackChrome, RenderError, RollChrome, SEARCH_HINT,
-    TransportChrome, draw_window, key_name, label_stride, labelled_bar,
+    ADD_CHANNEL, BrowserChrome, CHOOSE_FOLDER, Chrome, OPEN_FOLDER, RackChrome, RenderError,
+    RollChrome, SEARCH_HINT, TransportChrome, draw_window, key_name, label_stride, labelled_bar,
 };
 use crate::text::{Labels, TextContext, TextLayout};
 use crate::theme::Theme;
@@ -193,6 +193,11 @@ pub struct WindowApp {
     file_scroll: usize,
     preset_scroll: usize,
     hover_control: Option<RollControl>,
+    /// Which of the browser's buttons the pointer is over.
+    hover_browser: Option<BrowserHit>,
+    /// The browser panel's heading, kept rather than formatted per frame — the
+    /// renderer takes a `&str` and `Labels` is keyed by the string itself.
+    browser_title: String,
     /// Whether a mouse button is down, so a `CursorMoved` is a drag rather
     /// than a hover.
     dragging: bool,
@@ -262,6 +267,8 @@ impl WindowApp {
             file_scroll: 0,
             preset_scroll: 0,
             hover_control: None,
+            hover_browser: None,
+            browser_title: "Soundfonts".to_string(),
             dragging: false,
             auditioning: None,
             animating: false,
@@ -363,7 +370,9 @@ impl WindowApp {
                     presets: &self.presets,
                     selected_file: self.selected_file,
                     searching: self.searching,
+                    hover: self.hover_browser,
                 }),
+                browser_title: &self.browser_title,
                 labels: &self.labels,
                 status: &self.status,
             },
@@ -496,6 +505,23 @@ impl WindowApp {
         if control != self.hover_control {
             self.hover_control = control;
             self.tree.invalidate(PANEL);
+        }
+        let button = match browser_hit(&self.browser, self.cursor.0, self.cursor.1) {
+            hit @ (BrowserHit::OpenFolder | BrowserHit::ChooseFolder) => Some(hit),
+            _ => None,
+        };
+        if button != self.hover_browser {
+            self.hover_browser = button;
+            self.tree.invalidate(BROWSER);
+        }
+    }
+
+    /// The browser panel's own heading, carrying the count so the number of
+    /// soundfonts is visible without a line of its own.
+    fn browser_heading(&self) -> String {
+        match self.files.len() {
+            0 => "Soundfonts".to_string(),
+            n => format!("Soundfonts \u{2014} {n}"),
         }
     }
 
@@ -783,6 +809,7 @@ impl WindowApp {
         self.preset_scroll = self.preset_scroll.min(self.presets.len().saturating_sub(1));
         self.rack_scroll = self.rack_scroll.min(self.channels.len().saturating_sub(1));
 
+        self.browser_title = self.browser_heading();
         self.relayout_panels();
         self.tree.invalidate(RACK);
         self.tree.invalidate(BROWSER);
@@ -802,15 +829,18 @@ impl WindowApp {
 
         for fixed in [
             "Channels",
-            "Soundfonts",
             ADD_CHANNEL,
             SEARCH_HINT,
+            OPEN_FOLDER,
+            CHOOSE_FOLDER,
             "S",
             "M",
             "vel",
         ] {
             want(&mut self.labels, &mut self.text, fixed);
         }
+        let heading = self.browser_title.clone();
+        want(&mut self.labels, &mut self.text, &heading);
         for (control, _) in &self.roll_bar.items {
             let caption = match control {
                 RollControl::Snap => self.roll.view.snap.label(),
@@ -1046,6 +1076,24 @@ impl WindowApp {
                         self.status = e;
                     }
                 }
+            }
+            BrowserHit::OpenFolder => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.reveal_library_dir();
+                }
+            }
+            BrowserHit::ChooseFolder => {
+                // Ctrl adds a folder instead of replacing the list, the same
+                // way Ctrl on a preset adds a channel instead of replacing its
+                // instrument. The button says "Change" because replacing is
+                // what somebody clicking it means.
+                let add = self.modifiers.control_key();
+                if let Some(doc) = &mut self.options.document {
+                    doc.choose_library_dir(add);
+                }
+                // The picker held the event loop while it was up, so the meters
+                // and the playhead have a gap in them to catch up on.
+                self.last_tick = std::time::Instant::now();
             }
             BrowserHit::Nothing => {}
         }

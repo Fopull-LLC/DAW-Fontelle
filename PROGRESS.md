@@ -127,6 +127,33 @@ on the live path so a drawn note sounds whether or not the transport is
 rolling, and a **visible toolbar** carrying the tools, the snap division and
 the zooms — the answer to not being able to see what the roll can do.
 
+### The bank folder is reachable from inside the window
+
+Reported straight after the first build of the above, and both halves were fair:
+the status line said "no .sf2 files yet — put them in /home/" and ran off the
+end of a 248-pixel panel at exactly the word that mattered, and there was no way
+to say where the soundfonts should be without knowing `--soundfonts` exists.
+
+The browser now has a footer that cannot scroll away: the bank folder, elided
+from the left (`…/fontelle/soundfonts` — the end of a path is the half that says
+where you are), over **Open folder** and **Change…**. Open folder shows it in
+the desktop's file manager and *creates it first if it is not there*, which is
+the whole point of pressing it. Change picks a different one and remembers it;
+`Ctrl`+click adds one alongside instead of replacing. The count moved into the
+panel heading (`Soundfonts — 5`), which is a line saved and a question answered.
+
+**No file-dialog crate.** `rfd` is the obvious answer and its default Linux
+backend is GTK, which is LGPL and banned outright by `deny.toml` (TDD §3.4); its
+portal backend needs an async runtime this workspace does not otherwise have,
+for two dialogs. `desktop.rs` runs the desktop's own picker as a subprocess —
+kdialog, then zenity, then AppleScript or PowerShell off Linux — which links
+nothing and degrades to a message naming `--soundfonts` on a machine with none.
+The command shapes, the answer parsing and the *subprocess plumbing* are all
+tested; the last of those is driven with `/bin/echo` and `/bin/false` rather
+than by clicking a dialog, so a cancel, an answer and a not-installed
+fall-through are all checked. **What is not verified is a human clicking through
+a real picker** — that one needs Ty.
+
 ### Three defects found by looking at the window, not by thinking about it
 
 Exactly what §2.5 of the plan predicts. All three are arithmetic now, in
@@ -161,7 +188,7 @@ instead of asking the document's own `TempoMap` (INVARIANT 5). Both fixed.
 
 ### Verified
 
-- **649 tests**, `cargo clippy --all-targets -- -D warnings` clean, `cargo fmt`
+- **658 tests**, `cargo clippy --all-targets -- -D warnings` clean, `cargo fmt`
   clean.
 - **Both reference bounces byte-identical** against a build of the previous
   commit, on real soundfonts: the demo phrase, and a 64 MB render of a

@@ -203,6 +203,42 @@ impl Session {
         }
     }
 
+    /// The folders the bank scans. The first is the one the browser's buttons
+    /// act on.
+    pub fn library_dirs(&self) -> Vec<PathBuf> {
+        self.bank.dirs().to_vec()
+    }
+
+    /// Points the bank at `dirs`, rescans, and writes the choice down.
+    ///
+    /// `add` keeps the folders already configured; otherwise this replaces
+    /// them, which is what somebody who clicked "Change" meant.
+    pub fn set_library_dirs(&mut self, dirs: Vec<PathBuf>, add: bool) {
+        let mut wanted = if add {
+            self.bank.dirs().to_vec()
+        } else {
+            Vec::new()
+        };
+        for dir in dirs {
+            if !wanted.contains(&dir) {
+                wanted.push(dir);
+            }
+        }
+        self.settings.soundfont_dirs = wanted.clone();
+        // Remembered before the scan, so a folder that turns out to be empty is
+        // still the folder Fontelle opens on next time — the user said so.
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+        self.bank = SoundfontBank::new(wanted);
+        self.bank.rescan();
+        // The open file was named by its place in a list that has just been
+        // rebuilt out of different folders.
+        self.open_file = None;
+        self.presets.clear();
+        self.revision += 1;
+    }
+
     pub fn project(&self) -> &Project {
         &self.project
     }
@@ -719,24 +755,59 @@ impl StudioHost for Session {
         self.install_preset(channel, preset)
     }
 
+    /// One short line naming the bank folder.
+    ///
+    /// **Short is a requirement, not a preference.** The browser is 248 pixels
+    /// wide, and the first version of this said "no .sf2 files yet — put them
+    /// in /home/…" and ran off the end of the panel at exactly the word that
+    /// mattered. The path is elided from the left, because the end of a path is
+    /// the half that says where you are.
     fn library_status(&self) -> String {
         let folders = self.bank.dirs();
-        if self.bank.entries().is_empty() {
-            return match folders.first() {
-                Some(dir) => format!("no .sf2 files yet — put them in {}", dir.display()),
-                None => "no soundfont folder configured".to_string(),
-            };
+        let Some(first) = folders.first() else {
+            return "no soundfont folder set".to_string();
+        };
+        let here = crate::desktop::elide_path(first, 2);
+        match folders.len() {
+            1 => here,
+            n => format!("{here} +{}", n - 1),
         }
-        format!(
-            "{} soundfonts in {} folder(s)",
-            self.bank.entries().len(),
-            folders.len()
-        )
     }
 
     fn rescan_library(&mut self) {
         self.bank.rescan();
         self.revision += 1;
+    }
+
+    fn reveal_library_dir(&mut self) {
+        let Some(dir) = self.bank.dirs().first().cloned() else {
+            self.message = Some("no soundfont folder is configured".to_string());
+            return;
+        };
+        if let Err(e) = crate::desktop::reveal(&dir) {
+            self.message = Some(e);
+        }
+        // Whatever was dropped in while the file manager was open is picked up
+        // the next time the panel is looked at — which is very often the point
+        // of having opened it.
+        self.bank.rescan();
+        self.revision += 1;
+    }
+
+    fn choose_library_dir(&mut self, add: bool) {
+        let start = self.bank.dirs().first().cloned();
+        match crate::desktop::choose_folder(start.as_deref()) {
+            Ok(Some(dir)) => {
+                self.set_library_dirs(vec![dir], add);
+                self.message = Some(match self.bank.entries().len() {
+                    0 => "no .sf2 files in there".to_string(),
+                    n => format!("found {n} soundfont(s)"),
+                });
+            }
+            // A cancel is not an event.
+            Ok(None) => {}
+            Err(e) => self.message = Some(e),
+        }
     }
 
     fn take_message(&mut self) -> Option<String> {

@@ -4,6 +4,7 @@
 
 pub mod bank;
 mod bundle;
+pub mod desktop;
 mod library;
 mod realise;
 mod session;

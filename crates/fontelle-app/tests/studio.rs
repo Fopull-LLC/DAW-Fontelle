@@ -450,3 +450,53 @@ fn session_with_audition(
     session.set_audition(sink);
     session
 }
+
+// -------------------------------------------------- where the bank lives ---
+
+/// The user has to be able to say where their soundfonts are without knowing
+/// that a `--soundfonts` flag exists, and to open the folder Fontelle picked so
+/// they can put files in it. Both reported from the window as gaps.
+#[test]
+fn the_bank_folder_is_reachable_and_changeable_from_inside_the_studio() {
+    let dir = a_bank("folders");
+    let (mut session, _source) = studio(&dir);
+    assert_eq!(session.library_dirs(), vec![dir.clone()]);
+
+    // Changing it replaces the list, rescans, and is remembered on disk — so a
+    // relaunch opens on the folder that was chosen and not on the default.
+    let other = scratch("folders-other");
+    session.set_library_dirs(vec![other.clone()], false);
+    assert_eq!(session.library_dirs(), vec![other.clone()]);
+    assert!(
+        session.library_files().is_empty(),
+        "the new folder has no soundfonts in it, and the old one's must be gone"
+    );
+    let (saved, error) = fontelle_app::settings::Settings::load_from(&dir.join("settings.json"));
+    assert!(error.is_none());
+    assert_eq!(saved.soundfont_dirs, vec![other.clone()]);
+
+    // Adding keeps what was there.
+    session.set_library_dirs(vec![dir.clone()], true);
+    assert_eq!(session.library_dirs(), vec![other, dir.clone()]);
+    assert_eq!(session.library_files().len(), 1, "the fixture is back");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_status_line_says_where_the_bank_is_rather_than_running_off_the_panel() {
+    let dir = a_bank("status");
+    let (session, _source) = studio(&dir);
+
+    let status = session.library_status();
+    assert!(
+        status.chars().count() <= 40,
+        "the browser is 248 pixels wide; {status:?} does not fit in it"
+    );
+    assert!(
+        status.contains(dir.file_name().unwrap().to_str().unwrap()),
+        "it still has to say which folder: {status:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

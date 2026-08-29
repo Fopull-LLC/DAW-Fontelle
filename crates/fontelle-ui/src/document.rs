@@ -127,6 +127,22 @@ pub trait StudioHost: DocumentHost {
     fn library_status(&self) -> String;
     fn rescan_library(&mut self);
 
+    /// Shows the bank folder in the desktop's file manager, creating it if it
+    /// is not there yet.
+    ///
+    /// The whole reason to press this is that the folder is empty and you want
+    /// to put something in it, so a file manager opening on a folder that does
+    /// not exist is not an answer.
+    fn reveal_library_dir(&mut self);
+
+    /// Asks the user for a folder and makes it the bank, remembering it.
+    ///
+    /// `add` keeps the folders already configured and appends this one;
+    /// otherwise it replaces them. **Blocking** — the picker is the desktop's
+    /// own, and the window is frozen while it is up, which is what every other
+    /// application does too.
+    fn choose_library_dir(&mut self, add: bool);
+
     /// The last thing that went wrong, for the status line. Taking it clears
     /// it, so a message shows once rather than forever.
     fn take_message(&mut self) -> Option<String>;

@@ -1151,7 +1151,10 @@ fn main() {
 /// Printed rather than shown because there is no help panel yet; the toolbar
 /// carries the same set, which is the half that does not need reading.
 const WELCOME: &str = "\
-  Pick a soundfont in the browser (bottom left), then a preset:
+  Your soundfonts live in a folder Fontelle scans. \"Open folder\" at the
+  bottom left shows you where that is (and makes it if it is not there yet);
+  \"Change...\" picks a different one, Ctrl+click to add one alongside.
+  Pick a soundfont in the browser, then a preset:
     click a preset  -> puts it on the selected channel
     Ctrl+click      -> puts it on a new one, as does \"+ Add instrument\"
   Draw with the left mouse button, delete with the right; drag a note's right
