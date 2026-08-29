@@ -110,6 +110,84 @@ fn centibels_attenuation_to_linear(cb: Option<i16>) -> f32 {
     10f32.powf(-(cb.unwrap_or(0) as f32) / 200.0)
 }
 
+/// Decodes one sample header's PCM into a ready-to-play buffer.
+///
+/// A corrupt or truncated file can carry a header whose range runs past the
+/// real `smpl` chunk — nothing in the parser cross-checks the two. Indexing on
+/// trust would panic out of bounds and take the process with it; TDD §20.3
+/// requires a clear failure instead. Validated up front so the loop below can
+/// stay a plain indexed read.
+fn decode_sample(
+    header: &soundfont::raw::SampleHeader,
+    pcm_bytes: &[u8],
+    smpl_offset: u64,
+) -> Result<SampleBuffer, ImportError> {
+    let buffer_len = (header.end.saturating_sub(header.start)) as usize;
+    let byte_start = smpl_offset as usize + header.start as usize * 2;
+    let byte_end = byte_start
+        .checked_add(buffer_len * 2)
+        .ok_or_else(|| ImportError("sample header range overflows".into()))?;
+    if byte_end > pcm_bytes.len() {
+        return Err(ImportError(format!(
+            "sample header range [{}, {}) runs past the end of the file's sample data \
+             ({} bytes) — the file is truncated or corrupt",
+            header.start,
+            header.end,
+            pcm_bytes.len()
+        )));
+    }
+
+    let mut data = Vec::with_capacity(buffer_len);
+    for i in 0..buffer_len {
+        let b0 = pcm_bytes[byte_start + i * 2];
+        let b1 = pcm_bytes[byte_start + i * 2 + 1];
+        data.push(i16::from_le_bytes([b0, b1]) as f32 / 32768.0);
+    }
+    Ok(SampleBuffer {
+        data: std::sync::Arc::from(data),
+        sample_rate: header.sample_rate,
+    })
+}
+
+/// Decodes the sample headers named by `wanted`, and nothing else.
+///
+/// This is what reopening a project runs: a saved patch names its audio by
+/// file plus the index of the sample header inside it (TDD §8.3), and what it
+/// needs back is exactly those buffers under fresh ids — not a re-import of
+/// whatever preset they originally came from, which would fail the moment
+/// somebody edited the patch to reach a second preset's sample.
+///
+/// The decode is the same function the importer uses, so a reopened project's
+/// audio is bit-identical to what it was saved from.
+pub fn load_sf2_samples(
+    path: &Path,
+    wanted: &[u32],
+    store: &mut SampleStore,
+) -> Result<HashMap<u32, AssetId>, ImportError> {
+    let bytes = std::fs::read(path).map_err(|e| ImportError(e.to_string()))?;
+    let sf2 = load_sf2(&bytes)?;
+    let smpl = sf2
+        .sample_data
+        .smpl
+        .ok_or_else(|| ImportError("SF2 file has no sample data (smpl chunk)".into()))?;
+
+    let mut loaded = HashMap::new();
+    for index in wanted {
+        if loaded.contains_key(index) {
+            continue;
+        }
+        let header = sf2.sample_headers.get(*index as usize).ok_or_else(|| {
+            ImportError(format!(
+                "this file has no sample {index} — it has {}",
+                sf2.sample_headers.len()
+            ))
+        })?;
+        let buffer = decode_sample(header, &bytes, smpl.offset)?;
+        loaded.insert(*index, store.insert(buffer));
+    }
+    Ok(loaded)
+}
+
 /// Builds one layer from one instrument zone, decoding its sample into
 /// `store`.
 ///
@@ -146,41 +224,11 @@ fn build_layer(
         GeneratorType::EndloopAddrsCoarseOffset,
     );
 
-    // A corrupt or truncated file can carry a sample header whose range runs
-    // past the real `smpl` chunk — nothing in the parser cross-checks the two.
-    // Indexing on trust would panic out of bounds and take the process with
-    // it; TDD §20.3 requires a clear failure instead. Validated up front so
-    // the decode loop below can stay a plain indexed read.
     let buffer_len = (header.end.saturating_sub(header.start)) as usize;
-    let byte_start = smpl_offset as usize + header.start as usize * 2;
-    let byte_end = byte_start
-        .checked_add(buffer_len * 2)
-        .ok_or_else(|| ImportError("sample header range overflows".into()))?;
-    if byte_end > pcm_bytes.len() {
-        return Err(ImportError(format!(
-            "sample header range [{}, {}) runs past the end of the file's sample data \
-             ({} bytes) — the file is truncated or corrupt",
-            header.start,
-            header.end,
-            pcm_bytes.len()
-        )));
-    }
 
     let asset = match already_decoded {
         Some(asset) => asset,
-        None => {
-            let mut data = Vec::with_capacity(buffer_len);
-            for i in 0..buffer_len {
-                let b0 = pcm_bytes[byte_start + i * 2];
-                let b1 = pcm_bytes[byte_start + i * 2 + 1];
-                let sample = i16::from_le_bytes([b0, b1]);
-                data.push(sample as f32 / 32768.0);
-            }
-            store.insert(SampleBuffer {
-                data: std::sync::Arc::from(data),
-                sample_rate: header.sample_rate,
-            })
-        }
+        None => store.insert(decode_sample(header, pcm_bytes, smpl_offset)?),
     };
 
     let root_key = match gen_i16(zone, GeneratorType::OverridingRootKey) {

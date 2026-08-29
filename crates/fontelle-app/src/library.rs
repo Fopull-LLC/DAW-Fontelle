@@ -70,6 +70,32 @@ impl SampleLibrary {
         id
     }
 
+    /// Reloads the samples a saved patch names, out of the file it names them
+    /// in (TDD §17.4).
+    ///
+    /// Only the headers listed are decoded, and by the same code the importer
+    /// uses, so a reopened project's audio is bit-identical to what it was
+    /// saved from. Deliberately *not* a re-import of the preset the patch
+    /// originally came from: a patch the user has edited to reach a second
+    /// preset's sample would not survive that, and the whole product thesis is
+    /// that the file supplies defaults rather than the final word.
+    pub fn reload_sf2_samples(
+        &mut self,
+        file: &AssetRef,
+        wanted: &[u32],
+    ) -> Result<(), ImportError> {
+        let loaded = fontelle_assets::load_sf2_samples(&file.path, wanted, self.store_mut())?;
+        for (sample, id) in loaded {
+            let reference = SampleRef {
+                file: file.clone(),
+                sample,
+            };
+            self.by_file.insert(reference.clone(), id);
+            self.by_id.insert(id, reference);
+        }
+        Ok(())
+    }
+
     /// Where each sample in the store came from — the argument
     /// `Patch::to_data` takes.
     pub fn provenance(&self) -> &HashMap<AssetId, SampleRef> {

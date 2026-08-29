@@ -1332,6 +1332,18 @@ binarise the whole document.
 
 **Never write floating-point beat positions.** Ticks only (§6.1).
 
+**Written pretty-printed** (added 2026-08-29). "Diffable, inspectable, greppable, and recoverable
+by hand" is only true of JSON that is actually laid out; one enormous line is none of those.
+
+**The version is read before the body.** A project from a newer build is refused by version rather
+than by whichever field happened to change shape first, so the message can say "upgrade Fontelle"
+instead of implying damage. The migration chain sits between the two, operating on untyped JSON
+because a migration exists precisely to read shapes this build's structs no longer describe.
+
+**A project's format version and a patch's are separate numbers** (§8.3). A document can gain a
+field without every preset in the world needing a new stamp, and the patch format can change
+without invalidating projects that hold one.
+
 ### 17.3 Storage locations — nothing outside configured paths
 
 **INVARIANT 10 — Fontelle writes nothing outside locations the user has explicitly configured,
@@ -1380,6 +1392,19 @@ missing files will happen. Required behaviour:
 3. Pointing that dialog at a parent directory resolves every file found beneath it in one action.
 4. The project loads and plays with placeholders for anything still missing. It does not refuse
    to open, and it does not lose the references on the next save.
+
+**Status, 2026-08-29:** point 4 is implemented — a project whose soundfont has moved opens, the
+layers that pointed at it render silence, `OpenedProject::missing` names the files *and the
+channels they affect* (so a message can name the instrument rather than a path nobody recognises),
+and a re-save keeps the references. Points 1–3 are the relink dialog and its search, and belong
+with the UI. The headless default is **reference, never copy**: there is no dialog to ask from,
+and copying silently would duplicate a 325 MB soundfont into somebody's project folder.
+
+**Reloading is by sample, not by preset.** A saved patch names its audio by file plus the index of
+the sample header inside it (§8.3), and reopening decodes exactly those headers. Re-importing the
+preset the patch originally came from would look equivalent and is not: a patch the user has
+edited to reach a second preset's sample would not survive it, and that editing is the whole
+product thesis.
 
 A modal per missing file, or silent failure, are both unacceptable.
 

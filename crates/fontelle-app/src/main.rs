@@ -34,22 +34,29 @@ const BPM: f64 = 120.0;
 struct PlayOptions<'a> {
     root_key: u8,
     preset: usize,
-    render_wav: Option<&'a std::path::Path>,
     midi: Option<(&'a std::path::Path, fontelle_assets::MidiChannels)>,
+    playback: Playback<'a>,
+}
+
+/// What to do with a project once there is one — the half `--open` shares with
+/// `--play-sf2`.
+struct Playback<'a> {
+    render_wav: Option<&'a std::path::Path>,
+    save: Option<&'a std::path::Path>,
     gain_db: f32,
     cue: Cue,
     midi_in: bool,
+    /// Printed once the graph is up, when there is something worth saying
+    /// about how the project was built.
+    announce: Option<String>,
 }
 
 fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), String> {
     let PlayOptions {
         root_key,
         preset,
-        render_wav,
         midi,
-        gain_db,
-        cue,
-        midi_in,
+        playback,
     } = options;
     // SF2 files store presets in arbitrary order, so "preset 0" is regularly
     // not the instrument anyone wants — `Secret_of_Mana.sf2` opens with a
@@ -73,14 +80,7 @@ fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), Stri
     // `--preset`; for a MIDI file it is whatever each channel's program change
     // asked for, which is what makes an arrangement play as written rather
     // than every part on one sound.
-    let quality = if render_wav.is_some() {
-        // An offline bounce is not real-time, so it renders at export quality
-        // rather than at whatever the patch asks for during playback.
-        fontelle_app::RENDER_QUALITY
-    } else {
-        fontelle_app::PLAYBACK_QUALITY
-    };
-    let mut project = match midi {
+    let project = match midi {
         Some((midi_path, channels)) => {
             let import = fontelle_assets::import_midi(midi_path, channels)
                 .map_err(|e| format!("failed to import {}: {e}", midi_path.display()))?;
@@ -162,6 +162,54 @@ fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), Stri
         }
     };
 
+    play_or_render(project, library, playback)
+}
+
+/// Opens a saved project and plays or renders it — the same path
+/// `--play-sf2` takes once it has built one.
+fn open_and_play(bundle: &std::path::Path, playback: Playback<'_>) -> Result<(), String> {
+    let opened = fontelle_app::open_project(bundle).map_err(|e| format!("{e}"))?;
+    println!("{}: \"{}\"", bundle.display(), opened.project.meta.name);
+    println!(
+        "  {} channel(s), {} clip(s), {:.1} bpm",
+        opened.project.channels.len(),
+        opened.project.clips.len(),
+        opened.project.tempo_map.tempo_at(0)
+    );
+    // TDD §17.4: the project opens and plays with placeholders. Saying which
+    // files are gone is the whole point of not refusing.
+    for missing in &opened.missing {
+        println!(
+            "  ! {} could not be read ({}) — {} channel(s) will be silent",
+            missing.file.path.display(),
+            missing.why,
+            missing.channels.len()
+        );
+    }
+    play_or_render(opened.project, opened.library, playback)
+}
+
+fn play_or_render(
+    mut project: fontelle_model::Project,
+    library: SampleLibrary,
+    options: Playback<'_>,
+) -> Result<(), String> {
+    let Playback {
+        render_wav,
+        save,
+        gain_db,
+        cue,
+        midi_in,
+        announce,
+    } = options;
+    // An offline bounce is not real-time, so it renders at export quality
+    // rather than at whatever the patch asks for during playback (§7.6).
+    let quality = if render_wav.is_some() {
+        fontelle_app::RENDER_QUALITY
+    } else {
+        fontelle_app::PLAYBACK_QUALITY
+    };
+
     // `--gain-db` is the master fader, and the master fader is a document
     // value now rather than a parameter threaded into the graph builder — set
     // through a command like every other mutation (INVARIANT 9).
@@ -190,6 +238,15 @@ fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), Stri
     }
 
     let timeline = fontelle_sequencer::compile(&project, &realised.channel_nodes);
+
+    // Written before anything is played: a bounce that takes two minutes
+    // should not be standing between the user and their project being on
+    // disk.
+    if let Some(bundle) = save {
+        fontelle_app::save_project(&project, bundle)
+            .map_err(|e| format!("failed to save {}: {e}", bundle.display()))?;
+        println!("  saved {}", bundle.display());
+    }
 
     // One beat of tail so the final chord's release rings out instead of
     // being chopped off when the stream stops.
@@ -271,15 +328,13 @@ fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), Stri
     let graph = realised.graph;
     let mut device = AudioDevice::default_host();
     println!(
-        "Fontelle: {} note events from {} on {:?}",
+        "Fontelle: {} note events, {} on {:?}",
         timeline.events.len(),
-        path.display(),
+        project.meta.name,
         device.default_output_name()
     );
-    if midi.is_none() {
-        println!(
-            "  root key {root_key} at {BPM} bpm — a root/third/fifth run, then the triad held."
-        );
+    if let Some(line) = &announce {
+        println!("{line}");
     }
     match looped {
         Some((from, to)) => println!(
@@ -572,15 +627,26 @@ fn choose_preset(
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--play-sf2") {
+    let opening = args.iter().any(|a| a == "--open");
+    if opening || args.iter().any(|a| a == "--play-sf2") {
         // A bad path is ordinary user error, not a bug — report it and exit
         // non-zero rather than dumping a panic and a backtrace hint.
-        let path = match fontelle_app::resolve_sf2_path(&args, |p| p.exists()) {
-            Ok(path) => path,
-            Err(e) => {
-                eprintln!("Fontelle: {e}");
-                std::process::exit(1);
+        let path = if opening {
+            std::path::PathBuf::new()
+        } else {
+            match fontelle_app::resolve_sf2_path(&args, |p| p.exists()) {
+                Ok(path) => path,
+                Err(e) => {
+                    eprintln!("Fontelle: {e}");
+                    std::process::exit(1);
+                }
             }
+        };
+        let path_flag = |name: &str| {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1))
+                .map(std::path::PathBuf::from)
         };
         let numeric_flag = |name: &str| {
             args.iter()
@@ -591,17 +657,15 @@ fn main() {
         let root_key = numeric_flag("--key").unwrap_or(60).min(127) as u8;
         let preset = numeric_flag("--preset").unwrap_or(0);
 
-        let render_wav = args
-            .iter()
-            .position(|a| a == "--render-wav")
-            .and_then(|i| args.get(i + 1))
-            .map(std::path::PathBuf::from);
+        let render_wav = path_flag("--render-wav");
+        let save = path_flag("--save");
+        let open = path_flag("--open");
+        if opening && open.is_none() {
+            eprintln!("Fontelle: --open takes the path of a .fontelle project folder");
+            std::process::exit(1);
+        }
 
-        let midi_path = args
-            .iter()
-            .position(|a| a == "--play-midi")
-            .and_then(|i| args.get(i + 1))
-            .map(std::path::PathBuf::from);
+        let midi_path = path_flag("--play-midi");
         // 1-based on the command line, 0-based in the file, because that is
         // how every DAW and every piece of MIDI documentation numbers them.
         let midi_channels = match numeric_flag("--midi-channel") {
@@ -669,18 +733,33 @@ fn main() {
             std::process::exit(1);
         }
 
-        if let Err(e) = play_sf2(
-            &path,
-            PlayOptions {
-                root_key,
-                preset,
-                render_wav: render_wav.as_deref(),
-                midi,
-                gain_db,
-                cue,
-                midi_in,
-            },
-        ) {
+        let playback = Playback {
+            render_wav: render_wav.as_deref(),
+            save: save.as_deref(),
+            gain_db,
+            cue,
+            midi_in,
+            announce: (midi.is_none() && !opening).then(|| {
+                format!(
+                    "  root key {root_key} at {BPM} bpm — a root/third/fifth run, \
+                     then the triad held."
+                )
+            }),
+        };
+
+        let result = match &open {
+            Some(bundle) => open_and_play(bundle, playback),
+            None => play_sf2(
+                &path,
+                PlayOptions {
+                    root_key,
+                    preset,
+                    midi,
+                    playback,
+                },
+            ),
+        };
+        if let Err(e) = result {
             eprintln!("Fontelle: {e}");
             std::process::exit(1);
         }
@@ -697,6 +776,7 @@ fn main() {
          (run with `--play-sf2 <path.sf2> [--preset <n>] [--key <note>] \
          [--play-midi <file.mid>] [--midi-channel <1-16> | --midi-all] \
          [--gain-db <db>] [--start-beat <n>] [--loop <from>:<to>] [--repeat <n>] \
-         [--midi-in] [--render-wav <out.wav>]` for the M0 vertical slice instead)"
+         [--midi-in] [--save <project.fontelle>] [--render-wav <out.wav>]`, or \
+         `--open <project.fontelle>`, for the vertical slice instead)"
     )
 }

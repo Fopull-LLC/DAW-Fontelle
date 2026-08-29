@@ -13,6 +13,105 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
+## 2026-08-29 (later still): a project you can save and open again
+
+Phase 1 item 4. `MyTrack.fontelle/` is a folder bundle with `project.json` and
+the five directories §17.1 names, written atomically, and the CLI can now save
+one and reopen it.
+
+```sh
+cargo run -p fontelle-app -- --play-sf2 <file.sf2> --save MyTrack.fontelle
+cargo run -p fontelle-app -- --open MyTrack.fontelle [--render-wav out.wav]
+```
+
+### Reopening is by *sample*, not by preset
+
+This is the decision the rest of it hangs on. A saved patch names its audio by
+file plus the index of the sample header inside it, so opening a project reads
+exactly those headers out of exactly those files, through the same decode the
+importer uses.
+
+Re-importing the preset the patch originally came from would look equivalent
+and is not: a patch the user has edited to reach a second preset's sample would
+not survive it — and that editing is the entire product thesis. `load_sf2_
+samples(path, &[header indices], store)` is the whole mechanism, and because it
+shares `decode_sample` with the importer, a reopened project's audio is
+bit-identical rather than merely equivalent.
+
+### The rest of it
+
+- **Atomic save**, per §17.1: temp file in the same directory, `sync_all`,
+  rename over the real one, then a best-effort sync of the directory because a
+  rename is only durable once its directory entry is. What is *testable* is
+  that a completed save leaves nothing behind; the crash-mid-write half is not
+  testable without a crash, and the test says so rather than implying more.
+- **The version is read before the body**, the same shape the patch format
+  uses, so a project from a newer build reads as "upgrade Fontelle" rather than
+  as a confusing field-level parse error. Its migration chain is empty and its
+  first arm is written out in the doc comment. A project's format version and a
+  patch's are separate numbers on purpose.
+- **Assets are referenced, not copied.** §17.4's ask-once policy has no dialog
+  to ask from here, and referencing is the answer that cannot surprise anybody
+  by silently duplicating a 325 MB soundfont into their project folder.
+  `assets/` is created anyway, because it is part of the bundle's shape.
+- **A broken link opens.** §17.4 point 4, implemented: the layers that pointed
+  at a moved file render silence, `OpenedProject::missing` names the file *and
+  the channels it affects* so a message can name the instrument rather than a
+  path nobody recognises, and a re-save keeps the reference so putting the file
+  back is all it takes. Points 1-3 — the automatic search and the relink dialog
+  — belong with the UI.
+- **`project.json` is pretty-printed.** §17.2 chose JSON to be diffable,
+  greppable and hand-recoverable, which one enormous line is not.
+- **`ProjectMeta::created`** is filled in on the first save and never
+  restamped: it is when the piece was started, not when it was last touched.
+  ISO-8601 UTC, from a fifteen-line `civil_from_days` rather than a calendar
+  dependency — my own test constants for it were off by one, and the
+  implementation was right.
+
+The SF2 fixture builder moved out of `fontelle-assets/tests` into
+`fontelle_assets::fixtures`, because the round-trip test needs a real file on
+disk and an integration test cannot enable a feature on the crate it is
+testing.
+
+### Verified
+
+The gate's last clause — "save the project, quit, reopen it to an
+identical-sounding state" — checked as bit-identical rather than as
+"sounds the same":
+
+```
+--play-sf2 F-Zero.sf2 --save Demo.fontelle --render-wav a.wav
+--open Demo.fontelle --render-wav b.wav          # cmp: identical
+--play-sf2 SGM-v2.01 --play-midi "Deltarune..." --save/--open  # 2 136 621 frames, identical
+```
+
+Both are also byte-identical to the renders taken *before* any of this
+stretch of work started, which is four rewrites ago now: the patch format, the
+realisation step, the arena, and the command layer.
+
+By hand at the CLI: a project whose soundfont has been deleted opens, names
+the file and the channel, and renders 108 000 frames at peak 0.000; a truncated
+`project.json` fails with `is not readable JSON: EOF while parsing a value at
+line 26 column 2`.
+
+Mutations, each caught by exactly one test in each crate: `open_project` never
+reloading the audio (two tests, both about audio coming back); the load
+skipping its version check; the save not creating the bundle directories.
+
+### What is deliberately not built
+
+- **No autosave, no `backups/` writing, no Export Bundle.** Autosave on a timer
+  is Phase 2 item 10; the directory exists for it.
+- **No relink search or dialog** (§17.4 points 1-3) — UI work. The data a
+  dialog needs is what `OpenedProject::missing` carries.
+- **`AssetTable` is still empty.** The patch carries its own asset references,
+  which is what §8.3 requires of a portable preset; the document-level table is
+  what a *shared* asset list and the copy-into-`assets/` path will need.
+- **`AssetKind::Sample` cannot be reloaded** — there is no loose-sample
+  importer yet. Reported as unreadable rather than silently skipped.
+
+**Where things stand:** 409 tests, clippy and fmt clean.
+
 ## 2026-08-29 (later): every edit is a command, and it can be taken back
 
 Phase 1 item 3. `Command` was a trait with no implementations and
@@ -1788,7 +1887,8 @@ To inspect what a given SF2 file actually imports as, without any audio:
   back. `Command`, `History::undo`/`redo` and fifteen commands are real
   (2026-08-29). Still `todo!()`: `prefab::resolve`. Tests:
   `crates/fontelle-model/src/{project,mixer,arena}.rs` and
-  `crates/fontelle-model/tests/commands.rs`.
+  `crates/fontelle-model/tests/{commands,storage}.rs`. `save_project`/
+  `load_project` are the §17.1 folder bundle, written atomically.
 - **fontelle-sequencer** — `compile()` is real, scoped to `ClipSource::Notes`
   clips with no prefab resolution (see the "2026-08-23 update" above for the
   full scope-cut list). `collision::voice_context_for_clip` was already real
@@ -1815,9 +1915,12 @@ To inspect what a given SF2 file actually imports as, without any audio:
   drives both the device callback and `render_offline` — play, stop, seek,
   loop, plus the `IdleGate` audition path and the live-event SPSC queues the
   MIDI hub feeds.
-- **fontelle-assets** — `import_sf2` is real, see "SF2 import scope" below.
-  `import_midi` is real (notes, piecewise tempo, per-channel program/CC
-  reporting). `import_sfz`, `SoundfontLibrary`, peak generation are pure stub.
+- **fontelle-assets** — `import_sf2` is real, see "SF2 import scope" below;
+  `load_sf2_samples` reloads the specific sample headers a saved patch names
+  (2026-08-29). `import_midi` is real (notes, piecewise tempo, per-channel
+  program/CC, a mixer track and a channel pan per part). `fixtures` holds the
+  hand-built SF2 byte streams both this crate's and `fontelle-app`'s tests use.
+  `import_sfz`, `SoundfontLibrary`, peak generation are pure stub.
 - **fontelle-midi** — real (2026-08-28): device enumeration and hot-plug via
   `midir`, decode, `MidiRouter` (sustain, stuck-note release on disconnect),
   `MidiHub`. Still stub: `ClockSync` (§14.5) and MIDI file *export* (§14.6).
@@ -1829,7 +1932,8 @@ To inspect what a given SF2 file actually imports as, without any audio:
   the engine. `SampleLibrary` holds the decoded audio and the two-way mapping
   between store ids and the file references a saved patch names them by.
   `render_offline`, `write_wav16`, `demo_project` and `project_from_midi` are
-  here too.
+  here too, and `open_project`/`save_project` (2026-08-29) are the folder
+  bundle plus the sample reloading a reopened project needs.
 - **fontelle-ui**, **fontelle-plugin** — pure stub, unchanged since
   scaffolding. Not on the M0 path.
 - **xtask** — pure stub.

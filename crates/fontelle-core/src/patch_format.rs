@@ -243,6 +243,33 @@ impl Patch {
     }
 }
 
+/// Every sample a stored patch points at, without deserialising it into a
+/// live [`Patch`].
+///
+/// What reopening a project needs before it can resolve anything: the loader
+/// has to know which files to read, and it cannot ask a `Patch` because there
+/// is no `Patch` until the files are read. Also what an "export bundle"
+/// (§17.1) has to walk.
+pub fn referenced_samples(data: &PatchData) -> Result<Vec<SampleRef>, PatchFormatError> {
+    if data.format_version > PATCH_FORMAT_VERSION {
+        return Err(PatchFormatError::FromTheFuture {
+            found: data.format_version,
+            newest: PATCH_FORMAT_VERSION,
+        });
+    }
+    let body = migrate(data.body.clone(), data.format_version)?;
+    let stored: StoredPatch =
+        serde_json::from_value(body).map_err(|e| PatchFormatError::Malformed(e.to_string()))?;
+    Ok(stored
+        .layers
+        .into_iter()
+        .filter_map(|layer| match layer.source {
+            StoredSource::Sf2Zone { file, .. } | StoredSource::Sample { file } => file,
+            StoredSource::Oscillator(_) => None,
+        })
+        .collect())
+}
+
 /// Brings a body written by an older build up to [`PATCH_FORMAT_VERSION`].
 ///
 /// One step per revision, in order, each rewriting the body from `N` to

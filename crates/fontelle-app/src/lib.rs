@@ -2,6 +2,7 @@
 //! can't be imported by an integration test, and "the thing we demo" deserves
 //! coverage as much as anything else does.
 
+mod bundle;
 mod library;
 mod realise;
 
@@ -13,6 +14,7 @@ use fontelle_model::{
 };
 use fontelle_types::{CompiledTimeline, PPQN, Tick};
 
+pub use bundle::{MissingAsset, OpenError, OpenedProject, open_project, save_project};
 pub use library::SampleLibrary;
 pub use realise::{
     RealiseError, RealiseOptions, Realised, channel_nodes, realise, set_channel_patch,
