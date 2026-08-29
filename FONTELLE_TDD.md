@@ -161,6 +161,7 @@ an automation system, and a full effects suite from scratch. §22 stages that wo
 | MIDI I/O | `midir` | MIT | §14. |
 | MIDI file parse | `midly` | MIT | Import/export of .mid. |
 | Serialisation | `serde` + `serde_json` | MIT/Apache-2.0 | Document format (§17.2). |
+| Content hashing | `twox-hash` | MIT | xxhash for `AssetRef::content_hash` (§17.4). Added 2026-08-28: §17.4 specifies xxhash and this table had no hashing crate. `std`'s `DefaultHasher` is documented as unstable across Rust releases, so it cannot back a value written to disk. |
 | Lock-free queues | `rtrb` | MIT/Apache-2.0 | |
 | RT priority | `audio_thread_priority` | MPL-2.0 | rtkit/D-Bus promotion on Linux. |
 | IDs | `uuid` (v7) | MIT/Apache-2.0 | Time-ordered, sortable. |
@@ -408,11 +409,18 @@ pub struct Layer {
 }
 
 pub enum Source {
-    Sf2Zone { file: AssetRef, zone: ZoneId },
-    Sample  { file: AssetRef },
+    Sf2Zone { file: AssetId, zone: ZoneId },
+    Sample  { file: AssetId },
     Oscillator(OscKind),   // sine, saw, square, triangle, noise
 }
 ```
+
+**Correction, 2026-08-28: `file` is an `AssetId`, not an `AssetRef`.** This section originally
+said `AssetRef`, which carries a `PathBuf`. A `Layer` is read by the voice on the RT thread, and
+an owned path inside it is a heap allocation in the type a patch edit clones — the wrong place
+for a filename. `AssetId` is the key of the decoded sample in the `SampleStore`, which is what
+rendering actually needs. The `AssetRef` lives in the *stored* form of the patch instead (§8.3),
+which is where a filename belongs and where §17.4's relinking can reach it.
 
 Note that `Source::Oscillator` exists from day one. The decision was that SF2 samples are *one*
 source among several, and a bare oscillator layer is cheap to implement and immediately useful
@@ -582,6 +590,19 @@ skewed / stepped), and a smoother. This is `nice-plug`'s `Params` shape, adopted
 The serialisation format lives in `fontelle-core` and is versioned with an explicit migration
 path from v0. Presets embed asset references (§17.4), not sample data, with an optional
 "embed samples" export mode for sharing.
+
+**How a stored patch names its audio (added 2026-08-28, implementing this section).** An
+`AssetRef` names a *file*, and one soundfont holds hundreds of samples — so a layer's reference
+is an `AssetRef` plus the index of the sample header inside that file (`fontelle_types::
+SampleRef`). The in-memory `AssetId` is never written: it is a `slotmap` key minted by whichever
+`SampleStore` happened to decode the file, so INVARIANT 8 forbids it and it would in any case
+mean nothing on the machine that opens the preset. Reading a patch therefore takes a resolver
+from `SampleRef` to a live `AssetId`; a reference that resolves to nothing yields a silent layer
+and is reported, per §17.4's requirement that a project with a broken link still opens.
+
+The stored form is `PatchData { format_version, body }` with an untyped `body`, because a
+migration has to read shapes this build's structs no longer describe. The version is read before
+the body, so a file from a newer build is refused as "upgrade Fontelle" rather than as damage.
 
 ### 8.4 Third-party hosting scaffold (not implemented in v1)
 

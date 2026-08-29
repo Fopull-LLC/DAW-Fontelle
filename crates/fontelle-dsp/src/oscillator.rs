@@ -1,6 +1,6 @@
 /// Bare oscillator sources, usable as a `Layer` on their own (TDD §7.2 —
 /// `Source::Oscillator`) for reinforcing a sample's sub-bass or adding attack noise.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OscKind {
     Sine,
     Saw,

@@ -18,3 +18,4 @@ notify = "8.2.0"
 slotmap = "1.1.1"
 soundfont = "0.1.0"
 symphonia = { version = "0.6.1", features = ["wav", "flac", "mp3", "vorbis"] }
+twox-hash = { version = "2.1.4", default-features = false, features = ["xxhash64"] }

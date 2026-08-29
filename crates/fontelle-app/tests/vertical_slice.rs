@@ -83,7 +83,7 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
         name: "ch".into(),
         color: [0, 0, 0, 255],
         mixer_track: Default::default(),
-        patch_data: Vec::new(),
+        patch_data: None,
     });
     let lane_id = project.lanes.insert(Lane {
         name: "lane".into(),

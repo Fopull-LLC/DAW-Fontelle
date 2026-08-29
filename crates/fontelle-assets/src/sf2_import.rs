@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
 
@@ -6,8 +7,24 @@ use fontelle_core::{
     PlaybackConfig, SampleBuffer, SampleStore, Source, VoiceConfig,
 };
 use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, SvfMode};
+use fontelle_types::{AssetId, AssetKind, AssetRef, SampleRef};
 use soundfont::raw::{Generator, GeneratorType};
 use soundfont::{SoundFont2, Zone};
+
+/// A patch, plus where every sample it plays came from.
+///
+/// The provenance is not decoration: a `Layer` names its audio with an
+/// `AssetId`, which is the key whichever `SampleStore` decoded the file
+/// happened to mint, and INVARIANT 8 forbids putting that on disk. Saving a
+/// patch means naming its samples by file (TDD §8.3, §17.4), and the importer
+/// is the only thing that knows which file each one came out of.
+#[derive(Debug, Clone)]
+pub struct ImportedPatch {
+    pub patch: Patch,
+    /// Keyed by the id in the store, so it is a drop-in argument for
+    /// `Patch::to_data`.
+    pub samples: HashMap<AssetId, SampleRef>,
+}
 
 #[derive(Debug)]
 pub struct ImportError(pub String);
@@ -93,13 +110,21 @@ fn centibels_attenuation_to_linear(cb: Option<i16>) -> f32 {
     10f32.powf(-(cb.unwrap_or(0) as f32) / 200.0)
 }
 
+/// Builds one layer from one instrument zone, decoding its sample into
+/// `store`.
+///
+/// `already_decoded` is the id an earlier zone in this same instrument got for
+/// the *same* sample header, if any — several zones pointing at one header is
+/// how a key split or a sustain layer is written, and decoding it again for
+/// each of them would put another copy of the same audio in memory.
 fn build_layer(
     zone: &Zone,
     header: &soundfont::raw::SampleHeader,
     store: &mut SampleStore,
     pcm_bytes: &[u8],
     smpl_offset: u64,
-) -> Result<Layer, ImportError> {
+    already_decoded: Option<AssetId>,
+) -> Result<(Layer, AssetId), ImportError> {
     let start_delta = offset_samples(
         zone,
         GeneratorType::StartAddrsOffset,
@@ -141,17 +166,22 @@ fn build_layer(
         )));
     }
 
-    let mut data = Vec::with_capacity(buffer_len);
-    for i in 0..buffer_len {
-        let b0 = pcm_bytes[byte_start + i * 2];
-        let b1 = pcm_bytes[byte_start + i * 2 + 1];
-        let sample = i16::from_le_bytes([b0, b1]);
-        data.push(sample as f32 / 32768.0);
-    }
-    let asset = store.insert(SampleBuffer {
-        data: std::sync::Arc::from(data),
-        sample_rate: header.sample_rate,
-    });
+    let asset = match already_decoded {
+        Some(asset) => asset,
+        None => {
+            let mut data = Vec::with_capacity(buffer_len);
+            for i in 0..buffer_len {
+                let b0 = pcm_bytes[byte_start + i * 2];
+                let b1 = pcm_bytes[byte_start + i * 2 + 1];
+                let sample = i16::from_le_bytes([b0, b1]);
+                data.push(sample as f32 / 32768.0);
+            }
+            store.insert(SampleBuffer {
+                data: std::sync::Arc::from(data),
+                sample_rate: header.sample_rate,
+            })
+        }
+    };
 
     let root_key = match gen_i16(zone, GeneratorType::OverridingRootKey) {
         Some(v) if v >= 0 => v as u8,
@@ -167,26 +197,29 @@ fn build_layer(
         _ => LoopMode::Off,
     };
 
-    Ok(Layer {
-        source: Source::Sample { file: asset },
-        key_range: gen_range(zone, GeneratorType::KeyRange).unwrap_or((0, 127)),
-        vel_range: gen_range(zone, GeneratorType::VelRange).unwrap_or((0, 127)),
-        root_key,
-        fine_tune_cents,
-        playback: PlaybackConfig {
-            start_offset: start_delta,
-            end_offset: buffer_len as f64 + end_delta,
-            loop_mode,
-            loop_start: (header.loop_start as f64 - header.start as f64) + loop_start_delta,
-            loop_end: (header.loop_end as f64 - header.start as f64) + loop_end_delta,
-            // SF2 has no interpolation generator, so the layer names no
-            // kernel and follows the session quality (TDD §7.6).
-            interpolation: None,
-            ..PlaybackConfig::default()
+    Ok((
+        Layer {
+            source: Source::Sample { file: asset },
+            key_range: gen_range(zone, GeneratorType::KeyRange).unwrap_or((0, 127)),
+            vel_range: gen_range(zone, GeneratorType::VelRange).unwrap_or((0, 127)),
+            root_key,
+            fine_tune_cents,
+            playback: PlaybackConfig {
+                start_offset: start_delta,
+                end_offset: buffer_len as f64 + end_delta,
+                loop_mode,
+                loop_start: (header.loop_start as f64 - header.start as f64) + loop_start_delta,
+                loop_end: (header.loop_end as f64 - header.start as f64) + loop_end_delta,
+                // SF2 has no interpolation generator, so the layer names no
+                // kernel and follows the session quality (TDD §7.6).
+                interpolation: None,
+                ..PlaybackConfig::default()
+            },
+            gain_db: -(gen_i16(zone, GeneratorType::InitialAttenuation).unwrap_or(0) as f32) / 10.0,
+            pan: gen_i16(zone, GeneratorType::Pan).unwrap_or(0) as f32 / 500.0,
         },
-        gain_db: -(gen_i16(zone, GeneratorType::InitialAttenuation).unwrap_or(0) as f32) / 10.0,
-        pan: gen_i16(zone, GeneratorType::Pan).unwrap_or(0) as f32 / 500.0,
-    })
+        asset,
+    ))
 }
 
 /// Imports the first preset of the SF2 file at `path` into a `Patch`, decoding
@@ -203,7 +236,7 @@ fn build_layer(
 /// the mod matrix stays empty. Every one of these is a deliberate, documented
 /// cut, not an oversight — read `soundfont`'s `Generator`/`GeneratorType` and
 /// extend `build_layer` to close any of them.
-pub fn import_sf2(path: &Path, store: &mut SampleStore) -> Result<Patch, ImportError> {
+pub fn import_sf2(path: &Path, store: &mut SampleStore) -> Result<ImportedPatch, ImportError> {
     import_sf2_preset(path, 0, store)
 }
 
@@ -265,7 +298,7 @@ pub fn import_sf2_preset(
     path: &Path,
     preset_index: usize,
     store: &mut SampleStore,
-) -> Result<Patch, ImportError> {
+) -> Result<ImportedPatch, ImportError> {
     let bytes = std::fs::read(path).map_err(|e| ImportError(e.to_string()))?;
 
     let sf2 = load_sf2(&bytes)?;
@@ -296,6 +329,15 @@ pub fn import_sf2_preset(
             ))
         })?;
 
+    let file = asset_ref(path, &bytes);
+    let mut samples: HashMap<AssetId, SampleRef> = HashMap::new();
+    // One decode per sample *header*, not per zone. A key split or a sustain
+    // layer regularly points several zones at the same header, and decoding it
+    // again for each one puts a second copy of the same audio in the store —
+    // on a 325 MB soundfont that is not a rounding error. It also makes the
+    // provenance map a bijection, which is what lets a reopened project find
+    // its way back from a `SampleRef` to exactly one id.
+    let mut decoded: HashMap<u16, AssetId> = HashMap::new();
     let mut layers = Vec::new();
     let mut amp_envelope = None;
     let mut filter = None;
@@ -352,7 +394,27 @@ pub fn import_sf2_preset(
             modulation = Some(ZoneModulation::read(zone));
         }
 
-        layers.push(build_layer(zone, header, store, &bytes, smpl.offset)?);
+        let (layer, asset) = build_layer(
+            zone,
+            header,
+            store,
+            &bytes,
+            smpl.offset,
+            decoded.get(sample_id).copied(),
+        )?;
+        if decoded.insert(*sample_id, asset).is_none() {
+            // The sample header's own index inside the file: what a reopened
+            // project matches on to find this audio again, since the store's
+            // key is minted fresh on every import.
+            samples.insert(
+                asset,
+                SampleRef {
+                    file: file.clone(),
+                    sample: *sample_id as u32,
+                },
+            );
+        }
+        layers.push(layer);
     }
 
     if layers.is_empty() {
@@ -395,14 +457,41 @@ pub fn import_sf2_preset(
     let modulation = modulation.unwrap_or_default();
     modulation.seed_routes(&mut mod_matrix, layers.len(), filter.enabled);
 
-    Ok(Patch {
-        layers,
-        filters: [filter, disabled_filter],
-        envelopes: vec![amp, modulation.envelope],
-        lfos: modulation.lfos.to_vec(),
-        mod_matrix,
-        voice_config: VoiceConfig::default(),
+    Ok(ImportedPatch {
+        patch: Patch {
+            layers,
+            filters: [filter, disabled_filter],
+            envelopes: vec![amp, modulation.envelope],
+            lfos: modulation.lfos.to_vec(),
+            mod_matrix,
+            voice_config: VoiceConfig::default(),
+        },
+        samples,
     })
+}
+
+/// Names the file on disk the way a saved patch has to (TDD §17.4).
+///
+/// The hash covers the first megabyte plus the size, which is what §17.4
+/// specifies: enough to tell two soundfonts apart, cheap enough to compute on
+/// every load, and — because it stops at a megabyte — the same cost for a
+/// 325 MB library as for a 97 KB one.
+///
+/// `bytes` is the file this import already read, so nothing is read twice.
+fn asset_ref(path: &Path, bytes: &[u8]) -> AssetRef {
+    use std::hash::Hasher;
+
+    const HASHED_PREFIX: usize = 1024 * 1024;
+    let mut hasher = twox_hash::XxHash64::with_seed(0);
+    hasher.write(&bytes[..bytes.len().min(HASHED_PREFIX)]);
+    hasher.write_u64(bytes.len() as u64);
+
+    AssetRef::unregistered(
+        path.to_path_buf(),
+        hasher.finish(),
+        bytes.len() as u64,
+        AssetKind::Sf2,
+    )
 }
 
 /// The modulation half of an instrument zone: SF2's two LFOs, its modulation

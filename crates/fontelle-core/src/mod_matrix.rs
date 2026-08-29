@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ModSource {
     Envelope(u8),
     Lfo(u8),
@@ -14,7 +14,7 @@ pub enum ModSource {
 /// Any continuous patch parameter, addressed by stable ID (TDD §7.5). Minimum set:
 /// layer pitch/gain/pan, sample start offset, loop start/length, filter cutoff and
 /// resonance, every envelope stage time/level, every LFO rate/depth, unison detune.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ModDest {
     LayerPitch(u8),
     LayerGain(u8),
@@ -37,7 +37,7 @@ pub enum ModDest {
 /// reach full depth whatever curve it carries — and every one preserves sign,
 /// so a bipolar source such as pitch bend or an LFO is shaped symmetrically
 /// rather than folded to one side.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Curve {
     Linear,
     /// Squared: slow to leave zero, then accelerating.
@@ -78,7 +78,7 @@ impl Curve {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ModRoute {
     pub source: ModSource,
     pub destination: ModDest,
@@ -101,7 +101,7 @@ pub struct ModRoute {
     pub invert: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ModMatrix {
     pub routes: Vec<ModRoute>,
 }

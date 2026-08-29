@@ -324,7 +324,7 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
             name: label.clone(),
             color: CHANNEL_COLOURS[midi_channel as usize % CHANNEL_COLOURS.len()],
             mixer_track: Default::default(),
-            patch_data: Vec::new(),
+            patch_data: None,
         });
         let lane = project.lanes.insert(Lane {
             name: label,

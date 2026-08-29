@@ -922,6 +922,7 @@ dependencies = [
  "slotmap",
  "soundfont",
  "symphonia",
+ "twox-hash",
 ]
 
 [[package]]
@@ -930,6 +931,8 @@ version = "0.0.0"
 dependencies = [
  "fontelle-dsp",
  "fontelle-types",
+ "serde",
+ "serde_json",
  "slotmap",
 ]
 
@@ -1014,6 +1017,7 @@ name = "fontelle-types"
 version = "0.0.0"
 dependencies = [
  "serde",
+ "serde_json",
  "slotmap",
  "uuid",
 ]
@@ -3492,6 +3496,12 @@ checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 dependencies = [
  "core_maths",
 ]
+
+[[package]]
+name = "twox-hash"
+version = "2.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5283634e518fe9e82c7b20520bb4bc209009fd16c82077c802f8111ecbb0117a"
 
 [[package]]
 name = "unicode-bidi"

@@ -104,6 +104,7 @@ fn plays_a_note_through_the_real_output_device() {
     let patch = if let Ok(path) = std::env::var("FONTELLE_TEST_SF2") {
         fontelle_assets::import_sf2(std::path::Path::new(&path), &mut store)
             .expect("FONTELLE_TEST_SF2 must point at a valid SF2 file")
+            .patch
     } else {
         synthetic_patch(&mut store)
     };

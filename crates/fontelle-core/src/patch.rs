@@ -7,17 +7,17 @@ use fontelle_dsp::{EnvelopeConfig, OscKind};
 
 /// A zone/preset identifier inside an SF2 file, assigned by `fontelle-assets` at
 /// import time. Opaque here — `fontelle-core` never parses SF2 metadata itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ZoneId(pub u32);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Source {
     Sf2Zone { file: AssetId, zone: ZoneId },
     Sample { file: AssetId },
     Oscillator(OscKind),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Layer {
     pub source: Source,
     pub key_range: (u8, u8),
@@ -30,7 +30,7 @@ pub struct Layer {
 }
 
 /// A named LFO instance. Depth/rate are mod-matrix destinations (TDD §7.5).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Lfo {
     pub rate_hz: f32,
     pub depth: f32,
@@ -44,7 +44,7 @@ pub struct Lfo {
     pub delay_s: f32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FilterSlot {
     pub mode: fontelle_dsp::SvfMode,
     pub cutoff_hz: f32,
@@ -54,7 +54,7 @@ pub struct FilterSlot {
 
 /// The user's fully-owned instrument definition (TDD §7.2). An SF2 file seeds this
 /// once at import; after that it has no live link back to the file's metadata.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Patch {
     /// Up to 16 layers: stacked, or split by key/velocity.
     pub layers: Vec<Layer>,

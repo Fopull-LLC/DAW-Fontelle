@@ -1,11 +1,11 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StealPolicy {
     Oldest,
     Quietest,
     LowestPriority,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct UnisonConfig {
     pub voices: u8,
     pub detune_cents: f32,
@@ -13,14 +13,14 @@ pub struct UnisonConfig {
     pub randomise_phase: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RetriggerMode {
     Poly,
     Mono,
     Legato,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VoiceConfig {
     /// 1..=256.
     pub polyphony: u16,

@@ -7,7 +7,7 @@ pub struct SvfFilter {
     ic2eq: f32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SvfMode {
     Lowpass,
     Highpass,

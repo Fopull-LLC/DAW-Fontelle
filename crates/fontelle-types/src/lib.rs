@@ -3,6 +3,7 @@ mod event;
 mod id;
 mod pan;
 mod param;
+mod patch_data;
 mod time;
 
 pub use asset::{AssetKind, AssetRef};
@@ -13,4 +14,5 @@ pub use id::{
 };
 pub use pan::PanLaw;
 pub use param::ParamAddress;
+pub use patch_data::{PatchData, SampleRef};
 pub use time::{PPQN, Sample, Tick};

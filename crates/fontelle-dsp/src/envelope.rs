@@ -17,7 +17,7 @@ pub enum EnvelopeStage {
 /// — loses a constant number of decibels per second, so it falls fast at first
 /// and then tails away. Getting this wrong makes every sustained soundfont
 /// patch sound wrong in a way that is easy to hear and hard to attribute.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum EnvelopeCurve {
     /// Every stage is a straight line in amplitude. Correct for a modulation
     /// envelope, whose output is a control value rather than a gain — SF2
@@ -57,7 +57,7 @@ fn db_to_level(db: f32) -> f32 {
     (db * (std::f32::consts::LOG2_10 / 20.0)).exp2()
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EnvelopeConfig {
     pub delay_s: f32,
     pub attack_s: f32,

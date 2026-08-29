@@ -287,7 +287,9 @@ fn imports_key_vel_range_root_key_and_tuning() {
     let path = write_fixture_to_temp_file("basic", &build_sf2(&fixture));
 
     let mut store = SampleStore::new();
-    let patch = import_sf2(&path, &mut store).expect("valid fixture must import");
+    let patch = import_sf2(&path, &mut store)
+        .expect("valid fixture must import")
+        .patch;
     std::fs::remove_file(&path).ok();
 
     assert_eq!(patch.layers.len(), 1);
@@ -351,7 +353,7 @@ fn note_outside_the_fixtures_key_range_would_be_silent() {
     let path = write_fixture_to_temp_file("range", &build_sf2(&fixture));
 
     let mut store = SampleStore::new();
-    let patch = import_sf2(&path, &mut store).unwrap();
+    let patch = import_sf2(&path, &mut store).unwrap().patch;
     std::fs::remove_file(&path).ok();
 
     let layer = &patch.layers[0];
@@ -406,7 +408,7 @@ fn imports_loop_points_gain_pan_and_volume_envelope() {
     let path = write_fixture_to_temp_file("env", &build_sf2(&fixture));
 
     let mut store = SampleStore::new();
-    let patch = import_sf2(&path, &mut store).unwrap();
+    let patch = import_sf2(&path, &mut store).unwrap().patch;
     std::fs::remove_file(&path).ok();
 
     let layer = &patch.layers[0];
@@ -655,9 +657,13 @@ fn import_sf2_preset_selects_the_requested_preset_not_the_first() {
     let path = write_fixture_to_temp_file("multi-pick", &build_multi_preset_sf2(MULTI));
 
     let mut store = SampleStore::new();
-    let piano = import_sf2_preset(&path, 2, &mut store).expect("preset 2 must import");
+    let piano = import_sf2_preset(&path, 2, &mut store)
+        .expect("preset 2 must import")
+        .patch;
     let mut store0 = SampleStore::new();
-    let orca = import_sf2_preset(&path, 0, &mut store0).expect("preset 0 must import");
+    let orca = import_sf2_preset(&path, 0, &mut store0)
+        .expect("preset 0 must import")
+        .patch;
     std::fs::remove_file(&path).ok();
 
     // Each fixture preset has a distinct root key, so this proves selection
@@ -680,8 +686,8 @@ fn import_sf2_defaults_to_preset_zero() {
     let path = write_fixture_to_temp_file("multi-default", &build_multi_preset_sf2(MULTI));
     let mut a = SampleStore::new();
     let mut b = SampleStore::new();
-    let default = import_sf2(&path, &mut a).unwrap();
-    let explicit = import_sf2_preset(&path, 0, &mut b).unwrap();
+    let default = import_sf2(&path, &mut a).unwrap().patch;
+    let explicit = import_sf2_preset(&path, 0, &mut b).unwrap().patch;
     std::fs::remove_file(&path).ok();
 
     assert_eq!(default.layers[0].root_key, explicit.layers[0].root_key);
@@ -741,7 +747,7 @@ fn filter_fixture(generators: Vec<Gen>) -> Sf2Fixture {
 fn import_filter_fixture(name: &str, generators: Vec<Gen>) -> Patch {
     let path = write_fixture_to_temp_file(name, &build_sf2(&filter_fixture(generators)));
     let mut store = SampleStore::new();
-    let patch = import_sf2(&path, &mut store).unwrap();
+    let patch = import_sf2(&path, &mut store).unwrap().patch;
     std::fs::remove_file(&path).ok();
     patch
 }
@@ -1017,7 +1023,7 @@ fn a_pitch_route_reaches_every_layer_not_just_the_first() {
     }];
     let path = write_fixture_to_temp_file("multilayer_mod", &build_sf2(&fixture));
     let mut store = SampleStore::new();
-    let patch = import_sf2(&path, &mut store).unwrap();
+    let patch = import_sf2(&path, &mut store).unwrap().patch;
     std::fs::remove_file(&path).ok();
 
     assert_eq!(patch.layers.len(), 2, "the fixture must have two layers");
@@ -1070,4 +1076,122 @@ fn the_modulation_envelope_can_drive_pitch_and_the_filter_at_the_same_time() {
         route_of(&patch, ModSource::Envelope(1), ModDest::FilterCutoff(0)).is_some(),
         "one envelope, two destinations"
     );
+}
+
+/// A two-zone fixture, so the round trip has to keep more than one sample
+/// straight — a mapping that happened to work for a single layer is exactly
+/// the kind that fails on the first real instrument.
+fn round_trip_fixture() -> Sf2Fixture {
+    Sf2Fixture {
+        samples: vec![0, 4096, 8192, 12288, 16384, 20480, 24576, 28672],
+        sample_rate: 44_100,
+        header_start: 0,
+        header_end: 8,
+        header_loop_start: 2,
+        header_loop_end: 6,
+        origpitch: 60,
+        pitchadj: 0,
+        zone: ZoneSpec {
+            generators: vec![
+                gen_range(GEN_KEY_RANGE, 0, 59),
+                gen_val(GEN_OVERRIDING_ROOT_KEY, 48),
+                gen_val(GEN_SAMPLE_MODES, 1),
+                gen_val(GEN_PAN, -250),
+                gen_val(GEN_INITIAL_ATTENUATION, 60),
+                gen_val(GEN_INITIAL_FILTER_FC, 7000),
+                gen_val(GEN_INITIAL_FILTER_Q, 60),
+            ],
+        },
+        extra_zones: vec![ZoneSpec {
+            generators: vec![
+                gen_range(GEN_KEY_RANGE, 60, 127),
+                gen_val(GEN_OVERRIDING_ROOT_KEY, 72),
+                gen_val(GEN_SAMPLE_MODES, 0),
+                gen_val(GEN_PAN, 250),
+            ],
+        }],
+    }
+}
+
+/// One note through a patch, rendered exactly as the engine would.
+fn render_a_note(patch: fontelle_core::Patch, store: &SampleStore, key: u8) -> Vec<f32> {
+    let mut sampler = fontelle_core::Sampler::new(patch);
+    sampler.prepare(&fontelle_core::PrepareContext {
+        sample_rate: 48_000.0,
+        max_block_size: 512,
+    });
+    sampler.note_on(key, 100, 0);
+    let mut left = vec![0.0; 512];
+    let mut right = vec![0.0; 512];
+    {
+        let mut out: Vec<&mut [f32]> = vec![&mut left, &mut right];
+        sampler.render(store, &mut out);
+    }
+    left.extend_from_slice(&right);
+    left
+}
+
+#[test]
+fn an_imported_preset_survives_a_serialisation_round_trip_note_for_note() {
+    // The whole point of the format (TDD §8.3): what a project reopens to has
+    // to be what it was saved from. Rendered rather than compared field by
+    // field, because a field that survives the round trip in the wrong unit
+    // still sounds wrong.
+    use std::collections::HashMap;
+
+    let path = write_fixture_to_temp_file("round-trip", &build_sf2(&round_trip_fixture()));
+
+    let mut store = SampleStore::new();
+    let imported = import_sf2(&path, &mut store).expect("valid fixture must import");
+    let data = imported
+        .patch
+        .to_data(&imported.samples)
+        .expect("an imported patch must serialise");
+
+    // Reopened the way a saved project is: the soundfont is imported again
+    // into a *fresh* store, and the saved patch is laid over whatever sample
+    // ids that import happened to mint. The decoy is there so the two stores
+    // genuinely disagree about the keys — without it, the ids would match by
+    // luck and a format that stored them would pass this test.
+    let mut reopened_store = SampleStore::new();
+    let _decoy = reopened_store.insert(fontelle_core::SampleBuffer {
+        data: std::sync::Arc::from(vec![0.0; 4]),
+        sample_rate: 44_100,
+    });
+    let reimported = import_sf2(&path, &mut reopened_store).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    let by_file: HashMap<&fontelle_types::SampleRef, fontelle_types::AssetId> = reimported
+        .samples
+        .iter()
+        .map(|(id, sample)| (sample, *id))
+        .collect();
+    // One entry, not two: the fixture's two zones share one sample header,
+    // and the importer decodes a header once and points both layers at it.
+    assert_eq!(by_file.len(), 1, "the shared sample must have provenance");
+    assert!(
+        imported
+            .samples
+            .keys()
+            .all(|id| !by_file.values().any(|reopened| reopened == id)),
+        "the two stores must have minted different ids, or this proves nothing"
+    );
+
+    let loaded = fontelle_core::Patch::from_data(&data, |sample| by_file.get(sample).copied())
+        .expect("a patch this build wrote must read back");
+    assert!(
+        loaded.unresolved.is_empty(),
+        "every sample must relink: {:?}",
+        loaded.unresolved
+    );
+
+    // One note in each zone's key range, so a mapping that crossed the two
+    // samples over is audible rather than hidden behind a shared layer.
+    for key in [40, 80] {
+        assert_eq!(
+            render_a_note(imported.patch.clone(), &store, key),
+            render_a_note(loaded.patch.clone(), &reopened_store, key),
+            "key {key} renders differently after the round trip"
+        );
+    }
 }

@@ -102,7 +102,7 @@ mod tests {
             name: "ch".into(),
             color: [0, 0, 0, 255],
             mixer_track: Default::default(),
-            patch_data: Vec::new(),
+            patch_data: None,
         });
 
         let lane_id = project.lanes.insert(Lane {

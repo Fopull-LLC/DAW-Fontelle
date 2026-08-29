@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::AssetId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum AssetKind {
     Sf2,
     Sf3,
@@ -14,7 +14,7 @@ pub enum AssetKind {
 /// `fontelle-core::Layer::Source`, resolved and imported by `fontelle-assets`, and
 /// tracked in the document's `AssetTable` by `fontelle-model` — living here keeps
 /// `fontelle-core` from depending on either of those crates (INVARIANT 4).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct AssetRef {
     pub id: AssetId,
     /// Absolute, or project-relative if the asset was copied in on import.

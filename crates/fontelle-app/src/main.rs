@@ -110,7 +110,8 @@ fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), Stri
                 );
                 patches.push(
                     fontelle_assets::import_sf2_preset(path, chosen, &mut store)
-                        .map_err(|e| format!("failed to import preset {chosen}: {e}"))?,
+                        .map_err(|e| format!("failed to import preset {chosen}: {e}"))?
+                        .patch,
                 );
             }
             for skipped in &import.skipped {
@@ -139,7 +140,8 @@ fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), Stri
         }
         None => {
             let patch = fontelle_assets::import_sf2_preset(path, preset, &mut store)
-                .map_err(|e| format!("failed to import {}: {e}", path.display()))?;
+                .map_err(|e| format!("failed to import {}: {e}", path.display()))?
+                .patch;
             (demo_song(root_key, BPM, SAMPLE_RATE), vec![patch])
         }
     };

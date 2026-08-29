@@ -34,7 +34,8 @@ fn main() {
 
     let mut store = fontelle_core::SampleStore::new();
     let patch = fontelle_assets::import_sf2_preset(path, preset, &mut store)
-        .unwrap_or_else(|e| panic!("import failed: {e}"));
+        .unwrap_or_else(|e| panic!("import failed: {e}"))
+        .patch;
 
     println!("layers: {}", patch.layers.len());
     for (i, l) in patch.layers.iter().enumerate() {

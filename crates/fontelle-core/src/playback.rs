@@ -1,6 +1,6 @@
 use fontelle_dsp::Interpolation;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LoopMode {
     Off,
     Forward,
@@ -12,7 +12,7 @@ pub enum LoopMode {
 /// Every field here is seeded from the SF2 zone at import and every field is
 /// user-editable afterward (TDD §7.3) — this is where Fontelle inverts the usual
 /// SF2-player relationship: the file supplies defaults, not the final word.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PlaybackConfig {
     pub start_offset: f64,
     pub end_offset: f64,

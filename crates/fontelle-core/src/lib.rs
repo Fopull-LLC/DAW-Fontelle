@@ -5,6 +5,7 @@
 
 mod mod_matrix;
 mod patch;
+mod patch_format;
 mod playback;
 mod sampler;
 mod streaming;
@@ -12,6 +13,7 @@ mod voice;
 
 pub use mod_matrix::{Curve, ModDest, ModMatrix, ModRoute, ModSource};
 pub use patch::{FilterSlot, Layer, Lfo, Patch, Source, ZoneId};
+pub use patch_format::{LoadedPatch, PATCH_FORMAT_VERSION, PatchFormatError, UnresolvedSample};
 pub use playback::{LoopMode, PlaybackConfig};
 pub use sampler::{PrepareContext, Sampler, SamplerContext};
 pub use streaming::{SampleBuffer, SampleStore};

@@ -214,7 +214,7 @@ pub fn demo_song(root_key: u8, bpm: f64, sample_rate: u32) -> Song {
         name: "Imported SF2".to_string(),
         color: [0x4f, 0x8f, 0xd0, 0xff],
         mixer_track: Default::default(),
-        patch_data: Vec::new(),
+        patch_data: None,
     });
     let lane = project.lanes.insert(Lane {
         name: "Lane 1".to_string(),
