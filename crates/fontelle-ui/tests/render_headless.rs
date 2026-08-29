@@ -12,11 +12,11 @@
 
 use fontelle_model::{Arena, Note};
 use fontelle_types::{NoteId, PPQN, Tick};
-use fontelle_ui::canvas::{RollView, roll_layout, tick_to_x};
+use fontelle_ui::canvas::{RollView, SnapDivision, Tool, roll_layout, tick_to_x, toolbar_layout};
 use fontelle_ui::layout::{Rect, window_layout};
 use fontelle_ui::render::RollChrome;
 use fontelle_ui::render::{Chrome, Headless, TransportChrome, draw_window};
-use fontelle_ui::text::TextContext;
+use fontelle_ui::text::{Labels, TextContext};
 use fontelle_ui::theme::{Color, Theme};
 use fontelle_ui::transport::{
     Meter, TransportBarLayout, TransportView, format_readout, playhead_x, transport_bar_layout,
@@ -26,6 +26,15 @@ use std::sync::{Mutex, OnceLock};
 
 const W: u32 = 640;
 const H: u32 = 360;
+
+/// The roll shots get their own, bigger window.
+///
+/// The chrome around the roll grew in item 9 — a sidebar on the left, a toolbar
+/// and a velocity lane inside the panel — and at 640x360 there is no longer a
+/// full octave of grid left to sample. Bigger here rather than smaller chrome:
+/// the chrome is what is being checked.
+const RW: u32 = 1000;
+const RH: u32 = 620;
 
 /// One GPU device for the whole file.
 ///
@@ -107,6 +116,10 @@ fn shoot_with(theme: Theme, view: TransportView, meters: [Meter; 2]) -> Option<S
                 hover: None,
             },
             roll: None,
+            rack: None,
+            browser: None,
+            labels: &Labels::new(),
+            status: "",
         },
     );
     let pixels = shared
@@ -404,7 +417,7 @@ struct RollShot {
 
 impl RollShot {
     fn at(&self, x: u32, y: u32) -> Color {
-        let i = ((y * W + x) * 4) as usize;
+        let i = ((y * RW + x) * 4) as usize;
         Color(self.pixels[i..i + 4].try_into().expect("four bytes"))
     }
 }
@@ -413,12 +426,12 @@ impl RollShot {
 fn shoot_roll(notes: &Arena<NoteId, Note>, selection: &[NoteId]) -> Option<RollShot> {
     let theme = Theme::dark_default();
     let shared = headless()?;
-    let layout = window_layout(W as f32, H as f32, &theme.metrics);
+    let layout = window_layout(RW as f32, RH as f32, &theme.metrics);
     let mut text = TextContext::new();
     let title = text.layout("Roll", &theme.font, None);
     let view = TransportView::unavailable();
     let readout = text.layout(&format_readout(&view, 4), &theme.font, None);
-    let roll_l = roll_layout(layout.panel.body, &theme.metrics);
+    let roll_l = roll_layout(layout.panel.body, &theme.metrics, true);
     let roll_view = RollView {
         top_key: 72,
         ..RollView::default()
@@ -440,18 +453,27 @@ fn shoot_roll(notes: &Arena<NoteId, Note>, selection: &[NoteId]) -> Option<RollS
             },
             roll: Some(RollChrome {
                 layout: roll_l,
+                toolbar: toolbar_layout(roll_l.toolbar, &theme.metrics),
                 view: roll_view,
                 notes,
                 selection,
                 playhead_tick: None,
                 beats_per_bar: 4,
+                tool: Tool::Draw,
+                snap: SnapDivision::Step,
+                marquee: None,
+                hover: None,
             }),
+            rack: None,
+            browser: None,
+            labels: &Labels::new(),
+            status: "",
         },
     );
     let pixels = shared
         .lock()
         .expect("the shared renderer")
-        .render(&scene, W, H, theme.palette.window)
+        .render(&scene, RW, RH, theme.palette.window)
         .expect("rendering a scene that fits in memory");
 
     Some(RollShot {

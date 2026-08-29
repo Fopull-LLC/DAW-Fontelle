@@ -897,6 +897,8 @@ dependencies = [
  "fontelle-sequencer",
  "fontelle-types",
  "fontelle-ui",
+ "serde",
+ "serde_json",
  "slotmap",
 ]
 

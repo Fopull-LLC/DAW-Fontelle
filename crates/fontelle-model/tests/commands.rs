@@ -685,3 +685,130 @@ fn command_error_says_what_went_wrong() {
     let CommandError(message) = command.apply(&mut project).expect_err("no such clip");
     assert!(!message.is_empty());
 }
+
+// --- Note velocity (the piano roll's velocity lane) -------------------------
+
+/// Velocity is the one note property the roll edits by dragging rather than by
+/// moving the note itself, and §16.5 lists it first among the property lanes.
+/// It needs its own command for the same reason everything else does: so it is
+/// undoable, and so a drag across the lane is one entry in the history rather
+/// than forty.
+#[test]
+fn setting_a_notes_velocity_inverts_exactly() {
+    let mut f = fixture();
+    round_trips(
+        Box::new(fontelle_model::SetNoteVelocity::new(
+            f.clip,
+            vec![f.notes[0], f.notes[2]],
+            17,
+        )),
+        &mut f.project,
+    );
+}
+
+#[test]
+fn a_velocity_command_remembers_each_notes_own_previous_value() {
+    use fontelle_model::{ClipSource, SetNoteVelocity};
+
+    let mut f = fixture();
+    // Give the three notes three different velocities, so an inverse that
+    // restored one value for all of them would be visible.
+    let ids = f.notes.clone();
+    for (index, id) in ids.iter().enumerate() {
+        let ClipSource::Notes(data) = &mut f.project.clips[f.clip].source else {
+            unreachable!()
+        };
+        data.notes.get_mut(*id).unwrap().velocity = 40 + index as u8 * 20;
+    }
+
+    let mut set = SetNoteVelocity::new(f.clip, ids.clone(), 100);
+    set.apply(&mut f.project).unwrap();
+    let ClipSource::Notes(data) = &f.project.clips[f.clip].source else {
+        unreachable!()
+    };
+    assert!(ids.iter().all(|id| data.notes[*id].velocity == 100));
+
+    set.invert().apply(&mut f.project).unwrap();
+    let ClipSource::Notes(data) = &f.project.clips[f.clip].source else {
+        unreachable!()
+    };
+    for (index, id) in ids.iter().enumerate() {
+        assert_eq!(
+            data.notes[*id].velocity,
+            40 + index as u8 * 20,
+            "each note must come back to its own velocity, not to a shared one"
+        );
+    }
+}
+
+#[test]
+fn dragging_across_the_velocity_lane_coalesces_into_one_history_entry() {
+    use fontelle_model::{ClipSource, History, SetNoteVelocity};
+
+    let mut f = fixture();
+    let mut history = History::new();
+    let ids = vec![f.notes[0]];
+
+    for velocity in [90, 80, 70, 60] {
+        history
+            .apply(
+                Box::new(SetNoteVelocity::new(f.clip, ids.clone(), velocity)),
+                &mut f.project,
+            )
+            .unwrap();
+    }
+    // One drag, one undo — and it goes back to where the drag started, not to
+    // the step before last.
+    history.undo(&mut f.project).unwrap().unwrap();
+    let ClipSource::Notes(data) = &f.project.clips[f.clip].source else {
+        unreachable!()
+    };
+    assert_eq!(data.notes[f.notes[0]].velocity, 100);
+}
+
+#[test]
+fn a_velocity_command_naming_a_note_that_is_gone_is_refused_rather_than_partial() {
+    use fontelle_model::SetNoteVelocity;
+
+    let mut f = fixture();
+    let before = snapshot(&f.project);
+    let mut set = SetNoteVelocity::new(f.clip, vec![f.notes[0], NoteId::default()], 5);
+    assert!(set.apply(&mut f.project).is_err());
+    assert_eq!(
+        before,
+        snapshot(&f.project),
+        "a refused command must leave the document untouched, not half done"
+    );
+}
+
+/// The piano roll draws a note and then drags it to length, which means the
+/// second half of the gesture needs the id the first half minted. The command
+/// keeps it; this is the only way to get at the command after the history has
+/// taken ownership of it.
+#[test]
+fn the_history_can_be_asked_what_it_just_applied() {
+    let mut f = fixture();
+    let mut history = History::new();
+    assert!(history.last_applied().is_none(), "nothing has been applied");
+
+    history
+        .apply(
+            Box::new(AddNotes::new(f.clip, vec![a_note(PPQN * 3, 72)])),
+            &mut f.project,
+        )
+        .unwrap();
+    let ids = history
+        .last_applied()
+        .and_then(|c| c.as_any().downcast_ref::<AddNotes>())
+        .map(|add| add.ids().to_vec())
+        .expect("the entry on top is the AddNotes that was just applied");
+    assert_eq!(ids.len(), 1);
+
+    let ClipSource::Notes(data) = &f.project.clips[f.clip].source else {
+        unreachable!()
+    };
+    assert_eq!(
+        data.notes[ids[0]].key, 72,
+        "and it names the note that arrived"
+    );
+}

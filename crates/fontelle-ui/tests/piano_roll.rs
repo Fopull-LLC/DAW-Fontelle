@@ -57,21 +57,28 @@ fn notes(items: &[(Tick, Tick, u8)]) -> Arena<NoteId, Note> {
 
 #[test]
 fn the_roll_reserves_a_keyboard_and_a_ruler_and_gives_the_rest_to_the_grid() {
+    // With the velocity lane hidden, the grid runs to the bottom of the panel;
+    // the toolbar is above the ruler either way. `roll_interaction.rs` covers
+    // what the lane does to this when it is showing.
     let l = roll_layout(
         Rect::new(0.0, 0.0, 1000.0, 600.0),
         &Theme::dark_default().metrics,
+        false,
     );
 
     assert_eq!(l.keys.x, l.frame.x);
-    assert_eq!(l.ruler.y, l.frame.y);
-    // The grid starts where both of them end — they meet at its top-left
-    // corner and the little square above the keyboard belongs to neither.
+    assert_eq!(l.toolbar.y, l.frame.y);
+    assert_eq!(l.ruler.y, l.toolbar.bottom());
+    // The grid starts where the ruler and the keyboard end — they meet at its
+    // top-left corner and the little square above the keyboard belongs to
+    // neither.
     assert_eq!(l.grid.x, l.keys.right());
     assert_eq!(l.grid.y, l.ruler.bottom());
     assert_eq!(l.grid.right(), l.frame.right());
     assert_eq!(l.grid.bottom(), l.frame.bottom());
     assert!(!l.grid.intersects(&l.keys));
     assert!(!l.grid.intersects(&l.ruler));
+    assert!(!l.grid.intersects(&l.toolbar));
     // The keyboard runs beside the grid, not beside the ruler.
     assert_eq!(l.keys.y, l.grid.y);
     assert_eq!(l.keys.height, l.grid.height);
@@ -81,7 +88,7 @@ fn the_roll_reserves_a_keyboard_and_a_ruler_and_gives_the_rest_to_the_grid() {
 fn a_roll_too_small_for_its_chrome_has_an_empty_grid_and_no_negative_rects() {
     let m = Theme::dark_default().metrics;
     for (w, h) in [(0.0, 0.0), (10.0, 10.0), (30.0, 400.0), (400.0, 12.0)] {
-        let l = roll_layout(Rect::new(0.0, 0.0, w, h), &m);
+        let l = roll_layout(Rect::new(0.0, 0.0, w, h), &m, true);
         for r in [l.frame, l.keys, l.ruler, l.grid] {
             assert!(r.width >= 0.0 && r.height >= 0.0, "{w}x{h} gave {r:?}");
         }

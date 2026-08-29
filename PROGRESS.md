@@ -13,7 +13,188 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
-## 2026-08-29 (latest): a piano roll you can write in
+## 2026-08-29 (latest): the studio opens itself
+
+Phase 2 item 9, most of the piano roll's second pass, and the engine piece both
+of them needed. **This is the first build that does not need the command line.**
+
+```sh
+cargo run --release -p fontelle-app
+```
+
+A window with a channel rack, a soundfont browser and a piano roll. Pick a
+soundfont from the browser, pick a preset, and it goes on a channel — while the
+audio device stays open and the transport keeps rolling. Draw, and you hear it.
+
+### Item 9, and the engine change under it
+
+`AudioDevice::start_output_stream` took a `CompiledGraph` **by value** and the
+callback kept it for the stream's life. The graph is where the instruments
+live, so choosing a soundfont meant tearing the device down and opening it
+again — which is why item 9 was the last thing standing between this and
+self-sufficiency, and why it is an engine change and not a UI one.
+
+`fontelle_engine::graph_channel` is the other half of `timeline_channel`, and
+deliberately not the same shape:
+
+- **Not a `triple_buffer`.** That needs `T: Clone`, and a `CompiledGraph` is a
+  bag of `Box<dyn AudioNode>` holding `Patch`es and `Arc<SampleStore>`s. There
+  is no meaningful clone of one.
+- **An SPSC queue forward and a return queue back.** Swapping the graph is
+  trivial; *not freeing the old one on the audio thread* is the whole problem,
+  and it is INVARIANT 1 exactly — dropping a `CompiledGraph` frees every node,
+  every patch and every buffer in it. So the RT side moves the graph it stopped
+  using into a return queue and `GraphPublisher::reclaim` frees it on the
+  thread that built the replacement.
+- **The room check comes first.** `GraphSource::take_update` will not take a
+  new graph unless there is somewhere to put the old one. With the return queue
+  full the honest answer is to keep playing what we have; the publisher empties
+  it on its next visit and the swap goes through then. That state turns out to
+  be unreachable through the public API — the queues are the same size and
+  every `publish` drains the return queue before it fills the forward one — so
+  it is tested as a unit test inside the module, where the queue can be filled
+  by hand. `tests/graph_channel.rs` has the reachable half.
+
+This also retires the documented `ManuallyDrop` leak for the graph. The leak
+was acceptable when the process exited seconds after `stop()`; a DAW that runs
+for hours and changes its instruments cannot leak one graph per change.
+
+### The soundfont bank (TDD §17.5, §17.3)
+
+`~/.local/share/fontelle/soundfonts` — created once, on first run, and said out
+loud. Drop `.sf2` files in it and they are in the browser next launch;
+`--soundfonts <dir>` adds another folder and is remembered in
+`~/.config/fontelle/settings.json`, so it only has to be said once.
+
+**INVARIANT 10 is decided here and the decision is a judgement, not a
+derivation.** The invariant says Fontelle writes nothing outside locations the
+user configured *except its own config directory*, and the default bank folder
+is under the XDG **data** directory rather than the config one. The reading
+taken: the data directory is as much Fontelle's own as the config directory is,
+and "a folder you drop your soundfonts into" cannot exist unless something
+creates it. Nothing defaults to `~/Documents`, `~/Music` or anywhere else that
+belongs to the user. **Overrule this if it is the wrong reading — it is one
+function and one `create_dir_all`.** `settings.rs` says the same thing at the
+top of the file.
+
+The search is §17.5's fuzzy one: a case-insensitive *subsequence*, so "gus"
+finds `GeneralUser GS`, scored so runs of consecutive letters and matches at a
+word boundary win. It runs over file names and over the preset names inside the
+**open** file. Across every preset in the collection is the same function over
+a cached index, and the index is not built yet.
+
+### Two real bugs the tests found by causing them
+
+- **The test suite wrote into the developer's real `~/.config/fontelle`.**
+  `Session::open_bank` saves the folders it settled on, the studio tests called
+  it, and a `/tmp` path ended up in a real config file. `Session` now takes a
+  settings path and the tests give it a scratch one.
+- **Concurrent saves corrupted that file.** `save_to` wrote a fixed
+  `settings.json.tmp` and renamed it; eight test threads doing that at once
+  produced a document with an extra brace on the end and, sometimes, no file at
+  all (the second rename found it already moved). The temp name carries the pid
+  and a counter now, and `tests/bank.rs` reproduces the old behaviour with
+  eight threads and twenty rounds each.
+
+### The piano roll, second pass
+
+Two things made it feel wrong to use, and both are fixed:
+
+**You could not draw a note to length.** In FL Studio — and in every roll built
+after it — a click on empty grid makes a note and the *same drag* sizes it.
+Here the click made a note and the drag did nothing, because the roll does not
+own the document and so did not know the id of the note it had just asked for.
+The fix is a handshake: the press leaves a pending add, `DocumentHost::edit`
+now returns the ids the command minted (read off `History::last_applied`, which
+is new and exists for this), and `PianoRoll::note_added` turns the gesture into
+a resize of that note.
+
+**Zoom was one axis, about the left edge.** §16.4 asks for continuous,
+independently controllable per axis. `zoom_x` and `zoom_y` now zoom about the
+pointer, in `f64`, so what was under it stays under it to within less than a
+pixel at any zoom — asserted in pixels rather than in ticks, because ticks is a
+weaker promise at low zoom and an impossible one at high (`scroll_tick` is a
+whole tick). Ctrl+wheel zooms time, Ctrl+Shift+wheel (or Alt+wheel) zooms
+pitch, and there are buttons for both on the new toolbar.
+
+Also landed, all of it from §16.5's list: marquee select (the Select tool, or
+Ctrl+drag in any tool), Ctrl+C/X/V and Ctrl+B duplicate, Alt for free
+positioning, Shift to constrain a drag to one axis, a Paint tool that draws
+across every cell it crosses without stacking notes, a velocity lane with its
+own `SetNoteVelocity` command (per-note inverse, and it merges so one drag is
+one undo), bar numbers in the ruler, key names on the keyboard, note audition
+on the live path so a drawn note sounds whether or not the transport is
+rolling, and a **visible toolbar** carrying the tools, the snap division and
+the zooms — the answer to not being able to see what the roll can do.
+
+### Three defects found by looking at the window, not by thinking about it
+
+Exactly what §2.5 of the plan predicts. All three are arithmetic now, in
+`tests/chrome_text.rs`:
+
+- The ruler numbered no bars at all. The stride was right; it was applied as
+  `number % stride == 1`, which for the common stride of one is `0 == 1`.
+- Soundfont names were drawn straight through their file sizes, because a name
+  was clipped to the whole row rather than to the column beside the size.
+- The keyboard was never labelled, at any zoom anyone would use: a line box is
+  taller than the ink in it, and the guard compared the two exactly. The
+  default row height went from 12 to 16 at the same time, which also makes a
+  note an easier target.
+
+### Where the process rule was followed, and the one place it was not
+
+Tests first, confirmed failing, for everything with a pure core:
+`graph_channel`, the bank and the settings file, the window and panel layouts,
+every new roll gesture, `SetNoteVelocity`, `History::last_applied`, and all
+three of the defects found by looking. Each of those was a compile error or a
+red assertion before it was an implementation.
+
+**The exception, stated plainly:** `Session`'s `StudioHost` implementation —
+the channel rack operations, the browser wiring, the audition path — was
+written before `tests/studio.rs` was, and those fourteen tests passed on their
+first run. That is the failure mode the rule exists to catch, so they are worth
+reading with more suspicion than the rest. Two of them were then written
+red-first against real gaps and did fail: choosing an instrument bypassed
+`History` entirely (the one edit in the app Ctrl+Z could not reach), and the
+roll's ruler converted ticks to samples by multiplying by a hard-coded 120 bpm
+instead of asking the document's own `TempoMap` (INVARIANT 5). Both fixed.
+
+### Verified
+
+- **649 tests**, `cargo clippy --all-targets -- -D warnings` clean, `cargo fmt`
+  clean.
+- **Both reference bounces byte-identical** against a build of the previous
+  commit, on real soundfonts: the demo phrase, and a 64 MB render of a
+  multi-part MIDI arrangement. The audio path is provably untouched.
+- **Seen, on this machine**, through a nested Xwayland: the window opens with
+  no arguments, finds five real soundfonts in a folder with their sizes, draws
+  the rack, the browser, the toolbar, the ruler's bar numbers, the keyboard's
+  key names and the velocity lane with the demo's crescendo in it.
+- **§16.3 still holds:** 2 frames drawn over a 30-second unattended run
+  (`--run-for 30`). Idle CPU is 2.2% of one core — and the same 2.2% for a
+  build of the previous commit doing the same thing, so it is the open audio
+  device, not the window. The earlier "0.05%" figure was a window with **no**
+  audio device behind it and is not comparable.
+
+### What is deliberately not built
+
+- **Loading a soundfont blocks the window.** `import_sf2` decodes every sample
+  in the preset on the calling thread, so a 300 MB soundfont freezes the UI
+  while it loads. The fix is a worker thread and a progress line; the shape is
+  ready for it because the graph already arrives through a channel.
+- **A graph swap cuts every sounding voice.** The new graph's samplers are new,
+  so notes ringing through an instrument change stop. FL does something
+  similar; a crossfade is not worth it yet.
+- **Adding an instrument is three undo entries** — the channel, its clip, its
+  patch — because there is no compound command. Each one undoes correctly.
+- No timeline/arrangement panel, no mixer panel, no record button in the
+  window, no interactive scrollbars, no ghost notes, no note property lanes
+  beyond velocity, no chord/scale/quantise helpers. §17.5's background scan,
+  on-disk index and cross-file preset search are not built.
+- Editing away a note that is currently sounding still leaves it ringing until
+  its next note-off.
+
+## 2026-08-29: a piano roll you can write in
 
 Phase 2 item 8, most of item 6's remaining colour work, and the engine piece
 both of them needed. This is the first build that is a **tool** rather than a

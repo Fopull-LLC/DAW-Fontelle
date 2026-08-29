@@ -6,6 +6,8 @@
 //! converted here into glyph runs, and that conversion is tested without a GPU
 //! (`docs/first-usable-plan.md` §2.5).
 
+use std::collections::HashMap;
+
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, Shaping, Wrap};
 
 use crate::theme::FontTokens;
@@ -153,5 +155,57 @@ fn family(name: &str) -> Family<'_> {
         "cursive" => Family::Cursive,
         "fantasy" => Family::Fantasy,
         other => Family::Name(other),
+    }
+}
+
+/// Shaped strings, kept so a label is shaped once rather than once a frame.
+///
+/// The chrome is now full of text that comes from data rather than from the
+/// theme — bar numbers, key names, channel names, soundfont names, preset
+/// names — and [`draw_window`](crate::render::draw_window) is a pure function
+/// that cannot shape anything. So the window shapes what it is about to draw
+/// into this and hands it over by reference.
+///
+/// Bounded rather than unbounded: scrolling a big soundfont collection would
+/// otherwise accumulate a shaped layout per file ever seen. Over the cap it is
+/// emptied wholesale, which costs one frame of re-shaping and never grows.
+#[derive(Default)]
+pub struct Labels {
+    shaped: HashMap<String, TextLayout>,
+}
+
+/// How many shaped strings to keep. A screenful of every panel at once is well
+/// under a hundred.
+const LABEL_CAP: usize = 512;
+
+impl Labels {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Shapes `text` if it has not been shaped already.
+    pub fn ensure(&mut self, text: &str, font: &FontTokens, context: &mut TextContext) {
+        if self.shaped.contains_key(text) {
+            return;
+        }
+        if self.shaped.len() >= LABEL_CAP {
+            self.shaped.clear();
+        }
+        let layout = context.layout(text, font, None);
+        self.shaped.insert(text.to_string(), layout);
+    }
+
+    /// The shaped form, or `None` when nobody asked for it this frame — which
+    /// draws as nothing rather than as a panic.
+    pub fn get(&self, text: &str) -> Option<&TextLayout> {
+        self.shaped.get(text)
+    }
+
+    pub fn len(&self) -> usize {
+        self.shaped.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.shaped.is_empty()
     }
 }

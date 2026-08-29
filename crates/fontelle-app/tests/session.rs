@@ -6,7 +6,7 @@
 //! the timeline channel. Every step is real; only the mouse and the sound card
 //! are missing.
 
-use fontelle_app::{Session, demo_project};
+use fontelle_app::{RealiseOptions, SampleLibrary, Session, demo_project};
 use fontelle_engine::timeline_channel;
 use fontelle_model::ClipSource;
 use fontelle_types::{CompiledTimeline, PPQN};
@@ -24,7 +24,19 @@ fn session() -> (Session, fontelle_engine::TimelineSource) {
     let channel_nodes = fontelle_app::channel_nodes(&project);
     let (publisher, source) = timeline_channel(CompiledTimeline::empty());
     (
-        Session::new(project, channel_nodes, publisher, clip, None),
+        Session::new(
+            project,
+            SampleLibrary::new(),
+            channel_nodes,
+            publisher,
+            RealiseOptions {
+                sample_rate: RATE,
+                block_size: fontelle_engine::BLOCK_SIZE,
+                quality: fontelle_app::PLAYBACK_QUALITY,
+            },
+            clip,
+            None,
+        ),
         source,
     )
 }

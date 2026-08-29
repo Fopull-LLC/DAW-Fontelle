@@ -15,7 +15,7 @@
 //! function rather than of the crate.
 
 use vello::kurbo::{Affine, BezPath, Rect as KRect, RoundedRect, RoundedRectRadii, Stroke};
-use vello::peniko::Fill;
+use vello::peniko::{BlendMode, Fill};
 use vello::util::RenderContext;
 use vello::wgpu;
 use vello::{AaConfig, RenderParams, Renderer, RendererOptions, Scene};
@@ -23,9 +23,13 @@ use vello::{AaConfig, RenderParams, Renderer, RendererOptions, Scene};
 use fontelle_model::{Arena, Note};
 use fontelle_types::{NoteId, PPQN, Tick};
 
-use crate::canvas::{RollLayout, RollView, snap_unit, tick_to_x, visible_keys, visible_ticks};
-use crate::layout::{Rect, WindowLayout};
-use crate::text::TextLayout;
+use crate::canvas::{
+    BrowserLayout, RackLayout, RollControl, RollLayout, RollView, SnapDivision, Tool,
+    ToolbarLayout, snap_unit, tick_to_x, velocity_to_y, visible_keys, visible_ticks,
+};
+use crate::document::{ChannelInfo, LibraryEntry};
+use crate::layout::{PanelLayout, Rect, WindowLayout};
+use crate::text::{Labels, TextLayout};
 use crate::theme::{Color, Theme};
 use crate::transport::{
     Meter, TransportBarLayout, TransportHit, TransportView, meter_fill, playhead_x,
@@ -43,12 +47,45 @@ pub struct Chrome<'a> {
     /// The panel's contents. `None` draws an empty panel — which is what a
     /// window with no clip open shows.
     pub roll: Option<RollChrome<'a>>,
+    /// The channel rack down the left. `None` when there is no studio behind
+    /// the window at all.
+    pub rack: Option<RackChrome<'a>>,
+    pub browser: Option<BrowserChrome<'a>>,
+    /// Everything that had to be shaped: bar numbers, key names, channel and
+    /// soundfont names, the toolbar's captions. Looked up by the string being
+    /// drawn, because that is the only key both sides can agree on without the
+    /// pure half of the renderer owning a font system.
+    pub labels: &'a Labels,
+    /// One line along the bottom of the browser: what went wrong, or where the
+    /// soundfonts are meant to go.
+    pub status: &'a str,
+}
+
+/// The channel rack's contents.
+pub struct RackChrome<'a> {
+    pub panel: PanelLayout,
+    pub layout: RackLayout,
+    pub channels: &'a [ChannelInfo],
+    pub selected: usize,
+}
+
+/// The soundfont browser's contents (TDD §17.5).
+pub struct BrowserChrome<'a> {
+    pub panel: PanelLayout,
+    pub layout: BrowserLayout,
+    pub query: &'a str,
+    pub files: &'a [LibraryEntry],
+    pub presets: &'a [LibraryEntry],
+    pub selected_file: Option<usize>,
+    /// Whether the search box has the keyboard, so the caret is drawn.
+    pub searching: bool,
 }
 
 /// Everything the piano roll draws from. All of it is read-only: the roll is a
 /// view and never a mutator (INVARIANT 2).
 pub struct RollChrome<'a> {
     pub layout: RollLayout,
+    pub toolbar: ToolbarLayout,
     pub view: RollView,
     pub notes: &'a Arena<NoteId, Note>,
     pub selection: &'a [NoteId],
@@ -56,6 +93,12 @@ pub struct RollChrome<'a> {
     /// is somewhere this clip does not cover.
     pub playhead_tick: Option<Tick>,
     pub beats_per_bar: u32,
+    /// What the mouse is doing, so the toolbar can light the tool that is on.
+    pub tool: Tool,
+    pub snap: SnapDivision,
+    /// The selection box being dragged, if one is.
+    pub marquee: Option<Rect>,
+    pub hover: Option<RollControl>,
 }
 
 pub struct TransportChrome<'a> {
@@ -85,6 +128,31 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     fill_rect(scene, layout.window, p.window);
 
     draw_transport_bar(scene, theme, &chrome.transport);
+
+    if let Some(rack) = &chrome.rack {
+        draw_panel_frame(scene, theme, &rack.panel);
+        draw_label(
+            scene,
+            chrome.labels,
+            "Channels",
+            rack.panel.header,
+            m,
+            p.text,
+        );
+        draw_rack(scene, theme, chrome.labels, rack);
+    }
+    if let Some(browser) = &chrome.browser {
+        draw_panel_frame(scene, theme, &browser.panel);
+        draw_label(
+            scene,
+            chrome.labels,
+            "Soundfonts",
+            browser.panel.header,
+            m,
+            p.text,
+        );
+        draw_browser(scene, theme, chrome.labels, browser, chrome.status);
+    }
 
     if layout.panel.frame.is_empty() {
         return;
@@ -127,7 +195,7 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     }
 
     if let Some(roll) = &chrome.roll {
-        draw_piano_roll(scene, theme, roll);
+        draw_piano_roll(scene, theme, chrome.labels, roll);
     }
 
     draw_text(
@@ -330,7 +398,7 @@ fn draw_meter(
 /// bound every loop here. The note scan is still linear in the clip's note
 /// count — filtering, not indexing — which is honest for the sizes this opens
 /// today and is the first thing to change when it is not.
-pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, chrome: &RollChrome<'_>) {
+pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RollChrome<'_>) {
     let p = &theme.palette;
     let l = &chrome.layout;
     let v = &chrome.view;
@@ -434,9 +502,396 @@ pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, chrome: &RollChrome<'_>
         }
     }
 
-    draw_keyboard(scene, theme, l, v);
-    draw_ruler_strip(scene, theme, l, v, chrome.beats_per_bar);
+    // The selection box, over the notes and under nothing.
+    if let Some(box_) = chrome.marquee {
+        let box_ = box_.intersection(&grid);
+        if !box_.is_empty() {
+            fill_rect(scene, box_, p.selection);
+            scene.stroke(
+                &Stroke::new(1.0),
+                Affine::IDENTITY,
+                p.accent.to_peniko(),
+                None,
+                &KRect::new(
+                    box_.x as f64,
+                    box_.y as f64,
+                    box_.right() as f64,
+                    box_.bottom() as f64,
+                ),
+            );
+        }
+    }
+
+    draw_keyboard(scene, theme, labels, l, v);
+    draw_ruler_strip(scene, theme, labels, l, v, chrome.beats_per_bar);
+    draw_velocity_lane(scene, theme, labels, chrome);
+    draw_roll_toolbar(scene, theme, labels, chrome);
 }
+
+/// The velocity lane under the grid (§16.5's first note property lane).
+///
+/// One bar per note, at the note's own x, so a phrase's dynamics are read
+/// straight down from the notes that make them.
+fn draw_velocity_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RollChrome<'_>) {
+    let p = &theme.palette;
+    let lane = chrome.layout.velocity;
+    if lane.is_empty() {
+        return;
+    }
+    let v = &chrome.view;
+    fill_rect(scene, chrome.layout.velocity_keys, p.panel_header);
+    fill_rect(scene, lane, p.row_accidental);
+    // A line at the top of the lane, so it reads as its own strip rather than
+    // as more grid.
+    fill_rect(
+        scene,
+        Rect::new(
+            chrome.layout.velocity_keys.x,
+            lane.y,
+            chrome.layout.frame.width,
+            1.0,
+        ),
+        p.border,
+    );
+    if let Some(text) = labels.get("vel") {
+        draw_text(
+            scene,
+            text,
+            chrome.layout.velocity_keys.x + 4.0,
+            chrome.layout.velocity_keys.y + 4.0,
+            p.text_muted,
+        );
+    }
+    // Half-way, so an eye can tell 100 from 60 without counting pixels.
+    fill_rect(
+        scene,
+        Rect::new(lane.x, lane.y + lane.height / 2.0, lane.width, 1.0),
+        p.grid_line,
+    );
+
+    let ticks = visible_ticks(v, chrome.layout.grid);
+    for (id, note) in chrome.notes.iter() {
+        if note.start + note.length < ticks.start || note.start > ticks.end {
+            continue;
+        }
+        let x = tick_to_x(v, chrome.layout.grid, note.start);
+        let top = velocity_to_y(lane, note.velocity);
+        let bar = Rect::new(x, top, 3.0, lane.bottom() - top).intersection(&lane);
+        if bar.is_empty() {
+            continue;
+        }
+        let selected = chrome.selection.contains(&id);
+        fill_rect(scene, bar, if selected { p.note_selected } else { p.note });
+    }
+}
+
+/// The toolbar: the tools, the snap chip, the zooms.
+///
+/// The answer to "I cannot see what this can do". Every one of them has a
+/// keyboard shortcut too, and the shortcut is what a person ends up using —
+/// but only after they have found out it exists.
+fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RollChrome<'_>) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    if chrome.layout.toolbar.is_empty() {
+        return;
+    }
+    fill_rect(scene, chrome.layout.toolbar, p.panel_header);
+
+    for (control, rect) in &chrome.toolbar.items {
+        if rect.is_empty() {
+            continue;
+        }
+        let on = match control {
+            RollControl::Tool(tool) => *tool == chrome.tool,
+            RollControl::Velocity => !chrome.layout.velocity.is_empty(),
+            _ => false,
+        };
+        if on || chrome.hover == Some(*control) {
+            fill_rect_rounded(
+                scene,
+                *rect,
+                m.corner_radius,
+                if on { p.accent } else { p.border },
+            );
+        }
+        // The snap chip says which division is live rather than the word
+        // "snap": the state is the useful half.
+        let caption = match control {
+            RollControl::Snap => chrome.snap.label(),
+            other => other.label(),
+        };
+        let Some(text) = labels.get(caption) else {
+            continue;
+        };
+        let ink = if on { p.panel } else { p.text };
+        draw_text_clipped(
+            scene,
+            text,
+            *rect,
+            rect.x + ((rect.width - text.width) / 2.0).max(1.0),
+            rect.y + (rect.height - text.height) / 2.0,
+            ink,
+        );
+    }
+}
+
+// --------------------------------------------------------- the sidebar ---
+
+/// A panel's ground, header strip and border — the three things every docked
+/// panel has and none of them is worth writing twice.
+fn draw_panel_frame(scene: &mut Scene, theme: &Theme, panel: &PanelLayout) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    if panel.frame.is_empty() {
+        return;
+    }
+    let frame = rounded(panel.frame, m.corner_radius);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        p.panel.to_peniko(),
+        None,
+        &frame,
+    );
+    if !panel.header.is_empty() {
+        let h = panel.header;
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            p.panel_header.to_peniko(),
+            None,
+            &RoundedRect::from_rect(
+                KRect::new(h.x as f64, h.y as f64, h.right() as f64, h.bottom() as f64),
+                RoundedRectRadii::new(m.corner_radius as f64, m.corner_radius as f64, 0.0, 0.0),
+            ),
+        );
+    }
+    if m.border_width > 0.0 {
+        scene.stroke(
+            &Stroke::new(m.border_width as f64),
+            Affine::IDENTITY,
+            p.border.to_peniko(),
+            None,
+            &frame,
+        );
+    }
+}
+
+/// A panel header's own caption.
+fn draw_label(
+    scene: &mut Scene,
+    labels: &Labels,
+    caption: &str,
+    header: Rect,
+    m: &crate::theme::Metrics,
+    ink: Color,
+) {
+    let Some(text) = labels.get(caption) else {
+        return;
+    };
+    draw_text_clipped(
+        scene,
+        text,
+        header,
+        header.x + m.panel_padding,
+        header.y + (header.height - text.height) / 2.0,
+        ink,
+    );
+}
+
+fn draw_rack(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RackChrome<'_>) {
+    let p = &theme.palette;
+    let l = &chrome.layout;
+
+    for row in &l.rows {
+        let Some(channel) = chrome.channels.get(row.index) else {
+            continue;
+        };
+        if row.index == chrome.selected {
+            fill_rect(scene, row.frame, p.selection);
+        }
+        // A channel with no soundfont on it is drawn in the muted ink: a
+        // channel that cannot make a sound and looks like one that can is the
+        // most confusing thing a rack can do.
+        let ink = if channel.has_instrument {
+            p.text
+        } else {
+            p.text_muted
+        };
+        if let Some(text) = labels.get(&channel.name) {
+            draw_text_clipped(
+                scene,
+                text,
+                row.name,
+                row.name.x + 6.0,
+                row.name.y + (row.name.height - text.height) / 2.0,
+                if channel.muted { p.text_muted } else { ink },
+            );
+        }
+        for (rect, on, caption, colour) in [
+            (row.solo, channel.soloed, "S", p.accent),
+            (row.mute, channel.muted, "M", p.meter_peak),
+        ] {
+            fill_rect_rounded(scene, rect, 2.0, if on { colour } else { p.border });
+            if let Some(text) = labels.get(caption) {
+                draw_text_clipped(
+                    scene,
+                    text,
+                    rect,
+                    rect.x + ((rect.width - text.width) / 2.0).max(0.0),
+                    rect.y + (rect.height - text.height) / 2.0,
+                    if on { p.panel } else { p.text_muted },
+                );
+            }
+        }
+    }
+
+    // The add button, always at the bottom.
+    fill_rect_rounded(scene, l.add, theme.metrics.corner_radius, p.accent);
+    if let Some(text) = labels.get(ADD_CHANNEL) {
+        draw_text_clipped(
+            scene,
+            text,
+            l.add,
+            l.add.x + ((l.add.width - text.width) / 2.0).max(0.0),
+            l.add.y + (l.add.height - text.height) / 2.0,
+            p.panel,
+        );
+    }
+}
+
+/// The caption on the rack's add button, in one place so the window can shape
+/// exactly the string the renderer will look for.
+pub const ADD_CHANNEL: &str = "+ Add instrument";
+
+fn draw_browser(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &BrowserChrome<'_>,
+    status: &str,
+) {
+    let p = &theme.palette;
+    let l = &chrome.layout;
+
+    // The search field.
+    if !l.search.is_empty() {
+        fill_rect_rounded(scene, l.search, 3.0, p.window);
+        if chrome.searching {
+            scene.stroke(
+                &Stroke::new(1.0),
+                Affine::IDENTITY,
+                p.accent.to_peniko(),
+                None,
+                &rounded(l.search, 3.0),
+            );
+        }
+        let shown = if chrome.query.is_empty() {
+            SEARCH_HINT
+        } else {
+            chrome.query
+        };
+        if let Some(text) = labels.get(shown) {
+            draw_text_clipped(
+                scene,
+                text,
+                l.search,
+                l.search.x + 6.0,
+                l.search.y + (l.search.height - text.height) / 2.0,
+                if chrome.query.is_empty() {
+                    p.text_muted
+                } else {
+                    p.text
+                },
+            );
+            if chrome.searching && !chrome.query.is_empty() {
+                fill_rect(
+                    scene,
+                    Rect::new(
+                        l.search.x + 7.0 + text.width,
+                        l.search.y + 3.0,
+                        1.0,
+                        (l.search.height - 6.0).max(0.0),
+                    )
+                    .intersection(&l.search),
+                    p.accent,
+                );
+            }
+        }
+    }
+
+    let mut list = |area: Rect, rows: &[(usize, Rect)], entries: &[LibraryEntry], selected| {
+        if area.is_empty() {
+            return;
+        }
+        fill_rect(scene, area, p.window);
+        for (index, rect) in rows {
+            let Some(entry) = entries.get(*index) else {
+                continue;
+            };
+            if Some(*index) == selected {
+                fill_rect(scene, *rect, p.selection);
+            }
+            let detail = labels.get(&entry.detail);
+            let detail_width = detail.map_or(0.0, |d| d.width);
+            if let Some(text) = labels.get(&entry.name) {
+                // Clipped to the room left beside the size, not to the whole
+                // row: a long soundfont name has to stop, not overprint.
+                let column = name_column(rect.inset(0.0), detail_width);
+                draw_text_clipped(
+                    scene,
+                    text,
+                    column,
+                    column.x + 5.0,
+                    rect.y + (rect.height - text.height) / 2.0,
+                    p.text,
+                );
+            }
+            if let Some(detail) = detail {
+                let x = rect.right() - detail.width - 5.0;
+                draw_text_clipped(
+                    scene,
+                    detail,
+                    *rect,
+                    x,
+                    rect.y + (rect.height - detail.height) / 2.0,
+                    p.text_muted,
+                );
+            }
+        }
+    };
+    list(l.files, &l.file_rows, chrome.files, chrome.selected_file);
+    list(l.presets, &l.preset_rows, chrome.presets, None);
+
+    // The status line, over the bottom of the preset list: on a first run the
+    // bank is empty and where to put soundfonts is the only useful thing the
+    // panel can say.
+    if !status.is_empty()
+        && let Some(text) = labels.get(status)
+    {
+        let strip = Rect::new(
+            l.body.x,
+            (l.body.bottom() - text.height - 2.0).max(l.body.y),
+            l.body.width,
+            text.height + 2.0,
+        )
+        .intersection(&l.body);
+        fill_rect(scene, strip, p.panel_header);
+        draw_text_clipped(
+            scene,
+            text,
+            strip,
+            strip.x + 4.0,
+            strip.y + 1.0,
+            p.text_muted,
+        );
+    }
+}
+
+/// The placeholder in the empty search box, in one place for the same reason
+/// [`ADD_CHANNEL`] is.
+pub const SEARCH_HINT: &str = "search soundfonts\u{2026}";
 
 /// The keyboard down the left-hand side.
 ///
@@ -444,7 +899,7 @@ pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, chrome: &RollChrome<'_>
 /// accidentals sit short and dark on top of them. Painting the strip dark and
 /// the naturals light instead gives a ladder of pale bars with gaps, which
 /// reads as neither a keyboard nor an octave.
-fn draw_keyboard(scene: &mut Scene, theme: &Theme, l: &RollLayout, v: &RollView) {
+fn draw_keyboard(scene: &mut Scene, theme: &Theme, labels: &Labels, l: &RollLayout, v: &RollView) {
     let p = &theme.palette;
     if l.keys.is_empty() {
         return;
@@ -472,14 +927,30 @@ fn draw_keyboard(scene: &mut Scene, theme: &Theme, l: &RollLayout, v: &RollView)
                 p.border,
             );
         }
-        // Every C gets the accent down its edge — the only orientation the
-        // roll offers until the ruler learns to write bar numbers.
+        // Every C gets the accent down its edge, and its own name beside it —
+        // "C4" is how a person says where they are on a keyboard.
         if key % 12 == 0 {
             fill_rect(
                 scene,
                 Rect::new(row.x, row.y, 3.0, row.height).intersection(&l.keys),
                 p.accent,
             );
+            // A line box is a little taller than the ink in it, so a name is
+            // allowed to be marginally taller than its row before it is
+            // dropped — otherwise the keyboard is never labelled at any zoom
+            // anyone actually uses.
+            if let Some(text) = labels.get(&key_name(key))
+                && row.height >= text.height - 3.0
+            {
+                draw_text_clipped(
+                    scene,
+                    text,
+                    row,
+                    row.x + 6.0,
+                    row.y + (row.height - text.height) / 2.0,
+                    p.key_black,
+                );
+            }
         }
     }
     // A border between the keyboard and the grid, so they read as two things.
@@ -494,6 +965,7 @@ fn draw_keyboard(scene: &mut Scene, theme: &Theme, l: &RollLayout, v: &RollView)
 fn draw_ruler_strip(
     scene: &mut Scene,
     theme: &Theme,
+    labels: &Labels,
     l: &RollLayout,
     v: &RollView,
     beats_per_bar: u32,
@@ -506,6 +978,9 @@ fn draw_ruler_strip(
 
     let bar = PPQN * Tick::from(beats_per_bar.max(1));
     let ticks = visible_ticks(v, l.grid);
+    // Numbered only when the numbers would not collide — at a zoom where two
+    // bars are eight pixels apart, a wall of digits is less legible than none.
+    let label_every = label_stride(bar as f32 * v.pixels_per_tick);
     let mut tick = ticks.start - ticks.start.rem_euclid(bar);
     while tick < ticks.end {
         let x = tick_to_x(v, l.grid, tick).floor();
@@ -515,6 +990,21 @@ fn draw_ruler_strip(
                 Rect::new(x, l.ruler.y, 1.0, l.ruler.height).intersection(&l.ruler),
                 p.grid_line_strong,
             );
+            // One-based, because bar 1 is where a musician says a song starts.
+            let number = tick / bar + 1;
+            if let Some(stride) = label_every
+                && labelled_bar(number, stride)
+                && let Some(text) = labels.get(&number.to_string())
+            {
+                draw_text_clipped(
+                    scene,
+                    text,
+                    l.ruler,
+                    x + 3.0,
+                    l.ruler.y + (l.ruler.height - text.height) / 2.0,
+                    p.text_muted,
+                );
+            }
         }
         tick += bar;
     }
@@ -523,6 +1013,55 @@ fn draw_ruler_strip(
         Rect::new(l.ruler.x, l.ruler.bottom() - 1.0, l.ruler.width, 1.0),
         p.border,
     );
+}
+
+/// How many bars apart the ruler's numbers should be, or `None` when even the
+/// widest spacing would crowd them.
+///
+/// Middle C is key 60 and is called C4, so the octave number is `key / 12 - 1`.
+pub fn key_name(key: i32) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    format!(
+        "{}{}",
+        NAMES[key.rem_euclid(12) as usize],
+        key.div_euclid(12) - 1
+    )
+}
+
+/// Whether bar `number` (one-based) gets written on the ruler at `stride`.
+///
+/// Its own function because the obvious spelling is wrong: `number % stride ==
+/// 1` reads correctly and is `0 == 1` for a stride of one, so the common case —
+/// every bar numbered — numbered none of them. Found by looking at the window.
+pub fn labelled_bar(number: i64, stride: i64) -> bool {
+    stride > 0 && (number - 1).rem_euclid(stride) == 0
+}
+
+/// The room a row's first column has, given how wide its second one is.
+///
+/// A soundfont called `Bread Breads Distortion Guitar v2.1` in a 248-pixel
+/// panel is the normal case, and clipping its name to the whole row draws it
+/// straight through the size at the other end.
+pub fn name_column(row: Rect, detail_width: f32) -> Rect {
+    Rect::new(row.x, row.y, row.width - detail_width - ROW_GAP, row.height).clamped()
+}
+
+/// Between a row's two columns.
+const ROW_GAP: f32 = 10.0;
+
+/// The bar numbers to write, given how many pixels one bar is.
+///
+/// About thirty pixels is the narrowest a two- or three-digit number can be
+/// written in without touching the next one.
+pub fn label_stride(bar_px: f32) -> Option<i64> {
+    if !bar_px.is_finite() || bar_px <= 0.0 {
+        return None;
+    }
+    [1i64, 2, 4, 8, 16, 32]
+        .into_iter()
+        .find(|&stride| bar_px * stride as f32 >= 30.0)
 }
 
 /// Whether `key` is a black note. The pattern repeats every octave and C is 0.
@@ -549,6 +1088,57 @@ pub fn draw_text(scene: &mut Scene, text: &TextLayout, x: f32, y: f32, color: Co
             .brush(color.to_peniko())
             .transform(Affine::translate((x as f64, y as f64)))
             .draw(Fill::NonZero, run.glyphs.iter().copied());
+    }
+}
+
+/// [`fill_rect`] with rounded corners — every chip, switch and button here.
+fn fill_rect_rounded(scene: &mut Scene, r: Rect, radius: f32, color: Color) {
+    if r.is_empty() {
+        return;
+    }
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        color.to_peniko(),
+        None,
+        &rounded(r, radius),
+    );
+}
+
+/// Draws text that must not run out of the rectangle it belongs to.
+///
+/// A soundfont called `Orchestral Strings Ensemble Legato.sf2` in a 248-pixel
+/// panel is the normal case, not the edge case, and text spilling over the
+/// panel next to it is the difference between a tool and a mock-up.
+fn draw_text_clipped(
+    scene: &mut Scene,
+    text: &TextLayout,
+    clip: Rect,
+    x: f32,
+    y: f32,
+    color: Color,
+) {
+    if clip.is_empty() || text.is_empty() {
+        return;
+    }
+    let needs_clip = x < clip.x || x + text.width > clip.right();
+    if needs_clip {
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            Affine::IDENTITY,
+            &KRect::new(
+                clip.x as f64,
+                clip.y as f64,
+                clip.right() as f64,
+                clip.bottom() as f64,
+            ),
+        );
+    }
+    draw_text(scene, text, x, y, color);
+    if needs_clip {
+        scene.pop_layer();
     }
 }
 

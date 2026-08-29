@@ -152,19 +152,41 @@ pub struct PanelLayout {
     pub body: Rect,
 }
 
-/// The window, and what is in it.
+/// The window, and what is in it (TDD §16.1).
 ///
-/// A transport bar across the top and one panel under it (items 6 and 7 of
-/// `docs/first-usable-plan.md`). The docked splits are item 9; this is the
-/// shape they grow out of, not a placeholder for it.
+/// A transport bar across the top, a sidebar down the left carrying the channel
+/// rack over the soundfont browser, and the piano roll taking everything that
+/// is left. Item 9 of `docs/first-usable-plan.md`; §16.1's resizable, saveable
+/// dock layouts are what this grows into, and the shape is already the shape
+/// they will need — every panel is a `PanelLayout` computed from one rectangle.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WindowLayout {
     pub window: Rect,
     /// The strip carrying play/stop, the playhead and the master meter. See
     /// [`crate::transport::transport_bar_layout`] for what is inside it.
     pub transport: Rect,
+    /// The channel rack: what is in the project and what it is playing.
+    pub rack: PanelLayout,
+    /// The soundfont bank (TDD §17.5).
+    pub browser: PanelLayout,
+    /// The piano roll.
     pub panel: PanelLayout,
 }
+
+/// How much of the sidebar's height the channel rack gets.
+///
+/// The rack is a list of names; the browser is a search box over two lists, and
+/// wants the room. Below this the browser stops being usable before the rack
+/// does, which is why the split is not even.
+const RACK_SHARE: f32 = 0.42;
+
+/// The narrowest the sidebar is allowed to squeeze the roll to before it gives
+/// up its own width instead.
+///
+/// The roll is what the window is *for*. A sidebar that keeps its width on a
+/// small screen leaves a piano roll two bars wide, which is worse for everyone
+/// than a browser that has to be scrolled sideways.
+const MIN_ROLL_WIDTH: f32 = 320.0;
 
 /// Lays out a window of `width` x `height` logical pixels.
 pub fn window_layout(width: f32, height: f32, metrics: &Metrics) -> WindowLayout {
@@ -172,21 +194,48 @@ pub fn window_layout(width: f32, height: f32, metrics: &Metrics) -> WindowLayout
     let content = window.inset(metrics.panel_margin);
 
     let (transport, below_bar) = content.split_top(metrics.transport_bar_height);
-    // The same gap between the bar and the panel as between the panel and the
+    // The same gap between the bar and the panels as between them and the
     // window edge, so the chrome reads as evenly spaced rather than as a bar
-    // with a panel stuck to it.
+    // with panels stuck to it.
     let (_gap, rest) = below_bar.split_top(metrics.panel_margin);
 
-    let frame = rest;
-    let (header, below) = frame.split_top(metrics.panel_header_height);
+    // The sidebar yields before the roll does, and disappears entirely rather
+    // than becoming a column too narrow to read.
+    let room_for_sidebar = (rest.width - MIN_ROLL_WIDTH - metrics.panel_margin).max(0.0);
+    let sidebar_width = if rest.width <= metrics.panel_margin {
+        0.0
+    } else {
+        metrics.sidebar_width.min(room_for_sidebar).max(0.0)
+    };
+
+    let sidebar = Rect::new(rest.x, rest.y, sidebar_width, rest.height).clamped();
+    let roll_x = if sidebar.is_empty() {
+        rest.x
+    } else {
+        sidebar.right() + metrics.panel_margin
+    };
+    let roll = Rect::new(roll_x, rest.y, rest.right() - roll_x, rest.height).clamped();
+
+    // The rack over the browser, with the same margin between them.
+    let rack_height = ((sidebar.height - metrics.panel_margin).max(0.0) * RACK_SHARE).max(0.0);
+    let (rack_frame, under) = sidebar.split_top(rack_height);
+    let (_gap, browser_frame) = under.split_top(metrics.panel_margin);
 
     WindowLayout {
         window,
         transport,
-        panel: PanelLayout {
-            frame,
-            header,
-            body: below.inset(metrics.panel_padding),
-        },
+        rack: panel(rack_frame, metrics),
+        browser: panel(browser_frame, metrics),
+        panel: panel(roll, metrics),
+    }
+}
+
+/// A frame split into its header and the body under it.
+fn panel(frame: Rect, metrics: &Metrics) -> PanelLayout {
+    let (header, below) = frame.split_top(metrics.panel_header_height);
+    PanelLayout {
+        frame,
+        header,
+        body: below.inset(metrics.panel_padding),
     }
 }

@@ -28,7 +28,7 @@ pub use command::{Command, CommandError, History};
 pub use commands::{
     AddChannel, AddClip, AddNotes, DuplicateClip, FlagTarget, MoveClip, MoveNotes, NumberTarget,
     RemoveChannel, RemoveClip, RemoveNotes, ResizeNotes, SetChannelPatch, SetFlag, SetLoopRange,
-    SetNumber,
+    SetNoteVelocity, SetNumber,
 };
 pub use lane::Lane;
 pub use mixer::{EffectSlot, Mixer, MixerTrack, PanLaw, Send};

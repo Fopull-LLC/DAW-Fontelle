@@ -925,6 +925,27 @@ timeline is dropped on the model thread — **never on the RT thread**, since dr
 Edits made during playback take effect at the next block boundary, which at 128 frames/48kHz is
 under 3ms. Perceptually instant.
 
+**The compiled *graph* is handed over the same way, and it cannot use the same mechanism.**
+Choosing a soundfont, adding a channel, changing a preset or muting a track rebuilds the
+`CompiledGraph`, which owns the instruments the timeline only points at; without a handoff for it,
+every one of those actions means tearing the audio device down and opening it again. But
+`triple_buffer` requires `T: Clone` and a `CompiledGraph` is a bag of `Box<dyn AudioNode>` holding
+`Patch`es — there is no clone of one. So the graph handoff is **an SPSC queue forward and a second
+one back**:
+
+- The RT thread pops the newest graph and pushes the one it replaces into the return queue.
+- The model thread drains that queue and frees them there. **A `CompiledGraph` is never dropped on
+  the RT thread** — freeing one deallocates every node, patch and sample buffer in it, which is
+  INVARIANT 1 at its most expensive.
+- The RT thread checks there is *room to return the old graph before it takes a new one*. With the
+  return queue full it keeps playing what it has; the writer empties it and the swap goes through
+  a block later. A swap it cannot undo would put the free on the audio thread, and that is the one
+  outcome that is not allowed.
+
+A graph swap silences whatever the old graph was sounding, because the new one's voices do not
+exist. That is acceptable for a structural change and is not acceptable for an automation move —
+which is why parameter changes are events through the graph, not new graphs.
+
 ### 11.4 Note collision policy
 
 Two clips on different lanes referencing the same channel, overlapping, on the same key: one
@@ -1398,6 +1419,20 @@ First-run setup asks for, and settings allow changing independently:
 | Recordings root | `<project>/recordings` | Independently overridable |
 | Soundfont library dirs | asked at first run | Multiple; §17.5 |
 | Config | XDG (`~/.config/fontelle`) | The one exception |
+
+`~/.config/fontelle/settings.json` is versioned like every other Fontelle file (its own number,
+separate from the project's, the patch's and the theme's), is refused by version if it comes from
+a newer build, and is **never silently rewritten**: a file that cannot be parsed is reported and
+left exactly where it is, because overwriting it with defaults would lose the soundfont folders
+somebody spent an afternoon assembling. It is written temp-file-then-rename with a temp name
+unique per writer.
+
+**The default soundfont folder is `$XDG_DATA_HOME/fontelle/soundfonts`, and Fontelle creates it.**
+That is a write outside the config directory, so it is a deliberate reading of INVARIANT 10 rather
+than a strict one: the XDG data directory is as much Fontelle's own as the config directory is,
+and "a folder you drop your soundfonts into" cannot exist unless something creates it. Nothing
+defaults to `~/Documents`, `~/Music`, or anywhere else that belongs to the user; every other
+folder is one the user named.
 | Cache | XDG (`~/.cache/fontelle`) | Purgeable from settings, with size shown |
 
 ### 17.4 Asset references and the import prompt

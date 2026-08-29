@@ -61,6 +61,17 @@ struct Playback<'a> {
     /// Printed once the graph is up, when there is something worth saying
     /// about how the project was built.
     announce: Option<String>,
+    /// The window's theme (§16.6). Read here rather than in the window so a
+    /// `--theme` file is honoured on every path that opens one.
+    theme: fontelle_ui::Theme,
+    /// Extra soundfont folders the user named on the command line. Remembered
+    /// in the settings file, so it only has to be said once (INVARIANT 10).
+    soundfont_dirs: Vec<std::path::PathBuf>,
+    /// Close the window by itself after this long, and say how many frames it
+    /// drew. There is no other way to run the window unattended, and "it
+    /// opened, drew, and then sat there drawing nothing" is exactly the claim
+    /// TDD §16.3 makes and §19 measures.
+    run_for: Option<std::time::Duration>,
 }
 
 fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), String> {
@@ -230,6 +241,9 @@ fn play_or_render(
         record_seconds,
         window,
         announce,
+        theme,
+        soundfont_dirs,
+        run_for,
     } = options;
     // An offline bounce is not real-time, so it renders at export quality
     // rather than at whatever the patch asks for during playback (§7.6).
@@ -363,7 +377,9 @@ fn play_or_render(
     // the window does.
     let event_count = timeline.events.len();
     let (timeline_publisher, timeline_source) = fontelle_engine::timeline_channel(timeline);
-    let graph = realised.graph;
+    // The instruments reach the running stream the same way the notes do, so a
+    // channel added from inside the window does not need the device restarted.
+    let (graph_publisher, graph_source) = fontelle_engine::graph_channel(realised.graph);
     let mut device = AudioDevice::default_host();
     println!(
         "Fontelle: {} note events, {} on {:?}",
@@ -441,11 +457,15 @@ fn play_or_render(
     }
     device
         .start_output_stream(
-            graph,
+            graph_source,
             timeline_source,
             SAMPLE_RATE,
             transport.clone(),
-            midi_in.then_some(live_source),
+            // Also without `--midi-in`: the window's audition path — clicking a
+            // key, drawing a note — is the same live channel a MIDI keyboard
+            // arrives through (TDD §14.1), and it is what makes what you draw
+            // audible while the transport is stopped.
+            (midi_in || window).then_some(live_source),
         )
         .map_err(|e| format!("failed to open the default output device: {e}"))?;
 
@@ -455,31 +475,62 @@ fn play_or_render(
         // it opens is a DAW you have to race to the stop button.
         transport.stop();
         transport.seek(start_sample);
+        // How far the transport bar's ruler reaches. The *notes* are what a
+        // bounce is as long as, but an empty project has none and a ruler that
+        // is zero samples wide has nowhere to put a playhead — so the window
+        // takes the clips into account as well.
+        let arranged = project
+            .clips
+            .values()
+            .map(|clip| clip.start + clip.length)
+            .max()
+            .unwrap_or(0);
+        let window_length = song_end_samples.max(project.tempo_map.tick_to_sample(arranged));
         let host = fontelle_app::EngineHost::new(
             transport.clone(),
             master,
             project.tempo_map.clone(),
-            song_end_samples,
+            window_length,
             SAMPLE_RATE,
         );
-        // The document the piano roll edits. Without a note clip there is
-        // nothing for a roll to show, so the panel simply stays empty rather
-        // than opening onto a clip that does not exist.
+        // The studio the window drives. Without a note clip there is nothing
+        // for a roll to show, so the panel simply stays empty rather than
+        // opening onto a clip that does not exist.
         let document = fontelle_app::Session::first_clip(&project).map(|clip| {
-            Box::new(fontelle_app::Session::new(
+            let mut session = fontelle_app::Session::new(
                 project.clone(),
+                library,
                 realised.channel_nodes.clone(),
                 timeline_publisher,
+                RealiseOptions {
+                    sample_rate: SAMPLE_RATE,
+                    block_size: BLOCK_SIZE,
+                    quality,
+                },
                 clip,
                 save.map(std::path::Path::to_path_buf),
-            )) as Box<dyn fontelle_ui::DocumentHost>
+            )
+            // The instruments reach the running stream through their own
+            // channel, so choosing a soundfont from inside the window does not
+            // restart the audio device.
+            .with_graphs(graph_publisher);
+            if let Some(port) = live_ports.claim() {
+                session = session.with_audition(Box::new(port));
+            }
+            for dir in &soundfont_dirs {
+                session.add_soundfont_dir(dir);
+            }
+            if let Some(created) = session.open_bank() {
+                println!("  soundfont folder: {}", created.display());
+            }
+            Box::new(session) as Box<dyn fontelle_ui::StudioHost>
         });
         let result = fontelle_ui::run_window(fontelle_ui::WindowOptions {
             title: format!("{} — Fontelle", project.meta.name),
             panel_title: project.meta.name.clone(),
-            theme: fontelle_ui::Theme::dark_default(),
+            theme,
             size: (1280, 720),
-            run_for: None,
+            run_for,
             host: Some(Box::new(host)),
             document,
         });
@@ -489,7 +540,15 @@ fn play_or_render(
         transport.stop();
         std::thread::sleep(std::time::Duration::from_millis(50));
         device.stop();
-        return result.map(|_| ()).map_err(|e| e.to_string());
+        return match result {
+            Ok(app) => {
+                if run_for.is_some() {
+                    println!("{} frames drawn", app.frames_drawn());
+                }
+                Ok(())
+            }
+            Err(e) => Err(e.to_string()),
+        };
     }
 
     // A recording has to end somewhere the process can act on, because what
@@ -868,196 +927,170 @@ fn choose_preset(
         .unwrap_or(default_preset)
 }
 
+/// The window `fontelle` opens with no arguments at all.
+///
+/// The gate sentence in `docs/first-usable-plan.md` §3 starts "launch
+/// `fontelle` with no arguments", and until item 9 this was the one thing it
+/// could not do: the window opened, but with no audio device behind it and no
+/// way to reach a soundfont from inside itself. Now it is the same path
+/// `--play-sf2 --window --blank` takes, minus the soundfont — the browser is
+/// where that comes from.
+fn start_empty(playback: Playback<'_>) -> Result<(), String> {
+    let project = fontelle_app::blank_project(8, BPM, SAMPLE_RATE);
+    play_or_render(project, SampleLibrary::new(), playback)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let opening = args.iter().any(|a| a == "--open");
-    if opening || args.iter().any(|a| a == "--play-sf2") {
-        // A bad path is ordinary user error, not a bug — report it and exit
-        // non-zero rather than dumping a panic and a backtrace hint.
-        let path = if opening {
-            std::path::PathBuf::new()
-        } else {
-            match fontelle_app::resolve_sf2_path(&args, |p| p.exists()) {
-                Ok(path) => path,
-                Err(e) => {
-                    eprintln!("Fontelle: {e}");
-                    std::process::exit(1);
-                }
-            }
-        };
-        let path_flag = |name: &str| {
-            args.iter()
-                .position(|a| a == name)
-                .and_then(|i| args.get(i + 1))
-                .map(std::path::PathBuf::from)
-        };
-        let numeric_flag = |name: &str| {
-            args.iter()
-                .position(|a| a == name)
-                .and_then(|i| args.get(i + 1))
-                .and_then(|v| v.parse::<usize>().ok())
-        };
-        let root_key = numeric_flag("--key").unwrap_or(60).min(127) as u8;
-        let preset = numeric_flag("--preset").unwrap_or(0);
+    let playing_sf2 = args.iter().any(|a| a == "--play-sf2");
 
-        let render_wav = path_flag("--render-wav");
-        let save = path_flag("--save");
-        let open = path_flag("--open");
-        if opening && open.is_none() {
-            eprintln!("Fontelle: --open takes the path of a .fontelle project folder");
-            std::process::exit(1);
-        }
-
-        let midi_path = path_flag("--play-midi");
-        // 1-based on the command line, 0-based in the file, because that is
-        // how every DAW and every piece of MIDI documentation numbers them.
-        let midi_channels = match numeric_flag("--midi-channel") {
-            Some(n) if n >= 1 => fontelle_assets::MidiChannels::Only(n as u8 - 1),
-            Some(_) => {
-                eprintln!("Fontelle: --midi-channel is 1-based; channel 10 is percussion");
+    // A bad path is ordinary user error, not a bug — report it and exit
+    // non-zero rather than dumping a panic and a backtrace hint.
+    let path = if playing_sf2 {
+        match fontelle_app::resolve_sf2_path(&args, |p| p.exists()) {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("Fontelle: {e}");
                 std::process::exit(1);
             }
-            None if args.iter().any(|a| a == "--midi-all") => fontelle_assets::MidiChannels::All,
-            None => fontelle_assets::MidiChannels::Melodic,
-        };
-        let midi = midi_path.as_deref().map(|p| (p, midi_channels));
+        }
+    } else {
+        std::path::PathBuf::new()
+    };
 
-        // The demo phrase's three coincident voices need the default headroom;
-        // a whole arrangement through the same fader lands about 20 dB down.
-        // Until there is a master limiter, that is a judgement about the
-        // material rather than something the tool can settle.
-        let gain_db = args
-            .iter()
-            .position(|a| a == "--gain-db")
+    let path_flag = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
             .and_then(|i| args.get(i + 1))
-            .and_then(|v| v.parse::<f32>().ok())
-            .unwrap_or(fontelle_app::DEMO_TRACK_GAIN_DB);
+            .map(std::path::PathBuf::from)
+    };
+    let numeric_flag = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .and_then(|v| v.parse::<usize>().ok())
+    };
+    let root_key = numeric_flag("--key").unwrap_or(60).min(127) as u8;
+    let preset = numeric_flag("--preset").unwrap_or(0);
 
-        let float_flag = |name: &str| {
-            args.iter()
-                .position(|a| a == name)
-                .and_then(|i| args.get(i + 1))
-                .and_then(|v| v.parse::<f64>().ok())
-        };
-        // `--loop <from>:<to>` in beats. A colon rather than two flags
-        // because a loop is one range: half of it given and half defaulted is
-        // never what anybody meant.
-        let loop_beats = match args.iter().position(|a| a == "--loop") {
-            Some(i) => match args.get(i + 1).and_then(|v| v.split_once(':')) {
-                Some((from, to)) => match (from.parse::<f64>(), to.parse::<f64>()) {
-                    (Ok(from), Ok(to)) if to > from && from >= 0.0 => Some((from, to)),
-                    _ => {
-                        eprintln!(
-                            "Fontelle: --loop takes a beat range as <from>:<to>, ending after \
-                             it starts — e.g. --loop 0:8 for the first two bars of 4/4"
-                        );
-                        std::process::exit(1);
-                    }
-                },
-                None => {
-                    eprintln!("Fontelle: --loop takes a beat range as <from>:<to>, e.g. 0:8");
+    let render_wav = path_flag("--render-wav");
+    let save = path_flag("--save");
+    let open = path_flag("--open");
+    if opening && open.is_none() {
+        eprintln!("Fontelle: --open takes the path of a .fontelle project folder");
+        std::process::exit(1);
+    }
+
+    // Every `--soundfonts <dir>`, remembered in the settings file so it only
+    // has to be said once (INVARIANT 10: it is the user who says where).
+    let soundfont_dirs: Vec<std::path::PathBuf> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| *a == "--soundfonts")
+        .filter_map(|(i, _)| args.get(i + 1))
+        .map(std::path::PathBuf::from)
+        .collect();
+
+    let midi_path = path_flag("--play-midi");
+    // 1-based on the command line, 0-based in the file, because that is how
+    // every DAW and every piece of MIDI documentation numbers them.
+    let midi_channels = match numeric_flag("--midi-channel") {
+        Some(n) if n >= 1 => fontelle_assets::MidiChannels::Only(n as u8 - 1),
+        Some(_) => {
+            eprintln!("Fontelle: --midi-channel is 1-based; channel 10 is percussion");
+            std::process::exit(1);
+        }
+        None if args.iter().any(|a| a == "--midi-all") => fontelle_assets::MidiChannels::All,
+        None => fontelle_assets::MidiChannels::Melodic,
+    };
+    let midi = midi_path.as_deref().map(|p| (p, midi_channels));
+
+    let gain_db = args
+        .iter()
+        .position(|a| a == "--gain-db")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(fontelle_app::DEMO_TRACK_GAIN_DB);
+
+    let float_flag = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .and_then(|v| v.parse::<f64>().ok())
+    };
+    // `--loop <from>:<to>` in beats. A colon rather than two flags because a
+    // loop is one range: half of it given and half defaulted is never what
+    // anybody meant.
+    let loop_beats = match args.iter().position(|a| a == "--loop") {
+        Some(i) => match args.get(i + 1).and_then(|v| v.split_once(':')) {
+            Some((from, to)) => match (from.parse::<f64>(), to.parse::<f64>()) {
+                (Ok(from), Ok(to)) if to > from && from >= 0.0 => Some((from, to)),
+                _ => {
+                    eprintln!(
+                        "Fontelle: --loop takes a beat range as <from>:<to>, ending after \
+                         it starts — e.g. --loop 0:8 for the first two bars of 4/4"
+                    );
                     std::process::exit(1);
                 }
             },
-            None => None,
-        };
-        let cue = Cue {
-            start_beat: float_flag("--start-beat").unwrap_or(0.0).max(0.0),
-            loop_beats,
-            repeat: numeric_flag("--repeat").unwrap_or(2).max(1) as u32,
-        };
+            None => {
+                eprintln!("Fontelle: --loop takes a beat range as <from>:<to>, e.g. 0:8");
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    };
+    let cue = Cue {
+        start_beat: float_flag("--start-beat").unwrap_or(0.0).max(0.0),
+        loop_beats,
+        repeat: numeric_flag("--repeat").unwrap_or(2).max(1) as u32,
+    };
 
-        let midi_in = args.iter().any(|a| a == "--midi-in");
-        let record = args.iter().any(|a| a == "--record");
-        let window = args.iter().any(|a| a == "--window");
-        let blank = args.iter().any(|a| a == "--blank");
-        if blank && !window {
-            eprintln!(
-                "Fontelle: --blank opens an empty clip to draw in, which needs \
-                 the window — add --window"
-            );
-            std::process::exit(1);
-        }
-        if window && render_wav.is_some() {
-            eprintln!(
-                "Fontelle: --window opens the transport for you to play with and \
-                 --render-wav is an offline bounce that exits when it is done; \
-                 pick one"
-            );
-            std::process::exit(1);
-        }
-        if window && record {
-            eprintln!(
-                "Fontelle: --record has to know when the take ends so it can be \
-                 written down, and the window has no record button yet (item 9). \
-                 Record headless with --record --save <project>, then --open it \
-                 --window"
-            );
-            std::process::exit(1);
-        }
-        if midi_in && render_wav.is_some() {
-            eprintln!(
-                "Fontelle: --midi-in is live playing and --render-wav is an offline bounce; \
-                 record the take first (--record --save <project>), then --open it and \
-                 --render-wav that"
-            );
-            std::process::exit(1);
-        }
-        if record && !midi_in {
-            eprintln!("Fontelle: --record needs --midi-in; there is nothing else to record");
-            std::process::exit(1);
-        }
+    let midi_in = args.iter().any(|a| a == "--midi-in");
+    let record = args.iter().any(|a| a == "--record");
+    let blank = args.iter().any(|a| a == "--blank");
+    // With no project named at all, the window is the whole point: there is
+    // nothing to render offline and nothing to play through.
+    let headless_project = playing_sf2 || opening;
+    let window = args.iter().any(|a| a == "--window") || !headless_project;
 
-        let playback = Playback {
-            render_wav: render_wav.as_deref(),
-            save: save.as_deref(),
-            gain_db,
-            cue,
-            midi_in,
-            record,
-            record_seconds: float_flag("--record-seconds"),
-            window,
-            announce: (midi.is_none() && !opening).then(|| {
-                if blank {
-                    format!(
-                        "  an empty 8 bars at {BPM} bpm — draw with the left mouse \
-                         button, delete with the right.\n  \
-                         Space plays, Ctrl+Z undoes, Ctrl+S saves, B cycles snap, \
-                         P/E/D pick draw/select/delete."
-                    )
-                } else {
-                    format!(
-                        "  root key {root_key} at {BPM} bpm — a root/third/fifth run, \
-                         then the triad held."
-                    )
-                }
-            }),
-        };
-
-        let result = match &open {
-            Some(bundle) => open_and_play(bundle, playback),
-            None => play_sf2(
-                &path,
-                PlayOptions {
-                    blank,
-                    root_key,
-                    preset,
-                    midi,
-                    playback,
-                },
-            ),
-        };
-        if let Err(e) = result {
-            eprintln!("Fontelle: {e}");
-            std::process::exit(1);
-        }
-        return;
+    if blank && !window {
+        eprintln!(
+            "Fontelle: --blank opens an empty clip to draw in, which needs \
+             the window — add --window"
+        );
+        std::process::exit(1);
+    }
+    if window && render_wav.is_some() {
+        eprintln!(
+            "Fontelle: --window opens the transport for you to play with and \
+             --render-wav is an offline bounce that exits when it is done; \
+             pick one"
+        );
+        std::process::exit(1);
+    }
+    if window && record {
+        eprintln!(
+            "Fontelle: --record has to know when the take ends so it can be \
+             written down, and the window has no record button yet. Record \
+             headless with --record --save <project>, then --open it --window"
+        );
+        std::process::exit(1);
+    }
+    if midi_in && render_wav.is_some() {
+        eprintln!(
+            "Fontelle: --midi-in is live playing and --render-wav is an offline bounce; \
+             record the take first (--record --save <project>), then --open it and \
+             --render-wav that"
+        );
+        std::process::exit(1);
+    }
+    if record && !midi_in {
+        eprintln!("Fontelle: --record needs --midi-in; there is nothing else to record");
+        std::process::exit(1);
     }
 
-    // The full DAW window. Item 6 of `docs/first-usable-plan.md`: a window, a
-    // wgpu surface, a vello scene and one themed panel — the walking skeleton
-    // the transport bar (item 7), the piano roll (item 8) and the docked panel
-    // set (item 9) grow inside. The audio path above is untouched by it.
     let theme = match theme_for(&args) {
         Ok(theme) => theme,
         Err(e) => {
@@ -1065,39 +1098,69 @@ fn main() {
             std::process::exit(1);
         }
     };
-    // Seconds, then closes itself. There is no other way to run the window
-    // unattended, and "it opened, drew, and then sat there drawing nothing" is
-    // exactly the claim TDD §16.3 makes and §19 measures.
-    let run_for = args
-        .iter()
-        .position(|a| a == "--run-for")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|v| v.parse::<f64>().ok())
-        .map(std::time::Duration::from_secs_f64);
 
-    match fontelle_ui::run_window(fontelle_ui::WindowOptions {
-        title: "Fontelle".to_string(),
-        panel_title: "Fontelle".to_string(),
+    let playback = Playback {
+        render_wav: render_wav.as_deref(),
+        save: save.as_deref(),
+        gain_db,
+        cue,
+        midi_in,
+        record,
+        record_seconds: float_flag("--record-seconds"),
+        window,
         theme,
-        size: (1280, 720),
-        run_for,
-        // No project and no audio device yet: the transport bar is drawn, and
-        // inert, and the panel is empty, until item 9 gives the window a way
-        // to open a soundfont from inside itself.
-        host: None,
-        document: None,
-    }) {
-        Ok(app) => {
-            if run_for.is_some() {
-                println!("{} frames drawn", app.frames_drawn());
-            }
-        }
-        Err(e) => {
-            eprintln!("Fontelle: {e}");
-            std::process::exit(1);
-        }
+        soundfont_dirs,
+        run_for: float_flag("--run-for").map(std::time::Duration::from_secs_f64),
+        announce: match (playing_sf2, opening) {
+            (false, false) => Some(WELCOME.to_string()),
+            (true, false) if midi.is_none() => Some(if blank {
+                format!("  an empty 8 bars at {BPM} bpm.\n{WELCOME}")
+            } else {
+                format!(
+                    "  root key {root_key} at {BPM} bpm — a root/third/fifth run, \
+                     then the triad held."
+                )
+            }),
+            _ => None,
+        },
+    };
+
+    let result = match (&open, playing_sf2) {
+        (Some(bundle), _) => open_and_play(bundle, playback),
+        (None, true) => play_sf2(
+            &path,
+            PlayOptions {
+                blank,
+                root_key,
+                preset,
+                midi,
+                playback,
+            },
+        ),
+        // No project named: the empty studio, which is the whole of item 9.
+        (None, false) => start_empty(playback),
+    };
+    if let Err(e) = result {
+        eprintln!("Fontelle: {e}");
+        std::process::exit(1);
     }
 }
+
+/// What the window says it can do, once, on stdout.
+///
+/// Printed rather than shown because there is no help panel yet; the toolbar
+/// carries the same set, which is the half that does not need reading.
+const WELCOME: &str = "\
+  Pick a soundfont in the browser (bottom left), then a preset:
+    click a preset  -> puts it on the selected channel
+    Ctrl+click      -> puts it on a new one, as does \"+ Add instrument\"
+  Draw with the left mouse button, delete with the right; drag a note's right
+  edge to lengthen it, and drag out from an empty cell to draw one to length.
+  Space plays.  Ctrl+Z/Y undo.  Ctrl+S saves.  Ctrl+C/X/V/B copy, cut, paste,
+  duplicate.  P/B/E/D pick draw/paint/select/delete.  S cycles snap.
+  Alt drags off the grid; Shift keeps a drag to one axis; Ctrl+drag marquees.
+  Wheel scrolls the keys, Shift+wheel the song, Ctrl+wheel zooms time and
+  Ctrl+Shift+wheel zooms pitch — both about the pointer.";
 
 /// The theme the window opens with: a file if one was named, otherwise the
 /// light or dark default (TDD §16.6).

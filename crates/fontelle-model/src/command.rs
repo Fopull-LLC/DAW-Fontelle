@@ -90,6 +90,18 @@ impl History {
     /// nudge a minute later. Only the caller knows the mouse came up. A time
     /// window would be guesswork that either splits a slow drag or swallows an
     /// edit the user meant to keep.
+    /// The entry on top of the undo stack — the command just applied, unless
+    /// it merged into the one before it.
+    ///
+    /// The piano roll needs this and there is no other way to get it: drawing
+    /// a note and dragging it to length is one gesture, and its second half
+    /// needs the `NoteId` the first half minted. `AddNotes` keeps that id, and
+    /// the history has owned the command since it was applied. Downcast
+    /// through `Command::as_any`.
+    pub fn last_applied(&self) -> Option<&dyn Command> {
+        self.undo_stack.last().map(|command| command.as_ref())
+    }
+
     pub fn break_gesture(&mut self) {
         self.gesture_broken = true;
     }

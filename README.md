@@ -5,7 +5,8 @@ sample playback. An SF2 file supplies *defaults* — loop points, envelopes, fil
 mapping, tuning — and every one of them is yours to override. Built by
 [Fopull LLC](https://fopull.com).
 
-**Status: early scaffolding.** No feature is implemented yet; see [Project status](#project-status).
+**Status: early, and runnable.** There is a window you can write music in; there
+is a great deal that is not built. See [Project status](#project-status).
 
 ## Why
 
@@ -14,14 +15,60 @@ Fontelle inverts that: the SF2 supplies a starting point, and nothing about it i
 See [`FONTELLE_TDD.md`](FONTELLE_TDD.md) for the full design — product thesis, invariants,
 crate layout, milestones, and the open questions still to resolve.
 
+## Running it
+
+```sh
+cargo run --release -p fontelle-app
+```
+
+That opens a window with a channel rack, a soundfont browser and a piano roll,
+over a real audio device. Put your `.sf2` files in
+`~/.local/share/fontelle/soundfonts` — Fontelle creates it on first run and says
+so — or point it somewhere else once and it remembers:
+
+```sh
+cargo run --release -p fontelle-app -- --soundfonts /path/to/your/soundfonts
+```
+
+Then: pick a soundfont in the browser, pick a preset (a plain click puts it on
+the selected channel; `Ctrl`+click puts it on a new one), and draw.
+
+| | |
+|---|---|
+| Draw / delete a note | left mouse / right mouse |
+| Draw one to length | drag out from an empty cell |
+| Lengthen one | drag its right edge |
+| Tools | `P` draw, `B` paint, `E` select, `D` delete |
+| Snap | `S` cycles bar / beat / 1&frasl;8 / 1&frasl;16 / 1&frasl;32 / triplet / off |
+| Off the grid, one axis | hold `Alt`, hold `Shift` |
+| Select a region | the Select tool, or `Ctrl`+drag |
+| Clipboard | `Ctrl+C` / `X` / `V`, `Ctrl+B` duplicate |
+| Undo / redo / save | `Ctrl+Z` / `Ctrl+Y` / `Ctrl+S` |
+| Play | `Space` |
+| Scroll | wheel for pitch, `Shift`+wheel for time |
+| Zoom, about the pointer | `Ctrl`+wheel for time, `Ctrl+Shift`+wheel for pitch |
+| Find a soundfont | `Ctrl+F`, then type — it matches letters in order, so `gus` finds `GeneralUser GS` |
+
+The command line is still there and does more than the window does — offline
+WAV bounces, MIDI file import, live MIDI in, recording a take. `--play-sf2
+<file>` plays a demo phrase through a preset; add `--window` to open the same
+project in the editor, `--open <project.fontelle>` to reopen a saved one.
+
 ## Project status
 
-This repository currently holds the M0 skeleton: every crate in the workspace exists with
-its real module boundaries and dependency graph, and the whole thing compiles. No feature
-is implemented — most functions are `todo!()` stubs describing what belongs there and
-pointing at the relevant section of the TDD. The M0 exit gate (a real audio callback
-playing one sampler voice from an SF2 file, end to end, with the zero-allocation
-assertion active — TDD §22) has not been reached yet.
+**Working, and tested end to end:** the SF2 importer (filters, envelopes, LFOs,
+the modulation matrix), the sampler and its voice architecture, the mixer and
+master bus with a brickwall limiter, a piecewise tempo map, the transport with
+looping and seeking, live MIDI input with hot-plug, MIDI recording, MIDI file
+import, offline rendering to WAV, the project document with commands and undo,
+saving and reopening a project, and the window described above.
+
+**Not built yet:** the arrangement timeline, the mixer panel, the sampler
+editor, automation, effects beyond the master limiter, sample streaming (a
+soundfont is fully resident), plugin export, and most of what
+[`FONTELLE_TDD.md`](FONTELLE_TDD.md) describes. Read
+[`PROGRESS.md`](PROGRESS.md) for where things actually stand — it is the living
+status document and it is blunt about what is missing.
 
 See [`docs/scaffolding-notes.md`](docs/scaffolding-notes.md) for the one structural
 decision made during scaffolding that isn't explicit in the TDD.

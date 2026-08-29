@@ -2,10 +2,12 @@
 //! can't be imported by an integration test, and "the thing we demo" deserves
 //! coverage as much as anything else does.
 
+pub mod bank;
 mod bundle;
 mod library;
 mod realise;
 mod session;
+pub mod settings;
 mod window;
 
 use std::path::{Path, PathBuf};

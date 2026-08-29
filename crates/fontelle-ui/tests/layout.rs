@@ -9,7 +9,7 @@ fn metrics() -> fontelle_ui::theme::Metrics {
 }
 
 #[test]
-fn the_transport_bar_is_across_the_top_and_the_panel_is_under_it() {
+fn the_transport_bar_is_across_the_top_and_the_panels_are_under_it() {
     let m = metrics();
     let l = window_layout(1280.0, 720.0, &m);
 
@@ -23,8 +23,11 @@ fn the_transport_bar_is_across_the_top_and_the_panel_is_under_it() {
             m.transport_bar_height,
         )
     );
-    assert_eq!(l.panel.frame.x, m.panel_margin);
-    assert_eq!(l.panel.frame.width, 1280.0 - 2.0 * m.panel_margin);
+    // The roll's panel starts to the right of the sidebar and runs to the
+    // window's own margin. Where the sidebar itself goes is `panels.rs`.
+    assert_eq!(l.rack.frame.x, m.panel_margin);
+    assert!(l.panel.frame.x > m.panel_margin);
+    assert_eq!(l.panel.frame.right(), 1280.0 - m.panel_margin);
     assert!(
         l.panel.frame.y >= l.transport.bottom(),
         "the panel starts above the transport bar"

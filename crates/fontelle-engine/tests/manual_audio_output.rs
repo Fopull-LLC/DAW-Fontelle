@@ -148,7 +148,7 @@ fn plays_a_note_through_the_real_output_device() {
     transport.play();
     device
         .start_output_stream(
-            graph,
+            fontelle_engine::graph_channel(graph).1,
             fontelle_engine::timeline_channel(timeline).1,
             SAMPLE_RATE,
             transport.clone(),

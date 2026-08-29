@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Its own number, separate from the project's and the patch's: a colour token
 /// added to the chrome has nothing to do with either.
-pub const THEME_FORMAT_VERSION: u32 = 2;
+pub const THEME_FORMAT_VERSION: u32 = 3;
 
 /// An 8-bit sRGB colour with alpha, written to file as hex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,6 +189,12 @@ pub struct Metrics {
     /// The strip across the top of the window carrying play/stop and the
     /// playhead. Added in theme format v1.
     pub transport_bar_height: f32,
+    /// How wide the left-hand column of docked panels — the channel rack and
+    /// the soundfont browser — is. Added in theme format v3.
+    ///
+    /// Wide enough for a soundfont's name and narrow enough that the piano
+    /// roll is still the thing the window is mostly made of.
+    pub sidebar_width: f32,
 }
 
 /// The chrome's typeface.
@@ -357,6 +363,7 @@ const METRICS: Metrics = Metrics {
     corner_radius: 4.0,
     row_height: 22.0,
     transport_bar_height: 34.0,
+    sidebar_width: 248.0,
 };
 
 /// Brings a theme written by an older build up to [`THEME_FORMAT_VERSION`],
@@ -399,6 +406,17 @@ fn migrate(mut json: serde_json::Value, mut from: u32) -> Result<serde_json::Val
             }
         }
         from = 2;
+    }
+
+    if from == 2 {
+        // v3 added the docked sidebar (item 9). A v2 file was written when the
+        // window was a transport bar and one panel.
+        if let Some(metrics) = json.get_mut("metrics").and_then(|m| m.as_object_mut()) {
+            metrics
+                .entry("sidebar_width")
+                .or_insert_with(|| serde_json::json!(METRICS.sidebar_width));
+        }
+        from = 3;
     }
 
     if from != THEME_FORMAT_VERSION {

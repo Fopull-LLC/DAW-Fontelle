@@ -31,7 +31,7 @@ pub use vello;
 
 pub use app::{WindowApp, WindowError, WindowOptions, run, run_window};
 pub use backend::WindowBackend;
-pub use document::DocumentHost;
+pub use document::{ChannelInfo, DocumentHost, LibraryEntry, StudioHost};
 pub use layout::{PanelLayout, Rect, WindowLayout, window_layout};
 pub use render::{Chrome, Headless, RenderError, RollChrome, TransportChrome, draw_window};
 pub use text::{GlyphRun, TextContext, TextLayout};

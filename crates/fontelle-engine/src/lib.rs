@@ -5,6 +5,7 @@
 
 mod device;
 mod graph;
+mod graph_channel;
 mod live;
 mod nodes;
 mod rt_guard;
@@ -16,6 +17,7 @@ pub use fontelle_fx::LimiterConfig;
 pub use graph::{
     AudioNode, BufferPool, CompiledGraph, ParamSet, PrepareContext, ProcessContext, ScheduledNode,
 };
+pub use graph_channel::{GRAPH_QUEUE_CAPACITY, GraphPublisher, GraphSource, graph_channel};
 pub use live::{
     CAPTURE_CAPACITY, CaptureReader, CaptureWriter, IdleGate, LIVE_PORT_CAPACITY, LIVE_PORT_COUNT,
     LiveEventPorts, LiveEventSource, LivePort, live_capture_channel, live_event_channel,

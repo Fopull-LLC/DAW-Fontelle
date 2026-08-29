@@ -4,7 +4,7 @@ use std::sync::Arc;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use fontelle_types::{CompiledTimeline, TimedEvent};
 
-use crate::graph::CompiledGraph;
+use crate::graph_channel::GraphSource;
 use crate::live::{IdleGate, LiveEventSource};
 use crate::rt_guard::with_rt_thread;
 use crate::timeline_channel::TimelineSource;
@@ -108,16 +108,20 @@ impl AudioDevice {
     /// does its note-on that way).
     pub fn start_output_stream(
         &mut self,
-        graph: CompiledGraph,
+        graph: GraphSource,
         timeline: TimelineSource,
         sample_rate: u32,
         transport: Arc<Transport>,
         live: Option<LiveEventSource>,
     ) -> Result<(), DeviceError> {
         // Off-RT, before the stream exists: nodes size their internal buffers
-        // here so the callback never has to.
+        // here so the callback never has to. Everything published later is
+        // prepared by `GraphPublisher`'s caller, on its own thread, for the
+        // same reason.
         let mut graph = graph;
-        graph.prepare(sample_rate as f32, BLOCK_SIZE as u32);
+        graph
+            .current()
+            .prepare(sample_rate as f32, BLOCK_SIZE as u32);
         let mut graph = ManuallyDrop::new(graph);
         let mut timeline = ManuallyDrop::new(timeline);
         let device = self
@@ -211,6 +215,15 @@ impl AudioDevice {
                             // binary search that repositions the cursor into
                             // it is not free, and nothing is republished
                             // mid-callback.
+                            // The instruments, not the notes: a channel added
+                            // or an instrument chosen in the window rebuilds
+                            // the graph, and this is where the running stream
+                            // picks the new one up. The graph it stops using
+                            // goes back to the publisher to be freed — never
+                            // here (INVARIANT 1).
+                            graph.take_update();
+                            let graph = graph.current();
+
                             let republished = timeline.has_update();
                             let timeline: &CompiledTimeline = timeline.current();
                             if republished {

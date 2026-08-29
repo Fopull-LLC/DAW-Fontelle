@@ -6,7 +6,7 @@ use fontelle_types::{ChannelId, NoteId};
 /// Per-note pan, fine pitch, release, and two free modulation values are cheap to
 /// store and route through the mod matrix — exactly the per-note character control
 /// that makes sample-based writing expressive (TDD §10.4).
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Note {
     /// Relative to clip start.
     pub start: Tick,

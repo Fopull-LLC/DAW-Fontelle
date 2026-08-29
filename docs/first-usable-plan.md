@@ -229,21 +229,29 @@ not relitigate the toolkit choice beyond that documented fallback.
    would notice an engine changing under it, which is now the tested
    `widget::sleep_budget`. See PROGRESS.md's top section.
 
-8. ~~**Piano roll MVP.**~~ **Mostly done, 2026-08-29.** Virtualised canvas
+8. ~~**Piano roll MVP.**~~ **Done, 2026-08-29.** Virtualised canvas
    (§16.4: `visible_ticks`/`visible_keys` bound every loop), draw, delete,
    select, move, resize, snap with the standard divisions, right-click delete,
    Ctrl+Z/Y through the real `History`, Ctrl+A. Every edit is a command: the
    roll emits `RollEdit` values and `fontelle-app`'s `Session` applies them,
    recompiles and publishes to the running stream, so what you draw you hear.
-   **Still missing:** marquee select and Ctrl+B/C/V/X. See PROGRESS.md's top
-   section.
+   **Second pass, same day:** draw-and-drag-to-length as one gesture, per-axis
+   zoom about the pointer, marquee select, Ctrl+B/C/V/X, Alt and Shift drag
+   modifiers, a Paint tool, a velocity lane, bar numbers, key names, note
+   audition, and a visible toolbar. See PROGRESS.md's top section.
 
-9. **Timeline + channels + mixer strip.** Arrangement canvas (clips as
-   blocks: move/duplicate/delete/mute), a channel list that creates channels
-   from an SF2 file picker with the preset list the CLI already prints, and
-   per-channel gain/pan/mute bound to `Project::mixer` through commands.
-   Record-arm per channel wiring item 5 into the UI, with a metronome
-   (small engine node; count-in optional).
+9. ~~**Channel rack + soundfont browser.**~~ **Done, 2026-08-29.** A channel
+   list with per-channel mute/solo, and a browser over a configured soundfont
+   bank (TDD §17.5) with fuzzy search, that puts a preset on a channel — or on
+   a new one — **while the audio device stays open**. That last clause is the
+   engine half: `fontelle_engine::graph_channel` hands a rebuilt
+   `CompiledGraph` to the running stream and takes the old one back to be freed
+   off the RT thread. `fontelle` with no arguments now opens a usable studio,
+   which is the first clause of the §3 gate sentence.
+
+   **Still to come under this item:** the arrangement canvas (clips as blocks:
+   move/duplicate/delete/mute), the mixer strip with per-channel gain and pan,
+   and record-arm wiring item 5 into the UI with a metronome.
 
 10. **Save/open/new in the UI.** File dialogs over item 4, dirty-state in
     the title bar, autosave to `backups/` on a timer. First-run settings can

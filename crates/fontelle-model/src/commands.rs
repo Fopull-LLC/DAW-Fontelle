@@ -734,6 +734,160 @@ impl Command for ResizeNotes {
     }
 }
 
+/// Sets the velocity of every named note to one value.
+///
+/// The piano roll's velocity lane (TDD §16.5's first note property lane), as a
+/// command like everything else. Two things about it are not obvious:
+///
+/// - **The inverse is per note.** A selection dragged flat came from notes that
+///   each had their own velocity, and an undo that restored one shared value
+///   would be a second edit wearing an undo's clothes. So `previous` is a
+///   parallel vector, captured on apply.
+/// - **It merges with itself.** Dragging up the lane produces one of these per
+///   mouse-move; without `merge_with` an undo would step back through the drag
+///   a pixel at a time. Merging keeps the *original* `previous`, which is what
+///   makes one undo go back to where the drag started.
+pub struct SetNoteVelocity {
+    clip: ClipId,
+    ids: Vec<NoteId>,
+    velocity: u8,
+    /// Each note's velocity before this ran, in `ids` order. Empty until
+    /// applied, which is also how `invert` knows it has nothing to say yet.
+    previous: Vec<u8>,
+    label: String,
+}
+
+impl SetNoteVelocity {
+    pub fn new(clip: ClipId, ids: Vec<NoteId>, velocity: u8) -> Self {
+        Self {
+            label: note_count_label("Set velocity of", ids.len()),
+            clip,
+            ids,
+            velocity,
+            previous: Vec::new(),
+        }
+    }
+}
+
+impl Command for SetNoteVelocity {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let data = notes_of(doc, self.clip)?;
+        // Checked before anything is written: a command that half-applies is
+        // one whose inverse cannot put the document back.
+        for id in &self.ids {
+            if data.notes.get(*id).is_none() {
+                return Err(CommandError(format!("no note {id:?} in this clip")));
+            }
+        }
+        // Only on the first apply. A redo must restore the same `previous` the
+        // original run captured, not whatever is there the second time round.
+        if self.previous.is_empty() {
+            self.previous = self
+                .ids
+                .iter()
+                .filter_map(|id| data.notes.get(*id).map(|n| n.velocity))
+                .collect();
+        }
+        for id in &self.ids {
+            if let Some(note) = data.notes.get_mut(*id) {
+                note.velocity = self.velocity;
+            }
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        if self.previous.is_empty() {
+            return Box::new(NotApplied("setting velocity"));
+        }
+        Box::new(RestoreNoteVelocities {
+            clip: self.clip,
+            ids: self.ids.clone(),
+            velocities: self.previous.clone(),
+            label: self.label.clone(),
+        })
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<SetNoteVelocity>() else {
+            return false;
+        };
+        if next.clip != self.clip || next.ids != self.ids {
+            return false;
+        }
+        // The new value, the old `previous`: one drag, one entry, one undo back
+        // to where it started.
+        self.velocity = next.velocity;
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.ids.len() * std::mem::size_of::<NoteId>()
+            + self.previous.len()
+            + self.label.len()
+    }
+}
+
+/// [`SetNoteVelocity`]'s inverse: each note back to its own value.
+struct RestoreNoteVelocities {
+    clip: ClipId,
+    ids: Vec<NoteId>,
+    velocities: Vec<u8>,
+    label: String,
+}
+
+impl Command for RestoreNoteVelocities {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let data = notes_of(doc, self.clip)?;
+        for (id, velocity) in self.ids.iter().zip(&self.velocities) {
+            let Some(note) = data.notes.get_mut(*id) else {
+                return Err(CommandError(format!("no note {id:?} in this clip")));
+            };
+            note.velocity = *velocity;
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        // Every note went back to its own value, so the forward direction is
+        // only expressible as one-value-for-all when they agreed. They did,
+        // because that is what `SetNoteVelocity` had just done.
+        Box::new(SetNoteVelocity::new(
+            self.clip,
+            self.ids.clone(),
+            self.velocities.first().copied().unwrap_or(0),
+        ))
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.ids.len() * std::mem::size_of::<NoteId>()
+            + self.velocities.len()
+            + self.label.len()
+    }
+}
+
 // --- Clips -----------------------------------------------------------------
 
 pub struct AddClip {

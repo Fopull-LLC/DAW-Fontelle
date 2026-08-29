@@ -1,4 +1,5 @@
-//! The piano roll (TDD §16.4, §16.5; item 8 of `docs/first-usable-plan.md`).
+//! The piano roll (TDD §16.4, §16.5; items 8 and 9 of
+//! `docs/first-usable-plan.md`).
 //!
 //! A direct-draw canvas, not a widget tree. Almost all of it is here, as pure
 //! functions and one small state machine, because §2.5 says so and because the
@@ -13,6 +14,18 @@
 //! returns [`RollEdit`]s; turning those into `Command`s and applying them is
 //! `fontelle-app`'s job. That is why this file can be tested with an `Arena`
 //! and no document at all.
+//!
+//! # The shape of a gesture
+//!
+//! One thing here is not obvious and is load-bearing. Drawing a note and
+//! sizing it is **one** mouse gesture, the way it is in FL Studio: press on
+//! empty grid, and the same drag that follows sets the length. But the roll
+//! does not own the document, so at the moment of the press it does not know
+//! the id of the note it just asked for. So the press leaves a *pending* add,
+//! the host applies the edit and calls [`PianoRoll::note_added`] with the id it
+//! minted, and the gesture becomes a resize of that note. Without that
+//! handshake the drag has nothing to resize, which is exactly what the first
+//! version of this file did and exactly why it felt wrong to use.
 
 use std::ops::Range;
 
@@ -26,7 +39,34 @@ use crate::theme::Metrics;
 const KEY_COUNT: i32 = 128;
 
 /// How wide a note's resize handle is, in pixels.
-const HANDLE_PX: f32 = 6.0;
+///
+/// Eight rather than six: this is the control people reach for most often after
+/// the note body itself, and a six-pixel target at a normal zoom is a target
+/// you miss. [`hit_test`] still shrinks it for notes too short to spare it.
+const HANDLE_PX: f32 = 8.0;
+
+/// Zoom limits. Both ends matter: `pixels_per_tick` at zero is a division by
+/// zero in every conversion here, and a key row taller than the panel is not a
+/// zoom, it is a broken window.
+pub const MIN_PIXELS_PER_TICK: f32 = 0.002;
+pub const MAX_PIXELS_PER_TICK: f32 = 4.0;
+pub const MIN_KEY_HEIGHT: f32 = 5.0;
+pub const MAX_KEY_HEIGHT: f32 = 40.0;
+
+/// Which modifier keys are down.
+///
+/// Pushed in by the window rather than passed to every method: §16.5 gives Alt
+/// and Shift meanings that apply to whatever gesture is in progress, and
+/// threading two booleans through nine entry points is how one of them ends up
+/// forgotten.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    pub ctrl: bool,
+    pub shift: bool,
+    /// §16.5: free positioning — the snap is bypassed for as long as it is
+    /// held.
+    pub alt: bool,
+}
 
 /// Where the roll is looking, and how closely.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -38,7 +78,8 @@ pub struct RollView {
     pub top_key: u8,
     /// Horizontal zoom.
     pub pixels_per_tick: f32,
-    /// Row height.
+    /// Row height — the vertical zoom. §16.4: continuous, and independent of
+    /// the horizontal one.
     pub key_height: f32,
     pub snap: SnapDivision,
 }
@@ -51,7 +92,9 @@ impl Default for RollView {
             // window without anyone having to scroll to find it.
             top_key: 84,
             pixels_per_tick: 0.125,
-            key_height: 12.0,
+            // Tall enough for a key's name to fit beside it and for a note to
+            // be an easy target. Twelve was neither.
+            key_height: 16.0,
             snap: SnapDivision::Step,
         }
     }
@@ -61,50 +104,85 @@ impl Default for RollView {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RollLayout {
     pub frame: Rect,
-    /// The keyboard down the left, beside the grid.
-    pub keys: Rect,
+    /// The tools, the snap chip and the zoom buttons — the answer to "I cannot
+    /// see what this can do".
+    pub toolbar: Rect,
     /// The bar ruler across the top, above the grid.
     pub ruler: Rect,
+    /// The keyboard down the left, beside the grid.
+    pub keys: Rect,
     /// Where the notes are.
     pub grid: Rect,
+    /// The label strip beside the velocity lane, lined up with the keyboard.
+    pub velocity_keys: Rect,
+    /// The velocity lane (§16.5's first note property lane). Empty when it is
+    /// hidden, and then the grid has the room instead.
+    pub velocity: Rect,
 }
 
 /// Wide enough for a key name and narrow enough not to eat the song.
 const KEYBOARD_WIDTH: f32 = 56.0;
 
-pub fn roll_layout(frame: Rect, metrics: &Metrics) -> RollLayout {
+/// How tall the velocity lane is.
+const VELOCITY_HEIGHT: f32 = 78.0;
+
+pub fn roll_layout(frame: Rect, metrics: &Metrics, velocity_lane: bool) -> RollLayout {
+    let (toolbar, under_toolbar) = frame.split_top(metrics.row_height.min(frame.height.max(0.0)));
+
     let ruler_height = metrics.row_height;
-    let keys_width = KEYBOARD_WIDTH.min(frame.width.max(0.0));
+    let keys_width = KEYBOARD_WIDTH.min(under_toolbar.width.max(0.0));
 
-    let ruler = Rect::new(
-        frame.x,
-        frame.y,
-        frame.width,
-        ruler_height.min(frame.height.max(0.0)),
+    let (ruler, below) = under_toolbar.split_top(ruler_height);
+
+    // The lane comes out of the bottom before the grid is measured, so the
+    // grid never has to be shrunk after the fact — which is the version of
+    // this that leaves a one-pixel seam.
+    let lane_height = if velocity_lane {
+        VELOCITY_HEIGHT.min((below.height - metrics.row_height).max(0.0))
+    } else {
+        0.0
+    };
+    let grid_area = Rect::new(
+        below.x,
+        below.y,
+        below.width,
+        (below.height - lane_height).max(0.0),
     )
     .clamped();
-    let below = Rect::new(
-        frame.x,
-        ruler.bottom(),
-        frame.width,
-        frame.height - ruler.height,
+    let lane_area = Rect::new(
+        below.x,
+        grid_area.bottom(),
+        below.width,
+        below.bottom() - grid_area.bottom(),
     )
     .clamped();
 
-    let keys = Rect::new(below.x, below.y, keys_width, below.height).clamped();
+    let keys = Rect::new(grid_area.x, grid_area.y, keys_width, grid_area.height).clamped();
     let grid = Rect::new(
         keys.right(),
-        below.y,
-        below.width - keys.width,
-        below.height,
+        grid_area.y,
+        grid_area.width - keys.width,
+        grid_area.height,
+    )
+    .clamped();
+
+    let velocity_keys = Rect::new(lane_area.x, lane_area.y, keys_width, lane_area.height).clamped();
+    let velocity = Rect::new(
+        velocity_keys.right(),
+        lane_area.y,
+        lane_area.width - velocity_keys.width,
+        lane_area.height,
     )
     .clamped();
 
     RollLayout {
         frame,
+        toolbar,
         keys,
         ruler,
         grid,
+        velocity_keys,
+        velocity,
     }
 }
 
@@ -161,6 +239,48 @@ pub fn visible_keys(view: &RollView, grid: Rect) -> Range<i32> {
     bottom.max(0)..(top + 1).min(KEY_COUNT)
 }
 
+// ----------------------------------------------------------------- zoom ---
+
+/// Zooms time about `anchor_x`, so whatever is under the pointer stays under
+/// it (§16.4).
+///
+/// Zooming about the left edge — which is what the first version did — throws
+/// away where you were looking every time you turn the wheel, and is the
+/// difference between navigating a song and hunting for your place in it.
+///
+/// The arithmetic is in `f64`: the anchor is recomputed from the live view on
+/// every call, so the only error is `scroll_tick` being a whole tick, and that
+/// is worth less than a pixel at any zoom this allows.
+pub fn zoom_x(view: &mut RollView, grid: Rect, anchor_x: f32, factor: f32) {
+    if view.pixels_per_tick <= 0.0 || !factor.is_finite() || factor <= 0.0 {
+        return;
+    }
+    let offset = f64::from(anchor_x - grid.x);
+    let anchor_tick = view.scroll_tick as f64 + offset / f64::from(view.pixels_per_tick);
+
+    view.pixels_per_tick =
+        (view.pixels_per_tick * factor).clamp(MIN_PIXELS_PER_TICK, MAX_PIXELS_PER_TICK);
+
+    let scroll = anchor_tick - offset / f64::from(view.pixels_per_tick);
+    view.scroll_tick = (scroll.round() as Tick).max(0);
+}
+
+/// Zooms pitch about `anchor_y`. See [`zoom_x`]; the only difference is that
+/// `top_key` is a key rather than a fraction of one, so the anchor holds to
+/// within a row.
+pub fn zoom_y(view: &mut RollView, grid: Rect, anchor_y: f32, factor: f32) {
+    if view.key_height <= 0.0 || !factor.is_finite() || factor <= 0.0 {
+        return;
+    }
+    let offset = f64::from(anchor_y - grid.y);
+    let anchor_key = f64::from(view.top_key) - offset / f64::from(view.key_height);
+
+    view.key_height = (view.key_height * factor).clamp(MIN_KEY_HEIGHT, MAX_KEY_HEIGHT);
+
+    let top = anchor_key + offset / f64::from(view.key_height);
+    view.top_key = (top.round() as i32).clamp(0, KEY_COUNT - 1) as u8;
+}
+
 // ----------------------------------------------------------------- snap ---
 
 /// The standard divisions (§16.5).
@@ -174,6 +294,35 @@ pub enum SnapDivision {
     Division(u8),
     Triplet,
     None,
+}
+
+impl SnapDivision {
+    /// What the snap chip on the toolbar says.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Bar => "bar",
+            Self::Beat => "beat",
+            Self::Step => "1/16",
+            Self::Division(2) => "1/8",
+            Self::Division(8) => "1/32",
+            Self::Division(_) => "1/n",
+            Self::Triplet => "trip",
+            Self::None => "none",
+        }
+    }
+
+    /// The cycle `B` walks, in the order a person would want them.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Bar => Self::Beat,
+            Self::Beat => Self::Division(2),
+            Self::Division(2) => Self::Step,
+            Self::Step => Self::Division(8),
+            Self::Division(8) => Self::Triplet,
+            Self::Triplet => Self::None,
+            _ => Self::Bar,
+        }
+    }
 }
 
 /// How many ticks one snap line is from the next. **Zero means no snap.**
@@ -270,6 +419,48 @@ pub fn hit_test(
     })
 }
 
+/// The note covering the column at `x`, whatever its pitch.
+///
+/// What the velocity lane hit-tests against: the lane has no pitch axis, so a
+/// column is the whole of the question. The topmost note wins, the same rule
+/// [`hit_test`] uses.
+pub fn note_at_tick(
+    view: &RollView,
+    grid: Rect,
+    notes: &Arena<NoteId, Note>,
+    x: f32,
+) -> Option<NoteId> {
+    let tick = x_to_tick(view, grid, x);
+    let mut found = None;
+    for (id, note) in notes.iter() {
+        if tick >= note.start && tick < note.start + note.length {
+            found = Some(id);
+        }
+    }
+    found
+}
+
+/// The velocity a point in the lane means: loud at the top, quiet at the
+/// bottom, and **never zero** — a note-on with velocity zero is a note-off in
+/// MIDI, so a lane that can produce one can silently delete a note.
+pub fn velocity_of_y(lane: Rect, y: f32) -> u8 {
+    if lane.height <= 0.0 {
+        return 100;
+    }
+    let t = ((y - lane.y) / lane.height).clamp(0.0, 1.0);
+    let value = (127.0 - t * 126.0).round() as i32;
+    value.clamp(1, 127) as u8
+}
+
+/// Where a note's velocity bar reaches in the lane.
+pub fn velocity_to_y(lane: Rect, velocity: u8) -> f32 {
+    if lane.height <= 0.0 {
+        return lane.y;
+    }
+    let t = (127.0 - f32::from(velocity.max(1))) / 126.0;
+    lane.y + t.clamp(0.0, 1.0) * lane.height
+}
+
 // -------------------------------------------------------------- editing ---
 
 /// What the roll wants done to the document.
@@ -279,12 +470,17 @@ pub fn hit_test(
 /// matching command and puts it through `History`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RollEdit {
+    /// One note, drawn. Separate from [`RollEdit::Insert`] because the host
+    /// hands the id back for it (see [`PianoRoll::note_added`]) and the drag
+    /// that follows sizes it.
     Add {
         tick: Tick,
         key: u8,
         length: Tick,
         velocity: u8,
     },
+    /// A phrase, pasted or duplicated, already positioned.
+    Insert(Vec<Note>),
     Remove(Vec<NoteId>),
     /// Deltas, and **relative to the previous step of the same drag** — that is
     /// what `MoveNotes` takes and what lets `merge_with` coalesce a drag into
@@ -298,12 +494,18 @@ pub enum RollEdit {
         ids: Vec<NoteId>,
         tick_delta: Tick,
     },
+    /// One value for every named note — the velocity lane's whole vocabulary.
+    SetVelocity {
+        ids: Vec<NoteId>,
+        velocity: u8,
+    },
 }
 
-/// The tools §16.5 names. The gate needs the first three.
+/// The tools §16.5 names. The gate needs the first four.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     Draw,
+    /// Draw, and keep drawing across every cell the pointer crosses.
     Paint,
     Delete,
     Select,
@@ -312,16 +514,132 @@ pub enum Tool {
     Slip,
 }
 
+impl Tool {
+    /// The toolbar caption, and the key that picks it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Draw => "Draw",
+            Self::Paint => "Paint",
+            Self::Delete => "Del",
+            Self::Select => "Sel",
+            Self::Slice => "Slice",
+            Self::Mute => "Mute",
+            Self::Slip => "Slip",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseButton {
     Left,
     Right,
 }
 
-/// What the pointer is in the middle of doing.
+// -------------------------------------------------------------- toolbar ---
+
+/// Something on the roll's toolbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RollControl {
+    Tool(Tool),
+    /// Cycles the snap division; the chip says which one is on.
+    Snap,
+    ZoomOutX,
+    ZoomInX,
+    ZoomOutY,
+    ZoomInY,
+    /// Shows and hides the velocity lane.
+    Velocity,
+}
+
+impl RollControl {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Tool(tool) => tool.label(),
+            Self::Snap => "snap",
+            Self::ZoomOutX => "-",
+            Self::ZoomInX => "+",
+            Self::ZoomOutY => "\u{2193}",
+            Self::ZoomInY => "\u{2191}",
+            Self::Velocity => "vel",
+        }
+    }
+
+    /// The keyboard shortcut worth writing in a tooltip, if there is one.
+    pub fn shortcut(self) -> Option<&'static str> {
+        match self {
+            Self::Tool(Tool::Draw) => Some("P"),
+            Self::Tool(Tool::Paint) => Some("B"),
+            Self::Tool(Tool::Select) => Some("E"),
+            Self::Tool(Tool::Delete) => Some("D"),
+            Self::Snap => Some("S"),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolbarLayout {
+    pub items: Vec<(RollControl, Rect)>,
+}
+
+/// The controls, left to right, in the order they are used: what the mouse
+/// does, then what the grid is, then how close you are looking.
+const TOOLBAR: [(RollControl, f32); 10] = [
+    (RollControl::Tool(Tool::Draw), 40.0),
+    (RollControl::Tool(Tool::Paint), 42.0),
+    (RollControl::Tool(Tool::Select), 34.0),
+    (RollControl::Tool(Tool::Delete), 34.0),
+    (RollControl::Snap, 52.0),
+    (RollControl::ZoomOutX, 24.0),
+    (RollControl::ZoomInX, 24.0),
+    (RollControl::ZoomOutY, 24.0),
+    (RollControl::ZoomInY, 24.0),
+    (RollControl::Velocity, 34.0),
+];
+
+/// A little air at each end and between groups.
+const TOOLBAR_PAD: f32 = 4.0;
+
+pub fn toolbar_layout(toolbar: Rect, metrics: &Metrics) -> ToolbarLayout {
+    let height = (toolbar.height - 2.0).max(0.0).min(metrics.row_height);
+    let y = toolbar.y + (toolbar.height - height).max(0.0) / 2.0;
+
+    let mut x = toolbar.x + TOOLBAR_PAD;
+    let mut items = Vec::with_capacity(TOOLBAR.len());
+    for (control, width) in TOOLBAR {
+        // Clipped rather than dropped: a control that has run off the end of a
+        // narrow panel is an empty rectangle, which hit-tests as absent and
+        // draws as nothing, and the list stays the same length either way.
+        items.push((
+            control,
+            Rect::new(x, y, width, height).intersection(&toolbar),
+        ));
+        x += width + TOOLBAR_PAD;
+    }
+    ToolbarLayout { items }
+}
+
+pub fn toolbar_hit(bar: &ToolbarLayout, x: f32, y: f32) -> Option<RollControl> {
+    bar.items
+        .iter()
+        .find(|(_, rect)| rect.contains(x, y))
+        .map(|(control, _)| *control)
+}
+
+// ------------------------------------------------------------- gestures ---
+
+/// What the pointer is in the middle of doing.
+#[derive(Debug, Clone, PartialEq)]
 enum Gesture {
     None,
+    /// A note has been asked for and its id is not known yet. The next
+    /// [`PianoRoll::note_added`] turns this into a resize of it.
+    PendingAdd {
+        /// Where the new note's right edge is, which is what the resize
+        /// measures from.
+        end: Tick,
+        key: u8,
+    },
     /// Dragging the selection around. `applied` is how far the drag has been
     /// committed so far, so each step can emit only the difference.
     Moving {
@@ -332,6 +650,20 @@ enum Gesture {
     Resizing {
         applied_tick: Tick,
     },
+    /// Dragging a selection box. Corners in pixels, because that is what the
+    /// box is drawn in and what makes direction irrelevant.
+    Marquee {
+        from: (f32, f32),
+        to: (f32, f32),
+    },
+    /// Painting notes across cells as the pointer crosses them.
+    Painting {
+        last: (Tick, u8),
+    },
+    /// Dragging in the velocity lane.
+    Velocity {
+        ids: Vec<NoteId>,
+    },
 }
 
 /// The roll's own state: where it is looking, what is selected, what the mouse
@@ -339,6 +671,8 @@ enum Gesture {
 pub struct PianoRoll {
     pub view: RollView,
     pub tool: Tool,
+    /// Whether the velocity lane is showing.
+    pub velocity_lane: bool,
     /// The velocity a newly drawn note gets.
     pub default_velocity: u8,
     /// How long a newly drawn note is, when snap is off.
@@ -347,6 +681,10 @@ pub struct PianoRoll {
     gesture: Gesture,
     /// Where the pointer was when the gesture started, in document units.
     origin: (Tick, u8),
+    modifiers: Modifiers,
+    /// The phrase Ctrl+C put there, normalised so its earliest note starts at
+    /// tick zero — which is what lets a paste land anywhere.
+    clipboard: Vec<Note>,
 }
 
 impl PianoRoll {
@@ -354,16 +692,36 @@ impl PianoRoll {
         Self {
             view,
             tool: Tool::Draw,
+            velocity_lane: true,
             default_velocity: 100,
             default_length: PPQN / 4,
             selection: Vec::new(),
             gesture: Gesture::None,
             origin: (0, 0),
+            modifiers: Modifiers::default(),
+            clipboard: Vec::new(),
         }
     }
 
     pub fn selection(&self) -> &[NoteId] {
         &self.selection
+    }
+
+    pub fn set_modifiers(&mut self, modifiers: Modifiers) {
+        self.modifiers = modifiers;
+    }
+
+    pub fn modifiers(&self) -> Modifiers {
+        self.modifiers
+    }
+
+    /// The selection box being dragged, for drawing. `None` when there is not
+    /// one.
+    pub fn marquee(&self) -> Option<Rect> {
+        match self.gesture {
+            Gesture::Marquee { from, to } => Some(box_between(from, to)),
+            _ => None,
+        }
     }
 
     pub fn select_all(&mut self, notes: &Arena<NoteId, Note>) {
@@ -372,6 +730,19 @@ impl PianoRoll {
 
     pub fn clear_selection(&mut self) {
         self.selection.clear();
+    }
+
+    pub fn select(&mut self, ids: Vec<NoteId>) {
+        self.selection = ids;
+    }
+
+    /// The snap in force *right now* — `None` while Alt is held (§16.5).
+    fn live_snap(&self) -> SnapDivision {
+        if self.modifiers.alt {
+            SnapDivision::None
+        } else {
+            self.view.snap
+        }
     }
 
     /// `Ctrl+A`'s counterpart: what `Delete` should do.
@@ -383,6 +754,29 @@ impl PianoRoll {
             return Vec::new();
         }
         vec![RollEdit::Remove(std::mem::take(&mut self.selection))]
+    }
+
+    /// Tells the roll the id of the note its last [`press`](Self::press) asked
+    /// for, turning the press into a draw-and-size gesture.
+    ///
+    /// Called by the host right after it applies a [`RollEdit::Add`]. A press
+    /// that produced no note leaves no pending add, so a stale one cannot
+    /// capture the next note drawn somewhere else.
+    pub fn note_added(&mut self, id: NoteId) {
+        let Gesture::PendingAdd { end, key } = self.gesture else {
+            return;
+        };
+        self.selection = vec![id];
+        self.origin = (end, key);
+        self.gesture = Gesture::Resizing { applied_tick: 0 };
+    }
+
+    /// The ids of notes the host created for a [`RollEdit::Insert`], so a
+    /// pasted phrase arrives selected and can be dragged straight away.
+    pub fn notes_inserted(&mut self, ids: Vec<NoteId>) {
+        if !ids.is_empty() {
+            self.selection = ids;
+        }
     }
 
     pub fn press(
@@ -430,18 +824,42 @@ impl PianoRoll {
             }
             RollHit::Empty { tick, key } => {
                 self.selection.clear();
-                if self.tool != Tool::Draw {
+                // Ctrl on empty grid is a marquee whatever the tool, which is
+                // the FL habit; the Select tool does it without one.
+                if self.tool == Tool::Select || self.modifiers.ctrl {
+                    self.gesture = Gesture::Marquee {
+                        from: (x, y),
+                        to: (x, y),
+                    };
                     return Vec::new();
                 }
-                let unit = snap_unit(self.view.snap, beats_per_bar);
+                if !matches!(self.tool, Tool::Draw | Tool::Paint) {
+                    self.gesture = Gesture::None;
+                    return Vec::new();
+                }
+                let snap = self.live_snap();
+                let unit = snap_unit(snap, beats_per_bar);
+                let length = if unit > 0 { unit } else { self.default_length };
+                let start = snap_tick(tick, snap, beats_per_bar);
+                self.gesture = if self.tool == Tool::Paint {
+                    Gesture::Painting { last: (start, key) }
+                } else {
+                    Gesture::PendingAdd {
+                        end: start + length,
+                        key,
+                    }
+                };
                 vec![RollEdit::Add {
-                    tick: snap_tick(tick, self.view.snap, beats_per_bar),
+                    tick: start,
                     key,
-                    length: if unit > 0 { unit } else { self.default_length },
+                    length,
                     velocity: self.default_velocity,
                 }]
             }
-            RollHit::Outside => Vec::new(),
+            RollHit::Outside => {
+                self.gesture = Gesture::None;
+                Vec::new()
+            }
         }
     }
 
@@ -453,24 +871,65 @@ impl PianoRoll {
         notes: &Arena<NoteId, Note>,
         beats_per_bar: u32,
     ) -> Vec<RollEdit> {
-        if self.selection.is_empty() {
-            return Vec::new();
-        }
         let tick = x_to_tick(&self.view, grid, x);
         let key = y_to_key(&self.view, grid, y);
 
-        match self.gesture {
-            Gesture::None => Vec::new(),
+        match self.gesture.clone() {
+            Gesture::None | Gesture::PendingAdd { .. } | Gesture::Velocity { .. } => Vec::new(),
+
+            Gesture::Marquee { from, .. } => {
+                self.gesture = Gesture::Marquee { from, to: (x, y) };
+                Vec::new()
+            }
+
+            Gesture::Painting { last } => {
+                let snap = self.live_snap();
+                let unit = snap_unit(snap, beats_per_bar);
+                let length = if unit > 0 { unit } else { self.default_length };
+                let start = snap_tick(tick, snap, beats_per_bar);
+                if (start, key) == last {
+                    return Vec::new();
+                }
+                // One note per cell crossed, and never on top of one that is
+                // already there — painting over an existing note in FL leaves
+                // one note, not a stack of them.
+                if note_covers(notes, start, key) {
+                    self.gesture = Gesture::Painting { last: (start, key) };
+                    return Vec::new();
+                }
+                self.gesture = Gesture::Painting { last: (start, key) };
+                vec![RollEdit::Add {
+                    tick: start,
+                    key,
+                    length,
+                    velocity: self.default_velocity,
+                }]
+            }
 
             Gesture::Moving {
                 applied_tick,
                 applied_key,
             } => {
+                if self.selection.is_empty() {
+                    return Vec::new();
+                }
                 // Snap the *destination*, not the delta: a note that started
                 // off the grid should land on it, which is what dragging a
                 // sloppily-placed note onto the beat is for.
-                let wanted_tick = self.snapped_delta(tick, beats_per_bar, notes, grid);
-                let wanted_key = i16::from(key) - i16::from(self.origin.1);
+                let mut wanted_tick = self.snapped_delta(tick, beats_per_bar, notes);
+                let mut wanted_key = i16::from(key) - i16::from(self.origin.1);
+
+                // §16.5: Shift constrains to whichever axis the drag is mostly
+                // along, measured in pixels so it is the axis it *looks* like.
+                if self.modifiers.shift {
+                    let dx = (wanted_tick as f32 * self.view.pixels_per_tick).abs();
+                    let dy = (f32::from(wanted_key) * self.view.key_height).abs();
+                    if dx >= dy {
+                        wanted_key = 0;
+                    } else {
+                        wanted_tick = 0;
+                    }
+                }
 
                 let d_tick = wanted_tick - applied_tick;
                 let d_key = wanted_key - applied_key;
@@ -491,7 +950,10 @@ impl PianoRoll {
             }
 
             Gesture::Resizing { applied_tick } => {
-                let unit = snap_unit(self.view.snap, beats_per_bar);
+                if self.selection.is_empty() {
+                    return Vec::new();
+                }
+                let unit = snap_unit(self.live_snap(), beats_per_bar);
                 let raw = tick - self.origin.0;
                 let wanted = if unit > 0 {
                     (raw as f64 / unit as f64).round() as Tick * unit
@@ -523,6 +985,173 @@ impl PianoRoll {
         self.gesture = Gesture::None;
     }
 
+    /// [`release`](Self::release), knowing where the button came up — which a
+    /// marquee needs, because that is the moment it decides what it caught.
+    pub fn release_over(&mut self, x: f32, y: f32, grid: Rect, notes: &Arena<NoteId, Note>) {
+        if let Gesture::Marquee { from, .. } = self.gesture {
+            let box_ = box_between(from, (x, y));
+            self.selection = notes_in(&self.view, grid, notes, box_);
+        }
+        self.gesture = Gesture::None;
+    }
+
+    // ------------------------------------------------------ velocity lane ---
+
+    /// Pressing in the velocity lane. Sets the note under the column, or the
+    /// whole selection when the column is part of it.
+    pub fn press_velocity(
+        &mut self,
+        x: f32,
+        y: f32,
+        lane: Rect,
+        grid: Rect,
+        notes: &Arena<NoteId, Note>,
+    ) -> Vec<RollEdit> {
+        let Some(id) = note_at_tick(&self.view, grid, notes, x) else {
+            self.gesture = Gesture::None;
+            return Vec::new();
+        };
+        // Grabbing one of a selection sets the lot — that is what makes
+        // flattening a chord one gesture rather than four.
+        let ids = if self.selection.contains(&id) {
+            self.selection.clone()
+        } else {
+            self.selection = vec![id];
+            vec![id]
+        };
+        self.gesture = Gesture::Velocity { ids: ids.clone() };
+        vec![RollEdit::SetVelocity {
+            ids,
+            velocity: velocity_of_y(lane, y),
+        }]
+    }
+
+    pub fn drag_velocity(
+        &mut self,
+        _x: f32,
+        y: f32,
+        lane: Rect,
+        _grid: Rect,
+        _notes: &Arena<NoteId, Note>,
+    ) -> Vec<RollEdit> {
+        let Gesture::Velocity { ids } = &self.gesture else {
+            return Vec::new();
+        };
+        // The notes are the ones the press caught, not whatever is under the
+        // pointer now: dragging sideways across the lane while setting a
+        // velocity would otherwise rewrite the whole bar.
+        vec![RollEdit::SetVelocity {
+            ids: ids.clone(),
+            velocity: velocity_of_y(lane, y),
+        }]
+    }
+
+    /// Whether a drag in progress belongs to the velocity lane.
+    pub fn is_editing_velocity(&self) -> bool {
+        matches!(self.gesture, Gesture::Velocity { .. })
+    }
+
+    // --------------------------------------------------------- clipboard ---
+
+    /// Copies the selection, normalised so its earliest note starts at zero.
+    /// Returns how many notes were taken; **zero leaves the clipboard alone**,
+    /// so a stray Ctrl+C with nothing selected does not throw away what you had.
+    pub fn copy(&mut self, notes: &Arena<NoteId, Note>) -> usize {
+        let phrase = self.selected_phrase(notes);
+        if phrase.is_empty() {
+            return 0;
+        }
+        self.clipboard = phrase;
+        self.clipboard.len()
+    }
+
+    pub fn cut(&mut self, notes: &Arena<NoteId, Note>) -> Vec<RollEdit> {
+        if self.copy(notes) == 0 {
+            return Vec::new();
+        }
+        vec![RollEdit::Remove(std::mem::take(&mut self.selection))]
+    }
+
+    /// Puts the clipboard down with its earliest note at `at`.
+    pub fn paste(&mut self, at: Tick) -> Vec<RollEdit> {
+        if self.clipboard.is_empty() {
+            return Vec::new();
+        }
+        let at = at.max(0);
+        let notes: Vec<Note> = self
+            .clipboard
+            .iter()
+            .map(|note| Note {
+                start: note.start + at,
+                ..*note
+            })
+            .collect();
+        vec![RollEdit::Insert(notes)]
+    }
+
+    /// `Ctrl+B`: the selection again, starting where it ends.
+    ///
+    /// Rounded up to the next bar, which is what makes duplicating a phrase
+    /// produce a phrase twice as long rather than an overlap nobody asked for.
+    pub fn duplicate(&mut self, notes: &Arena<NoteId, Note>, beats_per_bar: u32) -> Vec<RollEdit> {
+        let phrase = self.selected_phrase(notes);
+        if phrase.is_empty() {
+            return Vec::new();
+        }
+        let earliest = self
+            .selection
+            .iter()
+            .filter_map(|id| notes.get(*id))
+            .map(|n| n.start)
+            .min()
+            .unwrap_or(0);
+        let end = self
+            .selection
+            .iter()
+            .filter_map(|id| notes.get(*id))
+            .map(|n| n.start + n.length)
+            .max()
+            .unwrap_or(earliest);
+
+        let bar = PPQN * Tick::from(beats_per_bar.max(1));
+        // `div_ceil` on a signed integer is still unstable, so this is it by
+        // hand — and `end` is never negative, which is what makes it this short.
+        let landing = (end + bar - 1) / bar * bar;
+        let copies: Vec<Note> = phrase
+            .into_iter()
+            .map(|note| Note {
+                start: note.start + landing,
+                ..note
+            })
+            .collect();
+        vec![RollEdit::Insert(copies)]
+    }
+
+    pub fn clipboard_len(&self) -> usize {
+        self.clipboard.len()
+    }
+
+    /// The selection as notes, sorted and moved so the earliest starts at zero.
+    fn selected_phrase(&self, notes: &Arena<NoteId, Note>) -> Vec<Note> {
+        let mut phrase: Vec<Note> = self
+            .selection
+            .iter()
+            .filter_map(|id| notes.get(*id).copied())
+            .collect();
+        if phrase.is_empty() {
+            return phrase;
+        }
+        // Sorted so a paste is deterministic — the arena's own order is
+        // whatever the ids happen to be, and a phrase that comes back in a
+        // different order every time is one nobody can reason about.
+        phrase.sort_by_key(|n| (n.start, n.key));
+        let earliest = phrase.iter().map(|n| n.start).min().unwrap_or(0);
+        for note in &mut phrase {
+            note.start -= earliest;
+        }
+        phrase
+    }
+
     /// The tick delta a move wants, snapped and clamped so the earliest
     /// selected note cannot be dragged before the start of the clip.
     fn snapped_delta(
@@ -530,9 +1159,8 @@ impl PianoRoll {
         pointer_tick: Tick,
         beats_per_bar: u32,
         notes: &Arena<NoteId, Note>,
-        _grid: Rect,
     ) -> Tick {
-        let unit = snap_unit(self.view.snap, beats_per_bar);
+        let unit = snap_unit(self.live_snap(), beats_per_bar);
         let raw = pointer_tick - self.origin.0;
         let wanted = if unit > 0 {
             (raw as f64 / unit as f64).round() as Tick * unit
@@ -557,4 +1185,41 @@ impl PianoRoll {
             .min()
             .unwrap_or(1)
     }
+}
+
+/// The rectangle two corners describe, whichever way round they came.
+fn box_between(a: (f32, f32), b: (f32, f32)) -> Rect {
+    let x = a.0.min(b.0);
+    let y = a.1.min(b.1);
+    Rect::new(x, y, (a.0 - b.0).abs(), (a.1 - b.1).abs())
+}
+
+/// Every note whose block overlaps `box_`, in pixels.
+///
+/// In pixels rather than in ticks and keys, because that is what the box is
+/// drawn in: what it visibly covers is what it selects, at any zoom, dragged in
+/// any direction.
+fn notes_in(view: &RollView, grid: Rect, notes: &Arena<NoteId, Note>, box_: Rect) -> Vec<NoteId> {
+    // Never empty: a box dragged along one axis is a line, and a line through a
+    // row of notes is a perfectly ordinary way to select them.
+    let box_ = Rect::new(box_.x, box_.y, box_.width.max(1.0), box_.height.max(1.0));
+    notes
+        .iter()
+        .filter(|(_, note)| {
+            let left = tick_to_x(view, grid, note.start);
+            let right = tick_to_x(view, grid, note.start + note.length);
+            let top = key_to_y(view, grid, note.key);
+            let block = Rect::new(left, top, (right - left).max(1.0), view.key_height);
+            block.intersects(&box_)
+        })
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// Whether any note already covers this cell — what stops the Paint tool
+/// stacking notes on top of each other.
+fn note_covers(notes: &Arena<NoteId, Note>, tick: Tick, key: u8) -> bool {
+    notes
+        .values()
+        .any(|n| n.key == key && tick >= n.start && tick < n.start + n.length)
 }

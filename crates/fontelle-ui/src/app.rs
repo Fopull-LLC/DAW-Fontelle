@@ -32,11 +32,18 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use crate::canvas::{MouseButton, PianoRoll, RollLayout, SnapDivision, Tool, roll_layout};
-use crate::document::DocumentHost;
+use crate::canvas::{
+    BrowserHit, BrowserLayout, Modifiers, MouseButton, PianoRoll, RackHit, RackLayout, RollControl,
+    RollLayout, Tool, ToolbarLayout, browser_hit, browser_layout, rack_hit, rack_layout,
+    roll_layout, scrolled, toolbar_hit, toolbar_layout, x_to_tick, y_to_key, zoom_x, zoom_y,
+};
+use crate::document::{ChannelInfo, LibraryEntry, StudioHost};
 use crate::layout::{WindowLayout, window_layout};
-use crate::render::{Chrome, RenderError, RollChrome, TransportChrome, draw_window};
-use crate::text::{TextContext, TextLayout};
+use crate::render::{
+    ADD_CHANNEL, BrowserChrome, Chrome, RackChrome, RenderError, RollChrome, SEARCH_HINT,
+    TransportChrome, draw_window, key_name, label_stride, labelled_bar,
+};
+use crate::text::{Labels, TextContext, TextLayout};
 use crate::theme::Theme;
 use crate::transport::{
     Meter, TransportBarLayout, TransportHit, TransportHost, TransportView, apply, format_readout,
@@ -44,8 +51,12 @@ use crate::transport::{
 };
 use crate::widget::{Sleep, WidgetId, WidgetTree, sleep_budget};
 
-/// The one panel item 6 opens. Item 9 turns this into the docked set.
+/// The piano roll's panel.
 const PANEL: WidgetId = WidgetId::new(0);
+/// The channel rack, and the soundfont browser under it (item 9). Their own
+/// widgets so clicking a soundfont redraws the browser and not the roll.
+const RACK: WidgetId = WidgetId::new(2);
+const BROWSER: WidgetId = WidgetId::new(3);
 /// The transport bar (item 7). Its own widget so a moving playhead dirties the
 /// bar and nothing else — §16.4's rule, applied before there is any geometry
 /// expensive enough for it to matter, because that is the only time it is
@@ -72,9 +83,9 @@ pub struct WindowOptions {
     /// The engine the transport bar drives. `None` opens a window with the bar
     /// drawn but inert — no audio device, or no project yet.
     pub host: Option<Box<dyn TransportHost>>,
-    /// The document the piano roll shows and edits. `None` opens an empty
-    /// panel.
-    pub document: Option<Box<dyn DocumentHost>>,
+    /// The studio the window shows and edits: the open clip, the channel rack
+    /// and the soundfont bank. `None` opens an empty window.
+    pub document: Option<Box<dyn StudioHost>>,
 }
 
 impl Default for WindowOptions {
@@ -158,6 +169,36 @@ pub struct WindowApp {
     last_tick: std::time::Instant,
     roll: PianoRoll,
     roll_layout: RollLayout,
+    roll_bar: ToolbarLayout,
+
+    // --- the docked panels (item 9) ---
+    /// Everything the chrome draws that had to be shaped first. See
+    /// [`crate::text::Labels`].
+    labels: Labels,
+    rack: RackLayout,
+    browser: BrowserLayout,
+    /// The studio's revision as of the last read, so the lists below are
+    /// rebuilt when something changes them and not once a frame.
+    studio_revision: u64,
+    channels: Vec<ChannelInfo>,
+    files: Vec<LibraryEntry>,
+    presets: Vec<LibraryEntry>,
+    selected_channel: usize,
+    selected_file: Option<usize>,
+    /// The live search (TDD §17.5), and whether it has the keyboard.
+    query: String,
+    searching: bool,
+    status: String,
+    rack_scroll: usize,
+    file_scroll: usize,
+    preset_scroll: usize,
+    hover_control: Option<RollControl>,
+    /// Whether a mouse button is down, so a `CursorMoved` is a drag rather
+    /// than a hover.
+    dragging: bool,
+    /// The key currently sounding because the mouse is on it, so it can be
+    /// released when the mouse is.
+    auditioning: Option<u8>,
     /// Whether this window currently holds an animator on the tree's
     /// [`crate::widget::Redraw`]. Kept so `begin`/`end` stay paired — the
     /// counter is there so several moving things can coexist, and a caller
@@ -203,7 +244,26 @@ impl WindowApp {
             hover: None,
             last_tick: std::time::Instant::now(),
             roll: PianoRoll::new(Default::default()),
-            roll_layout: roll_layout(layout.panel.body, &options.theme.metrics),
+            roll_layout: roll_layout(layout.panel.body, &options.theme.metrics, true),
+            roll_bar: ToolbarLayout { items: Vec::new() },
+            labels: Labels::new(),
+            rack: rack_layout(layout.rack.body, &options.theme.metrics, 0, 0),
+            browser: browser_layout(layout.browser.body, &options.theme.metrics, 0, 0, 0, 0),
+            studio_revision: u64::MAX,
+            channels: Vec::new(),
+            files: Vec::new(),
+            presets: Vec::new(),
+            selected_channel: 0,
+            selected_file: None,
+            query: String::new(),
+            searching: false,
+            status: String::new(),
+            rack_scroll: 0,
+            file_scroll: 0,
+            preset_scroll: 0,
+            hover_control: None,
+            dragging: false,
+            auditioning: None,
             animating: false,
             options,
         }
@@ -223,9 +283,11 @@ impl WindowApp {
             &self.options.theme.metrics,
         );
         self.bar = transport_bar_layout(self.layout.transport, &self.options.theme.metrics);
-        self.roll_layout = roll_layout(self.layout.panel.body, &self.options.theme.metrics);
+        self.relayout_panels();
         self.tree.insert(TRANSPORT, self.layout.transport);
         self.tree.insert(PANEL, self.layout.panel.frame);
+        self.tree.insert(RACK, self.layout.rack.frame);
+        self.tree.insert(BROWSER, self.layout.browser.frame);
         // Re-shaped against the header it has to fit in: a title wider than its
         // panel should wrap inside the header rather than run out over the
         // window, and how wide that is only becomes known here.
@@ -241,11 +303,20 @@ impl WindowApp {
     }
 
     fn draw(&mut self) {
-        let Some(live) = &self.live else { return };
+        if self.live.is_none() {
+            return;
+        }
+        // Everything the frame is about to need, before the frame: the panels'
+        // contents when the studio has changed them, and a shaped form of
+        // every string the (pure) renderer will look up.
+        self.refresh_studio();
+        self.shape_labels();
+
         // §16.3, the whole of it: no dirty region, no frame.
         let Some(_region) = self.tree.take_dirty() else {
             return;
         };
+        let Some(live) = &self.live else { return };
 
         let device = &self.context.devices[live.surface.dev_id];
         let Some(Some(renderer)) = self.renderers.get_mut(live.surface.dev_id) else {
@@ -267,12 +338,34 @@ impl WindowApp {
                 },
                 roll: self.options.document.as_ref().map(|doc| RollChrome {
                     layout: self.roll_layout,
+                    toolbar: self.roll_bar.clone(),
                     view: self.roll.view,
                     notes: doc.notes(),
                     selection: self.roll.selection(),
                     playhead_tick: doc.playhead_tick(self.view.position_sample),
                     beats_per_bar: doc.beats_per_bar(),
+                    tool: self.roll.tool,
+                    snap: self.roll.view.snap,
+                    marquee: self.roll.marquee(),
+                    hover: self.hover_control,
                 }),
+                rack: self.options.document.as_ref().map(|_| RackChrome {
+                    panel: self.layout.rack,
+                    layout: self.rack.clone(),
+                    channels: &self.channels,
+                    selected: self.selected_channel,
+                }),
+                browser: self.options.document.as_ref().map(|_| BrowserChrome {
+                    panel: self.layout.browser,
+                    layout: self.browser.clone(),
+                    query: &self.query,
+                    files: &self.files,
+                    presets: &self.presets,
+                    selected_file: self.selected_file,
+                    searching: self.searching,
+                }),
+                labels: &self.labels,
+                status: &self.status,
             },
         );
 
@@ -399,6 +492,11 @@ impl WindowApp {
             self.hover = hover;
             self.tree.invalidate(TRANSPORT);
         }
+        let control = toolbar_hit(&self.roll_bar, self.cursor.0, self.cursor.1);
+        if control != self.hover_control {
+            self.hover_control = control;
+            self.tree.invalidate(PANEL);
+        }
     }
 
     /// True once the `run_for` deadline has passed, if there is one.
@@ -514,7 +612,9 @@ impl ApplicationHandler for WindowApp {
                 let scale = live.window.scale_factor();
                 self.cursor = ((position.x / scale) as f32, (position.y / scale) as f32);
                 self.update_hover();
-                self.drag_roll();
+                if self.dragging {
+                    self.drag_roll();
+                }
                 self.request_redraw_if_dirty();
             }
 
@@ -530,23 +630,8 @@ impl ApplicationHandler for WindowApp {
                 ..
             } => {
                 let (x, y) = self.cursor;
-                if let Some(what) = hit(&self.bar, &self.view, x, y)
-                    && button == winit::event::MouseButton::Left
-                    && let Some(host) = &mut self.options.host
-                {
-                    // Commands down (TDD §2.2): one click, one call, which is
-                    // a handful of relaxed stores on the other side. Nothing
-                    // here waits for the audio thread to acknowledge it — the
-                    // next `tick` reads back what actually happened.
-                    apply(host.as_mut(), what);
-                    self.tick();
-                } else if let Some(button) = match button {
-                    winit::event::MouseButton::Left => Some(MouseButton::Left),
-                    winit::event::MouseButton::Right => Some(MouseButton::Right),
-                    _ => None,
-                } {
-                    self.press_roll(button, x, y);
-                }
+                self.dragging = true;
+                self.press(button, x, y);
                 self.request_redraw_if_dirty();
             }
 
@@ -554,13 +639,24 @@ impl ApplicationHandler for WindowApp {
                 state: winit::event::ElementState::Released,
                 ..
             } => {
-                self.roll.release();
+                self.dragging = false;
+                let (x, y) = self.cursor;
+                // Where the button came up is what a marquee needs: that is
+                // the moment it decides what it caught.
+                let grid = self.roll_layout.grid;
+                match &self.options.document {
+                    Some(doc) => self.roll.release_over(x, y, grid, doc.notes()),
+                    None => self.roll.release(),
+                }
+                self.stop_audition();
                 // One drag, one undo entry (§10.6). Only the caller knows the
                 // mouse came up, which is exactly why `History` cannot decide
                 // this for itself.
                 if let Some(doc) = &mut self.options.document {
                     doc.end_gesture();
                 }
+                self.tree.invalidate(PANEL);
+                self.request_redraw_if_dirty();
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
@@ -574,7 +670,16 @@ impl ApplicationHandler for WindowApp {
                 self.request_redraw_if_dirty();
             }
 
-            WindowEvent::ModifiersChanged(state) => self.modifiers = state.state(),
+            WindowEvent::ModifiersChanged(state) => {
+                self.modifiers = state.state();
+                // §16.5's Alt and Shift apply to whatever gesture is running,
+                // so the roll is told rather than asked.
+                self.roll.set_modifiers(Modifiers {
+                    ctrl: self.modifiers.control_key(),
+                    shift: self.modifiers.shift_key(),
+                    alt: self.modifiers.alt_key(),
+                });
+            }
 
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == winit::event::ElementState::Pressed {
@@ -612,6 +717,13 @@ impl ApplicationHandler for WindowApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // The graph the audio thread handed back is freed here, on this
+        // thread — see `fontelle_engine::GraphPublisher`. Cheap, and it has to
+        // happen somewhere that runs whether or not a frame does.
+        if let Some(doc) = &mut self.options.document {
+            doc.pump();
+        }
+        self.refresh_studio();
         self.tick();
         self.request_redraw_if_dirty();
         self.arm_deadline(event_loop);
@@ -619,7 +731,221 @@ impl ApplicationHandler for WindowApp {
 }
 
 impl WindowApp {
-    /// A press that landed somewhere the transport bar did not want.
+    // ------------------------------------------------------------ layout ---
+
+    /// Recomputes every panel's inner geometry. Called on a resize, and
+    /// whenever something changes how many rows a list has.
+    fn relayout_panels(&mut self) {
+        let m = &self.options.theme.metrics;
+        self.roll_layout = roll_layout(self.layout.panel.body, m, self.roll.velocity_lane);
+        self.roll_bar = toolbar_layout(self.roll_layout.toolbar, m);
+        self.rack = rack_layout(
+            self.layout.rack.body,
+            m,
+            self.channels.len(),
+            self.rack_scroll,
+        );
+        self.browser = browser_layout(
+            self.layout.browser.body,
+            m,
+            self.files.len(),
+            self.presets.len(),
+            self.file_scroll,
+            self.preset_scroll,
+        );
+    }
+
+    /// Re-reads the studio's lists, but only when it says they have changed.
+    ///
+    /// The alternative — asking for `Vec<ChannelInfo>` every frame — allocates
+    /// once a frame for a list that changes when somebody clicks something.
+    fn refresh_studio(&mut self) {
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        let revision = doc.revision();
+        if revision == self.studio_revision {
+            return;
+        }
+        self.studio_revision = revision;
+        self.channels = doc.channels();
+        self.files = doc.library_files();
+        self.presets = doc.library_presets();
+        self.selected_channel = doc.selected_channel();
+        self.selected_file = doc.selected_file();
+        self.query = doc.query().to_string();
+        let status = doc.take_message().unwrap_or_else(|| doc.library_status());
+        self.status = status;
+
+        // A list that shrank under a scroll offset leaves a panel that looks
+        // empty until somebody scrolls back up.
+        self.file_scroll = self.file_scroll.min(self.files.len().saturating_sub(1));
+        self.preset_scroll = self.preset_scroll.min(self.presets.len().saturating_sub(1));
+        self.rack_scroll = self.rack_scroll.min(self.channels.len().saturating_sub(1));
+
+        self.relayout_panels();
+        self.tree.invalidate(RACK);
+        self.tree.invalidate(BROWSER);
+        self.tree.invalidate(PANEL);
+    }
+
+    /// Shapes everything the next frame will want to draw.
+    ///
+    /// `draw_window` is a pure function and cannot shape anything, so every
+    /// string it will look up has to be in [`Labels`] first. Cached, so this is
+    /// a few dozen hash lookups on a frame where nothing new appeared.
+    fn shape_labels(&mut self) {
+        let font = self.options.theme.font.clone();
+        let want = |labels: &mut Labels, text: &mut TextContext, s: &str| {
+            labels.ensure(s, &font, text);
+        };
+
+        for fixed in [
+            "Channels",
+            "Soundfonts",
+            ADD_CHANNEL,
+            SEARCH_HINT,
+            "S",
+            "M",
+            "vel",
+        ] {
+            want(&mut self.labels, &mut self.text, fixed);
+        }
+        for (control, _) in &self.roll_bar.items {
+            let caption = match control {
+                RollControl::Snap => self.roll.view.snap.label(),
+                other => other.label(),
+            };
+            self.labels.ensure(caption, &font, &mut self.text);
+        }
+        if !self.query.is_empty() {
+            let query = self.query.clone();
+            want(&mut self.labels, &mut self.text, &query);
+        }
+        if !self.status.is_empty() {
+            let status = self.status.clone();
+            want(&mut self.labels, &mut self.text, &status);
+        }
+
+        for row in &self.rack.rows {
+            if let Some(channel) = self.channels.get(row.index) {
+                self.labels.ensure(&channel.name, &font, &mut self.text);
+            }
+        }
+        for (index, _) in &self.browser.file_rows {
+            if let Some(entry) = self.files.get(*index) {
+                self.labels.ensure(&entry.name, &font, &mut self.text);
+                self.labels.ensure(&entry.detail, &font, &mut self.text);
+            }
+        }
+        for (index, _) in &self.browser.preset_rows {
+            if let Some(entry) = self.presets.get(*index) {
+                self.labels.ensure(&entry.name, &font, &mut self.text);
+                self.labels.ensure(&entry.detail, &font, &mut self.text);
+            }
+        }
+
+        // The roll's own text: a name beside every C, and a number on every
+        // bar line the ruler has room to number.
+        if self.options.document.is_some() {
+            for key in crate::canvas::visible_keys(&self.roll.view, self.roll_layout.grid) {
+                if key % 12 == 0 {
+                    self.labels.ensure(&key_name(key), &font, &mut self.text);
+                }
+            }
+            let beats = self
+                .options
+                .document
+                .as_ref()
+                .map_or(BEATS_PER_BAR, |doc| doc.beats_per_bar());
+            let bar = fontelle_types::PPQN * i64::from(beats.max(1));
+            if let Some(stride) = label_stride(bar as f32 * self.roll.view.pixels_per_tick) {
+                let ticks = crate::canvas::visible_ticks(&self.roll.view, self.roll_layout.grid);
+                let mut tick = ticks.start - ticks.start.rem_euclid(bar);
+                while tick < ticks.end {
+                    let number = tick / bar + 1;
+                    if labelled_bar(number, stride) {
+                        self.labels
+                            .ensure(&number.to_string(), &font, &mut self.text);
+                    }
+                    tick += bar;
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------- mouse ---
+
+    /// One press, routed to whichever panel it landed in.
+    fn press(&mut self, button: winit::event::MouseButton, x: f32, y: f32) {
+        // The transport bar first: it is the only thing above the panels.
+        if let Some(what) = hit(&self.bar, &self.view, x, y) {
+            if button == winit::event::MouseButton::Left
+                && let Some(host) = &mut self.options.host
+            {
+                // Commands down (TDD §2.2): one click, one call, which is a
+                // handful of relaxed stores on the other side. Nothing here
+                // waits for the audio thread to acknowledge it — the next
+                // `tick` reads back what actually happened.
+                apply(host.as_mut(), what);
+                self.tick();
+            }
+            return;
+        }
+
+        // Clicking anywhere but the search box gives the keyboard back to the
+        // roll — otherwise typing a note-tool shortcut types it into the
+        // search field instead.
+        let in_search = self.browser.search.contains(x, y);
+        if self.searching != in_search {
+            self.searching = in_search;
+            self.tree.invalidate(BROWSER);
+        }
+
+        if self.layout.rack.frame.contains(x, y) {
+            self.press_rack(x, y);
+            return;
+        }
+        if self.layout.browser.frame.contains(x, y) {
+            self.press_browser(x, y);
+            return;
+        }
+
+        let Some(button) = (match button {
+            winit::event::MouseButton::Left => Some(MouseButton::Left),
+            winit::event::MouseButton::Right => Some(MouseButton::Right),
+            _ => None,
+        }) else {
+            return;
+        };
+
+        if self.roll_layout.toolbar.contains(x, y) {
+            if button == MouseButton::Left
+                && let Some(control) = toolbar_hit(&self.roll_bar, x, y)
+            {
+                self.activate(control);
+            }
+            return;
+        }
+        if self.roll_layout.velocity.contains(x, y) {
+            self.press_velocity(x, y);
+            return;
+        }
+        if self.roll_layout.keys.contains(x, y) {
+            // The on-screen keyboard: clicking a key plays it (TDD §14.1's
+            // live path). Nothing is written down — it is an audition.
+            let key = y_to_key(&self.roll.view, self.roll_layout.grid, y);
+            self.start_audition(key);
+            return;
+        }
+        if self.roll_layout.ruler.contains(x, y) {
+            self.seek_to(x);
+            return;
+        }
+        self.press_roll(button, x, y);
+    }
+
+    /// A press that landed on the roll's grid.
     fn press_roll(&mut self, button: MouseButton, x: f32, y: f32) {
         let Some(doc) = &self.options.document else {
             return;
@@ -633,10 +959,169 @@ impl WindowApp {
             doc.notes(),
             beats_per_bar,
         );
+        let drew = edits
+            .iter()
+            .any(|edit| matches!(edit, crate::canvas::RollEdit::Add { .. }));
+        let key = y_to_key(&self.roll.view, self.roll_layout.grid, y);
         self.apply_roll_edits(edits);
+        // What you draw, you hear — even stopped. The note is auditioned on
+        // the live path rather than by starting the transport, which is the
+        // difference between hearing what you just wrote and playing the song.
+        if drew {
+            self.start_audition(key);
+        }
         // A press always changes the selection or the gesture, both of which
         // are visible.
         self.tree.invalidate(PANEL);
+    }
+
+    fn press_velocity(&mut self, x: f32, y: f32) {
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let edits = self.roll.press_velocity(
+            x,
+            y,
+            self.roll_layout.velocity,
+            self.roll_layout.grid,
+            doc.notes(),
+        );
+        self.apply_roll_edits(edits);
+        self.tree.invalidate(PANEL);
+    }
+
+    fn press_rack(&mut self, x: f32, y: f32) {
+        match rack_hit(&self.rack, x, y) {
+            RackHit::Row(index) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.select_channel(index);
+                }
+                self.roll.clear_selection();
+            }
+            RackHit::Mute(index) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.toggle_mute(index);
+                }
+            }
+            RackHit::Solo(index) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.toggle_solo(index);
+                }
+            }
+            RackHit::Add => {
+                // Nothing to add yet if no preset is chosen; the browser is
+                // where that happens, so say so rather than doing nothing.
+                self.add_channel_from_browser();
+            }
+            RackHit::Nothing => {}
+        }
+        self.tree.invalidate(RACK);
+    }
+
+    fn press_browser(&mut self, x: f32, y: f32) {
+        match browser_hit(&self.browser, x, y) {
+            BrowserHit::Search => {
+                self.searching = true;
+            }
+            BrowserHit::File(index) => {
+                if let Some(doc) = &mut self.options.document
+                    && let Err(e) = doc.open_file(index)
+                {
+                    self.status = e;
+                }
+                self.preset_scroll = 0;
+            }
+            BrowserHit::Preset(index) => {
+                // A preset click puts it on the **selected** channel, which is
+                // what "try this sound on this part" means. The add button —
+                // and Ctrl+click — make a new one instead.
+                let modifiers = self.modifiers;
+                if let Some(doc) = &mut self.options.document {
+                    let result = if modifiers.control_key() {
+                        doc.add_channel_with(index)
+                    } else {
+                        doc.set_channel_instrument(index)
+                    };
+                    if let Err(e) = result {
+                        self.status = e;
+                    }
+                }
+            }
+            BrowserHit::Nothing => {}
+        }
+        self.tree.invalidate(BROWSER);
+        self.tree.invalidate(RACK);
+    }
+
+    /// The rack's add button: the selected preset onto a new channel.
+    fn add_channel_from_browser(&mut self) {
+        let preset = self
+            .browser
+            .preset_rows
+            .first()
+            .map(|(index, _)| *index)
+            .unwrap_or(0);
+        if self.presets.is_empty() {
+            self.status =
+                "pick a soundfont below first — then its preset goes on a new channel".to_string();
+            return;
+        }
+        if let Some(doc) = &mut self.options.document
+            && let Err(e) = doc.add_channel_with(preset)
+        {
+            self.status = e;
+        }
+    }
+
+    /// A toolbar button.
+    fn activate(&mut self, control: RollControl) {
+        match control {
+            RollControl::Tool(tool) => self.set_tool(tool),
+            RollControl::Snap => self.cycle_snap(),
+            RollControl::ZoomInX => self.zoom(1.25, 1.0),
+            RollControl::ZoomOutX => self.zoom(0.8, 1.0),
+            RollControl::ZoomInY => self.zoom(1.0, 1.25),
+            RollControl::ZoomOutY => self.zoom(1.0, 0.8),
+            RollControl::Velocity => {
+                self.roll.velocity_lane = !self.roll.velocity_lane;
+                self.relayout_panels();
+                self.tree.invalidate(PANEL);
+            }
+        }
+    }
+
+    /// Zoom about the middle of the grid — what a button press means, as
+    /// against the wheel, which zooms about the pointer.
+    fn zoom(&mut self, x: f32, y: f32) {
+        let grid = self.roll_layout.grid;
+        if x != 1.0 {
+            zoom_x(&mut self.roll.view, grid, grid.x + grid.width / 2.0, x);
+        }
+        if y != 1.0 {
+            zoom_y(&mut self.roll.view, grid, grid.y + grid.height / 2.0, y);
+        }
+        self.tree.invalidate(PANEL);
+    }
+
+    /// Clicking the roll's ruler moves the playhead there.
+    ///
+    /// The tick is turned into a sample by the **document**, not by arithmetic
+    /// on a BPM: a song with a tempo change has no single BPM to multiply by
+    /// (INVARIANT 5), and only the document holds the map.
+    fn seek_to(&mut self, x: f32) {
+        let tick = x_to_tick(&self.roll.view, self.roll_layout.grid, x);
+        let Some(sample) = self
+            .options
+            .document
+            .as_ref()
+            .map(|doc| doc.sample_of_clip_tick(tick))
+        else {
+            return;
+        };
+        if let Some(host) = &mut self.options.host {
+            host.seek(sample);
+        }
+        self.tick();
     }
 
     fn drag_roll(&mut self) {
@@ -645,10 +1130,25 @@ impl WindowApp {
         };
         let beats_per_bar = doc.beats_per_bar();
         let (x, y) = self.cursor;
-        let edits = self
-            .roll
-            .drag(x, y, self.roll_layout.grid, doc.notes(), beats_per_bar);
+        let edits = if self.roll.is_editing_velocity() {
+            self.roll.drag_velocity(
+                x,
+                y,
+                self.roll_layout.velocity,
+                self.roll_layout.grid,
+                doc.notes(),
+            )
+        } else {
+            self.roll
+                .drag(x, y, self.roll_layout.grid, doc.notes(), beats_per_bar)
+        };
+        let dragging_box = self.roll.marquee().is_some();
         self.apply_roll_edits(edits);
+        if dragging_box {
+            // A marquee changes nothing in the document and everything on
+            // screen, so it has to dirty the panel on its own account.
+            self.tree.invalidate(PANEL);
+        }
     }
 
     /// The one place the roll's wishes become document changes.
@@ -659,36 +1159,110 @@ impl WindowApp {
         if edits.is_empty() {
             return;
         }
+        let mut added = Vec::new();
+        let mut inserted = Vec::new();
         if let Some(doc) = &mut self.options.document {
             for edit in edits {
-                doc.edit(edit);
+                let is_add = matches!(edit, crate::canvas::RollEdit::Add { .. });
+                let ids = doc.edit(edit);
+                if is_add {
+                    added.extend(ids);
+                } else {
+                    inserted.extend(ids);
+                }
             }
+        }
+        // The handshake that makes drawing and sizing one gesture — see this
+        // module's own docs and `canvas::piano_roll`.
+        if let Some(id) = added.first() {
+            self.roll.note_added(*id);
+        }
+        if !inserted.is_empty() {
+            self.roll.notes_inserted(inserted);
         }
         self.tree.invalidate(PANEL);
         self.refresh_title();
     }
 
-    /// Vertical scroll moves through the keys; `Shift` scrolls the song;
-    /// `Ctrl` zooms. The FL habits, and the ones a mouse can express.
+    /// Sounds a key on the live path, releasing whatever was sounding before.
+    fn start_audition(&mut self, key: u8) {
+        let velocity = self.roll.default_velocity;
+        if let Some(previous) = self.auditioning.replace(key)
+            && let Some(doc) = &mut self.options.document
+        {
+            doc.audition_off(previous);
+        }
+        if let Some(doc) = &mut self.options.document {
+            doc.audition_on(key, velocity);
+        }
+    }
+
+    fn stop_audition(&mut self) {
+        if let Some(key) = self.auditioning.take()
+            && let Some(doc) = &mut self.options.document
+        {
+            doc.audition_off(key);
+        }
+    }
+
+    /// The wheel, routed by what it is over.
+    ///
+    /// Over the roll: vertical scroll moves through the keys, `Shift` scrolls
+    /// the song, `Ctrl` zooms time about the pointer and `Ctrl+Shift` (or
+    /// `Alt`) zooms pitch. Over a list: it scrolls that list. The FL habits,
+    /// and the ones a mouse can express.
     fn scroll_roll(&mut self, dx: f32, dy: f32) {
+        let (x, y) = self.cursor;
+
+        if self.layout.rack.frame.contains(x, y) {
+            self.rack_scroll =
+                scrolled(self.rack_scroll, -(dy.round() as i32), self.channels.len());
+            self.relayout_panels();
+            self.tree.invalidate(RACK);
+            return;
+        }
+        if self.layout.browser.frame.contains(x, y) {
+            let over_presets = self.browser.presets.contains(x, y);
+            if over_presets {
+                self.preset_scroll =
+                    scrolled(self.preset_scroll, -(dy.round() as i32), self.presets.len());
+            } else {
+                self.file_scroll =
+                    scrolled(self.file_scroll, -(dy.round() as i32), self.files.len());
+            }
+            self.relayout_panels();
+            self.tree.invalidate(BROWSER);
+            return;
+        }
+
         if self.options.document.is_none() {
             return;
         }
-        let v = &mut self.roll.view;
-        if self.modifiers.control_key() {
-            // Zoom about the left edge. Zooming about the pointer is better and
-            // is a later refinement; this one is at least predictable.
-            v.pixels_per_tick = (v.pixels_per_tick * 1.15_f32.powf(dy)).clamp(0.004, 4.0);
-        } else if self.modifiers.shift_key() || dx != 0.0 {
+        let grid = self.roll_layout.grid;
+        let (ctrl, shift, alt) = (
+            self.modifiers.control_key(),
+            self.modifiers.shift_key(),
+            self.modifiers.alt_key(),
+        );
+
+        if ctrl && shift || alt {
+            zoom_y(&mut self.roll.view, grid, y.max(grid.y), 1.15_f32.powf(dy));
+        } else if ctrl {
+            zoom_x(&mut self.roll.view, grid, x.max(grid.x), 1.15_f32.powf(dy));
+        } else if shift || dx != 0.0 {
             let by = if dx != 0.0 { dx } else { dy };
+            let v = &mut self.roll.view;
             let step = (120.0 / v.pixels_per_tick.max(0.0001)) as fontelle_types::Tick;
             v.scroll_tick = (v.scroll_tick - by as fontelle_types::Tick * step).max(0);
         } else {
+            let v = &mut self.roll.view;
             let rows = (dy * 3.0).round() as i32;
             v.top_key = (i32::from(v.top_key) + rows).clamp(11, 127) as u8;
         }
         self.tree.invalidate(PANEL);
     }
+
+    // ---------------------------------------------------------- keyboard ---
 
     /// The subset of §16.5's keymap the gate needs. Every binding here is
     /// hard-coded, and §16.5 says all of them are remappable — the map is a
@@ -698,6 +1272,34 @@ impl WindowApp {
 
         let ctrl = self.modifiers.control_key();
         let shift = self.modifiers.shift_key();
+
+        // While the search box has the keyboard, it has all of it: a typed "d"
+        // is a letter in a soundfont's name, not the delete tool.
+        if self.searching {
+            match &event.logical_key {
+                Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
+                    self.searching = false;
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    let mut query = self.query.clone();
+                    query.pop();
+                    self.set_query(query);
+                }
+                Key::Character(c) => {
+                    let mut query = self.query.clone();
+                    query.push_str(c);
+                    self.set_query(query);
+                }
+                Key::Named(NamedKey::Space) => {
+                    let mut query = self.query.clone();
+                    query.push(' ');
+                    self.set_query(query);
+                }
+                _ => {}
+            }
+            self.tree.invalidate(BROWSER);
+            return;
+        }
 
         match &event.logical_key {
             Key::Named(NamedKey::Space) => {
@@ -718,6 +1320,10 @@ impl WindowApp {
                     doc.end_gesture();
                 }
             }
+            Key::Named(NamedKey::Escape) => {
+                self.roll.clear_selection();
+                self.tree.invalidate(PANEL);
+            }
             Key::Character(c) => {
                 let c = c.to_lowercase();
                 match c.as_str() {
@@ -731,17 +1337,89 @@ impl WindowApp {
                         }
                     }
                     "s" if ctrl => self.save(),
+                    "c" if ctrl => self.copy(),
+                    "x" if ctrl => self.cut(),
+                    "v" if ctrl => self.paste(),
+                    "b" if ctrl => self.duplicate(),
+                    "d" if ctrl => self.duplicate(),
+                    "f" if ctrl => {
+                        self.searching = true;
+                        self.tree.invalidate(BROWSER);
+                    }
                     // Tools, from the FL keymap.
-                    "p" if !ctrl => self.set_tool(Tool::Draw),
-                    "e" if !ctrl => self.set_tool(Tool::Select),
-                    "d" if !ctrl => self.set_tool(Tool::Delete),
-                    // Snap, cycled rather than given four bindings nobody
-                    // would remember.
-                    "b" if !ctrl => self.cycle_snap(),
+                    "p" => self.set_tool(Tool::Draw),
+                    "b" => self.set_tool(Tool::Paint),
+                    "e" => self.set_tool(Tool::Select),
+                    "d" => self.set_tool(Tool::Delete),
+                    // Snap, cycled rather than given six bindings nobody would
+                    // remember.
+                    "s" => self.cycle_snap(),
+                    "+" | "=" => self.zoom(1.25, 1.0),
+                    "-" | "_" => self.zoom(0.8, 1.0),
                     _ => {}
                 }
             }
             _ => {}
+        }
+    }
+
+    fn set_query(&mut self, query: String) {
+        if let Some(doc) = &mut self.options.document {
+            doc.set_query(&query);
+        }
+        self.query = query;
+        self.file_scroll = 0;
+        self.preset_scroll = 0;
+    }
+
+    fn copy(&mut self) {
+        if let Some(doc) = &self.options.document {
+            let n = self.roll.copy(doc.notes());
+            if n > 0 {
+                self.status = format!("{n} note(s) copied");
+            }
+        }
+    }
+
+    fn cut(&mut self) {
+        let edits = match &self.options.document {
+            Some(doc) => self.roll.cut(doc.notes()),
+            None => Vec::new(),
+        };
+        self.apply_roll_edits(edits);
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+        }
+    }
+
+    fn paste(&mut self) {
+        // At the playhead when it is over this clip, otherwise where the
+        // pointer is — which is what people reach for when the song is
+        // stopped somewhere else.
+        let at = self
+            .options
+            .document
+            .as_ref()
+            .and_then(|doc| doc.playhead_tick(self.view.position_sample))
+            .unwrap_or_else(|| x_to_tick(&self.roll.view, self.roll_layout.grid, self.cursor.0));
+        let edits = self.roll.paste(at);
+        self.apply_roll_edits(edits);
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+        }
+    }
+
+    fn duplicate(&mut self) {
+        let edits = match &self.options.document {
+            Some(doc) => {
+                let beats = doc.beats_per_bar();
+                self.roll.duplicate(doc.notes(), beats)
+            }
+            None => Vec::new(),
+        };
+        self.apply_roll_edits(edits);
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
         }
     }
 
@@ -751,13 +1429,7 @@ impl WindowApp {
     }
 
     fn cycle_snap(&mut self) {
-        self.roll.view.snap = match self.roll.view.snap {
-            SnapDivision::Bar => SnapDivision::Beat,
-            SnapDivision::Beat => SnapDivision::Step,
-            SnapDivision::Step => SnapDivision::Triplet,
-            SnapDivision::Triplet => SnapDivision::None,
-            _ => SnapDivision::Bar,
-        };
+        self.roll.view.snap = self.roll.view.snap.next();
         self.tree.invalidate(PANEL);
     }
 
@@ -784,12 +1456,16 @@ impl WindowApp {
             return;
         };
         match doc.save() {
-            // Printed rather than shown: a message area is item 10's, and a
-            // save that failed silently is the one outcome that must not
-            // happen.
-            Ok(()) => println!("Fontelle: saved"),
-            Err(e) => eprintln!("Fontelle: could not save — {e}"),
+            Ok(()) => {
+                println!("Fontelle: saved");
+                self.status = "saved".to_string();
+            }
+            Err(e) => {
+                eprintln!("Fontelle: could not save — {e}");
+                self.status = format!("could not save — {e}");
+            }
         }
+        self.tree.invalidate(BROWSER);
         self.refresh_title();
     }
 
