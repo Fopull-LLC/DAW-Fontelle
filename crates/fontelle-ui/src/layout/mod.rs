@@ -169,16 +169,69 @@ pub struct WindowLayout {
     pub rack: PanelLayout,
     /// The soundfont bank (TDD §17.5).
     pub browser: PanelLayout,
-    /// The piano roll.
+    /// The arrangement: clips as blocks on lanes, across the top of the editor
+    /// column. Empty when it is hidden, and then the editor has the room.
+    pub timeline: PanelLayout,
+    /// The seam between the arrangement and the editor — the thing you drag to
+    /// decide which of them gets the room. Empty when the arrangement is
+    /// hidden; there is no seam.
+    pub divider: Rect,
+    /// The seam down the right of the sidebar: drag it to decide how much of
+    /// the window the rack and browser get. Empty when the window is too
+    /// narrow to have a sidebar at all — a seam with nothing on one side of it
+    /// is a strip that eats clicks.
+    pub sidebar_seam: Rect,
+    /// And the seam across the sidebar, between the rack and the browser.
+    pub sidebar_split: Rect,
+    /// The editor: the piano roll, or the instrument the rack has open.
     pub panel: PanelLayout,
 }
 
-/// How much of the sidebar's height the channel rack gets.
+/// How tall the arrangement is until somebody drags it.
+pub const DEFAULT_TIMELINE_HEIGHT: f32 = 200.0;
+
+/// The shortest the arrangement may be dragged before it is simply hidden.
+pub const MIN_TIMELINE_HEIGHT: f32 = 80.0;
+
+/// The editor is what the window is for; the arrangement may not squeeze it
+/// past this.
+pub const MIN_EDITOR_HEIGHT: f32 = 220.0;
+
+/// How tall the drag target on the seam is.
+const DIVIDER: f32 = 6.0;
+
+/// The arrangement height a drag of the divider to `y` is asking for.
+///
+/// Its own function, and pure, for the reason
+/// [`crate::canvas::lane_height_at`] is: "the arrangement cannot swallow the
+/// editor and cannot be dragged negative" is exactly the rule that gets written
+/// once inside an event handler and then not held.
+pub fn timeline_height_at(layout: &WindowLayout, y: f32) -> f32 {
+    let column = layout
+        .timeline
+        .frame
+        .union(&layout.divider)
+        .union(&layout.panel.frame);
+    if column.is_empty() {
+        return 0.0;
+    }
+    let ceiling = (column.height - MIN_EDITOR_HEIGHT - DIVIDER).max(0.0);
+    let wanted = (y - column.y).max(0.0);
+    // Below the minimum it snaps shut rather than becoming a sliver that shows
+    // nothing and cannot be read.
+    if wanted < MIN_TIMELINE_HEIGHT / 2.0 {
+        return 0.0;
+    }
+    wanted.clamp(MIN_TIMELINE_HEIGHT.min(ceiling), ceiling)
+}
+
+/// How much of the sidebar's height the channel rack gets **until somebody
+/// drags the seam**.
 ///
 /// The rack is a list of names; the browser is a search box over two lists, and
 /// wants the room. Below this the browser stops being usable before the rack
-/// does, which is why the split is not even.
-const RACK_SHARE: f32 = 0.42;
+/// does, which is why the split is not even — and why it is only a default.
+pub const RACK_SHARE: f32 = 0.42;
 
 /// The narrowest the sidebar is allowed to squeeze the roll to before it gives
 /// up its own width instead.
@@ -186,10 +239,137 @@ const RACK_SHARE: f32 = 0.42;
 /// The roll is what the window is *for*. A sidebar that keeps its width on a
 /// small screen leaves a piano roll two bars wide, which is worse for everyone
 /// than a browser that has to be scrolled sideways.
-const MIN_ROLL_WIDTH: f32 = 320.0;
+pub const MIN_ROLL_WIDTH: f32 = 320.0;
 
-/// Lays out a window of `width` x `height` logical pixels.
-pub fn window_layout(width: f32, height: f32, metrics: &Metrics) -> WindowLayout {
+/// The narrowest the sidebar may be dragged.
+///
+/// A soundfont's name is the widest thing in it, and a column too narrow to
+/// read one in is not a column — it is a strip you have to widen again before
+/// you can use it.
+pub const MIN_SIDEBAR_WIDTH: f32 = 160.0;
+
+/// The shortest the channel rack may be dragged: its header and a row.
+pub const MIN_RACK_HEIGHT: f32 = 64.0;
+
+/// And the browser, which needs its header, its search box and something to
+/// search through before it is a browser rather than a caption.
+pub const MIN_BROWSER_HEIGHT: f32 = 120.0;
+
+/// How big the window's panels are, as far as the user has said.
+///
+/// Reported from using the window: *"I want to be able to make the soundfonts
+/// bigger than the channels, but the program doesn't let me right now."* It
+/// did not, because all three of these were constants. They are still the
+/// defaults — `None` means "whatever the theme and this file say" — and none of
+/// them is a decision this program gets to keep making for somebody who is
+/// looking at it all day.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Docks {
+    /// How tall the arrangement is. **Zero hides it.**
+    pub timeline_height: f32,
+    /// How wide the sidebar is. `None` until it is dragged, and then the
+    /// theme's `sidebar_width`.
+    pub sidebar_width: Option<f32>,
+    /// How much of the sidebar the rack gets, 0..=1. `None` until it is
+    /// dragged, and then [`RACK_SHARE`].
+    pub rack_share: Option<f32>,
+}
+
+impl Default for Docks {
+    fn default() -> Self {
+        Self {
+            timeline_height: DEFAULT_TIMELINE_HEIGHT,
+            sidebar_width: None,
+            rack_share: None,
+        }
+    }
+}
+
+/// Lays out a window of `width` x `height` logical pixels, giving the
+/// arrangement `timeline_height` of the editor column. **Zero hides it.**
+///
+/// The sidebar keeps the theme's width and the rack keeps [`RACK_SHARE`]; see
+/// [`window_layout_with`] for the form a window that has been dragged about
+/// uses.
+pub fn window_layout(
+    width: f32,
+    height: f32,
+    metrics: &Metrics,
+    timeline_height: f32,
+) -> WindowLayout {
+    window_layout_with(
+        width,
+        height,
+        metrics,
+        &Docks {
+            timeline_height,
+            ..Docks::default()
+        },
+    )
+}
+
+/// The width a drag of the sidebar's seam to `x` is asking for, clamped to
+/// what a sidebar may be.
+///
+/// Its own function, and pure, for the reason [`timeline_height_at`] is: the
+/// rule that the sidebar can neither be dragged shut nor eat the piano roll is
+/// exactly the kind that gets written once inside an event handler and then not
+/// held.
+pub fn sidebar_width_at(layout: &WindowLayout, x: f32) -> f32 {
+    let column = layout.rack.frame.union(&layout.browser.frame);
+    let editor = layout
+        .timeline
+        .frame
+        .union(&layout.divider)
+        .union(&layout.panel.frame);
+    if column.is_empty() {
+        return MIN_SIDEBAR_WIDTH;
+    }
+    // Everything the sidebar, the seam and the editor share, which is what
+    // decides how much of it the sidebar may have.
+    let across = editor.right() - column.x;
+    let seam = layout.sidebar_seam.width;
+    let ceiling = (across - MIN_ROLL_WIDTH - seam).max(0.0);
+    (x - column.x).clamp(MIN_SIDEBAR_WIDTH.min(ceiling), ceiling)
+}
+
+/// The share of the sidebar a drag of its split to `y` gives the rack, 0..=1.
+///
+/// A share rather than a height so that resizing the window keeps the
+/// proportion somebody chose instead of quietly giving one of them everything.
+pub fn rack_share_at(layout: &WindowLayout, y: f32) -> f32 {
+    let column = layout
+        .rack
+        .frame
+        .union(&layout.sidebar_split)
+        .union(&layout.browser.frame);
+    let available = column.height - layout.sidebar_split.height;
+    if available <= 0.0 {
+        return RACK_SHARE;
+    }
+    clamped_rack_height(y - column.y, available) / available
+}
+
+/// The rack height `wanted` becomes once neither panel is allowed to disappear.
+///
+/// Shared by the layout and by [`rack_share_at`] so that a drag round-trips:
+/// the share the seam reports is the share the layout then produces, which is
+/// what stops the seam drifting away from the pointer at the ends of its
+/// travel.
+fn clamped_rack_height(wanted: f32, available: f32) -> f32 {
+    let ceiling = (available - MIN_BROWSER_HEIGHT).max(0.0);
+    let floor = MIN_RACK_HEIGHT.min(ceiling);
+    wanted.clamp(floor, ceiling.max(floor))
+}
+
+/// [`window_layout`], with every panel size the user has chosen.
+pub fn window_layout_with(
+    width: f32,
+    height: f32,
+    metrics: &Metrics,
+    docks: &Docks,
+) -> WindowLayout {
+    let timeline_height = docks.timeline_height;
     let window = Rect::new(0.0, 0.0, width, height).clamped();
     let content = window.inset(metrics.panel_margin);
 
@@ -202,10 +382,14 @@ pub fn window_layout(width: f32, height: f32, metrics: &Metrics) -> WindowLayout
     // The sidebar yields before the roll does, and disappears entirely rather
     // than becoming a column too narrow to read.
     let room_for_sidebar = (rest.width - MIN_ROLL_WIDTH - metrics.panel_margin).max(0.0);
-    let sidebar_width = if rest.width <= metrics.panel_margin {
+    let wanted = docks.sidebar_width.unwrap_or(metrics.sidebar_width);
+    let sidebar_width = if rest.width <= metrics.panel_margin || room_for_sidebar <= 0.0 {
         0.0
     } else {
-        metrics.sidebar_width.min(room_for_sidebar).max(0.0)
+        wanted
+            .max(MIN_SIDEBAR_WIDTH.min(room_for_sidebar))
+            .min(room_for_sidebar)
+            .max(0.0)
     };
 
     let sidebar = Rect::new(rest.x, rest.y, sidebar_width, rest.height).clamped();
@@ -214,18 +398,60 @@ pub fn window_layout(width: f32, height: f32, metrics: &Metrics) -> WindowLayout
     } else {
         sidebar.right() + metrics.panel_margin
     };
-    let roll = Rect::new(roll_x, rest.y, rest.right() - roll_x, rest.height).clamped();
+    // The gap the margin already left, named so it can be dragged. Nothing
+    // moves to make room for it, which is why it can be added to a layout
+    // people are already used to without anything shifting under them.
+    let sidebar_seam = if sidebar.is_empty() {
+        Rect::ZERO
+    } else {
+        Rect::new(
+            sidebar.right(),
+            sidebar.y,
+            metrics.panel_margin,
+            sidebar.height,
+        )
+        .clamped()
+    };
+    let column = Rect::new(roll_x, rest.y, rest.right() - roll_x, rest.height).clamped();
 
-    // The rack over the browser, with the same margin between them.
-    let rack_height = ((sidebar.height - metrics.panel_margin).max(0.0) * RACK_SHARE).max(0.0);
+    // The arrangement comes off the top of the editor column, and never at the
+    // cost of the editor having somewhere to be.
+    let wanted = if timeline_height > 0.0 {
+        timeline_height
+            .max(MIN_TIMELINE_HEIGHT)
+            .min((column.height - MIN_EDITOR_HEIGHT - DIVIDER).max(0.0))
+    } else {
+        0.0
+    };
+    let (timeline_frame, under) = column.split_top(wanted);
+    let (divider, roll) = if timeline_frame.is_empty() {
+        (Rect::ZERO, under)
+    } else {
+        under.split_top(DIVIDER.min(under.height.max(0.0)))
+    };
+
+    // The rack over the browser, with the same margin between them — and that
+    // margin is the second seam.
+    let available = (sidebar.height - metrics.panel_margin).max(0.0);
+    let share = docks.rack_share.unwrap_or(RACK_SHARE).clamp(0.0, 1.0);
+    let rack_height = clamped_rack_height(available * share, available);
     let (rack_frame, under) = sidebar.split_top(rack_height);
-    let (_gap, browser_frame) = under.split_top(metrics.panel_margin);
+    let (gap, browser_frame) = under.split_top(metrics.panel_margin);
+    let sidebar_split = if sidebar.is_empty() || browser_frame.is_empty() {
+        Rect::ZERO
+    } else {
+        gap
+    };
 
     WindowLayout {
         window,
         transport,
         rack: panel(rack_frame, metrics),
         browser: panel(browser_frame, metrics),
+        timeline: panel(timeline_frame, metrics),
+        divider,
+        sidebar_seam,
+        sidebar_split,
         panel: panel(roll, metrics),
     }
 }
@@ -238,4 +464,115 @@ fn panel(frame: Rect, metrics: &Metrics) -> PanelLayout {
         header,
         body: below.inset(metrics.panel_padding),
     }
+}
+
+/// Which of the editor column's two views is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorTab {
+    /// The piano roll: the notes of one clip.
+    Roll,
+    /// The instrument: the parameters of one channel's soundfont player
+    /// (TDD §7.2).
+    Instrument,
+    /// The mixer: a fader, a pan and two switches per mixer track (TDD §13).
+    Mixer,
+    /// An automation clip's points (TDD §12).
+    Automation,
+    /// One insert's parameters — the EQ's curve (TDD §13.4).
+    ///
+    /// Reached by clicking a slot in a strip's rack rather than by picking the
+    /// tab, because "which effect" is a question the tab cannot ask. It is
+    /// still a tab so that the roll and the mixer stay one click away while an
+    /// EQ is open, which is what setting one against the other needs.
+    Effect,
+}
+
+/// Where the editor column's tabs are, in its panel header.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EditorTabs {
+    pub roll: Rect,
+    pub instrument: Rect,
+    pub mixer: Rect,
+    /// Only laid out while an insert is open — a tab for a thing that is not
+    /// there is a tab that does nothing when clicked.
+    pub effect: Option<Rect>,
+    /// The same, for an open automation clip.
+    pub automation: Option<Rect>,
+}
+
+/// How wide each tab is. Fixed rather than measured, so the header does not
+/// jump about as the selected channel's name changes length.
+const TAB_WIDTH: f32 = 96.0;
+const TAB_GAP: f32 = 2.0;
+
+/// Lays the two tabs out at the **right-hand end** of the header.
+///
+/// The left-hand end already carries the panel's title, which is the name of
+/// the project; putting the tabs against it would read as one long caption.
+pub fn editor_tabs(header: Rect, metrics: &Metrics) -> EditorTabs {
+    editor_tabs_with(header, metrics, false)
+}
+
+/// The same, with room for the effect tab when one is open.
+pub fn editor_tabs_with(header: Rect, metrics: &Metrics, effect: bool) -> EditorTabs {
+    editor_tabs_full(header, metrics, effect, false)
+}
+
+/// The full set, with room for whichever of the two transient tabs are open.
+pub fn editor_tabs_full(
+    header: Rect,
+    metrics: &Metrics,
+    effect: bool,
+    automation: bool,
+) -> EditorTabs {
+    let inset = (header.height * 0.15).min(4.0);
+    let height = (header.height - inset * 2.0).max(0.0);
+    let y = header.y + inset;
+    let right = header.right() - metrics.panel_padding.min(header.width);
+
+    // Laid out from the right, in the order they are *used*: the roll first
+    // because it is where the notes are, then the instrument that plays them,
+    // then the mixer that balances the lot.
+    let mut x = right;
+    let mut take = || {
+        x -= TAB_WIDTH;
+        let tab = Rect::new(x, y, TAB_WIDTH, height).intersection(&header);
+        x -= TAB_GAP;
+        tab
+    };
+    // Rightmost is the newest and the most transient: an EQ tab appears when
+    // one is opened and goes when it is closed, and the three that are always
+    // there must not shuffle underneath the pointer when it does.
+    let automation = automation.then(&mut take);
+    let effect = effect.then(&mut take);
+    let mixer = take();
+    let instrument = take();
+    let roll = take();
+    EditorTabs {
+        roll,
+        instrument,
+        mixer,
+        effect,
+        automation,
+    }
+}
+
+/// Which tab is under the pointer.
+pub fn editor_tab_at(tabs: &EditorTabs, x: f32, y: f32) -> Option<EditorTab> {
+    if tabs.roll.contains(x, y) {
+        return Some(EditorTab::Roll);
+    }
+    if tabs.instrument.contains(x, y) {
+        return Some(EditorTab::Instrument);
+    }
+    if tabs.mixer.contains(x, y) {
+        return Some(EditorTab::Mixer);
+    }
+    if tabs.effect.is_some_and(|tab| tab.contains(x, y)) {
+        return Some(EditorTab::Effect);
+    }
+    if tabs.automation.is_some_and(|tab| tab.contains(x, y)) {
+        return Some(EditorTab::Automation);
+    }
+    None
 }

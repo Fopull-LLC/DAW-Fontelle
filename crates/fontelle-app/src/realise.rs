@@ -16,7 +16,8 @@ use std::collections::{HashMap, HashSet};
 
 use fontelle_core::{Patch, PatchFormatError, PrepareContext, Sampler, UnresolvedSample};
 use fontelle_engine::{
-    BufferPool, CompiledGraph, MasterMeter, MixerTrackNode, SamplerNode, ScheduledNode,
+    BufferPool, CompiledGraph, MasterMeter, Metronome, MetronomeNode, MixerTrackNode, SamplerNode,
+    ScheduledNode, TrackControls,
 };
 use fontelle_model::{Command, CommandError, MixerTrack, Project};
 use fontelle_types::{ChannelId, MixerTrackId, NodeId, PatchData, SampleRef};
@@ -54,6 +55,44 @@ pub struct Realised {
     /// the graph goes to the audio callback, because after that nothing owns
     /// the node.
     pub master: std::sync::Arc<MasterMeter>,
+    /// The live end of every track's fader, and its meter — see
+    /// [`fontelle_engine::TrackControls`]. Taken here for the same reason
+    /// `master` is: once the graph is on the audio thread nothing else owns
+    /// the nodes.
+    ///
+    /// This is what makes a mixer usable. Without it the only way to change a
+    /// level while the project is playing is to build a whole new graph, which
+    /// deserialises every channel's patch — fine for a click, hopeless for a
+    /// drag.
+    pub track_controls: HashMap<MixerTrackId, std::sync::Arc<TrackControls>>,
+    /// The live end of every insert on every track, addressed the way the
+    /// mixer panel addresses one: the strip, and the slot in its chain.
+    ///
+    /// Taken here for the reason `track_controls` is, and it exists for the
+    /// same reason too — an EQ knob is dragged, and rebuilding the graph to
+    /// move one number deserialises every channel's patch. A rebuild mints
+    /// fresh ones from the document rather than carrying the old ones over:
+    /// unlike a fader's `Arc`, a triple buffer's two ends cannot be re-paired,
+    /// and the document is the source of truth either way (INVARIANT 9), so
+    /// what a fresh channel starts at is what the last one was told.
+    pub effect_controls: HashMap<(MixerTrackId, usize), fontelle_engine::EffectControls>,
+    /// Every automatable parameter this graph has, by its stable address
+    /// (INVARIANT 7), and the node that owns it.
+    ///
+    /// This is the map that makes automation possible, and it lives here for
+    /// the reason `channel_nodes` does: the document has addresses and the
+    /// graph has node ids, and this is the one step that sees both (§4.1). The
+    /// sequencer takes it and resolves every automation clip's target once,
+    /// off the audio thread — matching a string per event per block on the RT
+    /// side is work it should never be doing.
+    pub param_nodes: HashMap<fontelle_types::ParamAddress, NodeId>,
+    /// The metronome's switch, for whoever is driving the transport.
+    ///
+    /// Taken here for the same reason `master` is: once the graph is on the
+    /// audio thread nothing else owns the nodes. It is **not** document data —
+    /// a project sent to somebody else must not arrive with a woodblock on
+    /// every beat — so it is a session setting the window toggles.
+    pub metronome: std::sync::Arc<Metronome>,
     /// Samples a channel's patch pointed at that this library does not have
     /// (TDD §17.4). Those layers are silent and the project still plays; the
     /// references are here for a relink dialog to work on.
@@ -224,6 +263,34 @@ pub fn realise(
     library: &SampleLibrary,
     options: RealiseOptions,
 ) -> Result<Realised, RealiseError> {
+    realise_reusing(project, library, options, &HashMap::new())
+}
+
+/// As [`realise`], but keeping the live control surfaces the graph being
+/// replaced was already using, for every track that still exists.
+///
+/// What a running session calls. See [`fader`] for why the reuse matters.
+pub fn realise_reusing(
+    project: &Project,
+    library: &SampleLibrary,
+    options: RealiseOptions,
+    existing: &HashMap<MixerTrackId, std::sync::Arc<TrackControls>>,
+) -> Result<Realised, RealiseError> {
+    realise_with(project, library, options, existing, None)
+}
+
+/// As [`realise_reusing`], keeping the metronome the previous graph was using.
+///
+/// The switch has to survive a rebuild — choosing a soundfont with the click
+/// on must not turn it off — and so does the node's own beat, which the model
+/// side wrote into it.
+pub fn realise_with(
+    project: &Project,
+    library: &SampleLibrary,
+    options: RealiseOptions,
+    existing: &HashMap<MixerTrackId, std::sync::Arc<TrackControls>>,
+    metronome: Option<std::sync::Arc<Metronome>>,
+) -> Result<Realised, RealiseError> {
     if project.mixer.has_cycle() {
         return Err(RealiseError::MixerCycle);
     }
@@ -279,9 +346,12 @@ pub fn realise(
         // control — see `Channel::pan`.
         sampler.set_pan(channel.pan);
 
-        // A channel pointing at a mixer track that is gone lands on the
-        // master: a part you can hear and fix beats one that vanished.
-        let bus = bus_of.get(&channel.mixer_track).copied().unwrap_or([0, 1]);
+        // `None` is the master, and so is a route at a track that has been
+        // deleted since: a part you can hear and fix beats one that vanished.
+        let bus = channel
+            .mixer_track
+            .and_then(|id| bus_of.get(&id).copied())
+            .unwrap_or([0, 1]);
         schedule.push(ScheduledNode {
             id: channel_nodes[&channel_id],
             node: Box::new(SamplerNode::new(sampler, library.store())),
@@ -300,12 +370,38 @@ pub fn realise(
         .collect();
     tracks.sort_by_key(|id| std::cmp::Reverse(depth_to_master(project, *id, master)));
 
+    let mut track_controls: HashMap<MixerTrackId, std::sync::Arc<TrackControls>> = HashMap::new();
+    let mut effect_controls: HashMap<(MixerTrackId, usize), fontelle_engine::EffectControls> =
+        HashMap::new();
+    let mut param_nodes: HashMap<fontelle_types::ParamAddress, NodeId> = HashMap::new();
+    // Past every channel's id, so the two sets cannot collide.
+    let mut next_id = project.channels.len() as u64 + 1;
     for id in tracks {
         let track = &project.mixer.tracks[id];
         let bus = bus_of[&id].to_vec();
+        schedule_inserts(
+            &mut schedule,
+            &mut effect_controls,
+            &mut param_nodes,
+            &mut next_id,
+            id,
+            track,
+            &bus,
+        );
+        let (node, controls) = fader(track, is_audible(id), existing.get(&id));
+        track_controls.insert(id, controls);
+        let fader_id = mint(&mut next_id);
+        param_nodes.insert(
+            fontelle_types::ParamTarget::TrackGain(id).address(),
+            fader_id,
+        );
+        param_nodes.insert(
+            fontelle_types::ParamTarget::TrackPan(id).address(),
+            fader_id,
+        );
         schedule.push(ScheduledNode {
-            id: NodeId::default(),
-            node: Box::new(fader(track, is_audible(id))),
+            id: fader_id,
+            node: Box::new(node),
             // Same buffers in and out: a fader processes in place.
             input_buffers: bus.clone(),
             output_buffers: bus.clone(),
@@ -319,12 +415,48 @@ pub fn realise(
         });
     }
 
+    // Master's own chain, before its fader, exactly as every other track's.
+    schedule_inserts(
+        &mut schedule,
+        &mut effect_controls,
+        &mut param_nodes,
+        &mut next_id,
+        master,
+        &project.mixer.tracks[master],
+        &[0, 1],
+    );
+    let (master_fader, master_controls) = fader(
+        &project.mixer.tracks[master],
+        is_audible(master),
+        existing.get(&master),
+    );
+    track_controls.insert(master, master_controls);
+    let master_fader_id = mint(&mut next_id);
+    param_nodes.insert(
+        fontelle_types::ParamTarget::TrackGain(master).address(),
+        master_fader_id,
+    );
+    param_nodes.insert(
+        fontelle_types::ParamTarget::TrackPan(master).address(),
+        master_fader_id,
+    );
     schedule.push(ScheduledNode {
-        id: NodeId::default(),
-        node: Box::new(fader(&project.mixer.tracks[master], is_audible(master))),
+        id: master_fader_id,
+        node: Box::new(master_fader),
         input_buffers: vec![0, 1],
         output_buffers: vec![0, 1],
     });
+    // The click, into the master pair — after the master fader so the fader
+    // does not move it, and before the limiter so it cannot clip. It is not
+    // music: it is not saved, it does not bounce, and it belongs to no channel.
+    let metronome = metronome.unwrap_or_else(|| std::sync::Arc::new(Metronome::new()));
+    schedule.push(ScheduledNode {
+        id: NodeId::default(),
+        node: Box::new(MetronomeNode::new(std::sync::Arc::clone(&metronome))),
+        input_buffers: vec![0, 1],
+        output_buffers: vec![0, 1],
+    });
+
     // Last, after every track has arrived: a brickwall limiter and the master
     // meters. This is what lets the master fader sit at unity — the peaks an
     // arrangement reaches are a property of the material, and picking a gain
@@ -349,6 +481,10 @@ pub fn realise(
         graph,
         channel_nodes,
         master: meter,
+        track_controls,
+        effect_controls,
+        param_nodes,
+        metronome,
         unresolved,
     })
 }
@@ -360,18 +496,139 @@ fn load_patch(
     Patch::from_data(data, |file: &SampleRef| library.resolve(file))
 }
 
-/// The engine node for one document mixer track.
+/// Schedules one track's insert chain onto its own bus, in order, and hands
+/// back the live end of each.
 ///
-/// **Inserts and sends are not compiled** — effects and sends are M4, and the
-/// gate this is being built for balances a piece with gain, pan and mute. A
+/// **Before the fader**, which is where every mixer's inserts are: the fader is
+/// the last thing on a strip, so pulling it down turns the effects' output
+/// down rather than starving them of input.
+///
+/// **In place, on the same pair of buffers** — which is what makes a chain a
+/// chain. Three inserts are three nodes scheduled in a row on one bus, and the
+/// order they were scheduled in is the order the sound goes through them; the
+/// scheduler does not have to find a spare buffer per slot.
+fn schedule_inserts(
+    schedule: &mut Vec<ScheduledNode>,
+    controls: &mut HashMap<(MixerTrackId, usize), fontelle_engine::EffectControls>,
+    param_nodes: &mut HashMap<fontelle_types::ParamAddress, NodeId>,
+    next_id: &mut u64,
+    id: MixerTrackId,
+    track: &fontelle_model::MixerTrack,
+    bus: &[usize],
+) {
+    for (index, slot) in track.inserts.iter().enumerate() {
+        let (mut live, source) = fontelle_engine::effect_channel(slot.config);
+        live.set_bypassed(slot.bypassed);
+        let mut node = fontelle_engine::EffectNode::new(slot.config).with_controls(source);
+        node.set_bypassed(slot.bypassed);
+        controls.insert((id, index), live);
+
+        // A real id, not the default: an automation event has to be addressed
+        // to *this* insert, and a node with the default id would receive every
+        // other defaulted node's traffic.
+        let node_id = mint(next_id);
+        for spec in slot.config.specs() {
+            param_nodes.insert(
+                fontelle_types::ParamTarget::Insert {
+                    track: id,
+                    slot: index,
+                    param: spec.id.to_string(),
+                }
+                .address(),
+                node_id,
+            );
+        }
+        schedule.push(ScheduledNode {
+            id: node_id,
+            node: Box::new(node),
+            input_buffers: bus.to_vec(),
+            output_buffers: bus.to_vec(),
+        });
+    }
+}
+
+/// The next free engine node id.
+///
+/// Counted on from where the channels stopped, so a channel's node and an
+/// effect's can never collide — an event addressed to one would otherwise
+/// reach the other.
+fn mint(next: &mut u64) -> NodeId {
+    *next += 1;
+    NodeId::from(slotmap::KeyData::from_ffi(*next))
+}
+
+/// The engine node for one document mixer track, and the live end of its
+/// fader.
+///
+/// The node's own `gain_db`/`pan`/`mute` fields are seeded from the document as
+/// well as the controls, so the two agree from the first block even though only
+/// the controls are read while the graph is running.
+///
+/// **Sends are not compiled** — they are M4, and the gate this was built for
+/// balances a piece with gain, pan and mute. Inserts *are*, as of §13.4's
+/// first pass: see [`schedule_inserts`]. A
 /// send is a `BusSumNode` with a level and a pan, so the shape is already here
 /// when it is wanted.
-fn fader(track: &MixerTrack, audible: bool) -> MixerTrackNode {
-    MixerTrackNode {
+fn fader(
+    track: &MixerTrack,
+    audible: bool,
+    existing: Option<&std::sync::Arc<TrackControls>>,
+) -> (MixerTrackNode, std::sync::Arc<TrackControls>) {
+    let mute = track.mute || !audible;
+    // Reused where one already exists, so a track's control surface lives as
+    // long as the *track* rather than as long as a graph. Two things depend on
+    // that: a meter keeps its reading across an instrument change instead of
+    // dropping to silence, and nothing holding one of these can end up writing
+    // to a graph that has been thrown away — which is a fader that moves the
+    // document and is not heard.
+    let controls = match existing {
+        Some(controls) => {
+            controls.set_gain_db(track.gain_db);
+            controls.set_pan(track.pan);
+            controls.set_mute(mute);
+            std::sync::Arc::clone(controls)
+        }
+        None => std::sync::Arc::new(TrackControls::new(track.gain_db, track.pan, mute)),
+    };
+    let node = MixerTrackNode {
+        // Nothing is automated at build time; the first `ParamValue` says
+        // otherwise, and a rebuild mid-song gets one within a block.
+        automated_gain_db: None,
+        automated_pan: None,
         gain_db: track.gain_db,
         pan: track.pan,
         pan_law: track.pan_law,
-        mute: track.mute || !audible,
+        mute,
         phase_invert: track.phase_invert,
+        controls: Some(std::sync::Arc::clone(&controls)),
+    };
+    (node, controls)
+}
+
+/// Writes the document's levels, pans and effective mutes into a set of live
+/// controls a graph is already playing through.
+///
+/// The other half of [`fader`], and what a fader drag calls instead of
+/// rebuilding the graph. The **effective** mute is what goes in — a track's own
+/// switch, or a solo elsewhere silencing it — because audibility under solo is
+/// a property of the whole routing graph and not of any one node.
+///
+/// A track the map does not name is skipped: the graph it belongs to has been
+/// replaced since, and the next rebuild will seed a fresh set anyway.
+pub fn apply_mixer_controls(
+    project: &Project,
+    controls: &HashMap<MixerTrackId, std::sync::Arc<TrackControls>>,
+) {
+    let Some(master) = project.mixer.master else {
+        return;
+    };
+    let audible = soloed_audible(project, master);
+    for (id, track) in project.mixer.tracks.iter() {
+        let Some(live) = controls.get(&id) else {
+            continue;
+        };
+        live.set_gain_db(track.gain_db);
+        live.set_pan(track.pan);
+        live.set_mute(track.mute || audible.as_ref().is_some_and(|set| !set.contains(&id)));
     }
 }

@@ -127,6 +127,18 @@ fn sources_in_use(
 #[derive(Debug, Clone, Copy, Default)]
 struct LayerPlayback {
     active: bool,
+    /// **Which** of `patch.layers` this slot is playing.
+    ///
+    /// The slots used to be indexed *by* patch layer — slot `n` played layer
+    /// `n` — which quietly made `MAX_LAYERS` a limit on how many zones a patch
+    /// could have rather than on how many may sound at once. `zip` stopped at
+    /// sixteen and every zone past that never sounded: on a real 46-zone drum
+    /// kit, 30 keys of silence that looked exactly like keys that should work.
+    ///
+    /// A note triggers only the zones covering its key and velocity — one or
+    /// two, in a kit — so the slots now hold *those*, and a patch may carry as
+    /// many zones as the file does.
+    layer: u16,
     /// Fractional sample position within the layer's `SampleBuffer`.
     position: f64,
 }
@@ -148,6 +160,108 @@ struct PreparedLayer<'a> {
     looping: bool,
     end_offset: f64,
     interpolation: fontelle_dsp::Interpolation,
+}
+
+/// What a note's `release: 127` multiplies the patch's release time by.
+///
+/// Four rather than some larger number because the property has to stay
+/// *drawable*: the roll's lane maps 0..127 across a few dozen pixels, and a
+/// range wide enough to turn a pluck into a pad puts every musically useful
+/// value in the bottom two pixels of it.
+pub const MAX_NOTE_RELEASE: f32 = 4.0;
+
+/// Everything a note-on says beyond "start playing".
+///
+/// One struct rather than seven positional arguments, and the reason is
+/// §16.5: `Note` carries pan, fine pitch, release and two free modulation
+/// values, and every one of them has to reach a voice. Pan arrived first and
+/// the other four followed, each as a field here rather than another argument
+/// threaded through four call sites — which is what this struct was shaped
+/// for.
+///
+/// Built with [`NoteTrigger::new`] plus the `with_`/`in_`/`from_` methods, so
+/// a caller says only what it means and the rest stays at the default a plain
+/// note-on has always had: centred, voice context zero, from the timeline.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NoteTrigger {
+    pub key: u8,
+    pub velocity: u8,
+    /// `-1.0` hard left, `0.0` centre, `1.0` hard right. Adds to the layer's
+    /// pan and the channel's; see [`Voice::render_with_pan`].
+    ///
+    /// A unit interval rather than the document's byte: this is the audio
+    /// side of the seam, and `fontelle_types::pan_unit` is the one crossing.
+    pub pan: f32,
+    /// Cents off this note's own key. Adds to the layer's tuning and to the
+    /// mod matrix's pitch routes, all three being cents.
+    pub fine_pitch: i16,
+    /// `0..=127`, lengthening this one note's release past the patch's.
+    /// `0` is the patch's own — see [`EventPayload::NoteOn`].
+    ///
+    /// [`EventPayload::NoteOn`]: fontelle_types::EventPayload::NoteOn
+    pub release: u8,
+    /// §16.5's two free modulation values, `0..=127`, readable by the patch
+    /// as [`ModSource::NoteModX`] and [`ModSource::NoteModY`].
+    ///
+    /// [`ModSource::NoteModX`]: crate::ModSource::NoteModX
+    /// [`ModSource::NoteModY`]: crate::ModSource::NoteModY
+    pub mod_x: u8,
+    pub mod_y: u8,
+    /// TDD §11.4's per-clip tag, so a note-off finds the voice it belongs to.
+    pub voice_context: u32,
+    pub origin: fontelle_types::VoiceOrigin,
+}
+
+impl NoteTrigger {
+    /// A plain note: centred, voice context zero, from the timeline.
+    pub fn new(key: u8, velocity: u8) -> Self {
+        Self {
+            key,
+            velocity,
+            pan: 0.0,
+            fine_pitch: 0,
+            release: 0,
+            mod_x: 0,
+            mod_y: 0,
+            voice_context: 0,
+            origin: fontelle_types::VoiceOrigin::Timeline,
+        }
+    }
+
+    pub fn with_pan(mut self, pan: f32) -> Self {
+        self.pan = pan;
+        self
+    }
+
+    pub fn with_fine_pitch(mut self, cents: i16) -> Self {
+        self.fine_pitch = cents;
+        self
+    }
+
+    pub fn with_release(mut self, release: u8) -> Self {
+        self.release = release;
+        self
+    }
+
+    pub fn with_mod_x(mut self, mod_x: u8) -> Self {
+        self.mod_x = mod_x;
+        self
+    }
+
+    pub fn with_mod_y(mut self, mod_y: u8) -> Self {
+        self.mod_y = mod_y;
+        self
+    }
+
+    pub fn in_context(mut self, voice_context: u32) -> Self {
+        self.voice_context = voice_context;
+        self
+    }
+
+    pub fn from_origin(mut self, origin: fontelle_types::VoiceOrigin) -> Self {
+        self.origin = origin;
+        self
+    }
 }
 
 /// One playing note. Fixed-topology (INVARIANT 6): Layers → mix → Filter 1 → Filter 2
@@ -180,11 +294,38 @@ pub struct Voice {
     /// Fixed for the life of the note, from `velocity_to_gain`. Folded into
     /// each layer's gain at the top of `render` so it costs nothing per sample.
     velocity_gain: f32,
+    /// §16.5's per-note pan, `-1.0..=1.0`, captured at note-on.
+    ///
+    /// Per *voice* rather than per channel because that is what "per note"
+    /// means: two notes sounding together on one instrument may sit in
+    /// different places. It adds to the layer's own pan and to the channel's
+    /// live one — see [`Voice::render_with_pan`].
+    ///
+    /// **Reset on every trigger**, like the filter memory above it: a voice
+    /// coming back out of the pool carrying the last note's pan puts a centred
+    /// note wherever the previous one was, which is a bug that only appears
+    /// once the pool wraps.
+    note_pan: f32,
     /// Note-on velocity and key as the mod matrix sees them: normalised to
     /// 0..1, captured once so evaluating a route never has to reach back into
     /// the event that started the note.
     velocity_norm: f32,
     key_norm: f32,
+    /// §16.5's fine pitch as semitones, captured at note-on. Added to the
+    /// note's interval alongside the glide, and for the same reason: it moves
+    /// the *sound* and leaves `key` — the note's identity, which a note-off
+    /// names — where it is.
+    note_detune: f32,
+    /// What this note multiplies the patch's release time by, `>= 1.0`.
+    ///
+    /// A multiplier rather than a time so that it means the same thing on a
+    /// plucked patch and a pad: the instrument sets the character and the note
+    /// says "hold it longer than that". `1.0` is `release: 0` — the patch's
+    /// own, and the default every note carries.
+    note_release_scale: f32,
+    /// §16.5's two free modulation values, normalised to 0..1 for the matrix.
+    mod_x_norm: f32,
+    mod_y_norm: f32,
     amp_env: fontelle_dsp::EnvelopeGenerator,
     /// `patch.envelopes[1..]`, as modulation sources. Per voice, because two
     /// notes are at different points in their envelopes.
@@ -197,6 +338,17 @@ pub struct Voice {
     /// Samples since this note started, for `Lfo::delay_s`. One counter for
     /// the voice rather than one per LFO: they all start together.
     age_samples: u64,
+    /// How far the voice's pitch is from [`Voice::key`] right now, in
+    /// semitones, and where it is heading.
+    ///
+    /// **The key itself never moves.** A slide bends the sound and leaves the
+    /// note's identity alone, which is what lets the note-off the score wrote
+    /// for key 60 still end a voice that is currently sounding key 67 — see
+    /// [`Voice::glide_to`].
+    glide_semitones: f32,
+    glide_target: f32,
+    /// Semitones per second. Zero is "already there".
+    glide_rate: f32,
 }
 
 impl Voice {
@@ -210,12 +362,20 @@ impl Voice {
             layers: [LayerPlayback::default(); MAX_LAYERS],
             filters: [[fontelle_dsp::SvfFilter::new(); 2]; 2],
             velocity_gain: 0.0,
+            note_pan: 0.0,
             velocity_norm: 0.0,
             key_norm: 0.0,
+            note_detune: 0.0,
+            note_release_scale: 1.0,
+            mod_x_norm: 0.0,
+            mod_y_norm: 0.0,
             amp_env: fontelle_dsp::EnvelopeGenerator::new(),
             mod_envs: [fontelle_dsp::EnvelopeGenerator::new(); MAX_MOD_ENVELOPES],
             lfos: [fontelle_dsp::Oscillator::new(); MAX_LFOS],
             age_samples: 0,
+            glide_semitones: 0.0,
+            glide_target: 0.0,
+            glide_rate: 0.0,
         }
     }
 
@@ -238,15 +398,14 @@ impl Voice {
         self.origin
     }
 
-    /// Starts a note the timeline asked for. See [`Voice::trigger_from`] for
-    /// one a player did.
+    /// Starts a centred note the timeline asked for. See
+    /// [`Voice::trigger_from`] for one a player did, and
+    /// [`Voice::trigger_note`] for one that carries §16.5's per-note
+    /// character.
     pub fn trigger(&mut self, patch: &crate::Patch, key: u8, velocity: u8, voice_context: u32) {
-        self.trigger_from(
+        self.trigger_note(
             patch,
-            key,
-            velocity,
-            voice_context,
-            fontelle_types::VoiceOrigin::Timeline,
+            NoteTrigger::new(key, velocity).in_context(voice_context),
         );
     }
 
@@ -264,13 +423,54 @@ impl Voice {
         voice_context: u32,
         origin: fontelle_types::VoiceOrigin,
     ) {
+        self.trigger_note(
+            patch,
+            NoteTrigger::new(key, velocity)
+                .in_context(voice_context)
+                .from_origin(origin),
+        );
+    }
+
+    /// The one that actually starts a voice; the two above are it with the
+    /// defaults filled in.
+    ///
+    /// It takes a [`NoteTrigger`] rather than a fifth positional argument
+    /// because pan was the *first* of `Note`'s five per-note properties to
+    /// reach the audio path and was never going to be the last: fine pitch,
+    /// release and the two free modulation values followed, and each one is a
+    /// field on the struct rather than another rewrite of every call site.
+    pub fn trigger_note(&mut self, patch: &crate::Patch, note: NoteTrigger) {
+        let NoteTrigger {
+            key,
+            velocity,
+            pan,
+            fine_pitch,
+            release,
+            mod_x,
+            mod_y,
+            voice_context,
+            origin,
+        } = note;
         self.active = true;
         self.origin = origin;
         self.key = key;
         self.voice_context = voice_context;
         self.velocity_gain = velocity_to_gain(velocity);
+        self.note_pan = pan.clamp(-1.0, 1.0);
         self.velocity_norm = velocity as f32 / 127.0;
         self.key_norm = key as f32 / 127.0;
+        // Cents to semitones: the document stores cents because that is the
+        // unit a musician tunes in, and every other tuning on the pitch path
+        // is cents too, so nothing has to be converted twice.
+        self.note_detune = fine_pitch as f32 / 100.0;
+        // `0` is the patch's own release and 127 is four times it. Only ever
+        // longer, because `0` is what every note ever written carries and a
+        // property whose default rewrote existing projects is not one worth
+        // having — see `EventPayload::NoteOn`.
+        self.note_release_scale =
+            1.0 + (release.min(127) as f32 / 127.0) * (MAX_NOTE_RELEASE - 1.0);
+        self.mod_x_norm = mod_x.min(127) as f32 / 127.0;
+        self.mod_y_norm = mod_y.min(127) as f32 / 127.0;
         // A voice comes back out of the pool carrying the last note's filter
         // memory. Left alone, that discharges into the new note as a transient
         // belonging to a note that already ended — a click that only shows up
@@ -288,17 +488,42 @@ impl Voice {
             lfo.reset();
         }
         self.age_samples = 0;
+        // A fresh note is at its own pitch. Portamento is applied *after*
+        // this by whoever retriggered it (see `Sampler::trigger`), because
+        // only the sampler knows what was sounding before.
+        self.glide_semitones = 0.0;
+        self.glide_target = 0.0;
+        self.glide_rate = 0.0;
 
-        for (slot, layer) in self.layers.iter_mut().zip(patch.layers.iter()) {
+        // Every slot cleared first: what a voice plays is decided entirely by
+        // this note, and a slot left over from the last one is a zone that
+        // keeps sounding after the note that wanted it has gone.
+        self.layers = [LayerPlayback::default(); MAX_LAYERS];
+        let mut slot = 0;
+        for (index, layer) in patch.layers.iter().enumerate() {
+            if slot >= MAX_LAYERS {
+                // The stack is full. `MAX_LAYERS` bounds what sounds *at
+                // once* (TDD §7.4), and a seventeenth zone on one key is the
+                // one thing it is allowed to drop.
+                break;
+            }
             let in_key_range = key >= layer.key_range.0 && key <= layer.key_range.1;
             let in_vel_range = velocity >= layer.vel_range.0 && velocity <= layer.vel_range.1;
-            *slot = LayerPlayback {
-                active: in_key_range && in_vel_range,
+            if !(in_key_range && in_vel_range) {
+                continue;
+            }
+            // A patch with more zones than a `u16` can name is not a patch,
+            // it is a corrupt file; the zones past that are dropped rather
+            // than aliased onto a wrong one.
+            let Ok(index) = u16::try_from(index) else {
+                break;
+            };
+            self.layers[slot] = LayerPlayback {
+                active: true,
+                layer: index,
                 position: layer.playback.start_offset,
             };
-        }
-        for slot in self.layers.iter_mut().skip(patch.layers.len()) {
-            *slot = LayerPlayback::default();
+            slot += 1;
         }
     }
 
@@ -332,6 +557,100 @@ impl Voice {
         self.mod_envs = [fontelle_dsp::EnvelopeGenerator::new(); MAX_MOD_ENVELOPES];
         self.lfos = [fontelle_dsp::Oscillator::new(); MAX_LFOS];
         self.age_samples = 0;
+    }
+
+    /// Moves this voice onto a new note **without restarting it** — legato.
+    ///
+    /// The sample keeps playing, the envelopes keep their level, and only the
+    /// pitch moves; with a glide time it slides there rather than jumping,
+    /// which is portamento. That is what `RetriggerMode::Legato` means and
+    /// what makes a line played without gaps sound like one line.
+    ///
+    /// The **key is taken**, unlike [`Voice::glide_to`]: this voice is that
+    /// note now, so the note-off the score wrote for it is the one that ends
+    /// it. A slide is the other case — it bends the sound and leaves the
+    /// note's identity alone.
+    pub fn legato_to(&mut self, note: NoteTrigger, glide_seconds: f32) {
+        let from = self.sounding_key();
+        self.key = note.key;
+        self.voice_context = note.voice_context;
+        self.origin = note.origin;
+        self.velocity_gain = velocity_to_gain(note.velocity);
+        self.velocity_norm = note.velocity as f32 / 127.0;
+        self.key_norm = note.key as f32 / 127.0;
+        self.note_pan = note.pan.clamp(-1.0, 1.0);
+        // The envelopes are deliberately not touched: that is the difference
+        // between legato and a retrigger.
+        self.glide_from(from - note.key as f32, glide_seconds);
+    }
+
+    /// Bends this voice to `key` over `seconds`, from wherever its pitch is.
+    ///
+    /// **A slide, not a note.** The voice's own [`key`](Voice::key) is left
+    /// alone, so the note-off the score wrote for the key this voice *started*
+    /// on still ends it — which is the whole reason the offset is a separate
+    /// number rather than the key being rewritten. Without that, every slid
+    /// note in a piece would hang.
+    ///
+    /// `seconds` of zero arrives immediately, which is what a portamento of
+    /// zero has to mean.
+    pub fn glide_to(&mut self, key: u8, seconds: f32) {
+        self.glide_target = key as f32 - self.key as f32;
+        self.set_glide_rate(seconds);
+    }
+
+    /// Starts this voice's pitch `semitones` away from its own note and lets
+    /// it fall in over `seconds` — the portamento form.
+    ///
+    /// The other end of [`Voice::glide_to`]: that one moves the target, this
+    /// one moves the *start*. A new note in a mono patch is at its own pitch
+    /// as far as the score is concerned and has to sound as if it came from
+    /// the last one.
+    pub fn glide_from(&mut self, semitones: f32, seconds: f32) {
+        self.glide_semitones = semitones;
+        self.glide_target = 0.0;
+        self.set_glide_rate(seconds);
+    }
+
+    /// Where this voice's pitch is now, as a key — the note it started on plus
+    /// however far a glide has carried it.
+    ///
+    /// What a *following* glide measures from, so a chain of slides is one
+    /// continuous line rather than a series of jumps back to the original key.
+    pub fn sounding_key(&self) -> f32 {
+        self.key as f32 + self.glide_semitones
+    }
+
+    fn set_glide_rate(&mut self, seconds: f32) {
+        let distance = (self.glide_target - self.glide_semitones).abs();
+        if seconds <= 0.0 || distance <= f32::EPSILON {
+            self.glide_semitones = self.glide_target;
+            self.glide_rate = 0.0;
+            return;
+        }
+        self.glide_rate = distance / seconds;
+    }
+
+    /// Steps the glide on by one block.
+    ///
+    /// **Block rate, not sample rate**, and deliberately: the pitch a layer
+    /// plays at is worked out once per block already — the mod matrix's
+    /// `LayerPitch` route, which is what vibrato rides on, is computed in
+    /// exactly the same place. A glide that moved per sample would be the only
+    /// pitch modulation in this voice that did, and making all of it
+    /// per-sample is a change to the render loop rather than to this feature.
+    fn advance_glide(&mut self, frames: usize, sample_rate: f32) {
+        if self.glide_rate <= 0.0 || sample_rate <= 0.0 {
+            return;
+        }
+        let step = self.glide_rate * frames as f32 / sample_rate;
+        let remaining = self.glide_target - self.glide_semitones;
+        if remaining.abs() <= step {
+            self.glide_semitones = self.glide_target;
+            self.glide_rate = 0.0;
+            return;
+        }
+        self.glide_semitones += step * remaining.signum();
     }
 
     /// Voice stealing always ramps out over a short release rather than cutting
@@ -389,10 +708,12 @@ impl Voice {
     /// layer's placement.
     ///
     /// `channel_pan` is the compiled form of MIDI CC10 — a control over the
-    /// whole part, distinct from the `pan` an SF2 zone carries for itself.
-    /// The two **add**, then clamp: that is what a soundfont player does, and
-    /// it is the only reading under which a hard-left zone on a channel panned
-    /// right ends up between them rather than at whichever was consulted last.
+    /// whole part, distinct from the `pan` an SF2 zone carries for itself and
+    /// from the one the *note* carries (§16.5, captured at note-on as
+    /// `note_pan`). All three **add**, then clamp: that is what a soundfont
+    /// player does, and it is the only reading under which a hard-left zone
+    /// on a channel panned right ends up between them rather than at
+    /// whichever was consulted last.
     ///
     /// It is read here rather than captured at note-on because it is live:
     /// moving a part's pan has to move the notes already sounding.
@@ -425,6 +746,14 @@ impl Voice {
                     release_s: 0.0,
                     curve: fontelle_dsp::EnvelopeCurve::Linear,
                 });
+        // §16.5's per-note release, applied to the config rather than to the
+        // generator: the envelope's shape is the patch's, and the note only
+        // gets to say how long the last stage of it takes. A local copy, so
+        // two notes on one patch can ring for different lengths.
+        let amp_env_config = fontelle_dsp::EnvelopeConfig {
+            release_s: amp_env_config.release_s * self.note_release_scale,
+            ..amp_env_config
+        };
 
         // Modulation runs at block rate: every source is sampled once here and
         // held for the whole block, and every destination is resolved from it
@@ -489,12 +818,17 @@ impl Voice {
         //
         // Aftertouch, the mod wheel, pitch bend, `Random` and `NoteOnCounter`
         // read as at-rest: no MIDI controller state reaches a voice yet, and a
-        // plausible-looking number would be worse than an honest zero.
+        // plausible-looking number would be worse than an honest zero. Mod X
+        // and mod Y are not among them — those come off the note itself, so
+        // they are as available here as velocity is.
         let (velocity_norm, key_norm) = (self.velocity_norm, self.key_norm);
+        let (mod_x_norm, mod_y_norm) = (self.mod_x_norm, self.mod_y_norm);
         let amp_level = self.amp_env.level();
         let sources = move |source: crate::mod_matrix::ModSource| match source {
             crate::mod_matrix::ModSource::Velocity => velocity_norm,
             crate::mod_matrix::ModSource::Key => key_norm,
+            crate::mod_matrix::ModSource::NoteModX => mod_x_norm,
+            crate::mod_matrix::ModSource::NoteModY => mod_y_norm,
             // Envelope 0 is the amp envelope. It drives the amp stage
             // directly, and is readable here as well because "louder means
             // brighter" is a route a patch legitimately wants and there is no
@@ -512,10 +846,17 @@ impl Voice {
         // Per-layer constants resolved once, not once per sample: a fixed-size
         // stack array (INVARIANT 1 — no `Vec`, nothing heap-touching).
         let mut prepared: [Option<PreparedLayer<'_>>; MAX_LAYERS] = [None; MAX_LAYERS];
-        for (index, (slot, layer)) in self.layers.iter().zip(patch.layers.iter()).enumerate() {
+        for (prepared_index, slot) in self.layers.iter().enumerate() {
             if !slot.active {
                 continue;
             }
+            // The slot names its zone; `prepared` is indexed by *slot*, while
+            // every `ModDest` below is addressed by the zone's own index,
+            // because that is what a saved mod route names.
+            let index = usize::from(slot.layer);
+            let Some(layer) = patch.layers.get(index) else {
+                continue;
+            };
             let crate::patch::Source::Sample { file } = &layer.source else {
                 // Sf2Zone/Oscillator sources aren't wired to the renderer yet.
                 continue;
@@ -524,12 +865,27 @@ impl Voice {
                 continue;
             };
 
+            // `ModDest` names a layer with a `u8`, so a patch with more than
+            // 256 zones has no way to address the ones past that. They get no
+            // per-layer modulation rather than being aliased onto layer 0's
+            // routes, which is the failure that would be impossible to see.
+            let dest_index = u8::try_from(index).ok();
+            let layer_mod = |make: fn(u8) -> crate::mod_matrix::ModDest| {
+                dest_index.map_or(0.0, |i| {
+                    let dest = make(i);
+                    patch.mod_matrix.evaluate(dest, &sources) * dest.full_scale()
+                })
+            };
+
             // Pitch modulation is in cents, like the tuning it adds to, so a
             // route means the same interval wherever the note sits.
-            let pitch_dest = crate::mod_matrix::ModDest::LayerPitch(index as u8);
-            let pitch_cents =
-                patch.mod_matrix.evaluate(pitch_dest, &sources) * pitch_dest.full_scale();
+            let pitch_cents = layer_mod(crate::mod_matrix::ModDest::LayerPitch);
+            // The glide adds to the note's own interval rather than moving
+            // the key: the key is the note's *identity*, and a note-off names
+            // it (see `glide_to`).
             let semitones = (self.key as f32 - layer.root_key as f32)
+                + self.glide_semitones
+                + self.note_detune
                 + (layer.fine_tune_cents + pitch_cents) / 100.0;
             let pitch_ratio = 2f32.powf(semitones / 12.0);
             let rate_ratio = buffer.sample_rate as f32 / sample_rate;
@@ -542,20 +898,23 @@ impl Voice {
             // all the way to one side.
             // Gain modulation is in decibels, so a tremolo is symmetric in
             // loudness rather than lopsided the way a linear one would be.
-            let gain_dest = crate::mod_matrix::ModDest::LayerGain(index as u8);
-            let gain_db = patch.mod_matrix.evaluate(gain_dest, &sources) * gain_dest.full_scale();
+            let gain_db = layer_mod(crate::mod_matrix::ModDest::LayerGain);
 
             let pan_gain = if stereo {
-                let dest = crate::mod_matrix::ModDest::LayerPan(index as u8);
+                // Three pans, and they add: the zone's own placement inside
+                // the instrument, the note's placement inside the part, and
+                // the part's placement in the mix. Any other reading throws
+                // one of them away — see `render_with_pan`'s docs.
                 let pan = layer.pan
+                    + self.note_pan
                     + channel_pan
-                    + patch.mod_matrix.evaluate(dest, &sources) * dest.full_scale();
+                    + layer_mod(crate::mod_matrix::ModDest::LayerPan);
                 fontelle_types::PanLaw::Minus3Db.gains(pan)
             } else {
                 (1.0, 0.0)
             };
 
-            prepared[index] = Some(PreparedLayer {
+            prepared[prepared_index] = Some(PreparedLayer {
                 data: &buffer.data,
                 step: (pitch_ratio * rate_ratio) as f64,
                 gain: 10f32.powf((layer.gain_db + gain_db) / 20.0) * self.velocity_gain,
@@ -665,6 +1024,7 @@ impl Voice {
         }
 
         self.age_samples += frames as u64;
+        self.advance_glide(frames, sample_rate);
 
         let any_layer_active = self.layers.iter().any(|s| s.active);
         if !self.amp_env.is_active() || !any_layer_active {
@@ -730,6 +1090,11 @@ impl VoicePool {
         self.voices
             .iter_mut()
             .find(|v| v.is_active() && v.key() == key && v.voice_context() == voice_context)
+    }
+
+    /// Every sounding voice, in pool order.
+    pub fn iter_active(&self) -> impl DoubleEndedIterator<Item = &Voice> {
+        self.voices.iter().filter(|v| v.is_active())
     }
 
     pub fn iter_active_mut(&mut self) -> impl Iterator<Item = &mut Voice> {

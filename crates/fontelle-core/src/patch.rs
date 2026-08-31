@@ -56,7 +56,19 @@ pub struct FilterSlot {
 /// once at import; after that it has no live link back to the file's metadata.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Patch {
-    /// Up to 16 layers: stacked, or split by key/velocity.
+    /// The zones, stacked or split by key/velocity.
+    ///
+    /// **There is no limit here, and there deliberately is not.** A drum kit
+    /// is one zone per hit and real ones run to forty-odd — `Nokia_30.sf2`'s
+    /// kit has 47. `voice::MAX_LAYERS` bounds how many may sound *at once*
+    /// (TDD §7.4), which is a different quantity: a key split is not a stack,
+    /// and only the zones covering the note being played take a slot.
+    ///
+    /// This once said "up to 16", and the voice enforced it against the wrong
+    /// thing — it zipped its sixteen slots against this list, so every zone
+    /// past index 15 was silently unreachable. That is not a limit anybody
+    /// chose; it is `zip` stopping at the shorter side, and it cost three of
+    /// the kits in the development bank 30, 37 and 68 keys apiece.
     pub layers: Vec<Layer>,
     pub filters: [FilterSlot; 2],
     /// At least amp + mod envelopes; the user may add more.

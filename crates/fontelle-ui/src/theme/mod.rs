@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Its own number, separate from the project's and the patch's: a colour token
 /// added to the chrome has nothing to do with either.
-pub const THEME_FORMAT_VERSION: u32 = 3;
+pub const THEME_FORMAT_VERSION: u32 = 5;
 
 /// An 8-bit sRGB colour with alpha, written to file as hex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,7 +149,15 @@ pub struct Palette {
     /// The one colour that says "this is Fontelle": focus rings, active
     /// controls, the record button.
     pub accent: Color,
-    /// Beat lines in the timeline and piano roll.
+    /// The faintest of the roll's three grid levels: the lines *between*
+    /// beats — sixteenths, eighths, whatever the snap is showing. Added in
+    /// theme format v5.
+    ///
+    /// It exists because subdivisions and beats used to share
+    /// [`grid_line`](Self::grid_line), which made the grid one
+    /// undifferentiated comb that could not be counted by eye.
+    pub grid_line_sub: Color,
+    /// Beat lines in the timeline and piano roll — the middle level.
     pub grid_line: Color,
     /// Bar lines, which have to be tellable from beat lines at a glance.
     pub grid_line_strong: Color,
@@ -171,6 +179,20 @@ pub struct Palette {
     /// The roll's row behind a black key — a shade off the panel, so octaves
     /// are countable without drawing a line for every one.
     pub row_accidental: Color,
+
+    // --- the key map (added in theme format v4) ---
+    /// The roll's row for a key the instrument on the channel cannot play.
+    ///
+    /// Not the same ink as [`row_accidental`](Self::row_accidental), and it
+    /// must not be: they are two different statements about a row, and a drum
+    /// kit's dead keys land on naturals and accidentals alike.
+    pub row_dead: Color,
+    /// The same key, on the keyboard down the side.
+    pub key_dead: Color,
+    /// A note written on a key nothing plays. It is still a note — it can be
+    /// selected, moved, and heard the moment the instrument changes — so it
+    /// is drawn quietly rather than not at all.
+    pub note_silent: Color,
 }
 
 /// Sizes and radii, in logical pixels.
@@ -244,7 +266,8 @@ impl Theme {
                 // The top of the primary ramp: the one colour that says
                 // Fontelle.
                 accent: Color::rgb(0x40, 0x85, 0x9c),
-                grid_line: Color::rgb(0x11, 0x26, 0x2e),
+                grid_line_sub: Color::rgb(0x0d, 0x1c, 0x22),
+                grid_line: Color::rgb(0x18, 0x33, 0x3d),
                 grid_line_strong: Color::rgb(0x1f, 0x40, 0x4c),
                 // Green, from the first secondary ramp, so the playhead never
                 // competes with the teal chrome it travels over.
@@ -262,6 +285,9 @@ impl Theme {
                 key_white: Color::rgb(0xc9, 0xd6, 0xda),
                 key_black: Color::rgb(0x11, 0x26, 0x2e),
                 row_accidental: Color::rgb(0x0a, 0x18, 0x1e),
+                row_dead: Color::rgb(0x05, 0x0d, 0x11),
+                key_dead: Color::rgb(0x53, 0x63, 0x68),
+                note_silent: Color::rgb(0x2b, 0x3b, 0x48),
             },
             metrics: METRICS,
             font: FontTokens {
@@ -287,7 +313,8 @@ impl Theme {
                 text: Color::rgb(0x06, 0x10, 0x13),
                 text_muted: Color::rgb(0x31, 0x62, 0x72),
                 accent: Color::rgb(0x31, 0x62, 0x72),
-                grid_line: Color::rgb(0xc9, 0xd6, 0xda),
+                grid_line_sub: Color::rgb(0xdf, 0xe8, 0xea),
+                grid_line: Color::rgb(0xc0, 0xd0, 0xd5),
                 grid_line_strong: Color::rgb(0xa9, 0xc0, 0xc7),
                 playhead: Color::rgb(0x1e, 0x4f, 0x42),
                 selection: Color::rgba(0x49, 0x6f, 0xa4, 0x40),
@@ -298,6 +325,9 @@ impl Theme {
                 key_white: Color::rgb(0xf5, 0xf9, 0xfa),
                 key_black: Color::rgb(0x23, 0x36, 0x50),
                 row_accidental: Color::rgb(0xd8, 0xe4, 0xe7),
+                row_dead: Color::rgb(0xc2, 0xcc, 0xcf),
+                key_dead: Color::rgb(0xcf, 0xd8, 0xda),
+                note_silent: Color::rgb(0x9c, 0xac, 0xbb),
             },
             metrics: METRICS,
             font: FontTokens {
@@ -417,6 +447,39 @@ fn migrate(mut json: serde_json::Value, mut from: u32) -> Result<serde_json::Val
                 .or_insert_with(|| serde_json::json!(METRICS.sidebar_width));
         }
         from = 3;
+    }
+
+    if from == 3 {
+        // v4 added the key map's colours: the roll now greys the keys the
+        // instrument on the channel cannot play, and names the ones a drum
+        // kit can. A v3 file was written when every row looked alike.
+        let dark = Theme::dark_default().palette;
+        if let Some(palette) = json.get_mut("palette").and_then(|p| p.as_object_mut()) {
+            for (key, value) in [
+                ("row_dead", dark.row_dead),
+                ("key_dead", dark.key_dead),
+                ("note_silent", dark.note_silent),
+            ] {
+                palette
+                    .entry(key)
+                    .or_insert_with(|| serde_json::json!(value.to_hex()));
+            }
+        }
+        from = 4;
+    }
+
+    if from == 4 {
+        // v5 split the grid into three levels. A v4 file had two, and its
+        // `grid_line` meant "beat *and* subdivision" — so the new token is
+        // filled in from the default and the old one keeps whatever the file
+        // said, which is the level it was mostly describing.
+        let dark = Theme::dark_default().palette;
+        if let Some(palette) = json.get_mut("palette").and_then(|p| p.as_object_mut()) {
+            palette
+                .entry("grid_line_sub")
+                .or_insert_with(|| serde_json::json!(dark.grid_line_sub.to_hex()));
+        }
+        from = 5;
     }
 
     if from != THEME_FORMAT_VERSION {

@@ -51,6 +51,22 @@ impl PanLaw {
     }
 }
 
+/// Turns the pan a document stores — `Note::pan` and its `-127..=127` range —
+/// into the `-1.0..=1.0` position [`PanLaw::gains`] takes.
+///
+/// It lives here, beside the law it feeds, because it is the seam between the
+/// two halves of the workspace: the model and the compiled event stream count
+/// pan in bytes, and everything below `fontelle-core`'s note-on counts it in
+/// unit intervals. Written once, so a note panned hard left in the roll is
+/// hard left in the field rather than wherever the nearest divisor put it.
+///
+/// `i8` reaches one step further left than `NoteProperty::Pan` allows, so
+/// -128 is clamped to hard left rather than overshooting into a value the law
+/// would have to clamp anyway.
+pub fn pan_unit(pan: i8) -> f32 {
+    (f32::from(pan) / 127.0).clamp(-1.0, 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +139,25 @@ mod tests {
         assert!((l - 1.0).abs() < 1e-6 && r.abs() < 1e-6);
         let (l, r) = PanLaw::Minus6Db.gains(5.0);
         assert!(l.abs() < 1e-6 && (r - 1.0).abs() < 1e-6);
+    }
+
+    /// The document stores a note's pan as a byte and the audio path wants a
+    /// unit interval. The conversion is written **once**, here, because the
+    /// alternative is each layer dividing by whatever it remembers and a note
+    /// panned hard left in the roll arriving somewhere else in the field.
+    #[test]
+    fn a_notes_pan_byte_maps_onto_the_whole_field() {
+        assert!(pan_unit(0).abs() < 1e-6, "centre is centre");
+        assert!((pan_unit(127) - 1.0).abs() < 1e-6, "127 is hard right");
+        assert!((pan_unit(-127) + 1.0).abs() < 1e-6, "-127 is hard left");
+        // `NoteProperty::Pan` stops at -127 so the two ends are the same
+        // distance from centre, but the byte holding it reaches one step
+        // further. Clamping rather than overshooting keeps a damaged document
+        // out of `PanLaw::gains`'s clamp, where it would silently read as
+        // hard left anyway with no way to notice.
+        assert!(
+            (pan_unit(-128) + 1.0).abs() < 1e-6,
+            "-128 clamps to hard left rather than overshooting it"
+        );
     }
 }

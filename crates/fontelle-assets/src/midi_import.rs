@@ -344,9 +344,15 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
         let channel = project.channels.insert(Channel {
             name: label.clone(),
             color: CHANNEL_COLOURS[midi_channel as usize % CHANNEL_COLOURS.len()],
-            mixer_track,
+            // A MIDI file's parts really do each want a strip: the file
+            // carries a CC7 per channel and that is a fader, so the importer
+            // is the one caller that asks `AddChannel` for a track rather than
+            // taking the master.
+            mixer_track: Some(mixer_track),
             patch_data: None,
             pan,
+            muted: false,
+            soloed: false,
         });
         let lane = project.lanes.insert(Lane {
             name: label,
@@ -369,6 +375,7 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
             prefab_link: None,
             color: None,
             muted: false,
+            loop_length: None,
         });
 
         imported.push(ImportedMidiChannel {
@@ -429,5 +436,7 @@ fn push_note(notes: &mut Arena<NoteId, Note>, key: u8, start: &Pending, end: Tic
         release: 0,
         mod_x: 0,
         mod_y: 0,
+        // An imported note is an ordinary one: MIDI has no slide.
+        slide: false,
     });
 }

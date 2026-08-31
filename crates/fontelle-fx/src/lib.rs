@@ -14,10 +14,10 @@ mod soften;
 mod utility;
 
 pub use bitcrush::{Bitcrush, BitcrushConfig, DitherMode};
-pub use compressor::{Compressor, CompressorConfig, DetectionMode};
+pub use compressor::Compressor;
 pub use delay::{Delay, DelayConfig, DelayTime};
 pub use distortion::{Distortion, DistortionConfig, DistortionCurve};
-pub use eq::{BandType, EqBand, ParametricEq};
+pub use eq::ParametricEq;
 pub use limiter::{Limiter, LimiterConfig};
 pub use repitcher::{Repitcher, RepitcherConfig};
 pub use reverb::{FdnReverb, ReverbConfig};

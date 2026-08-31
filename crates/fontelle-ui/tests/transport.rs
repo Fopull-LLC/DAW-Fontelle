@@ -9,9 +9,9 @@
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
 use fontelle_ui::transport::{
-    HOLD_SECONDS, METER_FLOOR_DB, Meter, RELEASE_DB_PER_SECOND, TransportHit, TransportHost,
-    TransportView, apply, format_bars_beats, format_clock, hit, meter_fill, playhead_x, sample_at,
-    transport_bar_layout,
+    HOLD_SECONDS, METER_FLOOR_DB, Meter, RELEASE_DB_PER_SECOND, TransportAction, TransportHit,
+    TransportHost, TransportView, action, apply, format_bars_beats, format_clock, hit, meter_fill,
+    playhead_x, sample_at, transport_bar_layout,
 };
 
 const RATE: f64 = 48_000.0;
@@ -29,6 +29,8 @@ fn view() -> TransportView {
         loop_range_samples: (0, 0),
         peaks: [0.0, 0.0],
         reduction_db: 0.0,
+        armed: false,
+        metronome: false,
     }
 }
 
@@ -359,15 +361,23 @@ fn fake() -> FakeEngine {
 #[test]
 fn a_hit_becomes_exactly_one_command() {
     let mut engine = fake();
+    // Play seeks to the mark and rolls; a scrub moves the mark; stop rewinds.
+    // See `tests/marker.rs` for why each of those is two calls rather than one.
+    let mut marker = 0;
     for h in [
         TransportHit::Play,
         TransportHit::Scrub(1234),
         TransportHit::ToggleLoop,
         TransportHit::Stop,
     ] {
-        apply(&mut engine, h);
+        let what = action(h, &engine.view()).expect("every hit here is the engine's");
+        marker = apply(&mut engine, what, marker);
     }
-    assert_eq!(engine.commands, ["play", "seek 1234", "loop true", "stop"]);
+    assert_eq!(
+        engine.commands,
+        ["seek 0", "play", "seek 1234", "loop true", "stop", "seek 0"]
+    );
+    assert_eq!(marker, 0, "the stop button brought the mark back with it");
 }
 
 #[test]
@@ -376,18 +386,26 @@ fn the_loop_toggle_toggles_rather_than_setting() {
     // The bar asks for the opposite of what it last *saw*, so two clicks are
     // a round trip. Writing `true` twice would be a loop button that only
     // ever turns looping on.
-    apply(&mut engine, TransportHit::ToggleLoop);
-    apply(&mut engine, TransportHit::ToggleLoop);
+    let what = action(TransportHit::ToggleLoop, &engine.view()).expect("an engine control");
+    apply(&mut engine, what, 0);
+    let what = action(TransportHit::ToggleLoop, &engine.view()).expect("an engine control");
+    apply(&mut engine, what, 0);
     assert_eq!(engine.commands, ["loop true", "loop false"]);
 }
 
 #[test]
-fn play_while_playing_is_not_a_second_play() {
+fn play_while_playing_is_a_pause_back_to_the_mark() {
     let mut engine = fake();
-    apply(&mut engine, TransportHit::Play);
-    apply(&mut engine, TransportHit::Play);
-    // Pressing play on a transport that is already rolling should leave it
-    // rolling from where it is, not restart it and not stack a second command
-    // onto the audio thread every frame the button is held.
-    assert_eq!(engine.commands, ["play"]);
+    let marker = 1234;
+    let what = action(TransportHit::Play, &engine.view()).expect("an engine control");
+    apply(&mut engine, what, marker);
+    engine.view.position_sample = 90_000;
+
+    // The second press is a pause, not a second play: it never restarts the
+    // transport and never stacks a play onto the audio thread every frame the
+    // button is held. Where it comes back to is the mark — see `marker.rs`.
+    let what = action(TransportHit::Play, &engine.view()).expect("an engine control");
+    assert_eq!(what, TransportAction::Pause);
+    apply(&mut engine, what, marker);
+    assert_eq!(engine.commands, ["seek 1234", "play", "stop", "seek 1234"]);
 }

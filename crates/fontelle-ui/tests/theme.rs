@@ -273,3 +273,123 @@ fn contrast(a: Color, b: Color) -> f64 {
     let (hi, lo) = if x > y { (x, y) } else { (y, x) };
     (hi + 0.05) / (lo + 0.05)
 }
+
+/// v4 added the key map's colours: the roll now says which keys the instrument
+/// on the channel can actually play, and that needs ink of its own for a dead
+/// row, a dead key and a note sitting on one.
+///
+/// The same contract as every arm before it — a file from before the feature
+/// opens, with the new tokens filled in from the default and everything it did
+/// say left alone.
+#[test]
+fn a_v3_theme_gains_the_key_maps_colours_and_keeps_its_own() {
+    let mut json: serde_json::Value =
+        serde_json::from_str(&Theme::dark_default().to_json()).expect("valid JSON");
+    json["format_version"] = serde_json::json!(3);
+    json["palette"]["note"] = serde_json::json!("#123456");
+    let palette = json["palette"]
+        .as_object_mut()
+        .expect("palette is an object");
+    for added_in_v4 in ["row_dead", "key_dead", "note_silent"] {
+        palette.remove(added_in_v4).expect("v4 added this");
+    }
+
+    let migrated = Theme::from_json(&json.to_string()).expect("a v3 theme must still open");
+    let default = Theme::dark_default();
+    assert_eq!(migrated.format_version, THEME_FORMAT_VERSION);
+    assert_eq!(migrated.palette.row_dead, default.palette.row_dead);
+    assert_eq!(migrated.palette.key_dead, default.palette.key_dead);
+    assert_eq!(migrated.palette.note_silent, default.palette.note_silent);
+    assert_eq!(
+        migrated.palette.note,
+        Color::rgb(0x12, 0x34, 0x56),
+        "the colour the old file chose is still its own"
+    );
+}
+
+/// A dead row that looks like a live one says nothing, and a silent note that
+/// looks like a sounding one is worse than no marking at all — it is a lie
+/// about what will happen when you press play.
+#[test]
+fn the_key_maps_colours_are_tellable_from_the_ones_they_sit_beside() {
+    for theme in [Theme::dark_default(), Theme::light_default()] {
+        let p = &theme.palette;
+        assert_ne!(
+            p.row_dead, p.panel,
+            "{}: a dead row is the plain grid colour",
+            theme.name
+        );
+        assert_ne!(
+            p.row_dead, p.row_accidental,
+            "{}: a dead row is indistinguishable from an accidental's",
+            theme.name
+        );
+        assert_ne!(
+            p.key_dead, p.key_white,
+            "{}: a dead key looks like a live natural",
+            theme.name
+        );
+        assert_ne!(
+            p.note_silent, p.note,
+            "{}: a silent note looks like one that sounds",
+            theme.name
+        );
+    }
+}
+
+/// v5 added the grid's third level.
+///
+/// Reported from using the window: *"it's kind of hard to tell the time right
+/// now so ensure between bars or measures there's more dividers so I can see
+/// the on and offbeats."* The dividers were there — the roll has always drawn
+/// subdivision, beat and bar lines — but subdivisions and beats came out in
+/// the *same* ink, so the grid read as one undifferentiated comb and there was
+/// no way to count a bar by eye.
+#[test]
+fn a_v4_theme_gains_the_subdivision_line_and_keeps_its_own() {
+    let mut json: serde_json::Value =
+        serde_json::from_str(&Theme::dark_default().to_json()).expect("valid JSON");
+    json["format_version"] = serde_json::json!(4);
+    json["palette"]["grid_line"] = serde_json::json!("#123456");
+    json["palette"]
+        .as_object_mut()
+        .expect("palette is an object")
+        .remove("grid_line_sub")
+        .expect("v5 added this");
+
+    let migrated = Theme::from_json(&json.to_string()).expect("a v4 theme must still open");
+    assert_eq!(migrated.format_version, THEME_FORMAT_VERSION);
+    assert_eq!(
+        migrated.palette.grid_line_sub,
+        Theme::dark_default().palette.grid_line_sub
+    );
+    assert_eq!(
+        migrated.palette.grid_line,
+        Color::rgb(0x12, 0x34, 0x56),
+        "the beat line the old file chose is still its own"
+    );
+}
+
+/// The three levels have to be three: a grid whose bar, beat and sixteenth
+/// lines are the same colour is a grid you cannot count.
+#[test]
+fn the_grids_three_levels_are_three_different_inks() {
+    for theme in [Theme::dark_default(), Theme::light_default()] {
+        let p = &theme.palette;
+        assert_ne!(
+            p.grid_line_sub, p.grid_line,
+            "{}: a sixteenth line looks like a beat line",
+            theme.name
+        );
+        assert_ne!(
+            p.grid_line, p.grid_line_strong,
+            "{}: a beat line looks like a bar line",
+            theme.name
+        );
+        assert_ne!(
+            p.grid_line_sub, p.panel,
+            "{}: a subdivision that cannot be seen is not a divider",
+            theme.name
+        );
+    }
+}

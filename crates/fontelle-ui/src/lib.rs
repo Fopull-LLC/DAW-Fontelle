@@ -17,10 +17,13 @@
 //! What is left in [`app`] is only the part that genuinely needs a window.
 
 pub mod app;
+pub mod audition;
 pub mod backend;
 pub mod canvas;
 pub mod document;
+pub mod icon;
 pub mod layout;
+pub mod pointer;
 pub mod render;
 pub mod text;
 pub mod theme;
@@ -30,11 +33,20 @@ pub mod widget;
 pub use vello;
 
 pub use app::{WindowApp, WindowError, WindowOptions, run, run_window};
+pub use audition::{AuditionAction, Auditions, MAX_AUDITION, MIN_AUDITION};
 pub use backend::WindowBackend;
-pub use document::{ChannelInfo, DocumentHost, LibraryEntry, StudioHost};
-pub use layout::{PanelLayout, Rect, WindowLayout, window_layout};
+pub use document::{
+    ChannelInfo, ClipInfo, DocumentHost, GhostFilter, GhostNote, LaneInfo, LibraryEntry, StudioHost,
+};
+pub use layout::{
+    DEFAULT_TIMELINE_HEIGHT, EditorTab, EditorTabs, MIN_EDITOR_HEIGHT, MIN_TIMELINE_HEIGHT,
+    PanelLayout, Rect, WindowLayout, editor_tab_at, editor_tabs, timeline_height_at, window_layout,
+};
+pub use pointer::{Pointer, PointerScene, pointer_at};
 pub use render::{Chrome, Headless, RenderError, RollChrome, TransportChrome, draw_window};
 pub use text::{GlyphRun, TextContext, TextLayout};
 pub use theme::{Color, THEME_FORMAT_VERSION, Theme, ThemeError};
-pub use transport::{TransportBarLayout, TransportHit, TransportHost, TransportView};
+pub use transport::{
+    TransportAction, TransportBarLayout, TransportHit, TransportHost, TransportView,
+};
 pub use widget::{Redraw, WidgetId, WidgetTree};

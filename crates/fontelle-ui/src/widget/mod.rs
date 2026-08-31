@@ -212,3 +212,17 @@ pub fn sleep_budget(animating: bool, watching_engine: bool) -> Sleep {
         (false, false) => Sleep::Forever,
     }
 }
+
+/// Whether an autosave is due, given how long it has been since the last one.
+///
+/// Here rather than in `fontelle-app` for the reason everything in this module
+/// is: it is a decision about **when the window does something**, and this is
+/// where "may the window sleep" already lives.
+///
+/// Pure, so the interval is a test rather than something to notice by leaving
+/// a window open for a minute — and the window only asks while it is *awake*.
+/// It sleeps at idle (§16.3), so a window nobody is touching takes no backups,
+/// which is right: there is nothing new in it to lose.
+pub fn autosave_due(since_last: std::time::Duration, every: std::time::Duration) -> bool {
+    since_last >= every
+}

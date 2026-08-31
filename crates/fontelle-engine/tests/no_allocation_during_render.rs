@@ -135,6 +135,11 @@ fn process_block_does_not_allocate_across_many_real_blocks() {
         payload: EventPayload::NoteOn {
             key: 60,
             velocity: 100,
+            pan: 0,
+            fine_pitch: 0,
+            release: 0,
+            mod_x: 0,
+            mod_y: 0,
             voice_context: 0,
         },
     }];
@@ -191,6 +196,11 @@ fn the_stereo_sampler_into_mixer_chain_does_not_allocate_per_block() {
             payload: EventPayload::NoteOn {
                 key: 60 + (i % 12) as u8,
                 velocity: 100,
+                pan: 0,
+                fine_pitch: 0,
+                release: 0,
+                mod_x: 0,
+                mod_y: 0,
                 voice_context: 0,
             },
         });
@@ -294,6 +304,11 @@ fn the_full_track_to_master_chain_does_not_allocate_per_block() {
         payload: EventPayload::NoteOn {
             key: 60,
             velocity: 127,
+            pan: 0,
+            fine_pitch: 0,
+            release: 0,
+            mod_x: 0,
+            mod_y: 0,
             voice_context: 0,
         },
     }];
@@ -341,6 +356,11 @@ fn driving_the_transport_through_stops_seeks_and_loops_does_not_allocate() {
                     EventPayload::NoteOn {
                         key: 60,
                         velocity: 127,
+                        pan: 0,
+                        fine_pitch: 0,
+                        release: 0,
+                        mod_x: 0,
+                        mod_y: 0,
                         voice_context: 0,
                     }
                 } else {
@@ -425,6 +445,11 @@ fn draining_live_input_does_not_allocate() {
                     EventPayload::NoteOn {
                         key,
                         velocity: 100,
+                        pan: 0,
+                        fine_pitch: 0,
+                        release: 0,
+                        mod_x: 0,
+                        mod_y: 0,
                         voice_context: u32::MAX,
                     }
                 } else {

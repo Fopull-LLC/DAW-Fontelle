@@ -9,6 +9,19 @@ pub enum ModSource {
     PitchBend,
     Random,
     NoteOnCounter,
+    /// §16.5's two free per-note modulation values, `Note::mod_x` and
+    /// `Note::mod_y`, as unipolar `0.0..=1.0`.
+    ///
+    /// Free means the patch decides: they are sources and nothing more, so a
+    /// note that sets them under a patch routing neither is inaudible, and a
+    /// patch that routes X to cutoff has made X a per-note brightness knob
+    /// without anything outside the matrix having an opinion about it.
+    ///
+    /// Added after the variants above, which matters for the saved format:
+    /// serde names variants, so no existing patch file can name these and
+    /// none of them changes meaning.
+    NoteModX,
+    NoteModY,
 }
 
 /// Any continuous patch parameter, addressed by stable ID (TDD §7.5). Minimum set:

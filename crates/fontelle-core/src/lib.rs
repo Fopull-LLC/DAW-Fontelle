@@ -20,5 +20,6 @@ pub use playback::{LoopMode, PlaybackConfig};
 pub use sampler::{PrepareContext, Sampler, SamplerContext};
 pub use streaming::{SampleBuffer, SampleStore};
 pub use voice::{
-    RetriggerMode, StealPolicy, UnisonConfig, Voice, VoiceConfig, VoicePool, velocity_to_gain,
+    NoteTrigger, RetriggerMode, StealPolicy, UnisonConfig, Voice, VoiceConfig, VoicePool,
+    velocity_to_gain,
 };

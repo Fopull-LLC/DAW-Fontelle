@@ -98,6 +98,14 @@ impl MidiRouter {
                     EventPayload::NoteOn {
                         key: out_key,
                         velocity: self.mapping.velocity_curve.apply(velocity),
+                        // A MIDI note-on carries none of §16.5's per-note
+                        // properties — they are the score's, not the
+                        // keyboard's — so a played note is a note as written.
+                        pan: 0,
+                        fine_pitch: 0,
+                        release: 0,
+                        mod_x: 0,
+                        mod_y: 0,
                         voice_context: self.voice_context,
                     },
                 )

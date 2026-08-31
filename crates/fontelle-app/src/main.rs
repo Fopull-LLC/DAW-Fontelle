@@ -280,7 +280,8 @@ fn play_or_render(
         println!("  ! layer {} has no audio", missing.layer);
     }
 
-    let timeline = fontelle_sequencer::compile(&project, &realised.channel_nodes);
+    let timeline =
+        fontelle_sequencer::compile(&project, &realised.channel_nodes, &Default::default());
 
     // Written before anything is played: a bounce that takes two minutes
     // should not be standing between the user and their project being on
@@ -416,7 +417,10 @@ fn play_or_render(
     // Armed before the source goes to the callback, because after that nothing
     // owns it. The transport state is what decides whether anything is
     // actually written down, so arming costs nothing when not recording.
-    let mut capture = record.then(|| {
+    // `--record` on the command line, or a window, which has a record button.
+    // Arming the *mirror* costs nothing when nothing is recording: the
+    // transport state is what decides whether anything is written down.
+    let mut capture = (record || window).then(|| {
         let (writer, reader) =
             fontelle_engine::live_capture_channel(fontelle_engine::CAPTURE_CAPACITY);
         live_source.arm_capture(writer);
@@ -492,7 +496,10 @@ fn play_or_render(
             project.tempo_map.clone(),
             window_length,
             SAMPLE_RATE,
-        );
+        )
+        // The same switch the graph is playing through, so the button on the
+        // bar and the node in the schedule are one thing.
+        .with_metronome(realised.metronome.clone());
         // The studio the window drives. Without a note clip there is nothing
         // for a roll to show, so the panel simply stays empty rather than
         // opening onto a clip that does not exist.
@@ -513,7 +520,13 @@ fn play_or_render(
             // The instruments reach the running stream through their own
             // channel, so choosing a soundfont from inside the window does not
             // restart the audio device.
-            .with_graphs(graph_publisher);
+            .with_graphs(graph_publisher, realised.track_controls.clone())
+            .with_param_nodes(realised.param_nodes.clone());
+            // The recording end of the live channel, so pressing record in the
+            // window keeps a take the same way `--record` does.
+            if let Some(reader) = capture.take() {
+                session = session.with_capture(reader);
+            }
             if let Some(port) = live_ports.claim() {
                 session = session.with_audition(Box::new(port));
             }
@@ -523,6 +536,10 @@ fn play_or_render(
             if let Some(created) = session.open_bank() {
                 println!("  soundfont folder: {}", created.display());
             }
+            // And the projects folder, if the settings name one. Nothing is
+            // created and nothing is guessed at (INVARIANT 10): with no folder
+            // configured the Projects tab says so and offers to pick one.
+            session.open_projects();
             Box::new(session) as Box<dyn fontelle_ui::StudioHost>
         });
         let result = fontelle_ui::run_window(fontelle_ui::WindowOptions {
@@ -685,6 +702,7 @@ fn keep_the_take(
         prefab_link: None,
         color: None,
         muted: false,
+        loop_length: None,
     })
     .apply(project)
     .map_err(|e| format!("{e}"))?;
@@ -1157,13 +1175,28 @@ const WELCOME: &str = "\
   Pick a soundfont in the browser, then a preset:
     click a preset  -> puts it on the selected channel
     Ctrl+click      -> puts it on a new one, as does \"+ Add instrument\"
-  Draw with the left mouse button, delete with the right; drag a note's right
-  edge to lengthen it, and drag out from an empty cell to draw one to length.
+  Draw with the left mouse button, delete with the right; the drag that
+  follows carries the note you just drew, and a note's right edge lengthens it.
+  C is the cut tool: drag a line across the grid and every note it crosses is
+  cut where it crossed — a diagonal stroke staggers the cuts across a chord.
+  The arrangement has the same two tools: P draws a clip where you click, E
+  marquees, and Ctrl+drag marquees without leaving the draw tool.
+  Arrow keys move the selection: Ctrl+up/down by an octave, Ctrl+left/right by
+  a bar, Shift+left/right change the length, Shift+up/down the lane's value.
   Space plays.  Ctrl+Z/Y undo.  Ctrl+S saves.  Ctrl+C/X/V/B copy, cut, paste,
-  duplicate.  P/B/E/D pick draw/paint/select/delete.  S cycles snap.
+  duplicate.  P/B/E/D or 1-7 pick a tool.  S cycles snap; L the note property
+  the lane shows, and its chip opens the whole list.  G cycles the onion skin.
   Alt drags off the grid; Shift keeps a drag to one axis; Ctrl+drag marquees.
+  Drag the seams between the panels to resize them: down the side of the
+  channel rack, across it above the soundfonts, and under the arrangement.
   Wheel scrolls the keys, Shift+wheel the song, Ctrl+wheel zooms time and
-  Ctrl+Shift+wheel zooms pitch — both about the pointer.";
+  Ctrl+Shift+wheel zooms pitch — both about the pointer.
+  The tempo and the time signature are the two boxes after the position
+  read-out: drag the tempo or roll the wheel over it, Shift for a fine step;
+  click the signature or roll it to change the beats in a bar.
+  The Mixer tab beside the piano roll has a fader, a pan and mute/solo per
+  track, with the master pinned to the right; both controls snap to the
+  middle, and the read-out under each strip says the level.";
 
 /// The theme the window opens with: a file if one was named, otherwise the
 /// light or dark default (TDD §16.6).

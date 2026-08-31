@@ -958,6 +958,7 @@ name = "fontelle-fx"
 version = "0.0.0"
 dependencies = [
  "fontelle-dsp",
+ "fontelle-types",
  "realfft",
 ]
 
@@ -1026,6 +1027,7 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
+ "slotmap",
  "vello",
  "winit",
 ]

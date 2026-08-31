@@ -1,0 +1,314 @@
+//! Editing the selection from the keyboard.
+//!
+//! Reported from using the window: *"we need to ensure our keybinds are
+//! expansive so like in the piano roll, I should be able to do ctrl and up or
+//! down arrow to move a selection in the piano roll up or down an octave."*
+//!
+//! The roll had no arrow keys at all — the only way to move a note was to drag
+//! it, which is fine for a phrase you are placing and hopeless for one you are
+//! correcting. Everything here is the same edit a drag produces, so the same
+//! clamps hold and the same undo entry results; what the *window* binds each
+//! one to is [`crate::app`]'s business and is listed there.
+//!
+//! The clamps are the interesting half. A transpose is all-or-nothing in the
+//! document — `MoveNotes` moves every named note or none — so a chord with one
+//! note near the top of the keyboard has to be clamped by the roll, or pressing
+//! up does nothing at all and looks broken.
+
+use fontelle_model::{Arena, Note, NoteProperty};
+use fontelle_types::{NoteId, PPQN, Tick};
+use fontelle_ui::canvas::{LaneProperty, PianoRoll, RollEdit, RollView, SnapDivision};
+
+fn view() -> RollView {
+    RollView {
+        scroll_tick: 0,
+        top_key: 72,
+        pixels_per_tick: 0.25,
+        key_height: 12.0,
+        snap: SnapDivision::Step,
+    }
+}
+
+fn note(start: Tick, length: Tick, key: u8) -> Note {
+    Note {
+        start,
+        length,
+        key,
+        velocity: 100,
+        pan: 0,
+        fine_pitch: 0,
+        release: 0,
+        mod_x: 0,
+        mod_y: 0,
+        slide: false,
+    }
+}
+
+fn notes(items: &[(Tick, Tick, u8)]) -> (Arena<NoteId, Note>, Vec<NoteId>) {
+    let mut arena = Arena::default();
+    let ids = items
+        .iter()
+        .map(|(start, length, key)| arena.insert(note(*start, *length, *key)))
+        .collect();
+    (arena, ids)
+}
+
+fn apply(arena: &mut Arena<NoteId, Note>, edits: &[RollEdit]) {
+    for edit in edits {
+        match edit {
+            RollEdit::Move {
+                ids,
+                tick_delta,
+                key_delta,
+            } => {
+                for id in ids {
+                    if let Some(n) = arena.get_mut(*id) {
+                        n.start = (n.start + tick_delta).max(0);
+                        n.key = (i16::from(n.key) + key_delta).clamp(0, 127) as u8;
+                    }
+                }
+            }
+            RollEdit::Resize { ids, tick_delta } => {
+                for id in ids {
+                    if let Some(n) = arena.get_mut(*id) {
+                        n.length = (n.length + tick_delta).max(1);
+                    }
+                }
+            }
+            RollEdit::SetProperty {
+                ids,
+                property,
+                value,
+            } => {
+                for id in ids {
+                    if let Some(n) = arena.get_mut(*id) {
+                        property.set(n, *value);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+// ------------------------------------------------------------ transpose ---
+
+#[test]
+fn the_selection_moves_a_semitone_at_a_time() {
+    let (mut arena, ids) = notes(&[(0, PPQN, 60), (0, PPQN, 64)]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids.clone());
+
+    let edits = roll.nudge(&arena, 0, 1);
+    apply(&mut arena, &edits);
+    assert_eq!((arena[ids[0]].key, arena[ids[1]].key), (61, 65));
+
+    let edits = roll.nudge(&arena, 0, -1);
+    apply(&mut arena, &edits);
+    assert_eq!((arena[ids[0]].key, arena[ids[1]].key), (60, 64));
+}
+
+#[test]
+fn an_octave_is_the_same_edit_twelve_times_over() {
+    // What Ctrl+Up is bound to. The roll does not know about Ctrl; it knows
+    // about twelve.
+    let (mut arena, ids) = notes(&[(0, PPQN, 60)]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids.clone());
+
+    let edits = roll.nudge(&arena, 0, 12);
+    apply(&mut arena, &edits);
+    assert_eq!(arena[ids[0]].key, 72);
+}
+
+#[test]
+fn a_chord_that_would_run_off_the_top_moves_as_far_as_it_can() {
+    // `MoveNotes` is all-or-nothing: unclamped, one note at 120 stops the
+    // whole chord dead and pressing Ctrl+Up simply does nothing.
+    let (mut arena, ids) = notes(&[(0, PPQN, 60), (0, PPQN, 120)]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids.clone());
+
+    let edits = roll.nudge(&arena, 0, 12);
+    apply(&mut arena, &edits);
+    assert_eq!(
+        (arena[ids[0]].key, arena[ids[1]].key),
+        (67, 127),
+        "the shape has to survive the clamp"
+    );
+
+    assert!(
+        roll.nudge(&arena, 0, 12).is_empty(),
+        "and once it is against the ceiling there is nothing left to ask for"
+    );
+}
+
+#[test]
+fn a_chord_at_the_bottom_of_the_keyboard_is_clamped_the_same_way() {
+    let (mut arena, ids) = notes(&[(0, PPQN, 3), (0, PPQN, 40)]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids.clone());
+
+    let edits = roll.nudge(&arena, 0, -12);
+    apply(&mut arena, &edits);
+    assert_eq!((arena[ids[0]].key, arena[ids[1]].key), (0, 37));
+}
+
+// ----------------------------------------------------------------- time ---
+
+#[test]
+fn the_selection_slides_by_one_snap_unit() {
+    let (mut arena, ids) = notes(&[(PPQN, PPQN, 60)]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids.clone());
+
+    let step = roll.step(4);
+    assert_eq!(step, PPQN / 4, "a sixteenth, which is what the snap says");
+
+    let edits = roll.nudge(&arena, step, 0);
+    apply(&mut arena, &edits);
+    assert_eq!(arena[ids[0]].start, PPQN + PPQN / 4);
+}
+
+#[test]
+fn the_step_follows_the_snap_and_is_never_zero() {
+    let mut roll = PianoRoll::new(view());
+    roll.view.snap = SnapDivision::Bar;
+    assert_eq!(roll.step(4), PPQN * 4);
+    roll.view.snap = SnapDivision::Beat;
+    assert_eq!(roll.step(4), PPQN);
+    // With the snap off an arrow key still has to mean *something*, or the
+    // keyboard stops working the moment you turn free positioning on.
+    roll.view.snap = SnapDivision::None;
+    assert!(roll.step(4) > 0);
+}
+
+#[test]
+fn nothing_is_ever_nudged_before_the_start_of_the_clip() {
+    let (mut arena, ids) = notes(&[(PPQN / 4, PPQN, 60), (PPQN * 4, PPQN, 62)]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids.clone());
+
+    let edits = roll.nudge(&arena, -PPQN, 0);
+    apply(&mut arena, &edits);
+    assert_eq!(
+        (arena[ids[0]].start, arena[ids[1]].start),
+        (0, PPQN * 4 - PPQN / 4),
+        "the phrase keeps its shape and stops at bar one"
+    );
+    assert!(roll.nudge(&arena, -PPQN, 0).is_empty());
+}
+
+// --------------------------------------------------------------- length ---
+
+#[test]
+fn shift_arrows_lengthen_and_shorten() {
+    let (mut arena, ids) = notes(&[(0, PPQN, 60)]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids.clone());
+
+    let step = roll.step(4);
+    let edits = roll.resize_selection(&arena, step);
+    apply(&mut arena, &edits);
+    assert_eq!(arena[ids[0]].length, PPQN + PPQN / 4);
+
+    let edits = roll.resize_selection(&arena, -step);
+    apply(&mut arena, &edits);
+    assert_eq!(arena[ids[0]].length, PPQN);
+}
+
+#[test]
+fn a_note_is_never_shortened_past_nothing() {
+    let (mut arena, ids) = notes(&[(0, PPQN / 4, 60), (0, PPQN * 4, 62)]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids.clone());
+
+    for _ in 0..20 {
+        let edits = roll.resize_selection(&arena, -(PPQN / 4));
+        apply(&mut arena, &edits);
+    }
+    assert!(
+        arena[ids[0]].length >= 1 && arena[ids[1]].length >= 1,
+        "got {} and {}",
+        arena[ids[0]].length,
+        arena[ids[1]].length
+    );
+}
+
+// ------------------------------------------------------------- property ---
+
+#[test]
+fn the_lane_property_can_be_bumped_from_the_keyboard() {
+    // Velocity by ear rather than by dragging a three-pixel bar.
+    let (mut arena, ids) = notes(&[(0, PPQN, 60), (0, PPQN, 64)]);
+    arena[ids[1]].velocity = 40;
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids.clone());
+
+    let edits = roll.nudge_property(&arena, 10);
+    apply(&mut arena, &edits);
+    assert_eq!(
+        (arena[ids[0]].velocity, arena[ids[1]].velocity),
+        (110, 50),
+        "each note keeps its own value — a bump is not a flatten"
+    );
+}
+
+#[test]
+fn a_bumped_property_is_clamped_to_what_the_model_allows() {
+    let (mut arena, ids) = notes(&[(0, PPQN, 60)]);
+    arena[ids[0]].velocity = 125;
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids.clone());
+
+    let edits = roll.nudge_property(&arena, 10);
+    apply(&mut arena, &edits);
+    let (_, max) = NoteProperty::Velocity.range();
+    assert_eq!(i32::from(arena[ids[0]].velocity), max);
+    assert!(
+        roll.nudge_property(&arena, 10).is_empty(),
+        "already at the ceiling: nothing to ask for"
+    );
+}
+
+#[test]
+fn it_bumps_whichever_property_the_lane_is_showing() {
+    let (mut arena, ids) = notes(&[(0, PPQN, 60)]);
+    let mut roll = PianoRoll::new(view());
+    roll.lane_property = LaneProperty::Pan;
+    roll.select(ids.clone());
+
+    let edits = roll.nudge_property(&arena, -20);
+    apply(&mut arena, &edits);
+    assert_eq!(arena[ids[0]].pan, -20);
+    assert_eq!(arena[ids[0]].velocity, 100, "and nothing else moved");
+}
+
+// -------------------------------------------------------------- nothing ---
+
+#[test]
+fn a_keystroke_with_nothing_selected_is_not_an_undo_entry() {
+    let (arena, _) = notes(&[(0, PPQN, 60)]);
+    let mut roll = PianoRoll::new(view());
+    assert!(roll.nudge(&arena, PPQN, 0).is_empty());
+    assert!(roll.resize_selection(&arena, PPQN).is_empty());
+    assert!(roll.nudge_property(&arena, 1).is_empty());
+}
+
+#[test]
+fn a_nudge_that_changes_pitch_asks_for_the_note_to_be_sounded() {
+    // You hear what you touch, whether you touched it with the mouse or not.
+    let (arena, ids) = notes(&[(0, PPQN, 60)]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids.clone());
+
+    roll.nudge(&arena, 0, 4);
+    assert_eq!(roll.take_audition().map(|a| a.key), Some(64));
+
+    roll.nudge(&arena, PPQN, 0);
+    assert_eq!(
+        roll.take_audition().map(|a| a.key),
+        None,
+        "sliding along in time is not a new note to hear"
+    );
+}

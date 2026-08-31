@@ -16,9 +16,9 @@
 use fontelle_model::{Arena, Note};
 use fontelle_types::{NoteId, PPQN, Tick};
 use fontelle_ui::canvas::{
-    Modifiers, MouseButton, PianoRoll, RollControl, RollEdit, RollView, SnapDivision, Tool,
-    key_to_y, note_at_tick, roll_layout, tick_to_x, toolbar_hit, toolbar_layout, velocity_of_y,
-    x_to_tick, zoom_x, zoom_y,
+    DEFAULT_LANE_HEIGHT, Modifiers, MouseButton, PianoRoll, RollControl, RollEdit, RollView,
+    SnapDivision, Tool, key_to_y, note_at_tick, roll_layout, tick_to_x, toolbar_hit,
+    toolbar_layout, velocity_of_y, x_to_tick, zoom_x, zoom_y,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::{Metrics, Theme};
@@ -52,6 +52,7 @@ fn note(start: Tick, length: Tick, key: u8) -> Note {
         release: 0,
         mod_x: 0,
         mod_y: 0,
+        slide: false,
     }
 }
 
@@ -77,9 +78,16 @@ fn at(view: &RollView, tick: Tick, key: u8) -> (f32, f32) {
 
 // ------------------------------------------------- drawing a note to length ---
 
+/// **This used to be the default and is now opt-in.** Reported from using the
+/// window: *"if I click to place a note, then my cursor moves to drag it, it
+/// shouldn't change the note length it should move the note."* The gesture
+/// itself is unchanged and still tested here; what changed is which of the two
+/// a bare press gets. See `tests/roll_draw.rs` for the move, and `DrawDrag`
+/// for why the default went the other way.
 #[test]
 fn drawing_a_note_and_dragging_right_sizes_it_in_one_gesture() {
     let mut roll = roll();
+    roll.draw_drag = fontelle_ui::canvas::DrawDrag::Resize;
     let mut arena = notes(&[]);
 
     let step = PPQN / 4;
@@ -88,10 +96,12 @@ fn drawing_a_note_and_dragging_right_sizes_it_in_one_gesture() {
     assert_eq!(
         edits,
         vec![RollEdit::Add {
-            tick: 0,
-            key: 60,
-            length: step,
-            velocity: roll.default_velocity,
+            note: Note {
+                start: 0,
+                length: step,
+                key: 60,
+                ..roll.template()
+            },
         }]
     );
 
@@ -426,7 +436,7 @@ fn copy_and_paste_puts_the_phrase_down_where_it_was_asked_for() {
     roll.select_all(&arena);
 
     assert_eq!(roll.copy(&arena), 2);
-    let edits = roll.paste(PPQN * 8);
+    let edits = roll.paste(PPQN * 8, 4);
     let [RollEdit::Insert(pasted)] = &edits[..] else {
         panic!("expected one insert, got {edits:?}")
     };
@@ -454,7 +464,7 @@ fn cutting_removes_what_it_copied_and_paste_still_works_afterwards() {
         "what was cut is not still selected"
     );
 
-    let edits = roll.paste(PPQN * 2);
+    let edits = roll.paste(PPQN * 2, 4);
     let [RollEdit::Insert(pasted)] = &edits[..] else {
         panic!("expected an insert")
     };
@@ -465,7 +475,7 @@ fn cutting_removes_what_it_copied_and_paste_still_works_afterwards() {
 #[test]
 fn pasting_an_empty_clipboard_asks_for_nothing() {
     let mut roll = roll();
-    assert!(roll.paste(PPQN).is_empty());
+    assert!(roll.paste(PPQN, 4).is_empty());
     // And an empty selection copies nothing rather than emptying what is held.
     let arena = notes(&[(0, PPQN, 60)]);
     roll.select_all(&arena);
@@ -473,7 +483,7 @@ fn pasting_an_empty_clipboard_asks_for_nothing() {
     roll.clear_selection();
     assert_eq!(roll.copy(&arena), 0);
     assert_eq!(
-        roll.paste(0).len(),
+        roll.paste(0, 4).len(),
         1,
         "the clipboard is not cleared by a bad copy"
     );
@@ -525,8 +535,15 @@ fn dragging_in_the_velocity_lane_sets_the_note_under_the_pointer() {
     let lane = Rect::new(grid().x, 500.0, grid().width, 80.0);
 
     let x = tick_to_x(&roll.view, grid(), PPQN / 2);
-    let edits = roll.press_velocity(x, lane.y + 8.0, lane, grid(), &arena);
-    let [RollEdit::SetVelocity { ids: hit, velocity }] = &edits[..] else {
+    let edits = roll.press_lane(x, lane.y + 8.0, lane, grid(), &arena);
+    let [
+        RollEdit::SetProperty {
+            ids: hit,
+            value: velocity,
+            ..
+        },
+    ] = &edits[..]
+    else {
         panic!("expected a velocity edit, got {edits:?}")
     };
     assert_eq!(
@@ -540,8 +557,15 @@ fn dragging_in_the_velocity_lane_sets_the_note_under_the_pointer() {
     );
 
     // Dragging down the lane keeps editing the same note.
-    let edits = roll.drag_velocity(x, lane.bottom() - 8.0, lane, grid(), &arena);
-    let [RollEdit::SetVelocity { ids: hit, velocity }] = &edits[..] else {
+    let edits = roll.drag_lane(x, lane.bottom() - 8.0, lane, grid(), &arena);
+    let [
+        RollEdit::SetProperty {
+            ids: hit,
+            value: velocity,
+            ..
+        },
+    ] = &edits[..]
+    else {
         panic!("expected a velocity edit, got {edits:?}")
     };
     assert_eq!(hit, &vec![ids[0]]);
@@ -556,8 +580,8 @@ fn the_velocity_lane_edits_the_whole_selection_when_you_grab_one_of_it() {
     let lane = Rect::new(grid().x, 500.0, grid().width, 80.0);
 
     let x = tick_to_x(&roll.view, grid(), PPQN / 2);
-    let edits = roll.press_velocity(x, lane.y + 8.0, lane, grid(), &arena);
-    let [RollEdit::SetVelocity { ids, .. }] = &edits[..] else {
+    let edits = roll.press_lane(x, lane.y + 8.0, lane, grid(), &arena);
+    let [RollEdit::SetProperty { ids, .. }] = &edits[..] else {
         panic!("expected a velocity edit")
     };
     assert_eq!(
@@ -575,7 +599,7 @@ fn pressing_the_velocity_lane_where_there_is_no_note_does_nothing() {
     let lane = Rect::new(grid().x, 500.0, grid().width, 80.0);
     let x = tick_to_x(&roll.view, grid(), PPQN * 8);
     assert!(
-        roll.press_velocity(x, lane.y + 8.0, lane, grid(), &arena)
+        roll.press_lane(x, lane.y + 8.0, lane, grid(), &arena)
             .is_empty()
     );
 }
@@ -600,7 +624,7 @@ fn the_note_under_a_column_is_the_one_that_covers_it() {
 fn the_roll_reserves_a_toolbar_and_a_velocity_lane() {
     let m = metrics();
     let frame = Rect::new(0.0, 0.0, 900.0, 520.0);
-    let l = roll_layout(frame, &m, true);
+    let l = roll_layout(frame, &m, DEFAULT_LANE_HEIGHT);
 
     assert_eq!(l.toolbar.y, frame.y, "the toolbar is the top of the panel");
     assert!(l.ruler.y >= l.toolbar.bottom());
@@ -618,7 +642,7 @@ fn the_roll_reserves_a_toolbar_and_a_velocity_lane() {
     assert!(l.velocity.bottom() <= frame.bottom() + 0.001);
 
     // Hidden, the grid takes the room back.
-    let without = roll_layout(frame, &m, false);
+    let without = roll_layout(frame, &m, 0.0);
     assert!(without.velocity.is_empty());
     assert!(without.grid.height > l.grid.height);
     assert_eq!(without.grid.bottom(), frame.bottom());
@@ -627,7 +651,7 @@ fn the_roll_reserves_a_toolbar_and_a_velocity_lane() {
 #[test]
 fn every_toolbar_control_is_inside_the_toolbar_and_clickable() {
     let m = metrics();
-    let l = roll_layout(Rect::new(0.0, 0.0, 900.0, 520.0), &m, true);
+    let l = roll_layout(Rect::new(0.0, 0.0, 900.0, 520.0), &m, DEFAULT_LANE_HEIGHT);
     let bar = toolbar_layout(l.toolbar, &m);
 
     assert!(!bar.items.is_empty());
@@ -672,4 +696,80 @@ fn a_toolbar_with_no_room_produces_nothing_rather_than_overlapping_controls() {
         toolbar_hit(&bar, 5.0, 2.0),
         bar.items.first().map(|(c, _)| *c)
     );
+}
+
+/// Reported from using the window: *"when I paste notes in the piano roll
+/// they're off time instead of snapped."*
+///
+/// The window worked out *where* to paste from the playhead, or — when the
+/// playhead is somewhere else in the song — from the raw pointer x, and handed
+/// that tick over untouched. A pointer is never on the grid, so a pasted
+/// phrase never was either.
+///
+/// It is fixed **here**, in the roll, rather than at the call site: the roll is
+/// what owns the snap division, and a rule enforced in the caller is a rule
+/// the next caller forgets.
+#[test]
+fn pasting_lands_on_the_grid_rather_than_where_the_pointer_happened_to_be() {
+    let mut roll = PianoRoll::new(view());
+    let mut notes = Arena::default();
+    let id = notes.insert(note(0, PPQN / 2, 60));
+    roll.select(vec![id]);
+    assert_eq!(roll.copy(&notes), 1);
+
+    // Seventeen ticks past bar 3 — the sort of number a pointer produces.
+    let edits = roll.paste(PPQN * 8 + 17, 4);
+    let [RollEdit::Insert(pasted)] = &edits[..] else {
+        panic!("expected one insert, got {edits:?}");
+    };
+    assert_eq!(
+        pasted[0].start,
+        PPQN * 8,
+        "a paste lands on the nearest line of the grid that is switched on"
+    );
+}
+
+/// The snap the roll is *actually* on, not a hard-coded one: a phrase pasted
+/// with the grid set to bars belongs on a bar.
+#[test]
+fn a_paste_uses_the_snap_division_that_is_switched_on() {
+    let mut roll = PianoRoll::new(RollView {
+        snap: SnapDivision::Bar,
+        ..view()
+    });
+    let mut notes = Arena::default();
+    let id = notes.insert(note(0, PPQN, 60));
+    roll.select(vec![id]);
+    roll.copy(&notes);
+
+    let edits = roll.paste(PPQN * 5, 4);
+    let [RollEdit::Insert(pasted)] = &edits[..] else {
+        panic!("expected one insert, got {edits:?}");
+    };
+    assert_eq!(
+        pasted[0].start,
+        PPQN * 4,
+        "bar snap puts it on the bar, not on the beat it was asked for"
+    );
+}
+
+/// And §16.5's free positioning still wins, as it does for every other
+/// gesture: Alt turns the grid off for as long as it is held.
+#[test]
+fn alt_pastes_free_of_the_grid() {
+    let mut roll = PianoRoll::new(view());
+    let mut notes = Arena::default();
+    let id = notes.insert(note(0, PPQN / 2, 60));
+    roll.select(vec![id]);
+    roll.copy(&notes);
+    roll.set_modifiers(Modifiers {
+        alt: true,
+        ..Default::default()
+    });
+
+    let edits = roll.paste(PPQN * 8 + 17, 4);
+    let [RollEdit::Insert(pasted)] = &edits[..] else {
+        panic!("expected one insert, got {edits:?}");
+    };
+    assert_eq!(pasted[0].start, PPQN * 8 + 17, "Alt means exactly there");
 }

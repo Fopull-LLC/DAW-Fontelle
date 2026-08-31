@@ -14,6 +14,11 @@ fn note_at(sample: i64, key: u8) -> TimedEvent {
         payload: EventPayload::NoteOn {
             key,
             velocity: 100,
+            pan: 0,
+            fine_pitch: 0,
+            release: 0,
+            mod_x: 0,
+            mod_y: 0,
             voice_context: 0,
         },
     }

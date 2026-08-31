@@ -56,6 +56,23 @@ pub fn is_soundfont(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("sf2"))
 }
 
+/// What a folder row says. The folder's own name, and the whole path when it
+/// has none — a root like `/` has no file name and a blank row is unclickable.
+fn folder_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// What a row sorts by.
+fn row_key(row: &BankRow) -> &str {
+    match row {
+        BankRow::Up { .. } => "",
+        BankRow::Folder { name, .. } => name,
+        BankRow::File(entry) => &entry.name,
+    }
+}
+
 fn display_name(path: &Path) -> String {
     path.file_stem()
         .and_then(|s| s.to_str())
@@ -63,11 +80,48 @@ fn display_name(path: &Path) -> String {
         .to_string()
 }
 
+/// One row of the browser while it is **browsing** — as against searching.
+///
+/// A collection organised as `Orchestral/Strings/…` is organised that way on
+/// purpose, and the flat list this used to produce threw that information
+/// away. See the module note on why browsing and searching are two questions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BankRow {
+    /// Back up one level. Always the first row when there is one, and absent
+    /// at the top — Fontelle reads nothing outside the folders the user named
+    /// (INVARIANT 10), and a browser that could walk to `/` would be offering
+    /// exactly that.
+    Up {
+        /// Where "up" goes. `None` is the list of configured folders.
+        to: Option<PathBuf>,
+    },
+    Folder {
+        path: PathBuf,
+        name: String,
+        /// How many soundfonts are under it, subfolders included.
+        ///
+        /// The one number worth showing: a folder with nothing in it looks
+        /// exactly like a folder with a hundred files until you click it.
+        soundfonts: usize,
+    },
+    File(BankEntry),
+}
+
 /// The folders, and what is in them.
 #[derive(Debug, Default)]
 pub struct SoundfontBank {
     dirs: Vec<PathBuf>,
+    /// Every soundfont under every configured folder, flat. What the **search**
+    /// runs against, and what it has always been.
     entries: Vec<BankEntry>,
+    /// Where the browser is standing. `None` is the top — the list of
+    /// configured folders, which is only a place to be when there is more than
+    /// one of them.
+    at: Option<PathBuf>,
+    /// What is in `at`, ready to draw. Cached rather than read on demand
+    /// because the panel asks for it every time its revision moves, and that
+    /// is not a reason to hit the disk.
+    rows: Vec<BankRow>,
     unreadable: Vec<(PathBuf, String)>,
 }
 
@@ -84,6 +138,8 @@ impl SoundfontBank {
         Self {
             dirs,
             entries: Vec::new(),
+            at: None,
+            rows: Vec::new(),
             unreadable: Vec::new(),
         }
     }
@@ -92,8 +148,75 @@ impl SoundfontBank {
         &self.dirs
     }
 
+    /// Every soundfont in the collection, flat. What the search runs against.
     pub fn entries(&self) -> &[BankEntry] {
         &self.entries
+    }
+
+    /// What the browser is showing right now: folders, then files.
+    pub fn rows(&self) -> &[BankRow] {
+        &self.rows
+    }
+
+    /// Which folder the browser is standing in. `None` is the list of
+    /// configured folders.
+    pub fn at(&self) -> Option<&Path> {
+        self.at.as_deref()
+    }
+
+    /// Follows row `index`. Returns whether the browser **moved** — a file row
+    /// is not a folder move, and the caller opens it instead.
+    pub fn open_row(&mut self, index: usize) -> bool {
+        let Some(row) = self.rows.get(index) else {
+            return false;
+        };
+        match row.clone() {
+            BankRow::Up { to } => {
+                self.at = to;
+                self.relist();
+                true
+            }
+            BankRow::Folder { path, .. } => {
+                self.at = Some(path);
+                self.relist();
+                true
+            }
+            BankRow::File(_) => false,
+        }
+    }
+
+    /// The soundfonts whose names match `query`, best first — across the
+    /// **whole** collection, wherever the browser happens to be standing.
+    pub fn search(&self, query: &str) -> Vec<&BankEntry> {
+        matches(&self.entries, query)
+            .into_iter()
+            .filter_map(|index| self.entries.get(index))
+            .collect()
+    }
+
+    /// Which folder a search hit is in, relative to its configured root —
+    /// the part that varies, and the part that tells two files called `Kit`
+    /// apart. Empty for a file sitting in the root itself.
+    pub fn folder_of(&self, entry: &BankEntry) -> String {
+        let parent = match entry.path.parent() {
+            Some(parent) => parent,
+            None => return String::new(),
+        };
+        for root in &self.dirs {
+            if let Ok(rest) = parent.strip_prefix(root) {
+                // `/` whatever the platform separator is: this is a label, and
+                // a mixed one would read as a bug.
+                return rest
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/");
+            }
+        }
+        parent
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
     }
 
     /// Folders that could not be read — gone, or not permitted.
@@ -125,6 +248,118 @@ impl SoundfontBank {
         }
 
         self.entries.sort_by_key(|entry| entry.name.to_lowercase());
+        // Where the browser was standing may have been moved or deleted while
+        // the window was open — the folder is on somebody's disk and Fontelle
+        // is not the only thing that can touch it.
+        self.settle();
+        self.relist();
+    }
+
+    /// Puts the browser somewhere that exists.
+    ///
+    /// Walks up from wherever it was until it finds a folder that is still
+    /// there and still inside a configured root; the top is the fallback. A
+    /// browser listing nothing, in a folder that is gone, with no way back is
+    /// the state this exists to make unreachable.
+    fn settle(&mut self) {
+        // With exactly one configured folder there is no useful level above
+        // it: a bank with one root should not make you click into it before
+        // you can see anything.
+        if self.at.is_none() && self.dirs.len() == 1 {
+            self.at = self.dirs.first().cloned();
+        }
+        while let Some(at) = self.at.clone() {
+            if at.is_dir() && self.root_of(&at).is_some() {
+                return;
+            }
+            self.at = self.parent_within_roots(&at);
+        }
+        if self.dirs.len() == 1 {
+            self.at = self.dirs.first().filter(|d| d.is_dir()).cloned();
+        }
+    }
+
+    /// The configured folder `path` is inside, or is.
+    fn root_of(&self, path: &Path) -> Option<&PathBuf> {
+        self.dirs.iter().find(|root| path.starts_with(root))
+    }
+
+    /// One level up, or `None` at a configured root — which is the top.
+    fn parent_within_roots(&self, path: &Path) -> Option<PathBuf> {
+        if self.dirs.iter().any(|root| root == path) {
+            return None;
+        }
+        path.parent()
+            .filter(|parent| self.root_of(parent).is_some())
+            .map(Path::to_path_buf)
+    }
+
+    /// Reads whichever folder the browser is standing in.
+    fn relist(&mut self) {
+        self.rows.clear();
+        let Some(at) = self.at.clone() else {
+            // The top, with more than one configured folder: the folders
+            // themselves are the list.
+            for dir in self.dirs.clone() {
+                self.rows.push(BankRow::Folder {
+                    name: folder_name(&dir),
+                    soundfonts: self.count_under(&dir),
+                    path: dir,
+                });
+            }
+            self.rows.sort_by_key(|row| row_key(row).to_lowercase());
+            return;
+        };
+
+        if self.parent_within_roots(&at).is_some() || self.dirs.len() > 1 {
+            self.rows.push(BankRow::Up {
+                to: self.parent_within_roots(&at),
+            });
+        }
+
+        let listing = match std::fs::read_dir(&at) {
+            Ok(listing) => listing,
+            Err(e) => {
+                self.unreadable.push((at, e.to_string()));
+                return;
+            }
+        };
+        let (mut folders, mut files) = (Vec::new(), Vec::new());
+        for entry in listing.flatten() {
+            let path = entry.path();
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                folders.push(BankRow::Folder {
+                    name: folder_name(&path),
+                    soundfonts: self.count_under(&path),
+                    path,
+                });
+            } else if is_soundfont(&path) {
+                files.push(BankRow::File(BankEntry {
+                    name: display_name(&path),
+                    path,
+                    size_bytes: meta.len(),
+                }));
+            }
+        }
+        // Folders first, then files, each alphabetical: the structure is what
+        // you are reading when you are browsing, so it comes first.
+        folders.sort_by_key(|row| row_key(row).to_lowercase());
+        files.sort_by_key(|row| row_key(row).to_lowercase());
+        self.rows.append(&mut folders);
+        self.rows.append(&mut files);
+    }
+
+    /// How many soundfonts are under `dir`, subfolders included.
+    ///
+    /// From the index rather than by walking again: it already holds every
+    /// file under every root, and counting a prefix is a scan of a `Vec`
+    /// against a folder read per row.
+    fn count_under(&self, dir: &Path) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.path.starts_with(dir))
+            .count()
     }
 
     fn walk(&mut self, dir: &Path, depth: usize, seen: &mut HashSet<PathBuf>) {

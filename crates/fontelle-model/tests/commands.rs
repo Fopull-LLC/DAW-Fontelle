@@ -32,6 +32,7 @@ fn a_note(start: i64, key: u8) -> Note {
         release: 0,
         mod_x: 0,
         mod_y: 0,
+        slide: false,
     }
 }
 
@@ -56,9 +57,11 @@ fn fixture() -> Fixture {
     let channel = project.channels.insert(fontelle_model::Channel {
         name: "Part".into(),
         color: [0; 4],
-        mixer_track: track,
+        mixer_track: Some(track),
         patch_data: None,
         pan: 0.0,
+        muted: false,
+        soloed: false,
     });
     let lane = project.lanes.insert(Lane {
         name: "Lane".into(),
@@ -81,6 +84,7 @@ fn fixture() -> Fixture {
         prefab_link: None,
         color: None,
         muted: false,
+        loop_length: None,
     });
     Fixture {
         project,
@@ -123,19 +127,26 @@ fn adding_and_removing_a_channel_inverts_exactly() {
 }
 
 #[test]
-fn adding_a_channel_gives_it_a_mixer_track_of_its_own() {
-    // One command, one undo entry: choosing an instrument should not need two
-    // presses of Ctrl+Z to take back.
+fn adding_a_channel_is_one_command_and_one_undo_entry() {
+    // Choosing an instrument should not need two presses of Ctrl+Z to take
+    // back. It used to also mint a mixer track, and this test used to say so;
+    // that is deliberately gone — see `tests/routing.rs`, which asserts the
+    // opposite, and `Channel::mixer_track` for why.
     let mut f = fixture();
     let tracks_before = f.project.mixer.tracks.len();
     let mut add = AddChannel::new("Strings", None);
     add.apply(&mut f.project).unwrap();
 
     let channel = add.channel().expect("the id is known once it is applied");
-    assert_eq!(f.project.mixer.tracks.len(), tracks_before + 1);
-    let track = f.project.channels[channel].mixer_track;
-    assert!(f.project.mixer.tracks.contains_key(track));
-    assert_eq!(f.project.mixer.tracks[track].output, f.project.mixer.master);
+    assert_eq!(f.project.channels[channel].name, "Strings");
+    assert_eq!(
+        f.project.mixer.tracks.len(),
+        tracks_before,
+        "a strip is a destination somebody builds, not a side effect of loading a soundfont"
+    );
+
+    add.invert().apply(&mut f.project).unwrap();
+    assert!(!f.project.channels.contains_key(channel));
 }
 
 #[test]
@@ -187,6 +198,7 @@ fn every_clip_command_inverts_exactly() {
         prefab_link: None,
         color: None,
         muted: false,
+        loop_length: None,
     };
     round_trips(Box::new(AddClip::new(new_clip)), &mut f.project);
     round_trips(Box::new(RemoveClip::new(f.clip)), &mut f.project);
@@ -810,5 +822,466 @@ fn the_history_can_be_asked_what_it_just_applied() {
     assert_eq!(
         data.notes[ids[0]].key, 72,
         "and it names the note that arrived"
+    );
+}
+
+// --- note properties beyond velocity ---------------------------------------
+//
+// The piano roll's lane can show pan, tuning, release and the two free
+// modulation values as well as velocity (§16.5's property lanes). All five were
+// already on `Note` and none of them had a command, so none of them could be
+// edited at all — INVARIANT 9 leaves no other way in.
+
+#[test]
+fn a_property_command_sets_one_property_and_leaves_the_rest_alone() {
+    use fontelle_model::{ClipSource, NoteProperty, SetNoteProperty};
+
+    let mut f = fixture();
+    let ids = vec![f.notes[0]];
+    let mut set = SetNoteProperty::new(f.clip, ids.clone(), NoteProperty::Pan, -40);
+    set.apply(&mut f.project).unwrap();
+
+    let ClipSource::Notes(data) = &f.project.clips[f.clip].source else {
+        unreachable!()
+    };
+    let note = data.notes[f.notes[0]];
+    assert_eq!(note.pan, -40);
+    assert_eq!(note.velocity, 100, "velocity is not pan's business");
+    assert_eq!(note.fine_pitch, 0);
+}
+
+#[test]
+fn a_property_command_clamps_to_what_the_field_can_hold() {
+    use fontelle_model::{ClipSource, NoteProperty, SetNoteProperty};
+
+    let mut f = fixture();
+    let ids = vec![f.notes[0]];
+    for (property, asked, expected) in [
+        (NoteProperty::Pan, 9_000, 127),
+        (NoteProperty::Pan, -9_000, -127),
+        (NoteProperty::Velocity, 0, 1),
+        (NoteProperty::Velocity, 300, 127),
+        // An octave, not a pitch bend's 8191. The range narrowed once fine
+        // pitch became audible: read as the cents it is documented in, ±8192
+        // is ±81 semitones, which no lane can be aimed inside. See
+        // `fontelle-model/tests/note_properties.rs`.
+        (NoteProperty::FinePitch, 99_999, 1_200),
+        (NoteProperty::FinePitch, -99_999, -1_200),
+    ] {
+        SetNoteProperty::new(f.clip, ids.clone(), property, asked)
+            .apply(&mut f.project)
+            .unwrap();
+        let ClipSource::Notes(data) = &f.project.clips[f.clip].source else {
+            unreachable!()
+        };
+        assert_eq!(
+            property.get(&data.notes[f.notes[0]]),
+            expected,
+            "{property:?} asked for {asked}"
+        );
+    }
+}
+
+#[test]
+fn undoing_a_property_edit_restores_each_note_its_own_value() {
+    use fontelle_model::{ClipSource, History, NoteProperty, SetNoteProperty};
+
+    let mut f = fixture();
+    // Two notes that disagree, which is the case a single restored value gets
+    // wrong — the same trap `SetNoteVelocity` documents.
+    {
+        let ClipSource::Notes(data) = &mut f.project.clips[f.clip].source else {
+            unreachable!()
+        };
+        data.notes[f.notes[0]].pan = -20;
+        data.notes[f.notes[1]].pan = 60;
+    }
+    let ids = vec![f.notes[0], f.notes[1]];
+
+    let mut history = History::new();
+    history
+        .apply(
+            Box::new(SetNoteProperty::new(
+                f.clip,
+                ids.clone(),
+                NoteProperty::Pan,
+                0,
+            )),
+            &mut f.project,
+        )
+        .unwrap();
+    history.undo(&mut f.project).unwrap().unwrap();
+
+    let ClipSource::Notes(data) = &f.project.clips[f.clip].source else {
+        unreachable!()
+    };
+    assert_eq!(data.notes[f.notes[0]].pan, -20);
+    assert_eq!(data.notes[f.notes[1]].pan, 60);
+}
+
+#[test]
+fn dragging_a_property_lane_coalesces_into_one_history_entry() {
+    use fontelle_model::{ClipSource, History, NoteProperty, SetNoteProperty};
+
+    let mut f = fixture();
+    let mut history = History::new();
+    let ids = vec![f.notes[0]];
+
+    for pan in [10, 20, 30, 40] {
+        history
+            .apply(
+                Box::new(SetNoteProperty::new(
+                    f.clip,
+                    ids.clone(),
+                    NoteProperty::Pan,
+                    pan,
+                )),
+                &mut f.project,
+            )
+            .unwrap();
+    }
+    history.undo(&mut f.project).unwrap().unwrap();
+    let ClipSource::Notes(data) = &f.project.clips[f.clip].source else {
+        unreachable!()
+    };
+    assert_eq!(data.notes[f.notes[0]].pan, 0, "back to before the drag");
+
+    // But a drag on a *different* property is a different entry: cycling the
+    // lane mid-gesture must not fold a pan edit into a velocity one.
+    let mut history = History::new();
+    history
+        .apply(
+            Box::new(SetNoteProperty::new(
+                f.clip,
+                ids.clone(),
+                NoteProperty::Pan,
+                50,
+            )),
+            &mut f.project,
+        )
+        .unwrap();
+    history
+        .apply(
+            Box::new(SetNoteProperty::new(
+                f.clip,
+                ids.clone(),
+                NoteProperty::Velocity,
+                50,
+            )),
+            &mut f.project,
+        )
+        .unwrap();
+    history.undo(&mut f.project).unwrap().unwrap();
+    let ClipSource::Notes(data) = &f.project.clips[f.clip].source else {
+        unreachable!()
+    };
+    assert_eq!(data.notes[f.notes[0]].velocity, 100, "the velocity is back");
+    assert_eq!(data.notes[f.notes[0]].pan, 50, "and the pan edit survived");
+}
+
+#[test]
+fn a_property_command_naming_a_note_that_is_gone_is_refused_rather_than_partial() {
+    use fontelle_model::{NoteProperty, SetNoteProperty};
+
+    let mut f = fixture();
+    let before = snapshot(&f.project);
+    let mut set = SetNoteProperty::new(
+        f.clip,
+        vec![f.notes[0], NoteId::default()],
+        NoteProperty::Pan,
+        5,
+    );
+    assert!(set.apply(&mut f.project).is_err());
+    assert_eq!(
+        before,
+        snapshot(&f.project),
+        "a refused command must leave the document untouched, not half done"
+    );
+}
+
+// --- naming a channel ------------------------------------------------------
+//
+// A channel's name is what the rack shows, and until this existed there was no
+// way to change it — so a channel whose soundfont had been swapped went on
+// saying what it used to be, which is the loudest "nothing happened" a rack can
+// give somebody who just changed an instrument.
+
+#[test]
+fn renaming_a_channel_inverts_exactly() {
+    use fontelle_model::RenameChannel;
+
+    let mut f = fixture();
+    let before = snapshot(&f.project);
+    let was = f.project.channels[f.channel].name.clone();
+
+    let mut rename = RenameChannel::new(f.channel, "tri baja");
+    rename.apply(&mut f.project).unwrap();
+    assert_eq!(f.project.channels[f.channel].name, "tri baja");
+    assert_ne!(was, "tri baja", "the fixture already had the new name");
+
+    rename.invert().apply(&mut f.project).unwrap();
+    assert_eq!(before, snapshot(&f.project));
+}
+
+#[test]
+fn renaming_a_channel_that_is_gone_is_refused() {
+    use fontelle_model::RenameChannel;
+    use fontelle_types::ChannelId;
+
+    let mut f = fixture();
+    let before = snapshot(&f.project);
+    let mut rename = RenameChannel::new(ChannelId::default(), "nowhere");
+    assert!(rename.apply(&mut f.project).is_err());
+    assert_eq!(before, snapshot(&f.project));
+}
+
+#[test]
+fn renaming_the_same_channel_twice_is_one_history_entry() {
+    use fontelle_model::{History, RenameChannel};
+
+    let mut f = fixture();
+    let was = f.project.channels[f.channel].name.clone();
+    let mut history = History::new();
+    for name in ["a", "ab", "abc"] {
+        history
+            .apply(
+                Box::new(RenameChannel::new(f.channel, name)),
+                &mut f.project,
+            )
+            .unwrap();
+    }
+    history.undo(&mut f.project).unwrap().unwrap();
+    assert_eq!(
+        f.project.channels[f.channel].name, was,
+        "one undo goes back to the name it started with, not to \"ab\""
+    );
+}
+
+// --- one gesture, one entry ------------------------------------------------
+//
+// Choosing an instrument is two document changes — the patch, and the channel's
+// name — and it is one thing a person did. `Compound` is what makes those the
+// same number of Ctrl+Z presses as the sentence "I chose an instrument" has
+// verbs.
+
+#[test]
+fn a_compound_applies_its_parts_in_order_and_undoes_them_all_at_once() {
+    use fontelle_model::{Compound, RenameChannel, SetNumber};
+
+    let mut f = fixture();
+    let before = snapshot(&f.project);
+
+    let mut compound = Compound::new(
+        "Choose instrument",
+        vec![
+            Box::new(RenameChannel::new(f.channel, "tri baja")),
+            Box::new(SetNumber::new(NumberTarget::Tempo, 90.0)),
+        ],
+    );
+    compound.apply(&mut f.project).unwrap();
+    assert_eq!(f.project.channels[f.channel].name, "tri baja");
+    assert_eq!(f.project.tempo_map.tempo_at(0), 90.0);
+    assert_eq!(compound.label(), "Choose instrument");
+
+    compound.invert().apply(&mut f.project).unwrap();
+    assert_eq!(
+        before,
+        snapshot(&f.project),
+        "a compound's inverse is its parts' inverses, in reverse"
+    );
+}
+
+#[test]
+fn a_compound_whose_second_part_fails_leaves_the_document_alone() {
+    use fontelle_model::{Compound, RenameChannel};
+    use fontelle_types::ChannelId;
+
+    let mut f = fixture();
+    let before = snapshot(&f.project);
+
+    let mut compound = Compound::new(
+        "Two renames",
+        vec![
+            Box::new(RenameChannel::new(f.channel, "first")),
+            Box::new(RenameChannel::new(ChannelId::default(), "nowhere")),
+        ],
+    );
+    assert!(compound.apply(&mut f.project).is_err());
+    assert_eq!(
+        before,
+        snapshot(&f.project),
+        "half a compound is exactly the state its inverse cannot describe"
+    );
+}
+
+#[test]
+fn a_compound_goes_through_the_history_as_one_entry() {
+    use fontelle_model::{ClipSource, Compound, History, RemoveNotes, RenameChannel};
+
+    let mut f = fixture();
+    let mut history = History::new();
+    history
+        .apply(
+            Box::new(Compound::new(
+                "Tidy up",
+                vec![
+                    Box::new(RenameChannel::new(f.channel, "lead")),
+                    Box::new(RemoveNotes::new(f.clip, vec![f.notes[0]])),
+                ],
+            )),
+            &mut f.project,
+        )
+        .unwrap();
+
+    history.undo(&mut f.project).unwrap().unwrap();
+    assert_eq!(f.project.channels[f.channel].name, "Part");
+    let ClipSource::Notes(data) = &f.project.clips[f.clip].source else {
+        unreachable!()
+    };
+    assert!(
+        data.notes.get(f.notes[0]).is_some(),
+        "one undo put both halves back"
+    );
+}
+
+// --- resizing a clip -------------------------------------------------------
+//
+// The arrangement canvas drags a clip's right-hand edge, which is the one clip
+// operation the command set was missing — `MoveClip` and `DuplicateClip` were
+// both there.
+
+#[test]
+fn resizing_a_clip_inverts_exactly() {
+    use fontelle_model::ResizeClip;
+
+    let mut f = fixture();
+    let before = snapshot(&f.project);
+    let was = f.project.clips[f.clip].length;
+
+    let mut resize = ResizeClip::new(f.clip, PPQN * 4);
+    resize.apply(&mut f.project).unwrap();
+    assert_eq!(f.project.clips[f.clip].length, was + PPQN * 4);
+
+    resize.invert().apply(&mut f.project).unwrap();
+    assert_eq!(before, snapshot(&f.project));
+}
+
+#[test]
+fn a_clip_can_never_be_resized_to_nothing() {
+    use fontelle_model::ResizeClip;
+
+    let mut f = fixture();
+    let mut resize = ResizeClip::new(f.clip, -PPQN * 10_000);
+    resize.apply(&mut f.project).unwrap();
+    assert!(
+        f.project.clips[f.clip].length > 0,
+        "a clip of zero length is one nobody can grab again"
+    );
+}
+
+#[test]
+fn dragging_a_clips_edge_coalesces_into_one_history_entry() {
+    use fontelle_model::{History, ResizeClip};
+
+    let mut f = fixture();
+    let was = f.project.clips[f.clip].length;
+    let mut history = History::new();
+    for _ in 0..4 {
+        history
+            .apply(Box::new(ResizeClip::new(f.clip, PPQN)), &mut f.project)
+            .unwrap();
+    }
+    assert_eq!(f.project.clips[f.clip].length, was + PPQN * 4);
+    history.undo(&mut f.project).unwrap().unwrap();
+    assert_eq!(f.project.clips[f.clip].length, was, "one drag, one undo");
+}
+
+#[test]
+fn turning_a_knob_on_a_patch_coalesces_into_one_history_entry() {
+    use fontelle_model::{History, SetChannelPatch};
+    use fontelle_types::PatchData;
+
+    let mut f = fixture();
+    let was = f.project.channels[f.channel].patch_data.clone();
+    let mut history = History::new();
+
+    // The instrument editor writes the whole patch on every step of a knob
+    // drag; without a merge, one drag would leave forty entries and one Ctrl+Z
+    // would go back one pixel.
+    for cutoff in [200u32, 400, 800, 1600] {
+        history
+            .apply(
+                Box::new(SetChannelPatch::new(
+                    f.channel,
+                    Some(PatchData {
+                        format_version: 0,
+                        body: serde_json::json!({ "cutoff": cutoff }),
+                    }),
+                )),
+                &mut f.project,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        f.project.channels[f.channel]
+            .patch_data
+            .as_ref()
+            .map(|d| d.body.clone()),
+        Some(serde_json::json!({ "cutoff": 1600 }))
+    );
+
+    history.undo(&mut f.project).unwrap().unwrap();
+    assert_eq!(
+        f.project.channels[f.channel]
+            .patch_data
+            .as_ref()
+            .map(|d| d.body.clone()),
+        was.as_ref().map(|d| d.body.clone()),
+        "one undo went back one step of the drag instead of all of it"
+    );
+}
+
+#[test]
+fn a_patch_written_to_a_different_channel_is_a_different_entry() {
+    use fontelle_model::{AddChannel, History, SetChannelPatch};
+    use fontelle_types::PatchData;
+
+    let mut f = fixture();
+    let mut history = History::new();
+    let mut add = AddChannel::new("Second", None);
+    add.apply(&mut f.project).unwrap();
+    let second = add.channel().expect("the channel was created");
+
+    let data = |n: u32| {
+        Some(PatchData {
+            format_version: 0,
+            body: serde_json::json!({ "n": n }),
+        })
+    };
+    history
+        .apply(
+            Box::new(SetChannelPatch::new(f.channel, data(1))),
+            &mut f.project,
+        )
+        .unwrap();
+    history
+        .apply(
+            Box::new(SetChannelPatch::new(second, data(2))),
+            &mut f.project,
+        )
+        .unwrap();
+
+    history.undo(&mut f.project).unwrap().unwrap();
+    assert!(
+        f.project.channels[second].patch_data.is_none(),
+        "the second channel's patch came off"
+    );
+    assert_eq!(
+        f.project.channels[f.channel]
+            .patch_data
+            .as_ref()
+            .map(|d| d.body.clone()),
+        data(1).map(|d| d.body),
+        "and the first channel's survived — two channels are two gestures"
     );
 }

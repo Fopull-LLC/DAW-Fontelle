@@ -23,6 +23,7 @@ vello = "0.10.0"
 winit = "0.30.13"
 
 [dev-dependencies]
+slotmap = { version = "1.1.1", features = ["serde"] }
 # Only so `FONTELLE_UI_DUMP` can write out what the headless renderer produced.
 # §2.5 of `docs/first-usable-plan.md` makes "seen once by a human" half of the
 # done-criterion for every GUI item, and on a machine with no display that is

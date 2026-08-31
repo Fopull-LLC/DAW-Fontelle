@@ -35,3 +35,115 @@ pub struct AutomationData {
     pub target: ParamAddress,
     pub points: Arena<PointId, AutomationPoint>,
 }
+
+impl CurveShape {
+    /// Where a segment of this shape is, `t` of the way through it.
+    ///
+    /// Every shape is an interpolation between the *same* two points, so all
+    /// of them return 0 at `t = 0` and 1 at `t = 1` — a shape that missed its
+    /// own endpoint would put a jump at every point it touched.
+    ///
+    /// `tension` is not read yet. It is in the document (§12.1) and the shapes
+    /// below are its zero position; a curve editor that can bend one is what
+    /// gives it a value to have.
+    fn eased(self, t: f64) -> f64 {
+        let t = t.clamp(0.0, 1.0);
+        match self {
+            Self::Linear => t,
+            // Slow to start, fast at the end — a fade that sounds even.
+            Self::Exponential => t * t,
+            // Its mirror.
+            Self::Logarithmic => 1.0 - (1.0 - t) * (1.0 - t),
+            // Eased at both ends. Smoothstep, which is the cheapest curve with
+            // zero slope at each end, so a sweep neither starts nor stops with
+            // a corner in it.
+            Self::SCurve => t * t * (3.0 - 2.0 * t),
+            // Neither of these interpolates at all; they are handled before
+            // this is called and are here so the match is total.
+            Self::Stepped | Self::Hold => 0.0,
+        }
+    }
+
+    /// Whether this shape ignores where the segment is *going* — the value
+    /// stays put until something else happens.
+    fn holds(self) -> bool {
+        matches!(self, Self::Stepped | Self::Hold)
+    }
+
+    /// Whether it ignores every later point as well, not just the next one.
+    ///
+    /// This is the whole difference between the two flat shapes, and the TDD
+    /// names both without saying what separates them:
+    ///
+    /// - **`Stepped`** is a staircase: hold this value until the next point,
+    ///   then jump to it. What a rhythmic lane is made of.
+    /// - **`Hold`** is a full stop: this value, for the rest of the clip,
+    ///   whatever is drawn after it. It is how a lane says "this parameter
+    ///   stops moving here" without deleting the points beyond.
+    ///
+    /// Two flat shapes that both jumped at the next point would be one shape
+    /// with two names.
+    fn freezes(self) -> bool {
+        matches!(self, Self::Hold)
+    }
+}
+
+impl AutomationData {
+    /// The value at `tick`, in the clip's own time, normalised 0..1.
+    ///
+    /// `None` for a clip with no points in it — not zero, which would slam
+    /// every automated parameter to its minimum the moment somebody made an
+    /// empty clip.
+    ///
+    /// Sorted here rather than kept sorted, because a person draws points
+    /// wherever they like and the arena keeps the order they were *made* in:
+    /// the alternative is every insertion re-sorting a collection whose ids
+    /// have to stay stable for undo. §12.1's "points are kept sorted;
+    /// evaluation is binary search" is the shape this grows into when a lane
+    /// with thousands of points exists to make it matter — the ordering is
+    /// what has to be right, and it is.
+    pub fn value_at(&self, tick: Tick) -> Option<f64> {
+        let mut points: Vec<AutomationPoint> = self.points.iter().map(|(_, p)| *p).collect();
+        if points.is_empty() {
+            return None;
+        }
+        points.sort_by_key(|p| p.tick);
+        // A `Hold` ends the curve where it sits: everything after it is that
+        // value. Truncating here rather than special-casing below means the
+        // rest of this function — and `final_value` — get it for free.
+        if let Some(freeze) = points.iter().position(|p| p.curve.freezes()) {
+            points.truncate(freeze + 1);
+        }
+
+        // Before the first point, the first point's value: a curve that began
+        // somewhere else would be a value nobody drew.
+        let first = points[0];
+        if tick <= first.tick {
+            return Some(first.value.clamp(0.0, 1.0));
+        }
+        let last = points[points.len() - 1];
+        if tick >= last.tick {
+            return Some(last.value.clamp(0.0, 1.0));
+        }
+
+        let index = points.partition_point(|p| p.tick <= tick) - 1;
+        let (from, to) = (points[index], points[index + 1]);
+        if from.curve.holds() {
+            return Some(from.value.clamp(0.0, 1.0));
+        }
+        let span = (to.tick - from.tick).max(1) as f64;
+        let t = from.curve.eased((tick - from.tick) as f64 / span);
+        Some((from.value + (to.value - from.value) * t).clamp(0.0, 1.0))
+    }
+
+    /// The last value this clip produces — what §12.2's second rule says the
+    /// parameter holds after the clip has ended.
+    pub fn final_value(&self) -> Option<f64> {
+        // Asked of the curve rather than of the last point, so a `Hold`
+        // part-way through gives the same answer here as it does inside the
+        // clip. Two ways of working out the same number is a place for them
+        // to disagree.
+        let last = self.points.iter().map(|(_, p)| p.tick).max()?;
+        self.value_at(last)
+    }
+}

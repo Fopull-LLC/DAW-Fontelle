@@ -104,9 +104,11 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
     let channel_id = project.channels.insert(Channel {
         name: "ch".into(),
         color: [0, 0, 0, 255],
-        mixer_track: track,
+        mixer_track: Some(track),
         patch_data: None,
         pan: 0.0,
+        muted: false,
+        soloed: false,
     });
     let lane_id = project.lanes.insert(Lane {
         name: "lane".into(),
@@ -128,6 +130,7 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
         release: 0,
         mod_x: 0,
         mod_y: 0,
+        slide: false,
     });
     project.clips.insert(Clip {
         lane: lane_id,
@@ -140,6 +143,7 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
         prefab_link: None,
         color: None,
         muted: false,
+        loop_length: None,
     });
 
     // --- Engine-side node identity + compiled graph, built the same way
@@ -148,7 +152,7 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
     let node_id = node_ids.insert(channel_id);
     let channel_nodes: HashMap<ChannelId, NodeId> = HashMap::from([(channel_id, node_id)]);
 
-    let timeline = fontelle_sequencer::compile(&project, &channel_nodes);
+    let timeline = fontelle_sequencer::compile(&project, &channel_nodes, &Default::default());
     assert_eq!(
         timeline.events.len(),
         2,

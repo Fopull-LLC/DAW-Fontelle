@@ -179,7 +179,11 @@ fn record(performance: &[(usize, [u8; 3])], blocks: usize) -> Take {
         gate: IdleGate::new(),
         source,
         graph: realised.graph,
-        timeline: fontelle_sequencer::compile(&project, &realised.channel_nodes),
+        timeline: fontelle_sequencer::compile(
+            &project,
+            &realised.channel_nodes,
+            &Default::default(),
+        ),
     };
 
     let transport = Transport::new();
@@ -231,6 +235,7 @@ fn keep(take: &mut Take) -> fontelle_types::ClipId {
         prefab_link: None,
         color: None,
         muted: false,
+        loop_length: None,
     });
     add.apply(&mut take.project).expect("the take must land");
     add.id().unwrap()
@@ -261,7 +266,8 @@ fn play_back(take: &Take) -> Vec<f32> {
         },
     )
     .unwrap();
-    let timeline = fontelle_sequencer::compile(&take.project, &realised.channel_nodes);
+    let timeline =
+        fontelle_sequencer::compile(&take.project, &realised.channel_nodes, &Default::default());
     render_offline(&timeline, &mut realised.graph, 48_000)
 }
 
@@ -359,7 +365,11 @@ fn nothing_is_recorded_when_the_transport_is_only_playing() {
         gate: IdleGate::new(),
         source,
         graph: realised.graph,
-        timeline: fontelle_sequencer::compile(&project, &realised.channel_nodes),
+        timeline: fontelle_sequencer::compile(
+            &project,
+            &realised.channel_nodes,
+            &Default::default(),
+        ),
     };
 
     let transport = Transport::new();

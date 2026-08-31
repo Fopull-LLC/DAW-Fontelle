@@ -825,3 +825,52 @@ fn an_imported_preset_survives_a_serialisation_round_trip_note_for_note() {
         );
     }
 }
+
+/// The piano roll has no way to tell a key that plays a snare from a key that
+/// plays nothing, because the only thing that distinguishes them is the name
+/// on the sample header — and the importer read it, used it to find the audio,
+/// and threw it away. On a drum kit that turns writing a beat into guessing.
+#[test]
+fn an_import_records_the_name_of_the_sample_behind_every_layer() {
+    let path = write_fixture_to_temp_file("kit-names", &build_drum_kit_sf2(KIT));
+    let mut store = SampleStore::new();
+    let imported = import_sf2(&path, &mut store).expect("valid kit must import");
+
+    assert_eq!(imported.patch.layers.len(), KIT.len(), "one layer per hit");
+    for (layer, (name, key)) in imported.patch.layers.iter().zip(KIT) {
+        assert_eq!(
+            layer.key_range,
+            (*key, *key),
+            "a kit's zone is one key wide"
+        );
+        let Source::Sample { file } = layer.source else {
+            panic!("a kit zone imports as a sample layer")
+        };
+        assert_eq!(
+            imported.names.get(&file).map(String::as_str),
+            Some(*name),
+            "the layer on key {key} has to know it is the {name}"
+        );
+    }
+}
+
+/// Reopening a project does not re-import the preset — it reloads exactly the
+/// sample headers the saved patch names (TDD §17.4). The names have to come
+/// back on that path too, or a kit is labelled until you close the project
+/// and anonymous afterwards.
+#[test]
+fn reloading_a_saved_patchs_samples_brings_their_names_back() {
+    let path = write_fixture_to_temp_file("kit-reload", &build_drum_kit_sf2(KIT));
+    let mut store = SampleStore::new();
+
+    let loaded = fontelle_assets::load_sf2_samples(&path, &[1, 3], &mut store)
+        .expect("the headers a saved patch names must reload");
+
+    assert_eq!(loaded.len(), 2, "only what was asked for");
+    assert_eq!(loaded[&1].name, KIT[1].0);
+    assert_eq!(loaded[&3].name, KIT[3].0);
+    assert!(
+        store.get(loaded[&1].asset).is_some(),
+        "and the audio is in the store under the id it reports"
+    );
+}

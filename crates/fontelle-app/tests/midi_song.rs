@@ -90,7 +90,7 @@ fn write_temp(name: &str, bytes: &[u8]) -> PathBuf {
 }
 
 fn compile(project: &Project) -> CompiledTimeline {
-    fontelle_sequencer::compile(project, &channel_nodes(project))
+    fontelle_sequencer::compile(project, &channel_nodes(project), &Default::default())
 }
 
 /// The document channels an import produced, in MIDI-channel order.
@@ -245,7 +245,10 @@ fn each_part_gets_its_own_fader_from_the_files_own_volume_controller() {
     // the project in a private type — which is what makes it something a UI
     // can show and a command can change.
     let gain = |channel: fontelle_types::ChannelId| {
-        project.mixer.tracks[project.channels[channel].mixer_track].gain_db
+        project.mixer.tracks[project.channels[channel]
+            .mixer_track
+            .expect("an imported part gets a strip of its own")]
+        .gain_db
     };
     assert!(
         (gain(parts[1]) - quiet_part).abs() < 1e-6,
@@ -289,7 +292,11 @@ fn a_parts_pan_lands_on_its_channel_rather_than_on_its_fader() {
     );
     for part in &parts {
         assert_eq!(
-            project.mixer.tracks[project.channels[*part].mixer_track].pan, 0.0,
+            project.mixer.tracks[project.channels[*part]
+                .mixer_track
+                .expect("an imported part gets a strip")]
+            .pan,
+            0.0,
             "the track stays a balance control at centre"
         );
     }

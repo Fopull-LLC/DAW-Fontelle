@@ -203,3 +203,23 @@ fn polling_the_engine_is_far_slower_than_drawing() {
     // busy one.
     assert!(ENGINE_POLL > FRAME_INTERVAL * 4);
 }
+
+// ------------------------------------------------------------- autosave ---
+
+#[test]
+fn the_autosave_interval_is_arithmetic_anyone_can_check() {
+    // In this module for the same reason `sleep_budget` is: it decides *when
+    // the window does something*, and a timer you have to leave a window open
+    // for a minute to check is not a test.
+    use fontelle_ui::widget::autosave_due;
+    use std::time::Duration;
+
+    let every = Duration::from_secs(60);
+    assert!(!autosave_due(Duration::from_secs(0), every));
+    assert!(!autosave_due(Duration::from_secs(59), every));
+    assert!(autosave_due(Duration::from_secs(60), every));
+    assert!(
+        autosave_due(Duration::from_secs(600), every),
+        "a window left alone and then touched backs up on the next pass"
+    );
+}

@@ -10,12 +10,61 @@ pub enum EventPayload {
     NoteOn {
         key: u8,
         velocity: u8,
+        /// Where this one note sits in the stereo field, in the range
+        /// `Note::pan` is stored in: `-127` hard left, `0` centre, `127` hard
+        /// right. [`pan_unit`](crate::pan_unit) is the one conversion into the
+        /// `-1.0..=1.0` the pan law takes.
+        ///
+        /// It is on the note-on rather than a parameter of the node because it
+        /// is §16.5's *per-note* pan — two notes sounding together on one
+        /// channel may sit in different places, which a node-wide control
+        /// cannot express. The channel's own pan is separate and live, and the
+        /// two add (see `Voice::render_with_pan`).
+        pan: i8,
+        /// Cents off this note's own key, in the range `Note::fine_pitch` is
+        /// stored in. `0` is the note as written, and it adds to the layer's
+        /// tuning and the mod matrix's pitch routes — all three are cents, so
+        /// a value here means the same interval wherever the note sits.
+        fine_pitch: i16,
+        /// How much longer than the instrument says this one note rings after
+        /// its note-off, `0..=127`.
+        ///
+        /// `0` is *the patch's own* release rather than the shortest one, and
+        /// that is a compatibility rule rather than an aesthetic one: `0` is
+        /// the default every note ever written carries, so any other reading
+        /// would change how existing projects sound the day this field
+        /// started being read. Higher only ever lengthens.
+        release: u8,
+        /// §16.5's two free per-note modulation values, `0..=127`, reaching
+        /// the voice as `ModSource::NoteModX` and `NoteModY`.
+        ///
+        /// Free means the *patch* decides what they do: nothing is routed
+        /// from them by default, and a note that sets them under a patch that
+        /// routes neither sounds exactly like one that does not.
+        mod_x: u8,
+        mod_y: u8,
         /// TDD §11.4: distinguishes overlapping clips on the same channel so a
         /// note-off only kills the voice it belongs to.
         voice_context: u32,
     },
     NoteOff {
         key: u8,
+        voice_context: u32,
+    },
+    /// Bend whatever is sounding in `voice_context` to `key`, over
+    /// `glide_samples` — a **slide note** (FL Studio's), compiled from
+    /// `Note::slide`.
+    ///
+    /// It starts no voice and ends none, which is the whole of what makes it a
+    /// slide: the note that was already playing arrives at a new pitch, and
+    /// the note-off the score wrote for the *original* key still ends it. A
+    /// slide with nothing sounding does nothing.
+    ///
+    /// In samples rather than seconds because everything else on this wire is:
+    /// the RT side has a sample clock and no other unit.
+    NoteSlide {
+        key: u8,
+        glide_samples: u32,
         voice_context: u32,
     },
     ParamValue {
@@ -134,6 +183,11 @@ mod tests {
             payload: EventPayload::NoteOn {
                 key: 60,
                 velocity: 100,
+                pan: 0,
+                fine_pitch: 0,
+                release: 0,
+                mod_x: 0,
+                mod_y: 0,
                 voice_context: 0,
             },
         }

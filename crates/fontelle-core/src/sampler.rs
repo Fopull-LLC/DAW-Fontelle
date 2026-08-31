@@ -91,8 +91,53 @@ impl Sampler {
         voice_context: u32,
         origin: fontelle_types::VoiceOrigin,
     ) {
-        if let Some(voice) = self.voices.allocate(self.patch.voice_config.steal_policy) {
-            voice.trigger_from(&self.patch, key, velocity, voice_context, origin);
+        self.trigger(
+            crate::NoteTrigger::new(key, velocity)
+                .in_context(voice_context)
+                .from_origin(origin),
+        );
+    }
+
+    /// Starts a note carrying §16.5's per-note character — today that is pan,
+    /// and see [`crate::NoteTrigger`] for why it is a struct.
+    ///
+    /// The one the other two delegate to. A note-on that finds no free voice
+    /// and cannot steal one is dropped, which is what a polyphony limit means.
+    pub fn trigger(&mut self, note: crate::NoteTrigger) {
+        let config = self.patch.voice_config;
+        // **Mono and legato**, which `RetriggerMode` has named since the patch
+        // format was written and nothing read. One voice per context: a note
+        // arriving while one is sounding takes it over rather than stacking on
+        // top of it, which is what makes a bass line a line.
+        if matches!(
+            config.retrigger,
+            crate::RetriggerMode::Mono | crate::RetriggerMode::Legato
+        ) && let Some(voice) = self
+            .voices
+            .iter_active_mut()
+            .find(|v| v.voice_context() == note.voice_context)
+        {
+            match config.retrigger {
+                // Legato keeps the envelope and the sample position; mono
+                // starts the note again and only the *pitch* is carried over.
+                crate::RetriggerMode::Legato => voice.legato_to(note, config.glide_time_s),
+                _ => {
+                    let from = voice.sounding_key();
+                    voice.trigger_note(&self.patch, note);
+                    if config.glide_time_s > 0.0 {
+                        voice.glide_from(from - note.key as f32, config.glide_time_s);
+                    }
+                }
+            }
+            return;
+        }
+
+        // Poly, or nothing sounding to glide from. **Portamento does not
+        // apply here on purpose**: in a poly patch it would mean every note of
+        // a chord sliding from whichever one happened to be last, which is not
+        // a statement anybody makes musically.
+        if let Some(voice) = self.voices.allocate(config.steal_policy) {
+            voice.trigger_note(&self.patch, note);
         }
     }
 
@@ -100,6 +145,29 @@ impl Sampler {
         if let Some(voice) = self.voices.find_active_mut(key, voice_context) {
             voice.release();
         }
+    }
+
+    /// Bends whatever is sounding in `voice_context` to `key`, over `seconds`.
+    ///
+    /// **This is the slide note**, FL Studio's: it starts no voice and ends
+    /// none. A slide with nothing sounding does nothing, which is what makes
+    /// it safe to write one at the top of a bar and then delete the note in
+    /// front of it.
+    ///
+    /// Every voice in the context, not just one: a slide under a chord moves
+    /// the chord.
+    pub fn slide(&mut self, key: u8, seconds: f32, voice_context: u32) {
+        for voice in self.voices.iter_active_mut() {
+            if voice.voice_context() == voice_context {
+                voice.glide_to(key, seconds);
+            }
+        }
+    }
+
+    /// How many voices are sounding. What a test asserting "a slide is not a
+    /// note-on" needs, and what a voice-count read-out would use.
+    pub fn active_voices(&self) -> usize {
+        self.voices.active_count()
     }
 
     /// RT. No allocation (INVARIANT 1). Zeroes `out` first, then mixes every
@@ -167,7 +235,7 @@ mod tests {
     use crate::mod_matrix::ModMatrix;
     use crate::patch::{FilterSlot, Layer, Source};
     use crate::playback::{LoopMode, PlaybackConfig};
-    use crate::voice::{StealPolicy, VoiceConfig};
+    use crate::voice::{NoteTrigger, StealPolicy, VoiceConfig};
     use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 
     const SR: f32 = 48_000.0;
@@ -784,5 +852,206 @@ mod tests {
                  first note a sampler ever plays, got {a} against {b}"
             );
         }
+    }
+
+    /// §16.5's per-note pan: where *this note* sits, as against
+    /// [`Sampler::set_pan`], which is where the whole part sits.
+    #[test]
+    fn a_notes_own_pan_places_it_in_the_field() {
+        let mut store = SampleStore::new();
+        let patch = one_voice_patch(&mut store, 8);
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 128,
+        });
+
+        sampler.trigger(NoteTrigger::new(60, 127).with_pan(-1.0));
+        let mut left = vec![0.0; 64];
+        let mut right = vec![0.0; 64];
+        sampler.render(&store, &mut [&mut left[..], &mut right[..]]);
+
+        assert!(
+            (left[0] - 1.0).abs() < 1e-5 && right[0].abs() < 1e-5,
+            "a note panned hard left must be on the left alone, got {} / {}",
+            left[0],
+            right[0]
+        );
+    }
+
+    /// The note's pan and the channel's **add**, exactly as the layer's and
+    /// the channel's already do. Any other reading throws one of them away:
+    /// panning a part right would flatten every note that was leaning left
+    /// against it, which is the whole point of writing them apart.
+    #[test]
+    fn a_notes_pan_adds_to_the_channels_rather_than_replacing_it() {
+        let mut store = SampleStore::new();
+        let patch = one_voice_patch(&mut store, 8);
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 128,
+        });
+
+        sampler.set_pan(1.0);
+        sampler.trigger(NoteTrigger::new(60, 127).with_pan(-1.0));
+        let mut left = vec![0.0; 64];
+        let mut right = vec![0.0; 64];
+        sampler.render(&store, &mut [&mut left[..], &mut right[..]]);
+
+        let centred = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(
+            (left[0] - centred).abs() < 1e-5 && (right[0] - centred).abs() < 1e-5,
+            "a note hard left on a channel hard right belongs between them, \
+             got {} / {}",
+            left[0],
+            right[0]
+        );
+    }
+
+    /// A voice comes back out of the pool carrying the last note's pan, and a
+    /// centred note landing where a hard-left one used to be is a bug that
+    /// only appears once the pool wraps. The same class as the filter memory
+    /// `trigger_from` already resets.
+    #[test]
+    fn a_reused_voice_does_not_inherit_the_last_notes_pan() {
+        let mut store = SampleStore::new();
+        let patch = one_voice_patch(&mut store, 1);
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 128,
+        });
+
+        sampler.trigger(NoteTrigger::new(60, 127).with_pan(-1.0));
+        sampler.note_off(60, 0);
+        sampler.reset();
+        sampler.note_on(60, 127, 0);
+
+        let mut left = vec![0.0; 64];
+        let mut right = vec![0.0; 64];
+        sampler.render(&store, &mut [&mut left[..], &mut right[..]]);
+
+        let centred = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(
+            (left[0] - centred).abs() < 1e-5 && (right[0] - centred).abs() < 1e-5,
+            "a plain note-on is centred whatever the voice played last, \
+             got {} / {}",
+            left[0],
+            right[0]
+        );
+    }
+
+    /// A drum kit is one zone per hit, and real ones have far more than
+    /// sixteen: `Setzer's_SPC_Soundfont.sf2`'s Standard kit has 46 zones,
+    /// `Nokia_30.sf2`'s has 47, `MN64 Drums` 46.
+    ///
+    /// Reported from using the window: *"a lot of notes are showing as ones
+    /// that should be playable but just aren't producing any sound at all —
+    /// it's making a lot of kits just incomplete to use."*
+    ///
+    /// `Voice::trigger_note` zipped its **fixed sixteen** playback slots
+    /// against `patch.layers`, and `zip` stops at the shorter one. Every zone
+    /// past index 15 therefore never got a slot, never became active, and
+    /// never rendered — silently. On the three kits above that is 30, 37 and
+    /// 68 keys respectively: audible only as a kit that half works.
+    ///
+    /// `MAX_LAYERS` is the number of layers that may sound **at once** (TDD
+    /// §7.4: "stacked, or split by key/velocity"), and a key split is not a
+    /// stack. A patch may hold as many zones as the file does.
+    fn kit_patch(store: &mut SampleStore, keys: &[u8]) -> Patch {
+        let asset = store.insert(crate::streaming::SampleBuffer {
+            data: std::sync::Arc::from(vec![1.0; 100_000]),
+            sample_rate: SR as u32,
+        });
+        Patch {
+            layers: keys
+                .iter()
+                .map(|key| Layer {
+                    source: Source::Sample { file: asset },
+                    // One key wide, which is what makes it a kit.
+                    key_range: (*key, *key),
+                    vel_range: (0, 127),
+                    root_key: *key,
+                    fine_tune_cents: 0.0,
+                    playback: PlaybackConfig {
+                        loop_mode: LoopMode::Off,
+                        interpolation: Some(Interpolation::Draft),
+                        end_offset: 100_000.0,
+                        ..PlaybackConfig::default()
+                    },
+                    gain_db: 0.0,
+                    pan: 0.0,
+                })
+                .collect(),
+            filters: [disabled_filter(), disabled_filter()],
+            envelopes: vec![instant_envelope(), instant_envelope()],
+            lfos: Vec::new(),
+            mod_matrix: ModMatrix::default(),
+            voice_config: VoiceConfig {
+                polyphony: 8,
+                steal_policy: StealPolicy::Oldest,
+                ..VoiceConfig::default()
+            },
+        }
+    }
+
+    fn sounds(patch: &Patch, store: &SampleStore, key: u8) -> bool {
+        let mut sampler = Sampler::new(patch.clone());
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 128,
+        });
+        sampler.note_on(key, 100, 0);
+        let mut out = vec![0.0; 64];
+        sampler.render(store, &mut [&mut out[..]]);
+        out.iter().any(|s| s.abs() > 1e-6)
+    }
+
+    #[test]
+    fn every_zone_of_a_kit_sounds_however_many_zones_it_has() {
+        let mut store = SampleStore::new();
+        // 47 hits, the size of a real GM kit, on the keys one uses.
+        let keys: Vec<u8> = (35..35 + 47).collect();
+        let patch = kit_patch(&mut store, &keys);
+
+        let silent: Vec<u8> = keys
+            .iter()
+            .copied()
+            .filter(|key| !sounds(&patch, &store, *key))
+            .collect();
+
+        assert!(
+            silent.is_empty(),
+            "these keys have a zone of their own and made no sound: {silent:?}"
+        );
+    }
+
+    /// The other half of the same rule, and the reason `MAX_LAYERS` is still
+    /// sixteen: it bounds what may sound *together*. A key covered by no zone
+    /// is still silent, however many zones the patch has.
+    #[test]
+    fn a_key_no_zone_covers_is_still_silent_in_a_large_kit() {
+        let mut store = SampleStore::new();
+        let patch = kit_patch(&mut store, &[36, 38, 42, 46]);
+        assert!(sounds(&patch, &store, 36));
+        assert!(
+            !sounds(&patch, &store, 37),
+            "key 37 has no zone and must stay silent"
+        );
+    }
+
+    /// A stack deeper than the voice has slots takes the first `MAX_LAYERS` of
+    /// it rather than dropping the note — the documented limit, applied to the
+    /// thing it is actually about.
+    #[test]
+    fn more_than_max_layers_stacked_on_one_key_still_sounds() {
+        let mut store = SampleStore::new();
+        let keys: Vec<u8> = std::iter::repeat_n(60u8, crate::voice::MAX_LAYERS + 8).collect();
+        let patch = kit_patch(&mut store, &keys);
+        assert!(
+            sounds(&patch, &store, 60),
+            "a deep stack must sound, not fall off the end"
+        );
     }
 }

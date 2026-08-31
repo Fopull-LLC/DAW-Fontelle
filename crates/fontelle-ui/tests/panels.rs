@@ -9,7 +9,7 @@
 use fontelle_ui::canvas::{
     BrowserHit, RackHit, browser_hit, browser_layout, rack_hit, rack_layout,
 };
-use fontelle_ui::layout::{Rect, window_layout};
+use fontelle_ui::layout::{DEFAULT_TIMELINE_HEIGHT, Rect, window_layout};
 use fontelle_ui::theme::{Metrics, Theme};
 
 fn metrics() -> Metrics {
@@ -21,7 +21,7 @@ fn metrics() -> Metrics {
 #[test]
 fn the_sidebar_is_down_the_left_and_the_roll_takes_what_is_left() {
     let m = metrics();
-    let l = window_layout(1280.0, 720.0, &m);
+    let l = window_layout(1280.0, 720.0, &m, DEFAULT_TIMELINE_HEIGHT);
 
     assert_eq!(
         l.rack.frame.x, m.panel_margin,
@@ -52,7 +52,7 @@ fn the_sidebar_is_down_the_left_and_the_roll_takes_what_is_left() {
 #[test]
 fn every_sidebar_panel_reaches_the_bottom_of_the_window_between_them() {
     let m = metrics();
-    let l = window_layout(1280.0, 720.0, &m);
+    let l = window_layout(1280.0, 720.0, &m, DEFAULT_TIMELINE_HEIGHT);
     assert_eq!(l.browser.frame.bottom(), 720.0 - m.panel_margin);
     assert_eq!(l.panel.frame.bottom(), 720.0 - m.panel_margin);
 }
@@ -62,7 +62,7 @@ fn a_narrow_window_gives_the_sidebar_up_before_it_squeezes_the_roll_to_nothing()
     let m = metrics();
     // A window narrower than the sidebar plus a usable roll: the roll is what
     // the window is *for*, so the sidebar is what yields.
-    let l = window_layout(320.0, 720.0, &m);
+    let l = window_layout(320.0, 720.0, &m, DEFAULT_TIMELINE_HEIGHT);
     assert!(
         l.rack.frame.width < m.sidebar_width,
         "the sidebar must give way rather than push the roll off the window"
@@ -75,7 +75,7 @@ fn a_narrow_window_gives_the_sidebar_up_before_it_squeezes_the_roll_to_nothing()
 fn a_window_too_small_for_any_of_it_yields_empty_rects_and_never_negative_ones() {
     let m = metrics();
     for (w, h) in [(0.0, 0.0), (1.0, 1.0), (4.0, 900.0), (900.0, 4.0)] {
-        let l = window_layout(w, h, &m);
+        let l = window_layout(w, h, &m, DEFAULT_TIMELINE_HEIGHT);
         for r in [
             l.transport,
             l.panel.frame,
@@ -180,10 +180,14 @@ fn the_browser_is_a_search_box_over_a_file_list_over_a_preset_list() {
     let body = Rect::new(10.0, 20.0, 240.0, 400.0);
     let l = browser_layout(body, &m, 20, 8, 0, 0);
 
+    // The mode switch is the first thing in the panel now, and the search box
+    // is under it: the search filters whichever list is showing, so it belongs
+    // *below* the thing that decides which list that is. See `tests/projects.rs`.
     assert_eq!(
-        l.search.y, body.y,
-        "the search box is the first thing in it"
+        l.sounds_tab.y, body.y,
+        "the mode switch is the first thing in it"
     );
+    assert!(l.search.y >= l.sounds_tab.bottom());
     assert!(l.files.y >= l.search.bottom());
     assert!(l.presets.y >= l.files.bottom());
     assert!(!l.search.intersects(&l.files));
@@ -294,5 +298,74 @@ fn a_browser_with_no_room_still_produces_usable_geometry() {
         for (_, rect) in l.file_rows.iter().chain(&l.preset_rows) {
             assert!(rect.height >= 0.0 && rect.width >= 0.0);
         }
+    }
+}
+
+// ---------------------------------------------------- the arrangement strip ---
+//
+// The window had a piano roll and no view of the piece. The arrangement takes a
+// strip across the top of the editor column, with a divider between them that
+// can be dragged — a piano roll is what you write a bar in and an arrangement
+// is what you build a song in, and which of them wants the room changes by the
+// minute.
+
+#[test]
+fn the_arrangement_takes_a_strip_above_the_editor() {
+    let m = metrics();
+    let l = window_layout(1280.0, 720.0, &m, DEFAULT_TIMELINE_HEIGHT);
+
+    assert!(!l.timeline.frame.is_empty());
+    assert_eq!(
+        l.timeline.frame.x, l.panel.frame.x,
+        "the arrangement is in the editor column, not over the sidebar"
+    );
+    assert_eq!(l.timeline.frame.width, l.panel.frame.width);
+    assert_eq!(l.timeline.frame.y, l.rack.frame.y, "and starts at the top");
+    assert!(l.panel.frame.y >= l.timeline.frame.bottom());
+    assert!(!l.timeline.frame.intersects(&l.panel.frame));
+    assert!(!l.timeline.frame.intersects(&l.rack.frame));
+    assert!(!l.timeline.frame.intersects(&l.browser.frame));
+    assert!(!l.transport.intersects(&l.timeline.frame));
+    assert_eq!(l.panel.frame.bottom(), 720.0 - m.panel_margin);
+
+    // The divider is the seam between them, and it is grabbable.
+    assert!(l.divider.height >= 4.0, "a seam nobody can hit is not one");
+    assert!(l.divider.y >= l.timeline.frame.bottom() - 0.001);
+    assert!(l.divider.bottom() <= l.panel.frame.y + 0.001);
+}
+
+#[test]
+fn hiding_the_arrangement_gives_its_room_back_to_the_editor() {
+    let m = metrics();
+    let with = window_layout(1280.0, 720.0, &m, DEFAULT_TIMELINE_HEIGHT);
+    let without = window_layout(1280.0, 720.0, &m, 0.0);
+
+    assert!(without.timeline.frame.is_empty());
+    assert!(without.divider.is_empty());
+    assert!(without.panel.frame.height > with.panel.frame.height);
+    assert_eq!(without.panel.frame.y, without.rack.frame.y);
+    assert_eq!(without.panel.frame.bottom(), with.panel.frame.bottom());
+}
+
+#[test]
+fn the_arrangement_cannot_be_dragged_taller_than_the_window() {
+    use fontelle_ui::layout::{MIN_EDITOR_HEIGHT, timeline_height_at};
+
+    let m = metrics();
+    let l = window_layout(1280.0, 720.0, &m, 200.0);
+
+    // Dragged down past the bottom of the window it stops, leaving the editor
+    // something to be.
+    let huge = timeline_height_at(&l, 10_000.0);
+    let squashed = window_layout(1280.0, 720.0, &m, huge);
+    assert!(squashed.panel.frame.height >= MIN_EDITOR_HEIGHT - 0.001);
+
+    // Dragged up past the top it becomes nothing rather than negative.
+    let tiny = timeline_height_at(&l, -10_000.0);
+    assert!(tiny >= 0.0);
+    let gone = window_layout(1280.0, 720.0, &m, tiny);
+    assert!(gone.panel.frame.height > 0.0);
+    for r in [gone.timeline.frame, gone.divider, gone.panel.frame] {
+        assert!(r.width >= 0.0 && r.height >= 0.0);
     }
 }

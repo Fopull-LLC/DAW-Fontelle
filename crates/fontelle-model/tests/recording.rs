@@ -23,6 +23,11 @@ fn on(sample: i64, key: u8, velocity: u8) -> TimedEvent {
         payload: EventPayload::NoteOn {
             key,
             velocity,
+            pan: 0,
+            fine_pitch: 0,
+            release: 0,
+            mod_x: 0,
+            mod_y: 0,
             voice_context: u32::MAX,
         },
     }

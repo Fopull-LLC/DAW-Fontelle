@@ -58,7 +58,8 @@ pub fn realise_at(
         },
     )
     .expect("this project must realise");
-    let timeline = fontelle_sequencer::compile(project, &realised.channel_nodes);
+    let timeline =
+        fontelle_sequencer::compile(project, &realised.channel_nodes, &realised.param_nodes);
     (realised, timeline)
 }
 

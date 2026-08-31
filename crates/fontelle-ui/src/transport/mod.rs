@@ -19,7 +19,7 @@
 //! Everything here is a pure function or a small state machine, per §2.5 of the
 //! plan. There is no window in this file.
 
-use fontelle_types::PPQN;
+use fontelle_types::{PPQN, Sample};
 
 use crate::layout::Rect;
 use crate::theme::Metrics;
@@ -58,6 +58,15 @@ pub struct TransportView {
     pub length_samples: i64,
     pub sample_rate: f64,
     pub looping: bool,
+    /// Armed: the next press of play records rather than plays.
+    ///
+    /// Separate from [`recording`](TransportView::recording), which is the
+    /// transport actually rolling with the tape running. Arming is a decision
+    /// you make before you press play, which is what makes it a button of its
+    /// own rather than a fourth transport state.
+    pub armed: bool,
+    /// Whether the click is on.
+    pub metronome: bool,
     pub loop_range_samples: (i64, i64),
     /// Peak per channel since the last read, linear.
     pub peaks: [f32; 2],
@@ -77,6 +86,8 @@ impl TransportView {
             length_samples: 0,
             sample_rate: 48_000.0,
             looping: false,
+            armed: false,
+            metronome: false,
             loop_range_samples: (0, 0),
             peaks: [0.0; 2],
             reduction_db: 0.0,
@@ -108,6 +119,19 @@ pub trait TransportHost {
     fn stop(&mut self);
     fn seek(&mut self, sample: i64);
     fn set_looping(&mut self, on: bool);
+
+    /// Arms or disarms. Arming does not start anything: the next press of
+    /// play does, and it records.
+    fn set_armed(&mut self, on: bool) {
+        let _ = on;
+    }
+
+    /// Turns the click on or off. A session setting, not the document's — a
+    /// project sent to somebody else must not arrive with a woodblock on
+    /// every beat.
+    fn set_metronome(&mut self, on: bool) {
+        let _ = on;
+    }
 }
 
 /// Where the bar's pieces are, left to right.
@@ -117,8 +141,18 @@ pub struct TransportBarLayout {
     pub play: Rect,
     pub stop: Rect,
     pub loop_toggle: Rect,
+    /// Arm. Pressing play while it is lit records.
+    pub record: Rect,
+    /// The click.
+    pub metronome: Rect,
     /// The position read-out. A label, not a control.
     pub readout: Rect,
+    /// The tempo, in beats per minute. Dragged, and the only control on this
+    /// bar that writes to the **document** rather than to the engine.
+    pub tempo: Rect,
+    /// The time signature — its numerator, over a quarter note. See
+    /// [`format_signature`].
+    pub signature: Rect,
     /// The song, end to end. Clicking it seeks.
     pub ruler: Rect,
     pub meter: Rect,
@@ -126,6 +160,10 @@ pub struct TransportBarLayout {
 
 /// Wide enough for `999.4.959  99:59.999` at the chrome's font size.
 const READOUT_WIDTH: f32 = 160.0;
+/// Wide enough for `999.99`, framed.
+const TEMPO_WIDTH: f32 = 72.0;
+/// And for `16/4`.
+const SIGNATURE_WIDTH: f32 = 48.0;
 const METER_WIDTH: f32 = 96.0;
 
 pub fn transport_bar_layout(bar: Rect, metrics: &Metrics) -> TransportBarLayout {
@@ -146,7 +184,16 @@ pub fn transport_bar_layout(bar: Rect, metrics: &Metrics) -> TransportBarLayout 
     let play = take(button);
     let stop = take(button);
     let loop_toggle = take(button);
+    // Arm sits with the transport it belongs to, and the click next to it:
+    // the two things you set before you press play, in the order you set them.
+    let record = take(button);
+    let metronome = take(button);
     let readout = take(READOUT_WIDTH);
+    // Beside the position, because "where am I in the song" and "how fast is
+    // it going" are read together. A tempo box at the far end of the bar is
+    // one you have to go and find.
+    let tempo = take(TEMPO_WIDTH);
+    let signature = take(SIGNATURE_WIDTH);
 
     // The ruler gets what is left after the meter is reserved on the right —
     // the meter's width is fixed because a meter that changes size changes
@@ -165,7 +212,11 @@ pub fn transport_bar_layout(bar: Rect, metrics: &Metrics) -> TransportBarLayout 
         play,
         stop,
         loop_toggle,
+        record,
+        metronome,
         readout,
+        tempo,
+        signature,
         ruler,
         meter,
     }
@@ -177,8 +228,16 @@ pub enum TransportHit {
     Play,
     Stop,
     ToggleLoop,
-    /// Seek to this sample.
-    Scrub(i64),
+    /// Arm, or disarm.
+    ToggleRecord,
+    /// The click, on or off.
+    ToggleMetronome,
+    /// Mark this sample — and go there.
+    Scrub(Sample),
+    /// The tempo box. **Not the engine's business** — see [`action`].
+    Tempo,
+    /// The time-signature box, likewise.
+    Signature,
 }
 
 /// What, if anything, is under `(x, y)`.
@@ -203,6 +262,18 @@ pub fn hit(
     if layout.loop_toggle.contains(x, y) {
         return Some(TransportHit::ToggleLoop);
     }
+    if layout.record.contains(x, y) {
+        return Some(TransportHit::ToggleRecord);
+    }
+    if layout.metronome.contains(x, y) {
+        return Some(TransportHit::ToggleMetronome);
+    }
+    if layout.tempo.contains(x, y) {
+        return Some(TransportHit::Tempo);
+    }
+    if layout.signature.contains(x, y) {
+        return Some(TransportHit::Signature);
+    }
     if layout.ruler.contains(x, y) {
         return Some(TransportHit::Scrub(sample_at(
             layout.ruler,
@@ -213,22 +284,202 @@ pub fn hit(
     None
 }
 
-/// Turns a hit into commands on the engine.
+/// What a press actually asks the engine to do, once the **time marker** is
+/// taken into account.
+///
+/// The marker is the last place the user clicked on either ruler, and it is
+/// what makes the transport behave the way people expect from FL Studio: play
+/// starts *there*, stopping comes back *there*, and only the stop button goes
+/// to the front of the song. A hit is not enough to decide any of that on its
+/// own, so the decision is its own value and its own function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportAction {
+    /// Roll, from the marker.
+    Play,
+    /// Stop, and put the playhead back on the marker. What the space bar and
+    /// the play button do while it is rolling.
+    Pause,
+    /// Stop, and put the playhead **and the marker** at the front of the song.
+    /// The stop button, and only it.
+    Rewind,
+    SetLooping(bool),
+    /// Arm, or disarm. Nothing starts or stops.
+    SetArmed(bool),
+    SetMetronome(bool),
+    /// Put the marker — and the playhead with it — at this sample.
+    Mark(Sample),
+}
+
+/// What pressing `hit` means, given what the engine is doing.
+///
+/// The view is read here rather than inside [`apply`] so the decision is a pure
+/// function of a snapshot: what the loop button toggles *from*, and whether the
+/// play button is a play or a pause, are both answers about one moment.
+///
+/// `None` for the tempo and the signature. Every other control on this bar is
+/// one atomic store into the transport; those two are `Command`s against the
+/// **document**, which has to be undoable and has to be saved, and which this
+/// crate cannot reach. Saying so with a `None` is better than inventing a
+/// `TransportAction` that [`apply`] would then have to refuse — the window
+/// starts a drag against `DocumentHost` instead.
+pub fn action(hit: TransportHit, view: &TransportView) -> Option<TransportAction> {
+    Some(match hit {
+        // The same button both ways round, which is what every transport in
+        // every DAW does and what the space bar has always done here.
+        TransportHit::Play if view.playing => TransportAction::Pause,
+        TransportHit::Play => TransportAction::Play,
+        TransportHit::Stop => TransportAction::Rewind,
+        TransportHit::ToggleLoop => TransportAction::SetLooping(!view.looping),
+        TransportHit::ToggleRecord => TransportAction::SetArmed(!view.armed),
+        TransportHit::ToggleMetronome => TransportAction::SetMetronome(!view.metronome),
+        TransportHit::Scrub(sample) => TransportAction::Mark(sample),
+        TransportHit::Tempo | TransportHit::Signature => return None,
+    })
+}
+
+// --------------------------------------------------------------- the tempo ---
+
+/// The slowest a song may be dragged to. Not zero: a tempo of nothing is a
+/// song that never plays, and a divide by it is worse.
+pub const MIN_TEMPO: f64 = 20.0;
+
+/// And the fastest. Beyond this a sixteenth note is shorter than the audio
+/// device's own block.
+pub const MAX_TEMPO: f64 = 999.0;
+
+/// How much of a beat per minute one pixel of vertical drag is worth.
+///
+/// A quarter, so a hundred pixels — about a third of the window's height —
+/// walks 120 to 145. Faster than that and the box is unsettable; slower and
+/// getting from 90 to 174 is a gesture that runs off the screen.
+const TEMPO_PER_PIXEL: f64 = 0.25;
+
+/// How much slower a fine (Shift) drag is. Ten, so the fine drag's step is a
+/// fortieth of a BPM and the second decimal place the box shows is reachable.
+const TEMPO_FINE: f64 = 10.0;
+
+/// The tempo a vertical drag of `dy` pixels from `start` is asking for.
+///
+/// Up is more, which is the way every tempo box and every knob works and the
+/// opposite of the screen's y axis, hence the sign. Measured from where the
+/// gesture *started* rather than from where the pointer is, or the value jumps
+/// the moment the box is grabbed.
+pub fn tempo_at(start: f64, dy: f32, fine: bool) -> f64 {
+    let per_pixel = if fine {
+        TEMPO_PER_PIXEL / TEMPO_FINE
+    } else {
+        TEMPO_PER_PIXEL
+    };
+    round_tempo(start - dy as f64 * per_pixel)
+}
+
+/// The tempo `steps` wheel notches from `current` — a beat per minute each,
+/// or a tenth with Shift held.
+pub fn nudge_tempo(current: f64, steps: f32, fine: bool) -> f64 {
+    let step = if fine { 0.1 } else { 1.0 };
+    round_tempo(current + steps as f64 * step)
+}
+
+/// Clamps to the settable range and rounds to what [`format_tempo`] can show.
+///
+/// Both, in one place: a value the box cannot display exactly is a number on
+/// screen that is not the number in the document.
+pub fn round_tempo(bpm: f64) -> f64 {
+    (bpm.clamp(MIN_TEMPO, MAX_TEMPO) * 100.0).round() / 100.0
+}
+
+/// What the box says. Two decimal places, because a fine drag can put the
+/// value between them.
+pub fn format_tempo(bpm: f64) -> String {
+    format!("{bpm:.2}")
+}
+
+// ------------------------------------------------------- the time signature ---
+
+/// One beat in a bar: a bar line every beat. Odd, and legal.
+pub const MIN_BEATS_PER_BAR: u32 = 1;
+
+/// And the most. Past this the bar numbers on the roll's ruler are further
+/// apart than the roll is wide at any useful zoom.
+pub const MAX_BEATS_PER_BAR: u32 = 16;
+
+/// The next value a *click* on the box asks for: one more beat, wrapping back
+/// to the bottom at the top.
+///
+/// Wrapping, not clamping. A click is the only gesture on the box that needs
+/// no aim, and one that stops at the top is one you cannot get back down from
+/// without knowing about the wheel.
+pub fn cycle_beats_per_bar(current: u32) -> u32 {
+    if current >= MAX_BEATS_PER_BAR {
+        MIN_BEATS_PER_BAR
+    } else {
+        current.max(MIN_BEATS_PER_BAR) + 1
+    }
+}
+
+/// The value `by` wheel notches from `current`, clamped.
+pub fn step_beats_per_bar(current: u32, by: i32) -> u32 {
+    let wanted = current as i64 + by as i64;
+    wanted.clamp(MIN_BEATS_PER_BAR as i64, MAX_BEATS_PER_BAR as i64) as u32
+}
+
+/// What the signature box says.
+///
+/// The denominator is not settable and the box does not pretend it is:
+/// [`PPQN`] is ticks per *quarter* note, so a denominator other than four is a
+/// change to what a tick means in every conversion in the project, not a
+/// control. It is drawn because `4/4` is how a time signature reads and a bare
+/// `4` is not.
+pub fn format_signature(beats_per_bar: u32) -> String {
+    format!("{beats_per_bar}/4")
+}
+
+/// Turns an action into commands on the engine, and hands back where the marker
+/// now is.
 ///
 /// The one place a click becomes a write, so "commands down" is a single
-/// function rather than a habit. It reads the view first, which is what makes
-/// the loop button a *toggle* — asking for the opposite of what was last seen —
-/// rather than a button that only ever turns looping on.
-pub fn apply(host: &mut dyn TransportHost, hit: TransportHit) {
-    let view = host.view();
-    match hit {
-        // Play on a transport that is already rolling would restart it, and
-        // with a button held down it would do so every frame.
-        TransportHit::Play if !view.playing => host.play(),
-        TransportHit::Play => {}
-        TransportHit::Stop => host.stop(),
-        TransportHit::ToggleLoop => host.set_looping(!view.looping),
-        TransportHit::Scrub(sample) => host.seek(sample),
+/// function rather than a habit. The marker comes in and goes out rather than
+/// living here: this crate holds no state the window could disagree with.
+pub fn apply(host: &mut dyn TransportHost, action: TransportAction, marker: Sample) -> Sample {
+    let marker = marker.max(0);
+    match action {
+        TransportAction::Play => {
+            // Seek first, then roll. The other order plays a few milliseconds
+            // of wherever the playhead was left before jumping.
+            host.seek(marker);
+            host.play();
+            marker
+        }
+        TransportAction::Pause => {
+            host.stop();
+            host.seek(marker);
+            marker
+        }
+        TransportAction::Rewind => {
+            host.stop();
+            host.seek(0);
+            // The marker comes back too. A stop button that returns the
+            // playhead and then plays from bar 5 again is a stop button
+            // nobody can use.
+            0
+        }
+        TransportAction::SetLooping(on) => {
+            host.set_looping(on);
+            marker
+        }
+        TransportAction::SetArmed(on) => {
+            host.set_armed(on);
+            marker
+        }
+        TransportAction::SetMetronome(on) => {
+            host.set_metronome(on);
+            marker
+        }
+        TransportAction::Mark(sample) => {
+            let sample = sample.max(0);
+            host.seek(sample);
+            sample
+        }
     }
 }
 
@@ -361,4 +612,24 @@ pub fn format_bars_beats(beats: f64, beats_per_bar: u32) -> String {
         beat as i64 + 1,
         tick.min(PPQN - 1)
     )
+}
+
+/// The shortest a mouse audition sounds for.
+///
+/// Lives in [`crate::audition`] now, beside the state machine that enforces
+/// it; re-exported here because this is where callers first looked for it.
+pub use crate::audition::MIN_AUDITION;
+
+/// When a note that started sounding at `started` and whose key came up at
+/// `released` should actually be released, for the floor case.
+///
+/// The minimum is a **floor, not a length**: holding a key still sounds it for
+/// as long as it is held. [`crate::audition::Auditions`] is the general form —
+/// it carries a per-note hold, so clicking a half note sounds like a half note
+/// rather than like the front 180 ms of one.
+pub fn audition_release(
+    started: std::time::Instant,
+    released: std::time::Instant,
+) -> std::time::Instant {
+    released.max(started + MIN_AUDITION)
 }

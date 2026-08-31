@@ -105,6 +105,9 @@ pub fn notes_from_capture(
             release: 0,
             mod_x: 0,
             mod_y: 0,
+            // A recorded note is an ordinary one: a slide is
+            // something you draw, not something a keyboard sends.
+            slide: false,
         });
     }
 

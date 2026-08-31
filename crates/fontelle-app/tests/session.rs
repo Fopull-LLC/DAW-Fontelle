@@ -8,7 +8,7 @@
 
 use fontelle_app::{RealiseOptions, SampleLibrary, Session, demo_project};
 use fontelle_engine::timeline_channel;
-use fontelle_model::ClipSource;
+use fontelle_model::{ClipSource, Note};
 use fontelle_types::{CompiledTimeline, PPQN};
 use fontelle_ui::canvas::RollEdit;
 use fontelle_ui::document::DocumentHost;
@@ -60,10 +60,18 @@ fn drawing_a_note_puts_it_in_the_document_and_on_the_timeline() {
     let events_before = {
         // Prime the channel with what the project already sounds like.
         session.edit(RollEdit::Add {
-            tick: PPQN * 8,
-            key: 72,
-            length: PPQN,
-            velocity: 100,
+            note: Note {
+                start: PPQN * 8,
+                length: PPQN,
+                key: 72,
+                velocity: 100,
+                pan: 0,
+                fine_pitch: 0,
+                release: 0,
+                mod_x: 0,
+                mod_y: 0,
+                slide: false,
+            },
         });
         source.current().events.len()
     };
@@ -88,10 +96,18 @@ fn undo_takes_the_note_back_off_the_timeline_too() {
     let (mut session, mut source) = session();
     let before = note_count(&session);
     session.edit(RollEdit::Add {
-        tick: PPQN * 8,
-        key: 72,
-        length: PPQN,
-        velocity: 100,
+        note: Note {
+            start: PPQN * 8,
+            length: PPQN,
+            key: 72,
+            velocity: 100,
+            pan: 0,
+            fine_pitch: 0,
+            release: 0,
+            mod_x: 0,
+            mod_y: 0,
+            slide: false,
+        },
     });
     let with_note = source.current().events.len();
 
@@ -116,10 +132,18 @@ fn undo_takes_the_note_back_off_the_timeline_too() {
 fn redo_puts_it_back() {
     let (mut session, mut source) = session();
     session.edit(RollEdit::Add {
-        tick: PPQN * 8,
-        key: 72,
-        length: PPQN,
-        velocity: 100,
+        note: Note {
+            start: PPQN * 8,
+            length: PPQN,
+            key: 72,
+            velocity: 100,
+            pan: 0,
+            fine_pitch: 0,
+            release: 0,
+            mod_x: 0,
+            mod_y: 0,
+            slide: false,
+        },
     });
     let with_note = source.current().events.len();
     session.undo();
@@ -206,10 +230,18 @@ fn a_fresh_session_is_clean_and_an_edit_makes_it_dirty() {
     let (mut session, _source) = session();
     assert!(!session.is_dirty());
     session.edit(RollEdit::Add {
-        tick: 0,
-        key: 60,
-        length: PPQN,
-        velocity: 100,
+        note: Note {
+            start: 0,
+            length: PPQN,
+            key: 60,
+            velocity: 100,
+            pan: 0,
+            fine_pitch: 0,
+            release: 0,
+            mod_x: 0,
+            mod_y: 0,
+            slide: false,
+        },
     });
     assert!(session.is_dirty(), "an edited project did not go dirty");
 }
@@ -228,10 +260,18 @@ fn removing_a_note_takes_its_events_with_it() {
     let (mut session, mut source) = session();
     let ids: Vec<_> = session.notes().keys().collect();
     session.edit(RollEdit::Add {
-        tick: 0,
-        key: 60,
-        length: PPQN,
-        velocity: 100,
+        note: Note {
+            start: 0,
+            length: PPQN,
+            key: 60,
+            velocity: 100,
+            pan: 0,
+            fine_pitch: 0,
+            release: 0,
+            mod_x: 0,
+            mod_y: 0,
+            slide: false,
+        },
     });
     let before = source.current().events.len();
 

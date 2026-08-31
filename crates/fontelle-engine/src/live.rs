@@ -191,10 +191,20 @@ fn rt_safe_copy(event: &TimedEvent) -> Option<TimedEvent> {
         fontelle_types::EventPayload::NoteOn {
             key,
             velocity,
+            pan,
+            fine_pitch,
+            release,
+            mod_x,
+            mod_y,
             voice_context,
         } => fontelle_types::EventPayload::NoteOn {
             key: *key,
             velocity: *velocity,
+            pan: *pan,
+            fine_pitch: *fine_pitch,
+            release: *release,
+            mod_x: *mod_x,
+            mod_y: *mod_y,
             voice_context: *voice_context,
         },
         fontelle_types::EventPayload::NoteOff { key, voice_context } => {
@@ -203,6 +213,15 @@ fn rt_safe_copy(event: &TimedEvent) -> Option<TimedEvent> {
                 voice_context: *voice_context,
             }
         }
+        fontelle_types::EventPayload::NoteSlide {
+            key,
+            glide_samples,
+            voice_context,
+        } => fontelle_types::EventPayload::NoteSlide {
+            key: *key,
+            glide_samples: *glide_samples,
+            voice_context: *voice_context,
+        },
         fontelle_types::EventPayload::ClipStart => fontelle_types::EventPayload::ClipStart,
         fontelle_types::EventPayload::ClipStop => fontelle_types::EventPayload::ClipStop,
         fontelle_types::EventPayload::ParamValue { .. } => return None,
@@ -265,6 +284,11 @@ mod tests {
             payload: EventPayload::NoteOn {
                 key,
                 velocity: 100,
+                pan: 0,
+                fine_pitch: 0,
+                release: 0,
+                mod_x: 0,
+                mod_y: 0,
                 voice_context: 0,
             },
         }

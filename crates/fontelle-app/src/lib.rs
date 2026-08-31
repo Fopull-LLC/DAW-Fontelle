@@ -5,7 +5,10 @@
 pub mod bank;
 mod bundle;
 pub mod desktop;
+pub mod instrument;
+mod keymap;
 mod library;
+mod projects;
 mod realise;
 mod session;
 pub mod settings;
@@ -20,9 +23,12 @@ use fontelle_model::{
 use fontelle_types::{CompiledTimeline, PPQN, Tick};
 
 pub use bundle::{MissingAsset, OpenError, OpenedProject, open_project, save_project};
+pub use keymap::{HIT_SPAN_KEYS, KEY_MAP_HITS, MAX_NAMED_BAND_KEYS, key_map};
 pub use library::SampleLibrary;
+pub use projects::{ProjectEntry, ProjectLibrary, ProjectOrder, unique_name};
 pub use realise::{
-    RealiseError, RealiseOptions, Realised, channel_nodes, realise, set_channel_patch,
+    RealiseError, RealiseOptions, Realised, apply_mixer_controls, channel_nodes, realise,
+    realise_reusing, realise_with, set_channel_patch,
 };
 pub use session::Session;
 pub use window::EngineHost;
@@ -153,6 +159,7 @@ pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
             release: 0,
             mod_x: 0,
             mod_y: 0,
+            slide: false,
         });
     };
 
@@ -192,6 +199,7 @@ pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
         prefab_link: None,
         color: None,
         muted: false,
+        loop_length: None,
     })
     .apply(&mut project)
     .expect("a fresh project must take a clip");
@@ -237,6 +245,7 @@ pub fn blank_project(bars: i64, bpm: f64, sample_rate: u32) -> Project {
         prefab_link: None,
         color: None,
         muted: false,
+        loop_length: None,
     })
     .apply(&mut project)
     .expect("a fresh project must take a clip");

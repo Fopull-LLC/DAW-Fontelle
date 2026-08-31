@@ -13,7 +13,7 @@ use fontelle_types::{EventPayload, PPQN};
 /// which is the realisation step's to hand out even when no instrument has
 /// been chosen yet.
 fn compile(project: &Project) -> CompiledTimeline {
-    fontelle_sequencer::compile(project, &channel_nodes(project))
+    fontelle_sequencer::compile(project, &channel_nodes(project), &Default::default())
 }
 
 const SR: u32 = 48_000;

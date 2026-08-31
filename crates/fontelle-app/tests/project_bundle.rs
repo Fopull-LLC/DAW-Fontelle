@@ -15,8 +15,8 @@ use fontelle_app::{
     save_project, set_channel_patch,
 };
 use fontelle_assets::fixtures::{
-    GEN_KEY_RANGE, GEN_OVERRIDING_ROOT_KEY, GEN_PAN, GEN_SAMPLE_MODES, Sf2Fixture, ZoneSpec,
-    build_sf2, gen_range, gen_val, write_fixture_to_temp_file,
+    GEN_KEY_RANGE, GEN_OVERRIDING_ROOT_KEY, GEN_PAN, GEN_SAMPLE_MODES, KIT, Sf2Fixture, ZoneSpec,
+    build_drum_kit_sf2, build_sf2, gen_range, gen_val, write_fixture_to_temp_file,
 };
 use fontelle_model::{Command, NumberTarget, Project, SetNumber, StorageError};
 use fontelle_types::PPQN;
@@ -84,7 +84,8 @@ fn render(project: &Project, library: &SampleLibrary) -> Vec<f32> {
         },
     )
     .expect("this project must realise");
-    let timeline = fontelle_sequencer::compile(project, &realised.channel_nodes);
+    let timeline =
+        fontelle_sequencer::compile(project, &realised.channel_nodes, &realised.param_nodes);
     render_offline(
         &timeline,
         &mut realised.graph,
@@ -208,6 +209,65 @@ fn a_saved_project_references_its_soundfont_rather_than_copying_it_in() {
     );
     let text = std::fs::read_to_string(bundle.join("project.json")).unwrap();
     assert!(text.contains(soundfont.to_str().unwrap()));
+    std::fs::remove_dir_all(&bundle).ok();
+    std::fs::remove_file(&soundfont).ok();
+}
+
+/// The piano roll labels a drum kit's keys from the sample names in the file
+/// (see `fontelle-app`'s `keymap`). A saved patch names its audio by file plus
+/// header index (TDD §8.3) and is reloaded by that index rather than by
+/// re-importing the preset — so the names have to come back on *that* path, or
+/// a kit is labelled until you reopen the project and anonymous afterwards.
+#[test]
+fn a_reopened_kit_still_knows_what_its_keys_are_called() {
+    let soundfont = write_fixture_to_temp_file("bundle-kit", &build_drum_kit_sf2(KIT));
+    let bundle = scratch("kit-names");
+
+    let mut library = SampleLibrary::new();
+    let patch = library
+        .import_sf2(&soundfont, 0)
+        .expect("the kit must import");
+    let mut project = fontelle_app::demo_project(60, 120.0, SR);
+    let channel = project.channels.keys().next().unwrap();
+    set_channel_patch(&mut project, channel, &patch, &library).unwrap();
+
+    let before = fontelle_app::key_map(&patch, &library);
+    assert_eq!(
+        before.name(KIT[1].1),
+        Some(KIT[1].0),
+        "labelled to begin with"
+    );
+
+    save_project(&project, &bundle).expect("save");
+    drop((project, library));
+
+    let opened = open_project(&bundle).expect("open");
+    assert!(opened.missing.is_empty(), "the kit is still where it was");
+    let reloaded = fontelle_core::Patch::from_data(
+        opened
+            .project
+            .channels
+            .values()
+            .next()
+            .unwrap()
+            .patch_data
+            .as_ref()
+            .expect("the channel kept its instrument"),
+        |file| opened.library.resolve(file),
+    )
+    .expect("the stored patch must read back")
+    .patch;
+
+    let after = fontelle_app::key_map(&reloaded, &opened.library);
+    assert!(after.is_named(), "a reopened kit is still a kit");
+    for (name, key) in KIT {
+        assert_eq!(
+            after.name(*key),
+            Some(*name),
+            "key {key} lost its name across the round trip"
+        );
+    }
+
     std::fs::remove_dir_all(&bundle).ok();
     std::fs::remove_file(&soundfont).ok();
 }

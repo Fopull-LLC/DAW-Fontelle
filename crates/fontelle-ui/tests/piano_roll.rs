@@ -9,8 +9,9 @@
 use fontelle_model::{Arena, Note};
 use fontelle_types::{NoteId, PPQN, Tick};
 use fontelle_ui::canvas::{
-    NotePart, RollEdit, RollHit, RollView, SnapDivision, Tool, hit_test, key_to_y, roll_layout,
-    snap_tick, snap_unit, tick_to_x, visible_keys, visible_ticks, x_to_tick, y_to_key,
+    DEFAULT_LANE_HEIGHT, NotePart, RollEdit, RollHit, RollView, SnapDivision, Tool, hit_test,
+    key_to_y, roll_layout, snap_tick, snap_unit, tick_to_x, visible_keys, visible_ticks, x_to_tick,
+    y_to_key,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
@@ -42,6 +43,7 @@ fn note(start: Tick, length: Tick, key: u8) -> Note {
         release: 0,
         mod_x: 0,
         mod_y: 0,
+        slide: false,
     }
 }
 
@@ -63,7 +65,7 @@ fn the_roll_reserves_a_keyboard_and_a_ruler_and_gives_the_rest_to_the_grid() {
     let l = roll_layout(
         Rect::new(0.0, 0.0, 1000.0, 600.0),
         &Theme::dark_default().metrics,
-        false,
+        0.0,
     );
 
     assert_eq!(l.keys.x, l.frame.x);
@@ -88,7 +90,7 @@ fn the_roll_reserves_a_keyboard_and_a_ruler_and_gives_the_rest_to_the_grid() {
 fn a_roll_too_small_for_its_chrome_has_an_empty_grid_and_no_negative_rects() {
     let m = Theme::dark_default().metrics;
     for (w, h) in [(0.0, 0.0), (10.0, 10.0), (30.0, 400.0), (400.0, 12.0)] {
-        let l = roll_layout(Rect::new(0.0, 0.0, w, h), &m, true);
+        let l = roll_layout(Rect::new(0.0, 0.0, w, h), &m, DEFAULT_LANE_HEIGHT);
         for r in [l.frame, l.keys, l.ruler, l.grid] {
             assert!(r.width >= 0.0 && r.height >= 0.0, "{w}x{h} gave {r:?}");
         }
@@ -362,10 +364,12 @@ fn drawing_on_an_empty_cell_asks_for_a_note_of_one_snap_unit() {
     assert_eq!(
         edits,
         vec![RollEdit::Add {
-            tick: snap_tick(500, SnapDivision::Step, BEATS_PER_BAR),
-            key: 60,
-            length: snap_unit(SnapDivision::Step, BEATS_PER_BAR),
-            velocity: roll.default_velocity,
+            note: Note {
+                start: snap_tick(500, SnapDivision::Step, BEATS_PER_BAR),
+                length: snap_unit(SnapDivision::Step, BEATS_PER_BAR),
+                key: 60,
+                ..roll.template()
+            },
         }]
     );
 }
@@ -740,4 +744,50 @@ fn resizing_never_makes_a_note_shorter_than_nothing() {
         ),
         other => panic!("expected at most one resize, got {other:?}"),
     }
+}
+
+// --------------------------------------------------------- the grid's levels ---
+
+/// Reported from using the window: *"it's kind of hard to tell the time right
+/// now so ensure between bars or measures there's more dividers so I can see
+/// the on and offbeats and stuff in the piano roll — just makes it easier to
+/// lay stuff down."*
+///
+/// Two things were wrong and only one of them was the ink. The other is this:
+/// the roll drew its finest lines at **the snap division**, so setting the
+/// snap to bars or turning it off removed every line between the bars and left
+/// a bar-wide empty box to place notes in by eye.
+///
+/// The grid is not the snap. It is the ruler you read the time off, and it
+/// keeps showing at least the eighths whatever the snap is doing.
+#[test]
+fn the_grid_shows_the_offbeats_however_coarse_the_snap_is() {
+    use fontelle_ui::canvas::subdivision_unit;
+
+    assert_eq!(
+        subdivision_unit(SnapDivision::Bar, 4),
+        PPQN / 2,
+        "snapping to bars must not empty the bar"
+    );
+    assert_eq!(subdivision_unit(SnapDivision::Beat, 4), PPQN / 2);
+    assert_eq!(
+        subdivision_unit(SnapDivision::None, 4),
+        PPQN / 2,
+        "free positioning is about where a note may go, not about what you can see"
+    );
+}
+
+/// And a snap finer than an eighth shows *itself*, because then the grid and
+/// the snap agree and the lines you are aiming at are the lines you can see.
+#[test]
+fn a_snap_finer_than_an_eighth_is_the_grid_that_is_drawn() {
+    use fontelle_ui::canvas::subdivision_unit;
+
+    assert_eq!(subdivision_unit(SnapDivision::Step, 4), PPQN / 4);
+    assert_eq!(subdivision_unit(SnapDivision::Division(8), 4), PPQN / 8);
+    assert_eq!(
+        subdivision_unit(SnapDivision::Triplet, 4),
+        PPQN / 3,
+        "a triplet grid is the one thing an eighth grid cannot show"
+    );
 }

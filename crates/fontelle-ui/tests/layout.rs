@@ -1,6 +1,7 @@
 //! Window geometry, which is arithmetic and therefore tested here rather than
 //! looked at (`docs/first-usable-plan.md` §2.5).
 
+use fontelle_ui::layout::DEFAULT_TIMELINE_HEIGHT;
 use fontelle_ui::layout::{Rect, window_layout};
 use fontelle_ui::theme::Theme;
 
@@ -11,7 +12,7 @@ fn metrics() -> fontelle_ui::theme::Metrics {
 #[test]
 fn the_transport_bar_is_across_the_top_and_the_panels_are_under_it() {
     let m = metrics();
-    let l = window_layout(1280.0, 720.0, &m);
+    let l = window_layout(1280.0, 720.0, &m, DEFAULT_TIMELINE_HEIGHT);
 
     assert_eq!(l.window, Rect::new(0.0, 0.0, 1280.0, 720.0));
     assert_eq!(
@@ -39,7 +40,7 @@ fn the_transport_bar_is_across_the_top_and_the_panels_are_under_it() {
 #[test]
 fn the_header_sits_on_top_of_the_body_and_they_tile_the_frame() {
     let m = metrics();
-    let l = window_layout(1280.0, 720.0, &m);
+    let l = window_layout(1280.0, 720.0, &m, DEFAULT_TIMELINE_HEIGHT);
     let (frame, header, body) = (l.panel.frame, l.panel.header, l.panel.body);
 
     assert_eq!(header.y, frame.y);
@@ -58,8 +59,8 @@ fn the_header_sits_on_top_of_the_body_and_they_tile_the_frame() {
 #[test]
 fn growing_the_window_grows_only_the_body() {
     let m = metrics();
-    let small = window_layout(1280.0, 720.0, &m);
-    let tall = window_layout(1280.0, 820.0, &m);
+    let small = window_layout(1280.0, 720.0, &m, DEFAULT_TIMELINE_HEIGHT);
+    let tall = window_layout(1280.0, 820.0, &m, DEFAULT_TIMELINE_HEIGHT);
 
     assert_eq!(small.panel.header.height, tall.panel.header.height);
     assert_eq!(small.panel.body.width, tall.panel.body.width);
@@ -73,7 +74,7 @@ fn a_window_too_small_for_its_chrome_yields_empty_rects_never_negative_ones() {
     // A user dragging a window edge past the chrome is ordinary, and a
     // negative width reaches the GPU as a panic or a garbage draw.
     for (w, h) in [(0.0, 0.0), (1.0, 1.0), (4.0, 900.0), (900.0, 4.0)] {
-        let l = window_layout(w, h, &m);
+        let l = window_layout(w, h, &m, DEFAULT_TIMELINE_HEIGHT);
         for r in [l.transport, l.panel.frame, l.panel.header, l.panel.body] {
             assert!(
                 r.width >= 0.0 && r.height >= 0.0,
@@ -141,7 +142,7 @@ fn a_physical_size_scales_by_the_dpi_factor() {
     // The layout is in logical pixels; the surface is in physical ones. Doing
     // this arithmetic in two places is how a HiDPI window ends up with chrome
     // at half size, so there is one function for it.
-    let logical = window_layout(1280.0, 720.0, &m);
+    let logical = window_layout(1280.0, 720.0, &m, DEFAULT_TIMELINE_HEIGHT);
     assert_eq!(
         logical.panel.frame.scale(2.0).width,
         logical.panel.frame.width * 2.0

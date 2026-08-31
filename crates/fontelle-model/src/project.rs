@@ -222,12 +222,31 @@ pub struct ViewState {
     pub scroll: f32,
 }
 
+/// 4/4 — what a project is in until somebody says otherwise, and what a file
+/// written before the field existed was in.
+fn default_beats_per_bar() -> u32 {
+    4
+}
+
 /// The whole document (TDD §10.1). Owned exclusively by the model thread; every
 /// mutation goes through a `Command` (INVARIANT 9).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Project {
     pub meta: ProjectMeta,
     pub tempo_map: TempoMap,
+    /// The time signature's numerator: how many beats there are in a bar.
+    ///
+    /// **The denominator is always four and is not stored**, because [`PPQN`]
+    /// is ticks per *quarter* note — a denominator other than four is a change
+    /// to what a tick means in every conversion in this crate, not a document
+    /// field. A time-signature *track* (§6.2's remaining gap) is where a piece
+    /// that changes metre mid-song goes; this is the one signature the grid,
+    /// the bar numbers and the read-out all count by.
+    ///
+    /// Defaulted rather than required, so a project written before this field
+    /// existed opens in the 4/4 it was made in.
+    #[serde(default = "default_beats_per_bar")]
+    pub beats_per_bar: u32,
     pub channels: Arena<ChannelId, Channel>,
     pub mixer: Mixer,
     /// Visual only — TDD §10.3.
@@ -262,6 +281,7 @@ impl Project {
                 format_version: 0,
             },
             tempo_map: TempoMap::default(),
+            beats_per_bar: default_beats_per_bar(),
             channels: Arena::default(),
             mixer,
             lanes: Arena::default(),

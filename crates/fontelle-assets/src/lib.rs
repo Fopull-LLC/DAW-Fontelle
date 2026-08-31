@@ -15,7 +15,7 @@ pub use midi_import::{
 };
 pub use peaks::{PeakData, generate_peaks};
 pub use sf2_import::{
-    ImportError, ImportedPatch, ImportedZone, ImportedZones, PresetInfo, import_sf2,
+    ImportError, ImportedPatch, ImportedZone, ImportedZones, LoadedSample, PresetInfo, import_sf2,
     import_sf2_preset, list_presets, load_sf2_samples,
 };
 pub use sfz_import::import_sfz;

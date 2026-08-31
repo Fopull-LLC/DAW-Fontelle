@@ -1,0 +1,411 @@
+//! The arrangement canvas — clips as blocks on lanes (TDD §16.4, and the half
+//! of item 9 of `docs/first-usable-plan.md` that was still outstanding).
+//!
+//! Reported from using the window: *"why is there no timeline right now, only
+//! piano roll?"* There was not one because nothing had been built; the piano
+//! roll shows one clip and there was no view of the piece.
+//!
+//! This is the roll's shape applied to a coarser grid: virtualised the same way
+//! (§16.4 — a project with two hundred lanes builds a screenful of rectangles),
+//! edits by value rather than by mutation (INVARIANT 2), and every decision a
+//! pure function so it is testable without a window (§2.5).
+
+use fontelle_model::Arena;
+use fontelle_types::{ClipId, PPQN, Tick};
+use fontelle_ui::canvas::{
+    ArrangeEdit, ClipPart, MouseButton, SnapDivision, Timeline, TimelineHit, TimelineView,
+    clip_rect, lane_to_y, timeline_hit, timeline_layout, visible_lanes, y_to_lane,
+};
+use fontelle_ui::document::ClipInfo;
+use fontelle_ui::layout::Rect;
+use fontelle_ui::theme::{Metrics, Theme};
+
+fn metrics() -> Metrics {
+    Theme::dark_default().metrics
+}
+
+fn view() -> TimelineView {
+    TimelineView {
+        scroll_tick: 0,
+        top_lane: 0,
+        // A bar (4 beats = 3840 ticks) is 96 pixels: about what an arrangement
+        // is read at.
+        pixels_per_tick: 0.025,
+        lane_height: 34.0,
+        snap: SnapDivision::Bar,
+    }
+}
+
+fn grid() -> Rect {
+    Rect::new(120.0, 24.0, 900.0, 200.0)
+}
+
+/// Clips with real ids, minted the way the document mints them — there is no
+/// other way to make a `ClipId`, and inventing one would be inventing a key
+/// the arena never issued.
+fn clips(specs: &[(usize, Tick, Tick)]) -> Vec<ClipInfo> {
+    let mut arena: Arena<ClipId, ()> = Arena::default();
+    specs
+        .iter()
+        .enumerate()
+        .map(|(n, (lane, start, length))| ClipInfo {
+            id: arena.insert(()),
+            lane: *lane,
+            start: *start,
+            length: *length,
+            name: format!("Clip {}", n + 1),
+            muted: false,
+            open: false,
+            color: [0x4f, 0x8f, 0xd0, 0xff],
+            loop_length: None,
+        })
+        .collect()
+}
+
+/// One clip, when that is all a test needs.
+fn clip(_id: u32, lane: usize, start: Tick, length: Tick) -> ClipInfo {
+    clips(&[(lane, start, length)]).remove(0)
+}
+
+const BAR: Tick = PPQN * 4;
+
+// ------------------------------------------------------------- geometry ---
+
+#[test]
+fn the_arrangement_reserves_a_ruler_and_a_lane_header_column() {
+    let m = metrics();
+    let frame = Rect::new(0.0, 0.0, 1000.0, 220.0);
+    let l = timeline_layout(frame, &m);
+
+    // The toolbar is the top of the panel now — the arrangement had no
+    // controls at all until snap, repeat and the clipboard needed somewhere to
+    // live, and a control nobody can see is a control nobody has.
+    assert_eq!(l.toolbar.y, frame.y, "the toolbar is the top of the panel");
+    assert_eq!(l.ruler.y, l.toolbar.bottom(), "the ruler sits under it");
+    assert_eq!(l.grid.y, l.ruler.bottom());
+    assert!(!l.toolbar.intersects(&l.ruler));
+    assert!(!l.toolbar.intersects(&l.grid));
+    assert_eq!(l.headers.y, l.grid.y, "the headers run beside the grid");
+    assert_eq!(l.headers.height, l.grid.height);
+    assert_eq!(l.grid.x, l.headers.right());
+    assert_eq!(l.grid.right(), frame.right());
+    assert_eq!(l.grid.bottom(), frame.bottom());
+    assert!(!l.grid.intersects(&l.headers));
+    assert!(!l.grid.intersects(&l.ruler));
+}
+
+#[test]
+fn a_panel_too_small_for_its_chrome_yields_no_negative_rectangles() {
+    let m = metrics();
+    for (w, h) in [(0.0, 0.0), (8.0, 8.0), (40.0, 300.0), (600.0, 6.0)] {
+        let l = timeline_layout(Rect::new(0.0, 0.0, w, h), &m);
+        for r in [l.frame, l.toolbar, l.ruler, l.headers, l.grid] {
+            assert!(r.width >= 0.0 && r.height >= 0.0, "{w}x{h} gave {r:?}");
+        }
+    }
+}
+
+#[test]
+fn only_the_visible_lanes_are_built_however_many_there_are() {
+    let v = view();
+    let g = grid();
+    // 200 pixels of grid at 34 per lane is six rows; a project with two hundred
+    // lanes must cost six rectangles, not two hundred (§16.4).
+    let lanes = visible_lanes(&v, g, 200);
+    assert!(lanes.len() <= 8, "built {} lanes", lanes.len());
+    assert_eq!(lanes.start, 0);
+
+    // Scrolled down, the window moves rather than growing.
+    let scrolled = visible_lanes(&TimelineView { top_lane: 40, ..v }, g, 200);
+    assert_eq!(scrolled.start, 40);
+    assert_eq!(scrolled.len(), lanes.len());
+
+    // And it never runs past the end of the project.
+    let short = visible_lanes(&v, g, 2);
+    assert_eq!(short, 0..2);
+}
+
+#[test]
+fn a_lane_and_its_row_convert_both_ways() {
+    let v = view();
+    let g = grid();
+    for lane in 0..5 {
+        let y = lane_to_y(&v, g, lane);
+        assert_eq!(y_to_lane(&v, g, y + 1.0), lane);
+    }
+    assert_eq!(y_to_lane(&v, g, g.y - 100.0), 0, "clamped above the grid");
+}
+
+#[test]
+fn a_clip_becomes_the_block_its_start_and_length_describe() {
+    let v = view();
+    let g = grid();
+    let block = clip_rect(&v, g, &clip(1, 2, BAR * 4, BAR * 2));
+
+    assert_eq!(block.y, lane_to_y(&v, g, 2));
+    assert_eq!(block.height, v.lane_height);
+    assert!((block.width - (BAR * 2) as f32 * v.pixels_per_tick).abs() < 0.01);
+    // A clip too short to see is still a block you can click.
+    let tiny = clip_rect(&v, g, &clip(2, 0, 0, 1));
+    assert!(tiny.width >= 1.0);
+}
+
+// ---------------------------------------------------------- hit-testing ---
+
+#[test]
+fn hit_testing_says_which_clip_and_which_part_of_it() {
+    let v = view();
+    let l = timeline_layout(Rect::new(0.0, 0.0, 1020.0, 224.0), &metrics());
+    let clips = clips(&[(0, BAR, BAR * 4)]);
+    let block = clip_rect(&v, l.grid, &clips[0]);
+
+    let body = timeline_hit(&v, &l, &clips, block.x + block.width / 2.0, block.y + 4.0);
+    assert_eq!(
+        body,
+        TimelineHit::Clip(clips[0].id, ClipPart::Body),
+        "got {body:?}"
+    );
+
+    let edge = timeline_hit(&v, &l, &clips, block.right() - 2.0, block.y + 4.0);
+    assert_eq!(edge, TimelineHit::Clip(clips[0].id, ClipPart::RightEdge));
+
+    // Empty grid says where, so a double-click there could make a clip.
+    match timeline_hit(&v, &l, &clips, block.right() + 200.0, block.y + 4.0) {
+        TimelineHit::Empty { lane, .. } => assert_eq!(lane, 0),
+        other => panic!("expected empty grid, got {other:?}"),
+    }
+
+    // The ruler is its own answer: that is where the time marker is set.
+    let on_ruler = timeline_hit(&v, &l, &clips, l.ruler.x + 300.0, l.ruler.y + 2.0);
+    assert!(
+        matches!(on_ruler, TimelineHit::Ruler(_)),
+        "got {on_ruler:?}"
+    );
+    // As is a lane header.
+    let on_header = timeline_hit(&v, &l, &clips, l.headers.x + 4.0, l.headers.y + 4.0);
+    assert_eq!(on_header, TimelineHit::Lane(0));
+
+    assert_eq!(
+        timeline_hit(&v, &l, &clips, -50.0, -50.0),
+        TimelineHit::Outside
+    );
+}
+
+// ------------------------------------------------------------- gestures ---
+
+fn timeline() -> Timeline {
+    Timeline::new(view())
+}
+
+#[test]
+fn clicking_a_clip_selects_it_and_asks_for_it_to_be_opened() {
+    let mut t = timeline();
+    let l = timeline_layout(Rect::new(0.0, 0.0, 1020.0, 224.0), &metrics());
+    let clips = clips(&[(0, BAR, BAR * 4), (1, 0, BAR)]);
+    let block = clip_rect(&t.view, l.grid, &clips[0]);
+
+    let edits = t.press(
+        MouseButton::Left,
+        block.x + 20.0,
+        block.y + 4.0,
+        &l,
+        &clips,
+        4,
+    );
+    assert!(edits.is_empty(), "selecting is not an edit: {edits:?}");
+    assert_eq!(t.selection(), &[clips[0].id]);
+    assert_eq!(
+        t.take_open(),
+        Some(clips[0].id),
+        "the roll follows the arrangement — clicking a clip opens it"
+    );
+    assert_eq!(t.take_open(), None, "and it is asked for exactly once");
+}
+
+#[test]
+fn dragging_a_clip_moves_it_by_whole_bars_and_never_before_the_start() {
+    let mut t = timeline();
+    let l = timeline_layout(Rect::new(0.0, 0.0, 1020.0, 224.0), &metrics());
+    let clips = clips(&[(0, BAR * 4, BAR * 4)]);
+    let block = clip_rect(&t.view, l.grid, &clips[0]);
+    let y = block.y + 4.0;
+
+    t.press(MouseButton::Left, block.x + 20.0, y, &l, &clips, 4);
+
+    // A nudge shorter than a bar is not a move, and not a history entry.
+    let none = t.drag(block.x + 21.0, y, &l, &clips, 4);
+    assert!(none.is_empty(), "a sub-bar drag moved it: {none:?}");
+
+    let one_bar = BAR as f32 * t.view.pixels_per_tick;
+    let moved = t.drag(block.x + 20.0 + one_bar, y, &l, &clips, 4);
+    let [
+        ArrangeEdit::Move {
+            ids,
+            tick_delta,
+            lane_delta,
+        },
+    ] = &moved[..]
+    else {
+        panic!("expected one move, got {moved:?}");
+    };
+    assert_eq!(ids, &vec![clips[0].id]);
+    assert_eq!(*tick_delta, BAR);
+    assert_eq!(*lane_delta, 0);
+
+    // And dragged hard left it stops at bar 1 rather than going negative.
+    let back = t.drag(l.grid.x - 500.0, y, &l, &clips, 4);
+    let total: Tick = back
+        .iter()
+        .map(|e| match e {
+            ArrangeEdit::Move { tick_delta, .. } => *tick_delta,
+            _ => 0,
+        })
+        .sum::<Tick>()
+        + BAR;
+    assert_eq!(
+        clips[0].start + total,
+        0,
+        "the clip lands on bar 1, not before it"
+    );
+}
+
+#[test]
+fn dragging_a_clip_down_a_row_changes_its_lane() {
+    let mut t = timeline();
+    let l = timeline_layout(Rect::new(0.0, 0.0, 1020.0, 224.0), &metrics());
+    let clips = clips(&[(0, 0, BAR * 4)]);
+    let block = clip_rect(&t.view, l.grid, &clips[0]);
+
+    t.press(
+        MouseButton::Left,
+        block.x + 20.0,
+        block.y + 4.0,
+        &l,
+        &clips,
+        4,
+    );
+    let moved = t.drag(
+        block.x + 20.0,
+        block.y + t.view.lane_height * 2.0 + 4.0,
+        &l,
+        &clips,
+        4,
+    );
+    let [ArrangeEdit::Move { lane_delta, .. }] = &moved[..] else {
+        panic!("expected one move, got {moved:?}");
+    };
+    assert_eq!(*lane_delta, 2);
+}
+
+#[test]
+fn dragging_a_clips_right_edge_resizes_it() {
+    let mut t = timeline();
+    let l = timeline_layout(Rect::new(0.0, 0.0, 1020.0, 224.0), &metrics());
+    let clips = clips(&[(0, 0, BAR * 4)]);
+    let block = clip_rect(&t.view, l.grid, &clips[0]);
+    let y = block.y + 4.0;
+
+    t.press(MouseButton::Left, block.right() - 2.0, y, &l, &clips, 4);
+    let one_bar = BAR as f32 * t.view.pixels_per_tick;
+    let edits = t.drag(block.right() - 2.0 + one_bar, y, &l, &clips, 4);
+    let [ArrangeEdit::Resize { ids, tick_delta }] = &edits[..] else {
+        panic!("expected one resize, got {edits:?}");
+    };
+    assert_eq!(ids, &vec![clips[0].id]);
+    assert_eq!(*tick_delta, BAR);
+}
+
+#[test]
+fn right_clicking_a_clip_deletes_it() {
+    let mut t = timeline();
+    let l = timeline_layout(Rect::new(0.0, 0.0, 1020.0, 224.0), &metrics());
+    let clips = clips(&[(0, 0, BAR * 4)]);
+    let block = clip_rect(&t.view, l.grid, &clips[0]);
+
+    let edits = t.press(
+        MouseButton::Right,
+        block.x + 20.0,
+        block.y + 4.0,
+        &l,
+        &clips,
+        4,
+    );
+    assert_eq!(edits, vec![ArrangeEdit::Remove(vec![clips[0].id])]);
+}
+
+#[test]
+fn the_selection_can_be_duplicated_muted_and_deleted() {
+    let mut t = timeline();
+    let clips = clips(&[(0, 0, BAR * 4), (1, BAR, BAR)]);
+    t.select(vec![clips[0].id, clips[1].id]);
+
+    // Duplicate lands after the end of what was selected, rounded to a bar, so
+    // a phrase copied twice is twice as long rather than an overlap.
+    let [ArrangeEdit::Duplicate { ids, tick_offset }] = &t.duplicate(&clips, 4)[..] else {
+        panic!("expected a duplicate");
+    };
+    assert_eq!(ids.len(), 2);
+    assert_eq!(*tick_offset, BAR * 4);
+
+    let [ArrangeEdit::SetMuted { muted, .. }] = &t.toggle_mute(&clips)[..] else {
+        panic!("expected a mute");
+    };
+    assert!(
+        *muted,
+        "none of them was muted, so all of them become muted"
+    );
+
+    assert_eq!(
+        t.delete_selection(),
+        vec![ArrangeEdit::Remove(vec![clips[0].id, clips[1].id])]
+    );
+    assert!(
+        t.delete_selection().is_empty(),
+        "deleting nothing is not an edit"
+    );
+}
+
+#[test]
+fn a_marquee_over_the_arrangement_selects_what_it_covers() {
+    let mut t = timeline();
+    // The arrangement starts in **draw** now — a press on empty grid makes a
+    // clip, which is the thing it could not do before (see
+    // `tests/arrange_draw.rs`). The marquee is the select tool's, and Ctrl's.
+    t.set_tool(fontelle_ui::canvas::TimelineTool::Select);
+    let l = timeline_layout(Rect::new(0.0, 0.0, 1020.0, 224.0), &metrics());
+    let clips = clips(&[(0, 0, BAR), (1, 0, BAR), (2, BAR * 20, BAR)]);
+
+    // Press on empty grid past the end of everything, then drag back over the
+    // first two lanes.
+    let from = clip_rect(&t.view, l.grid, &clips[0]);
+    t.press(
+        MouseButton::Left,
+        l.grid.right() - 4.0,
+        l.grid.bottom() - 4.0,
+        &l,
+        &clips,
+        4,
+    );
+    t.drag(from.x + 1.0, from.y + 1.0, &l, &clips, 4);
+    assert!(t.marquee().is_some(), "there is a box to draw");
+    t.release_over(from.x + 1.0, from.y + 1.0, &l, &clips);
+
+    let selected = t.selection();
+    assert_eq!(selected.len(), 2, "got {selected:?}");
+    assert!(selected.contains(&clips[0].id));
+    assert!(selected.contains(&clips[1].id));
+}
+
+#[test]
+fn zooming_the_arrangement_holds_the_bar_under_the_pointer() {
+    let mut t = timeline();
+    let g = grid();
+    let anchor = g.x + 400.0;
+    let before = fontelle_ui::canvas::timeline_x_to_tick(&t.view, g, anchor);
+    fontelle_ui::canvas::timeline_zoom_x(&mut t.view, g, anchor, 2.0);
+    let after = fontelle_ui::canvas::timeline_x_to_tick(&t.view, g, anchor);
+    assert!(
+        (before - after).abs() < BAR / 8,
+        "the bar under the pointer moved from {before} to {after}"
+    );
+}

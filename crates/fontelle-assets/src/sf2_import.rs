@@ -24,6 +24,28 @@ pub struct ImportedPatch {
     /// Keyed by the id in the store, so it is a drop-in argument for
     /// `Patch::to_data`.
     pub samples: HashMap<AssetId, SampleRef>,
+    /// What the file calls each sample, by the same key.
+    ///
+    /// Not decoration, and this is the reason it is here rather than left in
+    /// the parser: on a **drum kit** the sample name is the only thing that
+    /// says which key is the snare. A `Layer` names a key range and an
+    /// `AssetId`, and neither of those can be shown to a person. The piano
+    /// roll's key map reads this (see `fontelle-app`'s `keymap`), which is
+    /// what turns forty anonymous rows into a labelled kit.
+    ///
+    /// Deliberately *not* on `Patch`: a patch is the user's, and INVARIANT 8
+    /// keeps decoded-audio identity off disk. The name is a fact about the
+    /// file, re-read every time its audio is, on both the import path and the
+    /// reopen path ([`load_sf2_samples`]).
+    pub names: HashMap<AssetId, String>,
+}
+
+/// One sample brought back for a saved patch: the id it now has in the store,
+/// and what the file calls it. See [`load_sf2_samples`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedSample {
+    pub asset: AssetId,
+    pub name: String,
 }
 
 #[derive(Debug)]
@@ -163,7 +185,7 @@ pub fn load_sf2_samples(
     path: &Path,
     wanted: &[u32],
     store: &mut SampleStore,
-) -> Result<HashMap<u32, AssetId>, ImportError> {
+) -> Result<HashMap<u32, LoadedSample>, ImportError> {
     let bytes = std::fs::read(path).map_err(|e| ImportError(e.to_string()))?;
     let sf2 = load_sf2(&bytes)?;
     let smpl = sf2
@@ -183,7 +205,16 @@ pub fn load_sf2_samples(
             ))
         })?;
         let buffer = decode_sample(header, &bytes, smpl.offset)?;
-        loaded.insert(*index, store.insert(buffer));
+        loaded.insert(
+            *index,
+            LoadedSample {
+                asset: store.insert(buffer),
+                // The same name the importer records, on the path a reopened
+                // project takes — otherwise a kit is labelled until you close
+                // it and anonymous afterwards.
+                name: header.name.clone(),
+            },
+        );
     }
     Ok(loaded)
 }
@@ -386,6 +417,7 @@ pub fn import_sf2_preset(
     // provenance map a bijection, which is what lets a reopened project find
     // its way back from a `SampleRef` to exactly one id.
     let mut decoded: HashMap<u16, AssetId> = HashMap::new();
+    let mut names: HashMap<AssetId, String> = HashMap::new();
     let mut layers = Vec::new();
     let mut amp_envelope = None;
     let mut filter = None;
@@ -450,6 +482,7 @@ pub fn import_sf2_preset(
             smpl.offset,
             decoded.get(sample_id).copied(),
         )?;
+        names.insert(asset, header.name.clone());
         if decoded.insert(*sample_id, asset).is_none() {
             // The sample header's own index inside the file: what a reopened
             // project matches on to find this audio again, since the store's
@@ -515,6 +548,7 @@ pub fn import_sf2_preset(
             voice_config: VoiceConfig::default(),
         },
         samples,
+        names,
     })
 }
 

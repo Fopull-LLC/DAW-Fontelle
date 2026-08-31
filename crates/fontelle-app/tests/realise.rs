@@ -124,9 +124,11 @@ impl Rig {
         let channel = self.project.channels.insert(Channel {
             name: name.into(),
             color: [0; 4],
-            mixer_track: track,
+            mixer_track: Some(track),
             patch_data: None,
             pan: 0.0,
+            muted: false,
+            soloed: false,
         });
         fontelle_app::set_channel_patch(&mut self.project, channel, &patch, &self.library)
             .expect("a patch this build built must serialise");
@@ -146,6 +148,7 @@ impl Rig {
             release: 0,
             mod_x: 0,
             mod_y: 0,
+            slide: false,
         });
         self.project.clips.insert(Clip {
             lane: self.lane,
@@ -155,6 +158,7 @@ impl Rig {
             prefab_link: None,
             color: None,
             muted: false,
+            loop_length: None,
         });
     }
 
@@ -162,7 +166,11 @@ impl Rig {
     fn render(&self, frames: usize) -> Vec<f32> {
         let mut realised =
             realise(&self.project, &self.library, options()).expect("this project must realise");
-        let timeline = fontelle_sequencer::compile(&self.project, &realised.channel_nodes);
+        let timeline = fontelle_sequencer::compile(
+            &self.project,
+            &realised.channel_nodes,
+            &Default::default(),
+        );
         render_offline(&timeline, &mut realised.graph, frames as i64)
     }
 }
@@ -216,7 +224,8 @@ fn each_channel_becomes_a_sampler_node_the_sequencer_can_target() {
 
     // The mapping is the whole reason this step exists: it is what
     // `fontelle_sequencer::compile` needs and cannot work out for itself.
-    let timeline = fontelle_sequencer::compile(&rig.project, &realised.channel_nodes);
+    let timeline =
+        fontelle_sequencer::compile(&rig.project, &realised.channel_nodes, &Default::default());
     assert!(timeline.events.iter().any(|e| e.target == node_a));
     assert!(timeline.events.iter().any(|e| e.target == node_b));
 }
@@ -340,9 +349,11 @@ fn a_channel_with_no_instrument_keeps_its_place_but_nothing_answers_for_it() {
     let silent = rig.project.channels.insert(Channel {
         name: "empty".into(),
         color: [0; 4],
-        mixer_track: track,
+        mixer_track: Some(track),
         patch_data: None,
         pan: 0.0,
+        muted: false,
+        soloed: false,
     });
     rig.hold_a_note(silent);
 
@@ -352,7 +363,8 @@ fn a_channel_with_no_instrument_keeps_its_place_but_nothing_answers_for_it() {
         !realised.graph.schedule.iter().any(|n| n.id == node),
         "there is no instrument to schedule"
     );
-    let timeline = fontelle_sequencer::compile(&rig.project, &realised.channel_nodes);
+    let timeline =
+        fontelle_sequencer::compile(&rig.project, &realised.channel_nodes, &Default::default());
     assert!(
         timeline.events.iter().any(|e| e.target == node),
         "the notes are still in the timeline"
@@ -376,7 +388,8 @@ fn a_channel_whose_samples_are_missing_still_realises_and_plays_silence() {
     assert_eq!(realised.unresolved.len(), 1);
     assert_eq!(realised.unresolved[0].0, channel);
     let mut realised = realised;
-    let timeline = fontelle_sequencer::compile(&rig.project, &realised.channel_nodes);
+    let timeline =
+        fontelle_sequencer::compile(&rig.project, &realised.channel_nodes, &Default::default());
     let audio = render_offline(&timeline, &mut realised.graph, 4_000);
     assert_eq!(peak_mono(&audio), 0.0);
 }

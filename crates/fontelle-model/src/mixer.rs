@@ -1,18 +1,45 @@
 use std::collections::HashMap;
 
-use fontelle_types::{AudioInputId, MixerTrackId, ParamAddress};
+use fontelle_types::{AudioInputId, EffectConfig, EffectKind, MixerTrackId};
 
 // `PanLaw` lives in `fontelle-types` so `fontelle-engine`'s `MixerTrackNode`
 // can share this exact type — the engine can't depend on this crate (TDD §4.1).
 pub use fontelle_types::PanLaw;
 
-/// A document-level reference to one effect instance in an insert chain. The DSP
-/// itself (`fontelle-fx`) is instantiated and processed by `fontelle-engine`; the
-/// model only stores which effect, its parameters, and whether it's bypassed.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// One effect instance in an insert chain: which effect, how it is set, and
+/// whether it is switched out.
+///
+/// The DSP lives in `fontelle-fx` and runs on the audio thread; what is here is
+/// the parameters, which is all the document has an opinion about. The two
+/// share one type — `fontelle_types::EffectConfig` — rather than each keeping
+/// a copy with a translation between them, for the reason `PanLaw` is shared:
+/// two parallel definitions of the same eight numbers is a place for them to
+/// drift.
+///
+/// This was `{ effect_id: ParamAddress, bypassed: bool }` while §13.4 was
+/// unbuilt — a name for an effect with nowhere to put a single parameter.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EffectSlot {
-    pub effect_id: ParamAddress,
+    pub config: EffectConfig,
+    /// Switched out of the chain, keeping its settings. A bypass is not a
+    /// delete: the reason to reach for one is to hear the difference and then
+    /// put it back.
     pub bypassed: bool,
+}
+
+impl EffectSlot {
+    /// A fresh effect of `kind`, at settings that change nothing until they
+    /// are touched.
+    pub fn new(kind: EffectKind) -> Self {
+        Self {
+            config: EffectConfig::new(kind),
+            bypassed: false,
+        }
+    }
+
+    pub fn kind(&self) -> EffectKind {
+        self.config.kind()
+    }
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]

@@ -382,3 +382,125 @@ pub const MULTI: &[(&str, u16, u16, i16)] = &[
     ("Bells", 14, 0, 60),
     ("Piano", 0, 0, 69),
 ];
+
+/// Builds an SF2 shaped like a **drum kit**: one preset, one instrument, and
+/// one single-key zone per hit, each pointing at its own named sample.
+///
+/// This is the file shape the piano roll's key map exists for, and it is not
+/// the shape either builder above produces. A melodic preset is a handful of
+/// zones spanning registers; a kit is dozens of zones one key wide with gaps
+/// between them, and the name on each sample header — `Kick`, `Snare`,
+/// `Closed Hat` — is the only thing that says which key does what. Without a
+/// fixture of this shape there is no way to test "grey out what the font
+/// cannot play, and name what it can" against anything real.
+///
+/// `hits` is `(sample name, MIDI key)`, in file order.
+pub fn build_drum_kit_sf2(hits: &[(&str, u8)]) -> Vec<u8> {
+    let n = hits.len();
+    let mut sfbk = Vec::new();
+    sfbk.extend_from_slice(b"sfbk");
+
+    write_list(&mut sfbk, b"INFO", |buf| {
+        write_chunk(buf, b"ifil", &[2, 0, 1, 0]);
+        write_chunk(buf, b"isng", b"EMU8000\0");
+        write_chunk(buf, b"INAM", b"Fontelle Test Kit\0");
+    });
+
+    // Four frames per hit, each a different constant so a decoded buffer can
+    // be told from its neighbour.
+    write_list(&mut sfbk, b"sdta", |buf| {
+        let mut pcm = Vec::new();
+        for i in 0..n {
+            for _ in 0..4 {
+                pcm.extend_from_slice(&(((i as i16) + 1) * 1000).to_le_bytes());
+            }
+        }
+        write_chunk(buf, b"smpl", &pcm);
+    });
+
+    write_list(&mut sfbk, b"pdta", |buf| {
+        // One preset, bag 0, plus the mandatory EOP terminator.
+        let mut phdr = Vec::new();
+        phdr.extend_from_slice(&zstr("Test Kit", 20));
+        phdr.extend_from_slice(&0u16.to_le_bytes()); // preset #
+        phdr.extend_from_slice(&128u16.to_le_bytes()); // bank 128 — a kit
+        phdr.extend_from_slice(&0u16.to_le_bytes()); // bag_id
+        phdr.extend_from_slice(&[0u8; 12]);
+        phdr.extend_from_slice(&zstr("EOP", 20));
+        phdr.extend_from_slice(&0u16.to_le_bytes());
+        phdr.extend_from_slice(&0u16.to_le_bytes());
+        phdr.extend_from_slice(&1u16.to_le_bytes());
+        phdr.extend_from_slice(&[0u8; 12]);
+        write_chunk(buf, b"phdr", &phdr);
+
+        let mut pbag = Vec::new();
+        pbag.extend_from_slice(&0u16.to_le_bytes());
+        pbag.extend_from_slice(&0u16.to_le_bytes());
+        pbag.extend_from_slice(&1u16.to_le_bytes()); // terminator
+        pbag.extend_from_slice(&0u16.to_le_bytes());
+        write_chunk(buf, b"pbag", &pbag);
+        write_chunk(buf, b"pmod", &[0u8; 10]);
+
+        let mut pgen = Vec::new();
+        write_gen(&mut pgen, &gen_val(41, 0)); // Instrument -> 0
+        pgen.extend_from_slice(&[0u8; 4]);
+        write_chunk(buf, b"pgen", &pgen);
+
+        let mut inst = Vec::new();
+        inst.extend_from_slice(&zstr("Kit inst", 20));
+        inst.extend_from_slice(&0u16.to_le_bytes());
+        inst.extend_from_slice(&zstr("EOS", 20));
+        inst.extend_from_slice(&(n as u16).to_le_bytes());
+        write_chunk(buf, b"inst", &inst);
+
+        // Two generators per zone — the key range and the SampleID — so the
+        // bag index advances by two per hit.
+        let mut ibag = Vec::new();
+        for i in 0..=n {
+            ibag.extend_from_slice(&((i * 2) as u16).to_le_bytes());
+            ibag.extend_from_slice(&0u16.to_le_bytes());
+        }
+        write_chunk(buf, b"ibag", &ibag);
+        write_chunk(buf, b"imod", &[0u8; 10]);
+
+        let mut igen = Vec::new();
+        for (i, (_, key)) in hits.iter().enumerate() {
+            // One key wide, which is what makes it a hit rather than a range.
+            write_gen(&mut igen, &gen_range(GEN_KEY_RANGE, *key, *key));
+            write_gen(&mut igen, &gen_val(53, i as i16)); // SampleID -> i
+        }
+        igen.extend_from_slice(&[0u8; 4]);
+        write_chunk(buf, b"igen", &igen);
+
+        // The sample headers carry the names the whole feature reads.
+        let mut shdr = Vec::new();
+        for (i, (name, key)) in hits.iter().enumerate() {
+            let start = (i * 4) as u32;
+            shdr.extend_from_slice(&zstr(name, 20));
+            shdr.extend_from_slice(&start.to_le_bytes());
+            shdr.extend_from_slice(&(start + 4).to_le_bytes());
+            shdr.extend_from_slice(&start.to_le_bytes());
+            shdr.extend_from_slice(&(start + 4).to_le_bytes());
+            shdr.extend_from_slice(&44_100u32.to_le_bytes());
+            shdr.push(*key); // a kit's sample plays untransposed on its key
+            shdr.push(0);
+            shdr.extend_from_slice(&0u16.to_le_bytes());
+            shdr.extend_from_slice(&1u16.to_le_bytes()); // MonoSample
+        }
+        shdr.extend_from_slice(&zstr("EOS", 20));
+        shdr.extend_from_slice(&[0u8; 26]);
+        write_chunk(buf, b"shdr", &shdr);
+    });
+
+    let mut riff = Vec::new();
+    write_chunk(&mut riff, b"RIFF", &sfbk);
+    riff
+}
+
+/// A kit with the gaps a real one has: nothing on 37, 39, 40 or 41.
+pub const KIT: &[(&str, u8)] = &[
+    ("Kick", 36),
+    ("Snare", 38),
+    ("Closed Hat", 42),
+    ("Open Hat", 46),
+];

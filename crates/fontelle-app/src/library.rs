@@ -26,6 +26,15 @@ pub struct SampleLibrary {
     store: Arc<SampleStore>,
     by_id: HashMap<AssetId, SampleRef>,
     by_file: HashMap<SampleRef, AssetId>,
+    /// What the file calls each sample.
+    ///
+    /// Kept beside the provenance rather than on the `Patch`, for the reason
+    /// the provenance is kept here: it is a fact about the *file*, not about
+    /// the user's instrument, and INVARIANT 8 keeps file-derived identity out
+    /// of the document. Re-read on every import and on every reopen, so a
+    /// drum kit is labelled in the piano roll whether the project was just
+    /// built or just opened. See `crate::keymap`.
+    names: HashMap<AssetId, String>,
     /// How many synthetic samples have been registered, so each gets a
     /// distinct reference even when two are given the same name. Two samples
     /// sharing one reference is not a duplicate-name annoyance — it silently
@@ -46,6 +55,7 @@ impl SampleLibrary {
             self.by_file.insert(file.clone(), id);
             self.by_id.insert(id, file);
         }
+        self.names.extend(imported.names);
         Ok(imported.patch)
     }
 
@@ -59,6 +69,7 @@ impl SampleLibrary {
     /// [`Self::import_sf2`]'s path instead.
     pub fn insert_synthetic(&mut self, name: &str, buffer: SampleBuffer) -> AssetId {
         let id = self.store_mut().insert(buffer);
+        self.names.insert(id, name.to_string());
         let index = self.synthetic_count;
         self.synthetic_count += 1;
         let file = SampleRef {
@@ -85,13 +96,14 @@ impl SampleLibrary {
         wanted: &[u32],
     ) -> Result<(), ImportError> {
         let loaded = fontelle_assets::load_sf2_samples(&file.path, wanted, self.store_mut())?;
-        for (sample, id) in loaded {
+        for (sample, found) in loaded {
             let reference = SampleRef {
                 file: file.clone(),
                 sample,
             };
-            self.by_file.insert(reference.clone(), id);
-            self.by_id.insert(id, reference);
+            self.by_file.insert(reference.clone(), found.asset);
+            self.by_id.insert(found.asset, reference);
+            self.names.insert(found.asset, found.name);
         }
         Ok(())
     }
@@ -100,6 +112,14 @@ impl SampleLibrary {
     /// `Patch::to_data` takes.
     pub fn provenance(&self) -> &HashMap<AssetId, SampleRef> {
         &self.by_id
+    }
+
+    /// What the file calls the sample under `id`, if this library knows.
+    ///
+    /// `None` for audio whose file this build never read — a broken link
+    /// (TDD §17.4), which is a normal condition rather than an error.
+    pub fn name(&self, id: AssetId) -> Option<&str> {
+        self.names.get(&id).map(String::as_str)
     }
 
     /// The live id for a stored reference, if this library has it — the
