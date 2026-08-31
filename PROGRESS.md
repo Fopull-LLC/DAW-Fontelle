@@ -13,7 +13,1578 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
-## 2026-08-29 (latest): the studio opens itself
+## 2026-08-31 (last): the compressor, and automation on everything
+
+> *"Continue closing the remaining open not-built gaps, and also one note:
+> please ensure we keep everything automatable — any value in these mixer
+> effects I should be able to turn into an automation track in my timeline."*
+
+That note is TDD §8.2's INVARIANT 7, and §8.2 is blunt about it: **one**
+addressing scheme, serving plugin export, automation targets, preset
+serialisation, MIDI learn and undo command targets, and *"if an implementer
+creates a second, parallel addressing scheme for any of these, that is a design
+regression — escalate it."* So this pass built the contract first and hung
+everything else off it.
+
+### The parameter contract (INVARIANT 7)
+
+`fontelle_types::ParamSpec` is §8.2's own list: stable id, display name, range,
+default, unit, value distribution. `EffectConfig::specs()` returns one per
+parameter; `get`/`set` read and write by id; `normalised`/`set_normalised` do
+the same on the 0..1 scale §12.1 stores automation points in.
+
+`ParamTarget` is the address, in §8.2's own format —
+`mixer:<track>/insert[0]/param/band1.gain`, `mixer:<track>/gain`,
+`transport/tempo` — with a parser, because the string is what is *stored* and
+the enum is a view of it. Not a second scheme: the round trip is tested, and an
+address this build does not recognise parses to `None` rather than to a guess.
+
+The EQ declares **48** parameters, the compressor **8**, and
+`every_effect_parameter_is_reachable_by_address` is the user's sentence written
+as a test: a parameter `specs` lists and `get` cannot read would be a lane that
+draws and does nothing.
+
+Two design notes worth keeping:
+
+- **Frequencies and times are logarithmic**, ratios too. A linear 20 Hz–20 kHz
+  automation lane spends nine tenths of its travel above 2 kHz.
+- **Stepped parameters land on steps.** Automating a band type produces band
+  types, not numbers between two of them, and
+  `a_stepped_parameter_reaches_every_one_of_its_steps` checks all eleven are
+  reachable rather than ten and a rounding error.
+
+### The compressor (§13.4)
+
+Feed-forward: measure, decide a gain from the transfer curve, smooth it with
+attack and release, apply it. Feed-forward rather than feed-back because the
+decision is then a pure function of the input, which is what makes the curve
+drawable and this file's 18 tests assertable.
+
+Threshold, ratio, attack, release, soft knee, makeup, auto-makeup, peak/RMS
+detection, and the sidechain input §13.4 asks for — the DSP takes a key signal
+already, though nothing routes one to it yet (that is sends, below).
+Stereo-linked like the limiter, for the same reason.
+
+One test-side lesson: a peak detector watching a **sine** sees the
+instantaneous level, so a short release lets the gain creep back between peaks
+and the output measures about half a decibel above what the transfer curve
+says. That ripple is real — it is why a fast release on a bass line distorts —
+but it is the envelope talking, and the curve tests set a long release so they
+are measuring the thing they claim to.
+
+**And it is the first non-linear link in a chain**, which is what makes chain
+order audible at all. `two_eqs_in_a_chain_commute_because_both_are_linear` said
+this was coming.
+
+### Automation, all the way through (§12)
+
+`AutomationData` had been in the document since the format was written and
+nothing had ever evaluated it. Now:
+
+- **Evaluation** — `value_at`, every curve shape, and §12.2's two rules stated
+  as tests: overlapping clips, **the later one wins** (not blended); after a
+  clip ends the parameter **holds what it left** rather than snapping back to
+  the knob. Before any clip starts it is `None`, because rule 2 is about
+  *after* and a clip cannot reach back in time.
+- **`Hold` got a meaning.** The TDD names `Stepped` and `Hold` without saying
+  what separates them, and two flat shapes that both jump at the next point are
+  one shape with two names. `Stepped` is a staircase; `Hold` is a full stop —
+  this value for the rest of the clip, whatever is drawn after it, which is how
+  a lane says "stop moving here" without deleting what follows.
+- **Compilation** — automation clips become `ParamValue` events at the node
+  that owns the target. The address is resolved **off the audio thread**, from
+  a map the realisation step builds, because it is the only layer that sees
+  both the document's addresses and the graph's node ids (the same reason
+  `compile` already took `channel_nodes`). The control rate is a fixed 256
+  samples: per-sample is a hundred thousand events a second for a smoothness
+  nobody can hear, per-block is what the engine would like and what the
+  sequencer cannot know. A flat curve costs one event, not one per interval.
+- **Application** — `EffectNode` and `MixerTrackNode` apply what arrives, and
+  **hold it across blocks**, which is §12.2's second rule from the audio side.
+  Automation is read *after* the live control channel, so a lane outranks the
+  knob while it has an opinion.
+- **Editing** — `AddAutomationPoint`, `MoveAutomationPoints`,
+  `RemoveAutomationPoints`, `SetPointCurve`, all through `History`.
+
+The drag command stores **where the points were before the drag**, not a
+running total of deltas. That is not cosmetic: a drag is sixty commands merged
+into one, and summing sixty `f64` deltas then subtracting them leaves a point a
+rounding error from where it started. This project's rule is that applying a
+command and inverting it puts the document back *exactly*, and
+`0.4000000000000001` does not.
+
+### And it is reachable
+
+**Right-click any control.** A mixer fader, a track's pan, an EQ band's handle
+— §12.4's gesture, and it works from all of them through one code path because
+they share the addressing scheme rather than because it was wired three times.
+The clip lands on the current lane at the playhead, one bar long, **flat at the
+value the control is already at**: a lane that jumped the parameter the moment
+it was made is a lane nobody trusts.
+
+It opens in an **automation editor** tab — the roll's shape with a value axis
+instead of a keyboard. Click empty grid to make a point and keep dragging;
+right-click a point to delete it.
+
+The other two gaps this closes: the **effect menu** (`+ fx` now drops a list of
+`EffectKind::ALL`, which a new effect joins by existing rather than by being
+added in a second place), and a **generic parameter editor** — any effect that
+declares `specs()` gets one, built as the `InstrumentView` this crate already
+had, because "a list of addressed parameters" is what the instrument editor
+already was.
+
+### One bug worth recording
+
+Widening `compile`'s signature meant patching 23 call sites, and the mechanical
+pass gave `Session` an **empty** parameter map — so the running app compiled
+automation that reached nothing. Every unit test still passed. It was caught by
+`drawing_on_the_lane_is_heard`, which goes through `StudioHost` and asks the
+compiled timeline what it holds. The lesson is the one the shakedown made:
+tests that drive the trait the window calls find what per-layer tests cannot.
+
+### Still not built
+
+- **Sends** (§13.2) — including the compressor's sidechain, which needs one
+  track's audio routed to another's detector. The DSP is ready; the graph is
+  not.
+- **Drag-to-reorder inserts.** `MoveInsert` exists and is tested; no row drags
+  yet.
+- **Tempo automation.** `transport/tempo` addresses and parses, and nothing
+  compiles it — §12.3 says the tempo map is *generated* by evaluating tempo
+  automation, which means `TempoMap` stops being stored and starts being
+  derived. That is a change to who owns the tempo, not a lane to add.
+- **Automation clips are not drawn on the arrangement yet** — they exist, play,
+  and open in the editor, but a lane full of them looks like a lane of empty
+  clips.
+- **Latency compensation** (plan item 16). No insert has latency yet, and there
+  is a test asserting it, so the day one does is not the day a phase error
+  appears.
+
+### Tests
+
+`fontelle-types/tests/parameters.rs` (20), `fontelle-fx/tests/compressor.rs`
+(18), `fontelle-model/tests/automation.rs` (22) and `automation_edits.rs` (14),
+`fontelle-sequencer/tests/automation.rs` (11), plus the automation and
+addressing tests in `fontelle-app/tests/insert_chains.rs` and the menu and
+generic-editor tests in `fontelle-ui/tests/inserts.rs`.
+
+## 2026-08-31 (later): mixer track effects — the chain, and the first thing in it
+
+> *"I want you to start working on the mixer track effects."*
+
+`MixerTrack::inserts` has been in the document since the format was written and
+has never held anything, because `EffectSlot` was `{ effect_id: ParamAddress,
+bypassed: bool }` — a name for an effect with nowhere to put a single
+parameter. `EffectNode` was an empty struct with a comment saying the real one
+lands in M4. `realise` said, in its own doc comment, *"inserts and sends are
+not compiled"*. And of the nine effects in `fontelle-fx`, exactly one — the
+limiter — had a body; `ParametricEq::process` and `Compressor::process` were
+`todo!()`.
+
+This pass builds the **whole seam**, end to end, with the parametric EQ as its
+first inhabitant: document → command → graph → audible → on screen → saved.
+Everything after it is a new arm on a match.
+
+### Where an effect's parameters live
+
+In `fontelle-types::effect`, beside `PanLaw` and for exactly its reason. The
+document has to name them and may not depend on `fontelle-fx` (§4.1); the
+effect has to read them; the mixer panel has to draw them. One type, shared,
+rather than three parallel definitions of the same eight bands with translation
+layers between them for them to drift in.
+
+So the rule for every effect that follows: **its config lives in
+`fontelle-types`, its state lives in `fontelle-fx`.** That is the split the
+limiter already had before there was a chain to put it in, and it is the split
+that makes a knob movable without the audio thread rebuilding anything.
+
+(This adds `fx → types` to §4.1's arrow list. It is not a dependency *upward* —
+`fontelle-types` is the shared vocabulary crate with no workspace dependencies
+of its own — and the alternative is the drift above.)
+
+### The parametric EQ (§13.4)
+
+Eight bands, SVF per section, every type in the table: bell, low/high shelf,
+low/high pass at 12/24/48 dB per octave, notch, band-pass. 35 tests, and every
+one of them measures a **frequency response** rather than looking at a
+waveform: a bell wired to the wrong coefficient still produces plausible audio,
+a shelf whose gain is applied twice sounds like an EQ until you measure it, and
+a cascade whose sections share one filter's state has a slope that is nearly
+right.
+
+Three things worth writing down:
+
+- **The steep slopes are Butterworth cascades, not repeated sections.** Four
+  copies of a Q=0.707 low-pass is 12 dB down at its own corner with a droop
+  starting an octave early. The pole Qs of a Butterworth of order 2n are what
+  make it flat to the corner and then steep, and they are a table.
+- **The band-pass is normalised.** The SVF's own band-pass output peaks at Q,
+  which is right for a voice's resonant filter and wrong for an EQ band: at
+  Q=4 it would be a +12 dB bell nobody asked for, and a soloed band would get
+  louder the narrower it got.
+- **Per-band solo is *listen*** — a band-pass at the band's own frequency and
+  Q, whatever kind of band it is. A soloed low-pass auditioned as a low-pass
+  would just be the mix again.
+
+### Mid/side, and a design error I had to be shown
+
+The first draft had one `mid_side` switch on the whole EQ, which is what §13.4
+says. The test for it failed, and the design was what was wrong: **a filter is
+linear**, so `F(M) + F(S) = F(L)`, and filtering mid and side alike is exactly
+filtering left and right alike. An EQ-wide mid/side mode with the same eight
+bands either side of the rotation is provably a no-op.
+
+It is per band now — `EqBand::channel` is `Stereo`, `Mid` or `Side`, and the
+EQ only rotates if some band asks. Left/right as separate targets is a
+deliberate cut: an EQ with some bands in L/R and some in M/S has no one
+rotation to run in, and the useful half of the feature is the M/S half.
+
+### The chain in the document
+
+`EffectSlot { config: EffectConfig, bypassed: bool }`, and five commands, all
+of them `Command`s through `History` (INVARIANT 9). 18 tests, of which the
+sharp ones are about undo: removing an insert and undoing it puts back **that
+effect, tuned as it was, at the index it was at** — not a fresh one of the same
+kind, and not on the end. `SetEqBand` merges with itself while one band of one
+EQ is being dragged, so a knob is one undo entry rather than sixty.
+
+### The chain in the graph
+
+`EffectNode` wraps the DSP and processes **in place on the track's bus**, which
+is what makes a chain a chain: three inserts are three nodes scheduled in a row
+on one pair of buffers, and the scheduler does not need a spare buffer per
+slot. `realise` schedules them **before the fader**, where every mixer's
+inserts are — the fader is the last thing on a strip, so pulling it down turns
+the effects' output down rather than starving them of input.
+
+**And an insert has a live end**, for the reason a fader does. An EQ knob is
+dragged; rebuilding the `CompiledGraph` to move one number deserialises every
+channel's patch and reloads every soundfont. So an insert writes both — the
+command, for undo and the file, and `EffectControls`, for the sound between now
+and the next rebuild.
+
+A fader is four scalars and fits in atomics. An `EqConfig` is eight bands,
+which is neither atomic nor a mutex the audio thread may take (INVARIANT 1), so
+the mechanism is the **triple buffer** the compiled timeline already crosses
+on. Unlike a fader's `Arc`, a triple buffer's two ends cannot be re-paired, so
+a rebuild mints fresh ones seeded from the document — which is the source of
+truth either way, so the two cannot drift.
+
+### On screen
+
+A **rack on every mixer strip**: a row per insert in chain order, each with a
+bypass dot at its left-hand end that can be flicked without opening anything,
+and a `+ fx` row under them. The rack comes out of the fader's space and only
+as much of it as leaves a fader worth dragging — a rack that grew into one
+would take away the mixer's one essential gesture the moment somebody used its
+newest feature.
+
+Clicking a row opens the **EQ editor**, a fourth tab in the editor column. It
+is a curve you drag, not eight rows of numbers: an EQ *is* a shape, the shape
+is what a person is deciding about, and the sum of eight bands is not something
+anybody reads off a table. A press on empty curve switches the next unused band
+on where it landed and the drag continues from the handle it just made — the
+same "draw it and size it in one gesture" handshake the piano roll has.
+
+**The curve is computed from the same numbers the filter is built from**
+(`EqBand::response_db`, in `fontelle-types` beside the config), and
+`fontelle-fx`'s tests hold the drawn curve against the measured response at a
+dozen frequencies per band type. That check is the point: a curve that lies
+about the sound is worse than no curve, because it is believed. It caught the
+shelf formula, which was drawing +11.4 dB for a +8 dB shelf.
+
+### What is not built
+
+- **Only the EQ.** `EffectKind` has one variant. The compressor is next and is
+  the interesting one, because it is the first **non-linear** link — which is
+  what makes chain order audible at all. There is a test in
+  `fontelle-app/tests/insert_chains.rs` saying exactly that, named for the
+  truth (`two_eqs_in_a_chain_commute_because_both_are_linear`) after the
+  version asserting "order is the sound" turned out to be asserting a bug.
+- **No reorder gesture.** `MoveInsert` exists and is tested; nothing drags a
+  row yet.
+- **No effect menu.** One kind ships, so `+ fx` adds it rather than dropping a
+  menu with one row in it. The menu is what the second effect brings.
+- **Sends are still uncompiled** (§13.2), and latency compensation is still
+  outstanding (item 16) — no insert has latency yet, and there is a test
+  asserting that so the day one does is not the day a phase error appears.
+
+### Tests
+
+`fontelle-fx/tests/eq.rs` (35), `fontelle-model/tests/inserts.rs` (18),
+`fontelle-engine/tests/inserts.rs` (9), `fontelle-app/tests/insert_chains.rs`
+(12), `fontelle-ui/tests/inserts.rs` (22).
+
+## 2026-08-31: rendering, backups, and the four properties nobody could hear
+
+Three things, and the third is the seventh instance of the same defect.
+
+### A render you can hand to somebody (plan item 11)
+
+`Session::export_wav` renders the project offline at
+`RENDER_QUALITY` — not the live quality, because an export has no deadline —
+and writes 16-bit stereo into `<bundle>/renders/`. It goes *inside the bundle*
+because of INVARIANT 10: Fontelle writes nothing outside places the user chose,
+and the bundle is a place the user chose. A project that has never been saved
+gets a message saying so rather than a file somewhere surprising.
+
+Two details that only showed up by using it:
+
+- **The name comes off the bundle, not off `meta.name`.** Opening
+  `Bassline.fontelle` whose metadata still said "Untitled" produced
+  `Untitled.wav`, an "Untitled" title bar and an "Untitled" row in the
+  projects list — three places disagreeing about what the project is called.
+  Fixed at both ends: renders are named from the bundle's stem, and `adopt`
+  sets `meta.name` from it on open, so all three agree.
+- **A second export is `Bassline 2.wav`,** by the same `unique_name` the
+  projects folder uses. Overwriting the last render because you rendered twice
+  is not a thing software should do quietly.
+
+The Export button sits beside New on the browser's Projects tab, and Ctrl+E
+does it from the keyboard.
+
+### Autosave
+
+`Session::autosave` writes the whole project as a bundle to
+`<bundle>/backups/autosave.fontelle` every minute while the document is dirty.
+It is a *backup*, not a save: it does not clear the dirty flag, does not touch
+the title bar, and does nothing at all when the document is clean, when there
+is no bundle to put it in, or right after a real save. The timer is
+`fontelle_ui::widget::autosave_due`, which is arithmetic over two `Duration`s
+and is tested as such — the window owns the clock, and a clock is not a thing
+to test through a window.
+
+(That closes item 10's last piece. The dirty title bar the older note lists as
+outstanding has existed for a while — `refresh_title` appends a `•` and
+sixteen call sites use it.)
+
+### The four properties nobody could hear
+
+`Note` has carried all five of §16.5's per-note properties since the document
+format was written. The roll's property lane drew them, the lane menu offered
+all six by name, dragging edited them, undo undid them — and `compile.rs` read
+`key`, `velocity` and `pan` and dropped `fine_pitch`, `release`, `mod_x` and
+`mod_y` on the floor. Four curves you could draw that changed no sound.
+
+That is the **seventh** instance of this defect (after `SetNumber(Tempo)`, the
+mixer's gain and pan, `Tool::Slice`, `VoiceConfig::glide_time_s`,
+`RetriggerMode`, `Settings::projects_dir` and the bank's folder structure), and
+it was the loudest of them, because unlike a setting nobody could find, this
+one was on screen inviting you to use it.
+
+What each one now means:
+
+- **Fine pitch** is cents, added to the note's interval alongside the glide —
+  the key itself never moves, because the key is the note's identity and a
+  note-off names it.
+- **Release** is `0..=127` and only ever *lengthens*, `0` being the patch's
+  own release and `127` four times it (`MAX_NOTE_RELEASE`). `0` is what every
+  note ever written carries, so any other reading would have changed how
+  existing projects sound the day the field started being read. That is a
+  compatibility rule, and there is a test asserting it rather than a comment
+  hoping for it.
+- **Mod X and mod Y** are two new `ModSource` variants, `NoteModX` and
+  `NoteModY`, unipolar `0..1`. *Free* means the patch decides: nothing routes
+  from them by default, so a note with both wide open under a patch that
+  routes neither is sample-for-sample a note without them. Added after the
+  existing variants, so no saved patch can name them and none of the old ones
+  changes meaning.
+
+All four ride on `EventPayload::NoteOn` and arrive as fields on `NoteTrigger`
+— the struct that exists precisely so this kind of growth is a field rather
+than a rewrite of every call site, which is what its own doc comment predicted
+back when pan was the only one there.
+
+### And a range that made one of them useless
+
+`NoteProperty::FinePitch.range()` was `-8192..=8191`, mirroring a MIDI pitch
+bend. Read as the **cents** it is documented in, that is ±81 semitones — so a
+lane fifty pixels tall moved a note by about a minor third per pixel, and the
+one thing a control called *fine* pitch has to be able to do is move a note a
+little. It is now ±1200, an octave each way. Nothing had ever read the field,
+so no project can hold a value this narrows away that anybody chose.
+
+Worth naming as a pattern of its own: making a dead control audible is not
+finished when the value arrives: a range nobody can aim inside is a control
+that exists and still cannot be used, which is the same defect one layer up.
+
+### Tests
+
+`fontelle-core/tests/note_properties.rs` (11) measures the *audible* thing in
+each case — pitch by counting cycles, release by the length of the tail a
+note-off leaves, the two mod values by routing them at a patch's gain — plus
+the two failure modes this class of field invites: a voice out of the pool
+carrying the last note's properties, and two notes on one channel that have to
+differ. `fontelle-sequencer/tests/note_properties.rs` (4) is the seam from
+score to wire, with all four set to different values so a compiler wiring one
+field to another's source fails rather than looks right.
+`fontelle-model/tests/note_properties.rs` (4) is the ranges.
+`fontelle-app/tests/exporting.rs` (12) covers the render and the backup.
+
+### The shakedown, the half a machine can do (plan item 12)
+
+`fontelle-app/tests/shakedown.rs` makes a whole piece the way a person makes
+one — through the same `DocumentHost`/`StudioHost` trait the window calls, in
+the order a person works: pick a projects folder, make a project, set tempo and
+metre, load two soundfonts (one from a subfolder), add channels, build a mixer
+by hand and route into it, draw a clip, write notes, draw properties on them,
+mark a slide, loop the clip, save, render, and open it again from the browser
+to find the same piece.
+
+Through the *trait*, deliberately. Every one of this gate's dead controls was a
+thing the model could do and the window could not reach, so a test that drives
+`Session`'s internals is testing the layer the bugs were never in. And one long
+test rather than eight short ones, because a per-feature test proves a feature
+works while a session proves the features work **in each other's presence**,
+which is the claim item 12 actually makes.
+
+Three more alongside it: undo-to-exhaustion and redo-to-exhaustion are each
+other's inverse over a whole session (state-based, not counting calls — how
+many commands "add a channel with an instrument" decomposes into is the
+session's business); a piece with nothing written in it still saves, opens and
+renders; and **the rendered file is audible** — the samples read back out of
+the WAV, with the same project minus its notes as the control, because a file
+of the right length full of zeroes is exactly what every layer above can pass
+while producing.
+
+Three failures on the first run, and all three were the test's:
+
+- The mixer's strip indices run **tracks then master** (`route_names` and the
+  mixer panel agree; the route *menu* draws Master first as a row of its own,
+  which is a display order and not that one). The test renamed master to "Low"
+  and then routed a channel to it, which the session correctly read as "route
+  to master" — `None`.
+- Counting one undo per call assumed each call is one command. Adding a
+  channel with an instrument on it is legitimately more than one. Rewritten as
+  the invariant that actually matters.
+- Setting mod X on a note and then making it a **slide** note, then looking for
+  the mod X on its note-on. A slide compiles to `NoteSlide` and starts no
+  voice, so it has no note-on to carry anything — correct, and now asserted
+  as such rather than tripped over.
+
+So the scripted half found nothing wrong with the product. That is a real
+result and not a very reassuring one: what it covers is everything below the
+window's own event handling, and the window's event handling is where all
+seven dead controls lived. **The listening half — the actual sentence in §3,
+"on hardware" — is still outstanding and needs a person at the keyboard.**
+
+## 2026-08-30 (last): the soundfont browser learns about folders
+
+> *"Make sure the soundfonts browser is able to handle multiple files and
+> folders so I can see other folders in there and click into them to see their
+> contents. Right now I'm only seeing just soundfont names even though my
+> soundfont directory has folders."*
+
+Exactly what it did. `SoundfontBank::rescan` walked the whole tree — six levels
+deep, deliberately, "for how people actually organise a collection" — and then
+**flattened** every file it found into one alphabetical list of names. The
+organisation was read and thrown away. On the reporter's own bank
+(`.../Patches/Soundfonts`) that turned six folders and sixteen loose files into
+twenty-two names in a heap.
+
+### Browsing and searching are two questions
+
+The flat index is not the mistake; it is the other half. §17.5 calls instant
+fuzzy search *the* feature that makes a large collection usable, and a search
+that only looked in the folder you happened to be standing in would not be it.
+
+So the panel does both, and **the search box decides which**:
+
+- **Empty — browse.** Folders first with a count of what is under each, then
+  the soundfonts in *this* folder, and a row back up. The structure is the
+  answer.
+- **Anything typed — search.** The whole collection, flat, each hit labelled
+  with the folder it came from — because two files called `Kit` in different
+  folders is the commonest thing in a collection and a list of bare names
+  cannot tell them apart.
+
+The status line follows: where you are while browsing, and *"12 matches in the
+whole collection"* while searching, which is the surprising half.
+
+### The decisions worth writing down
+
+- **The top of a one-folder bank is its contents**, not a single folder row you
+  have to click through first. With several configured folders there genuinely
+  *is* a level above them, and it is the list of folders the user chose.
+- **There is no way up from a configured root.** Fontelle reads nothing outside
+  the folders the user named (INVARIANT 10), and a browser that could walk to
+  `/` would be offering exactly that.
+- **An empty folder is still listed.** Hiding it makes "I put my kits in there"
+  unanswerable: the folder you are looking for is simply not in the list.
+- **A folder that vanishes under you** — it is on somebody's disk and Fontelle
+  is not the only thing that can move it — walks the browser up to the nearest
+  folder that still exists rather than listing nothing with no way back.
+- **The open file is remembered by its path, not its row.** The list moves
+  constantly: a search, a folder change, a rescan. An index would name whatever
+  landed in that slot afterwards, and the highlight now follows the file
+  wherever the list puts it — or disappears, which is true when the file is not
+  in the list at all.
+- **The heading counts the collection, not the rows.** A heading counting what
+  is in front of you says "2" inside a folder of two and reads as the
+  collection having shrunk — and counts folders as soundfonts besides.
+- **One method for both kinds of row.** A panel has one click;
+  `StudioHost::open_file` is "activate row N" whatever the row turns out to be,
+  because only the host knows what it was. The panel gets a `LibraryKind` for
+  choosing a glyph and no business acting on it.
+
+### Verified
+
+`cargo test --workspace` green, clippy clean, fmt applied. New:
+`fontelle-app/tests/browsing.rs` — twenty cases, half against the bank and half
+driven through the same `StudioHost` seam the window uses. Seen in the real
+window against the reporter's own bank: `Famicom`, `GBFont`, `GXSCC_gm_033`,
+`Square`, `The_Ultimate_Megadrive_Soundfont` and `thenew (40 sf2)` as folder
+rows with folder glyphs, the loose files below them.
+
+**Two existing tests changed meaning and were updated rather than loosened**,
+both because the behaviour they pinned is what this work replaced: with two
+configured folders the browser's top level is now the two folders rather than a
+flat list of everything under them, and a search no longer forgets which file
+is open.
+
+**A fixture that was quietly lying**, found on the way: `tests/browsing.rs`
+first wrote sixteen zero bytes per "soundfont". Every browsing test passed over
+a collection of rubbish, and the one test that actually *opened* a row was the
+only one that noticed. It builds real, spec-valid SF2 bytes now — the same
+hand-built kind the rest of the workspace uses.
+
+## 2026-08-30 (later): a cut tool, and a way to make a clip at all
+
+Two reports, and the second is the more serious of the two.
+
+### The cut tool (`C`)
+
+> *"We need a cut tool in the piano roll (C) that works basically the same as
+> the FL Studio cut tool in the piano roll."*
+
+`Tool::Slice` has been in the tool list since the roll was written, was bound
+to `5`, and did nothing — the same shape as every other control this project
+has found sitting there unreachable.
+
+It is a **line**, not a click, and that is what makes it a tool: one stroke
+across a chord cuts every note it crosses, and a **diagonal** stroke cuts them
+at *different* times, which is a musical gesture rather than an artefact.
+
+The rule is one sentence — *a note is cut where the line crosses the middle of
+its own row, and only if that lands strictly inside the note* — and three
+behaviours fall out of it rather than being special cases:
+
+- a line drawn **along** a row never crosses its middle, so a horizontal
+  wiggle inside a long note cuts nothing rather than cutting it somewhere
+  nobody aimed at;
+- a cut landing on a note's own **edge** is not offered, because a zero-length
+  note is a note-on and a note-off at the same sample — silence you can
+  neither see nor select (`SliceNotes` refuses one too, and both is right: the
+  canvas refusing is what stops the gesture *looking* like it did something);
+- each note is cut **once** per stroke, so a line that wanders back over a row
+  does not offer a second cut measured against a length the first has changed.
+
+`SliceNotes` is one command for the whole stroke, so a line across a chord is
+one undo entry rather than one per note, and the second half of every cut
+keeps everything the note was — velocity, pan, fine pitch, release, both mod
+values, and whether it was a slide. The stroke is drawn while it is being
+made: a tool whose gesture leaves no mark is one you have to aim blind on rows
+fourteen pixels apart.
+
+### You could not make a clip
+
+> *"It's also way too difficult to just make a new clip in the arrangement
+> right now — I can't even figure out how. It's like I'm given one clip when I
+> make a new channel and I have to roll with that."*
+
+Exactly right, and it was not difficulty — it was **impossible**. The
+arrangement could move, resize, duplicate, delete, copy, cut, paste, mute and
+loop clips; a press on empty grid started a marquee, always. The one gesture
+anybody tries first did nothing visible.
+
+The fix is FL Studio's, and it is a **tool** rather than a double-click: the
+arrangement gets **Draw** and **Select** chips on the toolbar it already has,
+and **Draw is the default**. Two reasons for a tool: a double-click is
+invisible — there is nothing on screen saying it exists, which is the whole
+complaint — and the roll next door already works this way, so it is one idea
+rather than two. The marquee is still a press away (pick Select, or hold
+**Ctrl**), and `P`/`E` pick the tool for **whichever canvas has the keyboard**,
+the same rule Delete and Ctrl+C already follow.
+
+A drawn clip lands **on the grid** rather than where the pointer was, is one
+bar long, opens in the roll (you made it to put notes in), and plays whatever
+else is already on that lane — which is what a lane *means* to somebody
+looking at it, and stops a second clip on the drum row playing the piano.
+
+### The same bug, twice, and what was done about it
+
+The arrangement's Draw chip was laid out, hit-tested, themed — and the
+renderer never lit it, because an edit script aborted before writing that
+hunk. That is the **second** time in two sessions: the record and metronome
+buttons went the same way. Both times every view-model test passed, because
+the geometry and the hit-testing were right and only the pixels knew.
+
+`the_active_tool_chip_is_lit_on_both_toolbars` joins
+`every_transport_button_actually_draws_its_glyph` as the pair of tests that
+catch this class. Both were found by **sampling the screenshot**, not by
+looking at it — which is now three times measuring has beaten eyeballing on
+this project, and is why `seeing-fontelles-gui` says so.
+
+### Verified
+
+`cargo test --workspace` green (**1128 tests**, up from 1092), clippy clean,
+fmt applied. New: `fontelle-model/tests/slicing.rs`,
+`fontelle-ui/tests/{slicing,arrange_draw}.rs`, four cases in
+`fontelle-app/tests/studio.rs`, and the lit-chip pixel test. Seen in the real
+window: the scissors on the roll's toolbar, and the two tool chips on the
+arrangement's with Draw lit.
+
+**One existing test changed meaning and was updated rather than loosened**:
+`a_marquee_over_the_arrangement_selects_what_it_covers` pressed on empty grid
+and expected a marquee. That is the behaviour this work deliberately replaced,
+so the test now says which tool it is in, and why.
+
+## 2026-08-30: routing, looping, projects, icons, slides, and the click
+
+Six reports in one, and they are written up together because four of them
+turned out to share a shape: a **field the model already had that nothing
+could reach**, and one that changes what a thing *is* rather than what value
+it holds.
+
+### Channels do not own mixer tracks any more
+
+> *"Channels shouldn't have their own mixer track. You should be able to make
+> as many mixer tracks as you want and then route any channel to any mixer
+> track you want. By default it just goes straight to master."*
+
+That is FL Studio's model and it is the right one: a mixer track is a
+**destination you build** — a drum bus, a reverb return — not a thing that
+appears every time a soundfont is loaded. Twenty channels meant twenty strips
+nobody asked for, and the one question a mixer answers ("what is going
+where") had no way to be asked.
+
+- `Channel::mixer_track` is `Option<MixerTrackId>`; **`None` is the master**,
+  and that is where a new channel goes. A project written before this carries a
+  bare id, which deserialises as `Some`.
+- Four commands: `AddMixerTrack`, `RemoveMixerTrack`, `RenameMixerTrack`,
+  `SetChannelRoute`. Deleting a track sends everything on it — channels *and*
+  the tracks feeding it — back to the master rather than nowhere:
+  audible-and-wrong is a state a person can fix, silent-and-wrong is one they
+  have to debug. The master cannot be deleted.
+- Every rack row has a **route chip** saying the mixer's own number (master is
+  0), which drops a menu: Master, every track, and **+ New track** — which
+  makes one *and* sends the channel to it, in one gesture.
+
+**The consequence worth naming**, because it is a behaviour change and not a
+refactor: **the rack's mute and solo had to move onto the channel.** They were
+the mixer track's; with every channel on master by default, that switch would
+now mute the master and silence the song. They are `Channel::muted` /
+`soloed` now, and they are **sequencer** mutes — the compiler drops a muted
+channel's clips, the same reading a lane mute has. The mixer keeps its own
+per-track mute and solo; the two answer different questions and a project may
+want both. `studio.rs`'s own mute test says so.
+
+### Looping is a feature, and it is not copying
+
+> *"I want to make it easier to loop things vs just extend the clip. [...] I
+> want clips that I loop to be genuinely looped so it's just repeating what
+> was in the first clip length. Copying and pasting is its own separate thing
+> but looping is its own feature too."*
+
+The distinction is real and the two look identical on the arrangement:
+
+- **Copying** makes new clips with notes of their own. Editing one leaves the
+  others alone; that is the point of it.
+- **Looping** is *one* clip whose content repeats. One set of notes, so
+  editing bar 1 changes every pass — which is what "repeat this drum pattern"
+  means and what a copy can never give you.
+
+`Clip::loop_length` is the period. The compiler emits the repeats from the one
+set of notes, and three rules fell out of writing the tests: a note written
+**past** the period is not part of the loop (it is what the clip would play if
+it were not looping, and playing it every pass would be a second invisible
+loop); a repeat that **starts** past the clip's end does not sound; and a loop
+does not **ring** past its own end, or its last pass is longer than every one
+before it.
+
+The gesture is **Shift on the clip's right-hand grip** — the same grip, one
+modifier, nothing new to find. A clip that already loops keeps its period when
+stretched further: dragging a one-bar loop out to eight bars must not make it
+an eight-bar loop. There is a **Loop** button beside Repeat in the arrangement
+toolbar too, so the two readings of "play this again" sit side by side, which
+is what teaches the difference.
+
+**The picture**: seams with notches between the repeats and the caption
+re-drawn faintly per pass, so a loop reads as a strip of tiles rather than as
+one long block. Below six pixels a repeat the seams stop being drawn — at one
+pixel each they are a filled rectangle, which is the solid block they exist to
+stop looking like.
+
+### A projects folder
+
+> *"I want to be able to select any folder on my disk as my projects folder
+> [...] I should be able to make new projects from within the app, browse my
+> projects within the app, set my projects folder if not already set, change
+> it if it is."*
+
+`Settings::projects_dir` has existed since the settings file did and nothing
+read it. `ProjectLibrary` reads it: `.fontelle` bundles with a manifest in
+them, name and age ("3 days ago"), sortable by name or by recency.
+
+The browser panel grew a **Sounds / Projects** switch rather than the window
+growing a second panel — you want a project at the start and the end of a
+session and a soundfont all the way through, so they are never wanted at once,
+and a window that changes shape is one you have to re-learn. In Projects mode
+the one list takes the whole area (a project has no presets inside it),
+**+ New project** makes and opens one with a name nothing else in the folder
+has, a row opens it, and the two folder buttons point at the projects folder
+instead of the bank.
+
+**INVARIANT 10 shapes all of it**: there is no default projects folder and no
+guess at `~/Documents`. `None` means *ask*, scanning a folder that is not
+there **reports** rather than creating it, and with nothing configured the
+panel says so and offers to pick.
+
+### Icons, and cursors that say which tool is live
+
+> *"Make the cursor icons actually represent the action better, and I want the
+> app to have more icons instead of just text."*
+
+The Floptle repo was checked first, as suggested — its art is game assets
+(swords, health bars) and there are no SVGs, so nothing there fits.
+
+The icons are **drawn as paths** (`fontelle-ui/src/icon.rs`), not loaded.
+vello is a path renderer, so an icon that *is* a path costs nothing extra and
+is crisp at any scale; it takes the theme's own ink, so the light theme needs
+no second set; it ships no files and tracks no licence. Thirty of them, in a
+deliberately tiny vocabulary — polylines, filled polygons, circles — which is
+what makes the whole set checkable by arithmetic: nothing empty, nothing
+outside its box, nothing too small to read.
+
+**The division that decides where an icon goes**: a **verb** gets a picture,
+because a picture of an action is quicker to find than its name; a **read-out**
+keeps its text, because the useful half is the value and no picture says
+`1/16`. So the tools, the clipboard, the zooms, mute, loop, repeat and the two
+new transport buttons are glyphs; snap, the lane chip and the onion skin are
+still words.
+
+And the same shapes rasterise into the **mouse cursor** — a small software
+rasteriser, because a cursor is a 32-pixel bitmap made once at start-up and
+reaching for the GPU pipeline to make one would tie the pointer to the surface
+being alive. White with a dark outline, always: a cursor is drawn over the
+user's own colours and a single-ink one disappears against half of them. The
+draw, paint, select and delete tools each have their own now; everything else
+keeps the desktop's, because a resize arrow drawn by hand is a worse resize
+arrow.
+
+### Slide notes, and portamento
+
+> *"Expand the functionality of the piano roll to encompass things like slide
+> and portamento notes that function similarly to FL Studio."*
+
+Two ends of one piece of machinery, and **both were configuration nothing
+read**: `VoiceConfig::glide_time_s`, `glide_legato_only` and `RetriggerMode`
+have been on the patch — and on the instrument editor's panel — since the
+format was written.
+
+- **`Voice` has a glide**: an offset in semitones with a target and a rate.
+  The voice's own `key` never moves, which is what lets the note-off the score
+  wrote for key 60 still end a voice currently sounding key 67. Without that,
+  every slid note in a piece hangs.
+- **Mono and legato are implemented.** One voice per context: a note arriving
+  while one is sounding takes it over rather than stacking. Legato keeps the
+  envelope and the sample position and moves only the pitch; mono retriggers
+  and carries the pitch over. Portamento is deliberately **not** applied in a
+  poly patch — it would mean every note of a chord sliding from whichever one
+  happened to be last.
+- **`Note::slide`** is the score's end. A slide note starts no voice and ends
+  none; it bends whatever is sounding to its pitch over its own length, and a
+  slide with nothing sounding does nothing. `EventPayload::NoteSlide` carries
+  it, in samples, because that is the only clock the RT side has.
+- In the roll: a **slide chip** on the toolbar (and `A`) marks the selection
+  *and* sets what the next note drawn will be — otherwise "make these slides,
+  now draw another" produces an ordinary note in the middle of a run. A slide
+  is drawn as the **ramp it is**, a wedge rising to the pitch it lands on,
+  because it is not a note and must not look like one.
+
+**The glide is block-rate**, and deliberately: the pitch a layer plays at is
+already worked out once per block — the mod matrix's `LayerPitch` route, which
+is what vibrato rides on, is computed in the same place. A per-sample glide
+would be the only pitch modulation in the voice that was, and making all of it
+per-sample is a change to the render loop rather than to this feature.
+
+### Record-arm and the metronome
+
+The last two pieces of item 9, and they go together: playing a part in time to
+one you have not written yet needs something to play in time *to*.
+
+**Arming is not a transport state.** `TransportState` has three values and none
+of them is "stopped, but the next play records"; arming is a decision made
+*before* play, and a fourth state would mean every `is_processing()` check in
+the engine had to learn about it. So the bar has an `armed` flag and `play` is
+what turns it into `Recording`. Arming throws the last take away, so a new one
+does not begin with the end of the one before it still in the ring; stopping
+turns what was played into notes on the open clip through `AddNotes`, so a
+take is one undo entry like anything else, and says how many — "nothing was
+played" is the commonest thing that happens to a record button.
+
+**The metronome is a node, not a clip.** A click is not document data: it is
+not saved, it does not bounce, it belongs to no channel, and a project emailed
+to somebody else must not arrive with a woodblock on every beat. `Metronome` is
+three atomics and `MetronomeNode` reads the transport's **position** rather
+than counting its own elapsed blocks — which is what makes a seek and a loop
+land on the beat. It sits after the master fader (so the fader does not move
+it) and before the limiter (so it cannot clip), and it *adds* into the master
+pair like every other source. The downbeat is louder, because a metronome that
+only says how fast is a pulse.
+
+**Its one documented limitation**: the beat is a constant number of samples,
+written by the model side from the tempo map. Exact for a song at one tempo —
+every song this build can create — and it drifts across a tempo *change*,
+where the right answer needs a map the RT thread may not read (INVARIANT 3).
+
+### Verified
+
+`cargo test --workspace` green (**1092 tests**, up from 979), `cargo clippy
+--all-targets` clean, `cargo fmt` applied. New test files:
+`fontelle-model/tests/{routing,looping}.rs`,
+`fontelle-sequencer/tests/looping.rs`, `fontelle-core/tests/glide.rs`,
+`fontelle-engine/tests/metronome.rs`, `fontelle-app/tests/projects.rs`,
+`fontelle-ui/tests/{routing,looping,projects,icons,slide,recording}.rs`.
+
+**A bug the pixels caught and the view-model could not**, worth writing down
+because it is the second time this project has been saved by measuring rather
+than looking: the record and metronome buttons were laid out, hit-tested and
+themed — and left out of the one array `draw_transport_bar` loops over. Two
+buttons that could be pressed and could not be seen, with every geometry test
+passing. `every_transport_button_actually_draws_its_glyph` is the test that
+would have caught it, and does now.
+
+Seen in the real window (nested Xwayland, per the agent memory), not only in
+the headless dump: five transport buttons, the route chip on the rack row, the
+Sounds/Projects switch, glyphs on both toolbars and on the editor tabs.
+
+## 2026-08-29: a tempo you can set and a mixer you can use
+
+> *"Currently we're lacking controls like tempo and the mixer for example."*
+
+Both were the same shape as the last three reports of this kind: the feature
+existed, in the model, with nothing on screen to reach it by.
+`SetNumber(NumberTarget::Tempo)` has been in `fontelle-model` since Phase 1
+item 3 and no pixel addressed it. `Project::mixer` has carried a gain, a pan
+and two switches per track since the scaffolding, `fontelle_app::realise` has
+compiled all four into the graph since this morning, and the only way to move
+any of them was to edit a JSON file.
+
+This closes **the last thing outstanding under item 9** of
+`docs/first-usable-plan.md` — the mixer strip — and with it the last clause of
+the §3 gate sentence that had nothing behind it: *"balance parts with
+per-channel gain/pan/mute"*. (Record-arm and the metronome are still open.)
+
+### The problem a fader poses, and the answer
+
+A control you **drag** has to move the sound while it is moving, and has to
+leave **one** undo entry behind when you let go. Those pull in opposite
+directions here:
+
+- The sound comes from a `CompiledGraph`. Rebuilding one runs
+  `Patch::from_data` over every channel in the project — a JSON tree per zone.
+- The undo entry comes from a `Command` through `History`, against the
+  document, which INVARIANT 9 says is the only way anything may change.
+
+Sixty graph rebuilds a second is not a fader. So a fader writes **both**:
+
+- **`fontelle_engine::TrackControls`** — gain, pan, effective mute and two
+  peak slots, as atomics, shared with the RT thread exactly the way
+  `MasterMeter` already is. `MixerTrackNode` reads them once per block when it
+  has one and falls back to its own fields when it does not, so every offline
+  render and every existing test is untouched.
+- **the command**, for undo and for the file.
+
+`realise` builds the controls and hands them back; `Session` writes to both on
+every movement and `apply_mixer_controls` pushes the document's values at the
+running graph after any change. The two cannot drift, because a rebuild
+re-seeds the atomics from the document.
+
+**The bug this arrangement caused, and how it was fixed properly:** a fader
+moved, then undone, left the document at unity and the *sound* where the drag
+had put it — `undo` rebuilds the graph, and the rebuild minted a fresh set of
+controls while everything holding the old ones went on writing to a graph that
+had been thrown away. `realise_reusing` is the fix: a track's control surface
+now lives as long as the **track**, not as long as a graph. A meter also keeps
+its reading across an instrument change instead of dropping to silence, and
+nothing holding one can end up talking to a dead graph.
+
+**A side effect worth having:** muting or soloing from the channel rack used to
+call `rebuild_graph`, which reloaded every soundfont in the project on every
+click of the switch. It is three atomic stores per track now.
+`studio.rs`'s own mute test says so — it reads the live control and asserts
+that *no* new graph was published.
+
+### The mixer panel
+
+A third tab in the editor column, beside the roll and the instrument. One strip
+per mixer track: a colour cap, the name, a pan with a centre detent, a fader
+with a meter beside it, mute, solo, and the level in decibels underneath.
+
+- **The master is pinned to the right and never scrolls.** It is where
+  everything arrives, not one of the things arriving; a master fader you have
+  to go and find is one you cannot use to set the level of what you are
+  listening to.
+- **The fader's taper is a four-point table**, not a formula:
+  `-60 / -30 / -10 / +6 dB` at `0 / 0.25 / 0.60 / 1.0` of the travel. Unity
+  lands at 0.85, so the top four-tenths of the throw cover the range a balance
+  decision actually lives in. Piecewise linear, because it has to be **exactly
+  invertible** — `fader_y_of_db` draws the handle where `fader_db_at` will read
+  it back, and a fader that jumps the moment it is grabbed is unusable.
+- **Both controls have a detent**, in pixels rather than in decibels so they
+  feel the same on a short panel and a tall one. Getting exactly 0.0 dB or
+  dead centre back by hand on a curved control is otherwise impossible, and
+  "nearly unity" is a mix that drifts every time it is touched.
+- **Virtualised** like the roll and the rack (§16.4): four hundred tracks build
+  a screenful of rectangles.
+- Metering is per track, taken **after** the fader — what a meter is for is
+  telling you what you sent on, not what arrived. Read once a frame, and only
+  while the tab is showing.
+
+### The tempo and the time signature
+
+Two boxes on the transport bar, after the position read-out, because *"where am
+I"* and *"how fast is it going"* are read together.
+
+They are the only controls on that bar that write to the **document** rather
+than to the engine, and the view-model says so out loud: `action` now returns
+`Option<TransportAction>` and answers `None` for both. Inventing a
+`TransportAction` that `apply` would then have to refuse would have been the
+easy lie.
+
+- Drag the tempo (a quarter of a BPM per pixel, a fortieth with Shift), or roll
+  the wheel over it (one BPM, a tenth with Shift). Clamped to 20–999 and
+  rounded to the two places the box shows, in one function, so the number on
+  screen is always exactly the number in the document.
+- **`Project::beats_per_bar` is a real document field now**, defaulted so
+  projects written before it opened in the 4/4 they were made in. The grid, the
+  bar numbers, the arrangement's snap and the read-out all count by it — the
+  `BEATS_PER_BAR` constant `Session` and the window were both hard-coding is
+  gone. The **denominator is not settable and the box does not pretend it is**:
+  `PPQN` is ticks per *quarter*, so a denominator other than four is a change
+  to what a tick means everywhere, not a control.
+
+### Verified
+
+`cargo test --workspace` green, `cargo clippy --all-targets` clean, `cargo fmt`
+applied. New: `fontelle-ui/tests/{mixer,tempo}.rs`, `fontelle-app/tests/mixer.rs`,
+six `TrackControls` cases inside `fontelle-engine/src/nodes.rs`, three mixer
+cases in `pointer.rs`, three machine-checked pixel shots in
+`render_headless.rs`, and the editor-tab tests extended to three tabs.
+
+The panel was **looked at**, through the headless dump rather than a window
+(`FONTELLE_UI_DUMP=<dir> cargo test -p fontelle-ui --test render_headless`
+writes `mixer.png`), and one thing only looking at it found: the grooves and
+the meter wells were drawn in the window colour, which is four steps from the
+panel's on this theme — a control at rest was a track you could not see there
+was anything to grab. They take the border ink now.
+
+**Not yet done in a real window.** The interaction wiring in `app.rs` — the
+press routing, the two drags, the wheel — has no test that can run without one,
+which is the same gap every GUI item in this project has had; the scene itself
+is checked by machine through the same vello pipeline the window uses.
+
+## 2026-08-29 (before that): the sixteen-layer wall
+
+> *"A lot of notes are showing as ones that should be playable but just aren't
+> producing any sound at all. It's making a lot of kits just incomplete to
+> use."*
+
+A real defect in the sampler, older than the key map that exposed it. One line:
+
+```rust
+for (slot, layer) in self.layers.iter_mut().zip(patch.layers.iter()) {
+```
+
+`Voice::layers` is a fixed `[LayerPlayback; MAX_LAYERS]` — sixteen — and `zip`
+stops at the shorter side. Slot `n` played patch layer `n`, so **every zone
+past index 15 never got a slot, never became active, and never rendered.** No
+error, no warning; just a kit that half works.
+
+That made `MAX_LAYERS` a limit on how many zones a patch may *contain*, when
+TDD §7.4 means it as a limit on how many may sound *at once* ("stacked, or
+split by key/velocity"). A key split is not a stack. A drum kit is one zone per
+hit and real ones run to forty-odd.
+
+Measured against the development bank before the fix — playable keys that made
+no sound at velocity 100:
+
+| soundfont | zones | keys the roll called playable | silent |
+| --- | --- | --- | --- |
+| `Mystical_Ninja_Starring_Goemon.sf2` — MN64 Drums | 46 | 84 | **68** |
+| `Nokia_30.sf2` — Drums | 47 | 53 | **37** |
+| `Setzer's_SPC_Soundfont.sf2` — Standard | 46 | 46 | **30** |
+
+Velocity was not a factor in any of them: zero of those keys were `vel_range`
+gated. It was the layer cap alone.
+
+**The fix**: a slot now records *which* zone it is playing (`LayerPlayback::
+layer`), and `trigger_note` fills slots with the zones that cover **this
+note** — one or two in a kit — instead of being indexed by zone. `MAX_LAYERS`
+goes back to meaning what it says, `Patch::layers` is explicitly unbounded, and
+`render_with_pan` walks slots while still addressing every `ModDest` by the
+zone's own index, because that is what a saved mod route names. Zones past 255
+get no per-layer modulation rather than being aliased onto layer 0's routes.
+
+Re-measured after, rendering a full second per key across the same bank: **29
+silent keys out of 34,056**, all in one preset (`Nokia_30`'s Reverse Cymbal) at
+the top of its range, where four octaves of upward transposition runs a quiet
+attack past in a few samples. That is the sampler doing arithmetic correctly,
+not a cap, and it is left alone.
+
+**Worth noting for whoever reads this next:** the short render length in the
+first diagnostic reported 5,978 "silent" keys, most of them false — a note
+transposed *down* four octaves advances eight samples in a 256-sample block and
+reads the quiet head of its own waveform. Measure a second, not a block.
+
+## 2026-08-29 (earlier): the arrangement grows controls, and the grid becomes readable
+
+Four reports, and three of them turned out to be the same shape: the feature
+existed, in the model, with nothing on screen to reach it by.
+
+### Pasting notes landed wherever the pointer was
+
+> *"When I paste notes in the piano roll they're off time instead of snapped."*
+
+`WindowApp::paste` worked out *where* from the playhead — or, when the playhead
+is elsewhere in the song, from the raw pointer x — and handed that tick to
+`PianoRoll::paste` untouched. Neither of those is ever on a line.
+
+The snap now happens in `PianoRoll::paste`, not at the call site, because the
+roll is what owns the division and `Alt` (see `live_snap`). A rule enforced by
+the caller is a rule the next caller forgets. `Timeline::paste` does the same
+for clips.
+
+### The snap control was there and did not look like one
+
+> *"I also don't see snap controls right now, please ensure we have those."*
+
+It was in the roll's toolbar the whole time, drawn as the bare word `1/16`
+sitting between `Del` and `-`. Nothing about a word in a strip says it can be
+pressed — which is the *same* report that once produced the caret on the lane
+chip, arriving again about the chip next to it.
+
+The three read-out chips — snap, lane, onion skin — now always carry their
+frame instead of only lighting on hover. And the arrangement, which had no
+toolbar at all, has one.
+
+### The arrangement had no controls
+
+> *"We need better arrangement controls like looping, duplicating clips,
+> copying and pasting arrangement clips, cutting, etc. Right now I can only
+> change the length and move them around — like I made this drum loop but I
+> can't repeat it."*
+
+`TimelineView` has carried a `snap` since it was written and `duplicate` since
+the arrangement existed. Both were reachable only from a keystroke you had to
+already know, with the arrangement focused — which is not a control, it is a
+rumour. Cut, copy and paste did not exist at all: `Ctrl+C` on the arrangement
+copied *notes*, because the window's clipboard keys went straight to the roll
+without asking which canvas the keyboard belonged to.
+
+- `TimelineControl` and `timeline_toolbar_layout`: snap, Repeat, Cut, Copy,
+  Paste, Mute, and the two zooms, in the same order as the roll's toolbar so
+  the panels read alike. A button whose action would do nothing right now is
+  drawn muted rather than hidden — a control that comes and goes is harder to
+  learn than one that is plainly unavailable.
+- `copy`/`cut`/`paste` now route by `Focus`, the way `duplicate` always did.
+- **The clip clipboard lives in `Session`, not in the canvas.** A `ClipInfo` is
+  a flattened view for drawing — no notes, no channel — so a canvas holding
+  copied clips would hold what INVARIANT 2 says it may not see. It emits
+  `ArrangeEdit::Copy`/`Paste` and the session keeps whole `Clip` values. That
+  is also what makes **cut** work: paste has to put something down after the
+  clip it copied from is gone, which a clipboard of ids could never do.
+
+**The bug worth writing down**, because it is the reason `StudioHost::arrange`
+now returns `Vec<ClipId>`: a duplicate's offset is measured from the selection,
+so leaving the selection on the *original* makes pressing the key twice put two
+copies in the same place. The roll solved this long ago — `AddNotes` hands its
+ids back and `PianoRoll::notes_inserted` adopts them — and `Timeline::
+clips_inserted` is that same handshake. It is what turns "duplicate" into
+"repeat".
+
+### The grid could not be counted
+
+> *"It's kind of hard to tell the time right now, so ensure between bars or
+> measures there's more dividers so I can see the on and offbeats."*
+
+Two faults, and only one of them was the ink.
+
+- **Subdivisions and beats shared `grid_line`.** Three levels drawn in two
+  colours is a comb, not a ruler. Theme format v5 adds `grid_line_sub` for the
+  faintest level; `grid_line` keeps the meaning its doc comment already
+  claimed (beats) and `grid_line_strong` keeps bars.
+- **The finest level was the *snap*.** Setting the snap to bars — or off —
+  removed every line between the bars and left a bar-wide empty box to place
+  notes in by eye. `subdivision_unit` fixes the rule: the grid is the ruler you
+  read the time off, the snap is where a note may land, and the grid never goes
+  coarser than an **eighth**, which is the coarsest division that still shows
+  an offbeat.
+
+Verified in the running window by reading pixels rather than by eye (see
+`seeing-fontelles-gui` in the agent memory — twice now a colour has been "seen"
+that the pixels disagreed with). Along one grid row: `#0d1c22` every 30 px
+(sixteenths), `#18333d` every 120 px (beats), `#1f404c` at the bar.
+
+## 2026-08-29 (earlier, third): pan you can hear, an eraser, and a keyboard that says what it plays
+
+Three reports from the window, and the third turned into the largest piece of
+this pass because getting it *right* meant measuring real soundfonts rather
+than picking a rule that sounded reasonable.
+
+### The pan lane was drawing a picture of a change
+
+> *"Piano roll panning isn't working right now."*
+
+It was not a UI bug at all. `Note::pan` was stored, editable in the property
+lane, serialised, and round-tripped through save/load — and then
+`fontelle_sequencer::compile` built a `NoteOn` without it, because
+`EventPayload::NoteOn` had nowhere to put it. Everything downstream of that
+point was working correctly on a value it was never given.
+
+The seam now runs all the way through, and it is one conversion, written once:
+
+- `EventPayload::NoteOn` carries `pan: i8`, in the range `Note::pan` is stored
+  in. It is on the note-on and not a node parameter because §16.5's pan is
+  **per note** — two notes sounding together on one channel may sit in
+  different places, which a node-wide control cannot express.
+- `fontelle_types::pan_unit` is the only crossing from the document's byte to
+  the `-1.0..=1.0` the pan law takes. `SamplerNode::process` is the one caller.
+- `fontelle_core::NoteTrigger` carries it onto a voice. It is a struct rather
+  than a fifth argument on `Voice::trigger_from` deliberately: pan is the
+  *first* of `Note`'s per-note properties to reach the audio path and will not
+  be the last, and a struct grows a field where a signature this deep grows a
+  rewrite of every call site.
+- `Voice::render_with_pan` now adds **three** pans and clamps — the zone's, the
+  note's, and the channel's live one. Any other reading throws one away.
+- The live path carries it too (`Auditions`, `StudioHost::audition_on`), from
+  the roll's template, so clicking a note you panned hard left sounds hard
+  left instead of being centred until the transport reaches it.
+
+**Still dropped, and deliberately flagged rather than quietly fixed:** the
+other four properties `Note` carries — `fine_pitch`, `release`, `mod_x`,
+`mod_y` — are stored, drawn and editable in the property lane and still reach
+nothing. Each is a field on `NoteTrigger` when it lands. The lane will keep
+looking like it works until they do.
+
+### Right-click erases while it is held
+
+> *"When holding right click hovering over anything should delete it, notes,
+> arrangement clips, etc."*
+
+Both canvases already deleted on a right *press*, and that was the whole of it:
+the button went down, one thing under it went away, and the gesture ended.
+Sweeping a bar meant clicking every note. Worse, a right press on empty grid
+left whatever was in `self.gesture` from before untouched, so the next pointer
+move carried on with it.
+
+`Gesture::Erasing` in both `canvas/piano_roll.rs` and `canvas/timeline.rs`, and
+it deliberately **carries no state**. Every other gesture here remembers where
+it started because it emits deltas from that origin; an erase asks the current
+document what is under the pointer, so a note already gone is simply not found
+again. That is what makes "held still, asks for nothing" true by construction
+rather than by a `last` field somebody has to maintain — which is exactly the
+trap this codebase has now fallen into four times (`tests/erase.rs` asserts it).
+
+Two details worth keeping:
+
+- It hit-tests the **unclamped** pointer. Clamping is right for a move — a drag
+  that strays onto the keyboard still means the nearest cell — and destructive
+  for a rub-out, where it would delete whatever sits at the edge you slid past
+  on your way off the canvas.
+- The right button no longer reaches the roll's or the arrangement's chrome at
+  all. Sounding a key, moving the playhead or grabbing the lane seam in the
+  middle of a sweep is the window answering a question nobody asked.
+
+The Delete tool sweeps on a left drag by the same path, which it always should
+have.
+
+### The piano roll now says which keys the soundfont can actually play
+
+> *"Often I will use drum soundfonts however the piano roll shows these the
+> same as normal ones, making it so that you have no idea which notes actually
+> play anything ... instead of trial and error trying to figure out which notes
+> actually play something for these drum soundfonts that only have a few sounds
+> every few notes."*
+
+Both facts needed were already in the patch and neither had any way to reach a
+canvas. `Layer::key_range` is not decoration — `Voice::trigger_note` marks
+every layer that does not cover the key inactive, so a note outside all of them
+starts a voice with nothing in it and is *genuinely silent*. And the importer
+read each sample's name to find its audio and threw it away.
+
+- `ImportedPatch::names` and `LoadedSample::name` keep it, on **both** paths —
+  the import and the reopen — so a kit is labelled whether the project was just
+  built or just opened (`tests/project_bundle.rs` pins the round trip).
+  Deliberately not on `Patch`: the name is a fact about the file, not about the
+  user's instrument, and INVARIANT 8 keeps file-derived identity off disk.
+- `SampleLibrary` holds them beside the provenance it already holds.
+- `fontelle-app`'s new `keymap` module turns a `Patch` into a
+  `fontelle_ui::document::KeyMap` — one entry per MIDI key, playable or not,
+  named or not. It lives there for the reason `instrument::describe` does: the
+  UI may not see a `Patch` (INVARIANT 2).
+- The roll greys dead rows and dead keys, draws a note on one in
+  `note_silent`, and writes the name beside the key — widening its key strip
+  from 56 to 132 px **only** when there is something to write, so a melodic
+  session's roll is the roll it always was, to the pixel
+  (`tests/keyboard.rs`). Theme format v4 adds `row_dead`, `key_dead` and
+  `note_silent`, with the usual migration.
+
+**An empty map means "not known", not "plays nothing".** A channel with no
+instrument greys nothing; the two are very different statements.
+
+#### The naming rule, and why it is three measured constants
+
+This is the judgement call in the feature, and the first two attempts at it
+were both wrong in ways only real files showed. The diagnostic was thrown away;
+the numbers it produced are in the doc comments in `crates/fontelle-app/src/keymap.rs`
+and are reproduced here because they are the whole argument.
+
+Against the 617 presets in the bank on the development machine:
+
+| rule | result |
+| --- | --- |
+| name a key when its own zone is ≤2 keys | F-Zero labelled **5 of 18** playable keys, Mega Man X **3 of 67** |
+| ...and treat a patch with ≥2 such hits as a key map | 10 of 11 kits fully labelled; `Z3 Percussion` still 1 of 12 |
+| ...with ≥1 hit, and no name spanning >32 keys | **all 11 kits label 100% of their playable keys** |
+
+The three constants that fell out, each measured rather than chosen:
+
+- `HIT_SPAN_KEYS = 2`. Melodic multisamples put their zones at 3–7 keys
+  (`STR_Ensemble.sf2`: 3, 4, 5, 6, 7, 31, 37); kits put hits at 1. Three would
+  start labelling string sections.
+- `KEY_MAP_HITS = 1`. Of 606 melodic presets, **two** contain a one-key zone at
+  all — and both contain five, so they are read as key maps either way. Of 11
+  percussion presets all 11 contain at least one hit and only 10 contain two,
+  so requiring two cost a real kit and bought nothing the corpus shows is
+  needed. The safety is in `HIT_SPAN_KEYS` being narrow, not in counting.
+- `MAX_NAMED_BAND_KEYS = 32`. Inside a key map the wide zones get named too —
+  they are one percussion sample stretched across a band, which is why F-Zero
+  went from 5 labels to 18 — but the widest band in any real percussion preset
+  is 28 keys, while the only two melodic presets containing a hit carry zones
+  of 48, 56 and 59. The cut falls cleanly between them.
+
+Velocity is deliberately not consulted: a `vel_range` can make a key silent
+softly and loud hard, and a keyboard greying itself in and out as the pen
+pressure changes would be worse than one that tells the truth about the key.
+
+**Where this would need revisiting:** the corpus is one person's retro-game
+soundfont bank. A kit whose author gave every hit three keys would fall
+straight through `HIT_SPAN_KEYS`, and the fix is that one constant with nothing
+else changing. That is why it is a constant with the measurement written next
+to it rather than a number inline.
+
+## 2026-08-29 (earlier still): the window bends to the person using it
+
+A third pass from the window, and the most useful kind of report — six
+complaints, of which three were bugs with mechanisms and three were features
+that existed and could not be found.
+
+### The hung note, and why a note-off is not enough
+
+> *"When placing a note sometimes it would play a different note on hold that
+> wouldn't stop until I replayed again."*
+
+`Sampler::note_off` releases **one** voice — the first active one matching the
+key and the voice context. That is correct and deliberate; §11.4's per-clip
+tagging depends on it. The window, though, only sent a note-off when the key
+*changed*: sounding the same key twice sent two note-ons and, between them,
+nothing. The second voice had no note-off coming and sustained until something
+else in the engine happened to take it.
+
+`crates/fontelle-app/tests/audition.rs` pins the engine half down — a doubled
+note-on really does survive one note-off, through the real graph — so that the
+reason the window is careful is written where somebody would find it if voice
+allocation ever changes.
+
+### The flicker, which was a number
+
+> *"Clicking a note on the piano roll I'm still not hearing it cleanly, just a
+> flicker."*
+
+The minimum audition was a flat 180 ms for everything, so clicking a half note
+sounded a fifth of a beat of it. The roll knew the length all along and was
+throwing it away at the door: `take_audition` returned a bare `u8`. It now
+returns an `Audition { key, ticks }`, `DocumentHost::seconds_per_tick` converts
+through the song's own tempo map (defaulted to 120 BPM, so a host without one
+still answers), and what you click sounds for as long as it *is* — floored at
+180 ms so a thirty-second is still a note, capped at 2.5 s so a whole note is
+not a drone.
+
+Both of these now live in `crates/fontelle-ui/src/audition.rs` as a state
+machine that **returns what to send** rather than sending it, which is the same
+shape every canvas here has and the reason both bugs are regression tests
+(`tests/audition_voice.rs`) instead of something to re-notice by ear. The
+property worth holding, and the one the bug broke: *every note-on it emits is
+matched by exactly one note-off.*
+
+### The drag after drawing a note
+
+> *"If I click to place a note, then my cursor moves to drag it, it shouldn't
+> change the note length it should move the note."*
+
+FL Studio's draw-and-size gesture — press on empty grid, the same drag sets the
+length — was the default, and it is a real habit. It also has a sharp edge this
+report is the sound of: a press is never perfectly still, so *every* drawn note
+was a resize in progress and the smallest wobble of the hand changed a length
+nobody meant to change. Placing a note now leaves you holding it: the drag
+moves it in both axes, and the right edge resizes it like every other note.
+`DrawDrag::Resize` keeps the old gesture for anyone who wants it, and
+`tests/roll_interaction.rs` still tests it under that flag.
+
+### The trap, a third time
+
+`Timeline::drag` had the *identical* live-clamp bug the roll was fixed for two
+sections ago — `earliest`, `highest` and the resize floor all recomputed from
+the `clips` slice the window refreshes between events. Nobody had reported it
+because nobody had dragged a clip to bar one yet. Limits are captured at the
+press now, `drag`'s `_clips` parameter is deliberately unread and says so, and
+`tests/arrange_gestures.rs` is the regression.
+
+**Three occurrences is a pattern, so state it plainly:** a gesture emits deltas
+relative to its own start, so any clamp it applies must be measured **once,
+when the gesture starts**. The test shape that catches it applies the canvas's
+own edits back into the document and asserts that a stationary pointer asks for
+nothing new.
+
+### Two features that existed and could not be found
+
+> *"I'm still not seeing panning options, only the velocity in the piano roll."*
+
+Pan was there. Every property `Note` carries was there — the lane has drawn any
+of them since it was written and the chip cycled through them. The chip said
+`vel`, which is a perfectly good *read-out* and a completely invisible control.
+So the feature existed and did not exist, which is the worse of the two. There
+is a menu now (`lane_menu_layout`, `tests/lane_menu.rs`), the chip carries a
+caret so it reads as something you press, and `L` still cycles.
+
+> *"The left section, I can't resize it. I want to be able to make the
+> soundfonts bigger than the channels."*
+
+The sidebar was always `metrics.sidebar_width` and the rack always took 42% of
+it. Both are now `Docks` fields with `None` meaning "the old default", and both
+seams are the margin that was *already* between the panels — so nothing moved
+under anybody who was used to the old layout, and there is something to grab.
+`tests/docks.rs` is mostly about the clamps: a seam that can be dragged until a
+panel is a sliver is a seam that will be, once, by accident.
+
+### Keys
+
+> *"Ensure our keybinds are expansive."*
+
+There were no arrow keys at all, which is fine for a phrase you are placing and
+hopeless for one you are correcting. Now: arrows move the selection, `Ctrl` up
+and down by an **octave** and left and right by a bar, `Shift` left and right
+changes the length and `Shift` up and down the lane's value, `1`-`7` pick a
+tool. The arrangement takes the same keys against its own selection. Every one
+of them goes through the same clamped edit a drag does, so a chord with one note
+near the top of the keyboard transposes as far as it can instead of refusing.
+
+**Not done, and deliberately:** none of the panel sizes survive a restart.
+`Settings` has the right shape for it (`serde`, a format version) and nothing
+writes to it at runtime yet; the next person to touch this should add a
+`workspace` section rather than another constant. The roll's toolbar is also
+twelve chips wide and will clip on a narrow window — every chip has a keyboard
+shortcut, but it wants a second row.
+
+## 2026-08-29 (later still): note editing stops fighting you
+
+A second pass from somebody using the window. One of these was a real bug with
+a precise mechanism, and it is the most instructive thing in this file.
+
+`cargo test --workspace`: 779 passing. Clippy `-D warnings` and `cargo fmt
+--all --check` clean.
+
+### The flicker: a clamp that chased the thing it was clamping
+
+Reported as *"when placing notes while playing it jitters and glitches out and
+changes the size of my notes — sometimes it just does that in general"*.
+
+A drag emits deltas **relative to the previous step of the same drag**, because
+that is what `MoveNotes` and `ResizeNotes` take and what lets a drag coalesce
+into one undo entry. But both clamps — "a note cannot go before the start of
+the clip" and "a note cannot be shortened past nothing" — were recomputed from
+the **live document**, which the drag is itself changing:
+
+1. Drag a note at bar 3 hard left. `earliest` is bar 3, so the clamp allows
+   -3 bars, and the note lands on bar 1.
+2. Next step, `earliest` is now bar 1, so the clamp allows **0**, and `wanted`
+   becomes 0 against an `applied` of -3 bars — a delta of **+3 bars**. The note
+   jumps back.
+3. Next step it jumps forward again. For ever, at mouse-move rate.
+
+The resize had the identical shape, which is the "changes the size of my notes"
+half, and it was loudest right after drawing a note because the pending-add
+handshake leaves a resize whose floor is the note that was *just* created.
+
+A gesture's limits are now measured **once, when it starts** (`MoveLimits`, and
+`Gesture::Resizing::shortest`). The move also clamps the key, which it never
+did: `MoveNotes` is all-or-nothing, so one note of a chord that would pass key
+127 stopped the whole shape from moving at all.
+
+`tests/roll_gestures.rs` is the regression, and its shape is the point — it
+**applies the roll's edits to the arena** the way the host does. A test that
+reads the roll's output without ever applying it cannot see this bug, which is
+exactly why the roll shipped with it. The invariant it pins down is worth
+stating: *a pointer that is not moving cannot be asking for anything new.*
+
+### The static: a click is thirty milliseconds
+
+Reported as *"I can't click on notes in the piano roll to hear them, I just
+hear a short flicker of static"*. Two things, and neither was the engine —
+`fontelle-app/tests/audition.rs` now drives the *mouse* audition path through
+the real graph and the real idle gate and holds a note for sixty-four blocks,
+which is the coverage the live path had from MIDI and never had from the
+window.
+
+- **Clicking an existing note auditioned nothing at all.** Only a *drawn* note
+  was sounded. The roll now hands the window a key to sound
+  (`PianoRoll::take_audition`, the same shape as `Timeline::take_open`) when
+  you draw a note, click one, or drag one to a new pitch — and deliberately not
+  when you slide one along in time, which would machine-gun the same pitch.
+- **An audition lasted exactly as long as the mouse button was down.** Thirty
+  milliseconds of any sample is a click rather than a note; of a chiptune noise
+  channel it is literally static. `transport::MIN_AUDITION` is a floor, not a
+  length — holding a key still sounds it for as long as it is held.
+
+### Onion skins
+
+Asked for: *"seeing onion skins of the other notes that match up in the
+timeline, so I can go back and forth between chord and melody on different
+instruments, and change the filter of the skinning."* `GhostFilter` steps
+off → all → one instrument at a time (the `skin` chip, or `G`), and
+`StudioHost::ghost_notes` maps the other clips' notes into the **open clip's
+own tick space** — a ghost that does not line up with what it is read against
+is worse than no ghost. Drawn faint and outlined in the source lane's colour,
+which `render_headless.rs` asserts in pixels: a ghost must never be mistakable
+for a real note.
+
+### The cursor
+
+`pointer.rs` is a pure function from the geometry the window already has to a
+cursor, so it is tested without a window (`tests/pointer.rs`). Notes and clips
+offer a grab, their right-hand edges a horizontal resize, the seams a vertical
+one, knobs a vertical one, empty grid the draw crosshair, rulers a grab, and
+everything clickable a hand. **A drag in progress overrides whatever is under
+the pointer** — dragging a note over the keyboard must not turn the cursor into
+a hand half way through the gesture.
+
+### Smaller things found on the way
+
+- **A lost mouse-up left a drag armed.** An alt-tab mid-gesture meant the next
+  pointer move continued the drag with the button already up — a note that
+  follows the mouse around on its own. `WindowEvent::Focused(false)` now ends
+  the gesture, releases the audition and breaks the history entry.
+- The roll's toolbar is twelve chips wide now. It clips rather than overlaps on
+  a narrow window, and every chip has a keyboard shortcut, but it is the first
+  thing that will want a second row.
+
+## 2026-08-29 (later): the studio becomes usable
+
+A pass driven entirely by **somebody actually using the window** and writing
+down what was wrong with it. Every item below is a reported complaint, and the
+list is worth keeping because almost all of it was arithmetic that was wrong at
+an edge rather than a feature that was missing.
+
+`cargo test --workspace`: 744 passing. `cargo clippy --workspace --all-targets
+-- -D warnings` and `cargo fmt --all --check` clean.
+
+### The things that were broken
+
+- **"Dragging notes near the start of the piano roll is glitchy and jittery."**
+  One bug. Dragging a note towards bar 1 walks the pointer off the left of the
+  grid and onto the keyboard, and dragging one upwards walks it onto the ruler;
+  both are a few pixels away at any normal zoom. Converted unclamped, left of
+  the grid gave a negative tick that `x_to_tick` flattened to zero and above the
+  grid gave a negative row count that ran the key up to 127 — so a gesture that
+  strayed teleported the note. `canvas::clamp_to_grid` is the fix and
+  `canvas::edge_scroll` is its other half: a drag held past an edge scrolls the
+  view towards it, so a note can be dragged to bar 1 from a screen away.
+
+- **"The soundfonts section was glitchy — overlaying things squished
+  together."** Also one bug with two faces. Both lists built one row *more* than
+  fits and clipped that row's **rectangle** to the list, so the last row was a
+  few pixels tall, its caption was centred inside those few pixels and drew on
+  top of the row above it, and the same over-long rectangle reached across the
+  boundary so a click at the top of the preset list landed on a soundfont. Rows
+  are whole rows now, the lists are a whole number of rows tall so there is no
+  dead band, hit-testing asks *which list* before *which row*, and
+  `draw_text_clipped` clips vertically as well as horizontally, which it never
+  did. `tests/panel_rows.rs`.
+
+- **"It wasn't highlighting the selected instrument."** There was nothing to
+  highlight with: `StudioHost` could say which *file* was open and not which
+  preset was on the channel. `selected_preset` says, the browser draws it, and
+  changing a channel's instrument now **renames the channel to the preset** —
+  a channel that goes on saying what it used to be is the loudest "nothing
+  happened" a rack can give somebody who just changed its sound. That is two
+  document changes for one gesture, which is what `Compound` is for.
+
+- **"The time bar is annoying to drag and I can never get it to the very
+  start."** It could only be *tapped*: `CursorMoved` sent every drag to the
+  piano roll and nothing else, so the transport ruler had no drag at all and
+  getting the playhead to sample zero was a matter of hitting one pixel. `Drag`
+  is now a value the press decides, and `sample_at` clamps, so a drag that
+  leaves the ruler on the left lands exactly on zero.
+
+### The FL Studio behaviours that were missing
+
+- **The time marker.** The last place clicked on either ruler is the mark; play
+  starts there, the space bar and the play button pause back to it, and the stop
+  square goes to the front of the song **and takes the mark with it** — a stop
+  that returns the playhead and then plays from bar 5 again is a stop nobody can
+  use. `transport::TransportAction`, `tests/marker.rs`.
+
+- **The last note is a stencil.** A drawn note is a copy of the last note drawn
+  or clicked — length, velocity, pan, tuning, all of it. `RollEdit::Add` now
+  carries a whole `Note` rather than four fields, which is what made this a
+  one-line change at the point of use. `PianoRoll::template`.
+
+- **Property lanes.** The lane under the grid shows velocity, pan, fine pitch,
+  release or either mod value, cycled by a chip on the toolbar, and it can be
+  **dragged taller** by the seam above it. `NoteProperty` and `SetNoteProperty`
+  are the document half — five of the six properties were already on `Note` and
+  none of them had a command, so none could be edited at all (INVARIANT 9 leaves
+  no other way in).
+
+### The two panels that did not exist
+
+- **The arrangement** (`canvas/timeline.rs`, `tests/timeline.rs`). Clips as
+  blocks on lanes across the top of the editor column, with a draggable divider:
+  move, size, duplicate, mute, delete, marquee-select, and click one to open it
+  in the roll. Virtualised like the roll (§16.4). `ResizeClip` was the one clip
+  command the model was missing. Ctrl+T hides it.
+
+- **The instrument editor** (`canvas/instrument.rs`, `fontelle-app`'s
+  `instrument.rs`), reached from a switch on every channel row or the second tab
+  in the editor column. **This is §7.2's whole point finally exercised**: the
+  SF2 supplies defaults and the user owns every parameter afterwards, and until
+  this existed an imported preset played exactly what the file said. Voice
+  config, both filters, the amp envelope, per-layer gain and pan, interpolation
+  quality, and the channel's own fader — every control addressed by
+  `ParamAddress` (§8.2, INVARIANT 7), so the same table will serve automation,
+  MIDI learn and the plugin export rather than growing a second scheme.
+  `SetChannelPatch` now coalesces with itself, so turning a knob is one undo
+  rather than one per pixel.
+
+### Notes for whoever is next
+
+- `Session::channel_presets` and `Session::patch_cache` are **live-session
+  state, not document state**. A `PatchData` records the audio a patch points at
+  (INVARIANT 8), not the browser row it was picked from, so a project reopened
+  from disk shows no preset highlight until one is chosen again. The channel's
+  *name* is the half of that answer which does survive, which is why it is set
+  from the preset.
+- The instrument editor rebuilds the whole `CompiledGraph` on every step of a
+  knob drag. That is correct — the graph carries the instrument, and you have to
+  hear what you are turning — and it is the obvious thing to make incremental if
+  it ever shows up in a profile.
+- Still outstanding from item 9: the mixer strip, and record-arm wiring Phase 1
+  item 5 into the UI with a metronome. The instrument editor took the place the
+  mixer would have had, and per-channel gain and pan are on it in the meantime.
+
+## 2026-08-29: the studio opens itself
 
 Phase 2 item 9, most of the piano roll's second pass, and the engine piece both
 of them needed. **This is the first build that does not need the command line.**
@@ -2666,7 +4237,8 @@ To inspect what a given SF2 file actually imports as, without any audio:
   recompile, publish. This crate is the one layer allowed to see model, engine
   and UI at once, which is what keeps `fontelle-ui` off `fontelle-engine`.
   `blank_project` is the empty starting point `--blank` opens.
-- **fontelle-ui** — real, as far as items 6-8 go (2026-08-29). `theme` is a
+- **fontelle-ui** — real, as far as items 6-8 go, plus item 9's panels
+  (2026-08-29). `theme` is a
   full token set with a dark default, a light variant and a versioned JSON
   format (**v2**, with working migrations from v0 and v1); `layout` is the
   window geometry; `widget` holds the §16.3 invalidation core — `Redraw`, and
@@ -2680,10 +4252,12 @@ To inspect what a given SF2 file actually imports as, without any audio:
   scene into memory with no surface; `app` is the winit/wgpu/vello event loop
   and the input routing, and nothing else. It depends on `fontelle-model`
   read-only and on `fontelle-engine` **not at all** — INVARIANT 2 and 9 hold
-  because no `&mut Project` is reachable from here. Still stub:
-  `canvas::{timeline, mixer}` (`TimelineCanvas::visible_tick_range` and friends
-  are `todo!()`), and there are no widgets in the tree beyond the panel, the
-  bar and the roll. Tests: `crates/fontelle-ui/tests/`.
+  because no `&mut Project` is reachable from here. `canvas::timeline` (the
+  arrangement) and `canvas::mixer` (a fader, a pan, mute/solo and a meter per
+  track, with the master pinned) are real too, and `transport` carries the
+  tempo and time-signature boxes. Nothing in this crate is `todo!()` any more;
+  what it does not have is widgets in the tree beyond the panels, the bar, the
+  roll and the strips. Tests: `crates/fontelle-ui/tests/`.
 - **fontelle-plugin** — pure stub, unchanged since scaffolding.
   `BaseviewBackend::request_redraw` is a `todo!()`; M2 is deferred until after
   the first-usable gate (§2.2 of `docs/first-usable-plan.md`).
@@ -2816,23 +4390,31 @@ crash the process).
 13. ~~Phase 1 of `docs/first-usable-plan.md`~~ **Done, 2026-08-29** — patch
     serialisation, the `Project` -> graph realisation step, commands and undo,
     the project bundle, and MIDI recording.
-14. **Phase 2 of `docs/first-usable-plan.md`, the walking GUI skeleton.**
-    Items 6 (window + surface + one panel) and 7 (the transport bar over the
-    real engine) are **done, 2026-08-29** — see the two sections at the top.
-    The vello stack came up without needing the lyon fallback; zero frames at
-    idle is built in and measured; and the window drives a live audio thread
-    through nothing but atomics. Item 8 (the piano roll) is **mostly done,
-    2026-08-29** — draw, delete, select, move, resize, snap, right-click delete
-    and Ctrl+Z/Y all work against the real `History`, and what you draw you
-    hear while it plays. Missing from item 8: marquee select and Ctrl+B/C/V/X.
-    **Next is item 9**, whose first half is what turns this from a tool you
-    launch with a soundfont path into one that stands on its own: a channel
-    list that opens an SF2 from inside the window, with the preset list the CLI
-    already prints. That needs a *graph* channel alongside the timeline one —
-    the same `triple_buffer` shape, because the compiled graph lives in the
-    callback and adding a channel rebuilds it. Then the timeline canvas,
-    per-channel gain/pan/mute through commands, and record-arm wiring Phase 1
-    item 5 into the UI.
+14. ~~**Phase 2 of `docs/first-usable-plan.md`, the walking GUI skeleton.**~~
+    Items 6 (window + surface + one panel), 7 (the transport bar over the real
+    engine), 8 (the piano roll) and 9 (channel rack + soundfont browser +
+    arrangement) are **done, 2026-08-29** — see the sections at the top. The
+    vello stack came up without needing the lyon fallback; zero frames at idle
+    is built in and measured; and the window drives a live audio thread through
+    nothing but atomics. The arrangement canvas and the instrument editor
+    landed in the "the studio becomes usable" pass, along with the FL Studio
+    behaviours a person using the window found missing.
+
+    ~~**Still outstanding under item 9**~~ — **item 9 is closed** (2026-08-30):
+    the mixer strip, the tempo and time-signature boxes, record-arm and the
+    metronome are all in. ~~**Item 10 is most of the way done too**~~ —
+    **item 10 is closed** (2026-08-31): the browser panel's Projects tab
+    makes, lists and opens projects out of a configurable folder, the title
+    bar has carried a `•` since `refresh_title` landed, and the autosave timer
+    is in. The first-run settings it also mentions are covered by the two
+    folder pickers.
+
+    **Item 11 (export) is done** (2026-08-31) — an offline render at render
+    quality into `<bundle>/renders/`, from a button and from Ctrl+E. What is
+    left of Phase 3 is **item 12: the real-project shakedown** — making an
+    actual multi-part piece in the window, on hardware, end to end, and fixing
+    what that finds. Every gate before it has been closed by somebody using
+    the thing rather than by reading it.
 15. Then the rest of M1: streaming (TDD §7.7 — we currently hold whole
     soundfonts in memory) and effects. `ParametricEq::process` and
     `Compressor::process` are the two `fontelle-dsp` could already support.

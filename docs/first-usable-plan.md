@@ -249,20 +249,42 @@ not relitigate the toolkit choice beyond that documented fallback.
    off the RT thread. `fontelle` with no arguments now opens a usable studio,
    which is the first clause of the §3 gate sentence.
 
-   **Still to come under this item:** the arrangement canvas (clips as blocks:
-   move/duplicate/delete/mute), the mixer strip with per-channel gain and pan,
-   and record-arm wiring item 5 into the UI with a metronome.
+   **The arrangement canvas** (clips as blocks: move/duplicate/delete/mute)
+   and **the mixer strip** (a fader, a pan, mute/solo and a meter per track,
+   with the master pinned to the right) both landed on 2026-08-29, along with
+   the tempo and time-signature boxes on the transport bar — see PROGRESS.md.
+   A fader writes both a `Command` and a set of atomics the running graph
+   reads, because rebuilding the graph per frame of a drag reloads every
+   soundfont in the project.
 
-10. **Save/open/new in the UI.** File dialogs over item 4, dirty-state in
-    the title bar, autosave to `backups/` on a timer. First-run settings can
-    be minimal (§18's full wizard is M7): audio device selection and the
-    projects/soundfonts paths, honouring INVARIANT 10.
+   **Record-arm and the metronome** landed on 2026-08-30, which closes this
+   item. Arming is a flag on the transport bar rather than a fourth
+   `TransportState`; the click is an engine node reading the transport's own
+   position, because a click is not document data. Along with them:
+   channel-to-mixer-track routing (a channel no longer owns a strip), genuine
+   clip looping as against copying, slide notes and portamento, and a drawn
+   icon set that also supplies the tool cursors. See PROGRESS.md.
+
+10. **Save/open/new in the UI.** *Mostly done, 2026-08-30*: the browser
+    panel's Projects tab lists a configurable projects folder, makes projects
+    in it and opens them, and the folder is picked with the desktop's own
+    dialog. **Done, 2026-08-31**: the title bar carries a `•` while the
+    document is dirty, and `Session::autosave` writes a whole bundle to
+    `backups/autosave.fontelle` on a one-minute timer while it stays dirty —
+    a backup, so it never clears the dirty flag. First-run settings are
+    covered by the two folder pickers (§18's full wizard is M7), honouring
+    INVARIANT 10.
 
 ### Phase 3 — closing the gate
 
-11. **Export dialog.** `render_offline` already exists and renders at `High`
-    quality; wire it to a dialog writing into `<project>/renders/` with the
-    clipped-sample count surfaced.
+11. ~~**Export dialog.**~~ **Done, 2026-08-31.** `Session::export_wav`
+    renders offline at `RENDER_QUALITY` — an export has no deadline, so it
+    does not use the live quality — and writes 16-bit stereo into
+    `<project>/renders/`, named from the bundle and never overwriting a
+    previous render, with the clipped-sample count in the message. From the
+    Export button on the browser's Projects tab, or Ctrl+E. A project that
+    has never been saved is told to save first rather than given a file
+    somewhere surprising (INVARIANT 10).
 
 12. **A real-project shakedown.** Make an actual multi-part piece in the app,
     start to finish, on hardware — the equivalent of M0's "heard on real
@@ -270,11 +292,28 @@ not relitigate the toolkit choice beyond that documented fallback.
     shakedown finds before calling the gate closed; PROGRESS.md's history
     says this step always finds something.
 
+    **The scripted half is done, 2026-08-31**:
+    `fontelle-app/tests/shakedown.rs` makes a whole piece through the same
+    trait the window calls — project, tempo, metre, two soundfonts, channels,
+    a hand-built mixer with routing, a drawn clip, notes with properties, a
+    slide, a loop, save, render, reopen — plus undo/redo to exhaustion over a
+    whole session, an empty piece, and a check that the rendered WAV is
+    actually audible (with the same piece minus its notes as the control). It
+    found three things and all three were the test's own mistakes.
+
+    **The listening half is still open**, and it is the half §3's sentence is
+    about: a person at the keyboard, on hardware, making something they would
+    keep. The scripted half covers everything *below* the window's event
+    handling, and the window's event handling is where all seven of this
+    gate's dead controls lived.
+
 ### After the gate (explicitly out, in likely order)
 
-Automation → EQ/compressor and the first insert effects (needs latency
-compensation at the send/insert boundary) → sampler editor panel → **M2
-plugin export** (now with a real UI stack to build the editor on) → streaming
+Automation → ~~EQ/compressor and the first insert effects~~ (**the insert
+chain and the parametric EQ landed 2026-08-31** — see PROGRESS.md; the
+compressor and the rest of §13.4 follow behind the same seam, and latency
+compensation at the send/insert boundary is still outstanding) → sampler editor
+panel → **M2 plugin export** (now with a real UI stack to build the editor on) → streaming
 → prefabs → sfz → MIDI learn/clock → audio clips/recording (M6) → M7 polish.
 
 ## 5. Ground rules carried forward
