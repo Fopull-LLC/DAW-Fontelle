@@ -12,10 +12,58 @@
 //! router tracks every note it has sounded, per channel, in a bitset — which
 //! is also what makes the sustain pedal and the panic messages work.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use fontelle_types::{EventPayload, EventSink, NodeId, TimedEvent};
 
 use crate::mapping::{DeviceMapping, VelocityCurve};
 use crate::message::{MidiMessage, decode};
+
+/// Which instrument live MIDI is playing **right now** (TDD §14.3).
+///
+/// Shared between the UI thread, which moves it when the selection changes,
+/// and every device callback, which reads it. One atomic rather than a lock:
+/// a `midir` callback runs on the driver's own thread and may not block, and
+/// reopening the port to change one integer would drop whatever was being
+/// played across it.
+///
+/// A `NodeId` is a `slotmap` key, which is exactly a `u64` — `as_ffi` and
+/// `from_ffi` are its own round trip, so nothing is being reinterpreted here.
+#[derive(Debug)]
+pub struct LiveTarget {
+    node: AtomicU64,
+}
+
+/// The **null** node, not a zeroed `AtomicU64`: `KeyData::from_ffi(0)` is a
+/// key of version one, which is a perfectly good id belonging to whatever
+/// happens to be in slot zero. An app that has not realised a graph yet has to
+/// be able to say "nowhere", and a live target that silently meant "the first
+/// node" would play a random instrument until something set it.
+impl Default for LiveTarget {
+    fn default() -> Self {
+        Self::new(NodeId::default())
+    }
+}
+
+impl LiveTarget {
+    pub fn new(node: NodeId) -> Self {
+        Self {
+            node: AtomicU64::new(node.to_bits()),
+        }
+    }
+
+    pub fn get(&self) -> NodeId {
+        NodeId::from_bits(self.node.load(Ordering::Relaxed))
+    }
+
+    /// Points live input at another instrument. Takes effect at the next
+    /// message — see [`MidiRouter::handle`] for what happens to a note that is
+    /// down when it does.
+    pub fn set(&self, node: NodeId) {
+        self.node.store(node.to_bits(), Ordering::Relaxed);
+    }
+}
 
 /// CC 64. The one controller worth handling before the learn table exists:
 /// without it, half of playing a keyboard part is missing.
@@ -26,7 +74,16 @@ const CC_ON_THRESHOLD: u8 = 64;
 
 pub struct MidiRouter {
     mapping: DeviceMapping,
-    target: NodeId,
+    /// Where live input is pointed, which the UI thread may move at any time.
+    target: Arc<LiveTarget>,
+    /// The node this router is **currently** playing, latched from `target`.
+    ///
+    /// Not read fresh per message, and that is the whole correctness argument:
+    /// a note-off has to reach the instrument its note-on went to. Selecting
+    /// another channel while a key is down would otherwise send the release to
+    /// the new instrument and leave the old note sounding with nothing left
+    /// that could ever stop it.
+    current: NodeId,
     voice_context: u32,
     /// Bit per key, per channel: notes this router has sounded and not yet
     /// released.
@@ -43,7 +100,19 @@ impl MidiRouter {
     /// separates a live player's notes from the timeline's, so a sequenced
     /// note-off cannot cut a note the player is holding (TDD §11.4).
     pub fn new(target: NodeId, voice_context: u32, mapping: DeviceMapping) -> Self {
+        Self::following(Arc::new(LiveTarget::new(target)), voice_context, mapping)
+    }
+
+    /// The same, following a target the caller can move — §14.3's routing,
+    /// pointed at whichever instrument the window has selected rather than at
+    /// whichever channel happened to be first in the song.
+    pub fn following(
+        target: Arc<LiveTarget>,
+        voice_context: u32,
+        mapping: DeviceMapping,
+    ) -> Self {
         Self {
+            current: target.get(),
             mapping,
             target,
             voice_context,
@@ -60,6 +129,27 @@ impl MidiRouter {
     /// A `sink` that refuses (a full queue) is not retried: see
     /// `EventSink::send`.
     pub fn handle(&mut self, bytes: &[u8], sink: &mut dyn EventSink) -> usize {
+        // Before anything is decoded, so a note-on that arrives after the
+        // selection moved lands on the new instrument and whatever this router
+        // was holding is let go on the old one.
+        let released = self.follow_target(sink);
+        released + self.decode_and_route(bytes, sink)
+    }
+
+    /// Adopts `target` if it has moved, releasing everything sounding on the
+    /// node being left. Returns how many note-offs that took, which is zero on
+    /// every message where nothing changed — which is nearly all of them.
+    fn follow_target(&mut self, sink: &mut dyn EventSink) -> usize {
+        let wanted = self.target.get();
+        if wanted == self.current {
+            return 0;
+        }
+        let released = self.release_all(sink);
+        self.current = wanted;
+        released
+    }
+
+    fn decode_and_route(&mut self, bytes: &[u8], sink: &mut dyn EventSink) -> usize {
         let Some(message) = decode(bytes) else {
             return 0;
         };
@@ -236,7 +326,7 @@ impl MidiRouter {
         // only it knows which block this landed in.
         let queued = sink.send(TimedEvent {
             sample: 0,
-            target: self.target,
+            target: self.current,
             payload,
         });
         queued as usize

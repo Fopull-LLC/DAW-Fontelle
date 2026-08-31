@@ -360,3 +360,244 @@ fn the_time_signature_is_settable_and_the_grid_follows_it() {
     session.undo();
     assert_eq!(session.beats_per_bar(), 4);
 }
+
+// ------------------------------------------- selecting, routing, building ---
+//
+// Reported from using the window, in one breath:
+//
+// > *"i'm able to make new mixer tracks only by selecting it from the dropdown
+// > when changing a channel's routed track ... also i am not able to click on
+// > any of these to select them right now and there's also no routing wiring
+// > yet to route tracks to other tracks (tracks should all start just wiring
+// > into master by default)."*
+//
+// Three things, and they are one thing: the mixer was a read-out of tracks
+// made elsewhere. The panel's half is `fontelle-ui/tests/track_options.rs`;
+// this is the document's.
+
+#[test]
+fn the_mixer_has_a_selection_and_it_starts_somewhere_real() {
+    let session = session_with(2);
+    let selected = session.selected_mixer_track();
+    assert!(
+        selected < session.mixer_strips().len(),
+        "the selection points at a strip that is not there"
+    );
+}
+
+#[test]
+fn selecting_a_strip_sticks() {
+    let mut session = session_with(3);
+    for strip in 0..session.mixer_strips().len() {
+        session.select_mixer_track(strip);
+        assert_eq!(session.selected_mixer_track(), strip);
+    }
+}
+
+#[test]
+fn selecting_a_strip_that_is_not_there_leaves_the_selection_alone() {
+    // A panel and a document disagree for a frame every time a track is
+    // deleted, and a selection that followed the panel off the end would be an
+    // index nothing else could use.
+    let mut session = session_with(1);
+    session.select_mixer_track(1);
+    let kept = session.selected_mixer_track();
+    session.select_mixer_track(99);
+    assert_eq!(session.selected_mixer_track(), kept);
+}
+
+#[test]
+fn the_selection_survives_the_track_list_shrinking() {
+    let mut session = session_with(3);
+    session.select_mixer_track(2);
+    session.remove_mixer_track(2);
+    assert!(
+        session.selected_mixer_track() < session.mixer_strips().len(),
+        "the selection was left pointing past the end of the mixer"
+    );
+}
+
+#[test]
+fn adding_a_track_from_the_mixer_selects_it() {
+    // *"then the plus button moves to the next empty space so you can just add
+    // as many new tracks as you want"* — and the one you just made is the one
+    // you are about to put an effect on, so the options column follows it.
+    let mut session = session_with(1);
+    let before = session.mixer_strips().len();
+    session.add_mixer_track();
+    let strips = session.mixer_strips();
+    assert_eq!(strips.len(), before + 1);
+    assert_eq!(
+        session.selected_mixer_track(),
+        strips.len() - 2,
+        "the new track is the last one before the master, and it is selected"
+    );
+    assert!(!strips[session.selected_mixer_track()].is_master);
+}
+
+// ------------------------------------------------------------- the routing ---
+
+#[test]
+fn every_track_starts_routed_to_the_master() {
+    let session = session_with(3);
+    for strip in 0..session.mixer_strips().len() - 1 {
+        assert_eq!(
+            session.track_output(strip),
+            None,
+            "track {strip} does not start on the master"
+        );
+    }
+}
+
+#[test]
+fn a_track_can_be_routed_into_another_and_back() {
+    let mut session = session_with(2);
+    session.set_track_output(0, Some(1));
+    assert_eq!(session.track_output(0), Some(1));
+
+    session.set_track_output(0, None);
+    assert_eq!(session.track_output(0), None, "back out to the master");
+}
+
+#[test]
+fn routing_a_track_is_undoable() {
+    let mut session = session_with(2);
+    session.set_track_output(0, Some(1));
+    session.undo();
+    assert_eq!(
+        session.track_output(0),
+        None,
+        "a routing decision is an edit like any other"
+    );
+    session.redo();
+    assert_eq!(session.track_output(0), Some(1));
+}
+
+#[test]
+fn a_routing_that_would_close_a_loop_is_refused_and_says_so() {
+    // The command's own test is `fontelle-model/tests/routing.rs`. What is
+    // here is that the refusal reaches the user: a menu row that silently does
+    // nothing is worse than one that is not offered.
+    let mut session = session_with(2);
+    session.set_track_output(0, Some(1));
+    session.take_message();
+
+    session.set_track_output(1, Some(0));
+    assert_eq!(
+        session.track_output(1),
+        None,
+        "the loop was allowed into the document"
+    );
+    assert!(
+        session.take_message().is_some(),
+        "a refused routing said nothing at all"
+    );
+}
+
+#[test]
+fn a_route_reaches_the_running_graph() {
+    // A routing that only changed the document would be a mix that sounds the
+    // same until the file is reopened. Solo is what proves it arrived: a solo
+    // silences *"the others that are not feeding it"*, so a bus carrying the
+    // soloed track has to stay open — and whether it carries it is exactly the
+    // routing this test just set.
+    let mut session = session_with(2);
+    session.set_track_output(0, Some(1));
+
+    session.toggle_track_solo(0);
+    let controls = session.track_controls();
+    assert!(!controls[0].mute(), "the soloed track itself stays audible");
+    assert!(
+        !controls[1].mute(),
+        "the bus the soloed track now feeds was muted, so nothing reaches the \
+         master"
+    );
+    assert!(!controls[2].mute(), "and the master stays open");
+}
+
+#[test]
+fn a_track_that_is_no_longer_in_the_path_is_still_silenced_by_a_solo() {
+    // The other half of the sentence above, so the test before it is not
+    // passing merely because everything stays open.
+    let mut session = session_with(3);
+    session.set_track_output(0, Some(1));
+    session.toggle_track_solo(0);
+    let controls = session.track_controls();
+    assert!(
+        controls[2].mute(),
+        "track 2 feeds nothing that is soloed and should be out of the mix"
+    );
+}
+
+// -------------------------------------------------------- the insert chain ---
+
+#[test]
+fn an_effect_can_be_dragged_up_and_down_its_chain() {
+    // *"there's no place right now to actually edit the effect stack"* — and
+    // order is most of what an effect stack *is*: a compressor before an EQ
+    // and after it are two different sounds.
+    let mut session = session_with(1);
+    session.add_insert(0, fontelle_types::EffectKind::Eq);
+    session.add_insert(0, fontelle_types::EffectKind::Compressor);
+    let labels = |s: &Session| -> Vec<String> {
+        s.mixer_strips()[0]
+            .inserts
+            .iter()
+            .map(|i| i.label.clone())
+            .collect()
+    };
+    let before = labels(&session);
+    assert_eq!(before.len(), 2);
+
+    session.move_insert(0, 1, 0);
+    let after = labels(&session);
+    assert_eq!(
+        after,
+        vec![before[1].clone(), before[0].clone()],
+        "the chain did not reorder"
+    );
+
+    session.undo();
+    assert_eq!(labels(&session), before, "reordering is an edit like any other");
+}
+
+#[test]
+fn moving_an_effect_nowhere_changes_nothing() {
+    let mut session = session_with(1);
+    session.add_insert(0, fontelle_types::EffectKind::Eq);
+    session.add_insert(0, fontelle_types::EffectKind::Compressor);
+    let before: Vec<String> = session.mixer_strips()[0]
+        .inserts
+        .iter()
+        .map(|i| i.label.clone())
+        .collect();
+
+    session.move_insert(0, 1, 1);
+    session.move_insert(0, 5, 0);
+    session.move_insert(0, 0, 9);
+
+    let after: Vec<String> = session.mixer_strips()[0]
+        .inserts
+        .iter()
+        .map(|i| i.label.clone())
+        .collect();
+    assert_eq!(after, before, "an out-of-range move rearranged the chain");
+}
+
+#[test]
+fn an_effect_can_be_taken_off_a_track_from_the_options_column() {
+    let mut session = session_with(1);
+    session.add_insert(0, fontelle_types::EffectKind::Eq);
+    session.add_insert(0, fontelle_types::EffectKind::Compressor);
+    assert_eq!(session.mixer_strips()[0].inserts.len(), 2);
+
+    session.remove_insert(0, 0);
+    assert_eq!(session.mixer_strips()[0].inserts.len(), 1);
+
+    session.undo();
+    assert_eq!(
+        session.mixer_strips()[0].inserts.len(),
+        2,
+        "an effect deleted by accident has to come back with its settings"
+    );
+}

@@ -65,10 +65,7 @@ fn a_note_played_on_a_real_port_arrives_as_a_timed_event() {
 
     let observed = Shared::default();
     let target = NodeId::from(slotmap::KeyData::from_ffi(3));
-    let mut hub = MidiHub::new(RouteTo {
-        node: target,
-        voice_context: 7,
-    });
+    let mut hub = MidiHub::new(RouteTo::to(target, 7));
 
     let report = hub
         .poll(|| Some(Box::new(observed.clone()) as Box<dyn EventSink>))
@@ -123,10 +120,10 @@ fn closing_a_device_that_is_holding_a_note_releases_it() {
     };
 
     let observed = Shared::default();
-    let mut hub = MidiHub::new(RouteTo {
-        node: NodeId::from(slotmap::KeyData::from_ffi(3)),
-        voice_context: 7,
-    });
+    let mut hub = MidiHub::new(RouteTo::to(
+        NodeId::from(slotmap::KeyData::from_ffi(3)),
+        7,
+    ));
     hub.poll(|| Some(Box::new(observed.clone()) as Box<dyn EventSink>))
         .expect("enumerating MIDI inputs");
 

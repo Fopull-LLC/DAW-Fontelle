@@ -155,6 +155,23 @@ pub enum RackHit {
     Nothing,
 }
 
+impl RackHit {
+    /// What a hover tip says (see [`crate::tooltip`]).
+    ///
+    /// `None` for a row, which carries the channel's own name and needs no
+    /// gloss.
+    pub fn tip(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Mute(_) => "Silence this channel",
+            Self::Solo(_) => "Hear only this channel",
+            Self::Edit(_) => "Open this channel's sound",
+            Self::Route(_) => "Which mixer track this channel plays through",
+            Self::Add => "Add a channel",
+            Self::Row(_) | Self::Nothing => return None,
+        })
+    }
+}
+
 pub fn rack_hit(layout: &RackLayout, x: f32, y: f32) -> RackHit {
     if layout.add.contains(x, y) {
         return RackHit::Add;
@@ -274,9 +291,31 @@ pub fn route_menu_layout(
     metrics: &Metrics,
     names: &[String],
 ) -> RouteMenu {
+    route_menu_layout_excluding(chip, bounds, metrics, names, None)
+}
+
+/// The same, leaving one track out of the list.
+///
+/// For the track-options column's output row (§13.2): a track routed into
+/// itself is the shortest possible feedback loop and the easiest one to click
+/// by accident in a menu that lists every track. Longer loops — A into B into
+/// A — are refused by `SetTrackOutput` and reported, because whether one
+/// exists is a question about the whole routing graph rather than about this
+/// menu's own row.
+pub fn route_menu_layout_excluding(
+    chip: Rect,
+    bounds: Rect,
+    metrics: &Metrics,
+    names: &[String],
+    exclude: Option<usize>,
+) -> RouteMenu {
     // Master, every track somebody made, and the row that makes one.
     let mut choices = vec![RouteChoice::Master];
-    choices.extend((0..names.len().saturating_sub(1)).map(RouteChoice::Track));
+    choices.extend(
+        (0..names.len().saturating_sub(1))
+            .filter(|index| Some(*index) != exclude)
+            .map(RouteChoice::Track),
+    );
     choices.push(RouteChoice::New);
 
     let row = metrics.row_height.max(1.0);

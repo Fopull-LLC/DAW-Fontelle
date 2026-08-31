@@ -912,6 +912,19 @@ pub enum Tool {
 }
 
 impl Tool {
+    /// What a hover tip says about this tool (see [`crate::tooltip`]).
+    pub fn tip(self) -> &'static str {
+        match self {
+            Self::Draw => "Draw notes; drag one out to length",
+            Self::Paint => "Draw, and keep drawing as you sweep",
+            Self::Delete => "Erase notes you press or sweep over",
+            Self::Select => "Select notes; drag on empty grid to marquee",
+            Self::Slice => "Cut notes in two where you drag across them",
+            Self::Mute => "Mute notes you press",
+            Self::Slip => "Slide a note's content without moving the note",
+        }
+    }
+
     /// The toolbar caption, and the key that picks it.
     pub fn label(self) -> &'static str {
         match self {
@@ -1014,6 +1027,25 @@ impl RollControl {
     }
 
     /// The keyboard shortcut worth writing in a tooltip, if there is one.
+    /// What a hover tip says (see [`crate::tooltip`]).
+    ///
+    /// The shortcut is not repeated here — the renderer appends
+    /// [`shortcut`](Self::shortcut) to what it draws, so the two cannot drift.
+    pub fn tip(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Tool(tool) => tool.tip(),
+            Self::Snap => "What notes snap to \u{2014} click to cycle",
+            Self::ZoomOutX => "Zoom out in time",
+            Self::ZoomInX => "Zoom in in time",
+            Self::ZoomOutY => "Shorter keys \u{2014} more of the keyboard",
+            Self::ZoomInY => "Taller keys \u{2014} easier to aim at",
+            Self::Velocity => "Show or hide the property lane",
+            Self::Lane => "Which property the lane draws",
+            Self::Ghost => "Show other instruments' notes behind these",
+            Self::Slide => "Slide notes: bend what is sounding, start nothing",
+        })
+    }
+
     pub fn shortcut(self) -> Option<&'static str> {
         match self {
             Self::Tool(Tool::Draw) => Some("P"),

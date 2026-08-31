@@ -138,6 +138,7 @@ fn shoot_with(theme: Theme, view: TransportView, meters: [Meter; 2]) -> Option<S
             browser_title: "Soundfonts",
             labels: &Labels::new(),
             status: "",
+            tooltip: None,
         },
     );
     let pixels = shared
@@ -621,6 +622,7 @@ fn shoot_roll_with(
             browser_title: "Soundfonts",
             labels: &labels,
             status: "",
+            tooltip: None,
         },
     );
     let pixels = shared
@@ -838,6 +840,7 @@ fn shoot_timeline(clips: &[fontelle_ui::document::ClipInfo]) -> Option<TimelineS
             browser_title: "Soundfonts",
             labels: &Labels::new(),
             status: "",
+            tooltip: None,
         },
     );
     let pixels = shared
@@ -870,6 +873,8 @@ fn a_clip(
         open: false,
         color,
         loop_length: None,
+        kind: fontelle_ui::document::ClipKind::Notes,
+        curve: Vec::new(),
     }
 }
 
@@ -1041,6 +1046,7 @@ fn shoot_instrument() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::Instrument
             browser_title: "Soundfonts",
             labels: &labels,
             status: "",
+            tooltip: None,
         },
     );
     let pixels = shared
@@ -1434,6 +1440,12 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
                 peaks: &peaks,
                 hover: None,
                 active: None,
+                selected: 0,
+                output_label: String::new(),
+                insert_drag: None,
+                output_menu: None,
+                route_names: &[],
+                output: None,
             }),
             tabs: editor_tabs(layout.panel.header, &theme.metrics),
             tab: EditorTab::Mixer,
@@ -1441,6 +1453,7 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
             browser_title: "Soundfonts",
             labels: &labels,
             status: "",
+            tooltip: None,
         },
     );
     let pixels = shared

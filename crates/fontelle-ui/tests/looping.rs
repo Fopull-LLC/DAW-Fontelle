@@ -52,6 +52,8 @@ fn clip(id: ClipId, start: Tick, length: Tick, loop_length: Option<Tick>) -> Cli
         open: false,
         color: [0x4f, 0x8f, 0xd0, 0xff],
         loop_length,
+        kind: fontelle_ui::document::ClipKind::Notes,
+        curve: Vec::new(),
     }
 }
 

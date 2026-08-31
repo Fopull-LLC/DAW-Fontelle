@@ -198,9 +198,16 @@ pub fn pointer_at(scene: &PointerScene<'_>, x: f32, y: f32) -> Pointer {
             MixerHit::Mute(_)
             | MixerHit::Solo(_)
             | MixerHit::Name(_)
+            | MixerHit::Strip(_)
             | MixerHit::Insert(_, _)
             | MixerHit::BypassInsert(_, _)
-            | MixerHit::AddInsert(_) => Pointer::Hand,
+            | MixerHit::AddInsert(_)
+            | MixerHit::AddTrack => Pointer::Hand,
+            // The grip is the one thing in the options column you pick up
+            // rather than press, and saying so is the only cue that a row can
+            // be reordered at all.
+            MixerHit::Options(crate::canvas::OptionsHit::Grip(_)) => Pointer::Grab,
+            MixerHit::Options(_) => Pointer::Hand,
             MixerHit::Nothing => Pointer::Default,
         };
     }

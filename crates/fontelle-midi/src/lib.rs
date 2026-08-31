@@ -17,4 +17,4 @@ pub use file_io::{MidiExportError, export_midi_file};
 pub use learn::{CcKey, LearnMode, MidiLearnTable, TakeoverMode};
 pub use mapping::{DeviceMapping, MappingTable, VelocityCurve};
 pub use message::{MidiMessage, decode};
-pub use router::MidiRouter;
+pub use router::{LiveTarget, MidiRouter};

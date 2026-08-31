@@ -82,6 +82,8 @@ fn rig() -> Rig {
         open: true,
         color: [0x4f, 0x8f, 0xd0, 0xff],
         loop_length: None,
+        kind: fontelle_ui::document::ClipKind::Notes,
+        curve: Vec::new(),
     }];
 
     let instrument_view = InstrumentView {

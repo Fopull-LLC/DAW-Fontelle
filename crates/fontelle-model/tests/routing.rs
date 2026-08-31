@@ -20,7 +20,7 @@
 
 use fontelle_model::{
     AddChannel, AddMixerTrack, Command, FlagTarget, Project, RemoveChannel, RemoveMixerTrack,
-    RenameMixerTrack, SetChannelRoute, SetFlag,
+    RenameMixerTrack, SetChannelRoute, SetFlag, SetTrackOutput,
 };
 use fontelle_types::MixerTrackId;
 
@@ -302,4 +302,159 @@ fn removing_a_channel_leaves_the_track_it_was_playing_through() {
         project.mixer.tracks.contains_key(track),
         "deleting a channel must not delete a bus other things may be on"
     );
+}
+
+// ------------------------------------------------- a track's own output ---
+//
+// Reported from using the window: *"there's also no routing wiring yet to
+// route tracks to other tracks (tracks should all start just wiring into
+// master by default)"*.
+//
+// The document has carried `MixerTrack::output` since the mixer was written,
+// and `Mixer::has_cycle` has carried the check §13.2 demands — but there was
+// no command, so the only way to point one track at another was to write the
+// field by hand, which is what the two tests above had to do.
+
+/// Where `track` actually ends up.
+///
+/// **The master has two spellings** and both mean the same destination:
+/// `MixerTrack::output` documents `None` as the master, and `AddMixerTrack`
+/// names it outright because it is "the only destination that is always
+/// there". `realise` reads them alike (`output.unwrap_or(master)`), so a test
+/// that insisted on one of them would be pinning down an incidental choice
+/// rather than the routing.
+fn destination(project: &Project, track: MixerTrackId) -> Option<MixerTrackId> {
+    project.mixer.tracks[track].output.or(project.mixer.master)
+}
+
+#[test]
+fn a_track_starts_on_the_master_and_can_be_pointed_at_another_track() {
+    let mut project = project();
+    let master = project.mixer.master.unwrap();
+    let mut add_bus = AddMixerTrack::new("Drum bus");
+    add_bus.apply(&mut project).unwrap();
+    let bus = add_bus.track().unwrap();
+    let mut add_kick = AddMixerTrack::new("Kick");
+    add_kick.apply(&mut project).unwrap();
+    let kick = add_kick.track().unwrap();
+
+    assert_eq!(
+        destination(&project, kick),
+        Some(master),
+        "a new track goes to the master — *\"tracks should all start just \
+         wiring into master by default\"*"
+    );
+
+    round_trip(
+        Box::new(SetTrackOutput::new(kick, Some(bus))),
+        &mut project,
+        |p| format!("{:?}", p.mixer.tracks[kick].output),
+    );
+    assert_eq!(destination(&project, kick), Some(bus));
+
+    // And back to the master, which is a routing decision like any other.
+    SetTrackOutput::new(kick, None).apply(&mut project).unwrap();
+    assert_eq!(destination(&project, kick), Some(master));
+}
+
+#[test]
+fn a_track_cannot_be_routed_into_itself() {
+    // The shortest possible feedback loop, and the easiest one to click by
+    // accident in a menu that lists every track.
+    let mut project = project();
+    let mut add = AddMixerTrack::new("Bus");
+    add.apply(&mut project).unwrap();
+    let bus = add.track().unwrap();
+
+    assert!(
+        SetTrackOutput::new(bus, Some(bus)).apply(&mut project).is_err(),
+        "a track routed into itself is a feedback loop the graph compiler \
+         cannot build"
+    );
+    assert_eq!(
+        destination(&project, bus),
+        project.mixer.master,
+        "a refused command must leave the document alone"
+    );
+}
+
+#[test]
+fn a_routing_that_would_close_a_loop_is_refused() {
+    // §13.2: the routing graph must be validated acyclic on *every* mutation —
+    // reject the command, never let a feedback loop reach the graph compiler.
+    let mut project = project();
+    let mut add_a = AddMixerTrack::new("A");
+    add_a.apply(&mut project).unwrap();
+    let a = add_a.track().unwrap();
+    let mut add_b = AddMixerTrack::new("B");
+    add_b.apply(&mut project).unwrap();
+    let b = add_b.track().unwrap();
+
+    SetTrackOutput::new(a, Some(b)).apply(&mut project).unwrap();
+    assert!(
+        SetTrackOutput::new(b, Some(a)).apply(&mut project).is_err(),
+        "A into B into A is a loop"
+    );
+    assert_eq!(destination(&project, b), project.mixer.master);
+    assert!(!project.mixer.has_cycle());
+}
+
+#[test]
+fn a_longer_loop_is_refused_too() {
+    let mut project = project();
+    let mut ids = Vec::new();
+    for name in ["A", "B", "C"] {
+        let mut add = AddMixerTrack::new(name);
+        add.apply(&mut project).unwrap();
+        ids.push(add.track().unwrap());
+    }
+    SetTrackOutput::new(ids[0], Some(ids[1]))
+        .apply(&mut project)
+        .unwrap();
+    SetTrackOutput::new(ids[1], Some(ids[2]))
+        .apply(&mut project)
+        .unwrap();
+
+    assert!(
+        SetTrackOutput::new(ids[2], Some(ids[0]))
+            .apply(&mut project)
+            .is_err(),
+        "A into B into C into A is still a loop, three edges out"
+    );
+    assert!(!project.mixer.has_cycle());
+}
+
+#[test]
+fn routing_a_track_at_one_that_does_not_exist_is_refused() {
+    let mut project = project();
+    let mut add = AddMixerTrack::new("Bus");
+    add.apply(&mut project).unwrap();
+    let bus = add.track().unwrap();
+    let gone = MixerTrackId::default();
+
+    assert!(
+        SetTrackOutput::new(bus, Some(gone))
+            .apply(&mut project)
+            .is_err()
+    );
+    assert_eq!(destination(&project, bus), project.mixer.master);
+}
+
+#[test]
+fn the_master_has_nowhere_to_be_routed() {
+    // It is where everything arrives. Giving it an output is either a loop or
+    // a second master, and neither is a thing this document can mean.
+    let mut project = project();
+    let master = project.mixer.master.unwrap();
+    let mut add = AddMixerTrack::new("Bus");
+    add.apply(&mut project).unwrap();
+    let bus = add.track().unwrap();
+
+    assert!(
+        SetTrackOutput::new(master, Some(bus))
+            .apply(&mut project)
+            .is_err(),
+        "the master's output is the speakers"
+    );
+    assert_eq!(project.mixer.tracks[master].output, None);
 }

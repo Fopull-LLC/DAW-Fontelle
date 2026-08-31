@@ -186,6 +186,33 @@ impl TimelineControl {
         })
     }
 
+    /// What a hover tip says (see [`crate::tooltip`]).
+    ///
+    /// Beside `label` and `icon` rather than in a table somewhere else, so
+    /// that a control added without an explanation is a hole in this match
+    /// rather than a silent miss.
+    ///
+    /// The shortcut is **not** repeated here — the renderer appends
+    /// [`shortcut`](Self::shortcut) to the tip it draws, so the two cannot
+    /// drift.
+    pub fn tip(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Draw => "Draw clips on empty bars",
+            Self::Select => "Select clips; drag on empty bars to marquee",
+            Self::Snap => "What clips snap to \u{2014} click to cycle",
+            // The two readings of "repeat this" are two buttons on purpose,
+            // and the tips are where the difference is said out loud.
+            Self::Repeat => "Copy the selection after itself \u{2014} edits apart",
+            Self::Loop => "Repeat one clip's own notes \u{2014} edits together",
+            Self::Cut => "Cut the selected clips",
+            Self::Copy => "Copy the selected clips",
+            Self::Paste => "Paste at the marker",
+            Self::Mute => "Mute the selected clips",
+            Self::ZoomOut => "Zoom out",
+            Self::ZoomIn => "Zoom in",
+        })
+    }
+
     /// The keyboard shortcut worth writing down, if there is one.
     pub fn shortcut(self) -> Option<&'static str> {
         match self {
@@ -335,6 +362,55 @@ pub fn clip_rect(view: &TimelineView, grid: Rect, clip: &ClipInfo) -> Rect {
 
 /// Zooms time about `anchor_x`, so whatever is under the pointer stays under
 /// it — [`crate::canvas::zoom_x`]'s counterpart, and the same arithmetic.
+/// How much air a curve keeps between itself and the block's own edges.
+///
+/// A point at 0.0 or 1.0 is drawn as a dot, and a dot centred on the edge is
+/// half a dot — and half of it is over the lane next door.
+const CURVE_INSET: f32 = 3.0;
+
+/// A [`ClipKind::Automation`](crate::document::ClipKind) block's curve, in
+/// screen points.
+///
+/// `curve` is `(tick from the clip's start, value 0..1)` in time order —
+/// exactly what [`ClipInfo::curve`](crate::document::ClipInfo::curve) carries.
+///
+/// **One is up.** A curve drawn upside down is a lie about the value and the
+/// mistake is invisible until you put it beside the editor, so it is worth a
+/// test of its own.
+///
+/// Everything is clamped into `block`: nothing should produce a point outside
+/// it, and one that escaped would be drawn over the lane above.
+pub fn automation_polyline(block: Rect, length: Tick, curve: &[(Tick, f64)]) -> Vec<(f32, f32)> {
+    if block.is_empty() || curve.is_empty() {
+        return Vec::new();
+    }
+    let inner = block.inset(CURVE_INSET);
+    // A block narrower than twice the inset has no inside; drawing down its
+    // middle is better than drawing nothing.
+    let (top, height) = if inner.height > 0.0 {
+        (inner.y, inner.height)
+    } else {
+        (block.y + block.height / 2.0, 0.0)
+    };
+    curve
+        .iter()
+        .map(|(tick, value)| {
+            // A clip of no length is one instant: everything in it is at its
+            // left-hand edge, rather than a division by zero.
+            let along = if length > 0 {
+                (*tick as f32 / length as f32).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let up = value.clamp(0.0, 1.0) as f32;
+            (
+                (block.x + block.width * along).clamp(block.x, block.right()),
+                (top + height * (1.0 - up)).clamp(block.y, block.bottom()),
+            )
+        })
+        .collect()
+}
+
 pub fn timeline_zoom_x(view: &mut TimelineView, grid: Rect, anchor_x: f32, factor: f32) {
     if view.pixels_per_tick <= 0.0 || !factor.is_finite() || factor <= 0.0 {
         return;

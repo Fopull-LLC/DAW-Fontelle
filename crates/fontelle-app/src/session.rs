@@ -37,7 +37,7 @@ use fontelle_types::{
 };
 use fontelle_ui::canvas::{ArrangeEdit, InstrumentView, RollEdit};
 use fontelle_ui::document::{
-    ChannelInfo, ClipInfo, DocumentHost, GhostFilter, GhostNote, LaneInfo, LibraryEntry,
+    ChannelInfo, ClipInfo, ClipKind, DocumentHost, GhostFilter, GhostNote, LaneInfo, LibraryEntry,
     MixerStrip, StudioHost,
 };
 
@@ -99,6 +99,24 @@ pub struct Session {
     automation_clip: Option<fontelle_types::ClipId>,
     automation_label: String,
     automation_selection: Vec<fontelle_types::PointId>,
+    /// What each automated parameter is *called*, by address.
+    ///
+    /// The caption is the panel's — "Master — band1.gain" is a sentence only
+    /// the side holding the strip names can write — and the document stores
+    /// only the address. This is where the two are put back together for the
+    /// arrangement's blocks and lane headers. Session state, not the
+    /// document's: it is re-derivable, and a file is not the place for a
+    /// window's wording.
+    automation_names: HashMap<fontelle_types::ParamAddress, String>,
+    /// Which mixer strip the track-options column is about.
+    ///
+    /// The mixer's own selection, kept apart from `selected` — several
+    /// channels may share one track (§13.1), so "the selected channel" does
+    /// not name a strip.
+    selected_track: usize,
+    /// Where live MIDI is pointed — the selected channel's node. See
+    /// [`Session::with_live_target`].
+    live_target: Option<std::sync::Arc<fontelle_midi::LiveTarget>>,
     /// The metronome the running graph is playing through. Kept across a
     /// rebuild — choosing a soundfont with the click on must not turn it off.
     metronome: Option<std::sync::Arc<fontelle_engine::Metronome>>,
@@ -207,6 +225,9 @@ impl Session {
             automation_clip: None,
             automation_label: String::new(),
             automation_selection: Vec::new(),
+            automation_names: HashMap::new(),
+            selected_track: 0,
+            live_target: None,
             metronome: None,
             capture: None,
             take: Vec::new(),
@@ -481,6 +502,65 @@ impl Session {
         ids
     }
 
+    /// The lane an automation clip for `address` belongs on, making one if
+    /// this parameter has none yet.
+    ///
+    /// A lane is *visual only* (TDD §10.3) and deliberately cheap, which is
+    /// why this inserts one rather than going through a command — the same
+    /// thing `add_channel_with` does for a new channel's lane, and with the
+    /// same consequence: making a lane is not on the undo stack, though
+    /// everything put on it is.
+    fn automation_lane(
+        &mut self,
+        address: &fontelle_types::ParamAddress,
+        label: &str,
+    ) -> fontelle_types::LaneId {
+        // A lane already carrying this parameter's automation is this
+        // parameter's lane. Found by the clips on it rather than by its name,
+        // because the name is a caption and the address is the identity.
+        let existing = self.project.clips.values().find_map(|clip| match &clip.source {
+            ClipSource::Automation(data) if data.target == *address => Some(clip.lane),
+            _ => None,
+        });
+        if let Some(lane) = existing {
+            return lane;
+        }
+        self.project.lanes.insert(Lane {
+            name: label.to_string(),
+            height: 32.0,
+            // Dimmer than a note lane's, so the two kinds of strip are
+            // tellable apart down the header column before either is read.
+            color: [0x7a, 0x6f, 0x9a, 0xff],
+            muted: false,
+            locked: false,
+        })
+    }
+
+    /// What an automation clip is called on the arrangement.
+    ///
+    /// The words came from the **panel** that made it — "Master — band1.gain",
+    /// which is a sentence only the side holding the strip names could write.
+    /// Remembered against the address so a clip made in one session is still
+    /// captioned in the next, and falling back to the address itself, which is
+    /// unlovely and never wrong.
+    fn automation_name(&self, address: &fontelle_types::ParamAddress) -> String {
+        self.automation_names
+            .get(address)
+            .cloned()
+            .unwrap_or_else(|| address.to_string())
+    }
+
+    /// Keeps the mixer's selection inside the mixer.
+    ///
+    /// Called after a track is deleted. Not on every read: an index that is
+    /// briefly stale is a panel drawing the wrong strip for one frame, and an
+    /// index silently rewritten under a caller is a bug that shows up
+    /// somewhere else entirely.
+    fn clamp_track_selection(&mut self) {
+        let last = self.mixer_track_ids().len().saturating_sub(1);
+        self.selected_track = self.selected_track.min(last);
+    }
+
     /// Tells the metronome where the beats are.
     ///
     /// From the tempo map, so a click follows the tempo box; a **constant**
@@ -491,12 +571,53 @@ impl Session {
         let Some(metronome) = &self.metronome else {
             return;
         };
-        // One beat, measured through the map rather than divided out of a BPM:
-        // that is the same rule `seconds_per_tick` follows and the reason it
-        // stays right when the map grows segments.
-        let beat =
-            self.project.tempo_map.tick_to_sample(PPQN) - self.project.tempo_map.tick_to_sample(0);
-        metronome.set_beat(beat.max(0) as u32, self.project.beats_per_bar);
+        metronome.set_beat(
+            crate::beat_samples(&self.project),
+            self.project.beats_per_bar,
+        );
+    }
+
+    /// Gives the session the click the running graph is playing through.
+    ///
+    /// **Without this the metronome button goes dead on the first rebuild.**
+    /// `rebuild_graph` passes whatever it holds to `realise`, and `realise`
+    /// mints a fresh `Metronome` when handed `None` — so a session that was
+    /// never given one adopts a new node on every rebuild while the transport
+    /// bar goes on holding the original `Arc`. Everything still compiles and
+    /// nothing sounds. See `fontelle-app/tests/click.rs`.
+    pub fn with_metronome(mut self, metronome: std::sync::Arc<fontelle_engine::Metronome>) -> Self {
+        self.metronome = Some(metronome);
+        self.publish_metronome();
+        self
+    }
+
+    /// The click itself, so a caller can hand the same switch to the transport
+    /// bar — the button and the node in the schedule have to be one thing.
+    pub fn metronome(&self) -> std::sync::Arc<fontelle_engine::Metronome> {
+        self.metronome
+            .clone()
+            .unwrap_or_else(|| std::sync::Arc::new(fontelle_engine::Metronome::new()))
+    }
+
+    /// Gives the session the cell live MIDI is routed through (TDD §14.3).
+    ///
+    /// Published straight away and again after every selection change and
+    /// every graph rebuild: a rebuild mints new node ids, so a target set once
+    /// and never again is aimed at a node that no longer exists — which is
+    /// silence, and indistinguishable from never having wired it up.
+    ///
+    /// Optional, because every offline path builds a `Session` without one.
+    pub fn with_live_target(mut self, target: std::sync::Arc<fontelle_midi::LiveTarget>) -> Self {
+        self.live_target = Some(target);
+        self.publish_live_target();
+        self
+    }
+
+    /// Points live MIDI at the selected channel.
+    fn publish_live_target(&self) {
+        if let Some(target) = &self.live_target {
+            target.set(self.audition_target());
+        }
     }
 
     /// Gives the session the recording end of the live-event channel.
@@ -753,6 +874,9 @@ impl Session {
                 self.effect_controls = realised.effect_controls;
                 self.metronome = Some(realised.metronome);
                 self.publish_metronome();
+                // New graph, new node ids — including the one a plugged-in
+                // keyboard is playing through.
+                self.publish_live_target();
                 for (_, missing) in &realised.unresolved {
                     self.message = Some(format!("layer {} has no audio", missing.layer));
                 }
@@ -844,7 +968,11 @@ impl Session {
     }
 
     /// The node an audition should reach: the selected channel's.
-    fn audition_target(&self) -> NodeId {
+    ///
+    /// Public because it is also where **live MIDI** goes (§14.3). A keyboard
+    /// and a clicked key on the roll play the same instrument, and having one
+    /// answer to "which node is that" is what keeps them from drifting apart.
+    pub fn audition_target(&self) -> NodeId {
         self.channel_ids()
             .get(self.selected)
             .and_then(|id| self.channel_nodes.get(id).copied())
@@ -1222,6 +1350,8 @@ impl StudioHost for Session {
         };
         self.selected = index;
         self.patch_cache = None;
+        // A MIDI keyboard follows the rack, the same as an audition does.
+        self.publish_live_target();
         // The roll follows the rack: selecting a channel opens its clip, which
         // is the whole reason a rack and a roll are next to each other.
         if let Some(clip) = self.clip_of_channel(channel) {
@@ -1294,6 +1424,10 @@ impl StudioHost for Session {
         let name = format!("Track {}", self.project.mixer.tracks.len());
         self.run(Box::new(fontelle_model::AddMixerTrack::new(name)));
         self.history.break_gesture();
+        // The one you just made is the one you are about to put an effect on,
+        // so the options column follows it. It lands before the master, which
+        // `mixer_track_ids` keeps last.
+        self.selected_track = self.mixer_track_ids().len().saturating_sub(2);
         // A new bus is a new pair of buffers, so this is the graph's shape
         // changing rather than a value in it.
         self.rebuild_graph();
@@ -1305,6 +1439,80 @@ impl StudioHost for Session {
         };
         self.run(Box::new(fontelle_model::RemoveMixerTrack::new(id)));
         self.history.break_gesture();
+        // The list is shorter than the selection now, if the last strip went.
+        self.clamp_track_selection();
+        self.rebuild_graph();
+    }
+
+    fn selected_mixer_track(&self) -> usize {
+        self.selected_track
+    }
+
+    fn select_mixer_track(&mut self, strip: usize) {
+        // Ignored rather than clamped when it is past the end: a panel and a
+        // document disagree for a frame every time a track is deleted, and a
+        // selection that followed the panel off the end would be an index
+        // nothing else could use.
+        if strip >= self.mixer_track_ids().len() {
+            return;
+        }
+        self.selected_track = strip;
+        self.revision += 1;
+    }
+
+    fn track_output(&self, strip: usize) -> Option<usize> {
+        let ids = self.mixer_track_ids();
+        let output = self.project.mixer.tracks.get(*ids.get(strip)?)?.output?;
+        // The master has two spellings in the document — `None`, and its own
+        // id, which `AddMixerTrack` writes because it is "the only destination
+        // that is always there". The panel has one, so both come back as
+        // `None` here.
+        if Some(output) == self.project.mixer.master {
+            return None;
+        }
+        ids.iter().position(|id| *id == output)
+    }
+
+    fn set_track_output(&mut self, strip: usize, target: Option<usize>) {
+        let ids = self.mixer_track_ids();
+        let Some(id) = ids.get(strip).copied() else {
+            return;
+        };
+        // `None` from the panel and `None` in the document mean the same
+        // thing, and so does a target naming the master's own strip — which is
+        // what the menu's first row is. The same normalisation
+        // `set_channel_route` does.
+        let output = target
+            .and_then(|strip| ids.get(strip).copied())
+            .filter(|id| Some(*id) != self.project.mixer.master);
+        // A loop is refused by the command and reported by `run`, which is
+        // what puts the message in front of the user (§13.2).
+        self.run(Box::new(fontelle_model::SetTrackOutput::new(id, output)));
+        self.history.break_gesture();
+        // The signal arrives on a different bus now, which is the graph's
+        // shape rather than a value in it.
+        self.rebuild_graph();
+    }
+
+    fn move_insert(&mut self, strip: usize, from: usize, to: usize) {
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return;
+        };
+        let len = self
+            .project
+            .mixer
+            .tracks
+            .get(id)
+            .map_or(0, |track| track.inserts.len());
+        // Guarded here rather than left to the command, which refuses both of
+        // these with an error. A drag that ended where it started is not a
+        // mistake worth telling anybody about — see `MoveInsert::apply`.
+        if from >= len || to >= len || from == to {
+            return;
+        }
+        self.run(Box::new(fontelle_model::MoveInsert::new(id, from, to)));
+        self.history.break_gesture();
+        // Order is what the chain *is*, so the schedule changes.
         self.rebuild_graph();
     }
 
@@ -1880,13 +2088,16 @@ impl StudioHost for Session {
     }
 
     fn create_automation(&mut self, address: &fontelle_types::ParamAddress, label: &str, at: Tick) {
-        // On the lane the arrangement is looking at, at the playhead, one bar
-        // long — §12.4's "places a clip on the current lane at the playhead,
-        // pre-targeted".
-        let Some(lane) = self.project.lanes.keys().next() else {
-            self.message = Some("this project has no lane to put automation on".into());
-            return;
-        };
+        // **On a lane of its own**, at the playhead, one bar long. §12.4 says
+        // "the current lane", and that reading put the curve on top of the
+        // notes: an automation clip and a note clip in the same pixels is one
+        // of them drawn over the other, which is the *"lane of empty clips"*
+        // this was reported as.
+        //
+        // Reused when this parameter already has one, so a lane belongs to a
+        // parameter rather than to a gesture — otherwise every right-click on
+        // the same fader grows the arrangement another strip.
+        let lane = self.automation_lane(address, label);
         let start = at.max(0);
         let bar = PPQN * i64::from(self.project.beats_per_bar.max(1));
 
@@ -1924,6 +2135,7 @@ impl StudioHost for Session {
             // same handshake a drawn note clip has.
             self.automation_clip = Some(id);
             self.automation_label = label.to_string();
+            self.automation_names.insert(address.clone(), label.to_string());
             self.automation_selection.clear();
         }
         self.history.break_gesture();
@@ -2168,16 +2380,44 @@ impl StudioHost for Session {
         self.project
             .clips
             .iter()
-            .filter(|(_, clip)| matches!(clip.source, ClipSource::Notes(_)))
+            // **Audio clips only** are left out, and only because §15 has not
+            // built them: a `ClipSource::Audio` carries nothing to draw yet.
+            // Automation used to be filtered out here too, which is what made
+            // it *"play and open"* while a lane of it looked like a lane of
+            // empty clips.
+            .filter(|(_, clip)| !matches!(clip.source, ClipSource::Audio(_)))
             .map(|(id, clip)| {
-                // The block is captioned with the channel it plays, not with a
-                // clip name — a clip has none, and "what instrument is this"
-                // is the question somebody scanning an arrangement is asking.
-                let name = self
-                    .channel_of_clip(id)
-                    .and_then(|channel| self.project.channels.get(channel))
-                    .map(|channel| channel.name.clone())
-                    .unwrap_or_else(|| "Clip".to_string());
+                let (kind, name, curve) = match &clip.source {
+                    // A note block is captioned with the channel it plays, not
+                    // with a clip name — a clip has none, and "what instrument
+                    // is this" is what somebody scanning an arrangement asks.
+                    ClipSource::Notes(_) => (
+                        ClipKind::Notes,
+                        self.channel_of_clip(id)
+                            .and_then(|channel| self.project.channels.get(channel))
+                            .map(|channel| channel.name.clone())
+                            .unwrap_or_else(|| "Clip".to_string()),
+                        Vec::new(),
+                    ),
+                    // And an automation block with the parameter it moves,
+                    // which is the same question asked of the other kind.
+                    ClipSource::Automation(data) => {
+                        let mut points: Vec<(Tick, f64)> = data
+                            .points
+                            .values()
+                            .map(|point| (point.tick, point.value))
+                            .collect();
+                        // In time order, so the canvas draws a polyline
+                        // without having to sort a copy every frame.
+                        points.sort_by_key(|(tick, _)| *tick);
+                        (
+                            ClipKind::Automation,
+                            self.automation_name(&data.target),
+                            points,
+                        )
+                    }
+                    ClipSource::Audio(_) => unreachable!("filtered above"),
+                };
                 ClipInfo {
                     id,
                     lane: lanes.iter().position(|l| *l == clip.lane).unwrap_or(0),
@@ -2185,7 +2425,10 @@ impl StudioHost for Session {
                     length: clip.length,
                     name,
                     muted: clip.muted,
-                    open: id == self.clip,
+                    // Either editor's open clip: the roll's, or the curve
+                    // editor's. One mark, because there is one thing you are
+                    // editing.
+                    open: id == self.clip || Some(id) == self.automation_clip,
                     loop_length: clip.loop_length,
                     color: clip.color.unwrap_or_else(|| {
                         self.project
@@ -2193,6 +2436,8 @@ impl StudioHost for Session {
                             .get(clip.lane)
                             .map_or([0x4f, 0x8f, 0xd0, 0xff], |lane| lane.color)
                     }),
+                    kind,
+                    curve,
                 }
             })
             .collect()
@@ -2391,7 +2636,16 @@ impl StudioHost for Session {
     }
 
     fn open_clip(&mut self, clip: ClipId) {
-        if self.project.clips.get(clip).is_none() {
+        let Some(open) = self.project.clips.get(clip) else {
+            return;
+        };
+        // A block opens what is in it, whichever kind it is — the same
+        // handshake a note clip has always had, for the other kind of clip.
+        if let ClipSource::Automation(data) = &open.source {
+            self.automation_label = self.automation_name(&data.target);
+            self.automation_clip = Some(clip);
+            self.automation_selection.clear();
+            self.revision += 1;
             return;
         }
         self.clip = clip;

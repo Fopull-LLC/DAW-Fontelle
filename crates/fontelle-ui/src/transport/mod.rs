@@ -240,6 +240,26 @@ pub enum TransportHit {
     Signature,
 }
 
+impl TransportHit {
+    /// What a hover tip says about this control (see [`crate::tooltip`]).
+    ///
+    /// `None` for anything that is a *place* rather than a button: a tip
+    /// following the pointer along the ruler would be a box in the way of the
+    /// thing being scrubbed.
+    pub fn tip(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Play => "Play from the marker \u{2014} Space",
+            Self::Stop => "Stop, and go back to the marker \u{2014} Space",
+            Self::ToggleLoop => "Loop between the markers",
+            Self::ToggleRecord => "Arm recording: play, and keep the take",
+            Self::ToggleMetronome => "The click, on every beat",
+            Self::Tempo => "Tempo \u{2014} drag, or click and type",
+            Self::Signature => "Beats in a bar \u{2014} drag to change",
+            Self::Scrub(_) => return None,
+        })
+    }
+}
+
 /// What, if anything, is under `(x, y)`.
 ///
 /// Returns `None` for a dead transport: a bar with no engine behind it is

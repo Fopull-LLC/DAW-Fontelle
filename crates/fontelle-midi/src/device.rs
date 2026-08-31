@@ -1,7 +1,7 @@
 use fontelle_types::{EventSink, NodeId};
 
 use crate::mapping::MappingTable;
-use crate::router::MidiRouter;
+use crate::router::{LiveTarget, MidiRouter};
 
 /// Stable across replug/reboot: name + port + USB identifiers where available
 /// (TDD §14.2).
@@ -27,13 +27,26 @@ impl std::fmt::Display for MidiError {
 impl std::error::Error for MidiError {}
 
 /// What a newly connected device is wired up to.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RouteTo {
-    /// The engine node this device plays.
-    pub node: NodeId,
+    /// The engine node every device plays — **shared and live** (§14.3), so
+    /// selecting another instrument in the window moves the keyboard to it
+    /// without reopening a single port. See [`LiveTarget`].
+    pub target: std::sync::Arc<LiveTarget>,
     /// Separates a live player's notes from the timeline's, so a sequenced
     /// note-off cannot cut a note the player is holding (TDD §11.4).
     pub voice_context: u32,
+}
+
+impl RouteTo {
+    /// A route to one node, for ever — what an offline path with no window to
+    /// follow wants.
+    pub fn to(node: NodeId, voice_context: u32) -> Self {
+        Self {
+            target: std::sync::Arc::new(LiveTarget::new(node)),
+            voice_context,
+        }
+    }
 }
 
 /// The callback's state, and what `close` hands back when a device goes away.
@@ -91,6 +104,12 @@ impl MidiHub {
             mappings: MappingTable::default(),
             route,
         }
+    }
+
+    /// Where every open device is pointed. Moving it moves them all at once —
+    /// there is one focus, not one per keyboard.
+    pub fn target(&self) -> std::sync::Arc<LiveTarget> {
+        std::sync::Arc::clone(&self.route.target)
     }
 
     pub fn connected_devices(&self) -> Vec<DeviceKey> {
@@ -170,8 +189,8 @@ impl MidiHub {
             .ok_or_else(|| MidiError(format!("{} disappeared while opening it", key.0)))?;
 
         let live = Live {
-            router: MidiRouter::new(
-                self.route.node,
+            router: MidiRouter::following(
+                std::sync::Arc::clone(&self.route.target),
                 self.route.voice_context,
                 self.mappings.for_device(key),
             ),

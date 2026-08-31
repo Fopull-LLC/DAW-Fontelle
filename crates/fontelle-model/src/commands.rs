@@ -590,6 +590,96 @@ impl Command for RenameMixerTrack {
     }
 }
 
+/// Points a mixer track's output at another track, or back at the master
+/// (TDD §13.2).
+///
+/// `None` is the master, for the same reason [`SetChannelRoute`] spells it
+/// that way: a track that names the master by id stops being routed to the
+/// master the moment somebody makes a different one.
+///
+/// # The check is the point
+///
+/// §13.2 requires the routing graph to be validated acyclic on **every**
+/// mutation — reject the command, never let a feedback loop reach the graph
+/// compiler. So this writes the field, asks [`Mixer::has_cycle`], and puts it
+/// back if the answer is yes. Tentative-then-check rather than a bespoke
+/// reachability walk, because `has_cycle` already reads `output` *and* `sends`
+/// and a second implementation is somewhere for the two to disagree — which
+/// would mean a loop that one of them permits.
+pub struct SetTrackOutput {
+    track: MixerTrackId,
+    output: Option<MixerTrackId>,
+    previous: Option<Option<MixerTrackId>>,
+}
+
+impl SetTrackOutput {
+    pub fn new(track: MixerTrackId, output: Option<MixerTrackId>) -> Self {
+        Self {
+            track,
+            output,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetTrackOutput {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        // The master is where everything arrives. Giving it an output is
+        // either a loop or a second master, and neither is a thing this
+        // document can mean.
+        if doc.mixer.master == Some(self.track) {
+            return Err(CommandError("the master's output is the speakers".into()));
+        }
+        // Checked before the write, like `SetChannelRoute`: a track pointing
+        // at one that is not there feeds the master by accident rather than by
+        // decision, which only ever shows up as a mix being wrong.
+        if let Some(output) = self.output
+            && !doc.mixer.tracks.contains_key(output)
+        {
+            return Err(CommandError(format!("no mixer track {output:?}")));
+        }
+        let track = doc
+            .mixer
+            .tracks
+            .get_mut(self.track)
+            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
+        let previous = std::mem::replace(&mut track.output, self.output);
+        if doc.mixer.has_cycle() {
+            doc.mixer.tracks[self.track].output = previous;
+            return Err(CommandError(
+                "that routing would feed a track back into itself".into(),
+            ));
+        }
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match self.previous {
+            Some(previous) => Box::new(SetTrackOutput::new(self.track, previous)),
+            None => Box::new(NotApplied("routing a mixer track")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Route mixer track"
+    }
+
+    /// Picking from a menu is one decision each time, not a gesture: two
+    /// choices made a second apart are two things to be able to take back.
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
 /// Points a channel at a mixer track, or back at the master.
 ///
 /// `None` is the master. See [`Channel::mixer_track`] for why that is a

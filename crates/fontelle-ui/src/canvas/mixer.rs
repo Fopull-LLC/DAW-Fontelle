@@ -28,6 +28,24 @@ pub const STRIP_WIDTH: f32 = 76.0;
 /// Between strips, and inside one.
 const GAP: f32 = 4.0;
 
+/// How wide the track-options column is.
+///
+/// Wider than a strip because what it carries is *words* — an effect's name, a
+/// route's destination — where a strip carries controls. Three letters and a
+/// switch is all a 76-pixel rack can say, and "is that the EQ or the
+/// expander" is the question the column exists to answer.
+pub const OPTIONS_WIDTH: f32 = 168.0;
+
+/// How tall one row in the options column is. A row you can read and aim at,
+/// unlike `INSERT_ROW_HEIGHT`, which is what a strip can spare.
+const OPTION_ROW_HEIGHT: f32 = 20.0;
+
+/// The bypass switch at the left of an options row, and the grip and the
+/// delete at its right.
+const OPTION_BYPASS_WIDTH: f32 = 16.0;
+const OPTION_GRIP_WIDTH: f32 = 12.0;
+const OPTION_REMOVE_WIDTH: f32 = 16.0;
+
 /// How tall one insert row is. Small on purpose: it carries three or four
 /// letters and a switch, and every pixel it takes is a pixel off the fader.
 const INSERT_ROW_HEIGHT: f32 = 12.0;
@@ -118,6 +136,49 @@ pub struct MixerStripLayout {
     pub add: Rect,
 }
 
+/// One insert, as the options column draws it: a switch, a name you can press
+/// to open it, something to drag it by, and something to throw it away with.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsertRowLayout {
+    /// Its place in the chain, which is also the order the sound goes through
+    /// it.
+    pub slot: usize,
+    pub frame: Rect,
+    pub bypass: Rect,
+    /// Press to open the effect's editor.
+    pub name: Rect,
+    /// Drag to reorder. Its own target rather than "drag the row", because the
+    /// row's main job is a press that opens the editor, and one rectangle
+    /// cannot mean both without a timeout nobody can see.
+    pub grip: Rect,
+    pub remove: Rect,
+}
+
+/// The track-options column (TDD §13.2, §13.4): everything about the selected
+/// track that a 76-pixel strip has no room for.
+///
+/// Anchored between the last strip and the master. It belongs with the mixer
+/// rather than in the editor column because what it edits is whichever strip
+/// you just clicked — see `fontelle-ui/tests/track_options.rs`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackOptionsLayout {
+    /// Which strip this is about, by its index in the caller's list.
+    pub track: usize,
+    pub frame: Rect,
+    /// The track's name, and where a rename starts.
+    pub title: Rect,
+    /// Where the track's output goes. Press to choose another (§13.2).
+    pub output: Rect,
+    /// The heading over the chain.
+    pub inserts_title: Rect,
+    /// A row per insert, in chain order. Fewer than the track has when the
+    /// column is too short — the *front* of the chain is kept, because that is
+    /// where the signal arrives.
+    pub inserts: Vec<InsertRowLayout>,
+    /// Puts another on the end. Empty when there is no room for it.
+    pub add_insert: Rect,
+}
+
 /// Where every strip is.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MixerLayout {
@@ -133,10 +194,32 @@ pub struct MixerLayout {
     /// master fader you have to scroll to find is one you cannot use to set
     /// the level of the thing you are listening to.
     pub master: Option<MixerStripLayout>,
+    /// The column past the last strip that adds another track.
+    ///
+    /// *"in the mixer track next to the end of the empty track columns, there
+    /// will be a plus where you can add a new track there, then the plus
+    /// button moves to the next empty space"* — so its place is a consequence
+    /// of how many tracks there are, and adding one leaves the pointer over it
+    /// again. Empty when the strips have filled the panel: a button drawn over
+    /// a fader is worse than one that is not there.
+    pub add_track: Rect,
+    /// The selected track's options, between the last strip and the master.
+    /// `None` on a panel too narrow to carry it — the strips are what a mixer
+    /// is, and they are what a narrow window keeps.
+    pub options: Option<TrackOptionsLayout>,
     /// How many tracks there are in total, master included, so a scrollbar can
     /// be drawn and a scroll offset clamped.
     pub total: usize,
     pub scroll: usize,
+}
+
+impl MixerLayout {
+    /// The options column's rectangle, or an empty one. For callers — chiefly
+    /// tests and the renderer's overlap checks — that want to reason about
+    /// where it is without unwrapping it first.
+    pub fn options_frame(&self) -> Rect {
+        self.options.as_ref().map_or(Rect::ZERO, |o| o.frame)
+    }
 }
 
 /// Lays `strips` out in `body`, starting the scrolling half from `scroll`.
@@ -151,6 +234,22 @@ pub fn mixer_layout(
     strips: &[MixerStrip],
     scroll: usize,
 ) -> MixerLayout {
+    mixer_layout_for(body, metrics, strips, scroll, None)
+}
+
+/// The same, told which strip the options column is about.
+///
+/// `selected` is an index into `strips`. Out of range — and `None`, which is
+/// what every caller predating the column passes — falls back to the first
+/// track: a blank column that reserves the width and shows nothing is the
+/// worst of both.
+pub fn mixer_layout_for(
+    body: Rect,
+    metrics: &Metrics,
+    strips: &[MixerStrip],
+    scroll: usize,
+    selected: Option<usize>,
+) -> MixerLayout {
     let master_index = strips.iter().position(|s| s.is_master);
 
     if body.is_empty() {
@@ -159,6 +258,8 @@ pub fn mixer_layout(
             list: body,
             strips: Vec::new(),
             master: None,
+            add_track: Rect::ZERO,
+            options: None,
             total: strips.len(),
             scroll,
         };
@@ -167,11 +268,11 @@ pub fn mixer_layout(
     // The master's column comes off the right first, and everything else
     // shares what is left — the opposite way round from the rack's add button
     // only because a mixer is read left to right.
-    let (list, master) = match master_index {
+    let (mut rest, master) = match master_index {
         Some(index) => {
             let x = (body.right() - STRIP_WIDTH).max(body.x);
             let frame = Rect::new(x, body.y, (body.right() - x).max(0.0), body.height).clamped();
-            let list = Rect::new(
+            let rest = Rect::new(
                 body.x,
                 body.y,
                 (frame.x - GAP * 2.0 - body.x).max(0.0),
@@ -179,41 +280,188 @@ pub fn mixer_layout(
             )
             .clamped();
             (
-                list,
+                rest,
                 Some(strip_layout(index, frame, metrics, &strips[index])),
             )
         }
         None => (body, None),
     };
 
+    // Then the options column, off the right of what is left — but only when
+    // the strips can still spare it. A mixer is its faders; a window dragged
+    // narrow loses the column, not them.
+    let wants_options = !strips.is_empty();
+    let room_for_options = rest.width >= OPTIONS_WIDTH + GAP * 2.0 + STRIP_WIDTH * 2.0;
+    let options_frame = if wants_options && room_for_options {
+        let x = (rest.right() - OPTIONS_WIDTH).max(rest.x);
+        let frame = Rect::new(x, rest.y, (rest.right() - x).max(0.0), rest.height).clamped();
+        rest = Rect::new(
+            rest.x,
+            rest.y,
+            (frame.x - GAP * 2.0 - rest.x).max(0.0),
+            rest.height,
+        )
+        .clamped();
+        Some(frame)
+    } else {
+        None
+    };
+    let list = rest;
+
     // Whole strips only, for the reason `rack_layout` gives about rows: a
     // strip clipped to a few pixels still draws its fader inside those pixels,
     // on top of the strip beside it.
     let mut out = Vec::new();
+    let mut add_track = Rect::ZERO;
     if !list.is_empty() && STRIP_WIDTH > 0.0 {
-        let visible = ((list.width + GAP) / (STRIP_WIDTH + GAP)).floor() as usize;
+        let columns = ((list.width + GAP) / (STRIP_WIDTH + GAP)).floor() as usize;
         let ordinary: Vec<usize> = (0..strips.len())
             .filter(|index| Some(*index) != master_index)
             .collect();
         let scroll = scroll.min(ordinary.len().saturating_sub(1));
-        for (slot, index) in ordinary.into_iter().skip(scroll).take(visible).enumerate() {
-            let frame = Rect::new(
+        let shown = ordinary.len().saturating_sub(scroll).min(columns);
+        let column = |slot: usize| {
+            Rect::new(
                 list.x + slot as f32 * (STRIP_WIDTH + GAP),
                 list.y,
                 STRIP_WIDTH,
                 list.height,
-            );
-            out.push(strip_layout(index, frame, metrics, &strips[index]));
+            )
+        };
+        for (slot, index) in ordinary.into_iter().skip(scroll).take(shown).enumerate() {
+            out.push(strip_layout(index, column(slot), metrics, &strips[index]));
+        }
+        // The `+` takes the next column along, if there is one. It is the last
+        // thing to be given room: a panel full of strips shows the strips.
+        if shown < columns {
+            add_track = column(shown).clamped();
         }
     }
+
+    let options = options_frame.map(|frame| {
+        // Out of range, and `None`, fall back to a track that is there.
+        let track = selected
+            .filter(|index| *index < strips.len())
+            .unwrap_or(0)
+            .min(strips.len().saturating_sub(1));
+        options_layout(track, frame, metrics, &strips[track])
+    });
 
     MixerLayout {
         body,
         list,
         strips: out,
         master,
+        add_track,
+        options,
         total: strips.len(),
         scroll,
+    }
+}
+
+/// The options column's insides, top to bottom: which track, where it goes,
+/// and what is on it.
+fn options_layout(
+    track: usize,
+    frame: Rect,
+    metrics: &Metrics,
+    strip: &MixerStrip,
+) -> TrackOptionsLayout {
+    let inner = frame.inset(GAP);
+    let row = metrics.row_height.min(inner.height.max(0.0));
+
+    // Each row comes off what is left, never measured from a shared edge —
+    // the arithmetic that put two of the browser's footer rows in the same
+    // pixels. See `browser_layout_for`.
+    //
+    // A function taking `&mut top` rather than a closure capturing it, so the
+    // remaining height is still readable between the calls: how many insert
+    // rows fit is a question about what is left.
+    fn take(top: &mut f32, inner: Rect, wanted: f32) -> Rect {
+        let height = wanted.min((inner.bottom() - *top).max(0.0));
+        let taken = Rect::new(inner.x, *top, inner.width, height).clamped();
+        *top = taken.bottom();
+        taken
+    }
+
+    let mut top = inner.y;
+    let title = take(&mut top, inner, row);
+    take(&mut top, inner, GAP);
+    let output = take(&mut top, inner, row);
+    take(&mut top, inner, GAP);
+    let inserts_title = take(&mut top, inner, row);
+
+    // As many rows as fit, then the add row. The **front** of the chain is
+    // what a short column keeps: that is where the signal arrives, and a rack
+    // that dropped its first effect to show its last would be describing a
+    // signal path that does not exist.
+    let mut inserts = Vec::new();
+    for slot in 0..strip.inserts.len() {
+        // One row's worth has to be left for the add button as well, or a full
+        // chain has no way to grow.
+        if inner.bottom() - top < OPTION_ROW_HEIGHT * 2.0 {
+            break;
+        }
+        let frame = take(&mut top, inner, OPTION_ROW_HEIGHT);
+        if frame.is_empty() {
+            break;
+        }
+        inserts.push(insert_row(slot, frame));
+    }
+    let add_insert = if inner.bottom() - top >= OPTION_ROW_HEIGHT {
+        take(&mut top, inner, OPTION_ROW_HEIGHT)
+    } else {
+        Rect::ZERO
+    };
+
+    TrackOptionsLayout {
+        track,
+        frame,
+        title,
+        output,
+        inserts_title,
+        inserts,
+        add_insert,
+    }
+}
+
+/// One insert row: switch, name, grip, delete.
+fn insert_row(slot: usize, frame: Rect) -> InsertRowLayout {
+    let bypass = Rect::new(
+        frame.x,
+        frame.y,
+        OPTION_BYPASS_WIDTH.min(frame.width),
+        frame.height,
+    )
+    .clamped();
+    let remove = Rect::new(
+        (frame.right() - OPTION_REMOVE_WIDTH).max(bypass.right()),
+        frame.y,
+        OPTION_REMOVE_WIDTH.min((frame.right() - bypass.right()).max(0.0)),
+        frame.height,
+    )
+    .clamped();
+    let grip = Rect::new(
+        (remove.x - OPTION_GRIP_WIDTH).max(bypass.right()),
+        frame.y,
+        OPTION_GRIP_WIDTH.min((remove.x - bypass.right()).max(0.0)),
+        frame.height,
+    )
+    .clamped();
+    let name = Rect::new(
+        bypass.right(),
+        frame.y,
+        (grip.x - bypass.right()).max(0.0),
+        frame.height,
+    )
+    .clamped();
+    InsertRowLayout {
+        slot,
+        frame,
+        bypass,
+        name,
+        grip,
+        remove,
     }
 }
 
@@ -344,11 +592,38 @@ fn strip_layout(
     }
 }
 
+/// What is under the pointer in the track-options column.
+///
+/// Its own enum rather than seven more variants on [`MixerHit`], because every
+/// one of these is about *the selected track* and none of them carries a strip
+/// index: the column is only ever about one track, and threading that index
+/// through each variant would be inviting the two to disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionsHit {
+    /// The track's name, where a rename starts.
+    Rename,
+    /// Where the track's output goes (§13.2).
+    Output,
+    /// Open the effect in this slot.
+    Insert(usize),
+    /// Switch it out of the chain, or back in.
+    Bypass(usize),
+    Remove(usize),
+    /// Pick the row up to reorder it.
+    Grip(usize),
+    AddInsert,
+}
+
 /// What is under the pointer in the mixer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MixerHit {
-    /// Select the channel this track carries — the rack and the roll follow.
+    /// The track's name — select it. The rack, the roll and the options column
+    /// all follow the selection.
     Name(usize),
+    /// The strip's own body, away from every control. Also a select: a strip
+    /// you have to aim at a 22-pixel caption to choose is a strip nobody
+    /// realises they can choose at all.
+    Strip(usize),
     Fader(usize),
     Pan(usize),
     Mute(usize),
@@ -360,11 +635,63 @@ pub enum MixerHit {
     /// the switch at all.
     BypassInsert(usize, usize),
     AddInsert(usize),
+    /// The `+` column past the last strip.
+    AddTrack,
+    /// Something in the track-options column.
+    Options(OptionsHit),
     Nothing,
 }
 
+impl OptionsHit {
+    /// What a hover tip says (see [`crate::tooltip`]).
+    pub fn tip(self) -> &'static str {
+        match self {
+            Self::Rename => "This is the track the options below are about",
+            Self::Output => "Where this track's sound goes",
+            Self::Insert(_) => "Open this effect's controls",
+            Self::Bypass(_) => "Switch this effect out, keeping its settings",
+            Self::Remove(_) => "Take this effect off the track",
+            Self::Grip(_) => "Drag to reorder \u{2014} order changes the sound",
+            Self::AddInsert => "Put another effect on the end of the chain",
+        }
+    }
+}
+
+impl MixerHit {
+    /// What a hover tip says (see [`crate::tooltip`]).
+    ///
+    /// `None` where there is nothing to explain: a fader with a decibel
+    /// read-out under it already says what it is.
+    pub fn tip(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Name(_) | Self::Strip(_) => "Select this track",
+            Self::Fader(_) => "Level \u{2014} drag; double the detent snaps to unity",
+            Self::Pan(_) => "Balance \u{2014} drag; the centre has a detent",
+            Self::Mute(_) => "Silence this track",
+            Self::Solo(_) => "Hear only this track and what feeds it",
+            Self::Insert(_, _) => "Open this effect's controls",
+            Self::BypassInsert(_, _) => "Switch this effect out, keeping its settings",
+            Self::AddInsert(_) => "Put an effect on this track",
+            Self::AddTrack => "Add a mixer track",
+            Self::Options(what) => what.tip(),
+            Self::Nothing => return None,
+        })
+    }
+}
+
 pub fn mixer_hit(layout: &MixerLayout, x: f32, y: f32) -> MixerHit {
-    // The master first: it is outside the list, and a list that claimed the
+    // The options column first. It is over the mixer's own body, and it is the
+    // only thing here whose rows are small enough that anything else claiming
+    // them would make them unreachable.
+    if let Some(options) = &layout.options
+        && options.frame.contains(x, y)
+    {
+        return options_hit(options, x, y);
+    }
+    if layout.add_track.contains(x, y) {
+        return MixerHit::AddTrack;
+    }
+    // Then the master: it is outside the list, and a list that claimed the
     // whole body would swallow it.
     for strip in layout.master.iter().chain(layout.strips.iter()) {
         if !strip.frame.contains(x, y) {
@@ -401,8 +728,43 @@ pub fn mixer_hit(layout: &MixerLayout, x: f32, y: f32) -> MixerHit {
         if strip.name.contains(x, y) {
             return MixerHit::Name(strip.index);
         }
-        return MixerHit::Nothing;
+        // Everything else on the strip — the read-out, the gaps between the
+        // controls — selects it. Last, so it can never shadow a control.
+        return MixerHit::Strip(strip.index);
     }
+    MixerHit::Nothing
+}
+
+fn options_hit(options: &TrackOptionsLayout, x: f32, y: f32) -> MixerHit {
+    for row in &options.inserts {
+        if !row.frame.contains(x, y) {
+            continue;
+        }
+        // Right to left: the two narrow targets at the end of the row, then
+        // the name, which is everything left over.
+        if row.remove.contains(x, y) {
+            return MixerHit::Options(OptionsHit::Remove(row.slot));
+        }
+        if row.grip.contains(x, y) {
+            return MixerHit::Options(OptionsHit::Grip(row.slot));
+        }
+        if row.bypass.contains(x, y) {
+            return MixerHit::Options(OptionsHit::Bypass(row.slot));
+        }
+        return MixerHit::Options(OptionsHit::Insert(row.slot));
+    }
+    if options.add_insert.contains(x, y) {
+        return MixerHit::Options(OptionsHit::AddInsert);
+    }
+    if options.output.contains(x, y) {
+        return MixerHit::Options(OptionsHit::Output);
+    }
+    if options.title.contains(x, y) {
+        return MixerHit::Options(OptionsHit::Rename);
+    }
+    // Empty space in the column. Deliberately **not** a fall-through to the
+    // strips underneath: a press that reached a fader you cannot see would
+    // move a level for no visible reason.
     MixerHit::Nothing
 }
 

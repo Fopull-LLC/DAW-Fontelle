@@ -28,7 +28,7 @@ use fontelle_ui::canvas::{
     TimelineTool, TimelineView, clip_rect, timeline_hit, timeline_layout, timeline_toolbar_hit,
     timeline_toolbar_layout,
 };
-use fontelle_ui::document::ClipInfo;
+use fontelle_ui::document::{ClipInfo, ClipKind};
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
 
@@ -54,6 +54,8 @@ fn a_clip(id: ClipId, lane: usize, start: Tick, length: Tick) -> ClipInfo {
         open: false,
         color: [0x4f, 0x8f, 0xd0, 0xff],
         loop_length: None,
+        kind: ClipKind::Notes,
+        curve: Vec::new(),
     }
 }
 

@@ -712,6 +712,19 @@ impl Metronome {
             .store(beats_per_bar.max(1), std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// How long one beat is, in samples. Zero is "no tempo yet" and clicks
+    /// nothing — which is exactly the state a metronome nobody told the tempo
+    /// to sits in, so it is worth being able to ask.
+    pub fn samples_per_beat(&self) -> u32 {
+        self.samples_per_beat
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn beats_per_bar(&self) -> u32 {
+        self.beats_per_bar
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     fn beat(&self) -> (i64, i64) {
         (
             i64::from(

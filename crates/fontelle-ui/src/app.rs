@@ -39,7 +39,7 @@ use crate::canvas::{
     RollControl, RollLayout, RouteChoice, RouteMenu, SnapDivision, Timeline, TimelineHit,
     TimelineLayout, Tool, ToolbarLayout, browser_hit, browser_layout, browser_layout_for,
     clamp_to_grid, edge_scroll, fader_db_at, format_gain_db, format_pan, instrument_hit,
-    instrument_layout, keyboard_width, knob_value, lane_height_at, mixer_hit, mixer_layout,
+    instrument_layout, keyboard_width, knob_value, lane_height_at, mixer_hit,
     next_value, pan_at, rack_hit, rack_layout, roll_layout_with_keys, route_label, route_menu_hit,
     route_menu_layout, scrolled, snap_tick, timeline_hit, timeline_layout, timeline_snap,
     timeline_toolbar_hit, timeline_toolbar_layout, timeline_x_to_tick, timeline_zoom_x,
@@ -118,6 +118,30 @@ enum Drag {
     /// and for the same reason: several can move at once and they have to keep
     /// their shape.
     AutomationPoints,
+    /// An insert being dragged up or down its chain in the track-options
+    /// column. The slot it started in and the slot it is over live in
+    /// `insert_drag`; this only says who a `CursorMoved` belongs to.
+    InsertRow,
+}
+
+/// Where the insert that was in `slot` ends up after one is moved from `from`
+/// to `to`.
+///
+/// The chain is a `Vec` and the move is a remove-then-insert, so every slot
+/// between the two shifts by one. The editor addresses an insert by its slot,
+/// and a reorder that left it pointing at the neighbour would silently swap
+/// which effect the panel of knobs is writing to.
+fn reslot(slot: usize, from: usize, to: usize) -> usize {
+    if slot == from {
+        return to;
+    }
+    if from < to && (from + 1..=to).contains(&slot) {
+        slot - 1
+    } else if to < from && (to..from).contains(&slot) {
+        slot + 1
+    } else {
+        slot
+    }
 }
 
 /// Which canvas the keyboard is talking to.
@@ -337,6 +361,21 @@ pub struct WindowApp {
     mixer_peaks: Vec<[f32; 2]>,
     mixer_scroll: usize,
     hover_mixer: Option<MixerHit>,
+    /// Which strip the track-options column is about, read with the rest of
+    /// the studio's lists.
+    selected_track: usize,
+    /// Where that strip's output goes, as an index into `route_names` —
+    /// `None` is the master. Read with the lists rather than per frame,
+    /// because the column's one caption is shaped from it.
+    track_output: Option<usize>,
+    /// The output row's menu, while it is open. The same shape as
+    /// `route_menu`, and deliberately a *different* field: the rack's chip and
+    /// the column's row are two menus over the same list, and one of them
+    /// being open must not dismiss the other's press.
+    output_menu: Option<crate::canvas::RouteMenu>,
+    /// An insert being dragged up or down its chain: which slot it started in,
+    /// and which it is over now.
+    insert_drag: Option<(usize, usize)>,
 
     // --- the transport bar's two document boxes ---
     /// The tempo at the start of the piece, read with the studio's lists.
@@ -444,6 +483,18 @@ pub struct WindowApp {
     /// [`crate::audition::Auditions`], which is where the bookkeeping and both
     /// of its regression tests live.
     audition: Auditions,
+    /// What the thing under the pointer says it does, and when the pointer
+    /// arrived on it. See [`crate::tooltip`].
+    ///
+    /// The **string** is what the dwell is measured against, not the hover
+    /// enum: moving along a row of four mute buttons changes the enum every
+    /// time and the explanation not at all, and a tip that restarted its
+    /// countdown at each one would never appear.
+    hover_tip: Option<String>,
+    hover_since: std::time::Instant,
+    /// Where the tip was last drawn, so the region it covered can be dirtied
+    /// when it goes away.
+    tip_rect: crate::layout::Rect,
     /// When a backup was last considered. See `maybe_autosave`.
     last_autosave: std::time::Instant,
     /// Whether this window currently holds an animator on the tree's
@@ -550,6 +601,8 @@ impl WindowApp {
                 list: layout.panel.body,
                 strips: Vec::new(),
                 master: None,
+                add_track: crate::layout::Rect::ZERO,
+                options: None,
                 total: 0,
                 scroll: 0,
             },
@@ -557,6 +610,10 @@ impl WindowApp {
             mixer_peaks: Vec::new(),
             mixer_scroll: 0,
             hover_mixer: None,
+            selected_track: 0,
+            track_output: None,
+            output_menu: None,
+            insert_drag: None,
             tempo: 120.0,
             tempo_text: TextLayout::default(),
             signature_text: TextLayout::default(),
@@ -597,6 +654,9 @@ impl WindowApp {
             browser_title: "Soundfonts".to_string(),
             drag: Drag::None,
             audition: Auditions::default(),
+            hover_tip: None,
+            hover_since: std::time::Instant::now(),
+            tip_rect: crate::layout::Rect::ZERO,
             last_autosave: std::time::Instant::now(),
             marker: 0,
             lane_height_shown: DEFAULT_LANE_HEIGHT,
@@ -666,6 +726,21 @@ impl WindowApp {
         // Read before the surface is borrowed: the chrome below is built
         // inside a closure that already holds a mutable borrow of `self`.
         let beats_per_bar = self.beats_per_bar();
+        let output_label = self.output_caption();
+        // The tip's box needs the shaped width of its own words, so it is
+        // measured here — after `shape_labels`, before the borrow.
+        let tooltip = self.due_tip().map(str::to_string).and_then(|caption| {
+            let text = self.labels.get(&caption)?;
+            let rect = crate::tooltip::tooltip_layout(
+                (text.width, text.height),
+                self.cursor,
+                self.layout.window,
+            );
+            (!rect.is_empty()).then_some((caption, rect))
+        });
+        // Remembered so the region it covered can be painted over when it goes
+        // away — it floats outside every widget's own bounds.
+        self.tip_rect = tooltip.as_ref().map_or(crate::layout::Rect::ZERO, |(_, r)| *r);
 
         // §16.3, the whole of it: no dirty region, no frame.
         let Some(_region) = self.tree.take_dirty() else {
@@ -811,6 +886,12 @@ impl WindowApp {
                         Drag::Pan(strip) => Some(MixerHit::Pan(strip)),
                         _ => None,
                     },
+                    selected: self.selected_track,
+                    output_label: output_label.clone(),
+                    insert_drag: self.insert_drag,
+                    output_menu: self.output_menu.as_ref(),
+                    route_names: &self.route_names,
+                    output: self.track_output,
                 }),
                 effect,
                 automation,
@@ -820,6 +901,7 @@ impl WindowApp {
                 browser_title: &self.browser_title,
                 labels: &self.labels,
                 status: &self.status,
+                tooltip: tooltip.as_ref().map(|(text, rect)| (text.as_str(), *rect)),
             },
         );
 
@@ -892,6 +974,13 @@ impl WindowApp {
         // worth of release in one step.
         let dt = (now - self.last_tick).as_secs_f32().min(0.25);
         self.last_tick = now;
+
+        // A tip that has just fallen due. Nothing else will ask for the frame:
+        // the pointer coming to rest is the last event there was, which is the
+        // whole reason the dwell exists.
+        if self.due_tip().is_some() && self.tip_rect.is_empty() {
+            self.tree.invalidate_rect(self.tooltip_region());
+        }
 
         let view = match &mut self.options.host {
             Some(host) => host.view(),
@@ -988,6 +1077,8 @@ impl WindowApp {
             Drag::Pan(_) => Some(Pointer::ResizeX),
             // A band handle goes wherever the pointer does, in both axes.
             Drag::EqHandle(_) | Drag::AutomationPoints => Some(Pointer::Grabbing),
+            // A row being carried up or down its chain.
+            Drag::InsertRow => Some(Pointer::Grabbing),
         }
     }
 
@@ -1157,7 +1248,100 @@ impl WindowApp {
             self.hover_rack = rack;
             self.tree.invalidate(RACK);
         }
+        self.refresh_tip();
         self.update_cursor();
+    }
+
+    /// What the thing under the pointer does, in one line, and when the
+    /// pointer arrived on it (see [`crate::tooltip`]).
+    ///
+    /// Recomputed with the hovers rather than at draw time so the dwell has
+    /// something to be measured from.
+    fn refresh_tip(&mut self) {
+        let tip = self.current_tip();
+        if tip == self.hover_tip {
+            return;
+        }
+        // The old box has to be painted over, and the new one is not due yet.
+        if !self.tip_rect.is_empty() {
+            self.tree.invalidate_rect(self.tip_rect);
+            self.tip_rect = crate::layout::Rect::ZERO;
+        }
+        self.hover_tip = tip;
+        self.hover_since = std::time::Instant::now();
+    }
+
+    /// The tip for whatever the pointer is over, or `None`.
+    ///
+    /// **Nothing while a button is held**: a box appearing under the pointer
+    /// halfway through a fader drag is in the way of the fader.
+    fn current_tip(&self) -> Option<String> {
+        if self.drag != Drag::None {
+            return None;
+        }
+        // The bar is above the panels, and the tabs above the panel they head,
+        // so the order here is the order `press` reads them in.
+        let shortcut = |tip: &'static str, key: Option<&'static str>| match key {
+            Some(key) => format!("{tip}  ({key})"),
+            None => tip.to_string(),
+        };
+        if let Some(what) = self.hover
+            && let Some(tip) = what.tip()
+        {
+            return Some(tip.to_string());
+        }
+        if let Some(tab) = self.hover_tab
+            && let Some(tip) = tab.tip()
+        {
+            return Some(tip.to_string());
+        }
+        if let Some(control) = self.hover_control
+            && let Some(tip) = control.tip()
+        {
+            return Some(shortcut(tip, control.shortcut()));
+        }
+        if let Some(control) = self.hover_timeline
+            && let Some(tip) = control.tip()
+        {
+            return Some(shortcut(tip, control.shortcut()));
+        }
+        if let Some(what) = self.hover_mixer
+            && let Some(tip) = what.tip()
+        {
+            return Some(tip.to_string());
+        }
+        if let Some(what) = self.hover_browser
+            && let Some(tip) = what.tip()
+        {
+            return Some(tip.to_string());
+        }
+        if let Some(what) = self.hover_rack
+            && let Some(tip) = what.tip()
+        {
+            return Some(tip.to_string());
+        }
+        None
+    }
+
+    /// Generously, where a tip near the pointer could land.
+    ///
+    /// Used to dirty a region for a tip that has not been laid out yet: the
+    /// box's width comes from its own shaped text, and that is not known until
+    /// the frame it appears in. A rectangle bigger than the box is a repaint
+    /// of a few thousand pixels once per hover; getting it wrong is a tip that
+    /// never appears until something else happens to redraw.
+    fn tooltip_region(&self) -> crate::layout::Rect {
+        let (x, y) = self.cursor;
+        let reach = 420.0;
+        crate::layout::Rect::new(x - reach, y - 64.0, reach * 2.0, 128.0)
+            .intersection(&self.layout.window)
+    }
+
+    /// The tip to draw **now** — `None` until the pointer has sat still long
+    /// enough.
+    fn due_tip(&self) -> Option<&str> {
+        let tip = self.hover_tip.as_deref()?;
+        (self.hover_since.elapsed() >= crate::tooltip::TOOLTIP_DELAY).then_some(tip)
     }
 
     /// The browser panel's own heading, carrying the count so the number of
@@ -1347,6 +1531,12 @@ impl ApplicationHandler for WindowApp {
                 {
                     doc.end_gesture();
                 }
+                // A row carried up or down its chain is moved where it is let
+                // go, not while it travels: one edit and one undo entry for
+                // one drag.
+                if matches!(self.drag, Drag::InsertRow) {
+                    self.drop_insert_row();
+                }
                 self.drag = Drag::None;
                 self.knob = None;
                 self.value_drag = None;
@@ -1509,11 +1699,12 @@ impl WindowApp {
                 content_height: 0.0,
             },
         };
-        self.mixer = mixer_layout(
+        self.mixer = crate::canvas::mixer_layout_for(
             self.layout.panel.body,
             m,
             &self.mixer_strips,
             self.mixer_scroll,
+            Some(self.selected_track),
         );
         self.rack = rack_layout(
             self.layout.rack.body,
@@ -1560,6 +1751,8 @@ impl WindowApp {
         self.clips = doc.clips();
         self.instrument = doc.instrument();
         self.mixer_strips = doc.mixer_strips();
+        self.selected_track = doc.selected_mixer_track();
+        self.track_output = doc.track_output(self.selected_track);
         self.route_names = doc.route_names();
         // The open insert may have been removed, or its whole strip may have —
         // in which case the tab closes rather than showing the effect that
@@ -1683,6 +1876,35 @@ impl WindowApp {
                         .ensure(&format_pan(strip.pan), &font, &mut self.text);
                 }
             }
+            // The `+` column and the track-options column.
+            want(&mut self.labels, &mut self.text, crate::render::ADD_TRACK);
+            want(
+                &mut self.labels,
+                &mut self.text,
+                crate::render::EFFECTS_HEADING,
+            );
+            want(&mut self.labels, &mut self.text, crate::render::ADD_EFFECT);
+            want(&mut self.labels, &mut self.text, crate::render::GRIP);
+            want(&mut self.labels, &mut self.text, crate::render::REMOVE);
+            let output = self.output_caption();
+            want(&mut self.labels, &mut self.text, &output);
+            if let Some(options) = self.mixer.options.clone()
+                && let Some(strip) = self.mixer_strips.get(options.track).cloned()
+            {
+                // The selected strip may be scrolled off the row of strips,
+                // and its name is the column's title.
+                self.labels.ensure(&strip.name, &font, &mut self.text);
+                for insert in &strip.inserts {
+                    self.labels.ensure(&insert.label, &font, &mut self.text);
+                }
+            }
+            // And the output menu's rows, while it is open.
+            if let Some(menu) = self.output_menu.clone() {
+                for (choice, _) in &menu.items {
+                    let caption = menu.label(*choice, &self.route_names);
+                    self.labels.ensure(&caption, &font, &mut self.text);
+                }
+            }
         }
 
         let heading = self.browser_title.clone();
@@ -1707,6 +1929,13 @@ impl WindowApp {
         if !self.status.is_empty() {
             let status = self.status.clone();
             want(&mut self.labels, &mut self.text, &status);
+        }
+        // The hover tip. Shaped while it is *pending* rather than when it
+        // falls due, so the frame that first shows it already has its width —
+        // otherwise the box would be laid out around a string nothing had
+        // measured and appear one frame late at the wrong size.
+        if let Some(tip) = self.hover_tip.clone() {
+            want(&mut self.labels, &mut self.text, &tip);
         }
 
         for row in &self.rack.rows {
@@ -1862,6 +2091,10 @@ impl WindowApp {
         }
         if self.route_menu.is_some() {
             self.press_route_menu(x, y);
+            return;
+        }
+        if self.output_menu.is_some() {
+            self.press_output_menu(x, y);
             return;
         }
 
@@ -2070,6 +2303,7 @@ impl WindowApp {
             Drag::Fader(strip) => self.drag_fader(strip, y),
             Drag::EqHandle(band) => self.drag_eq(band, x, y),
             Drag::AutomationPoints => self.drag_automation(x, y),
+            Drag::InsertRow => self.drag_insert_row(x, y),
             Drag::Pan(strip) => self.drag_pan(strip, x),
             Drag::Tempo => self.drag_tempo(y),
         }
@@ -2126,23 +2360,186 @@ impl WindowApp {
             MixerHit::Insert(strip, slot) => {
                 self.open_insert(strip, slot);
             }
-            // A track carries a channel, and the rack and the roll follow the
-            // selection — so clicking a strip's name opens what it plays,
-            // which is the same handshake clicking a clip already has.
-            MixerHit::Name(strip) => {
-                let channel = self
-                    .mixer_strips
-                    .get(strip)
-                    .filter(|s| !s.is_master)
-                    .map(|_| strip);
-                if let (Some(index), Some(doc)) = (channel, &mut self.options.document)
-                    && index < self.channels.len()
-                {
-                    doc.select_channel(index);
+            // Selecting a strip is what points the track-options column at
+            // it, which is the only place its chain and its routing can be
+            // reached. The name row and the strip's own body both do it: a
+            // strip you have to aim at a 22-pixel caption to choose is one
+            // nobody realises they can choose at all.
+            MixerHit::Name(strip) | MixerHit::Strip(strip) => self.select_track(strip),
+            // *"a plus where you can add a new track there"* — and the new
+            // track is selected, because it is the one you are about to put
+            // something on.
+            MixerHit::AddTrack => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.add_mixer_track();
                 }
+                self.refresh_studio();
+                self.refresh_title();
             }
+            MixerHit::Options(what) => self.press_options(what),
             MixerHit::Nothing => {}
         }
+        self.tree.invalidate(PANEL);
+    }
+
+    /// What the options column's output row says.
+    ///
+    /// The master has no name of its own in `route_names` beyond being last in
+    /// it, which is the same convention the rack's route chip reads.
+    fn output_caption(&self) -> String {
+        let name = match self.track_output {
+            Some(index) => self.route_names.get(index).cloned(),
+            None => self.route_names.last().cloned(),
+        };
+        crate::render::output_label(&name.unwrap_or_else(|| "Master".to_string()))
+    }
+
+    /// Points the mixer — and the track-options column with it — at `strip`.
+    fn select_track(&mut self, strip: usize) {
+        if let Some(doc) = &mut self.options.document {
+            doc.select_mixer_track(strip);
+        }
+        self.refresh_studio();
+        self.tree.invalidate(PANEL);
+    }
+
+    /// A press in the track-options column.
+    fn press_options(&mut self, what: crate::canvas::OptionsHit) {
+        use crate::canvas::OptionsHit;
+        let strip = self.selected_track;
+        match what {
+            // Where the track goes (§13.2). The same menu the rack's route
+            // chip drops, over the same list, minus this track itself — the
+            // shortest possible feedback loop and the easiest to click by
+            // accident.
+            OptionsHit::Output => self.open_output_menu(),
+            OptionsHit::AddInsert => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.add_insert(strip, fontelle_types::EffectKind::Eq);
+                }
+                self.refresh_studio();
+                self.refresh_title();
+            }
+            OptionsHit::Insert(slot) => self.open_insert(strip, slot),
+            OptionsHit::Bypass(slot) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.toggle_insert_bypass(strip, slot);
+                }
+                self.refresh_studio();
+                self.refresh_title();
+            }
+            OptionsHit::Remove(slot) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.remove_insert(strip, slot);
+                }
+                // The editor may have been showing the effect that just went.
+                if self.open_insert == Some((strip, slot)) {
+                    self.open_insert = None;
+                }
+                self.refresh_studio();
+                self.refresh_title();
+            }
+            // Picked up, not applied: the move happens where it is let go.
+            OptionsHit::Grip(slot) => {
+                self.drag = Drag::InsertRow;
+                self.insert_drag = Some((slot, slot));
+            }
+            // A rename needs a text field, and the panel has none yet. Naming
+            // it here rather than leaving the row inert: the row selects the
+            // track, which is what a press on a title should do anyway.
+            OptionsHit::Rename => self.select_track(strip),
+        }
+    }
+
+    /// Drops the output row's menu, listing everywhere this track could go.
+    fn open_output_menu(&mut self) {
+        let Some(options) = self.mixer.options.clone() else {
+            return;
+        };
+        self.output_menu = Some(crate::canvas::route_menu_layout_excluding(
+            options.output,
+            self.layout.panel.body,
+            &self.options.theme.metrics,
+            &self.route_names,
+            Some(self.selected_track),
+        ));
+        self.tree.invalidate(PANEL);
+    }
+
+    /// A press while the output menu is open. Anywhere but a row shuts it.
+    fn press_output_menu(&mut self, x: f32, y: f32) {
+        let Some(menu) = self.output_menu.take() else {
+            return;
+        };
+        self.tree.invalidate(PANEL);
+        let Some(choice) = route_menu_hit(&menu, x, y) else {
+            return; // a click off the menu is how a menu is dismissed
+        };
+        let strip = self.selected_track;
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        match choice {
+            RouteChoice::Master => doc.set_track_output(strip, None),
+            RouteChoice::Track(index) => doc.set_track_output(strip, Some(index)),
+            RouteChoice::New => {
+                // "I need a drum bus and this goes into it", in one gesture.
+                // The new track lands before the master, so its index is the
+                // number of strips there were minus the master's own.
+                let index = self.route_names.len().saturating_sub(1);
+                doc.add_mixer_track();
+                // `add_mixer_track` selects what it made; the routing is about
+                // the strip that was selected when the menu was opened.
+                doc.select_mixer_track(strip);
+                doc.set_track_output(strip, Some(index));
+            }
+        }
+        self.refresh_studio();
+        self.refresh_title();
+    }
+
+    /// Follows an insert being dragged up or down its chain.
+    fn drag_insert_row(&mut self, x: f32, y: f32) {
+        let Some((from, _)) = self.insert_drag else {
+            return;
+        };
+        let Some(options) = &self.mixer.options else {
+            return;
+        };
+        let over = options
+            .inserts
+            .iter()
+            .find(|row| row.frame.contains(x, y))
+            .map(|row| row.slot);
+        if let Some(over) = over
+            && self.insert_drag != Some((from, over))
+        {
+            self.insert_drag = Some((from, over));
+            self.tree.invalidate(PANEL);
+        }
+    }
+
+    /// And drops it. The move is one edit, made where the mouse came up.
+    fn drop_insert_row(&mut self) {
+        let Some((from, to)) = self.insert_drag.take() else {
+            return;
+        };
+        if from == to {
+            return;
+        }
+        let strip = self.selected_track;
+        if let Some(doc) = &mut self.options.document {
+            doc.move_insert(strip, from, to);
+        }
+        // The editor addresses an insert by its slot, and the slot it was
+        // showing has just moved.
+        if let Some((open_strip, slot)) = self.open_insert
+            && open_strip == strip
+        {
+            self.open_insert = Some((strip, reslot(slot, from, to)));
+        }
+        self.refresh_studio();
+        self.refresh_title();
         self.tree.invalidate(PANEL);
     }
 
@@ -2618,11 +3015,25 @@ impl WindowApp {
         // Clicking a clip opens it in the roll — the two panels are two views
         // of one piece, and having to find the channel in the rack to edit the
         // clip you just pointed at is two panels rather than one workflow.
-        if let Some(clip) = self.timeline.take_open()
-            && let Some(doc) = &mut self.options.document
-        {
-            doc.open_clip(clip);
-            self.roll.clear_selection();
+        if let Some(clip) = self.timeline.take_open() {
+            // Which editor a block opens into is the block's own business —
+            // an automation clip opens its curve, a note clip opens the roll.
+            // Read before the document is borrowed mutably.
+            let kind = self
+                .clips
+                .iter()
+                .find(|info| info.id == clip)
+                .map(|info| info.kind);
+            if let Some(doc) = &mut self.options.document {
+                doc.open_clip(clip);
+                self.roll.clear_selection();
+            }
+            self.tab = match kind {
+                Some(crate::document::ClipKind::Automation) => EditorTab::Automation,
+                _ => EditorTab::Roll,
+            };
+            self.refresh_studio();
+            self.relayout_panels();
         }
         self.tree.invalidate(TIMELINE);
         self.tree.invalidate(PANEL);
@@ -4193,6 +4604,14 @@ impl WindowApp {
         // window that goes back to sleep the instant the mouse comes up leaves
         // it sounding until something else happens to it.
         if let Some(due) = self.audition.due() {
+            wake = Some(wake.map_or(due, |w| w.min(due)));
+        }
+
+        // And a tip waiting out its dwell, for exactly the same reason: the
+        // pointer coming to rest is the *last* event, so nothing else will
+        // wake the window to draw the tip that rest earned.
+        if self.hover_tip.is_some() && self.due_tip().is_none() {
+            let due = self.hover_since + crate::tooltip::TOOLTIP_DELAY;
             wake = Some(wake.map_or(due, |w| w.min(due)));
         }
 

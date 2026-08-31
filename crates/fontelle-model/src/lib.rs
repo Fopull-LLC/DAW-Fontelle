@@ -33,7 +33,7 @@ pub use commands::{
     ResizeClip, ResizeNotes, RestoreAutomationPoints, RestoreInsert, RestorePointCurves,
     SetChannelPatch, SetChannelRoute, SetClipLoop, SetEqBand, SetFlag, SetInsertBypassed,
     SetLoopRange, SetNoteProperty, SetNoteSlide, SetNoteVelocity, SetNumber, SetPointCurve,
-    SliceNotes,
+    SetTrackOutput, SliceNotes,
 };
 pub use lane::Lane;
 pub use mixer::{EffectSlot, Mixer, MixerTrack, PanLaw, Send};

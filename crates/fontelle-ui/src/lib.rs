@@ -27,6 +27,7 @@ pub mod pointer;
 pub mod render;
 pub mod text;
 pub mod theme;
+pub mod tooltip;
 pub mod transport;
 pub mod widget;
 
@@ -36,7 +37,8 @@ pub use app::{WindowApp, WindowError, WindowOptions, run, run_window};
 pub use audition::{AuditionAction, Auditions, MAX_AUDITION, MIN_AUDITION};
 pub use backend::WindowBackend;
 pub use document::{
-    ChannelInfo, ClipInfo, DocumentHost, GhostFilter, GhostNote, LaneInfo, LibraryEntry, StudioHost,
+    ChannelInfo, ClipInfo, ClipKind, DocumentHost, GhostFilter, GhostNote, LaneInfo,
+    LibraryEntry, StudioHost,
 };
 pub use layout::{
     DEFAULT_TIMELINE_HEIGHT, EditorTab, EditorTabs, MIN_EDITOR_HEIGHT, MIN_TIMELINE_HEIGHT,

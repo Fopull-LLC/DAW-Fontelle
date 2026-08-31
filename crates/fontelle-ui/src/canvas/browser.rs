@@ -140,30 +140,30 @@ pub fn browser_layout_for(
     // The footer comes off the bottom first, so a long list can never push the
     // buttons off the panel — which is the one thing they must not do, since
     // on a first run they are all there is to click.
-    let buttons_height = metrics.row_height.min(rest.height.max(0.0));
-    let buttons = Rect::new(
-        rest.x,
-        (rest.bottom() - buttons_height).max(rest.y),
-        rest.width,
-        buttons_height,
-    )
-    .clamped();
-    let status_height = metrics.row_height.min((buttons.y - rest.y).max(0.0));
-    let status = Rect::new(
-        rest.x,
-        (buttons.y - status_height).max(rest.y),
-        rest.width,
-        status_height,
-    )
-    .clamped();
+    //
+    // **One row at a time, each above the last.** The version of this that
+    // measured every footer row from `buttons.y` put the status line and the
+    // new-project row in the same pixels: "no projects folder yet — ..." was
+    // drawn straight across "New" and "Export...", which is what a screenshot
+    // of the Projects tab showed. `take_row` is the fix and the guard — a row
+    // can only come off what is left, so two of them cannot occupy one place
+    // however many are added later.
+    let mut floor = rest.bottom();
+    let mut take_row = |wanted: f32| {
+        let height = wanted.min((floor - rest.y).max(0.0));
+        let row = Rect::new(rest.x, (floor - height).max(rest.y), rest.width, height).clamped();
+        floor = row.y;
+        row
+    };
+
+    let buttons = take_row(metrics.row_height);
 
     // "New project" sits above the two folder buttons, in the mode that has
     // one: it is the thing somebody opens this tab for on a first run, and the
     // two folder buttons stay where they are in both modes so neither moves
     // when you switch.
     let (new_project, export) = if mode == BrowserMode::Projects {
-        let height = metrics.row_height.min((buttons.y - rest.y).max(0.0));
-        let row = Rect::new(rest.x, (buttons.y - height).max(rest.y), rest.width, height).clamped();
+        let row = take_row(metrics.row_height);
         // Side by side on one row, so the two folder buttons under them stay
         // where they are when the mode changes.
         let half = (row.width - GAP).max(0.0) / 2.0;
@@ -174,6 +174,10 @@ pub fn browser_layout_for(
     } else {
         (Rect::ZERO, Rect::ZERO)
     };
+
+    // Above both, so the line that says what went wrong is never underneath
+    // the button that caused it.
+    let status = take_row(metrics.row_height);
 
     // Slightly wider for "Open folder", which is both the longer caption and
     // the one somebody reaches for on a first run.
@@ -187,14 +191,9 @@ pub fn browser_layout_for(
     )
     .clamped();
 
-    // Everything above the status line, less the new-project button when
-    // there is one.
-    let lists_bottom = if new_project.is_empty() {
-        status.y
-    } else {
-        new_project.y.min(status.y)
-    };
-    let lists = Rect::new(rest.x, rest.y, rest.width, (lists_bottom - rest.y).max(0.0)).clamped();
+    // Everything above the footer. The status line is the topmost row of it
+    // whichever mode this is, so it is the only bound the lists need.
+    let lists = Rect::new(rest.x, rest.y, rest.width, (status.y - rest.y).max(0.0)).clamped();
     // **Both lists are a whole number of rows tall.** Rows are whole rows (see
     // `rows`), so a list whose height is not a multiple of one would carry a
     // dead band along its bottom edge that looks like part of the list and
@@ -319,6 +318,26 @@ pub enum BrowserHit {
     /// Bounce the open project to a WAV.
     Export,
     Nothing,
+}
+
+impl BrowserHit {
+    /// What a hover tip says (see [`crate::tooltip`]).
+    ///
+    /// `None` for the rows: a row explains itself by being a row with a name
+    /// on it, and a box following the pointer down a list is in the way of the
+    /// list.
+    pub fn tip(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Mode(BrowserMode::Sounds) => "The soundfonts you have",
+            Self::Mode(BrowserMode::Projects) => "Your projects folder",
+            Self::Search => "Search every soundfont by name",
+            Self::OpenFolder => "Show this folder in your file manager",
+            Self::ChooseFolder => "Use a different folder",
+            Self::NewProject => "Start a new project",
+            Self::Export => "Bounce this project to a WAV",
+            Self::File(_) | Self::Preset(_) | Self::Nothing => return None,
+        })
+    }
 }
 
 pub fn browser_hit(layout: &BrowserLayout, x: f32, y: f32) -> BrowserHit {

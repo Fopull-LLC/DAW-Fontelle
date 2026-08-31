@@ -426,25 +426,31 @@ fn play_or_render(
         live_source.arm_capture(writer);
         reader
     });
-    let mut hub = if midi_in {
-        // The first part's instrument. There is no focus to follow yet
-        // (TDD §14.3's default), and playing the first instrument in the song
-        // is the answer that needs no UI.
-        let target = project
+    // Where live MIDI is pointed. The first part's instrument to begin with —
+    // §14.3's default, and the answer that needs no UI — and then whatever the
+    // window selects, which `Session::with_live_target` publishes onto this
+    // same cell. See `fontelle-midi/tests/focus.rs`.
+    let live_target = std::sync::Arc::new(fontelle_midi::LiveTarget::new(
+        project
             .channels
             .keys()
             .next()
             .and_then(|c| realised.channel_nodes.get(&c).copied())
-            .unwrap_or_default();
-        Some(fontelle_midi::MidiHub::new(fontelle_midi::RouteTo {
-            node: target,
+            .unwrap_or_default(),
+    ));
+    // **A window always listens.** There is no `--midi-in` to type in a
+    // window — you plug a keyboard in and play it — and requiring the flag is
+    // why *"I connected my usb midi controller and was pressing keys but got
+    // no output"*. On the command line it stays opt-in: a headless render must
+    // not open every MIDI port on the machine.
+    let mut hub = (midi_in || window).then(|| {
+        fontelle_midi::MidiHub::new(fontelle_midi::RouteTo {
+            target: std::sync::Arc::clone(&live_target),
             // Distinct from anything the sequencer emits, so a sequenced
             // note-off cannot cut a note the player is holding (TDD §11.4).
             voice_context: LIVE_VOICE_CONTEXT,
-        }))
-    } else {
-        None
-    };
+        })
+    });
 
     let finish = match looped {
         Some(_) => Finish::LoopPasses(cue.repeat.max(1)),
@@ -521,7 +527,15 @@ fn play_or_render(
             // channel, so choosing a soundfont from inside the window does not
             // restart the audio device.
             .with_graphs(graph_publisher, realised.track_controls.clone())
-            .with_param_nodes(realised.param_nodes.clone());
+            .with_param_nodes(realised.param_nodes.clone())
+            // The same switch `EngineHost` above was given, so the button on
+            // the transport bar and the node in the schedule stay one thing
+            // across every rebuild — see `Session::with_metronome`.
+            .with_metronome(realised.metronome.clone())
+            // And the cell the MIDI hub's routers read, so a keyboard plays
+            // whichever instrument is selected — including after a rebuild has
+            // renumbered every node.
+            .with_live_target(std::sync::Arc::clone(&live_target));
             // The recording end of the live channel, so pressing record in the
             // window keeps a take the same way `--record` does.
             if let Some(reader) = capture.take() {
@@ -542,6 +556,12 @@ fn play_or_render(
             session.open_projects();
             Box::new(session) as Box<dyn fontelle_ui::StudioHost>
         });
+        // Live MIDI, on its own thread, for as long as the window is open.
+        // `midir` has no hot-plug notification on any backend, so polling is
+        // the only mechanism there is — and it must not be on the UI thread,
+        // which is blocked inside the event loop until the window closes.
+        let midi = hub.take().map(|hub| watch_midi_devices(hub, live_ports));
+
         let result = fontelle_ui::run_window(fontelle_ui::WindowOptions {
             title: format!("{} — Fontelle", project.meta.name),
             panel_title: project.meta.name.clone(),
@@ -551,9 +571,16 @@ fn play_or_render(
             host: Some(Box::new(host)),
             document,
         });
-        // Through the transport before the stream goes away, so the callback
-        // cuts its voices and hands the device silence rather than a buffer
-        // that stops mid-note.
+        // The keyboards first: closing a device releases whatever it was
+        // holding, and those note-offs have to go through a callback that is
+        // still running. Afterwards they would land in a queue nobody drains,
+        // and the last chord played would be the last thing the speakers heard.
+        if let Some(midi) = midi {
+            midi.stop();
+        }
+        // Then through the transport before the stream goes away, so the
+        // callback cuts its voices and hands the device silence rather than a
+        // buffer that stops mid-note.
         transport.stop();
         std::thread::sleep(std::time::Duration::from_millis(50));
         device.stop();
@@ -736,6 +763,86 @@ impl Default for Cue {
 /// would let the arrangement's note-off for the same key cut the note the
 /// player is holding, and vice versa (TDD §11.4).
 const LIVE_VOICE_CONTEXT: u32 = u32::MAX;
+
+/// A running MIDI watcher, and the way to stop it.
+struct MidiWatch {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl MidiWatch {
+    /// Closes every device and waits for the thread to finish doing it.
+    ///
+    /// Joined rather than detached, and that is the whole point of the type:
+    /// `MidiHub::shutdown` releases the notes each device is holding, and a
+    /// caller that walked away without waiting would tear the audio stream
+    /// down underneath those note-offs.
+    fn stop(self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.thread.join().ok();
+    }
+}
+
+/// The window's counterpart to [`follow_midi_devices`]: opens every keyboard
+/// on the machine, keeps opening them as they are plugged in, and says so.
+///
+/// It carries none of the loop's transport business — a window has a transport
+/// bar, and the playhead is not this thread's problem. What is left is the
+/// half that actually makes a controller work: enumerate, open, and hand each
+/// device a port into the live queue.
+///
+/// 500 ms, for the reason [`follow_midi_devices`] gives: slow enough to cost
+/// nothing, fast enough that plugging a keyboard in feels immediate.
+fn watch_midi_devices(
+    mut hub: fontelle_midi::MidiHub,
+    mut ports: fontelle_engine::LiveEventPorts,
+) -> MidiWatch {
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = std::sync::Arc::clone(&stop);
+    let thread = std::thread::spawn(move || {
+        let mut announced = false;
+        while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+            match hub.poll(|| {
+                ports
+                    .claim()
+                    .map(|port| Box::new(port) as Box<dyn fontelle_types::EventSink>)
+            }) {
+                Ok(report) => {
+                    for key in &report.connected {
+                        println!("  + MIDI in: {}", key.0);
+                    }
+                    for key in &report.disconnected {
+                        println!("  - MIDI in: {} (its notes released)", key.0);
+                    }
+                    for key in &report.failed {
+                        println!("  ! MIDI in: {} could not be opened", key.0);
+                    }
+                    if !announced && hub.connected_devices().is_empty() {
+                        println!("  (no MIDI inputs found — plug one in and it will be picked up)");
+                        announced = true;
+                    }
+                    if !report.connected.is_empty() {
+                        announced = false;
+                    }
+                }
+                // Reported once and then kept trying: a backend that is
+                // momentarily unavailable is not a reason to stop listening
+                // for the rest of the session.
+                Err(e) => {
+                    if !announced {
+                        eprintln!("  ! MIDI enumeration failed: {e}");
+                        announced = true;
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        // Before the caller tears the audio stream down, which is what it is
+        // waiting on this thread for.
+        hub.shutdown();
+    });
+    MidiWatch { stop, thread }
+}
 
 /// Keeps live MIDI going for as long as the process runs: polls for devices
 /// coming and going, and reports each change.

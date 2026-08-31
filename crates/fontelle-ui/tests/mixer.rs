@@ -325,3 +325,155 @@ fn the_pan_marker_and_the_pan_agree_about_where_a_value_is() {
         );
     }
 }
+
+// -------------------------------------------------- selecting, and adding ---
+//
+// Reported from using the window:
+//
+// > *"i am not able to click on any of these to select them right now"*
+//
+// > *"i'm able to make new mixer tracks only by selecting it from the dropdown
+// > when changing a channel's routed track. please make it so that in the
+// > mixer track next to the end of the empty track columns, there will be a
+// > plus where you can add a new track there, then the plus button moves to
+// > the next empty space"*
+//
+// Both are about the mixer being a place you *build* rather than a read-out of
+// tracks made somewhere else.
+
+#[test]
+fn a_press_anywhere_on_a_strip_that_is_not_a_control_selects_it() {
+    // The name row was already a select target and nothing else was, which
+    // made a strip a thing you had to aim at a 22-pixel caption to choose.
+    let strips = strips(3);
+    let l = mixer_layout(body(), &theme().metrics, &strips, 0);
+    let s = l.strips[1].clone();
+
+    let (x, y) = (s.name.x + s.name.width / 2.0, s.name.y + s.name.height / 2.0);
+    assert_eq!(mixer_hit(&l, x, y), MixerHit::Name(1));
+
+    // The read-out along the bottom is a label, not a control — so it is part
+    // of the strip you can grab to select it.
+    let (x, y) = (
+        s.value.x + s.value.width / 2.0,
+        s.value.y + s.value.height / 2.0,
+    );
+    assert_eq!(
+        mixer_hit(&l, x, y),
+        MixerHit::Strip(1),
+        "the level read-out is somewhere to click, not a dead patch"
+    );
+}
+
+#[test]
+fn selecting_a_strip_never_shadows_a_control_on_it() {
+    // The whole risk of making the strip's body clickable: a fader that
+    // answers "you selected the track" is a fader that cannot be moved.
+    let strips = strips(3);
+    let l = mixer_layout(body(), &theme().metrics, &strips, 0);
+    let s = l.strips[2].clone();
+    let centre = |r: Rect| (r.x + r.width / 2.0, r.y + r.height / 2.0);
+
+    for (name, rect, expected) in [
+        ("fader", s.fader, MixerHit::Fader(2)),
+        ("pan", s.pan, MixerHit::Pan(2)),
+        ("mute", s.mute, MixerHit::Mute(2)),
+        ("solo", s.solo, MixerHit::Solo(2)),
+        ("name", s.name, MixerHit::Name(2)),
+    ] {
+        let (x, y) = centre(rect);
+        assert_eq!(mixer_hit(&l, x, y), expected, "the {name} stopped answering");
+    }
+}
+
+#[test]
+fn the_master_is_selectable_too() {
+    // It has an insert chain and a fader like any other track, and the options
+    // panel is the only place to reach the first of those.
+    let strips = strips(3);
+    let l = mixer_layout(body(), &theme().metrics, &strips, 0);
+    let m = l.master.clone().expect("master");
+    let (x, y) = (m.name.x + m.name.width / 2.0, m.name.y + m.name.height / 2.0);
+    assert_eq!(mixer_hit(&l, x, y), MixerHit::Name(strips.len() - 1));
+}
+
+#[test]
+fn the_row_of_strips_ends_with_a_button_that_adds_another() {
+    let strips = strips(3);
+    let l = mixer_layout(body(), &theme().metrics, &strips, 0);
+
+    assert!(!l.add_track.is_empty(), "there is nowhere to add a track");
+    let last = l.strips.last().expect("three strips");
+    assert!(
+        l.add_track.x >= last.frame.right(),
+        "the + is at {:?}, not past the last strip {:?}",
+        l.add_track,
+        last.frame
+    );
+    let (x, y) = (
+        l.add_track.x + l.add_track.width / 2.0,
+        l.add_track.y + l.add_track.height / 2.0,
+    );
+    assert_eq!(mixer_hit(&l, x, y), MixerHit::AddTrack);
+}
+
+#[test]
+fn the_add_button_moves_to_the_next_empty_column_as_tracks_appear() {
+    // *"then the plus button moves to the next empty space so you can just add
+    // as many new tracks as you want within the mixer itself"* — so its place
+    // is a consequence of how many tracks there are, and adding one leaves the
+    // pointer over the button again.
+    let two = mixer_layout(body(), &theme().metrics, &strips(2), 0);
+    let three = mixer_layout(body(), &theme().metrics, &strips(3), 0);
+    assert!(
+        three.add_track.x > two.add_track.x,
+        "the + stayed at {:?} when a track was added",
+        two.add_track
+    );
+    assert_eq!(
+        three.add_track.x - two.add_track.x,
+        two.strips[1].frame.x - two.strips[0].frame.x,
+        "it moves exactly one column"
+    );
+}
+
+#[test]
+fn the_add_button_gives_way_when_there_is_no_room_for_it() {
+    // A button drawn over the master, or over a strip, is worse than one that
+    // is not there — and the strips are what the panel is for.
+    let strips = strips(400);
+    let l = mixer_layout(body(), &theme().metrics, &strips, 0);
+    assert!(
+        l.add_track.is_empty(),
+        "a full panel found room for a + at {:?}",
+        l.add_track
+    );
+}
+
+#[test]
+fn nothing_in_the_mixer_is_drawn_on_top_of_anything_else() {
+    let strips = strips(3);
+    let l = mixer_layout(body(), &theme().metrics, &strips, 0);
+    let master = l.master.clone().expect("master");
+
+    let mut frames: Vec<(String, Rect)> = l
+        .strips
+        .iter()
+        .map(|s| (format!("strip {}", s.index), s.frame))
+        .collect();
+    frames.push(("the + column".into(), l.add_track));
+    frames.push(("the options panel".into(), l.options_frame()));
+    frames.push(("the master".into(), master.frame));
+
+    for (i, (a_name, a)) in frames.iter().enumerate() {
+        for (b_name, b) in frames.iter().skip(i + 1) {
+            if a.is_empty() || b.is_empty() {
+                continue;
+            }
+            assert!(
+                !a.intersects(b),
+                "{a_name} {a:?} overlaps {b_name} {b:?}"
+            );
+        }
+    }
+}

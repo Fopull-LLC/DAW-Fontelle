@@ -16,7 +16,7 @@ use fontelle_ui::canvas::{
     ArrangeEdit, ClipPart, MouseButton, SnapDivision, Timeline, TimelineHit, TimelineView,
     clip_rect, lane_to_y, timeline_hit, timeline_layout, visible_lanes, y_to_lane,
 };
-use fontelle_ui::document::ClipInfo;
+use fontelle_ui::document::{ClipInfo, ClipKind};
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::{Metrics, Theme};
 
@@ -58,6 +58,8 @@ fn clips(specs: &[(usize, Tick, Tick)]) -> Vec<ClipInfo> {
             open: false,
             color: [0x4f, 0x8f, 0xd0, 0xff],
             loop_length: None,
+            kind: ClipKind::Notes,
+            curve: Vec::new(),
         })
         .collect()
 }
@@ -408,4 +410,83 @@ fn zooming_the_arrangement_holds_the_bar_under_the_pointer() {
         (before - after).abs() < BAR / 8,
         "the bar under the pointer moved from {before} to {after}"
     );
+}
+
+// ------------------------------------ automation blocks show their curves ---
+//
+// Reported from using the window: *"automation clips aren't drawn on the
+// arrangement — they play and open, but a lane of them looks like a lane of
+// empty clips."*
+//
+// A block with a caption is the right picture for notes and the wrong one for
+// a curve: what you want to see at a glance is the *shape*, because that is
+// the whole content of the clip. The document half is
+// `fontelle-app/tests/insert_chains.rs`; this is where the points land.
+
+#[test]
+fn a_curve_fills_the_block_it_belongs_to() {
+    use fontelle_ui::canvas::automation_polyline;
+
+    let block = Rect::new(100.0, 40.0, 200.0, 30.0);
+    let points = automation_polyline(block, PPQN * 4, &[(0, 0.0), (PPQN * 2, 1.0), (PPQN * 4, 0.5)]);
+
+    assert_eq!(points.len(), 3);
+    for (x, y) in &points {
+        assert!(
+            (block.x..=block.right()).contains(x) && (block.y..=block.bottom()).contains(y),
+            "({x}, {y}) is outside the block {block:?}"
+        );
+    }
+    // Time runs left to right, and a later point is further right.
+    assert!(points[0].0 < points[1].0 && points[1].0 < points[2].0);
+    // And **one is up**: an automation curve drawn upside down is a lie about
+    // the value, and the mistake is invisible until you compare it with the
+    // editor.
+    assert!(
+        points[1].1 < points[0].1,
+        "value 1.0 must be above value 0.0: {points:?}"
+    );
+    assert!(points[2].1 < points[0].1 && points[2].1 > points[1].1, "0.5 is between");
+}
+
+#[test]
+fn the_ends_of_a_curve_are_inside_the_block_rather_than_on_its_edge() {
+    // A point at 0.0 or 1.0 is drawn as a dot, and a dot centred on the block's
+    // own edge is half of a dot.
+    use fontelle_ui::canvas::automation_polyline;
+
+    let block = Rect::new(0.0, 0.0, 120.0, 24.0);
+    let points = automation_polyline(block, PPQN, &[(0, 0.0), (PPQN, 1.0)]);
+    assert!(points[0].1 < block.bottom(), "the bottom point touches the edge");
+    assert!(points[1].1 > block.y, "the top point touches the edge");
+}
+
+#[test]
+fn a_curve_with_no_length_does_not_divide_by_it() {
+    use fontelle_ui::canvas::automation_polyline;
+
+    let block = Rect::new(0.0, 0.0, 120.0, 24.0);
+    for points in [
+        automation_polyline(block, 0, &[(0, 0.0), (0, 1.0)]),
+        automation_polyline(Rect::ZERO, PPQN, &[(0, 0.5)]),
+        automation_polyline(block, PPQN, &[]),
+    ] {
+        for (x, y) in &points {
+            assert!(x.is_finite() && y.is_finite(), "({x}, {y})");
+        }
+    }
+}
+
+#[test]
+fn a_value_outside_the_normal_range_is_clamped_into_the_block() {
+    // Nothing should produce one, and a curve that escaped its own block would
+    // be drawn over the lane above it.
+    use fontelle_ui::canvas::automation_polyline;
+
+    let block = Rect::new(10.0, 10.0, 100.0, 20.0);
+    let points = automation_polyline(block, PPQN, &[(-PPQN, -3.0), (PPQN * 9, 4.0)]);
+    for (x, y) in &points {
+        assert!((block.x..=block.right()).contains(x), "x {x} escaped");
+        assert!((block.y..=block.bottom()).contains(y), "y {y} escaped");
+    }
 }

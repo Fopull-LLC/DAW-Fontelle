@@ -487,6 +487,19 @@ pub enum EditorTab {
     Effect,
 }
 
+impl EditorTab {
+    /// What a hover tip says (see [`crate::tooltip`]).
+    pub fn tip(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Roll => "The notes of the open clip",
+            Self::Instrument => "The selected channel's sound",
+            Self::Mixer => "Levels, effects and routing",
+            Self::Automation => "The open automation clip's curve",
+            Self::Effect => "The open effect's parameters",
+        })
+    }
+}
+
 /// Where the editor column's tabs are, in its panel header.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EditorTabs {

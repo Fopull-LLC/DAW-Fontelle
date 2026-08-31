@@ -27,8 +27,8 @@ pub use keymap::{HIT_SPAN_KEYS, KEY_MAP_HITS, MAX_NAMED_BAND_KEYS, key_map};
 pub use library::SampleLibrary;
 pub use projects::{ProjectEntry, ProjectLibrary, ProjectOrder, unique_name};
 pub use realise::{
-    RealiseError, RealiseOptions, Realised, apply_mixer_controls, channel_nodes, realise,
-    realise_reusing, realise_with, set_channel_patch,
+    RealiseError, RealiseOptions, Realised, apply_mixer_controls, beat_samples, channel_nodes,
+    realise, realise_reusing, realise_with, set_channel_patch,
 };
 pub use session::Session;
 pub use window::EngineHost;

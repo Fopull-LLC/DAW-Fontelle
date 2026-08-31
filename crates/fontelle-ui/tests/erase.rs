@@ -25,7 +25,7 @@ use fontelle_ui::canvas::{
     ArrangeEdit, MouseButton, PianoRoll, RollEdit, RollView, SnapDivision, Timeline, TimelineView,
     Tool, key_to_y, lane_to_y, roll_layout, tick_to_x, timeline_layout, timeline_tick_to_x,
 };
-use fontelle_ui::document::ClipInfo;
+use fontelle_ui::document::{ClipInfo, ClipKind};
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
 
@@ -240,6 +240,8 @@ fn clips(items: &[(Tick, Tick, usize)]) -> Vec<ClipInfo> {
             open: false,
             color: [0x4f, 0x8f, 0xd0, 0xff],
             loop_length: None,
+            kind: ClipKind::Notes,
+            curve: Vec::new(),
         })
         .collect()
 }

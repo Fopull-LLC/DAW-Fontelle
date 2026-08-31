@@ -1524,3 +1524,95 @@ fn cutting_a_note_makes_two_that_meet_where_it_was_cut() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ------------------------------------------------ live MIDI follows focus ---
+//
+// Reported from using the window: *"I connected my usb midi controller and was
+// pressing keys but got no output"*. Opening the port at all is `main.rs`'s
+// half; this is the other one — §14.3's routing, which used to be *the first
+// channel in the song* and is now whatever the window has selected.
+//
+// The keyboard and the mouse arrive by the same road: `audition_target` is
+// what a clicked key on the roll already plays, and pointing live input at it
+// is what makes a MIDI controller and the on-screen keyboard the same
+// instrument. See `fontelle-midi/tests/focus.rs` for the router's half.
+
+#[test]
+fn a_keyboard_plays_the_channel_the_window_has_selected() {
+    let dir = a_bank("live-focus");
+    let (session, _source) = studio(&dir);
+    let target = std::sync::Arc::new(fontelle_midi::LiveTarget::default());
+    let mut session = session.with_live_target(std::sync::Arc::clone(&target));
+
+    session.open_file(0).expect("the fixture must open");
+    session.add_channel_with(0).unwrap();
+    assert!(session.channels().len() >= 2);
+
+    session.select_channel(0);
+    let first = target.get();
+    session.select_channel(1);
+    let second = target.get();
+
+    assert_ne!(
+        first, second,
+        "selecting another channel must move live input to it"
+    );
+    assert_eq!(
+        second,
+        session.audition_target(),
+        "a MIDI keyboard and a clicked key on the roll are the same instrument"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_target_is_published_the_moment_it_is_attached() {
+    // Not only on the next selection change. A controller plugged in before
+    // anything is clicked has to play *something*, and "nothing until you
+    // touch the rack" is indistinguishable from the bug this fixes.
+    let dir = a_bank("live-attach");
+    let (session, _source) = studio(&dir);
+    let target = std::sync::Arc::new(fontelle_midi::LiveTarget::default());
+    let session = session.with_live_target(std::sync::Arc::clone(&target));
+
+    assert_eq!(target.get(), session.audition_target());
+    assert_ne!(
+        target.get(),
+        fontelle_types::NodeId::default(),
+        "a blank project still has a channel to play"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn choosing_an_instrument_keeps_the_keyboard_pointed_at_it() {
+    // A graph rebuild mints new node ids, so a target published once and never
+    // again would be aimed at a node that no longer exists — silence, and the
+    // same symptom as never having wired it up at all.
+    let dir = a_bank("live-rebuild");
+    let (session, _source) = studio(&dir);
+    let target = std::sync::Arc::new(fontelle_midi::LiveTarget::default());
+    let mut session = session.with_live_target(std::sync::Arc::clone(&target));
+
+    session.open_file(0).expect("the fixture must open");
+    session.set_channel_instrument(0).expect("must load");
+
+    assert_eq!(
+        target.get(),
+        session.audition_target(),
+        "the rebuild left live input aimed at a node that is gone"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_studio_with_no_target_attached_still_works() {
+    // Every offline path builds a `Session` without one, and none of them may
+    // pay for the feature.
+    let dir = a_bank("live-none");
+    let (mut session, _source) = studio(&dir);
+    session.open_file(0).expect("the fixture must open");
+    session.add_channel_with(0).unwrap();
+    session.select_channel(0);
+    std::fs::remove_dir_all(&dir).ok();
+}

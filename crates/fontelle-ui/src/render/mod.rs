@@ -80,6 +80,9 @@ pub struct Chrome<'a> {
     /// One line along the bottom of the browser: what went wrong, or where the
     /// soundfonts are meant to go.
     pub status: &'a str,
+    /// The hover tip, once the pointer has sat still long enough — what it
+    /// says and where it goes. `None` for the great majority of frames.
+    pub tooltip: Option<(&'a str, Rect)>,
 }
 
 /// The channel rack's contents.
@@ -211,6 +214,22 @@ pub struct MixerChrome<'a> {
     /// And what is being dragged, which is also what makes the read-out under
     /// a strip show its **pan** while the pan is the thing moving.
     pub active: Option<crate::canvas::MixerHit>,
+    /// Which strip the options column is about, drawn with a ring so the
+    /// column and the strip it describes are visibly one thing.
+    pub selected: usize,
+    /// What the options column's output row says — worked out where the route
+    /// names are, rather than in the drawing code.
+    pub output_label: String,
+    /// An insert being dragged up or down the chain: the slot it started in
+    /// and the slot it is over.
+    pub insert_drag: Option<(usize, usize)>,
+    /// The output row's menu, while it is open, and the names its rows read.
+    pub output_menu: Option<&'a crate::canvas::RouteMenu>,
+    pub route_names: &'a [String],
+    /// Where the selected track's output goes, as an index into
+    /// `route_names` — so the menu can say where you are as well as where you
+    /// could go.
+    pub output: Option<usize>,
 }
 
 /// One EQ, as the editor draws it.
@@ -434,6 +453,38 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
         // theme with a bigger font stays centred without a second number to
         // keep in sync.
         layout.panel.header.y + (layout.panel.header.height - chrome.panel_title.height) / 2.0,
+        p.text,
+    );
+
+    // Absolutely last: a tip is above everything, including an open menu —
+    // which is the one place in this window where a control's meaning is least
+    // obvious and its explanation most wanted.
+    draw_tooltip(scene, theme, chrome);
+}
+
+/// The hover tip (see [`crate::tooltip`]).
+fn draw_tooltip(scene: &mut Scene, theme: &Theme, chrome: &Chrome<'_>) {
+    let Some((caption, rect)) = chrome.tooltip else {
+        return;
+    };
+    if rect.is_empty() {
+        return;
+    }
+    let Some(text) = labels_get(chrome.labels, caption) else {
+        return;
+    };
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    // Its own outline, because it floats over whatever is underneath: without
+    // one a tip over a panel reads as a hole in the panel.
+    fill_rect_rounded(scene, rect, m.corner_radius, p.border);
+    fill_rect_rounded(scene, rect.inset(1.0), m.corner_radius, p.panel_header);
+    draw_text_clipped(
+        scene,
+        text,
+        rect,
+        rect.x + crate::tooltip::TOOLTIP_PAD,
+        rect.y + (rect.height - text.height) / 2.0,
         p.text,
     );
 }
@@ -744,6 +795,41 @@ fn draw_mixer(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &MixerC
         draw_mixer_strip(scene, theme, labels, chrome, layout, strip, peaks);
     }
 
+    // The `+` past the last strip. *"then the plus button moves to the next
+    // empty space so you can just add as many new tracks as you want within
+    // the mixer itself"* — so it is drawn as an empty column waiting to be
+    // filled rather than as a button sitting on the background.
+    if !l.add_track.is_empty() {
+        let lit = chrome.hover == Some(crate::canvas::MixerHit::AddTrack);
+        fill_rect_rounded(
+            scene,
+            l.add_track,
+            m.corner_radius,
+            if lit { p.panel_header } else { p.panel },
+        );
+        stroke_rect_rounded(
+            scene,
+            l.add_track.inset(0.5),
+            m.corner_radius,
+            m.border_width.max(1.0),
+            p.border,
+        );
+        if let Some(text) = labels_get(labels, ADD_TRACK) {
+            draw_text_clipped(
+                scene,
+                text,
+                l.add_track,
+                l.add_track.x + (l.add_track.width - text.width) / 2.0,
+                l.add_track.y + (l.add_track.height - text.height) / 2.0,
+                if lit { p.text } else { p.text_muted },
+            );
+        }
+    }
+
+    if let Some(options) = &l.options {
+        draw_track_options(scene, theme, labels, chrome, options);
+    }
+
     // The seam the master sits behind, so the eye reads it as a different kind
     // of thing rather than as the strip that happens to be last.
     if let Some(master) = &l.master
@@ -758,6 +844,228 @@ fn draw_mixer(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &MixerC
                 master.frame.height,
             ),
             p.border,
+        );
+    }
+
+    // Last, over everything: an open menu is above the panel it hangs from.
+    draw_output_menu(scene, theme, labels, chrome);
+}
+
+/// The track-options column (TDD §13.2, §13.4).
+fn draw_track_options(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &MixerChrome<'_>,
+    options: &crate::canvas::TrackOptionsLayout,
+) {
+    use crate::canvas::{MixerHit, OptionsHit};
+
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let hovering = |what: OptionsHit| chrome.hover == Some(MixerHit::Options(what));
+    let Some(strip) = chrome.strips.get(options.track) else {
+        return;
+    };
+
+    fill_rect_rounded(scene, options.frame, m.corner_radius, p.panel);
+    stroke_rect_rounded(
+        scene,
+        options.frame.inset(0.5),
+        m.corner_radius,
+        m.border_width.max(1.0),
+        p.border,
+    );
+
+    // The track's own colour, the same cap its strip wears — which is what
+    // says the column and the highlighted strip are one thing.
+    fill_rect(
+        scene,
+        Rect::new(options.frame.x, options.frame.y, options.frame.width, 3.0),
+        if strip.is_master {
+            p.accent
+        } else {
+            Color(strip.color)
+        },
+    );
+
+    let row_text = |scene: &mut Scene, caption: &str, rect: Rect, x: f32, colour: Color| {
+        if let Some(text) = labels_get(labels, caption) {
+            draw_text_clipped(
+                scene,
+                text,
+                rect,
+                x,
+                rect.y + (rect.height - text.height) / 2.0,
+                colour,
+            );
+        }
+    };
+
+    row_text(scene, &strip.name, options.title, options.title.x + 2.0, p.text);
+
+    // Where it goes (§13.2).
+    if !options.output.is_empty() {
+        let lit = hovering(OptionsHit::Output);
+        fill_rect_rounded(
+            scene,
+            options.output,
+            m.corner_radius * 0.5,
+            if lit { p.border } else { p.panel_header },
+        );
+        let caption = chrome.output_label.clone();
+        row_text(
+            scene,
+            &caption,
+            options.output,
+            options.output.x + 4.0,
+            if lit { p.text } else { p.text_muted },
+        );
+    }
+
+    row_text(
+        scene,
+        EFFECTS_HEADING,
+        options.inserts_title,
+        options.inserts_title.x + 2.0,
+        p.text_muted,
+    );
+
+    for row in &options.inserts {
+        let Some(insert) = strip.inserts.get(row.slot) else {
+            continue;
+        };
+        // Where the dragged row would land, drawn as the row's own highlight
+        // so a reorder shows what it is about to do rather than only what it
+        // has done.
+        let landing = chrome
+            .insert_drag
+            .is_some_and(|(_, over)| over == row.slot);
+        let lit = landing
+            || hovering(OptionsHit::Insert(row.slot))
+            || hovering(OptionsHit::Grip(row.slot))
+            || hovering(OptionsHit::Bypass(row.slot))
+            || hovering(OptionsHit::Remove(row.slot));
+        fill_rect_rounded(
+            scene,
+            row.frame.inset(1.0),
+            m.corner_radius * 0.5,
+            if landing {
+                p.accent
+            } else if lit {
+                p.border
+            } else {
+                p.panel_header
+            },
+        );
+
+        // A filled dot is in the chain, a hollow one is out — the same shape
+        // the strip's own rack uses, because they are the same switch.
+        let dot_size = (row.bypass.height * 0.4).min(7.0);
+        fill_rect_rounded(
+            scene,
+            Rect::new(
+                row.bypass.x + (row.bypass.width - dot_size) / 2.0,
+                row.bypass.y + (row.bypass.height - dot_size) / 2.0,
+                dot_size,
+                dot_size,
+            ),
+            dot_size / 2.0,
+            if insert.bypassed {
+                p.text_muted
+            } else {
+                p.accent
+            },
+        );
+        row_text(
+            scene,
+            &insert.label,
+            row.name,
+            row.name.x + 2.0,
+            if insert.bypassed { p.text_muted } else { p.text },
+        );
+        row_text(scene, GRIP, row.grip, row.grip.x + 2.0, p.text_muted);
+        row_text(
+            scene,
+            REMOVE,
+            row.remove,
+            row.remove.x + (row.remove.width - 6.0).max(0.0) / 2.0,
+            if hovering(OptionsHit::Remove(row.slot)) {
+                p.text
+            } else {
+                p.text_muted
+            },
+        );
+    }
+
+    if !options.add_insert.is_empty() {
+        let lit = hovering(OptionsHit::AddInsert);
+        if lit {
+            fill_rect_rounded(
+                scene,
+                options.add_insert.inset(1.0),
+                m.corner_radius * 0.5,
+                p.border,
+            );
+        }
+        row_text(
+            scene,
+            ADD_EFFECT,
+            options.add_insert,
+            options.add_insert.x + 4.0,
+            if lit { p.text } else { p.text_muted },
+        );
+    }
+}
+
+/// The output row's menu. The same object the rack's route chip drops, over
+/// the same list of names.
+fn draw_output_menu(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &MixerChrome<'_>) {
+    let Some(menu) = chrome.output_menu else {
+        return;
+    };
+    if menu.frame.is_empty() {
+        return;
+    }
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    fill_rect_rounded(scene, menu.frame, m.corner_radius, p.border);
+    fill_rect_rounded(
+        scene,
+        menu.frame.inset(1.0),
+        m.corner_radius,
+        p.panel_header,
+    );
+
+    let current = match chrome.output {
+        Some(track) => crate::canvas::RouteChoice::Track(track),
+        None => crate::canvas::RouteChoice::Master,
+    };
+    for (choice, rect) in &menu.items {
+        if rect.is_empty() {
+            continue;
+        }
+        let on = current == *choice;
+        if on {
+            fill_rect_rounded(scene, *rect, m.corner_radius, p.accent);
+        }
+        let caption = menu.label(*choice, chrome.route_names);
+        let Some(text) = labels.get(&caption) else {
+            continue;
+        };
+        draw_text_clipped(
+            scene,
+            text,
+            *rect,
+            rect.x + m.panel_padding.min(rect.width),
+            rect.y + (rect.height - text.height) / 2.0,
+            if on {
+                p.panel
+            } else if *choice == crate::canvas::RouteChoice::New {
+                p.text_muted
+            } else {
+                p.text
+            },
         );
     }
 }
@@ -778,6 +1086,21 @@ fn draw_mixer_strip(
     let hovering = |what: MixerHit| chrome.hover == Some(what);
 
     fill_rect_rounded(scene, layout.frame, m.corner_radius, p.panel);
+
+    // The selected strip, ringed. Without it the track-options column beside
+    // the master is a panel of controls with nothing saying what they are
+    // about — and the report that started this was *"i am not able to click on
+    // any of these to select them"*, which is as much about there being no
+    // visible answer as about the press.
+    if chrome.selected == layout.index {
+        stroke_rect_rounded(
+            scene,
+            layout.frame.inset(0.5),
+            m.corner_radius,
+            m.border_width.max(1.0) * 2.0,
+            p.accent,
+        );
+    }
 
     // The track's own colour as a cap along the top, which is what makes a
     // strip findable at a glance on a project with twenty of them.
@@ -1845,6 +2168,25 @@ pub const TAB_EFFECT: &str = "EQ";
 /// letters anyway.
 pub const ADD_INSERT: &str = "+ fx";
 
+/// What the empty column past the last strip says.
+pub const ADD_TRACK: &str = "+";
+
+/// The track-options column's own captions, in one place so the window shapes
+/// exactly the strings the renderer looks for.
+pub const EFFECTS_HEADING: &str = "Effects";
+pub const ADD_EFFECT: &str = "+ Add effect";
+/// The handle a row is picked up by, and the cross that throws it away.
+pub const GRIP: &str = "\u{2261}";
+pub const REMOVE: &str = "\u{00d7}";
+
+/// What the output row says, given where the track goes.
+///
+/// Built here rather than in the drawing code so the window can shape exactly
+/// the string that will be looked for — `Labels` is keyed by the text itself.
+pub fn output_label(name: &str) -> String {
+    format!("Out \u{25b8} {name}")
+}
+
 /// What the instrument tab says when the channel is playing nothing.
 pub const NO_INSTRUMENT: &str =
     "this channel has no soundfont yet \u{2014} pick one from the browser";
@@ -2443,6 +2785,7 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
             continue;
         }
         let selected = chrome.selection.contains(&clip.id);
+        let automation = clip.kind == crate::document::ClipKind::Automation;
         let body = if clip.muted {
             p.grid_line
         } else if selected {
@@ -2450,7 +2793,23 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
         } else {
             Color(clip.color)
         };
-        fill_rect_rounded(scene, block.inset(1.0), 3.0, body);
+        // An automation block is a **ground for a curve**, so it is filled
+        // dark rather than in the lane's colour: the shape is the content, and
+        // a bright block with a line on it hides the line. A note block is the
+        // other way round — the block *is* what there is to see.
+        fill_rect_rounded(
+            scene,
+            block.inset(1.0),
+            3.0,
+            if automation && !selected {
+                p.panel_header
+            } else {
+                body
+            },
+        );
+        if automation {
+            draw_automation_curve(scene, theme, &block, clip, body);
+        }
         // The open clip gets a bright edge: the roll below is showing this one,
         // and nothing else on screen said so.
         if clip.open {
@@ -2488,7 +2847,16 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
             // is a long block.
             let first = block.x + 5.0;
             let y = block.y + (block.height - text.height) / 2.0;
-            let ink = if clip.muted { p.text_muted } else { p.panel };
+            let ink = if clip.muted {
+                p.text_muted
+            } else if automation {
+                // Behind the curve, not competing with it: on an automation
+                // block the name says *which parameter*, and the shape is what
+                // is actually being read.
+                p.text_muted
+            } else {
+                p.panel
+            };
             draw_text_clipped(scene, text, block, first, y, ink);
             for x in &seams {
                 let repeat =
@@ -2545,6 +2913,56 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
             None,
             &rounded(chrome.panel.frame, theme.metrics.corner_radius),
         );
+    }
+}
+
+/// One automation block's curve (TDD §12.1).
+///
+/// A polyline with a dot at each point — the same picture the editor draws,
+/// small. Which is the point: *"a lane of them looks like a lane of empty
+/// clips"* was true because an automation clip was drawn exactly like a note
+/// clip, and the one thing an automation clip has to show is its shape.
+fn draw_automation_curve(
+    scene: &mut Scene,
+    theme: &Theme,
+    block: &Rect,
+    clip: &ClipInfo,
+    ink: Color,
+) {
+    let points = crate::canvas::automation_polyline(block.inset(1.0), clip.length, &clip.curve);
+    if points.is_empty() {
+        return;
+    }
+    let p = &theme.palette;
+
+    // A flat clip is a single horizontal run and still has to be visible: two
+    // points at the same value make a line of zero height, which strokes to
+    // nothing without a width.
+    let mut path = BezPath::new();
+    path.move_to((points[0].0 as f64, points[0].1 as f64));
+    for (x, y) in points.iter().skip(1) {
+        path.line_to((*x as f64, *y as f64));
+    }
+    scene.stroke(
+        &Stroke::new(1.5),
+        Affine::IDENTITY,
+        ink.to_peniko(),
+        None,
+        &path,
+    );
+
+    // The points themselves, so a block with two of them reads as a segment
+    // you could grab rather than as a rule drawn across the clip. Skipped on a
+    // block too small for them to be anything but noise.
+    if block.height >= 12.0 {
+        for (x, y) in &points {
+            fill_rect_rounded(
+                scene,
+                Rect::new(x - 1.5, y - 1.5, 3.0, 3.0),
+                1.5,
+                p.text,
+            );
+        }
     }
 }
 
@@ -3183,6 +3601,25 @@ pub fn draw_text(scene: &mut Scene, text: &TextLayout, x: f32, y: f32, color: Co
 }
 
 /// [`fill_rect`] with rounded corners — every chip, switch and button here.
+/// An outline around a rounded rectangle, drawn *inside* its own edge.
+///
+/// The `+` column and the options panel both need to read as "a thing with a
+/// boundary" rather than as a patch of a slightly different background — a
+/// panel with no border on this theme sits four steps from the window colour
+/// and disappears.
+fn stroke_rect_rounded(scene: &mut Scene, r: Rect, radius: f32, width: f32, color: Color) {
+    if r.is_empty() || width <= 0.0 {
+        return;
+    }
+    scene.stroke(
+        &Stroke::new(width as f64),
+        Affine::IDENTITY,
+        color.to_peniko(),
+        None,
+        &rounded(r, radius),
+    );
+}
+
 fn fill_rect_rounded(scene: &mut Scene, r: Rect, radius: f32, color: Color) {
     if r.is_empty() {
         return;

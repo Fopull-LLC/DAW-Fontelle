@@ -161,3 +161,81 @@ fn a_panel_too_small_for_any_of_it_yields_empty_rects_never_negative_ones() {
         }
     }
 }
+
+#[test]
+fn nothing_in_the_footer_is_drawn_on_top_of_anything_else() {
+    // Reported from a screenshot of the Projects tab: the status line — *"no
+    // projects folder yet — ..."* — was drawn straight across the "New" and
+    // "Export..." buttons, because both were placed at the same `y`. Two
+    // captions in the same pixels is not a panel you can read, and neither of
+    // the buttons underneath looked pressable.
+    //
+    // Stated as "no two rectangles overlap" rather than as "new_project sits
+    // at status.y - height", because the second is the arithmetic that was
+    // already wrong once and the first is what a person actually sees.
+    let l = projects(3);
+    let named = [
+        ("sounds tab", l.sounds_tab),
+        ("projects tab", l.projects_tab),
+        ("search", l.search),
+        ("list", l.files),
+        ("status", l.status),
+        ("new project", l.new_project),
+        ("export", l.export),
+        ("open folder", l.open_folder),
+        ("choose folder", l.choose_folder),
+    ];
+    for (i, (a_name, a)) in named.iter().enumerate() {
+        for (b_name, b) in named.iter().skip(i + 1) {
+            if a.is_empty() || b.is_empty() {
+                continue;
+            }
+            assert!(
+                !a.intersects(b),
+                "the {a_name} {a:?} is drawn over the {b_name} {b:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_status_line_is_readable_in_both_modes() {
+    // It is the line that says where the folder is, or what just went wrong.
+    // A status line with no height is a message nobody ever sees, and one
+    // sharing its row with a button is a message nobody can read.
+    for l in [sounds(4, 4), projects(3)] {
+        assert!(!l.status.is_empty(), "the status line has nowhere to go");
+        assert!(
+            !l.status.intersects(&l.new_project),
+            "the status line and the new-project button share pixels"
+        );
+        assert!(
+            !l.status.intersects(&l.export),
+            "the status line and the export button share pixels"
+        );
+        assert!(!l.status.intersects(&l.open_folder));
+        assert!(!l.status.intersects(&l.choose_folder));
+    }
+}
+
+#[test]
+fn the_project_list_stops_above_everything_under_it() {
+    // The list is the tallest thing in the panel, so it is the one that has to
+    // give way — a row drawn under the status line hit-tests as a row and
+    // reads as a caption cut in half.
+    let l = projects(40);
+    assert!(!l.new_project.is_empty());
+    assert!(
+        l.files.bottom() <= l.new_project.y + 0.001,
+        "the list {:?} runs under the new-project row {:?}",
+        l.files,
+        l.new_project
+    );
+    for (_, row) in &l.file_rows {
+        assert!(
+            row.bottom() <= l.files.bottom() + 0.001,
+            "row {row:?} escapes the list {:?}",
+            l.files
+        );
+    }
+}

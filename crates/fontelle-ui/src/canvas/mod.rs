@@ -26,9 +26,10 @@ pub use instrument::{
     ParamKind, choice_index, instrument_hit, instrument_layout, knob_value, next_value,
 };
 pub use mixer::{
-    FADER_DETENT_PX, MAX_FADER_DB, MIN_FADER_DB, MixerHit, MixerLayout, MixerStripLayout,
-    PAN_DETENT_PX, STRIP_WIDTH, fader_db_at, fader_y_of_db, format_gain_db, format_pan, mixer_hit,
-    mixer_layout, pan_at, pan_x_of, unity_fraction,
+    FADER_DETENT_PX, InsertRowLayout, MAX_FADER_DB, MIN_FADER_DB, MixerHit, MixerLayout,
+    MixerStripLayout, OPTIONS_WIDTH, OptionsHit, PAN_DETENT_PX, STRIP_WIDTH, TrackOptionsLayout,
+    fader_db_at, fader_y_of_db, format_gain_db, format_pan, mixer_hit, mixer_layout,
+    mixer_layout_for, pan_at, pan_x_of, unity_fraction,
 };
 pub use piano_roll::{
     Audition, DEFAULT_LANE_HEIGHT, DrawDrag, KEYBOARD_WIDTH, LANE_PROPERTIES, LaneMenu,
@@ -42,12 +43,13 @@ pub use piano_roll::{
 };
 pub use rack::{
     NEW_TRACK, RackHit, RackLayout, RackRow, RouteChoice, RouteMenu, rack_hit, rack_layout,
-    route_label, route_menu_hit, route_menu_layout, scroll_to_show,
+    route_label, route_menu_hit, route_menu_layout, route_menu_layout_excluding, scroll_to_show,
 };
 pub use timeline::{
     ArrangeEdit, ClipPart, MAX_LANE_ROW, MAX_TIMELINE_PPT, MIN_LANE_ROW, MIN_TIMELINE_PPT,
     Timeline, TimelineControl, TimelineHit, TimelineLayout, TimelineTool, TimelineToolbar,
-    TimelineView, clip_rect, lane_to_y, loop_marks, timeline_hit, timeline_layout, timeline_snap,
+    TimelineView, automation_polyline, clip_rect, lane_to_y, loop_marks, timeline_hit,
+    timeline_layout, timeline_snap,
     timeline_tick_to_x, timeline_toolbar_hit, timeline_toolbar_layout, timeline_visible_ticks,
     timeline_x_to_tick, timeline_zoom_x, timeline_zoom_y, visible_lanes, y_to_lane,
 };

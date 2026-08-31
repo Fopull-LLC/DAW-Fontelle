@@ -22,7 +22,7 @@
 use fontelle_model::Arena;
 use fontelle_types::{ClipId, PPQN, Tick};
 use fontelle_ui::canvas::{ArrangeEdit, MouseButton, Timeline, TimelineView, timeline_layout};
-use fontelle_ui::document::ClipInfo;
+use fontelle_ui::document::{ClipInfo, ClipKind};
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
 
@@ -47,6 +47,8 @@ fn clips(items: &[(Tick, Tick, usize)]) -> Vec<ClipInfo> {
             open: false,
             color: [0x4f, 0x8f, 0xd0, 0xff],
             loop_length: None,
+            kind: ClipKind::Notes,
+            curve: Vec::new(),
         })
         .collect()
 }
