@@ -1501,6 +1501,7 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
                 insert_drag: None,
                 output_menu: None,
                 send_menu: None,
+                effect_menu: None,
                 route_names: &route_names,
                 output: None,
             }),

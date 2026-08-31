@@ -228,6 +228,9 @@ pub struct MixerChrome<'a> {
     /// The send menu, likewise — a separate field because the two are over the
     /// same list and mean different things, and only one is ever open.
     pub send_menu: Option<&'a crate::canvas::RouteMenu>,
+    /// And the menu of effects a track can be given, which is over a different
+    /// list again.
+    pub effect_menu: Option<&'a crate::canvas::EffectMenu>,
     pub route_names: &'a [String],
     /// Where the selected track's output goes, as an index into
     /// `route_names` — so the menu can say where you are as well as where you
@@ -852,6 +855,42 @@ fn draw_mixer(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &MixerC
 
     // Last, over everything: an open menu is above the panel it hangs from.
     draw_output_menu(scene, theme, labels, chrome);
+    draw_effect_menu(scene, theme, labels, chrome);
+}
+
+/// The menu of effects a track can be given.
+fn draw_effect_menu(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &MixerChrome<'_>) {
+    let Some(menu) = chrome.effect_menu else {
+        return;
+    };
+    if menu.frame.is_empty() {
+        return;
+    }
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    fill_rect_rounded(scene, menu.frame, m.corner_radius, p.border);
+    fill_rect_rounded(
+        scene,
+        menu.frame.inset(1.0),
+        m.corner_radius,
+        p.panel_header,
+    );
+    for (kind, rect) in &menu.items {
+        if rect.is_empty() {
+            continue;
+        }
+        let Some(text) = labels_get(labels, kind.label()) else {
+            continue;
+        };
+        draw_text_clipped(
+            scene,
+            text,
+            *rect,
+            rect.x + m.panel_padding.min(rect.width),
+            rect.y + (rect.height - text.height) / 2.0,
+            p.text,
+        );
+    }
 }
 
 /// The track-options column (TDD §13.2, §13.4).
@@ -2268,6 +2307,8 @@ pub const TAB_MIXER: &str = "Mixer";
 /// The tab an open insert puts up. Named for the effect, not for the slot: a
 /// tab saying "Insert 2" tells you where it is and not what it does.
 pub const TAB_EFFECT: &str = "EQ";
+/// And the one an open automation clip puts up.
+pub const TAB_AUTOMATION: &str = "Automation";
 
 /// The caption on a strip's empty rack row. Short, because the row is the
 /// width of a mixer strip and a longer word would be clipped to the same three
@@ -2326,8 +2367,17 @@ fn draw_editor_tabs(scene: &mut Scene, theme: &Theme, chrome: &Chrome<'_>) {
         ),
         (
             EditorTab::Effect,
-            chrome.tabs.effect.unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0)),
+            chrome.tabs.effect.unwrap_or(Rect::ZERO),
             TAB_EFFECT,
+            crate::icon::Icon::Curve,
+        ),
+        // The automation tab was laid out and hit-tested and never drawn, so
+        // opening a curve took you to a panel with no chip lit and no way
+        // back to it once you left. Found by looking at the window.
+        (
+            EditorTab::Automation,
+            chrome.tabs.automation.unwrap_or(Rect::ZERO),
+            TAB_AUTOMATION,
             crate::icon::Icon::Curve,
         ),
     ] {

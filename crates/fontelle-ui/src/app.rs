@@ -371,6 +371,8 @@ pub struct WindowApp {
     /// `None` is the master. Read with the lists rather than per frame,
     /// because the column's one caption is shaped from it.
     track_output: Option<usize>,
+    /// The effect menu, while it is open, and the strip it will put one on.
+    effect_menu: Option<(usize, crate::canvas::EffectMenu)>,
     /// The send menu, while it is open, and which send opened it — `None` for
     /// the row that makes a new one.
     send_menu: Option<(Option<usize>, crate::canvas::RouteMenu)>,
@@ -620,6 +622,7 @@ impl WindowApp {
             track_output: None,
             output_menu: None,
             send_menu: None,
+            effect_menu: None,
             insert_drag: None,
             tempo: 120.0,
             tempo_text: TextLayout::default(),
@@ -898,6 +901,7 @@ impl WindowApp {
                     insert_drag: self.insert_drag,
                     output_menu: self.output_menu.as_ref(),
                     send_menu: self.send_menu.as_ref().map(|(_, menu)| menu),
+                    effect_menu: self.effect_menu.as_ref().map(|(_, menu)| menu),
                     route_names: &self.route_names,
                     output: self.track_output,
                 }),
@@ -1277,6 +1281,16 @@ impl WindowApp {
             self.tip_rect = crate::layout::Rect::ZERO;
         }
         self.hover_tip = tip;
+        self.hover_since = std::time::Instant::now();
+    }
+
+    /// Takes the tip down and starts its dwell again.
+    fn dismiss_tip(&mut self) {
+        if !self.tip_rect.is_empty() {
+            self.tree.invalidate_rect(self.tip_rect);
+            self.tip_rect = crate::layout::Rect::ZERO;
+        }
+        self.hover_tip = None;
         self.hover_since = std::time::Instant::now();
     }
 
@@ -1839,6 +1853,7 @@ impl WindowApp {
             TAB_ROLL,
             TAB_INSTRUMENT,
             TAB_MIXER,
+            crate::render::TAB_AUTOMATION,
             NO_INSTRUMENT,
         ] {
             want(&mut self.labels, &mut self.text, fixed);
@@ -1902,6 +1917,12 @@ impl WindowApp {
             want(&mut self.labels, &mut self.text, crate::render::ADD_SEND);
             want(&mut self.labels, &mut self.text, crate::render::SEND_PRE);
             want(&mut self.labels, &mut self.text, crate::render::SEND_POST);
+            // The effect menu's rows. Shaped whether or not it is open: the
+            // names are two short words and the menu has to be readable on the
+            // first frame it appears.
+            for kind in fontelle_types::EffectKind::ALL {
+                want(&mut self.labels, &mut self.text, kind.label());
+            }
             want(&mut self.labels, &mut self.text, crate::render::GRIP);
             want(&mut self.labels, &mut self.text, crate::render::REMOVE);
             let output = self.output_caption();
@@ -2108,6 +2129,12 @@ impl WindowApp {
     fn press(&mut self, button: winit::event::MouseButton, x: f32, y: f32) {
         self.drag = Drag::None;
 
+        // Whatever the pointer was explaining, it is explaining it about a
+        // window that is about to change: a menu opened by a press would be
+        // drawn *under* the tip of the button that opened it. The dwell
+        // starts again, which is what a person expects after clicking.
+        self.dismiss_tip();
+
         // An open menu is above everything, including the transport bar, and a
         // click anywhere shuts it — which is what every menu on every desktop
         // does. Before the bar, or clicking Play with the menu up would both
@@ -2126,6 +2153,10 @@ impl WindowApp {
         }
         if self.send_menu.is_some() {
             self.press_send_menu(x, y);
+            return;
+        }
+        if self.effect_menu.is_some() {
+            self.press_effect_menu(x, y);
             return;
         }
 
@@ -2376,11 +2407,10 @@ impl WindowApp {
             // it rather than dropping a menu with one row in it; the menu is
             // what the second effect brings.
             MixerHit::AddInsert(strip) => {
-                if let Some(doc) = &mut self.options.document {
-                    doc.add_insert(strip, fontelle_types::EffectKind::Eq);
-                }
-                self.refresh_studio();
-                self.refresh_title();
+                let anchor = self
+                    .strip_layout(strip)
+                    .map_or(crate::layout::Rect::ZERO, |s| s.add);
+                self.open_effect_menu(strip, anchor);
             }
             MixerHit::BypassInsert(strip, slot) => {
                 if let Some(doc) = &mut self.options.document {
@@ -2445,12 +2475,16 @@ impl WindowApp {
             // shortest possible feedback loop and the easiest to click by
             // accident.
             OptionsHit::Output => self.open_output_menu(),
+            // Which effect is a question the row cannot ask, so it drops the
+            // menu rather than guessing. It used to add an EQ every time,
+            // which made the compressor unreachable from the window at all.
             OptionsHit::AddInsert => {
-                if let Some(doc) = &mut self.options.document {
-                    doc.add_insert(strip, fontelle_types::EffectKind::Eq);
-                }
-                self.refresh_studio();
-                self.refresh_title();
+                let anchor = self
+                    .mixer
+                    .options
+                    .as_ref()
+                    .map_or(crate::layout::Rect::ZERO, |o| o.add_insert);
+                self.open_effect_menu(strip, anchor);
             }
             OptionsHit::Insert(slot) => self.open_insert(strip, slot),
             OptionsHit::Bypass(slot) => {
@@ -2505,6 +2539,41 @@ impl WindowApp {
                 self.drag_send_level(index, self.cursor.0);
             }
         }
+    }
+
+    /// Drops the menu of effects that can go on a track.
+    ///
+    /// One list, from `EffectKind::ALL` — a new effect appears here by
+    /// existing rather than by somebody remembering a second place.
+    fn open_effect_menu(&mut self, strip: usize, anchor: crate::layout::Rect) {
+        if anchor.is_empty() {
+            return;
+        }
+        self.effect_menu = Some((
+            strip,
+            crate::canvas::effect_menu_layout(
+                anchor,
+                self.layout.panel.body,
+                &self.options.theme.metrics,
+            ),
+        ));
+        self.tree.invalidate(PANEL);
+    }
+
+    /// A press while the effect menu is open. Anywhere but a row shuts it.
+    fn press_effect_menu(&mut self, x: f32, y: f32) {
+        let Some((strip, menu)) = self.effect_menu.take() else {
+            return;
+        };
+        self.tree.invalidate(PANEL);
+        let Some(kind) = crate::canvas::effect_menu_hit(&menu, x, y) else {
+            return;
+        };
+        if let Some(doc) = &mut self.options.document {
+            doc.add_insert(strip, kind);
+        }
+        self.refresh_studio();
+        self.refresh_title();
     }
 
     /// Drops the menu of everywhere a send could go.

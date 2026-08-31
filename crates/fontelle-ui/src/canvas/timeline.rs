@@ -366,7 +366,7 @@ pub fn clip_rect(view: &TimelineView, grid: Rect, clip: &ClipInfo) -> Rect {
 ///
 /// A point at 0.0 or 1.0 is drawn as a dot, and a dot centred on the edge is
 /// half a dot — and half of it is over the lane next door.
-const CURVE_INSET: f32 = 3.0;
+const CURVE_INSET: f32 = 4.0;
 
 /// A [`ClipKind::Automation`](crate::document::ClipKind) block's curve, in
 /// screen points.

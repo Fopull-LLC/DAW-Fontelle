@@ -1303,7 +1303,15 @@ const WELCOME: &str = "\
   click the signature or roll it to change the beats in a bar.
   The Mixer tab beside the piano roll has a fader, a pan and mute/solo per
   track, with the master pinned to the right; both controls snap to the
-  middle, and the read-out under each strip says the level.";
+  middle, and the read-out under each strip says the level. Click a strip to
+  select it, and the + past the last one adds another.
+  The column beside the master is that strip's: where its output goes, the
+  effects on it — add, reorder by the grip, switch out by the dot, delete by
+  the cross — and its sends, each with a level you drag and a pre/post switch.
+  Right-click a fader, a pan or an EQ band to make an automation lane for it;
+  it lands on the arrangement as a curve you can open and draw in.
+  Plug a MIDI keyboard in and it plays whichever channel is selected.
+  Hover anything for a moment and it says what it does.";
 
 /// The theme the window opens with: a file if one was named, otherwise the
 /// light or dark default (TDD §16.6).

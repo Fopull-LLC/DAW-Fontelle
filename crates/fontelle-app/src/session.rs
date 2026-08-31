@@ -533,9 +533,13 @@ impl Session {
         self.project.lanes.insert(Lane {
             name: label.to_string(),
             height: 32.0,
-            // Dimmer than a note lane's, so the two kinds of strip are
-            // tellable apart down the header column before either is read.
-            color: [0x7a, 0x6f, 0x9a, 0xff],
+            // A light lavender: a different hue from a note lane's blue, so
+            // the two kinds of strip are tellable apart down the header
+            // column, and **bright**, because on an automation block this
+            // colour is the curve rather than the fill. The first attempt was
+            // a dim `0x7a6f9a` and the curve was invisible on the block — see
+            // `render::draw_automation_curve`.
+            color: [0xb4, 0xa2, 0xe8, 0xff],
             muted: false,
             locked: false,
         })

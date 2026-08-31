@@ -120,9 +120,10 @@ impl ProjectLibrary {
     pub fn rescan(&mut self) {
         self.entries.clear();
         let Some(dir) = self.dir.clone() else {
-            self.status =
-                "no projects folder yet — \"Change...\" picks one, and new projects go there"
-                    .to_string();
+            // Short enough for the 248-pixel panel it is drawn in: the longer
+            // wording was clipped mid-word to `... "Change..." pi`, which is a
+            // sentence nobody can finish.
+            self.status = "no projects folder — \"Change...\" picks one".to_string();
             return;
         };
         let listing = match std::fs::read_dir(&dir) {
