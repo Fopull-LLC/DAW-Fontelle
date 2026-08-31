@@ -40,6 +40,24 @@ pub const OPTIONS_WIDTH: f32 = 168.0;
 /// unlike `INSERT_ROW_HEIGHT`, which is what a strip can spare.
 const OPTION_ROW_HEIGHT: f32 = 20.0;
 
+/// How much of a send row goes to naming its destination, the rest to the
+/// level. Under half, because the level is what gets dragged and a groove you
+/// cannot aim at is not a control.
+const SEND_TARGET_SHARE: f32 = 0.38;
+
+/// How wide the pre/post switch at the head of a send row is.
+///
+/// Wider than the bypass dot beside it, because this one carries a *word*.
+/// At the bypass switch's sixteen pixels it read as "po", which is worse than
+/// no label — a control that says half of something is one you have to guess
+/// at twice.
+const SEND_TAP_WIDTH: f32 = 30.0;
+
+/// A send's travel, in decibels. The same ends as the mixer's own fader, so
+/// "off" means the same thing in both places.
+pub const MIN_SEND_DB: f32 = MIN_FADER_DB;
+pub const MAX_SEND_DB: f32 = MAX_FADER_DB;
+
 /// The bypass switch at the left of an options row, and the grip and the
 /// delete at its right.
 const OPTION_BYPASS_WIDTH: f32 = 16.0;
@@ -154,6 +172,24 @@ pub struct InsertRowLayout {
     pub remove: Rect,
 }
 
+/// One send, as the options column draws it: where it goes, how much of the
+/// track goes there, whether it is taken before the fader, and a way to throw
+/// it away.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SendRowLayout {
+    /// Its place in the track's send list.
+    pub index: usize,
+    pub frame: Rect,
+    /// Pre-fader or post. A switch, not a menu: there are two answers.
+    pub tap: Rect,
+    /// Where it goes. Press to send it somewhere else.
+    pub target: Rect,
+    /// How much goes. A horizontal groove, dragged like a fader on its side —
+    /// the widest thing in the row, because it is the one you actually move.
+    pub level: Rect,
+    pub remove: Rect,
+}
+
 /// The track-options column (TDD §13.2, §13.4): everything about the selected
 /// track that a 76-pixel strip has no room for.
 ///
@@ -177,6 +213,15 @@ pub struct TrackOptionsLayout {
     pub inserts: Vec<InsertRowLayout>,
     /// Puts another on the end. Empty when there is no room for it.
     pub add_insert: Rect,
+    /// The heading over the sends.
+    pub sends_title: Rect,
+    /// A row per send (§13.2).
+    ///
+    /// Dropped before the insert chain is when the column is short: the chain
+    /// is what changes the sound of *this* track, and a send is what it gives
+    /// to something else.
+    pub sends: Vec<SendRowLayout>,
+    pub add_send: Rect,
 }
 
 /// Where every strip is.
@@ -414,6 +459,32 @@ fn options_layout(
         Rect::ZERO
     };
 
+    // Then the sends, under the chain rather than among it: they are two
+    // different things about a track, and a column that interleaved them would
+    // read as one list.
+    let mut sends_title = Rect::ZERO;
+    let mut sends = Vec::new();
+    let mut add_send = Rect::ZERO;
+    if inner.bottom() - top >= row + OPTION_ROW_HEIGHT {
+        take(&mut top, inner, GAP);
+        sends_title = take(&mut top, inner, row);
+        for index in 0..strip.sends.len() {
+            // A row's worth left for the add button as well, or a track with
+            // sends has no way to make another.
+            if inner.bottom() - top < OPTION_ROW_HEIGHT * 2.0 {
+                break;
+            }
+            let frame = take(&mut top, inner, OPTION_ROW_HEIGHT);
+            if frame.is_empty() {
+                break;
+            }
+            sends.push(send_row(index, frame));
+        }
+        if inner.bottom() - top >= OPTION_ROW_HEIGHT {
+            add_send = take(&mut top, inner, OPTION_ROW_HEIGHT);
+        }
+    }
+
     TrackOptionsLayout {
         track,
         frame,
@@ -422,6 +493,52 @@ fn options_layout(
         inserts_title,
         inserts,
         add_insert,
+        sends_title,
+        sends,
+        add_send,
+    }
+}
+
+/// One send row: the tap switch, where it goes, how much, and a delete.
+fn send_row(index: usize, frame: Rect) -> SendRowLayout {
+    let tap = Rect::new(
+        frame.x,
+        frame.y,
+        SEND_TAP_WIDTH.min(frame.width),
+        frame.height,
+    )
+    .clamped();
+    let remove = Rect::new(
+        (frame.right() - OPTION_REMOVE_WIDTH).max(tap.right()),
+        frame.y,
+        OPTION_REMOVE_WIDTH.min((frame.right() - tap.right()).max(0.0)),
+        frame.height,
+    )
+    .clamped();
+    // The destination gets a name's worth, and the level takes the rest —
+    // it is the thing you actually drag.
+    let middle = (remove.x - tap.right()).max(0.0);
+    let target = Rect::new(
+        tap.right(),
+        frame.y,
+        (middle * SEND_TARGET_SHARE).max(0.0),
+        frame.height,
+    )
+    .clamped();
+    let level = Rect::new(
+        target.right(),
+        frame.y,
+        (remove.x - target.right()).max(0.0),
+        frame.height,
+    )
+    .clamped();
+    SendRowLayout {
+        index,
+        frame,
+        tap,
+        target,
+        level,
+        remove,
     }
 }
 
@@ -612,6 +729,14 @@ pub enum OptionsHit {
     /// Pick the row up to reorder it.
     Grip(usize),
     AddInsert,
+    /// Where a send goes — press to change it (§13.2).
+    Send(usize),
+    /// Take it before the fader instead of after, or back.
+    SendTap(usize),
+    /// How much of the track goes down it. Dragged.
+    SendLevel(usize),
+    SendRemove(usize),
+    AddSend,
 }
 
 /// What is under the pointer in the mixer.
@@ -653,6 +778,11 @@ impl OptionsHit {
             Self::Remove(_) => "Take this effect off the track",
             Self::Grip(_) => "Drag to reorder \u{2014} order changes the sound",
             Self::AddInsert => "Put another effect on the end of the chain",
+            Self::Send(_) => "Where this send goes",
+            Self::SendTap(_) => "Take the send before the fader, or after it",
+            Self::SendLevel(_) => "How much of this track goes down the send",
+            Self::SendRemove(_) => "Take this send off the track",
+            Self::AddSend => "Send a copy of this track to another one",
         }
     }
 }
@@ -753,8 +883,28 @@ fn options_hit(options: &TrackOptionsLayout, x: f32, y: f32) -> MixerHit {
         }
         return MixerHit::Options(OptionsHit::Insert(row.slot));
     }
+    for row in &options.sends {
+        if !row.frame.contains(x, y) {
+            continue;
+        }
+        if row.remove.contains(x, y) {
+            return MixerHit::Options(OptionsHit::SendRemove(row.index));
+        }
+        if row.tap.contains(x, y) {
+            return MixerHit::Options(OptionsHit::SendTap(row.index));
+        }
+        if row.target.contains(x, y) {
+            return MixerHit::Options(OptionsHit::Send(row.index));
+        }
+        // The groove is everything left over, so a press just off the mark
+        // still moves the level rather than doing nothing.
+        return MixerHit::Options(OptionsHit::SendLevel(row.index));
+    }
     if options.add_insert.contains(x, y) {
         return MixerHit::Options(OptionsHit::AddInsert);
+    }
+    if options.add_send.contains(x, y) {
+        return MixerHit::Options(OptionsHit::AddSend);
     }
     if options.output.contains(x, y) {
         return MixerHit::Options(OptionsHit::Output);
@@ -833,6 +983,39 @@ fn fraction_of_db(db: f32) -> f32 {
         }
     }
     1.0
+}
+
+/// The send level a press at `x` on the groove `level` is asking for.
+///
+/// **Linear in decibels**, unlike the strip's fader: a send has a shorter
+/// travel and is usually set by ear against the dry signal rather than read
+/// off a scale, and the fader's taper on a hundred-pixel groove would spend
+/// most of it below -30 dB.
+///
+/// Clamped to the ends, so a drag that runs off the panel pins the level
+/// rather than losing it.
+pub fn send_level_at(level: Rect, x: f32) -> f32 {
+    if level.width <= 0.0 {
+        return MIN_SEND_DB;
+    }
+    let along = ((x - level.x) / level.width).clamp(0.0, 1.0);
+    MIN_SEND_DB + (MAX_SEND_DB - MIN_SEND_DB) * along
+}
+
+/// The other direction: where the mark for `db` goes on the groove.
+pub fn send_x_of_level(level: Rect, db: f32) -> f32 {
+    let db = db.clamp(MIN_SEND_DB, MAX_SEND_DB);
+    let along = (db - MIN_SEND_DB) / (MAX_SEND_DB - MIN_SEND_DB);
+    level.x + level.width * along
+}
+
+/// What a send's level read-out says. `off` at the bottom, for the reason
+/// [`format_gain_db`] gives.
+pub fn format_send_db(db: f32) -> String {
+    if db <= MIN_SEND_DB {
+        return "off".to_string();
+    }
+    format!("{db:+.0}")
 }
 
 /// The pan a press at `x` on the strip `pan` is asking for, -1.0 to +1.0.

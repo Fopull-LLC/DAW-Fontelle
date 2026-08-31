@@ -26,14 +26,16 @@ pub use channel::Channel;
 pub use clip::{AudioClipData, Clip, ClipMap, ClipSource};
 pub use command::{Command, CommandError, History};
 pub use commands::{
-    AddAutomationPoint, AddChannel, AddClip, AddInsert, AddMixerTrack, AddNotes, Compound,
+    AddAutomationPoint, AddChannel, AddClip, AddInsert, AddMixerTrack, AddNotes, AddSend,
+    Compound,
     DuplicateClip, FlagTarget, MIN_CLIP_LENGTH, MoveAutomationPoints, MoveClip, MoveInsert,
     MoveNotes, NumberTarget, PlaceAutomationPoints, RemoveAutomationPoints, RemoveChannel,
-    RemoveClip, RemoveInsert, RemoveMixerTrack, RemoveNotes, RenameChannel, RenameMixerTrack,
+    NEW_SEND_DB, RemoveClip, RemoveInsert, RemoveMixerTrack, RemoveNotes, RemoveSend,
+    RenameChannel, RenameMixerTrack,
     ResizeClip, ResizeNotes, RestoreAutomationPoints, RestoreInsert, RestorePointCurves,
     SetChannelPatch, SetChannelRoute, SetClipLoop, SetEqBand, SetFlag, SetInsertBypassed,
     SetLoopRange, SetNoteProperty, SetNoteSlide, SetNoteVelocity, SetNumber, SetPointCurve,
-    SetTrackOutput, SliceNotes,
+    SetSendLevel, SetSendPreFader, SetTrackOutput, SliceNotes,
 };
 pub use lane::Lane;
 pub use mixer::{EffectSlot, Mixer, MixerTrack, PanLaw, Send};

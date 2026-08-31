@@ -19,8 +19,9 @@
 //! has) rather than fader mutes.
 
 use fontelle_model::{
-    AddChannel, AddMixerTrack, Command, FlagTarget, Project, RemoveChannel, RemoveMixerTrack,
-    RenameMixerTrack, SetChannelRoute, SetFlag, SetTrackOutput,
+    AddChannel, AddMixerTrack, AddSend, Command, FlagTarget, Project, RemoveChannel,
+    RemoveMixerTrack, RemoveSend, RenameMixerTrack, SetChannelRoute, SetFlag, SetSendLevel,
+    SetSendPreFader, SetTrackOutput,
 };
 use fontelle_types::MixerTrackId;
 
@@ -457,4 +458,255 @@ fn the_master_has_nowhere_to_be_routed() {
         "the master's output is the speakers"
     );
     assert_eq!(project.mixer.tracks[master].output, None);
+}
+
+// -------------------------------------------------------------- the sends ---
+//
+// TDD §13.2, the half that was never built: `MixerTrack::sends` has been in the
+// document since the mixer was written, `Mixer::has_cycle` has counted send
+// edges as signal paths from the day it was written, and nothing could make
+// one — the field was only ever an empty `Vec`.
+//
+// A send is what a reverb bus *is*. Routing a track's output into a reverb
+// sends all of it; a send takes a copy at a level and leaves the dry signal on
+// its own path, which is the whole point.
+
+#[test]
+fn a_send_can_be_made_and_taken_back() {
+    let mut project = project();
+    let mut add_reverb = AddMixerTrack::new("Reverb");
+    add_reverb.apply(&mut project).unwrap();
+    let reverb = add_reverb.track().unwrap();
+    let mut add_vox = AddMixerTrack::new("Vox");
+    add_vox.apply(&mut project).unwrap();
+    let vox = add_vox.track().unwrap();
+
+    assert!(project.mixer.tracks[vox].sends.is_empty());
+    round_trip(
+        Box::new(AddSend::new(vox, reverb)),
+        &mut project,
+        |p| format!("{}", p.mixer.tracks[vox].sends.len()),
+    );
+
+    let sends = &project.mixer.tracks[vox].sends;
+    assert_eq!(sends.len(), 1);
+    assert_eq!(sends[0].target, reverb);
+    assert!(
+        sends[0].level_db <= -60.0,
+        "a new send starts at silence, not at unity: a send that arrived \
+         wide open would change the mix the moment it was made"
+    );
+    assert!(
+        !sends[0].pre_fader,
+        "post-fader is what a reverb send wants: pull the fader down and the \
+         reverb follows it"
+    );
+}
+
+#[test]
+fn the_dry_path_is_untouched_by_a_send() {
+    // Which is the whole difference between a send and an output. Routing an
+    // output moves the signal; a send takes a copy.
+    let mut project = project();
+    let mut add_reverb = AddMixerTrack::new("Reverb");
+    add_reverb.apply(&mut project).unwrap();
+    let reverb = add_reverb.track().unwrap();
+    let mut add_vox = AddMixerTrack::new("Vox");
+    add_vox.apply(&mut project).unwrap();
+    let vox = add_vox.track().unwrap();
+
+    let before = destination(&project, vox);
+    AddSend::new(vox, reverb).apply(&mut project).unwrap();
+    assert_eq!(destination(&project, vox), before);
+}
+
+#[test]
+fn a_send_can_be_levelled_and_flipped_pre_fader() {
+    let mut project = project();
+    let mut add_reverb = AddMixerTrack::new("Reverb");
+    add_reverb.apply(&mut project).unwrap();
+    let reverb = add_reverb.track().unwrap();
+    let mut add_vox = AddMixerTrack::new("Vox");
+    add_vox.apply(&mut project).unwrap();
+    let vox = add_vox.track().unwrap();
+    AddSend::new(vox, reverb).apply(&mut project).unwrap();
+
+    round_trip(
+        Box::new(SetSendLevel::new(vox, 0, -6.0)),
+        &mut project,
+        |p| format!("{}", p.mixer.tracks[vox].sends[0].level_db),
+    );
+    assert!((project.mixer.tracks[vox].sends[0].level_db + 6.0).abs() < 1e-6);
+
+    round_trip(
+        Box::new(SetSendPreFader::new(vox, 0, true)),
+        &mut project,
+        |p| format!("{}", p.mixer.tracks[vox].sends[0].pre_fader),
+    );
+    assert!(project.mixer.tracks[vox].sends[0].pre_fader);
+}
+
+#[test]
+fn a_send_level_drag_is_one_undo_entry() {
+    // The same rule a fader follows: one gesture, one entry. Sixty of them for
+    // one drag is an undo stack nobody can use.
+    let mut project = project();
+    let mut add = AddMixerTrack::new("Reverb");
+    add.apply(&mut project).unwrap();
+    let reverb = add.track().unwrap();
+    let mut add_vox = AddMixerTrack::new("Vox");
+    add_vox.apply(&mut project).unwrap();
+    let vox = add_vox.track().unwrap();
+    AddSend::new(vox, reverb).apply(&mut project).unwrap();
+
+    let mut first = SetSendLevel::new(vox, 0, -20.0);
+    assert!(
+        first.merge_with(&SetSendLevel::new(vox, 0, -12.0)),
+        "two moves of the same send's level are one gesture"
+    );
+    assert!(
+        !first.merge_with(&SetSendLevel::new(vox, 1, -12.0)),
+        "and two different sends are two"
+    );
+}
+
+#[test]
+fn a_send_can_be_removed_and_it_comes_back_with_its_settings() {
+    let mut project = project();
+    let mut add = AddMixerTrack::new("Reverb");
+    add.apply(&mut project).unwrap();
+    let reverb = add.track().unwrap();
+    let mut add_vox = AddMixerTrack::new("Vox");
+    add_vox.apply(&mut project).unwrap();
+    let vox = add_vox.track().unwrap();
+    AddSend::new(vox, reverb).apply(&mut project).unwrap();
+    SetSendLevel::new(vox, 0, -9.0).apply(&mut project).unwrap();
+
+    let mut remove = RemoveSend::new(vox, 0);
+    remove.apply(&mut project).unwrap();
+    assert!(project.mixer.tracks[vox].sends.is_empty());
+
+    remove.invert().apply(&mut project).unwrap();
+    let sends = &project.mixer.tracks[vox].sends;
+    assert_eq!(sends.len(), 1);
+    assert_eq!(sends[0].target, reverb);
+    assert!(
+        (sends[0].level_db + 9.0).abs() < 1e-6,
+        "a send deleted by accident comes back where it was set"
+    );
+}
+
+#[test]
+fn a_send_into_itself_is_refused() {
+    let mut project = project();
+    let mut add = AddMixerTrack::new("Bus");
+    add.apply(&mut project).unwrap();
+    let bus = add.track().unwrap();
+
+    assert!(AddSend::new(bus, bus).apply(&mut project).is_err());
+    assert!(project.mixer.tracks[bus].sends.is_empty());
+}
+
+#[test]
+fn a_send_that_would_close_a_loop_is_refused() {
+    // §13.2 is explicit that both edge kinds count, *"and a cycle through one
+    // is the same feedback loop as a cycle through an output — it is just
+    // harder to see in the UI"*. A into B by output, B into A by send, is a
+    // loop.
+    let mut project = project();
+    let mut add_a = AddMixerTrack::new("A");
+    add_a.apply(&mut project).unwrap();
+    let a = add_a.track().unwrap();
+    let mut add_b = AddMixerTrack::new("B");
+    add_b.apply(&mut project).unwrap();
+    let b = add_b.track().unwrap();
+
+    SetTrackOutput::new(a, Some(b)).apply(&mut project).unwrap();
+    assert!(AddSend::new(b, a).apply(&mut project).is_err());
+    assert!(project.mixer.tracks[b].sends.is_empty());
+    assert!(!project.mixer.has_cycle());
+}
+
+#[test]
+fn an_output_that_would_close_a_loop_through_a_send_is_refused_too() {
+    // The same check from the other side, so neither command is the only one
+    // that knows about the other's edges.
+    let mut project = project();
+    let mut add_a = AddMixerTrack::new("A");
+    add_a.apply(&mut project).unwrap();
+    let a = add_a.track().unwrap();
+    let mut add_b = AddMixerTrack::new("B");
+    add_b.apply(&mut project).unwrap();
+    let b = add_b.track().unwrap();
+
+    AddSend::new(a, b).apply(&mut project).unwrap();
+    assert!(SetTrackOutput::new(b, Some(a)).apply(&mut project).is_err());
+    assert!(!project.mixer.has_cycle());
+}
+
+#[test]
+fn sending_to_a_track_that_does_not_exist_is_refused() {
+    let mut project = project();
+    let mut add = AddMixerTrack::new("Vox");
+    add.apply(&mut project).unwrap();
+    let vox = add.track().unwrap();
+    assert!(
+        AddSend::new(vox, MixerTrackId::default())
+            .apply(&mut project)
+            .is_err()
+    );
+}
+
+#[test]
+fn one_track_can_feed_two_buses() {
+    // A reverb and a delay off the same vocal is the ordinary case, not the
+    // edge case.
+    let mut project = project();
+    let mut ids = Vec::new();
+    for name in ["Reverb", "Delay", "Vox"] {
+        let mut add = AddMixerTrack::new(name);
+        add.apply(&mut project).unwrap();
+        ids.push(add.track().unwrap());
+    }
+    let (reverb, delay, vox) = (ids[0], ids[1], ids[2]);
+    AddSend::new(vox, reverb).apply(&mut project).unwrap();
+    AddSend::new(vox, delay).apply(&mut project).unwrap();
+
+    let targets: Vec<MixerTrackId> = project.mixer.tracks[vox]
+        .sends
+        .iter()
+        .map(|s| s.target)
+        .collect();
+    assert_eq!(targets, vec![reverb, delay]);
+    assert!(!project.mixer.has_cycle());
+}
+
+#[test]
+fn deleting_a_track_takes_the_sends_that_fed_it_with_it() {
+    // A send at a track that is not there is either silent or a panic, and
+    // both are worse than the send simply going with the bus it fed.
+    let mut project = project();
+    let mut add_reverb = AddMixerTrack::new("Reverb");
+    add_reverb.apply(&mut project).unwrap();
+    let reverb = add_reverb.track().unwrap();
+    let mut add_vox = AddMixerTrack::new("Vox");
+    add_vox.apply(&mut project).unwrap();
+    let vox = add_vox.track().unwrap();
+    AddSend::new(vox, reverb).apply(&mut project).unwrap();
+
+    let mut remove = RemoveMixerTrack::new(reverb);
+    remove.apply(&mut project).unwrap();
+    assert!(
+        project.mixer.tracks[vox].sends.is_empty(),
+        "a send was left pointing at a deleted track"
+    );
+
+    // And undo brings the bus back with what fed it.
+    remove.invert().apply(&mut project).unwrap();
+    assert_eq!(
+        project.mixer.tracks[vox].sends.len(),
+        1,
+        "undoing the deletion has to restore the send too"
+    );
+    assert_eq!(project.mixer.tracks[vox].sends[0].target, reverb);
 }

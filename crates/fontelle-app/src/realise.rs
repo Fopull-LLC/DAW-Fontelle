@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 use fontelle_core::{Patch, PatchFormatError, PrepareContext, Sampler, UnresolvedSample};
 use fontelle_engine::{
     BufferPool, CompiledGraph, MasterMeter, Metronome, MetronomeNode, MixerTrackNode, SamplerNode,
+    SendControls, SendNode,
     ScheduledNode, TrackControls,
 };
 use fontelle_model::{Command, CommandError, MixerTrack, Project};
@@ -86,6 +87,13 @@ pub struct Realised {
     /// off the audio thread — matching a string per event per block on the RT
     /// side is work it should never be doing.
     pub param_nodes: HashMap<fontelle_types::ParamAddress, NodeId>,
+    /// One live control surface per send, keyed by `(track, index into that
+    /// track's `sends`)`.
+    ///
+    /// The same reason `track_controls` exists: a send level is something
+    /// somebody **drags**, and `realise` deserialises every channel's patch —
+    /// so a drag that rebuilt the graph per pixel would be unusable.
+    pub send_controls: HashMap<(MixerTrackId, usize), std::sync::Arc<SendControls>>,
     /// The metronome's switch, for whoever is driving the transport.
     ///
     /// Taken here for the same reason `master` is: once the graph is on the
@@ -166,19 +174,40 @@ pub fn set_channel_patch(
 /// walk terminates; the bound is a belt-and-braces guard against a document
 /// that changed underneath, not the termination argument.
 fn depth_to_master(project: &Project, track: MixerTrackId, master: MixerTrackId) -> usize {
-    let mut steps = 0;
-    let mut current = track;
-    while current != master && steps <= project.mixer.tracks.len() {
-        match project.mixer.tracks.get(current).and_then(|t| t.output) {
-            Some(next) => {
-                current = next;
-                steps += 1;
-            }
-            // `output: None` means master (TDD §13.1).
-            None => return steps + 1,
+    // **Both edge kinds**, and the *longest* path, because a track has to be
+    // scheduled after everything that feeds it — a send crossing from a
+    // shallow track into a deeper bus is a feeding edge like any other, and
+    // one measured along `output` alone would put the tap after the bus it
+    // feeds had already been read.
+    //
+    // Depth-first with a visited set rather than a walk, since sends make this
+    // a DAG rather than a chain. Acyclic by construction: every command that
+    // writes an edge checks `Mixer::has_cycle` first (§13.2), and `realise`
+    // refuses a document that slipped through.
+    fn walk(
+        project: &Project,
+        track: MixerTrackId,
+        master: MixerTrackId,
+        seen: &mut HashSet<MixerTrackId>,
+    ) -> usize {
+        if track == master || !seen.insert(track) {
+            return 0;
         }
+        let Some(node) = project.mixer.tracks.get(track) else {
+            return 0;
+        };
+        // `output: None` means master (TDD §13.1), which is depth one.
+        let mut deepest = match node.output {
+            Some(next) => walk(project, next, master, seen) + 1,
+            None => 1,
+        };
+        for send in &node.sends {
+            deepest = deepest.max(walk(project, send.target, master, seen) + 1);
+        }
+        seen.remove(&track);
+        deepest
     }
-    steps
+    walk(project, track, master, &mut HashSet::new())
 }
 
 /// The tracks a solo leaves audible.
@@ -203,41 +232,55 @@ fn soloed_audible(project: &Project, master: MixerTrackId) -> Option<HashSet<Mix
         return None;
     }
 
+    // Everything `track` feeds, one hop: its output and every send's target.
+    // **Both**, because a send is a signal path like any other — a soloed
+    // vocal whose reverb bus was closed would be a solo that took the reverb
+    // away with everything else, and §13.2 is explicit that the two edge kinds
+    // are the same kind of thing.
+    let downstream = |track: MixerTrackId| -> Vec<MixerTrackId> {
+        let Some(node) = project.mixer.tracks.get(track) else {
+            return Vec::new();
+        };
+        let mut out: Vec<MixerTrackId> = vec![node.output.unwrap_or(master)];
+        out.extend(node.sends.iter().map(|send| send.target));
+        out
+    };
+
     let mut audible: HashSet<MixerTrackId> = soloed.iter().copied().collect();
-    // Upwards: everything carrying a soloed track to the speakers.
-    for start in &soloed {
-        let mut current = *start;
-        for _ in 0..=project.mixer.tracks.len() {
-            let Some(next) = project.mixer.tracks.get(current).and_then(|t| t.output) else {
-                audible.insert(master);
-                break;
-            };
-            if !audible.insert(next) && next == master {
-                break;
+    // Upwards: everything carrying a soloed track to the speakers, by either
+    // kind of edge. Breadth-first rather than a walk, since a track with sends
+    // reaches the master by more than one path.
+    let mut queue: Vec<MixerTrackId> = soloed.clone();
+    while let Some(track) = queue.pop() {
+        for next in downstream(track) {
+            if audible.insert(next) && next != master {
+                queue.push(next);
             }
-            current = next;
         }
     }
+    audible.insert(master);
     // Downwards: everything feeding one. A track feeds a soloed track exactly
-    // when its own walk to master passes through one, so this is the same walk
-    // read the other way round.
+    // when some path from it reaches one, so this is the same walk read the
+    // other way round.
+    let feeds_a_soloed_track = |start: MixerTrackId| -> bool {
+        let mut seen: HashSet<MixerTrackId> = HashSet::new();
+        let mut queue = vec![start];
+        while let Some(track) = queue.pop() {
+            if soloed.contains(&track) {
+                return true;
+            }
+            if track == master || !seen.insert(track) {
+                continue;
+            }
+            queue.extend(downstream(track));
+        }
+        false
+    };
     let feeders: Vec<MixerTrackId> = project
         .mixer
         .tracks
         .keys()
-        .filter(|id| {
-            let mut current = *id;
-            for _ in 0..=project.mixer.tracks.len() {
-                if soloed.contains(&current) {
-                    return true;
-                }
-                match project.mixer.tracks.get(current).and_then(|t| t.output) {
-                    Some(next) => current = next,
-                    None => return false,
-                }
-            }
-            false
-        })
+        .filter(|id| feeds_a_soloed_track(*id))
         .collect();
     audible.extend(feeders);
     Some(audible)
@@ -374,6 +417,8 @@ pub fn realise_with(
     let mut effect_controls: HashMap<(MixerTrackId, usize), fontelle_engine::EffectControls> =
         HashMap::new();
     let mut param_nodes: HashMap<fontelle_types::ParamAddress, NodeId> = HashMap::new();
+    let mut send_controls: HashMap<(MixerTrackId, usize), std::sync::Arc<SendControls>> =
+        HashMap::new();
     // Past every channel's id, so the two sets cannot collide.
     let mut next_id = project.channels.len() as u64 + 1;
     for id in tracks {
@@ -387,6 +432,22 @@ pub fn realise_with(
             id,
             track,
             &bus,
+        );
+        // Pre-fader sends: after the inserts, before the fader. "Pre-fader" is
+        // a claim about the *fader* and not about the chain — an EQ on a track
+        // is part of the track's sound, and a send that bypassed it would be
+        // sending a different instrument.
+        schedule_sends(
+            &mut schedule,
+            &mut send_controls,
+            &TrackPlan {
+                id,
+                track,
+                bus: &bus,
+                bus_of: &bus_of,
+                audible: is_audible(id),
+            },
+            true,
         );
         let (node, controls) = fader(track, is_audible(id), existing.get(&id));
         track_controls.insert(id, controls);
@@ -406,6 +467,22 @@ pub fn realise_with(
             input_buffers: bus.clone(),
             output_buffers: bus.clone(),
         });
+        // Post-fader sends: after it, so pulling the part down takes its
+        // reverb with it. Before the bus sum only because that is where the
+        // bus stops being this track's — the sum leaves its source untouched,
+        // so either order would read the same signal.
+        schedule_sends(
+            &mut schedule,
+            &mut send_controls,
+            &TrackPlan {
+                id,
+                track,
+                bus: &bus,
+                bus_of: &bus_of,
+                audible: is_audible(id),
+            },
+            false,
+        );
         let output = track.output.unwrap_or(master);
         schedule.push(ScheduledNode {
             id: NodeId::default(),
@@ -491,6 +568,7 @@ pub fn realise_with(
         track_controls,
         effect_controls,
         param_nodes,
+        send_controls,
         metronome,
         unresolved,
     })
@@ -519,6 +597,73 @@ fn load_patch(
     library: &SampleLibrary,
 ) -> Result<fontelle_core::LoadedPatch, PatchFormatError> {
     Patch::from_data(data, |file: &SampleRef| library.resolve(file))
+}
+
+/// One track, and everything scheduling a node on it needs to know.
+///
+/// A struct rather than five more parameters: they travel together, two of
+/// them are only meaningful against each other (a bus is this track's bus),
+/// and the pair that would be easiest to swap by accident — `id` and the
+/// `audible` flag *about* that id — cannot be, this way.
+#[derive(Clone, Copy)]
+struct TrackPlan<'a> {
+    id: MixerTrackId,
+    track: &'a fontelle_model::MixerTrack,
+    bus: &'a [usize],
+    bus_of: &'a HashMap<MixerTrackId, [usize; 2]>,
+    /// Whether a solo elsewhere leaves this track in the mix.
+    audible: bool,
+}
+
+/// Schedules `track`'s sends whose tap point matches `pre_fader`.
+///
+/// A send **adds** into its target's bus and leaves its source untouched,
+/// which is the whole difference between a send and an output: routing an
+/// output moves the signal, a send takes a copy and the dry path carries on.
+///
+/// A send at a track that is not there is **dropped** rather than sent to the
+/// master, which is the opposite of what a channel with a dead route does and
+/// deliberately so. A channel with nowhere to go is silent, which is a bug
+/// nobody can see; a send that quietly became a second dry path would be a mix
+/// that is wrong with no visible reason. `RemoveMixerTrack` takes the sends
+/// that fed a deleted track with it, so this is the belt to that braces.
+fn schedule_sends(
+    schedule: &mut Vec<ScheduledNode>,
+    controls: &mut HashMap<(MixerTrackId, usize), std::sync::Arc<SendControls>>,
+    plan: &TrackPlan<'_>,
+    pre_fader: bool,
+) {
+    let TrackPlan {
+        id,
+        track,
+        bus,
+        bus_of,
+        audible,
+    } = *plan;
+    for (index, send) in track.sends.iter().enumerate() {
+        if send.pre_fader != pre_fader || send.target == id {
+            continue;
+        }
+        let Some(target) = bus_of.get(&send.target).copied() else {
+            continue;
+        };
+        // Silenced with the track that feeds it, so a solo elsewhere does not
+        // leave a reverb ringing from a part nobody can hear. Which tracks a
+        // solo leaves audible is a property of the whole routing graph, which
+        // is why the node is told rather than left to work it out.
+        let live = std::sync::Arc::new(SendControls::new(
+            send.level_db,
+            send.pan,
+            track.mute || !audible,
+        ));
+        controls.insert((id, index), std::sync::Arc::clone(&live));
+        schedule.push(ScheduledNode {
+            id: NodeId::default(),
+            node: Box::new(SendNode::new(live, track.pan_law)),
+            input_buffers: bus.to_vec(),
+            output_buffers: target.to_vec(),
+        });
+    }
 }
 
 /// Schedules one track's insert chain onto its own bus, in order, and hands
@@ -589,11 +734,9 @@ fn mint(next: &mut u64) -> NodeId {
 /// well as the controls, so the two agree from the first block even though only
 /// the controls are read while the graph is running.
 ///
-/// **Sends are not compiled** — they are M4, and the gate this was built for
-/// balances a piece with gain, pan and mute. Inserts *are*, as of §13.4's
-/// first pass: see [`schedule_inserts`]. A
-/// send is a `BusSumNode` with a level and a pan, so the shape is already here
-/// when it is wanted.
+/// The chain around it is [`schedule_inserts`] before and [`schedule_sends`]
+/// on either side: a pre-fader send is taken between the inserts and this, and
+/// a post-fader one between this and the bus sum.
 fn fader(
     track: &MixerTrack,
     audible: bool,
@@ -655,5 +798,35 @@ pub fn apply_mixer_controls(
         live.set_gain_db(track.gain_db);
         live.set_pan(track.pan);
         live.set_mute(track.mute || audible.as_ref().is_some_and(|set| !set.contains(&id)));
+    }
+}
+
+/// The same, for every send (TDD §13.2).
+///
+/// Its own function rather than another parameter on
+/// [`apply_mixer_controls`], because a caller that has no sends to publish —
+/// every offline path — should not have to say so.
+///
+/// A send is silenced with the track that feeds it, so a mute or a solo
+/// flicked while listening takes its reverb with it rather than leaving the
+/// bus ringing from a part nobody can hear.
+pub fn apply_send_controls(
+    project: &Project,
+    controls: &HashMap<(MixerTrackId, usize), std::sync::Arc<SendControls>>,
+) {
+    let Some(master) = project.mixer.master else {
+        return;
+    };
+    let audible = soloed_audible(project, master);
+    for (id, track) in project.mixer.tracks.iter() {
+        let silent = track.mute || audible.as_ref().is_some_and(|set| !set.contains(&id));
+        for (index, send) in track.sends.iter().enumerate() {
+            let Some(live) = controls.get(&(id, index)) else {
+                continue;
+            };
+            live.set_level_db(send.level_db);
+            live.set_pan(send.pan);
+            live.set_mute(silent);
+        }
     }
 }

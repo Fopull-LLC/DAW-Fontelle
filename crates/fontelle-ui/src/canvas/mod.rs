@@ -26,10 +26,11 @@ pub use instrument::{
     ParamKind, choice_index, instrument_hit, instrument_layout, knob_value, next_value,
 };
 pub use mixer::{
-    FADER_DETENT_PX, InsertRowLayout, MAX_FADER_DB, MIN_FADER_DB, MixerHit, MixerLayout,
-    MixerStripLayout, OPTIONS_WIDTH, OptionsHit, PAN_DETENT_PX, STRIP_WIDTH, TrackOptionsLayout,
-    fader_db_at, fader_y_of_db, format_gain_db, format_pan, mixer_hit, mixer_layout,
-    mixer_layout_for, pan_at, pan_x_of, unity_fraction,
+    FADER_DETENT_PX, InsertRowLayout, MAX_FADER_DB, MAX_SEND_DB, MIN_FADER_DB, MIN_SEND_DB,
+    MixerHit, MixerLayout, MixerStripLayout, OPTIONS_WIDTH, OptionsHit, PAN_DETENT_PX,
+    STRIP_WIDTH, SendRowLayout, TrackOptionsLayout, fader_db_at, fader_y_of_db, format_gain_db,
+    format_pan, format_send_db, mixer_hit, mixer_layout, mixer_layout_for, pan_at, pan_x_of,
+    send_level_at, send_x_of_level, unity_fraction,
 };
 pub use piano_roll::{
     Audition, DEFAULT_LANE_HEIGHT, DrawDrag, KEYBOARD_WIDTH, LANE_PROPERTIES, LaneMenu,

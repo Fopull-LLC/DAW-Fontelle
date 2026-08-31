@@ -26,7 +26,7 @@
 use fontelle_ui::canvas::{
     InsertInfo, MixerHit, OptionsHit, STRIP_WIDTH, mixer_hit, mixer_layout, mixer_layout_for,
 };
-use fontelle_ui::document::MixerStrip;
+use fontelle_ui::document::{MixerStrip, SendInfo};
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::{Metrics, Theme};
 
@@ -44,6 +44,16 @@ fn strip(name: &str, inserts: Vec<InsertInfo>) -> MixerStrip {
         is_master: false,
         color: [0x60, 0x60, 0x68, 0xff],
         inserts,
+        sends: Vec::new(),
+    }
+}
+
+fn a_send(target: usize, name: &str, level_db: f32) -> SendInfo {
+    SendInfo {
+        target,
+        target_name: name.into(),
+        level_db,
+        pre_fader: false,
     }
 }
 
@@ -279,4 +289,186 @@ fn the_panel_can_be_pointed_at_the_master() {
     let o = l.options.expect("options");
     assert_eq!(o.track, 2);
     assert!(!o.add_insert.is_empty());
+}
+
+// --------------------------------------------------------------- the sends ---
+//
+// TDD §13.2's other half. A send is two numbers and a destination, so a
+// 76-pixel strip has room for none of it — which is why the column exists at
+// all and why the sends live here rather than on the strip.
+
+/// The same rig, with a reverb send on the first track.
+fn with_sends() -> Vec<MixerStrip> {
+    let mut strips = strips();
+    strips[0].sends = vec![a_send(1, "Reverb", -12.0), a_send(2, "Master", -30.0)];
+    strips
+}
+
+fn sending(selected: usize) -> fontelle_ui::canvas::TrackOptionsLayout {
+    mixer_layout_for(body(), &metrics(), &with_sends(), 0, Some(selected))
+        .options
+        .expect("a 900px panel has room for the options column")
+}
+
+#[test]
+fn the_panel_shows_the_sends_of_the_selected_track() {
+    let o = sending(0);
+    assert_eq!(o.sends.len(), 2);
+    assert_eq!(o.sends[0].index, 0);
+    assert_eq!(o.sends[1].index, 1);
+    assert!(!o.add_send.is_empty());
+
+    let none = sending(1);
+    assert!(none.sends.is_empty());
+    assert!(
+        !none.add_send.is_empty(),
+        "a track with no sends still has somewhere to make the first one"
+    );
+}
+
+#[test]
+fn the_sends_sit_under_the_effects_rather_than_among_them() {
+    // The chain and the sends are two different things about a track, and a
+    // column that interleaved them would read as one list of nine rows.
+    let o = sending(0);
+    assert!(o.sends_title.y >= o.add_insert.bottom() - 0.001);
+    assert!(o.sends[0].frame.y >= o.sends_title.bottom() - 0.001);
+    assert!(o.add_send.y >= o.sends[1].frame.bottom() - 0.001);
+}
+
+#[test]
+fn every_send_row_is_inside_the_panel_and_nothing_overlaps() {
+    let o = sending(0);
+    let mut named: Vec<(String, Rect)> = vec![
+        ("the title".into(), o.title),
+        ("the output row".into(), o.output),
+        ("the effects heading".into(), o.inserts_title),
+        ("the add-insert row".into(), o.add_insert),
+        ("the sends heading".into(), o.sends_title),
+        ("the add-send row".into(), o.add_send),
+    ];
+    for row in &o.inserts {
+        named.push((format!("insert row {}", row.slot), row.frame));
+    }
+    for row in &o.sends {
+        named.push((format!("send row {}", row.index), row.frame));
+        for (part, rect) in [
+            ("tap", row.tap),
+            ("target", row.target),
+            ("level", row.level),
+            ("remove", row.remove),
+        ] {
+            // Edge by edge rather than `intersection(&frame) == rect`, for the
+            // reason `tests/mixer.rs` gives: `intersection` recomputes a width
+            // by subtraction, and a rectangle built from a fraction of another
+            // comes back a float ulp adrift from one that is genuinely inside.
+            assert!(
+                rect.x >= o.frame.x - 1e-3
+                    && rect.y >= o.frame.y - 1e-3
+                    && rect.right() <= o.frame.right() + 1e-3
+                    && rect.bottom() <= o.frame.bottom() + 1e-3,
+                "the {part} of send {} escapes the panel: {rect:?} in {:?}",
+                row.index,
+                o.frame
+            );
+        }
+    }
+    for (i, (a_name, a)) in named.iter().enumerate() {
+        for (b_name, b) in named.iter().skip(i + 1) {
+            if a.is_empty() || b.is_empty() {
+                continue;
+            }
+            assert!(!a.intersects(b), "{a_name} {a:?} overlaps {b_name} {b:?}");
+        }
+    }
+}
+
+#[test]
+fn a_send_rows_four_controls_do_not_eat_each_other() {
+    let o = sending(0);
+    let row = o.sends[0].clone();
+    for (a_name, a) in [("tap", row.tap), ("target", row.target), ("level", row.level)] {
+        for (b_name, b) in [("target", row.target), ("level", row.level), ("remove", row.remove)] {
+            if a == b || a.is_empty() || b.is_empty() {
+                continue;
+            }
+            assert!(!a.intersects(&b), "the {a_name} overlaps the {b_name}");
+        }
+    }
+    assert!(
+        row.level.width > row.tap.width,
+        "the level is the thing you drag and should get the room"
+    );
+}
+
+#[test]
+fn every_send_control_reports_itself() {
+    let l = mixer_layout_for(body(), &metrics(), &with_sends(), 0, Some(0));
+    let o = l.options.clone().expect("options");
+
+    let (x, y) = centre(o.add_send);
+    assert_eq!(mixer_hit(&l, x, y), MixerHit::Options(OptionsHit::AddSend));
+
+    let row = o.sends[1].clone();
+    let (x, y) = centre(row.tap);
+    assert_eq!(mixer_hit(&l, x, y), MixerHit::Options(OptionsHit::SendTap(1)));
+    let (x, y) = centre(row.target);
+    assert_eq!(mixer_hit(&l, x, y), MixerHit::Options(OptionsHit::Send(1)));
+    let (x, y) = centre(row.level);
+    assert_eq!(
+        mixer_hit(&l, x, y),
+        MixerHit::Options(OptionsHit::SendLevel(1))
+    );
+    let (x, y) = centre(row.remove);
+    assert_eq!(
+        mixer_hit(&l, x, y),
+        MixerHit::Options(OptionsHit::SendRemove(1))
+    );
+}
+
+#[test]
+fn a_send_level_reads_back_where_it_was_dragged() {
+    // The same claim the fader rests on: what is drawn is what would be read
+    // from a press there, or the control jumps the moment it is grabbed.
+    use fontelle_ui::canvas::{send_level_at, send_x_of_level};
+
+    let track = Rect::new(10.0, 0.0, 100.0, 12.0);
+    for db in [-60.0, -40.0, -12.0, -3.0, 0.0, 6.0] {
+        let x = send_x_of_level(track, db);
+        let read = send_level_at(track, x);
+        assert!(
+            (read - db).abs() < 0.6,
+            "{db} dB drew at {x} and read back as {read}"
+        );
+    }
+}
+
+#[test]
+fn a_send_level_clamps_to_the_ends_of_its_travel() {
+    use fontelle_ui::canvas::send_level_at;
+
+    let track = Rect::new(10.0, 0.0, 100.0, 12.0);
+    assert!(send_level_at(track, -500.0) <= -60.0);
+    assert!(send_level_at(track, 500.0) >= 6.0);
+    // A zero-width control answers rather than dividing by its own width.
+    assert!(send_level_at(Rect::new(0.0, 0.0, 0.0, 0.0), 5.0).is_finite());
+}
+
+#[test]
+fn a_column_too_short_for_the_sends_keeps_the_chain() {
+    // The chain is what changes the sound of the track itself; a send is what
+    // it gives to something else. When only one fits, it is the chain.
+    let short = Rect::new(0.0, 0.0, 900.0, 150.0);
+    let l = mixer_layout_for(short, &metrics(), &with_sends(), 0, Some(0));
+    let Some(o) = l.options else { return };
+    if o.sends.is_empty() {
+        assert!(
+            !o.inserts.is_empty() || o.add_insert.is_empty(),
+            "the sends were dropped while the chain had nothing either"
+        );
+    }
+    for row in &o.sends {
+        assert!(row.frame.bottom() <= o.frame.bottom() + 1e-3);
+        assert!(row.frame.y >= o.frame.y - 1e-3);
+    }
 }

@@ -23,7 +23,7 @@ use fontelle_types::{ChannelId, ClipId, LaneId, MixerTrackId, NoteId, Tick};
 use crate::channel::Channel;
 use crate::clip::{Clip, ClipSource};
 use crate::command::{Command, CommandError};
-use crate::mixer::MixerTrack;
+use crate::mixer::{MixerTrack, Send};
 use crate::note::{Note, NoteProperty};
 use crate::project::Project;
 
@@ -387,6 +387,13 @@ struct RemovedTrack {
     channels: Vec<ChannelId>,
     /// And the tracks that were feeding it.
     feeders: Vec<MixerTrackId>,
+    /// The sends that pointed at it, and where each sat in its own track's
+    /// list — `(track, index, the send itself)`.
+    ///
+    /// Kept whole rather than remade on undo: a send carries a level somebody
+    /// set, and restoring a deleted reverb bus with every send to it wide open
+    /// would be a worse surprise than the deletion was.
+    senders: Vec<(MixerTrackId, usize, crate::mixer::Send)>,
 }
 
 /// Deletes a mixer track, sending everything that pointed at it back to the
@@ -442,10 +449,27 @@ impl Command for RemoveMixerTrack {
             doc.mixer.tracks[*id].output = doc.mixer.master;
         }
 
+        // A send at a track that is not there is either silent or a panic, and
+        // both are worse than the send going with the bus it fed. Recorded
+        // back to front so restoring them by `insert` puts each one back at
+        // its own index.
+        let mut senders = Vec::new();
+        for (id, other) in doc.mixer.tracks.iter() {
+            for (index, send) in other.sends.iter().enumerate() {
+                if send.target == self.id {
+                    senders.push((id, index, *send));
+                }
+            }
+        }
+        for (id, index, _) in senders.iter().rev() {
+            doc.mixer.tracks[*id].sends.remove(*index);
+        }
+
         self.removed = Some(RemovedTrack {
             track,
             channels,
             feeders,
+            senders,
         });
         Ok(())
     }
@@ -502,6 +526,13 @@ impl Command for RestoreMixerTrack {
         for track in &self.removed.feeders {
             if let Some(track) = doc.mixer.tracks.get_mut(*track) {
                 track.output = Some(self.id);
+            }
+        }
+        // Forwards, so each send goes back to the index it came from.
+        for (track, index, send) in &self.removed.senders {
+            if let Some(track) = doc.mixer.tracks.get_mut(*track) {
+                let at = (*index).min(track.sends.len());
+                track.sends.insert(at, *send);
             }
         }
         Ok(())
@@ -667,6 +698,326 @@ impl Command for SetTrackOutput {
 
     /// Picking from a menu is one decision each time, not a gesture: two
     /// choices made a second apart are two things to be able to take back.
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// The level a new send starts at.
+///
+/// **Silence.** A send that arrived wide open would change the mix the moment
+/// it was made, which is the opposite of what making one is for: you add a
+/// reverb send and then bring it up until you can hear it.
+pub const NEW_SEND_DB: f32 = -60.0;
+
+/// Takes a copy of one track's signal into another (TDD §13.2).
+///
+/// # A send is not an output
+///
+/// Routing a track's *output* into a reverb sends all of it and nothing stays
+/// dry. A send takes a copy at a level and leaves the dry signal on its own
+/// path, which is what a reverb bus is and why both exist.
+///
+/// §13.2 requires the routing graph to be validated acyclic on every
+/// mutation, and it is explicit that both edge kinds count: a cycle through a
+/// send is the same feedback loop as one through an output, "just harder to
+/// see in the UI". So this checks with [`Mixer::has_cycle`], the same way
+/// [`SetTrackOutput`] does and for the same reason — one implementation of
+/// what a loop is.
+pub struct AddSend {
+    track: MixerTrackId,
+    target: MixerTrackId,
+    /// Where it landed, so the inverse can take exactly this one off.
+    index: Option<usize>,
+}
+
+impl AddSend {
+    pub fn new(track: MixerTrackId, target: MixerTrackId) -> Self {
+        Self {
+            track,
+            target,
+            index: None,
+        }
+    }
+}
+
+impl Command for AddSend {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        if !doc.mixer.tracks.contains_key(self.target) {
+            return Err(CommandError(format!("no mixer track {:?}", self.target)));
+        }
+        let track = doc
+            .mixer
+            .tracks
+            .get_mut(self.track)
+            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
+        let index = self.index.unwrap_or(track.sends.len()).min(track.sends.len());
+        track.sends.insert(
+            index,
+            Send {
+                target: self.target,
+                level_db: NEW_SEND_DB,
+                pan: 0.0,
+                // Post-fader, which is what a reverb send wants: pull the
+                // fader down and the reverb follows it rather than being left
+                // ringing over a part that is no longer there.
+                pre_fader: false,
+            },
+        );
+        if doc.mixer.has_cycle() {
+            doc.mixer.tracks[self.track].sends.remove(index);
+            return Err(CommandError(
+                "that send would feed a track back into itself".into(),
+            ));
+        }
+        self.index = Some(index);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match self.index {
+            Some(index) => Box::new(RemoveSend::new(self.track, index)),
+            None => Box::new(NotApplied("adding a send")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Add send"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// Takes one off, keeping it so undo puts it back where it was set.
+pub struct RemoveSend {
+    track: MixerTrackId,
+    index: usize,
+    removed: Option<Send>,
+}
+
+impl RemoveSend {
+    pub fn new(track: MixerTrackId, index: usize) -> Self {
+        Self {
+            track,
+            index,
+            removed: None,
+        }
+    }
+}
+
+impl Command for RemoveSend {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let track = doc
+            .mixer
+            .tracks
+            .get_mut(self.track)
+            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
+        if self.index >= track.sends.len() {
+            return Err(CommandError("no such send".into()));
+        }
+        let removed = track.sends.remove(self.index);
+        self.removed.get_or_insert(removed);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match self.removed {
+            Some(send) => Box::new(RestoreSend {
+                track: self.track,
+                index: self.index,
+                send,
+            }),
+            None => Box::new(NotApplied("deleting a send")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Delete send"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// Puts a deleted send back at its own index, with the level it was set to.
+struct RestoreSend {
+    track: MixerTrackId,
+    index: usize,
+    send: Send,
+}
+
+impl Command for RestoreSend {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let track = doc
+            .mixer
+            .tracks
+            .get_mut(self.track)
+            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
+        let at = self.index.min(track.sends.len());
+        track.sends.insert(at, self.send);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        Box::new(RemoveSend::new(self.track, self.index))
+    }
+
+    fn label(&self) -> &str {
+        "Restore send"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// How much of a track goes down one of its sends.
+pub struct SetSendLevel {
+    track: MixerTrackId,
+    index: usize,
+    level_db: f32,
+    previous: Option<f32>,
+}
+
+impl SetSendLevel {
+    pub fn new(track: MixerTrackId, index: usize, level_db: f32) -> Self {
+        Self {
+            track,
+            index,
+            level_db,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetSendLevel {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let send = doc
+            .mixer
+            .tracks
+            .get_mut(self.track)
+            .and_then(|track| track.sends.get_mut(self.index))
+            .ok_or_else(|| CommandError("no such send".into()))?;
+        let previous = std::mem::replace(&mut send.level_db, self.level_db);
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match self.previous {
+            Some(previous) => Box::new(SetSendLevel::new(self.track, self.index, previous)),
+            None => Box::new(NotApplied("setting a send level")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Send level"
+    }
+
+    /// Dragging is one gesture. The same rule a fader follows — sixty entries
+    /// for one drag is an undo stack nobody can use.
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<SetSendLevel>() else {
+            return false;
+        };
+        if next.track != self.track || next.index != self.index {
+            return false;
+        }
+        self.level_db = next.level_db;
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// Whether a send is taken before the fader or after it.
+///
+/// The difference is audible and is the reason the switch exists: a post-fader
+/// send follows the fader down, and a pre-fader one does not — which is what a
+/// cue mix wants and what a reverb send does not.
+pub struct SetSendPreFader {
+    track: MixerTrackId,
+    index: usize,
+    pre_fader: bool,
+    previous: Option<bool>,
+}
+
+impl SetSendPreFader {
+    pub fn new(track: MixerTrackId, index: usize, pre_fader: bool) -> Self {
+        Self {
+            track,
+            index,
+            pre_fader,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetSendPreFader {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let send = doc
+            .mixer
+            .tracks
+            .get_mut(self.track)
+            .and_then(|track| track.sends.get_mut(self.index))
+            .ok_or_else(|| CommandError("no such send".into()))?;
+        let previous = std::mem::replace(&mut send.pre_fader, self.pre_fader);
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match self.previous {
+            Some(previous) => Box::new(SetSendPreFader::new(self.track, self.index, previous)),
+            None => Box::new(NotApplied("switching a send pre-fader")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Send tap point"
+    }
+
     fn merge_with(&mut self, _next: &dyn Command) -> bool {
         false
     }

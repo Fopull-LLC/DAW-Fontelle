@@ -44,7 +44,7 @@ use fontelle_ui::document::{
 use crate::bank::{BankRow, SoundfontBank, matches_names};
 use crate::library::SampleLibrary;
 use crate::projects::ProjectLibrary;
-use crate::realise::{RealiseOptions, apply_mixer_controls, realise};
+use crate::realise::{RealiseOptions, apply_mixer_controls, apply_send_controls, realise};
 use crate::settings::Settings;
 
 /// How long a clip a freshly added channel gets, in bars.
@@ -99,6 +99,10 @@ pub struct Session {
     automation_clip: Option<fontelle_types::ClipId>,
     automation_label: String,
     automation_selection: Vec<fontelle_types::PointId>,
+    /// The live end of every send, keyed the way `realise` keys it. Kept for
+    /// the reason `track_controls` is: a send level is dragged, and a drag has
+    /// to be audible before the mouse comes up.
+    send_controls: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SendControls>>,
     /// What each automated parameter is *called*, by address.
     ///
     /// The caption is the panel's — "Master — band1.gain" is a sentence only
@@ -225,6 +229,7 @@ impl Session {
             automation_clip: None,
             automation_label: String::new(),
             automation_selection: Vec::new(),
+            send_controls: HashMap::new(),
             automation_names: HashMap::new(),
             selected_track: 0,
             live_target: None,
@@ -550,6 +555,32 @@ impl Session {
             .unwrap_or_else(|| address.to_string())
     }
 
+    /// How many sends `id` has.
+    fn sends_of(&self, id: MixerTrackId) -> usize {
+        self.project
+            .mixer
+            .tracks
+            .get(id)
+            .map_or(0, |track| track.sends.len())
+    }
+
+    /// The live end of every send, in the order `realise` built them.
+    ///
+    /// Public so a test can prove a send level was heard without a sound card,
+    /// and prove it was heard *without* the graph being rebuilt.
+    pub fn send_controls(
+        &self,
+    ) -> HashMap<(usize, usize), std::sync::Arc<fontelle_engine::SendControls>> {
+        let ids = self.mixer_track_ids();
+        self.send_controls
+            .iter()
+            .filter_map(|((track, index), live)| {
+                let strip = ids.iter().position(|id| id == track)?;
+                Some(((strip, *index), std::sync::Arc::clone(live)))
+            })
+            .collect()
+    }
+
     /// Keeps the mixer's selection inside the mixer.
     ///
     /// Called after a track is deleted. Not on every read: an index that is
@@ -767,6 +798,7 @@ impl Session {
     /// soundfont in the project.
     fn publish_mixer(&mut self) {
         apply_mixer_controls(&self.project, &self.track_controls);
+        apply_send_controls(&self.project, &self.send_controls);
         self.revision += 1;
     }
 
@@ -872,6 +904,7 @@ impl Session {
                 // The old set belonged to the graph that is being replaced.
                 self.track_controls = realised.track_controls;
                 self.effect_controls = realised.effect_controls;
+                self.send_controls = realised.send_controls;
                 self.metronome = Some(realised.metronome);
                 self.publish_metronome();
                 // New graph, new node ids — including the one a plugged-in
@@ -1999,8 +2032,9 @@ impl StudioHost for Session {
     // --- the mixer (TDD §13) ---
 
     fn mixer_strips(&self) -> Vec<MixerStrip> {
-        self.mixer_track_ids()
-            .into_iter()
+        let ids = self.mixer_track_ids();
+        ids.iter()
+            .copied()
             .filter_map(|id| {
                 let track = self.project.mixer.tracks.get(id)?;
                 Some(MixerStrip {
@@ -2019,9 +2053,99 @@ impl StudioHost for Session {
                             bypassed: slot.bypassed,
                         })
                         .collect(),
+                    sends: track
+                        .sends
+                        .iter()
+                        .map(|send| {
+                            // A send at a track that is not in the list can
+                            // only be a document that got past the commands,
+                            // and the panel says so rather than pointing at
+                            // whichever strip happens to be first.
+                            let target = ids.iter().position(|id| *id == send.target);
+                            fontelle_ui::document::SendInfo {
+                                target: target.unwrap_or(usize::MAX),
+                                target_name: target
+                                    .and_then(|index| ids.get(index))
+                                    .and_then(|id| self.project.mixer.tracks.get(*id))
+                                    .map(|track| track.name.clone())
+                                    .unwrap_or_else(|| "\u{2014}".to_string()),
+                                level_db: send.level_db,
+                                pre_fader: send.pre_fader,
+                            }
+                        })
+                        .collect(),
                 })
             })
             .collect()
+    }
+
+    fn add_send(&mut self, strip: usize, target: usize) {
+        let ids = self.mixer_track_ids();
+        let (Some(id), Some(target)) = (ids.get(strip).copied(), ids.get(target).copied()) else {
+            return;
+        };
+        // A loop is refused by the command and reported by `run`, which is
+        // what puts the message in front of the user (§13.2).
+        self.run(Box::new(fontelle_model::AddSend::new(id, target)));
+        self.history.break_gesture();
+        // A send is a node in the schedule, so this is the graph's shape
+        // changing rather than a value in it.
+        self.rebuild_graph();
+    }
+
+    fn remove_send(&mut self, strip: usize, index: usize) {
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return;
+        };
+        // Guarded here rather than left to the command: a panel and a document
+        // disagree for a frame every time something is deleted, and a stale
+        // index arriving from a click is ordinary rather than worth a message.
+        if index >= self.sends_of(id) {
+            return;
+        }
+        self.run(Box::new(fontelle_model::RemoveSend::new(id, index)));
+        self.history.break_gesture();
+        self.rebuild_graph();
+    }
+
+    fn set_send_level(&mut self, strip: usize, index: usize, level_db: f32) {
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return;
+        };
+        if index >= self.sends_of(id) {
+            return;
+        }
+        // Both, like a fader: the command for undo and for the file, and the
+        // atomic for the sound between now and the next rebuild.
+        self.run(Box::new(fontelle_model::SetSendLevel::new(
+            id, index, level_db,
+        )));
+        if let Some(live) = self.send_controls.get(&(id, index)) {
+            live.set_level_db(level_db);
+        }
+        self.revision += 1;
+    }
+
+    fn toggle_send_pre_fader(&mut self, strip: usize, index: usize) {
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return;
+        };
+        let Some(pre) = self
+            .project
+            .mixer
+            .tracks
+            .get(id)
+            .and_then(|track| track.sends.get(index))
+            .map(|send| send.pre_fader)
+        else {
+            return;
+        };
+        self.run(Box::new(fontelle_model::SetSendPreFader::new(
+            id, index, !pre,
+        )));
+        self.history.break_gesture();
+        // Where the tap is taken is where the node sits in the schedule.
+        self.rebuild_graph();
     }
 
     fn mixer_peaks(&mut self) -> Vec<[f32; 2]> {

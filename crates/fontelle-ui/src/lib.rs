@@ -38,7 +38,7 @@ pub use audition::{AuditionAction, Auditions, MAX_AUDITION, MIN_AUDITION};
 pub use backend::WindowBackend;
 pub use document::{
     ChannelInfo, ClipInfo, ClipKind, DocumentHost, GhostFilter, GhostNote, LaneInfo,
-    LibraryEntry, StudioHost,
+    LibraryEntry, SendInfo, StudioHost,
 };
 pub use layout::{
     DEFAULT_TIMELINE_HEIGHT, EditorTab, EditorTabs, MIN_EDITOR_HEIGHT, MIN_TIMELINE_HEIGHT,

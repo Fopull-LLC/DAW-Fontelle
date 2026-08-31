@@ -253,6 +253,27 @@ pub struct GhostNote {
     pub color: [u8; 4],
 }
 
+/// One send, as the track-options column draws it (TDD §13.2).
+///
+/// A send is a copy of a track's signal at a level into another track — which
+/// is what a reverb bus is, and the whole difference from an *output*: routing
+/// an output moves the signal, a send leaves the dry path alone.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SendInfo {
+    /// Where it goes, as an index into [`StudioHost::route_names`].
+    pub target: usize,
+    /// And what that track is called, so the row can be drawn without the
+    /// panel holding the whole list (INVARIANT 2).
+    pub target_name: String,
+    pub level_db: f32,
+    /// Taken before the fader rather than after it.
+    ///
+    /// The difference is audible and is why the switch exists: a post-fader
+    /// send follows the fader down, which is what a reverb wants, and a
+    /// pre-fader one does not, which is what a cue mix wants.
+    pub pre_fader: bool,
+}
+
 /// One mixer track, as the mixer panel draws it.
 ///
 /// A flattened view rather than a `&MixerTrack`, like [`ChannelInfo`] and
@@ -291,6 +312,10 @@ pub struct MixerStrip {
     /// `EffectConfig` per strip per frame would be eight bands copied for
     /// every track on screen to draw a three-letter word.
     pub inserts: Vec<crate::canvas::InsertInfo>,
+    /// The copies of this track's signal going to other tracks (§13.2). Drawn
+    /// in the track-options column, not on the strip: a send is two numbers
+    /// and a destination, and a 76-pixel strip has room for none of them.
+    pub sends: Vec<SendInfo>,
 }
 
 /// One lane, as the arrangement's header column draws it.
@@ -673,6 +698,28 @@ pub trait StudioHost: DocumentHost {
     /// §13.2 requires the graph be validated acyclic on every mutation, and a
     /// menu row that silently does nothing is worse than one not offered.
     fn set_track_output(&mut self, _strip: usize, _target: Option<usize>) {}
+
+    /// Sends a copy of `strip`'s signal to another track (TDD §13.2).
+    ///
+    /// `target` is an index into [`route_names`](StudioHost::route_names). A
+    /// send that would close a feedback loop is refused and reported through
+    /// [`take_message`](StudioHost::take_message), the same as a routing —
+    /// §13.2 counts both edge kinds, because a cycle through a send is the
+    /// same loop as one through an output and only harder to see.
+    ///
+    /// It starts **silent**: a send that arrived wide open would change the
+    /// mix the moment it was made, which is the opposite of what making one is
+    /// for.
+    fn add_send(&mut self, _strip: usize, _target: usize) {}
+
+    fn remove_send(&mut self, _strip: usize, _index: usize) {}
+
+    /// How much of the track goes down the send. Applied as a command **and**
+    /// heard immediately, the same as a fader and for the same reason.
+    fn set_send_level(&mut self, _strip: usize, _index: usize, _level_db: f32) {}
+
+    /// Takes it before the fader instead of after, or back.
+    fn toggle_send_pre_fader(&mut self, _strip: usize, _index: usize) {}
 
     /// Moves one insert to another place in its chain.
     ///

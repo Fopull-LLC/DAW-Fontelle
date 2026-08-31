@@ -26,7 +26,8 @@ pub use live::{
 };
 pub use nodes::{
     AudioClipNode, BusSumNode, EffectNode, GAIN_MAX_DB, GAIN_MIN_DB, MasterMeter, MasterNode,
-    Metronome, MetronomeNode, MixerTrackNode, SamplerNode, SendNode, TrackControls,
+    Metronome, MetronomeNode, MixerTrackNode, SEND_MIN_DB, SamplerNode, SendControls,
+    SendNode, TrackControls,
 };
 pub use rt_guard::{
     RtGuardAllocator, current_thread_is_rt, mark_current_thread_rt, unmark_current_thread_rt,

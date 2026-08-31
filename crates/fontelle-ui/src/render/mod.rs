@@ -225,6 +225,9 @@ pub struct MixerChrome<'a> {
     pub insert_drag: Option<(usize, usize)>,
     /// The output row's menu, while it is open, and the names its rows read.
     pub output_menu: Option<&'a crate::canvas::RouteMenu>,
+    /// The send menu, likewise — a separate field because the two are over the
+    /// same list and mean different things, and only one is ever open.
+    pub send_menu: Option<&'a crate::canvas::RouteMenu>,
     pub route_names: &'a [String],
     /// Where the selected track's output goes, as an index into
     /// `route_names` — so the menu can say where you are as well as where you
@@ -1016,12 +1019,112 @@ fn draw_track_options(
             if lit { p.text } else { p.text_muted },
         );
     }
+
+    // --- the sends (§13.2) ---
+    if !options.sends_title.is_empty() {
+        row_text(
+            scene,
+            SENDS_HEADING,
+            options.sends_title,
+            options.sends_title.x + 2.0,
+            p.text_muted,
+        );
+    }
+    for row in &options.sends {
+        let Some(send) = strip.sends.get(row.index) else {
+            continue;
+        };
+        let lit = hovering(OptionsHit::Send(row.index))
+            || hovering(OptionsHit::SendTap(row.index))
+            || hovering(OptionsHit::SendLevel(row.index))
+            || hovering(OptionsHit::SendRemove(row.index));
+        fill_rect_rounded(
+            scene,
+            row.frame.inset(1.0),
+            m.corner_radius * 0.5,
+            if lit { p.border } else { p.panel_header },
+        );
+
+        // The tap point, as the two letters that name it. A switch with two
+        // answers, so it says which one is on rather than dropping a menu.
+        row_text(
+            scene,
+            if send.pre_fader { SEND_PRE } else { SEND_POST },
+            row.tap,
+            row.tap.x + 1.0,
+            if send.pre_fader { p.accent } else { p.text_muted },
+        );
+        row_text(
+            scene,
+            &send.target_name,
+            row.target,
+            row.target.x + 2.0,
+            p.text,
+        );
+
+        // The level: a groove filled from the left, the way a horizontal
+        // fader reads, with its value written over it. A number alone would be
+        // exact and unreadable at a glance; a bar alone would be readable and
+        // unrepeatable.
+        if !row.level.is_empty() {
+            let groove = row.level.inset(2.0);
+            fill_rect_rounded(scene, groove, 2.0, p.panel);
+            let at = crate::canvas::send_x_of_level(groove, send.level_db);
+            fill_rect_rounded(
+                scene,
+                Rect::new(groove.x, groove.y, (at - groove.x).max(0.0), groove.height),
+                2.0,
+                p.accent,
+            );
+            let caption = crate::canvas::format_send_db(send.level_db);
+            if let Some(text) = labels_get(labels, &caption) {
+                draw_text_clipped(
+                    scene,
+                    text,
+                    groove,
+                    groove.right() - text.width - 2.0,
+                    groove.y + (groove.height - text.height) / 2.0,
+                    p.text,
+                );
+            }
+        }
+        row_text(
+            scene,
+            REMOVE,
+            row.remove,
+            row.remove.x + (row.remove.width - 6.0).max(0.0) / 2.0,
+            if hovering(OptionsHit::SendRemove(row.index)) {
+                p.text
+            } else {
+                p.text_muted
+            },
+        );
+    }
+    if !options.add_send.is_empty() {
+        let lit = hovering(OptionsHit::AddSend);
+        if lit {
+            fill_rect_rounded(
+                scene,
+                options.add_send.inset(1.0),
+                m.corner_radius * 0.5,
+                p.border,
+            );
+        }
+        row_text(
+            scene,
+            ADD_SEND,
+            options.add_send,
+            options.add_send.x + 4.0,
+            if lit { p.text } else { p.text_muted },
+        );
+    }
 }
 
 /// The output row's menu. The same object the rack's route chip drops, over
 /// the same list of names.
 fn draw_output_menu(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &MixerChrome<'_>) {
-    let Some(menu) = chrome.output_menu else {
+    // Only one is ever open — a press anywhere shuts whichever was.
+    let Some(menu) = chrome.output_menu.or(chrome.send_menu) else {
         return;
     };
     if menu.frame.is_empty() {
@@ -1037,15 +1140,18 @@ fn draw_output_menu(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
         p.panel_header,
     );
 
-    let current = match chrome.output {
+    // Where the *output* already goes, so the menu says where you are as well
+    // as where you could go. A send menu is picking a new destination and has
+    // no current row to mark.
+    let current = chrome.output_menu.map(|_| match chrome.output {
         Some(track) => crate::canvas::RouteChoice::Track(track),
         None => crate::canvas::RouteChoice::Master,
-    };
+    });
     for (choice, rect) in &menu.items {
         if rect.is_empty() {
             continue;
         }
-        let on = current == *choice;
+        let on = current == Some(*choice);
         if on {
             fill_rect_rounded(scene, *rect, m.corner_radius, p.accent);
         }
@@ -2175,6 +2281,11 @@ pub const ADD_TRACK: &str = "+";
 /// exactly the strings the renderer looks for.
 pub const EFFECTS_HEADING: &str = "Effects";
 pub const ADD_EFFECT: &str = "+ Add effect";
+pub const SENDS_HEADING: &str = "Sends";
+pub const ADD_SEND: &str = "+ Add send";
+/// Which side of the fader a send is taken from.
+pub const SEND_PRE: &str = "pre";
+pub const SEND_POST: &str = "post";
 /// The handle a row is picked up by, and the cross that throws it away.
 pub const GRIP: &str = "\u{2261}";
 pub const REMOVE: &str = "\u{00d7}";

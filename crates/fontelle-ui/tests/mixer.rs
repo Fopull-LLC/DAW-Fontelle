@@ -27,6 +27,7 @@ fn strip(name: &str) -> MixerStrip {
         is_master: false,
         color: [0x4f, 0x8f, 0xd0, 0xff],
         inserts: Vec::new(),
+        sends: Vec::new(),
     }
 }
 

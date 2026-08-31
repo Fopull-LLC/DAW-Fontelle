@@ -1388,9 +1388,19 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
         is_master: false,
         color: [0x4f, 0x8f, 0xd0, 0xff],
         inserts: Vec::new(),
+        sends: Vec::new(),
     };
-    let strips = vec![
-        strip("Drums", 0.0, 0.0, false),
+    let chain = |label: &str, bypassed: bool| fontelle_ui::canvas::InsertInfo {
+        label: label.to_string(),
+        bypassed,
+    };
+    let mut strips = vec![
+        // A chain on the selected strip, so the shot shows what the
+        // track-options column is for.
+        MixerStrip {
+            inserts: vec![chain("EQ", false), chain("Comp", true)],
+            ..strip("Drums", 0.0, 0.0, false)
+        },
         strip("Bass", -18.0, -0.8, false),
         strip("Keys", 3.0, 0.5, true),
         MixerStrip {
@@ -1398,16 +1408,62 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
             ..strip("Master", 0.0, 0.0, false)
         },
     ];
+    // A reverb send off the selected strip, so the shot shows what the
+    // sends half of the column is for.
+    let send_names = ["Bass".to_string(), "Keys".to_string()];
+    strips[0].sends = vec![
+        fontelle_ui::document::SendInfo {
+            target: 1,
+            target_name: send_names[0].clone(),
+            level_db: -12.0,
+            pre_fader: false,
+        },
+        fontelle_ui::document::SendInfo {
+            target: 2,
+            target_name: send_names[1].clone(),
+            level_db: -30.0,
+            pre_fader: true,
+        },
+    ];
+    let route_names: Vec<String> = strips.iter().map(|s| s.name.clone()).collect();
+    let output_label = fontelle_ui::render::output_label("Master");
     let peaks = vec![[0.8, 0.6], [0.2, 0.2], [0.0, 0.0], [0.9, 0.9]];
 
     let l = mixer_layout(layout.panel.body, &theme.metrics, &strips, 0);
     let mut labels = Labels::new();
-    for caption in ["Piano roll", "Instrument", "Mixer", "M", "S"] {
+    for caption in [
+        "Piano roll",
+        "Instrument",
+        "Mixer",
+        "M",
+        "S",
+        fontelle_ui::render::ADD_TRACK,
+        fontelle_ui::render::EFFECTS_HEADING,
+        fontelle_ui::render::ADD_EFFECT,
+        fontelle_ui::render::GRIP,
+        fontelle_ui::render::REMOVE,
+        fontelle_ui::render::SENDS_HEADING,
+        fontelle_ui::render::ADD_SEND,
+        fontelle_ui::render::SEND_PRE,
+        fontelle_ui::render::SEND_POST,
+    ] {
         labels.ensure(caption, &theme.font, &mut text);
     }
+    labels.ensure(&output_label, &theme.font, &mut text);
     for s in &strips {
         labels.ensure(&s.name, &theme.font, &mut text);
         labels.ensure(&format_gain_db(s.gain_db), &theme.font, &mut text);
+        for insert in &s.inserts {
+            labels.ensure(&insert.label, &theme.font, &mut text);
+        }
+        for send in &s.sends {
+            labels.ensure(&send.target_name, &theme.font, &mut text);
+            labels.ensure(
+                &fontelle_ui::canvas::format_send_db(send.level_db),
+                &theme.font,
+                &mut text,
+            );
+        }
     }
 
     let mut scene = vello::Scene::new();
@@ -1441,10 +1497,11 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
                 hover: None,
                 active: None,
                 selected: 0,
-                output_label: String::new(),
+                output_label: output_label.clone(),
                 insert_drag: None,
                 output_menu: None,
-                route_names: &[],
+                send_menu: None,
+                route_names: &route_names,
                 output: None,
             }),
             tabs: editor_tabs(layout.panel.header, &theme.metrics),

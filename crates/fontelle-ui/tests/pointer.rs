@@ -110,6 +110,7 @@ fn rig() -> Rig {
             is_master: false,
             color: [0x4f, 0x8f, 0xd0, 0xff],
             inserts: Vec::new(),
+            sends: Vec::new(),
         },
         fontelle_ui::document::MixerStrip {
             name: "Master".to_string(),
@@ -120,6 +121,7 @@ fn rig() -> Rig {
             is_master: true,
             color: [0x60, 0x60, 0x68, 0xff],
             inserts: Vec::new(),
+            sends: Vec::new(),
         },
     ];
 

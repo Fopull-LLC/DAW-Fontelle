@@ -118,6 +118,9 @@ enum Drag {
     /// and for the same reason: several can move at once and they have to keep
     /// their shape.
     AutomationPoints,
+    /// A send's level, dragged along its groove. **Absolute**, like a fader:
+    /// a press takes it to where it landed and then follows.
+    SendLevel(usize),
     /// An insert being dragged up or down its chain in the track-options
     /// column. The slot it started in and the slot it is over live in
     /// `insert_drag`; this only says who a `CursorMoved` belongs to.
@@ -368,6 +371,9 @@ pub struct WindowApp {
     /// `None` is the master. Read with the lists rather than per frame,
     /// because the column's one caption is shaped from it.
     track_output: Option<usize>,
+    /// The send menu, while it is open, and which send opened it — `None` for
+    /// the row that makes a new one.
+    send_menu: Option<(Option<usize>, crate::canvas::RouteMenu)>,
     /// The output row's menu, while it is open. The same shape as
     /// `route_menu`, and deliberately a *different* field: the rack's chip and
     /// the column's row are two menus over the same list, and one of them
@@ -613,6 +619,7 @@ impl WindowApp {
             selected_track: 0,
             track_output: None,
             output_menu: None,
+            send_menu: None,
             insert_drag: None,
             tempo: 120.0,
             tempo_text: TextLayout::default(),
@@ -890,6 +897,7 @@ impl WindowApp {
                     output_label: output_label.clone(),
                     insert_drag: self.insert_drag,
                     output_menu: self.output_menu.as_ref(),
+                    send_menu: self.send_menu.as_ref().map(|(_, menu)| menu),
                     route_names: &self.route_names,
                     output: self.track_output,
                 }),
@@ -1079,6 +1087,7 @@ impl WindowApp {
             Drag::EqHandle(_) | Drag::AutomationPoints => Some(Pointer::Grabbing),
             // A row being carried up or down its chain.
             Drag::InsertRow => Some(Pointer::Grabbing),
+            Drag::SendLevel(_) => Some(Pointer::ResizeX),
         }
     }
 
@@ -1522,6 +1531,7 @@ impl ApplicationHandler for WindowApp {
                         | Drag::Tempo
                         | Drag::EqHandle(_)
                         | Drag::AutomationPoints
+                        | Drag::SendLevel(_)
                 );
                 // An EQ band drag coalesces into one history entry while it
                 // runs; this is what tells the document it has stopped, the
@@ -1884,6 +1894,14 @@ impl WindowApp {
                 crate::render::EFFECTS_HEADING,
             );
             want(&mut self.labels, &mut self.text, crate::render::ADD_EFFECT);
+            want(
+                &mut self.labels,
+                &mut self.text,
+                crate::render::SENDS_HEADING,
+            );
+            want(&mut self.labels, &mut self.text, crate::render::ADD_SEND);
+            want(&mut self.labels, &mut self.text, crate::render::SEND_PRE);
+            want(&mut self.labels, &mut self.text, crate::render::SEND_POST);
             want(&mut self.labels, &mut self.text, crate::render::GRIP);
             want(&mut self.labels, &mut self.text, crate::render::REMOVE);
             let output = self.output_caption();
@@ -1897,9 +1915,18 @@ impl WindowApp {
                 for insert in &strip.inserts {
                     self.labels.ensure(&insert.label, &font, &mut self.text);
                 }
+                for send in &strip.sends {
+                    self.labels.ensure(&send.target_name, &font, &mut self.text);
+                    let level = crate::canvas::format_send_db(send.level_db);
+                    self.labels.ensure(&level, &font, &mut self.text);
+                }
             }
-            // And the output menu's rows, while it is open.
-            if let Some(menu) = self.output_menu.clone() {
+            // And whichever menu is open — the output row's or a send's.
+            if let Some(menu) = self
+                .output_menu
+                .clone()
+                .or_else(|| self.send_menu.as_ref().map(|(_, menu)| menu.clone()))
+            {
                 for (choice, _) in &menu.items {
                     let caption = menu.label(*choice, &self.route_names);
                     self.labels.ensure(&caption, &font, &mut self.text);
@@ -2095,6 +2122,10 @@ impl WindowApp {
         }
         if self.output_menu.is_some() {
             self.press_output_menu(x, y);
+            return;
+        }
+        if self.send_menu.is_some() {
+            self.press_send_menu(x, y);
             return;
         }
 
@@ -2304,6 +2335,7 @@ impl WindowApp {
             Drag::EqHandle(band) => self.drag_eq(band, x, y),
             Drag::AutomationPoints => self.drag_automation(x, y),
             Drag::InsertRow => self.drag_insert_row(x, y),
+            Drag::SendLevel(index) => self.drag_send_level(index, x),
             Drag::Pan(strip) => self.drag_pan(strip, x),
             Drag::Tempo => self.drag_tempo(y),
         }
@@ -2448,7 +2480,132 @@ impl WindowApp {
             // it here rather than leaving the row inert: the row selects the
             // track, which is what a press on a title should do anyway.
             OptionsHit::Rename => self.select_track(strip),
+
+            // --- the sends (§13.2) ---
+            OptionsHit::AddSend => self.open_send_menu(None),
+            OptionsHit::Send(index) => self.open_send_menu(Some(index)),
+            OptionsHit::SendTap(index) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.toggle_send_pre_fader(strip, index);
+                }
+                self.refresh_studio();
+                self.refresh_title();
+            }
+            OptionsHit::SendRemove(index) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.remove_send(strip, index);
+                }
+                self.refresh_studio();
+                self.refresh_title();
+            }
+            // Absolute, like a fader: a press on the groove takes the level to
+            // where it landed and then follows.
+            OptionsHit::SendLevel(index) => {
+                self.drag = Drag::SendLevel(index);
+                self.drag_send_level(index, self.cursor.0);
+            }
         }
+    }
+
+    /// Drops the menu of everywhere a send could go.
+    ///
+    /// `index` is the send being re-pointed, or `None` to make a new one — one
+    /// menu for both, because "where does this go" is the same question either
+    /// way and a second list of the same tracks is a second thing to keep in
+    /// step.
+    fn open_send_menu(&mut self, index: Option<usize>) {
+        let Some(options) = self.mixer.options.clone() else {
+            return;
+        };
+        let chip = match index {
+            Some(index) => options
+                .sends
+                .iter()
+                .find(|row| row.index == index)
+                .map_or(options.add_send, |row| row.target),
+            None => options.add_send,
+        };
+        self.send_menu = Some((
+            index,
+            crate::canvas::route_menu_layout_excluding(
+                chip,
+                self.layout.panel.body,
+                &self.options.theme.metrics,
+                &self.route_names,
+                // A track cannot send to itself: the shortest possible
+                // feedback loop, and the easiest to click by accident.
+                Some(self.selected_track),
+            ),
+        ));
+        self.tree.invalidate(PANEL);
+    }
+
+    /// A press while the send menu is open. Anywhere but a row shuts it.
+    fn press_send_menu(&mut self, x: f32, y: f32) {
+        let Some((index, menu)) = self.send_menu.take() else {
+            return;
+        };
+        self.tree.invalidate(PANEL);
+        let Some(choice) = route_menu_hit(&menu, x, y) else {
+            return;
+        };
+        let strip = self.selected_track;
+        // The master is the last of `route_names`, and it is a destination
+        // like any other for a send — unlike an *output*, where "the master"
+        // is spelled `None`.
+        let master = self.route_names.len().saturating_sub(1);
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        let target = match choice {
+            RouteChoice::Master => master,
+            RouteChoice::Track(track) => track,
+            RouteChoice::New => {
+                // "I need a reverb bus and this goes to it", in one gesture.
+                let made = self.route_names.len().saturating_sub(1);
+                doc.add_mixer_track();
+                doc.select_mixer_track(strip);
+                made
+            }
+        };
+        // Re-pointing an existing send is a delete and a make: `Send::target`
+        // has no command of its own, and one that only changed the target
+        // would still be a graph rebuild and a history entry — which is what
+        // these two are.
+        if let Some(index) = index {
+            doc.remove_send(strip, index);
+        }
+        doc.add_send(strip, target);
+        self.refresh_studio();
+        self.refresh_title();
+    }
+
+    /// Follows a send's level while it is being dragged.
+    fn drag_send_level(&mut self, index: usize, x: f32) {
+        let Some(options) = &self.mixer.options else {
+            return;
+        };
+        let Some(row) = options.sends.iter().find(|row| row.index == index) else {
+            return;
+        };
+        let db = crate::canvas::send_level_at(row.level, x);
+        let strip = self.selected_track;
+        let current = self
+            .mixer_strips
+            .get(strip)
+            .and_then(|s| s.sends.get(index))
+            .map_or(0.0, |send| send.level_db);
+        // Nothing to say when the value has not moved — the same guard
+        // `drag_fader` has, and for the same reason.
+        if (db - current).abs() < 0.001 {
+            return;
+        }
+        if let Some(doc) = &mut self.options.document {
+            doc.set_send_level(strip, index, db);
+        }
+        self.refresh_studio();
+        self.refresh_title();
+        self.tree.invalidate(PANEL);
     }
 
     /// Drops the output row's menu, listing everywhere this track could go.

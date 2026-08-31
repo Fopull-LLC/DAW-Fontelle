@@ -647,9 +647,139 @@ impl AudioNode for BusSumNode {
     }
 }
 
-pub struct SendNode {
-    // Pre/post-fader tap to another track. TDD §13.2.
+/// One send's level and placement, shared with the RT thread.
+///
+/// Atomics, like [`TrackControls`] and for the same reason: a send level is
+/// something somebody **drags**, and a drag has to be audible before the mouse
+/// comes up. The document is still the source of truth (INVARIANT 9) — a
+/// rebuild seeds a fresh set of these from it, so the two cannot drift.
+///
+/// `mute` carries the *effective* mute of the track this send is taken from.
+/// A solo elsewhere that silences the source has to silence its sends too, or
+/// a reverb goes on ringing from a part nobody can hear — and which tracks a
+/// solo leaves audible is a property of the whole routing graph, not something
+/// a node can work out from where it sits.
+#[derive(Debug)]
+pub struct SendControls {
+    level_db: std::sync::atomic::AtomicU32,
+    pan: std::sync::atomic::AtomicU32,
+    mute: std::sync::atomic::AtomicBool,
 }
+
+impl SendControls {
+    pub fn new(level_db: f32, pan: f32, mute: bool) -> Self {
+        Self {
+            level_db: std::sync::atomic::AtomicU32::new(level_db.to_bits()),
+            pan: std::sync::atomic::AtomicU32::new(pan.to_bits()),
+            mute: std::sync::atomic::AtomicBool::new(mute),
+        }
+    }
+
+    pub fn level_db(&self) -> f32 {
+        f32::from_bits(self.level_db.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    pub fn set_level_db(&self, value: f32) {
+        self.level_db
+            .store(value.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn pan(&self) -> f32 {
+        f32::from_bits(self.pan.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    pub fn set_pan(&self, value: f32) {
+        self.pan
+            .store(value.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn mute(&self) -> bool {
+        self.mute.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn set_mute(&self, value: bool) {
+        self.mute.store(value, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A pre- or post-fader tap from one track's bus into another's (TDD §13.2).
+///
+/// [`BusSumNode`] plus a level and a pan, which is exactly what its own note
+/// said a send would be. Like it, this **adds** into its destination — a
+/// reverb bus has as many things arriving at it as were sent there — and
+/// **leaves its source untouched**, which is the whole difference between a
+/// send and an output: routing an output moves the signal, a send takes a
+/// copy and the dry path carries on.
+///
+/// Where it sits in the chain is `fontelle_app::realise`'s business: before
+/// the fader for a pre-fader send, after it for a post-fader one. The node
+/// itself cannot tell, and does not need to.
+pub struct SendNode {
+    controls: Arc<SendControls>,
+    pan_law: fontelle_types::PanLaw,
+}
+
+impl SendNode {
+    pub fn new(controls: Arc<SendControls>, pan_law: fontelle_types::PanLaw) -> Self {
+        Self { controls, pan_law }
+    }
+
+    pub fn controls(&self) -> Arc<SendControls> {
+        Arc::clone(&self.controls)
+    }
+}
+
+impl AudioNode for SendNode {
+    fn prepare(&mut self, _ctx: &PrepareContext) {}
+
+    fn process(&mut self, ctx: &mut ProcessContext) {
+        if self.controls.mute() {
+            return;
+        }
+        let level_db = self.controls.level_db();
+        // The bottom of the travel is off, not "very quiet": that is where
+        // every send starts, and `MIN_FADER_DB` worth of a loud part is still
+        // audible on a bus with nothing else on it.
+        if level_db <= SEND_MIN_DB {
+            return;
+        }
+        let gain = 10f32.powf(level_db / 20.0);
+
+        // Read once per block, like the fader's: a level moved mid-block takes
+        // effect at a block boundary, which is the same granularity every
+        // other live control here has.
+        //
+        // Pan only means something with two channels to balance between. On a
+        // mono path there is nowhere for it to go, and applying the centre
+        // pan-law gain would make every mono send quietly -3 dB down — the
+        // same rule `MixerTrackNode` follows.
+        let stereo = ctx.inputs.len() >= 2 && ctx.outputs.len() >= 2;
+        let (left, right) = if stereo {
+            self.pan_law.gains(self.controls.pan())
+        } else {
+            (1.0, 1.0)
+        };
+
+        for (channel, (source, dest)) in ctx.inputs.iter().zip(ctx.outputs.iter_mut()).enumerate() {
+            let side = if channel == 1 { right } else { left };
+            for (sample, out) in source.iter().zip(dest.iter_mut()) {
+                *out += *sample * gain * side;
+            }
+        }
+    }
+
+    fn reset(&mut self) {}
+
+    fn params(&self) -> &dyn ParamSet {
+        &EmptyParams
+    }
+}
+
+/// Where a send's level reads as off.
+///
+/// The bottom of the mixer's own fader travel, so the panel's scale and the
+/// DSP's floor are the same number rather than two that nearly agree.
+pub const SEND_MIN_DB: f32 = -60.0;
 
 pub struct AudioClipNode {
     // TDD §15 (M6).

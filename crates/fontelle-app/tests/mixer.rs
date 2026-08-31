@@ -601,3 +601,193 @@ fn an_effect_can_be_taken_off_a_track_from_the_options_column() {
         "an effect deleted by accident has to come back with its settings"
     );
 }
+
+// -------------------------------------------------------------- the sends ---
+//
+// TDD §13.2, from the side the window drives. The document's half is
+// `fontelle-model/tests/routing.rs` and the graph's is
+// `fontelle-app/tests/sends.rs`; what is here is that the panel can reach
+// them, and that a send level behaves like a fader — heard while it is moving,
+// one undo entry when it stops.
+
+fn a_send_rig() -> (Session, usize, usize) {
+    // Two tracks and a master. Track 0 sends to track 1.
+    let mut session = session_with(2);
+    session.add_send(0, 1);
+    (session, 0, 1)
+}
+
+#[test]
+fn a_track_starts_with_no_sends_and_can_be_given_one() {
+    let mut session = session_with(2);
+    assert!(session.mixer_strips()[0].sends.is_empty());
+
+    session.add_send(0, 1);
+    let sends = session.mixer_strips()[0].sends.clone();
+    assert_eq!(sends.len(), 1);
+    assert_eq!(sends[0].target, 1);
+    assert_eq!(sends[0].target_name, session.route_names()[1]);
+    assert!(
+        sends[0].level_db <= -60.0,
+        "a new send starts silent, so making one changes nothing"
+    );
+    assert!(!sends[0].pre_fader);
+}
+
+#[test]
+fn a_send_is_undoable() {
+    let mut session = session_with(2);
+    session.add_send(0, 1);
+    session.undo();
+    assert!(session.mixer_strips()[0].sends.is_empty());
+    session.redo();
+    assert_eq!(session.mixer_strips()[0].sends.len(), 1);
+}
+
+#[test]
+fn a_send_into_itself_is_refused_and_says_so() {
+    let mut session = session_with(2);
+    session.take_message();
+    session.add_send(0, 0);
+    assert!(session.mixer_strips()[0].sends.is_empty());
+    assert!(
+        session.take_message().is_some(),
+        "a refused send said nothing at all"
+    );
+}
+
+#[test]
+fn a_send_level_reaches_the_running_graph_before_the_mouse_is_let_go() {
+    // The same requirement a fader has, and the same reason: `realise`
+    // deserialises every channel's patch, and a drag calls this sixty times a
+    // second.
+    let (mut session, from, _) = a_send_rig();
+    let controls = session.send_controls();
+    let live = controls
+        .get(&(from, 0))
+        .cloned()
+        .expect("the send has a live control surface");
+
+    session.set_send_level(from, 0, -6.0);
+    assert!(
+        (live.level_db() + 6.0).abs() < 1e-4,
+        "the level did not reach the graph: {}",
+        live.level_db()
+    );
+    assert!(
+        std::sync::Arc::ptr_eq(&live, &session.send_controls()[&(from, 0)]),
+        "a send level is a value, not a new graph"
+    );
+}
+
+#[test]
+fn a_whole_send_drag_is_one_undo_entry() {
+    let (mut session, from, _) = a_send_rig();
+    for step in 0..30 {
+        session.set_send_level(from, 0, -30.0 + step as f32);
+    }
+    session.end_gesture();
+    session.undo();
+    assert!(
+        session.mixer_strips()[from].sends[0].level_db <= -60.0,
+        "one drag left more than one entry behind: {}",
+        session.mixer_strips()[from].sends[0].level_db
+    );
+}
+
+#[test]
+fn a_send_can_be_flipped_pre_fader_and_back() {
+    let (mut session, from, _) = a_send_rig();
+    session.toggle_send_pre_fader(from, 0);
+    assert!(session.mixer_strips()[from].sends[0].pre_fader);
+    session.toggle_send_pre_fader(from, 0);
+    assert!(!session.mixer_strips()[from].sends[0].pre_fader);
+
+    session.undo();
+    assert!(
+        session.mixer_strips()[from].sends[0].pre_fader,
+        "the tap point is an edit like any other"
+    );
+}
+
+#[test]
+fn a_send_can_be_taken_off_and_comes_back_where_it_was_set() {
+    let (mut session, from, _) = a_send_rig();
+    session.set_send_level(from, 0, -9.0);
+    session.end_gesture();
+
+    session.remove_send(from, 0);
+    assert!(session.mixer_strips()[from].sends.is_empty());
+
+    session.undo();
+    let sends = session.mixer_strips()[from].sends.clone();
+    assert_eq!(sends.len(), 1);
+    assert!(
+        (sends[0].level_db + 9.0).abs() < 1e-4,
+        "a send deleted by accident came back wide open: {}",
+        sends[0].level_db
+    );
+}
+
+#[test]
+fn an_out_of_range_send_edit_does_nothing_rather_than_complaining() {
+    // A panel and a document disagree for a frame every time something is
+    // deleted, and a stale index arriving from a click is ordinary.
+    let (mut session, from, _) = a_send_rig();
+    session.take_message();
+    session.set_send_level(from, 9, 0.0);
+    session.toggle_send_pre_fader(from, 9);
+    session.remove_send(from, 9);
+    session.remove_send(9, 0);
+    assert_eq!(session.mixer_strips()[from].sends.len(), 1);
+    assert!(
+        session.take_message().is_none(),
+        "a stale index is not something to tell the user about"
+    );
+}
+
+#[test]
+fn a_solo_silences_a_send_without_rebuilding_the_graph() {
+    // A mute and a solo are switches somebody flicks *while listening*, so
+    // they are pushed at the graph that is already playing rather than
+    // rebuilt into a new one — and a send that kept arriving through a solo
+    // would leave a reverb ringing from a part nobody can hear.
+    // Three tracks, so there is one for the solo to exclude: 0 sends to 1, and
+    // 2 is somewhere else entirely. Soloing the *master* would prove nothing —
+    // every track feeds it, so a solo there leaves the whole mix audible,
+    // which is right and is why this needs a third track.
+    let mut session = session_with(3);
+    let from = 0;
+    session.add_send(from, 1);
+    session.set_send_level(from, 0, 0.0);
+    session.end_gesture();
+    let live = session.send_controls()[&(from, 0)].clone();
+    assert!(!live.mute());
+
+    session.toggle_track_solo(2);
+    assert!(
+        live.mute(),
+        "the send went on arriving from a track the solo had silenced"
+    );
+    assert!(
+        std::sync::Arc::ptr_eq(&live, &session.send_controls()[&(from, 0)]),
+        "a solo is a value, not a new graph"
+    );
+
+    session.toggle_track_solo(2);
+    assert!(!live.mute(), "unsoloing opens the send back up");
+}
+
+#[test]
+fn muting_a_track_silences_what_it_sends() {
+    let (mut session, from, _) = a_send_rig();
+    session.set_send_level(from, 0, 0.0);
+    session.end_gesture();
+    let live = session.send_controls()[&(from, 0)].clone();
+
+    session.toggle_track_mute(from);
+    assert!(
+        live.mute(),
+        "a muted track was still feeding its reverb bus"
+    );
+}
