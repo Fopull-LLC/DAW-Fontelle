@@ -13,6 +13,137 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
+## 2026-08-31 (latest): a mixer you can build in, and the wires nobody had run
+
+Everything in this pass came out of one session of *using* the window, and the
+shape of it repeats: the document could already do the thing, and nothing on
+screen could reach it. That is now the eleventh time PROGRESS.md has recorded
+this pattern, and it is worth naming as the project's characteristic failure
+mode rather than as a run of coincidences.
+
+### Three wires that were never connected
+
+- **The metronome was silent.** `MetronomeNode` had eight passing tests and no
+  *beat*: `Metronome::new` starts at zero samples per beat — the "no tempo yet"
+  value, which clicks nothing rather than dividing by it — and the only caller
+  of `set_beat` was `Session::publish_metronome`, which had no metronome to
+  publish to, because `Session::new` never took one. `realise` publishes the
+  beat now, being the one place that sees both the tempo map and the node built
+  out of it. `Session::with_metronome` is the other half: without it the button
+  went dead the first time anybody chose a soundfont, since `rebuild_graph`
+  passed `None`, `realise` minted a fresh metronome and the transport bar went
+  on holding the original `Arc`. That failure had *no* failing test and could
+  not have had one until the session held the switch.
+
+- **A MIDI keyboard did nothing.** The window never opened a port: the hub was
+  built only under `--midi-in`, and the loop that opens devices ran only on the
+  path with no window. A window listens by default now, polling for hot-plug on
+  its own thread. It also plays **what you have selected** (§14.3, which was
+  "the first channel in the song") through a shared `LiveTarget` the UI thread
+  stores into and each device callback loads. The router *latches* it and
+  releases what it holds on the old instrument before adopting the new, because
+  a note-off has to reach the instrument its note-on went to.
+
+- **The Projects tab drew its status line across its own buttons.** Both rows
+  were measured from `buttons.y`. The footer takes one row at a time off what
+  is left now — a shape two rows cannot share however many are added later.
+
+### The mixer became a place you build
+
+Reported as three complaints and it is one: the mixer was a read-out of tracks
+made somewhere else.
+
+Strips select (the name row *and* the body — a strip you must aim at a
+22-pixel caption to choose is one nobody realises they can choose), a `+` past
+the last strip adds another and moves along, and a **track-options column**
+sits between the last strip and the master carrying everything a 76-pixel strip
+has no room for: where the track goes, its insert chain as rows you can read,
+reorder and delete, and its sends.
+
+`SetTrackOutput` writes `MixerTrack::output`, which had been in the document
+since the mixer was written with no command to set it.
+
+### Sends (§13.2), finally
+
+`MixerTrack::sends` has been in the document just as long, `Mixer::has_cycle`
+has counted send edges from the day it was written, and `SendNode` was two
+lines and a comment.
+
+`SendNode` is `BusSumNode` plus a level and a pan — which is exactly what
+`BusSumNode`'s own note said a send would be. Pre-fader taps go after the
+inserts and before the fader; post-fader after it. "Pre-fader" is a claim about
+the *fader*, not the chain, and both readings have a test.
+
+**The ordering bug this caught:** `realise` schedules tracks deepest-first, and
+depth was measured along `output` alone. A send crossing from a shallow track
+into a deeper bus is a feeding edge too, and the old measure would have put the
+tap after the bus it feeds had already been read — the block silently gone.
+`depth_to_master` is a longest-path walk over both edge kinds now, and
+`soloed_audible` follows both as well, so a solo neither strands a reverb nor
+closes the bus its own send feeds.
+
+### Automation you can see
+
+`Session::clips` filtered to `ClipSource::Notes`, so an automation clip was in
+the document, compiled, audible and invisible. A clip says what kind it is now
+and carries its curve flattened onto the block; the arrangement draws the
+shape, which is the whole content of the clip. They get a lane of their own,
+reused per *parameter* rather than per gesture — §12.4's "the current lane" put
+the curve on top of the notes.
+
+### Hover tips
+
+The window is nearly all icons, and an icon set is a private language until
+something translates it. The placement is arithmetic in `crate::tooltip`; the
+words are a `tip()` beside each hover enum's existing `label()` and `icon()`,
+so a control added without an explanation is a hole in one match rather than a
+silent miss in a table somewhere else.
+
+### Four things only looking at it could find
+
+Opening the window and clicking found four pieces that were built, tested, and
+never connected to a rectangle: **"+ Add effect" always added an EQ** (the
+`EffectMenu` existed, with six tests, and nothing built one — so the compressor
+was unreachable from the window entirely); the **Automation tab** was laid out
+and hit-tested and never *drawn*; a **tooltip covered the menu its own button
+had opened**; and an **automation block's curve was invisible**, drawn in a
+lane colour picked to be quiet when it was a fill and wrong when it is the
+line.
+
+None of these could have been caught by a test that did not render, and three
+of them are exactly the kind of thing §2.5's "the pixels have been seen once by
+a human" exists for.
+
+### Verified against the real thing
+
+The window opens the machine's actual MPK mini 3 on its own; the metronome
+button lights and its node has a tempo; three clicks on the `+` build three
+tracks and the `+` moves along each time; a right-click on a fader puts a curve
+on the arrangement and opens it.
+
+### Still not built
+
+- **The compressor's sidechain.** The DSP takes a key signal and now there are
+  sends to carry one — what is missing is an address for "that effect's
+  detector input" as a send *target*, which is a routing destination that is
+  not a track.
+- **Tempo automation.** `transport/tempo` addresses and parses and nothing
+  compiles it: §12.3 wants the tempo map *generated* from it, which means
+  `TempoMap` stops being stored and starts being derived. A change to who owns
+  the tempo, not a lane to add.
+- **Renaming a mixer track from the panel.** `RenameMixerTrack` exists and is
+  tested; the options column's title row selects the track instead, because
+  there is no text field in this window yet.
+- **Latency compensation** (plan item 16).
+
+### Tests
+
+`fontelle-app/tests/click.rs` (7) and `sends.rs` (11),
+`fontelle-midi/tests/focus.rs` (7), `fontelle-engine/tests/sends.rs` (10),
+`fontelle-ui/tests/track_options.rs` (20) and `tooltips.rs` (14), plus the
+send, routing and selection tests added to `fontelle-model/tests/routing.rs`,
+`fontelle-app/tests/mixer.rs` and `insert_chains.rs`. 1522 in the workspace.
+
 ## 2026-08-31 (last): the compressor, and automation on everything
 
 > *"Continue closing the remaining open not-built gaps, and also one note:
@@ -143,6 +274,9 @@ compiled timeline what it holds. The lesson is the one the shakedown made:
 tests that drive the trait the window calls find what per-layer tests cannot.
 
 ### Still not built
+
+*(Everything but the last two was built in the pass above; kept as written so
+the record of what was open when reads honestly.)*
 
 - **Sends** (§13.2) — including the compressor's sidechain, which needs one
   track's audio routed to another's detector. The DSP is ready; the graph is
