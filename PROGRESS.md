@@ -13,7 +13,1217 @@ test suite as ground truth. Every section below that claims something is "real"
 was built this way — check the corresponding test file if you want the proof
 rather than the claim.
 
-## 2026-08-31 (latest): a mixer you can build in, and the wires nobody had run
+**Picking this up cold?** `docs/handoff.md` says what state the tree is in,
+what is still open, and the handful of things about this machine and this
+codebase that cost real time to rediscover.
+
+## 2026-09-02 (latest): four effects, a preset picker, and the external sidechain
+
+The four P0s at the top of `docs/effects-catalogue.md` §4's build order, each
+written to the standard §3 set, plus **both** of the items that gate more than
+one row below them. Test-first throughout: the config, then a test file
+confirmed failing against `todo!()`, then the DSP.
+
+**Where the count went:** 1889 → 2017 across the workspace, 0 failing.
+`cargo clippy --workspace --all-targets -- -D warnings` reports four errors,
+all of them ones the previous pass recorded as pre-existing
+(`fontelle-model/tests/inserts.rs` ×2, `fontelle-ui/src/app.rs`,
+`fontelle-ui/src/render/mod.rs`) and none in anything touched here. A fifth
+that pass recorded — `large_enum_variant` on `EditorWindowChrome` — stopped
+firing, because the field the key row added to `InstrumentChrome` closed the
+gap between its two largest variants. Two clippy did find in this work — a
+manual swap in `RestoreInsertConfig` and a constant assertion in a test — are
+fixed.
+
+### Utility (`fontelle-fx/tests/utility.rs`, 18)
+
+One insert rather than seven: gain, pan, width, a mono-maker, a channel swap,
+two mutes, two polarity flips, a DC/rumble filter, mix. First in
+`EffectKind::ALL`, because it is the commonest thing in mixing and it should
+be one click. The stubs that used to sit in `fontelle-fx/src/utility.rs`
+became the effect; the three metering ones that shared the file moved to
+`meters.rs`, which is where the catalogue's §2.5 puts them.
+
+Three things the tests are watching, each of which was a decision:
+
+- **Pan is a balance**, not a pan law. A constant-power law would take 3 dB
+  off a centred signal the moment the insert was added, which is exactly what
+  rule 2 forbids on a gain-staging tool.
+- **A fresh utility is a wire sample for sample**, not nearly one. The
+  mid/side stage is skipped whole when the width is at 100 % and the
+  mono-maker is off, because `(l+r)/2 + (l−r)/2` is only *approximately* `l`
+  in floating point. `a_fresh_utility_is_a_wire_sample_for_sample` is an
+  `assert_eq!` on the whole buffer, and it is what forced the short-circuit.
+- **A test that proved nothing, caught before it was believed.** The first
+  draft had `the_mono_maker_runs_after_the_width`, on the theory that
+  widening after summing would undo the sum. It would not: both act on the one
+  side signal and one of them is a scalar, so they commute exactly. The test
+  was replaced with `a_widened_bass_is_still_summed`, which is the claim a
+  person actually cares about and which *would* fail if the mono-maker were
+  written on the middle or on the channels. The ordering that does have teeth
+  is invert-before-width, and `a_flipped_side_summed_to_mono_is_a_null` is it.
+
+### Gate / expander (`fontelle-fx/tests/gate.rs`, 15)
+
+Threshold, hysteresis, key high-pass, look-ahead, attack, hold, release,
+ratio, range. One effect for the gate and the expander because they are one
+machine at two settings, and both of the knobs that say which one you have are
+continuous, so the expander that only ducks spill by six decibels is reachable
+rather than being a third menu entry.
+
+**What the tests caught.** The first implementation compared `|x|` to the
+threshold, and eight of the fifteen tests failed at once: a steady sine's
+rectified value visits zero twice a cycle, so the gate was opening and closing
+at the tone's own frequency. That is not a tuning problem, it is a missing
+stage — a gate compares an *envelope* to its threshold. The detector is now a
+peak follower with a 20 ms hold (one cycle of the lowest note anybody gates
+on) and a 10 ms release, and the ratio, range and stereo-link measurements
+came out exact rather than approximately right. The hold is deliberately
+*under* the `hold` knob's range, and it is why the gate takes about 20 ms to
+notice a note has stopped.
+
+**Three test premises were wrong and were corrected before the code was.** A
+dip of 30 ms could not test the hold knob, because the detector's own hold had
+not expired inside it; look-ahead of two attack time-constants does not reach
+"open", because a one-pole never arrives, so the attack was shortened until
+five fit inside the knob's ten milliseconds; and a sine starting at zero closes
+the gate for a fraction of a cycle, so the pure-delay test uses a cosine.
+
+Also: the look-ahead line is written every block whatever the knob says, so
+turning it up mid-song reads history rather than the silence a line nobody had
+been filling would hold. At zero the read slot *is* the write slot, so there
+is no branch and no special case.
+
+### Chorus / ensemble (`fontelle-fx/tests/chorus.rs`, 16)
+
+One to four voices, a chorus/ensemble chooser, spread, rate with sync and a
+note division, depth, centre delay, signed feedback, tone, mix. It is
+`is_time_based` and opens half wet, because a fully wet chorus is a detuned
+copy with nothing to beat against — which is a vibrato, and not what somebody
+who added a chorus asked for.
+
+**Each voice has its own centre as well as its own LFO phase**, spread across
+±15 % of the delay knob. Spreading *n* voices evenly around one LFO's cycle is
+the obvious design and it has a hole: for a sine, at every zero crossing — and
+for an even *n*, at both ends of the sweep — the waveform takes the same value
+at two of those points, and two voices are reading the same place. Four taps
+at four delays is what a hardware ensemble did, and it is what makes
+`each_voice_is_a_copy_of_its_own` a count rather than a hope.
+
+Two measurements worth keeping: `depth_bends_the_pitch_of_what_comes_out`
+counts zero crossings on the outward and the returning sweep (923 Hz and 1076
+Hz from a 1 kHz tone), and the pair
+`the_rate_is_how_often_the_sweep_comes_round` /
+`ensemble_voices_never_come_back_into_step` is the difference between the two
+modes as a number: the chorus repeats after one LFO period to within 0.02 and
+the ensemble does not.
+
+**Two bugs the tests found in code that was not new.** The phase accumulator
+had to become `f64`: in `f32`, a hundred thousand additions of a 2 Hz step
+drift by a third of a sample of read position, which is a chorus that is not
+quite in the same place a cycle later — measurable, and the periodicity test
+measures it. And `read_at`, copied from `delay.rs`, could index one past the
+end: `rem_euclid` of a position a hair under zero comes back a hair under
+`length`, and a hair under `length` *rounds to* `length` in `f32` once the
+line is a few thousand samples long. It panicked on the first ensemble test.
+Fixed in both files — it was a latent panic on the audio thread in the delay
+too, reachable only on the first block after a reset with a long line.
+
+### Filter (`fontelle-fx/tests/filter.rs`, 15)
+
+The synthesiser filter as an insert. Eight shapes (LP/HP/BP at 12 and 24 dB,
+notch, peak), cutoff, resonance, drive, a **signed** envelope amount with its
+own attack and release, an LFO with six waves and a tempo sync, an output trim
+and a mix.
+
+- **The envelope amount is signed**, which is the half of an auto-wah nobody
+  ships: a filter that closes as the signal gets loud is a duck with a tone.
+  Both amounts are in octaves and they add, four octaves each at full.
+- **The drive is before the filter**, and `the_drive_is_before_the_filter` is
+  the only measurement that can tell the two orders apart: a `tanh` on a 500 Hz
+  sine makes a third harmonic, and a corner at 800 Hz takes it away. If the
+  drive were after the filter the harmonic would survive any corner.
+- **Coefficients are rebuilt per sample only while something is moving them.**
+  With both amounts at zero the corner is built once a block and the effect
+  costs what an EQ band costs, which is what makes it reasonable to put one on
+  every bus.
+- **The band-pass is normalised to unity at its centre**, unlike the SVF's own
+  band-pass output, which peaks at Q. `eq.rs` calls the un-normalised one "the
+  right one for a voice's resonant filter, where the resonance is meant to be
+  loud", and this *is* that filter — but it is also an insert on a mix bus,
+  where a resonance knob carrying 21 dB of gain is a knob nobody turns past a
+  third. Same one-multiply fix the EQ uses.
+- **No key tracking**, and that is not an omission: a filter that follows the
+  note needs a note, and an insert on a bus does not have one.
+
+`LfoWave` is in `fontelle-types` rather than in the filter, because the
+tremolo, the phaser and the flanger all want the same six and `value()` is a
+closed form the panel could draw from. `SampleHold` is the exception and
+returns zero from it: its value is a memory rather than a formula, and
+`sample_and_hold_jumps_rather_than_sweeps` asks the DSP instead.
+
+### A preset picker, at last
+
+Soften has had four presets and no way to choose one since it was written.
+There is now a row of chips above the first heading on the generic effect
+panel, built from `EffectConfig::presets()` exactly the way the knobs are
+built from `specs()` — so an effect that ships presets gets a picker for free,
+the same bargain §8.2 already made for automation.
+
+Clicking one runs `fontelle_model::SetInsertPreset`, which is **one entry on
+the undo stack**. That is the whole reason it is a command rather than a run
+of `SetInsertParam`s: fourteen entries for one click is a history nobody can
+walk, and merging them would be worse, because `SetInsertParam::merge_with` is
+deliberately per-control. Its inverse is `RestoreInsertConfig`, which puts the
+whole parameter set back and refuses a slot whose kind has changed under it.
+
+**Rule 10 grew an exception with a test behind it.** "Every effect with more
+than eight parameters ships presets" is now "…or says why not": the utility's
+ten controls are ten separate jobs, and the gate's and the filter's are one
+machine each with one obvious knob to reach for. What
+`whether_an_effect_ships_presets_is_a_decision_taken_for_every_one` prevents
+is the third case — a new effect landing in the "no presets" list because
+nobody decided. It also records the debt: the EQ, the compressor, the chorus,
+the delay and the reverb are *owed* presets and have not been given them.
+
+### The external sidechain
+
+The second gating item, and the older of the two: `Compressor::process` has
+taken an `Option<&[f32]>` key since it was written, with a comment saying the
+routing was the graph's job and had not been done. It is done —
+`docs/effects-catalogue.md` §6 is the design; what is worth recording here is
+what it cost and what nearly went wrong.
+
+**A key is a routing edge, not a parameter.** It is a field on `EffectSlot`
+rather than a knob in the config, and that is forced: a `ParamSpec` is a float
+with a fixed range and a permanent id, and a track is neither. A "key" chooser
+stepping through whatever tracks happened to exist would be an automation lane
+that pointed somewhere else after a rename — §8.2's second addressing scheme,
+which the TDD forbids by name.
+
+**The direction was wrong the first time, and a test caught it.** A key means
+the named track *feeds* the track the insert sits on, which is the opposite of
+how the document stores it — an insert names what it listens *to*. The first
+`has_cycle` iterated each track's own inserts' keys as outgoing edges, which is
+backwards, and `a_key_that_would_close_a_loop_is_refused` failed by accepting
+one. The reversal now lives in exactly one place, `Mixer::key_listeners`, and
+both the cycle check and the compiler's scheduling order read it from there.
+Getting it backwards is a cycle check that passes a loop *and* a schedule that
+reads the key a block late; one function, one direction, one place to be wrong.
+
+**Why a tap rather than a second input on the node.** `CompiledGraph::process_
+block` is deliberately narrow — in place, or one bus routed to another of the
+same width, at most two buffers a side — and it carries the argument for that
+narrowness in its own comments, along with the `no_allocation_during_render`
+test that guards it. A key is a third set, a bus the node reads and never
+writes, and widening that dispatch for one feature was the wrong trade. So a
+`KeyTapNode` on the source's bus copies the block into a `KeyTap` and the
+insert reads it out. Both ends are the audio thread in one pass, in an order
+the compiler guarantees, so the tap needs no ring and no synchronisation past
+what the `Arc` implies — unlike the analyser's, whose reader is a window.
+
+**And a window control**, because a key nobody can choose is not delivered: a
+second row of chips under the presets, laid out by the same `chip_row`. It
+appears only on the two effects `EffectKind::takes_key` names.
+
+`AudioNode` gained a `debug_name`, and it is worth saying why: a schedule is a
+flat list of boxed trait objects whose **order** is a correctness property —
+post-fader means after the fader, and a key means before the insert — and
+neither shows up in the sound as anything but a one-block error. The tests that
+hold the compiler to those orders read the list, and that is how they name what
+they find.
+
+### Still open
+
+- **The gate's look-ahead is uncompensated latency**, like the master
+  limiter's — item 16 above. It is off by default for that reason, and
+  `Gate::latency_samples` reports it for whenever item 16 lands.
+- **A chorus or a gate with look-ahead under a mix below 100 %** combs against
+  an undelayed dry, because `EffectNode` blends the signal as it arrived.
+  True of any lookahead insert without delay compensation; also item 16.
+- **A key tap is rebuilt with the graph**, unlike the analyser's ring. It
+  holds one block and is refilled before it is read, so the most a rebuild
+  costs is a block of silence on the key — under three milliseconds, during
+  which a keyed compressor opens slightly. Worth revisiting if a rebuild ever
+  lands somewhere audible.
+- **The ducker and the vocoder** (§2.1, §2.6) are unblocked and unwritten.
+- **Judgement calls to revisit.** The chorus's voices are summed and divided
+  by their count, so four voices are quieter than one rather than louder —
+  never a level jump, at the cost of some thinning. The filter's modulation
+  reaches four octaves each way at full, which is a guess at what a wah wants.
+  The gate's threshold opens at the bottom of its range rather than its ratio
+  at 1:1, which is a different reading of rule 2 from the compressor's and is
+  argued on `GateConfig::new`.
+
+## 2026-09-02: the effects catalogue, and two effects rebuilt to go far
+
+*"I'm finding it hard to get more than a basic distortion sound with our
+distortion plugin... all of our effects need to follow these principles of
+having lots of functionality and use cases directly out of the box... there
+are lots of types of bitcrush."*
+
+Three things this pass delivered, in the order they were written:
+
+### `docs/effects-catalogue.md`
+
+What ships in the "+ Add effect" menu, what each one has to be able to do
+before it counts as done, and in what order the missing ones get built. It
+extends TDD §13.4's one-line-per-effect table into a design — forty-odd
+effects across dynamics, EQ and filtering, distortion and lo-fi, time and
+modulation, stereo and metering, and pitch — with a status (built /
+rebuilt / planned), a priority (P0 a mix cannot be finished without; P1 a
+producer will go looking for; P2 quality of life or fun), and for each the
+*family* it has to be rather than the sound. §1 states the twelve rules
+every effect follows, each of which exists because its absence has already
+produced a defect this file records. §4 is the build order; §5 the recipe.
+Two things gate several rows and are called out: a **preset picker** in the
+effect window (Soften, the distortion and the bitcrush now have seventeen
+presets between them and no way to choose one), and an **external sidechain
+into `EffectNode`**.
+
+### Distortion, rebuilt (`fontelle-fx/tests/distortion.rs`, 28)
+
+Five curves, a drive, a tone and an output was a pedal. What was missing
+was everything a pedal's *circuit* does around the clipping stage, and any
+way to make each curve a continuum rather than one point. It has fourteen
+parameters now, in three sections:
+
+- **Drive**: ten curves (the five that were, plus diode, triangle fold,
+  rectify, crossover and wrap), a `shape` knob that is each curve's own
+  continuum — hardness, knee, asymmetry, fold count, polynomial order,
+  half-to-full wave, dead-zone width, wrap threshold — `bias` (a shifted
+  operating point, which is even harmonics on any curve, with the offset
+  taken back out), and `sag` (drive that falls as the input gets loud: the
+  amplifier's power supply).
+- **Voicing**: a high-pass and a mid bell **before** the curve, a
+  `clean_low` split that sends the bottom *around* the curve on a
+  fourth-order Linkwitz–Riley crossover, and the tone after it.
+- **Output**: output, `auto_gain` (the curve's own level at this drive,
+  measured on a reference sine per block rather than estimated, so it is
+  right for a folder as well as a clipper), oversampling as a chooser
+  (off / 2× / 4× / 8×, eighth-order filters), mix.
+
+Seven presets as constructors. Every stage is tested by what it should
+change **and** by what it should leave alone: the pre-filters are proved to
+sit *before* the curve by the harmonics they prevent, not the frequencies
+they remove; the clean band by a 30 Hz tone that comes out undistorted
+under a split that distorts 2 kHz as hard as ever, and by the split summing
+flat at no drive.
+
+**What the test suite caught.** With the oversampling filters raised to
+eighth order, `more_oversampling_is_less_alias` — the test that says the
+chooser is a ladder — failed with 4× only 44 % better than 2×, and a
+diagnostic showed the residual almost entirely at 13 kHz. The filter
+measured exactly as designed (35 kHz at −44 dB). The cause was a safety
+clamp to ±1 *after* the DC blocker, at the base rate: a band-limited square
+overshoots its corners by a sixth, and clamping that at 48 kHz re-clipped
+the ringing, which is exactly the aliasing the oversampling exists to
+prevent. Replaced by a wide net at ±1.5 that nothing ordinary reaches. The
+two tests that had asserted a hard clipper stops within 5 % of its ceiling
+now allow the ringing, with the reason written on them, and the wrap test
+runs un-oversampled as its preset does.
+
+Two other measurements were wrong about physics rather than about the
+code and were corrected before the implementation was touched: "a harder
+soft clip keeps more of the seventh harmonic" measured at a drive where
+every soft clip is a square wave (true, and not the claim — hardness is
+where the series *ends*, so it is now the eleventh to nineteenth at a
+moderate drive), and the bitcrush rails test assumed a four-bit grid has a
+level at 1.0 (it has fifteen steps with one at zero, so its top is 14/15).
+
+**Compatibility.** A project saved with `"oversample": true` reads as 2×,
+and every new field defaults to rest; `auto_gain` defaults **off** for a
+file that does not say and **on** for a fresh effect, so an old project
+does not change level on opening. The one thing that does move: an
+automation lane on the `curve` chooser stores a normalised position, and
+five positions became ten, so a lane written before this pass lands on a
+different curve. The saved *config* names its curve and is unaffected.
+
+### Bitcrush, rebuilt (`fontelle-fx/tests/bitcrush.rs`, 21)
+
+Bits, rate, dither and anti-alias was one bitcrusher. What makes the
+*types* is how the amplitude is rounded, how the time is held, and what the
+level is when it happens. Eleven parameters in three sections:
+
+- **Depth**: `input` gain (a quantiser is a level-dependent effect), bits,
+  a **quantiser** chooser — round, truncate (toward zero, so small signals
+  fall to silence: the 8-bit sample player's gating), µ-law (a logarithmic
+  grid, so quiet detail survives and loud material crunches) — and a
+  **dither** chooser: off, rectangular, triangular, shaped (error feedback,
+  which pushes the noise up out of the way; measured as the low end of the
+  error spectrum falling by half against triangular).
+- **Rate**: rate, a **decimation** chooser — hold, linear (a ramp between
+  takes, a sampler with interpolation), drop (one sample then silence:
+  sparse, comb-like) — `jitter` (an unstable clock, measured as the hold
+  lengths becoming uneven), anti-alias.
+- **Output**: a post low-pass (the old sampler's output stage, which tames
+  aliasing after the fact — a different sound from preventing it), output
+  gain, mix.
+
+Six presets. `"dither": true` in an old file reads as triangular.
+
+### Sections, and no other UI change
+
+`EffectConfig::sections()` is a list of `(name, count)` runs over the
+effect's own table, and `effect_view` draws one heading per run. The split
+lives beside the table rather than in the window, for the reason the table
+does: the place that knows which five knobs are the drive is the place that
+lists them. Effects with one grid declare one section and draw as they did.
+`every_effects_sections_cover_its_parameters_exactly` holds every count to
+its table.
+
+- `fontelle-types/tests/effect_families.rs` (19): the contract side — ids,
+  units, positions, sections, presets distinct from the wire and from each
+  other, and both old-file shapes loading.
+- `fontelle-ui/tests/inserts.rs` gained two.
+
+**Verified:** `cargo test --workspace` green at **1889 passing** (1840 before
+this pass, 0 failed, counted from every `test result` line rather than a
+wrapper's exit code). `cargo clippy --all-targets -- -D warnings` is clean on
+`fontelle-fx`, `fontelle-types` and `fontelle-engine`. It is **not** clean on
+the workspace, and was not before this pass either: the two `unused Result`s
+in `fontelle-model/tests/inserts.rs` the handoff already lists, and three
+pre-existing hits in `fontelle-ui` (`app.rs:2147`, `render/mod.rs:532` and
+`:4037`) that the previous "clippy clean" claim did not cover. One lint is
+allowed crate-wide in `fontelle-fx` with its reason on it:
+`needless_range_loop`, because every effect indexes several parallel arrays
+by frame and by channel and the iterator form is the less readable one.
+
+## 2026-09-02: two more effects, and the third wrong thing in the handoff
+
+The mixer offered **two** effects at the start of this run of work and offers
+**seven** now. This pass added the last two that belong in an insert slot, and
+corrected one more claim in `docs/handoff.md` that did not survive being
+checked.
+
+### Bitcrush
+
+Two destructions that are usually shipped as one "crush" knob, kept apart
+because that is the whole use of them: **bit depth** quantises amplitude,
+**rate** quantises time, and a 12-bit sample at full rate is a different sound
+from a 16-bit one held at 8 kHz.
+
+**Anti-aliasing is off by default**, which is the interesting default. The
+fold-down a sample-and-hold produces *is* the effect — a 6 kHz tone held at
+8 kHz comes back as 2 kHz, and that ring-modulation is what a bitcrusher is
+for. A bitcrusher that band-limits its decimation is a low-pass with extra
+steps. The switch is there for the times the grit is wanted and the fold is
+not.
+
+**A test that was wrong about its own subject.** `dither_breaks_the_steps_up`
+asserted that dither makes the output land on more distinct values. It does
+not: dither adds no levels, the output still lands on the quantiser's grid.
+What it changes is *which* level gets chosen — by making the choice depend on a
+random offset as well as the signal, so the error stops being correlated with
+the material. The test that replaced it measures what dither is actually for: a
+tone quieter than half a quantisation step rounds away to silence without it
+and survives with it, in the average. Writing the wrong test first is how that
+got noticed.
+
+- `fontelle-fx/tests/bitcrush.rs` (10).
+
+### Soften — the one that exists because of what this program is
+
+TDD §13.5, and the only effect here whose reason is Fontelle rather than audio
+in general. A sampled instrument played at a pitch it was not recorded at,
+through a filter an SF2 file specified decades ago, is harsh in ways a treble
+control cannot separate — turning the top down fixes all of them by throwing
+away the record, and the result is *dull* rather than *smooth*.
+
+Four stages, each tested by what it should change **and** by something it
+should leave alone, because a stage that cut everything would pass half of
+those:
+
+- A **dynamic high shelf** whose depth follows how much top end there actually
+  is, so a quiet passage is not darkened along with a loud one.
+  `the_shelf_cuts_a_loud_top_end_harder_than_a_quiet_one` is the word
+  "dynamic" as a measurement.
+- An **adaptive suppressor** over three bands across 1–6 kHz, each ducking by
+  how far it stands out *relative to the whole signal* — a band that is merely
+  present is not honking; one that is most of the signal is.
+- A **transient softener**, driven by how far a fast envelope stands above a
+  slow one, which is what an attack is and nothing else.
+- An **air restore** shelf at 12 kHz, above the harsh region rather than inside
+  it. This is the stage that makes the effect smoothing rather than dulling:
+  without it the first three add up to a low-pass, and
+  `the_shelf_and_the_air_restore_are_not_the_same_shelf` is what says they are
+  not one control undoing itself.
+
+**It opens at Gentle, not at zero**, which is a deliberate departure from the
+rule the EQ and the compressor follow. Those open as an identity because you
+add them in order to dial in your own settings; this is one macro with one job,
+and somebody who has just added "Soften" has already said what they want.
+Opening at zero would be the dead panel this document keeps recording. The
+`Gentle` preset's numbers and the spec table's defaults are written next to
+each other for the reason every other pair like that is.
+
+Presets are a **constructor, not a parameter**: a preset sets the four knobs and
+then has nothing further to say, and a "preset" knob would fight the four it
+had just written. There is no preset picker in the window yet.
+
+- `fontelle-fx/tests/soften.rs` (13).
+
+### The third wrong thing in the handoff
+
+That document's top item has now been wrong three times, and the pattern is
+worth naming: **it described what the code looked like rather than what it
+did.**
+
+1. "Seven effects are written and unreachable" — six were `todo!()`.
+2. Their reachability was "cheap plumbing" — that part was exactly right.
+3. **"The limiter is unreachable."** It is not, and never was: its DSP is
+   complete and it has been running on the master bus in `MasterNode` the whole
+   time, deliberately not an insert, with a comment on the field saying so. It
+   was read as unreachable because it has no `EffectKind` variant — and it has
+   none because it is not that kind of thing.
+
+A file with a config struct, a state struct, a `process` signature and a
+doc-comment reads exactly like a finished effect from anywhere except inside
+the function body; a limiter wired into a node reads like an unused one from
+anywhere except the node. Both mistakes are the same mistake.
+
+**Still `todo!()`: the repitcher** — and it is arguably in the wrong crate. It
+is varispeed over a *clip*, not a bus effect, so it has no insert slot to live
+in and giving it one would be inventing a use for it.
+
+## 2026-09-01: rows that can be put in order, and a cursor where you are typing
+
+The last two items on `docs/handoff.md`'s list that can be done on this
+machine. Both are small; one of them turned up a live bug that had been
+harmless only by accident.
+
+### Rows in the order you want them
+
+*"theres no way to actually edit arrangement rows"* was answered a while ago
+for adding, renaming, muting and deleting. **Ordering** was not: the arrangement
+stacked rows in the arena's own order, which is insertion order and cannot be
+changed, so an arrangement whose rows were made in the wrong order stayed that
+way.
+
+`Lane` gained an `order`, `Project::lane_ids()` is now the one answer to "what
+is row 3", and `MoveLane` is the command. Three things it was important to get
+right:
+
+- **The sort is stable and the field is defaulted**, so a project written
+  before this keeps the order it always had — every row in it carries the same
+  number and the tie falls back to the arena. A sort breaking that tie any
+  other way would silently rearrange every saved arrangement.
+- **It swaps order numbers, never contents.** A clip names a `LaneId`, so
+  swapping the two lanes' fields would leave every clip pointing at the wrong
+  row. `moving_a_row_takes_its_clips_with_it` is the test for that alone.
+- **A row added after a reorder goes to the bottom**, where somebody adding one
+  is looking for it — not wherever a default of zero sorts. `AddLane` and the
+  three places that build a lane straight on the arena (an automation lane, a
+  channel's own) all follow the same rule.
+
+**It is the menu, not a drag.** The handoff phrased the gap as "one cannot be
+dragged above another"; this is "Move up" and "Move down" on the right-click
+menu that already carries add, rename, mute and delete, greyed at the ends.
+That makes reordering possible and is where somebody looks for it; dragging a
+lane header is still not a gesture the arrangement has.
+
+**The bug this turned up.** `Session::lanes()` walked the arena while
+`Session::clips()` indexed rows through `lane_ids()`. Before rows could move
+those two agreed by accident and nothing noticed — and the moment one moved,
+every clip would have been drawn against the **wrong row**. That is the
+two-lists-that-must-agree defect this document keeps recording, it was live for
+exactly as long as it took a test to move a row, and it is the reason the
+host-level test asserts *which row each clip is on by the row's name* rather
+than just that the names reordered.
+
+- `fontelle-model/tests/arranging.rs`, `fontelle-app/tests/studio.rs`.
+
+### A caret where you are typing
+
+Right-click → Rename put every keystroke straight into the document and the row
+updated live. That is the right mechanism — the document is the buffer — and it
+gave no sign the keyboard had been captured: the row looked exactly like a row
+nobody was typing into, and the only way to find out was to press a letter and
+watch what happened.
+
+The rename state never reached the renderer at all, so it does now:
+`RackChrome` and `TimelineChrome` carry which row is being typed into, and a
+one-pixel bar goes after the name. The same shape the **search box** has drawn
+since it was written — one mark for "the keyboard is going here", wherever it
+is — and it is on channel rows and arrangement lane headers alike.
+
+`a_row_being_renamed_shows_a_caret_and_the_others_do_not` shoots the rack twice
+and compares the two, because "a caret is drawn" is only worth anything as
+"this row has one and that row does not, in the same picture".
+
+- `fontelle-ui/tests/render_headless.rs`.
+
+### A process note
+
+The menu entries and the `move_lane` host method were written **before** their
+tests, which is the one rule stated at the top of this document. The tests came
+straight after and are what found the `lanes()` bug above, so the work is
+covered — but the order was wrong, and recording that is cheaper than letting
+the section imply otherwise.
+
+### Still open
+
+- **Bitcrush, soften and repitcher are still `todo!()`**; the limiter's DSP is
+  complete and it is still unreachable, because it carries lookahead latency
+  that nothing compensates for.
+- **Raising an already-open editor window** (item 8) cannot be checked here:
+  the test harness is a bare nested X server with no window manager, so there
+  is nothing to raise against. It needs a real session.
+
+## 2026-09-01: the tempo reaches the audio thread, and three knobs stop lying
+
+Three items off `docs/handoff.md`'s list, and the first one is the reason the
+other two fitted in the same pass: it is the only one that needed a change to
+what the engine is handed every block.
+
+### A delay in note values, and the wire that had to be run for it
+
+The delay shipped in the pass above with the time in **milliseconds only**, and
+that was recorded as a deliberate gap rather than a missing field:
+`ProcessContext` carried a `TransportSnapshot` with a position and a state in
+it and **no tempo at all**, so "a dotted eighth" was a question nothing on the
+audio thread could answer.
+
+The wire runs like this, and every link is tested on its own:
+
+1. **The sequencer compiles it.** `CompiledTimeline` gains
+   `tempo: Vec<(Sample, f32)>` — the tempo map, converted to the block
+   contract's own units. Here rather than anywhere else for the reason
+   `param_nodes` is: this pass already owns every tick-to-sample conversion in
+   the project, because that is what compiling a timeline *is*. A table built
+   elsewhere would be a second answer to a question that already has one.
+2. **The engine reads it.** `fontelle-engine` cannot see a `TempoMap` —
+   INVARIANT 4 runs the other way — but it sees a `CompiledTimeline` every
+   block. `TransportSnapshot` gains `bpm`: the tempo **here**, at the position
+   being rendered, read through `CompiledTimeline::bpm_at` (binary search, no
+   allocation). Never zero, because what reads it divides by it.
+3. **The document interprets it.** `NoteDivision` and
+   `DelayConfig::effective_time_ms(bpm)` live in `fontelle-types`, because what
+   a dotted eighth *is* is a document fact. The engine's job is to supply the
+   tempo, not to interpret it, and the DSP's is to turn a duration into sound.
+
+Because the tempo is read **every block** rather than at build time, a synced
+delay follows a tempo *change* — and follows it through the same glide a
+dragged time knob uses, so a tempo automation ramp bends the repeats like tape
+instead of stepping.
+
+Two things the tests caught that are worth keeping:
+
+- `the_divisions_run_from_longest_to_shortest` failed on the obvious ordering.
+  Grouping the list by family — whole, half, quarter... then the dotted ones,
+  then the triplets — is **not** monotonic in length: a dotted quarter (1.5
+  beats) is longer than a half-note triplet (1⅓), and an eighth triplet is
+  shorter than a dotted sixteenth. `NoteDivision::ALL` interleaves them, so
+  turning the knob shortens the delay all the way down rather than jumping
+  about half way.
+- `MAX_DELAY_MS` went from 2 s to **4 s**, so that the longest division the
+  chooser offers just fits: a whole note at 60 bpm is exactly four seconds.
+  Offering a setting the line then silently clamps is worse than not offering
+  it. Safe to change now and not later — nothing has been saved with a delay in
+  it yet, and the range is what a normalised automation value is scaled against.
+
+- `fontelle-types/tests/tempo_sync.rs` (14),
+  `fontelle-sequencer/tests/tempo_track.rs` (4), and the synced half of
+  `fontelle-fx/tests/delay.rs`, ending at
+  `a_synced_delay_takes_its_time_from_the_transports_tempo` in
+  `fontelle-engine/tests/effects.rs`, which is the one that says the links are
+  connected to each other.
+
+### A ramp cut in half stopped stepping
+
+`SplitClip` sent each automation point to the half it fell in and inserted none
+at the cut. A note lying across the cut has been cut in two since the tool was
+written; a **ramp** across it was not, so the left half ended at its last point
+and held, the right half began at its first, and between them the value
+stepped. Cutting a filter sweep to move one end of it left a click at the join
+— which is the exact thing automation exists to avoid.
+
+The cut now reads the curve's value *at* the cut before dealing the points out
+— after that, neither half has both sides of the seam to interpolate between —
+and puts a point there in both halves, carrying the shape of the segment the
+cut fell inside so the bend either side is unchanged. A point already sitting
+exactly on the cut is the seam, and does not get a second one.
+
+`the_two_halves_read_the_same_as_the_clip_they_came_from` is the test with the
+teeth: it samples the whole curve before and after, not just the join, because
+inserting a point at the cut must not bend the segments around it.
+
+- `fontelle-model/tests/arranging.rs`.
+
+### The polyphony lane that drew and did nothing
+
+`patch/voice/polyphony` was addressable, drawable, saveable and automatable, and
+moving it through a lane changed nothing: the pool was sized once in
+`Sampler::new` and never read again. The *knob* worked, because turning it
+rebuilds the graph. That is the worst shape a defect can have here — the lane
+draws, saves and plays, and the only thing missing is the sound.
+
+**The fix is not to resize the pool.** That is a `Vec` allocation on the audio
+thread, which is INVARIANT 1's whole subject. The pool keeps the size it was
+built at and polyphony became a **limit inside it**, which is what the word
+means anyway: a note that finds nothing free under the limit steals one,
+exactly as it does when the pool is full. Voices already sounding above a
+lowered limit are left to ring out rather than cut, because cutting them would
+put a click exactly where somebody was reaching for a swell.
+
+**The honest limit:** a lane can take polyphony down and bring it back up to
+the size the pool was built at, and cannot raise it past that. The pool is
+built from the patch, so the knob's own value is the ceiling, and turning the
+knob rebuilds the graph and raises it. `the_pool_is_the_ceiling` is the test
+that states it rather than leaving it to be discovered.
+
+- `fontelle-core/tests/patch_params.rs`.
+
+### Still open
+
+- **Bitcrush, soften and repitcher are still `todo!()`**, and the limiter is
+  still unreachable — its DSP is complete, but it carries lookahead latency
+  that nothing compensates for yet.
+- Items 6-8 of `docs/handoff.md`: no lane reordering, rename has no caret, and
+  raising an already-open editor window is still unverified on a real
+  compositor.
+
+## 2026-09-01: three effects that were names in a menu, and a ring on the knobs a lane owns
+
+### The mixer had two effects and a list of seven promises
+
+`docs/handoff.md` ranked this first and described it as cheap: *"seven effects
+are written and unreachable — `fontelle-fx` has working `process` functions for
+delay, reverb, distortion, bitcrush, limiter, soften and repitcher"*, needing
+only an `EffectKind` variant and a spec table each.
+
+**That was wrong, and it is worth recording why rather than just fixing it.**
+Six of the seven were `todo!()`:
+
+```rust
+impl Delay {
+    pub fn process(&mut self, _left: &mut [f32], _right: &mut [f32], _config: &DelayConfig) {
+        todo!("tempo-aware delay line with filtered/saturated feedback loop")
+    }
+}
+```
+
+A file with a config struct, a state struct, a `process` signature and a
+doc-comment describing the algorithm reads exactly like a finished effect from
+anywhere except inside the function body. Only the limiter (433 lines) was
+real. So this was not enum plumbing; it was writing the DSP.
+
+Three of them are now real, reachable, and heard: **delay**, **reverb** and
+**distortion** — the three a mixer is most obviously missing. Each is
+`fontelle-fx` DSP + a `fontelle-types` config and spec table + one
+`EffectState` arm, and **nothing in the UI changed at all**: `EffectKind::ALL`
+drives the "+ Add effect" menu and `EffectConfig::specs()` drives the generic
+window, so each arrived with a menu row, a panel of knobs in the right units,
+read-outs, and a right-click that makes an automation lane — none of which
+anybody wrote for them. That is the §8.2 payoff working exactly as the previous
+pass claimed it would.
+
+- **Delay** (`fontelle-fx/src/delay.rs`) — a stereo line with the damping
+  filter and the saturation **inside the feedback path**, which is where they
+  belong: the first repeat is what you played, and each one after it has been
+  round the filter once more. On the output they would be a tone control.
+  Ping-pong crosses the *feedback*, not the input, so the dry image does not
+  move. The read pointer **glides** to a new time rather than jumping — a
+  pointer that jumped would splice two unrelated points of the signal together,
+  which is a click at full scale every time somebody drags the knob;
+  `moving_the_time_while_it_runs_does_not_click` is the test.
+- **Reverb** (`fontelle-fx/src/reverb.rs`) — an 8-line FDN with a Householder
+  reflection (`y = x - (2/N)·Σx`) between the lines, which is orthogonal, so
+  the network neither gains nor loses energy of its own. Line lengths are
+  **mutually prime**, because two lines sharing a factor stack their echoes at
+  every common multiple and the tail comes out metallic. Decay is an **RT60**,
+  not a feedback gain: each line's gain is `10^(-3L/(RT60·fs))`, derived from
+  *its own length*, which is what keeps the size knob a room control instead of
+  a second decay control.
+- **Distortion** (`fontelle-fx/src/distortion.rs`) — five curves, and
+  **oversampled**, which is the part that matters. Clipping a 7 kHz tone puts a
+  seventh harmonic at 49 kHz; at 48 kHz that frequency does not exist, so it
+  folds back as a **1 kHz tone nobody played**. `oversampling_keeps_the_aliases_out`
+  measures that one bin with and without, and
+  `oversampling_keeps_the_harmonics_that_belong` is its other half — a
+  decimation filter set too low would pass the first test by removing the
+  wanted third harmonic along with the alias.
+
+**No tempo sync**, and that is a deliberate gap rather than a missing field:
+`ProcessContext` carries a `TransportSnapshot` with a position and a state in
+it and **no tempo at all**, so a delay division in beats is a change to the
+engine's block contract, not to the effect. The time is in milliseconds and the
+field that would name a division is not there to be half-wired.
+
+### A reverb that made the track disappear
+
+Adding these broke an assumption the tests had been holding uniformly, and
+finding it is the reason this is written up rather than just fixed.
+
+`a_fresh_effect_is_all_wet` asserted every effect opens at 100 % wet. That is
+right for a processor — an EQ *replaces* the signal, and the point of a
+compressor is the compressed track. But `Delay::process` writes **the repeats
+and only the repeats**, and `FdnReverb::process` writes **the tail**, because
+`EffectNode` owns the dry/wet blend for every effect and one that mixed its own
+dry back in would be blended twice. So a fully wet reverb insert is a track
+replaced by its own reverb tail, with the sound that caused it gone.
+
+The rule is now sharper rather than looser: **an effect opens at the default
+its own spec declares**, `EffectKind::is_time_based` says which ones sit under
+the track, and `MIX_PARAM` became `mix_param(default)` so the spec table and
+the constructor cannot drift. Delay opens at 35 %, reverb at 30 %, everything
+else at 100 %. `every_effect_at_its_defaults_leaves_something_audible` in
+`fontelle-engine/tests/effects.rs` is the test that would have caught the
+original as a bug.
+
+### The tests loop over `EffectKind::ALL`, on purpose
+
+`fontelle-engine/tests/effects.rs` is new and names no effect. It asserts that
+every kind the menu offers builds a node that runs, leaves something audible at
+its defaults, is a wire when bypassed, and is a wire at a fully dry mix — so
+**an effect added later is covered the day it is added** rather than the day
+somebody remembers to write its test. That is the one that catches a missing
+`EffectState` arm, which is otherwise silent: the `match` falls through to
+`_ => {}` and the slot passes the signal along looking like it works.
+
+Two of my own tests were measuring the wrong thing and were corrected before
+the implementation went in, which is worth recording because both would have
+passed against wrong DSP:
+
+- The delay's damping test used a *continuous* tone, so every window contained
+  the fresh input — the line always holds what is being played into it — and no
+  amount of damping changes that. It uses a burst now.
+- The reverb's damping test used an unfaded burst, which is a tone plus two
+  clicks, and a click is broadband: it was measuring the clicks. The burst is
+  windowed now.
+
+One real bug in the FDN, found by `the_decay_time_is_roughly_what_it_says`
+reading **-158 dB** where -60 was expected: the lines were sized individually
+but share one write pointer, so the long lines' reads wrapped somewhere the
+writer never reached and most of the network was reading stale silence. Every
+line is the same length now, read at different offsets.
+
+- `fontelle-fx/tests/{delay,reverb,distortion}.rs` (34 tests),
+  `fontelle-engine/tests/effects.rs`, and the existing generic tables in
+  `fontelle-types/tests/{parameters,effect_mix}.rs`, which now cover all five
+  kinds — `every_stepped_parameter_names_its_positions_or_none_of_them` had
+  been hard-coded to two.
+
+### The ring that was answered and drawn by nothing
+
+`docs/handoff.md`'s second item: *"`is_automated` is implemented, answered by
+the session, covered by a test — and drawn by nothing."* TDD §12.2 asks for a
+distinct ring colour on a control under automation, and a knob a lane had taken
+over looked exactly like one nobody had touched.
+
+The answer was never the missing piece; the **join** was. `InstrumentParam`
+gained an `automated` flag and `InstrumentView::mark_automated` sets it — after
+the view is built rather than while, because the caller knows which addresses
+are automated as **one set** and asking the document per parameter would walk
+every clip in the project once per knob, forty-nine times for an EQ.
+
+- It is the knob's **groove** that changes colour, not the value arc: the value
+  arc is the part you read the setting off, and it has to keep saying what the
+  setting is.
+- A switch and a chooser have no groove, so the ring goes round the chip and
+  round the row of pips — the same statement in the shape those controls have.
+- The wet/dry dial **on the mixer strip** wears it too (`InsertInfo::mix_automated`).
+  The mix is automatable like every other parameter, and a ring that appeared
+  on one of the two places it is drawn and not the other would be a worse
+  answer than neither.
+- `mark_automated` **clears** as well as sets. The panel is rebuilt whenever
+  the revision moves, so it runs again after a lane is deleted, and a ring left
+  on a knob nothing owns any more is worse than no ring: it is a ring that
+  lies.
+
+Theme format **v6** adds `param_automated`, with the migration arm a v5 file
+needs. Amber, which is the one hue left that neither the accent, the playhead,
+a note nor a clipping meter has already claimed — and deliberately not one of
+the three ramps, for the reason `meter_peak` is not: it is a statement about
+*who is holding the control*, and a teal ring on teal chrome says nothing.
+
+`a_knob_under_automation_wears_a_ring_an_ordinary_knob_does_not` in
+`render_headless.rs` renders the panel and compares the automated knob's cell
+against an ordinary one's **in the same picture**, which is the only form of
+the claim that means anything to somebody looking at the panel.
+
+- `fontelle-ui/tests/{instrument,theme,render_headless}.rs`,
+  `fontelle-app/tests/insert_chains.rs`.
+
+### Still open
+
+- **Bitcrush, soften and repitcher are still `todo!()`**, and so is the
+  limiter's *reachability* — its DSP is real and complete, but it has no
+  `EffectKind` variant, and it is the one with lookahead latency to compensate,
+  which is why it was not folded in here.
+- **Tempo-synced delay** needs the tempo in `ProcessContext`.
+- Items 3-7 of `docs/handoff.md` are untouched: `patch/voice/polyphony`
+  automation is inert, cutting an automation clip can step at the seam, no lane
+  reordering, rename has no caret, and raising an open editor window is still
+  unverified on a real compositor.
+
+## 2026-09-01: every knob automatable, and a window for the effects that had none
+
+The two things the pass below left open, closed.
+
+### Every knob, not just the two
+
+*"there's no way to actually turn a knob into an automation clip. i want to be
+able to right click on a knob and select create automation clip."*
+
+The channel's own volume and pan became addressable in the pass below; the knobs
+**inside** the instrument — a cutoff, an envelope stage, an oscillator's level —
+did not, and their menu entry said so. What stood in the way was where the
+mapping lived: turning one of §8.2's addresses into a change to a `Patch` was in
+`fontelle-app`, which the audio thread cannot see (INVARIANT 4 runs the other
+way).
+
+It lives in [`fontelle_core::patch_params`] now, beside the `Patch` it writes to,
+and both callers use it — the panel to draw and set, `Sampler::set_patch_param`
+to apply what a lane is holding. That is not tidying-up: it is what makes *"every
+knob is automatable"* true **by construction** rather than by two lists agreeing.
+`realise` registers the addressable parameters by asking the *panel* for its own
+list (`instrument::patch_addresses`), so a knob added to the panel is a knob the
+graph can reach, and `every_address_the_panel_offers_is_one_the_graph_can_reach`
+is the test that says so.
+
+- `ParamTarget::ChannelPatch { channel, param }` — `channel:<id>/patch/...`,
+  exactly as §8.2 writes it. **Anything after `patch/` parses**: which controls a
+  patch has is the patch's business, and INVARIANT 7 already says an unknown name
+  changes nothing and is not an error, so a project from a later build opens and
+  its lane survives being saved again.
+- The lane starts at the value the knob is on, and a second right-click **opens
+  the lane that is there** rather than stacking a second curve on the first.
+- `fontelle-core/tests/patch_params.rs`, `fontelle-app/tests/patch_automation.rs`
+  (which drives real blocks through a real graph — a sweep to the bottom of the
+  cutoff has to be *heard*), `fontelle-app/tests/instrument_editor.rs`.
+
+### A window for every effect
+
+Clicking an insert in the track-options column did nothing at all unless it
+happened to be an EQ, because the EQ was the only effect with a panel. A
+compressor was a row you could add, bypass and delete and never open — the same
+"the button does nothing" the add-instrument button was.
+
+`canvas::effect_view` already turned an effect's own `specs()` into a panel and
+had never been drawn anywhere: another thing that existed and could not be
+reached. It is what the window shows now, so **every effect added later gets a
+window, read-outs in the right units and a right-click that makes an automation
+lane, without anybody writing any of the three**.
+
+Opening it exposed three things the list had been carrying quietly:
+
+- A ten-millisecond attack read **"10 s"**. The compressor's times are stored in
+  milliseconds — the DSP takes `attack_ms` — and the spec said `Seconds`, which
+  nothing read until a window printed it. `Unit::Milliseconds` now exists.
+- A two-position chooser read **"0.00"**. `ParamSpec::positions` names them, so
+  detection reads *Peak* and *RMS*, and a band's type and channel read the words
+  the document uses. Written beside the specs because a `static` read on the
+  audio thread cannot call a method on an enum, and
+  `a_bands_chooser_reads_the_way_the_document_does` keeps the two in step.
+- Right-clicking one nested its address inside a second address, so the lane
+  reached nothing — visible only because the window it opened was titled
+  `mixer:4294967296/insert[0]/param/threshold`.
+  `a_knob_can_be_written_by_its_address_or_by_its_id` is the test.
+
+## 2026-09-01: a spectrum behind the curve, a synth in every new channel, a blade on the arrangement, and two bugs you could hear
+
+A long list from somebody using the studio, and it splits three ways: things
+that were **not there** (an analyser, a cut tool on the arrangement, a right-click
+menu anywhere), things that were there and **could not be reached** (the
+transport from inside a plugin window, undo from inside one, a band's Delete),
+and two that were **wrong** — one silent, one loud.
+
+### The two bugs
+
+**A note that sometimes did not play.** *"sometimes notes will not play if i
+have a note extending before it all the way until where the new note starts, it
+just has a chance not to play."* Two notes on one key, the first ending exactly
+where the second begins, compile to a note-off and a note-on at the same sample
+— and the compiler emitted them in whatever order the clip's arena happened to
+hold the notes. When the off came second it found the voice the *on* had just
+taken (the pool hands out the lowest free slot, and the first note's voice can
+already be free) and released it: the note was there, and silent. That it
+depended on arena order is exactly what made it *"a chance"*.
+
+Events at one sample now have a defined order — parameter values, then
+note-offs, then slides, then note-ons — in `compile::rank`, and
+`sort_events` is public so any later splice uses the same rule.
+`fontelle-sequencer/tests/event_order.rs`.
+
+**A knob that turned the wrong instrument.** *"i changed the volume on my hold
+choir channel instrument and it was changing the volume on my bright yamaha
+piano grand."* Not a mix-up over which channel was selected: the instrument
+panel's volume and pan were the **mixer track's**, and every channel goes to the
+master until somebody routes it elsewhere (see `Channel::mixer_track`), so two
+panels were two knobs on one fader — and that fader was the master's, so it took
+the whole song with it.
+
+A channel now has its own `gain_db` beside the `pan` it already had, applied at
+the sampler ahead of the bus, which is also what keeps it independent of how
+many channels share a track. Both are addressable
+(`ParamTarget::ChannelGain`/`ChannelPan`), so both can be automated.
+`fontelle-app/tests/instrument_editor.rs`.
+
+### A blank instrument that plays something
+
+*"when clicking new instrument, right now it doesnt do anything until i select
+an instrument in the soundfonts tab... then it actually happening later when you
+werent intending."* A channel with no instrument has no panel, no keys that
+sound and no knob that does anything — so the button that made one looked broken
+and then looked haunted, because the click that finally seemed to work was
+somebody choosing a preset for a channel they already had.
+
+`Patch::basic_synth` is what a new channel plays now: a saw, a square an octave
+down and a sine two, with only the saw up and enough headroom for a chord. That
+needed `Source::Oscillator` — named in the patch format since it was written and
+skipped by the renderer — to actually render, so `PreparedLayer` is an enum now
+and a voice carries a phase per slot. The panel grew an **Oscillators** section:
+shape, level, octave, tune and pan per oscillator.
+`fontelle-core/tests/oscillator_layers.rs`.
+
+### The analyser
+
+*"currently theres no eq monitor graph drawn to view the frequency spectrum and
+make edits based off it and see in realtime."*
+
+Four pieces, each testable on its own:
+
+- **The transform.** `fontelle_dsp::SpectrumAnalyser` — a 2048-point radix-2
+  FFT over a Hann window, written out rather than pulled in (it is forty lines
+  and would have been this crate's second dependency). `fontelle-dsp/tests/spectrum.rs`.
+- **The tap.** `fontelle_engine::SpectrumTap` — a lock-free ring the audio
+  thread *copies* into, one relaxed store a frame. The transform runs on the
+  window, once a frame, only while an EQ's window is open; an analyser on the
+  audio thread would make every mix pay for a picture nobody is watching.
+  `fontelle-engine/tests/spectrum.rs`.
+- **The mapping.** The transform's bins are linear and the picture is
+  logarithmic, so each of 96 bands takes the **loudest** bin it covers — an
+  analyser is read for where the peaks are.
+- **The picture.** Filled to the floor of the plot behind the curve, and in the
+  panel's ink rather than the accent, because the accent is the curve.
+  `fontelle-ui/tests/inserts.rs`, and `fontelle-app/tests/spectrum.rs` is the
+  end-to-end one that would have caught a chain wired at every joint and
+  connected to nothing at one end.
+
+It is taken **before** the effect, on purpose: the curve is drawn over the
+signal you are shaping, so a cut you have just made leaves a dip in the *curve*
+against an unchanged spectrum rather than flattening the picture and leaving
+nothing to aim at. A bypassed insert still feeds it.
+
+### Right-click, everywhere it was missing
+
+One `canvas::menu` — geometry and strings, like every other piece of layout here
+— and three things hang off it:
+
+- **A channel**: open, rename, duplicate, clear its instrument, delete.
+  `DuplicateChannel` copies the instrument *and* the clips, onto a row of their
+  own, as one history entry.
+- **A lane**: add, rename, mute, delete. *"i made one i dont want but i cant
+  right click and delete it."* `RemoveLane` takes the clips on it with it, and
+  the last lane cannot go — greyed rather than hidden, because a menu that
+  hides the entry teaches nothing about why it is not there.
+- **A knob**: *"create automation clip"*, which is §12.4's rule on the panel
+  that did not have it. The patch's own knobs are not addressable yet (§8.2),
+  so their entry says so rather than doing nothing.
+
+Renaming has no text buffer beside it: every keystroke goes through the rename
+command, which coalesces, so the document *is* the buffer, the row redraws as
+you type, and one Ctrl+Z takes back the whole name.
+
+### The cut tool on the arrangement
+
+*"should work like the same tool in fl studio and correctly split up looped
+clips and everything taking into account all edge cases cleanly."* `C` picks it
+in whichever canvas has the keyboard, and it draws a line like the roll's.
+
+`SplitClip` is where the edge cases are written down: a cut on an edge is not a
+cut, a note across the cut is cut with it, and a **looped clip stays two looped
+clips** — with the right-hand half's content *rotated* to the phase the loop was
+at, because a second half that restarted the pattern would be a cut you can
+hear. `fontelle-model/tests/arranging.rs`, `fontelle-ui/tests/timeline.rs`.
+
+### The windows that could not hear you
+
+*"cannot use keybinds to like pause and play when i have one of the opened
+windows like an eq plugin window selected"*, and *"undoing and redoing isnt
+working in there either"*. An editor is a separate OS window, so the whole
+keyboard stopped at its title bar. `global_key` is the set that means the same
+thing everywhere — transport, history, save, export — and every window answers
+it. What is deliberately *not* shared is the canvas keys: Delete means "the
+selected band" in an EQ window and "the selected notes" in the roll.
+
+Two more from the same list: **Delete removes the selected EQ band**, and the
+band handles are 18 logical pixels rather than 11 (*"its kinda easy to miss
+them"* — eleven is under the 16 every desktop guideline asks for, on a target
+that is dragged in two axes and carries a number).
+
+And **clicking an instrument or an insert that is already open raises its
+window** instead of doing nothing. Two calls, because one desktop in three
+ignores each: `focus_window` is what X11, Windows and macOS take, and under
+Wayland a client may not take focus by asking — it has to be given it, through
+an xdg-activation token, which is what `request_user_attention` asks for.
+
+## 2026-09-01: the EQ you could not touch, wet/dry, even rows, and searching inside every soundfont
+
+Another pass driven entirely by somebody using the window, and the
+characteristic failure mode shows up twice more: a control that exists in the
+document with nothing on screen able to reach it, and a control that *was*
+reachable but whose picture never changed, which from the other side of the
+screen is the same thing.
+
+### Keys light up under your hands
+
+*"when midi keys are pressed and triggered it should highlight the note of the
+piano in the piano roll... so its easier to say play something on the midi
+keyboard and see which notes you might wanna draw in."*
+
+`fontelle_midi::LiveKeys` is a pair of atomics — 128 bits, one per key — that
+every device callback ORs into and the window loads once a frame. It mirrors
+what the router is **sounding**, not what arrived on the wire: transpose is
+applied on the way in, so the key that lights is the key you would draw, a note
+the sustain pedal is holding stays lit until the pedal lets it go, and a device
+unplugged mid-chord takes its own lights out with its notes. While anything is
+down the window animates at frame rate rather than at the 100 ms idle poll, so
+the light goes out when the key does. `fontelle-midi/tests/live_keys.rs`.
+
+### The EQ drew a curve nobody could change
+
+*"the eq effect is uninteractable i just see a flat line, however it does SOUND
+like it is making an audible change."*
+
+Both halves of that sentence were **one bug**, and it is the pattern this file
+keeps recording. `Session::set_eq_band` wrote the document and published the new
+config to the running graph — so it was audible — and did not move the studio's
+**revision**. `WindowApp::refresh_studio` re-reads its lists only when the
+revision moves (asking every frame allocates), so the editor kept drawing the
+config it had cached when the window opened: eight flat bands, for ever. Every
+other dragged control in the session already bumps it on the line after it
+publishes. `fontelle-app/tests/eq_editor.rs` is that one line, as a test.
+
+With the picture live again, the editor became worth building:
+
+- **Eight numbered band chips.** A fresh EQ has every band switched off and
+  therefore no handles at all — which is what *"just a flat line"* looks like.
+  Clicking a chip switches its band on at a home frequency spread across the
+  spectrum (60 Hz to 15 kHz, so eight bands are not eight handles stacked at
+  1 kHz) and selects it; Ctrl-click switches it back off.
+- **A row of controls for the selected band**: type, frequency, gain, Q, which
+  part of the stereo image it works on, solo, off — and the effect's wet/dry.
+  The numbers drag (Shift for fine), the choosers step forward on a click and
+  back on Ctrl-click, and the wheel works over any of them.
+- **Right-click any of them for an automation lane** (§12.4 taken at its word).
+  The EQ has had 48 addressable parameters since it landed; what was missing was
+  a rectangle per parameter to right-click.
+- **A grid that says what it is** — the decade frequencies labelled along the
+  bottom, ±12 dB and 0 down the side, the summed curve filled back to the zero
+  line, and the band in hand drawn faintly behind it.
+
+`fontelle-ui/tests/inserts.rs` covers the geometry, the hit-testing, the
+read-outs and the per-band curve.
+
+**What it still had not got** was a spectrum analyser behind the curve — an FFT
+and a tap off the audio thread, which is a feature of its own rather than a
+control that was missing a rectangle. The pass above is that feature.
+
+### Wet/dry on every effect
+
+*"i should have a knob to adjust the sound of the dry sound (before the plugin)
+and the wet sound (after the plugin processes the dry sound) blending like how
+fl studio and other daws do it."*
+
+`mix` lives **in each effect's config** rather than beside the bypass on the
+slot, and that buys three things for one field: it is addressable (so an
+automation lane can sweep it), it crosses to the audio thread on the live
+channel the knobs already use, and it is saved and undone by machinery that
+already exists. `EffectNode` keeps a dry copy in scratch sized in `prepare` —
+no block allocates — and blends with two gains rather than an equal-power law,
+because parallel processing is a *sum*: a fully dry insert has to be exactly the
+wire it replaced. There is a **dial** on every insert row in the track-options
+column, with its number beside it (right-click it to automate it) and the same
+control inside the EQ's own window. A dial rather than the groove it was first
+drawn as, and turned rather than slid — `knob_value`, the same arithmetic the
+instrument editor's knobs use, so every knob in the window behaves alike. `fontelle-types/tests/effect_mix.rs`, `fontelle-engine/tests/inserts.rs`,
+`fontelle-model/tests/inserts.rs`, `fontelle-app/tests/eq_editor.rs`.
+
+### The roll's rows were not all the same height
+
+*"there is inconsistant sizing on the notes in the piano roll... single white
+keys wont be as tall as other white keys."*
+
+Two causes, and both are fixed in `canvas::key_row`, which is now the one
+rectangle the keyboard, the grid's rows and the notes are all drawn in.
+
+1. **Fractional pixels.** Every vertical zoom multiplied `key_height` by 1.2, so
+   two notches from 16 gave 23.04 and the rasteriser rounded the rows to
+   23, 23, 24, 23, 24. `zoom_y` keeps it a whole number now, rounding away from
+   where it started so a step at the bottom of the range still moves.
+2. **The strip drew a real piano.** A natural was one row and an accidental was
+   a short bar over the *left* of its own row, so the white left over beside C#
+   read as part of C's key: C looked half again as tall as E, which has no
+   accidental above it. Every key gets an even band now, with a hairline under
+   all of them; the accidentals keep their short black bar inside a band the
+   same height as every other.
+
+### A list of names instead of a keyboard
+
+*"there should also be view options to switch between a piano visual view or
+just a plain list of names... useful for drums since like right now if a drum
+sound if on a black key i cant even read it."*
+
+A chip on the roll's toolbar switches the strip between `keys` and `list`. The
+list drops the black-and-white for one even band per key carrying the name of
+what is on it — the sample's own name where the instrument has one, the note
+otherwise — and takes the wider strip, because a column of names on 56 pixels is
+a column of first syllables. It is **per channel and saved with the song**
+(`Channel::named_keys`): a kit wants the list and the piano beside it wants the
+keyboard.
+
+### The lane seam was five pixels
+
+*"the velocity / pan etc. section at the bottom does have a knob to drag it but
+i am unable to drag it right now."* Driven with XTEST against the real window,
+the drag itself turned out to be correct — press on the seam, move, and the lane
+follows to the pixel. What was wrong was the size of the thing you have to hit:
+`LANE_GRIP` was 5.0, which is three physical rows on a scaled display, and a
+target that thin is one you miss and then conclude is not a control. It is nine
+now, and the extra pixels come out of the grid, never the lane: a grip over the
+top of the bars would eat the clicks that set a velocity to its loudest.
+
+### Searching inside every soundfont
+
+*"we can search through soundfonts, and then sounds inside the soundfonts, but
+we are not able to search for sounds from within ALL of our soundfonts! ...type
+"tuba" and of course no soundfont would show up since i dont have any sf2 file
+named that but within several of my sf2s are sounds called tuba."*
+
+Typing in the browser now searches the presets of the **whole collection**, with
+the hits grouped under the soundfont they came from and the open soundfont's own
+hits first. Clicking one loads it and brings the browser with it.
+
+The interesting half is that listing a soundfont's presets means reading and
+parsing the whole file, and a collection is hundreds of megabytes: doing that on
+the UI thread at the first keystroke would freeze the window for seconds, which
+is a worse feature than no feature. So the scan runs on a thread of its own, the
+results arrive in `Session::pump` (where the graph's leavings are already
+freed), the list fills in as they land, and the status line says how far it has
+got. It is built once, lazily — somebody who never types in the box never pays
+for it. `fontelle-app/tests/browsing.rs`.
+
+### Seen on screen
+
+Every one of these was driven with XTEST against the real window on a nested X
+server and checked by reading pixels back, which is how the harness's own
+mistakes were caught (events sent before the window had mapped, and no window
+manager to give it keyboard focus):
+
+- Every key band in the strip measures **exactly 16 pixels**, and 32 after three
+  vertical zooms — no alternation.
+- The `keys`/`list` chip widens the strip to the name column and back.
+- The lane seam drags: 78 pixels to 159, following the pointer.
+- Adding an EQ, turning its wet/dry dial, opening its window, switching a band on
+  from its chip, dragging the handle (the curve bulges), stepping the band type
+  (the shape changes), and dragging the wet/dry — which moves the groove on the
+  mixer row at the same time.
+- Typing in the browser fills the preset list with hits from across the
+  collection, under headings, on the real 61-soundfont bank.
+
+## 2026-08-31: a mixer you can build in, and the wires nobody had run
 
 Everything in this pass came out of one session of *using* the window, and the
 shape of it repeats: the document could already do the thing, and nothing on
