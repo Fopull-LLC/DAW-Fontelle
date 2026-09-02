@@ -10,6 +10,8 @@ mod graph_channel;
 mod live;
 mod nodes;
 mod rt_guard;
+mod key_tap;
+mod spectrum_tap;
 mod timeline_channel;
 mod transport;
 
@@ -25,10 +27,13 @@ pub use live::{
     LiveEventPorts, LiveEventSource, LivePort, live_capture_channel, live_event_channel,
 };
 pub use nodes::{
-    AudioClipNode, BusSumNode, EffectNode, GAIN_MAX_DB, GAIN_MIN_DB, MasterMeter, MasterNode,
+    AudioClipNode, BusSumNode, CHANNEL_GAIN_MAX_DB, CHANNEL_GAIN_MIN_DB, EffectNode, GAIN_MAX_DB,
+    GAIN_MIN_DB, MasterMeter, MasterNode,
     Metronome, MetronomeNode, MixerTrackNode, SEND_MIN_DB, SamplerNode, SendControls,
     SendNode, TrackControls,
 };
+pub use key_tap::{KeyTap, KeyTapNode};
+pub use spectrum_tap::SpectrumTap;
 pub use rt_guard::{
     RtGuardAllocator, current_thread_is_rt, mark_current_thread_rt, unmark_current_thread_rt,
     with_rt_thread,

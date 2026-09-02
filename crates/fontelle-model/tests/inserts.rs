@@ -13,7 +13,7 @@
 
 use fontelle_model::{
     AddInsert, Command, History, MixerTrack, MoveInsert, Project, RemoveInsert, SetEqBand,
-    SetInsertBypassed,
+    SetInsertBypassed, SetInsertMix,
 };
 use fontelle_types::{BandChannel, BandType, EffectConfig, EffectKind, EqBand, MixerTrackId};
 
@@ -442,6 +442,111 @@ fn two_different_bands_do_not_merge_into_each_other() {
     assert_eq!(history.depth(), depth + 2);
 }
 
+// ------------------------------------------------------------ dry and wet ---
+//
+// Asked for from using the mixer: a wet/dry knob per effect, the way FL and
+// every other DAW has one. The parameter lives in the effect's own config
+// (see `fontelle-types/tests/effect_mix.rs` for why); what is here is the
+// command that moves it, which has to behave like every other dragged
+// control: heard while it moves, one undo entry when it stops.
+
+fn mix_of(project: &Project, track: MixerTrackId, slot: usize) -> f32 {
+    project.mixer.tracks[track].inserts[slot].config.mix()
+}
+
+#[test]
+fn an_insert_can_be_mixed_back_towards_the_dry_signal() {
+    let (mut project, track) = fixture();
+    AddInsert::new(track, EffectKind::Eq)
+        .apply(&mut project)
+        .unwrap();
+    assert_eq!(mix_of(&project, track, 0), 1.0, "a new effect is the effect");
+
+    SetInsertMix::new(track, 0, 0.35)
+        .apply(&mut project)
+        .unwrap();
+    assert!((mix_of(&project, track, 0) - 0.35).abs() < 1e-6);
+}
+
+#[test]
+fn mixing_one_insert_leaves_the_others_alone() {
+    let (mut project, track) = fixture();
+    AddInsert::new(track, EffectKind::Eq)
+        .apply(&mut project)
+        .unwrap();
+    AddInsert::new(track, EffectKind::Compressor)
+        .apply(&mut project)
+        .unwrap();
+
+    SetInsertMix::new(track, 1, 0.2).apply(&mut project).unwrap();
+    assert_eq!(mix_of(&project, track, 0), 1.0);
+    assert!((mix_of(&project, track, 1) - 0.2).abs() < 1e-6);
+}
+
+#[test]
+fn a_mix_is_undoable_back_to_where_the_drag_started() {
+    let (mut project, track) = fixture();
+    AddInsert::new(track, EffectKind::Eq)
+        .apply(&mut project)
+        .unwrap();
+    let mut history = History::new();
+    history
+        .apply(Box::new(SetInsertMix::new(track, 0, 0.5)), &mut project)
+        .unwrap();
+    history.undo(&mut project).unwrap().unwrap();
+    assert_eq!(mix_of(&project, track, 0), 1.0);
+}
+
+#[test]
+fn a_whole_mix_drag_is_one_undo_entry() {
+    // The rule every dragged control in this document follows: sixty commands
+    // land, one entry is left behind, and undo goes back to before the drag
+    // rather than to the middle of it.
+    let (mut project, track) = fixture();
+    AddInsert::new(track, EffectKind::Eq)
+        .apply(&mut project)
+        .unwrap();
+    let mut history = History::new();
+    let depth = history.depth();
+    for step in 0..20 {
+        history
+            .apply(
+                Box::new(SetInsertMix::new(track, 0, 1.0 - step as f32 / 40.0)),
+                &mut project,
+            )
+            .unwrap();
+    }
+    assert_eq!(history.depth(), depth + 1, "a drag is one thing somebody did");
+    history.undo(&mut project).unwrap().unwrap();
+    assert_eq!(mix_of(&project, track, 0), 1.0);
+}
+
+#[test]
+fn two_inserts_mixed_one_after_the_other_are_two_entries() {
+    let (mut project, track) = fixture();
+    AddInsert::new(track, EffectKind::Eq)
+        .apply(&mut project)
+        .unwrap();
+    AddInsert::new(track, EffectKind::Compressor)
+        .apply(&mut project)
+        .unwrap();
+    let mut history = History::new();
+    let depth = history.depth();
+    history
+        .apply(Box::new(SetInsertMix::new(track, 0, 0.5)), &mut project)
+        .unwrap();
+    history
+        .apply(Box::new(SetInsertMix::new(track, 1, 0.5)), &mut project)
+        .unwrap();
+    assert_eq!(history.depth(), depth + 2);
+}
+
+#[test]
+fn mixing_an_insert_that_is_not_there_is_refused() {
+    let (mut project, track) = fixture();
+    assert!(SetInsertMix::new(track, 0, 0.5).apply(&mut project).is_err());
+}
+
 // ------------------------------------------------------------ round tripping
 
 #[test]
@@ -461,6 +566,7 @@ fn a_chain_survives_being_written_out_and_read_back() {
     SetInsertBypassed::new(track, 0, true)
         .apply(&mut project)
         .unwrap();
+    SetInsertMix::new(track, 0, 0.25).apply(&mut project).unwrap();
 
     let json = serde_json::to_string(&project).expect("a project serialises");
     let back: Project = serde_json::from_str(&json).expect("and comes back");
@@ -474,4 +580,8 @@ fn a_chain_survives_being_written_out_and_read_back() {
     assert_eq!(eq.bands[5].gain_db, -3.5);
     assert_eq!(eq.bands[5].band_type, BandType::HighShelf);
     assert_eq!(eq.bands[5].channel, BandChannel::Side);
+    assert!(
+        (eq.mix - 0.25).abs() < 1e-6,
+        "a wet/dry setting has to survive the file"
+    );
 }

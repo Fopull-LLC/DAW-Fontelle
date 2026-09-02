@@ -45,6 +45,7 @@ fn run(node: &mut SendNode, source: [f32; 2], dest: [f32; 2]) -> ([Vec<f32>; 2],
             transport: TransportSnapshot {
                 state: TransportState::Playing,
                 position_sample: 0,
+                bpm: fontelle_types::DEFAULT_BPM,
             },
             sample_range: 0..FRAMES as i64,
         };
@@ -175,6 +176,7 @@ fn a_mono_send_does_not_lose_three_decibels_to_a_pan_law() {
             transport: TransportSnapshot {
                 state: TransportState::Playing,
                 position_sample: 0,
+                bpm: fontelle_types::DEFAULT_BPM,
             },
             sample_range: 0..FRAMES as i64,
         };
@@ -204,6 +206,7 @@ fn a_send_with_more_targets_than_sources_writes_only_what_it_has() {
             transport: TransportSnapshot {
                 state: TransportState::Playing,
                 position_sample: 0,
+                bpm: fontelle_types::DEFAULT_BPM,
             },
             sample_range: 0..FRAMES as i64,
         };

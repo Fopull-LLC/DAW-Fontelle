@@ -6,13 +6,14 @@
 mod mod_matrix;
 mod patch;
 mod patch_format;
+pub mod patch_params;
 mod playback;
 mod sampler;
 mod streaming;
 mod voice;
 
 pub use mod_matrix::{Curve, ModDest, ModMatrix, ModRoute, ModSource};
-pub use patch::{FilterSlot, Layer, Lfo, Patch, Source, ZoneId};
+pub use patch::{FilterSlot, Layer, Lfo, Patch, SILENT_DB, Source, ZoneId};
 pub use patch_format::{
     LoadedPatch, PATCH_FORMAT_VERSION, PatchFormatError, UnresolvedSample, referenced_samples,
 };
@@ -20,6 +21,6 @@ pub use playback::{LoopMode, PlaybackConfig};
 pub use sampler::{PrepareContext, Sampler, SamplerContext};
 pub use streaming::{SampleBuffer, SampleStore};
 pub use voice::{
-    NoteTrigger, RetriggerMode, StealPolicy, UnisonConfig, Voice, VoiceConfig, VoicePool,
-    velocity_to_gain,
+    NoteTrigger, OSC_ROOT_HZ, RetriggerMode, StealPolicy, UnisonConfig, Voice, VoiceConfig,
+    VoicePool, velocity_to_gain,
 };

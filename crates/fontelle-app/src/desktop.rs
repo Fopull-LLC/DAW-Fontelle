@@ -50,16 +50,16 @@ pub fn reveal(dir: &Path) -> Result<(), String> {
 /// Ordered by how well each one fits in: a KDE session gets its own dialog, a
 /// GNOME one gets zenity, and the AppleScript and PowerShell forms are there so
 /// this does not become a Linux-only feature by accident.
-pub fn picker_candidates(start: Option<&Path>) -> Vec<(&'static str, Vec<String>)> {
+pub fn picker_candidates(title: &str, start: Option<&Path>) -> Vec<(&'static str, Vec<String>)> {
     let start = start.map(|p| p.to_string_lossy().into_owned());
 
     if cfg!(target_os = "macos") {
         let script = match &start {
             Some(dir) => format!(
-                "POSIX path of (choose folder with prompt \"Soundfont folder\" \
+                "POSIX path of (choose folder with prompt \"{title}\" \
                  default location POSIX file \"{dir}\")"
             ),
-            None => "POSIX path of (choose folder with prompt \"Soundfont folder\")".to_string(),
+            None => format!("POSIX path of (choose folder with prompt \"{title}\")"),
         };
         return vec![("osascript", vec!["-e".to_string(), script])];
     }
@@ -69,6 +69,7 @@ pub fn picker_candidates(start: Option<&Path>) -> Vec<(&'static str, Vec<String>
         let script = format!(
             "Add-Type -AssemblyName System.Windows.Forms; \
              $d = New-Object System.Windows.Forms.FolderBrowserDialog; \
+             $d.Description = '{title}'; \
              $d.SelectedPath = '{root}'; \
              if ($d.ShowDialog() -eq 'OK') {{ $d.SelectedPath }}"
         );
@@ -83,7 +84,7 @@ pub fn picker_candidates(start: Option<&Path>) -> Vec<(&'static str, Vec<String>
     // KDE's own, which is what this project's own desktop has.
     let mut kdialog = vec![
         "--title".to_string(),
-        "Soundfont folder".to_string(),
+        title.to_string(),
         "--getexistingdirectory".to_string(),
     ];
     // Never an empty argument: `kdialog --getexistingdirectory ""` is not a
@@ -94,7 +95,7 @@ pub fn picker_candidates(start: Option<&Path>) -> Vec<(&'static str, Vec<String>
     let mut zenity = vec![
         "--file-selection".to_string(),
         "--directory".to_string(),
-        "--title=Soundfont folder".to_string(),
+        format!("--title={title}"),
     ];
     // Zenity wants a trailing separator to read the value as a directory to
     // open rather than a file to preselect.
@@ -118,10 +119,19 @@ pub fn parse_picker_output(stdout: &str) -> Option<PathBuf> {
 
 /// Asks the user for a folder, **blocking** until they answer.
 ///
+/// `title` is what the dialog calls itself, and it is not decoration: every
+/// picker here was titled "Soundfont folder" whatever it was asking for, so
+/// the dialog that came up to choose a *projects* folder said in its own title
+/// bar that it was choosing the soundfont one. That is half of *"if I select
+/// change to set my projects folder it actually just changes my soundfonts
+/// folder"* — the other half was a click handler that did not branch on the
+/// panel's mode, and a wrong answer is much easier to believe when the dialog
+/// agrees with it.
+///
 /// `Ok(None)` is a cancel. `Err` is a machine with no picker on it at all,
 /// which is worth saying rather than looking like a cancel.
-pub fn choose_folder(start: Option<&Path>) -> Result<Option<PathBuf>, String> {
-    run_picker(&picker_candidates(start))
+pub fn choose_folder(title: &str, start: Option<&Path>) -> Result<Option<PathBuf>, String> {
+    run_picker(&picker_candidates(title, start))
 }
 
 /// [`choose_folder`] with the candidate list handed in.

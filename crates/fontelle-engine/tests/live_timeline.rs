@@ -28,6 +28,7 @@ fn timeline(events: Vec<TimedEvent>) -> CompiledTimeline {
     let mut timeline = CompiledTimeline {
         events,
         index: Vec::new(),
+        tempo: Vec::new(),
     };
     timeline.events.sort_by_key(|e| e.sample);
     timeline

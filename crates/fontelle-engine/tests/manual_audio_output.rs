@@ -212,5 +212,6 @@ fn arpeggio_then_chord(root: u8) -> CompiledTimeline {
     CompiledTimeline {
         events,
         index: Vec::new(),
+        tempo: Vec::new(),
     }
 }

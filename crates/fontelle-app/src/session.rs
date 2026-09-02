@@ -90,6 +90,16 @@ pub struct Session {
     /// wholesale on a rebuild, because a triple buffer's two ends cannot be
     /// re-paired; the document is the source of truth either way.
     effect_controls: HashMap<(MixerTrackId, usize), fontelle_engine::EffectControls>,
+    /// One analyser tap per insert. **Kept across a rebuild** — see
+    /// [`crate::Realised::spectrum_taps`].
+    spectrum_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    /// The transform behind the EQ's graph, and the scratch it reads into.
+    ///
+    /// One of each rather than one per insert: only one EQ window is open at a
+    /// time, and an analyser holds a few kilobytes of window and scratch that
+    /// would otherwise be allocated per insert and used by none of them.
+    analyser: fontelle_dsp::SpectrumAnalyser,
+    spectrum_scratch: Vec<f32>,
     /// The automation clip the editor has open, what it is called, and which
     /// of its points are selected.
     ///
@@ -121,6 +131,15 @@ pub struct Session {
     /// Where live MIDI is pointed — the selected channel's node. See
     /// [`Session::with_live_target`].
     live_target: Option<std::sync::Arc<fontelle_midi::LiveTarget>>,
+    /// The cell every open MIDI device reads its input settings out of
+    /// (TDD §14.3), when there is a hub to read it. `None` on every offline
+    /// path — the settings are still edited and still written down, there is
+    /// simply no keyboard listening.
+    live_input: Option<std::sync::Arc<fontelle_midi::LiveMapping>>,
+    /// The keys every open MIDI device is holding down, for the roll to light
+    /// (TDD §14.1). `None` on every offline path, which has no keyboard to
+    /// light — see [`Session::with_live_keys`].
+    live_keys: Option<std::sync::Arc<fontelle_midi::LiveKeys>>,
     /// The metronome the running graph is playing through. Kept across a
     /// rebuild — choosing a soundfont with the click on must not turn it off.
     metronome: Option<std::sync::Arc<fontelle_engine::Metronome>>,
@@ -168,6 +187,10 @@ pub struct Session {
     /// the path when the panel asks (see `selected_file`).
     open_file: Option<PathBuf>,
     presets: Vec<fontelle_assets::PresetInfo>,
+    /// Every preset in the whole collection, for searching across soundfonts
+    /// rather than only inside the open one. Built lazily and in the
+    /// background — see [`PresetIndex`].
+    preset_index: PresetIndex,
     /// What each channel is playing, as the file it came from and the preset's
     /// own index inside that file — which is what the browser needs to say
     /// *which* instrument is on the channel you are looking at.
@@ -226,6 +249,9 @@ impl Session {
             param_nodes: HashMap::new(),
             track_controls: HashMap::new(),
             effect_controls: HashMap::new(),
+            spectrum_taps: HashMap::new(),
+            analyser: fontelle_dsp::SpectrumAnalyser::new(),
+            spectrum_scratch: Vec::new(),
             automation_clip: None,
             automation_label: String::new(),
             automation_selection: Vec::new(),
@@ -233,6 +259,8 @@ impl Session {
             automation_names: HashMap::new(),
             selected_track: 0,
             live_target: None,
+            live_input: None,
+            live_keys: None,
             metronome: None,
             capture: None,
             take: Vec::new(),
@@ -251,6 +279,7 @@ impl Session {
             query: String::new(),
             open_file: None,
             presets: Vec::new(),
+            preset_index: PresetIndex::default(),
             clip_clipboard: Vec::new(),
             channel_presets: HashMap::new(),
             patch_cache: None,
@@ -300,6 +329,21 @@ impl Session {
     ) -> Self {
         self.graphs = Some(graphs);
         self.track_controls = controls;
+        self
+    }
+
+    /// Keeps the analyser taps the first graph was built with.
+    ///
+    /// Without this a session only learns about them on its first *rebuild*,
+    /// so a project opened with an EQ already on a track would draw no
+    /// spectrum until something else changed the graph — which is the kind of
+    /// bug that looks like the feature is broken rather than unwired. See
+    /// [`crate::Realised::spectrum_taps`].
+    pub fn with_spectrum_taps(
+        mut self,
+        taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    ) -> Self {
+        self.spectrum_taps = taps;
         self
     }
 
@@ -542,6 +586,7 @@ impl Session {
             color: [0xb4, 0xa2, 0xe8, 0xff],
             muted: false,
             locked: false,
+            order: next_lane_order(&self.project),
         })
     }
 
@@ -646,6 +691,40 @@ impl Session {
         self.live_target = Some(target);
         self.publish_live_target();
         self
+    }
+
+    /// Gives the session the cell the MIDI hub's routers read their input
+    /// settings out of, and publishes what the settings file says into it.
+    ///
+    /// The same shape as [`Session::with_live_target`] and for the same
+    /// reason: a device callback may not take a lock, and reopening a port to
+    /// change one number would drop whatever was being played across it.
+    pub fn with_input_settings(
+        mut self,
+        cell: std::sync::Arc<fontelle_midi::LiveMapping>,
+    ) -> Self {
+        self.live_input = Some(cell);
+        self.publish_input_settings();
+        self
+    }
+
+    /// Gives the session the cell every open device lights its keys in, so the
+    /// roll can show what is being played (TDD §14.1).
+    ///
+    /// Read-only from here: the routers write it, the window draws it, and the
+    /// session is only the road between them. Optional, like the two cells
+    /// above, because every offline path builds a `Session` without one.
+    pub fn with_live_keys(mut self, keys: std::sync::Arc<fontelle_midi::LiveKeys>) -> Self {
+        self.live_keys = Some(keys);
+        self
+    }
+
+    /// Puts what the settings file says onto the shared cell, so a keyboard
+    /// already plugged in plays by it.
+    fn publish_input_settings(&self) {
+        if let Some(cell) = &self.live_input {
+            cell.set(self.settings.midi_input.into());
+        }
     }
 
     /// Points live MIDI at the selected channel.
@@ -806,6 +885,31 @@ impl Session {
         self.revision += 1;
     }
 
+    /// What the document says one insert is set to, whatever kind it holds.
+    ///
+    /// [`eq_config`](StudioHost::eq_config)'s general case: the curve editor
+    /// wants the EQ specifically, and publishing to the live end wants
+    /// whatever is there.
+    fn insert_config(&self, strip: usize, slot: usize) -> Option<fontelle_types::EffectConfig> {
+        let id = self.mixer_track_ids().get(strip).copied()?;
+        Some(self.project.mixer.tracks.get(id)?.inserts.get(slot)?.config)
+    }
+
+    /// What one insert's **live end** is set to right now — the config the
+    /// audio thread is reading, rather than the one the document holds.
+    ///
+    /// Public for the reason [`Session::track_controls`] is: a test has to be
+    /// able to prove a knob was heard without a sound card, and prove it was
+    /// heard *without* the graph being rebuilt.
+    pub fn live_effect_config(
+        &self,
+        strip: usize,
+        slot: usize,
+    ) -> Option<fontelle_types::EffectConfig> {
+        let id = self.mixer_track_ids().get(strip).copied()?;
+        Some(self.effect_controls.get(&(id, slot))?.config())
+    }
+
     /// The live end of every mixer track's fader, in the order
     /// [`Session::mixer_track_ids`] gives.
     ///
@@ -822,7 +926,10 @@ impl Session {
     /// [`Session::channel_ids`] exists: "lane 3" has to mean one thing to the
     /// canvas and to the commands it produces.
     fn lane_ids(&self) -> Vec<LaneId> {
-        self.project.lanes.keys().collect()
+        // One answer to "what is row 3", and it is the document's — see
+        // `Project::lane_ids`. The arena's own order was this until rows could
+        // be moved.
+        self.project.lane_ids()
     }
 
     /// The channel a clip plays, for the block's caption.
@@ -860,12 +967,6 @@ impl Session {
         self.publisher.publish(timeline);
     }
 
-    /// Rebuilds the whole graph and publishes it — what an instrument change,
-    /// a new channel or a mute needs.
-    ///
-    /// Note the order: the node map is rebuilt *first*, because adding a
-    /// channel renumbers the nodes, and a timeline compiled against the old map
-    /// would address notes to nodes that have moved.
     /// What an addressed parameter is worth right now, normalised.
     ///
     /// So a fresh automation clip starts by changing nothing: a lane that
@@ -885,6 +986,28 @@ impl Session {
                 let pan = self.project.mixer.tracks.get(id)?.pan;
                 Some(f64::from((pan + 1.0).clamp(0.0, 2.0) / 2.0))
             }
+            ParamTarget::ChannelGain(id) => {
+                let db = self.project.channels.get(id)?.gain_db;
+                let span = fontelle_engine::CHANNEL_GAIN_MAX_DB
+                    - fontelle_engine::CHANNEL_GAIN_MIN_DB;
+                Some(f64::from(
+                    ((db - fontelle_engine::CHANNEL_GAIN_MIN_DB) / span).clamp(0.0, 1.0),
+                ))
+            }
+            ParamTarget::ChannelPan(id) => {
+                let pan = self.project.channels.get(id)?.pan;
+                Some(f64::from((pan + 1.0).clamp(0.0, 2.0) / 2.0))
+            }
+            // One of the instrument's own knobs. Read through the same table
+            // the panel draws from and the audio thread writes through — see
+            // `fontelle_core::patch_params`.
+            ParamTarget::ChannelPatch { channel, param } => {
+                let data = self.project.channels.get(channel)?.patch_data.as_ref()?;
+                let patch = fontelle_core::Patch::from_data(data, |file| self.library.resolve(file))
+                    .ok()?
+                    .patch;
+                fontelle_core::patch_params::value(&patch, &param).map(f64::from)
+            }
             ParamTarget::Insert { track, slot, param } => {
                 let insert = self.project.mixer.tracks.get(track)?.inserts.get(slot)?;
                 insert.config.normalised(&param).map(f64::from)
@@ -892,15 +1015,22 @@ impl Session {
         }
     }
 
+    /// Rebuilds the whole graph and publishes it — what an instrument change,
+    /// a new channel or a mute needs.
+    ///
+    /// Note the order: the node map is rebuilt *first*, because adding a
+    /// channel renumbers the nodes, and a timeline compiled against the old map
+    /// would address notes to nodes that have moved.
     fn rebuild_graph(&mut self) {
         // Reusing the control surfaces, so a track's fader and meter outlive
         // the graph they were built with — see `realise::fader`.
-        match crate::realise::realise_with(
+        match crate::realise::realise_keeping(
             &self.project,
             &self.library,
             self.options,
             &self.track_controls,
             self.metronome.clone(),
+            &self.spectrum_taps,
         ) {
             Ok(realised) => {
                 self.channel_nodes = realised.channel_nodes;
@@ -908,6 +1038,7 @@ impl Session {
                 // The old set belonged to the graph that is being replaced.
                 self.track_controls = realised.track_controls;
                 self.effect_controls = realised.effect_controls;
+                self.spectrum_taps = realised.spectrum_taps;
                 self.send_controls = realised.send_controls;
                 self.metronome = Some(realised.metronome);
                 self.publish_metronome();
@@ -999,9 +1130,98 @@ impl Session {
         matches_names(&names, &self.query)
     }
 
-    fn filtered_presets(&self) -> Vec<usize> {
-        let names: Vec<&str> = self.presets.iter().map(|p| p.name.as_str()).collect();
-        matches_names(&names, &self.query)
+    /// One row of the preset list, which is not always the open file's.
+    ///
+    /// A search reaches across the whole collection (see [`PresetIndex`]), so
+    /// a row can be a heading naming a soundfont or a preset inside one that
+    /// is not open. Everything that acts on a row — loading it, highlighting
+    /// it, naming a channel after it — goes through this, so the list the
+    /// panel draws and the list a click is resolved against cannot disagree.
+    fn preset_rows(&self) -> Vec<PresetRow> {
+        let query = self.query.trim();
+        if query.is_empty() {
+            // The open soundfont's own presets, in file order — what the
+            // browser has always shown.
+            return self
+                .presets
+                .iter()
+                .map(|preset| PresetRow::Preset {
+                    file: self.open_file.clone().unwrap_or_default(),
+                    index: preset.index,
+                    name: preset.name.clone(),
+                    detail: format!("{}:{}", preset.bank, preset.program),
+                })
+                .collect();
+        }
+
+        // Searching: every soundfont's presets, grouped by the file they are
+        // in, with the open one's first.
+        let names: Vec<&str> = self
+            .preset_index
+            .hits
+            .iter()
+            .map(|hit| hit.name.as_str())
+            .collect();
+        let mut groups: Vec<(PathBuf, String, Vec<&PresetHit>)> = Vec::new();
+        for index in matches_names(&names, query) {
+            let hit = &self.preset_index.hits[index];
+            match groups.iter_mut().find(|(file, _, _)| *file == hit.file) {
+                Some((_, _, rows)) => rows.push(hit),
+                None => groups.push((hit.file.clone(), hit.file_name.clone(), vec![hit])),
+            }
+        }
+        // *"if i have a soundfont selected already it should show the results
+        // within the one selected at the top first"* — the rest keep the order
+        // the index was built in, which is the order the browser lists them.
+        if let Some(open) = &self.open_file
+            && let Some(at) = groups.iter().position(|(file, _, _)| file == open)
+        {
+            let mine = groups.remove(at);
+            groups.insert(0, mine);
+        }
+
+        let mut rows = Vec::new();
+        for (file, name, hits) in groups {
+            rows.push(PresetRow::Group {
+                name,
+                detail: match hits.len() {
+                    1 => "1 sound".to_string(),
+                    n => format!("{n} sounds"),
+                },
+            });
+            for hit in hits {
+                rows.push(PresetRow::Preset {
+                    file: file.clone(),
+                    index: hit.index,
+                    name: hit.name.clone(),
+                    detail: format!("{}:{}", hit.bank, hit.program),
+                });
+            }
+        }
+        rows
+    }
+
+    /// Makes sure a search across the collection has something to search.
+    ///
+    /// Called when the query changes rather than when the bank is scanned: a
+    /// person who never types in the box never pays for the read.
+    fn want_preset_index(&mut self) {
+        if self.query.trim().is_empty() || self.preset_index.ready || self.preset_index.running() {
+            return;
+        }
+        let files: Vec<PathBuf> = self
+            .bank
+            .entries()
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect();
+        self.preset_index.start(files);
+    }
+
+    /// Whether the collection is still being read. The status line says so,
+    /// and a test waits on it.
+    pub fn searching_presets(&self) -> bool {
+        self.preset_index.running()
     }
 
     /// The node an audition should reach: the selected channel's.
@@ -1033,12 +1253,17 @@ impl Session {
     /// Puts a preset onto a channel, through the command path like everything
     /// else, and rebuilds the graph so it can be heard.
     fn install_preset(&mut self, channel: ChannelId, preset: usize) -> Result<(), String> {
-        let file = self.open_file_path().ok_or("no soundfont is open")?;
-        let index = self
-            .presets
-            .get(preset)
-            .map(|p| p.index)
-            .ok_or("that preset is not in this soundfont")?;
+        // Which row was clicked, which is not always a preset of the open
+        // soundfont: a search lists hits from the whole collection.
+        let (file, index, name) = match self.preset_rows().into_iter().nth(preset) {
+            Some(PresetRow::Preset {
+                file, index, name, ..
+            }) => (file, index, name),
+            Some(PresetRow::Group { .. }) => {
+                return Err("that row is a heading, not a sound".to_string());
+            }
+            None => return Err("that preset is not in this soundfont".to_string()),
+        };
         let patch = self
             .library
             .import_sf2(&file, index)
@@ -1059,10 +1284,11 @@ impl Session {
         let mut parts: Vec<Box<dyn Command>> = vec![Box::new(
             fontelle_model::SetChannelPatch::new(channel, Some(data)),
         )];
-        if let Some(name) = self.presets.get(preset).map(|p| p.name.clone())
-            && !name.is_empty()
-        {
-            parts.push(Box::new(fontelle_model::RenameChannel::new(channel, name)));
+        if !name.is_empty() {
+            parts.push(Box::new(fontelle_model::RenameChannel::new(
+                channel,
+                name.clone(),
+            )));
         }
         self.history
             .apply(
@@ -1072,11 +1298,88 @@ impl Session {
             .map_err(|e| e.to_string())?;
         self.history.break_gesture();
 
+        // The browser follows what was loaded. A hit chosen out of a search
+        // across the collection is very often in a soundfont that is not open,
+        // and leaving the file list pointing somewhere else would make the
+        // highlight — and the next click — belong to a different soundfont.
+        if self.open_file.as_ref() != Some(&file) {
+            self.presets = fontelle_assets::list_presets(&file).unwrap_or_default();
+            self.open_file = Some(file.clone());
+        }
         self.channel_presets.insert(channel, (file, index));
         self.patch_cache = None;
         self.dirty = true;
         self.rebuild_graph();
         Ok(())
+    }
+
+    /// A new channel, with a lane and an empty clip of its own, ready to be
+    /// played and drawn in.
+    ///
+    /// Shared by the two ways of making one — the button, which gives it the
+    /// built-in synth, and a Ctrl-clicked preset, which puts a soundfont on it
+    /// afterwards. A channel with nowhere to write notes is a channel the roll
+    /// cannot open, so the lane and the clip are not optional extras.
+    ///
+    /// Through the history like everything else (INVARIANT 9), so adding an
+    /// instrument by mistake is one Ctrl+Z away.
+    fn new_channel(
+        &mut self,
+        name: String,
+        patch_data: Option<fontelle_types::PatchData>,
+    ) -> Result<ChannelId, String> {
+        let channel = self
+            .apply_for::<AddChannel>(Box::new(AddChannel::new(name, patch_data)))?
+            .channel()
+            .ok_or("the channel was not created")?;
+        self.history.break_gesture();
+
+        let lane = self.project.lanes.insert(Lane {
+            name: format!("Lane {}", self.project.lanes.len() + 1),
+            height: 32.0,
+            color: [0x4f, 0x8f, 0xd0, 0xff],
+            muted: false,
+            locked: false,
+            order: next_lane_order(&self.project),
+        });
+        // As long as the longest clip already there, so a new part lines up
+        // with the piece rather than stopping a bar into it.
+        let length = self
+            .project
+            .clips
+            .values()
+            .map(|c| c.length)
+            .max()
+            .unwrap_or(0)
+            .max(PPQN * 4 * NEW_CLIP_BARS);
+        self.history
+            .apply(
+                Box::new(AddClip::new(Clip {
+                    lane,
+                    start: 0,
+                    length,
+                    source: ClipSource::Notes(NoteData {
+                        channel,
+                        notes: Arena::default(),
+                    }),
+                    prefab_link: None,
+                    color: None,
+                    muted: false,
+                    loop_length: None,
+                })),
+                &mut self.project,
+            )
+            .map_err(|e| e.to_string())?;
+        self.history.break_gesture();
+
+        self.dirty = true;
+        // The new channel is the selected one, and its clip is what the roll
+        // opens: you made it to put something in it.
+        self.selected = self.project.channels.len().saturating_sub(1);
+        if let Some(id) = self.clip_of_channel(channel) {
+            self.clip = id;
+        }
+        Ok(channel)
     }
 
     /// The selected channel, if there is one.
@@ -1126,7 +1429,61 @@ impl Session {
         self.rebuild_graph();
     }
 
-    fn open_file_path(&self) -> Option<PathBuf> {
+    /// Takes the instrument off the selected channel, leaving a channel that
+    /// plays nothing.
+    ///
+    /// A real state and a reachable one — it is what every channel used to
+    /// start in, and it is what a project saved before the built-in synth
+    /// existed opens as. Through the history like every other document
+    /// mutation (INVARIANT 9).
+    pub fn clear_channel_instrument(&mut self) {
+        let Some(channel) = self.selected_channel_id() else {
+            return;
+        };
+        self.run(Box::new(fontelle_model::SetChannelPatch::new(channel, None)));
+        self.history.break_gesture();
+        self.channel_presets.remove(&channel);
+        self.patch_cache = None;
+        self.dirty = true;
+        self.rebuild_graph();
+        self.revision += 1;
+    }
+
+    /// Every parameter address the running graph can reach, as the instrument
+    /// panel spells them.
+    ///
+    /// What a test asks to check the one invariant this feature rests on: the
+    /// panel's list and the graph's map are the same list. A knob the panel
+    /// offers and the graph does not know is a lane that is made, drawn, saved
+    /// — and silent, because an unresolved target emits no events at all.
+    pub fn automatable_addresses(&self) -> Vec<fontelle_types::ParamAddress> {
+        let Some(channel) = self.selected_channel_id() else {
+            return Vec::new();
+        };
+        self.param_nodes
+            .keys()
+            .filter_map(|address| match fontelle_types::ParamTarget::parse(address) {
+                Some(fontelle_types::ParamTarget::ChannelGain(id)) if id == channel => {
+                    Some(fontelle_types::ParamAddress::new(crate::instrument::MIXER_GAIN))
+                }
+                Some(fontelle_types::ParamTarget::ChannelPan(id)) if id == channel => {
+                    Some(fontelle_types::ParamAddress::new(crate::instrument::MIXER_PAN))
+                }
+                Some(fontelle_types::ParamTarget::ChannelPatch { channel: id, param })
+                    if id == channel =>
+                {
+                    Some(fontelle_types::ParamAddress::new(param))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Which soundfont the browser has open, if any.
+    ///
+    /// Public so a test can check that choosing a search hit from another
+    /// soundfont brought the browser with it.
+    pub fn open_file_path(&self) -> Option<PathBuf> {
         self.open_file.clone()
     }
 }
@@ -1619,17 +1976,18 @@ impl StudioHost for Session {
     }
 
     fn library_presets(&self) -> Vec<LibraryEntry> {
-        self.filtered_presets()
+        self.preset_rows()
             .into_iter()
-            .filter_map(|index| self.presets.get(index))
-            .map(|preset| {
-                // Bank and program, because a General MIDI soundfont has three
-                // presets called "Piano" and the numbers are what tell them
-                // apart.
-                LibraryEntry::file(
-                    preset.name.clone(),
-                    format!("{}:{}", preset.bank, preset.program),
-                )
+            .map(|row| match row {
+                // Bank and program on a preset, because a General MIDI
+                // soundfont has three presets called "Piano" and the numbers
+                // are what tell them apart.
+                PresetRow::Preset { name, detail, .. } => LibraryEntry::file(name, detail),
+                PresetRow::Group { name, detail } => LibraryEntry {
+                    name,
+                    detail,
+                    kind: fontelle_ui::document::LibraryKind::Group,
+                },
             })
             .collect()
     }
@@ -1640,6 +1998,10 @@ impl StudioHost for Session {
 
     fn set_query(&mut self, query: &str) {
         self.query = query.to_string();
+        // Typing is what asks for the collection to be read — see
+        // `want_preset_index`. Nothing happens on the second keystroke: the
+        // index is built once and searched many times.
+        self.want_preset_index();
         // The list is a different list now — the whole collection rather than
         // one folder, or the other way round. The file that was open is still
         // open; only which row it is has changed, and `selected_file` works
@@ -1696,75 +2058,210 @@ impl StudioHost for Session {
         if self.open_file_path().as_ref() != Some(file) {
             return None;
         }
-        // Into the *filtered* list, because that is what the panel draws — a
-        // search that has hidden the chosen preset shows no highlight, which is
-        // true.
-        self.filtered_presets()
-            .into_iter()
-            .position(|p| self.presets.get(p).is_some_and(|info| info.index == *index))
+        // Into the list the panel draws — a search that has hidden the chosen
+        // preset shows no highlight, which is true.
+        self.preset_rows().into_iter().position(|row| {
+            matches!(row, PresetRow::Preset { file: f, index: i, .. } if f == *file && i == *index)
+        })
+    }
+
+    fn add_channel(&mut self) -> Result<(), String> {
+        let name = format!("Channel {}", self.project.channels.len() + 1);
+        // **The built-in synth, not silence.** A channel with no instrument
+        // has no panel, no keys that sound and nothing a knob can change, so
+        // the button that made one looked broken until a soundfont had been
+        // chosen — and then looked haunted, because the click people made next
+        // (a preset, meaning *"swap this channel's sound"*) was the one that
+        // finally seemed to do it. See `fontelle_core::Patch::basic_synth`.
+        let patch = fontelle_core::Patch::basic_synth()
+            .to_data(self.library.provenance())
+            .map_err(|e| e.to_string())?;
+        let channel = self.new_channel(name, Some(patch))?;
+        self.patch_cache = None;
+        self.rebuild_graph();
+        self.revision += 1;
+        let _ = channel;
+        Ok(())
     }
 
     fn add_channel_with(&mut self, preset: usize) -> Result<(), String> {
-        let name = self
-            .presets
-            .get(preset)
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| format!("Channel {}", self.project.channels.len() + 1));
+        let name = match self.preset_rows().into_iter().nth(preset) {
+            Some(PresetRow::Preset { name, .. }) if !name.is_empty() => name,
+            _ => format!("Channel {}", self.project.channels.len() + 1),
+        };
+        let channel = self.new_channel(name, None)?;
+        self.install_preset(channel, preset)
+    }
 
-        // Through the history like everything else (INVARIANT 9), so adding an
-        // instrument by mistake is one Ctrl+Z away. It is three entries — the
-        // channel, its clip, its patch — rather than one; a compound command
-        // is what makes it one, and there is no need for one yet.
-        let channel = self
-            .apply_for::<AddChannel>(Box::new(AddChannel::new(name, None)))?
-            .channel()
-            .ok_or("the channel was not created")?;
+    fn duplicate_channel(&mut self, index: usize) {
+        let Some(id) = self.channel_ids().get(index).copied() else {
+            return;
+        };
+        match self.apply_for::<fontelle_model::DuplicateChannel>(Box::new(
+            fontelle_model::DuplicateChannel::new(id),
+        )) {
+            Ok(command) => {
+                let made = command.channel();
+                self.history.break_gesture();
+                // The copy is what you are now working on — you made it to
+                // play it — and the roll follows, the same handshake adding a
+                // channel has.
+                if let Some(made) = made {
+                    self.selected = self
+                        .channel_ids()
+                        .iter()
+                        .position(|c| *c == made)
+                        .unwrap_or(self.selected);
+                    if let Some(clip) = self.clip_of_channel(made) {
+                        self.clip = clip;
+                    }
+                }
+                self.patch_cache = None;
+                self.dirty = true;
+                self.rebuild_graph();
+            }
+            Err(e) => self.message = Some(e),
+        }
+    }
+
+    fn remove_channel(&mut self, index: usize) {
+        let ids = self.channel_ids();
+        let Some(id) = ids.get(index).copied() else {
+            return;
+        };
+        // The last one stays. A rack with no channels is a studio with nothing
+        // to play and no clip for the roll to open — and every way back in
+        // makes a channel anyway, so this only ever costs a press of the add
+        // button.
+        if ids.len() <= 1 {
+            self.message = Some("a project needs at least one instrument".to_string());
+            return;
+        }
+        let opened = self.channel_of_clip(self.clip) == Some(id);
+        self.run(Box::new(fontelle_model::RemoveChannel::new(id)));
         self.history.break_gesture();
+        self.channel_presets.remove(&id);
+        self.patch_cache = None;
+        self.selected = self
+            .selected
+            .min(self.project.channels.len().saturating_sub(1));
+        // The roll cannot go on showing a clip that is not there.
+        if opened && let Some(next) = Self::first_clip(&self.project) {
+            self.clip = next;
+            self.selected = self.channel_index_of_clip().unwrap_or(self.selected);
+        }
+        self.dirty = true;
+        self.rebuild_graph();
+    }
 
-        // A channel with nowhere to write notes is a channel the roll cannot
-        // open, so it gets a lane and an empty clip of its own, as long as the
-        // longest one already there.
-        let lane = self.project.lanes.insert(Lane {
-            name: format!("Lane {}", self.project.lanes.len() + 1),
-            height: 32.0,
-            color: [0x4f, 0x8f, 0xd0, 0xff],
-            muted: false,
-            locked: false,
-        });
-        let length = self
+    fn rename_channel(&mut self, index: usize, name: &str) {
+        let Some(id) = self.channel_ids().get(index).copied() else {
+            return;
+        };
+        // No `break_gesture`: `RenameChannel::merge_with` folds every keystroke
+        // into one entry, so undo takes back the *name*, not the last letter.
+        self.run(Box::new(fontelle_model::RenameChannel::new(id, name)));
+        self.dirty = true;
+        self.revision += 1;
+    }
+
+    fn clear_channel_instrument(&mut self, index: usize) {
+        let Some(id) = self.channel_ids().get(index).copied() else {
+            return;
+        };
+        let was = self.selected;
+        self.selected = index;
+        Session::clear_channel_instrument(self);
+        self.selected = was.min(self.project.channels.len().saturating_sub(1));
+        let _ = id;
+    }
+
+    // --- the arrangement's rows ---
+
+    fn add_lane(&mut self) {
+        let name = format!("Lane {}", self.project.lanes.len() + 1);
+        self.run(Box::new(fontelle_model::AddLane::new(name)));
+        self.history.break_gesture();
+        self.dirty = true;
+        self.revision += 1;
+    }
+
+    fn remove_lane(&mut self, index: usize) {
+        let Some(id) = self.lane_ids().get(index).copied() else {
+            return;
+        };
+        let opened = self
             .project
             .clips
-            .values()
-            .map(|c| c.length)
-            .max()
-            .unwrap_or(0)
-            .max(PPQN * 4 * NEW_CLIP_BARS);
-        self.history
-            .apply(
-                Box::new(AddClip::new(Clip {
-                    lane,
-                    start: 0,
-                    length,
-                    source: ClipSource::Notes(NoteData {
-                        channel,
-                        notes: Arena::default(),
-                    }),
-                    prefab_link: None,
-                    color: None,
-                    muted: false,
-                    loop_length: None,
-                })),
-                &mut self.project,
-            )
-            .map_err(|e| e.to_string())?;
+            .get(self.clip)
+            .is_some_and(|clip| clip.lane == id);
+        self.run(Box::new(fontelle_model::RemoveLane::new(id)));
         self.history.break_gesture();
-
-        self.dirty = true;
-        self.selected = self.project.channels.len().saturating_sub(1);
-        if let Some(id) = self.clip_of_channel(channel) {
-            self.clip = id;
+        if opened && let Some(next) = Self::first_clip(&self.project) {
+            self.clip = next;
+            self.selected = self.channel_index_of_clip().unwrap_or(self.selected);
         }
-        self.install_preset(channel, preset)
+        self.dirty = true;
+        // The clips that went with it are gone from the timeline, so the
+        // sequencer has to hear about it as well as the window.
+        self.rebuild_graph();
+    }
+
+    fn rename_lane(&mut self, index: usize, name: &str) {
+        let Some(id) = self.lane_ids().get(index).copied() else {
+            return;
+        };
+        self.run(Box::new(fontelle_model::RenameLane::new(id, name)));
+        self.dirty = true;
+        self.revision += 1;
+    }
+
+    fn can_remove_lane(&self, index: usize) -> bool {
+        self.project.lanes.len() > 1 && index < self.project.lanes.len()
+    }
+
+    fn automate_instrument_param(&mut self, address: &fontelle_types::ParamAddress, at: Sample) {
+        let Some(id) = self.selected_channel_id() else {
+            return;
+        };
+        // The panel's address is a *panel* address — `mixer/gain`,
+        // `patch/filter[0]/cutoff` — and an automation target has to name the
+        // channel as well, since two channels' panels offer the same strings.
+        // This is the one place the two scrapes of §8.2's scheme meet.
+        let target = match address.as_str() {
+            crate::instrument::MIXER_GAIN => fontelle_types::ParamTarget::ChannelGain(id),
+            crate::instrument::MIXER_PAN => fontelle_types::ParamTarget::ChannelPan(id),
+            param if param.starts_with("patch/") => fontelle_types::ParamTarget::ChannelPatch {
+                channel: id,
+                param: param.to_string(),
+            },
+            // A control the panel drew and this build cannot address. Nothing
+            // rather than a lane pointed at nothing.
+            _ => return,
+        };
+        // What the control is *called*, taken from the panel rather than from
+        // the address: "cutoff" is what somebody right-clicked, and
+        // `patch/filter[0]/cutoff` is what the file says.
+        let label = {
+            let channel = self
+                .project
+                .channels
+                .get(id)
+                .map_or_else(String::new, |channel| channel.name.clone());
+            let caption = self
+                .instrument()
+                .and_then(|view| {
+                    view.groups
+                        .iter()
+                        .flat_map(|group| group.params.iter())
+                        .find(|param| param.address == *address)
+                        .map(|param| param.label.clone())
+                })
+                .unwrap_or_else(|| address.to_string());
+            format!("{channel} \u{2014} {caption}")
+        };
+        let at = self.playhead_song_tick(at);
+        self.create_automation(&target.address(), &label, at);
     }
 
     fn set_channel_instrument(&mut self, preset: usize) -> Result<(), String> {
@@ -1827,10 +2324,64 @@ impl StudioHost for Session {
         Ok(())
     }
 
+    fn settings(&self) -> Vec<LibraryEntry> {
+        crate::settings::SETTING_ROWS
+            .iter()
+            .map(|row| LibraryEntry::file(row.label(), row.value(&self.settings.midi_input)))
+            .collect()
+    }
+
+    fn settings_status(&self) -> String {
+        // The file, not the folder: "where do I edit this by hand" is the
+        // question a settings tab leaves somebody with, and the answer is a
+        // path. Elided from the left like the bank's, because the end of a
+        // path is the half that says where you are.
+        match self.settings_path.clone().or_else(Settings::config_path) {
+            Some(path) => crate::desktop::elide_path(&path, 2),
+            None => "there is no home directory to keep settings in".to_string(),
+        }
+    }
+
+    fn nudge_setting(&mut self, index: usize, delta: i32) {
+        let Some(row) = crate::settings::SETTING_ROWS.get(index) else {
+            return;
+        };
+        let before = self.settings.midi_input;
+        row.nudge(&mut self.settings.midi_input, delta);
+        if self.settings.midi_input == before {
+            // A heading, or a number already at its end. Neither is worth a
+            // write to disk or a redraw.
+            return;
+        }
+        // Onto the keyboard first and into the file second: what somebody is
+        // adjusting is how the next note feels, and a disk write that fails
+        // must not stop that.
+        self.publish_input_settings();
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+        self.revision += 1;
+    }
+
+    fn reveal_config_dir(&mut self) {
+        let dir = self
+            .settings_path
+            .as_deref()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .or_else(Settings::config_dir);
+        let Some(dir) = dir else {
+            self.message = Some("there is no home directory to keep settings in".to_string());
+            return;
+        };
+        if let Err(e) = crate::desktop::reveal(&dir) {
+            self.message = Some(e);
+        }
+    }
+
     fn choose_projects_dir(&mut self) {
         // One projects folder, not a list: "where do my projects live" has one
         // answer, unlike a soundfont bank, which is genuinely several places.
-        match crate::desktop::choose_folder(self.projects.dir()) {
+        match crate::desktop::choose_folder("Projects folder", self.projects.dir()) {
             Ok(Some(dir)) => self.set_projects_dir(Some(dir)),
             Ok(None) => {}
             Err(e) => self.message = Some(e),
@@ -1870,11 +2421,28 @@ impl StudioHost for Session {
         // While searching, say what is being searched — the whole collection,
         // which is the thing that is surprising about it.
         if !self.query.trim().is_empty() {
-            let hits = self.bank.search(&self.query).len();
-            return match hits {
-                0 => format!("nothing matching \u{201c}{}\u{201d}", self.query.trim()),
-                1 => "1 match in the whole collection".to_string(),
-                n => format!("{n} matches in the whole collection"),
+            let files = self.bank.search(&self.query).len();
+            // The sounds *inside* the soundfonts, which is the half of the
+            // answer a file-name search cannot give: nothing is called `tuba`
+            // and four soundfonts have one in them.
+            let sounds = self
+                .preset_rows()
+                .iter()
+                .filter(|row| matches!(row, PresetRow::Preset { .. }))
+                .count();
+            if self.preset_index.running() {
+                return format!(
+                    "reading the collection\u{2026} {} of {} soundfonts",
+                    self.preset_index.scanned, self.preset_index.total
+                );
+            }
+            let query = self.query.trim();
+            return match (files, sounds) {
+                (0, 0) => format!("nothing matching \u{201c}{query}\u{201d}"),
+                (0, n) => format!("{n} sounds matching \u{201c}{query}\u{201d}"),
+                (1, 0) => "1 match in the whole collection".to_string(),
+                (f, 0) => format!("{f} matches in the whole collection"),
+                (f, n) => format!("{f} soundfonts and {n} sounds matching \u{201c}{query}\u{201d}"),
             };
         }
         // Otherwise say **where you are**, which is the question a browser you
@@ -1914,7 +2482,7 @@ impl StudioHost for Session {
 
     fn choose_library_dir(&mut self, add: bool) {
         let start = self.bank.dirs().first().cloned();
-        match crate::desktop::choose_folder(start.as_deref()) {
+        match crate::desktop::choose_folder("Soundfont folder", start.as_deref()) {
             Ok(Some(dir)) => {
                 self.set_library_dirs(vec![dir], add);
                 self.message = Some(match self.bank.entries().len() {
@@ -1960,22 +2528,58 @@ impl StudioHost for Session {
         let channel_id = self.selected_channel_id()?;
         let channel = self.project.channels.get(channel_id)?;
         let patch = self.selected_patch()?;
-        // The fader lives on the mixer track, not on the patch — see
-        // `crate::instrument::describe`.
-        let track = channel
-            .mixer_track
-            .or(self.project.mixer.master)
-            .and_then(|id| self.project.mixer.tracks.get(id));
-        Some(crate::instrument::describe(
+        // **The channel's own level and placement**, not its mixer track's.
+        // Every channel goes to the master until somebody routes it somewhere
+        // else, so a panel reading the track was every panel reading one
+        // fader — see `Channel::gain_db`.
+        let mut view = crate::instrument::describe(
             &channel.name,
             &patch,
-            track.map_or(0.0, |t| t.gain_db),
-            track.map_or(0.0, |t| t.pan),
-        ))
+            channel.gain_db,
+            channel.pan,
+        );
+        // The ring §12.2 asks for. Marked here rather than inside `describe`,
+        // which knows about patches and not about clips — and marked from one
+        // set rather than one question per knob, since answering it walks
+        // every clip in the project.
+        // Built once for the whole panel: `automated_targets` walks every
+        // clip in the project, and a closure that called it per knob would
+        // walk them forty-nine times for an EQ.
+        let automated = fontelle_model::automated_targets(&self.project);
+        view.mark_automated(|address| automated.contains(address));
+        Some(view)
     }
 
     fn clip_clipboard_len(&self) -> usize {
         self.clip_clipboard.len()
+    }
+
+    fn key_style(&self) -> fontelle_ui::canvas::KeyStyle {
+        let named = self
+            .channel_ids()
+            .get(self.selected)
+            .and_then(|id| self.project.channels.get(*id))
+            .is_some_and(|channel| channel.named_keys);
+        if named {
+            fontelle_ui::canvas::KeyStyle::Names
+        } else {
+            fontelle_ui::canvas::KeyStyle::Piano
+        }
+    }
+
+    fn set_key_style(&mut self, style: fontelle_ui::canvas::KeyStyle) {
+        let Some(id) = self.channel_ids().get(self.selected).copied() else {
+            return;
+        };
+        self.run(Box::new(fontelle_model::SetFlag::new(
+            fontelle_model::FlagTarget::ChannelNamedKeys(id),
+            style == fontelle_ui::canvas::KeyStyle::Names,
+        )));
+        self.history.break_gesture();
+        // The strip is a different width in the two views, so the grid beside
+        // it moves: the window has to lay the panel out again, and it does
+        // that when the revision moves.
+        self.revision += 1;
     }
 
     fn key_map(&self) -> fontelle_ui::document::KeyMap {
@@ -1989,33 +2593,30 @@ impl StudioHost for Session {
         let Some(channel_id) = self.selected_channel_id() else {
             return;
         };
-        // The two that are the mixer's rather than the patch's. A channel on
-        // the master edits the master's, which is what the panel is showing.
-        let track = self
-            .project
-            .channels
-            .get(channel_id)
-            .and_then(|c| c.mixer_track.or(self.project.mixer.master));
+        // The two that live on the **channel** rather than in its patch. Not
+        // on its mixer track: a track is a destination several channels may
+        // share, and a panel that wrote to one was two channels' panels
+        // turning the same fader. See `Channel::gain_db`.
         match address.as_str() {
             crate::instrument::MIXER_GAIN => {
-                let Some(track) = track else { return };
                 let db = crate::instrument::GAIN_MIN_DB
                     + value.clamp(0.0, 1.0)
                         * (crate::instrument::GAIN_MAX_DB - crate::instrument::GAIN_MIN_DB);
                 self.run(Box::new(fontelle_model::SetNumber::new(
-                    fontelle_model::NumberTarget::TrackGainDb(track),
+                    fontelle_model::NumberTarget::ChannelGainDb(channel_id),
                     f64::from(db),
                 )));
                 self.rebuild_graph();
+                self.revision += 1;
                 return;
             }
             crate::instrument::MIXER_PAN => {
-                let Some(track) = track else { return };
                 self.run(Box::new(fontelle_model::SetNumber::new(
-                    fontelle_model::NumberTarget::TrackPan(track),
+                    fontelle_model::NumberTarget::ChannelPan(channel_id),
                     f64::from(value.clamp(0.0, 1.0) * 2.0 - 1.0),
                 )));
                 self.rebuild_graph();
+                self.revision += 1;
                 return;
             }
             _ => {}
@@ -2027,7 +2628,7 @@ impl StudioHost for Session {
         // An address this build does not recognise changes nothing and is not
         // an error (INVARIANT 7): a project naming a parameter a later build
         // dropped has to open rather than refuse.
-        if !crate::instrument::set(&mut patch, address, value) {
+        if !crate::instrument::set(&mut patch, address.as_str(), value) {
             return;
         }
         self.store_patch(channel_id, patch);
@@ -2037,6 +2638,10 @@ impl StudioHost for Session {
 
     fn mixer_strips(&self) -> Vec<MixerStrip> {
         let ids = self.mixer_track_ids();
+        // Built once for the whole rack rather than per insert: it walks every
+        // clip in the project, and asking it per slot would walk them again
+        // for each one.
+        let automated = fontelle_model::automated_targets(&self.project);
         ids.iter()
             .copied()
             .filter_map(|id| {
@@ -2052,9 +2657,19 @@ impl StudioHost for Session {
                     inserts: track
                         .inserts
                         .iter()
-                        .map(|slot| fontelle_ui::canvas::InsertInfo {
+                        .enumerate()
+                        .map(|(index, slot)| fontelle_ui::canvas::InsertInfo {
                             label: slot.kind().label().to_string(),
                             bypassed: slot.bypassed,
+                            mix: slot.config.mix(),
+                            mix_automated: automated.contains(
+                                &fontelle_types::ParamTarget::Insert {
+                                    track: id,
+                                    slot: index,
+                                    param: fontelle_types::MIX.into(),
+                                }
+                                .address(),
+                            ),
                         })
                         .collect(),
                     sends: track
@@ -2152,6 +2767,10 @@ impl StudioHost for Session {
         self.rebuild_graph();
     }
 
+    fn live_keys(&self) -> u128 {
+        self.live_keys.as_ref().map_or(0, |keys| keys.snapshot())
+    }
+
     fn mixer_peaks(&mut self) -> Vec<[f32; 2]> {
         self.mixer_track_ids()
             .into_iter()
@@ -2225,6 +2844,28 @@ impl StudioHost for Session {
         // Reused when this parameter already has one, so a lane belongs to a
         // parameter rather than to a gesture — otherwise every right-click on
         // the same fader grows the arrangement another strip.
+        // And **the clip itself is reused** when this parameter already has one
+        // at this point in the song. A right-click on a control that already
+        // has a lane means "show me that lane", not "give me a second one on
+        // top of the first" — two clips for one parameter in the same bars is
+        // two curves fighting over the same value, and the RT side would apply
+        // whichever was compiled last.
+        if let Some(existing) = self.project.clips.iter().find_map(|(id, clip)| match &clip.source {
+            ClipSource::Automation(data)
+                if data.target == *address && clip.start <= at && at < clip.start + clip.length =>
+            {
+                Some(id)
+            }
+            _ => None,
+        }) {
+            self.automation_clip = Some(existing);
+            self.automation_label = label.to_string();
+            self.automation_names.insert(address.clone(), label.to_string());
+            self.automation_selection.clear();
+            self.revision += 1;
+            return;
+        }
+
         let lane = self.automation_lane(address, label);
         let start = at.max(0);
         let bar = PPQN * i64::from(self.project.beats_per_bar.max(1));
@@ -2359,6 +3000,182 @@ impl StudioHost for Session {
         fontelle_model::automated_targets(&self.project).contains(address)
     }
 
+    fn insert_view(&self, strip: usize, slot: usize) -> Option<InstrumentView> {
+        let config = self.insert_config(strip, slot)?;
+        // The EQ draws itself. See the trait's docs.
+        if matches!(config, fontelle_types::EffectConfig::Eq(_)) {
+            return None;
+        }
+        let id = self.mixer_track_ids().get(strip).copied()?;
+        let name = self
+            .project
+            .mixer
+            .tracks
+            .get(id)
+            .map_or_else(String::new, |track| track.name.clone());
+        // `effect_view` was written for this and had no window to be drawn in:
+        // it turns an effect's own `specs()` into a panel, so an effect added
+        // later gets one without anybody writing it. Its addresses are the
+        // full automation addresses, which is what makes right-clicking a knob
+        // in it need no translation at all.
+        // And the strips its detector could be pointed at, if it has one: the
+        // window offers the key, the document validates it and the compiler
+        // orders it. Every strip including this one — a track keying an
+        // insert on itself is refused by the command with a message that says
+        // what "no key" already means, which is more use than a name missing
+        // from a list.
+        let strips: Vec<String> = self
+            .mixer_track_ids()
+            .iter()
+            .map(|id| {
+                self.project
+                    .mixer
+                    .tracks
+                    .get(*id)
+                    .map_or_else(String::new, |track| track.name.clone())
+            })
+            .collect();
+        let mut view =
+            fontelle_ui::canvas::effect_view(&name, slot, id, &config, &strips, self.insert_key(strip, slot));
+        // Built once for the whole panel: `automated_targets` walks every
+        // clip in the project, and a closure that called it per knob would
+        // walk them forty-nine times for an EQ.
+        let automated = fontelle_model::automated_targets(&self.project);
+        view.mark_automated(|address| automated.contains(address));
+        Some(view)
+    }
+
+    fn set_insert_param(&mut self, strip: usize, slot: usize, param: &str, value: f32) {
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return;
+        };
+        // The panel hands back the **full** automation address it was built
+        // with; the command names the parameter inside the effect. This is the
+        // one place the two halves of §8.2's scheme meet, and it takes either.
+        let param = match fontelle_types::ParamTarget::parse(&fontelle_types::ParamAddress::new(
+            param,
+        )) {
+            Some(fontelle_types::ParamTarget::Insert { param, .. }) => param,
+            _ => param.to_string(),
+        };
+        let param = param.as_str();
+        // No `break_gesture`: `SetInsertParam::merge_with` folds a whole drag
+        // into one entry, and the window ends it on mouse-up like every other
+        // knob.
+        self.run(Box::new(fontelle_model::SetInsertParam::new(
+            id, slot, param, value,
+        )));
+        // Straight to the running graph, not through a rebuild: an effect knob
+        // is something somebody drags, and rebuilding deserialises every
+        // channel's patch. Same path `set_eq_band` takes.
+        if let Some(config) = self.insert_config(strip, slot)
+            && let Some(controls) = self.effect_controls.get_mut(&(id, slot))
+        {
+            controls.publish(config);
+        }
+        self.dirty = true;
+        self.revision += 1;
+    }
+
+    fn set_insert_preset(&mut self, strip: usize, slot: usize, preset: usize) {
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return;
+        };
+        // One entry on the history, whatever the preset moved — see
+        // `fontelle_model::SetInsertPreset`.
+        self.run(Box::new(fontelle_model::SetInsertPreset::new(
+            id, slot, preset,
+        )));
+        // Straight to the running graph, the same path a knob takes.
+        if let Some(config) = self.insert_config(strip, slot)
+            && let Some(controls) = self.effect_controls.get_mut(&(id, slot))
+        {
+            controls.publish(config);
+        }
+        self.dirty = true;
+        self.revision += 1;
+    }
+
+    fn set_insert_key(&mut self, strip: usize, slot: usize, key: Option<usize>) {
+        let ids = self.mixer_track_ids();
+        let Some(id) = ids.get(strip).copied() else {
+            return;
+        };
+        // `None` is "listen to yourself", which is what an insert does with no
+        // key; a strip index nobody has is the same answer rather than a
+        // guess at the nearest one.
+        let key = match key {
+            Some(index) => match ids.get(index).copied() {
+                Some(target) => Some(target),
+                None => return,
+            },
+            None => None,
+        };
+        // A key is a routing edge, so this **rebuilds** the graph rather than
+        // publishing to the live end: what changed is the order the schedule
+        // runs in and which node fills which tap, neither of which a control
+        // surface can carry. The same thing adding a send does.
+        self.run(Box::new(fontelle_model::SetInsertKey::new(id, slot, key)));
+        self.rebuild_graph();
+        self.dirty = true;
+        self.revision += 1;
+    }
+
+    fn insert_key(&self, strip: usize, slot: usize) -> Option<usize> {
+        let ids = self.mixer_track_ids();
+        let id = ids.get(strip).copied()?;
+        let key = self
+            .project
+            .mixer
+            .tracks
+            .get(id)?
+            .inserts
+            .get(slot)?
+            .effective_key()?;
+        ids.iter().position(|other| *other == key)
+    }
+
+    fn spectrum(&mut self, strip: usize, slot: usize) -> Vec<f32> {
+        use fontelle_ui::canvas::{SPECTRUM_BANDS, SPECTRUM_BOTTOM_DB, spectrum_band_hz};
+
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return Vec::new();
+        };
+        let Some(tap) = self.spectrum_taps.get(&(id, slot)) else {
+            return Vec::new();
+        };
+        // Nothing has gone through it: an offline session, or a graph built a
+        // moment ago. An empty spectrum draws nothing, which is honest.
+        if tap.frames_written() == 0 {
+            return Vec::new();
+        }
+        tap.read(&mut self.spectrum_scratch);
+        let magnitudes = self.analyser.analyse(&self.spectrum_scratch);
+
+        // The transform's bins are **linear** in frequency and the picture is
+        // logarithmic, so the bottom of the plot has a handful of bins spread
+        // across a third of the width and the top has hundreds crammed into
+        // the last inch. Each band takes the **loudest** bin it covers rather
+        // than the average: an analyser is read for where the peaks are, and
+        // averaging fifty bins in the top octave buries every one of them in
+        // the quiet between.
+        let bin_hz = fontelle_dsp::bin_width_hz(self.options.sample_rate as f32);
+        (0..SPECTRUM_BANDS)
+            .map(|band| {
+                let (low, high) = spectrum_band_hz(band);
+                let first = (low / bin_hz).floor().max(1.0) as usize;
+                let last = (high / bin_hz).ceil() as usize;
+                // A band narrower than one bin still reads one — the bottom
+                // three octaves, where a 23 Hz bin is wider than the band.
+                let last = last.max(first + 1).min(magnitudes.len());
+                magnitudes
+                    .get(first..last)
+                    .map(|bins| bins.iter().cloned().fold(SPECTRUM_BOTTOM_DB, f32::max))
+                    .unwrap_or(SPECTRUM_BOTTOM_DB)
+            })
+            .collect()
+    }
+
     fn eq_config(&self, strip: usize, slot: usize) -> Option<fontelle_types::EqConfig> {
         let id = self.mixer_track_ids().get(strip).copied()?;
         let insert = self.project.mixer.tracks.get(id)?.inserts.get(slot)?;
@@ -2389,6 +3206,26 @@ impl StudioHost for Session {
         {
             controls.publish(fontelle_types::EffectConfig::Eq(config));
         }
+        // And the window, which re-reads its lists only when this moves. Left
+        // out, the sound changed and the curve did not — see
+        // `tests/eq_editor.rs`, which is the report this line answers.
+        self.revision += 1;
+    }
+
+    fn set_insert_mix(&mut self, strip: usize, slot: usize, mix: f32) {
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return;
+        };
+        self.run(Box::new(fontelle_model::SetInsertMix::new(id, slot, mix)));
+        // Both ends, exactly as a band does and a fader does: the command for
+        // undo and for the file, the live channel for the sound between now
+        // and the next rebuild.
+        if let Some(config) = self.insert_config(strip, slot)
+            && let Some(controls) = self.effect_controls.get_mut(&(id, slot))
+        {
+            controls.publish(config);
+        }
+        self.revision += 1;
     }
 
     fn set_track_gain_db(&mut self, strip: usize, gain_db: f32) {
@@ -2493,9 +3330,16 @@ impl StudioHost for Session {
     // ------------------------------------------------------ the arrangement ---
 
     fn lanes(&self) -> Vec<LaneInfo> {
-        self.project
-            .lanes
-            .values()
+        // **Through `lane_ids`**, which is the order the arrangement stacks
+        // them — not the arena's. `clips()` below already indexes rows by
+        // position in that list, so a row list built any other way would draw
+        // every clip against the wrong row the moment somebody reordered one.
+        // That is precisely the two-lists-that-must-agree defect this codebase
+        // keeps finding, and it was live for exactly as long as it took a test
+        // to move a row.
+        self.lane_ids()
+            .into_iter()
+            .filter_map(|id| self.project.lanes.get(id))
             .map(|lane| LaneInfo {
                 name: lane.name.clone(),
                 muted: lane.muted,
@@ -2698,6 +3542,22 @@ impl StudioHost for Session {
                 self.republish();
                 self.revision += 1;
             }
+            ArrangeEdit::Split { cuts } => {
+                // One command per clip, and **one gesture**: a line drawn
+                // across four rows is one thing somebody did, so `break_gesture`
+                // comes after the lot rather than between them.
+                //
+                // Deliberately no `created` here: the halves a cut makes are
+                // not a new selection. `clips_inserted` would make them one,
+                // and a cut that left you holding four clips you did not
+                // choose is a cut you have to click somewhere to escape.
+                for (id, at) in cuts {
+                    self.run(Box::new(fontelle_model::SplitClip::new(id, at)));
+                }
+                self.history.break_gesture();
+                self.republish();
+                self.revision += 1;
+            }
             ArrangeEdit::SetLoop { ids, loop_length } => {
                 // No `break_gesture`: this arrives as the first step of a
                 // Shift-drag on a clip's edge, and the resize steps that
@@ -2816,6 +3676,16 @@ impl StudioHost for Session {
         self.revision += 1;
     }
 
+    fn move_lane(&mut self, lane: usize, delta: isize) {
+        self.run(Box::new(fontelle_model::MoveLane::new(lane, delta)));
+        self.history.break_gesture();
+        self.dirty = true;
+        // The arrangement re-reads its rows only when this moves — a reorder
+        // that forgot it would be a document that had changed and a window
+        // that had not.
+        self.revision += 1;
+    }
+
     fn keep_take(&mut self, end_sample: Sample) -> usize {
         // One last drain: the events between the previous pump and the stop
         // are the end of the performance, and they are the ones somebody just
@@ -2871,7 +3741,145 @@ impl StudioHost for Session {
             // on this thread, never on that one (INVARIANT 1).
             graphs.pump();
         }
+        // And where the collection's presets arrive while it is being read —
+        // see [`PresetIndex`]. The revision moves so the list redraws with
+        // what has landed, which is what makes a long scan look like a list
+        // filling in rather than like a window that has stopped.
+        if self.preset_index.drain() {
+            self.revision += 1;
+        }
     }
+}
+
+/// One preset, somewhere in the collection — a row of the search index.
+///
+/// The *name* is what is searched and the path is what is opened. Kept flat
+/// rather than as a map from file to presets, because the ordering the panel
+/// wants (the open soundfont first, then everything else) is decided per
+/// search and not once.
+#[derive(Debug, Clone)]
+pub struct PresetHit {
+    pub file: PathBuf,
+    /// What the browser calls the soundfont — its file stem.
+    pub file_name: String,
+    /// Which preset inside that file, as [`fontelle_assets::list_presets`]
+    /// numbers them.
+    pub index: usize,
+    pub name: String,
+    pub bank: u16,
+    pub program: u16,
+}
+
+/// The collection's presets, read on a thread of its own.
+///
+/// Asked for from using the browser: *"we are not able to search for sounds
+/// from within ALL of our soundfonts!"*.
+///
+/// **Why a thread.** Listing a soundfont's presets means reading and parsing
+/// the whole file — `fontelle_assets::list_presets` does — and a collection is
+/// hundreds of megabytes across dozens of files. Doing that on the UI thread
+/// the first time somebody types a letter would freeze the window for seconds,
+/// which is a worse feature than no feature. So the scan runs behind a channel
+/// and the results arrive in [`Session::pump`], the same place the graph's
+/// leavings are freed; the list fills in as they land.
+#[derive(Default)]
+struct PresetIndex {
+    hits: Vec<PresetHit>,
+    /// The receiving end while a scan is running. `None` when there is no scan
+    /// — either because none has been asked for, or because the last one
+    /// finished.
+    incoming: Option<std::sync::mpsc::Receiver<Vec<PresetHit>>>,
+    /// Whether what `hits` holds describes the bank as it is now. Cleared when
+    /// the collection changes under it.
+    ready: bool,
+    /// How many files have been read, and how many there are — for the status
+    /// line, which otherwise looks like a search that found nothing.
+    scanned: usize,
+    total: usize,
+}
+
+impl PresetIndex {
+    /// Starts a scan of `files`, throwing away anything an earlier one found.
+    fn start(&mut self, files: Vec<PathBuf>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.hits.clear();
+        self.ready = false;
+        self.scanned = 0;
+        self.total = files.len();
+        self.incoming = Some(rx);
+        std::thread::spawn(move || {
+            for path in files {
+                let name = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                // A file that will not parse is not an error here: the browser
+                // already says so where it lists it, and one bad soundfont
+                // must not stop the other sixty being searchable.
+                let presets = fontelle_assets::list_presets(&path).unwrap_or_default();
+                let hits = presets
+                    .into_iter()
+                    .map(|preset| PresetHit {
+                        file: path.clone(),
+                        file_name: name.clone(),
+                        index: preset.index,
+                        name: preset.name,
+                        bank: preset.bank,
+                        program: preset.program,
+                    })
+                    .collect();
+                // A send that fails is a window that has closed. Stop.
+                if tx.send(hits).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// Takes whatever the scan has finished since the last call. Returns
+    /// whether anything arrived, which is what decides a redraw.
+    fn drain(&mut self) -> bool {
+        let Some(rx) = &self.incoming else {
+            return false;
+        };
+        let mut moved = false;
+        loop {
+            match rx.try_recv() {
+                Ok(hits) => {
+                    self.hits.extend(hits);
+                    self.scanned += 1;
+                    moved = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                // The worker is done and gone.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.incoming = None;
+                    self.ready = true;
+                    moved = true;
+                    break;
+                }
+            }
+        }
+        moved
+    }
+
+    fn running(&self) -> bool {
+        self.incoming.is_some()
+    }
+}
+
+/// One row of the browser's preset list.
+enum PresetRow {
+    /// A heading naming the soundfont the rows under it came from. Not
+    /// something to click.
+    Group { name: String, detail: String },
+    /// A preset: which file it is in, and which preset of that file.
+    Preset {
+        file: PathBuf,
+        index: usize,
+        name: String,
+        detail: String,
+    },
 }
 
 /// A file size a person can read at a glance.
@@ -2888,4 +3896,20 @@ fn human_size(bytes: u64) -> String {
     } else {
         format!("{} MB", mb.round() as u64)
     }
+}
+
+/// The `order` a row added now should carry: past the bottom of the stack.
+///
+/// The same rule `AddLane` follows, and it has to be the same rule: a row
+/// created straight on the arena rather than through the command — an
+/// automation lane, a channel's own lane — must still turn up where somebody
+/// adding a row is looking for it, and not wherever a default of zero sorts
+/// once the rows have been reordered.
+fn next_lane_order(project: &fontelle_model::Project) -> u32 {
+    project
+        .lanes
+        .values()
+        .map(|lane| lane.order)
+        .max()
+        .map_or(0, |highest| highest.saturating_add(1))
 }

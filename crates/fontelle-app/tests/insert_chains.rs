@@ -132,6 +132,7 @@ impl Rig {
             color: [0; 4],
             muted: false,
             locked: false,
+            order: 0,
         });
         let mut library = SampleLibrary::new();
         let master = project.mixer.master.expect("a project has a master");
@@ -152,6 +153,8 @@ impl Rig {
             pan: 0.0,
             muted: false,
             soloed: false,
+            named_keys: false,
+            gain_db: 0.0,
         });
         fontelle_app::set_channel_patch(&mut project, channel, &patch, &library)
             .expect("a patch this build built must serialise");
@@ -256,6 +259,12 @@ impl Rig {
             .apply(&mut self.project)
             .unwrap();
         slot
+    }
+
+    /// Puts a fresh effect of `kind` on `track`, at its defaults.
+    fn add_insert(&mut self, track: MixerTrackId, kind: EffectKind) -> usize {
+        AddInsert::new(track, kind).apply(&mut self.project).unwrap();
+        self.project.mixer.tracks[track].inserts.len() - 1
     }
 }
 
@@ -1028,4 +1037,54 @@ fn the_open_automation_block_says_that_it_is_open() {
         .find(|c| c.kind == fontelle_ui::document::ClipKind::Automation)
         .expect("automation clip");
     assert!(made.open, "the clip that was just made is the one open");
+}
+
+/// And the panel that knob lives on comes back **saying so**.
+///
+/// `is_automated` answered this correctly for a long time and nothing asked
+/// it: the ring TDD §12.2 describes was drawn by nothing, so a knob a lane had
+/// taken over looked exactly like one nobody had touched. This is the join
+/// between the two — the session marking the view it builds — and it is the
+/// piece that was missing rather than the answer, which was always there.
+#[test]
+fn a_panel_says_which_of_its_knobs_a_lane_has_taken_over() {
+    let mut rig = Rig::new(false);
+    let master = rig.master();
+    // A compressor rather than an EQ: the EQ draws its own curve and has no
+    // generic panel, which is the trait's documented `None`.
+    rig.add_insert(master, EffectKind::Compressor);
+
+    let address = ParamTarget::Insert {
+        track: master,
+        slot: 0,
+        param: "ratio".into(),
+    }
+    .address();
+
+    let mut session = rig.into_session();
+    let before = session.insert_view(0, 0).expect("a compressor has a panel");
+    assert!(
+        before
+            .groups
+            .iter()
+            .flat_map(|group| &group.params)
+            .all(|param| !param.automated),
+        "nothing is automated to begin with"
+    );
+
+    session.create_automation(&address, "Master \u{2014} ratio", 0);
+
+    let after = session.insert_view(0, 0).expect("still a compressor");
+    let marked: Vec<&str> = after
+        .groups
+        .iter()
+        .flat_map(|group| &group.params)
+        .filter(|param| param.automated)
+        .map(|param| param.address.as_str())
+        .collect();
+    assert_eq!(
+        marked,
+        vec![address.as_str()],
+        "the ratio knob, and only the ratio knob, is under a lane"
+    );
 }

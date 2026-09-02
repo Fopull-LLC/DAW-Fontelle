@@ -40,6 +40,8 @@ fn an_insert(label: &str) -> InsertInfo {
     InsertInfo {
         label: label.into(),
         bypassed: false,
+        mix: 1.0,
+        mix_automated: false,
     }
 }
 
@@ -339,6 +341,46 @@ fn a_band_that_has_no_gain_puts_its_handle_on_the_zero_line() {
     );
 }
 
+/// *"please make the bands bigger so i can grab them easier its kinda easy to
+/// miss them right now."*
+///
+/// Eleven logical pixels is under half a fingertip and under the 16 px every
+/// desktop guideline puts on a pointer target; on a high-density display where
+/// the compositor is not scaling, it is smaller still. The handle carries its
+/// band's number, too, so it has to be big enough to read.
+#[test]
+fn a_band_handle_is_big_enough_to_hit() {
+    let area = Rect::new(0.0, 0.0, 600.0, 240.0);
+    let layout = eq_layout(area, &metrics(), &one_band(a_bell(1_000.0, 6.0)));
+    let handle = layout.handles[0].rect;
+    assert!(
+        handle.width >= 16.0 && handle.height >= 16.0,
+        "a handle you have to aim at is a handle you miss, got {}x{}",
+        handle.width,
+        handle.height
+    );
+}
+
+/// Missing it by a couple of pixels still lands on it — which is most of what
+/// "easy to miss" means in practice.
+#[test]
+fn a_press_just_off_a_handle_still_takes_it() {
+    let area = Rect::new(0.0, 0.0, 600.0, 240.0);
+    let layout = eq_layout(area, &metrics(), &one_band(a_bell(1_000.0, 6.0)));
+    let handle = layout.handles[0].rect;
+    let (cx, cy) = (
+        handle.x + handle.width / 2.0,
+        handle.y + handle.height / 2.0,
+    );
+    for (dx, dy) in [(6.0, 0.0), (-6.0, 0.0), (0.0, 6.0), (0.0, -6.0)] {
+        assert_eq!(
+            eq_hit(&layout, cx + dx, cy + dy),
+            EqHit::Handle(0),
+            "six pixels off centre is still the handle"
+        );
+    }
+}
+
 #[test]
 fn clicking_a_handle_picks_up_that_band() {
     let area = Rect::new(0.0, 0.0, 600.0, 240.0);
@@ -411,6 +453,248 @@ fn an_empty_editor_draws_a_flat_line() {
     );
 }
 
+// ----------------------------------------------------- the EQ's controls ---
+//
+// Reported from using the studio: *"the eq effect is uninteractable i just see
+// a flat line... needs to genuinely match up to other DAWs parametric eqs so
+// have all the features and interactables id expect and of course ability to
+// link automation curves to the bands knobs and whatnot."*
+//
+// A curve you can drag was the whole editor. Everything a parametric EQ is
+// *made of* — which band you are on, what type it is, its Q, which part of the
+// stereo image it works on, whether it is soloed, and the wet/dry — had no
+// rectangle anywhere, so none of it could be clicked and none of it could be
+// right-clicked into an automation lane either.
+//
+// The rule these tests hold is the one this project keeps relearning: a
+// control that exists in the model and has no rectangle on screen is not a
+// feature anybody has.
+
+use fontelle_ui::canvas::{
+    EqField, eq_band_curve_points, eq_field_caption, eq_layout_for, eq_nudge_freq, eq_nudge_gain,
+    eq_nudge_mix, next_band_type, next_band_channel,
+};
+
+/// The editor over a config, with `selected` the band its controls describe.
+fn editor(config: &EqConfig, selected: usize) -> fontelle_ui::canvas::EqLayout {
+    eq_layout_for(Rect::new(0.0, 0.0, 620.0, 340.0), &metrics(), config, selected)
+}
+
+#[test]
+fn every_band_has_a_chip_whether_it_is_switched_on_or_not() {
+    // This is the answer to "it opens flat and there is nothing to grab": a
+    // fresh EQ has eight bands, all off, and eight chips saying so. Clicking
+    // one is how you switch a band on without knowing that clicking the empty
+    // curve would have done it.
+    let layout = editor(&EqConfig::default(), 0);
+    assert_eq!(layout.bands.len(), fontelle_types::BANDS);
+    for (index, chip) in &layout.bands {
+        assert!(!chip.is_empty(), "band {index} has no chip");
+        let (x, y) = (chip.x + chip.width / 2.0, chip.y + chip.height / 2.0);
+        assert_eq!(eq_hit(&layout, x, y), EqHit::Band(*index));
+    }
+}
+
+#[test]
+fn the_chips_are_in_band_order_and_do_not_overlap() {
+    let layout = editor(&EqConfig::default(), 0);
+    for pair in layout.bands.windows(2) {
+        let (first, second) = (pair[0].1, pair[1].1);
+        assert!(first.x < second.x, "the chips are not in order");
+        assert!(
+            first.intersection(&second).is_empty(),
+            "two chips are drawn on top of each other"
+        );
+    }
+}
+
+#[test]
+fn the_selected_band_gets_a_row_of_its_own_controls() {
+    let mut config = EqConfig::default();
+    config.bands[2] = a_bell(800.0, 4.0);
+    let layout = editor(&config, 2);
+
+    for field in [
+        EqField::Type,
+        EqField::Freq,
+        EqField::Gain,
+        EqField::Q,
+        EqField::Channel,
+        EqField::Solo,
+        EqField::Delete,
+        EqField::Mix,
+    ] {
+        let rect = layout.field(field).unwrap_or_else(|| panic!("no {field:?}"));
+        assert!(!rect.is_empty(), "{field:?} has no room");
+        assert!(
+            layout.body.contains(rect.x + 1.0, rect.y + 1.0),
+            "{field:?} is outside the editor"
+        );
+        let (x, y) = (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        assert_eq!(
+            eq_hit(&layout, x, y),
+            EqHit::Field(field),
+            "{field:?} does not answer for itself"
+        );
+    }
+}
+
+#[test]
+fn no_two_controls_are_drawn_on_top_of_each_other() {
+    let layout = editor(&EqConfig::default(), 0);
+    let mut rects: Vec<(String, Rect)> = layout
+        .fields
+        .iter()
+        .map(|(field, rect)| (format!("{field:?}"), *rect))
+        .collect();
+    for (index, chip) in &layout.bands {
+        rects.push((format!("chip {index}"), *chip));
+    }
+    rects.push(("curve".to_string(), layout.curve));
+    for (i, (a_name, a)) in rects.iter().enumerate() {
+        for (b_name, b) in rects.iter().skip(i + 1) {
+            let overlap = a.intersection(b);
+            assert!(
+                overlap.is_empty(),
+                "{a_name} and {b_name} overlap by {overlap:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_control_says_what_it_is_set_to() {
+    // A knob whose number you cannot read is a knob you cannot set — the same
+    // rule the generic parameter panel already follows.
+    let mut config = EqConfig::default();
+    config.bands[0] = EqBand {
+        band_type: BandType::HighShelf,
+        freq_hz: 5_000.0,
+        gain_db: -6.0,
+        q: 2.0,
+        enabled: true,
+        solo: false,
+        channel: BandChannel::Side,
+    };
+    config.mix = 0.5;
+
+    assert_eq!(eq_field_caption(EqField::Type, &config, 0), "high shelf");
+    assert_eq!(eq_field_caption(EqField::Freq, &config, 0), "5.00 kHz");
+    assert_eq!(eq_field_caption(EqField::Gain, &config, 0), "-6.0 dB");
+    assert_eq!(eq_field_caption(EqField::Q, &config, 0), "Q 2.00");
+    assert_eq!(eq_field_caption(EqField::Channel, &config, 0), "side");
+    assert_eq!(eq_field_caption(EqField::Mix, &config, 0), "50%");
+}
+
+#[test]
+fn a_band_with_no_gain_says_so_rather_than_showing_a_number_that_does_nothing() {
+    // A low-pass has a corner, not a gain, and a gain read-out on one is a
+    // control that looks live and moves nothing.
+    let mut config = EqConfig::default();
+    config.bands[0] = EqBand {
+        band_type: BandType::LowPass24,
+        freq_hz: 2_000.0,
+        gain_db: 0.0,
+        q: 1.0,
+        enabled: true,
+        solo: false,
+        channel: BandChannel::Stereo,
+    };
+    assert_eq!(eq_field_caption(EqField::Gain, &config, 0), "\u{2014}");
+}
+
+#[test]
+fn the_type_and_the_channel_cycle_both_ways() {
+    assert_eq!(next_band_type(BandType::Bell, true), BandType::LowShelf);
+    assert_eq!(next_band_type(BandType::Bell, false), BandType::BandPass);
+    assert_eq!(
+        next_band_type(BandType::BandPass, true),
+        BandType::Bell,
+        "the list wraps rather than stopping"
+    );
+    assert_eq!(
+        next_band_channel(BandChannel::Stereo, true),
+        BandChannel::Mid
+    );
+    assert_eq!(
+        next_band_channel(BandChannel::Stereo, false),
+        BandChannel::Side
+    );
+}
+
+#[test]
+fn dragging_a_number_moves_it_by_a_step_that_suits_it() {
+    // A frequency is a ratio and a gain is a difference: one step of a
+    // frequency at 100 Hz has to be the same musical move as one step at
+    // 10 kHz, and half a decibel is half a decibel wherever it is.
+    let up = eq_nudge_freq(1_000.0, 12.0);
+    assert!(up > 1_000.0);
+    let ratio = up / 1_000.0;
+    let higher = eq_nudge_freq(10_000.0, 12.0) / 10_000.0;
+    assert!(
+        (ratio - higher).abs() < 1e-3,
+        "a frequency step must be a ratio, not a number of hertz"
+    );
+    assert_eq!(eq_nudge_freq(20.0, -50.0), 20.0, "and it stops at the ends");
+    assert_eq!(eq_nudge_freq(20_000.0, 50.0), 20_000.0);
+
+    assert!((eq_nudge_gain(0.0, 4.0) - 2.0).abs() < 1e-6);
+    assert_eq!(eq_nudge_gain(0.0, 200.0), 24.0, "clamped to what a band has");
+    assert_eq!(eq_nudge_gain(0.0, -200.0), -24.0);
+
+    assert!((eq_nudge_mix(1.0, -10.0) - 0.9).abs() < 1e-6);
+    assert_eq!(eq_nudge_mix(1.0, 10.0), 1.0);
+    assert_eq!(eq_nudge_mix(0.0, -10.0), 0.0);
+}
+
+#[test]
+fn each_band_can_be_drawn_on_its_own_as_well_as_in_the_sum() {
+    // What every parametric EQ shows: the band you are holding, picked out of
+    // the curve everything adds up to, so a cut you are making is visible
+    // against the shape it is being made in.
+    let mut config = EqConfig::default();
+    config.bands[0] = a_bell(200.0, 6.0);
+    config.bands[1] = a_bell(5_000.0, -6.0);
+    let layout = editor(&config, 0);
+
+    let first = eq_band_curve_points(&layout, &config, 0);
+    assert!(first.len() > 32);
+    let zero = eq_y_of_gain(layout.curve, 0.0);
+    // Its own bell rises, and it knows nothing about the other band's dip.
+    let at_5k = first
+        .iter()
+        .min_by(|a, b| {
+            let target = eq_x_of_freq(layout.curve, 5_000.0);
+            (a.0 - target).abs().partial_cmp(&(b.0 - target).abs()).unwrap()
+        })
+        .unwrap();
+    assert!(
+        (at_5k.1 - zero).abs() < 2.0,
+        "band 1's curve must not carry band 2's cut"
+    );
+
+    let off = eq_band_curve_points(&layout, &config, 7);
+    assert!(
+        off.iter().all(|(_, y)| (y - zero).abs() < 0.5),
+        "a band that is switched off is a flat line"
+    );
+}
+
+#[test]
+fn the_editor_still_works_when_there_is_no_room_for_it() {
+    // Every layout in this crate answers this one: a window dragged small
+    // yields empty rectangles, never negative ones, and hit-testing them finds
+    // nothing rather than everything.
+    let layout = eq_layout_for(Rect::new(0.0, 0.0, 30.0, 12.0), &metrics(), &EqConfig::default(), 0);
+    for (_, rect) in &layout.fields {
+        assert!(rect.width >= 0.0 && rect.height >= 0.0);
+    }
+    for (_, rect) in &layout.bands {
+        assert!(rect.width >= 0.0 && rect.height >= 0.0);
+    }
+    assert_eq!(eq_hit(&layout, -20.0, -20.0), EqHit::Nothing);
+}
+
 // ------------------------------------------------------------ the fx menu
 
 use fontelle_types::{EffectConfig, EffectKind};
@@ -466,7 +750,7 @@ fn any_effect_can_be_drawn_from_its_own_parameter_list() {
     // parameters gets an editor without anybody writing one, and every control
     // on it hands back the address automation would use.
     let config = EffectConfig::new(EffectKind::Compressor);
-    let view = effect_view("Master", 0, a_track(), &config);
+    let view = effect_view("Master", 0, a_track(), &config, &[], None);
     let count: usize = view.groups.iter().map(|g| g.params.len()).sum();
     assert_eq!(count, config.specs().len(), "a control per parameter");
 }
@@ -474,7 +758,7 @@ fn any_effect_can_be_drawn_from_its_own_parameter_list() {
 #[test]
 fn every_control_carries_the_address_that_automates_it() {
     let config = EffectConfig::new(EffectKind::Compressor);
-    let view = effect_view("Master", 2, a_track(), &config);
+    let view = effect_view("Master", 2, a_track(), &config, &[], None);
     for group in &view.groups {
         for param in &group.params {
             let target = fontelle_types::ParamTarget::parse(&param.address)
@@ -492,7 +776,7 @@ fn a_switch_is_drawn_as_a_switch_and_a_choice_as_a_choice() {
     // Not everything is a knob. A detection mode drawn as a dial is a control
     // whose two positions are somewhere in a sweep.
     let config = EffectConfig::new(EffectKind::Compressor);
-    let view = effect_view("Master", 0, a_track(), &config);
+    let view = effect_view("Master", 0, a_track(), &config, &[], None);
     let find = |name: &str| {
         view.groups
             .iter()
@@ -518,7 +802,7 @@ fn a_controls_read_out_is_in_the_units_the_parameter_is_in() {
     let mut config = EffectConfig::new(EffectKind::Compressor);
     config.set("threshold", -12.0);
     config.set("ratio", 4.0);
-    let view = effect_view("Master", 0, a_track(), &config);
+    let view = effect_view("Master", 0, a_track(), &config, &[], None);
     let display = |name: &str| {
         view.groups
             .iter()
@@ -539,7 +823,7 @@ fn a_controls_read_out_is_in_the_units_the_parameter_is_in() {
 #[test]
 fn the_panel_says_which_track_and_which_effect_it_is_showing() {
     let config = EffectConfig::new(EffectKind::Compressor);
-    let view = effect_view("Drums", 0, a_track(), &config);
+    let view = effect_view("Drums", 0, a_track(), &config, &[], None);
     assert!(view.title.contains("Drums"));
     assert!(view.title.contains("Comp"));
 }
@@ -563,4 +847,121 @@ fn a_scroll_over_a_band_changes_its_q_by_a_ratio() {
 fn a_q_cannot_be_scrolled_out_of_the_range_a_filter_has() {
     assert!(eq_nudge_q(0.1, -100.0) >= 0.1 - 1e-6);
     assert!(eq_nudge_q(20.0, 100.0) <= 24.0 + 1e-6);
+}
+
+// ------------------------------------------------------- the analyser ---
+//
+// *"currently theres no eq monitor graph drawn to view the frequency spectrum
+// and make edits based off it and see in realtime."* The transform is
+// `fontelle-dsp/tests/spectrum.rs`; this is the picture it becomes.
+
+#[test]
+fn the_spectrum_runs_left_to_right_across_the_curve() {
+    let area = Rect::new(10.0, 20.0, 600.0, 240.0);
+    let bands = vec![-40.0; fontelle_ui::canvas::SPECTRUM_BANDS];
+    let points = fontelle_ui::canvas::spectrum_points(area, &bands);
+    assert_eq!(
+        points.len(),
+        bands.len() + 1,
+        "one per band, and the last carried to the edge"
+    );
+    assert!((points[0].0 - area.x).abs() < 0.01, "starts at the left edge");
+    assert!(
+        (points[points.len() - 1].0 - area.right()).abs() < 0.01,
+        "and ends at the right"
+    );
+    assert!(
+        points.windows(2).all(|w| w[1].0 >= w[0].0),
+        "and never goes backwards"
+    );
+}
+
+/// Louder is higher, and the scale is the analyser's own — a *level*, not the
+/// ±24 dB of gain the curve is drawn against.
+#[test]
+fn a_louder_band_is_drawn_higher() {
+    let area = Rect::new(0.0, 0.0, 600.0, 240.0);
+    let mut bands = vec![fontelle_ui::canvas::SPECTRUM_BOTTOM_DB; 8];
+    bands[3] = -6.0;
+    let points = fontelle_ui::canvas::spectrum_points(area, &bands);
+    assert!(points[3].1 < points[2].1, "the loud band stands up");
+    assert!(
+        points[0].1 >= area.bottom() - 0.01,
+        "and silence sits on the floor"
+    );
+    let top = fontelle_ui::canvas::spectrum_points(area, &[0.0; 8]);
+    assert!(
+        (top[0].1 - area.y).abs() < 0.01,
+        "full scale reaches the top of the plot"
+    );
+}
+
+/// A stopped transport draws **nothing**, rather than a flat line along the
+/// floor that reads as a signal.
+#[test]
+fn silence_draws_no_analyser_at_all() {
+    let area = Rect::new(0.0, 0.0, 600.0, 240.0);
+    let silent = vec![fontelle_ui::canvas::SPECTRUM_BOTTOM_DB; 32];
+    assert!(fontelle_ui::canvas::spectrum_points(area, &silent).is_empty());
+    assert!(fontelle_ui::canvas::spectrum_points(area, &[]).is_empty());
+}
+
+/// Its bands are laid out on the **same** logarithmic axis the curve is, so a
+/// bar sits under the part of the curve that shapes it.
+#[test]
+fn the_bands_share_the_curves_frequency_axis() {
+    let area = Rect::new(0.0, 0.0, 600.0, 240.0);
+    let bands = vec![-20.0; fontelle_ui::canvas::SPECTRUM_BANDS];
+    let points = fontelle_ui::canvas::spectrum_points(area, &bands);
+    for band in [0, 30, 60, fontelle_ui::canvas::SPECTRUM_BANDS - 1] {
+        let (low, _) = fontelle_ui::canvas::spectrum_band_hz(band);
+        let expected = fontelle_ui::canvas::eq_x_of_freq(area, low);
+        assert!(
+            (points[band].0 - expected).abs() < 1.0,
+            "band {band} ({low} Hz) is drawn at {} and the curve puts it at {expected}",
+            points[band].0
+        );
+    }
+}
+
+/// The lowest band starts at the bottom of the axis and the highest ends at the
+/// top of it, so nothing is drawn off the plot.
+#[test]
+fn the_bands_span_the_whole_axis() {
+    let (low, _) = fontelle_ui::canvas::spectrum_band_hz(0);
+    let (_, high) = fontelle_ui::canvas::spectrum_band_hz(
+        fontelle_ui::canvas::SPECTRUM_BANDS - 1,
+    );
+    assert!((low - fontelle_ui::canvas::EQ_MIN_HZ).abs() < 0.01);
+    assert!((high - fontelle_ui::canvas::EQ_MAX_HZ).abs() < 1.0);
+}
+
+// ----------------------------------------------------------- sections
+
+#[test]
+fn an_effect_with_sections_is_drawn_as_one_group_per_section() {
+    // Fourteen knobs in one grid is a panel nobody can read. An effect that
+    // declares sections gets a heading per section, with exactly the controls
+    // the section names under it — and nothing else decides the split, so a
+    // parameter added to the config's table lands under the right heading
+    // without anybody touching the window.
+    let config = EffectConfig::new(EffectKind::Distortion);
+    let view = effect_view("Master", 0, a_track(), &config, &[], None);
+    let names: Vec<&str> = view.groups.iter().map(|g| g.name.as_str()).collect();
+    assert_eq!(names, ["Drive", "Voicing", "Output"]);
+    let counts: Vec<usize> = view.groups.iter().map(|g| g.params.len()).collect();
+    let declared: Vec<usize> = config.sections().iter().map(|s| s.count).collect();
+    assert_eq!(counts, declared);
+    // The first control of the second section is the first voicing knob.
+    assert_eq!(view.groups[1].params[0].label, "Pre high-pass");
+}
+
+#[test]
+fn an_effect_without_its_own_sections_is_still_one_group() {
+    // The compressor declares one section, so the panel it had is the panel
+    // it keeps.
+    let config = EffectConfig::new(EffectKind::Compressor);
+    let view = effect_view("Master", 0, a_track(), &config, &[], None);
+    assert_eq!(view.groups.len(), 1);
+    assert_eq!(view.groups[0].params.len(), config.specs().len());
 }

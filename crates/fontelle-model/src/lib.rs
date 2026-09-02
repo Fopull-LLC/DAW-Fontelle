@@ -26,16 +26,17 @@ pub use channel::Channel;
 pub use clip::{AudioClipData, Clip, ClipMap, ClipSource};
 pub use command::{Command, CommandError, History};
 pub use commands::{
-    AddAutomationPoint, AddChannel, AddClip, AddInsert, AddMixerTrack, AddNotes, AddSend,
+    AddAutomationPoint, AddChannel, AddClip, AddInsert, AddLane, AddMixerTrack, AddNotes, AddSend,
     Compound,
-    DuplicateClip, FlagTarget, MIN_CLIP_LENGTH, MoveAutomationPoints, MoveClip, MoveInsert,
-    MoveNotes, NumberTarget, PlaceAutomationPoints, RemoveAutomationPoints, RemoveChannel,
-    NEW_SEND_DB, RemoveClip, RemoveInsert, RemoveMixerTrack, RemoveNotes, RemoveSend,
-    RenameChannel, RenameMixerTrack,
+    DuplicateChannel, DuplicateClip, FlagTarget, MIN_CLIP_LENGTH, MoveAutomationPoints, MoveClip, MoveInsert,
+    MoveLane, MoveNotes, NumberTarget, PlaceAutomationPoints, RemoveAutomationPoints, RemoveChannel,
+    NEW_SEND_DB, RemoveClip, RemoveInsert, RemoveLane, RemoveMixerTrack, RemoveNotes, RemoveSend,
+    RenameChannel, RenameLane, RenameMixerTrack,
     ResizeClip, ResizeNotes, RestoreAutomationPoints, RestoreInsert, RestorePointCurves,
     SetChannelPatch, SetChannelRoute, SetClipLoop, SetEqBand, SetFlag, SetInsertBypassed,
+    RestoreInsertConfig, SetInsertKey, SetInsertMix, SetInsertParam, SetInsertPreset,
     SetLoopRange, SetNoteProperty, SetNoteSlide, SetNoteVelocity, SetNumber, SetPointCurve,
-    SetSendLevel, SetSendPreFader, SetTrackOutput, SliceNotes,
+    SetSendLevel, SetSendPreFader, SetTrackOutput, SliceNotes, SplitClip,
 };
 pub use lane::Lane;
 pub use mixer::{EffectSlot, Mixer, MixerTrack, PanLaw, Send};

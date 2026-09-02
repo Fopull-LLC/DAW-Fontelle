@@ -208,6 +208,11 @@ impl AudioDevice {
                                 ),
                                 None => &[],
                             };
+                            // Before any decision is taken: what a player is
+                            // holding down is what keeps the graph running
+                            // through the silent start of an attack. See
+                            // `IdleGate::held`.
+                            gate.take_live(live_events);
                             let mut live_pending = !live_events.is_empty();
 
                             // Once per callback, not once per step: taking a

@@ -23,9 +23,18 @@ use crate::theme::Metrics;
 #[derive(Debug, Clone, PartialEq)]
 pub struct BrowserLayout {
     pub body: Rect,
-    /// The two mode tabs, across the top. See [`BrowserMode`].
+    /// Which list this geometry was built for.
+    ///
+    /// Carried rather than left to the caller because the two folder buttons
+    /// mean a *different folder* in each mode, and a caller that has to
+    /// remember which one it asked for is a caller that forgets: the Projects
+    /// tab's "Change..." replaced the soundfont bank for exactly that reason.
+    /// See [`BrowserHit::ChooseFolder`].
+    pub mode: BrowserMode,
+    /// The three mode tabs, across the top. See [`BrowserMode`].
     pub sounds_tab: Rect,
     pub projects_tab: Rect,
+    pub settings_tab: Rect,
     /// The search field. §17.5's instant fuzzy search is the feature that makes
     /// a large collection usable, so it is the first thing in the panel.
     pub search: Rect,
@@ -76,6 +85,13 @@ pub enum BrowserMode {
     Sounds,
     /// The projects folder (TDD §17.3): one list, and a way to make one.
     Projects,
+    /// What Fontelle is set to (TDD §14.3, §18): one list of names and values,
+    /// each of which a click changes.
+    ///
+    /// A third mode rather than a fourth panel or a dialog, for the reason the
+    /// second one was added: it is reached for occasionally and never at the
+    /// same time as the other two.
+    Settings,
 }
 
 impl BrowserMode {
@@ -84,6 +100,7 @@ impl BrowserMode {
         match self {
             Self::Sounds => "Sounds",
             Self::Projects => "Projects",
+            Self::Settings => "Settings",
         }
     }
 }
@@ -126,16 +143,27 @@ pub fn browser_layout_for(
     let panel = body;
     let tabs_height = metrics.row_height.min(body.height.max(0.0));
     let (tabs, body_below) = body.split_top(tabs_height);
-    let half = (tabs.width - GAP).max(0.0) / 2.0;
-    let sounds_tab = Rect::new(tabs.x, tabs.y, half, tabs.height).clamped();
-    let projects_tab = Rect::new(sounds_tab.right() + GAP, tabs.y, half, tabs.height).clamped();
+    let third = (tabs.width - GAP * 2.0).max(0.0) / 3.0;
+    let sounds_tab = Rect::new(tabs.x, tabs.y, third, tabs.height).clamped();
+    let projects_tab = Rect::new(sounds_tab.right() + GAP, tabs.y, third, tabs.height).clamped();
+    let settings_tab = Rect::new(projects_tab.right() + GAP, tabs.y, third, tabs.height).clamped();
     let (_gap, body) = body_below.split_top(GAP.min(body_below.height.max(0.0)));
 
-    let search_height = metrics.row_height.min(body.height.max(0.0));
-    let (search, under) = body.split_top(search_height);
-    // A hair of air under the box so it reads as a field rather than as the
-    // first row of the list.
-    let (_gap, rest) = under.split_top(GAP.min(under.height.max(0.0)));
+    // **No search box over the settings.** It filters whichever list is
+    // showing, and a settings list is short enough to read whole. A field
+    // that does nothing is worse than no field — it takes the keyboard when
+    // you click it and then says nothing back — so the row it would have
+    // taken goes to the list instead.
+    let (search, rest) = if mode == BrowserMode::Settings {
+        (Rect::ZERO, body)
+    } else {
+        let search_height = metrics.row_height.min(body.height.max(0.0));
+        let (search, under) = body.split_top(search_height);
+        // A hair of air under the box so it reads as a field rather than as
+        // the first row of the list.
+        let (_gap, rest) = under.split_top(GAP.min(under.height.max(0.0)));
+        (search, rest)
+    };
 
     // The footer comes off the bottom first, so a long list can never push the
     // buttons off the panel — which is the one thing they must not do, since
@@ -179,17 +207,25 @@ pub fn browser_layout_for(
     // the button that caused it.
     let status = take_row(metrics.row_height);
 
-    // Slightly wider for "Open folder", which is both the longer caption and
-    // the one somebody reaches for on a first run.
-    let open_width = (buttons.width - GAP).max(0.0) * OPEN_SHARE;
-    let open_folder = Rect::new(buttons.x, buttons.y, open_width, buttons.height).clamped();
-    let choose_folder = Rect::new(
-        open_folder.right() + GAP,
-        buttons.y,
-        buttons.right() - open_folder.right() - GAP,
-        buttons.height,
-    )
-    .clamped();
+    // "Change..." has no meaning in the settings tab — there is no folder
+    // being browsed there — so it is not drawn, and the whole row goes to the
+    // one button that does mean something: the folder the settings live in.
+    let (open_folder, choose_folder) = if mode == BrowserMode::Settings {
+        (buttons, Rect::ZERO)
+    } else {
+        // Slightly wider for "Open folder", which is both the longer caption
+        // and the one somebody reaches for on a first run.
+        let open_width = (buttons.width - GAP).max(0.0) * OPEN_SHARE;
+        let open = Rect::new(buttons.x, buttons.y, open_width, buttons.height).clamped();
+        let choose = Rect::new(
+            open.right() + GAP,
+            buttons.y,
+            buttons.right() - open.right() - GAP,
+            buttons.height,
+        )
+        .clamped();
+        (open, choose)
+    };
 
     // Everything above the footer. The status line is the topmost row of it
     // whichever mode this is, so it is the only bound the lists need.
@@ -208,7 +244,7 @@ pub fn browser_layout_for(
     // A project has no presets inside it, so in that mode the one list takes
     // the whole area rather than half of it being left empty.
     let (files, presets) = match mode {
-        BrowserMode::Projects => (
+        BrowserMode::Projects | BrowserMode::Settings => (
             Rect::new(lists.x, lists.y, lists.width, whole(lists.height)).clamped(),
             Rect::ZERO,
         ),
@@ -229,14 +265,16 @@ pub fn browser_layout_for(
         }
     };
     let preset_count = match mode {
-        BrowserMode::Projects => 0,
+        BrowserMode::Projects | BrowserMode::Settings => 0,
         BrowserMode::Sounds => preset_count,
     };
 
     BrowserLayout {
         body: panel,
+        mode,
         sounds_tab,
         projects_tab,
+        settings_tab,
         search,
         file_rows: rows(files, metrics, file_count, file_scroll),
         files,
@@ -304,15 +342,24 @@ pub(crate) fn rows(
 pub enum BrowserHit {
     /// Switch the panel to this mode.
     Mode(BrowserMode),
-    /// Give the search box the keyboard.
-    Search,
+    /// Give the search box the keyboard. It filters whichever list is
+    /// showing, so it says which one that is.
+    Search(BrowserMode),
     /// A file in the bank, by its index in the list the caller passed.
     File(usize),
     Preset(usize),
-    /// Show the bank folder in the desktop's file manager.
-    OpenFolder,
-    /// Pick a different bank folder.
-    ChooseFolder,
+    /// Show a folder in the desktop's file manager — **which** folder is the
+    /// mode it carries.
+    OpenFolder(BrowserMode),
+    /// Pick a different folder, for whichever list is showing.
+    ///
+    /// The mode is part of the hit and not something the handler works out
+    /// again from its own state. That is the whole fix for *"if I select
+    /// change to set my projects folder ... it actually just changes my
+    /// soundfonts folder"*: the click handler branched on the mode for
+    /// [`OpenFolder`](Self::OpenFolder) and not for this one, so the two
+    /// folders were one folder as far as this button was concerned.
+    ChooseFolder(BrowserMode),
     /// Make a project in the projects folder.
     NewProject,
     /// Bounce the open project to a WAV.
@@ -330,9 +377,24 @@ impl BrowserHit {
         Some(match self {
             Self::Mode(BrowserMode::Sounds) => "The soundfonts you have",
             Self::Mode(BrowserMode::Projects) => "Your projects folder",
-            Self::Search => "Search every soundfont by name",
-            Self::OpenFolder => "Show this folder in your file manager",
-            Self::ChooseFolder => "Use a different folder",
+            Self::Mode(BrowserMode::Settings) => "How Fontelle is set up",
+            Self::Search(BrowserMode::Sounds) => "Search every soundfont by name",
+            Self::Search(BrowserMode::Projects) => "Search your projects by name",
+            // Never drawn in the settings tab: there is no box there. A hit is
+            // an enum, though, and every case of one has to be a sentence.
+            Self::Search(BrowserMode::Settings) => "Search your settings by name",
+            Self::OpenFolder(BrowserMode::Sounds) => {
+                "Show your soundfont folder in your file manager"
+            }
+            Self::OpenFolder(BrowserMode::Projects) => {
+                "Show your projects folder in your file manager"
+            }
+            Self::OpenFolder(BrowserMode::Settings) => {
+                "Show the folder Fontelle keeps its settings in"
+            }
+            Self::ChooseFolder(BrowserMode::Sounds) => "Use a different soundfont folder",
+            Self::ChooseFolder(BrowserMode::Projects) => "Use a different projects folder",
+            Self::ChooseFolder(BrowserMode::Settings) => "Use a different folder",
             Self::NewProject => "Start a new project",
             Self::Export => "Bounce this project to a WAV",
             Self::File(_) | Self::Preset(_) | Self::Nothing => return None,
@@ -347,6 +409,9 @@ pub fn browser_hit(layout: &BrowserLayout, x: f32, y: f32) -> BrowserHit {
     if layout.projects_tab.contains(x, y) {
         return BrowserHit::Mode(BrowserMode::Projects);
     }
+    if layout.settings_tab.contains(x, y) {
+        return BrowserHit::Mode(BrowserMode::Settings);
+    }
     if layout.new_project.contains(x, y) {
         return BrowserHit::NewProject;
     }
@@ -354,15 +419,15 @@ pub fn browser_hit(layout: &BrowserLayout, x: f32, y: f32) -> BrowserHit {
         return BrowserHit::Export;
     }
     if layout.search.contains(x, y) {
-        return BrowserHit::Search;
+        return BrowserHit::Search(layout.mode);
     }
     // The footer before the lists: it is drawn over the bottom of them when the
     // panel is short, and what is on top is what was clicked.
     if layout.open_folder.contains(x, y) {
-        return BrowserHit::OpenFolder;
+        return BrowserHit::OpenFolder(layout.mode);
     }
     if layout.choose_folder.contains(x, y) {
-        return BrowserHit::ChooseFolder;
+        return BrowserHit::ChooseFolder(layout.mode);
     }
     // **Which list first, then which row.** A row belongs to its own list and
     // to nothing else, so a pointer in the presets can never be answered with a
@@ -374,6 +439,20 @@ pub fn browser_hit(layout: &BrowserLayout, x: f32, y: f32) -> BrowserHit {
         return row_at(&layout.preset_rows, x, y).map_or(BrowserHit::Nothing, BrowserHit::Preset);
     }
     BrowserHit::Nothing
+}
+
+/// The row of the browser's main list under `(x, y)`, if the pointer is on
+/// one.
+///
+/// [`browser_hit`] answers the same question and four others; this is for the
+/// caller — the wheel — that only wants the row and does not want a button
+/// press for an answer.
+pub fn row_under(layout: &BrowserLayout, x: f32, y: f32) -> Option<usize> {
+    layout
+        .files
+        .contains(x, y)
+        .then(|| row_at(&layout.file_rows, x, y))
+        .flatten()
 }
 
 /// The index of the row under `(x, y)`, if there is one.

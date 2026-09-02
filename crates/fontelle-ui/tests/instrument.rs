@@ -17,8 +17,8 @@
 
 use fontelle_types::ParamAddress;
 use fontelle_ui::canvas::{
-    InstrumentGroup, InstrumentParam, InstrumentView, ParamKind, instrument_hit, instrument_layout,
-    knob_value,
+    InstrumentGroup, InstrumentParam, InstrumentView, PRESET_HEIGHT, ParamKind, instrument_hit,
+    instrument_key_hit, instrument_layout, instrument_preset_hit, knob_value,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::{Metrics, Theme};
@@ -34,11 +34,15 @@ fn knob(name: &str, value: f32) -> InstrumentParam {
         value,
         display: format!("{value:.2}"),
         kind: ParamKind::Knob,
+     automated: false,
     }
 }
 
 fn view() -> InstrumentView {
     InstrumentView {
+        presets: Vec::new(),
+        keys: Vec::new(),
+        key: None,
         title: "tri baja".to_string(),
         groups: vec![
             InstrumentGroup {
@@ -51,6 +55,7 @@ fn view() -> InstrumentView {
                         value: 0.0,
                         display: "off".to_string(),
                         kind: ParamKind::Switch,
+                     automated: false,
                     },
                     InstrumentParam {
                         address: ParamAddress::new("patch/voice/quality"),
@@ -62,6 +67,7 @@ fn view() -> InstrumentView {
                                 .map(str::to_string)
                                 .to_vec(),
                         ),
+                     automated: false,
                     },
                 ],
             },
@@ -229,4 +235,207 @@ fn a_choice_with_no_options_is_not_a_division_by_zero() {
     let empty = ParamKind::Choice(Vec::new());
     assert_eq!(next_value(&empty, 0.5), 0.5);
     assert_eq!(choice_index(&empty, 0.5), 0);
+}
+
+
+// ------------------------------------------- which controls a lane has taken
+
+/// A knob an automation lane owns is drawn differently (TDD §12.2's "distinct
+/// ring colour"), and this is where it is *told* so.
+///
+/// Marking happens after the view is built rather than while: the caller knows
+/// which addresses are automated as one set, and asking per parameter would
+/// mean rebuilding that set once per knob — forty-nine times for an EQ.
+#[test]
+fn a_view_can_be_told_which_of_its_controls_a_lane_owns() {
+    let mut view = view();
+    view.mark_automated(|address| address.as_str() == "patch/voice/legato");
+
+    let flagged: Vec<&str> = view
+        .groups
+        .iter()
+        .flat_map(|group| &group.params)
+        .filter(|param| param.automated)
+        .map(|param| param.address.as_str())
+        .collect();
+    assert_eq!(
+        flagged,
+        vec!["patch/voice/legato"],
+        "exactly the address the lane names, whatever kind of control it is"
+    );
+}
+
+#[test]
+fn a_fresh_view_has_nothing_under_automation() {
+    // The default, and it has to be: a view built before anybody asks about
+    // automation must not claim its knobs are owned.
+    let view = view();
+    assert!(
+        view.groups
+            .iter()
+            .flat_map(|group| &group.params)
+            .all(|param| !param.automated)
+    );
+}
+
+#[test]
+fn marking_a_view_twice_lets_go_of_what_is_no_longer_automated() {
+    // The panel is rebuilt from the document every time the revision moves, so
+    // this is really about the *second* build after a lane is deleted. Getting
+    // it wrong leaves a ring on a knob nothing owns any more, which is worse
+    // than no ring at all — it is a ring that lies.
+    let mut view = view();
+    view.mark_automated(|address| address.as_str() == "patch/polyphony");
+    view.mark_automated(|_| false);
+    assert!(
+        view.groups
+            .iter()
+            .flat_map(|group| &group.params)
+            .all(|param| !param.automated)
+    );
+}
+
+// ---------------------------------------------------------------- presets
+
+/// The same panel with a row of named starting points over it — what an
+/// effect with more than eight knobs gets. See
+/// `fontelle_types::EffectConfig::presets`.
+fn with_presets() -> InstrumentView {
+    InstrumentView {
+        presets: ["overdrive", "fuzz", "amp"].map(str::to_string).to_vec(),
+        ..view()
+    }
+}
+
+#[test]
+fn a_panel_with_no_presets_lays_out_exactly_as_it_always_did() {
+    // The row costs nothing when there is nothing in it: every instrument
+    // panel and most effects have none, and a reserved band of empty pixels
+    // above them would be a regression nobody asked for.
+    let layout = instrument_layout(body(), &metrics(), &view());
+    assert!(layout.presets.is_empty());
+    let first = layout.cells.first().expect("a panel with controls");
+    assert_eq!(first.2.y, layout.headings[0].1.bottom());
+}
+
+#[test]
+fn the_presets_are_a_row_of_chips_above_the_first_heading() {
+    let layout = instrument_layout(body(), &metrics(), &with_presets());
+    assert_eq!(layout.presets.len(), 3);
+    // In order, left to right, all on one line at this width.
+    let tops: Vec<f32> = layout.presets.iter().map(|(_, r)| r.y).collect();
+    assert!(tops.windows(2).all(|pair| pair[0] == pair[1]), "the row wrapped");
+    let lefts: Vec<f32> = layout.presets.iter().map(|(_, r)| r.x).collect();
+    assert!(lefts.windows(2).all(|pair| pair[0] < pair[1]), "out of order");
+    for (index, (which, _)) in layout.presets.iter().enumerate() {
+        assert_eq!(*which, index);
+    }
+    // And above the controls, which have moved down to make room.
+    let heading = layout.headings[0].1;
+    assert!(
+        layout.presets.iter().all(|(_, r)| r.bottom() <= heading.y),
+        "a chip is drawn over the first heading"
+    );
+    let plain = instrument_layout(body(), &metrics(), &view());
+    assert!(
+        layout.content_height > plain.content_height + PRESET_HEIGHT,
+        "the row took no room"
+    );
+}
+
+#[test]
+fn a_click_on_a_chip_names_the_preset_under_it() {
+    let layout = instrument_layout(body(), &metrics(), &with_presets());
+    for (index, rect) in &layout.presets {
+        let (x, y) = (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        assert_eq!(instrument_preset_hit(&layout, x, y), Some(*index));
+        // And a chip is not a control: the same point must not also read as
+        // one, or a click would both choose a preset and grab a knob.
+        assert_eq!(instrument_hit(&layout, x, y), None);
+    }
+    let below = layout.headings[0].1;
+    assert_eq!(
+        instrument_preset_hit(&layout, below.x + 4.0, below.y + 2.0),
+        None,
+        "the row reaches past its own chips"
+    );
+}
+
+#[test]
+fn a_panel_too_narrow_for_the_row_wraps_it_rather_than_running_off_the_edge() {
+    let narrow = Rect::new(0.0, 0.0, 150.0, 600.0);
+    let layout = instrument_layout(narrow, &metrics(), &with_presets());
+    assert_eq!(layout.presets.len(), 3);
+    for (_, rect) in &layout.presets {
+        assert!(
+            rect.right() <= narrow.right() + 0.01,
+            "a chip ran off the edge: {rect:?}"
+        );
+    }
+    // Wrapped, so the controls below still start under the last chip.
+    let lowest = layout
+        .presets
+        .iter()
+        .fold(0.0f32, |m, (_, r)| m.max(r.bottom()));
+    assert!(layout.headings[0].1.y >= lowest);
+}
+
+// -------------------------------------------------------------------- keys
+
+/// A panel with both rows: the named starting points and the strips its
+/// detector can be pointed at.
+fn with_both_rows() -> InstrumentView {
+    InstrumentView {
+        presets: ["overdrive", "fuzz", "amp"].map(str::to_string).to_vec(),
+        keys: ["no key", "Kick", "Pad"].map(str::to_string).to_vec(),
+        key: Some(1),
+        ..view()
+    }
+}
+
+#[test]
+fn the_key_row_sits_under_the_presets_and_over_the_controls() {
+    let layout = instrument_layout(body(), &metrics(), &with_both_rows());
+    assert_eq!(layout.presets.len(), 3);
+    assert_eq!(layout.keys.len(), 3);
+    let lowest_preset = layout
+        .presets
+        .iter()
+        .fold(0.0f32, |m, (_, r)| m.max(r.bottom()));
+    assert!(
+        layout.keys.iter().all(|(_, r)| r.y >= lowest_preset),
+        "the key row is drawn over the presets"
+    );
+    let heading = layout.headings[0].1;
+    assert!(
+        layout.keys.iter().all(|(_, r)| r.bottom() <= heading.y),
+        "the key row is drawn over the first heading"
+    );
+}
+
+#[test]
+fn a_panel_with_no_detector_has_no_key_row() {
+    // Which is every instrument panel and nine of the eleven effects, so it
+    // has to cost nothing.
+    let layout = instrument_layout(body(), &metrics(), &view());
+    assert!(layout.keys.is_empty());
+    let plain = instrument_layout(body(), &metrics(), &view());
+    assert_eq!(layout.content_height, plain.content_height);
+}
+
+#[test]
+fn a_click_on_a_key_chip_names_the_strip_under_it() {
+    let layout = instrument_layout(body(), &metrics(), &with_both_rows());
+    for (index, rect) in &layout.keys {
+        let (x, y) = (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        assert_eq!(instrument_key_hit(&layout, x, y), Some(*index));
+        // The two rows are separate: a point in one must not read as the
+        // other, or clicking a key would also choose a preset.
+        assert_eq!(instrument_preset_hit(&layout, x, y), None);
+        assert_eq!(instrument_hit(&layout, x, y), None);
+    }
+    for (_, rect) in &layout.presets {
+        let (x, y) = (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        assert_eq!(instrument_key_hit(&layout, x, y), None);
+    }
 }

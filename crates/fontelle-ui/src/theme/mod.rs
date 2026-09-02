@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Its own number, separate from the project's and the patch's: a colour token
 /// added to the chrome has nothing to do with either.
-pub const THEME_FORMAT_VERSION: u32 = 5;
+pub const THEME_FORMAT_VERSION: u32 = 6;
 
 /// An 8-bit sRGB colour with alpha, written to file as hex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +193,17 @@ pub struct Palette {
     /// selected, moved, and heard the moment the instrument changes — so it
     /// is drawn quietly rather than not at all.
     pub note_silent: Color,
+
+    // --- controls under automation (added in theme format v6) ---
+    /// The groove of a knob an automation lane has taken over — TDD §12.2's
+    /// "distinct ring colour".
+    ///
+    /// **Not one of the three ramps**, and for the same reason
+    /// [`meter_peak`](Self::meter_peak) is not: it is a statement about *who
+    /// is holding the control*, and a teal ring on teal chrome says nothing.
+    /// Amber, which is the one hue left that neither the accent, the playhead,
+    /// a note nor a clipping meter has already claimed.
+    pub param_automated: Color,
 }
 
 /// Sizes and radii, in logical pixels.
@@ -288,6 +299,7 @@ impl Theme {
                 row_dead: Color::rgb(0x05, 0x0d, 0x11),
                 key_dead: Color::rgb(0x53, 0x63, 0x68),
                 note_silent: Color::rgb(0x2b, 0x3b, 0x48),
+                param_automated: Color::rgb(0xd0, 0x8a, 0x3c),
             },
             metrics: METRICS,
             font: FontTokens {
@@ -328,6 +340,7 @@ impl Theme {
                 row_dead: Color::rgb(0xc2, 0xcc, 0xcf),
                 key_dead: Color::rgb(0xcf, 0xd8, 0xda),
                 note_silent: Color::rgb(0x9c, 0xac, 0xbb),
+                param_automated: Color::rgb(0x8a, 0x55, 0x14),
             },
             metrics: METRICS,
             font: FontTokens {
@@ -480,6 +493,19 @@ fn migrate(mut json: serde_json::Value, mut from: u32) -> Result<serde_json::Val
                 .or_insert_with(|| serde_json::json!(dark.grid_line_sub.to_hex()));
         }
         from = 5;
+    }
+
+    if from == 5 {
+        // v6 gave a control under automation a ring of its own (§12.2). A v5
+        // file was written when every knob looked alike whether a lane owned
+        // it or not, so it cannot have an opinion about the colour.
+        let dark = Theme::dark_default().palette;
+        if let Some(palette) = json.get_mut("palette").and_then(|p| p.as_object_mut()) {
+            palette
+                .entry("param_automated")
+                .or_insert_with(|| serde_json::json!(dark.param_automated.to_hex()));
+        }
+        from = 6;
     }
 
     if from != THEME_FORMAT_VERSION {

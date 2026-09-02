@@ -17,6 +17,9 @@ pub struct Sampler {
     sample_rate: f32,
     quality: fontelle_dsp::Interpolation,
     pan: f32,
+    /// The channel's own level as a linear amplitude, applied to the whole
+    /// mix on the way out. See [`Sampler::set_gain_db`].
+    gain: f32,
 }
 
 impl Sampler {
@@ -28,6 +31,7 @@ impl Sampler {
             sample_rate: 48_000.0,
             quality: fontelle_dsp::Interpolation::Normal,
             pan: 0.0,
+            gain: 1.0,
         }
     }
 
@@ -70,6 +74,53 @@ impl Sampler {
         self.pan
     }
 
+    /// Sets how loud the whole part is, in decibels.
+    ///
+    /// A channel control like [`set_pan`](Self::set_pan), and a **different**
+    /// control from the level of the bus it arrives on: several channels may
+    /// share one mixer track (TDD §13.1), so a level that lived on the track
+    /// would be one fader for all of them — which is exactly the bug that put
+    /// this here. See `fontelle_model::Channel::gain_db`.
+    ///
+    /// Read per block, so moving it moves the notes already sounding.
+    ///
+    /// RT-safe: a plain field write, no allocation.
+    pub fn set_gain_db(&mut self, gain_db: f32) {
+        // Decibels in, amplitude kept: the conversion is a `powf` and doing it
+        // here means it happens when the knob moves rather than every block.
+        self.gain = if gain_db <= crate::SILENT_DB {
+            0.0
+        } else {
+            10f32.powf(gain_db / 20.0)
+        };
+    }
+
+    /// Moves one of the patch's own controls by its §8.2 address — what an
+    /// **automation lane** does to a cutoff, an envelope stage or an
+    /// oscillator's level. Whether the address named anything.
+    ///
+    /// The same function the instrument panel writes through
+    /// ([`crate::patch_params::set`]), so what you can right-click is what a
+    /// lane can move, by construction.
+    ///
+    /// RT-safe: the address is split as a `&str` and everything it does is a
+    /// field write. An address this build does not recognise changes nothing
+    /// and is not an error (INVARIANT 7) — which on the audio thread also
+    /// means it cannot panic on a project from a later version.
+    pub fn set_patch_param(&mut self, address: &str, value: f32) -> bool {
+        crate::patch_params::set(&mut self.patch, address, value)
+    }
+
+    /// What [`set_gain_db`](Self::set_gain_db) was last given, back in
+    /// decibels.
+    pub fn gain_db(&self) -> f32 {
+        if self.gain <= 0.0 {
+            crate::SILENT_DB
+        } else {
+            20.0 * self.gain.log10()
+        }
+    }
+
     /// Starts a note the timeline asked for. See [`Sampler::note_on_from`]
     /// for one a player did.
     pub fn note_on(&mut self, key: u8, velocity: u8, voice_context: u32) {
@@ -105,6 +156,11 @@ impl Sampler {
     /// and cannot steal one is dropped, which is what a polyphony limit means.
     pub fn trigger(&mut self, note: crate::NoteTrigger) {
         let config = self.patch.voice_config;
+        // The live polyphony, read here rather than at construction, which is
+        // what makes `patch/voice/polyphony` an automation lane that does
+        // something. The pool cannot grow on this thread (INVARIANT 1), so
+        // this moves a limit inside it — see `VoicePool::set_limit`.
+        self.voices.set_limit(usize::from(config.polyphony));
         // **Mono and legato**, which `RetriggerMode` has named since the patch
         // format was written and nothing read. One voice per context: a note
         // arriving while one is sounding takes it over rather than stacking on
@@ -188,6 +244,16 @@ impl Sampler {
         let pan = self.pan;
         for voice in self.voices.iter_active_mut() {
             voice.render_with_pan(patch, store, sample_rate, quality, pan, out);
+        }
+        // The channel's own level, over the summed voices. After the mix
+        // rather than folded into each voice's gain so that a level moved
+        // mid-note moves what is already sounding, which is what a fader does.
+        if self.gain != 1.0 {
+            for channel in out.iter_mut() {
+                for sample in channel.iter_mut() {
+                    *sample *= self.gain;
+                }
+            }
         }
     }
 

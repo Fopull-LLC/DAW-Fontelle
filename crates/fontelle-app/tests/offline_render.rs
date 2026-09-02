@@ -266,3 +266,26 @@ fn the_track_gain_scales_the_render() {
         "6 dB more fader should be {expected}x the peak, got {ratio}"
     );
 }
+
+/// The note the demo opens with starts at tick zero, and the patch above has
+/// no delay and no attack — so the very first frame rendered is part of it.
+///
+/// Reported from playing a keyboard: *"when I try playing a single note it
+/// often doesn't play, it just does a flicker."* Rendering the demo offline
+/// showed the first **128 frames** — exactly one block — coming out at
+/// digital zero before any audio appeared. On the timeline that is 2.7 ms of
+/// latency nobody notices; live it is what the idle gate measures a note-on
+/// by, so the gate concluded the graph was silent and put it back to sleep
+/// underneath the note it had just started (see `fontelle-engine`'s
+/// `IdleGate`).
+#[test]
+fn a_note_at_the_top_of_the_song_sounds_in_the_first_block_and_not_the_second() {
+    let out = render(512);
+    let block = fontelle_engine::BLOCK_SIZE * 2; // interleaved stereo
+    let first = out[..block].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!(
+        first > 0.0,
+        "the first block of a note that starts at sample 0 is silent — the \
+         note is a whole block late"
+    );
+}

@@ -527,16 +527,90 @@ mod tests {
 /// all.
 pub struct IdleGate {
     ringing: bool,
+    /// How many notes live input is holding down right now.
+    ///
+    /// **The measurement alone is not enough, and this is the field that
+    /// says why.** Every enveloped instrument starts from zero, so the block
+    /// a note-on arrives in is regularly quieter than the floor below —
+    /// captured on real hardware, exactly `0.0`. A gate that asked only what
+    /// it had just heard therefore put the graph to sleep underneath the note
+    /// it had that instant started, and the note became audible for two
+    /// blocks only when the *note-off* woke the graph again. Held down for
+    /// half a second, played back as a click: *"it just does a flicker"*.
+    ///
+    /// A key that is down is a fact rather than a measurement, so it is
+    /// counted rather than inferred. It also covers the case the measurement
+    /// can never cover: an instrument with a two-second attack, which is
+    /// silent for hundreds of blocks and going to sound for all of them.
+    ///
+    /// A dropped note-off cannot strand this above zero without also
+    /// stranding the voice it belongs to — and a voice nothing releases is
+    /// audible, so `ringing` holds the graph awake anyway. There is no state
+    /// here that outlives the sound it is standing in for.
+    held: u32,
+    /// Blocks still owed to live input before the measurement is believed.
+    ///
+    /// For the note whose note-on and note-off land in the *same* drain — a
+    /// fast passage, or a file played into the port. `held` is back to zero
+    /// before the graph has rendered a single sample of it, so the count
+    /// alone would let a note be silenced by its own release.
+    settling: u32,
 }
+
+/// How long that grace is. Thirty-two blocks is 85 ms at 128 frames / 48 kHz:
+/// past the silent start of any attack worth the name, and short enough that
+/// an idle window is back to costing nothing within a tenth of a second.
+const SETTLING_BLOCKS: u32 = 32;
 
 impl IdleGate {
     pub fn new() -> Self {
-        Self { ringing: false }
+        Self {
+            ringing: false,
+            held: 0,
+            settling: 0,
+        }
+    }
+
+    /// Takes account of this block's live input. Call once per callback with
+    /// everything the drain produced, **before** [`is_awake`](Self::is_awake).
+    ///
+    /// It counts notes and nothing else: a controller message changes no
+    /// note's fate, and the `live_events > 0` term of `is_awake` already
+    /// wakes the graph for the block one arrives in.
+    pub fn take_live(&mut self, events: &[TimedEvent]) {
+        for event in events {
+            match event.payload {
+                fontelle_types::EventPayload::NoteOn { .. } => {
+                    self.held += 1;
+                    self.settling = SETTLING_BLOCKS;
+                }
+                fontelle_types::EventPayload::NoteOff { .. } => {
+                    // Saturating, not signed: a note-off for something this
+                    // gate never saw — a device opened mid-chord, a
+                    // `release_all` after a drop — would otherwise leave the
+                    // count negative, and the next real note-on would not
+                    // lift it back above zero.
+                    self.held = self.held.saturating_sub(1);
+                    self.settling = SETTLING_BLOCKS;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Everything let go of at once — a full graph reset, a device teardown.
+    pub fn release_all(&mut self) {
+        self.held = 0;
+        self.settling = 0;
     }
 
     /// Whether to run the graph despite a stopped transport.
+    ///
+    /// Three independent reasons, and they answer different questions:
+    /// something arrived this block, something is being *played* and has not
+    /// been let go, or something is still *making sound*.
     pub fn is_awake(&self, live_events: usize) -> bool {
-        live_events > 0 || self.ringing
+        live_events > 0 || self.held > 0 || self.settling > 0 || self.ringing
     }
 
     /// Records what the block just rendered actually produced. `peak` is the
@@ -555,6 +629,10 @@ impl IdleGate {
     pub fn observe(&mut self, peak: f32) {
         const SILENCE: f32 = 1e-5;
         self.ringing = peak > SILENCE;
+        // Counted per *rendered* block rather than per callback: it is a
+        // grace measured in chances to make a sound, and a callback that ran
+        // nothing gave the graph no chance at all.
+        self.settling = self.settling.saturating_sub(1);
     }
 }
 
@@ -567,6 +645,133 @@ impl Default for IdleGate {
 #[cfg(test)]
 mod idle_gate_tests {
     use super::*;
+    use fontelle_types::{EventPayload, NodeId};
+
+    fn key_event(payload: EventPayload) -> TimedEvent {
+        TimedEvent {
+            sample: 0,
+            target: NodeId::default(),
+            payload,
+        }
+    }
+
+    fn on(key: u8) -> TimedEvent {
+        key_event(EventPayload::NoteOn {
+            key,
+            velocity: 100,
+            pan: 0,
+            fine_pitch: 0,
+            release: 0,
+            mod_x: 0,
+            mod_y: 0,
+            voice_context: 0,
+        })
+    }
+
+    fn off(key: u8) -> TimedEvent {
+        key_event(EventPayload::NoteOff {
+            key,
+            voice_context: 0,
+        })
+    }
+
+    // --- what a player is holding (reported from a real keyboard) ---------
+
+    #[test]
+    fn a_key_held_down_keeps_the_graph_awake_while_its_attack_is_still_silent() {
+        // Reported from playing an Akai MPK mini: *"when I try playing a
+        // single note it often doesn't play, it just does a flicker."*
+        //
+        // The measurement alone cannot answer this. Every enveloped
+        // instrument starts from zero, so the block a note-on arrives in is
+        // regularly quieter than the -100 dBFS floor — and the gate, asked
+        // only what it had just heard, put the graph to sleep underneath the
+        // note it had that instant started. Captured on hardware: the note-on
+        // block measured exactly 0.0, the graph then idled for the whole 500 ms
+        // the key was down, and the note became audible for two blocks only
+        // when the *note-off* woke the graph again. That is the flicker.
+        //
+        // A key that is down is a fact, not a measurement, so it is counted.
+        let mut gate = IdleGate::new();
+        gate.take_live(&[on(60)]);
+        assert!(gate.is_awake(1), "the block the note-on arrived in");
+        gate.observe(0.0);
+        assert!(
+            gate.is_awake(0),
+            "a key is still down: silence this block says nothing about the next"
+        );
+        for _ in 0..1_000 {
+            gate.observe(0.0);
+            assert!(gate.is_awake(0), "a long attack must not be slept through");
+        }
+    }
+
+    #[test]
+    fn letting_the_key_go_hands_the_decision_back_to_the_measurement() {
+        // The release tail is exactly what the measurement is good at, and
+        // the count must not keep the graph awake for ever after it.
+        let mut gate = IdleGate::new();
+        gate.take_live(&[on(60)]);
+        gate.observe(0.0);
+        gate.take_live(&[off(60)]);
+        gate.observe(0.4);
+        assert!(gate.is_awake(0), "the tail is still ringing");
+        for _ in 0..64 {
+            gate.observe(0.0);
+        }
+        assert!(!gate.is_awake(0), "and idle CPU has to come back down");
+    }
+
+    #[test]
+    fn a_chord_is_awake_until_the_last_of_it_is_let_go() {
+        let mut gate = IdleGate::new();
+        gate.take_live(&[on(60), on(64), on(67)]);
+        gate.take_live(&[off(60), off(64)]);
+        gate.observe(0.0);
+        assert!(gate.is_awake(0), "one key is still down");
+        gate.take_live(&[off(67)]);
+        for _ in 0..64 {
+            gate.observe(0.0);
+        }
+        assert!(!gate.is_awake(0));
+    }
+
+    #[test]
+    fn a_note_off_with_nothing_down_cannot_drive_the_count_below_nothing() {
+        // A note-off for something this gate never saw — a device opened
+        // mid-chord, a `release_all` after a drop. Left signed, it would make
+        // the count negative and the *next* real note-on would not lift it
+        // back above zero, which is the same bug again with an extra step.
+        let mut gate = IdleGate::new();
+        gate.take_live(&[off(60), off(64)]);
+        for _ in 0..64 {
+            gate.observe(0.0);
+        }
+        assert!(!gate.is_awake(0));
+        gate.take_live(&[on(60)]);
+        gate.observe(0.0);
+        assert!(gate.is_awake(0), "the next note still has to wake it");
+    }
+
+    #[test]
+    fn a_note_shorter_than_one_block_still_gets_a_chance_to_sound() {
+        // Both halves of it can land in the same drain — a fast passage, or a
+        // file replayed into the port. The count is back to zero before the
+        // graph has rendered anything at all, so the count alone would let
+        // this note be silenced by its own release.
+        let mut gate = IdleGate::new();
+        gate.take_live(&[on(60), off(60)]);
+        gate.observe(0.0);
+        assert!(gate.is_awake(0), "it has not been given a block to sound in");
+    }
+
+    #[test]
+    fn nothing_played_at_all_is_still_asleep() {
+        // The whole point of the gate: a window sitting open costs nothing.
+        let mut gate = IdleGate::new();
+        gate.take_live(&[]);
+        assert!(!gate.is_awake(0));
+    }
 
     #[test]
     fn nothing_playing_leaves_the_graph_asleep() {

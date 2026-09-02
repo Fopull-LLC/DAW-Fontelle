@@ -353,6 +353,8 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
             pan,
             muted: false,
             soloed: false,
+            named_keys: false,
+            gain_db: 0.0,
         });
         let lane = project.lanes.insert(Lane {
             name: label,
@@ -360,6 +362,7 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
             color: CHANNEL_COLOURS[midi_channel as usize % CHANNEL_COLOURS.len()],
             muted: false,
             locked: false,
+            order: 0,
         });
         let length = notes
             .values()

@@ -34,7 +34,7 @@ fn the_file_manager_is_opened_with_the_platforms_own_opener() {
 
 #[test]
 fn there_is_more_than_one_folder_picker_to_try() {
-    let candidates = picker_candidates(None);
+    let candidates = picker_candidates("Soundfont folder", None);
     assert!(
         candidates.len() >= 2,
         "a desktop with no zenity is ordinary; there has to be a fallback"
@@ -47,7 +47,7 @@ fn there_is_more_than_one_folder_picker_to_try() {
 
 #[test]
 fn a_picker_is_started_in_the_folder_it_was_given() {
-    let candidates = picker_candidates(Some(Path::new("/music/sf2")));
+    let candidates = picker_candidates("Soundfont folder", Some(Path::new("/music/sf2")));
     assert!(
         candidates
             .iter()
@@ -56,7 +56,7 @@ fn a_picker_is_started_in_the_folder_it_was_given() {
          is makes the user navigate to it every time: {candidates:?}"
     );
     // And with nowhere to start, no candidate carries an empty path argument.
-    let bare = picker_candidates(None);
+    let bare = picker_candidates("Soundfont folder", None);
     assert!(
         bare.iter()
             .all(|(_, args)| args.iter().all(|a| !a.is_empty()))
@@ -133,4 +133,39 @@ fn a_picker_that_prints_a_path_gives_a_path_and_one_that_fails_gives_a_cancel() 
         nothing.unwrap_err().contains("--soundfonts"),
         "the message has to name the way out"
     );
+}
+
+#[test]
+fn a_picker_says_which_folder_it_is_asking_for() {
+    // Reported from using the window: *"if I select change to set my projects
+    // folder and I select a folder it actually just changes my soundfonts
+    // folder."* Half of that was a click handler that did not branch on the
+    // panel's mode. The other half is here, and it is why it was *believable*:
+    // every picker on every platform was titled "Soundfont folder", so the
+    // dialog that came up to choose a projects folder said, in its own title
+    // bar, that it was choosing the soundfont one.
+    for title in ["Soundfont folder", "Projects folder"] {
+        let candidates = picker_candidates(title, None);
+        assert!(!candidates.is_empty());
+        for (program, args) in &candidates {
+            assert!(
+                args.iter().any(|a| a.contains(title)),
+                "{program} was not told it is asking for the {title}: {args:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn no_picker_is_titled_for_a_folder_it_is_not_asking_for() {
+    // The specific failure, pinned: asking for the projects folder must not
+    // put the word "soundfont" anywhere a person can read it.
+    for (_, args) in picker_candidates("Projects folder", Some(Path::new("/music/projects"))) {
+        for arg in &args {
+            assert!(
+                !arg.to_lowercase().contains("soundfont"),
+                "the projects picker still says {arg:?}"
+            );
+        }
+    }
 }

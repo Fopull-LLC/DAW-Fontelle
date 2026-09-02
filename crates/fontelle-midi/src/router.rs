@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fontelle_types::{EventPayload, EventSink, NodeId, TimedEvent};
 
-use crate::mapping::{DeviceMapping, VelocityCurve};
+use crate::mapping::{DeviceMapping, InputSettings, LiveMapping, VelocityCurve};
 use crate::message::{MidiMessage, decode};
 
 /// Which instrument live MIDI is playing **right now** (TDD §14.3).
@@ -65,6 +65,62 @@ impl LiveTarget {
     }
 }
 
+/// Which keys are sounding **right now**, for the window to draw (TDD §14.1).
+///
+/// Written by every device callback and read by the UI thread once a frame.
+/// Two atomics rather than a lock, for the reason [`LiveTarget`] is one: a
+/// `midir` callback runs on the driver's own thread and may not block. There
+/// is no `AtomicU128`, so the 128 keys are a pair of `u64`s — a reader can
+/// therefore catch a chord half-written, which costs one frame of one key and
+/// is not worth a lock on the audio-adjacent side to prevent.
+///
+/// One cell is shared by every device: there is one keyboard on screen, not
+/// one per controller, so the bits are set and cleared rather than stored.
+#[derive(Debug, Default)]
+pub struct LiveKeys {
+    /// Keys 0..64 and 64..128.
+    halves: [AtomicU64; 2],
+}
+
+impl LiveKeys {
+    /// Lights a key. Idempotent — a device that retriggers a key it is already
+    /// holding is one lit key, not two.
+    pub fn press(&self, key: u8) {
+        let (half, bit) = Self::at(key);
+        self.halves[half].fetch_or(bit, Ordering::Relaxed);
+    }
+
+    /// Puts it out.
+    ///
+    /// Two controllers holding the same key are one bit, so the first release
+    /// takes the light out while the other is still holding it. A counter per
+    /// key would fix that, and it is not worth 128 of them for a highlight
+    /// that comes back the moment anything else happens on that key.
+    pub fn release(&self, key: u8) {
+        let (half, bit) = Self::at(key);
+        self.halves[half].fetch_and(!bit, Ordering::Relaxed);
+    }
+
+    pub fn is_down(&self, key: u8) -> bool {
+        let (half, bit) = Self::at(key);
+        self.halves[half].load(Ordering::Relaxed) & bit != 0
+    }
+
+    /// Every key that is down, as one bit each — what a frame draws from.
+    pub fn snapshot(&self) -> u128 {
+        u128::from(self.halves[0].load(Ordering::Relaxed))
+            | (u128::from(self.halves[1].load(Ordering::Relaxed)) << 64)
+    }
+
+    /// Which half a key lives in, and its bit within it. A key above 127
+    /// cannot exist — `map_key` drops those — and is folded rather than
+    /// panicking in a MIDI callback.
+    fn at(key: u8) -> (usize, u64) {
+        let key = (key & 0x7f) as usize;
+        (key / 64, 1u64 << (key % 64))
+    }
+}
+
 /// CC 64. The one controller worth handling before the learn table exists:
 /// without it, half of playing a keyboard part is missing.
 const CC_SUSTAIN: u8 = 64;
@@ -85,9 +141,27 @@ pub struct MidiRouter {
     /// that could ever stop it.
     current: NodeId,
     voice_context: u32,
+    /// What the window has the input settings set to, when there is a window
+    /// (TDD §14.3). `None` on every offline path, which has nothing that
+    /// could change them.
+    settings: Option<Arc<LiveMapping>>,
+    /// The settings this router is **currently** mapping with, latched from
+    /// `settings` — the same latch, and the same argument, as `current`.
+    ///
+    /// Transpose is applied on the way in, so a note-off has to be mapped the
+    /// way its note-on was. Read fresh per message, a nudge to transpose while
+    /// a key is down would look for a held note at a key nothing was ever
+    /// started on, drop the release, and leave the first note sounding with
+    /// nothing left in the system able to stop it.
+    current_settings: InputSettings,
     /// Bit per key, per channel: notes this router has sounded and not yet
     /// released.
     held: [u128; 16],
+    /// The window's copy of what is sounding, when there is a window
+    /// (TDD §14.1). `None` on every offline path, which has no keyboard to
+    /// light. Mirrors `held | sustained` rather than the bytes on the wire:
+    /// what lights is what the instrument is playing, transpose and all.
+    lit: Option<Arc<LiveKeys>>,
     /// Notes whose note-off arrived while the pedal was down.
     sustained: [u128; 16],
     /// Bit per channel.
@@ -111,15 +185,56 @@ impl MidiRouter {
         voice_context: u32,
         mapping: DeviceMapping,
     ) -> Self {
+        let current_settings = InputSettings {
+            velocity_curve: mapping.velocity_curve,
+            velocity_range: mapping.velocity_range,
+            transpose_semitones: mapping.transpose_semitones,
+            channel_filter: mapping.channel_filter,
+        };
         Self {
             current: target.get(),
             mapping,
             target,
             voice_context,
+            settings: None,
+            current_settings,
             held: [0; 16],
             sustained: [0; 16],
             pedal_down: 0,
+            lit: None,
         }
+    }
+
+    /// Mirrors what this router is sounding into a cell the window draws from
+    /// — the highlight on the roll's keyboard (TDD §14.1).
+    ///
+    /// Shared with every other device the hub opens, so two controllers light
+    /// one keyboard. See [`LiveKeys`].
+    pub fn watching_keys(mut self, keys: Arc<LiveKeys>) -> Self {
+        self.lit = Some(keys);
+        self
+    }
+
+    /// Follows input settings the window can change while a device is open
+    /// (TDD §14.3) — the velocity curve, the velocity window, transpose and
+    /// the channel filter.
+    ///
+    /// Adopted straight away, so a router built with one mapping and handed a
+    /// cell holding another plays by the cell rather than by whichever it was
+    /// constructed with.
+    pub fn following_input(mut self, settings: Arc<LiveMapping>) -> Self {
+        self.adopt(settings.get());
+        self.settings = Some(settings);
+        self
+    }
+
+    /// Writes `settings` into the mapping this router is using.
+    fn adopt(&mut self, settings: InputSettings) {
+        self.mapping.velocity_curve = settings.velocity_curve;
+        self.mapping.velocity_range = settings.velocity_range;
+        self.mapping.transpose_semitones = settings.transpose_semitones;
+        self.mapping.channel_filter = settings.channel_filter;
+        self.current_settings = settings;
     }
 
     /// Decodes one MIDI packet and queues whatever it produces. Returns the
@@ -132,8 +247,27 @@ impl MidiRouter {
         // Before anything is decoded, so a note-on that arrives after the
         // selection moved lands on the new instrument and whatever this router
         // was holding is let go on the old one.
-        let released = self.follow_target(sink);
+        let released = self.follow_target(sink) + self.follow_settings(sink);
         released + self.decode_and_route(bytes, sink)
+    }
+
+    /// Adopts the window's input settings if they have moved, releasing
+    /// everything sounding under the old ones first.
+    ///
+    /// The same shape as [`follow_target`](Self::follow_target) and for the
+    /// same reason — see `current_settings`. Zero on every message where
+    /// nothing changed, which is nearly all of them.
+    fn follow_settings(&mut self, sink: &mut dyn EventSink) -> usize {
+        let Some(cell) = &self.settings else {
+            return 0;
+        };
+        let wanted = cell.get();
+        if wanted == self.current_settings {
+            return 0;
+        }
+        let released = self.release_all(sink);
+        self.adopt(wanted);
+        released
     }
 
     /// Adopts `target` if it has moved, releasing everything sounding on the
@@ -183,6 +317,7 @@ impl MidiRouter {
                 // would release it a second time when the pedal came up.
                 self.sustained[channel] &= !(1u128 << out_key);
                 self.held[channel] |= 1u128 << out_key;
+                self.light(out_key, true);
                 self.send(
                     sink,
                     EventPayload::NoteOn {
@@ -215,9 +350,12 @@ impl MidiRouter {
                 }
                 self.held[channel] &= !bit;
                 if self.pedal_down & (1 << channel) != 0 {
+                    // Still sounding, so still lit: the key is up but the
+                    // pedal is what ends the note.
                     self.sustained[channel] |= bit;
                     return 0;
                 }
+                self.light(out_key, false);
                 self.send(
                     sink,
                     EventPayload::NoteOff {
@@ -297,6 +435,7 @@ impl MidiRouter {
         while keys != 0 {
             let key = keys.trailing_zeros() as u8;
             keys &= keys - 1;
+            self.light(key, false);
             sent += self.send(
                 sink,
                 EventPayload::NoteOff {
@@ -319,6 +458,18 @@ impl MidiRouter {
         let remapped = *self.mapping.note_remap.get(&key).unwrap_or(&key);
         let transposed = remapped as i16 + self.mapping.transpose_semitones as i16;
         (0..=127).contains(&transposed).then_some(transposed as u8)
+    }
+
+    /// Turns one key's light on or off, when the window has asked for them.
+    fn light(&self, key: u8, on: bool) {
+        let Some(lit) = &self.lit else {
+            return;
+        };
+        if on {
+            lit.press(key);
+        } else {
+            lit.release(key);
+        }
     }
 
     fn send(&self, sink: &mut dyn EventSink, payload: EventPayload) -> usize {

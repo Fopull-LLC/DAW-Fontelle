@@ -108,10 +108,15 @@ fn every_track_gets_a_strip_and_every_control_is_inside_it() {
 }
 
 #[test]
-fn the_master_is_pinned_to_the_right_and_never_scrolls_away() {
+fn the_master_is_pinned_to_the_left_and_never_scrolls_away() {
     // It is where everything arrives, not one of the things arriving. A master
     // fader you have to scroll to find is one you cannot use to set the level
     // of the thing you are listening to.
+    //
+    // **The left-hand end**, asked for from using the window. It is the
+    // anchor the rest of the panel is read against, and the left edge is where
+    // a panel starts — the same edge the rack and the browser start at, so the
+    // three line up rather than the mixer alone reading right-to-left.
     let strips = strips(40);
     let unscrolled = mixer_layout(body(), &theme().metrics, &strips, 0);
     let scrolled = mixer_layout(body(), &theme().metrics, &strips, 12);
@@ -119,10 +124,15 @@ fn the_master_is_pinned_to_the_right_and_never_scrolls_away() {
     let a = unscrolled.master.expect("master");
     let b = scrolled.master.expect("master");
     assert_eq!(a.frame, b.frame, "the master strip does not move");
-    assert_eq!(a.index, strips.len() - 1, "and it is the last track");
+    assert_eq!(a.index, strips.len() - 1, "and it is still the last track");
+    assert_eq!(
+        a.frame.x,
+        body().x,
+        "the master starts where the panel starts"
+    );
     for s in &scrolled.strips {
         assert!(
-            s.frame.right() <= a.frame.x,
+            s.frame.x >= a.frame.right(),
             "strip {} runs under the master",
             s.index
         );

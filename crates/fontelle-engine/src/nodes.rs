@@ -10,7 +10,7 @@ use crate::graph::{AudioNode, ParamSet, PrepareContext, ProcessContext};
 /// `prepare` (INVARIANT 1).
 const MAX_CHANNELS: usize = 2;
 
-struct EmptyParams;
+pub(crate) struct EmptyParams;
 impl ParamSet for EmptyParams {
     fn get(&self, _addr: &ParamAddress) -> Option<f64> {
         None
@@ -30,6 +30,16 @@ impl ParamSet for EmptyParams {
 /// is populated before it's handed to the RT thread and never mutated after —
 /// there's no synchronisation for a live re-import while a `SamplerNode` holding
 /// it is already playing.
+/// The span an automated **channel** level runs over, in decibels.
+///
+/// The same range the instrument panel's own volume knob has (see
+/// `fontelle_app::instrument::GAIN_MIN_DB`), because an automation lane and the
+/// knob it was made from have to mean the same thing by the same number — a
+/// curve drawn at half height that played at a different level from the knob at
+/// half travel would be a lane nobody could aim.
+pub const CHANNEL_GAIN_MIN_DB: f32 = -60.0;
+pub const CHANNEL_GAIN_MAX_DB: f32 = 12.0;
+
 pub struct SamplerNode {
     sampler: Sampler,
     store: Arc<SampleStore>,
@@ -120,6 +130,36 @@ impl AudioNode for SamplerNode {
                     };
                     self.sampler.slide(*key, seconds, *voice_context);
                 }
+                // A channel's own level and placement, under automation
+                // (§12.2). Block-rate, like the mixer track's and for the same
+                // reason: the last value in the block wins, which is finer
+                // than a hand moves and a fraction of the cost of applying one
+                // per sample.
+                //
+                // Matching on the tail of the address is not a search: the
+                // compiler already resolved it to *this* node, so the only
+                // question left is which of this channel's two controls it
+                // names.
+                fontelle_types::EventPayload::ParamValue { target, value } => {
+                    let value = *value as f32;
+                    let address = target.as_str();
+                    // A knob **inside** the instrument, addressed as
+                    // `channel:<id>/patch/...` — the panel's own address for
+                    // it, kept whole. Everything from `patch/` onward is what
+                    // `patch_params` reads, and taking a subslice of the
+                    // address rather than building a string is what keeps this
+                    // allocation-free (INVARIANT 1).
+                    if let Some(at) = address.find("/patch/") {
+                        self.sampler.set_patch_param(&address[at + 1..], value);
+                    } else if address.ends_with("/gain") {
+                        self.sampler.set_gain_db(
+                            CHANNEL_GAIN_MIN_DB
+                                + value * (CHANNEL_GAIN_MAX_DB - CHANNEL_GAIN_MIN_DB),
+                        );
+                    } else if address.ends_with("/pan") {
+                        self.sampler.set_pan(value * 2.0 - 1.0);
+                    }
+                }
                 _ => {}
             }
         }
@@ -203,7 +243,32 @@ pub struct EffectNode {
     /// A fixed array, not a map: this is the audio thread (INVARIANT 1). Sized
     /// for the largest parameter list any effect has.
     automated: [Option<f32>; MAX_EFFECT_PARAMS],
+    /// The bus as it arrived, kept while the effect has the real one.
+    ///
+    /// One `Vec` per channel, sized in [`prepare`](AudioNode::prepare) and
+    /// never resized after: this is the audio thread, and a dry/wet control
+    /// that allocated per block would be a control nobody could use
+    /// (INVARIANT 1). Empty until prepared, and a block that finds it too
+    /// small runs fully wet rather than reaching for the heap.
+    dry: Vec<Vec<f32>>,
+    /// Where the analyser reads its samples from, when a window is showing
+    /// one. `None` is the ordinary case and costs nothing — see
+    /// [`crate::SpectrumTap`].
+    tap: Option<std::sync::Arc<crate::SpectrumTap>>,
+    /// The **external sidechain**: another track's bus, left there by a
+    /// [`crate::KeyTapNode`] that the compiler scheduled first
+    /// (`docs/effects-catalogue.md` §2.1). `None` on every insert that has no
+    /// detector or has not been given a key, which is nearly all of them, and
+    /// then this costs one branch a block.
+    key: Option<std::sync::Arc<crate::KeyTap>>,
+    /// Where the key is copied to, sized in [`prepare`](AudioNode::prepare)
+    /// and never resized: reading it into a fresh `Vec` per block would be an
+    /// allocation on the audio thread (INVARIANT 1).
+    key_buffer: Vec<f32>,
 }
+
+/// How many channels the dry copy has room for. A mixer bus is stereo.
+const DRY_CHANNELS: usize = 2;
 
 /// The most parameters an effect may expose. The EQ has 48.
 const MAX_EFFECT_PARAMS: usize = 64;
@@ -218,8 +283,17 @@ const MAX_EFFECT_PARAMS: usize = 64;
 /// hot path.
 #[allow(clippy::large_enum_variant)]
 enum EffectState {
+    Utility(fontelle_fx::Utility),
     Eq(fontelle_fx::ParametricEq),
+    Filter(fontelle_fx::Filter),
     Compressor(fontelle_fx::Compressor),
+    Gate(fontelle_fx::Gate),
+    Distortion(fontelle_fx::Distortion),
+    Bitcrush(fontelle_fx::Bitcrush),
+    Soften(fontelle_fx::Soften),
+    Chorus(fontelle_fx::Chorus),
+    Delay(fontelle_fx::Delay),
+    Reverb(fontelle_fx::FdnReverb),
 }
 
 impl EffectNode {
@@ -227,17 +301,46 @@ impl EffectNode {
     pub fn new(config: fontelle_types::EffectConfig) -> Self {
         Self {
             state: match config {
+                fontelle_types::EffectConfig::Utility(_) => {
+                    EffectState::Utility(fontelle_fx::Utility::new())
+                }
                 fontelle_types::EffectConfig::Eq(_) => {
                     EffectState::Eq(fontelle_fx::ParametricEq::new())
                 }
+                fontelle_types::EffectConfig::Filter(_) => {
+                    EffectState::Filter(fontelle_fx::Filter::new())
+                }
                 fontelle_types::EffectConfig::Compressor(_) => {
                     EffectState::Compressor(fontelle_fx::Compressor::new())
+                }
+                fontelle_types::EffectConfig::Gate(_) => EffectState::Gate(fontelle_fx::Gate::new()),
+                fontelle_types::EffectConfig::Distortion(_) => {
+                    EffectState::Distortion(fontelle_fx::Distortion::new())
+                }
+                fontelle_types::EffectConfig::Bitcrush(_) => {
+                    EffectState::Bitcrush(fontelle_fx::Bitcrush::new())
+                }
+                fontelle_types::EffectConfig::Soften(_) => {
+                    EffectState::Soften(fontelle_fx::Soften::new())
+                }
+                fontelle_types::EffectConfig::Chorus(_) => {
+                    EffectState::Chorus(fontelle_fx::Chorus::new())
+                }
+                fontelle_types::EffectConfig::Delay(_) => {
+                    EffectState::Delay(fontelle_fx::Delay::new())
+                }
+                fontelle_types::EffectConfig::Reverb(_) => {
+                    EffectState::Reverb(fontelle_fx::FdnReverb::new())
                 }
             },
             config,
             bypassed: false,
             controls: None,
             automated: [None; MAX_EFFECT_PARAMS],
+            dry: Vec::new(),
+            tap: None,
+            key: None,
+            key_buffer: Vec::new(),
         }
     }
 
@@ -249,6 +352,33 @@ impl EffectNode {
     /// agree until they do not.
     pub fn with_controls(mut self, controls: crate::EffectSource) -> Self {
         self.controls = Some(controls);
+        self
+    }
+
+    /// Gives this insert an analyser tap, so an editor can draw the spectrum
+    /// arriving at it.
+    ///
+    /// **What arrives**, not what leaves: an EQ's curve is drawn over the
+    /// signal you are shaping, so a cut you have just made must leave a
+    /// visible dip in the *curve* against an unchanged spectrum, rather than
+    /// flattening the spectrum and leaving nothing to aim at.
+    pub fn with_spectrum(mut self, tap: std::sync::Arc<crate::SpectrumTap>) -> Self {
+        self.tap = Some(tap);
+        self
+    }
+
+    /// Gives this insert an **external key**: another track's bus, which its
+    /// detector listens to instead of the signal passing through it
+    /// (`docs/effects-catalogue.md` §2.1, TDD §13.4).
+    ///
+    /// The tap is filled by a [`crate::KeyTapNode`] the compiler scheduled on
+    /// the source track, and the compiler is what guarantees that node runs
+    /// first — a key is a feeding edge like a send. On an effect with no
+    /// detector this is carried and never read, which is why the document
+    /// answers "is there an edge" through `EffectSlot::effective_key` rather
+    /// than through the field.
+    pub fn with_key(mut self, key: std::sync::Arc<crate::KeyTap>) -> Self {
+        self.key = Some(key);
         self
     }
 
@@ -302,6 +432,17 @@ impl EffectNode {
         }
     }
 
+    /// Whether the scratch taken in `prepare` is big enough for this block.
+    ///
+    /// A block longer than the one prepared for cannot happen in this engine —
+    /// the device fixes the size — and if it ever did, running the insert
+    /// fully wet is the answer that stays on the audio thread.
+    fn dry_fits(&self, ctx: &ProcessContext) -> bool {
+        let frames = ctx.outputs.first().map_or(0, |buffer| buffer.len());
+        self.dry.len() >= ctx.outputs.len().min(DRY_CHANNELS)
+            && self.dry.iter().all(|buffer| buffer.len() >= frames)
+    }
+
     /// Picks up anything the live end has published. Called once per block —
     /// a swap of two indices at worst, nothing at all when nothing has moved.
     fn settle(&mut self) {
@@ -318,47 +459,180 @@ impl EffectNode {
 
 impl AudioNode for EffectNode {
     fn prepare(&mut self, ctx: &PrepareContext) {
+        // The delay and the reverb allocate their lines here, which is the
+        // whole reason `prepare` exists: two seconds of memory cannot be
+        // reached for on the audio thread (INVARIANT 1).
         match &mut self.state {
+            EffectState::Utility(utility) => utility.prepare(ctx.sample_rate),
             EffectState::Eq(eq) => eq.prepare(ctx.sample_rate),
+            EffectState::Filter(filter) => filter.prepare(ctx.sample_rate),
             EffectState::Compressor(comp) => comp.prepare(ctx.sample_rate),
+            EffectState::Gate(gate) => gate.prepare(ctx.sample_rate),
+            EffectState::Distortion(dist) => dist.prepare(ctx.sample_rate),
+            EffectState::Bitcrush(crush) => crush.prepare(ctx.sample_rate),
+            EffectState::Soften(soften) => soften.prepare(ctx.sample_rate),
+            EffectState::Chorus(chorus) => chorus.prepare(ctx.sample_rate),
+            EffectState::Delay(delay) => delay.prepare(ctx.sample_rate),
+            EffectState::Reverb(reverb) => reverb.prepare(ctx.sample_rate),
         }
+        // And room for the key, when there is one. Sized here for the same
+        // reason the dry copy is: the audio thread cannot reach for memory.
+        if self.key.is_some() {
+            self.key_buffer = vec![0.0; ctx.max_block_size as usize];
+        }
+        // Room for the dry copy the mix control blends back in — see `dry`.
+        // Stereo, which is what a mixer bus is; a node handed more channels
+        // than this blends the ones it has room for and runs the rest wet,
+        // which cannot happen in a graph this crate builds.
+        let frames = ctx.max_block_size as usize;
+        self.dry = (0..DRY_CHANNELS).map(|_| vec![0.0; frames]).collect();
     }
 
     fn process(&mut self, ctx: &mut ProcessContext) {
         self.settle();
         self.take_automation(ctx);
         self.apply_automation();
+        // Before the bypass, and before the effect: what the analyser draws is
+        // what is arriving here, which is true of a bypassed insert too — an
+        // EQ you have switched off while you look for the frequency is exactly
+        // when the picture matters most.
+        if let Some(tap) = &self.tap {
+            tap.write(ctx.outputs);
+        }
         if self.bypassed {
             return;
         }
+        // The signal as it arrived, before the effect is let at it. Taken only
+        // when the mix asks for it: a fully wet insert — which is every insert
+        // until somebody turns the knob — must cost exactly what it did before
+        // this control existed.
+        let mix = self.config.mix().clamp(0.0, 1.0);
+        let blending = mix < 1.0 && self.dry_fits(ctx);
+        if blending {
+            for (channel, buffer) in ctx.outputs.iter().enumerate().take(DRY_CHANNELS) {
+                self.dry[channel][..buffer.len()].copy_from_slice(buffer);
+            }
+        }
+        // The key, if this insert has one. Read out here rather than inside
+        // the arms below so that the borrow of `self.key_buffer` is settled
+        // before `self.state` is borrowed mutably — and so that the frames
+        // the source actually wrote bound it, which is what stops a short
+        // block keying off the tail of the one before it.
+        let key_frames = match &self.key {
+            Some(tap) if !self.key_buffer.is_empty() => {
+                let frames = ctx
+                    .outputs
+                    .first()
+                    .map_or(0, |c| c.len())
+                    .min(self.key_buffer.len());
+                let filled = tap.read_into(&mut self.key_buffer[..frames]);
+                Some(filled.min(frames))
+            }
+            _ => None,
+        };
+        let key = key_frames.map(|frames| &self.key_buffer[..frames]);
+
         // In place on the bus it was given: a chain is a run of inserts
         // scheduled on the same pair of buffers, in the order they run.
         match (&mut self.state, &self.config) {
+            (EffectState::Utility(utility), fontelle_types::EffectConfig::Utility(config)) => {
+                utility.process(ctx.outputs, config);
+            }
             (EffectState::Eq(eq), fontelle_types::EffectConfig::Eq(config)) => {
                 eq.process(ctx.outputs, config);
             }
+            (EffectState::Filter(filter), fontelle_types::EffectConfig::Filter(config)) => {
+                // The tempo, for an LFO set in note values.
+                filter.process(ctx.outputs, config, ctx.transport.bpm);
+            }
             (EffectState::Compressor(comp), fontelle_types::EffectConfig::Compressor(config)) => {
-                // No sidechain yet: routing one track's audio to another's
-                // detector is the graph's job and belongs with sends (§13.2),
-                // which are not compiled. The DSP takes one already.
-                comp.process(ctx.outputs, None, config);
+                comp.process(ctx.outputs, key, config);
+            }
+            (EffectState::Gate(gate), fontelle_types::EffectConfig::Gate(config)) => {
+                gate.process(ctx.outputs, key, config);
+            }
+            (
+                EffectState::Distortion(dist),
+                fontelle_types::EffectConfig::Distortion(config),
+            ) => {
+                dist.process(ctx.outputs, config);
+            }
+            // The delay and the reverb write their repeats and their tail,
+            // with none of the signal that caused them: the blend below is
+            // what puts the track back under it, and an effect that mixed its
+            // own dry in would be mixed in twice. It is also why these two
+            // open part dry — see `EffectKind::is_time_based`.
+            (
+                EffectState::Bitcrush(crush),
+                fontelle_types::EffectConfig::Bitcrush(config),
+            ) => {
+                crush.process(ctx.outputs, config);
+            }
+            (EffectState::Soften(soften), fontelle_types::EffectConfig::Soften(config)) => {
+                soften.process(ctx.outputs, config);
+            }
+            (EffectState::Chorus(chorus), fontelle_types::EffectConfig::Chorus(config)) => {
+                // The tempo, for a rate set in note values — read every block,
+                // so a chorus follows a tempo change like the delay does.
+                chorus.process(ctx.outputs, config, ctx.transport.bpm);
+            }
+            (EffectState::Delay(delay), fontelle_types::EffectConfig::Delay(config)) => {
+                // The tempo where this block sits, so a delay set in note
+                // values follows the song — and follows a tempo *change*,
+                // since this is read every block rather than at build time.
+                delay.process(ctx.outputs, config, ctx.transport.bpm);
+            }
+            (EffectState::Reverb(reverb), fontelle_types::EffectConfig::Reverb(config)) => {
+                reverb.process(ctx.outputs, config);
             }
             // A config of a different kind than the state cannot arrive: the
             // chain rebuilds the graph when a slot's *kind* changes, and only
             // tunes it in place when parameters move.
             _ => {}
         }
+
+        // And the two signals, blended. A gain each rather than a crossfade
+        // law: an EQ blended half and half with the signal that went into it
+        // has to be the *sum* of the two — that is what parallel processing
+        // means — and an equal-power curve would make a fully dry insert
+        // louder than the wire it is supposed to be.
+        if blending {
+            for (channel, buffer) in ctx.outputs.iter_mut().enumerate().take(DRY_CHANNELS) {
+                let dry = &self.dry[channel];
+                for (sample, was) in buffer.iter_mut().zip(dry.iter()) {
+                    *sample = *sample * mix + *was * (1.0 - mix);
+                }
+            }
+        }
     }
 
     fn reset(&mut self) {
         match &mut self.state {
+            EffectState::Utility(utility) => utility.reset(),
             EffectState::Eq(eq) => eq.reset(),
+            EffectState::Filter(filter) => filter.reset(),
             EffectState::Compressor(comp) => comp.reset(),
+            EffectState::Gate(gate) => gate.reset(),
+            EffectState::Distortion(dist) => dist.reset(),
+            EffectState::Bitcrush(crush) => crush.reset(),
+            EffectState::Soften(soften) => soften.reset(),
+            // Transport stop drops the voices, the way it drops the repeats
+            // and the tail.
+            EffectState::Chorus(chorus) => chorus.reset(),
+            // Transport stop drops the repeats and the tail. A delay still
+            // ringing across a seek would play the bar you left behind over
+            // the one you jumped to.
+            EffectState::Delay(delay) => delay.reset(),
+            EffectState::Reverb(reverb) => reverb.reset(),
         }
         // A full stop lets go of what automation was holding: the next thing
         // played starts from the document, and a `ParamValue` will arrive to
         // say otherwise if the playhead is inside a clip.
         self.automated = [None; MAX_EFFECT_PARAMS];
+    }
+
+    fn debug_name(&self) -> &'static str {
+        "EffectNode"
     }
 
     fn params(&self) -> &dyn ParamSet {
@@ -1243,6 +1517,7 @@ mod tests {
                 transport: TransportSnapshot {
                     state: TransportState::Playing,
                     position_sample: 0,
+                    bpm: fontelle_types::DEFAULT_BPM,
                 },
                 sample_range: 0..64,
             };
@@ -1506,6 +1781,7 @@ mod tests {
                 transport: TransportSnapshot {
                     state: TransportState::Playing,
                     position_sample: 0,
+                    bpm: fontelle_types::DEFAULT_BPM,
                 },
                 sample_range: 0..128,
             };
@@ -1534,6 +1810,7 @@ mod tests {
                 transport: TransportSnapshot {
                     state: TransportState::Playing,
                     position_sample: 0,
+                    bpm: fontelle_types::DEFAULT_BPM,
                 },
                 sample_range: 0..frames as i64,
             };
@@ -1639,6 +1916,7 @@ mod tests {
                 transport: TransportSnapshot {
                     state: TransportState::Playing,
                     position_sample: 0,
+                    bpm: fontelle_types::DEFAULT_BPM,
                 },
                 sample_range: 0..256,
             };
@@ -1697,6 +1975,7 @@ mod tests {
                 transport: TransportSnapshot {
                     state: TransportState::Playing,
                     position_sample: 0,
+                    bpm: fontelle_types::DEFAULT_BPM,
                 },
                 sample_range: 0..128,
             };

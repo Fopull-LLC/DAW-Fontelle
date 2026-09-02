@@ -1086,7 +1086,21 @@ All effects live in `fontelle-fx`, are `AudioNode` implementations, and are writ
 | **Bitcrush** | Bit-depth reduction with selectable dither, sample-rate decimation with optional anti-alias filter (defaults **off** — the aliasing is the point), mix. |
 | **Repitcher** | v1: varispeed (pitch and time locked together) plus high-quality resampling. v2: formant-preserving pitch shift behind the `stretch` feature flag (§3.3). |
 | **Soften** | See §13.5. |
-| Utility | Gain, pan, width, phase, mono-maker, DC filter, spectrum analyser, oscilloscope, tuner. |
+| Utility | Gain, pan, width, phase, mono-maker, DC filter, spectrum analyser, oscilloscope, tuner. **Built 2026-09-02** as one insert carrying gain, pan, width, the mono-maker, a channel swap, two mutes, two polarity flips and a DC/rumble filter; the three meters stay stubs and are separate rows in the catalogue. |
+| **Gate / expander** | Not in the original table; added 2026-09-02 as a P0 the catalogue names. Threshold, hysteresis, key high-pass, look-ahead, attack, hold, release, ratio, range. One machine for both. |
+| **Filter** | Not in the original table; added 2026-09-02. The synthesiser filter as an insert: eight shapes, cutoff, resonance, drive, a signed envelope follower and an LFO with six waves and a tempo sync. |
+| **Chorus / ensemble** | Not in the original table; added 2026-09-02. One to four voices, each at its own delay and its own point of the sweep; a chorus/ensemble chooser, spread, signed feedback, tone. |
+
+**How far each of these goes (added 2026-09-02).** This table names the effects; `docs/effects-catalogue.md`
+is the design for what each has to be able to do before it counts as done — a *family* of sounds behind
+one name, with every parameter automatable, gain staging built in, time synced to the song, nonlinear
+stages oversampled, presets as constructors and sections in the panel — plus the effects not listed here
+that a producer will go looking for (gate, chorus, filter, utility, limiter-as-insert, multiband, tape,
+and so on), in build order. Where the two disagree, the catalogue is newer.
+
+**The menu today (2026-09-02, second pass).** Eleven kinds: utility, EQ, filter, compressor, gate,
+distortion, bitcrush, soften, chorus, delay, reverb. The four added in the second pass are the first
+four of the catalogue's build order; the picker for the presets rule 10 asks for landed with them.
 
 ### 13.5 "Soften" — the soundfont harshness tool
 

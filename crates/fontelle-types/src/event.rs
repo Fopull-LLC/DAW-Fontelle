@@ -91,6 +91,22 @@ pub struct CompiledTimeline {
     pub events: Vec<TimedEvent>,
     /// Sparse seek index, one entry per bar: `(sample, first event index at or after it)`.
     pub index: Vec<(Sample, usize)>,
+    /// The tempo in force from each sample, sorted by sample: `(sample, bpm)`.
+    ///
+    /// **Why the tempo rides on the timeline.** `fontelle-engine` cannot see a
+    /// `TempoMap` — that belongs to `fontelle-model`, and INVARIANT 4 runs the
+    /// other way — so a node that wants to know the tempo cannot ask the
+    /// project. It gets one number a block on the transport snapshot, and this
+    /// is the table that number is read out of.
+    ///
+    /// Compiled here rather than derived somewhere else because the sequencer
+    /// already owns every tick-to-sample conversion in the project: that is
+    /// what compiling a timeline *is*, and a second table would be a second
+    /// answer to a question that already has one.
+    ///
+    /// Empty on a timeline nobody compiled, which is what
+    /// [`bpm_at`](Self::bpm_at)'s default is for.
+    pub tempo: Vec<(Sample, f32)>,
 }
 
 impl CompiledTimeline {
@@ -131,7 +147,33 @@ impl CompiledTimeline {
     pub fn cursor_at(&self, sample: Sample) -> usize {
         self.events.partition_point(|event| event.sample < sample)
     }
+
+    /// The tempo in force at `sample`, in BPM.
+    ///
+    /// Binary search over an already-sorted table: no allocation, so the audio
+    /// thread can call it every block (INVARIANT 1).
+    ///
+    /// [`DEFAULT_BPM`] for a timeline with no tempo on it, and for a sample
+    /// before the first segment. Both are reachable — `CompiledTimeline` is
+    /// `Default` in several places that never compile a project — and neither
+    /// may answer zero, because what reads this divides by it.
+    pub fn bpm_at(&self, sample: Sample) -> f32 {
+        if self.tempo.is_empty() {
+            return DEFAULT_BPM;
+        }
+        // The last segment starting at or before `sample`; the first one when
+        // `sample` is before all of them.
+        let at = self.tempo.partition_point(|(start, _)| *start <= sample);
+        self.tempo[at.saturating_sub(1)].1
+    }
 }
+
+/// The tempo a timeline with none of its own is read at.
+///
+/// 120 is the value `Project::new` starts at and the one every DAW opens on;
+/// it is here rather than only there because the audio thread needs an answer
+/// for a timeline the sequencer never touched, and it must not be zero.
+pub const DEFAULT_BPM: f32 = 120.0;
 
 /// Where a note came from: the compiled timeline, or somebody playing.
 ///
@@ -198,6 +240,7 @@ mod tests {
         let timeline = CompiledTimeline {
             events: vec![note_on(0), note_on(100), note_on(100), note_on(300)],
             index: Vec::new(),
+            tempo: Vec::new(),
         };
 
         assert_eq!(timeline.cursor_at(0), 0);
@@ -219,6 +262,7 @@ mod tests {
         let timeline = CompiledTimeline {
             events: vec![note_on(0), note_on(200)],
             index: Vec::new(),
+            tempo: Vec::new(),
         };
         let mut cursor = 0;
         timeline.events_for_block(&mut cursor, 0..1_000);
@@ -247,6 +291,7 @@ mod tests {
         let timeline = CompiledTimeline {
             events: vec![note_on(0), note_on(50), note_on(200)],
             index: Vec::new(),
+            tempo: Vec::new(),
         };
 
         let mut cursor = 0;
@@ -269,6 +314,7 @@ mod tests {
         let timeline = CompiledTimeline {
             events: vec![note_on(128)],
             index: Vec::new(),
+            tempo: Vec::new(),
         };
         let mut cursor = 0;
 
@@ -287,6 +333,7 @@ mod tests {
         let timeline = CompiledTimeline {
             events: vec![note_on(10), note_on(10), note_on(10)],
             index: Vec::new(),
+            tempo: Vec::new(),
         };
         let mut cursor = 0;
         let block = timeline.events_for_block(&mut cursor, 0..128);

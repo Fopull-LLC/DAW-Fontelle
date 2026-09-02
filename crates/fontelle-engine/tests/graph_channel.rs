@@ -87,6 +87,7 @@ fn rendered(graph: &mut CompiledGraph) -> f32 {
         fontelle_engine::TransportSnapshot {
             state: fontelle_engine::TransportState::Playing,
             position_sample: 0,
+            bpm: fontelle_types::DEFAULT_BPM,
         },
         0..16,
     );

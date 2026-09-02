@@ -390,7 +390,7 @@ fn a_marquee_over_the_arrangement_selects_what_it_covers() {
     );
     t.drag(from.x + 1.0, from.y + 1.0, &l, &clips, 4);
     assert!(t.marquee().is_some(), "there is a box to draw");
-    t.release_over(from.x + 1.0, from.y + 1.0, &l, &clips);
+    t.release_over(from.x + 1.0, from.y + 1.0, &l, &clips, 4);
 
     let selected = t.selection();
     assert_eq!(selected.len(), 2, "got {selected:?}");
@@ -489,4 +489,162 @@ fn a_value_outside_the_normal_range_is_clamped_into_the_block() {
         assert!((block.x..=block.right()).contains(x), "x {x} escaped");
         assert!((block.y..=block.bottom()).contains(y), "y {y} escaped");
     }
+}
+
+// -------------------------------------------------------- the cut tool ---
+//
+// *"theres no tool for cutting up clips in the arrangement right now (should be
+// c key) should work like the same tool in fl studio."* The model half of it is
+// `fontelle-model/tests/arranging.rs` — what a cut *does* to a clip, looped
+// clips included. This is where the line somebody draws turns into a list of
+// cuts, and it follows the roll's rule exactly: a clip is cut where the stroke
+// crosses the middle of its own row.
+
+/// Where the middle of lane `lane` is on screen.
+fn row_middle(v: &TimelineView, g: Rect, lane: usize) -> f32 {
+    lane_to_y(v, g, lane) + v.lane_height / 2.0
+}
+
+#[test]
+fn a_stroke_across_a_clip_cuts_it_where_it_crossed() {
+    let v = view();
+    let g = grid();
+    let clips = clips(&[(0, 0, BAR * 4)]);
+    // Down through the middle of row 0, two bars in.
+    let x = fontelle_ui::canvas::timeline_tick_to_x(&v, g, BAR * 2);
+    let cuts = fontelle_ui::canvas::clip_cuts(
+        &v,
+        g,
+        &clips,
+        (x, row_middle(&v, g, 0) - 20.0),
+        (x, row_middle(&v, g, 0) + 20.0),
+        SnapDivision::Bar,
+        4,
+    );
+    assert_eq!(cuts.len(), 1, "one clip crossed");
+    assert_eq!(cuts[0], (clips[0].id, BAR * 2), "cut where the line crossed");
+}
+
+/// A diagonal stroke cuts each row where it crosses *that* row — which is the
+/// gesture, not an artefact.
+#[test]
+fn a_diagonal_stroke_cuts_each_row_at_its_own_bar() {
+    let v = view();
+    let g = grid();
+    let clips = clips(&[(0, 0, BAR * 8), (1, 0, BAR * 8)]);
+    let from = (
+        fontelle_ui::canvas::timeline_tick_to_x(&v, g, BAR),
+        row_middle(&v, g, 0),
+    );
+    let to = (
+        fontelle_ui::canvas::timeline_tick_to_x(&v, g, BAR * 5),
+        row_middle(&v, g, 1),
+    );
+    let cuts = fontelle_ui::canvas::clip_cuts(&v, g, &clips, from, to, SnapDivision::Bar, 4);
+    assert_eq!(cuts.len(), 2);
+    assert_eq!(cuts[0].1, BAR, "the top row where the stroke started");
+    assert_eq!(cuts[1].1, BAR * 5, "and the one below where it ended");
+}
+
+/// A line drawn *along* a row never crosses its middle, so it cuts nothing —
+/// rather than cutting somewhere nobody aimed at.
+#[test]
+fn a_horizontal_stroke_cuts_nothing() {
+    let v = view();
+    let g = grid();
+    let clips = clips(&[(0, 0, BAR * 4)]);
+    let y = row_middle(&v, g, 0);
+    let cuts = fontelle_ui::canvas::clip_cuts(
+        &v,
+        g,
+        &clips,
+        (g.x + 10.0, y),
+        (g.x + 300.0, y),
+        SnapDivision::Bar,
+        4,
+    );
+    assert!(cuts.is_empty());
+}
+
+/// A press with no drag is somebody putting the pointer down.
+#[test]
+fn a_press_without_a_drag_cuts_nothing() {
+    let v = view();
+    let g = grid();
+    let clips = clips(&[(0, 0, BAR * 4)]);
+    let at = (
+        fontelle_ui::canvas::timeline_tick_to_x(&v, g, BAR),
+        row_middle(&v, g, 0),
+    );
+    assert!(
+        fontelle_ui::canvas::clip_cuts(&v, g, &clips, at, at, SnapDivision::Bar, 4).is_empty()
+    );
+}
+
+/// A cut aimed at a bar the clip does not cover is refused rather than
+/// clamped: a clip of nothing is one you can neither see nor grab.
+#[test]
+fn a_stroke_past_a_clips_end_cuts_nothing() {
+    let v = view();
+    let g = grid();
+    let clips = clips(&[(0, 0, BAR * 2)]);
+    let x = fontelle_ui::canvas::timeline_tick_to_x(&v, g, BAR * 6);
+    let cuts = fontelle_ui::canvas::clip_cuts(
+        &v,
+        g,
+        &clips,
+        (x, row_middle(&v, g, 0) - 20.0),
+        (x, row_middle(&v, g, 0) + 20.0),
+        SnapDivision::Bar,
+        4,
+    );
+    assert!(cuts.is_empty());
+}
+
+/// The cut snaps, unlike the roll's: a clip boundary half a beat off the bar is
+/// a boundary somebody has to nudge before they can use it.
+#[test]
+fn a_cut_lands_on_the_grid() {
+    let v = view();
+    let g = grid();
+    let clips = clips(&[(0, 0, BAR * 4)]);
+    // A few pixels past the second bar line.
+    let x = fontelle_ui::canvas::timeline_tick_to_x(&v, g, BAR * 2) + 5.0;
+    let cuts = fontelle_ui::canvas::clip_cuts(
+        &v,
+        g,
+        &clips,
+        (x, row_middle(&v, g, 0) - 20.0),
+        (x, row_middle(&v, g, 0) + 20.0),
+        SnapDivision::Bar,
+        4,
+    );
+    assert_eq!(cuts[0].1, BAR * 2, "snapped back to the bar it was aimed at");
+}
+
+/// The tool takes the press whatever is under it, and the cut lands on
+/// **release** — a line half-drawn is not a cut.
+#[test]
+fn the_cut_tool_emits_its_edit_when_the_button_comes_up() {
+    let m = metrics();
+    let l = timeline_layout(Rect::new(0.0, 0.0, 1000.0, 260.0), &m);
+    let mut t = Timeline::new(view());
+    t.set_tool(fontelle_ui::canvas::TimelineTool::Slice);
+    let clips = clips(&[(0, 0, BAR * 4)]);
+    let x = fontelle_ui::canvas::timeline_tick_to_x(&t.view, l.grid, BAR * 2);
+    let y = row_middle(&t.view, l.grid, 0);
+
+    let edits = t.press(MouseButton::Left, x, y - 20.0, &l, &clips, 4);
+    assert!(edits.is_empty(), "nothing happens on the way down");
+    t.drag(x, y + 20.0, &l, &clips, 4);
+    assert!(t.slice_line().is_some(), "the stroke is visible while drawn");
+
+    let edits = t.release_over(x, y + 20.0, &l, &clips, 4);
+    match edits.as_slice() {
+        [ArrangeEdit::Split { cuts }] => {
+            assert_eq!(cuts, &vec![(clips[0].id, BAR * 2)]);
+        }
+        other => panic!("expected one cut, got {other:?}"),
+    }
+    assert!(t.slice_line().is_none(), "and the stroke is gone after");
 }

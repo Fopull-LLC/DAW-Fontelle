@@ -53,6 +53,13 @@ pub struct RackLayout {
     /// scroll offset clamped.
     pub total: usize,
     pub scroll: usize,
+    /// How many rows the list has **room** for, whatever it is showing.
+    ///
+    /// Not `rows.len()`, which is what the current offset happens to reach:
+    /// scrolled to the end of a long list those two disagree, and the one a
+    /// scroll offset has to be clamped against is this one. Clamping to
+    /// `total - 1` instead is what leaves a full panel showing a single row.
+    pub capacity: usize,
 }
 
 /// How wide the mute and solo squares are.
@@ -86,8 +93,10 @@ pub fn rack_layout(body: Rect, metrics: &Metrics, count: usize, scroll: usize) -
     // to a few pixels still draws its caption centred inside those pixels, on
     // top of the row above it.
     let mut rows = Vec::new();
+    let mut capacity = 0;
     if metrics.row_height > 0.0 && !list.is_empty() {
         let visible = (list.height / metrics.row_height).floor() as usize;
+        capacity = visible;
         let scroll = scroll.min(count.saturating_sub(1));
         for (slot, index) in (scroll..count).take(visible).enumerate() {
             let frame = Rect::new(
@@ -137,6 +146,7 @@ pub fn rack_layout(body: Rect, metrics: &Metrics, count: usize, scroll: usize) -
         add,
         total: count,
         scroll,
+        capacity,
     }
 }
 

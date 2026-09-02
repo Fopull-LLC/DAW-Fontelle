@@ -195,3 +195,75 @@ fn the_document_is_readable_json_a_person_could_repair() {
     assert!(text.contains("Test Piece"));
     std::fs::remove_dir_all(&bundle).ok();
 }
+
+// ------------------------------------------- the effects in a saved project
+
+/// **Every** effect the menu offers survives a save and an open, with its
+/// settings unchanged.
+///
+/// Nothing covered this before: no test in this file put an insert on a track
+/// at all, so `EffectConfig`'s serde was exercised only incidentally. That was
+/// survivable while the enum had two variants written the same day as the
+/// storage; it is not once effects arrive one at a time, each bringing its own
+/// config struct and its own nested enums — a `DistortionCurve` that failed to
+/// round-trip would be a project that opens with the wrong distortion, which
+/// is worse than one that refuses to open.
+///
+/// Driven from `EffectKind::ALL`, so an effect added later is covered the day
+/// it is added.
+#[test]
+fn a_project_with_one_of_every_effect_reads_back_the_way_it_was_saved() {
+    use fontelle_model::AddInsert;
+    use fontelle_types::{EffectConfig, EffectKind};
+
+    let bundle = scratch("every-effect");
+    let mut project = a_project();
+    let master = project.mixer.master.unwrap();
+
+    for kind in EffectKind::ALL {
+        AddInsert::new(master, kind).apply(&mut project).unwrap();
+    }
+    // Moved off their defaults, so a load that quietly rebuilt them from
+    // `EffectConfig::new` would fail here rather than pass by coincidence.
+    for slot in project.mixer.tracks[master].inserts.iter_mut() {
+        let ids: Vec<&str> = slot.config.specs().iter().map(|spec| spec.id).collect();
+        for id in ids {
+            let spec = *slot
+                .config
+                .specs()
+                .iter()
+                .find(|spec| spec.id == id)
+                .unwrap();
+            slot.config.set(id, spec.min + (spec.max - spec.min) * 0.375);
+        }
+    }
+    let saved: Vec<EffectConfig> = project.mixer.tracks[master]
+        .inserts
+        .iter()
+        .map(|slot| slot.config)
+        .collect();
+
+    save_project(&project, &bundle).expect("save");
+    let back = load_project(&bundle).expect("load");
+
+    let master = back.mixer.master.unwrap();
+    let loaded: Vec<EffectConfig> = back.mixer.tracks[master]
+        .inserts
+        .iter()
+        .map(|slot| slot.config)
+        .collect();
+    assert_eq!(loaded.len(), EffectKind::ALL.len(), "an insert per effect");
+    for (was, now) in saved.iter().zip(loaded.iter()) {
+        assert_eq!(was.kind(), now.kind(), "the slot changed effect on the way");
+        for spec in was.specs() {
+            let before = was.get(spec.id).unwrap();
+            let after = now.get(spec.id).unwrap();
+            assert!(
+                (before - after).abs() <= (spec.max - spec.min) * 1e-5,
+                "{:?}'s {} was saved as {before} and read back as {after}",
+                was.kind(),
+                spec.id
+            );
+        }
+    }
+}

@@ -233,7 +233,7 @@ fn clicking_the_browser_says_which_file_or_preset_was_clicked() {
     let mid = |r: Rect| (r.x + r.width / 2.0, r.y + r.height / 2.0);
 
     let (x, y) = mid(l.search);
-    assert_eq!(browser_hit(&l, x, y), BrowserHit::Search);
+    assert_eq!(browser_hit(&l, x, y), BrowserHit::Search(l.mode));
 
     let (index, rect) = l.file_rows[2];
     let (x, y) = mid(rect);
@@ -275,9 +275,9 @@ fn the_browser_has_a_way_to_open_the_bank_folder_and_a_way_to_change_it() {
     assert!(!l.presets.intersects(&l.status));
 
     let (x, y) = mid(l.open_folder);
-    assert_eq!(browser_hit(&l, x, y), BrowserHit::OpenFolder);
+    assert_eq!(browser_hit(&l, x, y), BrowserHit::OpenFolder(l.mode));
     let (x, y) = mid(l.choose_folder);
-    assert_eq!(browser_hit(&l, x, y), BrowserHit::ChooseFolder);
+    assert_eq!(browser_hit(&l, x, y), BrowserHit::ChooseFolder(l.mode));
 }
 
 #[test]

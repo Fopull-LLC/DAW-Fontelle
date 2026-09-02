@@ -32,7 +32,12 @@ use serde::{Deserialize, Serialize};
 /// The revision of the settings file this build writes. Its own number, like
 /// the theme's and the project's — where Fontelle keeps things has nothing to
 /// do with either.
-pub const SETTINGS_FORMAT_VERSION: u32 = 1;
+///
+/// Two since the settings file grew [`MidiInputSettings`]. The field carries
+/// `#[serde(default)]`, so a version-1 file still reads — the bump is so that
+/// an *older* build handed a version-2 file says "upgrade Fontelle" rather
+/// than "unknown field `midi_input`".
+pub const SETTINGS_FORMAT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,6 +50,14 @@ pub struct Settings {
     pub projects_dir: Option<PathBuf>,
     /// A theme file, if the user has pointed at one (§16.6).
     pub theme: Option<PathBuf>,
+    /// How live MIDI input is read (§14.3).
+    ///
+    /// `default` rather than required, because a settings file written before
+    /// this existed is not a broken one — and because the default is the
+    /// identity, so a person who never opens the tab is in exactly the state
+    /// they were in before it did.
+    #[serde(default)]
+    pub midi_input: MidiInputSettings,
 }
 
 impl Default for Settings {
@@ -54,6 +67,247 @@ impl Default for Settings {
             soundfont_dirs: Vec::new(),
             projects_dir: None,
             theme: None,
+            midi_input: MidiInputSettings::default(),
+        }
+    }
+}
+
+/// What a MIDI keyboard's notes are read as (TDD §14.3).
+///
+/// Reported from playing one: *"every single input device will register
+/// differently, we need to expose options like this for users."* The engine's
+/// own shape for this is [`fontelle_midi::InputSettings`], which is built to
+/// cross onto a device callback thread in one atomic; this is the shape that
+/// goes in the file, which is a different job — it is read by a person with a
+/// text editor, so the curve is a name and not a tag byte, and `Fixed`'s value
+/// is a field of its own rather than a payload that vanishes when the curve is
+/// anything else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct MidiInputSettings {
+    pub velocity_curve: VelocityCurveSetting,
+    /// The velocity window a note must fall inside to be played at all, both
+    /// ends inclusive. `(0, 127)` lets everything through.
+    pub velocity_min: u8,
+    pub velocity_max: u8,
+    /// What [`VelocityCurveSetting::Fixed`] plays at. Kept even while another
+    /// curve is selected, so switching away and back does not lose it.
+    pub fixed_velocity: u8,
+    pub transpose_semitones: i8,
+    /// Which MIDI channel to listen to, counted from 1 as every keyboard's
+    /// own front panel counts it. `None` is all sixteen.
+    pub channel_filter: Option<u8>,
+}
+
+impl Default for MidiInputSettings {
+    /// The identity, per §14.3: per-device config is an "optional refinement,
+    /// never required setup".
+    fn default() -> Self {
+        Self {
+            velocity_curve: VelocityCurveSetting::Linear,
+            velocity_min: 0,
+            velocity_max: 127,
+            fixed_velocity: 100,
+            transpose_semitones: 0,
+            channel_filter: None,
+        }
+    }
+}
+
+/// Which shape a velocity is read through — the file's spelling of
+/// [`fontelle_midi::VelocityCurve`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VelocityCurveSetting {
+    /// What the keyboard sent, unchanged.
+    #[default]
+    Linear,
+    /// Quiet playing reads louder — the same effort reaches further up the
+    /// range, which is what a light action wants.
+    Soft,
+    /// Quiet playing reads quieter, for a keyboard that is too eager.
+    Hard,
+    /// Every note at one velocity, whatever was played. What an organ patch
+    /// wants, and what a keyboard with a broken sensor needs.
+    Fixed,
+}
+
+impl VelocityCurveSetting {
+    /// What the settings tab writes in the row's value column.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Linear => "Linear",
+            Self::Soft => "Soft",
+            Self::Hard => "Hard",
+            Self::Fixed => "Fixed",
+        }
+    }
+
+    /// The four in the order the tab steps through them.
+    pub const ALL: [Self; 4] = [Self::Linear, Self::Soft, Self::Hard, Self::Fixed];
+}
+
+/// One row of the settings tab (TDD §18).
+///
+/// The rows are an enum rather than an index into a table because what a step
+/// *means* differs per row — a choice wraps and a number stops — and because
+/// the window addresses them by position: `nudge_setting(3, +1)` has to reach
+/// the same setting the third row drew, and an enum in a `const` array is the
+/// one shape where those cannot drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingRow {
+    /// A section title. Nothing to set, and a click does nothing — it is what
+    /// makes "Transpose" read as *the MIDI keyboard's* transpose rather than
+    /// as some property of the song.
+    Heading(&'static str),
+    VelocityCurve,
+    FixedVelocity,
+    VelocityMin,
+    VelocityMax,
+    Transpose,
+    ChannelFilter,
+}
+
+/// Every row the settings tab shows, in the order it shows them.
+///
+/// One section today. More belong here — the theme, the autosave interval —
+/// and adding one is a variant, a `label`, a `value` and a `nudge`, with
+/// nothing in `fontelle-ui` to change: the window draws names and values and
+/// knows what none of them mean.
+pub const SETTING_ROWS: [SettingRow; 7] = [
+    SettingRow::Heading("MIDI input"),
+    SettingRow::VelocityCurve,
+    SettingRow::FixedVelocity,
+    SettingRow::VelocityMin,
+    SettingRow::VelocityMax,
+    SettingRow::Transpose,
+    SettingRow::ChannelFilter,
+];
+
+/// How far transpose goes either way. Two octaves is as far as anybody moves a
+/// keyboard to reach a part; past it you have chosen the wrong octave.
+const MAX_TRANSPOSE: i8 = 24;
+
+impl SettingRow {
+    /// The name in the row's left-hand column.
+    ///
+    /// **Short enough for a 248-pixel panel with a value beside it.** The
+    /// section heading is what carries "MIDI", so the rows under it do not
+    /// have to repeat it and can afford to be words rather than abbreviations.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Heading(title) => title,
+            Self::VelocityCurve => "Velocity curve",
+            Self::FixedVelocity => "Fixed velocity",
+            Self::VelocityMin => "Velocity min",
+            Self::VelocityMax => "Velocity max",
+            Self::Transpose => "Transpose",
+            Self::ChannelFilter => "Channel",
+        }
+    }
+
+    /// What it is set to, in the row's right-hand column.
+    pub fn value(self, settings: &MidiInputSettings) -> String {
+        match self {
+            Self::Heading(_) => String::new(),
+            Self::VelocityCurve => settings.velocity_curve.label().to_string(),
+            Self::FixedVelocity => settings.fixed_velocity.to_string(),
+            Self::VelocityMin => settings.velocity_min.to_string(),
+            Self::VelocityMax => settings.velocity_max.to_string(),
+            // With its sign, always: "+0" against "0" is the difference
+            // between a number that can go either way and one that might not.
+            Self::Transpose => format!("{:+} st", settings.transpose_semitones),
+            Self::ChannelFilter => match settings.channel_filter {
+                Some(channel) => channel.to_string(),
+                None => "All".to_string(),
+            },
+        }
+    }
+
+    /// Steps this row's value one place in the direction `delta` says.
+    ///
+    /// **A choice wraps and a number stops**, and the difference is not a
+    /// detail: four curves are a set with no ends, so stopping at one would
+    /// mean knowing to go back through; 0 and 127 are the ends of a range, and
+    /// running off one and arriving at the other is a control that cannot be
+    /// trusted to a held press.
+    pub fn nudge(self, settings: &mut MidiInputSettings, delta: i32) {
+        if delta == 0 {
+            return;
+        }
+        let step = delta.signum();
+        match self {
+            Self::Heading(_) => {}
+            Self::VelocityCurve => {
+                let all = VelocityCurveSetting::ALL;
+                let at = all
+                    .iter()
+                    .position(|c| *c == settings.velocity_curve)
+                    .unwrap_or(0) as i32;
+                let next = (at + step).rem_euclid(all.len() as i32) as usize;
+                settings.velocity_curve = all[next];
+            }
+            // Never zero: a velocity of zero is a note-off by convention
+            // everywhere in MIDI, so "every note at velocity 0" is "no notes".
+            Self::FixedVelocity => {
+                settings.fixed_velocity = clamped(settings.fixed_velocity, step, 1, 127);
+            }
+            Self::VelocityMin => {
+                settings.velocity_min = clamped(settings.velocity_min, step, 0, 127);
+                // The two ends push each other rather than crossing: a window
+                // whose bottom is above its top lets nothing through at all,
+                // which looks exactly like a broken keyboard.
+                settings.velocity_max = settings.velocity_max.max(settings.velocity_min);
+            }
+            Self::VelocityMax => {
+                settings.velocity_max = clamped(settings.velocity_max, step, 0, 127);
+                settings.velocity_min = settings.velocity_min.min(settings.velocity_max);
+            }
+            Self::Transpose => {
+                settings.transpose_semitones = (settings.transpose_semitones as i32 + step)
+                    .clamp(-(MAX_TRANSPOSE as i32), MAX_TRANSPOSE as i32)
+                    as i8;
+            }
+            // Seventeen states in a ring: every channel, then the sixteen a
+            // keyboard prints on its own front panel.
+            Self::ChannelFilter => {
+                let at = settings.channel_filter.unwrap_or(0) as i32;
+                let next = (at + step).rem_euclid(17);
+                settings.channel_filter = (next > 0).then_some(next as u8);
+            }
+        }
+    }
+}
+
+/// `value` moved one step and kept inside `low..=high`.
+fn clamped(value: u8, step: i32, low: u8, high: u8) -> u8 {
+    (value as i32 + step).clamp(low as i32, high as i32) as u8
+}
+
+impl From<MidiInputSettings> for fontelle_midi::InputSettings {
+    /// **The one place the file's shape becomes the engine's**, and where
+    /// everything the file could hold that the engine cannot is squared off:
+    /// a velocity window given the wrong way round is put back in order, and
+    /// a channel is converted from the 1..=16 a keyboard prints on its own
+    /// front panel to the 0..=15 the wire carries.
+    fn from(settings: MidiInputSettings) -> Self {
+        let low = settings.velocity_min.min(127);
+        let high = settings.velocity_max.min(127);
+        Self {
+            velocity_curve: match settings.velocity_curve {
+                VelocityCurveSetting::Linear => fontelle_midi::VelocityCurve::Linear,
+                VelocityCurveSetting::Soft => fontelle_midi::VelocityCurve::Soft,
+                VelocityCurveSetting::Hard => fontelle_midi::VelocityCurve::Hard,
+                VelocityCurveSetting::Fixed => {
+                    fontelle_midi::VelocityCurve::Fixed(settings.fixed_velocity.clamp(1, 127))
+                }
+            },
+            velocity_range: (low.min(high), low.max(high)),
+            transpose_semitones: settings.transpose_semitones,
+            channel_filter: settings
+                .channel_filter
+                .filter(|c| (1..=16).contains(c))
+                .map(|c| c - 1),
         }
     }
 }

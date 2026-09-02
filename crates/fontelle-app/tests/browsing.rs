@@ -563,3 +563,287 @@ mod through_the_session {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+// ------------------------------------ searching inside every soundfont ---
+//
+// Asked for from using the browser: *"we can search through soundfonts, and
+// then sounds inside the soundfonts, but we are not able to search for sounds
+// from within ALL of our soundfonts! that would be amazing if i could just go
+// to soundfonts section, type "tuba" or something in the search bar and of
+// course no soundfont would show up since i dont have any sf2 file named that
+// but within several of my sf2s are sounds called tuba that should be shown
+// within the bottom tab, organized by sf2 so the ones from same sf2s are
+// grouped together and obvious and if i have a soundfont selected already it
+// should show the results within the one selected at the top first."*
+//
+// # Why it is scanned in the background
+//
+// Listing a soundfont's presets means reading and parsing the whole file, and
+// a collection is hundreds of megabytes. Doing that on the UI thread the first
+// time somebody types a letter would freeze the window for seconds, which is
+// worse than not having the feature. So the scan runs on a thread of its own
+// and the list fills in as it lands — `pump` is where the results arrive,
+// which is the same place the graph's are freed.
+
+mod presets {
+    use fontelle_app::{RealiseOptions, SampleLibrary, Session, blank_project};
+    use fontelle_engine::timeline_channel;
+    use fontelle_types::CompiledTimeline;
+    use fontelle_ui::document::{LibraryKind, StudioHost};
+
+    use super::scratch;
+
+    const SR: u32 = 48_000;
+
+    /// Two soundfonts, neither of them *named* after anything inside it.
+    fn a_library(name: &str) -> std::path::PathBuf {
+        use fontelle_assets::fixtures::build_multi_preset_sf2;
+        let dir = scratch(name);
+        std::fs::write(
+            dir.join("Brass Pack.sf2"),
+            build_multi_preset_sf2(&[("Tuba", 0, 0, 60), ("Trumpet", 0, 1, 60)]),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("Orchestra.sf2"),
+            build_multi_preset_sf2(&[("Violin", 0, 0, 60), ("Tuba Solo", 0, 1, 60)]),
+        )
+        .unwrap();
+        dir
+    }
+
+    fn studio(dir: &std::path::Path) -> Session {
+        let project = blank_project(8, 120.0, SR);
+        let clip = Session::first_clip(&project).expect("a blank project has one clip");
+        let channel_nodes = fontelle_app::channel_nodes(&project);
+        let (publisher, _timeline) = timeline_channel(CompiledTimeline::empty());
+        let options = RealiseOptions {
+            sample_rate: SR,
+            block_size: fontelle_engine::BLOCK_SIZE,
+            quality: fontelle_app::PLAYBACK_QUALITY,
+        };
+        let mut session = Session::new(
+            project,
+            SampleLibrary::new(),
+            channel_nodes,
+            publisher,
+            options,
+            clip,
+            None,
+        )
+        .with_settings_path(dir.join("settings.json"));
+        session.add_soundfont_dir(dir);
+        session.open_bank();
+        session
+    }
+
+    /// Waits for the background scan, pumping the way the window does.
+    fn settle(session: &mut Session) {
+        for _ in 0..2_000 {
+            session.pump();
+            if !session.searching_presets() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("the preset scan never finished");
+    }
+
+    fn rows(session: &Session) -> Vec<(String, LibraryKind)> {
+        session
+            .library_presets()
+            .into_iter()
+            .map(|e| (e.name, e.kind))
+            .collect()
+    }
+
+    #[test]
+    fn a_query_no_file_matches_still_finds_the_sounds_inside_them() {
+        let dir = a_library("preset-search");
+        let mut session = studio(&dir);
+
+        session.set_query("tuba");
+        assert!(
+            session.library_files().is_empty(),
+            "no soundfont is called tuba, which is the whole point"
+        );
+        settle(&mut session);
+
+        let found = rows(&session);
+        assert!(
+            found.iter().any(|(name, kind)| name == "Tuba" && *kind == LibraryKind::File),
+            "the preset inside Brass Pack was not found: {found:?}"
+        );
+        assert!(
+            found.iter().any(|(name, _)| name == "Tuba Solo"),
+            "the one inside Orchestra was not found: {found:?}"
+        );
+        assert!(
+            !found.iter().any(|(name, _)| name == "Violin"),
+            "a preset nobody searched for came back: {found:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_hits_are_grouped_under_the_soundfont_they_came_from() {
+        // *"organized by sf2 so the ones from same sf2s are grouped together
+        // and obvious"* — a flat list of preset names across a collection is
+        // unusable, because the same instrument is in twenty of them.
+        let dir = a_library("preset-groups");
+        let mut session = studio(&dir);
+        session.set_query("tuba");
+        settle(&mut session);
+
+        let found = rows(&session);
+        let headings: Vec<&String> = found
+            .iter()
+            .filter(|(_, kind)| *kind == LibraryKind::Group)
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(
+            headings.len(),
+            2,
+            "one heading per soundfont with a hit in it: {found:?}"
+        );
+        // Every preset row comes after a heading, and the last heading before
+        // it is the file it is in.
+        let first = found
+            .iter()
+            .position(|(name, _)| name == "Tuba")
+            .expect("Tuba is in the list");
+        assert!(
+            found[..first]
+                .iter()
+                .any(|(_, kind)| *kind == LibraryKind::Group),
+            "a preset row with no heading above it: {found:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_open_soundfonts_own_hits_come_first() {
+        // *"if i have a soundfont selected already it should show the results
+        // within the one selected at the top first."*
+        let dir = a_library("preset-selected-first");
+        let mut session = studio(&dir);
+
+        // Open the *second* soundfont, so first-in-the-folder cannot be what
+        // puts it at the top.
+        let orchestra = session
+            .library_files()
+            .iter()
+            .position(|entry| entry.name == "Orchestra")
+            .expect("Orchestra is in the folder");
+        session.open_file(orchestra).expect("it opens");
+
+        session.set_query("tuba");
+        settle(&mut session);
+
+        let found = rows(&session);
+        let heading = found
+            .iter()
+            .find(|(_, kind)| *kind == LibraryKind::Group)
+            .map(|(name, _)| name.clone())
+            .expect("there is a heading");
+        assert_eq!(
+            heading, "Orchestra",
+            "the open soundfont's hits have to be the ones you see first: {found:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn choosing_a_hit_from_another_soundfont_loads_that_one() {
+        // The row has to *work*: a list of results you cannot click is a list
+        // of things you now have to go and find by hand.
+        let dir = a_library("preset-choose");
+        let mut session = studio(&dir);
+        session.set_query("tuba solo");
+        settle(&mut session);
+
+        let row = rows(&session)
+            .iter()
+            .position(|(name, kind)| name == "Tuba Solo" && *kind == LibraryKind::File)
+            .expect("the hit is in the list");
+        session
+            .set_channel_instrument(row)
+            .expect("choosing a search result must load it");
+
+        assert_eq!(
+            session.channels()[0].name,
+            "Tuba Solo",
+            "the channel is playing what was chosen"
+        );
+        assert_eq!(
+            session
+                .open_file_path()
+                .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string())),
+            Some("Orchestra".to_string()),
+            "and the browser followed it into the soundfont it came from"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_heading_row_is_not_something_you_can_load() {
+        let dir = a_library("preset-heading");
+        let mut session = studio(&dir);
+        session.set_query("tuba");
+        settle(&mut session);
+        let heading = rows(&session)
+            .iter()
+            .position(|(_, kind)| *kind == LibraryKind::Group)
+            .expect("there is a heading");
+        assert!(
+            session.set_channel_instrument(heading).is_err(),
+            "a heading is a label, not a preset"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn clearing_the_search_goes_back_to_this_soundfonts_presets() {
+        let dir = a_library("preset-clear");
+        let mut session = studio(&dir);
+        session.open_file(0).expect("Brass Pack opens");
+        assert_eq!(
+            rows(&session),
+            vec![
+                ("Tuba".to_string(), LibraryKind::File),
+                ("Trumpet".to_string(), LibraryKind::File),
+            ]
+        );
+
+        session.set_query("tuba");
+        settle(&mut session);
+        assert!(rows(&session).iter().any(|(_, k)| *k == LibraryKind::Group));
+
+        session.set_query("");
+        assert_eq!(
+            rows(&session),
+            vec![
+                ("Tuba".to_string(), LibraryKind::File),
+                ("Trumpet".to_string(), LibraryKind::File),
+            ],
+            "clearing the box puts the open soundfont's own list back"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_status_line_says_the_collection_is_being_read() {
+        // A list that fills in over a few seconds with nothing saying why
+        // looks broken. It is the same promise the bank's own scan makes.
+        let dir = a_library("preset-status");
+        let mut session = studio(&dir);
+        session.set_query("tuba");
+        settle(&mut session);
+        let status = session.library_status();
+        assert!(
+            status.contains("tuba") || status.contains("match"),
+            "the status line said {status:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

@@ -146,6 +146,7 @@ fn process_block_does_not_allocate_across_many_real_blocks() {
     let transport = fontelle_engine::TransportSnapshot {
         state: fontelle_engine::TransportState::Playing,
         position_sample: 0,
+        bpm: fontelle_types::DEFAULT_BPM,
     };
 
     // First block carries the NoteOn; render enough further blocks to cover
@@ -217,11 +218,13 @@ fn the_stereo_sampler_into_mixer_chain_does_not_allocate_per_block() {
     let timeline = CompiledTimeline {
         events,
         index: Vec::new(),
+        tempo: Vec::new(),
     };
 
     let transport = fontelle_engine::TransportSnapshot {
         state: fontelle_engine::TransportState::Playing,
         position_sample: 0,
+        bpm: fontelle_types::DEFAULT_BPM,
     };
 
     // Everything above is off-RT setup and may allocate freely.
@@ -315,6 +318,7 @@ fn the_full_track_to_master_chain_does_not_allocate_per_block() {
     let transport = fontelle_engine::TransportSnapshot {
         state: fontelle_engine::TransportState::Playing,
         position_sample: 0,
+        bpm: fontelle_types::DEFAULT_BPM,
     };
 
     fontelle_engine::mark_current_thread_rt();
@@ -372,6 +376,7 @@ fn driving_the_transport_through_stops_seeks_and_loops_does_not_allocate() {
             })
             .collect(),
         index: Vec::new(),
+        tempo: Vec::new(),
     };
 
     transport.play();

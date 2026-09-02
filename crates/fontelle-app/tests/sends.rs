@@ -114,6 +114,8 @@ impl Rig {
             pan: 0.0,
             muted: false,
             soloed: false,
+            named_keys: false,
+            gain_db: 0.0,
         });
         fontelle_app::set_channel_patch(&mut project, channel, &patch, &library)
             .expect("a patch this build built must serialise");
@@ -124,6 +126,7 @@ impl Rig {
             color: [0; 4],
             muted: false,
             locked: false,
+            order: 0,
         });
         let mut notes = Arena::default();
         notes.insert(Note {

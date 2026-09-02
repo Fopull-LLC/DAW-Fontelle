@@ -55,6 +55,24 @@ pub struct Channel {
     /// allows several channels to share one mixer track, and each of them
     /// needs its own place in the field.
     pub pan: f32,
+    /// How loud this channel is, in decibels, before it reaches its bus.
+    ///
+    /// **Not the same control as its mixer track's `gain_db`,** for exactly
+    /// the reason `pan` is not the same control as the track's `pan`, and the
+    /// bug that made the difference obvious: the instrument panel's volume
+    /// knob used to write the *track's* level, and since every channel goes to
+    /// the master until somebody routes it elsewhere, two channels' panels
+    /// were two knobs on one fader. Turning the choir down turned the piano
+    /// down with it — reported as *"changing the instrument settings for one
+    /// instrument was actually affecting the wrong instrument"*, which is what
+    /// it looks like from the other side of the screen.
+    ///
+    /// It is applied at the sampler, ahead of the bus, so it stays this
+    /// channel's however many channels share the track.
+    ///
+    /// Defaulted, so a project written before it existed opens at unity.
+    #[serde(default)]
+    pub gain_db: f32,
     /// This channel plays nothing.
     ///
     /// A **sequencer** mute, the same reading TDD §10.3 gives a lane's: the
@@ -70,4 +88,18 @@ pub struct Channel {
     /// its own solo, over tracks, which is a different question.
     #[serde(default)]
     pub soloed: bool,
+    /// Draw the roll's key strip as a **list of names** rather than as a
+    /// keyboard (TDD §16.4).
+    ///
+    /// A per-channel view preference, in the document rather than in the
+    /// window, because it is a fact about the *instrument*: a drum kit's keys
+    /// are a list of sounds and a piano's are a keyboard, and a project with
+    /// both wants both. Saved for the same reason a channel's colour is —
+    /// a preference that resets every time the song is opened is one nobody
+    /// sets twice.
+    ///
+    /// Defaulted, so every project written before the view existed opens on
+    /// the keyboard it had.
+    #[serde(default)]
+    pub named_keys: bool,
 }

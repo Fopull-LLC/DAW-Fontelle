@@ -202,10 +202,7 @@ fn every_arrangement_toolbar_control_explains_itself() {
 fn every_editor_tab_explains_itself() {
     for tab in [
         EditorTab::Roll,
-        EditorTab::Instrument,
         EditorTab::Mixer,
-        EditorTab::Automation,
-        EditorTab::Effect,
     ] {
         assert!(tab.tip().is_some_and(|t| !t.is_empty()), "{tab:?} is silent");
     }
@@ -245,9 +242,12 @@ fn every_browser_and_rack_button_explains_itself() {
     for what in [
         BrowserHit::Mode(BrowserMode::Sounds),
         BrowserHit::Mode(BrowserMode::Projects),
-        BrowserHit::Search,
-        BrowserHit::OpenFolder,
-        BrowserHit::ChooseFolder,
+        BrowserHit::Search(BrowserMode::Sounds),
+        BrowserHit::Search(BrowserMode::Projects),
+        BrowserHit::OpenFolder(BrowserMode::Sounds),
+        BrowserHit::OpenFolder(BrowserMode::Projects),
+        BrowserHit::ChooseFolder(BrowserMode::Sounds),
+        BrowserHit::ChooseFolder(BrowserMode::Projects),
         BrowserHit::NewProject,
         BrowserHit::Export,
     ] {

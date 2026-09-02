@@ -77,6 +77,15 @@ pub struct Realised {
     /// and the document is the source of truth either way (INVARIANT 9), so
     /// what a fresh channel starts at is what the last one was told.
     pub effect_controls: HashMap<(MixerTrackId, usize), fontelle_engine::EffectControls>,
+    /// One analyser tap per insert, keyed the same way.
+    ///
+    /// **Carried across a rebuild**, unlike the controls above it: a tap is a
+    /// ring of recent samples behind an `Arc`, so the two ends *can* be
+    /// re-paired, and an EQ window that went blank every time somebody added a
+    /// channel would be a window you could not use while you worked. See
+    /// [`fontelle_engine::SpectrumTap`].
+    pub spectrum_taps:
+        HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
     /// Every automatable parameter this graph has, by its stable address
     /// (INVARIANT 7), and the node that owns it.
     ///
@@ -173,7 +182,12 @@ pub fn set_channel_patch(
 /// Only called after [`fontelle_model::Mixer::has_cycle`] has said no, so the
 /// walk terminates; the bound is a belt-and-braces guard against a document
 /// that changed underneath, not the termination argument.
-fn depth_to_master(project: &Project, track: MixerTrackId, master: MixerTrackId) -> usize {
+fn depth_to_master(
+    project: &Project,
+    track: MixerTrackId,
+    master: MixerTrackId,
+    keyed_by: &HashMap<MixerTrackId, Vec<MixerTrackId>>,
+) -> usize {
     // **Both edge kinds**, and the *longest* path, because a track has to be
     // scheduled after everything that feeds it — a send crossing from a
     // shallow track into a deeper bus is a feeding edge like any other, and
@@ -188,6 +202,7 @@ fn depth_to_master(project: &Project, track: MixerTrackId, master: MixerTrackId)
         project: &Project,
         track: MixerTrackId,
         master: MixerTrackId,
+        keyed_by: &HashMap<MixerTrackId, Vec<MixerTrackId>>,
         seen: &mut HashSet<MixerTrackId>,
     ) -> usize {
         if track == master || !seen.insert(track) {
@@ -198,17 +213,27 @@ fn depth_to_master(project: &Project, track: MixerTrackId, master: MixerTrackId)
         };
         // `output: None` means master (TDD §13.1), which is depth one.
         let mut deepest = match node.output {
-            Some(next) => walk(project, next, master, seen) + 1,
+            Some(next) => walk(project, next, master, keyed_by, seen) + 1,
             None => 1,
         };
         for send in &node.sends {
-            deepest = deepest.max(walk(project, send.target, master, seen) + 1);
+            deepest = deepest.max(walk(project, send.target, master, keyed_by, seen) + 1);
+        }
+        // And every track this one **keys**: an insert reading another track's
+        // bus is fed by it, so the source has to be scheduled first, which
+        // means deeper. The third kind of edge, and the reason this takes a
+        // reverse map — the document says which track an insert listens *to*,
+        // and what is wanted here is who listens to this one.
+        for keyed in keyed_by.get(&track).into_iter().flatten() {
+            deepest = deepest.max(walk(project, *keyed, master, keyed_by, seen) + 1);
         }
         seen.remove(&track);
         deepest
     }
-    walk(project, track, master, &mut HashSet::new())
+    walk(project, track, master, keyed_by, &mut HashSet::new())
 }
+
+
 
 /// The tracks a solo leaves audible.
 ///
@@ -334,6 +359,19 @@ pub fn realise_with(
     existing: &HashMap<MixerTrackId, std::sync::Arc<TrackControls>>,
     metronome: Option<std::sync::Arc<Metronome>>,
 ) -> Result<Realised, RealiseError> {
+    realise_keeping(project, library, options, existing, metronome, &HashMap::new())
+}
+
+/// As [`realise_with`], keeping the analyser taps too — see
+/// [`Realised::spectrum_taps`].
+pub fn realise_keeping(
+    project: &Project,
+    library: &SampleLibrary,
+    options: RealiseOptions,
+    existing: &HashMap<MixerTrackId, std::sync::Arc<TrackControls>>,
+    metronome: Option<std::sync::Arc<Metronome>>,
+    existing_taps: &HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+) -> Result<Realised, RealiseError> {
     if project.mixer.has_cycle() {
         return Err(RealiseError::MixerCycle);
     }
@@ -364,6 +402,9 @@ pub fn realise_with(
 
     let mut schedule: Vec<ScheduledNode> = Vec::new();
     let mut unresolved = Vec::new();
+    // Declared here rather than beside the tracks below because the channels
+    // register theirs as they are built — see `ParamTarget::ChannelGain`.
+    let mut param_nodes: HashMap<fontelle_types::ParamAddress, NodeId> = HashMap::new();
 
     // --- Sources first. They only ever add into a bus, so their order among
     // themselves does not matter; what does matter is that every one of them
@@ -388,6 +429,10 @@ pub fn realise_with(
         // Constant-power placement at the voice, not the track's balance
         // control — see `Channel::pan`.
         sampler.set_pan(channel.pan);
+        // And this channel's own level, ahead of the bus — see
+        // `Channel::gain_db`. Several channels may share a mixer track, so
+        // this cannot be the track's fader.
+        sampler.set_gain_db(channel.gain_db);
 
         // `None` is the master, and so is a route at a track that has been
         // deleted since: a part you can hear and fix beats one that vanished.
@@ -395,6 +440,33 @@ pub fn realise_with(
             .mixer_track
             .and_then(|id| bus_of.get(&id).copied())
             .unwrap_or([0, 1]);
+        // Its own two controls are addressable, so a lane can sweep them —
+        // and they are the *channel's*, not its bus's, which is the whole
+        // reason they live here. See `Channel::gain_db`.
+        param_nodes.insert(
+            fontelle_types::ParamTarget::ChannelGain(channel_id).address(),
+            channel_nodes[&channel_id],
+        );
+        param_nodes.insert(
+            fontelle_types::ParamTarget::ChannelPan(channel_id).address(),
+            channel_nodes[&channel_id],
+        );
+        // And every knob **inside** the instrument, taken from the panel's own
+        // list rather than from a second one written here. That is the whole
+        // trick: what you can right-click is what the graph can reach, because
+        // it is one list. A parameter missing from this map emits no events at
+        // all, which is a lane that silently does nothing — the failure this
+        // arrangement makes unreachable.
+        for address in crate::instrument::patch_addresses(sampler.patch()) {
+            param_nodes.insert(
+                fontelle_types::ParamTarget::ChannelPatch {
+                    channel: channel_id,
+                    param: address,
+                }
+                .address(),
+                channel_nodes[&channel_id],
+            );
+        }
         schedule.push(ScheduledNode {
             id: channel_nodes[&channel_id],
             node: Box::new(SamplerNode::new(sampler, library.store())),
@@ -411,12 +483,41 @@ pub fn realise_with(
         .keys()
         .filter(|id| *id != master)
         .collect();
-    tracks.sort_by_key(|id| std::cmp::Reverse(depth_to_master(project, *id, master)));
+    // Who listens to whom, built once: it orders the schedule and then wires
+    // the taps.
+    // Who listens to whom. From the document rather than rebuilt here, so the
+    // order this schedule runs in and the cycle the document refuses are
+    // reasoning about the same edges — see `Mixer::key_listeners`.
+    let listeners = project.mixer.key_listeners();
+    tracks.sort_by_key(|id| std::cmp::Reverse(depth_to_master(project, *id, master, &listeners)));
+
+    // One tap per track something keys, made before the loop so that both
+    // ends — the node that fills it on the source track and the insert that
+    // reads it — get the same `Arc`.
+    //
+    // **Fresh on every rebuild**, unlike the analyser's rings above. A key tap
+    // holds one block and is refilled before it is read, so the most a rebuild
+    // can cost is a block of silence on the key — under three milliseconds,
+    // during which a compressor opens slightly. The analyser's ring holds two
+    // thousand samples of history and a window reads it, which is why that one
+    // has to survive.
+    let key_taps: HashMap<MixerTrackId, std::sync::Arc<fontelle_engine::KeyTap>> = listeners
+        .keys()
+        .map(|source| {
+            (
+                *source,
+                std::sync::Arc::new(fontelle_engine::KeyTap::new(options.block_size)),
+            )
+        })
+        .collect();
 
     let mut track_controls: HashMap<MixerTrackId, std::sync::Arc<TrackControls>> = HashMap::new();
     let mut effect_controls: HashMap<(MixerTrackId, usize), fontelle_engine::EffectControls> =
         HashMap::new();
-    let mut param_nodes: HashMap<fontelle_types::ParamAddress, NodeId> = HashMap::new();
+    let mut spectrum_taps: HashMap<
+        (MixerTrackId, usize),
+        std::sync::Arc<fontelle_engine::SpectrumTap>,
+    > = HashMap::new();
     let mut send_controls: HashMap<(MixerTrackId, usize), std::sync::Arc<SendControls>> =
         HashMap::new();
     // Past every channel's id, so the two sets cannot collide.
@@ -427,6 +528,9 @@ pub fn realise_with(
         schedule_inserts(
             &mut schedule,
             &mut effect_controls,
+            &mut spectrum_taps,
+            existing_taps,
+            &key_taps,
             &mut param_nodes,
             &mut next_id,
             id,
@@ -483,6 +587,20 @@ pub fn realise_with(
             },
             false,
         );
+        // The key tap, alongside the post-fader sends and for the same
+        // reason: what a sidechain should hear is what the track sends to the
+        // speakers, so pulling the kick down lets the bass back up. It reads
+        // the bus in place and writes nothing — a key that altered the track
+        // it listened to would be a sidechain you could hear on the wrong
+        // channel.
+        if let Some(tap) = key_taps.get(&id) {
+            schedule.push(ScheduledNode {
+                id: NodeId::default(),
+                node: Box::new(fontelle_engine::KeyTapNode::new(std::sync::Arc::clone(tap))),
+                input_buffers: bus.clone(),
+                output_buffers: bus.clone(),
+            });
+        }
         let output = track.output.unwrap_or(master);
         schedule.push(ScheduledNode {
             id: NodeId::default(),
@@ -496,6 +614,9 @@ pub fn realise_with(
     schedule_inserts(
         &mut schedule,
         &mut effect_controls,
+        &mut spectrum_taps,
+        existing_taps,
+        &key_taps,
         &mut param_nodes,
         &mut next_id,
         master,
@@ -568,6 +689,7 @@ pub fn realise_with(
         track_controls,
         effect_controls,
         param_nodes,
+        spectrum_taps,
         send_controls,
         metronome,
         unresolved,
@@ -677,9 +799,13 @@ fn schedule_sends(
 /// chain. Three inserts are three nodes scheduled in a row on one bus, and the
 /// order they were scheduled in is the order the sound goes through them; the
 /// scheduler does not have to find a spare buffer per slot.
+#[allow(clippy::too_many_arguments)]
 fn schedule_inserts(
     schedule: &mut Vec<ScheduledNode>,
     controls: &mut HashMap<(MixerTrackId, usize), fontelle_engine::EffectControls>,
+    taps: &mut HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    existing_taps: &HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    key_taps: &HashMap<MixerTrackId, std::sync::Arc<fontelle_engine::KeyTap>>,
     param_nodes: &mut HashMap<fontelle_types::ParamAddress, NodeId>,
     next_id: &mut u64,
     id: MixerTrackId,
@@ -692,6 +818,26 @@ fn schedule_inserts(
         let mut node = fontelle_engine::EffectNode::new(slot.config).with_controls(source);
         node.set_bypassed(slot.bypassed);
         controls.insert((id, index), live);
+        // The analyser's ring is **kept across a rebuild**, like the fader's
+        // controls above it: an EQ window open while somebody adds a channel
+        // must not go blank for a frame, and a fresh ring is a blank graph.
+        let tap = existing_taps
+            .get(&(id, index))
+            .map(std::sync::Arc::clone)
+            .unwrap_or_else(|| std::sync::Arc::new(fontelle_engine::SpectrumTap::new()));
+        node = node.with_spectrum(std::sync::Arc::clone(&tap));
+        taps.insert((id, index), tap);
+        // The external key, when the slot names one and the effect has a
+        // detector to use it. A key naming a track that has been deleted is
+        // **dropped** rather than left dangling, the same rule a send at a
+        // missing target follows: a compressor whose key vanished falls back
+        // to listening to itself, which is what it was doing before somebody
+        // pointed it elsewhere.
+        if let Some(key) = slot.effective_key()
+            && let Some(tap) = key_taps.get(&key)
+        {
+            node = node.with_key(std::sync::Arc::clone(tap));
+        }
 
         // A real id, not the default: an automation event has to be addressed
         // to *this* insert, and a node with the default id would receive every

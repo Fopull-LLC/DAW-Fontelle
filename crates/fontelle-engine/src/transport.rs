@@ -181,6 +181,17 @@ impl Default for Transport {
 pub struct TransportSnapshot {
     pub state: TransportState,
     pub position_sample: Sample,
+    /// The tempo in force **here**, at `position_sample`.
+    ///
+    /// One number rather than a map, because that is all a node ever wants and
+    /// all this crate is allowed to know: a `TempoMap` belongs to
+    /// `fontelle-model` and INVARIANT 4 runs the other way. It is read off the
+    /// compiled timeline's tempo table, which the sequencer builds in samples
+    /// for exactly this.
+    ///
+    /// Never zero — see [`CompiledTimeline::bpm_at`](fontelle_types::CompiledTimeline::bpm_at)
+    /// — because what reads it divides by it.
+    pub bpm: f32,
 }
 
 /// What the caller should do with the next chunk of the buffer it is filling.
@@ -291,6 +302,7 @@ impl TransportReader {
             let snapshot = TransportSnapshot {
                 state,
                 position_sample: self.position,
+                bpm: timeline.bpm_at(self.position),
             };
             if awake {
                 // Audition: run the graph over a block's worth of time without
@@ -365,6 +377,9 @@ impl TransportReader {
                 // the audio it is being asked to render, not where the
                 // playhead will be once it has.
                 position_sample: range.start,
+                // And the tempo there, for the same reason: a delay synced to
+                // the song is asking how long a beat is *in this block*.
+                bpm: timeline.bpm_at(range.start),
             },
             range,
             events,
@@ -408,6 +423,7 @@ mod tests {
         CompiledTimeline {
             events: samples.iter().copied().map(note_on).collect(),
             index: Vec::new(),
+            tempo: Vec::new(),
         }
     }
 
@@ -786,6 +802,7 @@ mod audition_tests {
                 },
             }],
             index: Vec::new(),
+            tempo: Vec::new(),
         }
     }
 

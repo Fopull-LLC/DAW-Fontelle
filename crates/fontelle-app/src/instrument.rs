@@ -11,57 +11,54 @@
 //! this build does not recognise is ignored rather than refused, so a project
 //! naming a parameter a later build dropped still opens.
 
-use fontelle_core::{Patch, PlaybackConfig};
-use fontelle_dsp::{Interpolation, SvfMode};
+use fontelle_core::Patch;
 use fontelle_types::ParamAddress;
 use fontelle_ui::canvas::{InstrumentGroup, InstrumentParam, InstrumentView, ParamKind};
 
-/// The parameters that live on the **mixer track** rather than on the patch, so
-/// the session knows to send those somewhere else.
-pub const MIXER_GAIN: &str = "mixer/gain";
-pub const MIXER_PAN: &str = "mixer/pan";
+/// The two parameters that live on the **channel** rather than in its patch —
+/// its level and its placement.
+///
+/// Re-exported from the crate that draws the panel rather than spelled again
+/// here: the window has to recognise them too (a right-click on either makes an
+/// automation lane), and one address written down twice is one to find and move.
+///
+/// They are called `mixer/*` for the reason INVARIANT 7 gives — an address
+/// never changes once assigned — and not because they reach the mixer, which
+/// they no longer do. See `fontelle_model::Channel::gain_db`.
+pub use fontelle_ui::canvas::{MIXER_GAIN, MIXER_PAN};
 
-/// The loudest and quietest a channel fader goes, in dB.
-pub const GAIN_MIN_DB: f32 = -60.0;
-pub const GAIN_MAX_DB: f32 = 12.0;
+/// Everything the two halves of the table share: the ranges each control is
+/// drawn over, the lists the choosers step through, and the tapers between a
+/// dial's fraction and a value in hertz or seconds.
+///
+/// **They live in `fontelle-core`**, beside the `Patch` they describe, because
+/// the audio thread needs them too — see
+/// [`fontelle_core::patch_params`], which is the write half of this file and
+/// the reason *"every knob is automatable"* is true by construction rather
+/// than by two lists agreeing.
+pub use fontelle_core::patch_params::{
+    CUTOFF_MAX_HZ, CUTOFF_MIN_HZ, DETUNE_CENTS, FILTER_MODES, GAIN_MAX_DB, GAIN_MIN_DB,
+    GLIDE_MAX_S, MAX_POLYPHONY, OCTAVES, QUALITIES, SHAPES, bool_value, choice_index,
+    choice_value, lerp, lerp_log, lerp_stage, octave_of, root_key_for, set, unlerp, unlerp_log,
+    unlerp_stage, value,
+};
 
-/// The filter modes the panel offers, in the order the chip steps through them.
-const FILTER_MODES: [(SvfMode, &str); 7] = [
-    (SvfMode::Lowpass, "LP"),
-    (SvfMode::Highpass, "HP"),
-    (SvfMode::Bandpass, "BP"),
-    (SvfMode::Notch, "Notch"),
-    (SvfMode::Bell, "Bell"),
-    (SvfMode::LowShelf, "LoShelf"),
-    (SvfMode::HighShelf, "HiShelf"),
-];
-
-/// The interpolation choices, with "Session" first: `None` on a layer means it
-/// follows the session's own quality (TDD §7.6), which is the default an import
-/// produces and a real answer rather than the absence of one.
-const QUALITIES: [(Option<Interpolation>, &str); 5] = [
-    (None, "Session"),
-    (Some(Interpolation::Draft), "Draft"),
-    (Some(Interpolation::Normal), "Normal"),
-    (Some(Interpolation::High), "High"),
-    (Some(Interpolation::Ultra), "Ultra"),
-];
-
-/// A cutoff runs 20 Hz to 20 kHz, and it runs **logarithmically**: a linear
-/// cutoff knob spends nine tenths of its travel above 2 kHz, where almost
-/// nothing musically interesting happens.
-const CUTOFF_MIN_HZ: f32 = 20.0;
-const CUTOFF_MAX_HZ: f32 = 20_000.0;
-
-/// The longest an envelope stage may be set to here. Ten seconds is a pad's
-/// release; beyond that a knob is unusable for everything shorter.
-const ENV_MAX_S: f32 = 10.0;
-
-/// And the longest a glide.
-const GLIDE_MAX_S: f32 = 2.0;
-
-/// The most voices a patch may be given. §7.4's limit.
-const MAX_POLYPHONY: f32 = 256.0;
+/// Every address on this patch's panel that belongs to the **patch** rather
+/// than to the channel around it.
+///
+/// Taken from [`describe`] rather than from a list written beside it, because
+/// the two would drift: a knob added to the panel and forgotten here would be
+/// a knob you can right-click and cannot automate, and the lane would be made,
+/// drawn, saved and silent. See `realise`, which is the caller.
+pub fn patch_addresses(patch: &Patch) -> Vec<String> {
+    describe("", patch, 0.0, 0.0)
+        .groups
+        .iter()
+        .flat_map(|group| group.params.iter())
+        .map(|param| param.address.as_str().to_string())
+        .filter(|address| address.starts_with("patch/"))
+        .collect()
+}
 
 // -------------------------------------------------------------- the view ---
 
@@ -205,32 +202,107 @@ pub fn describe(title: &str, patch: &Patch, gain_db: f32, pan: f32) -> Instrumen
         });
     }
 
-    // The layers, which is where a multi-sample soundfont's balance lives. Four
-    // at most: a panel of sixteen layers is a list, not an editor, and the list
-    // is what the sampler editor panel becomes later.
+    // The layers, which is where a multi-sample soundfont's balance lives —
+    // and where the built-in synth's three oscillators live, since an
+    // oscillator *is* a layer (`Source::Oscillator`). Four at most: a panel of
+    // sixteen layers is a list, not an editor, and the list is what the
+    // sampler editor panel becomes later.
     let shown = patch.layers.len().min(4);
     if shown > 0 {
+        // An all-oscillator patch is the built-in synth, and calling its
+        // section "Layers" would be technically right and useless. A patch
+        // that is some of each keeps the general heading.
+        let all_oscillators = patch
+            .layers
+            .iter()
+            .all(|l| matches!(l.source, fontelle_core::Source::Oscillator(_)));
         let mut params = Vec::new();
         for index in 0..shown {
             let layer = &patch.layers[index];
+            let name = |field: &str| {
+                if all_oscillators {
+                    format!("osc {} {field}", index + 1)
+                } else {
+                    format!("L{} {field}", index + 1)
+                }
+            };
+            // An oscillator has a shape and a tuning; a sample has neither,
+            // because its shape and its pitch are what was recorded.
+            if let fontelle_core::Source::Oscillator(kind) = layer.source {
+                let shape = SHAPES.iter().position(|(k, _)| *k == kind).unwrap_or(0);
+                params.push(param(
+                    &format!("patch/layer[{index}]/shape"),
+                    &name("shape"),
+                    choice_value(shape, SHAPES.len()),
+                    SHAPES[shape].1.to_string(),
+                    ParamKind::Choice(SHAPES.iter().map(|(_, n)| n.to_string()).collect()),
+                ));
+            }
             params.push(param(
                 &format!("patch/layer[{index}]/gain"),
-                &format!("L{} gain", index + 1),
+                &name("level"),
                 unlerp(layer.gain_db, GAIN_MIN_DB, GAIN_MAX_DB),
-                format!("{:+.1} dB", layer.gain_db),
+                if layer.gain_db <= GAIN_MIN_DB {
+                    // The bottom of the travel is *off*, and saying "-60.0 dB"
+                    // instead makes somebody wonder whether they can hear it.
+                    "off".to_string()
+                } else {
+                    format!("{:+.1} dB", layer.gain_db)
+                },
                 ParamKind::Knob,
             ));
+            if matches!(layer.source, fontelle_core::Source::Oscillator(_)) {
+                // Octaves as a chooser rather than a knob: there are five of
+                // them and a knob that steps through five values is a knob
+                // that is hard to land on the one you want. A **higher** root
+                // plays lower — see `fontelle_core::OSC_ROOT_HZ`.
+                let octave = octave_of(layer.root_key);
+                let index_of = OCTAVES
+                    .iter()
+                    .position(|o| *o == octave)
+                    .unwrap_or(OCTAVES.len() / 2);
+                params.push(param(
+                    &format!("patch/layer[{index}]/octave"),
+                    &name("octave"),
+                    choice_value(index_of, OCTAVES.len()),
+                    match OCTAVES[index_of] {
+                        0 => "0".to_string(),
+                        n => format!("{n:+}"),
+                    },
+                    ParamKind::Choice(
+                        OCTAVES
+                            .iter()
+                            .map(|n| match n {
+                                0 => "0".to_string(),
+                                n => format!("{n:+}"),
+                            })
+                            .collect(),
+                    ),
+                ));
+                params.push(param(
+                    &format!("patch/layer[{index}]/tune"),
+                    &name("tune"),
+                    unlerp(
+                        layer.fine_tune_cents.clamp(-DETUNE_CENTS, DETUNE_CENTS),
+                        -DETUNE_CENTS,
+                        DETUNE_CENTS,
+                    ),
+                    format!("{:+.0} c", layer.fine_tune_cents),
+                    ParamKind::Knob,
+                ));
+            }
             params.push(param(
                 &format!("patch/layer[{index}]/pan"),
-                &format!("L{} pan", index + 1),
+                &name("pan"),
                 (layer.pan.clamp(-1.0, 1.0) + 1.0) / 2.0,
                 pan_display(layer.pan),
                 ParamKind::Knob,
             ));
         }
         groups.push(InstrumentGroup {
-            name: match patch.layers.len() {
-                n if n > shown => format!("Layers (first {shown} of {n})"),
+            name: match (all_oscillators, patch.layers.len()) {
+                (true, _) => "Oscillators".to_string(),
+                (false, n) if n > shown => format!("Layers (first {shown} of {n})"),
                 _ => "Layers".to_string(),
             },
             params,
@@ -238,113 +310,12 @@ pub fn describe(title: &str, patch: &Patch, gain_db: f32, pan: f32) -> Instrumen
     }
 
     InstrumentView {
+        presets: Vec::new(),
+        keys: Vec::new(),
+        key: None,
         title: title.to_string(),
         groups,
     }
-}
-
-// ------------------------------------------------------------- the write ---
-
-/// Applies one control to `patch`. Returns whether anything changed.
-///
-/// An address that names nothing is ignored — see the module's own docs.
-pub fn set(patch: &mut Patch, address: &ParamAddress, value: f32) -> bool {
-    let value = value.clamp(0.0, 1.0);
-    let address = address.as_str();
-
-    match address {
-        "patch/voice/polyphony" => {
-            let voices = lerp(value, 1.0, MAX_POLYPHONY)
-                .round()
-                .clamp(1.0, MAX_POLYPHONY);
-            patch.voice_config.polyphony = voices as u16;
-            true
-        }
-        "patch/voice/glide" => {
-            patch.voice_config.glide_time_s = lerp(value, 0.0, GLIDE_MAX_S);
-            true
-        }
-        "patch/voice/legato" => {
-            patch.voice_config.glide_legato_only = value >= 0.5;
-            true
-        }
-        "patch/quality" => {
-            let index = choice_index(value, QUALITIES.len());
-            let quality = QUALITIES[index].0;
-            // Every layer, for the reason `describe` gives.
-            for layer in &mut patch.layers {
-                layer.playback = PlaybackConfig {
-                    interpolation: quality,
-                    ..layer.playback
-                };
-            }
-            true
-        }
-        _ => {
-            if let Some(rest) = indexed(address, "patch/filter[") {
-                return set_filter(patch, rest.0, rest.1, value);
-            }
-            if let Some((index, field)) = indexed(address, "patch/env[") {
-                return set_envelope(patch, index, field, value);
-            }
-            if let Some((index, field)) = indexed(address, "patch/layer[") {
-                return set_layer(patch, index, field, value);
-            }
-            false
-        }
-    }
-}
-
-fn set_filter(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool {
-    let Some(filter) = patch.filters.get_mut(index) else {
-        return false;
-    };
-    match field {
-        "enabled" => filter.enabled = value >= 0.5,
-        "mode" => filter.mode = FILTER_MODES[choice_index(value, FILTER_MODES.len())].0,
-        "cutoff" => filter.cutoff_hz = lerp_log(value, CUTOFF_MIN_HZ, CUTOFF_MAX_HZ),
-        "resonance" => filter.resonance = value,
-        _ => return false,
-    }
-    true
-}
-
-fn set_envelope(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool {
-    let Some(env) = patch.envelopes.get_mut(index) else {
-        return false;
-    };
-    match field {
-        "delay" => env.delay_s = lerp_stage(value),
-        "attack" => env.attack_s = lerp_stage(value),
-        "hold" => env.hold_s = lerp_stage(value),
-        "decay" => env.decay_s = lerp_stage(value),
-        "sustain" => env.sustain_level = value,
-        "release" => env.release_s = lerp_stage(value),
-        _ => return false,
-    }
-    true
-}
-
-fn set_layer(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool {
-    let Some(layer) = patch.layers.get_mut(index) else {
-        return false;
-    };
-    match field {
-        "gain" => layer.gain_db = lerp(value, GAIN_MIN_DB, GAIN_MAX_DB),
-        "pan" => layer.pan = value * 2.0 - 1.0,
-        _ => return false,
-    }
-    true
-}
-
-/// Splits `prefix[N]/field` into `(N, field)`.
-///
-/// Its own function because getting it wrong silently writes to the wrong
-/// filter, which is the kind of bug you hear rather than see.
-fn indexed<'a>(address: &'a str, prefix: &str) -> Option<(usize, &'a str)> {
-    let rest = address.strip_prefix(prefix)?;
-    let (number, field) = rest.split_once("]/")?;
-    Some((number.parse().ok()?, field))
 }
 
 // --------------------------------------------------------------- helpers ---
@@ -362,6 +333,9 @@ fn param(
         value: value.clamp(0.0, 1.0),
         display,
         kind,
+        // Filled in by `InstrumentView::mark_automated`, which the session
+        // calls once it has the set of lanes in hand.
+        automated: false,
     }
 }
 
@@ -375,65 +349,18 @@ fn stage(address: &str, label: &str, seconds_value: f32) -> InstrumentParam {
     )
 }
 
-fn lerp(t: f32, min: f32, max: f32) -> f32 {
-    min + t.clamp(0.0, 1.0) * (max - min)
-}
 
-fn unlerp(value: f32, min: f32, max: f32) -> f32 {
-    if (max - min).abs() < f32::EPSILON {
-        return 0.0;
-    }
-    ((value - min) / (max - min)).clamp(0.0, 1.0)
-}
 
-/// A logarithmic taper, so an octave is the same distance everywhere on the
-/// dial.
-fn lerp_log(t: f32, min: f32, max: f32) -> f32 {
-    (min.ln() + t.clamp(0.0, 1.0) * (max.ln() - min.ln())).exp()
-}
 
-fn unlerp_log(value: f32, min: f32, max: f32) -> f32 {
-    if value <= 0.0 {
-        return 0.0;
-    }
-    ((value.ln() - min.ln()) / (max.ln() - min.ln())).clamp(0.0, 1.0)
-}
 
-/// Envelope times, on a curve rather than a line: the first tenth of the dial
-/// has to cover a click's attack and the last has to reach a pad's release.
-fn lerp_stage(t: f32) -> f32 {
-    t.clamp(0.0, 1.0).powi(3) * ENV_MAX_S
-}
 
-fn unlerp_stage(seconds_value: f32) -> f32 {
-    (seconds_value.max(0.0) / ENV_MAX_S).clamp(0.0, 1.0).cbrt()
-}
 
-fn bool_value(on: bool) -> f32 {
-    if on { 1.0 } else { 0.0 }
-}
 
 fn on_off(on: bool) -> String {
     if on { "on" } else { "off" }.to_string()
 }
 
-/// Where option `index` of `count` sits on a normalised dial. The endpoints are
-/// the first and last option — see `fontelle_ui::canvas::choice_index`, which
-/// is the reader this has to agree with.
-fn choice_value(index: usize, count: usize) -> f32 {
-    if count < 2 {
-        return 0.0;
-    }
-    index as f32 / (count - 1) as f32
-}
 
-fn choice_index(value: f32, count: usize) -> usize {
-    if count < 2 {
-        return 0;
-    }
-    let last = count - 1;
-    ((value.clamp(0.0, 1.0) * last as f32).round() as usize).min(last)
-}
 
 fn seconds(value: f32) -> String {
     if value < 0.001 {

@@ -209,6 +209,7 @@ fn project_with(clips: &[(Tick, Tick, f64)]) -> Project {
         color: [0; 4],
         muted: false,
         locked: false,
+        order: 0,
     });
     for (start, length, value) in clips {
         let mut points = Arena::default();
@@ -330,6 +331,8 @@ fn a_note_clip_on_the_same_lane_is_ignored() {
         pan: 0.0,
         muted: false,
         soloed: false,
+        named_keys: false,
+        gain_db: 0.0,
     });
     project.clips.insert(Clip {
         lane,

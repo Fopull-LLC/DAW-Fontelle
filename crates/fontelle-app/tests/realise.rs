@@ -98,6 +98,7 @@ impl Rig {
             color: [0; 4],
             muted: false,
             locked: false,
+            order: 0,
         });
         Self {
             project,
@@ -129,6 +130,8 @@ impl Rig {
             pan: 0.0,
             muted: false,
             soloed: false,
+            named_keys: false,
+            gain_db: 0.0,
         });
         fontelle_app::set_channel_patch(&mut self.project, channel, &patch, &self.library)
             .expect("a patch this build built must serialise");
@@ -354,6 +357,8 @@ fn a_channel_with_no_instrument_keeps_its_place_but_nothing_answers_for_it() {
         pan: 0.0,
         muted: false,
         soloed: false,
+        named_keys: false,
+        gain_db: 0.0,
     });
     rig.hold_a_note(silent);
 

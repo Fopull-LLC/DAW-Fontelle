@@ -120,6 +120,8 @@ pub enum TimelineControl {
     Draw,
     /// Select: a press on empty grid marquees, the way it always did.
     Select,
+    /// Cut: a press on a clip divides it where you pressed.
+    Slice,
     /// Cycles the arrangement's snap; the chip says which division is on.
     Snap,
     /// The selection again, after itself — the answer to *"I made this drum
@@ -152,6 +154,7 @@ impl TimelineControl {
         match self {
             Self::Draw => "Draw",
             Self::Select => "Sel",
+            Self::Slice => "Cut",
             Self::Snap => "snap",
             Self::Repeat => "Repeat",
             Self::Loop => "Loop",
@@ -171,6 +174,9 @@ impl TimelineControl {
         Some(match self {
             Self::Draw => Icon::Pencil,
             Self::Select => Icon::Marquee,
+            // A blade, not the scissors `Cut` uses: dividing a clip and taking
+            // one away are two different things.
+            Self::Slice => Icon::Blade,
             // One clip coming round again, against copies laid after it. Two
             // features, two pictures.
             Self::Loop => Icon::Loop,
@@ -199,6 +205,7 @@ impl TimelineControl {
         Some(match self {
             Self::Draw => "Draw clips on empty bars",
             Self::Select => "Select clips; drag on empty bars to marquee",
+            Self::Slice => "Cut a clip in two where you click it",
             Self::Snap => "What clips snap to \u{2014} click to cycle",
             // The two readings of "repeat this" are two buttons on purpose,
             // and the tips are where the difference is said out loud.
@@ -218,6 +225,7 @@ impl TimelineControl {
         match self {
             Self::Draw => Some("P"),
             Self::Select => Some("E"),
+            Self::Slice => Some("C"),
             Self::Repeat => Some("Ctrl+B"),
             Self::Loop => Some("Shift+drag"),
             Self::Cut => Some("Ctrl+X"),
@@ -237,11 +245,12 @@ pub struct TimelineToolbar {
 /// The controls, left to right: what the grid is, then what to do to a clip,
 /// then how close you are looking. The same order as the roll's toolbar, for
 /// the same reason — the two panels are read the same way.
-const TIMELINE_TOOLBAR: [(TimelineControl, f32); 11] = [
+const TIMELINE_TOOLBAR: [(TimelineControl, f32); 12] = [
     // The tools first: they decide what every other press on the grid means,
     // and the roll's toolbar is read the same way round.
     (TimelineControl::Draw, 26.0),
     (TimelineControl::Select, 26.0),
+    (TimelineControl::Slice, 26.0),
     (TimelineControl::Snap, 52.0),
     // Loop next to Repeat, deliberately: they are the two readings of "play
     // this again" and seeing them side by side is what teaches the
@@ -349,6 +358,56 @@ pub fn visible_lanes(view: &TimelineView, grid: Rect, lane_count: usize) -> Rang
 /// Always at least a pixel wide, for the same reason a note is: a clip too
 /// short to see is still a clip, and one that vanishes cannot be clicked to
 /// find out why.
+/// Where a line drawn from `from` to `to` cuts the clips it crosses.
+///
+/// The arrangement's half of [`crate::canvas::slice_cuts`], and the same rule:
+/// **a clip is cut where the line crosses the middle of its own row**, and only
+/// if that lands strictly inside the clip. What follows from it is what makes
+/// the gesture worth having — a diagonal stroke cuts four rows at four
+/// different bars, and a line drawn *along* a row never crosses its middle and
+/// so cuts nothing, rather than cutting somewhere nobody aimed at.
+///
+/// The cut is **snapped**, unlike the roll's, because a clip boundary half a
+/// beat off the bar is a boundary somebody has to nudge before they can use it
+/// — and a cut snapped out of its own clip lands on the edge, where it is
+/// refused, which is the honest answer to "you aimed at a bar this clip does
+/// not cover".
+pub fn clip_cuts(
+    view: &TimelineView,
+    grid: Rect,
+    clips: &[ClipInfo],
+    from: (f32, f32),
+    to: (f32, f32),
+    snap: SnapDivision,
+    beats_per_bar: u32,
+) -> Vec<(ClipId, Tick)> {
+    let mut cuts = Vec::new();
+    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+    // A press with no drag is somebody putting the pointer down, not a cut.
+    if dx.abs() < f32::EPSILON && dy.abs() < f32::EPSILON {
+        return cuts;
+    }
+    if dy.abs() < f32::EPSILON {
+        return cuts; // drawn along the rows: it crosses none of their middles
+    }
+
+    let snapper = TimelineView { snap, ..*view };
+    for clip in clips {
+        let row = lane_to_y(view, grid, clip.lane) + view.lane_height / 2.0;
+        let along = (row - from.1) / dy;
+        if !(0.0..=1.0).contains(&along) {
+            continue; // the row is beyond one end of the stroke
+        }
+        let x = from.0 + dx * along;
+        let at = timeline_snap(&snapper, timeline_x_to_tick(view, grid, x), beats_per_bar);
+        if at <= clip.start || at >= clip.start + clip.length {
+            continue;
+        }
+        cuts.push((clip.id, at));
+    }
+    cuts
+}
+
 pub fn clip_rect(view: &TimelineView, grid: Rect, clip: &ClipInfo) -> Rect {
     let x0 = timeline_tick_to_x(view, grid, clip.start);
     let x1 = timeline_tick_to_x(view, grid, clip.start + clip.length);
@@ -555,6 +614,14 @@ pub enum ArrangeEdit {
         lane: usize,
         start: Tick,
     },
+    /// Cut each of these clips in two, at the song tick given.
+    ///
+    /// The arrangement's cut tool. One edit carrying every clip the stroke
+    /// crossed, because a line drawn across four rows is **one gesture** and
+    /// taking it back should be one press of Ctrl+Z.
+    Split {
+        cuts: Vec<(ClipId, Tick)>,
+    },
     /// Make these clips repeat their content every `loop_length` ticks, or
     /// stop them repeating.
     ///
@@ -607,6 +674,13 @@ impl MoveLimits {
 #[derive(Debug, Clone, PartialEq)]
 enum Gesture {
     None,
+    /// The cut tool, drawing its line. Like the roll's, and for the same
+    /// reason: the cut lands on **release**, because a line half-drawn is not
+    /// a cut.
+    Slicing {
+        from: (f32, f32),
+        to: (f32, f32),
+    },
     Moving {
         applied_tick: Tick,
         applied_lane: i32,
@@ -653,6 +727,13 @@ pub enum TimelineTool {
     Draw,
     /// A press on empty grid marquees.
     Select,
+    /// **Cut**: a press on a clip divides it where you pressed.
+    ///
+    /// FL Studio's, and the same key (`C`) the piano roll's slice tool has —
+    /// which is what somebody using the studio reached for and did not find:
+    /// *"theres no tool for cutting up clips in the arrangement right now
+    /// (should be c key)."*
+    Slice,
 }
 
 /// The arrangement's own state: where it is looking, what is selected, what the
@@ -726,6 +807,15 @@ impl Timeline {
         }
     }
 
+    /// The cut tool's line, while it is being drawn, so the canvas can show
+    /// where the blade is going. A stroke you cannot see is one you aim twice.
+    pub fn slice_line(&self) -> Option<((f32, f32), (f32, f32))> {
+        match self.gesture {
+            Gesture::Slicing { from, to } => Some((from, to)),
+            _ => None,
+        }
+    }
+
     pub fn press(
         &mut self,
         button: MouseButton,
@@ -745,6 +835,17 @@ impl Timeline {
         if button == MouseButton::Right {
             self.gesture = Gesture::Erasing;
             return self.erase_at(hit);
+        }
+
+        // The cut tool draws a line, and it draws it over **anything** — the
+        // same rule the roll's has, and the same reason: it is the one tool
+        // whose press does not care what is under it.
+        if self.tool == TimelineTool::Slice {
+            self.gesture = Gesture::Slicing {
+                from: (x, y),
+                to: (x, y),
+            };
+            return Vec::new();
         }
 
         match hit {
@@ -840,6 +941,11 @@ impl Timeline {
 
             Gesture::Marquee { from, .. } => {
                 self.gesture = Gesture::Marquee { from, to: (x, y) };
+                Vec::new()
+            }
+
+            Gesture::Slicing { from, .. } => {
+                self.gesture = Gesture::Slicing { from, to: (x, y) };
                 Vec::new()
             }
 
@@ -940,16 +1046,44 @@ impl Timeline {
 
     /// [`release`](Self::release), knowing where the button came up — which a
     /// marquee needs, because that is when it decides what it caught.
-    pub fn release_over(&mut self, x: f32, y: f32, layout: &TimelineLayout, clips: &[ClipInfo]) {
-        if let Gesture::Marquee { from, .. } = self.gesture {
-            let box_ = box_between(from, (x, y));
-            self.selection = clips
-                .iter()
-                .filter(|clip| clip_rect(&self.view, layout.grid, clip).intersects(&taut(box_)))
-                .map(|clip| clip.id)
-                .collect();
+    pub fn release_over(
+        &mut self,
+        x: f32,
+        y: f32,
+        layout: &TimelineLayout,
+        clips: &[ClipInfo],
+        beats_per_bar: u32,
+    ) -> Vec<ArrangeEdit> {
+        let mut edits = Vec::new();
+        match self.gesture {
+            Gesture::Marquee { from, .. } => {
+                let box_ = box_between(from, (x, y));
+                self.selection = clips
+                    .iter()
+                    .filter(|clip| clip_rect(&self.view, layout.grid, clip).intersects(&taut(box_)))
+                    .map(|clip| clip.id)
+                    .collect();
+            }
+            // The cut tool's whole edit lands here: a line half-drawn is not a
+            // cut, and one gesture is one history entry.
+            Gesture::Slicing { from, .. } => {
+                let cuts = clip_cuts(
+                    &self.view,
+                    layout.grid,
+                    clips,
+                    from,
+                    (x, y),
+                    self.view.snap,
+                    beats_per_bar,
+                );
+                if !cuts.is_empty() {
+                    edits.push(ArrangeEdit::Split { cuts });
+                }
+            }
+            _ => {}
         }
         self.gesture = Gesture::None;
+        edits
     }
 
     /// The shortest selected clip, which is what a resize is floored against.

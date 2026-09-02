@@ -39,7 +39,7 @@ use crate::canvas::{
     RollControl, RollLayout, RouteChoice, RouteMenu, SnapDivision, Timeline, TimelineHit,
     TimelineLayout, Tool, ToolbarLayout, browser_hit, browser_layout, browser_layout_for,
     clamp_to_grid, edge_scroll, fader_db_at, format_gain_db, format_pan, instrument_hit,
-    instrument_layout, keyboard_width, knob_value, lane_height_at, mixer_hit,
+    instrument_layout, knob_value, lane_height_at, mixer_hit,
     next_value, pan_at, rack_hit, rack_layout, roll_layout_with_keys, route_label, route_menu_hit,
     route_menu_layout, scrolled, snap_tick, timeline_hit, timeline_layout, timeline_snap,
     timeline_toolbar_hit, timeline_toolbar_layout, timeline_x_to_tick, timeline_zoom_x,
@@ -48,15 +48,16 @@ use crate::canvas::{
 use crate::canvas::{lane_menu_hit, lane_menu_layout};
 use crate::document::{ChannelInfo, ClipInfo, LaneInfo, LibraryEntry, MixerStrip, StudioHost};
 use crate::layout::{
-    DEFAULT_TIMELINE_HEIGHT, Docks, EditorTab, EditorTabs, WindowLayout, editor_tab_at,
-    editor_tabs, rack_share_at, sidebar_width_at, timeline_height_at, window_layout_with,
+    DEFAULT_TIMELINE_HEIGHT, Docks, EditorKind, EditorTab, EditorTabs, PanelLayout, WindowLayout,
+    editor_tab_at, editor_tabs, editor_window_layout, rack_share_at, sidebar_width_at,
+    timeline_height_at, window_layout_with,
 };
 use crate::pointer::{Pointer, PointerScene, pointer_at};
 use crate::render::{
     ADD_CHANNEL, ARRANGEMENT, BrowserChrome, CHOOSE_FOLDER, Chrome, EMPTY_LANE, EXPORT,
     InstrumentChrome, MixerChrome, NEW_PROJECT, NO_INSTRUMENT, OPEN_FOLDER, RackChrome,
-    RenderError, RollChrome, SEARCH_HINT, TAB_INSTRUMENT, TAB_MIXER, TAB_ROLL, TimelineChrome,
-    TransportChrome, draw_window, key_name, label_stride, labelled_bar,
+    EditorWindowChrome, RenderError, RollChrome, SEARCH_HINT, TAB_MIXER, TAB_ROLL, TimelineChrome,
+    TransportChrome, draw_editor_window, draw_window, key_name, label_stride, labelled_bar,
 };
 use crate::text::{Labels, TextContext, TextLayout};
 use crate::theme::Theme;
@@ -101,6 +102,10 @@ enum Drag {
     SidebarSplit,
     /// A knob on the instrument editor.
     Knob,
+    /// One on an effect's own panel — a compressor's threshold, say. Its own
+    /// variant because it writes to a different place, not because it behaves
+    /// differently.
+    InsertKnob,
     /// A fader on the mixer. Absolute, not relative: a press on the groove
     /// jumps the level to where it landed and then follows, which is how a
     /// fader in every DAW behaves and what makes "pull it right down" one
@@ -121,6 +126,13 @@ enum Drag {
     /// A send's level, dragged along its groove. **Absolute**, like a fader:
     /// a press takes it to where it landed and then follows.
     SendLevel(usize),
+    /// One insert's wet/dry, dragged along its groove. Absolute, like the
+    /// send's level and for the same reason.
+    InsertMix(usize),
+    /// One of the EQ's numbers, dragged up and down. **Relative**, unlike the
+    /// handle on the curve: a read-out is not a position, so it moves from
+    /// where it was by how far the mouse went.
+    EqField(crate::canvas::EqField),
     /// An insert being dragged up or down its chain in the track-options
     /// column. The slot it started in and the slot it is over live in
     /// `insert_drag`; this only says who a `CursorMoved` belongs to.
@@ -157,6 +169,56 @@ enum Focus {
     Roll,
     Timeline,
 }
+
+/// What a right-click menu — or a rename — is about.
+///
+/// The menu canvas lists **strings** and knows nothing about what they do (see
+/// [`crate::canvas::context_menu_layout`]); this is the other half, and it is
+/// what turns "the third row was chosen" into an edit.
+#[derive(Debug, Clone, PartialEq)]
+enum MenuTarget {
+    /// A channel in the rack, by row.
+    Channel(usize),
+    /// A row of the arrangement, by lane index.
+    Lane(usize),
+    /// One control on the instrument panel: the address the panel gave it, and
+    /// what it is called.
+    ///
+    /// **Every** control, now that §8.2's `channel:<id>/patch/...` addresses
+    /// exist: the channel's own level and placement, and the knobs inside the
+    /// patch. See
+    /// [`StudioHost::automate_instrument_param`](crate::document::StudioHost::automate_instrument_param).
+    InstrumentParam {
+        address: fontelle_types::ParamAddress,
+        name: String,
+    },
+    /// One control on an effect's own panel, by the effect's stable id for it
+    /// — a compressor's `threshold`. §12.4's "right-click any control", on the
+    /// window that did not exist.
+    InsertParam { param: String, name: String },
+}
+
+/// The effect's own id for a parameter, out of the full automation address the
+/// panel labels its controls with.
+///
+/// `effect_view` addresses each control the way a saved automation lane does —
+/// `mixer:<track>/insert[<slot>]/param/<id>` — which is what makes right-
+/// clicking one need no translation. Writing one, and naming one to
+/// `automate_insert`, both want the `<id>` on the end.
+fn insert_param_id(address: &str) -> String {
+    match fontelle_types::ParamTarget::parse(&fontelle_types::ParamAddress::new(address)) {
+        Some(fontelle_types::ParamTarget::Insert { param, .. }) => param,
+        // Already an id — the mixer's own rows name one directly.
+        _ => address.to_string(),
+    }
+}
+
+/// How fast the analyser's bars fall back, in decibels a second.
+///
+/// Thirty-six: a note's decay is visible as a decay rather than as a step, and
+/// a bar that was hit half a second ago is no longer standing there claiming to
+/// be sound.
+const SPECTRUM_FALL_DB_PER_S: f32 = 36.0;
 
 /// How often a backup is taken, while the window is being used.
 ///
@@ -262,6 +324,31 @@ pub fn run_window(options: WindowOptions) -> Result<WindowApp, WindowError> {
     }
 }
 
+/// One of this crate's cursors as the desktop's own vocabulary.
+///
+/// Its own function because two windows ask it now — the main one and every
+/// floating editor — and a second copy of this match is a second place for a
+/// shape to go stale.
+fn system_cursor(wanted: Pointer) -> winit::window::CursorIcon {
+    match wanted {
+        Pointer::Default => winit::window::CursorIcon::Default,
+        Pointer::Hand => winit::window::CursorIcon::Pointer,
+        Pointer::Text => winit::window::CursorIcon::Text,
+        // A note's or a clip's right-hand edge: it moves left and right,
+        // which `EResize` says more precisely than a two-headed arrow.
+        Pointer::ResizeX => winit::window::CursorIcon::EResize,
+        Pointer::ResizeY => winit::window::CursorIcon::NsResize,
+        Pointer::Grab => winit::window::CursorIcon::Grab,
+        Pointer::Grabbing => winit::window::CursorIcon::Grabbing,
+        // Only reached when the custom cursor could not be built — an old
+        // compositor, or a platform with no custom cursors at all.
+        Pointer::Draw | Pointer::Paint | Pointer::Select | Pointer::Cut => {
+            winit::window::CursorIcon::Crosshair
+        }
+        Pointer::Erase => winit::window::CursorIcon::NotAllowed,
+    }
+}
+
 /// The live window. Public so a caller can read [`WindowApp::frames_drawn`]
 /// after the loop returns.
 pub struct WindowApp {
@@ -273,6 +360,23 @@ pub struct WindowApp {
     /// One per device `RenderContext` has opened, indexed by its `dev_id`.
     renderers: Vec<Option<Renderer>>,
     live: Option<Live>,
+    /// The floating editor windows that are open (TDD §7.2, §12, §13.4).
+    /// At most one of each kind — see [`EditorKind`].
+    editors: Vec<Editor>,
+    /// Editors a click has asked for, opened on the next pass of the loop.
+    ///
+    /// A window can only be created with an `&ActiveEventLoop` in hand, and
+    /// the handlers that decide to open one — a press on a rack row, on an
+    /// insert, on an automation clip — are several calls deep inside one.
+    /// Threading the loop down to all of them would put winit in every
+    /// gesture; a queue keeps it at the edge.
+    pending_editors: Vec<EditorKind>,
+    /// Which window the pointer is in. `None` is the main one.
+    ///
+    /// `cursor` below is *that* window's coordinates, whichever it is: only
+    /// one window has the pointer at a time, so one pair of numbers and a note
+    /// of whose they are says everything two pairs would.
+    pointer_window: Option<EditorKind>,
     title: TextLayout,
     layout: WindowLayout,
     frames: u64,
@@ -339,7 +443,31 @@ pub struct WindowApp {
     /// rather than once a frame.
     eq: Option<fontelle_types::EqConfig>,
     eq_layout: crate::canvas::EqLayout,
+    /// The panel for an insert that is **not** an EQ — a grid of knobs read
+    /// off the effect's own parameter list. Exactly one of this and `eq` is
+    /// `Some` while an effect window is open. See
+    /// [`StudioHost::insert_view`](crate::document::StudioHost::insert_view).
+    insert_view: Option<InstrumentView>,
+    /// Where its controls are, in that window.
+    insert_layout: InstrumentLayout,
+    /// One of them being dragged: which control, where the drag started, and
+    /// the value it started from. The same shape as `knob`, for the same
+    /// reason.
+    insert_knob: Option<((usize, usize), f32, f32)>,
     eq_curve: Vec<(f32, f32)>,
+    /// The analyser behind the curve, in decibels per band, **smoothed**.
+    ///
+    /// Read once a frame while the EQ window is open — like the mixer's meters
+    /// and for the same reason (see [`StudioHost::spectrum`]) — and eased
+    /// towards rather than replaced: a raw transform 60 times a second is a
+    /// flicker rather than a picture. Fast up and slow down, which is what
+    /// every analyser does and what makes a transient visible for long enough
+    /// to see where it was.
+    spectrum: Vec<f32>,
+    /// The outline it is drawn as, in the curve's own rectangle.
+    spectrum_points: Vec<(f32, f32)>,
+    /// The selected band's own response, drawn faintly behind the sum.
+    eq_band_curve: Vec<(f32, f32)>,
     hover_band: Option<usize>,
     /// The automation clip the editor has open, as the host describes it, and
     /// where its points are on screen.
@@ -348,6 +476,12 @@ pub struct WindowApp {
     automation_curve: Vec<(f32, f32)>,
     hover_point: Option<fontelle_types::PointId>,
     hover_param: Option<(usize, usize)>,
+    /// Which preset chip the pointer is over, in the effect panel. Its own
+    /// field rather than a `hover_param`, because a chip has no address —
+    /// see `instrument_preset_hit`.
+    hover_preset: Option<usize>,
+    /// And which key chip, in the same panel.
+    hover_key: Option<usize>,
     hover_tab: Option<EditorTab>,
     /// The control being dragged, where the drag started, and the value it
     /// started from — a knob measures from where it was grabbed, not from
@@ -429,6 +563,10 @@ pub struct WindowApp {
     /// The projects in the configured folder, read with the studio's other
     /// lists.
     projects: Vec<LibraryEntry>,
+    /// What Fontelle is set to, as name-and-value rows — read with the
+    /// studio's other lists, and a `LibraryEntry` for the reason
+    /// [`StudioHost::settings`] gives.
+    settings: Vec<LibraryEntry>,
     /// How many soundfonts the whole collection holds — the browser panel's
     /// heading, which does not change as you browse into a folder.
     library_count: usize,
@@ -450,6 +588,17 @@ pub struct WindowApp {
     hover_browser: Option<BrowserHit>,
     /// The same for the channel rack.
     hover_rack: Option<RackHit>,
+    /// The right-click menu, while it is open: what it is about, and where it
+    /// was dropped. See [`MenuTarget`].
+    menu: Option<(MenuTarget, crate::canvas::ContextMenu)>,
+    /// What is being renamed, while somebody is typing a name.
+    ///
+    /// There is no text buffer beside it, and deliberately: every keystroke
+    /// goes straight through the rename command, which coalesces (see
+    /// `RenameChannel::merge_with`), so the *document* is the buffer, the row
+    /// redraws as you type without anything special being drawn, and Ctrl+Z
+    /// takes back the whole name rather than the last letter.
+    renaming: Option<MenuTarget>,
     /// The route chip's menu, while it is open, and whose row opened it.
     ///
     /// The same shape as `lane_menu` and for the same reason: a menu is state
@@ -477,6 +626,29 @@ pub struct WindowApp {
     /// strip, to shape the names, and to draw — and rebuilding it in each of
     /// those is how the three come to disagree.
     key_map: crate::document::KeyMap,
+    /// Whether the roll's key strip is a keyboard or a list of names, for the
+    /// selected channel. Cached with the other lists and refreshed on the
+    /// host's revision, like the key map it is drawn beside.
+    key_style: crate::canvas::KeyStyle,
+    /// Which band of the open EQ the controls under the curve describe, and
+    /// which handle is drawn as the one in hand.
+    ///
+    /// The editor's own state rather than the document's: which band you are
+    /// looking at is not part of the song, and a project that reopened with a
+    /// selected band would be a project storing where somebody's mouse was.
+    eq_band: usize,
+    /// A number in the EQ being dragged: what it was when the drag started,
+    /// and where the pointer was. See [`Drag::EqField`].
+    eq_drag: Option<(f32, f32)>,
+    /// The same, for an insert's wet/dry dial in the track-options column.
+    mix_drag: Option<(f32, f32)>,
+    /// Which of the EQ's controls the pointer is over, so it lights before it
+    /// is pressed.
+    hover_eq_field: Option<crate::canvas::EqField>,
+    /// Which keys a MIDI keyboard is holding down, as of the last frame, one
+    /// bit each. Read from the host once a frame like the mixer's meters —
+    /// see [`StudioHost::live_keys`](crate::document::StudioHost::live_keys).
+    live_keys: u128,
     /// What the held mouse button is doing, so a `CursorMoved` reaches the one
     /// thing that asked for it.
     drag: Drag,
@@ -520,6 +692,32 @@ struct Live {
     surface: RenderSurface<'static>,
 }
 
+/// One floating editor window (TDD §7.2, §12, §13.4).
+///
+/// The instrument, the effect and the automation curve were tabs of the editor
+/// column, and §7.5 is why they are not any more: a VST or a CLAP editor is
+/// handed a parent window and draws into it, so an editor that can only exist
+/// as one of that column's tabs is one the plugin path can never be built on.
+/// Making them windows now — while the only devices are Fontelle's own — is
+/// what makes hosting somebody else's a matter of putting a different surface
+/// behind the same window rather than of rebuilding how an editor is opened.
+///
+/// It shares the main window's `RenderContext` and its per-device `Renderer`:
+/// shader compilation is most of the cold-start budget (§19), and paying it
+/// again per window would make opening an EQ feel like launching an app.
+struct Editor {
+    kind: EditorKind,
+    window: Arc<Window>,
+    surface: RenderSurface<'static>,
+    /// Its header and the body the panel is drawn in, in logical pixels.
+    panel: PanelLayout,
+    /// What its header says, shaped.
+    title: TextLayout,
+    /// Its own scene. One per window, because a `Scene` is the picture of a
+    /// surface and two surfaces are two pictures.
+    scene: Scene,
+}
+
 impl WindowApp {
     fn new(options: WindowOptions) -> Self {
         let mut text = TextContext::new();
@@ -539,6 +737,9 @@ impl WindowApp {
             context: RenderContext::new(),
             renderers: Vec::new(),
             live: None,
+            editors: Vec::new(),
+            pending_editors: Vec::new(),
+            pointer_window: None,
             frames: 0,
             started: std::time::Instant::now(),
             failure: None,
@@ -579,6 +780,8 @@ impl WindowApp {
             instrument: None,
             instrument_layout: InstrumentLayout {
                 body: layout.panel.body,
+                presets: Vec::new(),
+                keys: Vec::new(),
                 headings: Vec::new(),
                 cells: Vec::new(),
                 content_height: 0.0,
@@ -590,7 +793,20 @@ impl WindowApp {
                 &options.theme.metrics,
                 &fontelle_types::EqConfig::new(),
             ),
+            insert_view: None,
+            insert_layout: InstrumentLayout {
+                body: layout.panel.body,
+                presets: Vec::new(),
+                keys: Vec::new(),
+                headings: Vec::new(),
+                cells: Vec::new(),
+                content_height: 0.0,
+            },
+            insert_knob: None,
             eq_curve: Vec::new(),
+            spectrum: Vec::new(),
+            spectrum_points: Vec::new(),
+            eq_band_curve: Vec::new(),
             hover_band: None,
             automation: None,
             automation_layout: crate::canvas::AutomationLayout {
@@ -602,6 +818,8 @@ impl WindowApp {
             automation_curve: Vec::new(),
             hover_point: None,
             hover_param: None,
+            hover_preset: None,
+            hover_key: None,
             hover_tab: None,
             knob: None,
             mixer: MixerLayout {
@@ -643,12 +861,19 @@ impl WindowApp {
             song_playhead: 0,
             song_marker: 0,
             browser_mode: BrowserMode::default(),
+            settings: Vec::new(),
             projects: Vec::new(),
             library_count: 0,
             query: String::new(),
             searching: false,
             status: String::new(),
             key_map: crate::document::KeyMap::unknown(),
+            key_style: crate::canvas::KeyStyle::default(),
+            eq_band: 0,
+            eq_drag: None,
+            mix_drag: None,
+            hover_eq_field: None,
+            live_keys: 0,
             timeline_bar: crate::canvas::TimelineToolbar { items: Vec::new() },
             hover_timeline: None,
             rack_scroll: 0,
@@ -657,6 +882,8 @@ impl WindowApp {
             hover_control: None,
             hover_browser: None,
             hover_rack: None,
+            menu: None,
+            renaming: None,
             route_menu: None,
             route_names: Vec::new(),
             pointer: Pointer::Default,
@@ -758,38 +985,6 @@ impl WindowApp {
         };
         let Some(live) = &self.live else { return };
 
-        // Built before the renderer is borrowed: it reads the strip names and
-        // the open insert, and the borrow below is a mutable one of `self`.
-        let effect = (self.tab == EditorTab::Effect)
-            .then(|| {
-                self.eq.map(|config| crate::render::EffectChrome {
-                    layout: self.eq_layout.clone(),
-                    config,
-                    curve: self.eq_curve.clone(),
-                    hover: self.hover_band,
-                    active: match self.drag {
-                        Drag::EqHandle(band) => Some(band),
-                        _ => None,
-                    },
-                    title: self.effect_title(),
-                    bypassed: self.open_insert_bypassed(),
-                })
-            })
-            .flatten();
-
-        let automation = (self.tab == EditorTab::Automation)
-            .then(|| {
-                self.automation
-                    .as_ref()
-                    .map(|view| crate::render::AutomationChrome {
-                        layout: self.automation_layout.clone(),
-                        view: view.clone(),
-                        curve: self.automation_curve.clone(),
-                        hover: self.hover_point,
-                    })
-            })
-            .flatten();
-
         let device = &self.context.devices[live.surface.dev_id];
         let Some(Some(renderer)) = self.renderers.get_mut(live.surface.dev_id) else {
             return;
@@ -825,11 +1020,13 @@ impl WindowApp {
                     lane_property: self.roll.lane_property,
                     ghosts: &self.ghosts,
                     ghost_filter: self.roll.ghosts,
+                    key_style: self.key_style,
                     marker_tick: doc.playhead_tick(self.marker),
                     marquee: self.roll.marquee(),
                     hover: self.hover_control,
                     lane_menu: self.lane_menu.as_ref(),
                     slice: self.roll.slice_stroke(),
+                    live_keys: self.live_keys,
                 }),
                 rack: self.options.document.as_ref().map(|_| RackChrome {
                     panel: self.layout.rack,
@@ -841,6 +1038,10 @@ impl WindowApp {
                     strips: self.route_names.len(),
                     route_menu: self.route_menu.as_ref().map(|(_, menu)| menu),
                     route_menu_open: self.route_menu.as_ref().map(|(index, _)| *index),
+                    renaming: match &self.renaming {
+                        Some(MenuTarget::Channel(index)) => Some(*index),
+                        _ => None,
+                    },
                 }),
                 browser: self.options.document.as_ref().map(|_| BrowserChrome {
                     panel: self.layout.browser,
@@ -850,6 +1051,7 @@ impl WindowApp {
                     files: match self.browser_mode {
                         BrowserMode::Sounds => &self.files,
                         BrowserMode::Projects => &self.projects,
+                        BrowserMode::Settings => &self.settings,
                     },
                     presets: &self.presets,
                     selected_file: self.selected_file,
@@ -874,17 +1076,16 @@ impl WindowApp {
                     toolbar: self.timeline_bar.clone(),
                     tool: self.timeline.tool(),
                     hover: self.hover_timeline,
-                    can_paste: self
+                    slice: self.timeline.slice_line(),
+                    renaming: match &self.renaming {
+                        Some(MenuTarget::Lane(index)) => Some(*index),
+                        _ => None,
+                    },
+                can_paste: self
                         .options
                         .document
                         .as_ref()
                         .is_some_and(|doc| doc.clip_clipboard_len() > 0),
-                }),
-                instrument: self.instrument.as_ref().map(|view| InstrumentChrome {
-                    layout: self.instrument_layout.clone(),
-                    view,
-                    hover: self.hover_param,
-                    active: self.knob.map(|(which, _, _)| which),
                 }),
                 mixer: (self.tab == EditorTab::Mixer).then(|| MixerChrome {
                     layout: self.mixer.clone(),
@@ -905,8 +1106,6 @@ impl WindowApp {
                     route_names: &self.route_names,
                     output: self.track_output,
                 }),
-                effect,
-                automation,
                 tabs: self.tabs,
                 tab: self.tab,
                 hover_tab: self.hover_tab,
@@ -914,6 +1113,12 @@ impl WindowApp {
                 labels: &self.labels,
                 status: &self.status,
                 tooltip: tooltip.as_ref().map(|(text, rect)| (text.as_str(), *rect)),
+                // Only the studio's own menus: one opened on a knob belongs to
+                // the instrument editor's window and is drawn there.
+                menu: match &self.menu {
+                    Some((MenuTarget::Channel(_) | MenuTarget::Lane(_), menu)) => Some(menu),
+                    _ => None,
+                },
             },
         );
 
@@ -1019,12 +1224,48 @@ impl WindowApp {
             }
         }
 
+        // The EQ's analyser, read once a frame and only while its window is
+        // open — the same rule the mixer's meters follow, and for the same
+        // reason: it moves every block, and reading it on the studio's
+        // revision would rebuild the whole window sixty times a second.
+        if self.is_editor_open(EditorKind::Effect) {
+            self.tick_spectrum(dt);
+        } else if !self.spectrum.is_empty() {
+            // The window closed. Nothing is drawing it, and a stale spectrum
+            // waiting to be shown at whatever it last was is worse than none.
+            self.spectrum.clear();
+            self.spectrum_points.clear();
+        }
+
+        // The keys a MIDI keyboard is holding, read once a frame for the same
+        // reason the meters are: a key goes down between revisions, and the
+        // roll's keyboard is the only thing in the window that draws them.
+        // Only while the roll is the panel showing — the mixer has no keyboard
+        // on it, and a phrase played over it would repaint the panel for
+        // nothing.
+        let live_keys = match (&self.options.document, self.tab) {
+            (Some(doc), EditorTab::Roll) => doc.live_keys(),
+            _ => 0,
+        };
+        if live_keys != self.live_keys {
+            self.live_keys = live_keys;
+            self.tree.invalidate(PANEL);
+        }
+
         // Whether anything on screen will change without the user doing
         // something: a rolling transport moves the playhead, and a meter above
-        // the floor is still falling. Held as an animator on the tree, which
+        // the floor is still falling. A key held on a keyboard counts: while
+        // one is down the window watches at frame rate, so the light goes out
+        // when the key does rather than up to an engine poll later. Held as an animator on the tree, which
         // is what `arm_deadline` reads — one source of truth for "may the
         // window sleep", rather than two that can disagree.
         let moving = view.playing
+            || self.live_keys != 0
+            // An open analyser is a moving picture, and it has to keep moving
+            // while it falls back to the floor as well as while it is being
+            // fed — a spectrum frozen at the last thing that played is a
+            // spectrum that lies.
+            || !self.spectrum.is_empty()
             || meters
                 .iter()
                 .any(|m| m.level_db > crate::transport::METER_FLOOR_DB);
@@ -1078,9 +1319,12 @@ impl WindowApp {
             Drag::None => None,
             Drag::Roll | Drag::Timeline => Some(Pointer::Grabbing),
             Drag::RollRuler | Drag::BarRuler | Drag::TimelineRuler => Some(Pointer::Grabbing),
-            Drag::LaneGrip | Drag::Divider | Drag::Knob | Drag::Lane | Drag::SidebarSplit => {
-                Some(Pointer::ResizeY)
-            }
+            Drag::LaneGrip
+            | Drag::Divider
+            | Drag::Knob
+            | Drag::InsertKnob
+            | Drag::Lane
+            | Drag::SidebarSplit => Some(Pointer::ResizeY),
             Drag::SidebarSeam => Some(Pointer::ResizeX),
             Drag::Keys => Some(Pointer::Hand),
             // A fader and the tempo box are both vertical throws; a pan is a
@@ -1092,6 +1336,9 @@ impl WindowApp {
             // A row being carried up or down its chain.
             Drag::InsertRow => Some(Pointer::Grabbing),
             Drag::SendLevel(_) => Some(Pointer::ResizeX),
+            Drag::InsertMix(_) => Some(Pointer::ResizeY),
+            // A number being dragged up and down, like the tempo box.
+            Drag::EqField(_) => Some(Pointer::ResizeY),
         }
     }
 
@@ -1143,23 +1390,7 @@ impl WindowApp {
                 .set_cursor(winit::window::Cursor::Custom(cursor));
             return;
         }
-        live.window.set_cursor(match wanted {
-            Pointer::Default => winit::window::CursorIcon::Default,
-            Pointer::Hand => winit::window::CursorIcon::Pointer,
-            Pointer::Text => winit::window::CursorIcon::Text,
-            // A note's or a clip's right-hand edge: it moves left and right,
-            // which `EResize` says more precisely than a two-headed arrow.
-            Pointer::ResizeX => winit::window::CursorIcon::EResize,
-            Pointer::ResizeY => winit::window::CursorIcon::NsResize,
-            Pointer::Grab => winit::window::CursorIcon::Grab,
-            Pointer::Grabbing => winit::window::CursorIcon::Grabbing,
-            // Only reached when the custom cursor could not be built — an
-            // old compositor, or a platform with no custom cursors at all.
-            Pointer::Draw | Pointer::Paint | Pointer::Select | Pointer::Cut => {
-                winit::window::CursorIcon::Crosshair
-            }
-            Pointer::Erase => winit::window::CursorIcon::NotAllowed,
-        });
+        live.window.set_cursor(system_cursor(wanted));
     }
 
     /// Builds the tool cursors, once, when the window comes up.
@@ -1230,27 +1461,12 @@ impl WindowApp {
             self.tree.invalidate(BROWSER);
         }
         let tab = editor_tab_at(&self.tabs, x, y);
-        let param = (self.tab == EditorTab::Instrument)
-            .then(|| instrument_hit(&self.instrument_layout, x, y))
-            .flatten();
         let strip = (self.tab == EditorTab::Mixer)
             .then(|| mixer_hit(&self.mixer, x, y))
             .filter(|hit| *hit != MixerHit::Nothing);
-        let band = (self.tab == EditorTab::Effect)
-            .then(|| match crate::canvas::eq_hit(&self.eq_layout, x, y) {
-                crate::canvas::EqHit::Handle(band) => Some(band),
-                _ => None,
-            })
-            .flatten();
-        if tab != self.hover_tab
-            || param != self.hover_param
-            || strip != self.hover_mixer
-            || band != self.hover_band
-        {
+        if tab != self.hover_tab || strip != self.hover_mixer {
             self.hover_tab = tab;
-            self.hover_param = param;
             self.hover_mixer = strip;
-            self.hover_band = band;
             self.tree.invalidate(PANEL);
         }
         let over_rack = self.layout.rack.frame.contains(x, y);
@@ -1370,13 +1586,27 @@ impl WindowApp {
     /// The browser panel's own heading, carrying the count so the number of
     /// soundfonts is visible without a line of its own.
     fn browser_heading(&self) -> String {
-        // How many soundfonts the **collection** holds, which does not change
-        // as you walk into a folder. Counting the rows in front of you would
-        // say "3" inside a folder of three and read as the collection having
-        // shrunk — and would count folders as soundfonts besides.
-        match self.library_count {
-            0 => "Soundfonts".to_string(),
-            n => format!("Soundfonts \u{2014} {n}"),
+        // **The mode's own heading.** It said "Soundfonts — 61" over the
+        // projects list and over the settings, which is the same conflation
+        // the folder buttons had: three lists in one panel, and one of them
+        // naming all three.
+        match self.browser_mode {
+            // How many soundfonts the **collection** holds, which does not
+            // change as you walk into a folder. Counting the rows in front of
+            // you would say "3" inside a folder of three and read as the
+            // collection having shrunk — and would count folders as
+            // soundfonts besides.
+            BrowserMode::Sounds => match self.library_count {
+                0 => "Soundfonts".to_string(),
+                n => format!("Soundfonts \u{2014} {n}"),
+            },
+            BrowserMode::Projects => match self.projects.len() {
+                0 => "Projects".to_string(),
+                n => format!("Projects \u{2014} {n}"),
+            },
+            // No count: a settings list is as long as there are settings, and
+            // "Settings — 7" answers a question nobody asked.
+            BrowserMode::Settings => "Settings".to_string(),
         }
     }
 
@@ -1464,7 +1694,14 @@ impl ApplicationHandler for WindowApp {
         self.arm_deadline(event_loop);
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // **Which window.** An editor's events are its own, and its close
+        // button closes it rather than the studio — which is the single worst
+        // thing this could have got wrong.
+        if let Some(index) = self.editor_at(id) {
+            self.editor_event(index, event);
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
 
@@ -1493,6 +1730,7 @@ impl ApplicationHandler for WindowApp {
                 // Logical pixels, because that is what the layout is in.
                 let scale = live.window.scale_factor();
                 self.cursor = ((position.x / scale) as f32, (position.y / scale) as f32);
+                self.pointer_window = None;
                 self.update_hover();
                 self.drag_pointer();
                 self.request_redraw_if_dirty();
@@ -1546,6 +1784,7 @@ impl ApplicationHandler for WindowApp {
                         | Drag::EqHandle(_)
                         | Drag::AutomationPoints
                         | Drag::SendLevel(_)
+                        | Drag::InsertMix(_)
                 );
                 // An EQ band drag coalesces into one history entry while it
                 // runs; this is what tells the document it has stopped, the
@@ -1583,8 +1822,13 @@ impl ApplicationHandler for WindowApp {
                 // The cut tool's whole edit lands here: a line half-drawn is
                 // not a cut.
                 self.apply_roll_edits(edits);
-                self.timeline
-                    .release_over(x, y, &self.timeline_layout, &self.clips);
+                let beats = self.beats_per_bar();
+                let edits =
+                    self.timeline
+                        .release_over(x, y, &self.timeline_layout, &self.clips, beats);
+                // The cut tool's whole edit lands here, like the roll's: a
+                // line half-drawn is not a cut.
+                self.apply_arrange_edits(edits);
                 self.stop_audition();
                 // One drag, one undo entry (§10.6). Only the caller knows the
                 // mouse came up, which is exactly why `History` cannot decide
@@ -1659,6 +1903,10 @@ impl ApplicationHandler for WindowApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Whatever a click asked for, now that there is an event loop to
+        // create it with. First, so an editor opened by the press that just
+        // ran is on screen this pass rather than next.
+        self.create_pending_editors(event_loop);
         // The graph the audio thread handed back is freed here, on this
         // thread — see `fontelle_engine::GraphPublisher`. Cheap, and it has to
         // happen somewhere that runs whether or not a frame does.
@@ -1677,6 +1925,780 @@ impl ApplicationHandler for WindowApp {
 impl WindowApp {
     // ------------------------------------------------------------ layout ---
 
+    // ---------------------------------------------- the editor windows ---
+
+    /// One frame of the EQ's analyser: read it, ease towards it, and shape the
+    /// outline the renderer draws.
+    ///
+    /// **Eased, not replaced.** A transform taken sixty times a second and
+    /// drawn raw is a flicker rather than a picture; every analyser in every
+    /// host smooths it, fast upwards so a transient is visible where it
+    /// happened and slow downwards so it is visible for long enough to read.
+    fn tick_spectrum(&mut self, dt: f32) {
+        let Some((strip, slot)) = self.open_insert else {
+            return;
+        };
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        let bands = doc.spectrum(strip, slot);
+        if bands.is_empty() {
+            if self.spectrum.is_empty() {
+                return;
+            }
+            // Nothing arriving: fall to the floor rather than holding the last
+            // thing that played.
+            for band in &mut self.spectrum {
+                *band = (*band - SPECTRUM_FALL_DB_PER_S * dt)
+                    .max(crate::canvas::SPECTRUM_BOTTOM_DB);
+            }
+            if self
+                .spectrum
+                .iter()
+                .all(|db| *db <= crate::canvas::SPECTRUM_BOTTOM_DB + 0.01)
+            {
+                self.spectrum.clear();
+            }
+        } else {
+            if self.spectrum.len() != bands.len() {
+                self.spectrum = bands.clone();
+            }
+            let fall = SPECTRUM_FALL_DB_PER_S * dt;
+            for (smoothed, fresh) in self.spectrum.iter_mut().zip(bands.iter()) {
+                *smoothed = if *fresh >= *smoothed {
+                    // Straight to a peak: a transient the eye misses is a
+                    // transient the analyser did not show.
+                    *fresh
+                } else {
+                    (*smoothed - fall).max(*fresh)
+                };
+            }
+        }
+        self.spectrum_points =
+            crate::canvas::spectrum_points(self.eq_layout.curve, &self.spectrum);
+        self.redraw_editor(EditorKind::Effect);
+    }
+
+    /// Whether an editor of this kind is open.
+    fn is_editor_open(&self, kind: EditorKind) -> bool {
+        self.editors.iter().any(|e| e.kind == kind)
+            || self.pending_editors.contains(&kind)
+    }
+
+    /// Opens an editor window, or brings the one already open to the front.
+    ///
+    /// **Asked for, not created.** A window needs an `&ActiveEventLoop`, and
+    /// the presses that decide to open one are several calls deep inside a
+    /// handler that has it; the queue is drained at the edge of the loop where
+    /// it is in hand again. See `pending_editors`.
+    fn open_editor(&mut self, kind: EditorKind) {
+        if self.raise_editor(kind) {
+            return;
+        }
+        if !self.pending_editors.contains(&kind) {
+            self.pending_editors.push(kind);
+        }
+    }
+
+    /// Brings an already-open editor window to the front. Whether there was
+    /// one.
+    ///
+    /// Raising it is the whole of "open" for a window that is behind the one
+    /// you are looking at — *"if a plugin or instrument window is already open
+    /// clicking on that instrument or plugin in its channel rack or track
+    /// effect rack should focus that window again, currently clicking it does
+    /// nothing so i have to find where the window is and drag it to the front
+    /// manually."*
+    ///
+    /// **Two calls, because one desktop in three ignores each.**
+    /// `focus_window` is the plain answer and is what X11, Windows and macOS
+    /// take; under Wayland it is a no-op by design, because a client may not
+    /// take the focus by asking — it has to be *given* it, through an
+    /// xdg-activation token, which is what `request_user_attention` asks for.
+    /// Calling both is not belt and braces: it is the same intention spelt in
+    /// the two ways the two protocols accept, and on the desktop that does not
+    /// need one of them, that one does nothing.
+    fn raise_editor(&mut self, kind: EditorKind) -> bool {
+        let Some(editor) = self.editors.iter().find(|e| e.kind == kind) else {
+            return false;
+        };
+        editor.window.focus_window();
+        editor
+            .window
+            .request_user_attention(Some(winit::window::UserAttentionType::Informational));
+        editor.window.request_redraw();
+        true
+    }
+
+    /// Closes it, if it is open. Dropping the `Editor` drops its surface.
+    fn close_editor(&mut self, kind: EditorKind) {
+        self.pending_editors.retain(|k| *k != kind);
+        self.editors.retain(|e| e.kind != kind);
+        if self.pointer_window == Some(kind) {
+            self.pointer_window = None;
+            // A gesture cannot be continued in a window that has gone.
+            self.drag = Drag::None;
+            self.knob = None;
+        }
+    }
+
+    /// Creates whatever `open_editor` has queued. Called from the one place
+    /// with an event loop in hand and nothing else to do.
+    fn create_pending_editors(&mut self, event_loop: &ActiveEventLoop) {
+        while let Some(kind) = self.pending_editors.pop() {
+            if self.editors.iter().any(|e| e.kind == kind) {
+                continue;
+            }
+            if let Err(e) = self.create_editor(event_loop, kind) {
+                // A window that would not open is worth saying so about, and
+                // is not worth tearing the studio down over.
+                self.status = e;
+                self.tree.invalidate(BROWSER);
+            }
+        }
+    }
+
+    fn create_editor(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        kind: EditorKind,
+    ) -> Result<(), String> {
+        let (w, h) = kind.default_size();
+        let (min_w, min_h) = kind.minimum_size();
+        let attributes = Window::default_attributes()
+            .with_title(self.editor_title(kind))
+            .with_inner_size(winit::dpi::LogicalSize::new(w, h))
+            .with_min_inner_size(winit::dpi::LogicalSize::new(min_w, min_h));
+        let window = Arc::new(
+            event_loop
+                .create_window(attributes)
+                .map_err(|e| format!("that editor could not be opened: {e}"))?,
+        );
+
+        let physical = window.inner_size();
+        let surface = crate::render::block_on(self.context.create_surface(
+            window.clone(),
+            physical.width.max(1),
+            physical.height.max(1),
+            wgpu::PresentMode::AutoVsync,
+        ))
+        .map_err(|e| format!("that editor could not be drawn: {e}"))?;
+
+        // The same per-device renderer the main window uses, built once. It
+        // exists already unless this is somehow the first surface, which is
+        // why the branch is here rather than an assumption.
+        if self.renderers.len() <= surface.dev_id {
+            self.renderers.resize_with(surface.dev_id + 1, || None);
+        }
+        if self.renderers[surface.dev_id].is_none() {
+            let device = &self.context.devices[surface.dev_id].device;
+            match Renderer::new(
+                device,
+                RendererOptions {
+                    use_cpu: false,
+                    antialiasing_support: vello::AaSupport::area_only(),
+                    num_init_threads: None,
+                    pipeline_cache: None,
+                },
+            ) {
+                Ok(r) => self.renderers[surface.dev_id] = Some(r),
+                Err(e) => return Err(format!("that editor could not be drawn: {e}")),
+            }
+        }
+
+        let title = self.editor_title(kind);
+        let title = self.text.layout(&title, &self.options.theme.font, None);
+        let scale = window.scale_factor() as f32;
+        let panel = editor_window_layout(
+            physical.width as f32 / scale,
+            physical.height as f32 / scale,
+            &self.options.theme.metrics,
+        );
+        self.editors.push(Editor {
+            kind,
+            window,
+            surface,
+            panel,
+            title,
+            scene: Scene::new(),
+        });
+        self.relayout_editors();
+        if let Some(editor) = self.editors.last() {
+            editor.window.request_redraw();
+        }
+        Ok(())
+    }
+
+    /// What an editor window's title bar and header say.
+    ///
+    /// The name of the *thing being edited* after the kind, because three
+    /// windows called "Effect" is three windows you have to click to tell
+    /// apart — which is exactly the complaint a tab strip had.
+    fn editor_title(&self, kind: EditorKind) -> String {
+        match kind {
+            EditorKind::Instrument => match self.channels.get(self.selected_channel) {
+                Some(channel) => format!("{} \u{2014} {}", kind.title(), channel.name),
+                None => kind.title().to_string(),
+            },
+            EditorKind::Effect => self.effect_title(),
+            EditorKind::Automation => match &self.automation {
+                Some(view) => format!("{} \u{2014} {}", kind.title(), view.title),
+                None => kind.title().to_string(),
+            },
+        }
+    }
+
+    /// The panel geometry inside each open editor window.
+    ///
+    /// The three layouts stay on `WindowApp` rather than inside `Editor`
+    /// because every gesture that reads them — `press_instrument`,
+    /// `press_effect`, `drag_automation` — already does, and there is at most
+    /// one window of each kind for the honest reason [`EditorKind`] gives:
+    /// the host answers one instrument, one insert and one clip.
+    fn relayout_editors(&mut self) {
+        let m = self.options.theme.metrics;
+        let bodies: Vec<(EditorKind, crate::layout::Rect)> = self
+            .editors
+            .iter()
+            .map(|e| (e.kind, e.panel.body))
+            .collect();
+        for (kind, body) in bodies {
+            match kind {
+                EditorKind::Instrument => {
+                    self.instrument_layout = match &self.instrument {
+                        Some(view) => instrument_layout(body, &m, view),
+                        None => InstrumentLayout {
+                            body,
+                            presets: Vec::new(),
+                            keys: Vec::new(),
+                            headings: Vec::new(),
+                            cells: Vec::new(),
+                            content_height: 0.0,
+                        },
+                    };
+                }
+                EditorKind::Effect => {
+                    // The other kind of effect window: a grid of knobs, laid
+                    // out by the same function the instrument panel uses.
+                    self.insert_layout = match &self.insert_view {
+                        Some(view) => instrument_layout(body, &m, view),
+                        None => InstrumentLayout {
+                            body,
+                            presets: Vec::new(),
+                            keys: Vec::new(),
+                            headings: Vec::new(),
+                            cells: Vec::new(),
+                            content_height: 0.0,
+                        },
+                    };
+                    let config = self.eq.unwrap_or_default();
+                    self.eq_layout =
+                        crate::canvas::eq_layout_for(body, &m, &config, self.eq_band);
+                    self.eq_curve = crate::canvas::eq_curve_points(&self.eq_layout, &config);
+                    // And the band in hand, drawn behind the sum so a cut can
+                    // be seen against the shape it is being made in.
+                    self.eq_band_curve =
+                        crate::canvas::eq_band_curve_points(&self.eq_layout, &config, self.eq_band);
+                }
+                EditorKind::Automation => {
+                    if let Some(view) = self.automation.clone() {
+                        self.automation_layout =
+                            crate::canvas::automation_layout(body, &m, &view);
+                        self.automation_curve = match &self.options.document {
+                            Some(doc) => match doc.automation_data() {
+                                Some(data) => crate::canvas::automation_curve(
+                                    &self.automation_layout,
+                                    &view,
+                                    &data,
+                                ),
+                                None => Vec::new(),
+                            },
+                            None => Vec::new(),
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    /// Retitles every open editor and asks it to redraw. What the main window
+    /// calls when the studio has moved underneath them.
+    fn refresh_editors(&mut self) {
+        let kinds: Vec<EditorKind> = self.editors.iter().map(|e| e.kind).collect();
+        for kind in kinds {
+            let caption = self.editor_title(kind);
+            let title = self.text.layout(&caption, &self.options.theme.font, None);
+            if let Some(editor) = self.editors.iter_mut().find(|e| e.kind == kind) {
+                editor.title = title;
+                editor.window.set_title(&caption);
+                editor.window.request_redraw();
+            }
+        }
+        self.relayout_editors();
+    }
+
+    /// Which open editor a window id belongs to.
+    fn editor_at(&self, id: WindowId) -> Option<usize> {
+        self.editors.iter().position(|e| e.window.id() == id)
+    }
+
+    /// One editor window's events. The main window's are `window_event`'s own.
+    fn editor_event(&mut self, index: usize, event: WindowEvent) {
+        let Some(editor) = self.editors.get(index) else {
+            return;
+        };
+        let kind = editor.kind;
+        match event {
+            // **Closes that window, not the studio.** A child window's close
+            // button meaning "quit Fontelle" is the single worst thing this
+            // change could have got wrong.
+            WindowEvent::CloseRequested => self.close_editor(kind),
+
+            WindowEvent::Resized(size) => {
+                let (w, h) = (size.width.max(1), size.height.max(1));
+                let scale = editor.window.scale_factor() as f32;
+                let Some(editor) = self.editors.get_mut(index) else {
+                    return;
+                };
+                self.context.resize_surface(&mut editor.surface, w, h);
+                editor.panel = editor_window_layout(
+                    w as f32 / scale,
+                    h as f32 / scale,
+                    &self.options.theme.metrics,
+                );
+                editor.window.request_redraw();
+                self.relayout_editors();
+            }
+
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                let size = editor.window.inner_size();
+                let Some(editor) = self.editors.get_mut(index) else {
+                    return;
+                };
+                editor.panel = editor_window_layout(
+                    size.width as f32 / scale_factor as f32,
+                    size.height as f32 / scale_factor as f32,
+                    &self.options.theme.metrics,
+                );
+                editor.window.request_redraw();
+                self.relayout_editors();
+            }
+
+            WindowEvent::CursorMoved { position, .. } => {
+                let scale = editor.window.scale_factor();
+                self.cursor = ((position.x / scale) as f32, (position.y / scale) as f32);
+                self.pointer_window = Some(kind);
+                self.update_editor_hover(kind);
+                self.update_editor_cursor(kind);
+                // The same drag machinery the docked panels used: a knob, an
+                // EQ handle and an automation point are dragged against the
+                // layouts `relayout_editors` put in this window.
+                self.drag_pointer();
+                self.redraw_editor(kind);
+            }
+
+            WindowEvent::CursorLeft { .. } => {
+                if self.pointer_window == Some(kind) {
+                    self.pointer_window = None;
+                }
+                self.cursor = (f32::MIN, f32::MIN);
+                self.update_editor_hover(kind);
+                self.redraw_editor(kind);
+            }
+
+            // The compositor took the pointer away mid-gesture. The same
+            // answer the main window gives, for the same reason.
+            WindowEvent::Focused(false) => {
+                self.drag = Drag::None;
+                self.knob = None;
+                if let Some(doc) = &mut self.options.document {
+                    doc.end_gesture();
+                }
+                self.redraw_editor(kind);
+            }
+
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                button,
+                ..
+            } => {
+                let (x, y) = self.cursor;
+                let button = match button {
+                    winit::event::MouseButton::Right => MouseButton::Right,
+                    _ => MouseButton::Left,
+                };
+                // A menu opened on a knob is above this window's own panel,
+                // and a press that chose an entry is spent.
+                if self.menu.is_some() && self.press_menu(x, y) {
+                    self.redraw_editor(kind);
+                    return;
+                }
+                self.press_editor(kind, button, x, y);
+                self.redraw_editor(kind);
+            }
+
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
+                ..
+            } => {
+                self.release_controls();
+                self.redraw_editor(kind);
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                // The wheel is the coarse way at a knob, and the only way at
+                // one on a trackpad with no room to drag. Nothing else in an
+                // editor window scrolls: these panels are laid out to fit.
+                let steps = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, lines) => lines,
+                    winit::event::MouseScrollDelta::PixelDelta(position) => {
+                        position.y as f32 / 40.0
+                    }
+                };
+                if kind == EditorKind::Effect && steps != 0.0 {
+                    let (x, y) = self.cursor;
+                    self.wheel_effect(x, y, steps);
+                }
+                self.redraw_editor(kind);
+            }
+
+            // An editor window has its own modifiers to keep: it is a separate
+            // OS window, so the studio's `ModifiersChanged` never reaches it,
+            // and without this a Ctrl+Z pressed in here would arrive with no
+            // Ctrl on it.
+            WindowEvent::ModifiersChanged(state) => self.modifiers = state.state(),
+
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == winit::event::ElementState::Pressed =>
+            {
+                self.editor_key(kind, &event);
+            }
+
+            WindowEvent::RedrawRequested => self.draw_editor(index),
+
+            _ => {}
+        }
+    }
+
+    /// A key pressed while an editor window has the keyboard.
+    ///
+    /// Three layers, nearest first: **Escape** closes the window, which is what
+    /// every floating editor in every host does; then whatever this particular
+    /// editor makes of the key; then the keys that mean the same thing
+    /// everywhere — see [`global_key`](Self::global_key), which is why the
+    /// transport and the history work in here now.
+    ///
+    /// What is deliberately *not* here is the studio's canvas keys. Delete
+    /// means "the selected band" in an EQ window and "the selected notes" in
+    /// the roll, and a window that answered both would be answering the wrong
+    /// one half the time.
+    fn editor_key(&mut self, kind: EditorKind, event: &winit::event::KeyEvent) {
+        use winit::keyboard::{Key, NamedKey};
+
+        if event.logical_key == Key::Named(NamedKey::Escape) {
+            self.close_editor(kind);
+            return;
+        }
+        if self.editor_own_key(kind, event) {
+            self.redraw_editor(kind);
+            return;
+        }
+        if self.global_key(event) {
+            // The studio's own panels moved — a transport button lit, a
+            // history entry came back — so it redraws too.
+            self.redraw_editor(kind);
+            self.request_redraw_if_dirty();
+        }
+    }
+
+    /// What one editor makes of a key of its own. Whether it took it.
+    fn editor_own_key(&mut self, kind: EditorKind, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+
+        match kind {
+            EditorKind::Effect => match &event.logical_key {
+                // *"i cant easily delete bands i didnt mean to make in the eq
+                // plugin i wanna just be able to press delete with it
+                // selected."* The band chip's Ctrl-click does the same thing
+                // and is a chip you have to find first.
+                Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
+                    self.remove_eq_band(self.eq_band);
+                    true
+                }
+                _ => false,
+            },
+            EditorKind::Instrument | EditorKind::Automation => false,
+        }
+    }
+
+    /// The cursor an editor window's own contents deserve.
+    ///
+    /// [`pointer_at`] answers this for the main window and cannot answer it
+    /// here: it is handed a `PointerScene` describing that window's panels,
+    /// and these are different surfaces entirely.
+    fn update_editor_cursor(&mut self, kind: EditorKind) {
+        let (x, y) = self.cursor;
+        let wanted = match self.drag_pointer_shape() {
+            Some(shape) => shape,
+            None => match kind {
+                EditorKind::Instrument => crate::pointer::instrument_pointer(
+                    &self.instrument_layout,
+                    self.instrument.as_ref(),
+                    x,
+                    y,
+                ),
+                // A band handle and a curve point are both picked up and
+                // carried, in both axes.
+                EditorKind::Effect if self.eq.is_none() => crate::pointer::instrument_pointer(
+                    &self.insert_layout,
+                    self.insert_view.as_ref(),
+                    x,
+                    y,
+                ),
+                EditorKind::Effect => {
+                    use crate::canvas::EqHit;
+                    match crate::canvas::eq_hit(&self.eq_layout, x, y) {
+                        EqHit::Handle(_) => Pointer::Grab,
+                        // The numbers are dragged up and down; the choosers
+                        // and the chips are pressed.
+                        EqHit::Field(field) if field.is_dragged() => Pointer::ResizeY,
+                        EqHit::Field(_) | EqHit::Band(_) => Pointer::Hand,
+                        // A press on empty curve puts a band there, which is a
+                        // thing you do rather than a thing you aim at.
+                        EqHit::Curve => Pointer::Hand,
+                        EqHit::Nothing => Pointer::Default,
+                    }
+                }
+                EditorKind::Automation => {
+                    match crate::canvas::automation_hit(&self.automation_layout, x, y) {
+                        crate::canvas::AutomationHit::Point(_) => Pointer::Grab,
+                        // Empty grid makes a point where you click it, which
+                        // is a thing you do rather than a thing you aim at.
+                        crate::canvas::AutomationHit::Grid => Pointer::Hand,
+                        _ => Pointer::Default,
+                    }
+                }
+            },
+        };
+        if self.pointer == wanted {
+            return;
+        }
+        self.pointer = wanted;
+        let Some(editor) = self.editors.iter().find(|e| e.kind == kind) else {
+            return;
+        };
+        match self.tool_cursors.get(&wanted) {
+            Some(custom) => editor
+                .window
+                .set_cursor(winit::window::Cursor::Custom(custom.clone())),
+            None => editor.window.set_cursor(system_cursor(wanted)),
+        }
+    }
+
+    /// A press inside an editor window, routed by which editor it is.
+    fn press_editor(&mut self, kind: EditorKind, button: MouseButton, x: f32, y: f32) {
+        match kind {
+            EditorKind::Instrument => match button {
+                MouseButton::Left => self.press_instrument(x, y),
+                // *"i want to be able to right click on a knob and select
+                // create automation clip."* §12.4's rule, on the panel that
+                // did not have it.
+                MouseButton::Right => self.press_instrument_menu(x, y),
+            },
+            // Which of the two effect windows this is — the EQ's curve, or the
+            // grid of knobs every other effect gets.
+            EditorKind::Effect if self.eq.is_none() => self.press_insert_panel(button, x, y),
+            EditorKind::Effect => self.press_effect_editor(button, x, y),
+            EditorKind::Automation => self.press_automation(button, x, y),
+        }
+    }
+
+    /// What the pointer is over inside an editor window.
+    fn update_editor_hover(&mut self, kind: EditorKind) {
+        let (x, y) = self.cursor;
+        match kind {
+            EditorKind::Instrument => {
+                self.hover_param = instrument_hit(&self.instrument_layout, x, y);
+            }
+            EditorKind::Effect if self.eq.is_none() => {
+                self.hover_param = instrument_hit(&self.insert_layout, x, y);
+                self.hover_preset =
+                    crate::canvas::instrument_preset_hit(&self.insert_layout, x, y);
+                self.hover_key = crate::canvas::instrument_key_hit(&self.insert_layout, x, y);
+            }
+            EditorKind::Effect => {
+                let hit = crate::canvas::eq_hit(&self.eq_layout, x, y);
+                self.hover_band = match hit {
+                    crate::canvas::EqHit::Handle(band) | crate::canvas::EqHit::Band(band) => {
+                        Some(band)
+                    }
+                    _ => None,
+                };
+                self.hover_eq_field = match hit {
+                    crate::canvas::EqHit::Field(field) => Some(field),
+                    _ => None,
+                };
+            }
+            EditorKind::Automation => {
+                self.hover_point =
+                    match crate::canvas::automation_hit(&self.automation_layout, x, y) {
+                        crate::canvas::AutomationHit::Point(id) => Some(id),
+                        _ => None,
+                    };
+            }
+        }
+    }
+
+    fn redraw_editor(&mut self, kind: EditorKind) {
+        if let Some(editor) = self.editors.iter().find(|e| e.kind == kind) {
+            editor.window.request_redraw();
+        }
+    }
+
+    /// One editor window's frame.
+    ///
+    /// Drawn whole rather than by dirty region: a panel of knobs is a few
+    /// hundred paths, the window is only up while somebody is using it, and a
+    /// second invalidation tree per window would be state to keep in sync for
+    /// no measurable gain. §16.3's promise is about the *idle* window, and an
+    /// editor that nobody is touching receives no events and draws no frames.
+    fn draw_editor(&mut self, index: usize) {
+        self.shape_labels();
+        let Some(editor) = self.editors.get(index) else {
+            return;
+        };
+        let kind = editor.kind;
+        let chrome = match kind {
+            EditorKind::Instrument => EditorWindowChrome::Instrument(
+                self.instrument.as_ref().map(|view| InstrumentChrome {
+                    layout: self.instrument_layout.clone(),
+                    view,
+                    hover: self.hover_param,
+                    active: self.knob.map(|(which, _, _)| which),
+                    // The instrument panel has no presets to hover.
+                    hover_preset: None,
+                    hover_key: None,
+                }),
+            ),
+            EditorKind::Effect if self.eq.is_none() => {
+                let Some(view) = self.insert_view.as_ref() else {
+                    return;
+                };
+                EditorWindowChrome::Insert(InstrumentChrome {
+                    layout: self.insert_layout.clone(),
+                    view,
+                    hover: self.hover_param,
+                    active: self.insert_knob.map(|(which, _, _)| which),
+                    hover_preset: self.hover_preset,
+                    hover_key: self.hover_key,
+                })
+            }
+            EditorKind::Effect => {
+                let Some(config) = self.eq else { return };
+                EditorWindowChrome::Effect(crate::render::EffectChrome {
+                    layout: self.eq_layout.clone(),
+                    config,
+                    spectrum: self.spectrum_points.clone(),
+                    curve: self.eq_curve.clone(),
+                    band_curve: self.eq_band_curve.clone(),
+                    hover: self.hover_band,
+                    hover_field: self.hover_eq_field,
+                    active: match self.drag {
+                        Drag::EqHandle(band) => Some(band),
+                        _ => None,
+                    },
+                    title: self.effect_title(),
+                    bypassed: self.open_insert_bypassed(),
+                })
+            }
+            EditorKind::Automation => {
+                let Some(view) = self.automation.clone() else {
+                    return;
+                };
+                EditorWindowChrome::Automation(crate::render::AutomationChrome {
+                    layout: self.automation_layout.clone(),
+                    view,
+                    curve: self.automation_curve.clone(),
+                    hover: self.hover_point,
+                })
+            }
+        };
+
+        let Some(editor) = self.editors.get_mut(index) else {
+            return;
+        };
+        editor.scene.reset();
+        draw_editor_window(
+            &mut editor.scene,
+            &self.options.theme,
+            &editor.panel,
+            &self.labels,
+            &editor.title,
+            &chrome,
+            match &self.menu {
+                Some((MenuTarget::InstrumentParam { .. }, menu))
+                    if kind == EditorKind::Instrument =>
+                {
+                    Some(menu)
+                }
+                Some((MenuTarget::InsertParam { .. }, menu)) if kind == EditorKind::Effect => {
+                    Some(menu)
+                }
+                _ => None,
+            },
+        );
+
+        let device = &self.context.devices[editor.surface.dev_id];
+        let Some(Some(renderer)) = self.renderers.get_mut(editor.surface.dev_id) else {
+            return;
+        };
+        let surface_texture = match editor.surface.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            // Out of date mid-resize, or occluded. Ask again rather than
+            // tearing anything down over it.
+            _ => {
+                editor.window.request_redraw();
+                return;
+            }
+        };
+        if renderer
+            .render_to_texture(
+                &device.device,
+                &device.queue,
+                &editor.scene,
+                &editor.surface.target_view,
+                &RenderParams {
+                    base_color: self.options.theme.palette.window.to_peniko(),
+                    width: editor.surface.config.width,
+                    height: editor.surface.config.height,
+                    antialiasing_method: AaConfig::Area,
+                },
+            )
+            .is_err()
+        {
+            return;
+        }
+        let mut encoder = device
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("fontelle-ui editor present"),
+            });
+        editor.surface.blitter.copy(
+            &device.device,
+            &mut encoder,
+            &editor.surface.target_view,
+            &surface_texture
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default()),
+        );
+        device.queue.submit([encoder.finish()]);
+        editor.window.pre_present_notify();
+        surface_texture.present();
+        let _ = device.device.poll(wgpu::PollType::Poll);
+        self.frames += 1;
+    }
+
     /// Recomputes every panel's inner geometry. Called on a resize, and
     /// whenever something changes how many rows a list has.
     fn relayout_panels(&mut self) {
@@ -1687,42 +2709,18 @@ impl WindowApp {
             self.layout.panel.body,
             m,
             self.roll.lane_height,
-            keyboard_width(&self.key_map),
+            crate::canvas::keyboard_width_for(&self.key_map, self.key_style),
         );
         self.roll_bar = toolbar_layout(self.roll_layout.toolbar, m);
         self.timeline_layout = timeline_layout(self.layout.timeline.body, m);
         self.timeline_bar = timeline_toolbar_layout(self.timeline_layout.toolbar, m);
-        self.tabs = crate::layout::editor_tabs_full(
-            self.layout.panel.header,
-            m,
-            self.open_insert.is_some(),
-            self.automation.is_some(),
-        );
-        if let Some(view) = &self.automation {
-            self.automation_layout =
-                crate::canvas::automation_layout(self.layout.panel.body, m, view);
-            self.automation_curve = match &self.options.document {
-                Some(doc) => match doc.automation_data() {
-                    Some(data) => {
-                        crate::canvas::automation_curve(&self.automation_layout, view, &data)
-                    }
-                    None => Vec::new(),
-                },
-                None => Vec::new(),
-            };
-        }
-        let config = self.eq.unwrap_or_default();
-        self.eq_layout = crate::canvas::eq_layout(self.layout.panel.body, m, &config);
-        self.eq_curve = crate::canvas::eq_curve_points(&self.eq_layout, &config);
-        self.instrument_layout = match &self.instrument {
-            Some(view) => instrument_layout(self.layout.panel.body, m, view),
-            None => InstrumentLayout {
-                body: self.layout.panel.body,
-                headings: Vec::new(),
-                cells: Vec::new(),
-                content_height: 0.0,
-            },
-        };
+        self.tabs = crate::layout::editor_tabs(self.layout.panel.header, m);
+        // The instrument, the effect and the automation curve are **not**
+        // laid out here any more. They are windows of their own, against
+        // their own bodies — see `relayout_editors`. Computing them here as
+        // well would silently overwrite an open editor's geometry with the
+        // main panel's every time the sidebar seam was dragged, and every
+        // knob in that window would then answer to the wrong pixels.
         self.mixer = crate::canvas::mixer_layout_for(
             self.layout.panel.body,
             m,
@@ -1743,6 +2741,7 @@ impl WindowApp {
             match self.browser_mode {
                 BrowserMode::Sounds => self.files.len(),
                 BrowserMode::Projects => self.projects.len(),
+                BrowserMode::Settings => self.settings.len(),
             },
             self.presets.len(),
             self.file_scroll,
@@ -1767,6 +2766,7 @@ impl WindowApp {
         self.files = doc.library_files();
         self.presets = doc.library_presets();
         self.projects = doc.projects();
+        self.settings = doc.settings();
         self.library_count = doc.library_count();
         self.selected_channel = doc.selected_channel();
         self.selected_file = doc.selected_file();
@@ -1779,38 +2779,56 @@ impl WindowApp {
         self.track_output = doc.track_output(self.selected_track);
         self.route_names = doc.route_names();
         // The open insert may have been removed, or its whole strip may have —
-        // in which case the tab closes rather than showing the effect that
+        // in which case its window closes rather than showing the effect that
         // happens to be at that index now.
         self.automation = doc.automation();
-        if self.automation.is_none() && self.tab == EditorTab::Automation {
-            self.tab = EditorTab::Mixer;
-        }
-        self.eq = match self.open_insert {
-            Some((strip, slot)) => doc.eq_config(strip, slot),
-            None => None,
+        let (eq, insert_view) = match self.open_insert {
+            Some((strip, slot)) => (doc.eq_config(strip, slot), doc.insert_view(strip, slot)),
+            None => (None, None),
         };
-        if self.eq.is_none() {
+        self.eq = eq;
+        self.insert_view = insert_view;
+        if self.eq.is_none() && self.insert_view.is_none() {
             self.open_insert = None;
-            if self.tab == EditorTab::Effect {
-                self.tab = EditorTab::Mixer;
-            }
         }
+
         self.tempo = doc.tempo();
         self.key_map = doc.key_map();
+        self.key_style = doc.key_style();
         let filter = self.roll.ghosts;
         self.ghosts = doc.ghost_notes(filter);
         self.query = doc.query().to_string();
         let fallback = match self.browser_mode {
             BrowserMode::Sounds => doc.library_status(),
             BrowserMode::Projects => doc.project_status(),
+            BrowserMode::Settings => doc.settings_status(),
         };
         self.status = doc.take_message().unwrap_or(fallback);
 
+        // An editor whose subject has gone — the insert was deleted, the clip
+        // was — closes rather than showing whatever is at that index now. The
+        // window *is* the editor, so closing one is closing the other.
+        if self.automation.is_none() {
+            self.close_editor(EditorKind::Automation);
+        }
+        if self.eq.is_none() && self.insert_view.is_none() {
+            self.close_editor(EditorKind::Effect);
+        }
+        // And the ones still open follow whatever moved underneath them.
+        self.refresh_editors();
+
         // A list that shrank under a scroll offset leaves a panel that looks
-        // empty until somebody scrolls back up.
-        self.file_scroll = self.file_scroll.min(self.files.len().saturating_sub(1));
+        // empty until somebody scrolls back up. Against the list that is
+        // *showing*: the three modes have three lengths.
+        self.file_scroll = self.file_scroll.min(self.browser_rows().saturating_sub(1));
         self.preset_scroll = self.preset_scroll.min(self.presets.len().saturating_sub(1));
-        self.rack_scroll = self.rack_scroll.min(self.channels.len().saturating_sub(1));
+        // Against the room the list has, not against the last row: clamping
+        // to `len - 1` leaves a full panel showing one channel. It is also
+        // what makes `usize::MAX` mean "scroll to the end", which is how a
+        // newly added channel is brought into view.
+        self.rack_scroll = self
+            .rack_scroll
+            .min(self.channels.len().saturating_sub(self.rack.capacity.max(1)));
         // The master is pinned outside the scrolling half, so the offset is
         // clamped against the tracks that actually scroll.
         self.mixer_scroll = self
@@ -1840,20 +2858,22 @@ impl WindowApp {
             "Channels",
             ADD_CHANNEL,
             SEARCH_HINT,
+            crate::render::search_hint(BrowserMode::Projects),
+            crate::render::search_hint(BrowserMode::Settings),
             OPEN_FOLDER,
+            crate::render::OPEN_CONFIG_FOLDER,
             CHOOSE_FOLDER,
             NEW_PROJECT,
             EXPORT,
             BrowserMode::Sounds.label(),
             BrowserMode::Projects.label(),
+            BrowserMode::Settings.label(),
             "S",
             "M",
             ARRANGEMENT,
             EMPTY_LANE,
             TAB_ROLL,
-            TAB_INSTRUMENT,
             TAB_MIXER,
-            crate::render::TAB_AUTOMATION,
             NO_INSTRUMENT,
         ] {
             want(&mut self.labels, &mut self.text, fixed);
@@ -1861,6 +2881,15 @@ impl WindowApp {
         if self.lane_menu.is_some() {
             for property in crate::canvas::LANE_PROPERTIES {
                 want(&mut self.labels, &mut self.text, property.label());
+            }
+        }
+        if let Some((_, menu)) = &self.menu {
+            // Cloned out first: `want` borrows `self.labels` and `self.text`
+            // mutably, and the entries live behind `self.menu`.
+            let captions: Vec<String> =
+                menu.entries.iter().map(|entry| entry.label.clone()).collect();
+            for caption in captions {
+                want(&mut self.labels, &mut self.text, &caption);
             }
         }
         // The transport's two document boxes. Shaped rather than cached in
@@ -1935,6 +2964,8 @@ impl WindowApp {
                 self.labels.ensure(&strip.name, &font, &mut self.text);
                 for insert in &strip.inserts {
                     self.labels.ensure(&insert.label, &font, &mut self.text);
+                    let mix = crate::canvas::format_mix(insert.mix);
+                    self.labels.ensure(&mix, &font, &mut self.text);
                 }
                 for send in &strip.sends {
                     self.labels.ensure(&send.target_name, &font, &mut self.text);
@@ -1961,6 +2992,12 @@ impl WindowApp {
         want(&mut self.labels, &mut self.text, &ghost_caption);
         let lane_caption = crate::canvas::lane_caption(self.roll.lane_property);
         want(&mut self.labels, &mut self.text, &lane_caption);
+        // Both, not only the one that is on: the chip is pressed and the other
+        // caption is what it draws next, and shaping it on the frame after
+        // would draw an empty chip for one frame.
+        for style in [crate::canvas::KeyStyle::Piano, crate::canvas::KeyStyle::Names] {
+            want(&mut self.labels, &mut self.text, style.label());
+        }
         for (control, _) in &self.roll_bar.items {
             let caption = match control {
                 RollControl::Snap => self.roll.view.snap.label(),
@@ -2050,6 +3087,7 @@ impl WindowApp {
             let entry = match self.browser_mode {
                 BrowserMode::Sounds => self.files.get(index).cloned(),
                 BrowserMode::Projects => self.projects.get(index).cloned(),
+                BrowserMode::Settings => self.settings.get(index).cloned(),
             };
             if let Some(entry) = entry {
                 self.labels.ensure(&entry.name, &font, &mut self.text);
@@ -2065,9 +3103,56 @@ impl WindowApp {
 
         // The instrument editor's captions and read-outs, which change as a
         // knob turns — bounded by what is on the panel, like everything else.
-        if self.tab == EditorTab::Instrument
-            && let Some(view) = self.instrument.clone()
+        // Shaped by the *main* window even though a floating one draws them:
+        // `Labels` is the font cache and there is one of it, so an editor
+        // window looks its captions up in the same place.
+        // The two editor windows that draw a caption of their own inside the
+        // panel. Neither was ever shaped, so both rows drew as nothing — a
+        // reserved band of empty pixels where the name of the thing you were
+        // editing was meant to be. Found by opening one.
+        if self.is_editor_open(EditorKind::Effect) {
+            let title = self.effect_title();
+            self.labels.ensure(&title, &font, &mut self.text);
+            // The editor's own captions: the eight band numbers, the axis, and
+            // the read-out on every control. Bounded by what is on the panel,
+            // like everything else here.
+            let config = self.eq.unwrap_or_default();
+            for band in 0..fontelle_types::BANDS {
+                self.labels
+                    .ensure(&(band + 1).to_string(), &font, &mut self.text);
+            }
+            for field in crate::canvas::EqField::ALL {
+                let caption = crate::canvas::eq_field_caption(field, &config, self.eq_band);
+                self.labels.ensure(&caption, &font, &mut self.text);
+            }
+            for caption in crate::render::EQ_AXIS_CAPTIONS {
+                self.labels.ensure(caption, &font, &mut self.text);
+            }
+        }
+        if let Some(view) = self.automation.clone() {
+            self.labels.ensure(&view.title, &font, &mut self.text);
+        }
+
+        // Both panels of knobs: the instrument's, and the one an effect that is
+        // not an EQ opens. Same shape, same captions to shape.
+        for view in [
+            self.is_editor_open(EditorKind::Instrument)
+                .then(|| self.instrument.clone())
+                .flatten(),
+            self.is_editor_open(EditorKind::Effect)
+                .then(|| self.insert_view.clone())
+                .flatten(),
+        ]
+        .into_iter()
+        .flatten()
         {
+            // The preset row. Shaped like everything else that is drawn: a
+            // caption nobody shaped draws as nothing, which is a row of empty
+            // chips — a defect this file has already recorded once, on the
+            // editor titles.
+            for name in view.presets.iter().chain(view.keys.iter()) {
+                self.labels.ensure(name, &font, &mut self.text);
+            }
             for group in &view.groups {
                 self.labels.ensure(&group.name, &font, &mut self.text);
                 for param in &group.params {
@@ -2098,7 +3183,13 @@ impl WindowApp {
                 if let Some(name) = self.key_map.name(key.clamp(0, 127) as u8) {
                     let name = name.to_string();
                     self.labels.ensure(&name, &font, &mut self.text);
-                } else if key % 12 == 0 {
+                } else if key % 12 == 0
+                    || self.key_style == crate::canvas::KeyStyle::Names
+                {
+                    // Every row is named in the list view, falling back to the
+                    // note where the instrument has nothing of its own to say —
+                    // that is what makes it a list rather than a keyboard with
+                    // the black keys painted out.
                     self.labels.ensure(&key_name(key), &font, &mut self.text);
                 }
             }
@@ -2139,6 +3230,15 @@ impl WindowApp {
         // click anywhere shuts it — which is what every menu on every desktop
         // does. Before the bar, or clicking Play with the menu up would both
         // start the song and leave the menu hanging over the roll.
+        if self.menu.is_some() {
+            // A press that chose an entry, or that landed on the menu without
+            // choosing one, is spent — the panel underneath must not also act
+            // on it. A press that missed the menu closes it and then carries
+            // on to whatever it hit, which is what every desktop does.
+            if self.press_menu(x, y) {
+                return;
+            }
+        }
         if self.lane_menu.is_some() {
             self.press_lane_menu(x, y);
             return;
@@ -2158,6 +3258,22 @@ impl WindowApp {
         if self.effect_menu.is_some() {
             self.press_effect_menu(x, y);
             return;
+        }
+
+        // A press anywhere ends a rename, for the reason the search box gives
+        // its keyboard back further down: a window whose keyboard is stuck in
+        // a text field nobody can see is a window that has stopped responding.
+        // After the menus, because the press that *starts* a rename is a press
+        // on one of them.
+        if self.renaming.is_some() {
+            self.renaming = None;
+            self.status.clear();
+            if let Some(doc) = &mut self.options.document {
+                doc.end_gesture();
+            }
+            self.tree.invalidate(RACK);
+            self.tree.invalidate(TIMELINE);
+            self.tree.invalidate(BROWSER);
         }
 
         // The transport bar first: it is the only thing above the panels.
@@ -2201,7 +3317,16 @@ impl WindowApp {
         }
 
         if self.layout.rack.frame.contains(x, y) {
-            self.press_rack(x, y);
+            // Converted here rather than at the top of `press`, because the
+            // transport bar above still compares against winit's own enum.
+            self.press_rack(
+                match button {
+                    winit::event::MouseButton::Right => MouseButton::Right,
+                    _ => MouseButton::Left,
+                },
+                x,
+                y,
+            );
             return;
         }
         if self.layout.browser.frame.contains(x, y) {
@@ -2263,12 +3388,6 @@ impl WindowApp {
             self.tree.invalidate(PANEL);
         }
 
-        if self.tab == EditorTab::Instrument {
-            if button == MouseButton::Left {
-                self.press_instrument(x, y);
-            }
-            return;
-        }
         if self.tab == EditorTab::Mixer {
             match button {
                 MouseButton::Left => self.press_mixer(x, y),
@@ -2279,20 +3398,21 @@ impl WindowApp {
                 MouseButton::Right => match mixer_hit(&self.mixer, x, y) {
                     MixerHit::Fader(strip) => self.automate_track(strip, true),
                     MixerHit::Pan(strip) => self.automate_track(strip, false),
+                    // A wet/dry is a control like any other, and sweeping one
+                    // is how an effect is brought in over a bar.
+                    MixerHit::Options(crate::canvas::OptionsHit::InsertMix(slot)) => {
+                        self.automate_insert(
+                            self.selected_track,
+                            slot,
+                            fontelle_types::MIX,
+                            "wet/dry",
+                        );
+                    }
                     _ => {}
                 },
             }
             return;
         }
-        if self.tab == EditorTab::Effect {
-            self.press_effect_tab(button, x, y);
-            return;
-        }
-        if self.tab == EditorTab::Automation {
-            self.press_automation(button, x, y);
-            return;
-        }
-
         if self.roll_layout.toolbar.contains(x, y) {
             if button == MouseButton::Left
                 && let Some(control) = toolbar_hit(&self.roll_bar, x, y)
@@ -2362,11 +3482,14 @@ impl WindowApp {
             Drag::SidebarSeam => self.drag_sidebar_seam(x),
             Drag::SidebarSplit => self.drag_sidebar_split(y),
             Drag::Knob => self.drag_knob(y),
+            Drag::InsertKnob => self.drag_insert_knob(y),
             Drag::Fader(strip) => self.drag_fader(strip, y),
             Drag::EqHandle(band) => self.drag_eq(band, x, y),
             Drag::AutomationPoints => self.drag_automation(x, y),
             Drag::InsertRow => self.drag_insert_row(x, y),
             Drag::SendLevel(index) => self.drag_send_level(index, x),
+            Drag::InsertMix(slot) => self.drag_insert_mix(slot, y),
+            Drag::EqField(field) => self.drag_eq_field(field, y),
             Drag::Pan(strip) => self.drag_pan(strip, x),
             Drag::Tempo => self.drag_tempo(y),
         }
@@ -2538,6 +3661,18 @@ impl WindowApp {
                 self.drag = Drag::SendLevel(index);
                 self.drag_send_level(index, self.cursor.0);
             }
+            // A knob, so it is *turned* rather than slid: the drag starts from
+            // where the value is and moves with the pointer, which is the
+            // gesture every other knob in this window has.
+            OptionsHit::InsertMix(slot) => {
+                let from = self
+                    .mixer_strips
+                    .get(strip)
+                    .and_then(|track| track.inserts.get(slot))
+                    .map_or(1.0, |insert| insert.mix);
+                self.mix_drag = Some((from, self.cursor.1));
+                self.drag = Drag::InsertMix(slot);
+            }
         }
     }
 
@@ -2650,6 +3785,37 @@ impl WindowApp {
     }
 
     /// Follows a send's level while it is being dragged.
+    /// Blends one insert with the signal that went into it.
+    ///
+    /// **Turned, not slid**: relative to where the value was when the drag
+    /// started, up for more, with Shift for a fine turn — `knob_value` is the
+    /// same arithmetic the instrument editor's knobs use, so every dial in the
+    /// window behaves alike. One undo entry for the whole drag: the command
+    /// merges, and `end_gesture` on the mouse-up closes it.
+    fn drag_insert_mix(&mut self, slot: usize, y: f32) {
+        let Some((from, from_y)) = self.mix_drag else {
+            return;
+        };
+        let mix = knob_value(from, y - from_y, self.modifiers.shift_key());
+        let strip = self.selected_track;
+        if self
+            .mixer_strips
+            .get(strip)
+            .and_then(|track| track.inserts.get(slot))
+            .is_some_and(|insert| (insert.mix - mix).abs() < 0.0005)
+        {
+            // Nothing to say when the knob has not moved a step: every write
+            // is a command, a publish to the audio thread and a redraw.
+            return;
+        }
+        if let Some(doc) = &mut self.options.document {
+            doc.set_insert_mix(strip, slot, mix);
+        }
+        self.refresh_studio();
+        self.refresh_title();
+        self.tree.invalidate(PANEL);
+    }
+
     fn drag_send_level(&mut self, index: usize, x: f32) {
         let Some(options) = &self.mixer.options else {
             return;
@@ -2829,36 +3995,71 @@ impl WindowApp {
         doc.create_automation(&address, &label, at);
         self.refresh_studio();
         self.refresh_title();
-        self.tab = EditorTab::Automation;
-        self.relayout_panels();
-        self.tree.invalidate(PANEL);
+        self.open_editor(EditorKind::Automation);
     }
 
     /// A press in the effect tab. Right-click makes an automation lane for
     /// whatever is under the pointer (§12.4).
-    fn press_effect_tab(&mut self, button: MouseButton, x: f32, y: f32) {
+    fn press_effect_editor(&mut self, button: MouseButton, x: f32, y: f32) {
         match button {
             MouseButton::Left => self.press_effect(x, y),
-            MouseButton::Right => {
-                if let crate::canvas::EqHit::Handle(band) =
-                    crate::canvas::eq_hit(&self.eq_layout, x, y)
-                {
-                    // A band's *gain* is what a right-click on its handle
-                    // means: it is the axis the handle moves vertically, and
-                    // the one a sweep is nearly always drawn on.
+            MouseButton::Right => match crate::canvas::eq_hit(&self.eq_layout, x, y) {
+                // A band's *gain* is what a right-click on its handle means:
+                // it is the axis the handle moves vertically, and the one a
+                // sweep is nearly always drawn on.
+                crate::canvas::EqHit::Handle(band) | crate::canvas::EqHit::Band(band) => {
                     self.automate_insert_param(&format!("band{}.gain", band + 1));
                 }
-            }
+                // §12.4 taken at its word: every control in the row is a
+                // parameter, so right-clicking any of them makes its lane —
+                // the frequency, the Q, the type, the wet/dry.
+                crate::canvas::EqHit::Field(field) => {
+                    if let Some(param) = field.param(self.eq_band) {
+                        self.automate_insert_param(&param);
+                    }
+                }
+                crate::canvas::EqHit::Curve | crate::canvas::EqHit::Nothing => {}
+            },
         }
     }
 
     /// Makes an automation lane for one parameter of the open insert.
     fn automate_insert_param(&mut self, param: &str) {
+        self.automate_insert_named(param, param);
+    }
+
+    /// The same for the insert the effect window has open, which is the only
+    /// one its own controls can belong to.
+    fn automate_insert_named(&mut self, param: &str, caption: &str) {
         let Some((strip, slot)) = self.open_insert else {
             return;
         };
+        self.automate_insert(strip, slot, param, caption);
+    }
+
+    /// The same, for an insert named directly — the mixer's rows can automate
+    /// a control without the effect's window being open, which is §12.4's
+    /// "right-click any control" taken at its word.
+    /// `caption` is what the control is **called**; `param` is the effect's own
+    /// id for it.
+    ///
+    /// Both, because they are two different things and the lane needs each: a
+    /// lane named `mixer:4294967296/insert[0]/param/threshold` is one nobody
+    /// can find on an arrangement, and a lane *addressed* by "Threshold" is one
+    /// that reaches nothing. The effect's panel has both — it read the word out
+    /// of the parameter's own spec — so it hands both over.
+    fn automate_insert(&mut self, strip: usize, slot: usize, param: &str, caption: &str) {
         // Both worked out before the document is borrowed mutably.
-        let label = format!("{} \u{2014} {param}", self.effect_title());
+        let name = self
+            .mixer_strips
+            .get(strip)
+            .map_or_else(|| "Track".to_string(), |track| track.name.clone());
+        let effect = self
+            .mixer_strips
+            .get(strip)
+            .and_then(|track| track.inserts.get(slot))
+            .map_or_else(String::new, |insert| insert.label.clone());
+        let label = format!("{name} \u{2014} {effect} {caption}");
         let at = self.view.position_sample;
         let Some(doc) = &mut self.options.document else {
             return;
@@ -2876,9 +4077,36 @@ impl WindowApp {
         doc.create_automation(&address, &label, at);
         self.refresh_studio();
         self.refresh_title();
-        self.tab = EditorTab::Automation;
-        self.relayout_panels();
-        self.tree.invalidate(PANEL);
+        self.open_editor(EditorKind::Automation);
+    }
+
+    /// The half of a mouse-up that belongs to a *control* — a knob, a fader,
+    /// an EQ band, an automation point.
+    ///
+    /// Its own function because an editor window's mouse-up needs exactly
+    /// this and none of the roll's or the arrangement's: those are the main
+    /// window's canvases, and releasing a marquee against a floating window's
+    /// coordinates would catch whatever notes happened to be under the same
+    /// numbers.
+    fn release_controls(&mut self) {
+        // A band or point drag coalesces into one history entry while it
+        // runs; this is what tells the document it has stopped, the same
+        // handshake a note drag has.
+        if matches!(self.drag, Drag::EqHandle(_) | Drag::AutomationPoints)
+            && let Some(doc) = &mut self.options.document
+        {
+            doc.end_gesture();
+        }
+        self.drag = Drag::None;
+        self.knob = None;
+        self.insert_knob = None;
+        self.value_drag = None;
+        self.eq_drag = None;
+        self.mix_drag = None;
+        self.pointer_anchor = None;
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+        }
     }
 
     /// A press in the automation editor.
@@ -2969,18 +4197,19 @@ impl WindowApp {
     /// flat line waiting to be found — is eight things to knock by accident to
     /// save one click.
     fn press_effect(&mut self, x: f32, y: f32) {
+        use crate::canvas::EqHit;
         match crate::canvas::eq_hit(&self.eq_layout, x, y) {
-            crate::canvas::EqHit::Handle(band) => {
+            EqHit::Handle(band) => {
+                // Picking a handle up also selects it, so the row of numbers
+                // under the curve is about the band in your hand.
+                self.select_eq_band(band);
                 self.drag = Drag::EqHandle(band);
             }
-            crate::canvas::EqHit::Curve => {
+            EqHit::Curve => {
                 let Some(config) = self.eq else { return };
                 let Some(band) = config.bands.iter().position(|band| !band.enabled) else {
                     // Eight is all there is. Saying nothing is better than
                     // silently rewriting one somebody set.
-                    return;
-                };
-                let Some((strip, slot)) = self.open_insert else {
                     return;
                 };
                 let mut value = config.bands[band];
@@ -2988,19 +4217,239 @@ impl WindowApp {
                 value.band_type = fontelle_types::BandType::Bell;
                 value.freq_hz = crate::canvas::eq_freq_at(self.eq_layout.curve, x);
                 value.gain_db = crate::canvas::eq_gain_at(self.eq_layout.curve, y);
-                if let Some(doc) = &mut self.options.document {
-                    doc.set_eq_band(strip, slot, band, value);
-                }
+                self.select_eq_band(band);
+                self.write_eq_band(band, value);
                 // And the drag continues from the handle it just made, so
                 // placing a band and aiming it are one gesture — the same
                 // handshake drawing a note and sizing it has.
                 self.drag = Drag::EqHandle(band);
-                self.refresh_studio();
-                self.refresh_title();
-                self.relayout_panels();
-                self.tree.invalidate(PANEL);
             }
-            crate::canvas::EqHit::Nothing => {}
+            // A chip switches its band on where it belongs and selects it.
+            // This is what a flat EQ needs to be usable at all: eight bands
+            // that are all off draw no handles, and a curve nobody knows to
+            // click is *"uninteractable"*.
+            EqHit::Band(band) => self.press_eq_chip(band),
+            EqHit::Field(field) => self.press_eq_field(field, y),
+            EqHit::Nothing => {}
+        }
+    }
+
+    /// Points the controls under the curve at one band.
+    fn select_eq_band(&mut self, band: usize) {
+        if self.eq_band == band {
+            return;
+        }
+        self.eq_band = band;
+        self.relayout_editors();
+        self.redraw_editor(EditorKind::Effect);
+    }
+
+    /// Writes one band and lets everything that draws it know.
+    fn write_eq_band(&mut self, band: usize, value: fontelle_types::EqBand) {
+        let Some((strip, slot)) = self.open_insert else {
+            return;
+        };
+        if let Some(doc) = &mut self.options.document {
+            doc.set_eq_band(strip, slot, band, value);
+        }
+        // `refresh_studio` re-reads the config and relays the editor out —
+        // without the revision the studio bumps for this, the sound would
+        // change and the curve would not. See `fontelle-app/tests/eq_editor.rs`.
+        self.refresh_studio();
+        self.refresh_title();
+        self.redraw_editor(EditorKind::Effect);
+        self.tree.invalidate(PANEL);
+    }
+
+    /// A press on one of the eight numbered chips.
+    ///
+    /// Selects that band, and switches it on where it belongs if it is off —
+    /// which is the discoverable way in. Ctrl switches it back off, so the
+    /// chip is the one control that both adds and removes.
+    fn press_eq_chip(&mut self, band: usize) {
+        let Some(config) = self.eq else { return };
+        let Some(mut value) = config.bands.get(band).copied() else {
+            return;
+        };
+        self.select_eq_band(band);
+        if self.modifiers.control_key() {
+            if !value.enabled {
+                return;
+            }
+            value.enabled = false;
+            value.solo = false;
+        } else if !value.enabled {
+            value.enabled = true;
+            // Where nothing has moved it yet: eight bands stacked at 1 kHz
+            // would be eight handles on top of each other.
+            if value.freq_hz == fontelle_types::EqBand::new().freq_hz {
+                value.freq_hz = crate::canvas::band_home_hz(band);
+            }
+        } else {
+            // Already on and already selected: nothing to change. The press
+            // has done its job by pointing the controls at it.
+            return;
+        }
+        self.write_eq_band(band, value);
+    }
+
+    /// Switches a band off, which is what deleting one means: the eight bands
+    /// are a fixed set and a band that is off has no handle, no curve and no
+    /// effect on the sound.
+    ///
+    /// One function rather than three copies of the same two lines, because
+    /// there are three ways in — the delete chip, Ctrl-clicking the band's
+    /// number, and the Delete key inside the window.
+    fn remove_eq_band(&mut self, band: usize) {
+        let Some(config) = self.eq else { return };
+        let Some(mut value) = config.bands.get(band).copied() else {
+            return;
+        };
+        if !value.enabled {
+            return;
+        }
+        value.enabled = false;
+        value.solo = false;
+        self.write_eq_band(band, value);
+    }
+
+    /// A press on one of the selected band's controls.
+    fn press_eq_field(&mut self, field: crate::canvas::EqField, y: f32) {
+        use crate::canvas::EqField;
+        let Some(config) = self.eq else { return };
+        let band = self.eq_band;
+        let Some(mut value) = config.bands.get(band).copied() else {
+            return;
+        };
+        // Ctrl steps a chooser backwards, the same modifier the browser's
+        // settings rows and the roll's lane chip give it.
+        let forward = !self.modifiers.control_key();
+        match field {
+            EqField::Type => {
+                value.band_type = crate::canvas::next_band_type(value.band_type, forward);
+                // Changing what a band *is* is a statement that you want it,
+                // so it comes on rather than being changed invisibly.
+                value.enabled = true;
+                self.write_eq_band(band, value);
+            }
+            EqField::Channel => {
+                value.channel = crate::canvas::next_band_channel(value.channel, forward);
+                self.write_eq_band(band, value);
+            }
+            EqField::Solo => {
+                value.solo = !value.solo;
+                if value.solo {
+                    value.enabled = true;
+                }
+                self.write_eq_band(band, value);
+            }
+            EqField::Delete => self.remove_eq_band(band),
+            // The numbers are dragged, from where they are.
+            EqField::Freq | EqField::Gain | EqField::Q | EqField::Mix => {
+                let from = match field {
+                    EqField::Freq => value.freq_hz,
+                    EqField::Gain => value.gain_db,
+                    EqField::Q => value.q,
+                    _ => config.mix,
+                };
+                self.eq_drag = Some((from, y));
+                self.drag = Drag::EqField(field);
+            }
+        }
+    }
+
+    /// One of the EQ's numbers, being dragged.
+    ///
+    /// Relative and from where the drag started, so a hand that wanders back
+    /// to where it began puts the value back — the same rule the tempo box
+    /// follows. Shift is the fine drag, as everywhere else in this window.
+    fn drag_eq_field(&mut self, field: crate::canvas::EqField, y: f32) {
+        use crate::canvas::EqField;
+        let (Some((from, from_y)), Some(config)) = (self.eq_drag, self.eq) else {
+            return;
+        };
+        let band = self.eq_band;
+        let Some(mut value) = config.bands.get(band).copied() else {
+            return;
+        };
+        // Up is more, which is the one direction nobody argues about.
+        let steps = (from_y - y) / if self.modifiers.shift_key() { 8.0 } else { 2.0 };
+        match field {
+            EqField::Freq => value.freq_hz = crate::canvas::eq_nudge_freq(from, steps),
+            EqField::Gain => value.gain_db = crate::canvas::eq_nudge_gain(from, steps),
+            EqField::Q => value.q = crate::canvas::eq_nudge_q(from, steps),
+            EqField::Mix => {
+                let mix = crate::canvas::eq_nudge_mix(from, steps);
+                if (mix - config.mix).abs() > 1e-4 {
+                    self.set_open_insert_mix(mix);
+                }
+                return;
+            }
+            _ => return,
+        }
+        if config.bands.get(band) != Some(&value) {
+            self.write_eq_band(band, value);
+        }
+    }
+
+    /// Moves the open insert's wet/dry from inside its own window.
+    fn set_open_insert_mix(&mut self, mix: f32) {
+        let Some((strip, slot)) = self.open_insert else {
+            return;
+        };
+        if let Some(doc) = &mut self.options.document {
+            doc.set_insert_mix(strip, slot, mix);
+        }
+        self.refresh_studio();
+        self.refresh_title();
+        self.redraw_editor(EditorKind::Effect);
+        self.tree.invalidate(PANEL);
+    }
+
+    /// The wheel over the EQ: the Q of the band under the pointer, or the
+    /// control under it.
+    ///
+    /// Over a handle it is the Q, which is the one thing a handle cannot say
+    /// by being dragged — it has two axes and three numbers.
+    fn wheel_effect(&mut self, x: f32, y: f32, steps: f32) {
+        use crate::canvas::{EqField, EqHit};
+        let Some(config) = self.eq else { return };
+        match crate::canvas::eq_hit(&self.eq_layout, x, y) {
+            EqHit::Handle(band) | EqHit::Band(band) => {
+                let Some(mut value) = config.bands.get(band).copied() else {
+                    return;
+                };
+                value.q = crate::canvas::eq_nudge_q(value.q, steps);
+                self.select_eq_band(band);
+                self.write_eq_band(band, value);
+            }
+            EqHit::Field(field) => {
+                let band = self.eq_band;
+                let Some(mut value) = config.bands.get(band).copied() else {
+                    return;
+                };
+                match field {
+                    EqField::Freq => value.freq_hz = crate::canvas::eq_nudge_freq(value.freq_hz, steps),
+                    EqField::Gain => value.gain_db = crate::canvas::eq_nudge_gain(value.gain_db, steps),
+                    EqField::Q => value.q = crate::canvas::eq_nudge_q(value.q, steps),
+                    EqField::Type => {
+                        value.band_type =
+                            crate::canvas::next_band_type(value.band_type, steps > 0.0);
+                    }
+                    EqField::Channel => {
+                        value.channel =
+                            crate::canvas::next_band_channel(value.channel, steps > 0.0);
+                    }
+                    EqField::Mix => {
+                        let mix = crate::canvas::eq_nudge_mix(config.mix, steps * 2.0);
+                        self.set_open_insert_mix(mix);
+                        return;
+                    }
+                    EqField::Solo | EqField::Delete => return,
+                }
+                self.write_eq_band(band, value);
+            }
+            EqHit::Curve | EqHit::Nothing => {}
         }
     }
 
@@ -3010,24 +4459,33 @@ impl WindowApp {
     /// three-letter row in a mixer strip means "show me this" and a click that
     /// selected something out of sight would be a click that did nothing.
     fn open_insert(&mut self, strip: usize, slot: usize) {
-        let config = self
-            .options
-            .document
-            .as_ref()
-            .and_then(|doc| doc.eq_config(strip, slot));
-        if config.is_none() {
+        let (config, view) = match &self.options.document {
+            // An EQ draws its curve; everything else draws the grid of knobs
+            // its own parameter list describes. Exactly one of the two is
+            // `Some` for any insert that is there.
+            Some(doc) => (doc.eq_config(strip, slot), doc.insert_view(strip, slot)),
+            None => (None, None),
+        };
+        if config.is_none() && view.is_none() {
+            // The slot is empty — the chain changed under a click. Nothing to
+            // open, and nothing worth saying about it.
             return;
         }
         self.open_insert = Some((strip, slot));
         self.eq = config;
-        self.tab = EditorTab::Effect;
-        self.relayout_panels();
-        self.tree.invalidate(PANEL);
+        self.insert_view = view;
+        self.open_editor(EditorKind::Effect);
+        self.relayout_editors();
     }
 
     /// What the effect panel calls what it is showing: the strip's name and
     /// the effect's, because "EQ" on its own does not say which track.
     fn effect_title(&self) -> String {
+        // The panel names itself when it is one of the generic ones — it was
+        // built from the effect's own list and knows which effect that was.
+        if let Some(view) = &self.insert_view {
+            return view.title.clone();
+        }
         match self.open_insert {
             Some((strip, _)) => match self.mixer_strips.get(strip) {
                 Some(track) => format!("{} \u{2014} EQ", track.name),
@@ -3151,6 +4609,191 @@ impl WindowApp {
         }
     }
 
+    /// A press on the grid of knobs an effect that is not an EQ opens.
+    ///
+    /// The instrument panel's rules exactly — a knob is dragged, a switch and a
+    /// chooser are clicked, and the right button offers an automation lane —
+    /// because it is the same panel with a different list in it.
+    fn press_insert_panel(&mut self, button: MouseButton, x: f32, y: f32) {
+        // The preset row first: it sits above the controls and is not one of
+        // them, so a click that lands on a chip is a choice rather than a
+        // knob. The right button has nothing to offer here — a preset is not
+        // a parameter and cannot become a lane (rule 10).
+        if let Some(preset) = crate::canvas::instrument_preset_hit(&self.insert_layout, x, y) {
+            if button == MouseButton::Left {
+                self.choose_insert_preset(preset);
+            }
+            return;
+        }
+        // And the key row under it. The first chip is "no key", which is why
+        // the index is shifted by one on the way out.
+        if let Some(chip) = crate::canvas::instrument_key_hit(&self.insert_layout, x, y) {
+            if button == MouseButton::Left {
+                self.choose_insert_key(chip.checked_sub(1));
+            }
+            return;
+        }
+        let Some(which) = instrument_hit(&self.insert_layout, x, y) else {
+            return;
+        };
+        let Some(param) = self
+            .insert_view
+            .as_ref()
+            .and_then(|view| view.param(which.0, which.1))
+            .cloned()
+        else {
+            return;
+        };
+        if button == MouseButton::Right {
+            // §12.4 taken at its word on the panel that did not exist: every
+            // control in it is a parameter, so every one of them can become a
+            // lane. `automate_insert` is the same path the mixer's rows take.
+            let bounds = self
+                .editors
+                .iter()
+                .find(|e| e.kind == EditorKind::Effect)
+                .map(|editor| editor.panel.body)
+                .unwrap_or(self.insert_layout.body);
+            self.open_menu(
+                MenuTarget::InsertParam {
+                    param: insert_param_id(param.address.as_str()),
+                    name: param.label.clone(),
+                },
+                x,
+                y,
+                bounds,
+            );
+            self.redraw_editor(EditorKind::Effect);
+            return;
+        }
+        match param.kind {
+            ParamKind::Knob => {
+                self.insert_knob = Some((which, y, param.value));
+                self.drag = Drag::InsertKnob;
+            }
+            ref kind => {
+                let value = next_value(kind, param.value);
+                self.write_insert_param(param.address.as_str(), value);
+                if let Some(doc) = &mut self.options.document {
+                    doc.end_gesture();
+                }
+            }
+        }
+        self.redraw_editor(EditorKind::Effect);
+    }
+
+    fn drag_insert_knob(&mut self, y: f32) {
+        let Some((which, from_y, from_value)) = self.insert_knob else {
+            return;
+        };
+        // Shift is a fine drag, the same modifier every other knob gives it.
+        let value = knob_value(from_value, y - from_y, self.modifiers.shift_key());
+        let Some(param) = self
+            .insert_view
+            .as_ref()
+            .and_then(|view| view.param(which.0, which.1))
+            .cloned()
+        else {
+            return;
+        };
+        // Nothing to say when the value has not moved a step: every one of
+        // these is a command on the history and a publish to the audio thread.
+        if (value - param.value).abs() < 0.001 {
+            return;
+        }
+        self.write_insert_param(param.address.as_str(), value);
+    }
+
+    /// Writes every knob a named preset stands for, as **one** thing to undo.
+    ///
+    /// Not a run of `write_insert_param`s: fourteen entries on the history for
+    /// one click is a history nobody can walk, which is why the document has a
+    /// command of its own for this (`fontelle_model::SetInsertPreset`).
+    fn choose_insert_preset(&mut self, preset: usize) {
+        let Some((strip, slot)) = self.open_insert else {
+            return;
+        };
+        if let Some(doc) = &mut self.options.document {
+            doc.set_insert_preset(strip, slot, preset);
+            doc.end_gesture();
+        }
+        // The same reason every other write refreshes here: the studio bumps
+        // its revision, and without re-reading it the sound would change and
+        // the panel would not.
+        self.refresh_studio();
+        self.refresh_title();
+        self.redraw_editor(EditorKind::Effect);
+    }
+
+    /// Points this insert's detector at a strip, or at nothing.
+    ///
+    /// A **routing** change, so it goes through the document — which refuses a
+    /// key that would make the graph feed itself, and a track keying an insert
+    /// on itself — and then rebuilds the graph, because what changed is the
+    /// order the schedule runs in.
+    fn choose_insert_key(&mut self, key: Option<usize>) {
+        let Some((strip, slot)) = self.open_insert else {
+            return;
+        };
+        if let Some(doc) = &mut self.options.document {
+            doc.set_insert_key(strip, slot, key);
+            doc.end_gesture();
+        }
+        self.refresh_studio();
+        self.refresh_title();
+        self.redraw_editor(EditorKind::Effect);
+    }
+
+    fn write_insert_param(&mut self, param: &str, value: f32) {
+        let Some((strip, slot)) = self.open_insert else {
+            return;
+        };
+        let param = param.to_string();
+        if let Some(doc) = &mut self.options.document {
+            doc.set_insert_param(strip, slot, &param, value);
+        }
+        // The same reason the EQ refreshes here: the studio bumps its revision
+        // for this, and without re-reading it the sound would change and the
+        // panel would not.
+        self.refresh_studio();
+        self.refresh_title();
+        self.redraw_editor(EditorKind::Effect);
+    }
+
+    /// A right-click on the instrument panel: a menu about the control under
+    /// the pointer.
+    ///
+    /// Two of its controls are addressable — the channel's own level and its
+    /// placement, which is what [`fontelle_types::ParamTarget`] knows how to
+    /// name — and the patch's own knobs are not yet (TDD §8.2). Both open a
+    /// menu, because a right-click that does nothing cannot be told from one
+    /// that missed; the second one's entry is greyed and says why.
+    fn press_instrument_menu(&mut self, x: f32, y: f32) {
+        let Some(which) = instrument_hit(&self.instrument_layout, x, y) else {
+            return;
+        };
+        let Some(param) = self
+            .instrument
+            .as_ref()
+            .and_then(|view| view.param(which.0, which.1))
+            .cloned()
+        else {
+            return;
+        };
+        let target = MenuTarget::InstrumentParam {
+            address: param.address.clone(),
+            name: param.label.clone(),
+        };
+        let bounds = self
+            .editors
+            .iter()
+            .find(|e| e.kind == EditorKind::Instrument)
+            .map(|editor| editor.panel.body)
+            .unwrap_or(self.instrument_layout.body);
+        self.open_menu(target, x, y, bounds);
+        self.redraw_editor(EditorKind::Instrument);
+    }
+
     fn drag_knob(&mut self, y: f32) {
         let Some((which, from_y, from_value)) = self.knob else {
             return;
@@ -3212,7 +4855,7 @@ impl WindowApp {
             }
             return;
         }
-        if button == MouseButton::Left
+        if self.timeline_layout.headers.contains(x, y)
             && let TimelineHit::Lane(lane) = timeline_hit(
                 &self.timeline.view,
                 &self.timeline_layout,
@@ -3220,10 +4863,20 @@ impl WindowApp {
                 x,
                 y,
             )
-            && self.timeline_layout.headers.contains(x, y)
         {
-            if let Some(doc) = &mut self.options.document {
-                doc.toggle_lane_mute(lane);
+            match button {
+                // *"i made one i dont want but i cant right click and delete
+                // it."* Adding, renaming, muting and deleting a row all live
+                // in one menu, because that is where somebody looks for them.
+                MouseButton::Right => {
+                    let bounds = self.layout.window;
+                    self.open_menu(MenuTarget::Lane(lane), x, y, bounds);
+                }
+                MouseButton::Left => {
+                    if let Some(doc) = &mut self.options.document {
+                        doc.toggle_lane_mute(lane);
+                    }
+                }
             }
             self.tree.invalidate(TIMELINE);
             return;
@@ -3254,10 +4907,14 @@ impl WindowApp {
                 doc.open_clip(clip);
                 self.roll.clear_selection();
             }
-            self.tab = match kind {
-                Some(crate::document::ClipKind::Automation) => EditorTab::Automation,
-                _ => EditorTab::Roll,
-            };
+            // An automation clip is edited in a window of its own; a note
+            // clip is what the roll is for.
+            match kind {
+                Some(crate::document::ClipKind::Automation) => {
+                    self.open_editor(EditorKind::Automation)
+                }
+                _ => self.tab = EditorTab::Roll,
+            }
             self.refresh_studio();
             self.relayout_panels();
         }
@@ -3555,13 +5212,38 @@ impl WindowApp {
         self.tree.invalidate(PANEL);
     }
 
-    fn press_rack(&mut self, x: f32, y: f32) {
-        match rack_hit(&self.rack, x, y) {
+    fn press_rack(&mut self, button: MouseButton, x: f32, y: f32) {
+        let hit = rack_hit(&self.rack, x, y);
+        // The right button opens a menu about whichever row it landed on —
+        // *"stuff like being able to right click and duplicate too, for
+        // instruments in the channel rack for example."* Any part of the row,
+        // not only its name: aiming at a caption is not a thing anybody should
+        // have to do to reach a menu.
+        if button == MouseButton::Right {
+            if let RackHit::Row(index)
+            | RackHit::Mute(index)
+            | RackHit::Solo(index)
+            | RackHit::Edit(index)
+            | RackHit::Route(index) = hit
+            {
+                let bounds = self.layout.window;
+                self.open_menu(MenuTarget::Channel(index), x, y, bounds);
+            }
+            return;
+        }
+        match hit {
             RackHit::Row(index) => {
                 if let Some(doc) = &mut self.options.document {
                     doc.select_channel(index);
                 }
                 self.roll.clear_selection();
+                // If the instrument window is open it is now showing *this*
+                // channel — see `refresh_editors` — so it comes to the front
+                // rather than staying wherever it was behind the studio. It
+                // is not *opened* by this: a click on a row means "work on
+                // this part", and a window appearing every time you changed
+                // parts would be its own complaint.
+                self.raise_editor(EditorKind::Instrument);
             }
             RackHit::Mute(index) => {
                 if let Some(doc) = &mut self.options.document {
@@ -3580,7 +5262,7 @@ impl WindowApp {
                     doc.select_channel(index);
                 }
                 self.roll.clear_selection();
-                self.tab = EditorTab::Instrument;
+                self.open_editor(EditorKind::Instrument);
                 self.tree.invalidate(PANEL);
             }
             RackHit::Route(index) => {
@@ -3607,11 +5289,7 @@ impl WindowApp {
                         }),
                 };
             }
-            RackHit::Add => {
-                // Nothing to add yet if no preset is chosen; the browser is
-                // where that happens, so say so rather than doing nothing.
-                self.add_channel_from_browser();
-            }
+            RackHit::Add => self.add_channel(),
             RackHit::Nothing => {}
         }
         self.tree.invalidate(RACK);
@@ -3646,7 +5324,7 @@ impl WindowApp {
 
     fn press_browser(&mut self, x: f32, y: f32) {
         match browser_hit(&self.browser, x, y) {
-            BrowserHit::Search => {
+            BrowserHit::Search(_) => {
                 self.searching = true;
             }
             BrowserHit::File(index) => {
@@ -3661,9 +5339,20 @@ impl WindowApp {
                 // The same rows in both modes, and the same click: a soundfont
                 // opens to show its presets, a folder opens to show what is
                 // in it, and a project opens as a project.
+                let modifiers = self.modifiers;
                 let result = match (&mut self.options.document, self.browser_mode) {
                     (Some(doc), BrowserMode::Sounds) => doc.open_file(index),
                     (Some(doc), BrowserMode::Projects) => doc.open_project(index),
+                    (Some(doc), BrowserMode::Settings) => {
+                        // A setting steps forward when you click it and back
+                        // when you Ctrl+click, which is the same pair of
+                        // gestures a preset row already uses for "this one"
+                        // against "a new one". No text field is involved:
+                        // there is not one in this window yet, and a value
+                        // you can reach with one click is quicker anyway.
+                        doc.nudge_setting(index, if modifiers.control_key() { -1 } else { 1 });
+                        Ok(())
+                    }
                     (None, _) => Ok(()),
                 };
                 if let Err(e) = result {
@@ -3676,6 +5365,15 @@ impl WindowApp {
                 self.refresh_title();
             }
             BrowserHit::Preset(index) => {
+                // A heading over a run of search hits is a label saying which
+                // soundfont they came from. Clicking one does nothing —
+                // quietly, because "that row is a heading" is a sentence
+                // nobody needs to read.
+                if self.presets.get(index).map(|entry| entry.kind)
+                    == Some(crate::document::LibraryKind::Group)
+                {
+                    return;
+                }
                 // A preset click puts it on the **selected** channel, which is
                 // what "try this sound on this part" means. The add button —
                 // and Ctrl+click — make a new one instead.
@@ -3691,22 +5389,38 @@ impl WindowApp {
                     }
                 }
             }
-            BrowserHit::OpenFolder => {
+            BrowserHit::OpenFolder(mode) => {
                 if let Some(doc) = &mut self.options.document {
-                    match self.browser_mode {
+                    match mode {
                         BrowserMode::Sounds => doc.reveal_library_dir(),
                         BrowserMode::Projects => doc.reveal_projects_dir(),
+                        BrowserMode::Settings => doc.reveal_config_dir(),
                     }
                 }
             }
-            BrowserHit::ChooseFolder => {
+            BrowserHit::ChooseFolder(mode) => {
+                // **The mode comes off the hit**, not off `self.browser_mode`.
+                // The version that read it from the window branched for
+                // "Open folder" and not for this one, so choosing a projects
+                // folder replaced the soundfont bank and left the projects
+                // folder unset — which is *"project management completely
+                // impossible"*, since a new project then has nowhere to go.
+                //
                 // Ctrl adds a folder instead of replacing the list, the same
                 // way Ctrl on a preset adds a channel instead of replacing its
-                // instrument. The button says "Change" because replacing is
-                // what somebody clicking it means.
+                // instrument — and only in Sounds, because a bank is genuinely
+                // several places and "where do my projects live" has one
+                // answer. The button says "Change" because replacing is what
+                // somebody clicking it means.
                 let add = self.modifiers.control_key();
                 if let Some(doc) = &mut self.options.document {
-                    doc.choose_library_dir(add);
+                    match mode {
+                        BrowserMode::Sounds => doc.choose_library_dir(add),
+                        BrowserMode::Projects => doc.choose_projects_dir(),
+                        // Not drawn in the settings tab — there is no folder
+                        // being browsed there — so this cannot be reached.
+                        BrowserMode::Settings => {}
+                    }
                 }
                 // The picker held the event loop while it was up, so the meters
                 // and the playhead have a gap in them to catch up on.
@@ -3744,24 +5458,335 @@ impl WindowApp {
         self.tree.invalidate(RACK);
     }
 
-    /// The rack's add button: the selected preset onto a new channel.
-    fn add_channel_from_browser(&mut self) {
-        let preset = self
-            .browser
-            .preset_rows
-            .first()
-            .map(|(index, _)| *index)
-            .unwrap_or(0);
-        if self.presets.is_empty() {
-            self.status =
-                "pick a soundfont below first — then its preset goes on a new channel".to_string();
+    /// How many rows the browser's main list has in the mode it is in.
+    ///
+    /// One function rather than the same three-armed match written out at
+    /// every scroll clamp — which is how the projects list came to be bounded
+    /// by the number of soundfonts.
+    fn browser_rows(&self) -> usize {
+        match self.browser_mode {
+            BrowserMode::Sounds => self.files.len(),
+            BrowserMode::Projects => self.projects.len(),
+            BrowserMode::Settings => self.settings.len(),
+        }
+    }
+
+    // ------------------------------------------------ the right-click menu ---
+
+    /// What a menu about `target` offers.
+    ///
+    /// A function of the target and the studio's lists, so what a menu says is
+    /// decided in one place rather than at each of the presses that opens one.
+    /// Entries that cannot be chosen are **greyed rather than left out**: a
+    /// menu that hides "Delete lane" on the last lane teaches nothing about why
+    /// it is not there.
+    fn menu_entries(&self, target: &MenuTarget) -> Vec<crate::canvas::MenuEntry> {
+        use crate::canvas::MenuEntry;
+        match target {
+            MenuTarget::Channel(index) => {
+                let plays = self
+                    .channels
+                    .get(*index)
+                    .is_some_and(|channel| channel.has_instrument);
+                vec![
+                    MenuEntry::new("Open instrument"),
+                    MenuEntry::new("Rename"),
+                    MenuEntry::new("Duplicate"),
+                    if plays {
+                        MenuEntry::new("Clear instrument").after_rule()
+                    } else {
+                        MenuEntry::disabled("Clear instrument").after_rule()
+                    },
+                    if self.channels.len() > 1 {
+                        MenuEntry::new("Delete instrument")
+                    } else {
+                        MenuEntry::disabled("Delete instrument")
+                    },
+                ]
+            }
+            MenuTarget::Lane(index) => {
+                let muted = self.lanes.get(*index).is_some_and(|lane| lane.muted);
+                let can_remove = self
+                    .options
+                    .document
+                    .as_ref()
+                    .is_some_and(|doc| doc.can_remove_lane(*index));
+                vec![
+                    MenuEntry::new("Add lane"),
+                    MenuEntry::new("Rename lane"),
+                    MenuEntry::new(if muted { "Unmute lane" } else { "Mute lane" }),
+                    // Greyed at the ends rather than left out, for the reason
+                    // this function's own docs give.
+                    if *index > 0 {
+                        MenuEntry::new("Move up").after_rule()
+                    } else {
+                        MenuEntry::disabled("Move up").after_rule()
+                    },
+                    if *index + 1 < self.lanes.len() {
+                        MenuEntry::new("Move down")
+                    } else {
+                        MenuEntry::disabled("Move down")
+                    },
+                    if can_remove {
+                        MenuEntry::new("Delete lane").after_rule()
+                    } else {
+                        MenuEntry::disabled("Delete lane").after_rule()
+                    },
+                ]
+            }
+            // The control's own name first, greyed: a menu of one entry with
+            // no heading is a menu you have to remember what you right-clicked
+            // to read.
+            MenuTarget::InstrumentParam { name, .. }
+            | MenuTarget::InsertParam { name, .. } => vec![
+                MenuEntry::disabled(name.clone()),
+                MenuEntry::new("Create automation clip").after_rule(),
+            ],
+        }
+    }
+
+    /// Opens a menu about `target` at `(x, y)`, inside `bounds`.
+    fn open_menu(&mut self, target: MenuTarget, x: f32, y: f32, bounds: crate::layout::Rect) {
+        let entries = self.menu_entries(&target);
+        let menu = crate::canvas::context_menu_layout(
+            (x, y),
+            bounds,
+            &self.options.theme.metrics,
+            self.options.theme.font.size,
+            entries,
+        );
+        if menu.is_empty() {
             return;
         }
-        if let Some(doc) = &mut self.options.document
-            && let Err(e) = doc.add_channel_with(preset)
-        {
-            self.status = e;
+        self.menu = Some((target, menu));
+        self.tree.invalidate_rect(bounds);
+    }
+
+    /// A press while a menu is open. Every press closes it; one that landed on
+    /// a row does what the row says first.
+    ///
+    /// Whether the press was **consumed** — a press that chose an entry, or one
+    /// that landed on the menu's own frame without choosing, must not also
+    /// reach whatever is drawn underneath it.
+    fn press_menu(&mut self, x: f32, y: f32) -> bool {
+        let Some((target, menu)) = self.menu.take() else {
+            return false;
+        };
+        let inside = menu.frame.contains(x, y);
+        let chosen = crate::canvas::context_menu_hit(&menu, x, y);
+        self.tree.invalidate_rect(menu.frame);
+        self.tree.invalidate(RACK);
+        self.tree.invalidate(TIMELINE);
+        self.tree.invalidate(PANEL);
+        if let Some(index) = chosen {
+            self.choose_menu(&target, index);
         }
+        inside
+    }
+
+    /// What entry `index` of a menu about `target` does. The other half of
+    /// [`menu_entries`](Self::menu_entries), and the two are read together.
+    fn choose_menu(&mut self, target: &MenuTarget, index: usize) {
+        match (target, index) {
+            (MenuTarget::Channel(channel), 0) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.select_channel(*channel);
+                }
+                self.open_editor(EditorKind::Instrument);
+            }
+            (MenuTarget::Channel(channel), 1) => self.start_rename(MenuTarget::Channel(*channel)),
+            (MenuTarget::Channel(channel), 2) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.duplicate_channel(*channel);
+                }
+                self.status = "Instrument duplicated".to_string();
+                self.rack_scroll = usize::MAX;
+            }
+            (MenuTarget::Channel(channel), 3) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.clear_channel_instrument(*channel);
+                }
+            }
+            (MenuTarget::Channel(channel), _) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.remove_channel(*channel);
+                }
+            }
+
+            (MenuTarget::Lane(_), 0) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.add_lane();
+                }
+            }
+            (MenuTarget::Lane(lane), 1) => self.start_rename(MenuTarget::Lane(*lane)),
+            (MenuTarget::Lane(lane), 2) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.toggle_lane_mute(*lane);
+                }
+            }
+            (MenuTarget::Lane(lane), 3) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.move_lane(*lane, -1);
+                }
+                self.status = "Row moved up".to_string();
+            }
+            (MenuTarget::Lane(lane), 4) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.move_lane(*lane, 1);
+                }
+                self.status = "Row moved down".to_string();
+            }
+            (MenuTarget::Lane(lane), _) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.remove_lane(*lane);
+                }
+            }
+
+            (MenuTarget::InsertParam { param, name }, 1) => {
+                let (param, name) = (param.clone(), name.clone());
+                self.automate_insert_named(&param, &name);
+                self.open_editor(EditorKind::Automation);
+            }
+            (MenuTarget::InstrumentParam { address, .. }, 1) => {
+                let at = self.view.position_sample;
+                let address = address.clone();
+                if let Some(doc) = &mut self.options.document {
+                    doc.automate_instrument_param(&address, at);
+                }
+                self.refresh_studio();
+                self.refresh_title();
+                // The lane is on the arrangement now, and the curve editor is
+                // what you draw it in — which is what *"then it appears in my
+                // timeline and im able to draw it"* asks for.
+                self.open_editor(EditorKind::Automation);
+            }
+            _ => {}
+        }
+        self.refresh_studio();
+        self.refresh_title();
+    }
+
+    // ------------------------------------------------------ typing a name ---
+
+    /// Starts a rename. Every keystroke after this goes into the name until
+    /// Enter or Escape ends it.
+    fn start_rename(&mut self, target: MenuTarget) {
+        self.renaming = Some(target);
+        self.status = "Type a name \u{2014} Enter when you are done".to_string();
+        self.tree.invalidate(RACK);
+        self.tree.invalidate(TIMELINE);
+        self.tree.invalidate(BROWSER);
+    }
+
+    /// The name being typed, as it stands — read from the document, because
+    /// the document is the buffer. See `renaming`.
+    fn renaming_text(&self) -> String {
+        match &self.renaming {
+            Some(MenuTarget::Channel(index)) => self
+                .channels
+                .get(*index)
+                .map_or_else(String::new, |channel| channel.name.clone()),
+            Some(MenuTarget::Lane(index)) => self
+                .lanes
+                .get(*index)
+                .map_or_else(String::new, |lane| lane.name.clone()),
+            _ => String::new(),
+        }
+    }
+
+    fn write_name(&mut self, name: String) {
+        let target = self.renaming.clone();
+        if let Some(doc) = &mut self.options.document {
+            match target {
+                Some(MenuTarget::Channel(index)) => doc.rename_channel(index, &name),
+                Some(MenuTarget::Lane(index)) => doc.rename_lane(index, &name),
+                _ => {}
+            }
+        }
+        self.refresh_studio();
+        self.refresh_title();
+    }
+
+    /// A key pressed while a name is being typed. Whether it was taken.
+    ///
+    /// It takes **all** of them while it is on, the same rule the search box
+    /// follows: a typed "d" is a letter in a name, not the delete tool.
+    fn rename_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        if self.renaming.is_none() {
+            return false;
+        }
+        match &event.logical_key {
+            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Escape) => {
+                self.renaming = None;
+                self.status.clear();
+                // The coalesced rename ends here, so the *next* one is its own
+                // undo entry rather than joining this one.
+                if let Some(doc) = &mut self.options.document {
+                    doc.end_gesture();
+                }
+            }
+            Key::Named(NamedKey::Backspace) => {
+                let mut name = self.renaming_text();
+                name.pop();
+                self.write_name(name);
+            }
+            Key::Named(NamedKey::Space) => {
+                let name = format!("{} ", self.renaming_text());
+                self.write_name(name);
+            }
+            Key::Character(c) => {
+                let name = format!("{}{c}", self.renaming_text());
+                self.write_name(name);
+            }
+            _ => {}
+        }
+        self.tree.invalidate(RACK);
+        self.tree.invalidate(TIMELINE);
+        self.tree.invalidate(BROWSER);
+        true
+    }
+
+    /// The rack's add button: a blank channel, playing the built-in synth.
+    ///
+    /// It used to put the browser's first preset on a new channel, and do
+    /// **nothing at all** when no soundfont had been opened — which is how a
+    /// button ends up looking broken and then looking haunted, because the
+    /// click that finally seemed to work was somebody choosing a preset for a
+    /// channel they already had. Something to play, immediately, and a
+    /// soundfont chosen after if you want one. See
+    /// [`StudioHost::add_channel`](crate::document::StudioHost::add_channel).
+    fn add_channel(&mut self) {
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        match doc.add_channel() {
+            Ok(()) => {
+                self.status = "New instrument \u{2014} the built-in synth".to_string();
+                // The rack scrolls to the end, where the new channel is: one
+                // added below the fold is a button that did nothing, again.
+                self.rack_scroll = usize::MAX;
+            }
+            Err(e) => self.status = e,
+        }
+        self.tree.invalidate(RACK);
+        self.tree.invalidate(PANEL);
+    }
+
+    /// Switches the key strip between the keyboard and the list of names.
+    ///
+    /// Per channel and saved with the song, so a kit stays a list and the
+    /// piano beside it stays a keyboard — see `StudioHost::set_key_style`.
+    fn cycle_key_style(&mut self) {
+        let wanted = self.key_style.next();
+        if let Some(doc) = &mut self.options.document {
+            doc.set_key_style(wanted);
+        }
+        self.refresh_studio();
+        self.refresh_title();
+        // The strip is a different width in the two views, so the grid moves.
+        self.relayout_panels();
+        self.tree.invalidate(PANEL);
     }
 
     /// A toolbar button.
@@ -3788,6 +5813,7 @@ impl WindowApp {
             RollControl::Lane => self.toggle_lane_menu(),
             RollControl::Ghost => self.cycle_ghosts(),
             RollControl::Slide => self.toggle_slide(),
+            RollControl::Keys => self.cycle_key_style(),
         }
     }
 
@@ -4191,13 +6217,33 @@ impl WindowApp {
             return;
         }
         if self.layout.browser.frame.contains(x, y) {
+            // Over a setting, the wheel **changes it** rather than scrolling
+            // past it: the list is seven rows long, so there is nothing to
+            // scroll, and turning a wheel over a value is how every other
+            // number in this window is set.
+            if self.browser_mode == BrowserMode::Settings {
+                if let Some(index) = crate::canvas::row_under(&self.browser, x, y) {
+                    let step = dy.round() as i32;
+                    if step != 0
+                        && let Some(doc) = &mut self.options.document
+                    {
+                        doc.nudge_setting(index, step);
+                        self.tree.invalidate(BROWSER);
+                    }
+                }
+                return;
+            }
             let over_presets = self.browser.presets.contains(x, y);
             if over_presets {
                 self.preset_scroll =
                     scrolled(self.preset_scroll, -(dy.round() as i32), self.presets.len());
             } else {
+                // **The list that is showing**, not the soundfonts: a scroll
+                // offset clamped against the wrong list either stops short of
+                // the end of a long one or runs past the end of a short one,
+                // and a panel that looks empty is what the second is.
                 self.file_scroll =
-                    scrolled(self.file_scroll, -(dy.round() as i32), self.files.len());
+                    scrolled(self.file_scroll, -(dy.round() as i32), self.browser_rows());
             }
             self.relayout_panels();
             self.tree.invalidate(BROWSER);
@@ -4260,11 +6306,58 @@ impl WindowApp {
     /// The subset of §16.5's keymap the gate needs. Every binding here is
     /// hard-coded, and §16.5 says all of them are remappable — the map is a
     /// later item, and one binding written down twice is one to find and move.
-    fn key(&mut self, event: &winit::event::KeyEvent) {
+    /// The keys that mean the same thing in every window, answered before
+    /// anything that depends on which canvas has the keyboard. Whether one of
+    /// them was pressed.
+    ///
+    /// Reported from using the studio: *"cannot use keybinds to like pause and
+    /// play when i have one of the opened windows like an eq plugin window
+    /// selected"*, and *"undoing and redoing isnt working in there either"*.
+    /// The editor windows are separate OS windows, so a keystroke aimed at one
+    /// never reached the studio's handler at all — the whole keyboard stopped
+    /// at the title bar.
+    ///
+    /// **These and no others.** Space is the transport, Ctrl+Z is the history
+    /// and Ctrl+S is the file, and none of the three is a statement about a
+    /// canvas; the tool keys and Delete are, and they stay where the canvas
+    /// that owns them can hear them.
+    fn global_key(&mut self, event: &winit::event::KeyEvent) -> bool {
         use winit::keyboard::{Key, NamedKey};
 
         let ctrl = self.modifiers.control_key();
         let shift = self.modifiers.shift_key();
+        match &event.logical_key {
+            // Play from the marker; press it again and the playhead comes back
+            // to the marker. See `crate::transport::TransportAction`.
+            Key::Named(NamedKey::Space) => self.transport(TransportHit::Play),
+            // And the front of the song, which is what the stop square does.
+            Key::Named(NamedKey::Home) => self.transport(TransportHit::Stop),
+            Key::Character(c) => match c.to_lowercase().as_str() {
+                "z" if ctrl && !shift => self.undo(),
+                "z" if ctrl && shift => self.redo(),
+                "y" if ctrl => self.redo(),
+                "s" if ctrl => self.save(),
+                // Beside Ctrl+S, because bouncing is the other thing you do to
+                // a whole project. The button is on the Projects tab; this is
+                // so you do not have to go there.
+                "e" if ctrl => self.export(),
+                _ => return false,
+            },
+            _ => return false,
+        }
+        true
+    }
+
+    fn key(&mut self, event: &winit::event::KeyEvent) {
+        use winit::keyboard::{Key, NamedKey};
+
+        let ctrl = self.modifiers.control_key();
+
+        // While a name is being typed, that has the keyboard: the same rule
+        // the search box follows, and for the same reason.
+        if self.rename_key(event) {
+            return;
+        }
 
         // While the search box has the keyboard, it has all of it: a typed "d"
         // is a letter in a soundfont's name, not the delete tool.
@@ -4294,12 +6387,15 @@ impl WindowApp {
             return;
         }
 
+        // Transport, undo and save mean the same thing wherever they are
+        // pressed, so they are answered before anything that depends on which
+        // canvas has the keyboard — and the editor windows answer them with
+        // this same function. See `global_key`.
+        if self.global_key(event) {
+            return;
+        }
+
         match &event.logical_key {
-            // Play from the marker; press it again and the playhead comes back
-            // to the marker. See `crate::transport::TransportAction`.
-            Key::Named(NamedKey::Space) => self.transport(TransportHit::Play),
-            // And the front of the song, which is what the stop square does.
-            Key::Named(NamedKey::Home) => self.transport(TransportHit::Stop),
             Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
                 // Whichever canvas was last pressed owns the key: "delete the
                 // selection" has two meanings and no reading that means both.
@@ -4317,6 +6413,10 @@ impl WindowApp {
             Key::Named(NamedKey::Escape) => {
                 // A menu that is open is what Escape is *for*; only once it is
                 // shut does Escape mean "drop the selection".
+                if let Some((_, menu)) = self.menu.take() {
+                    self.tree.invalidate_rect(menu.frame);
+                    return;
+                }
                 if self.lane_menu.take().is_some() {
                     self.tree.invalidate(PANEL);
                     return;
@@ -4333,20 +6433,12 @@ impl WindowApp {
             Key::Character(c) => {
                 let c = c.to_lowercase();
                 match c.as_str() {
-                    "z" if ctrl && !shift => self.undo(),
-                    "z" if ctrl && shift => self.redo(),
-                    "y" if ctrl => self.redo(),
                     "a" if ctrl => {
                         if let Some(doc) = &self.options.document {
                             self.roll.select_all(doc.notes());
                             self.tree.invalidate(PANEL);
                         }
                     }
-                    "s" if ctrl => self.save(),
-                    // Beside Ctrl+S, because bouncing is the other thing you
-                    // do to a whole project. The button is on the Projects
-                    // tab; this is so you do not have to go there.
-                    "e" if ctrl => self.export(),
                     "c" if ctrl => self.copy(),
                     "x" if ctrl => self.cut(),
                     "v" if ctrl => self.paste(),
@@ -4383,7 +6475,7 @@ impl WindowApp {
                     // The cut tool. `C` is FL's, and `Ctrl+C` is copy — the
                     // modifier is what keeps them apart, as it does for `B`
                     // (paint) and `Ctrl+B` (duplicate).
-                    "c" => self.set_tool(Tool::Slice),
+                    "c" => self.pick_tool(Tool::Slice, crate::canvas::TimelineTool::Slice),
                     "+" | "=" => self.zoom(1.25, 1.0),
                     "-" | "_" => self.zoom(0.8, 1.0),
                     // Every tool by number as well as by letter: the letters
@@ -4393,7 +6485,7 @@ impl WindowApp {
                     "2" => self.set_tool(Tool::Paint),
                     "3" => self.pick_tool(Tool::Select, crate::canvas::TimelineTool::Select),
                     "4" => self.set_tool(Tool::Delete),
-                    "5" => self.set_tool(Tool::Slice),
+                    "5" => self.pick_tool(Tool::Slice, crate::canvas::TimelineTool::Slice),
                     "6" => self.set_tool(Tool::Mute),
                     "7" => self.set_tool(Tool::Slip),
                     _ => {}
@@ -4504,11 +6596,11 @@ impl WindowApp {
     fn activate_timeline(&mut self, control: crate::canvas::TimelineControl) {
         use crate::canvas::TimelineControl as C;
         match control {
-            C::Draw | C::Select => {
-                self.timeline.set_tool(if control == C::Draw {
-                    crate::canvas::TimelineTool::Draw
-                } else {
-                    crate::canvas::TimelineTool::Select
+            C::Draw | C::Select | C::Slice => {
+                self.timeline.set_tool(match control {
+                    C::Draw => crate::canvas::TimelineTool::Draw,
+                    C::Select => crate::canvas::TimelineTool::Select,
+                    _ => crate::canvas::TimelineTool::Slice,
                 });
                 self.tree.invalidate(TIMELINE);
             }
@@ -4671,7 +6763,7 @@ impl WindowApp {
             return;
         }
 
-        if self.tab == EditorTab::Instrument {
+        if self.tab != EditorTab::Roll {
             // The roll is not on screen, and editing a selection nobody can
             // see is how you find out later that you transposed something.
             return;

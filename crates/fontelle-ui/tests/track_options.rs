@@ -61,6 +61,8 @@ fn an_insert(label: &str) -> InsertInfo {
     InsertInfo {
         label: label.into(),
         bypassed: false,
+        mix: 1.0,
+        mix_automated: false,
     }
 }
 
@@ -93,13 +95,16 @@ fn centre(r: Rect) -> (f32, f32) {
 // ------------------------------------------------------------ where it is ---
 
 #[test]
-fn the_panel_sits_between_the_last_strip_and_the_master() {
+fn the_panel_sits_past_the_last_strip_with_the_master_on_the_far_side() {
+    // The master is pinned to the panel's left edge, so the column takes the
+    // other end: strips in the middle, the thing they arrive at on one side
+    // and the thing that edits them on the other.
     let l = mixer_layout_for(body(), &metrics(), &strips(), 0, Some(0));
     let o = l.options.expect("options");
     let master = l.master.expect("master");
 
     assert!(
-        o.frame.right() <= master.frame.x,
+        o.frame.x >= master.frame.right(),
         "the options {:?} run under the master {:?}",
         o.frame,
         master.frame
@@ -263,6 +268,88 @@ fn every_control_in_the_panel_reports_itself() {
     assert_eq!(mixer_hit(&l, x, y), MixerHit::Options(OptionsHit::Remove(1)));
     let (x, y) = centre(row.grip);
     assert_eq!(mixer_hit(&l, x, y), MixerHit::Options(OptionsHit::Grip(1)));
+}
+
+#[test]
+fn every_insert_row_carries_its_own_wet_dry() {
+    // Asked for from using the mixer: *"i should have a knob to adjust the
+    // sound of the dry sound (before the plugin) and the wet sound (after the
+    // plugin processes the dry sound) blending like how fl studio and other
+    // daws do it."*
+    //
+    // On the row rather than only inside the editor, and for the reason the
+    // send's level is on its row: a mix is set by ear against the rest of the
+    // chain, and a control you have to open a window to reach is one you set
+    // once and never touch again.
+    let l = mixer_layout_for(body(), &metrics(), &strips(), 0, Some(0));
+    let o = l.options.clone().expect("options");
+
+    for row in &o.inserts {
+        assert!(!row.mix.is_empty(), "slot {} has no mix control", row.slot);
+        assert!(
+            row.frame.contains(row.mix.x + 1.0, row.mix.y + 1.0),
+            "the mix control is outside its own row"
+        );
+        let (x, y) = centre(row.mix);
+        assert_eq!(
+            mixer_hit(&l, x, y),
+            MixerHit::Options(OptionsHit::InsertMix(row.slot)),
+            "the mix control does not answer for itself"
+        );
+    }
+}
+
+#[test]
+fn the_mix_control_does_not_sit_on_top_of_the_rest_of_the_row() {
+    let l = mixer_layout_for(body(), &metrics(), &strips(), 0, Some(0));
+    let o = l.options.expect("options");
+    let row = o.inserts[0].clone();
+    for (what, other) in [
+        ("bypass", row.bypass),
+        ("name", row.name),
+        ("grip", row.grip),
+        ("remove", row.remove),
+    ] {
+        let overlap = row.mix.intersection(&other);
+        assert!(
+            overlap.is_empty(),
+            "the mix control overlaps the {what} by {overlap:?}"
+        );
+    }
+}
+
+#[test]
+fn the_mix_control_is_a_knob_and_turns_like_every_other_knob() {
+    // Asked for after seeing it: *"i would like the knob to be not looking like
+    // a slider and to actually resemble a knob"*. It is a dial now, and — more
+    // to the point — it is **turned** rather than slid: up is more, down is
+    // less, from where the value was when the drag started, which is the
+    // gesture every other knob in this window already has.
+    use fontelle_ui::canvas::{insert_mix_dial, knob_value};
+    let l = mixer_layout_for(body(), &metrics(), &strips(), 0, Some(0));
+    let o = l.options.expect("options");
+    let row = o.inserts[0].clone();
+
+    let dial = insert_mix_dial(row.mix);
+    assert!(!dial.is_empty(), "there is no dial to draw");
+    assert_eq!(
+        dial.width, dial.height,
+        "a dial is round, so its box is square"
+    );
+    assert!(
+        row.mix.contains(dial.x + 1.0, dial.y + 1.0),
+        "the dial has to be inside the target you grab"
+    );
+    assert!(
+        row.mix.width > dial.width,
+        "and there has to be room beside it for the number"
+    );
+
+    // Up is more and down is less, relative to where it started.
+    assert!(knob_value(0.5, -40.0, false) > 0.5);
+    assert!(knob_value(0.5, 40.0, false) < 0.5);
+    assert_eq!(knob_value(1.0, -400.0, false), 1.0, "and it stops at wet");
+    assert_eq!(knob_value(0.0, 400.0, false), 0.0, "and at dry");
 }
 
 #[test]

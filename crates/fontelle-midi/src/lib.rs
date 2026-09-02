@@ -15,6 +15,6 @@ pub use clock::{ClockSource, ClockSync};
 pub use device::{DeviceKey, HotplugReport, MidiError, MidiHub, RouteTo, available_inputs};
 pub use file_io::{MidiExportError, export_midi_file};
 pub use learn::{CcKey, LearnMode, MidiLearnTable, TakeoverMode};
-pub use mapping::{DeviceMapping, MappingTable, VelocityCurve};
+pub use mapping::{DeviceMapping, InputSettings, LiveMapping, MappingTable, VelocityCurve};
 pub use message::{MidiMessage, decode};
-pub use router::{LiveTarget, MidiRouter};
+pub use router::{LiveKeys, LiveTarget, MidiRouter};

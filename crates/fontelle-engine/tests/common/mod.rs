@@ -6,6 +6,16 @@ use fontelle_engine::{AudioNode, ProcessContext, TransportSnapshot, TransportSta
 /// and no events — everything a node that only touches audio needs, and
 /// nothing it does not.
 pub fn process<'a>(node: &mut dyn AudioNode, channels: &'a mut [&'a mut [f32]]) {
+    process_at_tempo(node, channels, fontelle_types::DEFAULT_BPM);
+}
+
+/// The same, at a stated tempo — for the nodes that read one. A synced delay
+/// is the first; anything with an LFO will be the next.
+pub fn process_at_tempo<'a>(
+    node: &mut dyn AudioNode,
+    channels: &'a mut [&'a mut [f32]],
+    bpm: f32,
+) {
     let frames = channels.iter().map(|c| c.len()).min().unwrap_or(0);
     let mut ctx = ProcessContext {
         inputs: &[],
@@ -16,6 +26,7 @@ pub fn process<'a>(node: &mut dyn AudioNode, channels: &'a mut [&'a mut [f32]]) 
         transport: TransportSnapshot {
             state: TransportState::Playing,
             position_sample: 0,
+            bpm,
         },
         sample_range: 0..frames as i64,
     };

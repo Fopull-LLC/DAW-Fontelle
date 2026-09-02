@@ -113,8 +113,6 @@ fn shoot_with(theme: Theme, view: TransportView, meters: [Meter; 2]) -> Option<S
         &theme,
         &layout,
         &Chrome {
-            effect: None,
-            automation: None,
             panel_title: &title,
             transport: TransportChrome {
                 layout: bar,
@@ -130,7 +128,6 @@ fn shoot_with(theme: Theme, view: TransportView, meters: [Meter; 2]) -> Option<S
             rack: None,
             browser: None,
             timeline: None,
-            instrument: None,
             mixer: None,
             tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
             tab: fontelle_ui::layout::EditorTab::Roll,
@@ -139,6 +136,7 @@ fn shoot_with(theme: Theme, view: TransportView, meters: [Meter; 2]) -> Option<S
             labels: &Labels::new(),
             status: "",
             tooltip: None,
+            menu: None,
         },
     );
     let pixels = shared
@@ -469,6 +467,7 @@ fn shoot_roll_snapped(snap: SnapDivision) -> Option<RollShot> {
         None,
         &fontelle_ui::document::KeyMap::unknown(),
         snap,
+        0,
     )
 }
 
@@ -478,7 +477,7 @@ fn shoot_roll_snapped(snap: SnapDivision) -> Option<RollShot> {
 /// The widened strip is rendered nowhere else, so without this the only thing
 /// checking `NAMED_KEYBOARD_WIDTH` is arithmetic in `tests/keyboard.rs`.
 fn shoot_roll_mapped(map: &fontelle_ui::document::KeyMap) -> Option<RollShot> {
-    shoot_roll_with(&Arena::default(), &[], &[], None, map, SnapDivision::Step)
+    shoot_roll_with(&Arena::default(), &[], &[], None, map, SnapDivision::Step, 0)
 }
 
 /// [`shoot_roll`] with the lane chip's menu open over it.
@@ -502,6 +501,7 @@ fn shoot_roll_menu(open: bool) -> Option<(RollShot, fontelle_ui::canvas::LaneMen
         open.then(|| menu.clone()),
         &fontelle_ui::document::KeyMap::unknown(),
         SnapDivision::Step,
+        0,
     )?;
     Some((shot, menu))
 }
@@ -519,6 +519,20 @@ fn shoot_roll_ghosted(
         None,
         &fontelle_ui::document::KeyMap::unknown(),
         SnapDivision::Step,
+        0,
+    )
+}
+
+/// [`shoot_roll`] with keys held down on a MIDI keyboard.
+fn shoot_roll_lit(live_keys: u128) -> Option<RollShot> {
+    shoot_roll_with(
+        &Arena::default(),
+        &[],
+        &[],
+        None,
+        &fontelle_ui::document::KeyMap::unknown(),
+        SnapDivision::Step,
+        live_keys,
     )
 }
 
@@ -529,6 +543,7 @@ fn shoot_roll_with(
     lane_menu: Option<fontelle_ui::canvas::LaneMenu>,
     key_map: &fontelle_ui::document::KeyMap,
     snap: SnapDivision,
+    live_keys: u128,
 ) -> Option<RollShot> {
     let theme = Theme::dark_default();
     let shared = headless()?;
@@ -574,8 +589,6 @@ fn shoot_roll_with(
         &theme,
         &layout,
         &Chrome {
-            effect: None,
-            automation: None,
             panel_title: &title,
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
@@ -610,11 +623,12 @@ fn shoot_roll_with(
                 hover: None,
                 lane_menu: lane_menu.as_ref(),
                 slice: None,
+                key_style: fontelle_ui::canvas::KeyStyle::Piano,
+                live_keys,
             }),
             rack: None,
             browser: None,
             timeline: None,
-            instrument: None,
             mixer: None,
             tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
             tab: fontelle_ui::layout::EditorTab::Roll,
@@ -623,6 +637,7 @@ fn shoot_roll_with(
             labels: &labels,
             status: "",
             tooltip: None,
+            menu: None,
         },
     );
     let pixels = shared
@@ -635,6 +650,8 @@ fn shoot_roll_with(
         &pixels,
         if key_map.is_known() {
             "roll-keymap"
+        } else if live_keys != 0 {
+            "roll-lit"
         } else if ghosts.is_empty() {
             "roll"
         } else {
@@ -728,6 +745,67 @@ fn the_keyboard_marks_every_c_so_octaves_can_be_counted() {
 }
 
 #[test]
+fn a_key_held_on_a_midi_keyboard_lights_up_on_the_roll_keyboard() {
+    // Asked for from playing the studio: seeing what you just played on the
+    // keyboard down the side is how a phrase gets written into the grid.
+    let (Some(quiet), Some(lit)) = (shoot_roll_lit(0), shoot_roll_lit(1u128 << 60)) else {
+        return;
+    };
+    // The right-hand end of the key, clear of the C marker down its left edge
+    // and of the caption written beside it.
+    let x = lit.layout.keys.right() as u32 - 4;
+    let y = (fontelle_ui::canvas::key_to_y(&lit.view, lit.layout.grid, 60)
+        + lit.view.key_height / 2.0) as u32;
+    assert_ne!(
+        quiet.at(x, y),
+        lit.at(x, y),
+        "a key held down looks exactly like one that is not"
+    );
+    assert!(
+        near(lit.at(x, y), lit.theme.palette.accent),
+        "expected the held key lit in the accent; found {:?}",
+        lit.at(x, y)
+    );
+}
+
+#[test]
+fn only_the_key_being_played_lights_up() {
+    let (Some(quiet), Some(lit)) = (shoot_roll_lit(0), shoot_roll_lit(1u128 << 60)) else {
+        return;
+    };
+    let x = lit.layout.keys.right() as u32 - 4;
+    for key in [59u8, 61, 62, 67] {
+        let y = (fontelle_ui::canvas::key_to_y(&lit.view, lit.layout.grid, key)
+            + lit.view.key_height / 2.0) as u32;
+        assert_eq!(
+            quiet.at(x, y),
+            lit.at(x, y),
+            "key {key} is not down and must not have changed"
+        );
+    }
+}
+
+#[test]
+fn a_black_key_lights_up_too() {
+    // The accidentals are drawn as a short dark bar over the naturals, and
+    // lighting only the strip behind one would light the neighbour it sits on
+    // rather than the key that is down.
+    let (Some(quiet), Some(lit)) = (shoot_roll_lit(0), shoot_roll_lit(1u128 << 61)) else {
+        return;
+    };
+    // Inside the black bar, which runs 62% of the way across the strip.
+    let x = (lit.layout.keys.x + lit.layout.keys.width * 0.3) as u32;
+    let y = (fontelle_ui::canvas::key_to_y(&lit.view, lit.layout.grid, 61)
+        + lit.view.key_height / 2.0) as u32;
+    assert_ne!(quiet.at(x, y), lit.at(x, y), "C#4 is down and unlit");
+    assert!(
+        near(lit.at(x, y), lit.theme.palette.accent),
+        "expected the held accidental lit in the accent; found {:?}",
+        lit.at(x, y)
+    );
+}
+
+#[test]
 fn an_accidental_row_is_shaded_differently_from_a_natural_one() {
     let Some(shot) = shoot_roll(&Arena::default(), &[]) else {
         return;
@@ -799,8 +877,6 @@ fn shoot_timeline(clips: &[fontelle_ui::document::ClipInfo]) -> Option<TimelineS
         &theme,
         &layout,
         &Chrome {
-            effect: None,
-            automation: None,
             panel_title: &title,
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
@@ -830,9 +906,10 @@ fn shoot_timeline(clips: &[fontelle_ui::document::ClipInfo]) -> Option<TimelineS
                 marker_tick: 0,
                 beats_per_bar: 4,
                 marquee: None,
+                slice: None,
                 focused: false,
+                renaming: None,
             }),
-            instrument: None,
             mixer: None,
             tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
             tab: fontelle_ui::layout::EditorTab::Roll,
@@ -841,6 +918,7 @@ fn shoot_timeline(clips: &[fontelle_ui::document::ClipInfo]) -> Option<TimelineS
             labels: &Labels::new(),
             status: "",
             tooltip: None,
+            menu: None,
         },
     );
     let pixels = shared
@@ -929,23 +1007,19 @@ fn an_arrangement_with_no_clips_still_draws_its_lanes_and_ruler() {
 
 /// Renders the editor column showing the instrument tab, with a patch's worth
 /// of controls on it.
-fn shoot_instrument() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::InstrumentLayout)> {
+fn shoot_instrument() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::InstrumentLayout, u32)> {
     use fontelle_types::ParamAddress;
     use fontelle_ui::canvas::{
         InstrumentGroup, InstrumentParam, InstrumentView, ParamKind, instrument_layout,
     };
-    use fontelle_ui::layout::{EditorTab, editor_tabs};
     use fontelle_ui::render::InstrumentChrome;
 
     let theme = Theme::dark_default();
     let shared = headless()?;
-    let layout = window_layout(RW as f32, RH as f32, &theme.metrics, 0.0);
     let mut text = TextContext::new();
-    let title = text.layout("Roll", &theme.font, None);
-    let view = TransportView::unavailable();
-    let readout = text.layout(&format_readout(&view, 4), &theme.font, None);
-    let tempo = text.layout("120.00", &theme.font, None);
-    let signature = text.layout("4/4", &theme.font, None);
+    // The window's header, which is its whole chrome: no transport bar, no
+    // rack, no browser. That is what a floating editor is.
+    let title = text.layout("Instrument \u{2014} Piano", &theme.font, None);
 
     let knob = |name: &str, value: f32, display: &str| InstrumentParam {
         address: ParamAddress::new(format!("patch/{name}")),
@@ -953,13 +1027,25 @@ fn shoot_instrument() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::Instrument
         value,
         display: display.to_string(),
         kind: ParamKind::Knob,
+        automated: false,
     };
     let instrument = InstrumentView {
+        presets: Vec::new(),
+        keys: Vec::new(),
+        key: None,
         title: "tri baja".to_string(),
         groups: vec![
             InstrumentGroup {
                 name: "Channel".to_string(),
-                params: vec![knob("volume", 0.8, "+0.0 dB"), knob("pan", 0.5, "centre")],
+                // `pan` is under automation and `volume` is not, so the two
+                // cells can be compared against each other in the same shot.
+                params: vec![
+                    knob("volume", 0.8, "+0.0 dB"),
+                    InstrumentParam {
+                        automated: true,
+                        ..knob("pan", 0.5, "centre")
+                    },
+                ],
             },
             InstrumentGroup {
                 name: "Filter 1".to_string(),
@@ -970,6 +1056,7 @@ fn shoot_instrument() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::Instrument
                         value: 1.0,
                         display: "on".to_string(),
                         kind: ParamKind::Switch,
+                        automated: false,
                     },
                     InstrumentParam {
                         address: ParamAddress::new("patch/filter[0]/mode"),
@@ -979,6 +1066,7 @@ fn shoot_instrument() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::Instrument
                         kind: ParamKind::Choice(
                             ["LP", "HP", "BP", "Notch"].map(str::to_string).to_vec(),
                         ),
+                        automated: false,
                     },
                     knob("cutoff", 0.65, "2.10 kHz"),
                     knob("res", 0.2, "0.20"),
@@ -996,7 +1084,11 @@ fn shoot_instrument() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::Instrument
         ],
     };
 
-    let l = instrument_layout(layout.panel.body, &theme.metrics, &instrument);
+    // The instrument's own window, not a tab of the main one — see
+    // `fontelle_ui::layout::EditorKind`. Shot at the size it opens at.
+    let (ew, eh) = fontelle_ui::layout::EditorKind::Instrument.default_size();
+    let panel = fontelle_ui::layout::editor_window_layout(ew as f32, eh as f32, &theme.metrics);
+    let l = instrument_layout(panel.body, &theme.metrics, &instrument);
     // Everything the pure renderer will look up has to be shaped first.
     let mut labels = Labels::new();
     for caption in ["Piano roll", "Instrument"] {
@@ -1011,60 +1103,38 @@ fn shoot_instrument() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::Instrument
     }
 
     let mut scene = vello::Scene::new();
-    draw_window(
+    fontelle_ui::render::draw_editor_window(
         &mut scene,
         &theme,
-        &layout,
-        &Chrome {
-            effect: None,
-            automation: None,
-            panel_title: &title,
-            transport: TransportChrome {
-                layout: transport_bar_layout(layout.transport, &theme.metrics),
-                view,
-                meters: [Meter::new(); 2],
-                readout: &readout,
-                tempo: &tempo,
-                signature: &signature,
-                hover: None,
-                marker_sample: 0,
-            },
-            roll: None,
-            rack: None,
-            browser: None,
-            timeline: None,
-            instrument: Some(InstrumentChrome {
-                layout: l.clone(),
-                view: &instrument,
-                hover: None,
-                active: Some((1, 2)),
-            }),
-            mixer: None,
-            tabs: editor_tabs(layout.panel.header, &theme.metrics),
-            tab: EditorTab::Instrument,
-            hover_tab: None,
-            browser_title: "Soundfonts",
-            labels: &labels,
-            status: "",
-            tooltip: None,
-        },
+        &panel,
+        &labels,
+        &title,
+        &fontelle_ui::render::EditorWindowChrome::Instrument(Some(InstrumentChrome {
+            hover_preset: None,
+            hover_key: None,
+            layout: l.clone(),
+            view: &instrument,
+            hover: None,
+            active: Some((1, 2)),
+        })),
+        None,
     );
     let pixels = shared
         .lock()
         .expect("the shared renderer")
-        .render(&scene, RW, RH, theme.palette.window)
+        .render(&scene, ew, eh, theme.palette.window)
         .expect("the scene must render");
-    dump_sized(&pixels, "instrument", RW, RH);
-    Some((pixels, theme, l))
+    dump_sized(&pixels, "instrument", ew, eh);
+    Some((pixels, theme, l, ew))
 }
 
 #[test]
-fn the_instrument_tab_draws_a_control_for_every_parameter() {
-    let Some((pixels, theme, l)) = shoot_instrument() else {
+fn the_instrument_window_draws_a_control_for_every_parameter() {
+    let Some((pixels, theme, l, width)) = shoot_instrument() else {
         return;
     };
     let at = |x: u32, y: u32| {
-        let i = ((y * RW + x) * 4) as usize;
+        let i = ((y * width + x) * 4) as usize;
         Color(pixels[i..i + 4].try_into().expect("four bytes"))
     };
 
@@ -1393,6 +1463,8 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
     let chain = |label: &str, bypassed: bool| fontelle_ui::canvas::InsertInfo {
         label: label.to_string(),
         bypassed,
+        mix: 1.0,
+        mix_automated: false,
     };
     let mut strips = vec![
         // A chain on the selected strip, so the shot shows what the
@@ -1472,8 +1544,6 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
         &theme,
         &layout,
         &Chrome {
-            effect: None,
-            automation: None,
             panel_title: &title,
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
@@ -1489,7 +1559,6 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
             rack: None,
             browser: None,
             timeline: None,
-            instrument: None,
             mixer: Some(MixerChrome {
                 layout: l.clone(),
                 strips: &strips,
@@ -1512,6 +1581,7 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
             labels: &labels,
             status: "",
             tooltip: None,
+            menu: None,
         },
     );
     let pixels = shared
@@ -1685,5 +1755,193 @@ fn the_active_tool_chip_is_lit_on_both_toolbars() {
         near(at(x, y), shot.theme.palette.accent),
         "the live tool's chip should carry the accent, found {:?}",
         at(x, y)
+    );
+}
+
+
+/// A knob a lane has taken over is drawn with a **different ring**, which is
+/// TDD §12.2's own words for it.
+///
+/// The claim this makes is not "something is drawn" — it is that the ring is
+/// tellable from an ordinary knob's *in the same picture*, which is the only
+/// form of the claim that means anything to somebody looking at the panel.
+/// `is_automated` was implemented, answered by the session and covered by a
+/// test long before anything drew it, and that is exactly the shape of defect
+/// this file exists to catch.
+#[test]
+fn a_knob_under_automation_wears_a_ring_an_ordinary_knob_does_not() {
+    let Some((pixels, theme, l, width)) = shoot_instrument() else {
+        return;
+    };
+    let at = |x: u32, y: u32| {
+        let i = ((y * width + x) * 4) as usize;
+        Color(pixels[i..i + 4].try_into().expect("four bytes"))
+    };
+    let cell = |group: usize, param: usize| {
+        l.cells
+            .iter()
+            .find(|(g, p, _)| (*g, *p) == (group, param))
+            .map(|(_, _, r)| *r)
+            .expect("that cell is on the panel")
+    };
+    let ring_pixels = |rect: fontelle_ui::layout::Rect| {
+        let mut count = 0;
+        for dy in 0..rect.height as u32 {
+            for dx in 0..rect.width as u32 {
+                if near(
+                    at(rect.x as u32 + dx, rect.y as u32 + dy),
+                    theme.palette.param_automated,
+                ) {
+                    count += 1;
+                }
+            }
+        }
+        count
+    };
+
+    // `pan`, which `shoot_instrument` marks as automated, against `volume`
+    // beside it, which it does not.
+    let automated = ring_pixels(cell(0, 1));
+    let ordinary = ring_pixels(cell(0, 0));
+    assert!(
+        automated > 20,
+        "the automated knob drew {automated} pixels of the ring colour"
+    );
+    assert_eq!(
+        ordinary, 0,
+        "an ordinary knob drew the automation ring colour {ordinary} times"
+    );
+}
+
+// ------------------------------------------------- the caret on a name
+
+/// Shoots the channel rack, optionally with one row being renamed.
+fn shoot_rack(renaming: Option<usize>) -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::RackLayout, u32, u32)> {
+    use fontelle_ui::canvas::rack_layout;
+    use fontelle_ui::document::ChannelInfo;
+    use fontelle_ui::render::RackChrome;
+
+    let theme = Theme::dark_default();
+    let shared = headless()?;
+    let mut text = TextContext::new();
+    let title = text.layout("Fontelle", &theme.font, None);
+
+    let channels: Vec<ChannelInfo> = ["Bass", "Keys"]
+        .iter()
+        .map(|name| ChannelInfo {
+            name: (*name).to_string(),
+            muted: false,
+            soloed: false,
+            has_instrument: true,
+            route: None,
+        })
+        .collect();
+
+    let layout = window_layout(W as f32, H as f32, &theme.metrics, DEFAULT_TIMELINE_HEIGHT);
+    let rack = rack_layout(layout.rack.body, &theme.metrics, channels.len(), 0);
+
+    let mut labels = Labels::new();
+    for channel in &channels {
+        labels.ensure(&channel.name, &theme.font, &mut text);
+    }
+    labels.ensure("Master", &theme.font, &mut text);
+
+    let mut scene = vello::Scene::new();
+    fontelle_ui::render::draw_window(
+        &mut scene,
+        &theme,
+        &layout,
+        &Chrome {
+            panel_title: &title,
+            transport: TransportChrome {
+                layout: transport_bar_layout(layout.transport, &theme.metrics),
+                view: TransportView::unavailable(),
+                meters: [Meter::new(); 2],
+                readout: &text.layout("1.1.0", &theme.font, None),
+                tempo: &text.layout("120.00", &theme.font, None),
+                signature: &text.layout("4/4", &theme.font, None),
+                hover: None,
+                marker_sample: 0,
+            },
+            roll: None,
+            rack: Some(RackChrome {
+                panel: layout.rack,
+                layout: rack.clone(),
+                channels: &channels,
+                selected: 0,
+                hover: None,
+                route_names: &["Master".to_string()],
+                strips: 1,
+                route_menu: None,
+                route_menu_open: None,
+                renaming,
+            }),
+            browser: None,
+            timeline: None,
+            mixer: None,
+            tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
+            tab: fontelle_ui::layout::EditorTab::Roll,
+            hover_tab: None,
+            browser_title: "Soundfonts",
+            labels: &labels,
+            status: "",
+            tooltip: None,
+            menu: None,
+        },
+    );
+    let pixels = shared
+        .lock()
+        .expect("the shared renderer")
+        .render(&scene, W, H, theme.palette.window)
+        .expect("the scene must render");
+    dump(&pixels, &format!("rack-renaming-{}", renaming.is_some()));
+    Some((pixels, theme, rack, W, H))
+}
+
+/// **A name being typed has a visible text cursor.**
+///
+/// Right-click → Rename put every keystroke straight into the document and the
+/// row updated live, which is the right mechanism and gave no sign that the
+/// keyboard had been captured: the row looked exactly like a row nobody was
+/// typing into, and the only way to find out was to press a letter and watch
+/// what happened. The search box has had a caret for this reason since it was
+/// written; this is the same claim for a row's name.
+#[test]
+fn a_row_being_renamed_shows_a_caret_and_the_others_do_not() {
+    let Some((quiet, theme, rack, width, _)) = shoot_rack(None) else {
+        return;
+    };
+    let Some((typing, _, _, _, _)) = shoot_rack(Some(0)) else {
+        return;
+    };
+    let accent_in = |pixels: &[u8], rect: fontelle_ui::layout::Rect| {
+        let mut count = 0;
+        for dy in 0..rect.height as u32 {
+            for dx in 0..rect.width as u32 {
+                let x = rect.x as u32 + dx;
+                let y = rect.y as u32 + dy;
+                let i = ((y * width + x) * 4) as usize;
+                if near(
+                    Color(pixels[i..i + 4].try_into().expect("four bytes")),
+                    theme.palette.accent,
+                ) {
+                    count += 1;
+                }
+            }
+        }
+        count
+    };
+
+    let first = rack.rows.first().expect("a first row").name;
+    let second = rack.rows.get(1).expect("a second row").name;
+
+    assert!(
+        accent_in(&typing, first) > accent_in(&quiet, first),
+        "the row being renamed should gain a caret it did not have"
+    );
+    assert_eq!(
+        accent_in(&typing, second),
+        accent_in(&quiet, second),
+        "and the row nobody is typing into should be unchanged"
     );
 }

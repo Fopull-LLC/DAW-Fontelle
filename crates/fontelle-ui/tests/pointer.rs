@@ -87,6 +87,9 @@ fn rig() -> Rig {
     }];
 
     let instrument_view = InstrumentView {
+        presets: Vec::new(),
+        keys: Vec::new(),
+        key: None,
         title: "tri baja".to_string(),
         groups: vec![InstrumentGroup {
             name: "Voice".to_string(),
@@ -96,6 +99,7 @@ fn rig() -> Rig {
                 value: 0.2,
                 display: "0 ms".to_string(),
                 kind: ParamKind::Knob,
+             automated: false,
             }],
         }],
     };
@@ -256,7 +260,7 @@ fn everything_you_can_click_says_so() {
         ("open folder", mid(r.browser.open_folder)),
         ("a toolbar button", mid(r.roll_bar.items[0].1)),
         ("the roll's keyboard", mid(r.roll.keys)),
-        ("the instrument tab", mid(r.tabs.instrument)),
+        ("the mixer tab", mid(r.tabs.mixer)),
     ] {
         assert_eq!(r.at(x, y), Pointer::Hand, "{name} at ({x}, {y})");
     }
@@ -305,19 +309,22 @@ fn a_clip_on_the_arrangement_behaves_like_a_note() {
 
 #[test]
 fn a_knob_says_it_is_dragged_up_and_down() {
+    // The instrument is a window of its own now (see
+    // `fontelle_ui::layout::EditorKind`), so the question is asked of that
+    // window's own layout rather than of a tab of the main one — which is why
+    // it has a function of its own rather than a branch inside `pointer_at`.
     let r = rig();
-    let scene = r.scene(EditorTab::Instrument, None);
     let cell = r.instrument.cells[0].2;
     assert_eq!(
-        pointer_at(
-            &scene,
+        fontelle_ui::pointer::instrument_pointer(
+            &r.instrument,
+            Some(&r.instrument_view),
             cell.x + cell.width / 2.0,
-            cell.y + cell.height / 2.0
+            cell.y + cell.height / 2.0,
         ),
         Pointer::ResizeY
     );
 }
-
 #[test]
 fn a_drag_in_progress_overrides_whatever_is_under_the_pointer() {
     // Dragging a note over the keyboard must not turn the cursor into a hand

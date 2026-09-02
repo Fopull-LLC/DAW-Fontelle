@@ -169,6 +169,44 @@ fn a_v0_theme_is_carried_through_every_arm_of_the_chain() {
     assert_eq!(migrated.name, default.name);
 }
 
+/// v6 added the ring that says a control is under automation (TDD §12.2).
+///
+/// A v5 file was written when every knob looked alike whether a lane owned it
+/// or not, so it cannot have an opinion about the colour — and "your theme
+/// stopped working" is still not an acceptable cost of adding one.
+#[test]
+fn a_v5_theme_gains_the_automation_ring_colour() {
+    let mut json: serde_json::Value =
+        serde_json::from_str(&Theme::dark_default().to_json()).expect("valid JSON");
+    json["format_version"] = serde_json::json!(5);
+    json["palette"]
+        .as_object_mut()
+        .expect("palette is an object")
+        .remove("param_automated")
+        .expect("v6 added this");
+
+    let migrated = Theme::from_json(&json.to_string()).expect("a v5 theme must still open");
+    assert_eq!(migrated.format_version, THEME_FORMAT_VERSION);
+    assert_eq!(
+        migrated.palette.param_automated,
+        Theme::dark_default().palette.param_automated
+    );
+    // And it is not one of the colours already there, or the ring would say
+    // nothing a knob does not already say.
+    let p = migrated.palette;
+    for (other, name) in [
+        (p.accent, "accent"),
+        (p.grid_line_strong, "grid_line_strong"),
+        (p.note, "note"),
+        (p.text, "text"),
+    ] {
+        assert_ne!(
+            p.param_automated, other,
+            "the automation ring is the same colour as {name}"
+        );
+    }
+}
+
 #[test]
 fn a_migration_does_not_overwrite_what_the_old_file_did_say() {
     // The `or_insert` half of the contract. A v1 theme with a hand-picked

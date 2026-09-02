@@ -156,6 +156,97 @@ fn the_live_end_can_bypass_as_well_as_tune() {
 
 // ------------------------------------------------------------------ plumbing
 
+// ------------------------------------------------------------- dry and wet ---
+//
+// Asked for from using the mixer: *"i should have a knob to adjust the sound
+// of the dry sound (before the plugin) and the wet sound (after the plugin
+// processes the dry sound) blending"*. The parameter is
+// `fontelle_types::EffectConfig::mix` and the blend is here, because this is
+// the one place that has both signals: the bus as it arrived, and the bus
+// after the effect has had it.
+//
+// The dry copy is taken in `prepare`-sized scratch, so no block allocates
+// (INVARIANT 1) — `no_allocation_during_render.rs` is what holds that.
+
+/// The peak of one settled block of `freq` through `node`, and the peak of the
+/// same tone with nothing done to it.
+fn wet_and_dry(mix: f32, freq: f32, gain_db: f32) -> (f32, f32) {
+    let mut eq = a_bell(freq, gain_db);
+    eq.mix = mix;
+    let mut node = EffectNode::new(EffectConfig::Eq(eq));
+    let wet = through(&mut node, freq);
+    let dry = peak(&sine(freq, BLOCK));
+    (wet, dry)
+}
+
+#[test]
+fn an_insert_mixed_dry_is_a_wire() {
+    // The other end of the bypass: bypass switches the effect *out*, and a mix
+    // of zero leaves it running and inaudible. Both have to be exact, because
+    // a wire that is only nearly a wire is a mix that changes when you touch a
+    // control you meant to leave alone.
+    let (out, dry) = wet_and_dry(0.0, 1_000.0, 12.0);
+    assert!(
+        (out - dry).abs() < 1e-4,
+        "a dry insert changed the signal: {out} against {dry}"
+    );
+}
+
+#[test]
+fn an_insert_mixed_wet_is_the_effect_it_always_was() {
+    let (out, dry) = wet_and_dry(1.0, 1_000.0, 12.0);
+    let lift = 20.0 * (out / dry).log10();
+    assert!(
+        (lift - 12.0).abs() < 0.5,
+        "a fully wet insert must be the effect: {lift} dB of lift"
+    );
+}
+
+#[test]
+fn half_way_is_half_way_between_the_two() {
+    // At the bell's own centre the filter's phase shift is zero, so the two
+    // signals add as their peaks do — which is what makes this checkable
+    // against arithmetic rather than against a previous run.
+    let (wet, dry) = wet_and_dry(1.0, 1_000.0, 12.0);
+    let (half, _) = wet_and_dry(0.5, 1_000.0, 12.0);
+    let expected = (wet + dry) / 2.0;
+    assert!(
+        (half - expected).abs() < expected * 0.02,
+        "expected about {expected}, got {half}"
+    );
+}
+
+#[test]
+fn the_mix_moves_while_the_effect_is_running() {
+    // The same claim the knobs make, for the same reason: this is a control
+    // somebody drags, and rebuilding the graph to move it would reload every
+    // soundfont in the project sixty times a second.
+    let mut eq = a_bell(1_000.0, 12.0);
+    eq.mix = 1.0;
+    let (mut controls, source) = effect_channel(EffectConfig::Eq(eq));
+    let mut node = EffectNode::new(EffectConfig::Eq(eq)).with_controls(source);
+    let loud = through(&mut node, 1_000.0);
+
+    eq.mix = 0.0;
+    controls.publish(EffectConfig::Eq(eq));
+    let dry = through(&mut node, 1_000.0);
+    assert!(
+        dry < loud * 0.4,
+        "the mix did not reach the running effect: {dry} against {loud}"
+    );
+}
+
+#[test]
+fn a_bypassed_insert_is_a_wire_whatever_its_mix_says() {
+    let mut eq = a_bell(1_000.0, 12.0);
+    eq.mix = 0.5;
+    let mut node = EffectNode::new(EffectConfig::Eq(eq));
+    node.set_bypassed(true);
+    let out = through(&mut node, 1_000.0);
+    let dry = peak(&sine(1_000.0, BLOCK));
+    assert!((out - dry).abs() < 1e-4, "a bypassed insert is not a wire");
+}
+
 #[test]
 fn a_reset_clears_the_effects_tail() {
     let mut node = EffectNode::new(EffectConfig::Eq({

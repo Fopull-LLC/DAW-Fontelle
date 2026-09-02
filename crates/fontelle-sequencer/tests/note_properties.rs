@@ -39,6 +39,8 @@ fn compile(notes: Vec<Note>) -> fontelle_types::CompiledTimeline {
         pan: 0.0,
         muted: false,
         soloed: false,
+        named_keys: false,
+        gain_db: 0.0,
     });
     let lane = project.lanes.insert(fontelle_model::Lane {
         name: "lane".into(),
@@ -46,6 +48,7 @@ fn compile(notes: Vec<Note>) -> fontelle_types::CompiledTimeline {
         color: [0; 4],
         muted: false,
         locked: false,
+        order: 0,
     });
     let mut arena = Arena::default();
     for note in notes {
@@ -153,6 +156,8 @@ fn a_looped_clip_repeats_the_properties_with_the_notes() {
         pan: 0.0,
         muted: false,
         soloed: false,
+        named_keys: false,
+        gain_db: 0.0,
     });
     let lane = project.lanes.insert(fontelle_model::Lane {
         name: "lane".into(),
@@ -160,6 +165,7 @@ fn a_looped_clip_repeats_the_properties_with_the_notes() {
         color: [0; 4],
         muted: false,
         locked: false,
+        order: 0,
     });
     let mut arena = Arena::default();
     arena.insert(note);

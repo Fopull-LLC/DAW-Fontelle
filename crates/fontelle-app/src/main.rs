@@ -443,6 +443,20 @@ fn play_or_render(
     // why *"I connected my usb midi controller and was pressing keys but got
     // no output"*. On the command line it stays opt-in: a headless render must
     // not open every MIDI port on the machine.
+    // How that keyboard's notes are read (TDD §14.3): the velocity curve, the
+    // velocity window, transpose and the channel filter. The window's settings
+    // tab writes into this same cell, so a change reaches a device that is
+    // already plugged in — see `fontelle-midi/tests/input_settings.rs`. The
+    // *values* come off the settings file, which `Session::with_input_settings`
+    // publishes; until then it holds the identity, which is what a headless
+    // `--midi-in` run wants and has always had.
+    let live_input = std::sync::Arc::new(fontelle_midi::LiveMapping::default());
+    // And which keys those devices are holding down, so the roll's keyboard
+    // lights up under what is being played (TDD §14.1) — asked for from
+    // playing the studio, so that a phrase can be found on a controller and
+    // then written into the grid. Written by every device callback, read by
+    // the window once a frame.
+    let live_keys = std::sync::Arc::new(fontelle_midi::LiveKeys::default());
     let mut hub = (midi_in || window).then(|| {
         fontelle_midi::MidiHub::new(fontelle_midi::RouteTo {
             target: std::sync::Arc::clone(&live_target),
@@ -450,6 +464,8 @@ fn play_or_render(
             // note-off cannot cut a note the player is holding (TDD §11.4).
             voice_context: LIVE_VOICE_CONTEXT,
         })
+        .with_input_settings(std::sync::Arc::clone(&live_input))
+        .with_live_keys(std::sync::Arc::clone(&live_keys))
     });
 
     let finish = match looped {
@@ -535,7 +551,14 @@ fn play_or_render(
             // And the cell the MIDI hub's routers read, so a keyboard plays
             // whichever instrument is selected — including after a rebuild has
             // renumbered every node.
-            .with_live_target(std::sync::Arc::clone(&live_target));
+            .with_live_target(std::sync::Arc::clone(&live_target))
+            // And the cell those devices read their input settings out of, so
+            // the settings tab changes how the keyboard already plugged in
+            // reads without reopening a port.
+            .with_input_settings(std::sync::Arc::clone(&live_input))
+            // And the cell those devices light their keys in, so the roll's
+            // keyboard shows what is being played on them.
+            .with_live_keys(std::sync::Arc::clone(&live_keys));
             // The recording end of the live channel, so pressing record in the
             // window keeps a take the same way `--record` does.
             if let Some(reader) = capture.take() {
@@ -717,6 +740,7 @@ fn keep_the_take(
         color: [0xd0, 0x7f, 0x4f, 0xff],
         muted: false,
         locked: false,
+        order: 0,
     });
     AddClip::new(Clip {
         lane,
@@ -1281,12 +1305,18 @@ const WELCOME: &str = "\
   \"Change...\" picks a different one, Ctrl+click to add one alongside.
   Pick a soundfont in the browser, then a preset:
     click a preset  -> puts it on the selected channel
-    Ctrl+click      -> puts it on a new one, as does \"+ Add instrument\"
+    Ctrl+click      -> puts it on a new one
+  \"+ Add instrument\" makes a blank channel playing the built-in three-oscillator
+  synth, so there is something to hear before you have chosen anything.
+  Right-click a channel to open, rename, duplicate, clear or delete it, and a
+  lane's name to add, rename, mute or delete a row of the arrangement.
   Draw with the left mouse button, delete with the right; the drag that
   follows carries the note you just drew, and a note's right edge lengthens it.
-  C is the cut tool: drag a line across the grid and every note it crosses is
-  cut where it crossed — a diagonal stroke staggers the cuts across a chord.
-  The arrangement has the same two tools: P draws a clip where you click, E
+  C is the cut tool, in the roll and on the arrangement alike: drag a line
+  across and everything it crosses is cut where it crossed — a diagonal stroke
+  staggers the cuts across a chord, and a looped clip stays looping on both
+  sides of the cut.
+  The arrangement has the same tools: P draws a clip where you click, E
   marquees, and Ctrl+drag marquees without leaving the draw tool.
   Arrow keys move the selection: Ctrl+up/down by an octave, Ctrl+left/right by
   a bar, Shift+left/right change the length, Shift+up/down the lane's value.
@@ -1308,8 +1338,15 @@ const WELCOME: &str = "\
   The column beside the master is that strip's: where its output goes, the
   effects on it — add, reorder by the grip, switch out by the dot, delete by
   the cross — and its sends, each with a level you drag and a pre/post switch.
-  Right-click a fader, a pan or an EQ band to make an automation lane for it;
-  it lands on the arrangement as a curve you can open and draw in.
+  Right-click **any** knob — a fader, a pan, an EQ band, a compressor's
+  threshold, an instrument's cutoff or one of its oscillators — to make an
+  automation lane for it; it lands on the arrangement as a curve you can open
+  and draw in, starting at the value the knob is on.
+  An EQ's window draws the spectrum arriving at it behind the curve, so you
+  can see what you are shaping. Its band chips switch bands on; Delete removes
+  the one that is selected; and the transport, undo and save work in there as
+  they do everywhere else. Every other effect opens a panel of its own knobs,
+  and right-clicking any of them makes its automation lane too.
   Plug a MIDI keyboard in and it plays whichever channel is selected.
   Hover anything for a moment and it says what it does.";
 

@@ -7,5 +7,5 @@ mod compile;
 mod incremental;
 
 pub use collision::voice_context_for_clip;
-pub use compile::compile;
+pub use compile::{compile, sort_events};
 pub use incremental::{DirtyBars, recompile_dirty};

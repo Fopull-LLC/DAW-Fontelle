@@ -117,10 +117,16 @@ pub enum Icon {
     /// An EQ curve: a flat line with a bell in it. What the effect tab is
     /// for, and legible at sixteen pixels because the bump is the whole shape.
     Curve,
+    /// The **cut tool**: a blade leaning across the line it makes.
+    ///
+    /// Not [`Icon::Cut`], which is a pair of scissors and already means "cut to
+    /// the clipboard" on the same toolbar. Cutting a clip in two and taking it
+    /// away are two different things and cannot share a picture.
+    Blade,
 }
 
 /// Every icon, for a test that has to check all of them.
-pub const EVERY_ICON: [Icon; 31] = [
+pub const EVERY_ICON: [Icon; 32] = [
     Icon::Play,
     Icon::Stop,
     Icon::Record,
@@ -152,6 +158,7 @@ pub const EVERY_ICON: [Icon; 31] = [
     Icon::Folder,
     Icon::NewFile,
     Icon::Curve,
+    Icon::Blade,
 ];
 
 /// What `icon` is made of, in the unit box.
@@ -228,6 +235,12 @@ pub fn shapes(icon: Icon) -> Vec<Shape> {
             Shape::line(&[(0.30, 0.44), (0.68, 0.72)]),
         ],
         // Two blades crossing, and the two finger loops under them.
+        // The line it leaves, and the blade that made it. The blade is filled
+        // so it reads as an object rather than as a second stroke.
+        Icon::Blade => vec![
+            Shape::line(&[(0.50, 0.04), (0.50, 0.96)]),
+            Shape::poly(&[(0.14, 0.74), (0.60, 0.10), (0.74, 0.22), (0.28, 0.86)]),
+        ],
         Icon::Cut => vec![
             Shape::line(&[(0.20, 0.10), (0.70, 0.66)]),
             Shape::line(&[(0.80, 0.10), (0.30, 0.66)]),

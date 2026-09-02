@@ -525,3 +525,26 @@ fn the_roll_starts_with_the_onion_skins_off() {
     // other instrument's notes is a roll you cannot read.
     assert_eq!(roll().ghosts, GhostFilter::Off);
 }
+
+#[test]
+fn the_lane_seam_is_thick_enough_to_actually_grab() {
+    // Reported from using the roll: *"the velocity / pan etc. section at the
+    // bottom does have a knob to drag it but i am unable to drag it right
+    // now."* The seam was five logical pixels tall — which on a 4K screen at
+    // 150% is three physical rows of the mark you are aiming at, and a target
+    // that thin is one you miss and then decide is not a control.
+    //
+    // The room comes from the *grid* side, never the lane's: a grip drawn over
+    // the top row of bars would eat the clicks that set a velocity to its
+    // loudest, which is the value people reach for most.
+    let l = roll_layout(Rect::new(0.0, 0.0, 900.0, 520.0), &metrics(), 78.0);
+    assert!(
+        l.lane_grip.height >= 8.0,
+        "the seam is {} pixels tall, which is not a control",
+        l.lane_grip.height
+    );
+    assert!(
+        l.lane_grip.bottom() <= l.velocity.y + 0.001,
+        "the grip must stay out of the lane"
+    );
+}

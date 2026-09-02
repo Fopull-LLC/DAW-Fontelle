@@ -64,6 +64,12 @@ pub enum Unit {
     /// On or off. Stepped with two positions, and worth its own unit because
     /// a lane showing it should draw a square wave rather than a ramp.
     Switch,
+    /// Milliseconds. Its own unit rather than [`Seconds`](Self::Seconds)
+    /// scaled, because a compressor's attack is *stored* in milliseconds and a
+    /// read-out that guessed from the number said "10 s" for a ten-millisecond
+    /// attack — which is not a rounding error, it is three orders of
+    /// magnitude.
+    Milliseconds,
 }
 
 impl Unit {
@@ -74,6 +80,7 @@ impl Unit {
             Self::Decibels => " dB",
             Self::Hertz => " Hz",
             Self::Seconds => " s",
+            Self::Milliseconds => " ms",
             Self::Ratio => ":1",
             Self::Percent => "%",
         }
@@ -97,6 +104,15 @@ pub struct ParamSpec {
     pub default: f32,
     pub unit: Unit,
     pub taper: Taper,
+    /// What a **stepped** parameter's positions are called, in order.
+    ///
+    /// Empty for everything else, and for a stepped parameter whose positions
+    /// really are numbers. A chooser whose read-out says "0.00" is a control
+    /// nobody can set on purpose — which is what a compressor's detection mode
+    /// looked like the first time it had a window — and the alternative is a
+    /// per-effect table in whatever draws it, which is the second list §8.2
+    /// exists to prevent.
+    pub positions: &'static [&'static str],
 }
 
 impl ParamSpec {
@@ -159,6 +175,30 @@ pub enum ParamTarget {
     TrackGain(crate::MixerTrackId),
     /// `mixer:<track>/pan`
     TrackPan(crate::MixerTrackId),
+    /// `channel:<channel>/gain` — an instrument channel's own level, which is
+    /// **not** its mixer track's: several channels may share a track (TDD
+    /// §13.1), so the two are different controls. See
+    /// `fontelle_model::Channel::gain_db`.
+    ChannelGain(crate::ChannelId),
+    /// `channel:<channel>/pan` — the same, for its place in the stereo field.
+    ChannelPan(crate::ChannelId),
+    /// `channel:<channel>/patch/<parameter>` — one control **inside** the
+    /// channel's instrument: a filter's cutoff, an envelope stage, an
+    /// oscillator's level.
+    ///
+    /// `param` is the address the instrument panel uses for that control, the
+    /// `patch/` prefix included, so the thing you right-click and the thing
+    /// automation writes are named by the same string and cannot drift apart.
+    ///
+    /// **Anything after `patch/` parses.** Which controls a patch has is the
+    /// patch's business, and INVARIANT 7 already says what happens to a name
+    /// this build does not recognise: it changes nothing, and it is not an
+    /// error. A project written by a later build has to open, and its lane has
+    /// to survive being saved again.
+    ChannelPatch {
+        channel: crate::ChannelId,
+        param: String,
+    },
     /// `mixer:<track>/insert[<slot>]/param/<param>`
     Insert {
         track: crate::MixerTrackId,
@@ -175,6 +215,11 @@ impl ParamTarget {
             Self::Tempo => "transport/tempo".to_string(),
             Self::TrackGain(track) => format!("mixer:{}/gain", track.data().as_ffi()),
             Self::TrackPan(track) => format!("mixer:{}/pan", track.data().as_ffi()),
+            Self::ChannelGain(channel) => format!("channel:{}/gain", channel.data().as_ffi()),
+            Self::ChannelPan(channel) => format!("channel:{}/pan", channel.data().as_ffi()),
+            Self::ChannelPatch { channel, param } => {
+                format!("channel:{}/{param}", channel.data().as_ffi())
+            }
             Self::Insert { track, slot, param } => format!(
                 "mixer:{}/insert[{slot}]/param/{param}",
                 track.data().as_ffi()
@@ -193,6 +238,26 @@ impl ParamTarget {
         let text = address.as_str();
         if text == "transport/tempo" {
             return Some(Self::Tempo);
+        }
+        if let Some(rest) = text.strip_prefix("channel:") {
+            let (id, field) = rest.split_once('/')?;
+            let channel = crate::ChannelId::from(slotmap::KeyData::from_ffi(id.parse().ok()?));
+            return match field {
+                "gain" => Some(Self::ChannelGain(channel)),
+                "pan" => Some(Self::ChannelPan(channel)),
+                // §8.2's patch scheme. The whole of `patch/...` is kept as the
+                // parameter name, because that is the address the instrument
+                // panel gives the control you right-clicked.
+                _ if field.starts_with("patch/") => Some(Self::ChannelPatch {
+                    channel,
+                    param: field.to_string(),
+                }),
+                // Anything else under `channel:` is not a scheme this build
+                // has — `None` rather than a guess, so an automation clip
+                // aimed at one does nothing instead of moving whichever
+                // parameter parsed closest.
+                _ => None,
+            };
         }
         let rest = text.strip_prefix("mixer:")?;
         let (id, rest) = rest.split_once('/')?;
@@ -219,9 +284,27 @@ impl ParamTarget {
     /// The mixer track this target belongs to, when it belongs to one.
     pub fn track(&self) -> Option<crate::MixerTrackId> {
         match self {
-            Self::Tempo => None,
+            // A channel's own controls are not a track's, which is the whole
+            // reason they exist — see `fontelle_model::Channel::gain_db`.
+            Self::Tempo
+            | Self::ChannelGain(_)
+            | Self::ChannelPan(_)
+            | Self::ChannelPatch { .. } => None,
             Self::TrackGain(track) | Self::TrackPan(track) => Some(*track),
             Self::Insert { track, .. } => Some(*track),
         }
     }
+}
+
+/// A run of consecutive parameters a panel draws under one heading — see
+/// `EffectConfig::sections`.
+///
+/// A name and a count rather than a list of ids: the section *is* the next
+/// `count` rows of the effect's own table, so a parameter cannot be in two
+/// sections or in none, and adding one to the table means adding one to a
+/// count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParamSection {
+    pub name: &'static str,
+    pub count: usize,
 }

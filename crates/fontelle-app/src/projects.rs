@@ -120,10 +120,13 @@ impl ProjectLibrary {
     pub fn rescan(&mut self) {
         self.entries.clear();
         let Some(dir) = self.dir.clone() else {
-            // Short enough for the 248-pixel panel it is drawn in: the longer
-            // wording was clipped mid-word to `... "Change..." pi`, which is a
-            // sentence nobody can finish.
-            self.status = "no projects folder — \"Change...\" picks one".to_string();
+            // **Short enough for the 248-pixel panel it is drawn in.** Two
+            // wordings have now been clipped mid-sentence in that panel — the
+            // first to `... "Change..." pi`, the second to `... "Change..."
+            // picks` — and a sentence nobody can finish is one nobody can
+            // act on. This one leads with the button, so the half that
+            // survives any future clipping is the half that says what to press.
+            self.status = "\"Change\u{2026}\" picks a projects folder".to_string();
             return;
         };
         let listing = match std::fs::read_dir(&dir) {

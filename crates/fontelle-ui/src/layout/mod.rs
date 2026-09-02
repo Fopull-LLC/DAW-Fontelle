@@ -467,24 +467,21 @@ fn panel(frame: Rect, metrics: &Metrics) -> PanelLayout {
 }
 
 /// Which of the editor column's two views is showing.
+///
+/// **Two, and only two.** An instrument, an effect and an automation curve
+/// were all tabs here once, and that was wrong for a reason that has nothing
+/// to do with taste: §7.5 hosts third-party plugins, and a VST or a CLAP
+/// editor expects a *window* — it is handed a parent handle and draws into it.
+/// A thing that can only exist as one of this column's tabs is a thing the
+/// plugin path can never be built on. So the two views that are genuinely
+/// *the document* stay here, and everything that edits one device opens as a
+/// window of its own. See [`EditorKind`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorTab {
     /// The piano roll: the notes of one clip.
     Roll,
-    /// The instrument: the parameters of one channel's soundfont player
-    /// (TDD §7.2).
-    Instrument,
     /// The mixer: a fader, a pan and two switches per mixer track (TDD §13).
     Mixer,
-    /// An automation clip's points (TDD §12).
-    Automation,
-    /// One insert's parameters — the EQ's curve (TDD §13.4).
-    ///
-    /// Reached by clicking a slot in a strip's rack rather than by picking the
-    /// tab, because "which effect" is a question the tab cannot ask. It is
-    /// still a tab so that the roll and the mixer stay one click away while an
-    /// EQ is open, which is what setting one against the other needs.
-    Effect,
 }
 
 impl EditorTab {
@@ -492,25 +489,82 @@ impl EditorTab {
     pub fn tip(self) -> Option<&'static str> {
         Some(match self {
             Self::Roll => "The notes of the open clip",
-            Self::Instrument => "The selected channel's sound",
             Self::Mixer => "Levels, effects and routing",
-            Self::Automation => "The open automation clip's curve",
-            Self::Effect => "The open effect's parameters",
         })
     }
+}
+
+/// What a floating editor window has open (TDD §7.2, §12, §13.4).
+///
+/// One window each, and at most one of each open at a time — which is not a
+/// simplification but the shape of what is behind them: the host answers
+/// "the selected channel's instrument", "the open insert's parameters" and
+/// "the open automation clip", each of which is one thing. A second window of
+/// the same kind would be a second view of the same state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EditorKind {
+    /// The parameters of one channel's soundfont player (TDD §7.2) — the
+    /// window a third-party instrument will one day draw into instead.
+    Instrument,
+    /// One insert's parameters: the EQ's curve, the compressor's knobs
+    /// (TDD §13.4).
+    Effect,
+    /// An automation clip's points (TDD §12).
+    Automation,
+}
+
+impl EditorKind {
+    /// What its title bar says, before the name of whatever it has open.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Instrument => "Instrument",
+            Self::Effect => "Effect",
+            Self::Automation => "Automation",
+        }
+    }
+
+    /// How big it opens, in logical pixels.
+    ///
+    /// Wide enough for the panel each one draws and no wider: a window that
+    /// opens larger than its contents is one you have to resize before you can
+    /// see the thing beside it, which is the whole reason these are windows.
+    pub fn default_size(self) -> (u32, u32) {
+        match self {
+            // A grid of knobs. **Tall**, because it is a column of sections —
+            // channel, voice, both filters, the envelopes — and a window that
+            // opens shorter than its own contents is one you have to resize
+            // before you can read it. Narrow for the same reason a plugin
+            // editor is: it goes beside the thing it is editing.
+            Self::Instrument => (620, 760),
+            // A curve needs width far more than it needs height.
+            Self::Effect => (720, 420),
+            Self::Automation => (720, 360),
+        }
+    }
+
+    /// The smallest it may be dragged to. Under this the panel inside has no
+    /// room for a control, and a window you can shrink into uselessness is one
+    /// somebody will.
+    pub fn minimum_size(self) -> (u32, u32) {
+        (320, 200)
+    }
+}
+
+/// The insides of a floating editor window: a header carrying its name, and
+/// the body the panel is drawn in.
+///
+/// The same shape as a docked panel's, deliberately — the panels drawn into
+/// these windows are the ones that were drawn into the editor column, and they
+/// take a body rectangle either way.
+pub fn editor_window_layout(width: f32, height: f32, metrics: &Metrics) -> PanelLayout {
+    panel(Rect::new(0.0, 0.0, width.max(0.0), height.max(0.0)), metrics)
 }
 
 /// Where the editor column's tabs are, in its panel header.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EditorTabs {
     pub roll: Rect,
-    pub instrument: Rect,
     pub mixer: Rect,
-    /// Only laid out while an insert is open — a tab for a thing that is not
-    /// there is a tab that does nothing when clicked.
-    pub effect: Option<Rect>,
-    /// The same, for an open automation clip.
-    pub automation: Option<Rect>,
 }
 
 /// How wide each tab is. Fixed rather than measured, so the header does not
@@ -523,29 +577,13 @@ const TAB_GAP: f32 = 2.0;
 /// The left-hand end already carries the panel's title, which is the name of
 /// the project; putting the tabs against it would read as one long caption.
 pub fn editor_tabs(header: Rect, metrics: &Metrics) -> EditorTabs {
-    editor_tabs_with(header, metrics, false)
-}
-
-/// The same, with room for the effect tab when one is open.
-pub fn editor_tabs_with(header: Rect, metrics: &Metrics, effect: bool) -> EditorTabs {
-    editor_tabs_full(header, metrics, effect, false)
-}
-
-/// The full set, with room for whichever of the two transient tabs are open.
-pub fn editor_tabs_full(
-    header: Rect,
-    metrics: &Metrics,
-    effect: bool,
-    automation: bool,
-) -> EditorTabs {
     let inset = (header.height * 0.15).min(4.0);
     let height = (header.height - inset * 2.0).max(0.0);
     let y = header.y + inset;
     let right = header.right() - metrics.panel_padding.min(header.width);
 
     // Laid out from the right, in the order they are *used*: the roll first
-    // because it is where the notes are, then the instrument that plays them,
-    // then the mixer that balances the lot.
+    // because it is where the notes are, then the mixer that balances them.
     let mut x = right;
     let mut take = || {
         x -= TAB_WIDTH;
@@ -553,21 +591,9 @@ pub fn editor_tabs_full(
         x -= TAB_GAP;
         tab
     };
-    // Rightmost is the newest and the most transient: an EQ tab appears when
-    // one is opened and goes when it is closed, and the three that are always
-    // there must not shuffle underneath the pointer when it does.
-    let automation = automation.then(&mut take);
-    let effect = effect.then(&mut take);
     let mixer = take();
-    let instrument = take();
     let roll = take();
-    EditorTabs {
-        roll,
-        instrument,
-        mixer,
-        effect,
-        automation,
-    }
+    EditorTabs { roll, mixer }
 }
 
 /// Which tab is under the pointer.
@@ -575,17 +601,8 @@ pub fn editor_tab_at(tabs: &EditorTabs, x: f32, y: f32) -> Option<EditorTab> {
     if tabs.roll.contains(x, y) {
         return Some(EditorTab::Roll);
     }
-    if tabs.instrument.contains(x, y) {
-        return Some(EditorTab::Instrument);
-    }
     if tabs.mixer.contains(x, y) {
         return Some(EditorTab::Mixer);
-    }
-    if tabs.effect.is_some_and(|tab| tab.contains(x, y)) {
-        return Some(EditorTab::Effect);
-    }
-    if tabs.automation.is_some_and(|tab| tab.contains(x, y)) {
-        return Some(EditorTab::Automation);
     }
     None
 }

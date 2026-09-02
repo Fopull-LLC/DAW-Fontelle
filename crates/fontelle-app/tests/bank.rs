@@ -160,6 +160,7 @@ fn settings_round_trip_through_their_file_form() {
         soundfont_dirs: vec![PathBuf::from("/music/sf2"), PathBuf::from("/more/sf2")],
         projects_dir: Some(PathBuf::from("/music/projects")),
         theme: None,
+        ..Settings::default()
     };
     let back = Settings::from_json(&settings.to_json()).expect("what we wrote must read back");
     assert_eq!(back.soundfont_dirs, settings.soundfont_dirs);
@@ -289,6 +290,7 @@ fn concurrent_saves_never_leave_a_damaged_file() {
                     soundfont_dirs: vec![PathBuf::from(format!("/sf/{n}"))],
                     projects_dir: None,
                     theme: None,
+                    ..Settings::default()
                 };
                 for _ in 0..20 {
                     settings.save_to(&path).expect("must write");

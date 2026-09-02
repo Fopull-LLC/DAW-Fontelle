@@ -22,6 +22,10 @@ fn a_track() -> fontelle_types::MixerTrackId {
     fontelle_types::MixerTrackId::from(slotmap::KeyData::from_ffi((1 << 32) | 3))
 }
 
+fn a_channel() -> fontelle_types::ChannelId {
+    fontelle_types::ChannelId::from(slotmap::KeyData::from_ffi((1 << 32) | 7))
+}
+
 // ------------------------------------------------------------- addressing
 
 #[test]
@@ -79,6 +83,12 @@ fn every_address_parses_back_to_the_target_that_wrote_it() {
             slot: 3,
             param: "band7.q".into(),
         },
+        ParamTarget::ChannelGain(a_channel()),
+        ParamTarget::ChannelPan(a_channel()),
+        ParamTarget::ChannelPatch {
+            channel: a_channel(),
+            param: "patch/filter[0]/cutoff".into(),
+        },
     ] {
         let address = target.address();
         assert_eq!(
@@ -96,7 +106,12 @@ fn an_address_nobody_recognises_is_none_rather_than_a_guess() {
         "mixer",
         "mixer:notanumber/gain",
         "mixer:12/insert[x]/param/a",
-        "channel:4/patch/layer[2]/filter1.cutoff",
+        // A channel with no field after it, and one whose id is not a number.
+        "channel:4",
+        "channel:notanumber/gain",
+        // `channel:<id>/` followed by something that is neither of the
+        // channel's own two controls nor its patch.
+        "channel:4/wobble",
         "transport/swing",
     ] {
         assert_eq!(
@@ -107,14 +122,74 @@ fn an_address_nobody_recognises_is_none_rather_than_a_guess() {
     }
 }
 
+/// A patch's own parameters address as §8.2 writes them, and they parse —
+/// **whatever comes after `patch/`**.
+///
+/// The target says *which channel's patch*; whether that patch has a parameter
+/// by that name is the patch's business, and INVARIANT 7 already says what
+/// happens to one this build does not recognise: it changes nothing, and it is
+/// not an error. A project written by a later build must open, and its
+/// automation lane must survive being saved again.
+#[test]
+fn a_patchs_own_parameters_address_the_way_the_tdd_writes_them() {
+    let channel = a_channel();
+    let target = ParamTarget::ChannelPatch {
+        channel,
+        param: "patch/filter[0]/cutoff".into(),
+    };
+    let address = target.address();
+    assert!(
+        address.as_str().starts_with("channel:"),
+        "a patch parameter belongs to a channel: {address}"
+    );
+    assert!(address.as_str().ends_with("/patch/filter[0]/cutoff"));
+    assert_eq!(ParamTarget::parse(&address), Some(target));
+
+    // Including one this build has never heard of.
+    let future = ParamAddress::new(format!(
+        "channel:{}/patch/layer[2]/filter1.cutoff",
+        slotmap::Key::data(&channel).as_ffi()
+    ));
+    assert!(matches!(
+        ParamTarget::parse(&future),
+        Some(ParamTarget::ChannelPatch { .. })
+    ));
+}
+
+/// A channel's own level and placement are **not** its mixer track's, so they
+/// do not answer `track()` — the thing that asks "which strip does this
+/// automation belong to".
+#[test]
+fn a_channels_controls_belong_to_no_mixer_track() {
+    assert_eq!(ParamTarget::ChannelGain(a_channel()).track(), None);
+    assert_eq!(ParamTarget::ChannelPan(a_channel()).track(), None);
+    assert_eq!(
+        ParamTarget::ChannelPatch {
+            channel: a_channel(),
+            param: "patch/quality".into(),
+        }
+        .track(),
+        None
+    );
+}
+
 // -------------------------------------------------------- the effect's list
 
 #[test]
 fn an_eq_lists_every_band_it_has() {
     let config = EffectConfig::new(EffectKind::Eq);
     let specs = config.specs();
-    // Frequency, gain, Q, on, type and channel, for each of eight bands.
-    assert_eq!(specs.len(), 8 * 6, "eight bands, six controls each");
+    // Frequency, gain, Q, on, type and channel, for each of eight bands —
+    // and the effect's own wet/dry, which is not a band's.
+    assert_eq!(
+        specs.len(),
+        8 * 6 + 1,
+        "eight bands, six controls each, and the wet/dry"
+    );
+    assert!(
+        specs.iter().any(|spec| spec.id == "mix"),
+        "the wet/dry is addressable"
+    );
     for band in 1..=8 {
         for suffix in ["freq", "gain", "q", "on", "type", "channel"] {
             let id = format!("band{band}.{suffix}");
@@ -385,4 +460,81 @@ fn a_unit_is_declared_so_a_lane_can_say_what_it_is_showing() {
     assert_eq!(spec("band1.freq").unit, Unit::Hertz);
     assert_eq!(spec("band1.gain").unit, Unit::Decibels);
     assert_eq!(spec("band1.on").unit, Unit::Switch);
+}
+
+// ------------------------------------------------ what a chooser is called
+
+/// A stepped parameter that names its positions names **all** of them, in the
+/// order the taper steps through them.
+///
+/// The names are written out beside the specs rather than built from the enums
+/// they mirror — a `static` read on the audio thread cannot call a method — so
+/// this is what stops the two drifting. A band type added to `BandType::ALL`
+/// and not to the table would leave a chooser one position short of its own
+/// range.
+#[test]
+fn every_stepped_parameter_names_its_positions_or_none_of_them() {
+    for kind in EffectKind::ALL {
+        for spec in EffectConfig::new(kind).specs() {
+            if spec.positions.is_empty() {
+                continue;
+            }
+            let Taper::Stepped(steps) = spec.taper else {
+                panic!("{} names positions and is not stepped", spec.id);
+            };
+            assert_eq!(
+                spec.positions.len(),
+                steps as usize,
+                "{} has {steps} steps and {} names",
+                spec.id,
+                spec.positions.len()
+            );
+            assert!(
+                spec.positions.iter().all(|name| !name.is_empty()),
+                "{} has a nameless position",
+                spec.id
+            );
+        }
+    }
+}
+
+/// And the band's two choosers say what the document's own enums say, so the
+/// word on the chooser is the word everywhere else.
+#[test]
+fn a_bands_chooser_reads_the_way_the_document_does() {
+    let config = EffectConfig::new(EffectKind::Eq);
+    let names = |id: &str| {
+        config
+            .specs()
+            .iter()
+            .find(|spec| spec.id == id)
+            .expect("that parameter is there")
+            .positions
+    };
+    let types: Vec<&str> = BandType::ALL.iter().map(|t| t.label()).collect();
+    assert_eq!(names("band1.type"), types.as_slice());
+    let channels: Vec<&str> = fontelle_types::BandChannel::ALL
+        .iter()
+        .map(|c| c.label())
+        .collect();
+    assert_eq!(names("band1.channel"), channels.as_slice());
+}
+
+/// A compressor's times are **milliseconds**, and the spec says so.
+///
+/// They always were — the DSP takes `attack_ms` — and the spec said `Seconds`,
+/// which nothing read until an effect got a window and it printed "10 s" for a
+/// ten-millisecond attack.
+#[test]
+fn the_compressors_times_are_milliseconds() {
+    let config = EffectConfig::new(EffectKind::Compressor);
+    for id in ["attack", "release"] {
+        let spec = config
+            .specs()
+            .iter()
+            .find(|spec| spec.id == id)
+            .expect("that parameter is there");
+        assert_eq!(spec.unit, Unit::Milliseconds, "{id}");
+    }
+    assert_eq!(Unit::Milliseconds.suffix(), " ms");
 }

@@ -25,6 +25,26 @@ pub struct EffectSlot {
     /// delete: the reason to reach for one is to hear the difference and then
     /// put it back.
     pub bypassed: bool,
+    /// Which track this insert's **detector** listens to instead of the signal
+    /// passing through it — the external sidechain of TDD §13.4's compressor
+    /// row and `docs/effects-catalogue.md` §2.1.
+    ///
+    /// A field on the slot rather than a parameter in the config, and that is
+    /// forced rather than chosen: a `ParamSpec` is a float with a fixed range
+    /// and permanent id (INVARIANT 7), and a track is neither. A "key" knob
+    /// stepping through whatever tracks happen to exist would mean an
+    /// automation lane that pointed at a different track after a rename, which
+    /// is the second addressing scheme §8.2 forbids.
+    ///
+    /// It is a **routing edge**, and every rule that applies to
+    /// [`Send::target`] applies to it: it feeds the track it sits on, so the
+    /// graph schedules the key's bus first, and a key that closed a loop is
+    /// refused by [`Mixer::has_cycle`] before it can reach the compiler.
+    ///
+    /// `None` on every effect that has no detector, and on every project
+    /// written before this field existed.
+    #[serde(default)]
+    pub key: Option<MixerTrackId>,
 }
 
 impl EffectSlot {
@@ -34,11 +54,24 @@ impl EffectSlot {
         Self {
             config: EffectConfig::new(kind),
             bypassed: false,
+            key: None,
         }
     }
 
     pub fn kind(&self) -> EffectKind {
         self.config.kind()
+    }
+
+    /// The track this insert listens to, if it has a detector *and* has been
+    /// given one.
+    ///
+    /// Both halves matter: a key left on a slot whose effect was changed to
+    /// one with no detector is a routing edge that feeds nothing, and it would
+    /// order the graph — and refuse a cycle — for a signal path nobody can
+    /// hear. Read through this rather than the field wherever the answer is
+    /// "does this edge exist".
+    pub fn effective_key(&self) -> Option<MixerTrackId> {
+        self.config.kind().takes_key().then_some(self.key).flatten()
     }
 }
 
@@ -111,6 +144,33 @@ impl Mixer {
     ///
     /// A track whose `output` is `None` routes to master and has no outgoing
     /// output edge, so master's own `None` does not close a loop.
+    /// For each track, the tracks whose inserts listen to it — the **signal
+    /// flow** direction of an insert's key.
+    ///
+    /// The document stores that edge the other way round, because it belongs
+    /// to the insert: a compressor names what it listens *to*. Everything that
+    /// reasons about the routing graph wants the reverse, because a key means
+    /// the named track *feeds* the track the insert sits on, exactly as a send
+    /// does. Getting that direction backwards is a cycle check that passes a
+    /// loop and a schedule that reads the key one block late, so it is written
+    /// once, here, beside the field it reverses.
+    ///
+    /// Reads through [`EffectSlot::effective_key`], so a key left on an effect
+    /// with no detector is not an edge.
+    pub fn key_listeners(&self) -> HashMap<MixerTrackId, Vec<MixerTrackId>> {
+        let mut map: HashMap<MixerTrackId, Vec<MixerTrackId>> = HashMap::new();
+        for (id, track) in self.tracks.iter() {
+            for slot in &track.inserts {
+                if let Some(key) = slot.effective_key()
+                    && key != id
+                {
+                    map.entry(key).or_default().push(id);
+                }
+            }
+        }
+        map
+    }
+
     pub fn has_cycle(&self) -> bool {
         // Three colours rather than a visited set: a node reachable twice from
         // different branches is not a cycle, and a plain "seen" set would call
@@ -125,6 +185,10 @@ impl Mixer {
 
         let mut colour: HashMap<MixerTrackId, Colour> =
             self.tracks.keys().map(|id| (id, Colour::White)).collect();
+        // The third kind of edge — see `key_listeners` for why it is reversed
+        // and why that direction is the one that matters.
+        let listeners = self.key_listeners();
+        let none: Vec<MixerTrackId> = Vec::new();
 
         // Iterative, not recursive: the routing graph is user-authored, and a
         // long chain must not be able to overflow the stack on the way to
@@ -139,11 +203,15 @@ impl Mixer {
                 let Some(track) = self.tracks.get(id) else {
                     continue;
                 };
+                // Three kinds of edge, not two: an insert's key is a signal
+                // path like a send, and a key that closed a loop would be a
+                // graph the compiler cannot order. See `EffectSlot::key`.
                 let next = track
                     .output
                     .iter()
                     .copied()
                     .chain(track.sends.iter().map(|s| s.target))
+                    .chain(listeners.get(&id).unwrap_or(&none).iter().copied())
                     .nth(edge);
                 match next {
                     Some(target) => {

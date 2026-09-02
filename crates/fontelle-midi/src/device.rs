@@ -1,6 +1,6 @@
 use fontelle_types::{EventSink, NodeId};
 
-use crate::mapping::MappingTable;
+use crate::mapping::{LiveMapping, MappingTable};
 use crate::router::{LiveTarget, MidiRouter};
 
 /// Stable across replug/reboot: name + port + USB identifiers where available
@@ -95,6 +95,14 @@ pub struct MidiHub {
     connections: Vec<Connection>,
     mappings: MappingTable,
     route: RouteTo,
+    /// The input settings the window can change while devices are open
+    /// (TDD §14.3). Shared with every router this hub opens, so a change
+    /// reaches a keyboard already plugged in — see [`crate::LiveMapping`].
+    input: Option<std::sync::Arc<LiveMapping>>,
+    /// Where every open device mirrors the keys it is holding, for the window
+    /// to draw (TDD §14.1). One cell for the hub, not one per device: there is
+    /// one keyboard on screen. `None` on every path with no window.
+    keys: Option<std::sync::Arc<crate::LiveKeys>>,
 }
 
 impl MidiHub {
@@ -103,7 +111,29 @@ impl MidiHub {
             connections: Vec::new(),
             mappings: MappingTable::default(),
             route,
+            input: None,
+            keys: None,
         }
+    }
+
+    /// Gives the hub the cell the window's settings tab writes into.
+    ///
+    /// Every device opened from now on follows it, and so does every device
+    /// already open — they share the one `Arc`, which is the whole reason it
+    /// is one rather than a value copied in at open time.
+    pub fn with_input_settings(mut self, settings: std::sync::Arc<LiveMapping>) -> Self {
+        self.input = Some(settings);
+        self
+    }
+
+    /// Gives the hub the cell the window lights its keyboard from.
+    ///
+    /// Every device opened from now on writes into it, and so does every
+    /// device already open — one `Arc`, shared, the same as the settings
+    /// above. See [`crate::LiveKeys`].
+    pub fn with_live_keys(mut self, keys: std::sync::Arc<crate::LiveKeys>) -> Self {
+        self.keys = Some(keys);
+        self
     }
 
     /// Where every open device is pointed. Moving it moves them all at once —
@@ -188,14 +218,18 @@ impl MidiHub {
             .find(|port| input.port_name(port).map(DeviceKey).as_ref() == Ok(key))
             .ok_or_else(|| MidiError(format!("{} disappeared while opening it", key.0)))?;
 
-        let live = Live {
-            router: MidiRouter::following(
-                std::sync::Arc::clone(&self.route.target),
-                self.route.voice_context,
-                self.mappings.for_device(key),
-            ),
-            sink,
-        };
+        let mut router = MidiRouter::following(
+            std::sync::Arc::clone(&self.route.target),
+            self.route.voice_context,
+            self.mappings.for_device(key),
+        );
+        if let Some(settings) = &self.input {
+            router = router.following_input(std::sync::Arc::clone(settings));
+        }
+        if let Some(keys) = &self.keys {
+            router = router.watching_keys(std::sync::Arc::clone(keys));
+        }
+        let live = Live { router, sink };
         let connection = input
             .connect(
                 &port,

@@ -170,6 +170,12 @@ pub struct InsertRowLayout {
     /// cannot mean both without a timeout nobody can see.
     pub grip: Rect,
     pub remove: Rect,
+    /// Wet/dry: how much of this insert's output is the effect and how much is
+    /// the signal that went into it. A short groove dragged like the send's
+    /// level, and on the row for the same reason — it is set by ear against
+    /// the rest of the chain, and a control behind a window is one nobody
+    /// touches twice.
+    pub mix: Rect,
 }
 
 /// One send, as the options column draws it: where it goes, how much of the
@@ -233,7 +239,7 @@ pub struct MixerLayout {
     /// because the renderer clips to it.
     pub list: Rect,
     pub strips: Vec<MixerStripLayout>,
-    /// The master strip, pinned to the right-hand end and never scrolled.
+    /// The master strip, pinned to the left-hand end and never scrolled.
     ///
     /// It is where everything arrives, not one of the things arriving. A
     /// master fader you have to scroll to find is one you cannot use to set
@@ -310,17 +316,23 @@ pub fn mixer_layout_for(
         };
     }
 
-    // The master's column comes off the right first, and everything else
-    // shares what is left — the opposite way round from the rack's add button
-    // only because a mixer is read left to right.
+    // The master's column comes off the **left** first, and everything else
+    // shares what is left of the panel.
+    //
+    // The left-hand end because that is where a panel starts: the rack and the
+    // browser both begin at their own left edge, and a master pinned to the
+    // right made the mixer the one panel in the window read from the other
+    // side. It is still the thing that never scrolls — where everything
+    // arrives, rather than one of the things arriving — which is the property
+    // that matters and is independent of which edge it is pinned to.
     let (mut rest, master) = match master_index {
         Some(index) => {
-            let x = (body.right() - STRIP_WIDTH).max(body.x);
-            let frame = Rect::new(x, body.y, (body.right() - x).max(0.0), body.height).clamped();
+            let width = STRIP_WIDTH.min(body.width.max(0.0));
+            let frame = Rect::new(body.x, body.y, width, body.height).clamped();
             let rest = Rect::new(
-                body.x,
+                frame.right() + GAP * 2.0,
                 body.y,
-                (frame.x - GAP * 2.0 - body.x).max(0.0),
+                (body.right() - frame.right() - GAP * 2.0).max(0.0),
                 body.height,
             )
             .clamped();
@@ -543,6 +555,13 @@ fn send_row(index: usize, frame: Rect) -> SendRowLayout {
 }
 
 /// One insert row: switch, name, grip, delete.
+/// How wide the wet/dry groove on an insert row is.
+///
+/// Wide enough for the dial and the number beside it, and no wider: the row is
+/// 168 pixels and already carries a bypass, a name, a grip and a delete. An
+/// effect's name is three or four letters, so the room comes out of the name.
+const OPTION_MIX_WIDTH: f32 = 52.0;
+
 fn insert_row(slot: usize, frame: Rect) -> InsertRowLayout {
     let bypass = Rect::new(
         frame.x,
@@ -565,10 +584,19 @@ fn insert_row(slot: usize, frame: Rect) -> InsertRowLayout {
         frame.height,
     )
     .clamped();
+    // Between the name and the grip. Full row height, because the dial wants
+    // to be as round as the row is tall.
+    let mix = Rect::new(
+        (grip.x - OPTION_MIX_WIDTH).max(bypass.right()),
+        frame.y + 1.0,
+        OPTION_MIX_WIDTH.min((grip.x - bypass.right()).max(0.0)),
+        (frame.height - 2.0).max(0.0),
+    )
+    .clamped();
     let name = Rect::new(
         bypass.right(),
         frame.y,
-        (grip.x - bypass.right()).max(0.0),
+        (mix.x - bypass.right()).max(0.0),
         frame.height,
     )
     .clamped();
@@ -579,7 +607,35 @@ fn insert_row(slot: usize, frame: Rect) -> InsertRowLayout {
         name,
         grip,
         remove,
+        mix,
     }
+}
+
+/// What a wet/dry read-out says.
+///
+/// `dry` and `wet` at the ends rather than 0% and 100%, because those are the
+/// two settings that mean something on their own: one is the effect switched
+/// out of the sound, the other is the effect.
+pub fn format_mix(mix: f32) -> String {
+    let percent = (mix.clamp(0.0, 1.0) * 100.0).round() as i32;
+    match percent {
+        0 => "dry".to_string(),
+        100 => "wet".to_string(),
+        other => format!("{other}%"),
+    }
+}
+
+/// Where the dial is drawn inside an insert row's wet/dry box.
+///
+/// A square at the leading end, with the number beside it. Its own function so
+/// the renderer and the hit-test cannot disagree about where the knob is — the
+/// same rule every other geometry decision in this crate follows.
+///
+/// The **box** is what you grab, not the circle: an 18-pixel dial is a small
+/// target, and the number next to it is part of the same control.
+pub fn insert_mix_dial(mix: Rect) -> Rect {
+    let side = mix.height.min(mix.width);
+    Rect::new(mix.x, mix.y, side, side).clamped()
 }
 
 /// One strip's insides, top to bottom: the name, the pan, the fader and its
@@ -726,6 +782,9 @@ pub enum OptionsHit {
     /// Switch it out of the chain, or back in.
     Bypass(usize),
     Remove(usize),
+    /// How much of that insert is heard against the signal that went into it.
+    /// Dragged.
+    InsertMix(usize),
     /// Pick the row up to reorder it.
     Grip(usize),
     AddInsert,
@@ -777,6 +836,9 @@ impl OptionsHit {
             Self::Bypass(_) => "Switch this effect out, keeping its settings",
             Self::Remove(_) => "Take this effect off the track",
             Self::Grip(_) => "Drag to reorder \u{2014} order changes the sound",
+            Self::InsertMix(_) => {
+                "Wet/dry: drag to blend this effect with the sound that went into it"
+            }
             Self::AddInsert => "Put another effect on the end of the chain",
             Self::Send(_) => "Where this send goes",
             Self::SendTap(_) => "Take the send before the fader, or after it",
@@ -880,6 +942,9 @@ fn options_hit(options: &TrackOptionsLayout, x: f32, y: f32) -> MixerHit {
         }
         if row.bypass.contains(x, y) {
             return MixerHit::Options(OptionsHit::Bypass(row.slot));
+        }
+        if row.mix.contains(x, y) {
+            return MixerHit::Options(OptionsHit::InsertMix(row.slot));
         }
         return MixerHit::Options(OptionsHit::Insert(row.slot));
     }

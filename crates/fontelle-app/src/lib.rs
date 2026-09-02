@@ -145,6 +145,7 @@ pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
         color: [0x4f, 0x8f, 0xd0, 0xff],
         muted: false,
         locked: false,
+        order: 0,
     });
 
     let mut notes = Arena::default();
@@ -219,7 +220,16 @@ pub fn blank_project(bars: i64, bpm: f64, sample_rate: u32) -> Project {
     let mut project = Project::new("Untitled");
     project.tempo_map = TempoMap::new(bpm, sample_rate as f64);
 
-    let mut add_channel = AddChannel::new("Channel 1", None);
+    // The built-in synth, so a brand new project has something to play the
+    // moment it opens — see `fontelle_core::Patch::basic_synth`. The patch
+    // references no samples, so there is no provenance to give it and no way
+    // for this to fail on a fresh document; if it somehow did, an instrument-
+    // less channel is exactly what a project used to start with, so the
+    // fallback is the old behaviour rather than a refusal to make a project.
+    let patch = fontelle_core::Patch::basic_synth()
+        .to_data(&Default::default())
+        .ok();
+    let mut add_channel = AddChannel::new("Channel 1", patch);
     add_channel
         .apply(&mut project)
         .expect("a fresh project must take a channel");
@@ -231,6 +241,7 @@ pub fn blank_project(bars: i64, bpm: f64, sample_rate: u32) -> Project {
         color: [0x4f, 0x8f, 0xd0, 0xff],
         muted: false,
         locked: false,
+        order: 0,
     });
 
     // 4/4 until the document has somewhere to keep a time signature.

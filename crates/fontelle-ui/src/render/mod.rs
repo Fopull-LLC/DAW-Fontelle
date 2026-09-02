@@ -52,13 +52,11 @@ pub struct Chrome<'a> {
     /// The editor column's contents. `None` draws an empty panel — which is
     /// what a window with no clip open shows.
     pub roll: Option<RollChrome<'a>>,
-    /// The instrument editor, when its tab is the one showing.
-    pub instrument: Option<InstrumentChrome<'a>>,
-    pub effect: Option<EffectChrome>,
-    pub automation: Option<AutomationChrome>,
     /// The mixer, likewise.
     pub mixer: Option<MixerChrome<'a>>,
-    /// The editor column's two tabs, and which of them is on.
+    /// The editor column's two tabs, and which of them is on. The instrument,
+    /// the effect and the automation curve are windows of their own — see
+    /// [`draw_editor_window`].
     pub tabs: EditorTabs,
     pub tab: EditorTab,
     /// Which tab the pointer is over.
@@ -83,6 +81,9 @@ pub struct Chrome<'a> {
     /// The hover tip, once the pointer has sat still long enough — what it
     /// says and where it goes. `None` for the great majority of frames.
     pub tooltip: Option<(&'a str, Rect)>,
+    /// The right-click menu, while one is open. Drawn **last**, over
+    /// everything, because that is what a menu is.
+    pub menu: Option<&'a crate::canvas::ContextMenu>,
 }
 
 /// The channel rack's contents.
@@ -103,6 +104,13 @@ pub struct RackChrome<'a> {
     /// over everything in the rack.
     pub route_menu: Option<&'a crate::canvas::RouteMenu>,
     pub route_menu_open: Option<usize>,
+    /// Which row is having its name typed into, so a caret is drawn on it.
+    ///
+    /// A rename writes straight into the document and the row updates live,
+    /// which is the right mechanism and gives no sign that the keyboard has
+    /// been captured. The search box has had a caret since it was written and
+    /// this is the same claim for a row's name.
+    pub renaming: Option<usize>,
 }
 
 /// The soundfont browser's contents (TDD §17.5).
@@ -150,6 +158,13 @@ pub struct TimelineChrome<'a> {
     /// Whether there is anything on the clip clipboard, so Paste can say
     /// whether pressing it would do anything.
     pub can_paste: bool,
+    /// The cut tool's stroke, while it is being drawn. The same thing the
+    /// roll's has, and for the same reason: a tool whose gesture leaves no
+    /// mark is one you have to aim blind.
+    pub slice: Option<((f32, f32), (f32, f32))>,
+    /// Which lane header is having its name typed into. See
+    /// [`RackChrome::renaming`].
+    pub renaming: Option<usize>,
 }
 
 /// Everything the piano roll draws from. All of it is read-only: the roll is a
@@ -187,6 +202,13 @@ pub struct RollChrome<'a> {
     pub lane_menu: Option<&'a crate::canvas::LaneMenu>,
     /// The cut tool's line while it is being drawn, in screen points.
     pub slice: Option<((f32, f32), (f32, f32))>,
+    /// Whether the strip down the side is a keyboard or a list of names.
+    pub key_style: crate::canvas::KeyStyle,
+    /// Which keys a MIDI keyboard is holding down right now, one bit each —
+    /// lit on the keyboard down the side so a phrase can be played and then
+    /// written in. Zero when nothing is plugged in, which draws the keyboard
+    /// exactly as it always was. See `fontelle_midi::LiveKeys`.
+    pub live_keys: u128,
 }
 
 /// The instrument editor's contents (TDD §7.2).
@@ -198,6 +220,12 @@ pub struct InstrumentChrome<'a> {
     pub hover: Option<(usize, usize)>,
     /// Which control is being dragged.
     pub active: Option<(usize, usize)>,
+    /// Which preset chip the pointer is over, so it lights before it is
+    /// clicked. Its own field rather than a value of `hover`, because a chip
+    /// is not a control — see `instrument_preset_hit`.
+    pub hover_preset: Option<usize>,
+    /// The same, for the key row.
+    pub hover_key: Option<usize>,
 }
 
 /// The mixer panel's contents (TDD §13).
@@ -242,12 +270,21 @@ pub struct MixerChrome<'a> {
 pub struct EffectChrome {
     pub layout: crate::canvas::EqLayout,
     pub config: fontelle_types::EqConfig,
+    /// The analyser behind the curve, as an outline — see
+    /// [`crate::canvas::spectrum_points`]. Empty draws nothing at all, which
+    /// is what a stopped transport gets.
+    pub spectrum: Vec<(f32, f32)>,
     /// The curve, already turned into points — computed once with the rest of
     /// the frame's arithmetic rather than inside the drawing code.
     pub curve: Vec<(f32, f32)>,
+    /// The selected band's own response, drawn faintly behind the sum so the
+    /// band in hand can be seen against the shape it is part of.
+    pub band_curve: Vec<(f32, f32)>,
     /// Which band the pointer is over, and which one it has hold of.
     pub hover: Option<usize>,
     pub active: Option<usize>,
+    /// Which control under the curve the pointer is over.
+    pub hover_field: Option<crate::canvas::EqField>,
     /// What the panel says this insert is: the strip's name and the effect's.
     pub title: String,
     pub bypassed: bool,
@@ -422,32 +459,6 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
                 draw_mixer(scene, theme, chrome.labels, mixer);
             }
         }
-        EditorTab::Automation => {
-            if let Some(automation) = &chrome.automation {
-                draw_automation(scene, theme, chrome.labels, automation);
-            }
-        }
-        EditorTab::Effect => {
-            if let Some(effect) = &chrome.effect {
-                draw_effect(scene, theme, chrome.labels, effect);
-            }
-        }
-        EditorTab::Instrument => {
-            if let Some(instrument) = &chrome.instrument {
-                draw_instrument(scene, theme, chrome.labels, instrument);
-            } else {
-                // A channel with no soundfont on it: say so, rather than
-                // drawing an empty panel that looks broken.
-                draw_label(
-                    scene,
-                    chrome.labels,
-                    NO_INSTRUMENT,
-                    layout.panel.body,
-                    m,
-                    p.text_muted,
-                );
-            }
-        }
     }
     draw_editor_tabs(scene, theme, chrome);
 
@@ -465,10 +476,125 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     // Absolutely last: a tip is above everything, including an open menu —
     // which is the one place in this window where a control's meaning is least
     // obvious and its explanation most wanted.
+    // Over everything else in the window, including the transport bar: a menu
+    // drawn under the thing it was opened from is a menu you cannot read.
+    draw_context_menu(scene, theme, chrome.labels, chrome.menu);
     draw_tooltip(scene, theme, chrome);
 }
 
 /// The hover tip (see [`crate::tooltip`]).
+/// Everything a floating editor window draws (TDD §7.2, §12, §13.4).
+///
+/// The three panels behind this were tabs of the editor column until §7.5's
+/// plugin hosting made that untenable — a VST or CLAP editor is handed a
+/// parent window and draws into it, so a thing that can only be a tab is a
+/// thing the plugin path cannot be built on. The *drawing* did not change: the
+/// same three functions take the same three chromes, against a body rectangle
+/// that is now a window's rather than a column's.
+pub fn draw_editor_window(
+    scene: &mut Scene,
+    theme: &Theme,
+    layout: &PanelLayout,
+    labels: &Labels,
+    title: &TextLayout,
+    chrome: &EditorWindowChrome<'_>,
+    // The right-click menu, when the one that is open belongs to *this*
+    // window — a knob's, opened on the instrument editor.
+    menu: Option<&crate::canvas::ContextMenu>,
+) {
+    let m = &theme.metrics;
+    let p = &theme.palette;
+
+    fill_rect(scene, layout.frame, p.window);
+    fill_rect(scene, layout.header, p.panel_header);
+    draw_text(
+        scene,
+        title,
+        layout.header.x + m.panel_padding,
+        layout.header.y + (layout.header.height - title.height) / 2.0,
+        p.text,
+    );
+
+    match chrome {
+        EditorWindowChrome::Instrument(Some(instrument)) => {
+            draw_instrument(scene, theme, labels, instrument)
+        }
+        // A channel with no soundfont on it: say so, rather than leaving an
+        // empty window that looks broken.
+        EditorWindowChrome::Instrument(None) => {
+            draw_label(scene, labels, NO_INSTRUMENT, layout.body, m, p.text_muted)
+        }
+        EditorWindowChrome::Effect(effect) => draw_effect(scene, theme, labels, effect),
+        EditorWindowChrome::Insert(insert) => draw_instrument(scene, theme, labels, insert),
+        EditorWindowChrome::Automation(automation) => {
+            draw_automation(scene, theme, labels, automation)
+        }
+    }
+
+    draw_context_menu(scene, theme, labels, menu);
+}
+
+/// Which panel a floating editor window is drawing, and what it needs.
+pub enum EditorWindowChrome<'a> {
+    Instrument(Option<InstrumentChrome<'a>>),
+    /// An EQ, which draws a curve because a curve is what an EQ is.
+    Effect(EffectChrome),
+    /// Every other effect: a grid of knobs read off its own parameter list —
+    /// see `fontelle_app::effect_panel`. The same chrome the instrument panel
+    /// uses, because a grid of knobs is a grid of knobs.
+    Insert(InstrumentChrome<'a>),
+    Automation(AutomationChrome),
+}
+
+/// The right-click menu (see [`crate::canvas::context_menu_layout`]).
+///
+/// Its own function taking the menu rather than a chrome, because two surfaces
+/// draw one: the studio's window and the instrument editor's, which is where a
+/// right-clicked knob opens one.
+pub fn draw_context_menu(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    menu: Option<&crate::canvas::ContextMenu>,
+) {
+    let Some(menu) = menu else { return };
+    if menu.frame.is_empty() {
+        return;
+    }
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    // A border against the panel's own ground, for the reason `draw_lane_menu`
+    // gives: it reads as "in front of" without needing a blur.
+    fill_rect_rounded(scene, menu.frame, m.corner_radius, p.border);
+    fill_rect_rounded(scene, menu.frame.inset(1.0), m.corner_radius, p.panel_header);
+
+    for (row, entry) in menu.rows.iter().zip(menu.entries.iter()) {
+        if row.is_empty() {
+            continue;
+        }
+        if entry.separator && row.y > menu.frame.y + 1.0 {
+            fill_rect(
+                scene,
+                Rect::new(row.x, row.y, row.width, m.border_width.max(1.0)),
+                p.border,
+            );
+        }
+        let Some(text) = labels_get(labels, &entry.label) else {
+            continue;
+        };
+        draw_text_clipped(
+            scene,
+            text,
+            *row,
+            row.x + crate::canvas::MENU_TEXT_INSET,
+            row.y + (row.height - text.height) / 2.0,
+            // A greyed entry is drawn in the same ink as a panel's border,
+            // which is this theme's "there, and not for you".
+            if entry.enabled { p.text } else { p.border },
+        );
+    }
+}
+
 fn draw_tooltip(scene: &mut Scene, theme: &Theme, chrome: &Chrome<'_>) {
     let Some((caption, rect)) = chrome.tooltip else {
         return;
@@ -693,8 +819,28 @@ fn draw_automation(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &A
 }
 
 /// The EQ editor: a grid, the curve, and a handle per band.
+/// The frequencies the EQ's grid is drawn at, and what each line says.
+///
+/// The ones people name out loud. Labelled, unlike the first draft: a curve
+/// over an unlabelled grid says a band is "somewhere around there", and
+/// "somewhere around there" is not a decision anybody can repeat.
+const EQ_GRID_HZ: [(f32, &str); 6] = [
+    (50.0, "50"),
+    (100.0, "100"),
+    (500.0, "500"),
+    (1_000.0, "1k"),
+    (5_000.0, "5k"),
+    (10_000.0, "10k"),
+];
+
+/// Every caption the axis needs shaped, so the window that owns the font cache
+/// can prepare them without knowing how the grid is drawn.
+pub const EQ_AXIS_CAPTIONS: [&str; 9] = [
+    "50", "100", "500", "1k", "5k", "10k", "+12", "0", "-12",
+];
+
 fn draw_effect(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &EffectChrome) {
-    use crate::canvas::{EQ_MAX_DB, eq_x_of_freq, eq_y_of_gain};
+    use crate::canvas::{EQ_MAX_DB, EqField, eq_x_of_freq, eq_y_of_gain};
     let p = &theme.palette;
     let m = &theme.metrics;
     let area = chrome.layout.curve;
@@ -704,20 +850,32 @@ fn draw_effect(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Effec
 
     fill_rect(scene, area, p.panel);
 
-    // The decade lines, at the frequencies people name out loud. Labelled by
-    // nothing: the handles carry their own read-out, and eleven numbers along
-    // the bottom of a small panel is noise.
-    for hz in [50.0, 100.0, 500.0, 1_000.0, 5_000.0, 10_000.0] {
+    // The decade lines, with their frequencies along the bottom.
+    for (hz, caption) in EQ_GRID_HZ {
         let x = eq_x_of_freq(area, hz);
         fill_rect(
             scene,
             Rect::new(x, area.y, m.border_width.max(1.0), area.height),
             p.grid_line,
         );
+        if let Some(text) = labels_get(labels, caption) {
+            draw_text_clipped(
+                scene,
+                text,
+                area,
+                x + 3.0,
+                area.bottom() - text.height - 2.0,
+                p.text_muted,
+            );
+        }
     }
     // And the dB lines, with 0 picked out — it is the one a curve is read
     // against, and a grid where every line looks the same has no datum.
-    for db in [-EQ_MAX_DB / 2.0, 0.0, EQ_MAX_DB / 2.0] {
+    for (db, caption) in [
+        (EQ_MAX_DB / 2.0, "+12"),
+        (0.0, "0"),
+        (-EQ_MAX_DB / 2.0, "-12"),
+    ] {
         let y = eq_y_of_gain(area, db);
         fill_rect(
             scene,
@@ -728,22 +886,104 @@ fn draw_effect(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Effec
                 p.grid_line
             },
         );
+        if let Some(text) = labels_get(labels, caption) {
+            draw_text_clipped(scene, text, area, area.x + 3.0, y + 1.0, p.text_muted);
+        }
     }
 
-    // The curve itself. Drawn even when the EQ is bypassed, greyed rather than
-    // hidden: what a bypassed effect is *set to* is what you are deciding
+    let ink = if chrome.bypassed {
+        p.text_muted
+    } else {
+        p.accent
+    };
+
+    // The analyser, **behind everything**: it is what the curve is drawn
+    // against, so a band's shape has to read on top of it rather than under
+    // it. Filled to the floor of the plot rather than to the zero line the
+    // curve fills to — a spectrum is a level and the curve is a gain, and the
+    // two do not share a datum.
+    if chrome.spectrum.len() > 1 {
+        let floor = area.bottom() as f64;
+        let mut fill = BezPath::new();
+        fill.move_to((chrome.spectrum[0].0 as f64, floor));
+        for (x, y) in &chrome.spectrum {
+            fill.line_to((*x as f64, *y as f64));
+        }
+        fill.line_to((chrome.spectrum[chrome.spectrum.len() - 1].0 as f64, floor));
+        fill.close_path();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            // The panel's own text colour at low alpha rather than the
+            // accent: the accent is the *curve*, and two shapes in one ink
+            // over each other is a picture with nothing to read.
+            Color([p.text.0[0], p.text.0[1], p.text.0[2], 44]).to_peniko(),
+            None,
+            &fill,
+        );
+        let mut path = BezPath::new();
+        path.move_to((
+            chrome.spectrum[0].0 as f64,
+            chrome.spectrum[0].1 as f64,
+        ));
+        for (x, y) in &chrome.spectrum[1..] {
+            path.line_to((*x as f64, *y as f64));
+        }
+        scene.stroke(
+            &Stroke::new(1.0),
+            Affine::IDENTITY,
+            Color([p.text.0[0], p.text.0[1], p.text.0[2], 0x88]).to_peniko(),
+            None,
+            &path,
+        );
+    }
+
+    // The band in hand, behind the sum and fainter: what every parametric EQ
+    // shows, so a cut can be seen against the shape it is being made in.
+    if chrome.band_curve.len() > 1 {
+        let mut path = BezPath::new();
+        path.move_to((
+            chrome.band_curve[0].0 as f64,
+            chrome.band_curve[0].1 as f64,
+        ));
+        for (x, y) in &chrome.band_curve[1..] {
+            path.line_to((*x as f64, *y as f64));
+        }
+        scene.stroke(
+            &Stroke::new(1.0),
+            Affine::IDENTITY,
+            p.text_muted.to_peniko(),
+            None,
+            &path,
+        );
+    }
+
+    // The curve itself, filled back to the zero line so it reads as a shape
+    // rather than as a wire. Drawn even when the EQ is bypassed, greyed rather
+    // than hidden: what a bypassed effect is *set to* is what you are deciding
     // whether to switch back in.
     if chrome.curve.len() > 1 {
+        let zero = eq_y_of_gain(area, 0.0) as f64;
+        let mut fill = BezPath::new();
+        fill.move_to((chrome.curve[0].0 as f64, zero));
+        for (x, y) in &chrome.curve {
+            fill.line_to((*x as f64, *y as f64));
+        }
+        fill.line_to((chrome.curve[chrome.curve.len() - 1].0 as f64, zero));
+        fill.close_path();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color([ink.0[0], ink.0[1], ink.0[2], 56]).to_peniko(),
+            None,
+            &fill,
+        );
+
         let mut path = BezPath::new();
         path.move_to((chrome.curve[0].0 as f64, chrome.curve[0].1 as f64));
         for (x, y) in &chrome.curve[1..] {
             path.line_to((*x as f64, *y as f64));
         }
-        let ink = if chrome.bypassed {
-            p.text_muted
-        } else {
-            p.accent
-        };
         scene.stroke(
             &Stroke::new(2.0),
             Affine::IDENTITY,
@@ -754,13 +994,18 @@ fn draw_effect(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Effec
     }
 
     for handle in &chrome.layout.handles {
-        let selected = chrome.active == Some(handle.band) || chrome.hover == Some(handle.band);
-        let fill = if selected { p.accent } else { p.note };
-        fill_rect_rounded(scene, handle.rect, handle.rect.width / 2.0, fill);
+        let selected = chrome.layout.selected == handle.band;
+        let lit = selected || chrome.active == Some(handle.band) || chrome.hover == Some(handle.band);
+        fill_rect_rounded(
+            scene,
+            handle.rect,
+            handle.rect.width / 2.0,
+            if lit { p.accent } else { p.note },
+        );
         scene.stroke(
             &Stroke::new(m.border_width as f64),
             Affine::IDENTITY,
-            p.border.to_peniko(),
+            if selected { p.text } else { p.border }.to_peniko(),
             None,
             &RoundedRect::from_rect(
                 KRect::new(
@@ -772,20 +1017,97 @@ fn draw_effect(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Effec
                 handle.rect.width as f64 / 2.0,
             ),
         );
+        // The band's number on its handle, which is what ties it to the chip
+        // below and to `band3.gain` in an automation lane's name.
+        if let Some(text) = labels_get(labels, &(handle.band + 1).to_string()) {
+            draw_text_clipped(
+                scene,
+                text,
+                handle.rect,
+                handle.rect.x + (handle.rect.width - text.width) / 2.0,
+                handle.rect.y + (handle.rect.height - text.height) / 2.0,
+                p.panel,
+            );
+        }
     }
 
-    draw_label(
-        scene,
-        labels,
-        &chrome.title,
-        chrome.layout.controls,
-        m,
-        if chrome.bypassed {
-            p.text_muted
-        } else {
-            p.text
-        },
-    );
+    // The eight chips. A fresh EQ has every band switched off and therefore no
+    // handles at all, and this row is what makes that state usable: the bands
+    // are visibly there, and clicking one switches it on.
+    for (index, chip) in &chrome.layout.bands {
+        if chip.is_empty() {
+            continue;
+        }
+        let band = chrome.config.bands[*index];
+        let selected = chrome.layout.selected == *index;
+        fill_rect_rounded(
+            scene,
+            *chip,
+            m.corner_radius * 0.5,
+            if band.enabled { p.accent } else { p.panel },
+        );
+        stroke_rect_rounded(
+            scene,
+            chip.inset(0.5),
+            m.corner_radius * 0.5,
+            m.border_width.max(1.0),
+            if selected { p.text } else { p.border },
+        );
+        if let Some(text) = labels_get(labels, &(index + 1).to_string()) {
+            draw_text_clipped(
+                scene,
+                text,
+                *chip,
+                chip.x + (chip.width - text.width) / 2.0,
+                chip.y + (chip.height - text.height) / 2.0,
+                if band.enabled { p.panel } else { p.text_muted },
+            );
+        }
+    }
+
+    // And the selected band's controls: type, frequency, gain, Q, which part
+    // of the stereo image it works on, solo, off — and the effect's wet/dry.
+    for (field, rect) in &chrome.layout.fields {
+        if rect.is_empty() {
+            continue;
+        }
+        let band = chrome.config.bands[chrome.layout.selected];
+        let on = match field {
+            EqField::Solo => band.solo,
+            EqField::Delete => !band.enabled,
+            _ => false,
+        };
+        let lit = chrome.hover_field == Some(*field);
+        fill_rect_rounded(
+            scene,
+            *rect,
+            m.corner_radius * 0.5,
+            if on {
+                p.accent
+            } else if lit {
+                p.border
+            } else {
+                p.panel
+            },
+        );
+        let caption = crate::canvas::eq_field_caption(*field, &chrome.config, chrome.layout.selected);
+        if let Some(text) = labels_get(labels, &caption) {
+            draw_text_clipped(
+                scene,
+                text,
+                *rect,
+                rect.x + (rect.width - text.width).max(0.0) / 2.0,
+                rect.y + (rect.height - text.height) / 2.0,
+                if on {
+                    p.panel
+                } else if band.enabled {
+                    p.text
+                } else {
+                    p.text_muted
+                },
+            );
+        }
+    }
 }
 
 fn draw_mixer(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &MixerChrome<'_>) {
@@ -837,14 +1159,17 @@ fn draw_mixer(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &MixerC
     }
 
     // The seam the master sits behind, so the eye reads it as a different kind
-    // of thing rather than as the strip that happens to be last.
+    // of thing rather than as the strip that happens to be first. Drawn on its
+    // *right*, which is the side the strips are on now that the master is
+    // pinned to the panel's left edge — on the far side it fell outside the
+    // panel entirely and drew nothing.
     if let Some(master) = &l.master
         && !l.list.is_empty()
     {
         fill_rect(
             scene,
             Rect::new(
-                master.frame.x - 3.0,
+                master.frame.right() + 2.0,
                 master.frame.y,
                 m.border_width.max(1.0),
                 master.frame.height,
@@ -1026,6 +1351,40 @@ fn draw_track_options(
             row.name.x + 2.0,
             if insert.bypassed { p.text_muted } else { p.text },
         );
+        // Wet/dry, as a **dial** with its number beside it. A knob rather than
+        // a groove because that is what it is: a mix is a setting you turn to
+        // taste, and a horizontal bar in a rack of them reads as a level.
+        if !row.mix.is_empty() {
+            let dial = crate::canvas::insert_mix_dial(row.mix);
+            let hot = hovering(OptionsHit::InsertMix(row.slot));
+            draw_knob(
+                scene,
+                theme,
+                dial,
+                insert.mix.clamp(0.0, 1.0),
+                hot,
+                insert.mix_automated,
+            );
+            let caption = crate::canvas::format_mix(insert.mix);
+            let beside = Rect::new(
+                dial.right() + 2.0,
+                row.mix.y,
+                (row.mix.right() - dial.right() - 2.0).max(0.0),
+                row.mix.height,
+            );
+            if let Some(text) = labels_get(labels, &caption)
+                && !beside.is_empty()
+            {
+                draw_text_clipped(
+                    scene,
+                    text,
+                    beside,
+                    beside.x,
+                    beside.y + (beside.height - text.height) / 2.0,
+                    if insert.bypassed { p.text_muted } else { p.text },
+                );
+            }
+        }
         row_text(scene, GRIP, row.grip, row.grip.x + 2.0, p.text_muted);
         row_text(
             scene,
@@ -1624,22 +1983,28 @@ pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome
     // Row shading: the accidentals sit a shade back, which is what makes an
     // octave countable without a line for every one of them.
     for key in keys.clone() {
-        let y = crate::canvas::key_to_y(v, grid, key as u8);
-        let row = Rect::new(grid.x, y, grid.width, v.key_height);
+        // Snapped to whole pixels, and the same rectangle the keyboard and the
+        // notes are drawn in — see `canvas::key_row`. Measuring the three in
+        // three places is how they came to disagree by a pixel, which is what
+        // "inconsistant sizing on the notes" looked like.
+        let row = crate::canvas::key_row(v, grid, key.clamp(0, 127) as u8);
         // A key the instrument cannot play, before the accidental shading and
         // instead of it: "nothing here sounds" is a stronger statement about a
         // row than "this one is a black key", and on a drum kit the dead rows
         // fall on naturals and accidentals alike.
         if !chrome.key_map.plays(key.clamp(0, 127) as u8) {
             fill_rect(scene, row.intersection(&grid), p.row_dead);
-        } else if is_accidental(key) {
+        } else if is_accidental(key) && chrome.key_style == crate::canvas::KeyStyle::Piano {
+            // Only in the piano view: the list view has no black keys to
+            // shade rows for, and striping them there would be a pattern
+            // saying something the strip beside it does not.
             fill_rect(scene, row.intersection(&grid), p.row_accidental);
         }
         // A stronger line under every C.
         if key % 12 == 0 {
             fill_rect(
                 scene,
-                Rect::new(grid.x, y + v.key_height - 1.0, grid.width, 1.0).intersection(&grid),
+                Rect::new(grid.x, row.bottom() - 1.0, grid.width, 1.0).intersection(&grid),
                 p.grid_line_strong,
             );
         }
@@ -1691,13 +2056,8 @@ pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome
         }
         let x0 = tick_to_x(v, grid, ghost.start);
         let x1 = tick_to_x(v, grid, ghost.start + ghost.length);
-        let block = Rect::new(
-            x0,
-            crate::canvas::key_to_y(v, grid, ghost.key),
-            (x1 - x0).max(1.0),
-            v.key_height,
-        )
-        .intersection(&grid);
+        let row = crate::canvas::key_row(v, grid, ghost.key);
+        let block = Rect::new(x0, row.y, (x1 - x0).max(1.0), row.height).intersection(&grid);
         if block.is_empty() {
             continue;
         }
@@ -1732,14 +2092,15 @@ pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome
         }
         let x0 = tick_to_x(v, grid, note.start);
         let x1 = tick_to_x(v, grid, note.start + note.length);
+        let row = crate::canvas::key_row(v, grid, note.key);
         let block = Rect::new(
             x0,
-            crate::canvas::key_to_y(v, grid, note.key),
+            row.y,
             // Always at least a pixel wide: a note too short to see is still a
             // note, and one that vanishes at low zoom cannot be clicked to
             // find out why.
             (x1 - x0).max(1.0),
-            v.key_height,
+            row.height,
         )
         .intersection(&grid);
         if block.is_empty() {
@@ -1857,7 +2218,16 @@ pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome
         scene.pop_layer();
     }
 
-    draw_keyboard(scene, theme, labels, l, v, chrome.key_map);
+    draw_keyboard(
+        scene,
+        theme,
+        labels,
+        l,
+        v,
+        chrome.key_map,
+        chrome.live_keys,
+        chrome.key_style,
+    );
     draw_ruler_strip(scene, theme, labels, l, v, chrome);
     draw_property_lane(scene, theme, labels, chrome);
     draw_roll_toolbar(scene, theme, labels, chrome);
@@ -2039,7 +2409,7 @@ fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
         // reasoning that put a caret on the lane chip.
         let is_chip = matches!(
             control,
-            RollControl::Snap | RollControl::Lane | RollControl::Ghost
+            RollControl::Snap | RollControl::Lane | RollControl::Ghost | RollControl::Keys
         );
         if on || is_chip || chrome.hover == Some(*control) {
             fill_rect_rounded(
@@ -2068,6 +2438,9 @@ fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
             RollControl::Snap => chrome.snap.label(),
             RollControl::Lane => &lane_caption,
             RollControl::Ghost => &ghost_caption,
+            // The chip says which view the strip is in, the way the snap chip
+            // says which division is on.
+            RollControl::Keys => chrome.key_style.label(),
             other => other.label(),
         };
         let Some(text) = labels.get(caption) else {
@@ -2184,6 +2557,9 @@ fn draw_rack(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RackChr
                 row.name.y + (row.name.height - text.height) / 2.0,
                 if channel.muted { p.text_muted } else { ink },
             );
+            if chrome.renaming == Some(row.index) {
+                draw_caret(scene, p.accent, row.name, row.name.x + 7.0 + text.width);
+            }
         }
         for (rect, on, caption, colour) in [
             (row.solo, channel.soloed, "S", p.accent),
@@ -2200,6 +2576,32 @@ fn draw_rack(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RackChr
                     if on { p.panel } else { p.text_muted },
                 );
             }
+        }
+
+        // The button that opens this channel's instrument in a window of its
+        // own (TDD §7.2, §7.5).
+        //
+        // **It was hit-tested and never drawn.** A rectangle you cannot see is
+        // not a button, and this one is now the only way to open an instrument
+        // at all — the tab it used to switch to is gone. Found the way the
+        // other four of its kind were: by opening the window and looking at
+        // the row. Drawn as the glyph and not a letter, because "E" beside "S"
+        // and "M" reads as a third switch.
+        if !row.edit.is_empty() {
+            let lit = chrome.hover == Some(RackHit::Edit(row.index));
+            fill_rect_rounded(scene, row.edit, 2.0, if lit { p.accent } else { p.border });
+            let side = (row.edit.height * 0.62).min(row.edit.width * 0.62);
+            draw_icon(
+                scene,
+                crate::icon::Icon::Sliders,
+                Rect::new(
+                    row.edit.x + (row.edit.width - side) / 2.0,
+                    row.edit.y + (row.edit.height - side) / 2.0,
+                    side,
+                    side,
+                ),
+                if lit { p.panel } else { p.text_muted },
+            );
         }
 
         // Where the channel goes, as the mixer's own number. Framed like the
@@ -2300,15 +2702,11 @@ fn draw_route_menu(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &R
 /// exactly the string the renderer will look for.
 pub const ADD_CHANNEL: &str = "+ Add instrument";
 
-/// The editor column's tab captions.
+/// The editor column's tab captions. Two, since the instrument, the effect
+/// and the automation curve became windows of their own — see
+/// [`draw_editor_window`].
 pub const TAB_ROLL: &str = "Piano roll";
-pub const TAB_INSTRUMENT: &str = "Instrument";
 pub const TAB_MIXER: &str = "Mixer";
-/// The tab an open insert puts up. Named for the effect, not for the slot: a
-/// tab saying "Insert 2" tells you where it is and not what it does.
-pub const TAB_EFFECT: &str = "EQ";
-/// And the one an open automation clip puts up.
-pub const TAB_AUTOMATION: &str = "Automation";
 
 /// The caption on a strip's empty rack row. Short, because the row is the
 /// width of a mixer strip and a longer word would be clipped to the same three
@@ -2354,31 +2752,10 @@ fn draw_editor_tabs(scene: &mut Scene, theme: &Theme, chrome: &Chrome<'_>) {
             crate::icon::Icon::Piano,
         ),
         (
-            EditorTab::Instrument,
-            chrome.tabs.instrument,
-            TAB_INSTRUMENT,
-            crate::icon::Icon::Magnet,
-        ),
-        (
             EditorTab::Mixer,
             chrome.tabs.mixer,
             TAB_MIXER,
             crate::icon::Icon::Sliders,
-        ),
-        (
-            EditorTab::Effect,
-            chrome.tabs.effect.unwrap_or(Rect::ZERO),
-            TAB_EFFECT,
-            crate::icon::Icon::Curve,
-        ),
-        // The automation tab was laid out and hit-tested and never drawn, so
-        // opening a curve took you to a panel with no chip lit and no way
-        // back to it once you left. Found by looking at the window.
-        (
-            EditorTab::Automation,
-            chrome.tabs.automation.unwrap_or(Rect::ZERO),
-            TAB_AUTOMATION,
-            crate::icon::Icon::Curve,
         ),
     ] {
         if rect.is_empty() {
@@ -2565,6 +2942,59 @@ fn draw_instrument(
         return;
     }
 
+    // The two chip rows, above the first heading. A chip rather than a knob,
+    // because choosing one is a different gesture from turning one: a preset
+    // writes the whole panel and then has nothing further to say (rule 10),
+    // and a key names a track, which is not a number with a range.
+    //
+    // The **chosen** chip is filled rather than outlined. A preset row has no
+    // chosen one — nothing stays selected once its knobs have been turned —
+    // and the key row always does, because "no key" is one of them.
+    for (chips, names, chosen, hovered) in [
+        (
+            &l.presets,
+            &chrome.view.presets,
+            None,
+            chrome.hover_preset,
+        ),
+        (&l.keys, &chrome.view.keys, chrome.view.key, chrome.hover_key),
+    ] {
+        for (index, rect) in chips {
+            let Some(name) = names.get(*index) else {
+                continue;
+            };
+            if rect.is_empty() {
+                continue;
+            }
+            let lit = hovered == Some(*index);
+            let picked = chosen == Some(*index);
+            fill_rect_rounded(
+                scene,
+                *rect,
+                m.corner_radius,
+                match (picked, lit) {
+                    (true, _) => p.accent,
+                    (false, true) => p.row_accidental,
+                    (false, false) => p.panel_header,
+                },
+            );
+            stroke_rect_rounded(scene, *rect, m.corner_radius, 1.0, p.border);
+            if let Some(text) = labels.get(name.as_str()) {
+                draw_text_clipped(
+                    scene,
+                    text,
+                    *rect,
+                    rect.x + 6.0,
+                    rect.y + (rect.height - text.height) / 2.0,
+                    // The palette has no on-accent colour; the accent is a
+                    // fill light enough that the panel's own text reads on it,
+                    // which is what every other selected row here uses.
+                    p.text,
+                );
+            }
+        }
+    }
+
     for (index, rect) in &l.headings {
         let Some(group) = chrome.view.groups.get(*index) else {
             continue;
@@ -2636,7 +3066,9 @@ fn draw_instrument(
         }
 
         match &param.kind {
-            ParamKind::Knob => draw_knob(scene, theme, control, param.value, hot),
+            ParamKind::Knob => {
+                draw_knob(scene, theme, control, param.value, hot, param.automated)
+            }
             ParamKind::Switch => {
                 let on = param.value >= 0.5;
                 let chip = control.inset((control.height * 0.25).min(control.width * 0.3));
@@ -2646,6 +3078,18 @@ fn draw_instrument(
                     chip.height / 2.0,
                     if on { p.accent } else { p.border },
                 );
+                // A switch has no groove to recolour, so the ring goes round
+                // the chip. Same statement as a knob's, in the one shape a
+                // two-position control has.
+                if param.automated {
+                    stroke_rect_rounded(
+                        scene,
+                        chip.inset(-2.0),
+                        (chip.height / 2.0) + 2.0,
+                        AUTOMATION_RING_WIDTH,
+                        p.param_automated,
+                    );
+                }
             }
             ParamKind::Choice(options) => {
                 // A row of pips saying where in the list you are: a chip that
@@ -2665,6 +3109,23 @@ fn draw_instrument(
                         if n == chosen { p.accent } else { p.border },
                     );
                 }
+                // Round the whole row of pips, for the reason the switch's
+                // goes round its chip.
+                if param.automated {
+                    let row = Rect::new(
+                        control.x + (control.width - span) / 2.0 - 3.0,
+                        y - 3.0,
+                        span + 6.0,
+                        pip + 6.0,
+                    );
+                    stroke_rect_rounded(
+                        scene,
+                        row,
+                        (pip + 6.0) / 2.0,
+                        AUTOMATION_RING_WIDTH,
+                        p.param_automated,
+                    );
+                }
             }
         }
     }
@@ -2681,7 +3142,21 @@ fn draw_instrument(
 /// The angle runs **clockwise from twelve o'clock**, which is the one thing to
 /// be careful of: screen y grows downwards, so the obvious spelling of an arc
 /// comes out mirrored and the knob turns anticlockwise. The first version did.
-fn draw_knob(scene: &mut Scene, theme: &Theme, area: Rect, value: f32, hot: bool) {
+/// How thick the ring round an automated control is drawn.
+///
+/// Wide enough that its interior samples the colour exactly rather than a
+/// blend with what is under it — which is what makes it a claim a test can
+/// check as well as one an eye can see.
+const AUTOMATION_RING_WIDTH: f32 = 2.0;
+
+fn draw_knob(
+    scene: &mut Scene,
+    theme: &Theme,
+    area: Rect,
+    value: f32,
+    hot: bool,
+    automated: bool,
+) {
     let p = &theme.palette;
     if area.is_empty() {
         return;
@@ -2721,11 +3196,23 @@ fn draw_knob(scene: &mut Scene, theme: &Theme, area: Rect, value: f32, hot: bool
         &vello::kurbo::Circle::new((cx as f64, cy as f64), (radius - 2.0).max(1.0) as f64),
     );
 
+    // The groove. **This is the ring §12.2 asks for**: when a lane owns the
+    // control it is drawn in the automation colour rather than the chrome's,
+    // so a knob somebody's automation is holding is tellable from one nobody
+    // has touched — at a glance, and without a second badge to find room for.
+    //
+    // The groove rather than the value arc, because the value arc is the part
+    // you read the setting off and it has to keep saying what the setting is.
     let width = (radius * 0.28).clamp(2.0, 4.0);
     scene.stroke(
         &Stroke::new(width as f64),
         Affine::IDENTITY,
-        p.grid_line_strong.to_peniko(),
+        if automated {
+            p.param_automated
+        } else {
+            p.grid_line_strong
+        }
+        .to_peniko(),
         None,
         &path_of(1.0),
     );
@@ -2795,7 +3282,8 @@ fn draw_timeline_toolbar(
             | TimelineControl::ZoomOut
             | TimelineControl::ZoomIn
             | TimelineControl::Draw
-            | TimelineControl::Select => true,
+            | TimelineControl::Select
+            | TimelineControl::Slice => true,
             TimelineControl::Paste => chrome.can_paste,
             _ => selected,
         };
@@ -2805,6 +3293,7 @@ fn draw_timeline_toolbar(
         let on = match control {
             TimelineControl::Draw => chrome.tool == crate::canvas::TimelineTool::Draw,
             TimelineControl::Select => chrome.tool == crate::canvas::TimelineTool::Select,
+            TimelineControl::Slice => chrome.tool == crate::canvas::TimelineTool::Slice,
             _ => false,
         };
         // The snap chip is a read-out and always carries its frame: a bare
@@ -2906,6 +3395,9 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
                 header.y + (header.height - text.height) / 2.0,
                 if muted { p.text_muted } else { p.text },
             );
+            if chrome.renaming == Some(lane) {
+                draw_caret(scene, p.accent, header, header.x + 9.0 + text.width);
+            }
         }
         fill_rect(
             scene,
@@ -3054,6 +3546,34 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
                 ),
             );
         }
+    }
+
+    // The cut tool's stroke, over the clips it is about to divide and clipped
+    // to the grid — the same mark the roll's makes, for the same reason.
+    if let Some((from, to)) = chrome.slice {
+        let mut line = BezPath::new();
+        line.move_to(Point::new(from.0 as f64, from.1 as f64));
+        line.line_to(Point::new(to.0 as f64, to.1 as f64));
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            Affine::IDENTITY,
+            &KRect::new(
+                l.grid.x as f64,
+                l.grid.y as f64,
+                l.grid.right() as f64,
+                l.grid.bottom() as f64,
+            ),
+        );
+        scene.stroke(
+            &Stroke::new(1.5),
+            Affine::IDENTITY,
+            p.meter_peak.to_peniko(),
+            None,
+            &line,
+        );
+        scene.pop_layer();
     }
 
     draw_timeline_ruler(scene, theme, labels, chrome);
@@ -3236,6 +3756,7 @@ fn draw_browser(
     for (mode, rect) in [
         (crate::canvas::BrowserMode::Sounds, l.sounds_tab),
         (crate::canvas::BrowserMode::Projects, l.projects_tab),
+        (crate::canvas::BrowserMode::Settings, l.settings_tab),
     ] {
         if rect.is_empty() {
             continue;
@@ -3314,7 +3835,7 @@ fn draw_browser(
             );
         }
         let shown = if chrome.query.is_empty() {
-            SEARCH_HINT
+            search_hint(chrome.mode)
         } else {
             chrome.query
         };
@@ -3386,8 +3907,18 @@ fn draw_browser(
             let glyph = match entry.kind {
                 LibraryKind::Folder => Some(crate::icon::Icon::Folder),
                 LibraryKind::Up => Some(crate::icon::Icon::ArrowUp),
+                // A heading over a run of search hits: which soundfont they
+                // are in. Given the folder glyph, because that is what it is
+                // saying — "these came from in here".
+                LibraryKind::Group => Some(crate::icon::Icon::Folder),
                 LibraryKind::File => None,
             };
+            // And a band behind it, so a list of hits from four soundfonts
+            // reads as four groups rather than as one long list with some
+            // grey rows in it.
+            if entry.kind == LibraryKind::Group {
+                fill_rect(scene, *rect, p.panel_header);
+            }
             let indent = match glyph {
                 Some(icon) => {
                     let side = (rect.height * 0.55).min(rect.width);
@@ -3476,14 +4007,18 @@ fn draw_browser(
     for (rect, caption, what, icon) in [
         (
             l.open_folder,
-            OPEN_FOLDER,
-            BrowserHit::OpenFolder,
+            if l.mode == crate::canvas::BrowserMode::Settings {
+                OPEN_CONFIG_FOLDER
+            } else {
+                OPEN_FOLDER
+            },
+            BrowserHit::OpenFolder(l.mode),
             crate::icon::Icon::Folder,
         ),
         (
             l.choose_folder,
             CHOOSE_FOLDER,
-            BrowserHit::ChooseFolder,
+            BrowserHit::ChooseFolder(l.mode),
             crate::icon::Icon::Route,
         ),
     ] {
@@ -3510,22 +4045,55 @@ fn draw_browser(
 
 /// The placeholder in the empty search box, in one place for the same reason
 /// [`ADD_CHANNEL`] is.
+/// What the empty search box says, per mode.
+///
+/// **It said "search soundfonts" over the projects list**, which is the same
+/// conflation the folder buttons and the panel heading had: three lists in one
+/// panel, and one of them naming all three. The box does filter projects, so
+/// the placeholder was not only wrong, it talked somebody out of using a
+/// control that worked.
+pub fn search_hint(mode: crate::canvas::BrowserMode) -> &'static str {
+    match mode {
+        crate::canvas::BrowserMode::Sounds => SEARCH_HINT,
+        crate::canvas::BrowserMode::Projects => "search projects\u{2026}",
+        // There is no box in this mode — see `browser_layout_for` — but a
+        // function over an enum answers for every case of it.
+        crate::canvas::BrowserMode::Settings => "search settings\u{2026}",
+    }
+}
+
 pub const SEARCH_HINT: &str = "search soundfonts\u{2026}";
 
 /// The browser footer's captions, in one place for the same reason.
 pub const OPEN_FOLDER: &str = "Open folder";
+/// The same button in the settings tab, where the folder it opens is the one
+/// the settings file itself lives in — worth naming, since it is the only
+/// folder in that mode and "Open folder" would be a question rather than a
+/// caption.
+pub const OPEN_CONFIG_FOLDER: &str = "Settings folder";
 /// And on the button that makes a project, in the mode that has one.
 pub const NEW_PROJECT: &str = "New";
 /// And on the one that bounces it to a WAV.
 pub const EXPORT: &str = "Export";
 pub const CHOOSE_FOLDER: &str = "Change\u{2026}";
 
-/// The keyboard down the left-hand side.
+/// The strip down the left-hand side: a keyboard, or a list of names.
 ///
-/// Drawn the way a keyboard looks: the naturals run the full width and the
-/// accidentals sit short and dark on top of them. Painting the strip dark and
-/// the naturals light instead gives a ladder of pale bars with gaps, which
-/// reads as neither a keyboard nor an octave.
+/// **Every key gets a band of the same height**, in both views. That is the fix
+/// for *"single white keys wont be as tall as other white keys... the e key is
+/// smaller"*: the first draft drew a real keyboard, with the naturals running
+/// the full width and the accidentals sitting short on top of them, so the
+/// white left over beside C# read as part of C's key and C looked half again as
+/// tall as E. A side view of a piano does look like that. A grid whose rows are
+/// all the same height does not, and the strip is a label for the grid.
+///
+/// The two views differ in what is *in* the band. The piano keeps the black
+/// and white of a keyboard, which is how you find your place on a melodic
+/// instrument; the list drops it for the name of whatever is on the key, which
+/// is the only thing that helps on a drum kit — see [`KeyStyle`].
+///
+/// [`KeyStyle`]: crate::canvas::KeyStyle
+#[allow(clippy::too_many_arguments)]
 fn draw_keyboard(
     scene: &mut Scene,
     theme: &Theme,
@@ -3533,46 +4101,69 @@ fn draw_keyboard(
     l: &RollLayout,
     v: &RollView,
     map: &crate::document::KeyMap,
+    live: u128,
+    style: crate::canvas::KeyStyle,
 ) {
+    use crate::canvas::KeyStyle;
     let p = &theme.palette;
     if l.keys.is_empty() {
         return;
     }
-    fill_rect(scene, l.keys, p.key_white);
+    fill_rect(scene, l.keys, if style == KeyStyle::Piano { p.key_white } else { p.panel });
 
     for key in visible_keys(v, l.grid) {
-        let y = crate::canvas::key_to_y(v, l.grid, key as u8);
-        let row = Rect::new(l.keys.x, y, l.keys.width, v.key_height).intersection(&l.keys);
+        // The same snapped rectangle the grid's rows and the notes use, so a
+        // key lines up with the row it names at every zoom.
+        let row = crate::canvas::key_row(v, l.grid, key.clamp(0, 127) as u8);
+        let row = Rect::new(l.keys.x, row.y, l.keys.width, row.height).intersection(&l.keys);
         if row.is_empty() {
             continue;
         }
         let plays = map.plays(key.clamp(0, 127) as u8);
-        if !plays {
+        // A key a MIDI keyboard is holding down. Lit in the accent, whether or
+        // not the instrument plays it: a key that is down is a fact about the
+        // hands, and a dead key that lights is how you find out it is dead.
+        let down = (0..=127).contains(&key) && live & (1u128 << key) != 0;
+        let accidental = is_accidental(key);
+
+        // The band itself.
+        let ink = match (down, plays, style, accidental) {
+            (true, _, _, _) => p.accent,
             // The whole key, not a shade of it. A drum kit is mostly dead
             // keys, and the four that work have to be the thing you see.
-            fill_rect(scene, row, p.key_dead);
-        }
-        if is_accidental(key) {
+            (_, false, _, _) => p.key_dead,
+            (_, _, KeyStyle::Piano, true) => p.key_black,
+            (_, _, KeyStyle::Piano, false) => p.key_white,
+            // The list has no black keys: every row is a name on the same
+            // ground, and the octave stripe below is what counts them.
+            (_, _, KeyStyle::Names, _) => p.panel_header,
+        };
+        fill_rect(scene, row, ink);
+        if style == KeyStyle::Piano && accidental && !down && plays {
+            // The black key is still short, which keeps the picture a
+            // keyboard — but the band it sits in is the same height as every
+            // other band, which is the whole point.
             fill_rect(
                 scene,
                 Rect::new(row.x, row.y, row.width * 0.62, row.height).intersection(&l.keys),
-                if plays { p.key_black } else { p.key_dead },
-            );
-        } else {
-            // A hairline between naturals, so E/F and B/C do not merge into
-            // one double-height key.
-            fill_rect(
-                scene,
-                Rect::new(row.x, row.bottom() - 1.0, row.width, 1.0).intersection(&l.keys),
-                p.border,
+                p.key_black,
             );
         }
+        // A hairline under **every** key, not only the naturals: it is what
+        // makes the rows read as even bands rather than as a keyboard.
+        fill_rect(
+            scene,
+            Rect::new(row.x, row.bottom() - 1.0, row.width, 1.0).intersection(&l.keys),
+            p.border,
+        );
+
         // The name of the thing on this key, when the instrument has one —
         // `Snare` rather than `D1`, which is the whole reason a kit is
         // writable without playing every row to find out what it does. It
         // takes precedence over the octave name: on a key that has both,
-        // "Snare" is the useful half.
-        let name = map.name(key.clamp(0, 127) as u8);
+        // "Snare" is the useful half. In the list view every row is named,
+        // falling back to the note when the instrument has nothing to say.
+        let named = map.name(key.clamp(0, 127) as u8);
         let octave = (key % 12 == 0).then(|| key_name(key));
         if key % 12 == 0 {
             fill_rect(
@@ -3581,7 +4172,13 @@ fn draw_keyboard(
                 p.accent,
             );
         }
-        let Some(caption) = name.map(str::to_string).or(octave) else {
+        let caption = match style {
+            KeyStyle::Piano => named.map(str::to_string).or(octave),
+            KeyStyle::Names => named
+                .map(str::to_string)
+                .or_else(|| Some(key_name(key))),
+        };
+        let Some(caption) = caption else {
             continue;
         };
         // A line box is a little taller than the ink in it, so a name is
@@ -3597,11 +4194,17 @@ fn draw_keyboard(
                 row,
                 row.x + 6.0,
                 row.y + (row.height - text.height) / 2.0,
-                if plays { p.key_black } else { p.text_muted },
+                match (plays, style, accidental) {
+                    (false, _, _) => p.text_muted,
+                    (_, KeyStyle::Names, _) => p.text,
+                    // On a black key the ink has to be the light one.
+                    (_, KeyStyle::Piano, true) => p.key_white,
+                    (_, KeyStyle::Piano, false) => p.key_black,
+                },
             );
         }
     }
-    // A border between the keyboard and the grid, so they read as two things.
+    // A border between the strip and the grid, so they read as two things.
     fill_rect(
         scene,
         Rect::new(l.keys.right() - 1.0, l.keys.y, 1.0, l.keys.height),
@@ -3768,6 +4371,18 @@ pub fn draw_text(scene: &mut Scene, text: &TextLayout, x: f32, y: f32, color: Co
 /// boundary" rather than as a patch of a slightly different background — a
 /// panel with no border on this theme sits four steps from the window colour
 /// and disappears.
+/// The text cursor after a name being typed into.
+///
+/// A one-pixel bar, which is what the search box has drawn since it was
+/// written — one shape for "the keyboard is going here", wherever it is.
+fn draw_caret(scene: &mut Scene, color: Color, field: Rect, x: f32) {
+    fill_rect(
+        scene,
+        Rect::new(x, field.y + 3.0, 1.0, (field.height - 6.0).max(0.0)).intersection(&field),
+        color,
+    );
+}
+
 fn stroke_rect_rounded(scene: &mut Scene, r: Rect, radius: f32, width: f32, color: Color) {
     if r.is_empty() || width <= 0.0 {
         return;

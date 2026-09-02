@@ -33,6 +33,22 @@ pub enum ParamKind {
     Choice(Vec<String>),
 }
 
+/// The two controls on this panel that belong to the **channel** rather than to
+/// its patch: its level and its place in the stereo field.
+///
+/// Named here, in the crate that draws the panel, because the window has to
+/// recognise them — they are the two a right-click can turn into an automation
+/// lane (see [`fontelle_types::ParamTarget`]), and the patch's own knobs are
+/// not addressable yet. The layer that maps an address onto a `Patch` is
+/// `fontelle-app`, and it uses these same two constants rather than spelling
+/// them again.
+///
+/// **INVARIANT 7:** these strings never change. They are what a saved project's
+/// automation names.
+pub const MIXER_GAIN: &str = "mixer/gain";
+pub const MIXER_PAN: &str = "mixer/pan";
+
+
 /// One control on the panel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InstrumentParam {
@@ -48,6 +64,14 @@ pub struct InstrumentParam {
     /// you cannot set.
     pub display: String,
     pub kind: ParamKind,
+    /// Whether an automation lane has taken this control over, so it can be
+    /// drawn with the ring TDD §12.2 asks for.
+    ///
+    /// Set by [`InstrumentView::mark_automated`] after the view is built,
+    /// rather than by whatever builds it: the caller knows which addresses are
+    /// automated as one set, and asking the document per parameter would
+    /// rebuild that set once per knob — forty-nine times for an EQ.
+    pub automated: bool,
 }
 
 /// A named row of controls — the filter, the amp envelope, the voice.
@@ -62,7 +86,47 @@ pub struct InstrumentGroup {
 pub struct InstrumentView {
     /// What the channel is playing, for the panel's heading.
     pub title: String,
+    /// Named starting points, drawn as a row of chips above the first group.
+    ///
+    /// Empty for a panel that has none, which is every instrument panel and
+    /// most effects — see
+    /// [`EffectConfig::presets`](fontelle_types::EffectConfig::presets). A
+    /// preset is not a parameter (rule 10), so it is not in a group: it writes
+    /// the knobs below it and then has nothing further to say, which is a
+    /// different gesture from turning one of them and deserves a different
+    /// shape on the panel.
+    pub presets: Vec<String>,
+    /// What this insert's **detector** can be pointed at: "no key" first, then
+    /// one entry per mixer strip (`docs/effects-catalogue.md` §2.1).
+    ///
+    /// Empty for every panel whose effect has no detector, which is every
+    /// instrument panel and nine of the eleven effects — see
+    /// [`EffectKind::takes_key`](fontelle_types::EffectKind::takes_key).
+    ///
+    /// A row of chips rather than a knob for the reason `EffectSlot::key`
+    /// gives: a track is not a float with a fixed range, so it cannot be a
+    /// `ParamSpec` without inventing a second addressing scheme.
+    pub keys: Vec<String>,
+    /// Which of [`keys`](Self::keys) is chosen. Always `Some` when `keys` is
+    /// non-empty, because "no key" is one of them.
+    pub key: Option<usize>,
     pub groups: Vec<InstrumentGroup>,
+}
+
+impl InstrumentView {
+    /// Flags every control an automation lane owns, and **clears the rest**.
+    ///
+    /// Clearing matters as much as setting: the panel is rebuilt from the
+    /// document whenever the revision moves, so this runs again after a lane
+    /// is deleted, and a ring left on a knob nothing owns any more is worse
+    /// than no ring — it is a ring that lies.
+    pub fn mark_automated(&mut self, is_automated: impl Fn(&ParamAddress) -> bool) {
+        for group in &mut self.groups {
+            for param in &mut group.params {
+                param.automated = is_automated(&param.address);
+            }
+        }
+    }
 }
 
 impl InstrumentView {
@@ -75,6 +139,12 @@ impl InstrumentView {
 #[derive(Debug, Clone, PartialEq)]
 pub struct InstrumentLayout {
     pub body: Rect,
+    /// One chip per preset, in order, along the top of the panel. Empty when
+    /// the view has none, and then nothing about the layout below changes.
+    pub presets: Vec<(usize, Rect)>,
+    /// One chip per choosable key, under the presets. Same shape and the same
+    /// rules — see [`InstrumentView::keys`].
+    pub keys: Vec<(usize, Rect)>,
     /// One heading strip per group, in order.
     pub headings: Vec<(usize, Rect)>,
     /// Every control, as `(group, param, cell)`.
@@ -93,12 +163,23 @@ pub const CELL_HEIGHT: f32 = 76.0;
 /// Between cells, and around them.
 const GAP: f32 = 6.0;
 
+/// How wide a preset chip is, and how tall.
+///
+/// Wide enough for "12-bit sampler" at the panel's own font, which is the
+/// longest name any effect ships; a chip whose name is clipped is a chip
+/// nobody can choose on purpose.
+pub const PRESET_WIDTH: f32 = 104.0;
+pub const PRESET_HEIGHT: f32 = 22.0;
+
 pub fn instrument_layout(body: Rect, metrics: &Metrics, view: &InstrumentView) -> InstrumentLayout {
     let mut headings = Vec::new();
     let mut cells = Vec::new();
+    let (mut presets, mut keys) = (Vec::new(), Vec::new());
     if body.is_empty() {
         return InstrumentLayout {
             body,
+            presets,
+            keys,
             headings,
             cells,
             content_height: 0.0,
@@ -109,6 +190,11 @@ pub fn instrument_layout(body: Rect, metrics: &Metrics, view: &InstrumentView) -
     // gets a clipped column rather than a division by zero.
     let per_row = (((body.width + GAP) / (CELL_WIDTH + GAP)).floor() as usize).max(1);
     let mut y = body.y;
+
+    // The chip rows, above everything, and only when there is one of each: a
+    // panel with neither has to lay out exactly as it did before they existed.
+    presets = chip_row(body, view.presets.len(), &mut y);
+    keys = chip_row(body, view.keys.len(), &mut y);
 
     for (index, group) in view.groups.iter().enumerate() {
         let heading = Rect::new(body.x, y, body.width, metrics.row_height).clamped();
@@ -144,10 +230,73 @@ pub fn instrument_layout(body: Rect, metrics: &Metrics, view: &InstrumentView) -
 
     InstrumentLayout {
         body,
+        presets,
+        keys,
         headings,
         cells,
         content_height: (y - body.y).max(0.0),
     }
+}
+
+/// Lays `count` chips across `body` from `y` down, wrapping, and advances `y`
+/// past them.
+///
+/// One implementation for both rows: presets and keys are different lists of
+/// different things, but "a row of clickable words above the controls" is one
+/// shape, and two copies of it is one to get wrong the day a third row wants
+/// the same shape.
+fn chip_row(body: Rect, count: usize, y: &mut f32) -> Vec<(usize, Rect)> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let across = (((body.width + GAP) / (PRESET_WIDTH + GAP)).floor() as usize).max(1);
+    let chips = (0..count)
+        .map(|index| {
+            let chip = Rect::new(
+                body.x + (index % across) as f32 * (PRESET_WIDTH + GAP),
+                *y + (index / across) as f32 * (PRESET_HEIGHT + GAP),
+                PRESET_WIDTH,
+                PRESET_HEIGHT,
+            );
+            (
+                index,
+                // Clipped to the panel's width so a chip can never run off the
+                // right-hand edge, whatever `across` rounded to.
+                Rect::new(
+                    chip.x,
+                    chip.y,
+                    chip.width.min((body.right() - chip.x).max(0.0)),
+                    chip.height,
+                )
+                .clamped(),
+            )
+        })
+        .collect();
+    *y += count.div_ceil(across) as f32 * (PRESET_HEIGHT + GAP) + GAP;
+    chips
+}
+
+/// Which preset chip is under the pointer, if any.
+///
+/// Its own hit test rather than a variant of [`instrument_hit`]'s pair,
+/// because a chip is not a control: it has no address, no value and no
+/// automation lane, and giving it a `(group, param)` would make every caller
+/// that reads one have to know which pairs are lies.
+pub fn instrument_preset_hit(layout: &InstrumentLayout, x: f32, y: f32) -> Option<usize> {
+    chip_hit(&layout.presets, x, y)
+}
+
+/// Which key chip is under the pointer, if any — see
+/// [`InstrumentView::keys`].
+pub fn instrument_key_hit(layout: &InstrumentLayout, x: f32, y: f32) -> Option<usize> {
+    chip_hit(&layout.keys, x, y)
+}
+
+fn chip_hit(chips: &[(usize, Rect)], x: f32, y: f32) -> Option<usize> {
+    chips
+        .iter()
+        .find(|(_, rect)| rect.contains(x, y))
+        .map(|(index, _)| *index)
 }
 
 /// Which control is under the pointer.

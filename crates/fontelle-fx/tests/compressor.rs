@@ -65,6 +65,9 @@ fn plain() -> CompressorConfig {
         makeup_db: 0.0,
         auto_makeup: false,
         detection: DetectionMode::Peak,
+        // Fully wet: the blend is the insert's, not the DSP's — see
+        // `fontelle-engine/tests/inserts.rs`.
+        mix: 1.0,
     }
 }
 

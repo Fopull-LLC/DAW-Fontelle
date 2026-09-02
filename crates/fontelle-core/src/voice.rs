@@ -141,26 +141,64 @@ struct LayerPlayback {
     layer: u16,
     /// Fractional sample position within the layer's `SampleBuffer`.
     position: f64,
+    /// The phase of a `Source::Oscillator` layer, which has no buffer to hold
+    /// a position in.
+    ///
+    /// Per **slot** rather than per patch layer, and per voice rather than per
+    /// patch, for the reason the filter memory is: two notes sounding together
+    /// on one oscillator are two different phases, and sharing one would make
+    /// a voice's output depend on which other voices rendered before it.
+    osc: fontelle_dsp::Oscillator,
+}
+
+/// Where one prepared layer's samples come from.
+///
+/// The two are resolved to completely different constants — a step through a
+/// buffer against a frequency in hertz — and keeping them in one struct with
+/// half its fields unused for either is how a renderer ends up silently
+/// skipping the variant nobody filled in, which is what `Source::Oscillator`
+/// did for as long as this enum did not exist.
+#[derive(Clone, Copy)]
+enum PreparedSource<'a> {
+    /// PCM straight out of the `SampleStore` — no copy, no allocation.
+    Sample {
+        data: &'a [f32],
+        step: f64,
+        loop_end: f64,
+        loop_len: f64,
+        looping: bool,
+        end_offset: f64,
+        interpolation: fontelle_dsp::Interpolation,
+    },
+    /// A shape and the pitch to run it at. **It never ends**: an oscillator
+    /// has no last sample to run off, so the note lasts exactly as long as its
+    /// amplitude envelope says.
+    Oscillator {
+        kind: fontelle_dsp::OscKind,
+        freq_hz: f32,
+    },
 }
 
 /// One layer's per-render constants, resolved once before the sample loop in
-/// `Voice::render` rather than recomputed per sample. Borrows the layer's PCM
-/// straight out of the `SampleStore` — no copy, no allocation.
+/// `Voice::render` rather than recomputed per sample.
 #[derive(Clone, Copy)]
 struct PreparedLayer<'a> {
-    data: &'a [f32],
-    step: f64,
+    source: PreparedSource<'a>,
     gain: f32,
     /// This layer's place in the stereo field, already through the pan law.
     /// `(1.0, 0.0)` on a mono render: nothing goes to a channel that isn't
     /// there, and the one that is carries the layer unattenuated.
     pan_gain: (f32, f32),
-    loop_end: f64,
-    loop_len: f64,
-    looping: bool,
-    end_offset: f64,
-    interpolation: fontelle_dsp::Interpolation,
 }
+
+/// The pitch an oscillator layer plays at its root key: middle C, 261.6256 Hz.
+///
+/// A `Source::Oscillator` is transposed by exactly the arithmetic a sample is —
+/// `key - root_key`, plus every tuning on the pitch path — so it needs one
+/// frequency to be transposed *from*. Middle C rather than A440 so that the
+/// default `root_key: 60` makes a note play its own pitch, which is the only
+/// reading of a synthesiser anybody expects.
+pub const OSC_ROOT_HZ: f32 = 261.625_56;
 
 /// What a note's `release: 127` multiplies the patch's release time by.
 ///
@@ -268,9 +306,10 @@ impl NoteTrigger {
 /// → Amp → Pan → out, with the mod matrix feeding every stage. Predictable per-voice
 /// cost, zero allocation on note-on, no graph compilation on the audio thread.
 ///
-/// **M0 scope note:** only `Source::Sample` layers render (`Source::Sf2Zone` and
-/// `Source::Oscillator` are silent no-ops for now); output is a single (mono)
-/// buffer, so `Layer::pan` has no effect yet. All tracked in `PROGRESS.md`.
+/// **Scope note:** `Source::Sample` and `Source::Oscillator` layers render;
+/// `Source::Sf2Zone` is still a silent no-op, and can only reach a patch from a
+/// build whose importer did not flatten one into a `Sample`. Tracked in
+/// `PROGRESS.md`.
 pub struct Voice {
     active: bool,
     key: u8,
@@ -522,6 +561,11 @@ impl Voice {
                 active: true,
                 layer: index,
                 position: layer.playback.start_offset,
+                // A fresh phase, for the reason the filter memory is reset: a
+                // voice out of the pool carrying the last note's phase makes
+                // the same note sound different depending on what was played
+                // before it.
+                osc: fontelle_dsp::Oscillator::new(),
             };
             slot += 1;
         }
@@ -857,12 +901,20 @@ impl Voice {
             let Some(layer) = patch.layers.get(index) else {
                 continue;
             };
-            let crate::patch::Source::Sample { file } = &layer.source else {
-                // Sf2Zone/Oscillator sources aren't wired to the renderer yet.
-                continue;
+            // An SF2 zone still resolves to nothing: the importer flattens
+            // one into a `Sample` before it ever reaches a patch, so a zone
+            // arriving here is a document from a build that did not.
+            let sample_file = match &layer.source {
+                crate::patch::Source::Sample { file } => Some(*file),
+                crate::patch::Source::Sf2Zone { .. } => continue,
+                crate::patch::Source::Oscillator(_) => None,
             };
-            let Some(buffer) = store.get(*file) else {
-                continue;
+            let buffer = match sample_file {
+                Some(file) => match store.get(file) {
+                    Some(buffer) => Some(buffer),
+                    None => continue,
+                },
+                None => None,
             };
 
             // `ModDest` names a layer with a `u8`, so a patch with more than
@@ -888,8 +940,6 @@ impl Voice {
                 + self.note_detune
                 + (layer.fine_tune_cents + pitch_cents) / 100.0;
             let pitch_ratio = 2f32.powf(semitones / 12.0);
-            let rate_ratio = buffer.sample_rate as f32 / sample_rate;
-            let loop_len = layer.playback.loop_end - layer.playback.loop_start;
 
             // SF2 pans a zone on a constant-power taper, and that is also
             // what keeps a layer's loudness steady as a route sweeps it
@@ -914,19 +964,45 @@ impl Voice {
                 (1.0, 0.0)
             };
 
+            let source = match (&layer.source, buffer) {
+                (crate::patch::Source::Oscillator(kind), _) => {
+                    // The note's own pitch, read off the same `semitones` a
+                    // sample is transposed by: at the default root of middle C
+                    // a note plays itself, a higher root plays it lower, and
+                    // every tuning on the pitch path — the layer's cents, the
+                    // note's, the glide, a mod route — is already in there.
+                    let freq_hz = OSC_ROOT_HZ * pitch_ratio;
+                    PreparedSource::Oscillator {
+                        kind: *kind,
+                        // Above Nyquist there is no waveform left to draw,
+                        // only aliases folding back down.
+                        freq_hz: freq_hz.clamp(0.0, sample_rate * 0.5),
+                    }
+                }
+                (_, Some(buffer)) => {
+                    let rate_ratio = buffer.sample_rate as f32 / sample_rate;
+                    let loop_len = layer.playback.loop_end - layer.playback.loop_start;
+                    PreparedSource::Sample {
+                        data: &buffer.data,
+                        step: (pitch_ratio * rate_ratio) as f64,
+                        loop_end: layer.playback.loop_end,
+                        loop_len,
+                        // `loop_len > 0.0` also guards the wrap loop below
+                        // against spinning forever on a degenerate
+                        // zero-length loop.
+                        looping: matches!(layer.playback.loop_mode, crate::LoopMode::Forward)
+                            && loop_len > 0.0,
+                        end_offset: layer.playback.end_offset,
+                        interpolation: layer.playback.interpolation.unwrap_or(quality),
+                    }
+                }
+                (_, None) => continue,
+            };
+
             prepared[prepared_index] = Some(PreparedLayer {
-                data: &buffer.data,
-                step: (pitch_ratio * rate_ratio) as f64,
+                source,
                 gain: 10f32.powf((layer.gain_db + gain_db) / 20.0) * self.velocity_gain,
                 pan_gain,
-                loop_end: layer.playback.loop_end,
-                loop_len,
-                // `loop_len > 0.0` also guards the wrap loop below against
-                // spinning forever on a degenerate zero-length loop.
-                looping: matches!(layer.playback.loop_mode, crate::LoopMode::Forward)
-                    && loop_len > 0.0,
-                end_offset: layer.playback.end_offset,
-                interpolation: layer.playback.interpolation.unwrap_or(quality),
             });
         }
 
@@ -983,24 +1059,41 @@ impl Voice {
                     continue;
                 }
 
-                if prep.looping {
-                    // `while`, not `if`: one subtraction isn't enough when the
-                    // playback step exceeds the loop length, which real
-                    // extreme upward transposition of a short loop does.
-                    while slot.position >= prep.loop_end {
-                        slot.position -= prep.loop_len;
+                let sample = match prep.source {
+                    PreparedSource::Sample {
+                        data,
+                        step,
+                        loop_end,
+                        loop_len,
+                        looping,
+                        end_offset,
+                        interpolation,
+                    } => {
+                        if looping {
+                            // `while`, not `if`: one subtraction isn't enough
+                            // when the playback step exceeds the loop length,
+                            // which real extreme upward transposition of a
+                            // short loop does.
+                            while slot.position >= loop_end {
+                                slot.position -= loop_len;
+                            }
+                        } else if slot.position >= end_offset {
+                            slot.active = false;
+                            continue;
+                        }
+                        let sample =
+                            fontelle_dsp::interpolate(data, slot.position, interpolation);
+                        slot.position += step;
+                        sample
                     }
-                } else if slot.position >= prep.end_offset {
-                    slot.active = false;
-                    continue;
-                }
-
-                let sample =
-                    fontelle_dsp::interpolate(prep.data, slot.position, prep.interpolation)
-                        * prep.gain;
+                    // No end to run off and no buffer to walk: the phase is
+                    // the whole of its position, and it advances itself.
+                    PreparedSource::Oscillator { kind, freq_hz } => {
+                        slot.osc.next_sample(kind, freq_hz, sample_rate)
+                    }
+                } * prep.gain;
                 mixed.0 += sample * prep.pan_gain.0;
                 mixed.1 += sample * prep.pan_gain.1;
-                slot.position += prep.step;
             }
 
             // mix -> Filter1 -> Filter2 -> Amp (TDD §7.4). The filters sit
@@ -1044,6 +1137,19 @@ impl Default for Voice {
 pub struct VoicePool {
     voices: Vec<Voice>,
     next_age: u64,
+    /// How many of `voices` new notes may use, `1..=voices.len()`.
+    ///
+    /// **The live polyphony**, which is not the same thing as the pool's size:
+    /// `patch/voice/polyphony` is automatable (§12.3), and growing a `Vec` on
+    /// the audio thread is exactly what INVARIANT 1 forbids. So the pool keeps
+    /// the size it was built at and this moves inside it, which is what a
+    /// polyphony limit means anyway — a note that finds nothing free under the
+    /// limit steals, exactly as it does when the pool is full.
+    ///
+    /// The pool is built from the patch, so the knob's value is the ceiling; a
+    /// lane can go down from there and back up, and turning the knob rebuilds
+    /// the graph and raises it.
+    limit: usize,
 }
 
 impl VoicePool {
@@ -1051,7 +1157,24 @@ impl VoicePool {
         Self {
             voices: (0..capacity).map(|_| Voice::new()).collect(),
             next_age: 0,
+            limit: usize::from(capacity),
         }
+    }
+
+    /// How many voices the pool physically has — the ceiling a lane cannot
+    /// raise the limit past.
+    pub fn capacity(&self) -> usize {
+        self.voices.len()
+    }
+
+    /// Sets how many voices new notes may use, clamped into the pool.
+    ///
+    /// Voices already sounding **above** the new limit are left alone rather
+    /// than cut: they ring out and their slots come back as they finish, which
+    /// is what lowering a polyphony knob does everywhere else. Cutting them
+    /// would put a click exactly where somebody was reaching for a swell.
+    pub fn set_limit(&mut self, limit: usize) {
+        self.limit = limit.clamp(1, self.voices.len().max(1));
     }
 
     pub fn active_count(&self) -> usize {
@@ -1066,11 +1189,17 @@ impl VoicePool {
         let age = self.next_age;
         self.next_age = self.next_age.wrapping_add(1);
 
-        let index = match self.voices.iter().position(|v| !v.is_active()) {
+        // Only the voices under the limit are candidates — see `limit`. A
+        // note arriving while the ones above it are still ringing out steals
+        // from inside the limit rather than reaching past it, which is what
+        // keeps a lowered polyphony *lowered* while the tail of the old
+        // setting decays.
+        let usable = self.limit.min(self.voices.len());
+        let index = match self.voices[..usable].iter().position(|v| !v.is_active()) {
             Some(i) => i,
             None => match policy {
                 StealPolicy::Oldest | StealPolicy::Quietest | StealPolicy::LowestPriority => self
-                    .voices
+                    .voices[..usable]
                     .iter()
                     .enumerate()
                     .min_by_key(|(_, v)| v.age)

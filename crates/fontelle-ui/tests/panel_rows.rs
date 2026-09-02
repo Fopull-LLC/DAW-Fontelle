@@ -201,7 +201,12 @@ fn every_rack_row_has_a_switch_that_opens_its_instrument() {
 }
 
 #[test]
-fn the_editor_column_has_a_tab_for_the_roll_the_instrument_and_the_mixer() {
+fn the_editor_column_has_a_tab_for_the_roll_and_one_for_the_mixer() {
+    // **Two, and only two.** The instrument, the effect and the automation
+    // curve were tabs here until §7.5's plugin hosting made that untenable —
+    // a VST or CLAP editor is handed a parent *window* and draws into it, so
+    // an editor that can only be one of this column's tabs is one the plugin
+    // path can never be built on. See `fontelle_ui::layout::EditorKind`.
     use fontelle_ui::layout::{EditorTab, editor_tab_at, editor_tabs};
 
     let m = metrics();
@@ -210,7 +215,6 @@ fn the_editor_column_has_a_tab_for_the_roll_the_instrument_and_the_mixer() {
 
     let all = [
         (EditorTab::Roll, tabs.roll),
-        (EditorTab::Instrument, tabs.instrument),
         (EditorTab::Mixer, tabs.mixer),
     ];
     for (i, (which, tab)) in all.iter().enumerate() {
@@ -235,7 +239,7 @@ fn a_header_too_narrow_for_its_tabs_still_produces_usable_geometry() {
     let m = metrics();
     for width in [0.0, 10.0, 60.0, 200.0, 280.0] {
         let tabs = editor_tabs(Rect::new(0.0, 0.0, width, 26.0), &m);
-        for tab in [tabs.roll, tabs.instrument, tabs.mixer] {
+        for tab in [tabs.roll, tabs.mixer] {
             assert!(tab.width >= 0.0 && tab.height >= 0.0, "width {width}");
             assert!(tab.right() <= width + 0.001, "width {width} gave {tab:?}");
         }

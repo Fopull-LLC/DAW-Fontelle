@@ -45,6 +45,8 @@ fn fixture(notes: Vec<Note>) -> (Project, ClipId, Vec<NoteId>) {
         pan: 0.0,
         muted: false,
         soloed: false,
+        named_keys: false,
+        gain_db: 0.0,
     });
     let lane = project.lanes.insert(fontelle_model::Lane {
         name: "lane".into(),
@@ -52,6 +54,7 @@ fn fixture(notes: Vec<Note>) -> (Project, ClipId, Vec<NoteId>) {
         color: [0; 4],
         muted: false,
         locked: false,
+        order: 0,
     });
     let mut add = AddClip::new(Clip {
         lane,

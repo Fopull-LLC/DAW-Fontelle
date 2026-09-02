@@ -53,6 +53,8 @@ fn fixture() -> (Project, ClipId, LaneId) {
         pan: 0.0,
         muted: false,
         soloed: false,
+        named_keys: false,
+        gain_db: 0.0,
     });
     let lane = project.lanes.insert(fontelle_model::Lane {
         name: "lane".into(),
@@ -60,6 +62,7 @@ fn fixture() -> (Project, ClipId, LaneId) {
         color: [0; 4],
         muted: false,
         locked: false,
+        order: 0,
     });
     let mut notes = Arena::default();
     notes.insert(a_note(0, 60));

@@ -168,7 +168,7 @@ pub fn compile(
     // Sorted once, at the end, over notes and automation together: the RT side
     // walks this list forwards and never sorts, so a sweep interleaved out of
     // order would be applied backwards.
-    events.sort_by_key(|e| e.sample);
+    sort_events(&mut events);
 
     CompiledTimeline {
         events,
@@ -178,7 +178,64 @@ pub fn compile(
         // `events` Vec directly — only for the O(1)-seek optimisation TDD
         // §11.1 describes. M3 work.
         index: Vec::new(),
+        // The tempo, in the block contract's own units, because the audio
+        // thread cannot see a `TempoMap` (INVARIANT 4) and a node that wants
+        // to know how long a beat is has nowhere else to ask. Converting it
+        // here rather than shipping ticks is the point: this pass already owns
+        // every tick-to-sample conversion in the project.
+        tempo: project
+            .tempo_map
+            .segments()
+            .iter()
+            .map(|segment| {
+                (
+                    project.tempo_map.tick_to_sample(segment.start_tick),
+                    segment.bpm as f32,
+                )
+            })
+            .collect(),
     }
+}
+
+/// Where an event sits among the others sharing its sample.
+///
+/// Time is the first key and this is the second, because *"at the same moment"*
+/// is not an order and the RT side applies the list in the order it is given.
+/// Three rules, and each one is a bug that was reachable without it:
+///
+/// 1. **A value before the note it belongs to.** An automation point written at
+///    the same tick as a note-on is the value that note is meant to sound at.
+/// 2. **A note-off before a note-on.** Two notes on one key, the first ending
+///    exactly where the second begins, is the commonest figure in music there
+///    is — a walking bass, a repeated pedal tone. Emitted the other way round,
+///    the off finds the voice the on has just taken (the pool hands out the
+///    lowest free slot, and the first note's voice can already be free) and
+///    releases it: the note is there, and silent. That it depended on arena
+///    order is what made it *"a chance"* rather than a reproducible failure.
+/// 3. **A slide between them.** It bends what is already sounding, so it has to
+///    arrive after the offs of the notes that ended and before the ons of the
+///    notes that have not started.
+fn rank(payload: &EventPayload) -> u8 {
+    match payload {
+        EventPayload::ParamValue { .. } => 0,
+        EventPayload::ClipStop => 1,
+        EventPayload::NoteOff { .. } => 2,
+        EventPayload::NoteSlide { .. } => 3,
+        EventPayload::ClipStart => 4,
+        EventPayload::NoteOn { .. } => 5,
+    }
+}
+
+/// Puts a compiled event list in the order the RT side walks it: by sample,
+/// then by [`rank`].
+///
+/// Public so that whoever splices freshly compiled events into an existing list
+/// — `recompile_dirty`, when it is written — orders them by the same rule this
+/// pass does. A splice with a rule of its own would reintroduce exactly the
+/// failure this exists to stop. **Stable**, so two events with the same sample
+/// and the same rank keep the order the document gave them.
+pub fn sort_events(events: &mut [fontelle_types::TimedEvent]) {
+    events.sort_by_key(|e| (e.sample, rank(&e.payload)));
 }
 
 /// How often an automated parameter is re-stated, in samples.
@@ -310,6 +367,8 @@ mod tests {
             pan: 0.0,
             muted: false,
             soloed: false,
+            named_keys: false,
+            gain_db: 0.0,
         });
 
         let lane_id = project.lanes.insert(Lane {
@@ -318,6 +377,7 @@ mod tests {
             color: [0, 0, 0, 255],
             muted: false,
             locked: false,
+            order: 0,
         });
 
         let mut notes = Arena::default();

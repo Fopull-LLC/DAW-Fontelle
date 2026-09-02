@@ -339,6 +339,9 @@ pub enum LibraryKind {
     Folder,
     /// The row back up. Always first when it is there.
     Up,
+    /// A heading over the rows under it — the soundfont a run of search hits
+    /// came from. Not something to click: it says where, it does not go there.
+    Group,
 }
 
 /// One row of the browser: a soundfont, a folder, or a preset inside a file.
@@ -508,10 +511,68 @@ pub trait StudioHost: DocumentHost {
     /// instrument was chosen, and flicking through presets changed the sound
     /// while the panel said nothing had happened at all.
     fn selected_preset(&self) -> Option<usize>;
+    /// Makes a **blank** channel: the host's built-in instrument, a lane and an
+    /// empty clip, selected and ready to play.
+    ///
+    /// The rack's add button calls this, and it takes no argument on purpose.
+    /// It used to need a preset chosen in the browser first, so pressing it
+    /// with nothing chosen did nothing at all — reported as *"clicking new
+    /// instrument doesnt do anything until i select an instrument in the
+    /// soundfonts tab... then it actually happening later when you werent
+    /// intending, when you were trying to swap instruments on a channel"*. A
+    /// button whose effect arrives on somebody else's click is worse than a
+    /// button that does nothing, and both are fixed by having something to
+    /// make.
+    fn add_channel(&mut self) -> Result<(), String> {
+        Err("this studio cannot add channels".to_string())
+    }
     /// Puts preset `index` of the open file onto a **new** channel.
     fn add_channel_with(&mut self, preset: usize) -> Result<(), String>;
     /// Puts it on the channel the rack has selected instead.
     fn set_channel_instrument(&mut self, preset: usize) -> Result<(), String>;
+    /// Copies channel `index` — its instrument, its settings and its clips —
+    /// onto a new channel and a row of its own.
+    ///
+    /// *"stuff like being able to right click and duplicate too, for
+    /// instruments in the channel rack for example."*
+    fn duplicate_channel(&mut self, _index: usize) {}
+    /// Deletes channel `index` and the clips that play it.
+    fn remove_channel(&mut self, _index: usize) {}
+    /// Renames it. Called per keystroke while a name is being typed; the
+    /// implementation coalesces them into one undo entry, the same way a
+    /// dragged knob does.
+    fn rename_channel(&mut self, _index: usize, _name: &str) {}
+    /// Takes the instrument off it, leaving a channel that plays nothing.
+    fn clear_channel_instrument(&mut self, _index: usize) {}
+
+    // --- the arrangement's rows (TDD §10.3) ---
+
+    /// Adds a lane.
+    fn add_lane(&mut self) {}
+    /// Deletes lane `index` **and the clips on it** — a clip on no lane is one
+    /// nothing can draw and nothing can reach.
+    ///
+    /// *"i made one i dont want but i cant right click and delete it."*
+    fn remove_lane(&mut self, _index: usize) {}
+    /// Renames it, per keystroke, like [`rename_channel`](Self::rename_channel).
+    fn rename_lane(&mut self, _index: usize, _name: &str) {}
+    /// Whether the arrangement would still have a row without lane `index` —
+    /// what greys out "Delete lane" rather than letting a press fail.
+    fn can_remove_lane(&self, _index: usize) -> bool {
+        false
+    }
+
+    /// Makes an automation lane for one control on the **selected channel's**
+    /// instrument panel, by the address the panel gave it.
+    ///
+    /// Every one of them: the channel's own level and placement, and the
+    /// knobs inside the patch — a cutoff, an envelope stage, an oscillator's
+    /// level. *"i want to be able to right click on a knob and select create
+    /// automation clip with value and then it appears in my timeline."*
+    ///
+    /// A parameter has **one** lane, so a second right-click opens the one
+    /// that is there rather than making another.
+    fn automate_instrument_param(&mut self, _address: &fontelle_types::ParamAddress, _at: Sample) {}
     // --- the projects folder (TDD §17.1, §17.3) ---
     /// Every project in the configured projects folder, name and age.
     ///
@@ -561,6 +622,38 @@ pub trait StudioHost: DocumentHost {
     ///
     /// [`choose_library_dir`]: StudioHost::choose_library_dir
     fn choose_projects_dir(&mut self) {}
+
+    // --- what Fontelle is set to (TDD §14.3, §18) ---
+    /// Every setting the window can change, as a name and the value it is at.
+    ///
+    /// A [`LibraryEntry`] and not a type of its own, deliberately: a setting
+    /// row *is* a name and a value, which is what a browser row already is —
+    /// so the settings tab reuses the list, its virtualisation, its rows and
+    /// its hit-testing rather than growing a second list widget beside them.
+    ///
+    /// The host decides what is in here and what each row means. Nothing in
+    /// this crate knows that row 0 is a velocity curve, which is what keeps
+    /// `fontelle-ui` free of any dependency on the MIDI layer and what makes
+    /// the list something more settings can simply be added to.
+    fn settings(&self) -> Vec<LibraryEntry> {
+        Vec::new()
+    }
+
+    /// One line about the settings — where the file is, or what just went
+    /// wrong writing it.
+    fn settings_status(&self) -> String {
+        String::new()
+    }
+
+    /// Steps setting `index` to its next value, or its previous one when
+    /// `delta` is negative. The size of a step is the host's business: a
+    /// choice has a next one and a number has an amount.
+    fn nudge_setting(&mut self, index: usize, delta: i32) {
+        let _ = (index, delta);
+    }
+
+    /// Shows the folder the settings file lives in.
+    fn reveal_config_dir(&mut self) {}
 
     /// Shows the projects folder in the desktop's file manager.
     fn reveal_projects_dir(&mut self) {}
@@ -627,6 +720,19 @@ pub trait StudioHost: DocumentHost {
     /// refuse.
     fn set_instrument_param(&mut self, address: &fontelle_types::ParamAddress, value: f32);
 
+    /// Whether the roll draws its key strip as a keyboard or as a list of
+    /// names, for the selected channel (TDD §16.4).
+    ///
+    /// Per channel and saved with the song: a drum kit's keys are a list of
+    /// sounds and a piano's are a keyboard, and a project with both wants
+    /// both.
+    fn key_style(&self) -> crate::canvas::KeyStyle {
+        crate::canvas::KeyStyle::default()
+    }
+
+    /// Switches it. Undoable like every other edit to the document.
+    fn set_key_style(&mut self, _style: crate::canvas::KeyStyle) {}
+
     /// Which keys the selected channel's instrument can play, and what each
     /// one is called. See [`KeyMap`] — [`KeyMap::unknown`] when the channel
     /// has no instrument, which greys nothing.
@@ -635,6 +741,18 @@ pub trait StudioHost: DocumentHost {
     /// list here.
     fn key_map(&self) -> KeyMap {
         KeyMap::unknown()
+    }
+
+    /// Which keys a MIDI keyboard is holding down right now, one bit each
+    /// (TDD §14.1) — lit on the roll's own keyboard so a phrase played on a
+    /// controller can be seen and then written in.
+    ///
+    /// Read once a frame, like [`mixer_peaks`](StudioHost::mixer_peaks) and
+    /// for the same reason: a key goes down between revisions, and bumping the
+    /// revision for one would rebuild every list in the window. Zero when
+    /// nothing is plugged in, which is what every offline path returns.
+    fn live_keys(&self) -> u128 {
+        0
     }
 
     // --- the mixer (TDD §13) ---
@@ -663,6 +781,14 @@ pub trait StudioHost: DocumentHost {
 
     /// Takes one off.
     fn remove_insert(&mut self, _strip: usize, _slot: usize) {}
+
+    /// Moves one insert's wet/dry mix, 0 (the signal that went in) to 1 (the
+    /// effect).
+    ///
+    /// Every effect has one, which is why it is here rather than in the EQ's
+    /// own methods — parallel compression is a compressor mixed under the dry
+    /// track, and a bell blended back is how a heavy cut is made gentle.
+    fn set_insert_mix(&mut self, _strip: usize, _slot: usize, _mix: f32) {}
 
     /// Switches one out of the chain, or back in. Not a delete: the settings
     /// stay, because the reason to reach for a bypass is to hear the
@@ -784,6 +910,66 @@ pub trait StudioHost: DocumentHost {
     /// The document's own `EqConfig`, not a view of it, for the reason
     /// `fontelle_types::effect` gives — the alternative is two definitions of
     /// the same eight bands with somewhere for them to drift.
+    /// The panel for the insert in `slot` of `strip`, when it is one the
+    /// generic grid of knobs can draw.
+    ///
+    /// `None` for the **EQ**, which has a curve of its own — two panels for one
+    /// effect would be two places to change it — and for a slot nothing is in.
+    ///
+    /// Built from the effect's own [`specs`](fontelle_types::EffectConfig::specs)
+    /// rather than hand-drawn per effect, so an effect added later gets a
+    /// window without anybody writing one. The same [`InstrumentView`] the
+    /// instrument panel uses, because a grid of knobs is a grid of knobs.
+    fn insert_view(&self, _strip: usize, _slot: usize) -> Option<InstrumentView> {
+        None
+    }
+
+    /// Moves one of them, normalised, through the history.
+    fn set_insert_param(&mut self, _strip: usize, _slot: usize, _param: &str, _value: f32) {}
+
+    /// Writes the knobs the `preset`th named starting point stands for, on one
+    /// insert — see
+    /// [`EffectConfig::presets`](fontelle_types::EffectConfig::presets).
+    ///
+    /// Its own call rather than a run of
+    /// [`set_insert_param`](Self::set_insert_param)s, because it is **one**
+    /// thing a person did and has to be one thing to undo.
+    fn set_insert_preset(&mut self, _strip: usize, _slot: usize, _preset: usize) {}
+
+    /// Points one insert's detector at another mixer strip — the external
+    /// sidechain (`docs/effects-catalogue.md` §2.1). `None` puts it back to
+    /// listening to the signal passing through it.
+    ///
+    /// Refused, and left alone, for an effect with no detector or a key that
+    /// would make the routing graph feed itself.
+    fn set_insert_key(&mut self, _strip: usize, _slot: usize, _key: Option<usize>) {}
+
+    /// Which strip one insert is keyed from, if any — what a window draws a
+    /// tick beside.
+    fn insert_key(&self, _strip: usize, _slot: usize) -> Option<usize> {
+        None
+    }
+
+    /// The spectrum arriving at the insert in `slot` of `strip`, in decibels,
+    /// one value per band of [`SPECTRUM_BANDS`](crate::canvas::SPECTRUM_BANDS)
+    /// spaced logarithmically across the EQ's own frequency axis.
+    ///
+    /// *"currently theres no eq monitor graph drawn to view the frequency
+    /// spectrum and make edits based off it and see in realtime."*
+    ///
+    /// Read **once a frame while the EQ's window is open**, like the mixer's
+    /// meters and for the same reason: it moves every block, and putting it on
+    /// the studio's revision would rebuild every panel in the window sixty
+    /// times a second. Empty when there is nothing to show — no such insert, no
+    /// running graph, or an offline session — and an empty spectrum draws
+    /// nothing rather than a flat line at the floor.
+    ///
+    /// `&mut self` because reading it advances the analyser, exactly as
+    /// [`mixer_peaks`](StudioHost::mixer_peaks) does.
+    fn spectrum(&mut self, _strip: usize, _slot: usize) -> Vec<f32> {
+        Vec::new()
+    }
+
     fn eq_config(&self, _strip: usize, _slot: usize) -> Option<fontelle_types::EqConfig> {
         None
     }
@@ -847,6 +1033,14 @@ pub trait StudioHost: DocumentHost {
     /// The other direction, for the arrangement's ruler.
     fn sample_of_song_tick(&self, tick: Tick) -> Sample;
     fn toggle_lane_mute(&mut self, lane: usize);
+
+    /// Moves one row up (`-1`) or down (`1`) the stack.
+    ///
+    /// A move off either end does nothing rather than failing — the menu greys
+    /// those entries, and a command that errored would make the gesture
+    /// something the window has to handle rather than something it can just
+    /// ask for.
+    fn move_lane(&mut self, _lane: usize, _delta: isize) {}
 
     // --- recording (TDD §14.7, item 9 of the plan) ---
     /// Turns whatever has been played since recording started into notes on

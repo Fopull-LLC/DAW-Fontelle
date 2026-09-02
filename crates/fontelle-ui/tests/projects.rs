@@ -239,3 +239,47 @@ fn the_project_list_stops_above_everything_under_it() {
         );
     }
 }
+
+// ------------------------------------------------- which folder, exactly ---
+
+#[test]
+fn a_folder_button_says_which_folder_it_is_about() {
+    // Reported from using the window: *"if I select change to set my projects
+    // folder and I select a folder it actually just changes my soundfonts
+    // folder"*. The click handler branched on the panel's mode for "Open
+    // folder" and not for "Change...", so the Projects tab's own button
+    // replaced the soundfont bank and left the projects folder unset —
+    // which makes project management impossible, since there is nowhere for a
+    // new project to go.
+    //
+    // Stated as "the hit carries the mode" rather than as "the handler
+    // branches", because a branch is what was already forgotten once. A hit
+    // that names its own folder cannot be answered with the other one.
+    for (mode, l) in [
+        (BrowserMode::Sounds, sounds(4, 4)),
+        (BrowserMode::Projects, projects(4)),
+    ] {
+        let mid = |r: Rect| (r.x + r.width / 2.0, r.y + r.height / 2.0);
+        let (x, y) = mid(l.choose_folder);
+        assert_eq!(
+            browser_hit(&l, x, y),
+            BrowserHit::ChooseFolder(mode),
+            "\"Change...\" in {mode:?} mode has to be about {mode:?}"
+        );
+        let (x, y) = mid(l.open_folder);
+        assert_eq!(
+            browser_hit(&l, x, y),
+            BrowserHit::OpenFolder(mode),
+            "\"Open folder\" in {mode:?} mode has to be about {mode:?}"
+        );
+    }
+}
+
+#[test]
+fn the_layout_remembers_which_mode_it_was_built_for() {
+    // The hit above can only name a folder because the geometry knows which
+    // list it laid out. Everything else about the panel already varies by
+    // mode; this is the field that makes it answerable.
+    assert_eq!(sounds(4, 4).mode, BrowserMode::Sounds);
+    assert_eq!(projects(4).mode, BrowserMode::Projects);
+}

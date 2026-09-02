@@ -161,7 +161,7 @@ pub fn pointer_at(scene: &PointerScene<'_>, x: f32, y: f32) -> Pointer {
 
     if scene.layout.browser.frame.contains(x, y) {
         return match browser_hit(scene.browser, x, y) {
-            BrowserHit::Search => Pointer::Text,
+            BrowserHit::Search(_) => Pointer::Text,
             BrowserHit::Nothing => Pointer::Default,
             _ => Pointer::Hand,
         };
@@ -212,22 +212,10 @@ pub fn pointer_at(scene: &PointerScene<'_>, x: f32, y: f32) -> Pointer {
         };
     }
 
-    if scene.tab == EditorTab::Instrument {
-        return match (
-            scene.instrument_view,
-            instrument_hit(scene.instrument, x, y),
-        ) {
-            (Some(view), Some((group, param))) => match view.param(group, param) {
-                // A knob is dragged up and down; a switch and a choice are
-                // clicked, and promising a drag on them is a small lie that
-                // costs somebody a gesture.
-                Some(param) if param.kind == crate::canvas::ParamKind::Knob => Pointer::ResizeY,
-                Some(_) => Pointer::Hand,
-                None => Pointer::Default,
-            },
-            _ => Pointer::Default,
-        };
-    }
+    // The instrument's own knobs are not here any more: it is a window of its
+    // own (see `crate::layout::EditorKind`), and this function answers "what
+    // is under the pointer in the *main* window". Its cursor is
+    // `instrument_pointer` below, which the editor window asks directly.
 
     // --- the piano roll ---
     if scene.roll.toolbar.contains(x, y) {
@@ -269,5 +257,31 @@ pub fn pointer_at(scene: &PointerScene<'_>, x: f32, y: f32) -> Pointer {
             _ => Pointer::Default,
         },
         RollHit::Outside => Pointer::Default,
+    }
+}
+
+/// The cursor for a point inside the **instrument editor's own window**
+/// (TDD §7.2).
+///
+/// Split out of [`pointer_at`] when the instrument stopped being a tab of the
+/// main window: the question is the same one and the answer is the same
+/// answer, but it is asked about a different surface, so it cannot be reached
+/// through a `PointerScene` describing the main one.
+pub fn instrument_pointer(
+    layout: &crate::canvas::InstrumentLayout,
+    view: Option<&crate::canvas::InstrumentView>,
+    x: f32,
+    y: f32,
+) -> Pointer {
+    match (view, instrument_hit(layout, x, y)) {
+        (Some(view), Some((group, param))) => match view.param(group, param) {
+            // A knob is dragged up and down; a switch and a choice are
+            // clicked, and promising a drag on them is a small lie that costs
+            // somebody a gesture.
+            Some(param) if param.kind == crate::canvas::ParamKind::Knob => Pointer::ResizeY,
+            Some(_) => Pointer::Hand,
+            None => Pointer::Default,
+        },
+        _ => Pointer::Default,
     }
 }

@@ -33,6 +33,7 @@ fn fixture(points: Vec<AutomationPoint>) -> (Project, ClipId) {
         color: [0; 4],
         muted: false,
         locked: false,
+        order: 0,
     });
     let mut arena = Arena::default();
     for p in points {
@@ -131,6 +132,7 @@ fn adding_to_a_clip_that_is_not_automation_is_refused() {
         color: [0; 4],
         muted: false,
         locked: false,
+        order: 0,
     });
     let channel = project.channels.insert(fontelle_model::Channel {
         name: "ch".into(),
@@ -140,6 +142,8 @@ fn adding_to_a_clip_that_is_not_automation_is_refused() {
         pan: 0.0,
         muted: false,
         soloed: false,
+        named_keys: false,
+        gain_db: 0.0,
     });
     let clip = project.clips.insert(Clip {
         lane,

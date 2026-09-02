@@ -53,6 +53,7 @@ fn peaks(node: &mut MetronomeNode, from: i64, frames: usize, block: usize) -> Ve
                 transport: TransportSnapshot {
                     state: TransportState::Playing,
                     position_sample: at,
+                    bpm: fontelle_types::DEFAULT_BPM,
                 },
                 sample_range: at..at + n as i64,
             };
@@ -218,6 +219,7 @@ fn the_metronome_adds_into_its_bus_rather_than_replacing_it() {
             transport: TransportSnapshot {
                 state: TransportState::Playing,
                 position_sample: 0,
+                bpm: fontelle_types::DEFAULT_BPM,
             },
             sample_range: 0..128,
         };
@@ -256,6 +258,7 @@ fn a_stopped_transport_does_not_click() {
             transport: TransportSnapshot {
                 state: TransportState::Stopped,
                 position_sample: 0,
+                bpm: fontelle_types::DEFAULT_BPM,
             },
             sample_range: 0..128,
         };

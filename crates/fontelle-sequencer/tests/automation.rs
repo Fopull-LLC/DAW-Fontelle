@@ -54,6 +54,7 @@ fn compile(
         color: [0; 4],
         muted: false,
         locked: false,
+        order: 0,
     });
     let mut arena = Arena::default();
     for p in points {
@@ -122,6 +123,7 @@ fn a_target_no_node_owns_emits_nothing() {
         color: [0; 4],
         muted: false,
         locked: false,
+        order: 0,
     });
     let mut arena = Arena::default();
     arena.insert(point(0, 0.5));
@@ -223,6 +225,7 @@ fn a_muted_automation_clip_emits_nothing() {
         color: [0; 4],
         muted: false,
         locked: false,
+        order: 0,
     });
     let mut arena = Arena::default();
     arena.insert(point(0, 0.0));
@@ -271,6 +274,7 @@ fn where_two_clips_overlap_the_later_one_is_what_is_emitted() {
         color: [0; 4],
         muted: false,
         locked: false,
+        order: 0,
     });
     for (start, value) in [(0, 0.2), (PPQN * 4, 0.9)] {
         let mut arena = Arena::default();

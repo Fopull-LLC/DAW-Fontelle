@@ -129,6 +129,54 @@ pub struct RollLayout {
     pub lane_grip: Rect,
 }
 
+/// How the strip down the side of the roll is drawn (TDD §16.4).
+///
+/// Asked for from using the roll: *"there should also be view options to switch
+/// between a piano visual view or just a plain list of names... this would be
+/// useful for drums since like right now if a drum sound if on a black key i
+/// cant even read it."*
+///
+/// The two are not decoration. A piano is the right picture for a melodic
+/// instrument, where the pattern of blacks and whites is how you find your
+/// place; it is the wrong one for a kit, where the keys are a list of sounds
+/// and the black ones are the ones you cannot read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyStyle {
+    /// Naturals and accidentals, drawn as a keyboard — but **on even rows**,
+    /// which is the fix for "the E key is smaller": a real keyboard's whites
+    /// are not all the same height and a grid's rows are.
+    #[default]
+    Piano,
+    /// One even band per key, each carrying the name of what is on it. No
+    /// black keys, because there is nothing to find your place by in a kit.
+    Names,
+}
+
+impl KeyStyle {
+    /// What the toolbar chip says.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Piano => "keys",
+            Self::Names => "list",
+        }
+    }
+
+    /// The other one. There are two, so a press is a toggle.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Piano => Self::Names,
+            Self::Names => Self::Piano,
+        }
+    }
+
+    pub fn tip(self) -> &'static str {
+        match self {
+            Self::Piano => "The keyboard down the side. Click for a list of names instead",
+            Self::Names => "A name per key. Click for the keyboard instead",
+        }
+    }
+}
+
 /// Wide enough for a key name and narrow enough not to eat the song.
 pub const KEYBOARD_WIDTH: f32 = 56.0;
 
@@ -148,7 +196,16 @@ pub const NAMED_KEYBOARD_WIDTH: f32 = 132.0;
 /// without a window, rather than being a comparison the window does twice —
 /// once to lay out and once to draw — and gets subtly different answers from.
 pub fn keyboard_width(map: &crate::document::KeyMap) -> f32 {
-    if map.is_named() {
+    keyboard_width_for(map, KeyStyle::Piano)
+}
+
+/// The same, for a strip drawn in a given style.
+///
+/// The list view always takes the wider strip: a column of names on 56 pixels
+/// is a column of first syllables, and the whole reason to switch to it is to
+/// read them.
+pub fn keyboard_width_for(map: &crate::document::KeyMap, style: KeyStyle) -> f32 {
+    if map.is_named() || style == KeyStyle::Names {
         NAMED_KEYBOARD_WIDTH
     } else {
         KEYBOARD_WIDTH
@@ -167,7 +224,14 @@ pub const MIN_LANE_HEIGHT: f32 = 32.0;
 pub const MAX_LANE_FRACTION: f32 = 0.7;
 
 /// How tall the drag target on the seam is.
-const LANE_GRIP: f32 = 5.0;
+///
+/// Reported as *"the velocity / pan etc. section at the bottom does have a
+/// knob to drag it but i am unable to drag it"*. It was five, which is three
+/// physical rows on a scaled display — thin enough to miss every time and then
+/// conclude the thing is not draggable at all. The extra pixels come out of
+/// the **grid**, never the lane: a grip over the top of the bars would eat the
+/// clicks that set a velocity to its loudest.
+const LANE_GRIP: f32 = 9.0;
 
 /// The lane height a drag of the grip to `y` is asking for, clamped to what a
 /// lane may be.
@@ -303,6 +367,25 @@ pub fn key_to_y(view: &RollView, grid: Rect, key: u8) -> f32 {
     grid.y + (i32::from(view.top_key) - i32::from(key)) as f32 * view.key_height
 }
 
+/// The rectangle one key's row occupies, **snapped to whole pixels**.
+///
+/// This is what the keyboard, the grid's rows and the notes in them are all
+/// drawn against, so none of the three can disagree with the others by a
+/// pixel. Two things make the rows even:
+///
+/// - the top is rounded, so a grid that starts on half a pixel does not put
+///   every row on half a pixel; and
+/// - the height is [`RollView::key_height`], which [`zoom_y`] keeps a whole
+///   number — so every row is the same height rather than alternating between
+///   two of them as a fractional zoom is rounded off.
+///
+/// Reported as *"inconsistant sizing on the notes in the piano roll"*, which
+/// is what a row height of 23.04 looks like once it has been rasterised.
+pub fn key_row(view: &RollView, grid: Rect, key: u8) -> Rect {
+    let height = view.key_height.round().max(1.0);
+    Rect::new(grid.x, key_to_y(view, grid, key).round(), grid.width, height)
+}
+
 pub fn y_to_key(view: &RollView, grid: Rect, y: f32) -> u8 {
     if view.key_height <= 0.0 {
         return view.top_key;
@@ -434,7 +517,18 @@ pub fn zoom_y(view: &mut RollView, grid: Rect, anchor_y: f32, factor: f32) {
     let offset = f64::from(anchor_y - grid.y);
     let anchor_key = f64::from(view.top_key) - offset / f64::from(view.key_height);
 
-    view.key_height = (view.key_height * factor).clamp(MIN_KEY_HEIGHT, MAX_KEY_HEIGHT);
+    // A **whole number** of pixels, always. A fractional row height draws some
+    // rows a pixel taller than others once the rasteriser has rounded them,
+    // which is the reported "inconsistant sizing" — see [`key_row`]. Rounded
+    // away from where it started, so a zoom step at the small end still moves:
+    // 5 × 1.2 is 6, and 6 / 1.2 rounds to 5 rather than back to 6.
+    let wanted = view.key_height * factor;
+    let stepped = if factor > 1.0 {
+        wanted.ceil()
+    } else {
+        wanted.floor()
+    };
+    view.key_height = stepped.clamp(MIN_KEY_HEIGHT, MAX_KEY_HEIGHT);
 
     let top = anchor_key + offset / f64::from(view.key_height);
     view.top_key = (top.round() as i32).clamp(0, KEY_COUNT - 1) as u8;
@@ -974,6 +1068,9 @@ pub enum RollControl {
     /// pitch, over its own length (FL Studio's). See
     /// `fontelle_model::Note::slide`.
     Slide,
+    /// Switches the strip down the side between the keyboard and a list of
+    /// names. The chip says which one is on — see [`KeyStyle`].
+    Keys,
 }
 
 impl RollControl {
@@ -989,6 +1086,9 @@ impl RollControl {
             Self::Lane => "vel",
             Self::Ghost => "skin",
             Self::Slide => "slide",
+            // The chip carries the view it will *give you*, like every other
+            // read-out on this bar: what it says is what is on.
+            Self::Keys => "keys",
         }
     }
 
@@ -1022,7 +1122,10 @@ impl RollControl {
             Self::Slide => Icon::Route,
             // Snap says its division, the lane chip says its property, and the
             // onion skin says which channel — all three are values.
-            Self::Snap | Self::Lane | Self::Ghost => return None,
+            // Snap says its division, the lane chip says its property, the
+            // onion skin says which channel, and the strip chip says which
+            // view — all four are values.
+            Self::Snap | Self::Lane | Self::Ghost | Self::Keys => return None,
         })
     }
 
@@ -1043,6 +1146,7 @@ impl RollControl {
             Self::Lane => "Which property the lane draws",
             Self::Ghost => "Show other instruments' notes behind these",
             Self::Slide => "Slide notes: bend what is sounding, start nothing",
+            Self::Keys => "The strip down the side: a keyboard, or a list of names",
         })
     }
 
@@ -1075,7 +1179,7 @@ pub struct ToolbarLayout {
 /// in a wide button is a glyph with a gap either side of it. The ones that are
 /// a *read-out* keep their text and keep the room to say it — which division
 /// is which is the same one the icons themselves are chosen by.
-const TOOLBAR: [(RollControl, f32); 14] = [
+const TOOLBAR: [(RollControl, f32); 15] = [
     (RollControl::Tool(Tool::Draw), 26.0),
     (RollControl::Tool(Tool::Paint), 26.0),
     (RollControl::Tool(Tool::Select), 26.0),
@@ -1090,6 +1194,7 @@ const TOOLBAR: [(RollControl, f32); 14] = [
     (RollControl::Slide, 26.0),
     (RollControl::Lane, 62.0),
     (RollControl::Ghost, 40.0),
+    (RollControl::Keys, 40.0),
 ];
 
 /// What the lane chip says: the property, and a caret because it opens a menu.

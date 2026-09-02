@@ -267,6 +267,23 @@ pub struct Project {
 }
 
 impl Project {
+    /// The lanes, **in the order the arrangement stacks them**.
+    ///
+    /// One answer to "what is row 3", here rather than in whatever draws the
+    /// arrangement, because a command that moves a row and a canvas that draws
+    /// one have to agree about which row is which — and two sorts is one to
+    /// forget. See [`Lane::order`](crate::Lane::order).
+    ///
+    /// The sort is **stable**, which is what keeps a project written before
+    /// rows could be ordered stacking the way it always did: every lane in it
+    /// carries the same default, so the tie falls back to the arena's own
+    /// order.
+    pub fn lane_ids(&self) -> Vec<LaneId> {
+        let mut ids: Vec<LaneId> = self.lanes.keys().collect();
+        ids.sort_by_key(|id| self.lanes.get(*id).map_or(0, |lane| lane.order));
+        ids
+    }
+
     /// A new, empty document — with a master mixer track, because every
     /// project has one (TDD §13.1) and a mixer with nothing to sum into is not
     /// a state any command should have to handle.

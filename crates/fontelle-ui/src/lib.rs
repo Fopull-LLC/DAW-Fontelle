@@ -41,8 +41,9 @@ pub use document::{
     LibraryEntry, SendInfo, StudioHost,
 };
 pub use layout::{
-    DEFAULT_TIMELINE_HEIGHT, EditorTab, EditorTabs, MIN_EDITOR_HEIGHT, MIN_TIMELINE_HEIGHT,
-    PanelLayout, Rect, WindowLayout, editor_tab_at, editor_tabs, timeline_height_at, window_layout,
+    DEFAULT_TIMELINE_HEIGHT, EditorKind, EditorTab, EditorTabs, MIN_EDITOR_HEIGHT,
+    MIN_TIMELINE_HEIGHT, PanelLayout, Rect, WindowLayout, editor_tab_at, editor_tabs,
+    editor_window_layout, timeline_height_at, window_layout,
 };
 pub use pointer::{Pointer, PointerScene, pointer_at};
 pub use render::{Chrome, Headless, RenderError, RollChrome, TransportChrome, draw_window};

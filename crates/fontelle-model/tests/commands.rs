@@ -62,6 +62,8 @@ fn fixture() -> Fixture {
         pan: 0.0,
         muted: false,
         soloed: false,
+        named_keys: false,
+        gain_db: 0.0,
     });
     let lane = project.lanes.insert(Lane {
         name: "Lane".into(),
@@ -69,6 +71,7 @@ fn fixture() -> Fixture {
         color: [0; 4],
         muted: false,
         locked: false,
+        order: 0,
     });
     let mut notes = Arena::default();
     let ids = vec![

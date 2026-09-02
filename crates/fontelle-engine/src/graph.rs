@@ -101,6 +101,19 @@ pub trait AudioNode: Send {
     fn latency_samples(&self) -> u32 {
         0
     }
+    /// What this node is, for anything that has to read a schedule back.
+    ///
+    /// A schedule is a flat list of boxed trait objects and its **order** is a
+    /// correctness property — a send has to be taken after the fader it is
+    /// post of, and a sidechain key has to be filled before the insert that
+    /// reads it. Neither is visible in the sound as anything but a one-block
+    /// error, so the tests that hold the compiler to those orders read the
+    /// list, and this is how they name what they find. Defaults to a word
+    /// nobody would assert on; a node overrides it when something checks for
+    /// it.
+    fn debug_name(&self) -> &'static str {
+        "node"
+    }
     fn params(&self) -> &dyn ParamSet;
 }
 
@@ -509,6 +522,7 @@ mod tests {
         TransportSnapshot {
             state: TransportState::Playing,
             position_sample: 0,
+            bpm: fontelle_types::DEFAULT_BPM,
         }
     }
 
@@ -582,6 +596,7 @@ mod tests {
         let transport = TransportSnapshot {
             state: TransportState::Playing,
             position_sample: 0,
+            bpm: fontelle_types::DEFAULT_BPM,
         };
 
         graph.process_block(&events, transport, 0..128);
@@ -638,6 +653,7 @@ mod tests {
         let transport = TransportSnapshot {
             state: TransportState::Playing,
             position_sample: 0,
+            bpm: fontelle_types::DEFAULT_BPM,
         };
 
         let mut unity = sampler_into_mixer_graph(MixerTrackNode::new());
@@ -674,6 +690,7 @@ mod tests {
             TransportSnapshot {
                 state: TransportState::Playing,
                 position_sample: 0,
+                bpm: fontelle_types::DEFAULT_BPM,
             },
             0..128,
         );
@@ -689,6 +706,7 @@ mod tests {
             TransportSnapshot {
                 state: TransportState::Playing,
                 position_sample: 0,
+                bpm: fontelle_types::DEFAULT_BPM,
             },
             0..128,
         );
@@ -776,6 +794,7 @@ mod tests {
         let transport = TransportSnapshot {
             state: TransportState::Playing,
             position_sample: 0,
+            bpm: fontelle_types::DEFAULT_BPM,
         };
         graph.process_block(&note_on_events(), transport, 0..chunk as i64);
 
@@ -821,6 +840,7 @@ mod tests {
         let transport = TransportSnapshot {
             state: TransportState::Playing,
             position_sample: 0,
+            bpm: fontelle_types::DEFAULT_BPM,
         };
 
         graph.process_block(&[], transport, 0..128);

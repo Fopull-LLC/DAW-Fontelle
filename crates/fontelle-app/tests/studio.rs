@@ -179,18 +179,32 @@ fn the_search_filters_the_bank_and_forgets_the_open_file() {
 
 // ----------------------------------------------------- the channel rack ---
 
+/// A fresh channel plays the **built-in synth**.
+///
+/// It used to play nothing, on the reasoning that a default instrument is a
+/// guess. What that cost is what somebody using the studio reported: a channel
+/// that plays nothing has no panel, no keys that sound and no knob that does
+/// anything, so the button that makes one looks broken — *"when clicking new
+/// instrument, right now it doesnt do anything"*. Three oscillators is not a
+/// guess about what you want to hear, it is something to hear while you decide.
 #[test]
-fn a_blank_project_starts_with_one_channel_and_no_instrument_on_it() {
+fn a_blank_project_starts_with_one_channel_playing_the_built_in_synth() {
     let dir = a_bank("blank");
     let (session, _source) = studio(&dir);
 
     let channels = session.channels();
     assert_eq!(channels.len(), 1);
     assert!(
-        !channels[0].has_instrument,
-        "a fresh channel plays nothing rather than playing a default"
+        channels[0].has_instrument,
+        "a fresh channel comes up playing the built-in synth"
     );
     assert!(!channels[0].muted && !channels[0].soloed);
+    assert!(
+        session
+            .instrument()
+            .is_some_and(|view| view.groups.iter().any(|g| g.name == "Oscillators")),
+        "and its panel is the synth's"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -355,17 +369,20 @@ fn muting_a_channel_is_a_command_and_reaches_the_audio_thread() {
 fn choosing_an_instrument_can_be_taken_back() {
     let dir = a_bank("undo-instrument");
     let (mut session, _source) = studio(&dir);
+    let before = session.channels()[0].name.clone();
     session.open_file(0).unwrap();
     session.set_channel_instrument(0).unwrap();
-    assert!(session.channels()[0].has_instrument);
+    let chosen = session.channels()[0].name.clone();
+    assert_ne!(chosen, before, "the row says what it is playing now");
 
     session.undo();
-    assert!(
-        !session.channels()[0].has_instrument,
+    assert_eq!(
+        session.channels()[0].name,
+        before,
         "putting the wrong soundfont on a channel has to be undoable"
     );
     session.redo();
-    assert!(session.channels()[0].has_instrument);
+    assert_eq!(session.channels()[0].name, chosen);
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -884,15 +901,25 @@ fn param_of<'a>(
         })
 }
 
+/// A channel really *can* still have nothing on it — a project saved before
+/// the built-in synth existed, or one whose instrument somebody cleared — and
+/// that channel offers no knobs. Only the *default* changed.
 #[test]
 fn a_channel_with_no_instrument_has_nothing_to_edit() {
     let dir = a_bank("vst-empty");
-    let (session, _source) = studio(&dir);
+    let (mut session, _source) = studio(&dir);
+    strip_the_instrument(&mut session);
     assert!(
         session.instrument().is_none(),
         "an empty channel must not offer knobs that write to nothing"
     );
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Takes the patch off the selected channel, which is the state every channel
+/// used to start in.
+fn strip_the_instrument(session: &mut Session) {
+    session.clear_channel_instrument();
 }
 
 #[test]
@@ -1220,7 +1247,8 @@ fn a_drum_kit_on_a_channel_names_its_hits_and_greys_the_rest() {
 #[test]
 fn a_channel_with_no_instrument_reports_an_unknown_key_map() {
     let dir = a_bank("no-instrument-map");
-    let (session, _graph) = studio(&dir);
+    let (mut session, _graph) = studio(&dir);
+    strip_the_instrument(&mut session);
 
     let map = session.key_map();
     assert!(!map.is_known());
@@ -1605,6 +1633,111 @@ fn choosing_an_instrument_keeps_the_keyboard_pointed_at_it() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// ------------------------------------------ how the key strip is drawn ---
+//
+// Asked for from using the roll: *"there should also be view options to switch
+// between a piano visual view or just a plain list of names which would
+// configure how the piano roll displays for that instrument... this would be
+// useful for drums since like right now if a drum sound if on a black key i
+// cant even read it."*
+//
+// Per channel, and in the document: a drum channel wants the list and the
+// piano beside it wants the keyboard, and a preference that reset every time
+// the project was reopened would be one nobody bothers to set.
+
+#[test]
+fn a_channel_starts_on_the_keyboard_it_always_had() {
+    let dir = a_bank("key-style-default");
+    let (session, _source) = studio(&dir);
+    assert_eq!(session.key_style(), fontelle_ui::canvas::KeyStyle::Piano);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_strip_can_be_switched_to_a_list_of_names_and_back() {
+    let dir = a_bank("key-style-switch");
+    let (mut session, _source) = studio(&dir);
+
+    session.set_key_style(fontelle_ui::canvas::KeyStyle::Names);
+    assert_eq!(session.key_style(), fontelle_ui::canvas::KeyStyle::Names);
+
+    session.set_key_style(fontelle_ui::canvas::KeyStyle::Piano);
+    assert_eq!(session.key_style(), fontelle_ui::canvas::KeyStyle::Piano);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn each_channel_keeps_its_own_view() {
+    // The whole reason it is per channel: a kit on one and a piano on the next
+    // want different pictures, and one switch for the window would make the
+    // second channel undo the first.
+    let dir = a_bank("key-style-per-channel");
+    let (session, _source) = studio(&dir);
+    let mut session = session;
+    session.open_file(0).expect("the fixture must open");
+    session.add_channel_with(0).unwrap();
+    assert!(session.channels().len() >= 2);
+
+    session.select_channel(0);
+    session.set_key_style(fontelle_ui::canvas::KeyStyle::Names);
+    session.select_channel(1);
+    assert_eq!(
+        session.key_style(),
+        fontelle_ui::canvas::KeyStyle::Piano,
+        "the second channel took the first one's view"
+    );
+    session.select_channel(0);
+    assert_eq!(session.key_style(), fontelle_ui::canvas::KeyStyle::Names);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn switching_the_view_moves_the_revision_so_the_panel_relays_out() {
+    // The strip is wider in the list view, so the grid beside it moves. A
+    // switch the window does not hear about is a strip drawn over the notes.
+    let dir = a_bank("key-style-revision");
+    let (mut session, _source) = studio(&dir);
+    let before = session.revision();
+    session.set_key_style(fontelle_ui::canvas::KeyStyle::Names);
+    assert_ne!(session.revision(), before);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ------------------------------------------- the keys a player is holding ---
+//
+// Asked for from playing the studio: *"when midi keys are pressed and
+// triggered it should highlight the note of the piano in the piano roll"*.
+// The routers write into one cell (see `fontelle-midi/tests/live_keys.rs`);
+// this is the studio's half — handing what it holds to the window, which
+// reads it once a frame rather than on the revision, the same way the meters
+// are read.
+
+#[test]
+fn the_keys_a_player_is_holding_reach_the_window() {
+    let dir = a_bank("live-keys");
+    let (session, _source) = studio(&dir);
+    let keys = std::sync::Arc::new(fontelle_midi::LiveKeys::default());
+    let session = session.with_live_keys(std::sync::Arc::clone(&keys));
+
+    assert_eq!(session.live_keys(), 0, "nothing is being played yet");
+    keys.press(60);
+    keys.press(64);
+    assert_eq!(session.live_keys(), (1u128 << 60) | (1u128 << 64));
+    keys.release(60);
+    assert_eq!(session.live_keys(), 1u128 << 64);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_studio_with_no_keys_attached_lights_nothing() {
+    // Every offline path builds a `Session` without one, and a headless
+    // render has no keyboard to light.
+    let dir = a_bank("live-keys-none");
+    let (session, _source) = studio(&dir);
+    assert_eq!(session.live_keys(), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn a_studio_with_no_target_attached_still_works() {
     // Every offline path builds a `Session` without one, and none of them may
@@ -1614,5 +1747,82 @@ fn a_studio_with_no_target_attached_still_works() {
     session.open_file(0).expect("the fixture must open");
     session.add_channel_with(0).unwrap();
     session.select_channel(0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// -------------------------------------------------- putting the rows in order
+
+/// **A row can be moved up the stack, and its clips go with it.**
+///
+/// Rows could be added, renamed, muted and deleted, and the order they stacked
+/// in was the order the arena happened to hold them — insertion order, and
+/// unchangeable. This drives the same trait method the menu's "Move up" calls.
+///
+/// The clip check is the one with teeth: a clip names a `LaneId`, so a reorder
+/// that swapped the lanes' *contents* rather than their order would leave every
+/// clip on screen against the wrong row, which is a corruption you would only
+/// notice by looking.
+#[test]
+fn a_row_can_be_moved_up_the_stack_and_takes_its_clips_with_it() {
+    let dir = a_bank("lane-order");
+    let (mut session, _source) = studio(&dir);
+    session.open_file(0).unwrap();
+    session.set_channel_instrument(0).unwrap();
+    session.add_channel_with(0).unwrap();
+
+    let before: Vec<String> = session.lanes().iter().map(|l| l.name.clone()).collect();
+    assert!(before.len() >= 2, "two channels, two rows: {before:?}");
+
+    // Which row each clip is on, by the row's *name*, so the claim survives
+    // the rows moving underneath it.
+    let clip_rows = |session: &Session| -> Vec<String> {
+        let lanes = session.lanes();
+        session
+            .clips()
+            .iter()
+            .map(|clip| lanes[clip.lane].name.clone())
+            .collect()
+    };
+    let rows_before = clip_rows(&session);
+
+    session.move_lane(1, -1);
+    let after: Vec<String> = session.lanes().iter().map(|l| l.name.clone()).collect();
+    assert_eq!(
+        after[0], before[1],
+        "the second row should now be the first: {before:?} then {after:?}"
+    );
+    assert_eq!(after[1], before[0]);
+    assert_eq!(
+        clip_rows(&session),
+        rows_before,
+        "every clip is still on the row it was on"
+    );
+
+    // And back, which is what the menu's other entry does.
+    session.move_lane(0, 1);
+    let restored: Vec<String> = session.lanes().iter().map(|l| l.name.clone()).collect();
+    assert_eq!(restored, before);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Moving a row off either end does nothing rather than failing — the menu
+/// greys those entries, and a gesture that errored would be one the window has
+/// to handle rather than one it can just ask for.
+#[test]
+fn moving_a_row_off_the_end_of_the_stack_is_harmless() {
+    let dir = a_bank("lane-order-edge");
+    let (mut session, _source) = studio(&dir);
+    session.open_file(0).unwrap();
+    session.set_channel_instrument(0).unwrap();
+    session.add_channel_with(0).unwrap();
+
+    let before: Vec<String> = session.lanes().iter().map(|l| l.name.clone()).collect();
+    let last = before.len() - 1;
+    session.move_lane(0, -1);
+    session.move_lane(last, 1);
+    let after: Vec<String> = session.lanes().iter().map(|l| l.name.clone()).collect();
+    assert_eq!(after, before);
+
     std::fs::remove_dir_all(&dir).ok();
 }

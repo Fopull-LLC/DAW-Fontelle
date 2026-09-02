@@ -12,4 +12,17 @@ pub struct Lane {
     /// mixer operation.
     pub muted: bool,
     pub locked: bool,
+    /// Where this row sits in the stack, low first.
+    ///
+    /// The arrangement used to stack rows in the arena's own order, which is
+    /// insertion order and cannot be changed — so an arrangement whose rows
+    /// were made in the wrong order stayed that way. This is what
+    /// [`Project::lane_ids`](crate::Project::lane_ids) sorts by.
+    ///
+    /// **Defaulted, and the sort is stable**, so every row in a project
+    /// written before this existed carries the same number and keeps the order
+    /// it has always had. A sort that broke that tie any other way would
+    /// silently rearrange every saved arrangement.
+    #[serde(default)]
+    pub order: u32,
 }
