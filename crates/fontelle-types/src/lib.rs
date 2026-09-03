@@ -1,4 +1,5 @@
 mod asset;
+mod audio_clip;
 mod effect;
 mod event;
 mod id;
@@ -9,6 +10,10 @@ mod patch_data;
 mod time;
 
 pub use asset::{AssetKind, AssetRef};
+pub use audio_clip::{
+    ClipLoopMode, Fade, FadeCurve, MAX_CLIP_GAIN_DB, MAX_CLIP_SPEED, MIN_CLIP_GAIN_DB,
+    MIN_CLIP_SPEED, AudioClipData,
+};
 pub use effect::{
     BANDS, BUTTERWORTH_Q, BandChannel, BandType, BitcrushConfig, BitcrushPreset,
     CHORUS_TONE_OPEN_HZ, ChorusConfig, ChorusMode, CompressorConfig, Decimation, DelayConfig,

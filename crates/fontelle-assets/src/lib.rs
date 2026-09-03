@@ -2,6 +2,7 @@
 //! generation, and soundfont library indexing
 //! (FONTELLE_TDD.md §7.7, §14.6, §15.3, §17.5).
 
+pub mod audio_import;
 pub mod fixtures;
 mod fsc_import;
 mod general_midi;
@@ -18,7 +19,8 @@ pub use midi_import::{
     ImportedMidiChannel, MidiChannelSummary, MidiChannels, MidiImport, MidiPart, MidiSurvey,
     import_midi, part_name, read_midi, read_midi_survey, survey_midi,
 };
-pub use peaks::{PeakData, generate_peaks};
+pub use audio_import::{AudioAsset, import_audio, read_audio};
+pub use peaks::{PEAK_BUCKET, PeakData, generate_peaks};
 pub use sf2_import::{
     ImportError, ImportedPatch, ImportedZone, ImportedZones, LoadedSample, PresetInfo, import_sf2,
     import_sf2_preset, list_presets, load_sf2_samples,

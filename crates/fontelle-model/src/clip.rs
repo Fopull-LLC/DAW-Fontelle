@@ -4,11 +4,12 @@ use crate::automation::AutomationData;
 use crate::note::NoteData;
 use crate::prefab::PrefabLink;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AudioClipData {
-    // Fleshed out in TDD §15 (M6). Left as a marker variant until then so
-    // `ClipSource` has its full v1 shape from commit one.
-}
+/// An audio clip's content (TDD §15.1), which lives in `fontelle-types` because
+/// **both ends need it**: the document owns and undoes it, and the audio thread
+/// reads it to decide which frame of the file to play. `fontelle-engine` may
+/// not depend on this crate (INVARIANT 4), so the shape sits beside `AssetRef`
+/// and `FilterConfig`, which are there for the same reason.
+pub use fontelle_types::AudioClipData;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ClipSource {

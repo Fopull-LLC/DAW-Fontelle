@@ -663,3 +663,46 @@ pub fn write_fsc_to_temp_file(name: &str, bytes: &[u8]) -> PathBuf {
     f.write_all(bytes).expect("write test fixture bytes");
     path
 }
+
+// ------------------------------------------------------------------ wav ---
+
+/// A RIFF/WAVE file holding `samples`, 16-bit PCM, interleaved across
+/// `channels`.
+///
+/// Written here rather than checked in, for the reason every other fixture in
+/// this file is: a test that depends on a binary blob nobody can read is a test
+/// nobody can change. Sixteen-bit because that is what a decoder is most likely
+/// to be wrong about — a float file round-trips through anything.
+pub fn build_wav(sample_rate: u32, channels: u16, samples: &[f32]) -> Vec<u8> {
+    let bits = 16u16;
+    let block_align = channels * bits / 8;
+    let byte_rate = sample_rate * u32::from(block_align);
+
+    let mut data = Vec::with_capacity(samples.len() * 2);
+    for value in samples {
+        // Symmetric about zero and clamped, which is what every encoder does:
+        // scaling by 32768 lets +1.0 wrap to −32768, and one wrapped sample is
+        // a click.
+        let scaled = (value.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+        data.extend_from_slice(&scaled.to_le_bytes());
+    }
+
+    let mut fmt = Vec::with_capacity(16);
+    fmt.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    fmt.extend_from_slice(&channels.to_le_bytes());
+    fmt.extend_from_slice(&sample_rate.to_le_bytes());
+    fmt.extend_from_slice(&byte_rate.to_le_bytes());
+    fmt.extend_from_slice(&block_align.to_le_bytes());
+    fmt.extend_from_slice(&bits.to_le_bytes());
+
+    let mut body = Vec::new();
+    body.extend_from_slice(b"WAVE");
+    write_chunk(&mut body, b"fmt ", &fmt);
+    write_chunk(&mut body, b"data", &data);
+
+    let mut out = Vec::with_capacity(body.len() + 8);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    out.extend_from_slice(&body);
+    out
+}
