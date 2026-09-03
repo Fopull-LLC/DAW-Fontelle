@@ -1,4 +1,12 @@
-//! The soundfont bank (TDD §17.5).
+//! The soundfont bank (TDD §17.5), and the import folders beside it.
+//!
+//! One type for both, because they are the same thing: **a list of folders the
+//! user named, walked into a browsable tree with a search over it.** What
+//! differs is only which files count — `.sf2` for the bank, `.mid` or `.fsc`
+//! for an import folder — and that is one predicate, [`BankFilter`]. A second
+//! copy of the folder walk, the `..` row, the duplicate check, the depth
+//! bound, the settle-after-a-folder-was-deleted and the fuzzy search would be
+//! six more places for those to disagree.
 //!
 //! One or more folders the user drops `.sf2` files into, scanned into a list
 //! the browser panel searches. That is the whole of it today, and the shape is
@@ -40,6 +48,40 @@ impl BankEntry {
             name: display_name(&path),
             path,
             size_bytes,
+        }
+    }
+}
+
+/// Which files a bank lists.
+///
+/// The whole of the difference between the soundfont bank and an import
+/// folder. `Default` is soundfonts, which is what this type was before it had
+/// a choice to make.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BankFilter {
+    /// `.sf2`, for the instrument bank.
+    #[default]
+    Soundfonts,
+    /// `.mid`/`.midi` or `.fsc`, for the two import folders.
+    Files(fontelle_types::FolderKind),
+}
+
+impl BankFilter {
+    pub fn accepts(self, path: &Path) -> bool {
+        match self {
+            Self::Soundfonts => is_soundfont(path),
+            Self::Files(kind) => kind.accepts(path),
+        }
+    }
+
+    /// What one of these files is called, for a folder row's count. Singular:
+    /// the caller pluralises, because "1 sf2" and "2 sf2" are both right and
+    /// "1 MIDI files" is not.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Soundfonts => "sf2",
+            Self::Files(fontelle_types::FolderKind::Midi) => "mid",
+            Self::Files(fontelle_types::FolderKind::Scores) => "fsc",
         }
     }
 }
@@ -98,18 +140,20 @@ pub enum BankRow {
     Folder {
         path: PathBuf,
         name: String,
-        /// How many soundfonts are under it, subfolders included.
+        /// How many matching files are under it, subfolders included.
         ///
         /// The one number worth showing: a folder with nothing in it looks
         /// exactly like a folder with a hundred files until you click it.
-        soundfonts: usize,
+        files: usize,
     },
     File(BankEntry),
 }
 
 /// The folders, and what is in them.
 #[derive(Debug, Default)]
-pub struct SoundfontBank {
+pub struct FileBank {
+    /// Which files count. See [`BankFilter`].
+    filter: BankFilter,
     dirs: Vec<PathBuf>,
     /// Every soundfont under every configured folder, flat. What the **search**
     /// runs against, and what it has always been.
@@ -133,15 +177,27 @@ pub struct SoundfontBank {
 /// hang. §17.5's `notify`-driven incremental index is what replaces this.
 const MAX_DEPTH: usize = 6;
 
-impl SoundfontBank {
+impl FileBank {
+    /// A bank of soundfonts, which is what every caller that predates the
+    /// import folders wants.
     pub fn new(dirs: Vec<PathBuf>) -> Self {
+        Self::with_filter(dirs, BankFilter::Soundfonts)
+    }
+
+    /// A bank over `dirs` listing whichever files `filter` accepts.
+    pub fn with_filter(dirs: Vec<PathBuf>, filter: BankFilter) -> Self {
         Self {
+            filter,
             dirs,
             entries: Vec::new(),
             at: None,
             rows: Vec::new(),
             unreadable: Vec::new(),
         }
+    }
+
+    pub fn filter(&self) -> BankFilter {
+        self.filter
     }
 
     pub fn dirs(&self) -> &[PathBuf] {
@@ -303,7 +359,7 @@ impl SoundfontBank {
             for dir in self.dirs.clone() {
                 self.rows.push(BankRow::Folder {
                     name: folder_name(&dir),
-                    soundfonts: self.count_under(&dir),
+                    files: self.count_under(&dir),
                     path: dir,
                 });
             }
@@ -331,10 +387,10 @@ impl SoundfontBank {
             if meta.is_dir() {
                 folders.push(BankRow::Folder {
                     name: folder_name(&path),
-                    soundfonts: self.count_under(&path),
+                    files: self.count_under(&path),
                     path,
                 });
-            } else if is_soundfont(&path) {
+            } else if self.filter.accepts(&path) {
                 files.push(BankRow::File(BankEntry {
                     name: display_name(&path),
                     path,
@@ -350,7 +406,7 @@ impl SoundfontBank {
         self.rows.append(&mut files);
     }
 
-    /// How many soundfonts are under `dir`, subfolders included.
+    /// How many matching files are under `dir`, subfolders included.
     ///
     /// From the index rather than by walking again: it already holds every
     /// file under every root, and counting a prefix is a scan of a `Vec`
@@ -380,7 +436,7 @@ impl SoundfontBank {
             let Ok(meta) = entry.metadata() else { continue };
             if meta.is_dir() {
                 subdirs.push(path);
-            } else if is_soundfont(&path) {
+            } else if self.filter.accepts(&path) {
                 // Canonicalised for the duplicate check only: two configured
                 // folders reaching the same file through different routes is
                 // ordinary, and the path shown stays the one the user's own
@@ -494,3 +550,7 @@ pub fn matches_names<S: AsRef<str>>(names: &[S], query: &str) -> Vec<usize> {
     hits.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     hits.into_iter().map(|(index, _)| index).collect()
 }
+
+/// The bank of soundfonts, by the name it had before it could hold anything
+/// else. Kept because that is what most of its callers mean.
+pub type SoundfontBank = FileBank;

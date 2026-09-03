@@ -7,6 +7,7 @@ mod mixer;
 mod piano_roll;
 mod rack;
 mod timeline;
+mod tools;
 
 pub use automation::{
     AutomationBlock, CURVE_SHAPES, automation_block, automation_polyline,
@@ -50,7 +51,8 @@ pub use piano_roll::{
     lane_caption, lane_height_at, lane_menu_hit, lane_menu_layout, lane_value_of_y,
     key_row, keyboard_width_for, lane_y_of_value, note_at_tick, roll_layout,
     roll_layout_with_keys, slice_cuts, snap_tick,
-    snap_unit, subdivision_unit, tick_to_x, toolbar_hit, toolbar_layout, velocity_of_y,
+    snap_unit, subdivision_unit, tick_to_x, toolbar_hit, toolbar_layout, tools_caption,
+    velocity_of_y,
     velocity_to_y, visible_keys, visible_ticks, x_to_tick, y_to_key, zoom_x, zoom_y,
 };
 pub use rack::{
@@ -66,4 +68,7 @@ pub use timeline::{
     timeline_layout, timeline_snap,
     timeline_tick_to_x, timeline_toolbar_hit, timeline_toolbar_layout, timeline_visible_ticks,
     timeline_x_to_tick, timeline_zoom_x, timeline_zoom_y, visible_lanes, y_to_lane,
+};
+pub use tools::{
+    TOOL_ROWS, ToolAction, ToolRow, Tools, ToolsPanel, tools_panel_hit, tools_panel_layout,
 };

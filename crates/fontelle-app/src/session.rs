@@ -26,10 +26,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use fontelle_engine::{GraphPublisher, TimelinePublisher};
+use fontelle_assets::{MidiChannels, import_fsc, import_midi, survey_midi};
 use fontelle_model::{
     AddChannel, AddClip, AddNotes, Arena, Clip, ClipSource, Command, DuplicateClip, FlagTarget,
-    History, Lane, MoveClip, MoveNotes, Note, NoteData, NumberTarget, Project, RemoveClip,
-    RemoveNotes, ResizeClip, ResizeNotes, SetFlag, SetNoteProperty, SetNumber,
+    History, ImportPart, ImportParts, Lane, MoveClip, MoveNotes, Note, NoteData, NumberTarget,
+    Project, RemoveClip, RemoveNotes, ResizeClip, ResizeNotes, SetFlag, SetNoteProperty, SetNumber,
 };
 use fontelle_types::{
     ChannelId, ClipId, EventPayload, LaneId, MixerTrackId, NodeId, NoteId, PPQN, Sample, Tick,
@@ -41,7 +42,7 @@ use fontelle_ui::document::{
     LaneInfo, LibraryEntry, MixerStrip, PlayMode, StudioHost,
 };
 
-use crate::bank::{BankRow, SoundfontBank, matches_names};
+use crate::bank::{BankFilter, BankRow, FileBank, SoundfontBank, matches_names};
 use crate::library::SampleLibrary;
 use crate::projects::ProjectLibrary;
 use crate::realise::{RealiseOptions, apply_mixer_controls, apply_send_controls, realise};
@@ -191,6 +192,26 @@ pub struct Session {
     /// tests wrote a soundfont folder in `/tmp` into the developer's real
     /// `~/.config/fontelle/settings.json`.
     settings_path: Option<PathBuf>,
+    /// The folder the Import tab is browsing, and what is in it.
+    ///
+    /// One bank rather than two, rebuilt when the kind changes: only one of
+    /// them is ever on screen, and two would mean two folder walks on every
+    /// launch for a tab most sessions never open.
+    import_bank: FileBank,
+    /// Which kind the Import tab is showing.
+    import_kind: fontelle_types::FolderKind,
+    /// What the Import tab's search box holds. Its own, not the bank's: a
+    /// query typed against soundfonts means nothing against MIDI files.
+    import_query: String,
+    /// A MIDI file waiting on the question *"all of it, or one part?"*.
+    ///
+    /// Session state and not the document's: it is a question in flight, and
+    /// a project saved while one is open should not arrive with it.
+    pending_import: Option<PendingImport>,
+    /// Which of the browser's lists is on screen, so the search box knows
+    /// which query it is editing. Mirrored from the window — see
+    /// `StudioHost::set_browser_mode`.
+    browser_mode: fontelle_ui::canvas::BrowserMode,
     bank: SoundfontBank,
     /// The projects folder and what is in it (TDD §17.1, §17.3). Live-session
     /// state, like the bank: where projects live is a setting, and the listing
@@ -293,6 +314,11 @@ impl Session {
             revision: 1,
             settings,
             settings_path: None,
+            import_bank: FileBank::default(),
+            import_kind: fontelle_types::FolderKind::Midi,
+            import_query: String::new(),
+            pending_import: None,
+            browser_mode: fontelle_ui::canvas::BrowserMode::Sounds,
             bank: SoundfontBank::default(),
             projects: ProjectLibrary::default(),
             query: String::new(),
@@ -1650,6 +1676,31 @@ impl DocumentHost for Session {
                 self.run(Box::new(ResizeNotes::new(clip, ids, tick_delta)));
                 Vec::new()
             }
+            // The Tools panel's *Add* and *Take off*: every note moved by the
+            // same amount from wherever it already was, which is what keeps a
+            // phrase's shape while changing its level.
+            RollEdit::NudgeProperty {
+                ids,
+                property,
+                delta,
+            } => {
+                self.run(Box::new(fontelle_model::NudgeNoteProperty::new(
+                    clip, ids, property, delta,
+                )));
+                Vec::new()
+            }
+            // And the randomizer's: a value each, as one entry in the
+            // history so one undo takes the whole roll back.
+            RollEdit::SetPropertyEach {
+                ids,
+                property,
+                values,
+            } => {
+                self.run(Box::new(fontelle_model::SetNotePropertyEach::new(
+                    clip, ids, property, values,
+                )));
+                Vec::new()
+            }
             RollEdit::Slice { cuts } => {
                 self.run(Box::new(fontelle_model::SliceNotes::new(clip, cuts)));
                 self.history.break_gesture();
@@ -1841,6 +1892,228 @@ impl Session {
         };
         self.republish();
         ids
+    }
+
+    // ------------------------------------------------ importing files ---
+
+    /// Sets the folder `kind` is imported from, remembers it, and reads it.
+    ///
+    /// The half of `choose_import_dir` that does not involve a dialog, so a
+    /// test — or a command-line flag, when there is one — can point the
+    /// importer somewhere without a person clicking through a picker.
+    pub fn set_import_folder(&mut self, kind: fontelle_types::FolderKind, dir: Option<PathBuf>) {
+        self.settings.set_folder(kind, dir);
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+        if self.import_kind == kind {
+            self.rescan_imports();
+        } else {
+            self.revision += 1;
+        }
+    }
+
+    /// Reads the import folder **if the bank is not already the right one**.
+    ///
+    /// The lazy form, and the one every entry point goes through. It exists
+    /// because the eager form was wrong in a way nothing could see: the bank
+    /// was rescanned when the *kind changed*, so opening the Import tab on
+    /// the kind it already had — which is what "Import MIDI…" does on a fresh
+    /// launch — browsed an empty, never-scanned bank and reported "no sf2
+    /// files" over a folder of MIDI. Asking "is the bank the one the settings
+    /// name?" cannot go stale the way "did something just change?" can.
+    ///
+    /// Cheap when it is already right: two path comparisons and no disk.
+    fn ensure_import_bank(&mut self) {
+        let wanted: Vec<PathBuf> = self
+            .settings
+            .folder(self.import_kind)
+            .map(|dir| vec![dir.to_path_buf()])
+            .unwrap_or_default();
+        if self.import_bank.filter() == BankFilter::Files(self.import_kind)
+            && self.import_bank.dirs() == wanted.as_slice()
+        {
+            return;
+        }
+        self.rescan_imports();
+    }
+
+    /// Points the import bank at the folder for `kind` and reads it.
+    ///
+    /// The disk read itself. Callers want [`ensure_import_bank`] unless they
+    /// know something has changed underneath.
+    fn rescan_imports(&mut self) {
+        let dirs = self
+            .settings
+            .folder(self.import_kind)
+            .map(|dir| vec![dir.to_path_buf()])
+            .unwrap_or_default();
+        self.import_bank = FileBank::with_filter(dirs, BankFilter::Files(self.import_kind));
+        self.import_bank.rescan();
+        self.revision += 1;
+    }
+
+    /// The path each row of the Import tab stands for. `None` for a folder or
+    /// the `..` row, which are moves rather than files.
+    fn import_rows(&self) -> Vec<Option<PathBuf>> {
+        if !self.import_query.trim().is_empty() {
+            return self
+                .import_bank
+                .search(&self.import_query)
+                .into_iter()
+                .map(|entry| Some(entry.path.clone()))
+                .collect();
+        }
+        self.import_bank
+            .rows()
+            .iter()
+            .map(|row| match row {
+                BankRow::File(entry) => Some(entry.path.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Brings `parts` in as instruments, rows and clips — one history entry.
+    ///
+    /// The tempo is **not** touched when the project already has clips in it.
+    /// A file's tempo is right for the file and wrong for the piece you are
+    /// working on, and changing the song's tempo is an edit nobody asked for;
+    /// on an empty project it is the only tempo there is, so it is taken.
+    fn bring_in(&mut self, what: &str, parts: Vec<ImportPart>, bpm: Option<f64>) -> Result<String, String> {
+        if parts.is_empty() {
+            return Err(format!("there is nothing in {what} to import"));
+        }
+        let names: Vec<String> = parts.iter().map(|part| part.name.clone()).collect();
+        let empty = self.project.clips.is_empty();
+        let command = Box::new(ImportParts::new(what.to_string(), parts));
+        let made = self
+            .apply_for::<ImportParts>(command)?
+            .made()
+            .to_vec();
+        if made.is_empty() {
+            return Err(format!("there is nothing in {what} to import"));
+        }
+
+        // The roll opens on what just arrived, which is what somebody who
+        // pressed "import" is looking for.
+        if let Some(first) = made.first() {
+            self.open_clip(first.clip);
+        }
+        if let (Some(bpm), true) = (bpm, empty) {
+            self.set_tempo(bpm);
+        }
+        self.rebuild_graph();
+        self.republish();
+
+        let tempo_note = match (bpm, empty) {
+            (Some(bpm), false) => format!(" \u{2014} the file is {bpm:.0} bpm, this song is not"),
+            _ => String::new(),
+        };
+        Ok(match names.len() {
+            1 => format!("Imported \u{201c}{}\u{201d}{tempo_note}", names[0]),
+            n => format!("Imported {n} parts from {what}{tempo_note}"),
+        })
+    }
+
+    /// Every part of a surveyed MIDI file, as things to bring in.
+    fn midi_parts(path: &Path, which: MidiChannels) -> Result<(Vec<ImportPart>, f64), String> {
+        let import = import_midi(path, which).map_err(|e| e.to_string())?;
+        let mut parts = Vec::new();
+        for (index, channel) in import.channels.iter().enumerate() {
+            // The notes are in the project the importer built; they are read
+            // out of it rather than re-derived, so what arrives is exactly
+            // what `import_midi` is tested to produce.
+            let Some(clip) = import
+                .project
+                .clips
+                .values()
+                .find(|clip| match &clip.source {
+                    ClipSource::Notes(data) => data.channel == channel.channel,
+                    _ => false,
+                })
+            else {
+                continue;
+            };
+            let ClipSource::Notes(data) = &clip.source else {
+                continue;
+            };
+            parts.push(ImportPart {
+                name: channel.name.clone(),
+                notes: data.notes.values().copied().collect(),
+                pan: channel.pan,
+                volume_db: channel.volume_db,
+                color: IMPORT_COLOURS[index % IMPORT_COLOURS.len()],
+            });
+        }
+        Ok((parts, import.bpm))
+    }
+
+    /// Imports a `.mid` file, or asks which part of it to import.
+    fn import_midi_file(&mut self, path: &Path, which: Option<MidiChannels>) -> Result<String, String> {
+        let name = file_label(path);
+        if let Some(which) = which {
+            let (parts, bpm) = Self::midi_parts(path, which)?;
+            return self.bring_in(&name, parts, Some(bpm));
+        }
+        let survey = survey_midi(path).map_err(|e| e.to_string())?;
+        if survey.parts.is_empty() {
+            return Err(format!("there are no notes in {name}"));
+        }
+        // **One part needs no question.** A prompt with a single answer is a
+        // click somebody has to make to get what they already asked for.
+        if !survey.is_multi_part() {
+            let only = survey.parts[0].channel;
+            let (parts, bpm) = Self::midi_parts(path, MidiChannels::Only(only))?;
+            return self.bring_in(&name, parts, Some(bpm));
+        }
+        // More than one: the window asks. What it asks *with* is
+        // `pending_import`, which it reads back through `import_prompt`.
+        self.pending_import = Some(PendingImport {
+            path: path.to_path_buf(),
+            survey,
+        });
+        Ok(String::new())
+    }
+
+    /// Imports an FL Studio score into the clip that is open.
+    ///
+    /// A score is a **phrase** — no instrument, no tempo, no arrangement — so
+    /// it lands in the roll rather than as a track of its own. That is what
+    /// FL's own *import score* does with one, and it is the difference
+    /// between the two formats rather than an inconsistency between them.
+    fn import_score_file(&mut self, path: &Path) -> Result<String, String> {
+        let score = import_fsc(path).map_err(|e| e.to_string())?;
+        let name = file_label(path);
+        // Where the phrase goes: the start of the time selection if there is
+        // one, and otherwise the top of the clip.
+        let at = self
+            .project
+            .loop_range
+            .map(|(from, _)| self.clip_tick_of_song_tick(from).max(0))
+            .unwrap_or(0);
+
+        // Every instrument in the score, flattened onto the one clip. FL's own
+        // library is single-instrument throughout; a score saved from a
+        // pattern of several is rare, and merging is closer to what was asked
+        // for than silently dropping all but one.
+        let mut notes = score.phrase_on(None);
+        if notes.is_empty() {
+            return Err(format!("there are no notes in {name}"));
+        }
+        for note in &mut notes {
+            note.start += at;
+        }
+        let count = notes.len();
+        let ids = self.insert(self.clip, notes);
+        if ids.is_empty() {
+            return Err(format!("{name} could not be added to this clip"));
+        }
+        self.history.break_gesture();
+        Ok(format!(
+            "Imported {count} note(s) from \u{201c}{name}\u{201d} (FL {})",
+            score.version
+        ))
     }
 
     /// Applies `command` through the history and hands back the entry, so a
@@ -2108,11 +2381,9 @@ impl StudioHost for Session {
                     detail: String::new(),
                     kind: fontelle_ui::document::LibraryKind::Up,
                 },
-                BankRow::Folder {
-                    name, soundfonts, ..
-                } => LibraryEntry {
+                BankRow::Folder { name, files, .. } => LibraryEntry {
                     name: name.clone(),
-                    detail: match soundfonts {
+                    detail: match files {
                         0 => String::new(),
                         1 => "1 sf2".to_string(),
                         n => format!("{n} sf2"),
@@ -2146,10 +2417,32 @@ impl StudioHost for Session {
     }
 
     fn query(&self) -> &str {
+        // Whichever list is showing — see `set_browser_mode`.
+        if self.browser_mode == fontelle_ui::canvas::BrowserMode::Import {
+            return &self.import_query;
+        }
         &self.query
     }
 
+    fn set_browser_mode(&mut self, mode: fontelle_ui::canvas::BrowserMode) {
+        if self.browser_mode == mode {
+            return;
+        }
+        self.browser_mode = mode;
+        if mode == fontelle_ui::canvas::BrowserMode::Import {
+            self.ensure_import_bank();
+        }
+        self.revision += 1;
+    }
+
     fn set_query(&mut self, query: &str) {
+        if self.browser_mode == fontelle_ui::canvas::BrowserMode::Import {
+            self.import_query = query.to_string();
+            // The list is a different list now — the whole folder tree rather
+            // than one folder, or the other way round.
+            self.revision += 1;
+            return;
+        }
         self.query = query.to_string();
         // Typing is what asks for the collection to be read — see
         // `want_preset_index`. Nothing happens on the second keystroke: the
@@ -2193,6 +2486,13 @@ impl StudioHost for Session {
     }
 
     fn selected_file(&self) -> Option<usize> {
+        // Nothing is "open" in the Import tab: its rows are files you act on
+        // rather than a file you are looking inside. Answering with the
+        // soundfont's index would light whichever import row happened to sit
+        // at that position — a highlight on a file nobody chose.
+        if self.browser_mode == fontelle_ui::canvas::BrowserMode::Import {
+            return None;
+        }
         let open = self.open_file.as_ref()?;
         // Worked out from the path each time, so a folder change or a search
         // moves the highlight to wherever the file now is — or removes it,
@@ -2480,7 +2780,7 @@ impl StudioHost for Session {
     fn settings(&self) -> Vec<LibraryEntry> {
         crate::settings::SETTING_ROWS
             .iter()
-            .map(|row| LibraryEntry::file(row.label(), row.value(&self.settings.midi_input)))
+            .map(|row| LibraryEntry::file(row.label(), row.value(&self.settings)))
             .collect()
     }
 
@@ -2499,6 +2799,17 @@ impl StudioHost for Session {
         let Some(row) = crate::settings::SETTING_ROWS.get(index) else {
             return;
         };
+        // A folder row is a **button**, not a value to step: clicking it asks
+        // for a folder. `SettingRow::nudge` deliberately does nothing to one
+        // (a row that was both would change the row above it), so the branch
+        // is here, at the one place a settings row is pressed.
+        if let Some(kind) = row.folder() {
+            self.import_kind = kind;
+            self.import_query.clear();
+            self.choose_import_dir();
+            self.revision += 1;
+            return;
+        }
         let before = self.settings.midi_input;
         row.nudge(&mut self.settings.midi_input, delta);
         if self.settings.midi_input == before {
@@ -2514,6 +2825,258 @@ impl StudioHost for Session {
             self.message = Some(format!("could not write settings: {e}"));
         }
         self.revision += 1;
+    }
+
+    // ------------------------------------------------ importing files ---
+
+    fn import_kind(&self) -> fontelle_types::FolderKind {
+        self.import_kind
+    }
+
+    fn set_import_kind(&mut self, kind: fontelle_types::FolderKind) {
+        if self.import_kind != kind {
+            self.import_kind = kind;
+            // A different folder is a different list, and a query typed
+            // against one means nothing against the other.
+            self.import_query.clear();
+        }
+        // **Unconditionally**, not only when the kind moved: on a fresh launch
+        // the kind has not moved and the bank has never been read.
+        self.ensure_import_bank();
+    }
+
+    fn has_import_dir(&self, kind: fontelle_types::FolderKind) -> bool {
+        self.settings.folder(kind).is_some()
+    }
+
+    fn import_files(&self) -> Vec<LibraryEntry> {
+        use fontelle_ui::document::LibraryKind;
+        if !self.import_query.trim().is_empty() {
+            return self
+                .import_bank
+                .search(&self.import_query)
+                .into_iter()
+                .map(|entry| LibraryEntry {
+                    name: entry.name.clone(),
+                    // Where it is, not how big: two files called `Intro` in
+                    // different folders is the commonest thing in a
+                    // collection, and a flat list of names cannot tell them
+                    // apart.
+                    detail: match self.import_bank.folder_of(entry) {
+                        folder if folder.is_empty() => human_size(entry.size_bytes),
+                        folder => folder,
+                    },
+                    kind: LibraryKind::File,
+                })
+                .collect();
+        }
+        let noun = self.import_bank.filter().noun();
+        self.import_bank
+            .rows()
+            .iter()
+            .map(|row| match row {
+                BankRow::Up { .. } => LibraryEntry {
+                    name: "..".to_string(),
+                    detail: String::new(),
+                    kind: LibraryKind::Up,
+                },
+                BankRow::Folder { name, files, .. } => LibraryEntry {
+                    name: name.clone(),
+                    detail: match files {
+                        0 => String::new(),
+                        n => format!("{n} {noun}"),
+                    },
+                    kind: LibraryKind::Folder,
+                },
+                BankRow::File(entry) => LibraryEntry {
+                    name: entry.name.clone(),
+                    detail: human_size(entry.size_bytes),
+                    kind: LibraryKind::File,
+                },
+            })
+            .collect()
+    }
+
+    fn import_status(&self) -> String {
+        let Some(dir) = self.settings.folder(self.import_kind) else {
+            return format!(
+                "no {} folder yet \u{2014} set one in Settings",
+                self.import_kind.tab_label()
+            );
+        };
+        if let Some((path, why)) = self.import_bank.unreadable().first() {
+            return format!("{}: {why}", crate::desktop::elide_path(path, 2));
+        }
+        let at = self.import_bank.at().unwrap_or(dir);
+        match self.import_bank.entries().len() {
+            0 => format!(
+                "no {} files under {}",
+                self.import_bank.filter().noun(),
+                crate::desktop::elide_path(at, 2)
+            ),
+            n => format!("{n} file(s) \u{2014} {}", crate::desktop::elide_path(at, 2)),
+        }
+    }
+
+    fn open_import(&mut self, index: usize) -> Result<(), String> {
+        self.ensure_import_bank();
+        // A folder row moves the browser and opens nothing. Only while
+        // *browsing*: a search lists files wherever they are, and a hit is
+        // always a file.
+        if self.import_query.trim().is_empty() && self.import_bank.open_row(index) {
+            self.revision += 1;
+            return Ok(());
+        }
+        let path = self
+            .import_rows()
+            .get(index)
+            .cloned()
+            .flatten()
+            .ok_or("that file is not in the folder any more")?;
+        let result = match self.import_kind {
+            fontelle_types::FolderKind::Midi => self.import_midi_file(&path, None),
+            fontelle_types::FolderKind::Scores => self.import_score_file(&path),
+        };
+        match result {
+            // An empty message is the multi-part prompt going up: it has not
+            // imported anything yet and there is nothing to announce.
+            Ok(message) => {
+                if !message.is_empty() {
+                    self.message = Some(message);
+                }
+                self.revision += 1;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn choose_import_dir(&mut self) {
+        let kind = self.import_kind;
+        let start = self
+            .settings
+            .folder(kind)
+            .map(std::path::Path::to_path_buf)
+            .or_else(|| self.settings.projects_dir.clone());
+        match crate::desktop::choose_folder(kind.picker_title(), start.as_deref()) {
+            Ok(Some(dir)) => {
+                self.settings.set_folder(kind, Some(dir));
+                if let Err(e) = self.save_settings() {
+                    self.message = Some(format!("could not write settings: {e}"));
+                }
+                self.rescan_imports();
+                self.message = Some(match self.import_bank.entries().len() {
+                    0 => format!("no {} files in there", self.import_bank.filter().noun()),
+                    n => format!("found {n} file(s)"),
+                });
+            }
+            // A cancel is not an event.
+            Ok(None) => {}
+            Err(e) => self.message = Some(e),
+        }
+    }
+
+    fn reveal_import_dir(&mut self) {
+        let dir = self
+            .import_bank
+            .at()
+            .map(std::path::Path::to_path_buf)
+            .or_else(|| {
+                self.settings
+                    .folder(self.import_kind)
+                    .map(std::path::Path::to_path_buf)
+            });
+        let Some(dir) = dir else {
+            self.message = Some(format!(
+                "no {} folder yet \u{2014} set one in Settings",
+                self.import_kind.tab_label()
+            ));
+            return;
+        };
+        if let Err(e) = crate::desktop::reveal(&dir) {
+            self.message = Some(e);
+        }
+    }
+
+    fn import_prompt(&self) -> Option<fontelle_ui::document::ImportPrompt> {
+        let pending = self.pending_import.as_ref()?;
+        let survey = &pending.survey;
+        let mut choices = vec![format!(
+            "All {} parts, as separate tracks",
+            survey.parts.len()
+        )];
+        // Then one line per part, named and counted, so choosing between
+        // "Bass" and "Strings" does not mean knowing which MIDI channel each
+        // of them was on.
+        for part in &survey.parts {
+            choices.push(format!("Only \u{201c}{}\u{201d} \u{2014} {} notes", part.name, part.notes));
+        }
+        Some(fontelle_ui::document::ImportPrompt {
+            title: format!(
+                "{} \u{2014} {:.0} bpm",
+                file_label(&pending.path),
+                survey.bpm
+            ),
+            choices,
+        })
+    }
+
+    fn answer_import(&mut self, choice: usize) {
+        let Some(pending) = self.pending_import.take() else {
+            return;
+        };
+        let which = match choice.checked_sub(1) {
+            // Every part. Percussion included: it is on the list the person
+            // just read, so leaving it out would be leaving out something
+            // they were shown and chose.
+            None => MidiChannels::All,
+            Some(index) => match pending.survey.parts.get(index) {
+                Some(part) => MidiChannels::Only(part.channel),
+                None => return,
+            },
+        };
+        match self.import_midi_file(&pending.path, Some(which)) {
+            Ok(message) if !message.is_empty() => self.message = Some(message),
+            Ok(_) => {}
+            Err(e) => self.message = Some(e),
+        }
+        self.revision += 1;
+    }
+
+    fn cancel_import(&mut self) {
+        if self.pending_import.take().is_some() {
+            self.revision += 1;
+        }
+    }
+
+    fn drop_file(&mut self, path: &Path) -> Result<String, String> {
+        let name = file_label(path);
+        if !path.exists() {
+            return Err(format!("{name} is not there"));
+        }
+        // By extension, which is the only thing a drop carries. Each kind is
+        // asked whether it is *its* file rather than the extension being
+        // matched here, so adding one is a variant and nothing else.
+        if fontelle_types::FolderKind::Midi.accepts(path) {
+            return self.import_midi_file(path, None);
+        }
+        if fontelle_types::FolderKind::Scores.accepts(path) {
+            return self.import_score_file(path);
+        }
+        if crate::bank::is_soundfont(path) {
+            // Not an import into the song: a soundfont is an *instrument*, so
+            // dropping one puts it on the selected channel the way clicking
+            // one in the browser does.
+            self.presets = fontelle_assets::list_presets(path)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            self.open_file = Some(path.to_path_buf());
+            self.revision += 1;
+            self.set_channel_instrument(0)?;
+            return Ok(format!("Loaded \u{201c}{name}\u{201d}"));
+        }
+        Err(format!(
+            "{name} is not something Fontelle can open \u{2014} it reads .mid, .fsc and .sf2 files"
+        ))
     }
 
     fn reveal_config_dir(&mut self) {
@@ -4094,4 +4657,35 @@ fn next_lane_order(project: &fontelle_model::Project) -> u32 {
         .map(|lane| lane.order)
         .max()
         .map_or(0, |highest| highest.saturating_add(1))
+}
+
+/// A `.mid` file that holds more than one part, waiting on the question
+/// *"import them all as separate tracks, or only one of them?"*.
+///
+/// The survey is kept rather than the parts themselves: a survey builds
+/// nothing, so a question that is never answered has cost a file read and no
+/// document at all.
+pub struct PendingImport {
+    pub path: PathBuf,
+    pub survey: fontelle_assets::MidiSurvey,
+}
+
+/// Enough distinct row colours that an imported file does not arrive as
+/// sixteen identical rows.
+const IMPORT_COLOURS: [[u8; 4]; 8] = [
+    [0x4f, 0x8f, 0xd0, 0xff],
+    [0xd0, 0x7f, 0x4f, 0xff],
+    [0x6f, 0xc0, 0x7f, 0xff],
+    [0xc0, 0x6f, 0xb0, 0xff],
+    [0xd0, 0xc0, 0x5f, 0xff],
+    [0x5f, 0xc0, 0xc0, 0xff],
+    [0x9f, 0x8f, 0xd0, 0xff],
+    [0xa0, 0xa0, 0xa0, 0xff],
+];
+
+/// A file's name without its extension — what an import calls itself.
+fn file_label(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
 }

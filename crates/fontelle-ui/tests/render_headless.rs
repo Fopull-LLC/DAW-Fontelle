@@ -575,6 +575,23 @@ fn shoot_roll_with(
     snap: SnapDivision,
     live_keys: u128,
 ) -> Option<RollShot> {
+    shoot_roll_full(
+        notes, selection, ghosts, lane_menu, key_map, snap, live_keys, false,
+    )
+}
+
+/// The same, with the Tools panel open over the grid.
+#[allow(clippy::too_many_arguments)]
+fn shoot_roll_full(
+    notes: &Arena<NoteId, Note>,
+    selection: &[NoteId],
+    ghosts: &[fontelle_ui::document::GhostNote],
+    lane_menu: Option<fontelle_ui::canvas::LaneMenu>,
+    key_map: &fontelle_ui::document::KeyMap,
+    snap: SnapDivision,
+    live_keys: u128,
+    tools_open: bool,
+) -> Option<RollShot> {
     let theme = Theme::dark_default();
     let shared = headless()?;
     let layout = window_layout(RW as f32, RH as f32, &theme.metrics, 0.0);
@@ -612,6 +629,34 @@ fn shoot_roll_with(
             );
         }
     }
+
+    // The Tools panel, when it is open, and every caption on it — a row
+    // nobody shaped draws as nothing at all, which would make an empty panel
+    // look like a pass.
+    let tools = fontelle_ui::canvas::Tools::default();
+    let tools_panel = tools_open.then(|| {
+        let chip = toolbar_layout(roll_l.toolbar, &theme.metrics)
+            .items
+            .iter()
+            .find(|(control, _)| *control == fontelle_ui::canvas::RollControl::Tools)
+            .map(|(_, rect)| *rect)
+            .unwrap_or(Rect::ZERO);
+        fontelle_ui::canvas::tools_panel_layout(chip, roll_l.frame, &theme.metrics)
+    });
+    if let Some(panel) = &tools_panel {
+        for (row, _) in &panel.rows {
+            for caption in [tools.label(*row), tools.value(*row)] {
+                if !caption.is_empty() {
+                    labels.ensure(&caption, &theme.font, &mut text);
+                }
+            }
+        }
+    }
+    labels.ensure(
+        &fontelle_ui::canvas::tools_caption(),
+        &theme.font,
+        &mut text,
+    );
 
     let mut scene = vello::Scene::new();
     draw_window(
@@ -655,6 +700,8 @@ fn shoot_roll_with(
                 marquee: None,
                 hover: None,
                 lane_menu: lane_menu.as_ref(),
+                tools_panel: tools_panel.as_ref(),
+                tools: &tools,
                 slice: None,
                 key_style: fontelle_ui::canvas::KeyStyle::Piano,
                 live_keys,
@@ -681,7 +728,9 @@ fn shoot_roll_with(
 
     dump_sized(
         &pixels,
-        if key_map.is_known() {
+        if tools_open {
+            "roll-tools"
+        } else if key_map.is_known() {
             "roll-keymap"
         } else if live_keys != 0 {
             "roll-lit"
@@ -2280,4 +2329,117 @@ fn the_mode_chip_is_drawn_and_says_which_mode_it_is_in() {
             "the read-out changed with the mode at x={x}"
         );
     }
+}
+
+// ---------------------------------------------------------- Tools panel ---
+
+/// The Tools panel opens over the grid, and its rows carry ink.
+///
+/// The failure this exists to catch is the one a pure layout test cannot: a
+/// panel that is laid out correctly and never drawn, or drawn with captions
+/// nobody shaped, which is an empty rectangle. Both have happened in this
+/// window — *"a menu that was never drawn, a tab that was never drawn"* — and
+/// neither had a failing test.
+#[test]
+fn the_tools_panel_is_actually_painted_over_the_grid() {
+    let Some(closed) = shoot_roll(&Arena::default(), &[]) else {
+        return;
+    };
+    let Some(open) = shoot_roll_full(
+        &Arena::default(),
+        &[],
+        &[],
+        None,
+        &fontelle_ui::document::KeyMap::unknown(),
+        SnapDivision::Step,
+        0,
+        true,
+    ) else {
+        return;
+    };
+
+    let theme = Theme::dark_default();
+    let chip = toolbar_layout(open.layout.toolbar, &theme.metrics)
+        .items
+        .iter()
+        .find(|(control, _)| *control == fontelle_ui::canvas::RollControl::Tools)
+        .map(|(_, rect)| *rect)
+        .expect("the toolbar has a tools chip");
+    let panel = fontelle_ui::canvas::tools_panel_layout(chip, open.layout.frame, &theme.metrics);
+    assert!(!panel.frame.is_empty(), "the panel had nowhere to go");
+
+    // Somewhere inside the panel that is over the grid: the two frames must
+    // differ, or the panel is not being drawn at all.
+    let mut differences = 0;
+    for (_, row) in &panel.rows {
+        if row.is_empty() {
+            continue;
+        }
+        let y = (row.y + row.height / 2.0) as u32;
+        for step in 0..12 {
+            let x = (row.x + 2.0 + step as f32 * (row.width / 14.0)) as u32;
+            if x >= RW || y >= RH {
+                continue;
+            }
+            if !near(open.at(x, y), closed.at(x, y)) {
+                differences += 1;
+            }
+        }
+    }
+    assert!(
+        differences > 20,
+        "the panel changed only {differences} sampled pixels \u{2014} it is not being drawn"
+    );
+}
+
+/// The captions on it are ink, not just a coloured slab.
+#[test]
+fn the_tools_panels_rows_have_words_on_them() {
+    let Some(open) = shoot_roll_full(
+        &Arena::default(),
+        &[],
+        &[],
+        None,
+        &fontelle_ui::document::KeyMap::unknown(),
+        SnapDivision::Step,
+        0,
+        true,
+    ) else {
+        return;
+    };
+    let theme = Theme::dark_default();
+    let chip = toolbar_layout(open.layout.toolbar, &theme.metrics)
+        .items
+        .iter()
+        .find(|(control, _)| *control == fontelle_ui::canvas::RollControl::Tools)
+        .map(|(_, rect)| *rect)
+        .expect("the toolbar has a tools chip");
+    let panel = fontelle_ui::canvas::tools_panel_layout(chip, open.layout.frame, &theme.metrics);
+
+    // A row's own background against the darkest pixel on it: text is drawn in
+    // `text` over `panel_header`, so a row with a caption has a pixel well
+    // away from its ground and a row without one is flat.
+    let mut rows_with_ink = 0;
+    for (_, row) in &panel.rows {
+        if row.is_empty() {
+            continue;
+        }
+        let y0 = row.y as u32;
+        let mut seen: Vec<Color> = Vec::new();
+        for dy in 0..(row.height as u32).max(1) {
+            for dx in 0..(row.width as u32).max(1) {
+                let (x, y) = (row.x as u32 + dx, y0 + dy);
+                if x < RW && y < RH {
+                    seen.push(open.at(x, y));
+                }
+            }
+        }
+        if seen.iter().any(|c| !near(*c, seen[0])) {
+            rows_with_ink += 1;
+        }
+    }
+    assert!(
+        rows_with_ink >= 10,
+        "only {rows_with_ink} rows have anything on them"
+    );
 }

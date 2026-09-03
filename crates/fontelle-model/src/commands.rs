@@ -2800,6 +2800,490 @@ impl Command for RestoreNoteProperties {
     }
 }
 
+/// Moves every named note's property by the **same amount**, each from wherever
+/// it already was.
+///
+/// The difference from [`SetNoteProperty`] is the whole point of it: that one
+/// writes one value over every note, which flattens exactly the differences
+/// somebody adjusting a phrase is adjusting. *"Everything I have selected, ten
+/// louder"* keeps the shape and moves it.
+///
+/// Clamped rather than refused at the ends, because a held stepper means "as
+/// far as it goes" and not "an error" — which is why the inverse cannot be
+/// "the other way by the same amount": once three notes have all been clamped
+/// to 127 their differences are gone from the document. It restores the value
+/// each note actually had, like [`SetNoteProperty`]'s does.
+pub struct NudgeNoteProperty {
+    clip: ClipId,
+    ids: Vec<NoteId>,
+    property: NoteProperty,
+    delta: i32,
+    /// Each note's value before the **first** apply, in `ids` order.
+    previous: Vec<i32>,
+    label: String,
+}
+
+impl NudgeNoteProperty {
+    pub fn new(clip: ClipId, ids: Vec<NoteId>, property: NoteProperty, delta: i32) -> Self {
+        Self {
+            label: note_count_label(&format!("Nudge {} of", property.label()), ids.len()),
+            clip,
+            ids,
+            property,
+            delta,
+            previous: Vec::new(),
+        }
+    }
+
+    pub fn property(&self) -> NoteProperty {
+        self.property
+    }
+}
+
+impl Command for NudgeNoteProperty {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let property = self.property;
+        let data = notes_of(doc, self.clip)?;
+        // Checked before anything is written: a command that half-applies is
+        // one whose inverse cannot put the document back.
+        for id in &self.ids {
+            if data.notes.get(*id).is_none() {
+                return Err(CommandError(format!("no note {id:?} in this clip")));
+            }
+        }
+        if self.previous.is_empty() {
+            self.previous = self
+                .ids
+                .iter()
+                .filter_map(|id| data.notes.get(*id).map(|n| property.get(n)))
+                .collect();
+        }
+        // From the values captured on the first apply rather than from
+        // whatever is there now. Without that a **merged** run of nudges
+        // would compound: four presses of +1 would move a note by 1, 2, 4, 8
+        // as each re-application read the result of the last.
+        for (id, was) in self.ids.iter().zip(&self.previous) {
+            if let Some(note) = data.notes.get_mut(*id) {
+                property.set(note, was.saturating_add(self.delta));
+            }
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        if self.previous.is_empty() {
+            return Box::new(NotApplied("nudging a note property"));
+        }
+        Box::new(RestoreNoteProperties {
+            clip: self.clip,
+            ids: self.ids.clone(),
+            property: self.property,
+            values: self.previous.clone(),
+            label: self.label.clone(),
+        })
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<NudgeNoteProperty>() else {
+            return false;
+        };
+        if next.clip != self.clip || next.ids != self.ids || next.property != self.property {
+            return false;
+        }
+        // The deltas add and the captured `previous` stays: a held stepper is
+        // one history entry, and one undo goes back to where the press began.
+        self.delta += next.delta;
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.ids.len() * std::mem::size_of::<NoteId>()
+            + self.previous.len() * std::mem::size_of::<i32>()
+            + self.label.len()
+    }
+}
+
+/// One value **per note** — what a randomizer produces.
+///
+/// [`SetNoteProperty`] cannot express it (one value for all) and
+/// [`NudgeNoteProperty`] cannot either (one offset for all), and doing it as
+/// N commands would be N undo entries for one press.
+///
+/// Deliberately **not** mergeable: rolling the dice again is a new answer to
+/// the same question rather than the continuation of a gesture, and undo
+/// should walk back through the rolls one at a time.
+pub struct SetNotePropertyEach {
+    clip: ClipId,
+    ids: Vec<NoteId>,
+    property: NoteProperty,
+    values: Vec<i32>,
+    previous: Vec<i32>,
+    label: String,
+}
+
+impl SetNotePropertyEach {
+    pub fn new(
+        clip: ClipId,
+        ids: Vec<NoteId>,
+        property: NoteProperty,
+        values: Vec<i32>,
+    ) -> Self {
+        Self {
+            label: note_count_label(&format!("Set {} of", property.label()), ids.len()),
+            clip,
+            ids,
+            property,
+            values,
+            previous: Vec::new(),
+        }
+    }
+
+    pub fn property(&self) -> NoteProperty {
+        self.property
+    }
+}
+
+impl Command for SetNotePropertyEach {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        // A list that does not line up with its notes would write the second
+        // note's value onto the third — a scramble rather than an error, and
+        // the sort of thing that is only noticed a week later.
+        if self.values.len() != self.ids.len() {
+            return Err(CommandError(format!(
+                "{} values for {} notes",
+                self.values.len(),
+                self.ids.len()
+            )));
+        }
+        let property = self.property;
+        let data = notes_of(doc, self.clip)?;
+        for id in &self.ids {
+            if data.notes.get(*id).is_none() {
+                return Err(CommandError(format!("no note {id:?} in this clip")));
+            }
+        }
+        if self.previous.is_empty() {
+            self.previous = self
+                .ids
+                .iter()
+                .filter_map(|id| data.notes.get(*id).map(|n| property.get(n)))
+                .collect();
+        }
+        for (id, value) in self.ids.iter().zip(&self.values) {
+            if let Some(note) = data.notes.get_mut(*id) {
+                // Clamped by `set`, so a value off the end of the range is
+                // the end rather than a refusal.
+                property.set(note, *value);
+            }
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        if self.previous.is_empty() {
+            return Box::new(NotApplied("setting a value on each note"));
+        }
+        Box::new(RestoreNoteProperties {
+            clip: self.clip,
+            ids: self.ids.clone(),
+            property: self.property,
+            values: self.previous.clone(),
+            label: self.label.clone(),
+        })
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.ids.len() * std::mem::size_of::<NoteId>()
+            + (self.values.len() + self.previous.len()) * std::mem::size_of::<i32>()
+            + self.label.len()
+    }
+}
+
+// --- Importing -------------------------------------------------------------
+
+/// One part of a file being brought in: an instrument, a row, and its notes.
+#[derive(Debug, Clone)]
+pub struct ImportPart {
+    /// What the file called it. What the channel, the strip and the
+    /// arrangement row are all named — see `fontelle_assets::part_name` for
+    /// where it comes from.
+    pub name: String,
+    /// Already on this project's grid, and relative to the clip's start.
+    pub notes: Vec<Note>,
+    /// Where the part sits in the stereo field, `-1.0`..=`1.0`.
+    pub pan: f32,
+    /// The part's level, on the strip made for it.
+    pub volume_db: f32,
+    pub color: [u8; 4],
+}
+
+/// What one part turned into, so the window can go and look at it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MadePart {
+    pub channel: ChannelId,
+    pub lane: LaneId,
+    pub track: MixerTrackId,
+    pub clip: ClipId,
+}
+
+/// Brings a file's parts into the project that is **already open**.
+///
+/// `fontelle_assets::import_midi` builds a whole new `Project`, which is the
+/// right shape for opening a `.mid` as a song and the wrong one for the thing
+/// people actually do: dropping a file onto a piece they are working on.
+///
+/// **One command rather than a [`Compound`]** of `AddChannel`/`AddLane`/
+/// `AddClip`, because those cannot be built in advance: the clip has to name
+/// the channel id that the `AddChannel` beside it is going to mint, and a
+/// `Compound` holds commands that were made before any of them ran. Being one
+/// command is also what makes importing eight tracks one entry in the history
+/// — eight presses of Ctrl+Z to undo one drop would be a bug report.
+pub struct ImportParts {
+    parts: Vec<ImportPart>,
+    /// What it made, kept so a **redo** puts everything back under the ids it
+    /// minted the first time. Without that, anything stacked above this entry
+    /// would be pointing at nothing after an undo and a redo.
+    made: Vec<MadePart>,
+    label: String,
+}
+
+impl ImportParts {
+    pub fn new(what: impl std::fmt::Display, parts: Vec<ImportPart>) -> Self {
+        Self {
+            label: format!("Import {what}"),
+            // A part with no notes is a row that would arrive empty, which is
+            // a thing to tidy up rather than a thing you asked for. MIDI
+            // files are full of channels that carry only a program change.
+            parts: parts.into_iter().filter(|part| !part.notes.is_empty()).collect(),
+            made: Vec::new(),
+        }
+    }
+
+    /// What this made, once it has been applied. Empty before that.
+    pub fn made(&self) -> &[MadePart] {
+        &self.made
+    }
+}
+
+impl Command for ImportParts {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        if self.parts.is_empty() {
+            return Err(CommandError(
+                "there is nothing in that file to import".into(),
+            ));
+        }
+        // Past the bottom of the stack, so a file dropped onto a song does
+        // not push what is already there down the arrangement.
+        let mut order = doc
+            .lanes
+            .values()
+            .map(|lane| lane.order)
+            .max()
+            .map_or(0, |highest| highest.saturating_add(1));
+
+        // A redo re-uses the ids of the first run; a first run mints them.
+        let redoing = !self.made.is_empty();
+        let mut made = Vec::with_capacity(self.parts.len());
+
+        for (index, part) in self.parts.iter().enumerate() {
+            let previous = redoing.then(|| self.made[index]);
+
+            let mut track = MixerTrack::new(part.name.clone());
+            track.gain_db = part.volume_db;
+            track.output = doc.mixer.master;
+            let track_id = match previous {
+                Some(ids) => {
+                    if !doc.mixer.tracks.insert_at(ids.track, track) {
+                        return Err(CommandError("that mixer track id is taken".into()));
+                    }
+                    ids.track
+                }
+                None => doc.mixer.tracks.insert(track),
+            };
+
+            let channel = Channel {
+                name: part.name.clone(),
+                color: part.color,
+                // A file's parts really do each want a strip: it carries a
+                // level per part, and that is a fader.
+                mixer_track: Some(track_id),
+                patch_data: None,
+                pan: part.pan,
+                muted: false,
+                soloed: false,
+                named_keys: false,
+                gain_db: 0.0,
+            };
+            let channel_id = match previous {
+                Some(ids) => {
+                    if !doc.channels.insert_at(ids.channel, channel) {
+                        return Err(CommandError("that channel id is taken".into()));
+                    }
+                    ids.channel
+                }
+                None => doc.channels.insert(channel),
+            };
+
+            let lane = Lane {
+                name: part.name.clone(),
+                height: 32.0,
+                color: part.color,
+                muted: false,
+                locked: false,
+                order,
+            };
+            order = order.saturating_add(1);
+            let lane_id = match previous {
+                Some(ids) => {
+                    if !doc.lanes.insert_at(ids.lane, lane) {
+                        return Err(CommandError("that lane id is taken".into()));
+                    }
+                    ids.lane
+                }
+                None => doc.lanes.insert(lane),
+            };
+
+            let mut notes = Arena::default();
+            let mut length = 0;
+            for note in &part.notes {
+                length = length.max(note.start + note.length);
+                notes.insert(*note);
+            }
+            let clip = Clip {
+                lane: lane_id,
+                start: 0,
+                length,
+                source: ClipSource::Notes(NoteData {
+                    channel: channel_id,
+                    notes,
+                }),
+                prefab_link: None,
+                color: None,
+                muted: false,
+                loop_length: None,
+            };
+            let clip_id = match previous {
+                Some(ids) => {
+                    if !doc.clips.insert_at(ids.clip, clip) {
+                        return Err(CommandError("that clip id is taken".into()));
+                    }
+                    ids.clip
+                }
+                None => doc.clips.insert(clip),
+            };
+
+            made.push(MadePart {
+                channel: channel_id,
+                lane: lane_id,
+                track: track_id,
+                clip: clip_id,
+            });
+        }
+
+        self.made = made;
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        if self.made.is_empty() {
+            return Box::new(NotApplied("importing a file"));
+        }
+        Box::new(UnimportParts {
+            made: self.made.clone(),
+            label: self.label.clone(),
+        })
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.label.len()
+            + self
+                .parts
+                .iter()
+                .map(|part| part.name.len() + part.notes.len() * std::mem::size_of::<Note>())
+                .sum::<usize>()
+    }
+}
+
+/// [`ImportParts`]'s inverse: everything it made, taken back out.
+///
+/// **Newest first**, so a clip is gone before the lane it names is.
+struct UnimportParts {
+    made: Vec<MadePart>,
+    label: String,
+}
+
+impl Command for UnimportParts {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        for ids in self.made.iter().rev() {
+            doc.clips.remove(ids.clip);
+            doc.lanes.remove(ids.lane);
+            doc.channels.remove(ids.channel);
+            doc.mixer.tracks.remove(ids.track);
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        // Not expressible as an `ImportParts` — the parts themselves are
+        // gone. Redoing an undone import goes through `History::redo`, which
+        // re-applies the original command rather than inverting this one.
+        Box::new(NotApplied("taking an import back out"))
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.made.len() * std::mem::size_of::<MadePart>()
+            + self.label.len()
+    }
+}
+
 // --- Clips -----------------------------------------------------------------
 
 pub struct AddClip {

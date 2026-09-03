@@ -951,6 +951,30 @@ pub enum RollEdit {
         property: LaneProperty,
         value: i32,
     },
+    /// Every named note's property moved by the **same amount**, each from
+    /// wherever it already was.
+    ///
+    /// Not [`RollEdit::SetProperty`], which writes one value over all of them
+    /// and so flattens exactly the differences somebody adjusting a phrase is
+    /// adjusting. The Tools panel's *Add* and *Take off* are this.
+    ///
+    /// Named with `fontelle_model::NoteProperty` rather than
+    /// [`LaneProperty`]: this does not come off the lane, so there is no lane
+    /// to ask.
+    NudgeProperty {
+        ids: Vec<NoteId>,
+        property: fontelle_model::NoteProperty,
+        delta: i32,
+    },
+    /// One value **per note**, in `ids` order — what the randomizer makes.
+    ///
+    /// One edit rather than one per note, so a roll is one entry in the
+    /// history and one press of Ctrl+Z takes it back.
+    SetPropertyEach {
+        ids: Vec<NoteId>,
+        property: fontelle_model::NoteProperty,
+        values: Vec<i32>,
+    },
 }
 
 /// A key the roll wants sounded, and how long the thing it came from is.
@@ -1071,6 +1095,11 @@ pub enum RollControl {
     /// Switches the strip down the side between the keyboard and a list of
     /// names. The chip says which one is on — see [`KeyStyle`].
     Keys,
+    /// Opens the Tools panel: the transposer, the property offset, the
+    /// randomizer, and the two importers. Carries a caret for the reason the
+    /// lane chip does — a small box with a word in it is a read-out, and
+    /// nothing about one says a panel is behind it.
+    Tools,
 }
 
 impl RollControl {
@@ -1089,6 +1118,7 @@ impl RollControl {
             // The chip carries the view it will *give you*, like every other
             // read-out on this bar: what it says is what is on.
             Self::Keys => "keys",
+            Self::Tools => "tools",
         }
     }
 
@@ -1125,7 +1155,9 @@ impl RollControl {
             // Snap says its division, the lane chip says its property, the
             // onion skin says which channel, and the strip chip says which
             // view — all four are values.
-            Self::Snap | Self::Lane | Self::Ghost | Self::Keys => return None,
+            // The tools chip carries its own caret, for the reason the lane
+            // chip does.
+            Self::Snap | Self::Lane | Self::Ghost | Self::Keys | Self::Tools => return None,
         })
     }
 
@@ -1147,6 +1179,7 @@ impl RollControl {
             Self::Ghost => "Show other instruments' notes behind these",
             Self::Slide => "Slide notes: bend what is sounding, start nothing",
             Self::Keys => "The strip down the side: a keyboard, or a list of names",
+            Self::Tools => "Transpose, adjust, randomize \u{2014} and import a file",
         })
     }
 
@@ -1161,6 +1194,7 @@ impl RollControl {
             Self::Lane => Some("L"),
             Self::Ghost => Some("G"),
             Self::Slide => Some("A"),
+            Self::Tools => Some("T"),
             _ => None,
         }
     }
@@ -1179,7 +1213,7 @@ pub struct ToolbarLayout {
 /// in a wide button is a glyph with a gap either side of it. The ones that are
 /// a *read-out* keep their text and keep the room to say it — which division
 /// is which is the same one the icons themselves are chosen by.
-const TOOLBAR: [(RollControl, f32); 15] = [
+const TOOLBAR: [(RollControl, f32); 16] = [
     (RollControl::Tool(Tool::Draw), 26.0),
     (RollControl::Tool(Tool::Paint), 26.0),
     (RollControl::Tool(Tool::Select), 26.0),
@@ -1195,6 +1229,7 @@ const TOOLBAR: [(RollControl, f32); 15] = [
     (RollControl::Lane, 62.0),
     (RollControl::Ghost, 40.0),
     (RollControl::Keys, 40.0),
+    (RollControl::Tools, 46.0),
 ];
 
 /// What the lane chip says: the property, and a caret because it opens a menu.
@@ -1203,6 +1238,15 @@ const TOOLBAR: [(RollControl, f32); 15] = [
 /// the shaped-label set, which would draw the chip empty.
 pub fn lane_caption(property: LaneProperty) -> String {
     format!("{} \u{25be}", property.label())
+}
+
+/// What the tools chip says: the word, and a caret because it opens a panel.
+///
+/// Built rather than matched, for the reason [`lane_caption`] is: the caret
+/// cannot end up on the chip and not in the shaped-label set, which would draw
+/// the chip empty.
+pub fn tools_caption() -> String {
+    format!("{} \u{25be}", RollControl::Tools.label())
 }
 
 /// A little air at each end and between groups.

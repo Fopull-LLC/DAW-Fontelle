@@ -504,3 +504,162 @@ pub const KIT: &[(&str, u8)] = &[
     ("Closed Hat", 42),
     ("Open Hat", 46),
 ];
+
+// ------------------------------------------------------ FL Studio scores ---
+
+/// One note, as an `.fsc` file holds it — in **FL's** units, not Fontelle's.
+///
+/// The defaults are the ones FL itself writes for a note you draw and do not
+/// touch, taken from its own factory score library: velocity 100, pan and
+/// release centred at 64, fine pitch centred at 120, and both free modulation
+/// values centred at 128. A test that cares about one field sets that field
+/// and inherits a note FL would recognise for the rest.
+#[derive(Debug, Clone, Copy)]
+pub struct FscNoteSpec {
+    /// In the file's own ticks.
+    pub position: u32,
+    pub length: u32,
+    pub key: u8,
+    /// Which instrument in the pattern the note belongs to.
+    pub rack: u16,
+    pub velocity: u8,
+    pub pan: u8,
+    pub fine: u8,
+    pub release: u8,
+    pub mod_x: u8,
+    pub mod_y: u8,
+    pub slide: bool,
+}
+
+impl Default for FscNoteSpec {
+    fn default() -> Self {
+        Self {
+            position: 0,
+            length: 96,
+            key: 60,
+            rack: 0,
+            velocity: 100,
+            pan: 64,
+            fine: 120,
+            release: 64,
+            mod_x: 128,
+            mod_y: 128,
+            slide: false,
+        }
+    }
+}
+
+/// FL's own flag for "this note is drawn, and is not a slide". Present on
+/// every note in every file in its factory library.
+const FSC_FLAG_PLAIN: u16 = 0x4000;
+/// Bit 3, added to the above on a slide note.
+const FSC_FLAG_SLIDE: u16 = 0x0008;
+
+/// How wide a note record is in a file that says it was written by `version`.
+///
+/// FL widened the record from 20 bytes to 24 at version 8, and the version
+/// string is the only thing in the file that says which one it holds. Checked
+/// against its whole factory score library — 609 files, 5523 notes, from
+/// 3.0.0 to 20.9.0 — with no exceptions.
+pub fn fsc_record_bytes(version: &str) -> usize {
+    let major: u32 = version
+        .split('.')
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if major >= 8 { 24 } else { 20 }
+}
+
+/// One note, packed the way a file written by `version` packs it.
+fn write_fsc_note(out: &mut Vec<u8>, note: &FscNoteSpec, wide: bool) {
+    let flags = FSC_FLAG_PLAIN | if note.slide { FSC_FLAG_SLIDE } else { 0 };
+    out.extend_from_slice(&note.position.to_le_bytes());
+    out.extend_from_slice(&flags.to_le_bytes());
+    out.extend_from_slice(&note.rack.to_le_bytes());
+    out.extend_from_slice(&note.length.to_le_bytes());
+    out.push(note.key);
+    if wide {
+        // Key's high byte, then the note group, then the four fields the
+        // narrow record has no room for.
+        out.extend_from_slice(&[0, 0, 0]);
+        out.push(note.fine);
+        out.push(0);
+        out.push(note.release);
+        out.push(0); // MIDI channel
+    } else {
+        out.push(note.fine);
+        out.extend_from_slice(&[0, 0]);
+    }
+    out.push(note.pan);
+    out.push(note.velocity);
+    out.push(note.mod_x);
+    out.push(note.mod_y);
+}
+
+/// A complete `.fsc` byte stream: the `FLhd`/`FLdt` container, a version
+/// string, a pattern number, and the note block.
+pub fn build_fsc(version: &str, ppq: u16, notes: &[FscNoteSpec]) -> Vec<u8> {
+    let wide = fsc_record_bytes(version) == 24;
+    let mut block = Vec::with_capacity(notes.len() * 24);
+    for note in notes {
+        write_fsc_note(&mut block, note, wide);
+    }
+    build_fsc_raw(version, ppq, &block)
+}
+
+/// [`build_fsc`] with the note block handed in verbatim — for the files a
+/// real one can never be: truncated, empty, or a record width that does not
+/// match what the version claims.
+pub fn build_fsc_raw(version: &str, ppq: u16, note_block: &[u8]) -> Vec<u8> {
+    let mut events = Vec::new();
+    // 199: the version string, which every score in FL's own library carries
+    // first and which says how wide a note is.
+    events.push(199);
+    let mut version_bytes = version.as_bytes().to_vec();
+    version_bytes.push(0);
+    write_fl_varint(&mut events, version_bytes.len() as u32);
+    events.extend_from_slice(&version_bytes);
+    // 65: the pattern the score came from, as a word.
+    events.push(65);
+    events.extend_from_slice(&0u16.to_le_bytes());
+    // 224: the notes.
+    events.push(224);
+    write_fl_varint(&mut events, note_block.len() as u32);
+    events.extend_from_slice(note_block);
+
+    let mut out = Vec::new();
+    out.extend_from_slice(b"FLhd");
+    out.extend_from_slice(&6u32.to_le_bytes());
+    // Format 16 is what a score file declares; a project declares 0.
+    out.extend_from_slice(&16i16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&ppq.to_le_bytes());
+    out.extend_from_slice(b"FLdt");
+    out.extend_from_slice(&(events.len() as u32).to_le_bytes());
+    out.extend_from_slice(&events);
+    out
+}
+
+/// FL's variable-length integer: seven bits a byte, little end first, high bit
+/// set on every byte but the last. The **opposite** order to MIDI's.
+fn write_fl_varint(out: &mut Vec<u8>, mut value: u32) {
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+/// [`write_fixture_to_temp_file`], for a file that has to be called `.fsc` —
+/// the importer is handed a path and the extension is part of what it is.
+pub fn write_fsc_to_temp_file(name: &str, bytes: &[u8]) -> PathBuf {
+    let mut path = std::env::temp_dir();
+    path.push(format!("fontelle-test-{name}-{}.fsc", std::process::id()));
+    let mut f = std::fs::File::create(&path).expect("write test fixture");
+    f.write_all(bytes).expect("write test fixture bytes");
+    path
+}

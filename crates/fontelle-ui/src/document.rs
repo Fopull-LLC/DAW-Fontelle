@@ -449,6 +449,20 @@ pub enum LibraryKind {
     Group,
 }
 
+/// A question a file has raised, and the ways of answering it.
+///
+/// Strings rather than anything structured, for the reason
+/// [`crate::canvas::ContextMenu`] lists strings: what each line *means* is the
+/// host's to remember, and the window's job is to draw them and say which one
+/// was pressed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportPrompt {
+    /// What is being imported — drawn greyed at the top, so a menu of six
+    /// lines is not one you have to remember what you clicked to read.
+    pub title: String,
+    pub choices: Vec<String>,
+}
+
 /// One row of the browser: a soundfont, a folder, or a preset inside a file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibraryEntry {
@@ -759,6 +773,82 @@ pub trait StudioHost: DocumentHost {
 
     /// Shows the folder the settings file lives in.
     fn reveal_config_dir(&mut self) {}
+
+    // ------------------------------------------------- files to import ---
+
+    /// Tells the host which of the browser's lists is on screen.
+    ///
+    /// The search box filters *whichever list is showing*, so the host has to
+    /// know which one that is: a query typed against MIDI files means nothing
+    /// against soundfonts, and a single shared box would carry one into the
+    /// other every time the tab changed.
+    fn set_browser_mode(&mut self, _mode: crate::canvas::BrowserMode) {}
+
+    /// Which kind of file the Import tab is showing.
+    fn import_kind(&self) -> fontelle_types::FolderKind {
+        fontelle_types::FolderKind::Midi
+    }
+
+    fn set_import_kind(&mut self, _kind: fontelle_types::FolderKind) {}
+
+    /// Whether a folder has been chosen for `kind` at all.
+    ///
+    /// The whole of *"if I don't have a folder selected yet, take me to the
+    /// settings menu"*: the window asks this before it opens the tab, and
+    /// sends you to set one when the answer is no. Fontelle reads nothing the
+    /// user has not named (INVARIANT 10), so there is no folder to fall back
+    /// on and offering an empty list would be a browser that looks broken.
+    fn has_import_dir(&self, _kind: fontelle_types::FolderKind) -> bool {
+        false
+    }
+
+    /// The rows of the Import tab: folders, then files, in the folder the
+    /// browser is standing in — or the search's hits across the whole
+    /// collection when there is a query.
+    fn import_files(&self) -> Vec<LibraryEntry> {
+        Vec::new()
+    }
+
+    /// One line saying where the folder is, or what just went wrong.
+    fn import_status(&self) -> String {
+        String::new()
+    }
+
+    /// Activates row `index`: walks into a folder, or imports a file.
+    fn open_import(&mut self, _index: usize) -> Result<(), String> {
+        Err("importing files is not available".to_string())
+    }
+
+    /// Picks the folder for the kind the tab is showing.
+    fn choose_import_dir(&mut self) {}
+
+    /// Shows it in the desktop's file manager.
+    fn reveal_import_dir(&mut self) {}
+
+    /// The question a file has raised, if one is waiting.
+    ///
+    /// A `.mid` holding several parts is the case this exists for: *"if I
+    /// import a midi with multiple instruments inside it, prompt me if I want
+    /// to import them all as separate named tracks or only import a single
+    /// instrument"*. The **host** decides what the choices are, because it is
+    /// the half that read the file; the window draws them as a menu.
+    fn import_prompt(&self) -> Option<ImportPrompt> {
+        None
+    }
+
+    /// Answers it, by the index of the chosen line.
+    fn answer_import(&mut self, _choice: usize) {}
+
+    /// Drops the question without importing anything.
+    fn cancel_import(&mut self) {}
+
+    /// Imports the file at `path`, whatever kind it turns out to be —
+    /// what a file **dropped on the window** goes through.
+    ///
+    /// `Ok` carries what to say about it; `Err` says why not.
+    fn drop_file(&mut self, _path: &std::path::Path) -> Result<String, String> {
+        Err("this build cannot open dropped files".to_string())
+    }
 
     /// Shows the projects folder in the desktop's file manager.
     fn reveal_projects_dir(&mut self) {}

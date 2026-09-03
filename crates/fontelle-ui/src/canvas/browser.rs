@@ -31,10 +31,16 @@ pub struct BrowserLayout {
     /// tab's "Change..." replaced the soundfont bank for exactly that reason.
     /// See [`BrowserHit::ChooseFolder`].
     pub mode: BrowserMode,
-    /// The three mode tabs, across the top. See [`BrowserMode`].
+    /// The four mode tabs, across the top. See [`BrowserMode`].
     pub sounds_tab: Rect,
     pub projects_tab: Rect,
+    pub import_tab: Rect,
     pub settings_tab: Rect,
+    /// The two buttons inside the Import tab that say which kind of file is
+    /// being browsed. **Empty in every other mode** — a control that does
+    /// nothing in the mode you are in is worse than one that is not there.
+    pub midi_kind: Rect,
+    pub score_kind: Rect,
     /// The search field. §17.5's instant fuzzy search is the feature that makes
     /// a large collection usable, so it is the first thing in the panel.
     pub search: Rect,
@@ -85,6 +91,17 @@ pub enum BrowserMode {
     Sounds,
     /// The projects folder (TDD §17.3): one list, and a way to make one.
     Projects,
+    /// The files you import from: `.mid` files, or FL Studio's `.fsc` scores.
+    ///
+    /// A tab rather than a list inside the roll's Tools panel, because
+    /// everything a browser of files needs is already here — folders you can
+    /// walk into, a `..` row back out, a search across the whole collection,
+    /// and a virtualised list. A second implementation of all of that, eleven
+    /// rows tall and hanging off a chip, would be worse at every one of them.
+    ///
+    /// **One tab for both kinds**, with a pair of buttons inside it saying
+    /// which: five tabs across a 248-pixel sidebar is a row of abbreviations.
+    Import,
     /// What Fontelle is set to (TDD §14.3, §18): one list of names and values,
     /// each of which a click changes.
     ///
@@ -95,11 +112,20 @@ pub enum BrowserMode {
 }
 
 impl BrowserMode {
+    /// Every mode, in the order the tabs are drawn.
+    ///
+    /// A list rather than four call sites writing the same four names out:
+    /// the window shapes a caption per tab and the renderer draws one per tab,
+    /// and a mode missing from either is a tab with **no words on it** — which
+    /// is exactly what the Import tab was on the first frame it ever drew.
+    pub const ALL: [Self; 4] = [Self::Sounds, Self::Projects, Self::Import, Self::Settings];
+
     /// What the tab says.
     pub fn label(self) -> &'static str {
         match self {
             Self::Sounds => "Sounds",
             Self::Projects => "Projects",
+            Self::Import => "Import",
             Self::Settings => "Settings",
         }
     }
@@ -143,10 +169,24 @@ pub fn browser_layout_for(
     let panel = body;
     let tabs_height = metrics.row_height.min(body.height.max(0.0));
     let (tabs, body_below) = body.split_top(tabs_height);
-    let third = (tabs.width - GAP * 2.0).max(0.0) / 3.0;
-    let sounds_tab = Rect::new(tabs.x, tabs.y, third, tabs.height).clamped();
-    let projects_tab = Rect::new(sounds_tab.right() + GAP, tabs.y, third, tabs.height).clamped();
-    let settings_tab = Rect::new(projects_tab.right() + GAP, tabs.y, third, tabs.height).clamped();
+    // Four across, each the same width. Laid out from a running left edge
+    // rather than each from its own multiple, so the rounding that a width of
+    // 248 divided four ways produces lands in one place instead of opening a
+    // gap between every pair.
+    let quarter = (tabs.width - GAP * 3.0).max(0.0) / 4.0;
+    let tab_at = |index: usize| {
+        Rect::new(
+            tabs.x + (quarter + GAP) * index as f32,
+            tabs.y,
+            quarter,
+            tabs.height,
+        )
+        .clamped()
+    };
+    let sounds_tab = tab_at(0);
+    let projects_tab = tab_at(1);
+    let import_tab = tab_at(2);
+    let settings_tab = tab_at(3);
     let (_gap, body) = body_below.split_top(GAP.min(body_below.height.max(0.0)));
 
     // **No search box over the settings.** It filters whichever list is
@@ -190,6 +230,20 @@ pub fn browser_layout_for(
     // one: it is the thing somebody opens this tab for on a first run, and the
     // two folder buttons stay where they are in both modes so neither moves
     // when you switch.
+    // The two kind buttons take the row "New project" takes in the Projects
+    // tab — same place, same shape, so nothing under them moves when the tab
+    // changes.
+    let (midi_kind, score_kind) = if mode == BrowserMode::Import {
+        let row = take_row(metrics.row_height);
+        let half = (row.width - GAP).max(0.0) / 2.0;
+        (
+            Rect::new(row.x, row.y, half, row.height).clamped(),
+            Rect::new(row.x + half + GAP, row.y, half, row.height).clamped(),
+        )
+    } else {
+        (Rect::ZERO, Rect::ZERO)
+    };
+
     let (new_project, export) = if mode == BrowserMode::Projects {
         let row = take_row(metrics.row_height);
         // Side by side on one row, so the two folder buttons under them stay
@@ -244,7 +298,7 @@ pub fn browser_layout_for(
     // A project has no presets inside it, so in that mode the one list takes
     // the whole area rather than half of it being left empty.
     let (files, presets) = match mode {
-        BrowserMode::Projects | BrowserMode::Settings => (
+        BrowserMode::Projects | BrowserMode::Settings | BrowserMode::Import => (
             Rect::new(lists.x, lists.y, lists.width, whole(lists.height)).clamped(),
             Rect::ZERO,
         ),
@@ -265,7 +319,7 @@ pub fn browser_layout_for(
         }
     };
     let preset_count = match mode {
-        BrowserMode::Projects | BrowserMode::Settings => 0,
+        BrowserMode::Projects | BrowserMode::Settings | BrowserMode::Import => 0,
         BrowserMode::Sounds => preset_count,
     };
 
@@ -274,7 +328,10 @@ pub fn browser_layout_for(
         mode,
         sounds_tab,
         projects_tab,
+        import_tab,
         settings_tab,
+        midi_kind,
+        score_kind,
         search,
         file_rows: rows(files, metrics, file_count, file_scroll),
         files,
@@ -360,6 +417,8 @@ pub enum BrowserHit {
     /// [`OpenFolder`](Self::OpenFolder) and not for this one, so the two
     /// folders were one folder as far as this button was concerned.
     ChooseFolder(BrowserMode),
+    /// Show this kind of file in the Import tab.
+    Kind(fontelle_types::FolderKind),
     /// Make a project in the projects folder.
     NewProject,
     /// Bounce the open project to a WAV.
@@ -377,7 +436,13 @@ impl BrowserHit {
         Some(match self {
             Self::Mode(BrowserMode::Sounds) => "The soundfonts you have",
             Self::Mode(BrowserMode::Projects) => "Your projects folder",
+            Self::Mode(BrowserMode::Import) => "MIDI files and FL scores to bring in",
             Self::Mode(BrowserMode::Settings) => "How Fontelle is set up",
+            Self::Search(BrowserMode::Import) => "Search every file in the folder by name",
+            Self::OpenFolder(BrowserMode::Import) => "Show the import folder in your file manager",
+            Self::ChooseFolder(BrowserMode::Import) => "Choose the folder to import from",
+            Self::Kind(fontelle_types::FolderKind::Midi) => "Browse your .mid files",
+            Self::Kind(fontelle_types::FolderKind::Scores) => "Browse FL Studio .fsc scores",
             Self::Search(BrowserMode::Sounds) => "Search every soundfont by name",
             Self::Search(BrowserMode::Projects) => "Search your projects by name",
             // Never drawn in the settings tab: there is no box there. A hit is
@@ -409,8 +474,17 @@ pub fn browser_hit(layout: &BrowserLayout, x: f32, y: f32) -> BrowserHit {
     if layout.projects_tab.contains(x, y) {
         return BrowserHit::Mode(BrowserMode::Projects);
     }
+    if layout.import_tab.contains(x, y) {
+        return BrowserHit::Mode(BrowserMode::Import);
+    }
     if layout.settings_tab.contains(x, y) {
         return BrowserHit::Mode(BrowserMode::Settings);
+    }
+    if layout.midi_kind.contains(x, y) {
+        return BrowserHit::Kind(fontelle_types::FolderKind::Midi);
+    }
+    if layout.score_kind.contains(x, y) {
+        return BrowserHit::Kind(fontelle_types::FolderKind::Scores);
     }
     if layout.new_project.contains(x, y) {
         return BrowserHit::NewProject;

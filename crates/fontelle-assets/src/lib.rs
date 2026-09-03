@@ -3,15 +3,20 @@
 //! (FONTELLE_TDD.md §7.7, §14.6, §15.3, §17.5).
 
 pub mod fixtures;
+mod fsc_import;
+mod general_midi;
 mod library;
 mod midi_import;
 mod peaks;
 mod sf2_import;
 mod sfz_import;
 
+pub use fsc_import::{FscNote, FscScore, import_fsc, read_fsc};
 pub use library::{LibraryEntry, SoundfontLibrary};
+pub use general_midi::{general_midi_family, general_midi_name};
 pub use midi_import::{
-    ImportedMidiChannel, MidiChannelSummary, MidiChannels, MidiImport, import_midi,
+    ImportedMidiChannel, MidiChannelSummary, MidiChannels, MidiImport, MidiPart, MidiSurvey,
+    import_midi, part_name, read_midi, read_midi_survey, survey_midi,
 };
 pub use peaks::{PeakData, generate_peaks};
 pub use sf2_import::{

@@ -16,7 +16,7 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
-`cargo test --workspace` is green at **2103 passing** and
+`cargo test --workspace` is green at **2265 passing** and
 `cargo clippy --workspace --all-targets -- -D warnings` is **clean**. Keep it
 that way: clippy at `-D warnings` is part of the bar now, and every hit the
 older handoffs recorded as "pre-existing" has been fixed.
@@ -43,7 +43,15 @@ older handoffs recorded as "pre-existing" has been fixed.
 
 Ranked by what I would take first.
 
-1. **The effects catalogue's build order, from item 5.** `docs/effects-catalogue.md`
+1. **Drag-and-drop has not been watched working.** The import pass wired
+   `WindowEvent::DroppedFile` and `Session::drop_file` is tested for every kind
+   (`.mid`, `.fsc`, `.sf2`, a file of the wrong sort, a file that is not
+   there), but synthesising an XDND drop against the nested X server was not
+   attempted, so the winit half is unproven. Everything *else* about importing
+   was driven in the real window — see `PROGRESS.md`'s top section, which also
+   lists the three bugs that found. Cheapest check: drag a `.mid` onto the
+   window by hand.
+2. **The effects catalogue's build order, from item 5.** `docs/effects-catalogue.md`
    §4 is the list and §5 is the recipe; items 1–4 (utility, gate, chorus,
    filter) are done, and both of the things that gated several rows — the
    preset picker and the external sidechain — are done too. Next is the
@@ -52,19 +60,19 @@ Ranked by what I would take first.
    **Presets are owed** on the EQ, the compressor, the chorus, the delay and
    the reverb, and rule 10 has a test that stops a new effect landing in the
    "no presets" list by accident.
-2. **Automation: what the block cannot do yet.** Points are placed and dragged
+3. **Automation: what the block cannot do yet.** Points are placed and dragged
    one at a time — there is no marquee over several inside a block, and no
    pencil/line/shape-stamp draw modes (§12.4 names all three). The gestures
    that exist are in `fontelle-ui/tests/automation_blocks.rs`.
-3. **A tempo lane is a staircase**, not a ramp: `effective_tempo_map` samples
+4. **A tempo lane is a staircase**, not a ramp: `effective_tempo_map` samples
    it every sixteenth note into constant segments, because `TempoMap` holds
    only constant segments (§6.2's scope cut). Interpolated segments are a
    bounded addition and the formula is written down in `project.rs`.
-4. **`effective_tempo_map` is built twice per republish** and calls
+5. **`effective_tempo_map` is built twice per republish** and calls
    `automation_at` once per step, each of which sorts a copy of the clip's
    points. A project with no tempo lane pays nothing, so this only bites once
    somebody automates the tempo.
-5. **Unverified: the last move of a right-drag on a ruler.** Driving the
+6. **Unverified: the last move of a right-drag on a ruler.** Driving the
    window with synthetic input, a right-drag that selects a time range
    sometimes commits one grid step short of where the button came up — the
    final `MotionNotify` before the release does not always reach the window.
@@ -72,15 +80,15 @@ Ranked by what I would take first.
    the XTEST harness (which this file already records as unreliable near a
    button release) or the window's own event handling is **not settled**.
    Check it with a real mouse before spending time on it.
-6. **Unverified: raising an already-open editor window.** The code calls
+7. **Unverified: raising an already-open editor window.** The code calls
    `focus_window()` *and* `request_user_attention()` (the Wayland
    xdg-activation path). It could not be verified here — the test harness is a
    bare nested X server with no window manager, so there is nothing to raise
    against. Check it on a real KDE session before believing it.
-7. **The gate's look-ahead is uncompensated latency**, like the master
+8. **The gate's look-ahead is uncompensated latency**, like the master
    limiter's, and any lookahead insert under a mix below 100 % combs against
    an undelayed dry. Both wait on delay compensation.
-8. **The ducker, the vocoder and the repitcher** are unwritten; the repitcher
+9. **The ducker, the vocoder and the repitcher** are unwritten; the repitcher
    is varispeed over a *clip* and is in the wrong crate.
 
 ## 4. Architecture notes that cost time to learn

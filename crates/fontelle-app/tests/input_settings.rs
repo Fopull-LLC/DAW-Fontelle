@@ -15,8 +15,16 @@ use fontelle_app::settings::{
     MidiInputSettings, SETTING_ROWS, Settings, SettingRow, VelocityCurveSetting,
 };
 
+/// A row's value, given only the MIDI half of the settings — which is all
+/// every test in this file is about. `SettingRow::value` reads the whole file
+/// because the tab now also lists the import folders; this puts the half
+/// under test into an otherwise-default one.
 fn value(row: SettingRow, s: &MidiInputSettings) -> String {
-    row.value(s)
+    let settings = Settings {
+        midi_input: *s,
+        ..Settings::default()
+    };
+    row.value(&settings)
 }
 
 /// `row` stepped `times` times in the direction `delta` says.
@@ -40,7 +48,10 @@ fn every_row_says_what_it_is_and_what_it_is_at() {
         if let SettingRow::Heading(_) = row {
             continue;
         }
-        assert!(!row.value(&s).is_empty(), "{row:?} does not say what it is at");
+        assert!(
+            !value(row, &s).is_empty(),
+            "{row:?} does not say what it is at"
+        );
     }
 }
 

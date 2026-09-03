@@ -214,8 +214,8 @@ fn a_folder_row_says_how_many_soundfonts_are_under_it() {
             .iter()
             .find_map(|row| match row {
                 BankRow::Folder {
-                    name, soundfonts, ..
-                } if name == want => Some(*soundfonts),
+                    name, files, ..
+                } if name == want => Some(*files),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("no folder {want}"))

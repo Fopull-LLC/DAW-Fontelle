@@ -26,6 +26,7 @@ use fontelle_types::{ChannelId, NoteId, PPQN, Tick};
 use midly::{MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 
 use crate::ImportError;
+use crate::general_midi::general_midi_name;
 
 /// MIDI's percussion channel, zero-indexed. Its note numbers select drums
 /// rather than pitches.
@@ -111,6 +112,10 @@ pub struct MidiChannelSummary {
     pub notes: usize,
     /// From the channel's first program-change event, if it has one.
     pub program: Option<u8>,
+    /// What this part is called — see [`part_name`]. Carried even though it
+    /// was skipped, because the thing that lists what was left out is also
+    /// the thing that offers to go back and get it.
+    pub name: String,
 }
 
 /// One of the file's channels, as a document channel of its own.
@@ -136,6 +141,9 @@ pub struct ImportedMidiChannel {
     /// which is about -4 dB — not unity, and reading it as unity would put
     /// every silent channel above the ones that spelled the default out.
     pub volume_db: f32,
+    /// What the part is called, and what the channel and its mixer track are
+    /// named in the document — see [`part_name`].
+    pub name: String,
 }
 
 pub struct MidiImport {
@@ -155,21 +163,149 @@ pub struct MidiImport {
     pub tempo_changes: usize,
 }
 
+/// One part of a MIDI file, as [`survey_midi`] reports it.
+///
+/// Deliberately not [`ImportedMidiChannel`]: that one names ids in a document
+/// that a survey does not build.
+#[derive(Debug, Clone)]
+pub struct MidiPart {
+    /// Zero-based, so channel 10 in a DAW's UI is 9 here.
+    pub channel: u8,
+    pub notes: usize,
+    pub program: Option<u8>,
+    pub is_percussion: bool,
+    /// What to call it — see [`part_name`].
+    pub name: String,
+}
+
+/// What is inside a `.mid` file, read without building anything.
+///
+/// A MIDI file may hold one part or sixteen, and which it is decides what
+/// importing it should mean: a one-part file is a phrase to drop on the
+/// instrument you have, and a sixteen-part file is a song that wants a track
+/// each. Asking the user that question needs the answer first, and importing
+/// the file to find out — then throwing it away if they say no — is a way to
+/// lose whatever was open.
+#[derive(Debug, Clone)]
+pub struct MidiSurvey {
+    /// The file's own name, without its extension.
+    pub name: String,
+    /// Every channel that carries notes, in channel order. Percussion
+    /// included: the survey reports what is *there*, and what to leave out is
+    /// the import's decision.
+    pub parts: Vec<MidiPart>,
+    /// The file's opening tempo. The whole curve is only built on import.
+    pub bpm: f64,
+    /// How many tempo segments the file would produce. One means constant.
+    pub tempo_changes: usize,
+    /// The file's own resolution, in ticks per quarter note.
+    pub ticks_per_quarter: u32,
+    /// How long the piece is, on **this project's** grid.
+    pub length: Tick,
+}
+
+impl MidiSurvey {
+    /// Whether this file holds more than one part, which is the whole question
+    /// the survey exists to answer.
+    pub fn is_multi_part(&self) -> bool {
+        self.parts.len() > 1
+    }
+
+    /// How many notes are in the file altogether.
+    pub fn notes(&self) -> usize {
+        self.parts.iter().map(|part| part.notes).sum()
+    }
+}
+
 /// A note-on waiting for its note-off.
 struct Pending {
     start: Tick,
     velocity: u8,
 }
 
-pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, ImportError> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| ImportError(format!("could not read {}: {e}", path.display())))?;
-    let smf = Smf::parse(&bytes).map_err(|e| {
-        ImportError(format!(
-            "{} is not a readable MIDI file: {e}",
-            path.display()
-        ))
-    })?;
+/// Everything one walk of the file finds, before any of it becomes a document.
+///
+/// One walk rather than two, and one shape for both callers: a survey that
+/// counted its notes differently from the import that follows it would offer a
+/// list of things you do not get.
+struct Scan {
+    ticks_per_quarter: u32,
+    /// Every tempo event, at the tick it takes effect.
+    tempo_events: Vec<(u64, u32)>,
+    /// Notes, per MIDI channel — only for the channels `accept` let through,
+    /// and only when the caller asked for them at all.
+    per_channel: HashMap<u8, Arena<NoteId, Note>>,
+    /// How many notes each channel carried, **whether or not it was accepted**.
+    counts: HashMap<u8, usize>,
+    programs: HashMap<u8, u8>,
+    controllers: HashMap<(u8, u8), u8>,
+    /// What each channel's own track called itself — see [`part_name`].
+    track_names: HashMap<u8, String>,
+    /// The last tick any note ends on, in the file's own ticks.
+    end: u64,
+}
+
+impl Scan {
+    /// The channels that carried notes, in channel order.
+    fn channels(&self) -> Vec<u8> {
+        let mut channels: Vec<u8> = self.counts.keys().copied().collect();
+        channels.sort_unstable();
+        channels
+    }
+
+    fn part(&self, channel: u8) -> MidiPart {
+        MidiPart {
+            channel,
+            notes: self.counts.get(&channel).copied().unwrap_or(0),
+            program: self.programs.get(&channel).copied(),
+            is_percussion: channel == PERCUSSION_CHANNEL,
+            name: part_name(
+                channel,
+                self.track_names.get(&channel).map(String::as_str),
+                self.programs.get(&channel).copied(),
+            ),
+        }
+    }
+}
+
+/// What to call a part, best source first.
+///
+/// A part called *"Channel 4"* tells you nothing, and a MIDI file almost
+/// always knows better. Three places to look, in the order they are worth
+/// trusting:
+///
+/// 1. **The track's own name.** Whoever wrote the file typed it, so it beats
+///    anything derived. Only when the track holds this one channel, though —
+///    see [`scan`].
+/// 2. **The General MIDI program** it selects. `33` is a fretless bass in
+///    every file that ever selected it.
+/// 3. **The percussion channel**, which is drums by definition.
+///
+/// And a number as the floor, counted from 1 the way a keyboard's own front
+/// panel counts channels rather than the way the wire does.
+pub fn part_name(channel: u8, track_name: Option<&str>, program: Option<u8>) -> String {
+    if let Some(name) = track_name {
+        let name = name.trim();
+        if !name.is_empty() {
+            return name.to_string();
+        }
+    }
+    // Before the program, because a program change on channel 10 selects a
+    // *kit* and its number means nothing on the melodic list — reading it
+    // there is how a drum track comes to be called "Acoustic Grand Piano".
+    if channel == PERCUSSION_CHANNEL {
+        return "Drums".to_string();
+    }
+    if let Some(program) = program {
+        return general_midi_name(program).to_string();
+    }
+    format!("Channel {}", channel as u16 + 1)
+}
+
+/// Parses the file and settles its timing, which both entry points need.
+fn read_smf<'bytes>(bytes: &'bytes [u8], what: &str) -> Result<(Smf<'bytes>, u32), ImportError> {
+    let smf = Smf::parse(bytes)
+        .map_err(|e| ImportError(format!("{what} is not a readable MIDI file: {e}")))?;
 
     // A metrical file counts time in subdivisions of a quarter note, which is
     // what Fontelle's PPQN grid is. SMPTE timecode counts in real seconds and
@@ -192,53 +328,72 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
             "MIDI header declares zero ticks per quarter note".into(),
         ));
     }
+    Ok((smf, ticks_per_quarter))
+}
 
-    // Exact wherever the resolutions divide, and rounded to nearest where they
-    // do not. Truncating would drag every note fractionally early and rounding
-    // up every note fractionally late; either way the bias is systematic, and
-    // at an odd source resolution it is a rhythm that is subtly but
-    // consistently wrong rather than a random jitter.
-    let to_project_ticks = |midi_tick: u64| -> Tick {
-        let tpq = ticks_per_quarter as u64;
-        ((midi_tick * PPQN as u64 + tpq / 2) / tpq) as Tick
+/// A file tick on this project's grid.
+///
+/// Exact wherever the resolutions divide, and rounded to nearest where they do
+/// not. Truncating would drag every note fractionally early and rounding up
+/// every note fractionally late; either way the bias is systematic, and at an
+/// odd source resolution it is a rhythm that is subtly but consistently wrong
+/// rather than a random jitter.
+fn to_project_ticks(midi_tick: u64, ticks_per_quarter: u32) -> Tick {
+    let tpq = ticks_per_quarter.max(1) as u64;
+    ((midi_tick * PPQN as u64 + tpq / 2) / tpq) as Tick
+}
+
+/// Walks the file once.
+///
+/// `collect_notes` is what tells a survey from an import: a survey wants the
+/// counts and the names and nothing else, and building sixteen arenas of notes
+/// to throw them away is work nobody asked for.
+fn scan(smf: &Smf<'_>, ticks_per_quarter: u32, channels: MidiChannels, collect_notes: bool) -> Scan {
+    let mut scan = Scan {
+        ticks_per_quarter,
+        tempo_events: Vec::new(),
+        per_channel: HashMap::new(),
+        counts: HashMap::new(),
+        programs: HashMap::new(),
+        controllers: HashMap::new(),
+        track_names: HashMap::new(),
+        end: 0,
     };
-
-    // Every tempo event, with the tick it takes effect at. A file may put
-    // them in any track, and a walk that kept only the first plays the whole
-    // piece at its opening tempo — the rhythm drifts further out the longer it
-    // runs, and nothing about the result says the importer dropped anything.
-    let mut tempo_events: Vec<(u64, u32)> = Vec::new();
-    // Notes are collected per MIDI channel, so each becomes an instrument of
-    // its own rather than being merged into one stream that has to share a
-    // patch — a bass part and a lead part are different sounds.
-    let mut per_channel: HashMap<u8, Arena<NoteId, Note>> = HashMap::new();
     let mut pending: HashMap<(u8, u8), Pending> = HashMap::new();
-    let mut counts: HashMap<u8, usize> = HashMap::new();
-    let mut programs: HashMap<u8, u8> = HashMap::new();
-    // First value wins, exactly as for a program change: a file that sweeps a
-    // controller is describing an automation curve, and Fontelle has nowhere
-    // to put one yet. The channel listing prints what was read, so a part that
-    // starts at zero is visible rather than mysteriously silent.
-    let mut controllers: HashMap<(u8, u8), u8> = HashMap::new();
 
     for track in &smf.tracks {
         // Delta times are per track and restart at zero, so a format-1 file's
         // tracks all begin together rather than one after another.
         let mut absolute: u64 = 0;
+        // What this track calls itself, and which channels it plays. A track
+        // name only names a *part* when the track holds one — see below.
+        let mut track_name: Option<String> = None;
+        let mut instrument_name: Option<String> = None;
+        let mut channels_here: Vec<u8> = Vec::new();
+
         for event in track {
             absolute += event.delta.as_int() as u64;
             match event.kind {
                 TrackEventKind::Meta(MetaMessage::Tempo(us)) => {
-                    tempo_events.push((absolute, us.as_int()));
+                    scan.tempo_events.push((absolute, us.as_int()));
+                }
+                // First of each wins: a track that renames itself part-way
+                // through is describing a section, not a second instrument.
+                TrackEventKind::Meta(MetaMessage::TrackName(name)) => {
+                    track_name.get_or_insert_with(|| String::from_utf8_lossy(name).into_owned());
+                }
+                TrackEventKind::Meta(MetaMessage::InstrumentName(name)) => {
+                    instrument_name
+                        .get_or_insert_with(|| String::from_utf8_lossy(name).into_owned());
                 }
                 TrackEventKind::Midi { channel, message } => {
                     let channel = channel.as_int();
                     match message {
                         MidiMessage::ProgramChange { program } => {
-                            programs.entry(channel).or_insert(program.as_int());
+                            scan.programs.entry(channel).or_insert(program.as_int());
                         }
                         MidiMessage::Controller { controller, value } => {
-                            controllers
+                            scan.controllers
                                 .entry((channel, controller.as_int()))
                                 .or_insert(value.as_int());
                         }
@@ -247,24 +402,28 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
                         // and read literally it starts a silent note that never
                         // ends, so the piece plays as one endless chord.
                         MidiMessage::NoteOn { key, vel } if vel.as_int() > 0 => {
-                            *counts.entry(channel).or_default() += 1;
-                            if channels.accepts(channel) {
+                            *scan.counts.entry(channel).or_default() += 1;
+                            if !channels_here.contains(&channel) {
+                                channels_here.push(channel);
+                            }
+                            if collect_notes && channels.accepts(channel) {
                                 pending.insert(
                                     (channel, key.as_int()),
                                     Pending {
-                                        start: to_project_ticks(absolute),
+                                        start: to_project_ticks(absolute, ticks_per_quarter),
                                         velocity: vel.as_int(),
                                     },
                                 );
                             }
                         }
                         MidiMessage::NoteOff { key, .. } | MidiMessage::NoteOn { key, .. } => {
+                            scan.end = scan.end.max(absolute);
                             if let Some(start) = pending.remove(&(channel, key.as_int())) {
                                 push_note(
-                                    per_channel.entry(channel).or_default(),
+                                    scan.per_channel.entry(channel).or_default(),
                                     key.as_int(),
                                     &start,
-                                    to_project_ticks(absolute),
+                                    to_project_ticks(absolute, ticks_per_quarter),
                                 );
                             }
                         }
@@ -277,51 +436,122 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
         // Anything still held at the end of a track never got its note-off.
         for ((channel, key), start) in pending.drain() {
             let end = start.start + STUCK_NOTE_LENGTH;
-            push_note(per_channel.entry(channel).or_default(), key, &start, end);
+            push_note(
+                scan.per_channel.entry(channel).or_default(),
+                key,
+                &start,
+                end,
+            );
+        }
+
+        // **A track's name only names a part when the track holds one part.**
+        // A format-0 file is one track carrying every channel, and its track
+        // name is the *song's* name — handing it to all sixteen would call
+        // every instrument in the piece the same thing, which is worse than a
+        // number because a number at least tells two of them apart.
+        if let [only] = channels_here[..] {
+            let name = track_name.or(instrument_name);
+            if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
+                scan.track_names.entry(only).or_insert(name);
+            }
         }
     }
 
     // Sorted by tick, and by file order within a tick — `TempoMap` resolves a
     // tie by taking the last, which is what a sequencer writing over its own
     // event means.
-    tempo_events.sort_by_key(|(tick, _)| *tick);
-    if tempo_events.is_empty() {
-        tempo_events.push((0, DEFAULT_US_PER_QUARTER));
+    scan.tempo_events.sort_by_key(|(tick, _)| *tick);
+    if scan.tempo_events.is_empty() {
+        scan.tempo_events.push((0, DEFAULT_US_PER_QUARTER));
     }
-    let segments: Vec<TempoSegment> = tempo_events
+    scan
+}
+
+/// What is in a `.mid` file, without building a document out of it.
+pub fn survey_midi(path: &Path) -> Result<MidiSurvey, ImportError> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| ImportError(format!("could not read {}: {e}", path.display())))?;
+    read_midi_survey(&bytes, &file_name(path))
+}
+
+/// [`survey_midi`] with the bytes in hand.
+pub fn read_midi_survey(bytes: &[u8], name: &str) -> Result<MidiSurvey, ImportError> {
+    let (smf, ticks_per_quarter) = read_smf(bytes, name)?;
+    // Every channel, because a survey reports what is *there*; what to leave
+    // out is the import's decision and the user's.
+    let scan = scan(&smf, ticks_per_quarter, MidiChannels::All, false);
+    let parts: Vec<MidiPart> = scan.channels().iter().map(|c| scan.part(*c)).collect();
+    let bpm = 60_000_000.0 / scan.tempo_events[0].1 as f64;
+    let tempo_changes = tempo_segments(&scan).len();
+    Ok(MidiSurvey {
+        name: name.to_string(),
+        parts,
+        bpm,
+        tempo_changes,
+        ticks_per_quarter,
+        length: to_project_ticks(scan.end, ticks_per_quarter),
+    })
+}
+
+/// The file's tempo curve, as the document's own segments.
+fn tempo_segments(scan: &Scan) -> Vec<TempoSegment> {
+    let mut segments: Vec<TempoSegment> = scan
+        .tempo_events
         .iter()
         .map(|(tick, us)| TempoSegment {
-            start_tick: to_project_ticks(*tick),
+            start_tick: to_project_ticks(*tick, scan.ticks_per_quarter),
             bpm: 60_000_000.0 / *us as f64,
         })
         .collect();
+    segments.dedup_by_key(|segment| segment.start_tick);
+    segments
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Imported MIDI".to_string())
+}
+
+pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, ImportError> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| ImportError(format!("could not read {}: {e}", path.display())))?;
+    read_midi(&bytes, &file_name(path), channels)
+}
+
+/// [`import_midi`] with the bytes in hand.
+pub fn read_midi(
+    bytes: &[u8],
+    name: &str,
+    channels: MidiChannels,
+) -> Result<MidiImport, ImportError> {
+    let (smf, ticks_per_quarter) = read_smf(bytes, name)?;
+    let mut scan = scan(&smf, ticks_per_quarter, channels, true);
+
+    let segments = tempo_segments(&scan);
     let bpm = segments[0].bpm;
 
-    let name = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Imported MIDI".to_string());
-    let mut project = Project::new(&name);
+    let mut project = Project::new(name);
     // 48 kHz is a placeholder: the rate belongs to the audio device, and the
     // caller replaces it with `TempoMap::set_sample_rate` once it knows one.
     project.tempo_map = TempoMap::from_segments(segments, 48_000.0);
     let tempo_changes = project.tempo_map.segments().len();
 
-    let mut midi_channels: Vec<u8> = per_channel.keys().copied().collect();
+    let mut midi_channels: Vec<u8> = scan.per_channel.keys().copied().collect();
     midi_channels.sort_unstable();
 
     let mut imported = Vec::new();
     for midi_channel in midi_channels {
-        let notes = per_channel.remove(&midi_channel).unwrap_or_default();
-        let is_percussion = midi_channel == PERCUSSION_CHANNEL;
-        let label = if is_percussion {
-            format!("{name} — drums")
-        } else {
-            format!("{name} — channel {}", midi_channel + 1)
-        };
+        let notes = scan.per_channel.remove(&midi_channel).unwrap_or_default();
+        let part = scan.part(midi_channel);
+        let is_percussion = part.is_percussion;
+        // The part's own name, which is what the survey showed and what the
+        // prompt offered. Everything the import makes for this part — the
+        // channel, its mixer track, its arrangement row — is called it.
+        let label = part.name.clone();
 
         let controller = |number: u8, default: u8| {
-            controllers
+            scan.controllers
                 .get(&(midi_channel, number))
                 .copied()
                 .unwrap_or(default)
@@ -357,7 +587,7 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
             gain_db: 0.0,
         });
         let lane = project.lanes.insert(Lane {
-            name: label,
+            name: label.clone(),
             height: 32.0,
             color: CHANNEL_COLOURS[midi_channel as usize % CHANNEL_COLOURS.len()],
             muted: false,
@@ -385,23 +615,28 @@ pub fn import_midi(path: &Path, channels: MidiChannels) -> Result<MidiImport, Im
             midi_channel,
             channel,
             notes: note_count,
-            program: programs.get(&midi_channel).copied(),
+            program: part.program,
             is_percussion,
             pan,
             volume_db,
+            name: label,
         });
     }
 
-    let mut skipped: Vec<MidiChannelSummary> = counts
+    let skipped: Vec<MidiChannelSummary> = scan
+        .channels()
         .into_iter()
-        .filter(|(channel, _)| !channels.accepts(*channel))
-        .map(|(channel, notes)| MidiChannelSummary {
-            channel,
-            notes,
-            program: programs.get(&channel).copied(),
+        .filter(|channel| !channels.accepts(*channel))
+        .map(|channel| {
+            let part = scan.part(channel);
+            MidiChannelSummary {
+                channel,
+                notes: part.notes,
+                program: part.program,
+                name: part.name,
+            }
         })
         .collect();
-    skipped.sort_by_key(|s| s.channel);
 
     Ok(MidiImport {
         project,

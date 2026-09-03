@@ -29,15 +29,19 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Re-exported so the settings file's own vocabulary is in one place, while
+/// the window — which may not depend on this crate — can still name it.
+pub use fontelle_types::FolderKind;
+
 /// The revision of the settings file this build writes. Its own number, like
 /// the theme's and the project's — where Fontelle keeps things has nothing to
 /// do with either.
 ///
-/// Two since the settings file grew [`MidiInputSettings`]. The field carries
-/// `#[serde(default)]`, so a version-1 file still reads — the bump is so that
-/// an *older* build handed a version-2 file says "upgrade Fontelle" rather
-/// than "unknown field `midi_input`".
-pub const SETTINGS_FORMAT_VERSION: u32 = 2;
+/// Two since the settings file grew [`MidiInputSettings`], three since it grew
+/// the two import folders. Every added field carries `#[serde(default)]`, so
+/// an older file still reads — the bump is so that an *older build* handed a
+/// newer file says "upgrade Fontelle" rather than "unknown field `midi_dir`".
+pub const SETTINGS_FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +62,21 @@ pub struct Settings {
     /// they were in before it did.
     #[serde(default)]
     pub midi_input: MidiInputSettings,
+    /// Where `.mid` files are kept, for the roll's *Import MIDI*.
+    ///
+    /// `None` means "ask", and never a guess: INVARIANT 10 says Fontelle
+    /// touches nothing the user has not named, and `~/Music` is as much
+    /// somebody's own folder as any other. The window's answer to `None` is
+    /// to send you here rather than to browse something you did not choose.
+    #[serde(default)]
+    pub midi_dir: Option<PathBuf>,
+    /// Where FL Studio's `.fsc` score files are kept.
+    ///
+    /// Usually somewhere inside an FL Studio installation, which is exactly
+    /// why it cannot be guessed: on this machine it is under a Wine prefix on
+    /// a second disk, and on the next one it will be somewhere else again.
+    #[serde(default)]
+    pub score_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -68,6 +87,8 @@ impl Default for Settings {
             projects_dir: None,
             theme: None,
             midi_input: MidiInputSettings::default(),
+            midi_dir: None,
+            score_dir: None,
         }
     }
 }
@@ -166,6 +187,9 @@ pub enum SettingRow {
     VelocityMax,
     Transpose,
     ChannelFilter,
+    /// A folder to import from. Clicking it opens a picker rather than
+    /// stepping a value — see [`SettingRow::folder`].
+    Folder(FolderKind),
 }
 
 /// Every row the settings tab shows, in the order it shows them.
@@ -174,7 +198,7 @@ pub enum SettingRow {
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 7] = [
+pub const SETTING_ROWS: [SettingRow; 10] = [
     SettingRow::Heading("MIDI input"),
     SettingRow::VelocityCurve,
     SettingRow::FixedVelocity,
@@ -182,6 +206,12 @@ pub const SETTING_ROWS: [SettingRow; 7] = [
     SettingRow::VelocityMax,
     SettingRow::Transpose,
     SettingRow::ChannelFilter,
+    // Their own heading, and not "MIDI input"'s: a row called "MIDI files"
+    // under a heading about the keyboard reads as a property of the keyboard
+    // rather than as a place on disk.
+    SettingRow::Heading("Import from"),
+    SettingRow::Folder(FolderKind::Midi),
+    SettingRow::Folder(FolderKind::Scores),
 ];
 
 /// How far transpose goes either way. Two octaves is as far as anybody moves a
@@ -203,23 +233,52 @@ impl SettingRow {
             Self::VelocityMax => "Velocity max",
             Self::Transpose => "Transpose",
             Self::ChannelFilter => "Channel",
+            Self::Folder(kind) => kind.label(),
+        }
+    }
+
+    /// Which folder this row is about, for the rows that are about one.
+    ///
+    /// What tells the host that a click here opens a **picker** rather than
+    /// stepping a number. It is asked of the row rather than matched at the
+    /// call site so that adding a third folder is a variant and nothing else.
+    pub fn folder(self) -> Option<FolderKind> {
+        match self {
+            Self::Folder(kind) => Some(kind),
+            _ => None,
         }
     }
 
     /// What it is set to, in the row's right-hand column.
-    pub fn value(self, settings: &MidiInputSettings) -> String {
+    ///
+    /// Takes the whole of [`Settings`] rather than just the MIDI half,
+    /// because the rows now span two sections of it — and a row that could
+    /// only see one of them is a row that would have to be told about the
+    /// other by its caller.
+    pub fn value(self, settings: &Settings) -> String {
+        let midi = &settings.midi_input;
         match self {
             Self::Heading(_) => String::new(),
-            Self::VelocityCurve => settings.velocity_curve.label().to_string(),
-            Self::FixedVelocity => settings.fixed_velocity.to_string(),
-            Self::VelocityMin => settings.velocity_min.to_string(),
-            Self::VelocityMax => settings.velocity_max.to_string(),
+            Self::VelocityCurve => midi.velocity_curve.label().to_string(),
+            Self::FixedVelocity => midi.fixed_velocity.to_string(),
+            Self::VelocityMin => midi.velocity_min.to_string(),
+            Self::VelocityMax => midi.velocity_max.to_string(),
             // With its sign, always: "+0" against "0" is the difference
             // between a number that can go either way and one that might not.
-            Self::Transpose => format!("{:+} st", settings.transpose_semitones),
-            Self::ChannelFilter => match settings.channel_filter {
+            Self::Transpose => format!("{:+} st", midi.transpose_semitones),
+            Self::ChannelFilter => match midi.channel_filter {
                 Some(channel) => channel.to_string(),
                 None => "All".to_string(),
+            },
+            // The **end** of the path: `…/FL Studio/Scores` says where you
+            // are and `/home/someone/Docum…` says nothing at all. The same
+            // rule the bank's own status line follows.
+            Self::Folder(kind) => match settings.folder(kind) {
+                Some(path) => crate::desktop::elide_path(path, 2),
+                // Never blank: an empty right-hand column reads as a bug, and
+                // "there is nothing here" is the state this whole feature
+                // starts in.
+                None => "Not set \u{2014} click".to_string(),
             },
         }
     }
@@ -237,7 +296,11 @@ impl SettingRow {
         }
         let step = delta.signum();
         match self {
-            Self::Heading(_) => {}
+            // Neither of these is a value to step. A folder row is a button,
+            // and its press is the host's — this module may not open a
+            // dialog. What matters here is that it does not quietly step the
+            // row above it instead.
+            Self::Heading(_) | Self::Folder(_) => {}
             Self::VelocityCurve => {
                 let all = VelocityCurveSetting::ALL;
                 let at = all
@@ -352,6 +415,25 @@ impl Settings {
 
     pub fn default_soundfont_dir() -> Option<PathBuf> {
         Self::default_soundfont_dir_from(&|key| std::env::var(key).ok())
+    }
+
+    /// Which folder is set for `kind`, if one is.
+    ///
+    /// One accessor pair rather than a match at every call site — which is
+    /// how a *"change my projects folder"* button in this very program came
+    /// to replace somebody's soundfont bank.
+    pub fn folder(&self, kind: FolderKind) -> Option<&Path> {
+        match kind {
+            FolderKind::Midi => self.midi_dir.as_deref(),
+            FolderKind::Scores => self.score_dir.as_deref(),
+        }
+    }
+
+    pub fn set_folder(&mut self, kind: FolderKind, dir: Option<PathBuf>) {
+        match kind {
+            FolderKind::Midi => self.midi_dir = dir,
+            FolderKind::Scores => self.score_dir = dir,
+        }
     }
 
     pub fn to_json(&self) -> String {

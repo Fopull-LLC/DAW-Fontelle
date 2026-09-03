@@ -18,6 +18,7 @@ mod prefab;
 mod project;
 mod recording;
 mod storage;
+mod tools;
 
 pub use arena::Arena;
 pub use asset_table::AssetTable;
@@ -28,14 +29,15 @@ pub use command::{Command, CommandError, History};
 pub use commands::{
     AddAutomationPoint, AddChannel, AddClip, AddInsert, AddLane, AddMixerTrack, AddNotes, AddSend,
     Compound,
-    DuplicateChannel, DuplicateClip, FlagTarget, MIN_CLIP_LENGTH, MoveAutomationPoints, MoveClip, MoveInsert,
-    MoveLane, MoveNotes, NumberTarget, PlaceAutomationPoints, RemoveAutomationPoints, RemoveChannel,
+    DuplicateChannel, DuplicateClip, FlagTarget, ImportPart, ImportParts, MIN_CLIP_LENGTH, MadePart, MoveAutomationPoints, MoveClip, MoveInsert,
+    MoveLane, MoveNotes, NudgeNoteProperty, NumberTarget, PlaceAutomationPoints, RemoveAutomationPoints, RemoveChannel,
     NEW_SEND_DB, RemoveClip, RemoveInsert, RemoveLane, RemoveMixerTrack, RemoveNotes, RemoveSend,
     RenameChannel, RenameLane, RenameMixerTrack,
     ResizeClip, ResizeNotes, RestoreAutomationPoints, RestoreInsert, RestorePointCurves,
     SetChannelPatch, SetChannelRoute, SetClipLoop, SetEqBand, SetFlag, SetInsertBypassed,
     RestoreInsertConfig, SetInsertKey, SetInsertMix, SetInsertParam, SetInsertPreset,
-    SetLoopRange, SetNoteProperty, SetNoteSlide, SetNoteVelocity, SetNumber, SetPointCurve,
+    SetLoopRange, SetNoteProperty, SetNotePropertyEach, SetNoteSlide, SetNoteVelocity,
+    SetNumber, SetPointCurve,
     SetSendLevel, SetSendPreFader, SetTrackOutput, SliceNotes, SplitClip,
 };
 pub use lane::Lane;
@@ -44,6 +46,7 @@ pub use note::{Note, NoteData, NoteProperty};
 pub use prefab::{ElementId, OverrideMap, Prefab, PrefabLink, PropKey, PropValue, resolve};
 pub use project::{Marker, Project, ProjectMeta, TempoMap, TempoSegment, ViewState};
 pub use recording::notes_from_capture;
+pub use tools::{MAX_RANDOM_AMOUNT, RandomMode, RandomSpec, randomised};
 pub use storage::{
     BUNDLE_DIRS, PROJECT_FILE, PROJECT_FORMAT_VERSION, StorageError, load_project, save_project,
 };

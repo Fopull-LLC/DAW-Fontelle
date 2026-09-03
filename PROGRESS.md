@@ -17,7 +17,165 @@ rather than the claim.
 what is still open, and the handful of things about this machine and this
 codebase that cost real time to rediscover.
 
-## 2026-09-02 (latest): clips show what is in them, and a cut through a loop
+## 2026-09-03 (latest): files come in, and the roll grows a bench
+
+> *"i want you to help implement a midi and fsc file import feature. should be
+> able to drag the files in or in the piano roll there should be a tools tab
+> which has various tools such as a randomizer (which should work like fl
+> studios randomizer basically), a transposer (and it should also let you
+> transpose all of your selections velocity or pan or whatever all at once
+> adding or subtracting a value ...), and importantly a import/midi and
+> import/fsc option which should if i dont have a folder selected yet, take me
+> to the settings menu where i can select my preffered folder ... and should
+> work cleanly with subdirectories."*
+
+**Where the count went:** 2103 → 2265 across the workspace, 0 failing, clippy
+clean at `-D warnings`.
+
+### The `.fsc` format, read off FL's own library rather than guessed at
+
+Image-Line publishes no specification for a piano-roll score file, so the
+format in `fontelle-assets/src/fsc_import.rs` was read off **FL Studio's own
+factory score library**: 609 files holding 5523 notes, written by every version
+of FL from 3.0.0 to 20.9.0. Every rule the importer follows holds across all of
+them with no exceptions, and `a_whole_library_of_real_scores_reads_cleanly`
+(ignored by default, pointed at a real copy with `FONTELLE_FSC_CORPUS`) is that
+claim — it reads all 609 on this machine.
+
+Two things about it are worth writing down, because neither is guessable:
+
+- **A note record is 20 bytes before FL 8 and 24 from FL 8 on**, and the
+  version string is the only thing in the file that says which. The block
+  length cannot settle it: 120 bytes is six narrow notes *or* five wide ones,
+  and **240 of the 609 files are ambiguous that way**. A reader that guessed
+  would drop a note and read every field of the others out of the wrong byte —
+  silently, because every byte of a real note is a plausible value of some
+  other field. A file with no version string is refused rather than guessed at.
+- **Every field is centred where FL's knob is, not where Fontelle's is.** Pan
+  is 0..128 about 64, fine pitch 0..240 about 120, release 0..128 about 64,
+  velocity 0..128 where this document holds 1..127. Each is converted, and the
+  two that cannot be converted cleanly are documented rather than fudged: FL's
+  release *shortens* below its centre and this document's field only lengthens
+  (so the bottom half collapses onto "the patch's own"), and FL's velocity 0 —
+  which it really does write, on slide notes — becomes 1, because a note-on at
+  velocity 0 is a note-off and dropping the note would lose the slide.
+
+Fine pitch has a version rule of its own: before FL 3.3 the byte is present and
+always zero, which read as a value is a full semitone flat. That is what every
+note of the two oldest files in FL's own library would have imported as.
+
+### MIDI: a survey before an import, and parts with names on them
+
+A `.mid` may hold one part or sixteen, and which it is decides what importing
+should even mean. `survey_midi` answers that **without building a document** —
+so the question can be asked before anything is opened, and a "no" costs a file
+read rather than a project.
+
+A part is named from the best source it has: the track's own name, then the
+General MIDI program it selects, then "Drums" for channel 10, then its channel
+number. The track name is used **only when the track carries one channel** — a
+format-0 file is one track holding every channel and its name is the *song's*,
+so handing it to all sixteen would call every instrument in the piece the same
+thing, which is worse than a number.
+
+### Bringing them in
+
+`ImportParts` is one command, so importing eight tracks is one entry in the
+history and one press of Ctrl+Z takes all of it back. It could not be a
+`Compound` of `AddChannel`/`AddLane`/`AddClip`: the clip has to name the channel
+id that the `AddChannel` beside it is about to mint, and a `Compound` holds
+commands built before any of them ran.
+
+The two formats land in different places, and that is the difference between
+them rather than an inconsistency:
+
+- A **`.mid` is a song** — it goes in as instruments, arrangement rows and
+  clips, each named, each on its own mixer strip at the level its CC7 asked
+  for. More than one part and it asks first.
+- An **`.fsc` is a phrase** — no instrument, no tempo, no arrangement — so it
+  goes into the clip that is open, which is what FL's own *import score* does.
+
+**The tempo is left alone** when the project already has clips in it. A file's
+tempo is right for the file and wrong for the piece you are working on; the
+status line says what the file's was instead.
+
+### The Tools panel
+
+A chip on the roll's toolbar (`T`) drops a panel of rows: a transposer, a
+property offset that adds or subtracts across the whole selection, a
+randomizer, and the two importers. Its shape is the settings tab's, because
+that shape is already in this window: **a name, a value, and a click that steps
+it — Ctrl+click steps back.** What the settings tab does not have is *action*
+rows, and `Tools::action` is what tells the two apart so a press on "Randomize"
+can never quietly change the amount above it.
+
+The randomizer is a pure function over a **seed** rather than something that
+reaches for entropy, which is what makes it re-rollable ("give me another one")
+*and* testable across every property and a few thousand seeds. Two modes:
+`Around` wobbles each note by up to *n*% of the property's range, keeping the
+shape of a phrase you shaped by hand; `Anywhere` mixes in a fresh value by *n*%,
+so the dial slides continuously from "leave it alone" to "forget what was
+there". Every answer is inside what the property may hold — a randomizer that
+could produce a velocity of 0 could silently delete a note.
+
+### The Import tab, and the folders behind it
+
+A fourth browser tab rather than a list inside the Tools panel, because
+everything a browser of files needs is already there: folders you walk into, a
+`..` row back out, a search across the whole tree, and a virtualised list.
+`SoundfontBank` became `FileBank` with a `BankFilter`, so the sf2 bank and the
+two import folders are one implementation rather than two that can disagree
+about what a folder walk is.
+
+Neither folder is guessed at (INVARIANT 10): with none set the Tools panel's
+importer **sends you to the Settings tab** and says so, which is what was asked
+for. The score folder is usually inside an FL Studio installation, which is
+exactly why it cannot be guessed — on this machine it is under a Wine prefix on
+a second disk.
+
+### Three bugs the window found and no test could
+
+Driven with synthetic input on a nested X server, against FL's real score
+library and a three-part `.mid`:
+
+- **A tab drawn with no words on it.** The label-shaping pass listed three
+  modes by hand; the fourth drew as an empty box. `BrowserMode::ALL` is the
+  fix, and the renderer's tab loop reads the same list.
+- **A menu that was never drawn.** The main window drew menus for four named
+  targets and the editor windows for two others; the import question matched
+  neither, so it was *open* — holding the next click, swallowing Escape — and
+  invisible. `MenuTarget::editor_window` asks that question once now, phrased
+  as "which editor window", so a new main-window menu is nothing to remember.
+- **A folder read only when something changed.** The import bank was rescanned
+  when the *kind* changed, so opening the tab on the kind it already had —
+  which is what "Import MIDI…" does on a fresh launch — browsed a bank that had
+  never been read and reported "no sf2 files" over a folder full of MIDI. It is
+  a lazy `ensure_import_bank` now: "is the bank the one the settings name?"
+  cannot go stale the way "did something just change?" can. That one has a test
+  (`a_folder_already_in_the_settings_file_is_read_without_anything_being_changed`),
+  confirmed to fail without the fix.
+
+The first two are the class this project has hit before and the reason
+`docs/handoff.md` says to look at the window: the state was right, the geometry
+was right, and only the draw filter was wrong.
+
+### What is not done
+
+- **Drag-and-drop is wired but not seen.** `WindowEvent::DroppedFile` is
+  handled and `Session::drop_file` is tested for every kind — `.mid`, `.fsc`,
+  `.sf2`, a file of the wrong sort, and a file that is not there — but
+  synthesising an XDND drop against the nested server was not attempted, so the
+  winit half has not been watched working. It is a few lines and they are the
+  ordinary ones.
+- **The randomizer does not randomize pitch or timing.** FL's Riff Machine
+  does; this randomizes note *properties*, which is what humanising means and
+  what the property lane already draws. Pitch randomisation mangles music and
+  the transposer covers the deliberate case.
+- **A score holding several instruments is flattened onto one clip.** Every
+  file in FL's own library uses rack slot 0 only, so this has no test data
+  behind it; `FscScore::notes_on` keeps them apart if a caller ever wants to.
+
+## 2026-09-02: clips show what is in them, and a cut through a loop
 
 Two reports from using the window, and one bug found only by looking at it.
 

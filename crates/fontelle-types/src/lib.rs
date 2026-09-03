@@ -2,6 +2,7 @@ mod asset;
 mod effect;
 mod event;
 mod id;
+mod import;
 mod pan;
 mod param;
 mod patch_data;
@@ -23,6 +24,7 @@ pub use effect::{
 pub use event::{
     CompiledTimeline, DEFAULT_BPM, EventPayload, EventSink, TimedEvent, VoiceOrigin,
 };
+pub use import::FolderKind;
 pub use id::{
     AssetId, AudioInputId, ChannelId, ClipId, LaneId, MarkerId, MixerTrackId, NodeId, NoteId,
     PersistentId, PointId, PrefabId,

@@ -45,7 +45,10 @@ use crate::canvas::{
     timeline_toolbar_hit, timeline_toolbar_layout, timeline_x_to_tick, timeline_zoom_x,
     timeline_zoom_y, toolbar_hit, toolbar_layout, x_to_tick, y_to_key, zoom_x, zoom_y,
 };
-use crate::canvas::{lane_menu_hit, lane_menu_layout};
+use crate::canvas::{
+    ToolAction, Tools, ToolsPanel, lane_menu_hit, lane_menu_layout, tools_panel_hit,
+    tools_panel_layout,
+};
 use crate::document::{ChannelInfo, ClipInfo, LaneInfo, LibraryEntry, MixerStrip, StudioHost};
 use crate::layout::{
     DEFAULT_TIMELINE_HEIGHT, Docks, EditorKind, EditorTab, EditorTabs, PanelLayout, WindowLayout,
@@ -56,7 +59,7 @@ use crate::pointer::{Pointer, PointerScene, pointer_at};
 use crate::render::{
     ADD_CHANNEL, ARRANGEMENT, BrowserChrome, CHOOSE_FOLDER, Chrome, EMPTY_LANE, EXPORT,
     InstrumentChrome, MixerChrome, NEW_PROJECT, NO_INSTRUMENT, OPEN_FOLDER, RackChrome,
-    EditorWindowChrome, RenderError, RollChrome, SEARCH_HINT, TAB_MIXER, TAB_ROLL, TimelineChrome,
+    EditorWindowChrome, RenderError, RollChrome, TAB_MIXER, TAB_ROLL, TimelineChrome,
     TransportChrome, draw_editor_window, draw_window, key_name, label_stride, labelled_bar,
 };
 use crate::text::{Labels, TextContext, TextLayout};
@@ -201,11 +204,42 @@ enum MenuTarget {
     /// The transport bar's tempo box. §12.3 names the tempo as automatable
     /// and it is a control like any other; the menu is how it becomes a lane.
     Tempo,
+    /// Which part of a `.mid` file to bring in. The entries come from the
+    /// host — see `StudioHost::import_prompt` — because it is the half that
+    /// read the file.
+    ImportChoice,
     /// One point of an automation block: its shape, or its removal.
     Point {
         clip: fontelle_types::ClipId,
         id: fontelle_types::PointId,
     },
+}
+
+impl MenuTarget {
+    /// Which window draws a menu about this, when one is open.
+    ///
+    /// **Asked once, in one place**, because the two draw calls have to agree
+    /// and there is no way to notice when they do not: a menu the main window
+    /// declines to draw and the editor window also declines to draw is a menu
+    /// that is *open* — holding the next click, swallowing Escape — and
+    /// invisible. That is what happened the first time the import question
+    /// went up, and no unit test could have seen it: the state was right, the
+    /// geometry was right, and only this filter was wrong.
+    ///
+    /// It is written as "which of the two editor windows", with everything
+    /// else belonging to the main one, so that adding a menu to the main
+    /// window is nothing to remember.
+    fn editor_window(&self) -> Option<EditorKind> {
+        match self {
+            Self::InstrumentParam { .. } => Some(EditorKind::Instrument),
+            Self::InsertParam { .. } => Some(EditorKind::Effect),
+            Self::Channel(_)
+            | Self::Lane(_)
+            | Self::Tempo
+            | Self::Point { .. }
+            | Self::ImportChoice => None,
+        }
+    }
 }
 
 /// The effect's own id for a parameter, out of the full automation address the
@@ -428,6 +462,19 @@ pub struct WindowApp {
     /// *"I'm still not seeing panning options"* about a lane that could
     /// already draw all six. A menu lists what it can do without being asked.
     lane_menu: Option<crate::canvas::LaneMenu>,
+    /// What the Tools panel is set to — the transpose distance, the property
+    /// the offset acts on, the randomizer's strength. Window state, not the
+    /// document's: which property you last adjusted is no more part of a song
+    /// than which tool is selected is.
+    tools: Tools,
+    /// The Import tab's rows, re-read when the studio's revision moves.
+    imports: Vec<crate::document::LibraryEntry>,
+    /// Which kind of file the Import tab is showing. Mirrored from the host
+    /// on every refresh, like every other list this panel draws.
+    import_kind: fontelle_types::FolderKind,
+    /// The Tools panel while it is open, laid out. The same shape as
+    /// `lane_menu` and for the same reason.
+    tools_panel: Option<ToolsPanel>,
     /// How wide the sidebar has been dragged, and how its two panels share it.
     /// `None` until somebody drags the seam — see [`crate::layout::Docks`].
     sidebar_width: Option<f32>,
@@ -786,6 +833,10 @@ impl WindowApp {
             timeline_height: DEFAULT_TIMELINE_HEIGHT,
             timeline_height_shown: DEFAULT_TIMELINE_HEIGHT,
             lane_menu: None,
+            tools: Tools::default(),
+            imports: Vec::new(),
+            import_kind: fontelle_types::FolderKind::Midi,
+            tools_panel: None,
             sidebar_width: None,
             rack_share: None,
             lanes: Vec::new(),
@@ -1043,6 +1094,8 @@ impl WindowApp {
                     marquee: self.roll.marquee(),
                     hover: self.hover_control,
                     lane_menu: self.lane_menu.as_ref(),
+                    tools_panel: self.tools_panel.as_ref(),
+                    tools: &self.tools,
                     slice: self.roll.slice_stroke(),
                     live_keys: self.live_keys,
                 }),
@@ -1065,10 +1118,12 @@ impl WindowApp {
                     panel: self.layout.browser,
                     layout: self.browser.clone(),
                     mode: self.browser_mode,
+                    import_kind: self.import_kind,
                     query: &self.query,
                     files: match self.browser_mode {
                         BrowserMode::Sounds => &self.files,
                         BrowserMode::Projects => &self.projects,
+                        BrowserMode::Import => &self.imports,
                         BrowserMode::Settings => &self.settings,
                     },
                     presets: &self.presets,
@@ -1134,18 +1189,15 @@ impl WindowApp {
                 labels: &self.labels,
                 status: &self.status,
                 tooltip: tooltip.as_ref().map(|(text, rect)| (text.as_str(), *rect)),
-                // Only the studio's own menus: one opened on a knob belongs to
-                // the instrument editor's window and is drawn there.
-                menu: match &self.menu {
-                    Some((
-                        MenuTarget::Channel(_)
-                        | MenuTarget::Lane(_)
-                        | MenuTarget::Tempo
-                        | MenuTarget::Point { .. },
-                        menu,
-                    )) => Some(menu),
-                    _ => None,
-                },
+                // Only the studio's own menus: one opened on a knob belongs
+                // to a floating editor's window and is drawn there. See
+                // `MenuTarget::editor_window` for why that question is asked
+                // in one place rather than listed at both draw calls.
+                menu: self
+                    .menu
+                    .as_ref()
+                    .filter(|(target, _)| target.editor_window().is_none())
+                    .map(|(_, menu)| menu),
             },
         );
 
@@ -1640,6 +1692,13 @@ impl WindowApp {
                 0 => "Projects".to_string(),
                 n => format!("Projects \u{2014} {n}"),
             },
+            // The count is of what is in front of you rather than of the
+            // whole collection, because unlike the bank this list *is* the
+            // folder: walking into one is meant to change the number.
+            BrowserMode::Import => match self.imports.len() {
+                0 => "Import".to_string(),
+                n => format!("Import \u{2014} {n}"),
+            },
             // No count: a settings list is as long as there are settings, and
             // "Settings — 7" answers a question nobody asked.
             BrowserMode::Settings => "Settings".to_string(),
@@ -1787,6 +1846,34 @@ impl ApplicationHandler for WindowApp {
                 }
                 self.update_cursor();
                 self.tree.invalidate(PANEL);
+                self.request_redraw_if_dirty();
+            }
+
+            // A file dragged onto the window. The **only** way into Fontelle
+            // that does not begin with a folder somebody configured, which is
+            // why it is worth having: a file you can see is a file you can
+            // drop, and INVARIANT 10 is about what Fontelle goes looking for
+            // rather than about what it is handed.
+            WindowEvent::DroppedFile(path) => {
+                self.drop_file(&path);
+                self.request_redraw_if_dirty();
+            }
+
+            // While one is over the window, say what will happen to it. A
+            // drop that silently does nothing looks like a broken window.
+            WindowEvent::HoveredFile(path) => {
+                self.status = format!(
+                    "Drop to open {}",
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string())
+                );
+                self.tree.invalidate(BROWSER);
+                self.request_redraw_if_dirty();
+            }
+            WindowEvent::HoveredFileCancelled => {
+                self.status.clear();
+                self.tree.invalidate(BROWSER);
                 self.request_redraw_if_dirty();
             }
 
@@ -2316,6 +2403,34 @@ impl WindowApp {
                 self.redraw_editor(kind);
             }
 
+            // A file dragged onto the window. The **only** way into Fontelle
+            // that does not begin with a folder somebody configured, which is
+            // why it is worth having: a file you can see is a file you can
+            // drop, and INVARIANT 10 is about what Fontelle goes looking for
+            // rather than about what it is handed.
+            WindowEvent::DroppedFile(path) => {
+                self.drop_file(&path);
+                self.request_redraw_if_dirty();
+            }
+
+            // While one is over the window, say what will happen to it. A
+            // drop that silently does nothing looks like a broken window.
+            WindowEvent::HoveredFile(path) => {
+                self.status = format!(
+                    "Drop to open {}",
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string())
+                );
+                self.tree.invalidate(BROWSER);
+                self.request_redraw_if_dirty();
+            }
+            WindowEvent::HoveredFileCancelled => {
+                self.status.clear();
+                self.tree.invalidate(BROWSER);
+                self.request_redraw_if_dirty();
+            }
+
             WindowEvent::CursorLeft { .. } => {
                 if self.pointer_window == Some(kind) {
                     self.pointer_window = None;
@@ -2626,17 +2741,10 @@ impl WindowApp {
             &self.labels,
             &editor.title,
             &chrome,
-            match &self.menu {
-                Some((MenuTarget::InstrumentParam { .. }, menu))
-                    if kind == EditorKind::Instrument =>
-                {
-                    Some(menu)
-                }
-                Some((MenuTarget::InsertParam { .. }, menu)) if kind == EditorKind::Effect => {
-                    Some(menu)
-                }
-                _ => None,
-            },
+            self.menu
+                .as_ref()
+                .filter(|(target, _)| target.editor_window() == Some(kind))
+                .map(|(_, menu)| menu),
         );
 
         let device = &self.context.devices[editor.surface.dev_id];
@@ -2732,6 +2840,7 @@ impl WindowApp {
             match self.browser_mode {
                 BrowserMode::Sounds => self.files.len(),
                 BrowserMode::Projects => self.projects.len(),
+                BrowserMode::Import => self.imports.len(),
                 BrowserMode::Settings => self.settings.len(),
             },
             self.presets.len(),
@@ -2799,9 +2908,12 @@ impl WindowApp {
         let filter = self.roll.ghosts;
         self.ghosts = doc.ghost_notes(filter);
         self.query = doc.query().to_string();
+        self.imports = doc.import_files();
+        self.import_kind = doc.import_kind();
         let fallback = match self.browser_mode {
             BrowserMode::Sounds => doc.library_status(),
             BrowserMode::Projects => doc.project_status(),
+            BrowserMode::Import => doc.import_status(),
             BrowserMode::Settings => doc.settings_status(),
         };
         self.status = doc.take_message().unwrap_or(fallback);
@@ -2855,17 +2967,11 @@ impl WindowApp {
         for fixed in [
             "Channels",
             ADD_CHANNEL,
-            SEARCH_HINT,
-            crate::render::search_hint(BrowserMode::Projects),
-            crate::render::search_hint(BrowserMode::Settings),
             OPEN_FOLDER,
             crate::render::OPEN_CONFIG_FOLDER,
             CHOOSE_FOLDER,
             NEW_PROJECT,
             EXPORT,
-            BrowserMode::Sounds.label(),
-            BrowserMode::Projects.label(),
-            BrowserMode::Settings.label(),
             "S",
             "M",
             ARRANGEMENT,
@@ -2876,9 +2982,33 @@ impl WindowApp {
         ] {
             want(&mut self.labels, &mut self.text, fixed);
         }
+        // Every tab's caption and every mode's search hint, from the one list
+        // of modes — see `BrowserMode::ALL`. Written out by hand, this is
+        // where the Import tab came to be drawn as an empty box.
+        for mode in BrowserMode::ALL {
+            want(&mut self.labels, &mut self.text, mode.label());
+            want(
+                &mut self.labels,
+                &mut self.text,
+                crate::render::search_hint(mode),
+            );
+        }
         if self.lane_menu.is_some() {
             for property in crate::canvas::LANE_PROPERTIES {
                 want(&mut self.labels, &mut self.text, property.label());
+            }
+        }
+        if let Some(panel) = &self.tools_panel {
+            // Cloned out first: `want` borrows `self.labels` and `self.text`
+            // mutably, and the captions are read through `self.tools`.
+            let captions: Vec<String> = panel
+                .rows
+                .iter()
+                .flat_map(|(row, _)| [self.tools.label(*row), self.tools.value(*row)])
+                .filter(|caption| !caption.is_empty())
+                .collect();
+            for caption in captions {
+                want(&mut self.labels, &mut self.text, &caption);
             }
         }
         if let Some((_, menu)) = &self.menu {
@@ -2990,6 +3120,13 @@ impl WindowApp {
         want(&mut self.labels, &mut self.text, &ghost_caption);
         let lane_caption = crate::canvas::lane_caption(self.roll.lane_property);
         want(&mut self.labels, &mut self.text, &lane_caption);
+        let tools_caption = crate::canvas::tools_caption();
+        want(&mut self.labels, &mut self.text, &tools_caption);
+        // Both, not only the one that is on, for the reason the two key
+        // styles are both shaped: the other is what the button draws next.
+        for kind in fontelle_types::FolderKind::ALL {
+            want(&mut self.labels, &mut self.text, kind.tab_label());
+        }
         // Both, not only the one that is on: the chip is pressed and the other
         // caption is what it draws next, and shaping it on the frame after
         // would draw an empty chip for one frame.
@@ -3001,6 +3138,7 @@ impl WindowApp {
                 RollControl::Snap => self.roll.view.snap.label(),
                 RollControl::Lane => &lane_caption,
                 RollControl::Ghost => &ghost_caption,
+                RollControl::Tools => &tools_caption,
                 other => other.label(),
             };
             self.labels.ensure(caption, &font, &mut self.text);
@@ -3085,6 +3223,7 @@ impl WindowApp {
             let entry = match self.browser_mode {
                 BrowserMode::Sounds => self.files.get(index).cloned(),
                 BrowserMode::Projects => self.projects.get(index).cloned(),
+                BrowserMode::Import => self.imports.get(index).cloned(),
                 BrowserMode::Settings => self.settings.get(index).cloned(),
             };
             if let Some(entry) = entry {
@@ -3238,6 +3377,10 @@ impl WindowApp {
             if self.press_menu(x, y) {
                 return;
             }
+        }
+        if self.tools_panel.is_some() {
+            self.press_tools_panel(x, y);
+            return;
         }
         if self.lane_menu.is_some() {
             self.press_lane_menu(x, y);
@@ -5419,6 +5562,9 @@ impl WindowApp {
                 let result = match (&mut self.options.document, self.browser_mode) {
                     (Some(doc), BrowserMode::Sounds) => doc.open_file(index),
                     (Some(doc), BrowserMode::Projects) => doc.open_project(index),
+                    // A folder row walks in, a file row imports. Which of
+                    // those it was is the host's to know — it holds the list.
+                    (Some(doc), BrowserMode::Import) => doc.open_import(index),
                     (Some(doc), BrowserMode::Settings) => {
                         // A setting steps forward when you click it and back
                         // when you Ctrl+click, which is the same pair of
@@ -5470,6 +5616,7 @@ impl WindowApp {
                     match mode {
                         BrowserMode::Sounds => doc.reveal_library_dir(),
                         BrowserMode::Projects => doc.reveal_projects_dir(),
+                        BrowserMode::Import => doc.reveal_import_dir(),
                         BrowserMode::Settings => doc.reveal_config_dir(),
                     }
                 }
@@ -5493,6 +5640,10 @@ impl WindowApp {
                     match mode {
                         BrowserMode::Sounds => doc.choose_library_dir(add),
                         BrowserMode::Projects => doc.choose_projects_dir(),
+                        // The kind the tab is showing, which the host holds:
+                        // the mode alone does not say whether this is the
+                        // MIDI folder or the score one.
+                        BrowserMode::Import => doc.choose_import_dir(),
                         // Not drawn in the settings tab — there is no folder
                         // being browsed there — so this cannot be reached.
                         BrowserMode::Settings => {}
@@ -5505,6 +5656,9 @@ impl WindowApp {
             BrowserHit::Mode(mode) => {
                 if self.browser_mode != mode {
                     self.browser_mode = mode;
+                    if let Some(doc) = &mut self.options.document {
+                        doc.set_browser_mode(mode);
+                    }
                     // The search filters whichever list is showing, and a
                     // query typed against soundfonts means nothing against
                     // projects.
@@ -5519,6 +5673,16 @@ impl WindowApp {
                     self.relayout_panels();
                 }
             }
+            BrowserHit::Kind(kind) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.set_import_kind(kind);
+                }
+                // A different folder is a different list, and the offset the
+                // old one was read at means nothing in it.
+                self.file_scroll = 0;
+                self.studio_revision = u64::MAX;
+                self.refresh_studio();
+            }
             BrowserHit::NewProject => {
                 if let Some(doc) = &mut self.options.document
                     && let Err(e) = doc.new_project()
@@ -5532,6 +5696,9 @@ impl WindowApp {
         }
         self.tree.invalidate(BROWSER);
         self.tree.invalidate(RACK);
+        // Importing a `.mid` of several parts asks a question rather than
+        // doing anything; this is where it goes up.
+        self.show_import_prompt();
     }
 
     /// How many rows the browser's main list has in the mode it is in.
@@ -5542,6 +5709,7 @@ impl WindowApp {
     fn browser_rows(&self) -> usize {
         match self.browser_mode {
             BrowserMode::Sounds => self.files.len(),
+            BrowserMode::Import => self.imports.len(),
             BrowserMode::Projects => self.projects.len(),
             BrowserMode::Settings => self.settings.len(),
         }
@@ -5622,6 +5790,24 @@ impl WindowApp {
                 MenuEntry::disabled("Tempo".to_string()),
                 MenuEntry::new("Create automation clip").after_rule(),
             ],
+            // Built by the host, which read the file. The window draws the
+            // lines and says which one was pressed.
+            MenuTarget::ImportChoice => match self
+                .options
+                .document
+                .as_ref()
+                .and_then(|doc| doc.import_prompt())
+            {
+                Some(prompt) => {
+                    let mut entries = vec![MenuEntry::disabled(prompt.title)];
+                    for (index, choice) in prompt.choices.into_iter().enumerate() {
+                        let entry = MenuEntry::new(choice);
+                        entries.push(if index == 0 { entry.after_rule() } else { entry });
+                    }
+                    entries
+                }
+                None => Vec::new(),
+            },
             // A point's shapes, then its removal. The shape it has is greyed,
             // which is how the menu says which one that is.
             MenuTarget::Point { clip, id } => {
@@ -5680,8 +5866,18 @@ impl WindowApp {
         self.tree.invalidate(RACK);
         self.tree.invalidate(TIMELINE);
         self.tree.invalidate(PANEL);
-        if let Some(index) = chosen {
-            self.choose_menu(&target, index);
+        match chosen {
+            Some(index) => self.choose_menu(&target, index),
+            // A question dismissed is a question answered "no". Without this
+            // the pending import would still be waiting, and the next click
+            // anywhere would put the same menu back up.
+            None => {
+                if matches!(target, MenuTarget::ImportChoice)
+                    && let Some(doc) = &mut self.options.document
+                {
+                    doc.cancel_import();
+                }
+            }
         }
         inside
     }
@@ -5766,6 +5962,21 @@ impl WindowApp {
                     doc.create_automation(&fontelle_types::ParamTarget::Tempo.address(), "Tempo", at);
                 }
                 self.lane_made();
+            }
+            // Entry 0 is the greyed title, which cannot be chosen, so the
+            // answers start at 1 — and the host counts them from zero.
+            (MenuTarget::ImportChoice, index) => {
+                if let Some(doc) = &mut self.options.document {
+                    match index.checked_sub(1) {
+                        Some(choice) => doc.answer_import(choice),
+                        None => doc.cancel_import(),
+                    }
+                }
+                // What arrived is a row on the arrangement and a clip in the
+                // roll, so both have to be re-read and re-measured.
+                self.lane_made();
+                self.tree.invalidate(TIMELINE);
+                self.tree.invalidate(RACK);
             }
             (MenuTarget::Point { clip, id }, index) => {
                 let (clip, id) = (*clip, *id);
@@ -5939,6 +6150,7 @@ impl WindowApp {
                 self.tree.invalidate(PANEL);
             }
             RollControl::Lane => self.toggle_lane_menu(),
+            RollControl::Tools => self.toggle_tools_panel(),
             RollControl::Ghost => self.cycle_ghosts(),
             RollControl::Slide => self.toggle_slide(),
             RollControl::Keys => self.cycle_key_style(),
@@ -5983,6 +6195,223 @@ impl WindowApp {
         };
         self.shape_labels();
         self.tree.invalidate(PANEL);
+    }
+
+    /// Opens a file that was dropped on the window.
+    ///
+    /// What it *is* is the host's to work out from its name — a `.mid`, an FL
+    /// score, or a soundfont — because this crate may not read one.
+    fn drop_file(&mut self, path: &std::path::Path) {
+        let result = match &mut self.options.document {
+            Some(doc) => doc.drop_file(path),
+            None => return,
+        };
+        match result {
+            // An empty message is a question going up instead: the file held
+            // several parts, and `refresh_studio` will find the prompt.
+            Ok(message) => {
+                if !message.is_empty() {
+                    self.status = message;
+                }
+            }
+            Err(e) => self.status = e,
+        }
+        self.refresh_studio();
+        self.refresh_title();
+        self.lane_made();
+        self.tree.invalidate(PANEL);
+        self.tree.invalidate(RACK);
+        self.tree.invalidate(TIMELINE);
+        self.tree.invalidate(BROWSER);
+        self.show_import_prompt();
+    }
+
+    /// Puts up the question a file has raised, if one is waiting and no menu
+    /// is already up.
+    ///
+    /// Centred on the piano roll rather than dropped at the pointer, because
+    /// nothing was right-clicked: the file may have arrived by a drop, and a
+    /// menu under a pointer that is nowhere near it reads as a misfire.
+    fn show_import_prompt(&mut self) {
+        if self.menu.is_some() {
+            return;
+        }
+        // The entries themselves come from `menu_entries`, which `open_menu`
+        // asks for — this only needs to know whether there is a question.
+        if self
+            .options
+            .document
+            .as_ref()
+            .and_then(|doc| doc.import_prompt())
+            .is_none()
+        {
+            return;
+        }
+        let bounds = self.roll_layout.frame;
+        let at = (
+            bounds.x + (bounds.width / 3.0).max(0.0),
+            bounds.y + (bounds.height / 4.0).max(0.0),
+        );
+        self.open_menu(MenuTarget::ImportChoice, at.0, at.1, bounds);
+    }
+
+    /// Sends the browser to the folder one of the two importers reads.
+    ///
+    /// **With nowhere to look, it goes to the settings instead** — asked for
+    /// as *"if I don't have a folder selected yet, take me to the settings
+    /// menu where I can select my preferred folder"*. Fontelle reads nothing
+    /// the user has not named (INVARIANT 10), so there is no folder to fall
+    /// back on, and an empty browser is one that looks broken rather than one
+    /// that says what it wants.
+    fn open_import_browser(&mut self, action: ToolAction) {
+        let kind = match action {
+            ToolAction::ImportScore => fontelle_types::FolderKind::Scores,
+            _ => fontelle_types::FolderKind::Midi,
+        };
+        let has_dir = match &mut self.options.document {
+            Some(doc) => {
+                doc.set_import_kind(kind);
+                doc.has_import_dir(kind)
+            }
+            None => return,
+        };
+        self.browser_mode = if has_dir {
+            BrowserMode::Import
+        } else {
+            self.status = format!(
+                "No {} folder yet \u{2014} choose one here, and it will be remembered",
+                kind.tab_label()
+            );
+            BrowserMode::Settings
+        };
+        if let Some(doc) = &mut self.options.document {
+            doc.set_browser_mode(self.browser_mode);
+        }
+        // The panel has done its job; leaving it up would cover the list it
+        // just opened.
+        self.tools_panel = None;
+        self.file_scroll = 0;
+        self.preset_scroll = 0;
+        // The lists are read on a revision change and the studio's has not
+        // moved, so ask for them again rather than waiting for something else
+        // to change them.
+        self.studio_revision = u64::MAX;
+        self.refresh_studio();
+        self.relayout_panels();
+        self.tree.invalidate(BROWSER);
+        self.tree.invalidate(PANEL);
+    }
+
+    /// Opens the Tools panel, or shuts it if it is already open.
+    fn toggle_tools_panel(&mut self) {
+        self.tools_panel = match self.tools_panel {
+            Some(_) => None,
+            None => {
+                let chip = self
+                    .roll_bar
+                    .items
+                    .iter()
+                    .find(|(control, _)| *control == RollControl::Tools)
+                    .map(|(_, rect)| *rect)
+                    .unwrap_or(crate::layout::Rect::ZERO);
+                Some(tools_panel_layout(
+                    chip,
+                    self.roll_layout.frame,
+                    &self.options.theme.metrics,
+                ))
+            }
+        };
+        self.shape_labels();
+        self.tree.invalidate(PANEL);
+    }
+
+    /// A press while the Tools panel is open.
+    ///
+    /// **The panel stays up** unless the press missed it, which is the
+    /// difference between this and every menu in the window: a menu is a
+    /// question you answer once, and this is a bench you work at — you set an
+    /// amount, apply it, look at the result, apply it again. A press that
+    /// missed closes it, the way clicking away from anything does.
+    fn press_tools_panel(&mut self, x: f32, y: f32) {
+        let Some(panel) = &self.tools_panel else {
+            return;
+        };
+        let Some(row) = tools_panel_hit(panel, x, y) else {
+            if !panel.frame.contains(x, y) {
+                self.tools_panel = None;
+                self.tree.invalidate(PANEL);
+            }
+            return;
+        };
+        match self.tools.action(row) {
+            Some(action) => self.run_tool(action),
+            // A value steps forward on a click and back on a Ctrl+click —
+            // the same pair of gestures the settings tab uses, and for the
+            // same reason: there is no text field in this window, and a value
+            // you can reach in a few clicks is quicker than one you type.
+            None => {
+                let delta = if self.modifiers.control_key() { -1 } else { 1 };
+                self.tools.nudge(row, delta);
+            }
+        }
+        self.shape_labels();
+        self.tree.invalidate(PANEL);
+    }
+
+    /// Carries out one of the Tools panel's actions.
+    fn run_tool(&mut self, action: ToolAction) {
+        // The two importers are not edits: reading a file is the window's
+        // job, and what they do is send the browser to the right folder.
+        if matches!(action, ToolAction::ImportMidi | ToolAction::ImportScore) {
+            self.open_import_browser(action);
+            return;
+        }
+        let selection = self.roll.selection().to_vec();
+        if selection.is_empty() {
+            // Said out loud rather than silently doing nothing: a tool that
+            // appears to be broken is worse than one that says what it wants.
+            self.status = "Select some notes first \u{2014} the tools act on what you have chosen"
+                .to_string();
+            return;
+        }
+        let edits = match &self.options.document {
+            Some(doc) => self.tools.run(action, &selection, doc.notes()),
+            None => Vec::new(),
+        };
+        if edits.is_empty() {
+            return;
+        }
+        self.apply_roll_edits(edits);
+        // Each press is one edit and one undo entry, so the gesture ends
+        // here — a second press of Randomize must not merge into the first.
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+        }
+        self.status = match action {
+            ToolAction::Transpose => format!(
+                "Moved {} note(s) by {:+} semitone(s)",
+                selection.len(),
+                self.tools.semitones
+            ),
+            ToolAction::Add => format!(
+                "Added {} to the {} of {} note(s)",
+                self.tools.amount,
+                self.tools.property.label(),
+                selection.len()
+            ),
+            ToolAction::Subtract => format!(
+                "Took {} off the {} of {} note(s)",
+                self.tools.amount,
+                self.tools.property.label(),
+                selection.len()
+            ),
+            ToolAction::Randomize => format!(
+                "Randomised the {} of {} note(s)",
+                self.tools.property.label(),
+                selection.len()
+            ),
+            ToolAction::ImportMidi | ToolAction::ImportScore => String::new(),
+        };
     }
 
     /// Picks a property from the open menu, or shuts it because the click
@@ -6546,8 +6975,19 @@ impl WindowApp {
             Key::Named(NamedKey::Escape) => {
                 // A menu that is open is what Escape is *for*; only once it is
                 // shut does Escape mean "drop the selection".
-                if let Some((_, menu)) = self.menu.take() {
+                if let Some((target, menu)) = self.menu.take() {
+                    // Escaping the import question drops it, the way clicking
+                    // away from it does.
+                    if matches!(target, MenuTarget::ImportChoice)
+                        && let Some(doc) = &mut self.options.document
+                    {
+                        doc.cancel_import();
+                    }
                     self.tree.invalidate_rect(menu.frame);
+                    return;
+                }
+                if self.tools_panel.take().is_some() {
+                    self.tree.invalidate(PANEL);
                     return;
                 }
                 if self.lane_menu.take().is_some() {
@@ -6611,6 +7051,9 @@ impl WindowApp {
                     // in the word is a tool. FL uses a right-click menu, which
                     // this window does not have yet.
                     "a" => self.toggle_slide(),
+                    // The Tools panel. `T` for tools, and no FL binding to
+                    // clash with — FL has no equivalent panel.
+                    "t" => self.toggle_tools_panel(),
                     // The cut tool. `C` is FL's, and `Ctrl+C` is copy — the
                     // modifier is what keeps them apart, as it does for `B`
                     // (paint) and `Ctrl+B` (duplicate).

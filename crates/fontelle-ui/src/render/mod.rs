@@ -128,8 +128,11 @@ pub struct BrowserChrome<'a> {
     pub searching: bool,
     /// What the pointer is over, so a button can light up.
     pub hover: Option<BrowserHit>,
-    /// Which of the panel's two lists is showing.
+    /// Which of the panel's lists is showing.
     pub mode: crate::canvas::BrowserMode,
+    /// Which kind of file the Import tab is showing, so its two buttons can
+    /// say which one is on.
+    pub import_kind: fontelle_types::FolderKind,
 }
 
 /// The arrangement's contents. Read-only, like every other canvas here
@@ -211,6 +214,11 @@ pub struct RollChrome<'a> {
     pub hover: Option<RollControl>,
     /// The lane chip's menu, while it is open. Drawn last, over everything.
     pub lane_menu: Option<&'a crate::canvas::LaneMenu>,
+    /// The Tools panel, while it is open. Drawn last, like the menu.
+    pub tools_panel: Option<&'a crate::canvas::ToolsPanel>,
+    /// What the Tools panel is set to, which is where its rows read their
+    /// names and values from.
+    pub tools: &'a crate::canvas::Tools,
     /// The cut tool's line while it is being drawn, in screen points.
     pub slice: Option<((f32, f32), (f32, f32))>,
     /// Whether the strip down the side is a keyboard or a list of names.
@@ -2187,6 +2195,69 @@ pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome
     draw_property_lane(scene, theme, labels, chrome);
     draw_roll_toolbar(scene, theme, labels, chrome);
     draw_lane_menu(scene, theme, labels, chrome);
+    draw_tools_panel(scene, theme, labels, chrome);
+}
+
+/// The Tools panel. **Last, over everything**, for the reason the lane menu
+/// is: it is not part of the layout it covers.
+fn draw_tools_panel(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RollChrome<'_>) {
+    let Some(panel) = chrome.tools_panel else {
+        return;
+    };
+    if panel.frame.is_empty() {
+        return;
+    }
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    fill_rect_rounded(scene, panel.frame, m.corner_radius, p.border);
+    fill_rect_rounded(
+        scene,
+        panel.frame.inset(1.0),
+        m.corner_radius,
+        p.panel_header,
+    );
+
+    for (row, rect) in &panel.rows {
+        if rect.is_empty() {
+            continue;
+        }
+        let heading = matches!(row, crate::canvas::ToolRow::Heading(_));
+        let action = chrome.tools.action(*row).is_some();
+        // An action row carries a frame so it reads as a button rather than
+        // as another read-out — the same reasoning that put a frame on the
+        // toolbar's chips.
+        if action {
+            fill_rect_rounded(scene, rect.inset(1.0), m.corner_radius, p.panel);
+        }
+        let ink = if heading { p.text_muted } else { p.text };
+        let inset = m.panel_padding.min(rect.width);
+        if let Some(text) = labels.get(&chrome.tools.label(*row)) {
+            draw_text_clipped(
+                scene,
+                text,
+                *rect,
+                rect.x + inset,
+                rect.y + (rect.height - text.height) / 2.0,
+                ink,
+            );
+        }
+        // The value is right-aligned against the row's far edge, so a column
+        // of them reads down the panel rather than wandering with the names.
+        let value = chrome.tools.value(*row);
+        if value.is_empty() {
+            continue;
+        }
+        if let Some(text) = labels.get(&value) {
+            draw_text_clipped(
+                scene,
+                text,
+                *rect,
+                rect.right() - inset - text.width,
+                rect.y + (rect.height - text.height) / 2.0,
+                p.accent,
+            );
+        }
+    }
 }
 
 /// The lane chip's drop-down. **Last, over everything**, which is what a menu
@@ -2346,6 +2417,7 @@ fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
 
     let ghost_caption = chrome.ghost_filter.label();
     let lane_caption = crate::canvas::lane_caption(chrome.lane_property);
+    let tools_caption = crate::canvas::tools_caption();
     for (control, rect) in &chrome.toolbar.items {
         if rect.is_empty() {
             continue;
@@ -2354,6 +2426,7 @@ fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
             RollControl::Tool(tool) => *tool == chrome.tool,
             RollControl::Velocity => !chrome.layout.velocity.is_empty(),
             RollControl::Ghost => chrome.ghost_filter != GhostFilter::Off,
+            RollControl::Tools => chrome.tools_panel.is_some(),
             _ => false,
         };
         // The three read-out chips always carry their frame, whether or not
@@ -2364,7 +2437,11 @@ fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
         // reasoning that put a caret on the lane chip.
         let is_chip = matches!(
             control,
-            RollControl::Snap | RollControl::Lane | RollControl::Ghost | RollControl::Keys
+            RollControl::Snap
+                | RollControl::Lane
+                | RollControl::Ghost
+                | RollControl::Keys
+                | RollControl::Tools
         );
         if on || is_chip || chrome.hover == Some(*control) {
             fill_rect_rounded(
@@ -2396,6 +2473,7 @@ fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
             // The chip says which view the strip is in, the way the snap chip
             // says which division is on.
             RollControl::Keys => chrome.key_style.label(),
+            RollControl::Tools => &tools_caption,
             other => other.label(),
         };
         let Some(text) = labels.get(caption) else {
@@ -3859,11 +3937,12 @@ fn draw_browser(
 
     // The mode switch, above everything: the search filters whichever list is
     // showing, so this is the thing that has to be read first.
-    for (mode, rect) in [
-        (crate::canvas::BrowserMode::Sounds, l.sounds_tab),
-        (crate::canvas::BrowserMode::Projects, l.projects_tab),
-        (crate::canvas::BrowserMode::Settings, l.settings_tab),
-    ] {
+    for (mode, rect) in crate::canvas::BrowserMode::ALL.into_iter().zip([
+        l.sounds_tab,
+        l.projects_tab,
+        l.import_tab,
+        l.settings_tab,
+    ]) {
         if rect.is_empty() {
             continue;
         }
@@ -3882,6 +3961,42 @@ fn draw_browser(
             },
         );
         if let Some(text) = labels.get(mode.label()) {
+            draw_text_clipped(
+                scene,
+                text,
+                rect,
+                rect.x + ((rect.width - text.width) / 2.0).max(2.0),
+                rect.y + (rect.height - text.height) / 2.0,
+                if on { p.panel } else { p.text },
+            );
+        }
+    }
+
+    // Which kind of file the Import tab is showing. Two buttons rather than
+    // one that toggles, because both answers are worth being able to see and
+    // press directly — a chip saying "MIDI" leaves "and what else?" unasked.
+    for (rect, kind) in [
+        (l.midi_kind, fontelle_types::FolderKind::Midi),
+        (l.score_kind, fontelle_types::FolderKind::Scores),
+    ] {
+        if rect.is_empty() {
+            continue;
+        }
+        let on = chrome.import_kind == kind;
+        let lit = chrome.hover == Some(BrowserHit::Kind(kind));
+        fill_rect_rounded(
+            scene,
+            rect,
+            m.corner_radius,
+            if on {
+                p.accent
+            } else if lit {
+                p.border
+            } else {
+                p.panel
+            },
+        );
+        if let Some(text) = labels.get(kind.tab_label()) {
             draw_text_clipped(
                 scene,
                 text,
@@ -4162,6 +4277,7 @@ pub fn search_hint(mode: crate::canvas::BrowserMode) -> &'static str {
     match mode {
         crate::canvas::BrowserMode::Sounds => SEARCH_HINT,
         crate::canvas::BrowserMode::Projects => "search projects\u{2026}",
+        crate::canvas::BrowserMode::Import => "search this folder\u{2026}",
         // There is no box in this mode — see `browser_layout_for` — but a
         // function over an enum answers for every case of it.
         crate::canvas::BrowserMode::Settings => "search settings\u{2026}",
