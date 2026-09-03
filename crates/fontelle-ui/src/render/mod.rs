@@ -541,9 +541,104 @@ pub fn draw_editor_window(
         }
         EditorWindowChrome::Effect(effect) => draw_effect(scene, theme, labels, effect),
         EditorWindowChrome::Insert(insert) => draw_instrument(scene, theme, labels, insert),
+        EditorWindowChrome::AudioClip(clip) => draw_audio_editor(scene, theme, labels, clip),
     }
 
     draw_context_menu(scene, theme, labels, menu);
+}
+
+/// The audio clip editor (TDD §15.1).
+///
+/// *"double clicking on an audio clip should open a menu that lets me make
+/// changes to that audio."* The rows are this window's own shape — a name, a
+/// value, a click that steps it — and across the top is the clip's own
+/// waveform, because a fade you cannot see is a fade you are aiming blind.
+fn draw_audio_editor(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &AudioEditorChrome<'_>,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let l = &chrome.layout;
+
+    // The waveform, against a ground of its own so the strip reads as a
+    // picture rather than as the top of the list.
+    if !l.waveform.is_empty() {
+        fill_rect_rounded(scene, l.waveform, m.corner_radius, p.panel_header);
+        let area = l.waveform.inset(3.0);
+        if !area.is_empty() && !chrome.preview.peaks.is_empty() {
+            let middle = area.y + area.height / 2.0;
+            let half = area.height / 2.0;
+            // A rule down the middle: zero, so a quiet take reads as quiet
+            // rather than as an empty box.
+            fill_rect(
+                scene,
+                Rect::new(area.x, middle, area.width, 1.0),
+                p.grid_line,
+            );
+            let peaks = &chrome.preview.peaks;
+            let mut x = area.x;
+            while x < area.right() {
+                let t = ((x - area.x) / area.width).clamp(0.0, 1.0);
+                let bucket = ((t * peaks.len() as f32) as usize).min(peaks.len() - 1);
+                let (low, high) = peaks[bucket];
+                let mut gain = 1.0;
+                if chrome.preview.fade_in > 0.0 {
+                    gain *= (t / chrome.preview.fade_in).clamp(0.0, 1.0);
+                }
+                if chrome.preview.fade_out > 0.0 {
+                    gain *= ((1.0 - t) / chrome.preview.fade_out).clamp(0.0, 1.0);
+                }
+                let top = middle - (high.clamp(-1.0, 1.0) * half * gain).max(0.0);
+                let bottom = middle - (low.clamp(-1.0, 1.0) * half * gain).min(0.0);
+                fill_rect(
+                    scene,
+                    Rect::new(x, top.min(middle), 1.0, (bottom - top).max(1.0)),
+                    p.accent,
+                );
+                x += 1.0;
+            }
+        }
+    }
+
+    for (field, rect) in &l.rows {
+        if rect.is_empty() {
+            continue;
+        }
+        let heading = matches!(field, crate::canvas::AudioField::Heading(_));
+        if !heading && chrome.hover == Some(*field) {
+            fill_rect_rounded(scene, rect.inset(1.0), m.corner_radius, p.panel_header);
+        }
+        let inset = m.panel_padding.min(rect.width);
+        if let Some(text) = labels.get(crate::canvas::audio_row_label(*field)) {
+            draw_text_clipped(
+                scene,
+                text,
+                *rect,
+                rect.x + inset,
+                rect.y + (rect.height - text.height) / 2.0,
+                if heading { p.text_muted } else { p.text },
+            );
+        }
+        // Right-aligned against the row's far edge, so a column of values
+        // reads down the panel rather than wandering with the names.
+        let value = crate::canvas::audio_row_value_at(chrome.clip, *field, chrome.sample_rate);
+        if value.is_empty() {
+            continue;
+        }
+        if let Some(text) = labels.get(&value) {
+            draw_text_clipped(
+                scene,
+                text,
+                *rect,
+                rect.right() - inset - text.width,
+                rect.y + (rect.height - text.height) / 2.0,
+                p.accent,
+            );
+        }
+    }
 }
 
 /// Which panel a floating editor window is drawing, and what it needs.
@@ -555,6 +650,20 @@ pub enum EditorWindowChrome<'a> {
     /// see `fontelle_app::effect_panel`. The same chrome the instrument panel
     /// uses, because a grid of knobs is a grid of knobs.
     Insert(InstrumentChrome<'a>),
+    /// One audio clip's properties (TDD §15.1): its waveform, and the rows that
+    /// change it.
+    AudioClip(AudioEditorChrome<'a>),
+}
+
+/// What the audio clip editor draws.
+pub struct AudioEditorChrome<'a> {
+    pub layout: crate::canvas::AudioEditorLayout,
+    pub clip: &'a fontelle_types::AudioClipData,
+    /// The waveform strip across the top — the **same** summary the block on
+    /// the arrangement draws, so the two pictures cannot disagree.
+    pub preview: &'a crate::document::AudioPreview,
+    pub sample_rate: u32,
+    pub hover: Option<crate::canvas::AudioField>,
 }
 
 /// The right-click menu (see [`crate::canvas::context_menu_layout`]).

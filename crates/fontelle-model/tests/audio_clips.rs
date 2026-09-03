@@ -108,3 +108,139 @@ fn an_import_says_what_it_is_in_the_history() {
         command.label()
     );
 }
+
+// ------------------------------------------------------- editing one ---
+
+use fontelle_model::SetAudioClip;
+use fontelle_types::{FadeCurve, Fade};
+
+fn a_project_with_a_clip() -> (Project, fontelle_types::ClipId) {
+    let mut project = Project::new("audio");
+    let mut command = import("Take.wav", 0, PPQN * 4);
+    command.apply(&mut project).expect("applies");
+    let id = command.clip().expect("a clip");
+    (project, id)
+}
+
+fn data_of(project: &Project, id: fontelle_types::ClipId) -> AudioClipData {
+    match &project.clips[id].source {
+        ClipSource::Audio(data) => data.clone(),
+        _ => panic!("not an audio clip"),
+    }
+}
+
+#[test]
+fn setting_a_clips_properties_changes_only_that_clip() {
+    // *"double clicking on an audio clip should open a menu that lets me make
+    // changes to that audio."* Non-destructive, per §15.1: the file is
+    // untouched and the numbers live on the clip.
+    let (mut project, id) = a_project_with_a_clip();
+    let mut wanted = data_of(&project, id);
+    wanted.gain_db = -6.0;
+    wanted.filter.cutoff_hz = 900.0;
+    wanted.fade_in = Fade { frames: 4096, curve: FadeCurve::SCurve };
+
+    let mut command = SetAudioClip::new(id, wanted.clone());
+    command.apply(&mut project).expect("applies");
+    assert_eq!(data_of(&project, id), wanted);
+    // And the asset it points at is the one it always pointed at: an editor
+    // that could repoint a clip at another file by accident would be a very
+    // confusing undo.
+    assert_eq!(data_of(&project, id).asset, wanted.asset);
+}
+
+#[test]
+fn undoing_an_edit_puts_every_property_back() {
+    let (mut project, id) = a_project_with_a_clip();
+    let before = data_of(&project, id);
+    let mut wanted = before.clone();
+    wanted.reverse = true;
+    wanted.speed = 0.5;
+
+    let mut command = SetAudioClip::new(id, wanted);
+    command.apply(&mut project).expect("applies");
+    command.invert().apply(&mut project).expect("inverts");
+    assert_eq!(data_of(&project, id), before);
+}
+
+#[test]
+fn editing_a_clip_that_is_not_audio_is_refused_rather_than_replacing_it() {
+    // A stale id naming a note clip: turning somebody's part into a take
+    // silently is the worst possible outcome.
+    let mut project = Project::new("audio");
+    let lane = project.lanes.insert(fontelle_model::Lane {
+        name: "Keys".into(),
+        height: 32.0,
+        color: [0; 4],
+        muted: false,
+        locked: false,
+        order: 0,
+    });
+    let notes = project.clips.insert(fontelle_model::Clip {
+        lane,
+        start: 0,
+        length: PPQN,
+        source: ClipSource::Notes(fontelle_model::NoteData {
+            channel: project.channels.insert(fontelle_model::Channel {
+                name: "ch".into(),
+                color: [0; 4],
+                mixer_track: None,
+                patch_data: None,
+                pan: 0.0,
+                muted: false,
+                soloed: false,
+                named_keys: false,
+                gain_db: 0.0,
+            }),
+            notes: Default::default(),
+        }),
+        prefab_link: None,
+        color: None,
+        muted: false,
+        loop_length: None,
+    });
+    let mut command = SetAudioClip::new(notes, a_clip("Elsewhere.wav"));
+    assert!(command.apply(&mut project).is_err());
+    assert!(matches!(project.clips[notes].source, ClipSource::Notes(_)));
+}
+
+#[test]
+fn a_run_of_edits_to_one_clip_is_one_history_entry() {
+    // Stepping a cutoff ten times is one thing you did, and ten undos to get
+    // back is not an undo anybody wants. The gesture is broken on mouse-up,
+    // which is what stops the *next* thing merging into it.
+    let (mut project, id) = a_project_with_a_clip();
+    let before = data_of(&project, id);
+    let mut first = SetAudioClip::new(id, {
+        let mut d = before.clone();
+        d.gain_db = -1.0;
+        d
+    });
+    first.apply(&mut project).expect("applies");
+    let mut second = SetAudioClip::new(id, {
+        let mut d = before.clone();
+        d.gain_db = -2.0;
+        d
+    });
+    assert!(first.merge_with(&second), "two steps did not coalesce");
+    second.apply(&mut project).expect("applies");
+
+    first.invert().apply(&mut project).expect("inverts");
+    assert_eq!(
+        data_of(&project, id),
+        before,
+        "one undo did not reach the start of the run"
+    );
+}
+
+#[test]
+fn edits_to_two_different_clips_are_two_history_entries() {
+    let (mut project, first_id) = a_project_with_a_clip();
+    let mut second = import("Other.wav", PPQN * 8, PPQN * 4);
+    second.apply(&mut project).expect("applies");
+    let second_id = second.clip().expect("a clip");
+
+    let mut a = SetAudioClip::new(first_id, data_of(&project, first_id));
+    let b = SetAudioClip::new(second_id, data_of(&project, second_id));
+    assert!(!a.merge_with(&b), "two clips coalesced into one entry");
+}

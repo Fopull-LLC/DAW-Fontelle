@@ -285,3 +285,53 @@ pub fn instrument_pointer(
         _ => Pointer::Default,
     }
 }
+
+// ---------------------------------------------------------- double clicks ---
+
+/// How long two presses may be apart and still be one double-click.
+///
+/// The common desktop default, and the one a hand is used to. Longer and a
+/// slow pair of deliberate single clicks becomes a double; shorter and a
+/// double-click is something you have to practise.
+pub const DOUBLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// And how far apart on screen, in points.
+///
+/// A press is never perfectly still, and a hand moving back to the same place
+/// twice is less still again. Four points is well inside one clip block and
+/// well outside "the same spot".
+pub const DOUBLE_CLICK_SLOP: f32 = 4.0;
+
+/// Whether the press that just happened was the second of a pair.
+///
+/// Reported from using the window: *"double clicking on an audio clip should
+/// open a menu."* Nothing in this window had any notion of a double-click —
+/// every other panel opens on a single one, because a clip you clicked is a
+/// clip you meant. An audio clip is the exception and the report says why:
+/// clicking one is how you **move** it, and a window that appeared every time
+/// you nudged a take along the bar would be in the way of the thing you were
+/// doing.
+///
+/// A pure decision about two presses and where they were, so it is decided
+/// here rather than inside an event loop where nothing could test it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DoubleClick {
+    last: Option<(f32, f32, std::time::Instant)>,
+}
+
+impl DoubleClick {
+    /// Records a press and says whether it completed a double-click.
+    ///
+    /// A double-click **consumes** the pair: a third press starts a fresh one
+    /// rather than completing a second double, or a mash on the button would
+    /// open a window per click.
+    pub fn press(&mut self, x: f32, y: f32, now: std::time::Instant) -> bool {
+        let doubled = self.last.is_some_and(|(px, py, at)| {
+            now.duration_since(at) <= DOUBLE_CLICK_WINDOW
+                && (x - px).abs() <= DOUBLE_CLICK_SLOP
+                && (y - py).abs() <= DOUBLE_CLICK_SLOP
+        });
+        self.last = if doubled { None } else { Some((x, y, now)) };
+        doubled
+    }
+}

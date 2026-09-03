@@ -1,3 +1,4 @@
+mod audio_clip;
 mod automation;
 mod browser;
 mod effect;
@@ -9,6 +10,10 @@ mod rack;
 mod timeline;
 mod tools;
 
+pub use audio_clip::{
+    AUDIO_ROWS, AudioEditorLayout, AudioField, audio_editor_hit, audio_editor_layout,
+    audio_row_label, audio_row_tip, audio_row_value, audio_row_value_at, nudge_audio_row,
+};
 pub use automation::{
     AutomationBlock, CURVE_SHAPES, automation_block, automation_polyline,
     block_tick_at, block_value_at, block_x_of_tick, block_y_of_value, curve_label, next_curve,

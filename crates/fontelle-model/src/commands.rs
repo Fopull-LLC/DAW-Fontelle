@@ -3210,6 +3210,87 @@ impl Command for RemoveAudioClip {
     }
 }
 
+/// Sets every property of one audio clip at once (TDD §15.1).
+///
+/// **All of them together**, rather than a command per knob, and the reason is
+/// §15.1's own: a clip *is* a reference plus a list of numbers, the editor
+/// hands back a whole list, and a command per field would be twenty commands
+/// that each have to agree about what "unchanged" means. Nothing is
+/// destructive either way — the file is never touched, so the inverse is
+/// simply the list that was there before.
+pub struct SetAudioClip {
+    clip: ClipId,
+    data: fontelle_types::AudioClipData,
+    /// What was there, captured on the first apply so the inverse is the
+    /// document's own answer rather than the caller's memory of it.
+    before: Option<fontelle_types::AudioClipData>,
+}
+
+impl SetAudioClip {
+    pub fn new(clip: ClipId, data: fontelle_types::AudioClipData) -> Self {
+        Self {
+            clip,
+            data,
+            before: None,
+        }
+    }
+}
+
+impl Command for SetAudioClip {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let Some(clip) = doc.clips.get_mut(self.clip) else {
+            return Err(CommandError("that clip is not there".into()));
+        };
+        let ClipSource::Audio(existing) = &mut clip.source else {
+            // A stale id naming a note clip. Refusing is the only safe answer:
+            // silently turning somebody's part into a take is the worst
+            // outcome available here.
+            return Err(CommandError("that clip is not audio".into()));
+        };
+        if self.before.is_none() {
+            self.before = Some(existing.clone());
+        }
+        *existing = self.data.clone();
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.before {
+            Some(data) => Box::new(SetAudioClip::new(self.clip, data.clone())),
+            None => Box::new(NotApplied("changing a sound")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Change sound"
+    }
+
+    /// A run of steps on one clip is one entry: stepping a cutoff ten times is
+    /// one thing you did, and ten undos to get back is not an undo anybody
+    /// wants. The gesture break on mouse-up is what stops the *next* thing
+    /// merging into it.
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<SetAudioClip>() else {
+            return false;
+        };
+        if next.clip != self.clip {
+            return false;
+        }
+        // The **later** value with the **earlier** `before`, which is what
+        // makes one undo reach the start of the run.
+        self.data = next.data.clone();
+        true
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() * 2
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// The colour a row made for an imported sound gets.
 ///
 /// A different hue from the blue a note row opens on, so an arrangement of both

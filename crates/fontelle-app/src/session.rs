@@ -3211,6 +3211,33 @@ impl StudioHost for Session {
         ))
     }
 
+    fn audio_clip(&self, clip: ClipId) -> Option<fontelle_types::AudioClipData> {
+        match &self.project.clips.get(clip)?.source {
+            ClipSource::Audio(data) => Some(data.clone()),
+            _ => None,
+        }
+    }
+
+    fn audio_clip_rate(&self, clip: ClipId) -> u32 {
+        let Some(ClipSource::Audio(data)) = self.project.clips.get(clip).map(|c| &c.source) else {
+            return 0;
+        };
+        self.library
+            .audio_store()
+            .get(data.asset.id)
+            .map_or(0, |buffer| buffer.sample_rate)
+    }
+
+    fn set_audio_clip(&mut self, clip: ClipId, data: fontelle_types::AudioClipData) {
+        // The clip's length on the arrangement follows its trim: a clip that
+        // draws four bars and plays two is the picture lying about the sound.
+        // Not its *speed*, though — a clip played at half speed still occupies
+        // the block it was given, which is what makes a loop stretchable.
+        // `run` republishes and bumps the revision, so the block on the
+        // arrangement redraws with its new fades on the same frame.
+        self.run(Box::new(fontelle_model::SetAudioClip::new(clip, data)));
+    }
+
     fn reveal_config_dir(&mut self) {
         let dir = self
             .settings_path

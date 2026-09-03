@@ -233,3 +233,69 @@ fn the_clip_names_a_source_the_graph_can_actually_play() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ------------------------------------------------------- editing one ---
+
+#[test]
+fn the_editor_reads_a_clips_properties_and_writes_them_back() {
+    // The seam between the window's editor and the document. Everything either
+    // side of it is tested where it lives; this is the join, and a join that
+    // reads but does not write is an editor whose knobs do nothing.
+    let dir = scratch("edit");
+    let mut session = a_session(&dir);
+    session.drop_file(&a_take(&dir, "Take.wav")).expect("imports");
+    let id = session
+        .clips()
+        .iter()
+        .find(|c| c.kind == ClipKind::Audio)
+        .expect("a clip")
+        .id;
+
+    let mut data = session.audio_clip(id).expect("the editor can read it");
+    assert_eq!(data.gain_db, 0.0);
+    data.gain_db = -6.0;
+    data.fade_in = fontelle_types::Fade {
+        frames: 4800,
+        curve: fontelle_types::FadeCurve::SCurve,
+    };
+    session.set_audio_clip(id, data);
+
+    assert_eq!(session.audio_clip(id).expect("still there").gain_db, -6.0);
+    // And the block on the arrangement redrew with the fade on it, which is
+    // what makes the picture the sound.
+    let clips = session.clips();
+    let block = clips.iter().find(|c| c.id == id).expect("the block");
+    assert!(block.audio.fade_in > 0.0, "the block did not take the fade");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_editor_knows_the_rate_the_file_was_recorded_at() {
+    // What lets a fade read in milliseconds rather than in frames.
+    let dir = scratch("rate");
+    let mut session = a_session(&dir);
+    session.drop_file(&a_take(&dir, "Take.wav")).expect("imports");
+    let id = session
+        .clips()
+        .iter()
+        .find(|c| c.kind == ClipKind::Audio)
+        .expect("a clip")
+        .id;
+    assert_eq!(session.audio_clip_rate(id), 48_000);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_clip_that_is_not_audio_has_nothing_for_the_editor_to_show() {
+    let dir = scratch("notaudio");
+    let session = a_session(&dir);
+    let notes = session
+        .clips()
+        .iter()
+        .find(|c| c.kind == ClipKind::Notes)
+        .expect("a blank project has a note clip")
+        .id;
+    assert!(session.audio_clip(notes).is_none());
+    assert_eq!(session.audio_clip_rate(notes), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}

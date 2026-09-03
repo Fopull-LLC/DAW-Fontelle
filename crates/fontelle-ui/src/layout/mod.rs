@@ -513,6 +513,14 @@ pub enum EditorKind {
     /// own and now are edited where they sit, inside their block on the
     /// arrangement — see `canvas::automation_block`.
     Effect,
+    /// One audio clip's properties (TDD §15.1) — *"double clicking on an audio
+    /// clip should open a menu that lets me make changes to that audio."*
+    ///
+    /// A window rather than a panel in the editor column, because it is edited
+    /// **against the arrangement**: you change a fade and look at the block it
+    /// shortened, which a panel that covered the arrangement could not let you
+    /// do.
+    AudioClip,
 }
 
 impl EditorKind {
@@ -521,6 +529,7 @@ impl EditorKind {
         match self {
             Self::Instrument => "Instrument",
             Self::Effect => "Effect",
+            Self::AudioClip => "Audio clip",
         }
     }
 
@@ -539,6 +548,9 @@ impl EditorKind {
             Self::Instrument => (620, 760),
             // A curve needs width far more than it needs height.
             Self::Effect => (720, 420),
+            // A column of rows with a waveform over it. Narrow, so it sits
+            // beside the arrangement rather than over it.
+            Self::AudioClip => (400, 560),
         }
     }
 

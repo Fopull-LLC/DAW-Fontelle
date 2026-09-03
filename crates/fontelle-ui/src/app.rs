@@ -476,6 +476,11 @@ pub struct WindowApp {
     /// Which kind of file the Import tab is showing. Mirrored from the host
     /// on every refresh, like every other list this panel draws.
     import_kind: fontelle_types::FolderKind,
+    /// The audio clip the editor window has open, if it has one — see
+    /// [`OpenAudioClip`].
+    audio_clip: Option<OpenAudioClip>,
+    /// Where its rows are, inside the window's body.
+    audio_layout: crate::canvas::AudioEditorLayout,
     /// The Tools panel while it is open, laid out. The same shape as
     /// `lane_menu` and for the same reason.
     tools_panel: Option<ToolsDialog>,
@@ -544,6 +549,11 @@ pub struct WindowApp {
     /// The mode chip's word, shaped.
     mode_text: TextLayout,
     hover_param: Option<(usize, usize)>,
+    /// The audio editor row the pointer is over, for its hover tip.
+    hover_audio: Option<crate::canvas::AudioField>,
+    /// Two presses in one place, which is how an audio clip's editor is opened
+    /// — see [`crate::pointer::DoubleClick`].
+    double_click: crate::pointer::DoubleClick,
     /// Which preset chip the pointer is over, in the effect panel. Its own
     /// field rather than a `hover_param`, because a chip has no address —
     /// see `instrument_preset_hit`.
@@ -773,6 +783,21 @@ struct Live {
 /// It shares the main window's `RenderContext` and its per-device `Renderer`:
 /// shader compilation is most of the cold-start budget (§19), and paying it
 /// again per window would make opening an EQ feel like launching an app.
+/// The audio clip the editor window is showing (TDD §15.1).
+///
+/// Its properties are held here rather than read from the document per frame
+/// for the reason every other list in this window is cached: the window redraws
+/// on a pointer move and the document only changes when somebody clicks
+/// something. `revision` is what puts them back in step.
+struct OpenAudioClip {
+    id: fontelle_types::ClipId,
+    /// What the title bar says — the file it came from.
+    name: String,
+    data: fontelle_types::AudioClipData,
+    /// The file's own rate, so a fade reads in milliseconds.
+    sample_rate: u32,
+}
+
 struct Editor {
     kind: EditorKind,
     window: Arc<Window>,
@@ -840,6 +865,11 @@ impl WindowApp {
             tools: Tools::default(),
             imports: Vec::new(),
             import_kind: fontelle_types::FolderKind::Midi,
+            audio_clip: None,
+            audio_layout: crate::canvas::AudioEditorLayout {
+                waveform: crate::layout::Rect::ZERO,
+                rows: Vec::new(),
+            },
             tools_panel: None,
             sidebar_width: None,
             rack_share: None,
@@ -886,6 +916,8 @@ impl WindowApp {
             play_mode: crate::document::PlayMode::Song,
             mode_text: TextLayout::default(),
             hover_param: None,
+            hover_audio: None,
+            double_click: crate::pointer::DoubleClick::default(),
             hover_preset: None,
             hover_key: None,
             hover_tab: None,
@@ -2278,6 +2310,10 @@ impl WindowApp {
                 None => kind.title().to_string(),
             },
             EditorKind::Effect => self.effect_title(),
+            EditorKind::AudioClip => match &self.audio_clip {
+                Some(open) => format!("{} \u{2014} {}", kind.title(), open.name),
+                None => kind.title().to_string(),
+            },
         }
     }
 
@@ -2332,6 +2368,13 @@ impl WindowApp {
                     // be seen against the shape it is being made in.
                     self.eq_band_curve =
                         crate::canvas::eq_band_curve_points(&self.eq_layout, &config, self.eq_band);
+                }
+                EditorKind::AudioClip => {
+                    self.audio_layout = crate::canvas::audio_editor_layout(
+                        body,
+                        &m,
+                        crate::canvas::AUDIO_ROWS.len(),
+                    );
                 }
             }
         }
@@ -2571,7 +2614,7 @@ impl WindowApp {
                 }
                 _ => false,
             },
-            EditorKind::Instrument => false,
+            EditorKind::Instrument | EditorKind::AudioClip => false,
         }
     }
 
@@ -2613,6 +2656,14 @@ impl WindowApp {
                         EqHit::Nothing => Pointer::Default,
                     }
                 }
+                // A row is pressed to step it, like every other row in this
+                // window.
+                EditorKind::AudioClip => {
+                    match crate::canvas::audio_editor_hit(&self.audio_layout, x, y) {
+                        Some(crate::canvas::AudioField::Heading(_)) | None => Pointer::Default,
+                        Some(_) => Pointer::Hand,
+                    }
+                }
             },
         };
         if self.pointer == wanted {
@@ -2644,6 +2695,7 @@ impl WindowApp {
             // grid of knobs every other effect gets.
             EditorKind::Effect if self.eq.is_none() => self.press_insert_panel(button, x, y),
             EditorKind::Effect => self.press_effect_editor(button, x, y),
+            EditorKind::AudioClip => self.press_audio_editor(button, x, y),
         }
     }
 
@@ -2673,7 +2725,62 @@ impl WindowApp {
                     _ => None,
                 };
             }
+            EditorKind::AudioClip => {
+                self.hover_audio = crate::canvas::audio_editor_hit(&self.audio_layout, x, y);
+            }
         }
+    }
+
+    /// A press on the audio clip editor: a row stepped forward, or back with
+    /// Ctrl — the same pair of gestures the settings tab and the tool dialogs
+    /// use, and for the same reason.
+    fn press_audio_editor(&mut self, button: MouseButton, x: f32, y: f32) {
+        if button != MouseButton::Left {
+            return;
+        }
+        let Some(field) = crate::canvas::audio_editor_hit(&self.audio_layout, x, y) else {
+            return;
+        };
+        let Some(open) = &mut self.audio_clip else {
+            return;
+        };
+        let direction = if self.modifiers.control_key() { -1 } else { 1 };
+        crate::canvas::nudge_audio_row(&mut open.data, field, direction, open.sample_rate);
+        let (id, data) = (open.id, open.data.clone());
+        if let Some(doc) = &mut self.options.document {
+            doc.set_audio_clip(id, data);
+        }
+        // The arrangement's block draws the fades and the trim, so it has to
+        // be re-read: the picture in the window and the picture on the
+        // timeline are the same picture.
+        self.refresh_studio();
+        self.redraw_editor(EditorKind::AudioClip);
+        self.tree.invalidate(TIMELINE);
+    }
+
+    /// Opens the audio clip editor on `clip`, or retargets the one that is
+    /// already open.
+    fn open_audio_editor(&mut self, clip: fontelle_types::ClipId) {
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let Some(data) = doc.audio_clip(clip) else {
+            return;
+        };
+        let sample_rate = doc.audio_clip_rate(clip);
+        let name = self
+            .clips
+            .iter()
+            .find(|info| info.id == clip)
+            .map(|info| info.name.clone())
+            .unwrap_or_else(|| "Audio".to_string());
+        self.audio_clip = Some(OpenAudioClip {
+            id: clip,
+            name,
+            data,
+            sample_rate,
+        });
+        self.open_editor(EditorKind::AudioClip);
     }
 
     fn redraw_editor(&mut self, kind: EditorKind) {
@@ -2736,6 +2843,29 @@ impl WindowApp {
                     },
                     title: self.effect_title(),
                     bypassed: self.open_insert_bypassed(),
+                })
+            }
+            EditorKind::AudioClip => {
+                let Some(open) = self.audio_clip.as_ref() else {
+                    return;
+                };
+                // The waveform is read off the **arrangement's** own list of
+                // blocks here rather than cached beside the numbers, so the
+                // strip in the window and the block on the timeline are
+                // literally one picture. Cached, it went stale the first time
+                // a fade was stepped: the block redrew and the strip did not.
+                let preview = self
+                    .clips
+                    .iter()
+                    .find(|info| info.id == open.id)
+                    .map(|info| &info.audio);
+                let Some(preview) = preview else { return };
+                EditorWindowChrome::AudioClip(crate::render::AudioEditorChrome {
+                    layout: self.audio_layout.clone(),
+                    clip: &open.data,
+                    preview,
+                    sample_rate: open.sample_rate,
+                    hover: self.hover_audio,
                 })
             }
         };
@@ -2884,6 +3014,18 @@ impl WindowApp {
         self.lanes = doc.lanes();
         self.clips = doc.clips();
         self.instrument = doc.instrument();
+        // The audio editor's working copy, back from the document. It steps
+        // its own numbers and writes them through, so it is normally ahead of
+        // this — but an **undo** changes the clip underneath it, and an editor
+        // still showing the numbers you took back is one that writes them
+        // again on the next click. A clip that has gone closes the window's
+        // contents rather than editing something nobody can see.
+        if let Some(open) = &mut self.audio_clip {
+            match doc.audio_clip(open.id) {
+                Some(data) => open.data = data,
+                None => self.audio_clip = None,
+            }
+        }
         self.mixer_strips = doc.mixer_strips();
         self.selected_track = doc.selected_mixer_track();
         self.track_output = doc.track_output(self.selected_track);
@@ -3006,6 +3148,23 @@ impl WindowApp {
         if self.lane_menu.is_some() {
             for property in crate::canvas::LANE_PROPERTIES {
                 want(&mut self.labels, &mut self.text, property.label());
+            }
+        }
+        if let Some(open) = &self.audio_clip {
+            // Cloned out first: `want` borrows `self.labels` and `self.text`
+            // mutably, and the captions are read through `self.audio_clip`.
+            let captions: Vec<String> = crate::canvas::AUDIO_ROWS
+                .iter()
+                .flat_map(|field| {
+                    [
+                        crate::canvas::audio_row_label(*field).to_string(),
+                        crate::canvas::audio_row_value_at(&open.data, *field, open.sample_rate),
+                    ]
+                })
+                .filter(|caption| !caption.is_empty())
+                .collect();
+            for caption in captions {
+                want(&mut self.labels, &mut self.text, &caption);
             }
         }
         if let Some(panel) = &self.tools_panel {
@@ -5117,6 +5276,33 @@ impl WindowApp {
         // Clicking a clip opens it in the roll — the two panels are two views
         // of one piece, and having to find the channel in the rack to edit the
         // clip you just pointed at is two panels rather than one workflow.
+        // *"double clicking on an audio clip should open a menu that lets me
+        // make changes to that audio."* Before the open below, because an
+        // audio clip has no roll to be opened in — and on the **second** press
+        // rather than the first, because clicking one is how you move it and a
+        // window that appeared every time you nudged a take along the bar
+        // would be in the way of the thing you were doing.
+        if button == MouseButton::Left
+            && self.double_click.press(x, y, std::time::Instant::now())
+            && let Some(clip) = self
+                .clips
+                .iter()
+                .find(|info| {
+                    if info.kind != crate::document::ClipKind::Audio {
+                        return false;
+                    }
+                    let block = crate::canvas::clip_rect(
+                        &self.timeline.view,
+                        self.timeline_layout.grid,
+                        info,
+                    )
+                    .intersection(&self.timeline_layout.grid);
+                    !block.is_empty() && block.contains(x, y)
+                })
+                .map(|info| info.id)
+        {
+            self.open_audio_editor(clip);
+        }
         if let Some(clip) = self.timeline.take_open() {
             // Which editor a block opens into is the block's own business —
             // a note clip opens the roll; an automation clip is edited where

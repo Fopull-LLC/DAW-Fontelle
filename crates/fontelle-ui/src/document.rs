@@ -1274,6 +1274,32 @@ pub trait StudioHost: DocumentHost {
     }
     /// Opens `clip` in the piano roll, selecting the channel that owns it.
     fn open_clip(&mut self, clip: ClipId);
+
+    // --- audio clips (TDD §15.1) ---
+    /// One audio clip's properties, for the editor to show and change.
+    ///
+    /// `None` for a clip that is not audio, or one that has gone — the editor
+    /// closes itself rather than editing a clip nobody can see.
+    fn audio_clip(&self, _clip: ClipId) -> Option<fontelle_types::AudioClipData> {
+        None
+    }
+
+    /// The rate the file behind `clip` was recorded at, so a fade can be shown
+    /// in milliseconds rather than in frames.
+    ///
+    /// Zero when it is not known, which the editor reads as "say nothing about
+    /// time" rather than dividing by it.
+    fn audio_clip_rate(&self, _clip: ClipId) -> u32 {
+        0
+    }
+
+    /// Sets every property of one audio clip at once.
+    ///
+    /// All of them together rather than one call per knob, for the reason
+    /// `SetAudioClip` is one command: a clip *is* a list of numbers, the editor
+    /// hands back a whole list, and a call per field would be twenty that each
+    /// have to agree about what "unchanged" means.
+    fn set_audio_clip(&mut self, _clip: ClipId, _data: fontelle_types::AudioClipData) {}
     /// How long the piece is, in ticks — what the arrangement's ruler spans.
     fn song_length(&self) -> Tick;
     /// Where `position_sample` is in the *song*, as against
