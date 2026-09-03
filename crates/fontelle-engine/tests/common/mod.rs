@@ -22,6 +22,7 @@ pub fn process_at_tempo<'a>(
         outputs: channels,
         all_events: &[],
         live_events: &[],
+        audio: &[],
         node: fontelle_types::NodeId::default(),
         transport: TransportSnapshot {
             state: TransportState::Playing,

@@ -30,7 +30,9 @@
 //! waveform, and by the editor's read-outs, and three answers that drift apart
 //! is a clip that sounds like one thing and draws as another.
 
-use crate::{AssetRef, FilterConfig, MixerTrackId, Sample};
+use std::ops::Range;
+
+use crate::{AssetRef, ClipId, FilterConfig, MixerTrackId, NodeId, Sample};
 
 /// The steepest boost a clip may be given, in dB.
 ///
@@ -307,8 +309,82 @@ impl AudioClipData {
         gain as f32
     }
 
+    /// Whether the clip's filter would do anything at all.
+    ///
+    /// A fresh [`FilterConfig`] is a wire — a 24 dB low-pass wide open, no
+    /// resonance, no drive, nothing moving it — and running an SVF per sample
+    /// to reproduce its input exactly is a cost every unfiltered clip in a
+    /// project would pay. This is the question the player asks before it
+    /// bothers.
+    pub fn filter_engaged(&self) -> bool {
+        let f = &self.filter;
+        f.mix > 0.0
+            && (f.cutoff_hz < crate::MAX_FILTER_HZ
+                || f.resonance > 0.0
+                || f.drive > 0.0
+                || f.env_amount != 0.0
+                || f.lfo_amount > 0.0
+                || f.output_db != 0.0)
+    }
+
     /// The boost as a multiplier.
     pub fn gain(&self) -> f32 {
         10f32.powf(self.gain_db.clamp(MIN_CLIP_GAIN_DB, MAX_CLIP_GAIN_DB) / 20.0)
+    }
+}
+
+/// One audio clip, placed on the song (TDD §11.1's job, for §15's content).
+///
+/// The compiled counterpart of a `TimedEvent`, and it is a different shape for
+/// a real reason: a note clip becomes **events** and a sampler turns them into
+/// sound, but an audio clip is a **continuous stream** that has to be at one
+/// place on the song and nowhere else. There is no moment to send; there is a
+/// range to be inside of.
+///
+/// Built by `fontelle-sequencer` and read on the audio thread, so everything in
+/// it is owned and nothing in it allocates once it exists.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioPlacement {
+    /// Which node plays it — the audio player in front of a mixer track.
+    pub target: NodeId,
+    /// Which clip it came from, so the player can keep a filter's state with
+    /// the clip it belongs to rather than with a position in a list.
+    pub clip: ClipId,
+    /// Where on the song it sounds, in samples.
+    pub range: Range<Sample>,
+    /// How often the content comes round, in samples — the compiled form of
+    /// `Clip::loop_length`. **Zero is no repeat**, which is what every clip
+    /// does by default.
+    ///
+    /// Not the same thing as [`ClipLoopMode`], and both exist: this is *the
+    /// arrangement* repeating a block, and that is *the file* coming round
+    /// when the block outlasts it. A four-bar loop dragged out to sixteen bars
+    /// uses one; a one-shot dropped on a long block uses neither.
+    pub repeat: Sample,
+    pub data: AudioClipData,
+}
+
+impl AudioPlacement {
+    /// How long it sounds for.
+    pub fn frames(&self) -> Sample {
+        (self.range.end - self.range.start).max(0)
+    }
+
+    /// Where in the clip's own time the song sample `at` falls, or `None` if it
+    /// falls outside the block entirely.
+    ///
+    /// The repeat is applied here rather than in the player, so *"which frame
+    /// of the clip is this"* has one answer that the waveform and the sound can
+    /// both be measured against.
+    pub fn position(&self, at: Sample) -> Option<Sample> {
+        if at < self.range.start || at >= self.range.end {
+            return None;
+        }
+        let offset = at - self.range.start;
+        Some(if self.repeat > 0 {
+            offset.rem_euclid(self.repeat)
+        } else {
+            offset
+        })
     }
 }

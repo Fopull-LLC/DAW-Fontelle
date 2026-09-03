@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::{NodeId, ParamAddress, Sample};
+use crate::{AudioPlacement, NodeId, ParamAddress, Sample};
 
 /// One entry in a `CompiledTimeline` (TDD §11.1). Read-only from the RT thread's
 /// point of view — the whole `Vec` is built and handed over by `triple_buffer`
@@ -107,6 +107,19 @@ pub struct CompiledTimeline {
     /// Empty on a timeline nobody compiled, which is what
     /// [`bpm_at`](Self::bpm_at)'s default is for.
     pub tempo: Vec<(Sample, f32)>,
+    /// Every audio clip in the project, placed on the song (TDD §15).
+    ///
+    /// Beside the events rather than among them, because it is a different
+    /// kind of thing: an event is a **moment** that the RT thread walks a
+    /// cursor through, and a placement is a **range** that a block either falls
+    /// inside or does not. There is nothing to schedule and nothing to
+    /// advance, so there is no index over it either.
+    ///
+    /// Carried on the timeline for the same reason the tempo table is: the
+    /// sequencer already owns every tick-to-sample conversion in the project,
+    /// and a second answer to "where does this clip start" is a second thing
+    /// to keep in step.
+    pub audio: Vec<AudioPlacement>,
 }
 
 impl CompiledTimeline {
@@ -241,6 +254,7 @@ mod tests {
             events: vec![note_on(0), note_on(100), note_on(100), note_on(300)],
             index: Vec::new(),
             tempo: Vec::new(),
+            audio: Vec::new(),
         };
 
         assert_eq!(timeline.cursor_at(0), 0);
@@ -263,6 +277,7 @@ mod tests {
             events: vec![note_on(0), note_on(200)],
             index: Vec::new(),
             tempo: Vec::new(),
+            audio: Vec::new(),
         };
         let mut cursor = 0;
         timeline.events_for_block(&mut cursor, 0..1_000);
@@ -292,6 +307,7 @@ mod tests {
             events: vec![note_on(0), note_on(50), note_on(200)],
             index: Vec::new(),
             tempo: Vec::new(),
+            audio: Vec::new(),
         };
 
         let mut cursor = 0;
@@ -315,6 +331,7 @@ mod tests {
             events: vec![note_on(128)],
             index: Vec::new(),
             tempo: Vec::new(),
+            audio: Vec::new(),
         };
         let mut cursor = 0;
 
@@ -334,6 +351,7 @@ mod tests {
             events: vec![note_on(10), note_on(10), note_on(10)],
             index: Vec::new(),
             tempo: Vec::new(),
+            audio: Vec::new(),
         };
         let mut cursor = 0;
         let block = timeline.events_for_block(&mut cursor, 0..128);

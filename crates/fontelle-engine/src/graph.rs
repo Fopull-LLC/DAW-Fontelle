@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use fontelle_types::{NodeId, ParamAddress, Sample, TimedEvent, VoiceOrigin};
+use fontelle_types::{AudioPlacement, NodeId, ParamAddress, Sample, TimedEvent, VoiceOrigin};
 
 use crate::transport::TransportSnapshot;
 
@@ -29,6 +29,14 @@ pub struct ProcessContext<'a> {
     /// block would put a heap allocation on the audio thread for no gain
     /// (INVARIANT 1). `events()` walks both.
     pub live_events: &'a [TimedEvent],
+    /// The audio clips placed on this block, for **all** nodes — the same
+    /// arrangement `all_events` has, and for the same reason. See
+    /// [`ProcessContext::clips`].
+    ///
+    /// A third slice rather than a fourth kind of event: an audio clip is not a
+    /// moment, it is a range to be inside of, so there is nothing to schedule
+    /// and nothing to merge.
+    pub audio: &'a [AudioPlacement],
     /// The id of the node being processed, so it can pick its own events out.
     pub node: NodeId,
     pub transport: TransportSnapshot,
@@ -59,6 +67,12 @@ impl ProcessContext<'_> {
     /// A source node that can be played by a person needs the tag: a voice
     /// records its origin so that transport stop and seek can cut the
     /// timeline's notes without cutting the player's.
+    /// The audio clips addressed to this node.
+    pub fn clips(&self) -> impl Iterator<Item = &AudioPlacement> {
+        let node = self.node;
+        self.audio.iter().filter(move |p| p.target == node)
+    }
+
     pub fn events_with_origin(&self) -> impl Iterator<Item = (VoiceOrigin, &TimedEvent)> {
         let node = self.node;
         self.all_events
@@ -273,6 +287,20 @@ impl CompiledGraph {
         self.process_block_with_live(events, &[], transport, sample_range);
     }
 
+    /// As [`CompiledGraph::process_block_with_live`], plus this block's audio
+    /// clips (TDD §15) — the ranges the sequencer placed on the song, read by
+    /// whichever [`crate::AudioClipNode`] each one names.
+    pub fn process_block_with_audio(
+        &mut self,
+        events: &[TimedEvent],
+        live_events: &[TimedEvent],
+        audio: &[AudioPlacement],
+        transport: TransportSnapshot,
+        sample_range: Range<Sample>,
+    ) {
+        self.process_all(events, live_events, audio, transport, sample_range);
+    }
+
     /// As [`CompiledGraph::process_block`], plus this block's live input
     /// (TDD §14.1) — the events a keyboard or controller produced since the
     /// last callback, already stamped and routed by
@@ -281,6 +309,17 @@ impl CompiledGraph {
         &mut self,
         events: &[TimedEvent],
         live_events: &[TimedEvent],
+        transport: TransportSnapshot,
+        sample_range: Range<Sample>,
+    ) {
+        self.process_all(events, live_events, &[], transport, sample_range);
+    }
+
+    fn process_all(
+        &mut self,
+        events: &[TimedEvent],
+        live_events: &[TimedEvent],
+        audio: &[AudioPlacement],
         transport: TransportSnapshot,
         sample_range: Range<Sample>,
     ) {
@@ -354,6 +393,7 @@ impl CompiledGraph {
                             outputs: &mut outputs,
                             all_events: events,
                             live_events,
+                            audio,
                             node: scheduled.id,
                             transport,
                             sample_range: sample_range.clone(),
@@ -376,6 +416,7 @@ impl CompiledGraph {
                             outputs: &mut outputs,
                             all_events: events,
                             live_events,
+                            audio,
                             node: scheduled.id,
                             transport,
                             sample_range: sample_range.clone(),
@@ -394,6 +435,7 @@ impl CompiledGraph {
                         outputs: &mut [],
                         all_events: events,
                         live_events,
+                        audio,
                         node: scheduled.id,
                         transport,
                         sample_range: sample_range.clone(),
@@ -409,6 +451,7 @@ impl CompiledGraph {
                         outputs: &mut outputs,
                         all_events: events,
                         live_events,
+                        audio,
                         node: scheduled.id,
                         transport,
                         sample_range: sample_range.clone(),
@@ -424,6 +467,7 @@ impl CompiledGraph {
                         outputs: &mut outputs,
                         all_events: events,
                         live_events,
+                        audio,
                         node: scheduled.id,
                         transport,
                         sample_range: sample_range.clone(),

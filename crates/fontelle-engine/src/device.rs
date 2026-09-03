@@ -273,9 +273,10 @@ impl AudioDevice {
                                 if step.process {
                                     let this_step = if live_pending { live_events } else { &[] };
                                     live_pending = false;
-                                    graph.process_block_with_live(
+                                    graph.process_block_with_audio(
                                         step.events,
                                         this_step,
+                                        step.audio,
                                         step.snapshot,
                                         step.range.clone(),
                                     );

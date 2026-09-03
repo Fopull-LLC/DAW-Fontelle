@@ -2,7 +2,7 @@
 //! that let a reopened project find it again.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use fontelle_assets::ImportError;
@@ -40,6 +40,31 @@ pub struct SampleLibrary {
     /// sharing one reference is not a duplicate-name annoyance — it silently
     /// resolves one of them to the other's audio.
     synthetic_count: u32,
+    /// Every audio **clip's** decoded audio (TDD §15), which is a different
+    /// store from `store` above because a `SampleBuffer` is mono and a take or
+    /// a loop is not — see `fontelle_core::AudioBuffer`.
+    ///
+    /// Behind an `Arc` for the reason the soundfont store is: that is the form
+    /// `AudioClipNode` takes, and `Arc::make_mut` lets an import copy the
+    /// *index* out from under a graph the audio thread is already holding
+    /// without copying a note of the audio.
+    audio: Arc<fontelle_core::AudioStore>,
+    /// The primary map the audio store is secondary to, so importing mints a
+    /// real id — and, keyed by path, so a loop dropped on eight rows is one
+    /// file rather than eight copies of it (TDD §7.7).
+    audio_files: slotmap::SlotMap<AssetId, PathBuf>,
+    audio_by_path: HashMap<PathBuf, AssetId>,
+}
+
+/// What [`SampleLibrary::import_audio`] found.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportedAudio {
+    /// The reference a clip holds. Its `id` is what indexes
+    /// [`SampleLibrary::audio_store`].
+    pub asset: AssetRef,
+    pub frames: usize,
+    pub sample_rate: u32,
+    pub channels: u16,
 }
 
 impl SampleLibrary {
@@ -132,6 +157,58 @@ impl SampleLibrary {
     /// The store as the graph takes it.
     pub fn store(&self) -> Arc<SampleStore> {
         self.store.clone()
+    }
+
+    /// Decodes an audio file and keeps it, minting an asset for a clip to
+    /// point at (TDD §15, §17.4).
+    ///
+    /// The audio-clip counterpart of [`import_sf2`](Self::import_sf2), and it
+    /// **dedupes by path**: importing the same file twice hands back the same
+    /// asset, so a loop dropped on eight rows is one copy of the audio in
+    /// memory rather than eight.
+    ///
+    /// A file that is not a sound is refused and mints nothing — an asset with
+    /// no audio behind it is a clip that draws and never plays.
+    pub fn import_audio(&mut self, path: &Path) -> Result<ImportedAudio, ImportError> {
+        let path = path.to_path_buf();
+        let decoded = fontelle_assets::import_audio(&path)?;
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let id = match self.audio_by_path.get(&path) {
+            Some(id) => *id,
+            None => {
+                let id = self.audio_files.insert(path.clone());
+                self.audio_by_path.insert(path.clone(), id);
+                Arc::make_mut(&mut self.audio).insert(
+                    id,
+                    fontelle_core::AudioBuffer {
+                        data: Arc::from(decoded.samples),
+                        sample_rate: decoded.sample_rate,
+                        channels: decoded.channels,
+                    },
+                );
+                id
+            }
+        };
+        Ok(ImportedAudio {
+            asset: AssetRef {
+                id,
+                path,
+                // Left at nothing rather than guessed: §17.4's relink hash is
+                // the first megabyte plus the size, and nothing reads it yet.
+                // A wrong hash is worse than an absent one.
+                content_hash: 0,
+                size,
+                kind: fontelle_types::AssetKind::Sample,
+            },
+            frames: decoded.frames,
+            sample_rate: decoded.sample_rate,
+            channels: decoded.channels,
+        })
+    }
+
+    /// Every audio clip's audio, in the form the graph takes.
+    pub fn audio_store(&self) -> Arc<fontelle_core::AudioStore> {
+        self.audio.clone()
     }
 
     fn store_mut(&mut self) -> &mut SampleStore {

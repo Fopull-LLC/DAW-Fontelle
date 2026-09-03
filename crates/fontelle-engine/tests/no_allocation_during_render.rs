@@ -219,6 +219,7 @@ fn the_stereo_sampler_into_mixer_chain_does_not_allocate_per_block() {
         events,
         index: Vec::new(),
         tempo: Vec::new(),
+        audio: Vec::new(),
     };
 
     let transport = fontelle_engine::TransportSnapshot {
@@ -377,6 +378,7 @@ fn driving_the_transport_through_stops_seeks_and_loops_does_not_allocate() {
             .collect(),
         index: Vec::new(),
         tempo: Vec::new(),
+        audio: Vec::new(),
     };
 
     transport.play();

@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 use fontelle_model::{ClipSource, Project, TempoMap};
-use fontelle_types::{ChannelId, ClipId, CompiledTimeline, EventPayload, NodeId, TimedEvent};
+use fontelle_types::{
+    AudioPlacement, ChannelId, ClipId, CompiledTimeline, EventPayload, MixerTrackId, NodeId,
+    ParamAddress, TimedEvent,
+};
 
 use crate::collision::voice_context_for_clip;
 
@@ -28,9 +31,51 @@ use crate::collision::voice_context_for_clip;
 pub fn compile(
     project: &Project,
     channel_nodes: &HashMap<ChannelId, NodeId>,
-    param_nodes: &HashMap<fontelle_types::ParamAddress, NodeId>,
+    param_nodes: &HashMap<ParamAddress, NodeId>,
 ) -> CompiledTimeline {
     compile_scoped(project, channel_nodes, param_nodes, CompileScope::Song)
+}
+
+/// Which engine node plays what.
+///
+/// This crate depends on `fontelle-types` and `fontelle-model` only (TDD §4.1),
+/// so it has no way to discover any of these itself: whoever builds the graph
+/// passes them in. Grouped into one type rather than added to the argument list
+/// one at a time, because there are three of them now and the list was already
+/// two positional maps that are easy to swap by mistake.
+///
+/// A target missing from a map compiles to **nothing for that target**, never a
+/// panic: the document can name a channel, a parameter or a mixer track before
+/// the graph has caught up with it, which is what happens on the frame one is
+/// created.
+#[derive(Debug, Clone, Copy)]
+pub struct NodeMaps<'a> {
+    /// Each channel's `SamplerNode`.
+    pub channels: &'a HashMap<ChannelId, NodeId>,
+    /// Each automatable parameter's owning node.
+    pub params: &'a HashMap<ParamAddress, NodeId>,
+    /// The `AudioClipNode` in front of each mixer track. **`None` is the
+    /// master**, matching `AudioClipData::mixer_track`.
+    pub audio: &'a HashMap<Option<MixerTrackId>, NodeId>,
+}
+
+impl Default for NodeMaps<'_> {
+    fn default() -> Self {
+        // Leaked-free empty maps with the program's own lifetime. A `static`
+        // rather than an owned field, so `NodeMaps` stays `Copy` and a caller
+        // can write `NodeMaps { audio: &mine, ..Default::default() }`.
+        static NO_CHANNELS: std::sync::OnceLock<HashMap<ChannelId, NodeId>> =
+            std::sync::OnceLock::new();
+        static NO_PARAMS: std::sync::OnceLock<HashMap<ParamAddress, NodeId>> =
+            std::sync::OnceLock::new();
+        static NO_AUDIO: std::sync::OnceLock<HashMap<Option<MixerTrackId>, NodeId>> =
+            std::sync::OnceLock::new();
+        Self {
+            channels: NO_CHANNELS.get_or_init(HashMap::new),
+            params: NO_PARAMS.get_or_init(HashMap::new),
+            audio: NO_AUDIO.get_or_init(HashMap::new),
+        }
+    }
 }
 
 /// How much of the document a compile reads.
@@ -66,10 +111,31 @@ impl CompileScope {
 pub fn compile_scoped(
     project: &Project,
     channel_nodes: &HashMap<ChannelId, NodeId>,
-    param_nodes: &HashMap<fontelle_types::ParamAddress, NodeId>,
+    param_nodes: &HashMap<ParamAddress, NodeId>,
     scope: CompileScope,
 ) -> CompiledTimeline {
+    compile_with(
+        project,
+        &NodeMaps {
+            channels: channel_nodes,
+            params: param_nodes,
+            ..Default::default()
+        },
+        scope,
+    )
+}
+
+/// [`compile_scoped`], knowing every node the document might reach — audio
+/// clips included.
+pub fn compile_with(
+    project: &Project,
+    nodes: &NodeMaps<'_>,
+    scope: CompileScope,
+) -> CompiledTimeline {
+    let channel_nodes = nodes.channels;
+    let param_nodes = nodes.params;
     let mut events = Vec::new();
+    let mut audio = Vec::new();
 
     // Every tick becomes a sample through the *automated* tempo map (TDD
     // §12.3), built once for the pass. In clip scope the tempo lane is out
@@ -111,8 +177,37 @@ pub fn compile_scoped(
             continue;
         }
 
+        // An audio clip is not events (TDD §15): it is a range on the song
+        // that a block either falls inside or does not, so it compiles to a
+        // placement and there is nothing to schedule.
+        if let ClipSource::Audio(data) = &clip.source {
+            let Some(&target) = nodes.audio.get(&data.mixer_track) else {
+                continue; // no player for that track yet
+            };
+            audio.push(AudioPlacement {
+                target,
+                clip: clip_id,
+                range: tempo.tick_to_sample(clip.start)
+                    ..tempo.tick_to_sample(clip.start + clip.length),
+                // **Not** unrolled into one placement per pass, which is what
+                // a looped note clip does. A note is a moment and has to be
+                // emitted again on every pass; a stream is one range that
+                // comes round — and unrolling would give a sixteen-bar
+                // one-bar loop sixteen filter states instead of one.
+                repeat: match clip.loop_length.filter(|p| *p > 0) {
+                    Some(period) => {
+                        tempo.tick_to_sample(clip.start + period)
+                            - tempo.tick_to_sample(clip.start)
+                    }
+                    None => 0,
+                },
+                data: data.clone(),
+            });
+            continue;
+        }
+
         let ClipSource::Notes(note_data) = &clip.source else {
-            continue; // automation (M4) / audio (M6) clips: not this pass
+            continue; // automation clips are compiled below
         };
 
         if !audible(note_data.channel) {
@@ -219,6 +314,7 @@ pub fn compile_scoped(
 
     CompiledTimeline {
         events,
+        audio,
         // Bar-granularity seek index needs the tempo map's time-signature
         // track, which doesn't exist yet (see TempoMap's scope cut). Not
         // required for correctness — `events_for_block` walks the sorted

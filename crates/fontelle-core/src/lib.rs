@@ -19,7 +19,7 @@ pub use patch_format::{
 };
 pub use playback::{LoopMode, PlaybackConfig};
 pub use sampler::{PrepareContext, Sampler, SamplerContext};
-pub use streaming::{SampleBuffer, SampleStore};
+pub use streaming::{AudioBuffer, AudioStore, SampleBuffer, SampleStore};
 pub use voice::{
     NoteTrigger, OSC_ROOT_HZ, RetriggerMode, StealPolicy, UnisonConfig, Voice, VoiceConfig,
     VoicePool, velocity_to_gain,

@@ -52,6 +52,19 @@ pub struct Realised {
     /// events simply reach a node that is not in the schedule, and nothing
     /// sounds.
     pub channel_nodes: HashMap<ChannelId, NodeId>,
+    /// Which engine node plays the **audio clips** routed to each mixer track
+    /// (TDD §15) — the other half of what `fontelle_sequencer::compile_with`
+    /// takes.
+    ///
+    /// Every track is here, whether or not any clip names it, for the reason
+    /// every channel is in `channel_nodes`: the timeline's shape then depends
+    /// only on the clips, so dropping a file on a track does not have to wait
+    /// for a graph rebuild to be heard.
+    ///
+    /// **`None` and `Some(master)` are both here and are the same node**,
+    /// matching `AudioClipData::mixer_track`, so a clip that names the master
+    /// and one that leaves it unset play through one player rather than two.
+    pub audio_nodes: HashMap<Option<MixerTrackId>, NodeId>,
     /// Master levels for anything off the RT thread. Has to be taken before
     /// the graph goes to the audio callback, because after that nothing owns
     /// the node.
@@ -402,6 +415,10 @@ pub fn realise_keeping(
 
     let mut schedule: Vec<ScheduledNode> = Vec::new();
     let mut unresolved = Vec::new();
+    // Past every channel's id, so the two sets cannot collide. Declared here
+    // rather than beside the tracks below because the audio players are minted
+    // among the sources, ahead of them.
+    let mut next_id = project.channels.len() as u64 + 1;
     // Declared here rather than beside the tracks below because the channels
     // register theirs as they are built — see `ParamTarget::ChannelGain`.
     let mut param_nodes: HashMap<fontelle_types::ParamAddress, NodeId> = HashMap::new();
@@ -475,6 +492,37 @@ pub fn realise_keeping(
         });
     }
 
+    // --- A player per mixer track, for the audio clips routed to it (TDD
+    // §15). Among the sources, and for the same reason a sampler is: it only
+    // ever adds into a bus, so its order among the other sources does not
+    // matter — what matters is that it has run before the fader on the bus it
+    // feeds, and every fader comes after this point.
+    //
+    // One per track whether or not any clip names it. A node with no
+    // placements returns immediately, and the alternative — building them only
+    // where a clip already sits — means dropping a file on a track it has
+    // never been dropped on before is silent until the graph is rebuilt.
+    let audio_store = library.audio_store();
+    let mut audio_nodes: HashMap<Option<MixerTrackId>, NodeId> = HashMap::new();
+    for (&track, bus) in &bus_of {
+        let id = mint(&mut next_id);
+        audio_nodes.insert(Some(track), id);
+        if track == master {
+            // `None` is the master — see `AudioClipData::mixer_track`. The
+            // same node, not a second one: two players on one bus would be two
+            // filter pools and two chances to disagree.
+            audio_nodes.insert(None, id);
+        }
+        schedule.push(ScheduledNode {
+            id,
+            node: Box::new(fontelle_engine::AudioClipNode::new(std::sync::Arc::clone(
+                &audio_store,
+            ))),
+            input_buffers: Vec::new(),
+            output_buffers: bus.to_vec(),
+        });
+    }
+
     // --- Then every track, deepest first, so a group's fader runs only after
     // everything feeding it has been summed in.
     let mut tracks: Vec<MixerTrackId> = project
@@ -520,8 +568,6 @@ pub fn realise_keeping(
     > = HashMap::new();
     let mut send_controls: HashMap<(MixerTrackId, usize), std::sync::Arc<SendControls>> =
         HashMap::new();
-    // Past every channel's id, so the two sets cannot collide.
-    let mut next_id = project.channels.len() as u64 + 1;
     for id in tracks {
         let track = &project.mixer.tracks[id];
         let bus = bus_of[&id].to_vec();
@@ -685,6 +731,7 @@ pub fn realise_keeping(
     Ok(Realised {
         graph,
         channel_nodes,
+        audio_nodes,
         master: meter,
         track_controls,
         effect_controls,

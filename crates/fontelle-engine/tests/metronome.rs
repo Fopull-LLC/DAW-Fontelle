@@ -49,6 +49,7 @@ fn peaks(node: &mut MetronomeNode, from: i64, frames: usize, block: usize) -> Ve
                 outputs: &mut outputs,
                 all_events: &[],
                 live_events: &[],
+                audio: &[],
                 node: Default::default(),
                 transport: TransportSnapshot {
                     state: TransportState::Playing,
@@ -215,6 +216,7 @@ fn the_metronome_adds_into_its_bus_rather_than_replacing_it() {
             outputs: &mut outputs,
             all_events: &[],
             live_events: &[],
+            audio: &[],
             node: Default::default(),
             transport: TransportSnapshot {
                 state: TransportState::Playing,
@@ -254,6 +256,7 @@ fn a_stopped_transport_does_not_click() {
             outputs: &mut outputs,
             all_events: &[],
             live_events: &[],
+            audio: &[],
             node: Default::default(),
             transport: TransportSnapshot {
                 state: TransportState::Stopped,

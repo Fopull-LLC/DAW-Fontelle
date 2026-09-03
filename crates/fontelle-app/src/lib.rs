@@ -24,7 +24,7 @@ use fontelle_types::{CompiledTimeline, PPQN, Tick};
 
 pub use bundle::{MissingAsset, OpenError, OpenedProject, open_project, save_project};
 pub use keymap::{HIT_SPAN_KEYS, KEY_MAP_HITS, MAX_NAMED_BAND_KEYS, key_map};
-pub use library::SampleLibrary;
+pub use library::{ImportedAudio, SampleLibrary};
 pub use projects::{ProjectEntry, ProjectLibrary, ProjectOrder, unique_name};
 pub use realise::{
     RealiseError, RealiseOptions, Realised, apply_mixer_controls, apply_send_controls, beat_samples, channel_nodes,
@@ -376,7 +376,16 @@ pub fn render_offline_with_transport(
             graph.reset_sequenced();
         }
         if step.process {
-            graph.process_block(step.events, step.snapshot, step.range.clone());
+            // **With the audio clips**, or an offline bounce is the song
+            // without any of its takes in it — a mistake nobody would notice
+            // until they listened to the file.
+            graph.process_block_with_audio(
+                step.events,
+                &[],
+                step.audio,
+                step.snapshot,
+                step.range.clone(),
+            );
             for i in 0..frames {
                 out.push(graph.buffer_pool.buffer_mut(0)[i]);
                 out.push(graph.buffer_pool.buffer_mut(1)[i]);

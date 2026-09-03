@@ -78,6 +78,10 @@ pub struct Session {
     /// recompiled on every edit, and both maps are what turns a document into
     /// events addressed at the right nodes. Replaced whenever the graph is.
     param_nodes: HashMap<fontelle_types::ParamAddress, NodeId>,
+    /// Which node plays the audio clips routed to each mixer track — see
+    /// [`crate::Realised::audio_nodes`]. Beside the two above and replaced with
+    /// them, for the same reason.
+    audio_nodes: HashMap<Option<MixerTrackId>, NodeId>,
     /// The live end of every mixer track's fader and meter, as the graph that
     /// is currently playing sees them.
     ///
@@ -286,6 +290,7 @@ impl Session {
             library,
             channel_nodes,
             param_nodes: HashMap::new(),
+            audio_nodes: HashMap::new(),
             track_controls: HashMap::new(),
             effect_controls: HashMap::new(),
             spectrum_taps: HashMap::new(),
@@ -832,10 +837,14 @@ impl Session {
         };
         let mut realised =
             realise(&self.project, &self.library, options).map_err(|e| e.to_string())?;
-        let timeline = fontelle_sequencer::compile(
+        let timeline = fontelle_sequencer::compile_with(
             &self.project,
-            &realised.channel_nodes,
-            &Default::default(),
+            &fontelle_sequencer::NodeMaps {
+                channels: &realised.channel_nodes,
+                params: &realised.param_nodes,
+                audio: &realised.audio_nodes,
+            },
+            fontelle_sequencer::CompileScope::Song,
         );
         let samples = crate::project_duration_samples(&self.project, RELEASE_TAIL);
         let audio = crate::render_offline(&timeline, &mut realised.graph, samples);
@@ -1016,10 +1025,13 @@ impl Session {
     /// Public so a test can prove a *sequencer* mute is one — that a muted
     /// channel puts no events on the timeline at all — without a sound card.
     pub fn compiled(&self) -> fontelle_types::CompiledTimeline {
-        fontelle_sequencer::compile_scoped(
+        fontelle_sequencer::compile_with(
             &self.project,
-            &self.channel_nodes,
-            &self.param_nodes,
+            &fontelle_sequencer::NodeMaps {
+                channels: &self.channel_nodes,
+                params: &self.param_nodes,
+                audio: &self.audio_nodes,
+            },
             self.scope(),
         )
     }
@@ -1178,6 +1190,7 @@ impl Session {
             Ok(realised) => {
                 self.channel_nodes = realised.channel_nodes;
                 self.param_nodes = realised.param_nodes;
+                self.audio_nodes = realised.audio_nodes;
                 // The old set belonged to the graph that is being replaced.
                 self.track_controls = realised.track_controls;
                 self.effect_controls = realised.effect_controls;

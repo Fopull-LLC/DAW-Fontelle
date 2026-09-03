@@ -885,6 +885,10 @@ impl AudioNode for MixerTrackNode {
 
     fn reset(&mut self) {}
 
+    fn debug_name(&self) -> &'static str {
+        "mixer-track"
+    }
+
     fn params(&self) -> &dyn ParamSet {
         &EmptyParams
     }
@@ -1055,8 +1059,242 @@ impl AudioNode for SendNode {
 /// DSP's floor are the same number rather than two that nearly agree.
 pub const SEND_MIN_DB: f32 = -60.0;
 
+/// The player in front of a mixer track that turns audio clips into sound
+/// (TDD §15).
+///
+/// A note clip becomes **events** and a sampler turns them into sound. An audio
+/// clip is not events: it is a continuous stream that has to be at one place on
+/// the song and nowhere else, so there is no moment to schedule — there is a
+/// range to be inside of. This node reads the transport's own sample position
+/// and the placements the sequencer compiled, and decides per sample which
+/// frame of which file belongs where.
+///
+/// # Where the audio comes from
+///
+/// An [`AudioStore`], handed over when the graph is built — exactly as a
+/// `SamplerNode` is handed its `SampleStore`. The placements arrive per block
+/// on the compiled timeline and carry no audio at all, which is what keeps a
+/// recompile (one per mouse-move while dragging a clip) from moving a hundred
+/// megabytes of take around.
+///
+/// # The filters
+///
+/// §15.1 puts a filter on every clip so *"make this one clip darker"* costs no
+/// mixer track and no plugin slot. A filter is stateful, so each clip needs its
+/// own — kept in a fixed pool allocated at `prepare` and claimed by
+/// [`ClipId`](fontelle_types::ClipId), so a clip keeps its filter's state across
+/// blocks even as the placement list is rebuilt underneath it. A track with
+/// more filtered clips **sounding at once** than the pool holds runs the
+/// surplus dry rather than allocating, which is INVARIANT 1: a wrong tone for a
+/// block is recoverable and an allocation on the audio thread is not.
 pub struct AudioClipNode {
-    // TDD §15 (M6).
+    store: std::sync::Arc<fontelle_core::AudioStore>,
+    /// One per pool slot, each remembering which clip last used it.
+    filters: Vec<(Option<fontelle_types::ClipId>, fontelle_fx::Filter)>,
+    /// Scratch for one clip's block, so the filter can be run over a
+    /// contiguous buffer without allocating. Sized at `prepare`.
+    scratch: [Vec<f32>; MAX_CHANNELS],
+    sample_rate: f32,
+}
+
+/// How many clips on one track may have a filter engaged at the same moment.
+///
+/// Generous: a track carrying sixteen simultaneously-filtered audio clips is
+/// already an unusual arrangement, and the cost of a spare slot is one unused
+/// SVF.
+const CLIP_FILTER_SLOTS: usize = 16;
+
+impl AudioClipNode {
+    pub fn new(store: std::sync::Arc<fontelle_core::AudioStore>) -> Self {
+        Self {
+            store,
+            filters: Vec::new(),
+            scratch: Default::default(),
+            sample_rate: 48_000.0,
+        }
+    }
+
+}
+
+/// The slot in `filters` holding `clip`'s filter, claiming a free one if it has
+/// none.
+///
+/// A linear scan of sixteen on the audio thread, which is nothing beside the
+/// buffer read it precedes. `None` when every slot is spoken for by a clip
+/// sounding in this same block — see [`AudioClipNode`]'s own note.
+///
+/// A free function rather than a method so the caller can hold the store and
+/// the scratch at the same time: `process` splits `self` into its parts exactly
+/// once, and everything after that borrows only what it uses.
+fn filter_slot(
+    filters: &mut [(Option<fontelle_types::ClipId>, fontelle_fx::Filter)],
+    clip: fontelle_types::ClipId,
+    claimed: usize,
+) -> Option<usize> {
+    if let Some(index) = filters.iter().position(|(owner, _)| *owner == Some(clip)) {
+        return Some(index);
+    }
+    // Never one already claimed by another clip in this block: two clips
+    // sharing a filter would each hear the other's ringing.
+    if claimed >= filters.len() {
+        return None;
+    }
+    filters[claimed].0 = Some(clip);
+    filters[claimed].1.reset();
+    Some(claimed)
+}
+
+impl AudioNode for AudioClipNode {
+    fn prepare(&mut self, ctx: &PrepareContext) {
+        self.sample_rate = ctx.sample_rate.max(1.0);
+        self.filters.clear();
+        for _ in 0..CLIP_FILTER_SLOTS {
+            let mut filter = fontelle_fx::Filter::new();
+            filter.prepare(self.sample_rate);
+            self.filters.push((None, filter));
+        }
+        for channel in &mut self.scratch {
+            channel.clear();
+            channel.resize(ctx.max_block_size as usize, 0.0);
+        }
+    }
+
+    fn process(&mut self, ctx: &mut ProcessContext) {
+        // A clip only sounds while something is rolling. Unlike a sampler
+        // there is no live half to keep going: nobody plays an audio clip with
+        // their hands.
+        if !ctx.transport.state.is_processing() {
+            return;
+        }
+        let frames = ctx.outputs.first().map_or(0, |o| o.len());
+        if frames == 0 || ctx.outputs.is_empty() {
+            return;
+        }
+        let start = ctx.sample_range.start;
+        let device_rate = f64::from(self.sample_rate);
+        // Split once, here. The render loop holds a buffer out of the store
+        // and writes the scratch at the same time, which it cannot do through
+        // `self`.
+        let Self {
+            store,
+            filters,
+            scratch,
+            ..
+        } = self;
+
+        // Collected first, because rendering borrows `self` mutably and the
+        // placements live in `ctx`. A fixed-size array rather than a `Vec`:
+        // this is the audio thread (INVARIANT 1).
+        let mut sounding: [Option<&fontelle_types::AudioPlacement>; CLIP_FILTER_SLOTS] =
+            [None; CLIP_FILTER_SLOTS];
+        let mut count = 0;
+        for placement in ctx.audio.iter().filter(|p| p.target == ctx.node) {
+            // Nothing to do for a clip that is not in this block at all, which
+            // is nearly all of them on a long song.
+            if placement.range.end <= start || placement.range.start >= ctx.sample_range.end {
+                continue;
+            }
+            if count < sounding.len() {
+                sounding[count] = Some(placement);
+                count += 1;
+            }
+        }
+
+        let mut claimed = 0;
+        for placement in sounding.iter().take(count).flatten() {
+            let clip = &placement.data;
+            let Some(buffer) = store.get(clip.asset.id) else {
+                // A clip whose file has not been decoded yet: silent, and it
+                // fills itself in as soon as the loader publishes a new store.
+                // §15.3's "draw what exists" applied to sound.
+                continue;
+            };
+            // The file's rate against the device's. A 44.1 kHz loop on a
+            // 48 kHz device advances slower than one frame per frame, or it
+            // plays sharp — the single most common bug in this whole area.
+            let ratio = f64::from(buffer.sample_rate.max(1)) / device_rate;
+            let gain = clip.gain();
+            let (left_gain, right_gain) = clip_pan(clip.pan);
+
+            let filtered = clip.filter_engaged();
+            let slot = if filtered {
+                let index = filter_slot(filters, placement.clip, claimed);
+                if index == Some(claimed) {
+                    claimed += 1;
+                }
+                index
+            } else {
+                None
+            };
+
+            // One clip's contribution, dry, into the scratch — then the filter
+            // over it, then summed in. Two passes rather than one because the
+            // filter wants a contiguous run and the output bus already holds
+            // other clips' audio.
+            let channels = ctx.outputs.len().min(MAX_CHANNELS);
+            for channel in scratch.iter_mut().take(channels) {
+                channel[..frames].fill(0.0);
+            }
+            for frame in 0..frames {
+                let Some(position) = placement.position(start + frame as i64) else {
+                    continue;
+                };
+                let clip_frame = position as f64 * ratio;
+                let source = clip.source_position(clip_frame);
+                if source < 0.0 {
+                    continue;
+                }
+                let envelope = gain * clip.fade_gain(clip_frame);
+                for (channel, buf) in scratch.iter_mut().take(channels).enumerate() {
+                    buf[frame] = buffer.at(source, channel as u16) * envelope;
+                }
+            }
+
+            if let Some(slot) = slot {
+                let (a, b) = scratch.split_at_mut(1);
+                let mut sides: [&mut [f32]; MAX_CHANNELS] =
+                    [&mut a[0][..frames], &mut b[0][..frames]];
+                filters[slot]
+                    .1
+                    .process(&mut sides[..channels], &clip.filter, ctx.transport.bpm);
+            }
+
+            for (channel, out) in ctx.outputs.iter_mut().take(channels).enumerate() {
+                let side = if channel == 0 { left_gain } else { right_gain };
+                for frame in 0..frames {
+                    out[frame] += scratch[channel][frame] * side;
+                }
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        for (owner, filter) in &mut self.filters {
+            *owner = None;
+            filter.reset();
+        }
+    }
+
+    fn debug_name(&self) -> &'static str {
+        "audio-clips"
+    }
+
+    fn params(&self) -> &dyn ParamSet {
+        &EmptyParams
+    }
+}
+
+/// A clip's own pan, as a pair of channel gains.
+///
+/// [`PanLaw::Linear`](fontelle_types::PanLaw::Linear) — balance-style, **unity
+/// at centre** — rather than the constant-power law a mixer track uses. The
+/// reason is the identity property this whole feature rests on: a file dropped
+/// on the arrangement has to sound exactly like the file, and a constant-power
+/// centre is that file three decibels down. A track's pan is a balance control
+/// over a bus and gets the -3 dB law; this is a clip's own placement and gets
+/// the one that does nothing when it is not moved.
+fn clip_pan(pan: f32) -> (f32, f32) {
+    fontelle_types::PanLaw::Linear.gains(pan)
 }
 
 /// The metronome's switch and its beat, shared with the RT thread.
@@ -1513,6 +1751,7 @@ mod tests {
                 outputs: &mut slices,
                 all_events: &[],
                 live_events: &[],
+                audio: &[],
                 node: fontelle_types::NodeId::default(),
                 transport: TransportSnapshot {
                     state: TransportState::Playing,
@@ -1777,6 +2016,7 @@ mod tests {
                 outputs: &mut out_slices,
                 all_events: &events,
                 live_events: &[],
+                audio: &[],
                 node: fontelle_types::NodeId::default(),
                 transport: TransportSnapshot {
                     state: TransportState::Playing,
@@ -1806,6 +2046,7 @@ mod tests {
                 outputs: &mut slices,
                 all_events: &[],
                 live_events: &[],
+                audio: &[],
                 node: fontelle_types::NodeId::default(),
                 transport: TransportSnapshot {
                     state: TransportState::Playing,
@@ -1912,6 +2153,7 @@ mod tests {
                 outputs: &mut slices,
                 all_events: &[],
                 live_events: &[],
+                audio: &[],
                 node: fontelle_types::NodeId::default(),
                 transport: TransportSnapshot {
                     state: TransportState::Playing,
@@ -1971,6 +2213,7 @@ mod tests {
                 outputs: &mut out_slices,
                 all_events: &events,
                 live_events: &[],
+                audio: &[],
                 node: fontelle_types::NodeId::default(),
                 transport: TransportSnapshot {
                     state: TransportState::Playing,

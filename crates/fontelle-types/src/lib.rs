@@ -11,6 +11,7 @@ mod time;
 
 pub use asset::{AssetKind, AssetRef};
 pub use audio_clip::{
+    AudioPlacement,
     ClipLoopMode, Fade, FadeCurve, MAX_CLIP_GAIN_DB, MAX_CLIP_SPEED, MIN_CLIP_GAIN_DB,
     MIN_CLIP_SPEED, AudioClipData,
 };

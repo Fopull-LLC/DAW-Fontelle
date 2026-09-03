@@ -1,7 +1,7 @@
 use std::ops::Range;
 use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU64, Ordering};
 
-use fontelle_types::{CompiledTimeline, Sample, Tick, TimedEvent};
+use fontelle_types::{AudioPlacement, CompiledTimeline, Sample, Tick, TimedEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -204,6 +204,12 @@ pub struct Step<'a> {
     pub range: Range<Sample>,
     /// The timeline events falling in `range`. Empty when `process` is false.
     pub events: &'a [TimedEvent],
+    /// Every audio clip on the timeline (TDD §15). **Not** narrowed to `range`
+    /// the way `events` is: an event is a moment and can be cursored past, and
+    /// a clip is a range that a block either falls inside or does not — so the
+    /// player asks that question per placement, and there is nothing to
+    /// advance. Empty when `process` is false.
+    pub audio: &'a [AudioPlacement],
     pub snapshot: TransportSnapshot,
     /// The graph must be reset *before* this step: a stop, a seek, or a loop
     /// wrap has cut the audio off from what came before it.
@@ -316,6 +322,9 @@ impl TransportReader {
                     frames,
                     range: self.position..self.position + frames as i64,
                     events: &[],
+                    // Nor any clips: the song is stopped and only what is
+                    // played live should sound.
+                    audio: &[],
                     snapshot,
                     reset,
                     process: true,
@@ -330,6 +339,7 @@ impl TransportReader {
                 frames: frames_remaining.max(1),
                 range: self.position..self.position,
                 events: &[],
+                audio: &[],
                 snapshot,
                 reset,
                 process: false,
@@ -383,6 +393,7 @@ impl TransportReader {
             },
             range,
             events,
+            audio: &timeline.audio,
             reset,
             process: true,
         }
@@ -424,6 +435,7 @@ mod tests {
             events: samples.iter().copied().map(note_on).collect(),
             index: Vec::new(),
             tempo: Vec::new(),
+            audio: Vec::new(),
         }
     }
 
@@ -803,6 +815,7 @@ mod audition_tests {
             }],
             index: Vec::new(),
             tempo: Vec::new(),
+            audio: Vec::new(),
         }
     }
 
