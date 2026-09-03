@@ -2026,12 +2026,23 @@ impl ApplicationHandler for WindowApp {
                 // not a cut.
                 self.apply_roll_edits(edits);
                 let beats = self.beats_per_bar();
+                // **Before** the release, because after it the gesture is gone:
+                // a marquee and a cut are both drawn by the canvas and known to
+                // nothing in the document, so the frame that clears them has to
+                // be asked for on their own account. Without this the stroke
+                // stays on screen after the button comes up — the same fault as
+                // the one that made it invisible during the drag, pointed the
+                // other way.
+                let overlay = self.timeline.draws_overlay() || self.roll.draws_overlay();
                 let edits =
                     self.timeline
                         .release_over(x, y, &self.timeline_layout, &self.clips, beats);
                 // The cut tool's whole edit lands here, like the roll's: a
                 // line half-drawn is not a cut.
                 self.apply_arrange_edits(edits);
+                if overlay {
+                    self.tree.invalidate(TIMELINE);
+                }
                 // **Before** the release, and this order is the whole of it: a
                 // click's audition starts here, on the way up, and
                 // `Auditions::start` clears any release that was scheduled. Ask

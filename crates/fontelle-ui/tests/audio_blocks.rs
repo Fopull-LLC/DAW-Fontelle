@@ -26,6 +26,8 @@ use fontelle_ui::document::{AudioPreview, ClipInfo, ClipKind};
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
 
+const BAR: Tick = PPQN * 4;
+
 fn view() -> TimelineView {
     TimelineView {
         pixels_per_tick: 0.05,
@@ -226,4 +228,61 @@ fn the_fades_shape_the_picture_the_way_they_shape_the_sound() {
         first < middle / 2.0,
         "the fade in is not drawn: {first} against {middle}"
     );
+}
+
+// --------------------------------------------------------- cutting one ---
+
+/// *"should work cleanly with all the tools like cutting and whatnot."*
+///
+/// The blade is kind-blind by design — it asks where a stroke crosses a row's
+/// middle and nothing else — but "by design" is worth a test, because an audio
+/// clip is the one kind that arrived after the tool did.
+#[test]
+fn the_blade_cuts_a_take_like_it_cuts_anything_else() {
+    use fontelle_ui::canvas::{SnapDivision, clip_cuts, lane_to_y};
+
+    let mut c = clip(BAR, flat(64, 0.5));
+    c.lane = 1;
+    let clips = vec![c];
+    let (v, grid) = (view(), grid());
+    let row = lane_to_y(&v, grid, 1) + v.lane_height / 2.0;
+    let x = fontelle_ui::canvas::timeline_tick_to_x(&v, grid, BAR / 2);
+
+    let cuts = clip_cuts(
+        &v,
+        grid,
+        &clips,
+        (x, row - v.lane_height),
+        (x, row + v.lane_height),
+        SnapDivision::Step,
+        4,
+    );
+    assert_eq!(cuts.len(), 1, "the blade passed straight through a take");
+    assert_eq!(cuts[0].0, clips[0].id);
+    assert!(cuts[0].1 > 0 && cuts[0].1 < BAR, "it cut at {}", cuts[0].1);
+}
+
+#[test]
+fn a_stroke_that_starts_below_a_take_still_crosses_it() {
+    // Which is the case the window found: the blade is dragged downwards from
+    // the row above, and what matters is that the row's middle is somewhere
+    // between the two ends of the stroke.
+    use fontelle_ui::canvas::{SnapDivision, clip_cuts, lane_to_y};
+
+    let mut c = clip(BAR, flat(64, 0.5));
+    c.lane = 1;
+    let clips = vec![c];
+    let (v, grid) = (view(), grid());
+    let row = lane_to_y(&v, grid, 1) + v.lane_height / 2.0;
+    let x = fontelle_ui::canvas::timeline_tick_to_x(&v, grid, BAR / 2);
+    let cuts = clip_cuts(
+        &v,
+        grid,
+        &clips,
+        (x, row + v.lane_height),
+        (x, row - v.lane_height),
+        SnapDivision::Step,
+        4,
+    );
+    assert_eq!(cuts.len(), 1, "a stroke drawn upwards cuts nothing");
 }

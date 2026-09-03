@@ -23,7 +23,7 @@ codebase that cost real time to rediscover.
 > be able to record my voice into the daw or import different sounds and loops
 > and whatnot to make songs with."*
 
-**Where the count went:** 2265 → 2450 across the workspace, 0 failing, clippy
+**Where the count went:** 2265 → 2452 across the workspace, 0 failing, clippy
 clean at `-D warnings`. Six commits, each one usable on its own.
 
 ### Four things the window got wrong, fixed first
@@ -117,6 +117,12 @@ dropped file takes**.
   arrangement's own list at draw time now, so the two are literally one picture.
 - **A menu opened off the right-hand edge**, which is how the thirty-two-row list
   was noticed at all.
+- **The blade's stroke stayed on screen after the button came up.** The same
+  fault as the one that made it invisible during the drag, pointed the other
+  way: a marquee and a cut are drawn by the canvas and known to nothing in the
+  document, so the frame that *clears* them has to be asked for on their own
+  account too. Watching a take get cut into three was what showed it — the
+  screenshots kept disagreeing with the arrangement.
 
 ### What is not done
 
