@@ -57,6 +57,7 @@ fn a_clip(id: ClipId, lane: usize, start: Tick, length: Tick) -> ClipInfo {
         kind: ClipKind::Notes,
         curve: Vec::new(),
         notes: Vec::new(),
+        audio: Default::default(),
     }
 }
 

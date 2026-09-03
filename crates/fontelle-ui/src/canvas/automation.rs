@@ -151,6 +151,7 @@ pub fn automation_polyline(block: Rect, length: Tick, curve: &[CurvePoint]) -> V
             kind: crate::document::ClipKind::Automation,
             curve: Vec::new(),
             notes: Vec::new(),
+            audio: Default::default(),
         },
     )
     .area;

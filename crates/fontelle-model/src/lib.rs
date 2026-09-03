@@ -27,7 +27,8 @@ pub use channel::Channel;
 pub use clip::{AudioClipData, Clip, ClipMap, ClipSource};
 pub use command::{Command, CommandError, History};
 pub use commands::{
-    AddAutomationPoint, AddChannel, AddClip, AddInsert, AddLane, AddMixerTrack, AddNotes, AddSend,
+    AddAudioClip, AddAutomationPoint, AddChannel, AddClip, AddInsert, AddLane, AddMixerTrack,
+    AddNotes, AddSend,
     Compound,
     DuplicateChannel, DuplicateClip, FlagTarget, ImportPart, ImportParts, MIN_CLIP_LENGTH, MadePart, MoveAutomationPoints, MoveClip, MoveInsert,
     MoveLane, MoveNotes, NudgeNoteProperty, NumberTarget, PlaceAutomationPoints, RemoveAutomationPoints, RemoveChannel,

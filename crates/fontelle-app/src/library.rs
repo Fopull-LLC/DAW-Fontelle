@@ -54,6 +54,12 @@ pub struct SampleLibrary {
     /// file rather than eight copies of it (TDD §7.7).
     audio_files: slotmap::SlotMap<AssetId, PathBuf>,
     audio_by_path: HashMap<PathBuf, AssetId>,
+    /// The waveform summary per audio asset (TDD §15.3), built once on import.
+    ///
+    /// Beside the audio rather than in the document: it is regenerable from
+    /// the file, which is why §17.1 puts its cached form under `cache/` and not
+    /// under `assets/`.
+    audio_peaks: HashMap<AssetId, fontelle_assets::PeakData>,
 }
 
 /// What [`SampleLibrary::import_audio`] found.
@@ -178,6 +184,10 @@ impl SampleLibrary {
             None => {
                 let id = self.audio_files.insert(path.clone());
                 self.audio_by_path.insert(path.clone(), id);
+                self.audio_peaks.insert(
+                    id,
+                    fontelle_assets::generate_peaks(id, &decoded.samples, decoded.channels),
+                );
                 Arc::make_mut(&mut self.audio).insert(
                     id,
                     fontelle_core::AudioBuffer {
@@ -209,6 +219,14 @@ impl SampleLibrary {
     /// Every audio clip's audio, in the form the graph takes.
     pub fn audio_store(&self) -> Arc<fontelle_core::AudioStore> {
         self.audio.clone()
+    }
+
+    /// One asset's waveform summary, if it has been decoded.
+    ///
+    /// `None` while a file is still being read — §15.3's *"draw what exists"*,
+    /// which the arrangement answers by drawing nothing rather than a slab.
+    pub fn audio_peaks(&self, asset: AssetId) -> Option<&fontelle_assets::PeakData> {
+        self.audio_peaks.get(&asset)
     }
 
     fn store_mut(&mut self) -> &mut SampleStore {

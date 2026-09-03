@@ -82,6 +82,9 @@ impl BankFilter {
             Self::Soundfonts => "sf2",
             Self::Files(fontelle_types::FolderKind::Midi) => "mid",
             Self::Files(fontelle_types::FolderKind::Scores) => "fsc",
+            // Not an extension, because there are six of them and a folder
+            // row saying "12 wav" over a folder of flac would be a lie.
+            Self::Files(fontelle_types::FolderKind::Audio) => "sound",
         }
     }
 }

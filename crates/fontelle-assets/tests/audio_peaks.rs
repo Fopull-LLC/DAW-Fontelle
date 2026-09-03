@@ -52,6 +52,19 @@ fn a_partial_bucket_at_the_end_is_still_a_bucket() {
 }
 
 #[test]
+fn the_peaks_remember_how_many_frames_they_cover() {
+    // What lets a reader map a position in the *file* to a bucket. Without it
+    // the levels are a picture of an unknown length, and every caller would
+    // have to be told the frame count separately — which is one more thing to
+    // keep in step and the usual place a waveform starts drawing the wrong
+    // part of a take.
+    let peaks = generate_peaks(an_asset(), &vec![0.0f32; PEAK_BUCKET * 5], 1);
+    assert_eq!(peaks.frames, PEAK_BUCKET * 5);
+    let stereo = generate_peaks(an_asset(), &vec![0.0f32; PEAK_BUCKET * 4], 2);
+    assert_eq!(stereo.frames, PEAK_BUCKET * 2, "frames, not samples");
+}
+
+#[test]
 fn the_levels_run_coarsest_first_and_each_is_half_the_one_after_it() {
     let samples = vec![0.0f32; PEAK_BUCKET * 64];
     let peaks = generate_peaks(an_asset(), &samples, 1);

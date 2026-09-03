@@ -36,11 +36,16 @@ pub struct BrowserLayout {
     pub projects_tab: Rect,
     pub import_tab: Rect,
     pub settings_tab: Rect,
-    /// The two buttons inside the Import tab that say which kind of file is
-    /// being browsed. **Empty in every other mode** — a control that does
-    /// nothing in the mode you are in is worse than one that is not there.
-    pub midi_kind: Rect,
-    pub score_kind: Rect,
+    /// A button per kind inside the Import tab, saying which one is being
+    /// browsed, in `FolderKind::ALL`'s order. **Empty in every other mode** —
+    /// a control that does nothing in the mode you are in is worse than one
+    /// that is not there.
+    ///
+    /// A list rather than one field per kind: adding audio to `FolderKind` with
+    /// two named fields here drew two buttons over three kinds, which is the
+    /// same class of bug as the fourth browser tab that was drawn with no words
+    /// on it. What is laid out is what the enum says there is.
+    pub kinds: Vec<(fontelle_types::FolderKind, Rect)>,
     /// The search field. §17.5's instant fuzzy search is the feature that makes
     /// a large collection usable, so it is the first thing in the panel.
     pub search: Rect,
@@ -233,15 +238,20 @@ pub fn browser_layout_for(
     // The two kind buttons take the row "New project" takes in the Projects
     // tab — same place, same shape, so nothing under them moves when the tab
     // changes.
-    let (midi_kind, score_kind) = if mode == BrowserMode::Import {
+    let kinds: Vec<(fontelle_types::FolderKind, Rect)> = if mode == BrowserMode::Import {
         let row = take_row(metrics.row_height);
-        let half = (row.width - GAP).max(0.0) / 2.0;
-        (
-            Rect::new(row.x, row.y, half, row.height).clamped(),
-            Rect::new(row.x + half + GAP, row.y, half, row.height).clamped(),
-        )
+        let count = fontelle_types::FolderKind::ALL.len() as f32;
+        let each = ((row.width - GAP * (count - 1.0)) / count).max(0.0);
+        fontelle_types::FolderKind::ALL
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| {
+                let x = row.x + (each + GAP) * index as f32;
+                (*kind, Rect::new(x, row.y, each, row.height).clamped())
+            })
+            .collect()
     } else {
-        (Rect::ZERO, Rect::ZERO)
+        Vec::new()
     };
 
     let (new_project, export) = if mode == BrowserMode::Projects {
@@ -330,8 +340,7 @@ pub fn browser_layout_for(
         projects_tab,
         import_tab,
         settings_tab,
-        midi_kind,
-        score_kind,
+        kinds,
         search,
         file_rows: rows(files, metrics, file_count, file_scroll),
         files,
@@ -436,13 +445,14 @@ impl BrowserHit {
         Some(match self {
             Self::Mode(BrowserMode::Sounds) => "The soundfonts you have",
             Self::Mode(BrowserMode::Projects) => "Your projects folder",
-            Self::Mode(BrowserMode::Import) => "MIDI files and FL scores to bring in",
+            Self::Mode(BrowserMode::Import) => "Sounds, MIDI files and FL scores to bring in",
             Self::Mode(BrowserMode::Settings) => "How Fontelle is set up",
             Self::Search(BrowserMode::Import) => "Search every file in the folder by name",
             Self::OpenFolder(BrowserMode::Import) => "Show the import folder in your file manager",
             Self::ChooseFolder(BrowserMode::Import) => "Choose the folder to import from",
             Self::Kind(fontelle_types::FolderKind::Midi) => "Browse your .mid files",
             Self::Kind(fontelle_types::FolderKind::Scores) => "Browse FL Studio .fsc scores",
+            Self::Kind(fontelle_types::FolderKind::Audio) => "Browse your sounds and loops",
             Self::Search(BrowserMode::Sounds) => "Search every soundfont by name",
             Self::Search(BrowserMode::Projects) => "Search your projects by name",
             // Never drawn in the settings tab: there is no box there. A hit is
@@ -480,11 +490,10 @@ pub fn browser_hit(layout: &BrowserLayout, x: f32, y: f32) -> BrowserHit {
     if layout.settings_tab.contains(x, y) {
         return BrowserHit::Mode(BrowserMode::Settings);
     }
-    if layout.midi_kind.contains(x, y) {
-        return BrowserHit::Kind(fontelle_types::FolderKind::Midi);
-    }
-    if layout.score_kind.contains(x, y) {
-        return BrowserHit::Kind(fontelle_types::FolderKind::Scores);
+    for (kind, rect) in &layout.kinds {
+        if rect.contains(x, y) {
+            return BrowserHit::Kind(*kind);
+        }
     }
     if layout.new_project.contains(x, y) {
         return BrowserHit::NewProject;

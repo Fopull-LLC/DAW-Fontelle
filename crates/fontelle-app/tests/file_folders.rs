@@ -178,7 +178,7 @@ fn the_folders_are_under_a_heading_of_their_own() {
             headings_before_folders.push(seen_heading);
         }
     }
-    assert_eq!(headings_before_folders.len(), 2);
+    assert_eq!(headings_before_folders.len(), FolderKind::ALL.len());
     for heading in &headings_before_folders {
         let heading = heading.expect("a folder row must sit under a heading");
         assert!(
@@ -186,9 +186,9 @@ fn the_folders_are_under_a_heading_of_their_own() {
             "the folders are under {heading:?}, which reads as the keyboard's"
         );
     }
-    assert_eq!(
-        headings_before_folders[0], headings_before_folders[1],
-        "both folders belong under the same heading"
+    assert!(
+        headings_before_folders.windows(2).all(|pair| pair[0] == pair[1]),
+        "every folder belongs under the same heading"
     );
 }
 

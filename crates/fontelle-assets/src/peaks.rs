@@ -38,6 +38,13 @@ pub const PEAK_BUCKET: usize = 64;
 #[derive(Debug, Clone, PartialEq)]
 pub struct PeakData {
     pub asset: AssetId,
+    /// How many **frames** of audio these levels cover.
+    ///
+    /// Kept here rather than asked of the caller: a reader mapping a position
+    /// in the file to a bucket needs both, and two numbers travelling
+    /// separately is the usual reason a waveform draws the wrong part of a
+    /// take.
+    pub frames: usize,
     /// One `Vec<(min, max)>` per zoom level, **coarsest first** — so
     /// `levels.last()` is the most detailed and `levels[0]` is the summary.
     pub levels: Vec<Vec<(f32, f32)>>,
@@ -82,6 +89,7 @@ pub fn generate_peaks(asset: AssetId, samples: &[f32], channels: u16) -> PeakDat
     if frames == 0 {
         return PeakData {
             asset,
+            frames: 0,
             levels: Vec::new(),
         };
     }
@@ -118,5 +126,9 @@ pub fn generate_peaks(asset: AssetId, samples: &[f32], channels: u16) -> PeakDat
         levels.push(above);
     }
     levels.reverse();
-    PeakData { asset, levels }
+    PeakData {
+        asset,
+        frames,
+        levels,
+    }
 }

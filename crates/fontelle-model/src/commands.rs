@@ -3048,6 +3048,178 @@ pub struct MadePart {
     pub clip: ClipId,
 }
 
+/// Brings one audio file into the arrangement: a row, and a clip on it
+/// (TDD §15).
+///
+/// **One command rather than a [`Compound`]** of `AddLane`/`AddClip`, for the
+/// reason [`ImportParts`] is one: the clip has to name the lane this same
+/// command is about to mint, and a `Compound` holds commands built before any
+/// of them ran. Two entries in the history would be worse still — an undo that
+/// leaves an empty row behind is not an undo.
+pub struct AddAudioClip {
+    label: String,
+    name: String,
+    data: fontelle_types::AudioClipData,
+    start: Tick,
+    length: Tick,
+    /// What it made, kept so a **redo** puts everything back under the ids it
+    /// minted the first time. Anything stacked above this entry names them.
+    made: Option<(LaneId, ClipId)>,
+}
+
+impl AddAudioClip {
+    pub fn new(
+        name: impl Into<String>,
+        data: fontelle_types::AudioClipData,
+        start: Tick,
+        length: Tick,
+    ) -> Self {
+        let name = name.into();
+        Self {
+            label: format!("Import {name}"),
+            name,
+            data,
+            start,
+            length,
+            made: None,
+        }
+    }
+
+    /// The clip it made, once it has been applied.
+    pub fn clip(&self) -> Option<ClipId> {
+        self.made.map(|(_, clip)| clip)
+    }
+
+    /// And the row it put it on.
+    pub fn lane(&self) -> Option<LaneId> {
+        self.made.map(|(lane, _)| lane)
+    }
+}
+
+impl Command for AddAudioClip {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        // Past the bottom of the stack, so a file dropped onto a song does not
+        // push what is already there down the arrangement.
+        let order = doc
+            .lanes
+            .values()
+            .map(|lane| lane.order)
+            .max()
+            .map_or(0, |highest| highest.saturating_add(1));
+        let lane = Lane {
+            name: self.name.clone(),
+            height: DEFAULT_LANE_HEIGHT,
+            color: AUDIO_LANE_COLOR,
+            muted: false,
+            locked: false,
+            order,
+        };
+        let clip = Clip {
+            lane: LaneId::default(),
+            start: self.start,
+            length: self.length,
+            source: ClipSource::Audio(self.data.clone()),
+            prefab_link: None,
+            color: None,
+            muted: false,
+            loop_length: None,
+        };
+
+        let (lane_id, clip_id) = match self.made {
+            Some((lane_id, clip_id)) => {
+                if !doc.lanes.insert_at(lane_id, lane) {
+                    return Err(CommandError("that row id is taken".into()));
+                }
+                let mut clip = clip;
+                clip.lane = lane_id;
+                if !doc.clips.insert_at(clip_id, clip) {
+                    doc.lanes.remove(lane_id);
+                    return Err(CommandError("that clip id is taken".into()));
+                }
+                (lane_id, clip_id)
+            }
+            None => {
+                let lane_id = doc.lanes.insert(lane);
+                let mut clip = clip;
+                clip.lane = lane_id;
+                (lane_id, doc.clips.insert(clip))
+            }
+        };
+        self.made = Some((lane_id, clip_id));
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match self.made {
+            Some((lane, clip)) => Box::new(RemoveAudioClip { lane, clip }),
+            None => Box::new(NotApplied("importing a sound")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() + self.name.len()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// What undoing an [`AddAudioClip`] does: the clip and the row it arrived on,
+/// both gone.
+struct RemoveAudioClip {
+    lane: LaneId,
+    clip: ClipId,
+}
+
+impl Command for RemoveAudioClip {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        doc.clips.remove(self.clip);
+        doc.lanes.remove(self.lane);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        // Never reached: the history holds the `AddAudioClip` and re-applies
+        // it for a redo, which is what puts the original ids back.
+        Box::new(NotApplied("un-importing a sound"))
+    }
+
+    fn label(&self) -> &str {
+        "Remove imported sound"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// The colour a row made for an imported sound gets.
+///
+/// A different hue from the blue a note row opens on, so an arrangement of both
+/// reads as two kinds of thing at a glance — which is the one question a
+/// colour on a row answers.
+const AUDIO_LANE_COLOR: [u8; 4] = [0x5f, 0xa8, 0x88, 0xff];
+
+/// How tall a row arrives, matching the one `AddLane` makes.
+const DEFAULT_LANE_HEIGHT: f32 = 32.0;
+
 /// Brings a file's parts into the project that is **already open**.
 ///
 /// `fontelle_assets::import_midi` builds a whole new `Project`, which is the

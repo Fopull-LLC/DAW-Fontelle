@@ -1056,6 +1056,7 @@ fn a_clip(
         kind: fontelle_ui::document::ClipKind::Notes,
         curve: Vec::new(),
         notes: Vec::new(),
+        audio: Default::default(),
     }
 }
 
@@ -2090,6 +2091,7 @@ fn an_automation_clip(values: &[f64]) -> fontelle_ui::document::ClipInfo {
             })
             .collect(),
         notes: Vec::new(),
+        audio: Default::default(),
     }
 }
 
@@ -2262,6 +2264,7 @@ fn a_note_clip(loop_length: Option<Tick>) -> fontelle_ui::document::ClipInfo {
             n(PPQN * 2, PPQN, 67),
             n(PPQN * 3, PPQN, 72),
         ],
+        audio: Default::default(),
     }
 }
 

@@ -77,6 +77,13 @@ pub struct Settings {
     /// a second disk, and on the next one it will be somewhere else again.
     #[serde(default)]
     pub score_dir: Option<PathBuf>,
+    /// Where sounds and loops are kept, for the arrangement's *Import audio*
+    /// (TDD §15).
+    ///
+    /// `None` means "ask", like the other two and for INVARIANT 10's reason:
+    /// Fontelle touches nothing the user has not named.
+    #[serde(default)]
+    pub audio_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -89,6 +96,7 @@ impl Default for Settings {
             midi_input: MidiInputSettings::default(),
             midi_dir: None,
             score_dir: None,
+            audio_dir: None,
         }
     }
 }
@@ -198,7 +206,7 @@ pub enum SettingRow {
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 10] = [
+pub const SETTING_ROWS: [SettingRow; 11] = [
     SettingRow::Heading("MIDI input"),
     SettingRow::VelocityCurve,
     SettingRow::FixedVelocity,
@@ -212,6 +220,7 @@ pub const SETTING_ROWS: [SettingRow; 10] = [
     SettingRow::Heading("Import from"),
     SettingRow::Folder(FolderKind::Midi),
     SettingRow::Folder(FolderKind::Scores),
+    SettingRow::Folder(FolderKind::Audio),
 ];
 
 /// How far transpose goes either way. Two octaves is as far as anybody moves a
@@ -432,6 +441,7 @@ impl Settings {
         match kind {
             FolderKind::Midi => self.midi_dir.as_deref(),
             FolderKind::Scores => self.score_dir.as_deref(),
+            FolderKind::Audio => self.audio_dir.as_deref(),
         }
     }
 
@@ -439,6 +449,7 @@ impl Settings {
         match kind {
             FolderKind::Midi => self.midi_dir = dir,
             FolderKind::Scores => self.score_dir = dir,
+            FolderKind::Audio => self.audio_dir = dir,
         }
     }
 

@@ -3546,6 +3546,10 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
                 &[]
             };
             draw_automation_curve(scene, theme, l.grid, whole, clip, body, lit);
+        } else if clip.kind == crate::document::ClipKind::Audio {
+            // *"i should be able to see the waveform of the audio inside the
+            // clip."* Same band as the note preview, same reason.
+            draw_clip_waveform(scene, theme, l.grid, whole, clip, selected);
         } else {
             // And a note clip shows the notes that are in it, for the same
             // reason: what is *in* a clip is the thing you are looking for
@@ -3762,6 +3766,50 @@ fn draw_clip_notes(
 fn lighten(colour: Color, amount: f32) -> Color {
     let mix = |c: u8| (f32::from(c) + (255.0 - f32::from(c)) * amount) as u8;
     Color([mix(colour.0[0]), mix(colour.0[1]), mix(colour.0[2]), colour.0[3]])
+}
+
+/// How far towards white a waveform is drawn against its block.
+///
+/// A step further than the note preview's, because a waveform is a thin line
+/// where a note is a slab: the same distance from the ground reads fainter.
+const WAVEFORM_LIGHTEN: f32 = 0.7;
+
+/// The waveform inside an audio clip's block (TDD §15.3).
+///
+/// *"i should be able to see the waveform of the audio inside the clip."* The
+/// geometry is `canvas::clip_waveform` — including which columns are on screen
+/// — so this only has to choose an ink and put the rectangles down.
+///
+/// The ink is the block's own colour **lightened**, exactly as the note
+/// preview's is and for the same reason: what is inside a clip has to read as
+/// part of it rather than as something lying on top.
+fn draw_clip_waveform(
+    scene: &mut Scene,
+    theme: &Theme,
+    grid: Rect,
+    block: Rect,
+    clip: &ClipInfo,
+    selected: bool,
+) {
+    let columns = crate::canvas::clip_waveform(block, grid, clip);
+    if columns.is_empty() {
+        return;
+    }
+    let p = &theme.palette;
+    let ink = if clip.muted {
+        p.text_muted
+    } else if selected {
+        p.panel
+    } else {
+        lighten(Color(clip.color), WAVEFORM_LIGHTEN)
+    };
+    for column in columns {
+        let column = column.intersection(&grid);
+        if column.is_empty() {
+            continue;
+        }
+        fill_rect(scene, column, ink);
+    }
 }
 
 /// One automation block's curve (TDD §12.1), and the handles it is edited by.
@@ -4002,13 +4050,11 @@ fn draw_browser(
         }
     }
 
-    // Which kind of file the Import tab is showing. Two buttons rather than
-    // one that toggles, because both answers are worth being able to see and
+    // Which kind of file the Import tab is showing. A button each rather than
+    // one that cycles, because every answer is worth being able to see and
     // press directly — a chip saying "MIDI" leaves "and what else?" unasked.
-    for (rect, kind) in [
-        (l.midi_kind, fontelle_types::FolderKind::Midi),
-        (l.score_kind, fontelle_types::FolderKind::Scores),
-    ] {
+    // Read off the layout, which reads off `FolderKind::ALL`.
+    for (kind, rect) in l.kinds.iter().map(|(kind, rect)| (*kind, *rect)) {
         if rect.is_empty() {
             continue;
         }

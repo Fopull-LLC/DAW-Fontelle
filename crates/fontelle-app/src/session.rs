@@ -272,7 +272,74 @@ pub struct Session {
     empty: Arena<NoteId, Note>,
 }
 
+/// How many buckets an audio clip's block preview holds.
+///
+/// A summary of a summary: the peak file already holds the loudest and
+/// quietest sample per 64 frames, and this resamples that onto a fixed number
+/// of columns covering the clip's own trimmed range. Fixed rather than
+/// per-block-width because it is built per document revision and the block is
+/// resized per frame — a preview rebuilt on every zoom is the cost §15.3 exists
+/// to avoid. 512 is more columns than a clip is usually wide, so the picture
+/// is smooth at any width a lane has room for.
+const PREVIEW_BUCKETS: usize = 512;
+
 impl Session {
+    /// The waveform an audio clip's block draws (TDD §15.3).
+    ///
+    /// See [`PREVIEW_BUCKETS`] for how much of it there is.
+    ///
+    /// Resampled onto a fixed number of buckets covering **this clip's own
+    /// trimmed range**, and in **play order** — so a clip trimmed to the middle
+    /// of a file draws the middle of it, and a reversed one draws backwards,
+    /// which is what makes the picture the sound rather than a decoration
+    /// beside it.
+    ///
+    /// Built per document revision rather than per frame, and from the peak
+    /// summary rather than the samples: §15.3's whole point.
+    fn audio_preview(&self, data: &fontelle_types::AudioClipData) -> fontelle_ui::document::AudioPreview {
+        let mut preview = fontelle_ui::document::AudioPreview {
+            peaks: Vec::new(),
+            fade_in: 0.0,
+            fade_out: 0.0,
+        };
+        let frames = data.source_frames();
+        if frames > 0 {
+            // As a fraction of the clip, which is what the canvas draws
+            // against. Clamped, because a fade longer than the clip is a real
+            // thing to ask for by dragging and must not run off the block.
+            preview.fade_in = (data.fade_in.frames as f32 / frames as f32).clamp(0.0, 1.0);
+            preview.fade_out = (data.fade_out.frames as f32 / frames as f32).clamp(0.0, 1.0);
+        }
+        let Some(peaks) = self.library.audio_peaks(data.asset.id) else {
+            // §15.3: draw what exists. Nothing yet is nothing drawn — never a
+            // slab, which would say the take is loud all the way through.
+            return preview;
+        };
+        // The finest level that is not more detail than the buckets can hold.
+        let level = &peaks.levels[peaks.level_for(frames as usize, PREVIEW_BUCKETS)];
+        if level.is_empty() {
+            return preview;
+        }
+        let per_bucket = frames as f64 / PREVIEW_BUCKETS as f64;
+        preview.peaks = (0..PREVIEW_BUCKETS)
+            .map(|bucket| {
+                // Which slice of the *file* this bucket covers. Through
+                // `source_position`, so trim, speed, reverse and looping are
+                // all obeyed by one function rather than four.
+                let from = data.source_position(bucket as f64 * per_bucket);
+                let to = data.source_position((bucket + 1) as f64 * per_bucket);
+                let (from, to) = if from <= to { (from, to) } else { (to, from) };
+                let scale = level.len() as f64 / peaks.frames.max(1) as f64;
+                let a = ((from * scale) as usize).min(level.len() - 1);
+                let b = ((to * scale) as usize).min(level.len() - 1);
+                level[a..=b]
+                    .iter()
+                    .fold((0.0f32, 0.0f32), |acc, (lo, hi)| (acc.0.min(*lo), acc.1.max(*hi)))
+            })
+            .collect();
+        preview
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         project: Project,
@@ -2089,6 +2156,53 @@ impl Session {
         Ok(String::new())
     }
 
+    /// Brings a sound into the arrangement as a clip on a row of its own
+    /// (TDD §15).
+    ///
+    /// **A row of its own**, because an audio clip is a take or a loop and
+    /// dropping one over what is already on a row would replace music with
+    /// music. A `.mid` gets a row per part for the same reason.
+    ///
+    /// Its length is the sound's own **duration**, converted through the
+    /// project's tempo map: a clip whose end is not where the sound ends is one
+    /// every later trim is measured against wrongly.
+    fn import_audio_file(&mut self, path: &Path) -> Result<String, String> {
+        let name = file_label(path);
+        let imported = self.library.import_audio(path).map_err(|e| e.to_string())?;
+        if imported.frames == 0 || imported.sample_rate == 0 {
+            return Err(format!("there is no sound in {name}"));
+        }
+
+        // Where it lands: the time selection's start if there is one, and
+        // otherwise the top of the song. The same rule an imported score
+        // follows.
+        let start = self.project.loop_range.map(|(from, _)| from.max(0)).unwrap_or(0);
+        // Its own duration in ticks, through the tempo map that already owns
+        // every sample-to-tick conversion in the project.
+        let samples = (imported.frames as f64 * self.options.sample_rate as f64
+            / f64::from(imported.sample_rate)) as i64;
+        let at = self.project.tempo_map.tick_to_sample(start);
+        let length = self.project.tempo_map.sample_to_tick(at + samples) - start;
+        let length = length.max(fontelle_model::MIN_CLIP_LENGTH);
+
+        let data = fontelle_types::AudioClipData::whole(
+            imported.asset.clone(),
+            imported.frames as fontelle_types::Sample,
+        );
+        let command = Box::new(fontelle_model::AddAudioClip::new(
+            name.clone(),
+            data,
+            start,
+            length,
+        ));
+        self.apply_for::<fontelle_model::AddAudioClip>(command)?;
+        // The graph has to be rebuilt: the player nodes hold the audio store,
+        // and the one they are holding does not have this file in it.
+        self.rebuild_graph();
+        self.republish();
+        Ok(format!("Imported \u{201c}{name}\u{201d}"))
+    }
+
     /// Imports an FL Studio score into the clip that is open.
     ///
     /// A score is a **phrase** — no instrument, no tempo, no arrangement — so
@@ -2949,6 +3063,7 @@ impl StudioHost for Session {
         let result = match self.import_kind {
             fontelle_types::FolderKind::Midi => self.import_midi_file(&path, None),
             fontelle_types::FolderKind::Scores => self.import_score_file(&path),
+            fontelle_types::FolderKind::Audio => self.import_audio_file(&path),
         };
         match result {
             // An empty message is the multi-part prompt going up: it has not
@@ -3076,6 +3191,9 @@ impl StudioHost for Session {
         if fontelle_types::FolderKind::Scores.accepts(path) {
             return self.import_score_file(path);
         }
+        if fontelle_types::FolderKind::Audio.accepts(path) {
+            return self.import_audio_file(path);
+        }
         if crate::bank::is_soundfont(path) {
             // Not an import into the song: a soundfont is an *instrument*, so
             // dropping one puts it on the selected channel the way clicking
@@ -3088,7 +3206,8 @@ impl StudioHost for Session {
             return Ok(format!("Loaded \u{201c}{name}\u{201d}"));
         }
         Err(format!(
-            "{name} is not something Fontelle can open \u{2014} it reads .mid, .fsc and .sf2 files"
+            "{name} is not something Fontelle can open \u{2014} it reads .wav, .flac, .mp3, \
+             .ogg, .mid, .fsc and .sf2 files"
         ))
     }
 
@@ -4044,13 +4163,8 @@ impl StudioHost for Session {
         self.project
             .clips
             .iter()
-            // **Audio clips only** are left out, and only because §15 has not
-            // built them: a `ClipSource::Audio` carries nothing to draw yet.
-            // Automation used to be filtered out here too, which is what made
-            // it *"play and open"* while a lane of it looked like a lane of
-            // empty clips.
-            .filter(|(_, clip)| !matches!(clip.source, ClipSource::Audio(_)))
             .map(|(id, clip)| {
+                let mut audio = fontelle_ui::document::AudioPreview::default();
                 let (kind, name, curve, notes) = match &clip.source {
                     // A note block is captioned with the channel it plays, not
                     // with a clip name — a clip has none, and "what instrument
@@ -4104,7 +4218,22 @@ impl StudioHost for Session {
                             Vec::new(),
                         )
                     }
-                    ClipSource::Audio(_) => unreachable!("filtered above"),
+                    // A take or a loop, captioned with the file it came
+                    // from — the same question the other two answer: what is
+                    // this, at a glance, without opening it.
+                    ClipSource::Audio(data) => {
+                        audio = self.audio_preview(data);
+                        (
+                            ClipKind::Audio,
+                            data.asset
+                                .path
+                                .file_stem()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| "Audio".to_string()),
+                            Vec::new(),
+                            Vec::new(),
+                        )
+                    }
                 };
                 ClipInfo {
                     id,
@@ -4127,10 +4256,12 @@ impl StudioHost for Session {
                     kind,
                     curve,
                     notes,
+                    audio,
                 }
             })
             .collect()
     }
+
 
     fn arrange(&mut self, edit: ArrangeEdit) -> Created {
         let lanes = self.lane_ids();

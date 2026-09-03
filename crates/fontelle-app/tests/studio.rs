@@ -1910,6 +1910,11 @@ fn an_automation_block_carries_no_notes_and_a_note_block_no_curve() {
             ClipKind::Automation => {
                 assert!(block.notes.is_empty(), "{} has notes", block.name)
             }
+            // And a take carries neither: what is inside it is a waveform.
+            ClipKind::Audio => {
+                assert!(block.notes.is_empty(), "{} has notes", block.name);
+                assert!(block.curve.is_empty(), "{} has a curve", block.name);
+            }
         }
     }
 }

@@ -159,6 +159,32 @@ pub enum ClipKind {
     Notes,
     /// A parameter's curve over time (TDD §12.1).
     Automation,
+    /// A take or a loop: audio, played from a file (TDD §15).
+    Audio,
+}
+
+/// What an audio clip's block shows.
+///
+/// Reported from using the window: *"i should be able to see the waveform of
+/// the audio inside the clip."* The same idea the note preview answers, pointed
+/// at the other kind of clip.
+///
+/// **A summary, not the samples.** A four-bar take is four hundred thousand
+/// frames and the block is a few hundred pixels wide, so what reaches the
+/// canvas is the loudest and quietest sample in each bucket —
+/// `fontelle_assets::generate_peaks`, resampled once per document revision onto
+/// the clip's own trimmed range rather than per frame.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AudioPreview {
+    /// `(min, max)` per bucket, evenly covering the clip's own range **in play
+    /// order** — so a reversed clip's picture is reversed too, because what you
+    /// see has to be what you hear.
+    pub peaks: Vec<(f32, f32)>,
+    /// The fades, as a fraction of the clip's length (TDD §15.2). Drawn into
+    /// the waveform rather than beside it, for the same reason: the picture is
+    /// the envelope.
+    pub fade_in: f32,
+    pub fade_out: f32,
 }
 
 /// One clip, as the arrangement canvas draws it.
@@ -220,6 +246,10 @@ pub struct ClipInfo {
     /// canvas may not see a `Project` (INVARIANT 2). Empty for every other
     /// kind.
     pub notes: Vec<NotePreview>,
+    /// For [`ClipKind::Audio`], the waveform to draw inside it. Empty peaks for
+    /// every other kind — and for an audio clip whose file has not been decoded
+    /// yet, which §15.3 says to draw as what exists rather than as a slab.
+    pub audio: AudioPreview,
 }
 
 /// One note, as the arrangement draws it inside its clip.

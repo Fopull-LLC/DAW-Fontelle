@@ -37,7 +37,7 @@ pub use app::{WindowApp, WindowError, WindowOptions, run, run_window};
 pub use audition::{AuditionAction, Auditions, MAX_AUDITION, MIN_AUDITION};
 pub use backend::WindowBackend;
 pub use document::{
-    ChannelInfo, ClipInfo, ClipKind, DocumentHost, GhostFilter, GhostNote, LaneInfo,
+    AudioPreview, ChannelInfo, ClipInfo, ClipKind, DocumentHost, GhostFilter, GhostNote, LaneInfo,
     LibraryEntry, SendInfo, StudioHost,
 };
 pub use layout::{

@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-/// One of the two folders the import browser reads.
+/// One of the folders the import browser reads.
 ///
 /// An enum rather than two of everything, because "which folder is this
 /// about" is a question every one of these functions has to answer and the
@@ -20,16 +20,26 @@ pub enum FolderKind {
     Midi,
     /// FL Studio's `.fsc` piano-roll scores.
     Scores,
+    /// Sounds and loops: whatever the decoder reads (TDD §15).
+    ///
+    /// *"i want to also be able to record my voice into the daw or import
+    /// different sounds and loops and whatnot to make songs with."* A third
+    /// variant and nothing else, which is what this enum is for.
+    Audio,
 }
 
 impl FolderKind {
-    pub const ALL: [Self; 2] = [Self::Midi, Self::Scores];
+    pub const ALL: [Self; 3] = [Self::Midi, Self::Scores, Self::Audio];
 
     /// The extensions a file has to have to show up in this folder's browser.
     pub fn extensions(self) -> &'static [&'static str] {
         match self {
             Self::Midi => &["mid", "midi"],
             Self::Scores => &["fsc"],
+            // What `symphonia` is built with here. Listing a format nothing
+            // can open would be a lie, which is the same rule that keeps
+            // `.sf3` out of the soundfont bank.
+            Self::Audio => &["wav", "wave", "flac", "mp3", "ogg", "oga"],
         }
     }
 
@@ -55,6 +65,7 @@ impl FolderKind {
         match self {
             Self::Midi => "MIDI file folder",
             Self::Scores => "FL Studio score folder",
+            Self::Audio => "Audio and loop folder",
         }
     }
 
@@ -63,6 +74,7 @@ impl FolderKind {
         match self {
             Self::Midi => "MIDI files",
             Self::Scores => "FL scores",
+            Self::Audio => "Audio files",
         }
     }
 
@@ -71,14 +83,16 @@ impl FolderKind {
         match self {
             Self::Midi => "MIDI",
             Self::Scores => "Scores",
+            Self::Audio => "Audio",
         }
     }
 
-    /// The other one, so a chip that shows it toggles.
+    /// The next one round, so a chip that shows one cycles them.
     pub fn next(self) -> Self {
         match self {
             Self::Midi => Self::Scores,
-            Self::Scores => Self::Midi,
+            Self::Scores => Self::Audio,
+            Self::Audio => Self::Midi,
         }
     }
 }

@@ -78,6 +78,87 @@ pub const NOTE_PREVIEW_MIN_KEYS: u8 = 12;
 /// block the arrangement used to draw.
 const MIN_NOTE_BLOCK_PX: f32 = 10.0;
 
+/// The waveform inside an audio clip's block (TDD §15.3).
+///
+/// Reported from using the window: *"i should be able to see the waveform of
+/// the audio inside the clip."*
+///
+/// One rectangle per **pixel column**, from the summary
+/// `AudioPreview::peaks` holds — resampled onto the columns rather than drawn
+/// one bucket per bucket, so a clip zoomed in past its own summary is stretched
+/// smoothly instead of drawn as a comb.
+///
+/// The rules the picture keeps, each of which is a test:
+///
+/// - It lives in the **content band** and never the caption, like the
+///   automation curve and the note preview — one picture, not three.
+/// - It is **centred**: zero is the middle of the band, so a quiet take and a
+///   loud one are different shapes rather than the same shape hung differently.
+/// - **Silence is a line, not nothing.** A gap in a take is part of the take;
+///   nothing at all reads as the clip ending early.
+/// - The **fades shape it**, because what you see has to be what you hear.
+/// - Only the part on screen is built, like the note preview: a twenty-minute
+///   take scrolled mostly off must not cost twenty minutes of columns a frame.
+pub fn clip_waveform(block: Rect, visible: Rect, clip: &ClipInfo) -> Vec<Rect> {
+    if clip.kind != ClipKind::Audio || clip.audio.peaks.is_empty() {
+        return Vec::new();
+    }
+    let (_, content) = clip_bands(block);
+    if content.is_empty() || content.width <= 0.0 || content.height < MIN_WAVEFORM_BLOCK_PX {
+        return Vec::new();
+    }
+    // The columns actually on screen. The block may run for a screen either
+    // way, and a column outside the grid is one nobody sees.
+    let from = content.x.max(visible.x).floor();
+    let to = content.right().min(visible.right()).ceil();
+    if to <= from {
+        return Vec::new();
+    }
+
+    let middle = content.y + content.height / 2.0;
+    let half = content.height / 2.0;
+    let peaks = &clip.audio.peaks;
+    let mut columns = Vec::with_capacity((to - from) as usize + 1);
+    let mut x = from;
+    while x < to {
+        // Where this column sits along the block, 0..1 — measured against the
+        // whole content band rather than the visible part, so the picture does
+        // not slide as the arrangement scrolls.
+        let t = ((x - content.x) / content.width).clamp(0.0, 1.0);
+        let bucket = ((t * peaks.len() as f32) as usize).min(peaks.len() - 1);
+        let (low, high) = peaks[bucket];
+        let envelope = preview_fade(&clip.audio, t);
+        let top = middle - (high.clamp(-1.0, 1.0) * half * envelope).max(0.0);
+        let bottom = middle - (low.clamp(-1.0, 1.0) * half * envelope).min(0.0);
+        // At least a pixel: silence is a line through the middle, which is
+        // what says "this part of the take is quiet" rather than "the take
+        // stops here".
+        let height = (bottom - top).max(1.0);
+        columns.push(Rect::new(x, top.min(middle), 1.0, height));
+        x += 1.0;
+    }
+    columns
+}
+
+/// The fade envelope at `t` along a clip, 0..1 — the drawn form of
+/// `AudioClipData::fade_gain`.
+///
+/// The two multiply, as they do in the player, so a short clip with a long fade
+/// at each end is a shape rather than a step where one of them wins.
+fn preview_fade(audio: &crate::document::AudioPreview, t: f32) -> f32 {
+    let mut gain = 1.0;
+    if audio.fade_in > 0.0 {
+        gain *= (t / audio.fade_in).clamp(0.0, 1.0);
+    }
+    if audio.fade_out > 0.0 {
+        gain *= ((1.0 - t) / audio.fade_out).clamp(0.0, 1.0);
+    }
+    gain
+}
+
+/// A block shorter than this has no room for a waveform, only for its caption.
+const MIN_WAVEFORM_BLOCK_PX: f32 = 6.0;
+
 /// The notes inside a clip's block, in screen points (TDD §16.4).
 ///
 /// *"show a preview of the notes drawn out inside of it like how other daws

@@ -87,20 +87,30 @@ fn the_layout_says_which_mode_it_was_built_for() {
 
 #[test]
 fn the_import_tab_carries_a_button_for_each_kind_of_file() {
+    // **Every** kind, from `FolderKind::ALL` rather than from a list written
+    // here. Audio was added as a variant and the tab drew two buttons, because
+    // the row was built for exactly two — the same class of bug as the fourth
+    // browser tab that was drawn with no words on it.
     let l = imports(4);
-    assert!(!l.midi_kind.is_empty());
-    assert!(!l.score_kind.is_empty());
-    assert!(!l.midi_kind.intersects(&l.score_kind));
-    assert!(l.score_kind.right() <= body().right() + 0.01);
+    assert_eq!(l.kinds.len(), FolderKind::ALL.len());
+    for (kind, rect) in &l.kinds {
+        assert!(!rect.is_empty(), "{kind:?} has no button");
+        assert!(rect.right() <= body().right() + 0.01, "{kind:?} escapes the panel");
+    }
+    for (i, (a_kind, a)) in l.kinds.iter().enumerate() {
+        for (b_kind, b) in l.kinds.iter().skip(i + 1) {
+            assert!(!a.intersects(b), "{a_kind:?} is over {b_kind:?}");
+        }
+    }
 }
 
 #[test]
 fn clicking_a_kind_button_asks_for_that_kind() {
     let l = imports(4);
-    let (x, y) = mid(l.midi_kind);
-    assert_eq!(browser_hit(&l, x, y), BrowserHit::Kind(FolderKind::Midi));
-    let (x, y) = mid(l.score_kind);
-    assert_eq!(browser_hit(&l, x, y), BrowserHit::Kind(FolderKind::Scores));
+    for (kind, rect) in &l.kinds {
+        let (x, y) = mid(*rect);
+        assert_eq!(browser_hit(&l, x, y), BrowserHit::Kind(*kind));
+    }
 }
 
 #[test]
@@ -114,8 +124,7 @@ fn the_kind_buttons_are_only_in_the_tab_they_mean_anything_in() {
         BrowserMode::Settings,
     ] {
         let l = browser_layout_for(body(), &metrics(), mode, 4, 4, 0, 0);
-        assert!(l.midi_kind.is_empty(), "{mode:?} draws a MIDI button");
-        assert!(l.score_kind.is_empty(), "{mode:?} draws a Scores button");
+        assert!(l.kinds.is_empty(), "{mode:?} draws the import tab's buttons");
     }
 }
 
@@ -145,16 +154,15 @@ fn nothing_in_the_import_tab_is_drawn_on_top_of_anything_else() {
     // The failure this catches has happened here before: the status line was
     // drawn straight across the buttons under it.
     let l = imports(40);
-    let parts: [(&str, Rect); 8] = [
+    let mut parts: Vec<(&str, Rect)> = vec![
         ("search", l.search),
         ("files", l.files),
         ("status", l.status),
-        ("midi kind", l.midi_kind),
-        ("score kind", l.score_kind),
         ("open folder", l.open_folder),
         ("choose folder", l.choose_folder),
         ("import tab", l.import_tab),
     ];
+    parts.extend(l.kinds.iter().map(|(_, rect)| ("kind", *rect)));
     for (i, (name_a, a)) in parts.iter().enumerate() {
         if a.is_empty() {
             continue;

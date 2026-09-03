@@ -85,6 +85,7 @@ fn rig() -> Rig {
         kind: fontelle_ui::document::ClipKind::Notes,
         curve: Vec::new(),
         notes: Vec::new(),
+        audio: Default::default(),
     }];
 
     let instrument_view = InstrumentView {

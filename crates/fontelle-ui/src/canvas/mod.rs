@@ -63,7 +63,7 @@ pub use timeline::{
     ArrangeEdit, ClipPart, MAX_LANE_ROW, MAX_TIMELINE_PPT, MIN_LANE_ROW, MIN_TIMELINE_PPT,
     Timeline, TimelineControl, TimelineHit, TimelineLayout, TimelineTool, TimelineToolbar,
     CLIP_HEADER_PX, NOTE_PREVIEW_MIN_KEYS,
-    TimelineView, clip_bands, clip_cuts, clip_grip, clip_notes, clip_rect, lane_to_y, loop_marks,
+    TimelineView, clip_bands, clip_cuts, clip_grip, clip_notes, clip_rect, clip_waveform, lane_to_y, loop_marks,
     time_selection, timeline_hit,
     timeline_layout, timeline_snap,
     timeline_tick_to_x, timeline_toolbar_hit, timeline_toolbar_layout, timeline_visible_ticks,

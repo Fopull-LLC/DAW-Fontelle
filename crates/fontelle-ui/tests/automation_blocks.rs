@@ -77,6 +77,7 @@ fn automation_clip(values: &[f64]) -> ClipInfo {
             })
             .collect(),
         notes: Vec::new(),
+        audio: Default::default(),
     }
 }
 
@@ -94,6 +95,7 @@ fn note_clip() -> ClipInfo {
         kind: ClipKind::Notes,
         curve: Vec::new(),
         notes: Vec::new(),
+        audio: Default::default(),
     }
 }
 
