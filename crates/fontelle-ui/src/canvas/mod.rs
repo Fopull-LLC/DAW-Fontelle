@@ -70,5 +70,6 @@ pub use timeline::{
     timeline_x_to_tick, timeline_zoom_x, timeline_zoom_y, visible_lanes, y_to_lane,
 };
 pub use tools::{
-    TOOL_ROWS, ToolAction, ToolRow, Tools, ToolsPanel, tools_panel_hit, tools_panel_layout,
+    TOOL_MENU, TOOL_ROWS, ToolAction, ToolKind, ToolMenuItem, ToolRow, Tools, ToolsDialog,
+    tools_dialog_hit, tools_dialog_layout,
 };

@@ -641,9 +641,15 @@ fn shoot_roll_full(
             .find(|(control, _)| *control == fontelle_ui::canvas::RollControl::Tools)
             .map(|(_, rect)| *rect)
             .unwrap_or(Rect::ZERO);
-        fontelle_ui::canvas::tools_panel_layout(chip, roll_l.frame, &theme.metrics)
+        fontelle_ui::canvas::tools_dialog_layout(
+            fontelle_ui::canvas::ToolKind::Adjust,
+            chip,
+            roll_l.frame,
+            &theme.metrics,
+        )
     });
     if let Some(panel) = &tools_panel {
+        labels.ensure(panel.kind.title(), &theme.font, &mut text);
         for (row, _) in &panel.rows {
             for caption in [tools.label(*row), tools.value(*row)] {
                 if !caption.is_empty() {
@@ -2419,7 +2425,12 @@ fn the_tools_panel_is_actually_painted_over_the_grid() {
         .find(|(control, _)| *control == fontelle_ui::canvas::RollControl::Tools)
         .map(|(_, rect)| *rect)
         .expect("the toolbar has a tools chip");
-    let panel = fontelle_ui::canvas::tools_panel_layout(chip, open.layout.frame, &theme.metrics);
+    let panel = fontelle_ui::canvas::tools_dialog_layout(
+        fontelle_ui::canvas::ToolKind::Adjust,
+        chip,
+        open.layout.frame,
+        &theme.metrics,
+    );
     assert!(!panel.frame.is_empty(), "the panel had nowhere to go");
 
     // Somewhere inside the panel that is over the grid: the two frames must
@@ -2468,7 +2479,12 @@ fn the_tools_panels_rows_have_words_on_them() {
         .find(|(control, _)| *control == fontelle_ui::canvas::RollControl::Tools)
         .map(|(_, rect)| *rect)
         .expect("the toolbar has a tools chip");
-    let panel = fontelle_ui::canvas::tools_panel_layout(chip, open.layout.frame, &theme.metrics);
+    let panel = fontelle_ui::canvas::tools_dialog_layout(
+        fontelle_ui::canvas::ToolKind::Adjust,
+        chip,
+        open.layout.frame,
+        &theme.metrics,
+    );
 
     // A row's own background against the darkest pixel on it: text is drawn in
     // `text` over `panel_header`, so a row with a caption has a pixel well
@@ -2492,8 +2508,12 @@ fn the_tools_panels_rows_have_words_on_them() {
             rows_with_ink += 1;
         }
     }
-    assert!(
-        rows_with_ink >= 10,
-        "only {rows_with_ink} rows have anything on them"
+    // **Every** row, now that a dialog holds one tool's worth of them: a
+    // blank row in a list of four is half the dialog.
+    let drawn = panel.rows.iter().filter(|(_, r)| !r.is_empty()).count();
+    assert!(drawn > 0, "the dialog had nowhere to go");
+    assert_eq!(
+        rows_with_ink, drawn,
+        "only {rows_with_ink} of {drawn} rows have anything on them"
     );
 }

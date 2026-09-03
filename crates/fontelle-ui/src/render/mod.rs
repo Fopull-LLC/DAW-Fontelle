@@ -215,7 +215,7 @@ pub struct RollChrome<'a> {
     /// The lane chip's menu, while it is open. Drawn last, over everything.
     pub lane_menu: Option<&'a crate::canvas::LaneMenu>,
     /// The Tools panel, while it is open. Drawn last, like the menu.
-    pub tools_panel: Option<&'a crate::canvas::ToolsPanel>,
+    pub tools_panel: Option<&'a crate::canvas::ToolsDialog>,
     /// What the Tools panel is set to, which is where its rows read their
     /// names and values from.
     pub tools: &'a crate::canvas::Tools,
@@ -2198,7 +2198,7 @@ pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome
     draw_tools_panel(scene, theme, labels, chrome);
 }
 
-/// The Tools panel. **Last, over everything**, for the reason the lane menu
+/// One tool's dialog. **Last, over everything**, for the reason the lane menu
 /// is: it is not part of the layout it covers.
 fn draw_tools_panel(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RollChrome<'_>) {
     let Some(panel) = chrome.tools_panel else {
@@ -2217,11 +2217,25 @@ fn draw_tools_panel(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
         p.panel_header,
     );
 
+    // The title, which is what says whose settings these are — and the reason
+    // a row inside can be called "Semitones" rather than "Transpose by".
+    if !panel.title.is_empty()
+        && let Some(text) = labels.get(panel.kind.title())
+    {
+        draw_text_clipped(
+            scene,
+            text,
+            panel.title,
+            panel.title.x + m.panel_padding.min(panel.title.width),
+            panel.title.y + (panel.title.height - text.height) / 2.0,
+            p.text_muted,
+        );
+    }
+
     for (row, rect) in &panel.rows {
         if rect.is_empty() {
             continue;
         }
-        let heading = matches!(row, crate::canvas::ToolRow::Heading(_));
         let action = chrome.tools.action(*row).is_some();
         // An action row carries a frame so it reads as a button rather than
         // as another read-out — the same reasoning that put a frame on the
@@ -2229,7 +2243,7 @@ fn draw_tools_panel(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
         if action {
             fill_rect_rounded(scene, rect.inset(1.0), m.corner_radius, p.panel);
         }
-        let ink = if heading { p.text_muted } else { p.text };
+        let ink = p.text;
         let inset = m.panel_padding.min(rect.width);
         if let Some(text) = labels.get(&chrome.tools.label(*row)) {
             draw_text_clipped(

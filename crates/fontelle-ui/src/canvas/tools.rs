@@ -1,25 +1,44 @@
-//! The piano roll's Tools panel.
+//! The piano roll's tools: a menu of them, and a dialog for each.
 //!
 //! Asked for as *"a tools tab which has various tools such as a randomizer, a
 //! transposer — and it should also let you transpose all of your selections
 //! velocity or pan or whatever all at once adding or subtracting a value —
 //! and importantly a import/midi and import/fsc option"*.
 //!
-//! # The shape, and why it is this one
+//! # The shape, and why it is this one now
 //!
-//! **Rows of a name and a value, where a click steps the value forward and a
-//! Ctrl+click steps it back.** That is the settings tab's shape, already in
-//! this window and already understood; no text field is involved, because
-//! there is not one in this window and a value you can reach in a handful of
-//! clicks is quicker than one you have to type anyway. What the settings tab
-//! does not have is *action* rows — "Transpose", "Randomize", "Import MIDI" —
-//! which are buttons rather than values, and [`Tools::action`] is what tells
-//! the two apart so a press on one can never quietly step the other.
+//! It began as **one bench**: every tool's settings and every tool's button on
+//! a single panel, in the settings tab's shape. That was reported back, and the
+//! report is worth quoting because it names the fault exactly:
 //!
-//! Everything here is pure: the panel is geometry, the settings are numbers,
+//! > *"right now you split the functionality between the settings and tools
+//! > button in the piano roll so i currently have to chose how much i want it
+//! > transposed in the settings and then click transpose in the tools to
+//! > actually do it. this is really annoying. please make it so like fl studio
+//! > these menus pop up as their own menu i can then make tweaks in to chose
+//! > how i want the tool to apply then i click apply."*
+//!
+//! Nothing was in fact split across the settings tab — that tab's *"Transpose"*
+//! is the MIDI **keyboard's**. But the window gave no way to know that, and a
+//! transpose amount sitting three rows above a button that belonged to a
+//! different tool is a panel that invites exactly this reading. So:
+//!
+//! - The chip opens a **menu** ([`TOOL_MENU`]) — three tools and the two
+//!   importers, nothing else.
+//! - Each tool is its own **dialog** ([`ToolKind::rows`]), holding that tool's
+//!   settings and that tool's Apply and no other tool's anything.
+//! - The settings tab's row says whose transpose it is.
+//!
+//! Inside a dialog the controls are still **a name, a value, and a click that
+//! steps it — Ctrl+click steps back**, which is the shape the rest of this
+//! window uses and there is still no text field in it. What a dialog has that
+//! the bench did not is [`Tools::action`]'s row at the bottom: the button, under
+//! the settings it applies, because that is the order you do them in.
+//!
+//! Everything here is pure: the dialog is geometry, the settings are numbers,
 //! and what a tool *does* is a list of [`RollEdit`]s. Reading a file is not
-//! something this crate may do (INVARIANT 2), so the two import rows name the
-//! action and produce no edit — the window carries them out.
+//! something this crate may do (INVARIANT 2), so the two import entries name
+//! the action and produce no edit — the window carries them out.
 
 use fontelle_model::{Arena, Note, RandomMode, RandomSpec, randomised};
 use fontelle_types::NoteId;
@@ -28,13 +47,9 @@ use super::piano_roll::{LANE_PROPERTIES, LaneProperty, RollEdit};
 use crate::layout::Rect;
 use crate::theme::Metrics;
 
-/// One row of the panel.
+/// One row of a tool's dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolRow {
-    /// A section title. Nothing to set, and a click does nothing — it is what
-    /// makes "Amount" read as the *offset's* amount rather than the
-    /// randomizer's, when both are on the same panel.
-    Heading(&'static str),
     /// How far [`ToolAction::Transpose`] moves things, in semitones.
     Transpose,
     /// Runs it.
@@ -51,15 +66,13 @@ pub enum ToolRow {
     /// Which sense it strays in — see [`RandomMode`].
     RandomMode,
     RandomizeNow,
-    ImportMidiNow,
-    ImportScoreNow,
 }
 
 /// What an action row does when it is pressed.
 ///
 /// Separate from [`ToolRow`] because the *window* switches on this and has no
-/// business knowing which row of the panel it came off — and because two rows
-/// (add and subtract) are the same tool pointed two ways.
+/// business knowing which row of which dialog it came off — and because two
+/// rows (add and subtract) are the same tool pointed two ways.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolAction {
     Transpose,
@@ -72,28 +85,109 @@ pub enum ToolAction {
     ImportScore,
 }
 
-/// Every row, in the order the panel draws them.
+/// One of the three tools that take settings before they do anything.
 ///
-/// Grouped by what you are doing rather than by what kind of control it is:
-/// the thing that moves notes in pitch, then the thing that changes a
-/// property, then the thing that makes a mess of one, then the two that bring
-/// something in from outside.
-pub const TOOL_ROWS: [ToolRow; 15] = [
-    ToolRow::Heading("Transpose"),
+/// A tool is a **dialog**, not a section of a shared panel: see this module's
+/// own note for why the shared panel had to go. Which rows belong to which tool
+/// is asked here, once, so a dialog cannot show a setting belonging to the tool
+/// next to it — which is what made the bench unreadable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolKind {
+    Transpose,
+    /// The property offset: *"transpose all of your selections velocity or pan
+    /// or whatever all at once adding or subtracting a value"*.
+    Adjust,
+    Randomize,
+}
+
+impl ToolKind {
+    /// In the order the menu lists them: move it, change it, mess it up.
+    pub const ALL: [Self; 3] = [Self::Transpose, Self::Adjust, Self::Randomize];
+
+    /// The dialog's own title, across the top of it.
+    ///
+    /// It is what tells you which tool's settings you are looking at, and it
+    /// is the reason a row inside can be called *"Semitones"* rather than
+    /// *"Transpose by"* — the dialog has already said what it is.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Transpose => "Transpose",
+            Self::Adjust => "Adjust",
+            Self::Randomize => "Randomize",
+        }
+    }
+
+    /// The rows of its dialog, settings first and the button that applies them
+    /// last.
+    pub fn rows(self) -> &'static [ToolRow] {
+        match self {
+            Self::Transpose => &[ToolRow::Transpose, ToolRow::TransposeNow],
+            // Two buttons, because *"adding or subtracting a value"* is one
+            // tool pointed two ways and a sign row you had to set first would
+            // be one more thing between you and the edit.
+            Self::Adjust => &[
+                ToolRow::Property,
+                ToolRow::Amount,
+                ToolRow::AddNow,
+                ToolRow::SubtractNow,
+            ],
+            Self::Randomize => &[
+                ToolRow::RandomAmount,
+                ToolRow::RandomMode,
+                ToolRow::RandomizeNow,
+            ],
+        }
+    }
+}
+
+/// One entry of the menu the Tools chip opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolMenuItem {
+    /// Opens that tool's dialog. Its label ends in an ellipsis, which is what
+    /// every menu everywhere uses to say "this asks you something first".
+    Open(ToolKind),
+    /// Does it now. The importers take their settings from a file browser
+    /// rather than from a dialog, so there is nothing to ask first.
+    Run(ToolAction),
+}
+
+impl ToolMenuItem {
+    pub fn label(self) -> String {
+        match self {
+            Self::Open(kind) => format!("{}\u{2026}", kind.title()),
+            Self::Run(ToolAction::ImportMidi) => "Import MIDI file\u{2026}".to_string(),
+            Self::Run(ToolAction::ImportScore) => "Import FL score\u{2026}".to_string(),
+            // No other action reaches the menu directly: the three that take
+            // settings are `Open`, and they are the only others there are.
+            Self::Run(other) => format!("{other:?}"),
+        }
+    }
+}
+
+/// The menu the Tools chip opens, in the order it lists it.
+pub const TOOL_MENU: [ToolMenuItem; 5] = [
+    ToolMenuItem::Open(ToolKind::Transpose),
+    ToolMenuItem::Open(ToolKind::Adjust),
+    ToolMenuItem::Open(ToolKind::Randomize),
+    ToolMenuItem::Run(ToolAction::ImportMidi),
+    ToolMenuItem::Run(ToolAction::ImportScore),
+];
+
+/// Every row of every dialog, so a test can sweep the lot.
+///
+/// Derived from [`ToolKind::rows`] rather than written out beside it: a second
+/// list is a second thing to keep in step, and the one that goes stale is
+/// always the one nothing draws.
+pub const TOOL_ROWS: [ToolRow; 9] = [
     ToolRow::Transpose,
     ToolRow::TransposeNow,
-    ToolRow::Heading("Adjust"),
     ToolRow::Property,
     ToolRow::Amount,
     ToolRow::AddNow,
     ToolRow::SubtractNow,
-    ToolRow::Heading("Randomize"),
     ToolRow::RandomAmount,
     ToolRow::RandomMode,
     ToolRow::RandomizeNow,
-    ToolRow::Heading("Import"),
-    ToolRow::ImportMidiNow,
-    ToolRow::ImportScoreNow,
 ];
 
 /// How far a transpose goes either way. Two octaves is as far as anybody moves
@@ -159,7 +253,6 @@ impl Tools {
     /// "Transpose" is two read-outs; "Transpose selection" is a button.
     pub fn label(&self, row: ToolRow) -> String {
         match row {
-            ToolRow::Heading(title) => title.to_string(),
             ToolRow::Transpose => "Semitones".to_string(),
             ToolRow::TransposeNow => "Transpose selection".to_string(),
             ToolRow::Property => "Property".to_string(),
@@ -169,8 +262,6 @@ impl Tools {
             ToolRow::RandomAmount => "Strength".to_string(),
             ToolRow::RandomMode => "Sense".to_string(),
             ToolRow::RandomizeNow => "Randomize selection".to_string(),
-            ToolRow::ImportMidiNow => "Import MIDI file\u{2026}".to_string(),
-            ToolRow::ImportScoreNow => "Import FL score\u{2026}".to_string(),
         }
     }
 
@@ -197,8 +288,6 @@ impl Tools {
             ToolRow::AddNow => ToolAction::Add,
             ToolRow::SubtractNow => ToolAction::Subtract,
             ToolRow::RandomizeNow => ToolAction::Randomize,
-            ToolRow::ImportMidiNow => ToolAction::ImportMidi,
-            ToolRow::ImportScoreNow => ToolAction::ImportScore,
             _ => return None,
         })
     }
@@ -206,7 +295,6 @@ impl Tools {
     /// What a hover tip says about the row.
     pub fn tip(&self, row: ToolRow) -> Option<&'static str> {
         Some(match row {
-            ToolRow::Heading(_) => return None,
             ToolRow::Transpose => "How far to move notes \u{2014} click to step, Ctrl+click back",
             ToolRow::TransposeNow => "Move every selected note by that many semitones",
             ToolRow::Property => "Which property Adjust and Randomize act on",
@@ -218,8 +306,6 @@ impl Tools {
                 "Around: wobble each note. Anywhere: forget what was there"
             }
             ToolRow::RandomizeNow => "Roll again \u{2014} press it twice for a different answer",
-            ToolRow::ImportMidiNow => "Bring in a .mid file",
-            ToolRow::ImportScoreNow => "Bring in an FL Studio .fsc score",
         })
     }
 
@@ -236,10 +322,9 @@ impl Tools {
         }
         let step = delta.signum();
         match row {
-            // Neither is a value. An action row that also stepped something
-            // would change the amount you were about to apply, on the press
-            // that applied it.
-            ToolRow::Heading(_) => {}
+            // Not a value. An action row that also stepped something would
+            // change the amount you were about to apply, on the press that
+            // applied it.
             _ if self.action(row).is_some() => {}
             ToolRow::Transpose => {
                 self.semitones = (self.semitones + step).clamp(-MAX_TRANSPOSE, MAX_TRANSPOSE);
@@ -358,15 +443,22 @@ fn ladder_step(ladder: &[i32], value: i32, step: i32) -> i32 {
 
 // ------------------------------------------------------------- geometry ---
 
-/// The Tools panel, laid out.
+/// One tool's dialog, laid out.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ToolsPanel {
-    /// The whole panel — for the background, and for "did the click miss".
+pub struct ToolsDialog {
+    /// Which tool it belongs to — so a press can be run without the window
+    /// having to remember what it opened.
+    pub kind: ToolKind,
+    /// The whole dialog — for the background, and for "did the click miss".
     pub frame: Rect,
-    /// One rectangle per row, in [`TOOL_ROWS`] order. A row with no room
-    /// left is an **empty** rectangle,
-    /// which draws as nothing and hit-tests as absent — the list stays the
-    /// same length either way, so a caller can index it.
+    /// The title band across the top. Not a row: it hit-tests as nothing, and
+    /// it is what lets the settings under it be called what they are rather
+    /// than repeating the tool's name.
+    pub title: Rect,
+    /// One rectangle per row, in [`ToolKind::rows`] order. A row with no room
+    /// left is an **empty** rectangle, which draws as nothing and hit-tests as
+    /// absent — the list stays the same length either way, so a caller can
+    /// index it.
     pub rows: Vec<(ToolRow, Rect)>,
 }
 
@@ -376,23 +468,31 @@ const PANEL_PAD: f32 = 4.0;
 /// Wide enough for "Take 64 off selection" and a value beside it.
 const PANEL_WIDTH: f32 = 188.0;
 
-/// Drops the panel from `chip`, kept inside `bounds`.
+/// Drops `kind`'s dialog from `chip`, kept inside `bounds`.
 ///
-/// Below the chip by preference — a panel over the control it belongs to hides
+/// Below the chip by preference — a dialog over the control it belongs to hides
 /// what it is doing — then above it, and if it fits in neither it is pinned to
 /// the top of `bounds` and **clipped**. That last case is where this differs
 /// from every other menu in this window, which draw nothing rather than draw
-/// part of themselves: the Tools panel is the only way to reach the importers,
-/// so a short window must not be a window with no importers.
-pub fn tools_panel_layout(chip: Rect, bounds: Rect, metrics: &Metrics) -> ToolsPanel {
-    let rows = TOOL_ROWS;
+/// part of themselves: a short window must still be one you can transpose in.
+pub fn tools_dialog_layout(
+    kind: ToolKind,
+    chip: Rect,
+    bounds: Rect,
+    metrics: &Metrics,
+) -> ToolsDialog {
+    let rows = kind.rows();
     let row_height = metrics.row_height.max(1.0);
     let width = PANEL_WIDTH.min(bounds.width);
-    let height = row_height * rows.len() as f32 + PANEL_PAD * 2.0;
+    // The title band plus a row each, and the same air top and bottom the
+    // panel before it had.
+    let height = row_height * (rows.len() + 1) as f32 + PANEL_PAD * 2.0;
 
     if bounds.is_empty() || width <= 0.0 {
-        return ToolsPanel {
+        return ToolsDialog {
+            kind,
             frame: Rect::ZERO,
+            title: Rect::ZERO,
             rows: rows.iter().map(|row| (*row, Rect::ZERO)).collect(),
         };
     }
@@ -411,6 +511,10 @@ pub fn tools_panel_layout(chip: Rect, bounds: Rect, metrics: &Metrics) -> ToolsP
         .clamp(bounds.x, (bounds.right() - width).max(bounds.x));
     let frame = Rect::new(x, y, width, height).intersection(&bounds);
 
+    let inner = (frame.width - PANEL_PAD * 2.0).max(0.0);
+    let title = Rect::new(frame.x + PANEL_PAD, y + PANEL_PAD, inner, row_height)
+        .intersection(&frame)
+        .clamped();
     let laid = rows
         .iter()
         .copied()
@@ -418,28 +522,33 @@ pub fn tools_panel_layout(chip: Rect, bounds: Rect, metrics: &Metrics) -> ToolsP
         .map(|(index, row)| {
             let rect = Rect::new(
                 frame.x + PANEL_PAD,
-                y + PANEL_PAD + row_height * index as f32,
-                (frame.width - PANEL_PAD * 2.0).max(0.0),
+                y + PANEL_PAD + row_height * (index + 1) as f32,
+                inner,
                 row_height,
             );
             // Clipped to the frame rather than dropped, so a row that ran off
-            // the end of a short panel is an empty rectangle: it draws as
+            // the end of a short dialog is an empty rectangle: it draws as
             // nothing and hit-tests as absent, and the list keeps its length.
             (row, rect.intersection(&frame).clamped())
         })
         .collect();
 
-    ToolsPanel { frame, rows: laid }
+    ToolsDialog {
+        kind,
+        frame,
+        title,
+        rows: laid,
+    }
 }
 
 /// Which row `(x, y)` is on, if it is on one.
 ///
-/// A **heading** hit-tests as itself rather than as nothing, unlike a greyed
-/// menu entry: the caller has to know the press landed on the panel so it does
-/// not also reach the grid underneath, and `Tools::nudge` already does nothing
-/// to a heading.
-pub fn tools_panel_hit(panel: &ToolsPanel, x: f32, y: f32) -> Option<ToolRow> {
-    panel
+/// The **title** is not one: it says which tool this is and there is nothing to
+/// press. A click that lands on it still lands on the dialog, which is what
+/// stops it reaching the grid underneath — that question is `frame.contains`,
+/// asked by the caller.
+pub fn tools_dialog_hit(dialog: &ToolsDialog, x: f32, y: f32) -> Option<ToolRow> {
+    dialog
         .rows
         .iter()
         .find(|(_, rect)| !rect.is_empty() && rect.contains(x, y))

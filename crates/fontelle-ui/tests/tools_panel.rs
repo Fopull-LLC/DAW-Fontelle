@@ -18,8 +18,7 @@
 use fontelle_model::{Note, NoteProperty, RandomMode};
 use fontelle_types::{NoteId, PPQN};
 use fontelle_ui::canvas::{
-    LaneProperty, RollEdit, TOOL_ROWS, ToolAction, ToolRow, Tools, tools_panel_hit,
-    tools_panel_layout,
+    LaneProperty, RollEdit, TOOL_ROWS, ToolAction, ToolRow, Tools,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
@@ -73,7 +72,7 @@ fn every_row_says_what_it_is_and_what_it_is_at() {
     let tools = Tools::default();
     for row in TOOL_ROWS {
         assert!(!tools.label(row).is_empty(), "{row:?} has no name");
-        if matches!(row, ToolRow::Heading(_)) || tools.action(row).is_some() {
+        if tools.action(row).is_some() {
             continue;
         }
         assert!(
@@ -84,11 +83,21 @@ fn every_row_says_what_it_is_and_what_it_is_at() {
 }
 
 #[test]
-fn the_panel_has_the_three_tools_that_were_asked_for_and_the_two_imports() {
-    let actions: Vec<ToolAction> = TOOL_ROWS
+fn the_tools_that_were_asked_for_are_all_reachable_from_the_chip() {
+    let mut actions: Vec<ToolAction> = TOOL_ROWS
         .iter()
         .filter_map(|row| Tools::default().action(*row))
         .collect();
+    // The two importers are entries on the menu rather than rows in a dialog:
+    // a file browser is where they take their settings.
+    actions.extend(
+        fontelle_ui::canvas::TOOL_MENU
+            .iter()
+            .filter_map(|item| match item {
+                fontelle_ui::canvas::ToolMenuItem::Run(action) => Some(*action),
+                fontelle_ui::canvas::ToolMenuItem::Open(_) => None,
+            }),
+    );
     for wanted in [
         ToolAction::Transpose,
         ToolAction::Add,
@@ -99,18 +108,6 @@ fn the_panel_has_the_three_tools_that_were_asked_for_and_the_two_imports() {
     ] {
         assert!(actions.contains(&wanted), "no row does {wanted:?}");
     }
-}
-
-#[test]
-fn a_heading_is_a_row_a_click_does_nothing_to() {
-    let mut tools = Tools::default();
-    let before = tools;
-    for row in TOOL_ROWS {
-        if let ToolRow::Heading(_) = row {
-            tools.nudge(row, 1);
-        }
-    }
-    assert_eq!(tools, before);
 }
 
 #[test]
@@ -406,12 +403,12 @@ fn the_two_import_rows_produce_no_edit_because_they_are_the_windows_to_make() {
 
 #[test]
 fn the_panel_hangs_off_its_chip_and_stays_inside_the_window() {
-    let panel = tools_panel_layout(chip(), bounds(), &metrics());
+    let panel = tools_dialog_layout(ToolKind::Adjust, chip(), bounds(), &metrics());
     assert!(!panel.frame.is_empty());
     assert!(panel.frame.y >= chip().bottom() - 0.01, "it opens downwards");
     assert!(panel.frame.right() <= bounds().right() + 0.01);
     assert!(panel.frame.bottom() <= bounds().bottom() + 0.01);
-    assert_eq!(panel.rows.len(), TOOL_ROWS.len());
+    assert_eq!(panel.rows.len(), ToolKind::Adjust.rows().len());
 }
 
 #[test]
@@ -419,7 +416,7 @@ fn a_chip_near_the_bottom_opens_the_panel_upwards() {
     // A panel that hung off the bottom would be a list of tools half of which
     // nobody can reach.
     let low = Rect::new(120.0, 560.0, 40.0, 18.0);
-    let panel = tools_panel_layout(low, bounds(), &metrics());
+    let panel = tools_dialog_layout(ToolKind::Adjust, low, bounds(), &metrics());
     assert!(panel.frame.bottom() <= bounds().bottom() + 0.01);
     assert!(panel.frame.y < low.y, "it opened upwards");
 }
@@ -427,36 +424,36 @@ fn a_chip_near_the_bottom_opens_the_panel_upwards() {
 #[test]
 fn a_chip_near_the_right_edge_slides_the_panel_back_inside() {
     let right = Rect::new(780.0, 4.0, 40.0, 18.0);
-    let panel = tools_panel_layout(right, bounds(), &metrics());
+    let panel = tools_dialog_layout(ToolKind::Adjust, right, bounds(), &metrics());
     assert!(panel.frame.right() <= bounds().right() + 0.01);
     assert!(panel.frame.x >= bounds().x - 0.01);
 }
 
 #[test]
 fn a_click_on_a_row_finds_that_row() {
-    let panel = tools_panel_layout(chip(), bounds(), &metrics());
+    let panel = tools_dialog_layout(ToolKind::Adjust, chip(), bounds(), &metrics());
     for (row, rect) in &panel.rows {
         if rect.is_empty() {
             continue;
         }
-        let hit = tools_panel_hit(&panel, rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        let hit = tools_dialog_hit(&panel, rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
         assert_eq!(hit, Some(*row), "clicking {row:?} found {hit:?}");
     }
 }
 
 #[test]
 fn a_click_that_missed_the_panel_hits_nothing() {
-    let panel = tools_panel_layout(chip(), bounds(), &metrics());
-    assert_eq!(tools_panel_hit(&panel, 5.0, 590.0), None);
+    let panel = tools_dialog_layout(ToolKind::Adjust, chip(), bounds(), &metrics());
+    assert_eq!(tools_dialog_hit(&panel, 5.0, 590.0), None);
 }
 
 #[test]
 fn a_window_too_short_for_the_whole_panel_still_shows_what_it_can() {
     // Better than the alternative every other menu in this window takes,
-    // which is to draw nothing: the tools are the only way to reach the
-    // importers, so a short window must not be a window with no importers.
+    // which is to draw nothing: a short window must still be one you can
+    // transpose in.
     let short = Rect::new(0.0, 0.0, 800.0, 90.0);
-    let panel = tools_panel_layout(Rect::new(10.0, 2.0, 40.0, 16.0), short, &metrics());
+    let panel = tools_dialog_layout(ToolKind::Adjust, Rect::new(10.0, 2.0, 40.0, 16.0), short, &metrics());
     assert!(!panel.frame.is_empty());
     assert!(panel.frame.bottom() <= short.bottom() + 0.01);
     let reachable = panel.rows.iter().filter(|(_, r)| !r.is_empty()).count();
@@ -468,7 +465,7 @@ fn a_window_too_short_for_the_whole_panel_still_shows_what_it_can() {
             continue;
         }
         assert_eq!(
-            tools_panel_hit(&panel, rect.x + 1.0, rect.y + rect.height / 2.0),
+            tools_dialog_hit(&panel, rect.x + 1.0, rect.y + rect.height / 2.0),
             Some(*row)
         );
     }
@@ -476,7 +473,7 @@ fn a_window_too_short_for_the_whole_panel_still_shows_what_it_can() {
 
 #[test]
 fn nothing_on_the_panel_is_drawn_outside_it() {
-    let panel = tools_panel_layout(chip(), bounds(), &metrics());
+    let panel = tools_dialog_layout(ToolKind::Adjust, chip(), bounds(), &metrics());
     for (row, rect) in &panel.rows {
         if rect.is_empty() {
             continue;
@@ -486,5 +483,160 @@ fn nothing_on_the_panel_is_drawn_outside_it() {
             "{row:?} at {rect:?} is outside {:?}",
             panel.frame
         );
+    }
+}
+
+// ------------------------------------------------- one tool at a time ---
+//
+// Reported from using the window:
+//
+// > *"right now you split the functionality between the settings and tools
+// > button in the piano roll so i currently have to chose how much i want it
+// > transposed in the settings and then click transpose in the tools to
+// > actually do it. this is really annoying. please make it so like fl studio
+// > these menus pop up as their own menu i can then make tweaks in to chose
+// > how i want the tool to apply then i click apply."*
+//
+// The first sentence is a misreading of the window and the misreading is the
+// window's fault: the settings tab's *"Transpose"* is the MIDI keyboard's and
+// has nothing to do with the roll, but it is one word in a list of settings
+// and the roll's transposer is one word in a list of tools, so of course they
+// read as two halves of one thing. Two fixes, and this file is the second:
+// the settings row now says whose transpose it is, and the Tools chip now
+// opens a **menu of tools** where each one is its own small dialog with its
+// own settings and its own Apply — rather than one bench with every tool's
+// settings on it at once, where the amount you were about to apply sat three
+// rows above a button belonging to a different tool.
+
+use fontelle_ui::canvas::{TOOL_MENU, ToolKind, ToolMenuItem, tools_dialog_hit, tools_dialog_layout};
+
+#[test]
+fn the_chip_opens_a_menu_of_tools_rather_than_every_tools_settings_at_once() {
+    let labels: Vec<String> = TOOL_MENU.iter().map(|item| item.label()).collect();
+    assert_eq!(
+        labels.len(),
+        5,
+        "three tools and the two importers: {labels:?}"
+    );
+    for item in TOOL_MENU {
+        assert!(!item.label().is_empty(), "{item:?} has no name");
+    }
+    // The three that take settings say so with an ellipsis, the FL habit and
+    // everybody else's: a menu entry that opens something is spelled
+    // differently from one that does something.
+    for kind in ToolKind::ALL {
+        let entry = TOOL_MENU
+            .iter()
+            .find(|item| matches!(item, ToolMenuItem::Open(k) if *k == kind))
+            .unwrap_or_else(|| panic!("{kind:?} is not on the menu"));
+        assert!(
+            entry.label().ends_with('\u{2026}'),
+            "{kind:?} opens a dialog and its entry does not say so: {}",
+            entry.label()
+        );
+    }
+}
+
+#[test]
+fn every_tool_dialog_holds_that_tools_settings_and_no_other_tools() {
+    // The whole complaint. A dialog that also shows the randomizer's strength
+    // is the bench again, and the reason a transpose amount three rows away
+    // from an Apply button read as living somewhere else entirely.
+    for kind in ToolKind::ALL {
+        let mine = kind.rows();
+        assert!(!mine.is_empty(), "{kind:?} has no settings at all");
+        for other in ToolKind::ALL {
+            if other == kind {
+                continue;
+            }
+            for row in other.rows() {
+                assert!(
+                    !mine.contains(row),
+                    "{kind:?}'s dialog shows {row:?}, which belongs to {other:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn every_tool_dialog_ends_in_the_button_that_applies_it() {
+    // *"i can then make tweaks in to chose how i want the tool to apply then i
+    // click apply."* The apply is the last thing in the dialog, under the
+    // settings it applies, because that is the order you do them in.
+    let tools = Tools::default();
+    for kind in ToolKind::ALL {
+        let rows = kind.rows();
+        let (last, rest) = rows.split_last().expect("a dialog has rows");
+        assert!(
+            tools.action(*last).is_some(),
+            "{kind:?}'s dialog does not end in a button"
+        );
+        // Every row above it is a setting, with one exception that is not one:
+        // Adjust applies two ways — add and take off — and the two buttons sit
+        // together at the bottom.
+        for row in rest {
+            if tools.action(*row).is_some() {
+                assert!(
+                    tools.action(rows[rows.len() - 2]).is_some(),
+                    "{kind:?} has a button above a setting"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_dialog_is_titled_with_the_tool_it_is() {
+    for kind in ToolKind::ALL {
+        assert!(!kind.title().is_empty(), "{kind:?} has no title");
+        let l = tools_dialog_layout(kind, chip(), bounds(), &metrics());
+        assert_eq!(l.kind, kind);
+        assert!(!l.title.is_empty(), "{kind:?}'s dialog has no title bar");
+        assert!(
+            l.title.intersection(&l.frame) == l.title,
+            "the title escapes the dialog"
+        );
+        for (row, rect) in &l.rows {
+            assert!(
+                rect.is_empty() || !rect.intersects(&l.title),
+                "{row:?} is drawn over the title"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_click_on_a_dialog_row_finds_that_row() {
+    let l = tools_dialog_layout(ToolKind::Randomize, chip(), bounds(), &metrics());
+    for (row, rect) in &l.rows {
+        let (x, y) = (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        assert_eq!(tools_dialog_hit(&l, x, y), Some(*row));
+    }
+    assert_eq!(tools_dialog_hit(&l, l.frame.right() + 20.0, l.frame.y), None);
+    assert_eq!(
+        tools_dialog_hit(&l, l.title.x + 2.0, l.title.y + 2.0),
+        None,
+        "the title is not a row to click"
+    );
+}
+
+#[test]
+fn a_tool_dialog_hangs_off_its_chip_and_stays_inside_the_window() {
+    for kind in ToolKind::ALL {
+        let l = tools_dialog_layout(kind, chip(), bounds(), &metrics());
+        assert_eq!(
+            l.frame.intersection(&bounds()),
+            l.frame,
+            "{kind:?}'s dialog escapes the window"
+        );
+        assert!(l.frame.y >= chip().bottom() - 0.001 || l.frame.bottom() <= chip().y + 0.001);
+        for (row, rect) in &l.rows {
+            assert_eq!(
+                rect.intersection(&l.frame),
+                *rect,
+                "{row:?} is drawn outside {kind:?}'s dialog"
+            );
+        }
     }
 }

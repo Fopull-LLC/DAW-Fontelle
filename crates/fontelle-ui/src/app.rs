@@ -46,8 +46,8 @@ use crate::canvas::{
     timeline_zoom_y, toolbar_hit, toolbar_layout, x_to_tick, y_to_key, zoom_x, zoom_y,
 };
 use crate::canvas::{
-    ToolAction, Tools, ToolsPanel, lane_menu_hit, lane_menu_layout, tools_panel_hit,
-    tools_panel_layout,
+    ToolAction, ToolKind, Tools, ToolsDialog, lane_menu_hit, lane_menu_layout,
+    tools_dialog_hit, tools_dialog_layout,
 };
 use crate::document::{ChannelInfo, ClipInfo, LaneInfo, LibraryEntry, MixerStrip, StudioHost};
 use crate::layout::{
@@ -208,6 +208,9 @@ enum MenuTarget {
     /// host — see `StudioHost::import_prompt` — because it is the half that
     /// read the file.
     ImportChoice,
+    /// The roll's Tools chip. Three tools that open a dialog and two importers
+    /// that do not — see `canvas::TOOL_MENU`.
+    RollTools,
     /// One point of an automation block: its shape, or its removal.
     Point {
         clip: fontelle_types::ClipId,
@@ -236,6 +239,7 @@ impl MenuTarget {
             Self::Channel(_)
             | Self::Lane(_)
             | Self::Tempo
+            | Self::RollTools
             | Self::Point { .. }
             | Self::ImportChoice => None,
         }
@@ -474,7 +478,7 @@ pub struct WindowApp {
     import_kind: fontelle_types::FolderKind,
     /// The Tools panel while it is open, laid out. The same shape as
     /// `lane_menu` and for the same reason.
-    tools_panel: Option<ToolsPanel>,
+    tools_panel: Option<ToolsDialog>,
     /// How wide the sidebar has been dragged, and how its two panels share it.
     /// `None` until somebody drags the seam — see [`crate::layout::Docks`].
     sidebar_width: Option<f32>,
@@ -3007,12 +3011,13 @@ impl WindowApp {
         if let Some(panel) = &self.tools_panel {
             // Cloned out first: `want` borrows `self.labels` and `self.text`
             // mutably, and the captions are read through `self.tools`.
-            let captions: Vec<String> = panel
+            let mut captions: Vec<String> = panel
                 .rows
                 .iter()
                 .flat_map(|(row, _)| [self.tools.label(*row), self.tools.value(*row)])
                 .filter(|caption| !caption.is_empty())
                 .collect();
+            captions.push(panel.kind.title().to_string());
             for caption in captions {
                 want(&mut self.labels, &mut self.text, &caption);
             }
@@ -5817,6 +5822,21 @@ impl WindowApp {
                 }
                 None => Vec::new(),
             },
+            // The tools, each of which opens its own dialog — see
+            // `canvas::tools`. A rule above the importers: bringing a file in
+            // is not something you do to the selection.
+            MenuTarget::RollTools => crate::canvas::TOOL_MENU
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let entry = MenuEntry::new(item.label());
+                    if index == crate::canvas::ToolKind::ALL.len() {
+                        entry.after_rule()
+                    } else {
+                        entry
+                    }
+                })
+                .collect(),
             // A point's shapes, then its removal. The shape it has is greyed,
             // which is how the menu says which one that is.
             MenuTarget::Point { clip, id } => {
@@ -5986,6 +6006,22 @@ impl WindowApp {
                 self.lane_made();
                 self.tree.invalidate(TIMELINE);
                 self.tree.invalidate(RACK);
+            }
+            // A tool: the three that take settings open their dialog, and the
+            // two importers open a file browser. `TOOL_MENU` is the order in
+            // both places, so nothing here has to know which is which.
+            (MenuTarget::RollTools, index) => {
+                match crate::canvas::TOOL_MENU.get(index) {
+                    Some(crate::canvas::ToolMenuItem::Open(kind)) => {
+                        let kind = *kind;
+                        self.open_tool_dialog(kind);
+                    }
+                    Some(crate::canvas::ToolMenuItem::Run(action)) => {
+                        let action = *action;
+                        self.run_tool(action);
+                    }
+                    None => {}
+                }
             }
             (MenuTarget::Point { clip, id }, index) => {
                 let (clip, id) = (*clip, *id);
@@ -6311,41 +6347,65 @@ impl WindowApp {
         self.tree.invalidate(PANEL);
     }
 
-    /// Opens the Tools panel, or shuts it if it is already open.
+    /// Where the Tools chip is, for whatever hangs off it.
+    fn tools_chip(&self) -> crate::layout::Rect {
+        self.roll_bar
+            .items
+            .iter()
+            .find(|(control, _)| *control == RollControl::Tools)
+            .map(|(_, rect)| *rect)
+            .unwrap_or(crate::layout::Rect::ZERO)
+    }
+
+    /// The Tools chip: a **menu of tools**, each of which opens its own dialog.
+    ///
+    /// It used to drop one bench holding every tool's settings and every
+    /// tool's button at once, and that was reported back as *"you split the
+    /// functionality between the settings and tools button... please make it
+    /// so like fl studio these menus pop up as their own menu i can then make
+    /// tweaks in to chose how i want the tool to apply then i click apply."*
+    /// See `canvas::tools` for the whole of that reasoning.
     fn toggle_tools_panel(&mut self) {
-        self.tools_panel = match self.tools_panel {
-            Some(_) => None,
-            None => {
-                let chip = self
-                    .roll_bar
-                    .items
-                    .iter()
-                    .find(|(control, _)| *control == RollControl::Tools)
-                    .map(|(_, rect)| *rect)
-                    .unwrap_or(crate::layout::Rect::ZERO);
-                Some(tools_panel_layout(
-                    chip,
-                    self.roll_layout.frame,
-                    &self.options.theme.metrics,
-                ))
-            }
-        };
+        // A dialog already open is what the chip shuts, so the chip is still
+        // the way out of whatever it let you in to.
+        if self.tools_panel.take().is_some() {
+            self.shape_labels();
+            self.tree.invalidate(PANEL);
+            return;
+        }
+        let chip = self.tools_chip();
+        self.open_menu(
+            MenuTarget::RollTools,
+            chip.x,
+            chip.bottom(),
+            self.roll_layout.frame,
+        );
+    }
+
+    /// Opens one tool's dialog under the chip.
+    fn open_tool_dialog(&mut self, kind: ToolKind) {
+        self.tools_panel = Some(tools_dialog_layout(
+            kind,
+            self.tools_chip(),
+            self.roll_layout.frame,
+            &self.options.theme.metrics,
+        ));
         self.shape_labels();
         self.tree.invalidate(PANEL);
     }
 
-    /// A press while the Tools panel is open.
+    /// A press while a tool's dialog is open.
     ///
-    /// **The panel stays up** unless the press missed it, which is the
-    /// difference between this and every menu in the window: a menu is a
-    /// question you answer once, and this is a bench you work at — you set an
-    /// amount, apply it, look at the result, apply it again. A press that
-    /// missed closes it, the way clicking away from anything does.
+    /// **The dialog stays up** unless the press missed it, which is the
+    /// difference between this and a menu: a menu is a question you answer
+    /// once, and this is a bench you work at — set an amount, apply it, look
+    /// at the result, apply it again. A press that missed closes it, the way
+    /// clicking away from anything does.
     fn press_tools_panel(&mut self, x: f32, y: f32) {
         let Some(panel) = &self.tools_panel else {
             return;
         };
-        let Some(row) = tools_panel_hit(panel, x, y) else {
+        let Some(row) = tools_dialog_hit(panel, x, y) else {
             if !panel.frame.contains(x, y) {
                 self.tools_panel = None;
                 self.tree.invalidate(PANEL);

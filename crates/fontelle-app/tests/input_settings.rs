@@ -55,10 +55,43 @@ fn every_row_says_what_it_is_and_what_it_is_at() {
     }
 }
 
+/// Reported from using the window:
+///
+/// > *"please also remove unneccessary things from the settings this is
+/// > supposed to be your settings across all projects but it seems like it has
+/// > \[FL-]specific stuff to the project or specific intentions such as
+/// > transposition? why is that in the settings right now? thats supposed to
+/// > just be a piano roll tool!"*
+///
+/// It is not the piano roll's — this row transposes what a **MIDI keyboard**
+/// sends, which is a property of the hardware and belongs in a settings file
+/// that outlives every project. But it was called *"Transpose"*, sitting one
+/// panel away from the roll's own transposer also called *"Transpose"*, and
+/// the heading above it was doing all the work of telling them apart. A
+/// heading three rows up is not enough: the row has to say it.
+#[test]
+fn the_keyboards_transpose_row_says_it_is_the_keyboards() {
+    let label = SettingRow::Transpose.label().to_lowercase();
+    assert!(
+        label.contains("keyboard"),
+        "a settings row called {:?} reads as the piano roll's transposer, \
+         which is a different thing in a different place",
+        SettingRow::Transpose.label()
+    );
+    // And no other row is named so vaguely that it could be read as somebody's
+    // song rather than as their setup.
+    for row in SETTING_ROWS {
+        assert_ne!(
+            row.label().to_lowercase(),
+            "transpose",
+            "{row:?} is named after a piano roll tool"
+        );
+    }
+}
+
 #[test]
 fn a_heading_is_a_row_a_click_does_nothing_to() {
-    // It says which of these settings belong together, which is the whole
-    // difference between "Transpose" and "the MIDI keyboard's transpose".
+    // It says which of these settings belong together.
     let before = MidiInputSettings::default();
     let after = stepped(before, SettingRow::Heading("MIDI input"), 1, 5);
     assert_eq!(after, before);

@@ -178,8 +178,8 @@ impl VelocityCurveSetting {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingRow {
     /// A section title. Nothing to set, and a click does nothing — it is what
-    /// makes "Transpose" read as *the MIDI keyboard's* transpose rather than
-    /// as some property of the song.
+    /// says which of these settings belong together. It is deliberately *not*
+    /// the only thing saying so: see [`SettingRow::Transpose`]'s label.
     Heading(&'static str),
     VelocityCurve,
     FixedVelocity,
@@ -222,8 +222,10 @@ impl SettingRow {
     /// The name in the row's left-hand column.
     ///
     /// **Short enough for a 248-pixel panel with a value beside it.** The
-    /// section heading is what carries "MIDI", so the rows under it do not
-    /// have to repeat it and can afford to be words rather than abbreviations.
+    /// section heading carries "MIDI", so most rows under it need not repeat
+    /// it — with one exception, [`Self::Transpose`], because the piano roll has
+    /// a transposer of its own and a row called "Transpose" in a settings list
+    /// reads as that tool's missing half. It was reported as exactly that.
     pub fn label(self) -> &'static str {
         match self {
             Self::Heading(title) => title,
@@ -231,7 +233,11 @@ impl SettingRow {
             Self::FixedVelocity => "Fixed velocity",
             Self::VelocityMin => "Velocity min",
             Self::VelocityMax => "Velocity max",
-            Self::Transpose => "Transpose",
+            // Whose transpose it is, in the row rather than in the heading
+            // above it. Reported from using the window: the roll has a
+            // transposer of its own and this one read as its settings half,
+            // which is a feature nobody could find because it does not exist.
+            Self::Transpose => "Keyboard transpose",
             Self::ChannelFilter => "Channel",
             Self::Folder(kind) => kind.label(),
         }
