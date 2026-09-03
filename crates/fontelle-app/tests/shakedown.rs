@@ -236,7 +236,7 @@ fn a_whole_piece_made_the_way_a_person_makes_one() {
         lane: 1,
         start: PPQN * 12,
     });
-    assert_eq!(bass_clip.len(), 1, "the draw tool makes exactly one clip");
+    assert_eq!(bass_clip.clips.len(), 1, "the draw tool makes exactly one clip");
 
     // --- 6. Notes in each, with the properties that took until today to hear.
     let first = s.clips()[0].id;

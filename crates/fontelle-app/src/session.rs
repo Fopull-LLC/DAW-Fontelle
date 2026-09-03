@@ -37,8 +37,8 @@ use fontelle_types::{
 };
 use fontelle_ui::canvas::{ArrangeEdit, InstrumentView, RollEdit};
 use fontelle_ui::document::{
-    ChannelInfo, ClipInfo, ClipKind, DocumentHost, GhostFilter, GhostNote, LaneInfo, LibraryEntry,
-    MixerStrip, StudioHost,
+    ChannelInfo, ClipInfo, ClipKind, Created, CurvePoint, DocumentHost, GhostFilter, GhostNote,
+    LaneInfo, LibraryEntry, MixerStrip, PlayMode, StudioHost,
 };
 
 use crate::bank::{BankRow, SoundfontBank, matches_names};
@@ -100,15 +100,13 @@ pub struct Session {
     /// would otherwise be allocated per insert and used by none of them.
     analyser: fontelle_dsp::SpectrumAnalyser,
     spectrum_scratch: Vec<f32>,
-    /// The automation clip the editor has open, what it is called, and which
-    /// of its points are selected.
+    /// The automation clip last opened from the arrangement, so its block can
+    /// be marked as the one in hand.
     ///
     /// Session state, not document state: which clip you are looking at is not
     /// something a project sent to somebody else should arrive with, for the
     /// same reason the piano roll's open clip is not saved.
     automation_clip: Option<fontelle_types::ClipId>,
-    automation_label: String,
-    automation_selection: Vec<fontelle_types::PointId>,
     /// The live end of every send, keyed the way `realise` keys it. Kept for
     /// the reason `track_controls` is: a send level is dragged, and a drag has
     /// to be audible before the mouse comes up.
@@ -155,6 +153,26 @@ pub struct Session {
     publisher: TimelinePublisher,
     /// The other half of the pair — see this module's own documentation.
     graphs: Option<GraphPublisher>,
+    /// The transport the window is driving, when there is one.
+    ///
+    /// Held so the **time selection** can reach it: a loop is document state
+    /// in ticks (§6.3) and the RT thread needs samples, and the conversion
+    /// has to happen here because only this side has the tempo map. `None` on
+    /// every offline path, where a loop is still edited and saved and there
+    /// is simply nothing playing.
+    transport: Option<std::sync::Arc<fontelle_engine::Transport>>,
+    /// What pressing play plays. Session state, not the document's: it is how
+    /// you are listening, not what the song is.
+    play_mode: PlayMode,
+    /// The tempo map the song actually plays by — the document's own, bent by
+    /// whatever automation aims at the tempo (§12.3).
+    ///
+    /// Cached rather than derived per call, because **every** tick-to-sample
+    /// conversion in the window goes through it — the playhead, both rulers,
+    /// a loop range — and building it walks every clip in the project.
+    /// Rebuilt in [`Session::republish`], which is the one thing every
+    /// command already goes through.
+    effective_tempo: fontelle_model::TempoMap,
     options: RealiseOptions,
     /// The clip the piano roll is showing, and the channel it belongs to.
     clip: ClipId,
@@ -253,8 +271,6 @@ impl Session {
             analyser: fontelle_dsp::SpectrumAnalyser::new(),
             spectrum_scratch: Vec::new(),
             automation_clip: None,
-            automation_label: String::new(),
-            automation_selection: Vec::new(),
             send_controls: HashMap::new(),
             automation_names: HashMap::new(),
             selected_track: 0,
@@ -266,6 +282,9 @@ impl Session {
             take: Vec::new(),
             publisher,
             graphs: None,
+            transport: None,
+            play_mode: PlayMode::Song,
+            effective_tempo: fontelle_model::TempoMap::default(),
             options,
             clip,
             selected: 0,
@@ -288,7 +307,16 @@ impl Session {
             empty: Arena::default(),
         };
         session.selected = session.channel_index_of_clip().unwrap_or(0);
+        session.effective_tempo = session.tempo_for_scope();
         session
+    }
+
+    /// Gives the session the transport the window is driving, so a time
+    /// selection and the play mode can reach it — see [`Session::transport`].
+    pub fn with_transport(mut self, transport: std::sync::Arc<fontelle_engine::Transport>) -> Self {
+        self.transport = Some(transport);
+        self.publish_loop();
+        self
     }
 
     /// Points the session at a settings file other than the user's own.
@@ -449,6 +477,11 @@ impl Session {
         self.clip_clipboard.clear();
         self.track_controls.clear();
         self.selected = self.channel_index_of_clip().unwrap_or(0);
+        self.automation_clip = None;
+        // A different document is a different tempo curve and a different
+        // loop; both are read off the project that has just arrived.
+        self.effective_tempo = self.tempo_for_scope();
+        self.publish_loop();
         for missing in &opened.missing {
             self.message = Some(format!(
                 "{} could not be found",
@@ -551,29 +584,28 @@ impl Session {
         ids
     }
 
-    /// The lane an automation clip for `address` belongs on, making one if
-    /// this parameter has none yet.
+    /// A lane for an automation clip to go on.
+    ///
+    /// Always a new one, and the caller is why: [`create_automation`] hands
+    /// back the clip a parameter already has rather than making a second, so
+    /// by the time this is called there is no clip for this address and
+    /// therefore no lane carrying one. (It used to search for one, by the
+    /// clips on it rather than by its name — the name is a caption and the
+    /// address is the identity — and that search can no longer find
+    /// anything.)
     ///
     /// A lane is *visual only* (TDD §10.3) and deliberately cheap, which is
     /// why this inserts one rather than going through a command — the same
     /// thing `add_channel_with` does for a new channel's lane, and with the
     /// same consequence: making a lane is not on the undo stack, though
     /// everything put on it is.
+    ///
+    /// [`create_automation`]: fontelle_ui::document::StudioHost::create_automation
     fn automation_lane(
         &mut self,
-        address: &fontelle_types::ParamAddress,
+        _address: &fontelle_types::ParamAddress,
         label: &str,
     ) -> fontelle_types::LaneId {
-        // A lane already carrying this parameter's automation is this
-        // parameter's lane. Found by the clips on it rather than by its name,
-        // because the name is a caption and the address is the identity.
-        let existing = self.project.clips.values().find_map(|clip| match &clip.source {
-            ClipSource::Automation(data) if data.target == *address => Some(clip.lane),
-            _ => None,
-        });
-        if let Some(lane) = existing {
-            return lane;
-        }
         self.project.lanes.insert(Lane {
             name: label.to_string(),
             height: 32.0,
@@ -958,13 +990,93 @@ impl Session {
     /// Public so a test can prove a *sequencer* mute is one — that a muted
     /// channel puts no events on the timeline at all — without a sound card.
     pub fn compiled(&self) -> fontelle_types::CompiledTimeline {
-        fontelle_sequencer::compile(&self.project, &self.channel_nodes, &self.param_nodes)
+        fontelle_sequencer::compile_scoped(
+            &self.project,
+            &self.channel_nodes,
+            &self.param_nodes,
+            self.scope(),
+        )
+    }
+
+    /// How much of the document the timeline carries: everything, or the one
+    /// clip being edited (§6.3's clip mode).
+    fn scope(&self) -> fontelle_sequencer::CompileScope {
+        match self.play_mode {
+            PlayMode::Song => fontelle_sequencer::CompileScope::Song,
+            PlayMode::Clip => fontelle_sequencer::CompileScope::Clip(self.clip),
+        }
     }
 
     fn republish(&mut self) {
-        let timeline =
-            fontelle_sequencer::compile(&self.project, &self.channel_nodes, &self.param_nodes);
+        // The tempo first: a tempo lane changes what sample every tick in the
+        // pass lands on, and the loop the transport is running is in samples.
+        //
+        // **Against the same scope the timeline is compiled with**, which is
+        // what keeps the window's clock and the song it is playing the same
+        // clock. Clip mode compiles one clip and leaves every other clip out,
+        // a tempo lane on another row included — so the window has to leave
+        // it out too, or the playhead is drawn in a bar the notes are not in.
+        self.effective_tempo = self.tempo_for_scope();
+        self.publish_loop();
+        let timeline = self.compiled();
         self.publisher.publish(timeline);
+    }
+
+    /// The tempo map this session's [`scope`](Session::scope) plays by.
+    fn tempo_for_scope(&self) -> fontelle_model::TempoMap {
+        match self.play_mode {
+            PlayMode::Song => fontelle_model::effective_tempo_map(&self.project),
+            PlayMode::Clip => self.project.tempo_map.clone(),
+        }
+    }
+
+    /// The bars the clip being edited covers, in song ticks.
+    fn clip_span(&self) -> Option<(Tick, Tick)> {
+        let clip = self.project.clips.get(self.clip)?;
+        Some((clip.start, clip.start + clip.length))
+    }
+
+    /// Hands the transport the stretch it should be looping, in **both**
+    /// units (§6.3), and whether to loop at all.
+    ///
+    /// In song mode that is the time selection somebody dragged out on a
+    /// ruler; in clip mode it is the clip being edited, whatever the
+    /// selection says — that is what clip mode *is*. Both halves are
+    /// published together because the RT thread cannot run a `TempoMap`
+    /// lookup against a map this thread may be editing.
+    fn publish_loop(&self) {
+        let Some(transport) = &self.transport else {
+            return;
+        };
+        let range = match self.play_mode {
+            PlayMode::Song => self.project.loop_range,
+            PlayMode::Clip => self.clip_span(),
+        };
+        match range {
+            Some((from, to)) if to > from => {
+                transport.set_loop_range(
+                    (from, to),
+                    (
+                        self.effective_tempo.tick_to_sample(from),
+                        self.effective_tempo.tick_to_sample(to),
+                    ),
+                );
+                transport.set_looping(true);
+            }
+            // Nothing selected is not a loop of nothing: it is no loop.
+            _ => transport.set_looping(false),
+        }
+    }
+
+    /// How long the piece is, in ticks. See [`StudioHost::song_length`].
+    fn song_ticks(&self) -> Tick {
+        self.project
+            .clips
+            .values()
+            .map(|clip| clip.start + clip.length)
+            .max()
+            .unwrap_or(0)
+            .max(PPQN * i64::from(self.project.beats_per_bar) * NEW_CLIP_BARS)
     }
 
     /// What an addressed parameter is worth right now, normalised.
@@ -974,7 +1086,12 @@ impl Session {
     fn parameter_now(&self, address: &fontelle_types::ParamAddress) -> Option<f64> {
         use fontelle_types::ParamTarget;
         match ParamTarget::parse(address)? {
-            ParamTarget::Tempo => None,
+            // The **box's** tempo, not the automated one: a lane made on the
+            // tempo starts flat where the box is, so making it changes
+            // nothing you can hear (§12.4).
+            ParamTarget::Tempo => Some(fontelle_types::normalised_tempo(
+                self.project.tempo_map.tempo_at(0),
+            )),
             ParamTarget::TrackGain(id) => {
                 let db = self.project.mixer.tracks.get(id)?.gain_db;
                 let span = fontelle_engine::GAIN_MAX_DB - fontelle_engine::GAIN_MIN_DB;
@@ -1063,6 +1180,19 @@ impl Session {
             Ok(()) => {
                 self.dirty = true;
                 self.republish();
+                // **Every accepted command moves the revision.** The window
+                // caches every list it draws and re-reads them only when this
+                // moves (`fontelle-ui`'s `refresh_studio`), so a mutation that
+                // forgets to bump it is a change you cannot see.
+                //
+                // It used to be bumped by hand at each call site, and drawing
+                // a note was one of the places that did not: harmless while a
+                // clip's block on the arrangement carried nothing that changed
+                // with its notes, and a preview that never updated the moment
+                // the block started showing them. One place to bump it is one
+                // place to be wrong, and this is the place every edit already
+                // goes through (INVARIANT 9).
+                self.revision += 1;
             }
             // A refused edit is not a crash and not a history entry — a note
             // dragged past key 127 simply does not move.
@@ -1618,7 +1748,7 @@ impl DocumentHost for Session {
     /// Measured over a whole beat and divided down, so a map stored in samples
     /// answers to within a sample rather than to within a tick.
     fn seconds_per_tick(&self) -> f64 {
-        let map = &self.project.tempo_map;
+        let map = &self.effective_tempo;
         let rate = map.sample_rate_hz();
         if rate <= 0.0 {
             return 0.5 / PPQN as f64;
@@ -1632,7 +1762,7 @@ impl DocumentHost for Session {
 
     fn playhead_tick(&self, position_sample: Sample) -> Option<Tick> {
         let clip = self.project.clips.get(self.clip)?;
-        let tick = self.project.tempo_map.sample_to_tick(position_sample);
+        let tick = self.effective_tempo.sample_to_tick(position_sample);
         // Only while the playhead is actually over this clip: a roll that
         // draws a playhead parked at its left edge whenever the song is
         // elsewhere is lying about where you are.
@@ -1645,7 +1775,26 @@ impl DocumentHost for Session {
             .clips
             .get(self.clip)
             .map_or(0, |clip| clip.start);
-        self.project.tempo_map.tick_to_sample(start + tick.max(0))
+        self.effective_tempo.tick_to_sample(start + tick.max(0))
+    }
+
+    /// A tick of the open clip, as a tick of the song.
+    fn song_tick_of_clip_tick(&self, tick: Tick) -> Tick {
+        let start = self
+            .project
+            .clips
+            .get(self.clip)
+            .map_or(0, |clip| clip.start);
+        start + tick
+    }
+
+    fn clip_tick_of_song_tick(&self, tick: Tick) -> Tick {
+        let start = self
+            .project
+            .clips
+            .get(self.clip)
+            .map_or(0, |clip| clip.start);
+        tick - start
     }
 
     fn is_dirty(&self) -> bool {
@@ -1677,21 +1826,21 @@ impl Session {
         if notes.is_empty() {
             return Vec::new();
         }
-        if let Err(e) = self
-            .history
-            .apply(Box::new(AddNotes::new(clip, notes)), &mut self.project)
-        {
-            eprintln!("Fontelle: {e}");
-            self.message = Some(e.to_string());
-            return Vec::new();
-        }
-        self.dirty = true;
+        // Through `apply_for` like every other command that hands its ids
+        // back. It used to call `History::apply` itself, which made a **third**
+        // way into the history — and the third way was the one that forgot to
+        // move the revision, so notes drawn in the roll never reached the
+        // block on the arrangement. Two ways in are enough to keep honest.
+        let ids = match self.apply_for::<AddNotes>(Box::new(AddNotes::new(clip, notes))) {
+            Ok(add) => add.ids().to_vec(),
+            Err(e) => {
+                eprintln!("Fontelle: {e}");
+                self.message = Some(e);
+                return Vec::new();
+            }
+        };
         self.republish();
-        self.history
-            .last_applied()
-            .and_then(|command| command.as_any().downcast_ref::<AddNotes>())
-            .map(|add| add.ids().to_vec())
-            .unwrap_or_default()
+        ids
     }
 
     /// Applies `command` through the history and hands back the entry, so a
@@ -1701,6 +1850,10 @@ impl Session {
             .apply(command, &mut self.project)
             .map_err(|e| e.to_string())?;
         self.dirty = true;
+        // The second of the two ways into the history — see `run`, which
+        // carries the reasoning. Both bump it, so "the document changed" and
+        // "the window knows" cannot come apart.
+        self.revision += 1;
         self.history
             .last_applied()
             .and_then(|c| c.as_any().downcast_ref::<T>())
@@ -2835,47 +2988,64 @@ impl StudioHost for Session {
     }
 
     fn create_automation(&mut self, address: &fontelle_types::ParamAddress, label: &str, at: Tick) {
-        // **On a lane of its own**, at the playhead, one bar long. §12.4 says
-        // "the current lane", and that reading put the curve on top of the
-        // notes: an automation clip and a note clip in the same pixels is one
-        // of them drawn over the other, which is the *"lane of empty clips"*
-        // this was reported as.
-        //
-        // Reused when this parameter already has one, so a lane belongs to a
-        // parameter rather than to a gesture — otherwise every right-click on
-        // the same fader grows the arrangement another strip.
-        // And **the clip itself is reused** when this parameter already has one
-        // at this point in the song. A right-click on a control that already
-        // has a lane means "show me that lane", not "give me a second one on
-        // top of the first" — two clips for one parameter in the same bars is
-        // two curves fighting over the same value, and the RT side would apply
-        // whichever was compiled last.
-        if let Some(existing) = self.project.clips.iter().find_map(|(id, clip)| match &clip.source {
-            ClipSource::Automation(data)
-                if data.target == *address && clip.start <= at && at < clip.start + clip.length =>
-            {
-                Some(id)
+        // The words come from the panel that asked; the document knows only
+        // the address. Recorded first, so the block is captioned whichever
+        // branch below is taken.
+        self.automation_names
+            .insert(address.clone(), label.to_string());
+
+        // **Reused when this parameter already has a clip.** A right-click on
+        // a control that already has one means "show me that one", not "give
+        // me a second on top of the first" — two clips for one parameter over
+        // the same bars is two curves fighting over one value, and the RT
+        // side would apply whichever was compiled last. The one covering the
+        // playhead wins where there are several.
+        let mut fallback = None;
+        let mut covering = None;
+        for (id, clip) in self.project.clips.iter() {
+            let ClipSource::Automation(data) = &clip.source else {
+                continue;
+            };
+            if data.target != *address {
+                continue;
             }
-            _ => None,
-        }) {
+            fallback.get_or_insert(id);
+            if clip.start <= at && at < clip.start + clip.length {
+                covering = Some(id);
+                break;
+            }
+        }
+        if let Some(existing) = covering.or(fallback) {
             self.automation_clip = Some(existing);
-            self.automation_label = label.to_string();
-            self.automation_names.insert(address.clone(), label.to_string());
-            self.automation_selection.clear();
             self.revision += 1;
             return;
         }
 
+        // **Over the time selection, or the whole song**, on a lane of its
+        // own. *"it creates a new automation clip in my arrangement just flat
+        // on the value that its currently at basically with the clip
+        // extending the current length of the song or time selection."* A
+        // one-bar clip at the playhead — which is what this used to make — is
+        // a clip you have to stretch before you can draw anything worth
+        // hearing in it.
+        //
+        // The lane is its own for the reason it always was: §12.4 says "the
+        // current lane", and that reading put the curve on top of the notes,
+        // which is one of them drawn over the other.
+        let (start, length) = match self.project.loop_range {
+            Some((from, to)) if to > from => (from, to - from),
+            _ => (0, self.song_ticks()),
+        };
+        let length = length.max(1);
         let lane = self.automation_lane(address, label);
-        let start = at.max(0);
-        let bar = PPQN * i64::from(self.project.beats_per_bar.max(1));
 
-        // Two points at the value the control is at now, so the clip starts by
-        // changing nothing: an automation lane that jumped the parameter the
-        // moment it was created would be a lane nobody trusts.
+        // Two points at the value the control is at now, one at each end, so
+        // the clip starts by changing nothing: an automation lane that jumped
+        // the parameter the moment it was created would be a lane nobody
+        // trusts.
         let value = self.parameter_now(address).unwrap_or(0.5);
         let mut points = fontelle_model::Arena::default();
-        for tick in [0, bar] {
+        for tick in [0, length] {
             points.insert(fontelle_model::AutomationPoint {
                 tick,
                 value,
@@ -2887,7 +3057,7 @@ impl StudioHost for Session {
         let clip = Clip {
             lane,
             start,
-            length: bar,
+            length,
             source: ClipSource::Automation(fontelle_model::AutomationData {
                 target: address.clone(),
                 points,
@@ -2900,100 +3070,46 @@ impl StudioHost for Session {
         if let Ok(command) = self.apply_for::<AddClip>(Box::new(AddClip::new(clip)))
             && let Some(id) = command.id()
         {
-            // It opens straight away: you made it to draw in it, which is the
-            // same handshake a drawn note clip has.
+            // It is the block in hand: you made it to draw in it, and the
+            // drawing happens where it sits (§12.4).
             self.automation_clip = Some(id);
-            self.automation_label = label.to_string();
-            self.automation_names.insert(address.clone(), label.to_string());
-            self.automation_selection.clear();
         }
         self.history.break_gesture();
         self.republish();
         self.revision += 1;
     }
 
-    fn automation(&self) -> Option<fontelle_ui::canvas::AutomationView> {
-        let clip_id = self.automation_clip?;
-        let clip = self.project.clips.get(clip_id)?;
-        let fontelle_model::ClipSource::Automation(data) = &clip.source else {
-            return None;
-        };
-        let mut points: Vec<fontelle_ui::canvas::PointInfo> = data
-            .points
-            .iter()
-            .map(|(id, point)| fontelle_ui::canvas::PointInfo {
-                id,
-                tick: point.tick,
-                value: point.value,
-                selected: self.automation_selection.contains(&id),
-                curve: point.curve,
-            })
-            .collect();
-        // In time order, so the handle drawn last is the rightmost rather than
-        // whichever was made last.
-        points.sort_by_key(|point| point.tick);
-        Some(fontelle_ui::canvas::AutomationView {
-            title: self.automation_label.clone(),
-            length: clip.length,
-            points,
-        })
+    fn loop_range(&self) -> Option<(Tick, Tick)> {
+        self.project.loop_range
     }
 
-    fn automation_data(&self) -> Option<fontelle_model::AutomationData> {
-        let clip = self.project.clips.get(self.automation_clip?)?;
-        match &clip.source {
-            fontelle_model::ClipSource::Automation(data) => Some(data.clone()),
-            _ => None,
-        }
+    fn set_loop_range(&mut self, range: Option<(Tick, Tick)>) {
+        self.run(Box::new(fontelle_model::SetLoopRange::new(range)));
+        self.history.break_gesture();
+        // `run` republished, which published the loop — but only if the
+        // command was accepted, and this costs two atomic stores either way.
+        self.publish_loop();
+        self.revision += 1;
     }
 
-    fn edit_automation(&mut self, edit: fontelle_ui::canvas::AutomationEdit) {
-        use fontelle_ui::canvas::AutomationEdit;
-        let Some(clip) = self.automation_clip else {
+    fn play_mode(&self) -> PlayMode {
+        self.play_mode
+    }
+
+    fn set_play_mode(&mut self, mode: PlayMode) {
+        if self.play_mode == mode {
             return;
-        };
-        match edit {
-            AutomationEdit::Add { tick, value } => {
-                let point = fontelle_model::AutomationPoint {
-                    tick,
-                    value,
-                    curve: fontelle_model::CurveShape::Linear,
-                    tension: 0.0,
-                };
-                if let Ok(command) = self.apply_for::<fontelle_model::AddAutomationPoint>(Box::new(
-                    fontelle_model::AddAutomationPoint::new(clip, point),
-                )) {
-                    // The point the click just made is the one the drag that
-                    // follows moves — the same handshake drawing a note has.
-                    self.automation_selection = command.id().into_iter().collect();
-                }
-                self.history.break_gesture();
-            }
-            AutomationEdit::Move {
-                ids,
-                tick_delta,
-                value_delta,
-            } => self.run(Box::new(fontelle_model::MoveAutomationPoints::new(
-                clip,
-                ids,
-                tick_delta,
-                value_delta,
-            ))),
-            AutomationEdit::Remove(ids) => {
-                self.automation_selection.retain(|id| !ids.contains(id));
-                self.run(Box::new(fontelle_model::RemoveAutomationPoints::new(
-                    clip, ids,
-                )));
-                self.history.break_gesture();
-            }
-            AutomationEdit::SetCurve { ids, curve } => {
-                self.run(Box::new(fontelle_model::SetPointCurve::new(
-                    clip, ids, curve,
-                )));
-                self.history.break_gesture();
-            }
         }
+        self.play_mode = mode;
+        // Both halves, and `republish` is both: the timeline is recompiled to
+        // carry one clip or all of them, and the transport is handed the
+        // stretch to loop.
         self.republish();
+        self.revision += 1;
+    }
+
+    fn focused_clip_span(&self) -> Option<(Tick, Tick)> {
+        self.clip_span()
     }
 
     fn is_automated(&self, address: &fontelle_types::ParamAddress) -> bool {
@@ -3359,33 +3475,57 @@ impl StudioHost for Session {
             // empty clips.
             .filter(|(_, clip)| !matches!(clip.source, ClipSource::Audio(_)))
             .map(|(id, clip)| {
-                let (kind, name, curve) = match &clip.source {
+                let (kind, name, curve, notes) = match &clip.source {
                     // A note block is captioned with the channel it plays, not
                     // with a clip name — a clip has none, and "what instrument
                     // is this" is what somebody scanning an arrangement asks.
-                    ClipSource::Notes(_) => (
-                        ClipKind::Notes,
-                        self.channel_of_clip(id)
-                            .and_then(|channel| self.project.channels.get(channel))
-                            .map(|channel| channel.name.clone())
-                            .unwrap_or_else(|| "Clip".to_string()),
-                        Vec::new(),
-                    ),
+                    ClipSource::Notes(data) => {
+                        // The clip's own notes, in time order and **not**
+                        // expanded across a loop's passes — the canvas tiles
+                        // them the way it tiles the seams. See
+                        // `fontelle_ui::document::ClipInfo::notes`.
+                        let mut notes: Vec<fontelle_ui::document::NotePreview> = data
+                            .notes
+                            .values()
+                            .map(|note| fontelle_ui::document::NotePreview {
+                                start: note.start,
+                                length: note.length,
+                                key: note.key,
+                            })
+                            .collect();
+                        notes.sort_by_key(|note| (note.start, note.key));
+                        (
+                            ClipKind::Notes,
+                            self.channel_of_clip(id)
+                                .and_then(|channel| self.project.channels.get(channel))
+                                .map(|channel| channel.name.clone())
+                                .unwrap_or_else(|| "Clip".to_string()),
+                            Vec::new(),
+                            notes,
+                        )
+                    }
                     // And an automation block with the parameter it moves,
                     // which is the same question asked of the other kind.
                     ClipSource::Automation(data) => {
-                        let mut points: Vec<(Tick, f64)> = data
+                        let mut points: Vec<CurvePoint> = data
                             .points
-                            .values()
-                            .map(|point| (point.tick, point.value))
+                            .iter()
+                            .map(|(id, point)| CurvePoint {
+                                id,
+                                tick: point.tick,
+                                value: point.value,
+                                curve: point.curve,
+                            })
                             .collect();
-                        // In time order, so the canvas draws a polyline
-                        // without having to sort a copy every frame.
-                        points.sort_by_key(|(tick, _)| *tick);
+                        // In time order, so the canvas draws a polyline —
+                        // and evaluates a curve — without having to sort a
+                        // copy every frame.
+                        points.sort_by_key(|point| point.tick);
                         (
                             ClipKind::Automation,
                             self.automation_name(&data.target),
                             points,
+                            Vec::new(),
                         )
                     }
                     ClipSource::Audio(_) => unreachable!("filtered above"),
@@ -3410,13 +3550,15 @@ impl StudioHost for Session {
                     }),
                     kind,
                     curve,
+                    notes,
                 }
             })
             .collect()
     }
 
-    fn arrange(&mut self, edit: ArrangeEdit) -> Vec<ClipId> {
+    fn arrange(&mut self, edit: ArrangeEdit) -> Created {
         let lanes = self.lane_ids();
+        let mut points: Vec<fontelle_types::PointId> = Vec::new();
         // Filled in by the two edits that make clips. Every other arm leaves
         // it empty, which is what "created none" means to the canvas.
         let mut created = Vec::new();
@@ -3492,7 +3634,7 @@ impl StudioHost for Session {
                 let lanes = self.lane_ids();
                 let Some(lane_id) = lanes.get(lane).or_else(|| lanes.last()).copied() else {
                     self.message = Some("this project has no lanes to draw on".to_string());
-                    return created;
+                    return Created { clips: created, points };
                 };
                 // What the clip plays: whatever else is already on this lane,
                 // because that is what a lane *means* to somebody looking at
@@ -3512,7 +3654,7 @@ impl StudioHost for Session {
                 else {
                     self.message =
                         Some("add an instrument first — a clip has to play something".to_string());
-                    return created;
+                    return Created { clips: created, points };
                 };
 
                 let bar = PPQN * i64::from(self.project.beats_per_bar.max(1));
@@ -3581,11 +3723,11 @@ impl StudioHost for Session {
                 }
                 // A copy changes no document state, so no command and no undo
                 // entry — and deliberately no `revision` bump either.
-                return created;
+                return Created { clips: created, points };
             }
             ArrangeEdit::Paste { at } => {
                 if self.clip_clipboard.is_empty() {
-                    return created;
+                    return Created { clips: created, points };
                 }
                 let earliest = self.clip_clipboard.first().map_or(0, |c| c.start);
                 // A lane the project no longer has would make every paste
@@ -3618,9 +3760,57 @@ impl StudioHost for Session {
                 self.republish();
                 self.history.break_gesture();
             }
+            // --- the points of an automation block, edited where it sits ---
+            ArrangeEdit::AddPoint { clip, tick, value } => {
+                let point = fontelle_model::AutomationPoint {
+                    tick,
+                    value,
+                    curve: fontelle_model::CurveShape::Linear,
+                    tension: 0.0,
+                };
+                if let Ok(command) = self.apply_for::<fontelle_model::AddAutomationPoint>(
+                    Box::new(fontelle_model::AddAutomationPoint::new(clip, point)),
+                ) {
+                    // The point the click just made is the one the drag that
+                    // follows moves — the same handshake drawing a note has.
+                    points.extend(command.id());
+                }
+                self.history.break_gesture();
+                self.republish();
+            }
+            ArrangeEdit::MovePoints {
+                clip,
+                ids,
+                tick_delta,
+                value_delta,
+            } => {
+                // No `break_gesture`: a drag is sixty of these and one entry
+                // on the history, and only the window knows the mouse came up.
+                self.run(Box::new(fontelle_model::MoveAutomationPoints::new(
+                    clip,
+                    ids,
+                    tick_delta,
+                    value_delta,
+                )));
+            }
+            ArrangeEdit::RemovePoints { clip, ids } => {
+                self.run(Box::new(fontelle_model::RemoveAutomationPoints::new(
+                    clip, ids,
+                )));
+                self.history.break_gesture();
+            }
+            ArrangeEdit::SetPointCurve { clip, ids, curve } => {
+                self.run(Box::new(fontelle_model::SetPointCurve::new(
+                    clip, ids, curve,
+                )));
+                self.history.break_gesture();
+            }
         }
         self.revision += 1;
-        created
+        Created {
+            clips: created,
+            points,
+        }
     }
 
     fn open_clip(&mut self, clip: ClipId) {
@@ -3629,10 +3819,10 @@ impl StudioHost for Session {
         };
         // A block opens what is in it, whichever kind it is — the same
         // handshake a note clip has always had, for the other kind of clip.
-        if let ClipSource::Automation(data) = &open.source {
-            self.automation_label = self.automation_name(&data.target);
+        if let ClipSource::Automation(_) = &open.source {
+            // An automation block is edited where it sits, so opening one is
+            // only a matter of saying which block is in hand.
             self.automation_clip = Some(clip);
-            self.automation_selection.clear();
             self.revision += 1;
             return;
         }
@@ -3647,23 +3837,15 @@ impl StudioHost for Session {
     }
 
     fn song_length(&self) -> Tick {
-        self.project
-            .clips
-            .values()
-            .map(|clip| clip.start + clip.length)
-            .max()
-            .unwrap_or(0)
-            .max(PPQN * i64::from(self.project.beats_per_bar) * NEW_CLIP_BARS)
+        self.song_ticks()
     }
 
     fn playhead_song_tick(&self, position_sample: Sample) -> Tick {
-        self.project
-            .tempo_map
-            .sample_to_tick(position_sample.max(0))
+        self.effective_tempo.sample_to_tick(position_sample.max(0))
     }
 
     fn sample_of_song_tick(&self, tick: Tick) -> Sample {
-        self.project.tempo_map.tick_to_sample(tick.max(0))
+        self.effective_tempo.tick_to_sample(tick.max(0))
     }
 
     fn toggle_lane_mute(&mut self, lane: usize) {

@@ -119,10 +119,12 @@ enum Drag {
     /// A band's handle on the EQ curve. Absolute: the handle goes where the
     /// pointer is, because the handle *is* the frequency and the gain.
     EqHandle(usize),
-    /// Points on an automation curve. **Relative**, like the roll's note drag
-    /// and for the same reason: several can move at once and they have to keep
-    /// their shape.
-    AutomationPoints,
+    /// The right button dragging a time selection out along the arrangement's
+    /// ruler (TDD §6.3). Where it started is `select_anchor`, in song ticks.
+    TimelineSelect,
+    /// The same, along the roll's ruler, in the clip's ticks converted to the
+    /// song's — one selection, drawn on both rulers.
+    RollSelect,
     /// A send's level, dragged along its groove. **Absolute**, like a fader:
     /// a press takes it to where it landed and then follows.
     SendLevel(usize),
@@ -196,6 +198,14 @@ enum MenuTarget {
     /// — a compressor's `threshold`. §12.4's "right-click any control", on the
     /// window that did not exist.
     InsertParam { param: String, name: String },
+    /// The transport bar's tempo box. §12.3 names the tempo as automatable
+    /// and it is a control like any other; the menu is how it becomes a lane.
+    Tempo,
+    /// One point of an automation block: its shape, or its removal.
+    Point {
+        clip: fontelle_types::ClipId,
+        id: fontelle_types::PointId,
+    },
 }
 
 /// The effect's own id for a parameter, out of the full automation address the
@@ -469,12 +479,19 @@ pub struct WindowApp {
     /// The selected band's own response, drawn faintly behind the sum.
     eq_band_curve: Vec<(f32, f32)>,
     hover_band: Option<usize>,
-    /// The automation clip the editor has open, as the host describes it, and
-    /// where its points are on screen.
-    automation: Option<crate::canvas::AutomationView>,
-    automation_layout: crate::canvas::AutomationLayout,
-    automation_curve: Vec<(f32, f32)>,
-    hover_point: Option<fontelle_types::PointId>,
+    /// The time selection, in song ticks, as the document holds it — and,
+    /// while one is being dragged out on a ruler, the one under the pointer
+    /// instead, so both rulers show the loop as it is drawn.
+    loop_range: Option<(fontelle_types::Tick, fontelle_types::Tick)>,
+    /// Where a ruler drag started, in song ticks, and what it has selected
+    /// so far. See `Drag::TimelineSelect`.
+    select_anchor: fontelle_types::Tick,
+    select_preview: Option<(fontelle_types::Tick, fontelle_types::Tick)>,
+    /// Song or clip — what pressing play plays. Read off the studio on its
+    /// revision, like every other list here.
+    play_mode: crate::document::PlayMode,
+    /// The mode chip's word, shaped.
+    mode_text: TextLayout,
     hover_param: Option<(usize, usize)>,
     /// Which preset chip the pointer is over, in the effect panel. Its own
     /// field rather than a `hover_param`, because a chip has no address —
@@ -808,15 +825,11 @@ impl WindowApp {
             spectrum_points: Vec::new(),
             eq_band_curve: Vec::new(),
             hover_band: None,
-            automation: None,
-            automation_layout: crate::canvas::AutomationLayout {
-                body: layout.panel.body,
-                grid: layout.panel.body,
-                header: layout.panel.body,
-                handles: Vec::new(),
-            },
-            automation_curve: Vec::new(),
-            hover_point: None,
+            loop_range: None,
+            select_anchor: 0,
+            select_preview: None,
+            play_mode: crate::document::PlayMode::Song,
+            mode_text: TextLayout::default(),
             hover_param: None,
             hover_preset: None,
             hover_key: None,
@@ -1003,8 +1016,10 @@ impl WindowApp {
                     readout: &self.readout,
                     tempo: &self.tempo_text,
                     signature: &self.signature_text,
+                    mode: &self.mode_text,
                     hover: self.hover,
                     marker_sample: self.marker,
+                    clip_mode: self.play_mode == crate::document::PlayMode::Clip,
                 },
                 roll: self.options.document.as_ref().map(|doc| RollChrome {
                     key_map: &self.key_map,
@@ -1022,6 +1037,9 @@ impl WindowApp {
                     ghost_filter: self.roll.ghosts,
                     key_style: self.key_style,
                     marker_tick: doc.playhead_tick(self.marker),
+                    loop_range: self
+                        .loop_range
+                        .map(|(from, to)| (doc.clip_tick_of_song_tick(from), doc.clip_tick_of_song_tick(to))),
                     marquee: self.roll.marquee(),
                     hover: self.hover_control,
                     lane_menu: self.lane_menu.as_ref(),
@@ -1081,6 +1099,9 @@ impl WindowApp {
                         Some(MenuTarget::Lane(index)) => Some(*index),
                         _ => None,
                     },
+                    point_clip: self.timeline.point_clip(),
+                    point_selection: self.timeline.point_selection(),
+                    loop_range: self.loop_range,
                 can_paste: self
                         .options
                         .document
@@ -1116,7 +1137,13 @@ impl WindowApp {
                 // Only the studio's own menus: one opened on a knob belongs to
                 // the instrument editor's window and is drawn there.
                 menu: match &self.menu {
-                    Some((MenuTarget::Channel(_) | MenuTarget::Lane(_), menu)) => Some(menu),
+                    Some((
+                        MenuTarget::Channel(_)
+                        | MenuTarget::Lane(_)
+                        | MenuTarget::Tempo
+                        | MenuTarget::Point { .. },
+                        menu,
+                    )) => Some(menu),
                     _ => None,
                 },
             },
@@ -1199,10 +1226,18 @@ impl WindowApp {
             self.tree.invalidate_rect(self.tooltip_region());
         }
 
-        let view = match &mut self.options.host {
+        let mut view = match &mut self.options.host {
             Some(host) => host.view(),
             None => TransportView::unavailable(),
         };
+        // The bars-and-beats read-out through the document's map, not the
+        // engine host's copy of it: the host was handed the map at start-up
+        // and a tempo change — or a tempo lane — has moved it since. Only
+        // the document holds the current one (INVARIANT 5).
+        if let Some(doc) = &self.options.document {
+            view.position_beats =
+                doc.playhead_song_tick(view.position_sample) as f64 / fontelle_types::PPQN as f64;
+        }
         let mut meters = self.meters;
         for (index, meter) in meters.iter_mut().enumerate() {
             meter.update(view.peaks.get(index).copied().unwrap_or(0.0), dt);
@@ -1332,7 +1367,8 @@ impl WindowApp {
             Drag::Fader(_) | Drag::Tempo => Some(Pointer::ResizeY),
             Drag::Pan(_) => Some(Pointer::ResizeX),
             // A band handle goes wherever the pointer does, in both axes.
-            Drag::EqHandle(_) | Drag::AutomationPoints => Some(Pointer::Grabbing),
+            Drag::EqHandle(_) => Some(Pointer::Grabbing),
+            Drag::TimelineSelect | Drag::RollSelect => Some(Pointer::ResizeX),
             // A row being carried up or down its chain.
             Drag::InsertRow => Some(Pointer::Grabbing),
             Drag::SendLevel(_) => Some(Pointer::ResizeX),
@@ -1782,14 +1818,13 @@ impl ApplicationHandler for WindowApp {
                         | Drag::Pan(_)
                         | Drag::Tempo
                         | Drag::EqHandle(_)
-                        | Drag::AutomationPoints
                         | Drag::SendLevel(_)
                         | Drag::InsertMix(_)
                 );
                 // An EQ band drag coalesces into one history entry while it
                 // runs; this is what tells the document it has stopped, the
                 // same handshake a note drag has.
-                if matches!(self.drag, Drag::EqHandle(_) | Drag::AutomationPoints)
+                if matches!(self.drag, Drag::EqHandle(_))
                     && let Some(doc) = &mut self.options.document
                 {
                     doc.end_gesture();
@@ -1799,6 +1834,11 @@ impl ApplicationHandler for WindowApp {
                 // one drag.
                 if matches!(self.drag, Drag::InsertRow) {
                     self.drop_insert_row();
+                }
+                // A time selection lands where the button comes up, like a
+                // marquee: that is when it decides what it caught.
+                if matches!(self.drag, Drag::TimelineSelect | Drag::RollSelect) {
+                    self.commit_selection();
                 }
                 self.drag = Drag::None;
                 self.knob = None;
@@ -2141,20 +2181,16 @@ impl WindowApp {
                 None => kind.title().to_string(),
             },
             EditorKind::Effect => self.effect_title(),
-            EditorKind::Automation => match &self.automation {
-                Some(view) => format!("{} \u{2014} {}", kind.title(), view.title),
-                None => kind.title().to_string(),
-            },
         }
     }
 
     /// The panel geometry inside each open editor window.
     ///
-    /// The three layouts stay on `WindowApp` rather than inside `Editor`
-    /// because every gesture that reads them — `press_instrument`,
-    /// `press_effect`, `drag_automation` — already does, and there is at most
-    /// one window of each kind for the honest reason [`EditorKind`] gives:
-    /// the host answers one instrument, one insert and one clip.
+    /// The layouts stay on `WindowApp` rather than inside `Editor` because
+    /// every gesture that reads them — `press_instrument`, `press_effect` —
+    /// already does, and there is at most one window of each kind for the
+    /// honest reason [`EditorKind`] gives: the host answers one instrument
+    /// and one insert.
     fn relayout_editors(&mut self) {
         let m = self.options.theme.metrics;
         let bodies: Vec<(EditorKind, crate::layout::Rect)> = self
@@ -2199,23 +2235,6 @@ impl WindowApp {
                     // be seen against the shape it is being made in.
                     self.eq_band_curve =
                         crate::canvas::eq_band_curve_points(&self.eq_layout, &config, self.eq_band);
-                }
-                EditorKind::Automation => {
-                    if let Some(view) = self.automation.clone() {
-                        self.automation_layout =
-                            crate::canvas::automation_layout(body, &m, &view);
-                        self.automation_curve = match &self.options.document {
-                            Some(doc) => match doc.automation_data() {
-                                Some(data) => crate::canvas::automation_curve(
-                                    &self.automation_layout,
-                                    &view,
-                                    &data,
-                                ),
-                                None => Vec::new(),
-                            },
-                            None => Vec::new(),
-                        };
-                    }
                 }
             }
         }
@@ -2427,7 +2446,7 @@ impl WindowApp {
                 }
                 _ => false,
             },
-            EditorKind::Instrument | EditorKind::Automation => false,
+            EditorKind::Instrument => false,
         }
     }
 
@@ -2469,15 +2488,6 @@ impl WindowApp {
                         EqHit::Nothing => Pointer::Default,
                     }
                 }
-                EditorKind::Automation => {
-                    match crate::canvas::automation_hit(&self.automation_layout, x, y) {
-                        crate::canvas::AutomationHit::Point(_) => Pointer::Grab,
-                        // Empty grid makes a point where you click it, which
-                        // is a thing you do rather than a thing you aim at.
-                        crate::canvas::AutomationHit::Grid => Pointer::Hand,
-                        _ => Pointer::Default,
-                    }
-                }
             },
         };
         if self.pointer == wanted {
@@ -2509,7 +2519,6 @@ impl WindowApp {
             // grid of knobs every other effect gets.
             EditorKind::Effect if self.eq.is_none() => self.press_insert_panel(button, x, y),
             EditorKind::Effect => self.press_effect_editor(button, x, y),
-            EditorKind::Automation => self.press_automation(button, x, y),
         }
     }
 
@@ -2538,13 +2547,6 @@ impl WindowApp {
                     crate::canvas::EqHit::Field(field) => Some(field),
                     _ => None,
                 };
-            }
-            EditorKind::Automation => {
-                self.hover_point =
-                    match crate::canvas::automation_hit(&self.automation_layout, x, y) {
-                        crate::canvas::AutomationHit::Point(id) => Some(id),
-                        _ => None,
-                    };
             }
         }
     }
@@ -2609,17 +2611,6 @@ impl WindowApp {
                     },
                     title: self.effect_title(),
                     bypassed: self.open_insert_bypassed(),
-                })
-            }
-            EditorKind::Automation => {
-                let Some(view) = self.automation.clone() else {
-                    return;
-                };
-                EditorWindowChrome::Automation(crate::render::AutomationChrome {
-                    layout: self.automation_layout.clone(),
-                    view,
-                    curve: self.automation_curve.clone(),
-                    hover: self.hover_point,
                 })
             }
         };
@@ -2778,10 +2769,20 @@ impl WindowApp {
         self.selected_track = doc.selected_mixer_track();
         self.track_output = doc.track_output(self.selected_track);
         self.route_names = doc.route_names();
+        // The time selection and the play mode, from the document: a loop
+        // reopens with the song, and the chip says what play will do.
+        self.loop_range = doc.loop_range();
+        let mode = doc.play_mode();
+        if mode != self.play_mode || self.mode_text.width == 0.0 {
+            self.mode_text = self
+                .text
+                .layout(mode.label(), &self.options.theme.font, None);
+            self.play_mode = mode;
+            self.tree.invalidate(TRANSPORT);
+        }
         // The open insert may have been removed, or its whole strip may have —
         // in which case its window closes rather than showing the effect that
         // happens to be at that index now.
-        self.automation = doc.automation();
         let (eq, insert_view) = match self.open_insert {
             Some((strip, slot)) => (doc.eq_config(strip, slot), doc.insert_view(strip, slot)),
             None => (None, None),
@@ -2805,12 +2806,9 @@ impl WindowApp {
         };
         self.status = doc.take_message().unwrap_or(fallback);
 
-        // An editor whose subject has gone — the insert was deleted, the clip
-        // was — closes rather than showing whatever is at that index now. The
-        // window *is* the editor, so closing one is closing the other.
-        if self.automation.is_none() {
-            self.close_editor(EditorKind::Automation);
-        }
+        // An editor whose subject has gone — the insert was deleted — closes
+        // rather than showing whatever is at that index now. The window *is*
+        // the editor, so closing one is closing the other.
         if self.eq.is_none() && self.insert_view.is_none() {
             self.close_editor(EditorKind::Effect);
         }
@@ -3129,8 +3127,10 @@ impl WindowApp {
                 self.labels.ensure(caption, &font, &mut self.text);
             }
         }
-        if let Some(view) = self.automation.clone() {
-            self.labels.ensure(&view.title, &font, &mut self.text);
+        // The shapes a point's menu offers, and the tempo's menu.
+        for shape in crate::canvas::CURVE_SHAPES {
+            self.labels
+                .ensure(crate::canvas::curve_label(shape), &font, &mut self.text);
         }
 
         // Both panels of knobs: the instrument's, and the one an effect that is
@@ -3278,11 +3278,21 @@ impl WindowApp {
 
         // The transport bar first: it is the only thing above the panels.
         if let Some(what) = hit(&self.bar, &self.view, x, y) {
+            // §12.4's rule on the tempo box: right-click any control to
+            // automate it, and the tempo is a control (§12.3). *"even the
+            // tempo section for example which i currently cannot turn into
+            // an automation clip."*
+            if button == winit::event::MouseButton::Right && what == TransportHit::Tempo {
+                let bounds = self.layout.window;
+                self.open_menu(MenuTarget::Tempo, x, y, bounds);
+                self.tree.invalidate(TRANSPORT);
+                return;
+            }
             if button == winit::event::MouseButton::Left {
-                // The two boxes that write to the *document* rather than to
-                // the engine. `transport` would do nothing with either —
-                // `action` returns `None` for them — so they are dealt with
-                // here, where the document is reachable.
+                // The boxes that write to the *document* rather than to the
+                // engine. `transport` would do nothing with any of them —
+                // `action` returns `None` — so they are dealt with here,
+                // where the document is reachable.
                 match what {
                     TransportHit::Tempo => {
                         self.value_drag = Some((self.tempo, y));
@@ -3291,6 +3301,10 @@ impl WindowApp {
                     }
                     TransportHit::Signature => {
                         self.set_beats_per_bar(cycle_beats_per_bar(self.beats_per_bar()));
+                        return;
+                    }
+                    TransportHit::Mode => {
+                        self.toggle_play_mode();
                         return;
                     }
                     _ => {}
@@ -3455,10 +3469,20 @@ impl WindowApp {
                 self.mark_at_roll(x);
                 return;
             }
-        } else if self.roll_layout.velocity.contains(x, y)
-            || self.roll_layout.keys.contains(x, y)
-            || self.roll_layout.ruler.contains(x, y)
-        {
+        } else if self.roll_layout.ruler.contains(x, y) {
+            // The right button on the roll's ruler drags a time selection
+            // out, the same as on the arrangement's — in this clip's ticks,
+            // stored as the song's.
+            let grid = self.roll_layout.grid;
+            let (x, _) = clamp_to_grid(grid, x, grid.y);
+            let clip_tick = x_to_tick(&self.roll.view, grid, x);
+            if let Some(doc) = &self.options.document {
+                self.select_anchor = doc.song_tick_of_clip_tick(clip_tick);
+                self.select_preview = None;
+                self.drag = Drag::RollSelect;
+            }
+            return;
+        } else if self.roll_layout.velocity.contains(x, y) || self.roll_layout.keys.contains(x, y) {
             return;
         }
         self.drag = Drag::Roll;
@@ -3485,7 +3509,8 @@ impl WindowApp {
             Drag::InsertKnob => self.drag_insert_knob(y),
             Drag::Fader(strip) => self.drag_fader(strip, y),
             Drag::EqHandle(band) => self.drag_eq(band, x, y),
-            Drag::AutomationPoints => self.drag_automation(x, y),
+            Drag::TimelineSelect => self.drag_select_timeline(x),
+            Drag::RollSelect => self.drag_select_roll(x),
             Drag::InsertRow => self.drag_insert_row(x, y),
             Drag::SendLevel(index) => self.drag_send_level(index, x),
             Drag::InsertMix(slot) => self.drag_insert_mix(slot, y),
@@ -3993,9 +4018,16 @@ impl WindowApp {
         .address();
         let at = doc.playhead_song_tick(at);
         doc.create_automation(&address, &label, at);
+        self.lane_made();
+    }
+
+    /// The arrangement after a lane was made: it is drawn there, selected,
+    /// and that is where it is edited — *"then it creates a new automation
+    /// clip in my arrangement"*. Nothing opens.
+    fn lane_made(&mut self) {
         self.refresh_studio();
         self.refresh_title();
-        self.open_editor(EditorKind::Automation);
+        self.tree.invalidate(TIMELINE);
     }
 
     /// A press in the effect tab. Right-click makes an automation lane for
@@ -4075,9 +4107,7 @@ impl WindowApp {
         .address();
         let at = doc.playhead_song_tick(at);
         doc.create_automation(&address, &label, at);
-        self.refresh_studio();
-        self.refresh_title();
-        self.open_editor(EditorKind::Automation);
+        self.lane_made();
     }
 
     /// The half of a mouse-up that belongs to a *control* — a knob, a fader,
@@ -4092,7 +4122,7 @@ impl WindowApp {
         // A band or point drag coalesces into one history entry while it
         // runs; this is what tells the document it has stopped, the same
         // handshake a note drag has.
-        if matches!(self.drag, Drag::EqHandle(_) | Drag::AutomationPoints)
+        if matches!(self.drag, Drag::EqHandle(_))
             && let Some(doc) = &mut self.options.document
         {
             doc.end_gesture();
@@ -4109,84 +4139,104 @@ impl WindowApp {
         }
     }
 
-    /// A press in the automation editor.
-    ///
-    /// A click on empty grid **makes a point there and picks it up**, which is
-    /// the gesture every curve editor has and the same handshake drawing a
-    /// note in the roll has. Right-click deletes.
-    fn press_automation(&mut self, button: MouseButton, x: f32, y: f32) {
-        let hit = crate::canvas::automation_hit(&self.automation_layout, x, y);
-        let Some(view) = self.automation.clone() else {
-            return;
+    // ------------------------------------------------ the time selection ---
+
+    /// One step of a right-drag along the arrangement's ruler.
+    fn drag_select_timeline(&mut self, x: f32) {
+        let grid = self.timeline_layout.grid;
+        let (x, _) = clamp_to_grid(grid, x, grid.y);
+        let tick = timeline_x_to_tick(&self.timeline.view, grid, x);
+        let snap = if self.modifiers.alt_key() {
+            SnapDivision::None
+        } else {
+            self.timeline.view.snap
         };
-        match (button, hit) {
-            (MouseButton::Left, crate::canvas::AutomationHit::Point(_)) => {
-                self.drag = Drag::AutomationPoints;
-                self.pointer_anchor = Some((x, y));
-            }
-            (MouseButton::Left, crate::canvas::AutomationHit::Grid) => {
-                let grid = self.automation_layout.grid;
-                let tick = crate::canvas::auto_tick_at(grid, view.length, x);
-                let value = crate::canvas::auto_value_at(grid, y);
-                if let Some(doc) = &mut self.options.document {
-                    doc.edit_automation(crate::canvas::AutomationEdit::Add { tick, value });
-                }
-                self.drag = Drag::AutomationPoints;
-                self.pointer_anchor = Some((x, y));
-                self.refresh_studio();
-                self.refresh_title();
-                self.relayout_panels();
-                self.tree.invalidate(PANEL);
-            }
-            (MouseButton::Right, crate::canvas::AutomationHit::Point(id)) => {
-                if let Some(doc) = &mut self.options.document {
-                    doc.edit_automation(crate::canvas::AutomationEdit::Remove(vec![id]));
-                }
-                self.refresh_studio();
-                self.refresh_title();
-                self.relayout_panels();
-                self.tree.invalidate(PANEL);
-            }
-            _ => {}
-        }
+        self.preview_selection(tick, snap);
     }
 
-    /// One step of an automation-point drag: deltas from where the pointer was
-    /// last, so a whole gesture merges into one undo entry.
-    fn drag_automation(&mut self, x: f32, y: f32) {
-        let (Some(view), Some((from_x, from_y))) = (self.automation.clone(), self.pointer_anchor)
+    /// The same along the roll's ruler, in the clip's ticks turned into the
+    /// song's — so a loop drawn on either ruler is one loop on both.
+    fn drag_select_roll(&mut self, x: f32) {
+        let grid = self.roll_layout.grid;
+        let (x, _) = clamp_to_grid(grid, x, grid.y);
+        let snap = if self.modifiers.alt_key() {
+            SnapDivision::None
+        } else {
+            self.roll.view.snap
+        };
+        let clip_tick = x_to_tick(&self.roll.view, grid, x);
+        let Some(tick) = self
+            .options
+            .document
+            .as_ref()
+            .map(|doc| doc.song_tick_of_clip_tick(clip_tick))
         else {
             return;
         };
-        let selected: Vec<fontelle_types::PointId> = view
-            .points
-            .iter()
-            .filter(|point| point.selected)
-            .map(|point| point.id)
-            .collect();
-        if selected.is_empty() {
+        self.preview_selection(tick, snap);
+    }
+
+    fn preview_selection(&mut self, tick: fontelle_types::Tick, snap: SnapDivision) {
+        let beats = self.beats_per_bar();
+        let picked = crate::canvas::time_selection(self.select_anchor, tick, snap, beats);
+        if picked == self.select_preview {
             return;
         }
-        let grid = self.automation_layout.grid;
-        let tick_delta = crate::canvas::auto_tick_at(grid, view.length, x)
-            - crate::canvas::auto_tick_at(grid, view.length, from_x);
-        let value_delta =
-            crate::canvas::auto_value_at(grid, y) - crate::canvas::auto_value_at(grid, from_y);
-        if tick_delta == 0 && value_delta.abs() < 1e-9 {
-            return;
-        }
+        self.select_preview = picked;
+        // Shown on both rulers while it is drawn, in place of the loop the
+        // document holds — what you are choosing, not what you had.
+        self.loop_range = picked;
+        self.tree.invalidate(TIMELINE);
+        self.tree.invalidate(PANEL);
+    }
+
+    /// The button came up: what was dragged out is the loop now, and a drag
+    /// that was a click clears it. One command, saved with the song.
+    fn commit_selection(&mut self) {
+        let picked = self.select_preview.take();
         if let Some(doc) = &mut self.options.document {
-            doc.edit_automation(crate::canvas::AutomationEdit::Move {
-                ids: selected,
-                tick_delta,
-                value_delta,
-            });
+            doc.set_loop_range(picked);
+            doc.end_gesture();
         }
-        self.pointer_anchor = Some((x, y));
         self.refresh_studio();
         self.refresh_title();
-        self.relayout_panels();
+        self.tree.invalidate(TIMELINE);
         self.tree.invalidate(PANEL);
+        self.tree.invalidate(TRANSPORT);
+    }
+
+    /// The song/clip chip: the other mode, and the marker brought inside the
+    /// clip so play starts on it rather than somewhere the loop will pull it
+    /// into a bar later.
+    fn toggle_play_mode(&mut self) {
+        let next = self.play_mode.next();
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        doc.set_play_mode(next);
+        let span = doc.focused_clip_span();
+        self.refresh_studio();
+        if next == crate::document::PlayMode::Clip
+            && let Some((from, to)) = span
+            && let Some(doc) = &self.options.document
+        {
+            let marker_tick = doc.playhead_song_tick(self.marker);
+            if marker_tick < from || marker_tick >= to {
+                let sample = doc.sample_of_song_tick(from);
+                self.mark(sample);
+            }
+        }
+        self.status = match next {
+            crate::document::PlayMode::Song => "Song mode: play plays the arrangement".to_string(),
+            crate::document::PlayMode::Clip => {
+                "Clip mode: play loops the clip you are editing".to_string()
+            }
+        };
+        self.tick();
+        self.tree.invalidate(TRANSPORT);
+        self.tree.invalidate(TIMELINE);
+        self.tree.invalidate(PANEL);
+        self.tree.invalidate(BROWSER);
     }
 
     /// A press in the EQ editor.
@@ -4849,9 +4899,22 @@ impl WindowApp {
         // the roll's chrome is: the right button erases, and neither of them
         // holds a clip.
         if self.timeline_layout.ruler.contains(x, y) {
-            if button == MouseButton::Left {
-                self.drag = Drag::TimelineRuler;
-                self.mark_on_timeline(x);
+            match button {
+                MouseButton::Left => {
+                    self.drag = Drag::TimelineRuler;
+                    self.mark_on_timeline(x);
+                }
+                // The right button drags a time selection out — *"right
+                // click and drag on the time bar to loop a time section"*.
+                // Anchored where it went down, unsnapped; the grid is applied
+                // to both ends as the selection is drawn.
+                MouseButton::Right => {
+                    let grid = self.timeline_layout.grid;
+                    let (x, _) = clamp_to_grid(grid, x, grid.y);
+                    self.select_anchor = timeline_x_to_tick(&self.timeline.view, grid, x);
+                    self.select_preview = None;
+                    self.drag = Drag::TimelineSelect;
+                }
             }
             return;
         }
@@ -4891,13 +4954,21 @@ impl WindowApp {
         );
         self.drag = Drag::Timeline;
         self.apply_arrange_edits(edits);
+        // A right-click on a point of an automation block asks for the
+        // point's menu: its shape, or its removal.
+        if let Some((clip, id)) = self.timeline.take_point_menu() {
+            let bounds = self.layout.window;
+            self.open_menu(MenuTarget::Point { clip, id }, x, y, bounds);
+        }
         // Clicking a clip opens it in the roll — the two panels are two views
         // of one piece, and having to find the channel in the rack to edit the
         // clip you just pointed at is two panels rather than one workflow.
         if let Some(clip) = self.timeline.take_open() {
             // Which editor a block opens into is the block's own business —
-            // an automation clip opens its curve, a note clip opens the roll.
-            // Read before the document is borrowed mutably.
+            // a note clip opens the roll; an automation clip is edited where
+            // it sits, so the document is told which one is in hand and the
+            // panel stays where it was. Read before the document is borrowed
+            // mutably.
             let kind = self
                 .clips
                 .iter()
@@ -4907,13 +4978,8 @@ impl WindowApp {
                 doc.open_clip(clip);
                 self.roll.clear_selection();
             }
-            // An automation clip is edited in a window of its own; a note
-            // clip is what the roll is for.
-            match kind {
-                Some(crate::document::ClipKind::Automation) => {
-                    self.open_editor(EditorKind::Automation)
-                }
-                _ => self.tab = EditorTab::Roll,
+            if kind == Some(crate::document::ClipKind::Notes) {
+                self.tab = EditorTab::Roll;
             }
             self.refresh_studio();
             self.relayout_panels();
@@ -5056,16 +5122,26 @@ impl WindowApp {
         if edits.is_empty() {
             return;
         }
-        let mut created = Vec::new();
+        let mut created = crate::document::Created::default();
         if let Some(doc) = &mut self.options.document {
             for edit in edits {
-                created.extend(doc.arrange(edit));
+                let made = doc.arrange(edit);
+                created.clips.extend(made.clips);
+                created.points.extend(made.points);
             }
         }
         // The copy becomes the selection, so repeating walks along the
         // arrangement instead of stacking clips in one place — see
-        // `Timeline::clips_inserted`.
-        self.timeline.clips_inserted(created);
+        // `Timeline::clips_inserted`. And a point a press just made is the
+        // one its drag carries — `Timeline::points_inserted`.
+        self.timeline.clips_inserted(created.clips);
+        if let Some(clip) = self.timeline.point_clip() {
+            self.timeline.points_inserted(clip, created.points);
+        }
+        // The blocks are re-read now rather than at the next frame: a point
+        // drag reads the curve it is on, and one frame stale is one step of
+        // the drag applied to the wrong list.
+        self.refresh_studio();
         self.tree.invalidate(TIMELINE);
         self.tree.invalidate(PANEL);
         self.refresh_title();
@@ -5542,6 +5618,32 @@ impl WindowApp {
                 MenuEntry::disabled(name.clone()),
                 MenuEntry::new("Create automation clip").after_rule(),
             ],
+            MenuTarget::Tempo => vec![
+                MenuEntry::disabled("Tempo".to_string()),
+                MenuEntry::new("Create automation clip").after_rule(),
+            ],
+            // A point's shapes, then its removal. The shape it has is greyed,
+            // which is how the menu says which one that is.
+            MenuTarget::Point { clip, id } => {
+                let current = self
+                    .clips
+                    .iter()
+                    .find(|info| info.id == *clip)
+                    .and_then(|info| info.curve.iter().find(|p| p.id == *id))
+                    .map(|p| p.curve);
+                let mut entries: Vec<MenuEntry> = crate::canvas::CURVE_SHAPES
+                    .iter()
+                    .map(|shape| {
+                        if current == Some(*shape) {
+                            MenuEntry::disabled(crate::canvas::curve_label(*shape))
+                        } else {
+                            MenuEntry::new(crate::canvas::curve_label(*shape))
+                        }
+                    })
+                    .collect();
+                entries.push(MenuEntry::new("Delete point").after_rule());
+                entries
+            }
         }
     }
 
@@ -5645,7 +5747,6 @@ impl WindowApp {
             (MenuTarget::InsertParam { param, name }, 1) => {
                 let (param, name) = (param.clone(), name.clone());
                 self.automate_insert_named(&param, &name);
-                self.open_editor(EditorKind::Automation);
             }
             (MenuTarget::InstrumentParam { address, .. }, 1) => {
                 let at = self.view.position_sample;
@@ -5653,12 +5754,39 @@ impl WindowApp {
                 if let Some(doc) = &mut self.options.document {
                     doc.automate_instrument_param(&address, at);
                 }
-                self.refresh_studio();
-                self.refresh_title();
-                // The lane is on the arrangement now, and the curve editor is
-                // what you draw it in — which is what *"then it appears in my
-                // timeline and im able to draw it"* asks for.
-                self.open_editor(EditorKind::Automation);
+                // The lane is on the arrangement now, and that is where it is
+                // drawn in — *"then it appears in my timeline and im able to
+                // draw it"*.
+                self.lane_made();
+            }
+            (MenuTarget::Tempo, 1) => {
+                let at = self.view.position_sample;
+                if let Some(doc) = &mut self.options.document {
+                    let at = doc.playhead_song_tick(at);
+                    doc.create_automation(&fontelle_types::ParamTarget::Tempo.address(), "Tempo", at);
+                }
+                self.lane_made();
+            }
+            (MenuTarget::Point { clip, id }, index) => {
+                let (clip, id) = (*clip, *id);
+                let edit = match crate::canvas::CURVE_SHAPES.get(index) {
+                    Some(shape) => crate::canvas::ArrangeEdit::SetPointCurve {
+                        clip,
+                        ids: vec![id],
+                        curve: *shape,
+                    },
+                    None => {
+                        self.timeline.delete_points();
+                        crate::canvas::ArrangeEdit::RemovePoints {
+                            clip,
+                            ids: vec![id],
+                        }
+                    }
+                };
+                self.apply_arrange_edits(vec![edit]);
+                if let Some(doc) = &mut self.options.document {
+                    doc.end_gesture();
+                }
             }
             _ => {}
         }
@@ -6400,7 +6528,12 @@ impl WindowApp {
                 // Whichever canvas was last pressed owns the key: "delete the
                 // selection" has two meanings and no reading that means both.
                 if self.focus == Focus::Timeline {
-                    let edits = self.timeline.delete_selection();
+                    // Points before clips: while some are selected, Delete
+                    // means them, and the block they sit on stays.
+                    let mut edits = self.timeline.delete_points();
+                    if edits.is_empty() {
+                        edits = self.timeline.delete_selection();
+                    }
                     self.apply_arrange_edits(edits);
                 } else {
                     let edits = self.roll.delete_selection();
@@ -6454,6 +6587,12 @@ impl WindowApp {
                     }
                     // Show and hide the arrangement strip.
                     "t" if ctrl => self.toggle_timeline(),
+                    // Song or clip. The chip on the transport bar is the
+                    // other way, and on a narrow window there is no room for
+                    // it (see `MIN_RULER_WIDTH`) — so the mode is reachable
+                    // whatever the bar had room for. FL's own binding is `L`,
+                    // which here already cycles the roll's property lane.
+                    "l" if ctrl => self.toggle_play_mode(),
                     "f" if ctrl => {
                         self.searching = true;
                         self.tree.invalidate(BROWSER);

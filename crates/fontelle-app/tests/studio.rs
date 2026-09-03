@@ -1403,26 +1403,27 @@ fn duplicating_and_pasting_report_the_clips_they_made() {
         ids: vec![first],
         tick_offset: PPQN * 16,
     });
-    assert_eq!(made.len(), 1, "a duplicate makes one clip and says which");
-    assert_ne!(made[0], first, "and it is not the one it copied");
-    assert!(session.project().clips.get(made[0]).is_some());
+    assert_eq!(made.clips.len(), 1, "a duplicate makes one clip and says which");
+    assert_ne!(made.clips[0], first, "and it is not the one it copied");
+    assert!(session.project().clips.get(made.clips[0]).is_some());
 
     session.arrange(ArrangeEdit::Copy(vec![first]));
     let pasted = session.arrange(ArrangeEdit::Paste { at: PPQN * 32 });
-    assert_eq!(pasted.len(), 1, "a paste reports what it put down");
+    assert_eq!(pasted.clips.len(), 1, "a paste reports what it put down");
     assert_eq!(
-        session.project().clips.get(pasted[0]).map(|c| c.start),
+        session.project().clips.get(pasted.clips[0]).map(|c| c.start),
         Some(PPQN * 32)
     );
 
     // The edits that create nothing say so.
-    assert!(session.arrange(ArrangeEdit::Copy(vec![first])).is_empty());
+    assert!(session.arrange(ArrangeEdit::Copy(vec![first])).clips.is_empty());
     assert!(
         session
             .arrange(ArrangeEdit::SetMuted {
                 ids: vec![first],
                 muted: true
             })
+            .clips
             .is_empty()
     );
 
@@ -1446,12 +1447,12 @@ fn drawing_on_the_arrangement_makes_a_real_clip_on_that_lane() {
         start: PPQN * 8,
     });
 
-    assert_eq!(made.len(), 1, "one clip, and its id came back");
+    assert_eq!(made.clips.len(), 1, "one clip, and its id came back");
     let clips = session.clips();
     assert_eq!(clips.len(), before + 1);
     let clip = clips
         .iter()
-        .find(|c| c.id == made[0])
+        .find(|c| c.id == made.clips[0])
         .expect("the new clip is in the list");
     assert_eq!(clip.start, PPQN * 8);
     assert_eq!(clip.lane, 0);
@@ -1479,7 +1480,7 @@ fn a_drawn_clip_plays_whatever_else_is_on_that_lane() {
     let clips = session.clips();
     let drawn = clips
         .iter()
-        .find(|c| c.id == made[0])
+        .find(|c| c.id == made.clips[0])
         .expect("the new clip");
     assert_eq!(
         drawn.name, existing,
@@ -1825,4 +1826,146 @@ fn moving_a_row_off_the_end_of_the_stack_is_harmless() {
     assert_eq!(after, before);
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+// ------------------------------- what the arrangement shows is what is in ---
+//
+// *"make it so the midi clips in the arrangement arent just blank rectangles
+// but instead actually show a preview of the notes drawn out inside of it...
+// ensure it actually displays cleanly so the sections actually line up with
+// what youre editing."*
+//
+// The canvas half — where each note lands in a block, and how a loop's passes
+// tile — is `fontelle-ui/tests/note_preview.rs`. This is the seam: the notes
+// the arrangement is handed are the notes in the clip, in the clip's own
+// ticks, so "lines up with what youre editing" is true by construction rather
+// than by coincidence.
+
+#[test]
+fn a_clips_block_carries_the_notes_that_are_in_it() {
+    use fontelle_ui::canvas::RollEdit;
+    use fontelle_ui::document::{ClipKind, DocumentHost};
+
+    let dir = a_bank("clip-notes");
+    let (mut session, _graph) = studio(&dir);
+    let clip = Session::first_clip(session.project()).expect("a clip");
+    session.open_clip(clip);
+
+    let written = [(0, PPQN, 60u8), (PPQN * 2, PPQN / 2, 67), (PPQN * 5, PPQN, 55)];
+    for (start, length, key) in written {
+        session.edit(RollEdit::Add {
+            note: fontelle_model::Note {
+                start,
+                length,
+                key,
+                velocity: 100,
+                pan: 0,
+                fine_pitch: 0,
+                release: 0,
+                mod_x: 0,
+                mod_y: 0,
+                slide: false,
+            },
+        });
+        session.end_gesture();
+    }
+
+    let block = session
+        .clips()
+        .into_iter()
+        .find(|info| info.id == clip)
+        .expect("the clip is on the arrangement");
+    assert_eq!(block.kind, ClipKind::Notes);
+
+    let mut shown: Vec<(i64, i64, u8)> = block
+        .notes
+        .iter()
+        .map(|note| (note.start, note.length, note.key))
+        .collect();
+    shown.sort();
+    let mut expected = written.to_vec();
+    expected.sort();
+    assert_eq!(shown, expected, "the block shows the clip's own notes");
+    // In time order, so the canvas draws them without sorting a copy per
+    // frame — and in the **clip's** ticks, which is what makes a note at bar
+    // 3 of the clip draw at bar 3 of the block.
+    assert!(block.notes.windows(2).all(|w| w[0].start <= w[1].start));
+}
+
+#[test]
+fn an_automation_block_carries_no_notes_and_a_note_block_no_curve() {
+    use fontelle_types::ParamTarget;
+    use fontelle_ui::document::ClipKind;
+
+    let dir = a_bank("clip-kinds");
+    let (mut session, _graph) = studio(&dir);
+    let master = session
+        .mixer_track_id(session.mixer_strips().len() - 1)
+        .expect("a master strip");
+    session.create_automation(&ParamTarget::TrackGain(master).address(), "Master", 0);
+
+    for block in session.clips() {
+        match block.kind {
+            ClipKind::Notes => assert!(block.curve.is_empty(), "{} has a curve", block.name),
+            ClipKind::Automation => {
+                assert!(block.notes.is_empty(), "{} has notes", block.name)
+            }
+        }
+    }
+}
+
+/// Writing a note moves the studio's revision, so the arrangement re-reads it.
+///
+/// The window caches every list it draws and re-reads them only when
+/// [`StudioHost::revision`] moves (see `fontelle-ui`'s `refresh_studio`). That
+/// was harmless while a clip's block carried nothing that changed when its
+/// notes did; now the block carries the notes themselves, and a revision that
+/// does not move is a preview that never updates — the roll fills up and the
+/// arrangement goes on showing an empty clip.
+///
+/// Found by drawing notes in the real window and looking at the block, which
+/// is the only way it could have been found: every unit test asks
+/// `Session::clips()` directly, and that has always answered correctly.
+#[test]
+fn writing_a_note_tells_the_window_its_lists_have_changed() {
+    use fontelle_ui::canvas::RollEdit;
+    use fontelle_ui::document::DocumentHost;
+
+    let dir = a_bank("note-revision");
+    let (mut session, _graph) = studio(&dir);
+    let clip = Session::first_clip(session.project()).expect("a clip");
+    session.open_clip(clip);
+
+    let note = fontelle_model::Note {
+        start: 0,
+        length: PPQN,
+        key: 60,
+        velocity: 100,
+        pan: 0,
+        fine_pitch: 0,
+        release: 0,
+        mod_x: 0,
+        mod_y: 0,
+        slide: false,
+    };
+
+    let before = session.revision();
+    session.edit(RollEdit::Add { note });
+    session.end_gesture();
+    assert!(
+        session.revision() > before,
+        "drawing a note left the revision at {before}, so the block never redraws"
+    );
+
+    // And taking it back moves it again, or the preview keeps the note that
+    // is no longer there.
+    let after_add = session.revision();
+    session.undo();
+    assert!(
+        session.revision() > after_add,
+        "an undo has to move it too, or the block shows a note that is gone"
+    );
+    let redone = session.revision();
+    session.redo();
+    assert!(session.revision() > redone, "and so does a redo");
 }

@@ -9,9 +9,8 @@ mod rack;
 mod timeline;
 
 pub use automation::{
-    AutomationEdit, AutomationHit, AutomationLayout, AutomationView, PointInfo, auto_tick_at,
-    auto_value_at, auto_x_of_tick, auto_y_of_value, automation_curve, automation_hit,
-    automation_layout, next_curve,
+    AutomationBlock, CURVE_SHAPES, automation_block, automation_polyline,
+    block_tick_at, block_value_at, block_x_of_tick, block_y_of_value, curve_label, next_curve,
 };
 pub use browser::{
     BrowserHit, BrowserLayout, BrowserMode, browser_hit, browser_layout, browser_layout_for,
@@ -61,7 +60,9 @@ pub use rack::{
 pub use timeline::{
     ArrangeEdit, ClipPart, MAX_LANE_ROW, MAX_TIMELINE_PPT, MIN_LANE_ROW, MIN_TIMELINE_PPT,
     Timeline, TimelineControl, TimelineHit, TimelineLayout, TimelineTool, TimelineToolbar,
-    TimelineView, automation_polyline, clip_cuts, clip_rect, lane_to_y, loop_marks, timeline_hit,
+    CLIP_HEADER_PX, NOTE_PREVIEW_MIN_KEYS,
+    TimelineView, clip_bands, clip_cuts, clip_grip, clip_notes, clip_rect, lane_to_y, loop_marks,
+    time_selection, timeline_hit,
     timeline_layout, timeline_snap,
     timeline_tick_to_x, timeline_toolbar_hit, timeline_toolbar_layout, timeline_visible_ticks,
     timeline_x_to_tick, timeline_zoom_x, timeline_zoom_y, visible_lanes, y_to_lane,

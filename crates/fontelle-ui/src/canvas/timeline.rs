@@ -19,16 +19,164 @@
 
 use std::ops::Range;
 
-use fontelle_types::{ClipId, PPQN, Tick};
+use fontelle_types::{ClipId, PPQN, PointId, Tick};
 
+use crate::canvas::automation::{automation_block, block_tick_at, block_value_at};
 use crate::canvas::piano_roll::{SnapDivision, snap_tick, snap_unit};
 use crate::canvas::{Modifiers, MouseButton, clamp_to_grid};
-use crate::document::ClipInfo;
+use crate::document::{ClipInfo, ClipKind};
 use crate::layout::Rect;
 use crate::theme::Metrics;
 
 /// How wide the grab handle on a clip's right-hand edge is.
 const HANDLE_PX: f32 = 7.0;
+
+/// How wide `block`'s right-hand resize grip actually is.
+///
+/// A block narrower than three grips has none: moving a clip is more common
+/// than sizing one, and a clip you cannot grab is worse than one you cannot
+/// size without zooming in.
+///
+/// Public because an automation block's curve has to keep clear of it — see
+/// [`automation_block`](crate::canvas::automation_block). Two answers to
+/// "where does the grip start" would be a point drawn under a grip that then
+/// swallows every press aimed at it.
+pub fn clip_grip(block: Rect) -> f32 {
+    HANDLE_PX.min(block.width / 3.0)
+}
+
+/// How tall the caption band across the top of a clip block is, at most.
+///
+/// A third of the block when the block is short, so a shallow lane still has
+/// more content than caption: what is *in* a clip is the thing you are
+/// reading, and the name only says which clip it is.
+pub const CLIP_HEADER_PX: f32 = 12.0;
+
+/// A clip block's two bands: the caption across the top, and the room its
+/// content gets under it.
+///
+/// One function for both kinds of clip. An automation block's curve and a
+/// note block's notes sit in the same place for the same reason — a caption
+/// drawn *over* the content of one and *beside* the content of the other is
+/// two pictures where there should be one.
+pub fn clip_bands(block: Rect) -> (Rect, Rect) {
+    let header = CLIP_HEADER_PX.min(block.height / 3.0).max(0.0);
+    block.split_top(header)
+}
+
+/// How few semitones the note preview's pitch axis may span.
+///
+/// Scaled to the notes present a single note fills the block's whole height
+/// and reads as a solid bar rather than as a note, and a two-note clip draws
+/// two slabs. An octave is the floor, which is also about the range a bar of
+/// music usually moves in, so the common case is not stretched either.
+pub const NOTE_PREVIEW_MIN_KEYS: u8 = 12;
+
+/// How short a block may be before its notes stop being drawn.
+///
+/// Under this a row of one-pixel smudges is less readable than the plain
+/// block the arrangement used to draw.
+const MIN_NOTE_BLOCK_PX: f32 = 10.0;
+
+/// The notes inside a clip's block, in screen points (TDD §16.4).
+///
+/// *"show a preview of the notes drawn out inside of it like how other daws
+/// do... ensure it actually displays cleanly so the sections actually line up
+/// with what youre editing."* Lining up is the whole of it: a note is placed
+/// against the block's own time axis, which is the axis the ruler above it is
+/// drawn against, so bar 3 of the clip is bar 3 of the song.
+///
+/// `block` is the clip's **whole** rectangle, unclipped — the same one
+/// [`clip_rect`] returns — because that is what the time axis is measured
+/// against; a block measured from the part of it on screen would slide as the
+/// arrangement scrolled. `visible` bounds what is *built*: §16.4 makes
+/// virtualisation mandatory, and a two-hundred-bar loop is otherwise two
+/// hundred passes of geometry for a screenful of pixels.
+///
+/// Empty for a clip that is not [`ClipKind::Notes`], one with no notes, and
+/// one drawn too small to read.
+pub fn clip_notes(block: Rect, visible: Rect, clip: &ClipInfo) -> Vec<Rect> {
+    if clip.kind != ClipKind::Notes || clip.notes.is_empty() || clip.length <= 0 {
+        return Vec::new();
+    }
+    let (_, content) = clip_bands(block);
+    if content.is_empty() || content.height < MIN_NOTE_BLOCK_PX || block.width <= 0.0 {
+        return Vec::new();
+    }
+
+    // The pitch axis: the notes that are there, with a floor so a clip of one
+    // note is not one slab. Centred on what is present, so a bass part sits
+    // low in its block and a lead sits high — which is a thing you can read at
+    // a glance without any numbers.
+    let (low, high) = clip
+        .notes
+        .iter()
+        .fold((u8::MAX, u8::MIN), |(lo, hi), n| (lo.min(n.key), hi.max(n.key)));
+    let span = u32::from(high - low) + 1;
+    let span = span.max(u32::from(NOTE_PREVIEW_MIN_KEYS));
+    // Centred: half the slack below the lowest note and half above the
+    // highest, so the picture does not sit against one edge.
+    let slack = span - (u32::from(high - low) + 1);
+    let bottom_key = i32::from(low) - (slack / 2) as i32;
+    let row = content.height / span as f32;
+
+    // The passes to build. A clip that does not loop is one pass at zero; a
+    // looped one repeats every `period` until the clip runs out — the same
+    // arithmetic `loop_marks` uses, so the notes and the seams agree.
+    let period = clip.loop_length.filter(|p| *p > 0);
+    let per_tick = block.width / clip.length as f32;
+
+    let mut rects = Vec::new();
+    let mut base: Tick = 0;
+    loop {
+        let pass_left = content.x + base as f32 * per_tick;
+        // Off the right of what can be seen: every pass after this one is
+        // further right, so there is nothing left to build.
+        if pass_left > visible.right() {
+            break;
+        }
+        let pass_right = match period {
+            Some(p) => content.x + ((base + p) as f32).min(clip.length as f32) * per_tick,
+            None => content.right(),
+        };
+        if pass_right >= visible.x {
+            for note in &clip.notes {
+                // A note at or past the period is content the loop does not
+                // contain — the compiler drops it, so drawing it would be a
+                // picture of something the song does not play.
+                if period.is_some_and(|p| note.start >= p) {
+                    continue;
+                }
+                let start = base + note.start;
+                if start >= clip.length {
+                    continue;
+                }
+                // And a pass that rings past the clip's end is cut there, the
+                // same rule again.
+                let end = (start + note.length.max(1)).min(clip.length);
+                if end <= start {
+                    continue;
+                }
+                let x = content.x + start as f32 * per_tick;
+                let width = ((end - start) as f32 * per_tick).max(1.0);
+                let top = content.bottom()
+                    - (i32::from(note.key) - bottom_key + 1) as f32 * row;
+                let rect = Rect::new(x, top, width, row.max(1.0))
+                    .clamped()
+                    .intersection(&content);
+                if !rect.is_empty() {
+                    rects.push(rect);
+                }
+            }
+        }
+        let Some(p) = period else { break };
+        base += p;
+        if base >= clip.length {
+            break;
+        }
+    }
+    rects
+}
 
 /// Zoom limits. A pixels-per-tick of zero is a division by zero in every
 /// conversion here; a lane taller than the panel is not a zoom.
@@ -421,55 +569,6 @@ pub fn clip_rect(view: &TimelineView, grid: Rect, clip: &ClipInfo) -> Rect {
 
 /// Zooms time about `anchor_x`, so whatever is under the pointer stays under
 /// it — [`crate::canvas::zoom_x`]'s counterpart, and the same arithmetic.
-/// How much air a curve keeps between itself and the block's own edges.
-///
-/// A point at 0.0 or 1.0 is drawn as a dot, and a dot centred on the edge is
-/// half a dot — and half of it is over the lane next door.
-const CURVE_INSET: f32 = 4.0;
-
-/// A [`ClipKind::Automation`](crate::document::ClipKind) block's curve, in
-/// screen points.
-///
-/// `curve` is `(tick from the clip's start, value 0..1)` in time order —
-/// exactly what [`ClipInfo::curve`](crate::document::ClipInfo::curve) carries.
-///
-/// **One is up.** A curve drawn upside down is a lie about the value and the
-/// mistake is invisible until you put it beside the editor, so it is worth a
-/// test of its own.
-///
-/// Everything is clamped into `block`: nothing should produce a point outside
-/// it, and one that escaped would be drawn over the lane above.
-pub fn automation_polyline(block: Rect, length: Tick, curve: &[(Tick, f64)]) -> Vec<(f32, f32)> {
-    if block.is_empty() || curve.is_empty() {
-        return Vec::new();
-    }
-    let inner = block.inset(CURVE_INSET);
-    // A block narrower than twice the inset has no inside; drawing down its
-    // middle is better than drawing nothing.
-    let (top, height) = if inner.height > 0.0 {
-        (inner.y, inner.height)
-    } else {
-        (block.y + block.height / 2.0, 0.0)
-    };
-    curve
-        .iter()
-        .map(|(tick, value)| {
-            // A clip of no length is one instant: everything in it is at its
-            // left-hand edge, rather than a division by zero.
-            let along = if length > 0 {
-                (*tick as f32 / length as f32).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let up = value.clamp(0.0, 1.0) as f32;
-            (
-                (block.x + block.width * along).clamp(block.x, block.right()),
-                (top + height * (1.0 - up)).clamp(block.y, block.bottom()),
-            )
-        })
-        .collect()
-}
-
 pub fn timeline_zoom_x(view: &mut TimelineView, grid: Rect, anchor_x: f32, factor: f32) {
     if view.pixels_per_tick <= 0.0 || !factor.is_finite() || factor <= 0.0 {
         return;
@@ -492,13 +591,23 @@ pub fn timeline_zoom_y(view: &mut TimelineView, factor: f32) {
 // ---------------------------------------------------------- hit-testing ---
 
 /// Which bit of a clip is under the pointer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// A note block has a body and a grip. An automation block has those — its
+/// body is the caption band across its top — and, under the band, the curve
+/// it is for: a point of it, or the bare curve between points. See
+/// `canvas::automation_block` for the anatomy.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ClipPart {
     Body,
     RightEdge,
+    /// A point of an automation block's curve.
+    Point(PointId),
+    /// The curve area of an automation block, away from any point, at this
+    /// tick **of the clip** (unsnapped) and this value.
+    Curve { tick: Tick, value: f64 },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TimelineHit {
     Clip(ClipId, ClipPart),
     /// Bare grid. The tick is **unsnapped**, for the reason
@@ -542,18 +651,15 @@ pub fn timeline_hit(
         if !block.contains(x, y) {
             continue;
         }
-        // A block narrower than three handles has none: moving a clip is more
-        // common than sizing one, and a clip you cannot grab is worse than one
-        // you cannot size without zooming in.
-        let handle = HANDLE_PX.min(block.width / 3.0);
-        found = Some(TimelineHit::Clip(
-            clip.id,
-            if x >= block.right() - handle {
-                ClipPart::RightEdge
-            } else {
-                ClipPart::Body
-            },
-        ));
+        let handle = clip_grip(block);
+        let part = if x >= block.right() - handle {
+            ClipPart::RightEdge
+        } else if clip.kind == ClipKind::Automation {
+            automation_part(block, clip, x, y)
+        } else {
+            ClipPart::Body
+        };
+        found = Some(TimelineHit::Clip(clip.id, part));
     }
     found.unwrap_or(TimelineHit::Empty {
         tick: timeline_x_to_tick(view, layout.grid, x),
@@ -561,12 +667,60 @@ pub fn timeline_hit(
     })
 }
 
+/// What is under `(x, y)` inside an automation block, the grip aside.
+///
+/// The band is the block; a handle is its point — the last one first, since
+/// points drawn later sit on top; and anything else under the band is the
+/// curve, reported with the tick and value the pointer is at so a press can
+/// make a point there.
+fn automation_part(block: Rect, clip: &ClipInfo, x: f32, y: f32) -> ClipPart {
+    let anatomy = automation_block(block, clip);
+    if anatomy.header.contains(x, y) {
+        return ClipPart::Body;
+    }
+    if let Some((id, _)) = anatomy
+        .handles
+        .iter()
+        .rev()
+        .find(|(_, rect)| rect.contains(x, y))
+    {
+        return ClipPart::Point(*id);
+    }
+    ClipPart::Curve {
+        tick: block_tick_at(anatomy.area, clip.length, x),
+        value: block_value_at(anatomy.area, y),
+    }
+}
+
+// ----------------------------------------------------- time selection ---
+
+/// The stretch of time a right-drag along a ruler selects, on the grid.
+///
+/// *"right click and drag on the time bar to loop a time section you are
+/// editing either in the piano roll or arrangement."* One function for both
+/// rulers: `anchor` is where the button went down and `to` is where the
+/// pointer is now, both unsnapped; the answer is both ends on the grid, in
+/// order, never before the song. A drag whose ends land on the same line is
+/// a click, and a click **clears** the selection — `None` — which is what
+/// makes the same button both make and unmake a loop.
+pub fn time_selection(
+    anchor: Tick,
+    to: Tick,
+    snap: SnapDivision,
+    beats_per_bar: u32,
+) -> Option<(Tick, Tick)> {
+    let a = snap_tick(anchor.max(0), snap, beats_per_bar);
+    let b = snap_tick(to.max(0), snap, beats_per_bar);
+    let (from, to) = (a.min(b), a.max(b));
+    (to > from).then_some((from, to))
+}
+
 // -------------------------------------------------------------- editing ---
 
 /// What the arrangement wants done to the document.
 ///
 /// Values, not commands, for the reason [`crate::canvas::RollEdit`] gives.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ArrangeEdit {
     /// Deltas, **relative to the previous step of the same drag** — which is
     /// what `MoveClip` takes and what lets `merge_with` coalesce a drag into
@@ -633,6 +787,72 @@ pub enum ArrangeEdit {
         ids: Vec<ClipId>,
         loop_length: Option<Tick>,
     },
+    /// Put a point on an automation clip's curve, at `tick` **of the clip**.
+    ///
+    /// The host hands the new point's id back (`Created::points`), and the
+    /// drag that made it carries it — see [`Timeline::points_inserted`].
+    AddPoint {
+        clip: ClipId,
+        tick: Tick,
+        value: f64,
+    },
+    /// Deltas, **relative to the previous step of the same drag**, like
+    /// [`Move`](Self::Move) and for the same reason.
+    MovePoints {
+        clip: ClipId,
+        ids: Vec<PointId>,
+        tick_delta: Tick,
+        value_delta: f64,
+    },
+    RemovePoints {
+        clip: ClipId,
+        ids: Vec<PointId>,
+    },
+    /// The shape of the segment after each of these points.
+    SetPointCurve {
+        clip: ClipId,
+        ids: Vec<PointId>,
+        curve: fontelle_model::CurveShape,
+    },
+}
+
+/// How far a point may go before the clip would refuse it, **measured once
+/// when the gesture started** — [`MoveLimits`]'s reason exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+struct PointLimits {
+    min_tick: Tick,
+    max_tick: Tick,
+    min_value: f64,
+    max_value: f64,
+}
+
+impl PointLimits {
+    fn of(clip: &ClipInfo, selection: &[PointId]) -> Self {
+        let mut limits = Self {
+            min_tick: Tick::MIN,
+            max_tick: Tick::MAX,
+            min_value: f64::MIN,
+            max_value: f64::MAX,
+        };
+        for point in clip.curve.iter().filter(|p| selection.contains(&p.id)) {
+            limits.min_tick = limits.min_tick.max(-point.tick);
+            limits.max_tick = limits.max_tick.min(clip.length - point.tick);
+            limits.min_value = limits.min_value.max(-point.value);
+            limits.max_value = limits.max_value.min(1.0 - point.value);
+        }
+        limits
+    }
+
+    /// For a point that has just been made at `(tick, value)` and is not yet
+    /// in anybody's list.
+    fn at(clip: &ClipInfo, tick: Tick, value: f64) -> Self {
+        Self {
+            min_tick: -tick,
+            max_tick: clip.length - tick,
+            min_value: -value,
+            max_value: 1.0 - value,
+        }
+    }
 }
 
 /// How far a move may go before it would take a clip somewhere the document
@@ -708,6 +928,21 @@ enum Gesture {
         from: (f32, f32),
         to: (f32, f32),
     },
+    /// Points on an automation block's curve, carried. **Relative**, like a
+    /// note drag and for the same reason: several can move at once and they
+    /// have to keep their shape.
+    MovingPoints {
+        clip: ClipId,
+        /// The clip tick and the value under the pointer when it was pressed.
+        origin_tick: Tick,
+        origin_value: f64,
+        applied_tick: Tick,
+        applied_value: f64,
+        limits: PointLimits,
+        /// The press made the point and the host has not yet said which
+        /// point it made. Nothing moves until it does.
+        pending: bool,
+    },
     /// Rubbing clips out: the right button held down. Stateless, for the same
     /// reason the roll's `Erasing` is — it asks the current clips what is
     /// under the pointer, so one already removed is simply not found again.
@@ -755,6 +990,16 @@ pub struct Timeline {
     /// *document's* business (it changes which channel is selected) and this
     /// canvas may not touch the document (INVARIANT 2).
     open: Option<ClipId>,
+    /// The selected points of an automation block, and whose they are.
+    ///
+    /// One clip's at a time: a point selection spanning two clips is two
+    /// curves moved by one drag, which nobody asks for and nothing draws.
+    point_clip: Option<ClipId>,
+    point_selection: Vec<PointId>,
+    /// A point the right button asked about, waiting to be collected — the
+    /// same handshake `open` is, for the same reason: the menu is the
+    /// window's.
+    point_menu: Option<(ClipId, PointId)>,
 }
 
 impl Timeline {
@@ -767,6 +1012,9 @@ impl Timeline {
             modifiers: Modifiers::default(),
             origin: (0, 0),
             open: None,
+            point_clip: None,
+            point_selection: Vec::new(),
+            point_menu: None,
         }
     }
 
@@ -780,6 +1028,73 @@ impl Timeline {
 
     pub fn clear_selection(&mut self) {
         self.selection.clear();
+        self.clear_point_selection();
+    }
+
+    /// The selected points of an automation block, if any are.
+    pub fn point_selection(&self) -> &[PointId] {
+        &self.point_selection
+    }
+
+    /// Which block those points belong to.
+    pub fn point_clip(&self) -> Option<ClipId> {
+        self.point_clip
+    }
+
+    fn clear_point_selection(&mut self) {
+        self.point_selection.clear();
+        self.point_clip = None;
+    }
+
+    /// The points a press on a curve just made, as the host reports them —
+    /// they become the point selection, and the drag in progress carries
+    /// them. The same handshake `PianoRoll::note_added` has.
+    pub fn points_inserted(&mut self, clip: ClipId, ids: Vec<PointId>) {
+        if ids.is_empty() {
+            return;
+        }
+        self.point_clip = Some(clip);
+        self.point_selection = ids;
+        if let Gesture::MovingPoints {
+            clip: gesture_clip,
+            pending,
+            ..
+        } = &mut self.gesture
+            && *gesture_clip == clip
+        {
+            *pending = false;
+        }
+    }
+
+    /// The point the right button asked about, once.
+    pub fn take_point_menu(&mut self) -> Option<(ClipId, PointId)> {
+        self.point_menu.take()
+    }
+
+    /// Gives the selected points a shape.
+    pub fn set_point_curve(&mut self, curve: fontelle_model::CurveShape) -> Vec<ArrangeEdit> {
+        match self.point_clip {
+            Some(clip) if !self.point_selection.is_empty() => vec![ArrangeEdit::SetPointCurve {
+                clip,
+                ids: self.point_selection.clone(),
+                curve,
+            }],
+            _ => Vec::new(),
+        }
+    }
+
+    /// What `Delete` does while points are selected: takes them off their
+    /// curve, and leaves the clip alone.
+    pub fn delete_points(&mut self) -> Vec<ArrangeEdit> {
+        let Some(clip) = self.point_clip else {
+            return Vec::new();
+        };
+        if self.point_selection.is_empty() {
+            return Vec::new();
+        }
+        let ids = std::mem::take(&mut self.point_selection);
+        self.point_clip = None;
+        vec![ArrangeEdit::RemovePoints { clip, ids }]
     }
 
     /// One step of an erase: whatever `hit` found, gone. Shared by the press
@@ -832,7 +1147,28 @@ impl Timeline {
         // set `self.open`. A clip being rubbed out is not a clip being opened
         // for editing, and a sweep across a row would otherwise leave the
         // piano roll showing the last thing it destroyed.
+        //
+        // Inside an automation block's curve the right button is a question,
+        // not an eraser: on a point it asks for that point's menu, and on the
+        // bare curve it does nothing at all — the pointer being two pixels
+        // off a point must not cost the whole clip.
         if button == MouseButton::Right {
+            match hit {
+                TimelineHit::Clip(clip, ClipPart::Point(id)) => {
+                    self.point_clip = Some(clip);
+                    if !self.point_selection.contains(&id) {
+                        self.point_selection = vec![id];
+                    }
+                    self.point_menu = Some((clip, id));
+                    self.gesture = Gesture::None;
+                    return Vec::new();
+                }
+                TimelineHit::Clip(_, ClipPart::Curve { .. }) => {
+                    self.gesture = Gesture::None;
+                    return Vec::new();
+                }
+                _ => {}
+            }
             self.gesture = Gesture::Erasing;
             return self.erase_at(hit);
         }
@@ -849,10 +1185,68 @@ impl Timeline {
         }
 
         match hit {
+            // A point of an automation block: picked up, to be carried.
+            TimelineHit::Clip(id, ClipPart::Point(point)) => {
+                self.selection = vec![id];
+                self.open = Some(id);
+                if self.point_clip != Some(id) || !self.point_selection.contains(&point) {
+                    self.point_clip = Some(id);
+                    self.point_selection = vec![point];
+                }
+                let Some(clip) = clips.iter().find(|c| c.id == id) else {
+                    self.gesture = Gesture::None;
+                    return Vec::new();
+                };
+                let block = clip_rect(&self.view, layout.grid, clip);
+                let area = automation_block(block, clip).area;
+                self.gesture = Gesture::MovingPoints {
+                    clip: id,
+                    origin_tick: block_tick_at(area, clip.length, x),
+                    origin_value: block_value_at(area, y),
+                    applied_tick: 0,
+                    applied_value: 0.0,
+                    limits: PointLimits::of(clip, &self.point_selection),
+                    pending: false,
+                };
+                Vec::new()
+            }
+            // The bare curve: a point is made where you pressed, on the grid,
+            // and the drag that follows carries it — the same handshake
+            // drawing a note has.
+            TimelineHit::Clip(id, ClipPart::Curve { tick, value }) => {
+                self.selection = vec![id];
+                self.open = Some(id);
+                self.point_clip = Some(id);
+                self.point_selection.clear();
+                let Some(clip) = clips.iter().find(|c| c.id == id) else {
+                    self.gesture = Gesture::None;
+                    return Vec::new();
+                };
+                let snapped = timeline_snap(&self.view, tick, beats_per_bar).clamp(0, clip.length);
+                let block = clip_rect(&self.view, layout.grid, clip);
+                let area = automation_block(block, clip).area;
+                self.gesture = Gesture::MovingPoints {
+                    clip: id,
+                    origin_tick: block_tick_at(area, clip.length, x),
+                    origin_value: block_value_at(area, y),
+                    applied_tick: 0,
+                    applied_value: 0.0,
+                    limits: PointLimits::at(clip, snapped, value),
+                    pending: true,
+                };
+                vec![ArrangeEdit::AddPoint {
+                    clip: id,
+                    tick: snapped,
+                    value,
+                }]
+            }
             TimelineHit::Clip(id, part) => {
                 if !self.selection.contains(&id) {
                     self.selection = vec![id];
                 }
+                // A block picked up is a block, not its points: whatever
+                // points were selected — on it or on another — let go.
+                self.clear_point_selection();
                 // Clicking a clip opens it: the roll and the arrangement are
                 // two views of the same piece, and having to find the channel
                 // in the rack to edit the clip you just pointed at is the
@@ -873,16 +1267,19 @@ impl Timeline {
                         looping: self.modifiers.shift,
                         period: self.loop_period(clips),
                     },
-                    ClipPart::Body => Gesture::Moving {
-                        applied_tick: 0,
-                        applied_lane: 0,
-                        limits: MoveLimits::of(&self.selection, clips),
-                    },
+                    ClipPart::Body | ClipPart::Point(_) | ClipPart::Curve { .. } => {
+                        Gesture::Moving {
+                            applied_tick: 0,
+                            applied_lane: 0,
+                            limits: MoveLimits::of(&self.selection, clips),
+                        }
+                    }
                 };
                 Vec::new()
             }
             TimelineHit::Empty { tick, lane } => {
                 self.selection.clear();
+                self.clear_point_selection();
                 // Ctrl is the marquee whichever tool is on — the same
                 // modifier the roll uses for the same thing, so selecting a
                 // few clips does not cost two trips to the toolbar.
@@ -947,6 +1344,60 @@ impl Timeline {
             Gesture::Slicing { from, .. } => {
                 self.gesture = Gesture::Slicing { from, to: (x, y) };
                 Vec::new()
+            }
+
+            Gesture::MovingPoints {
+                clip: id,
+                origin_tick,
+                origin_value,
+                applied_tick,
+                applied_value,
+                limits,
+                pending,
+            } => {
+                if pending || self.point_selection.is_empty() {
+                    return Vec::new();
+                }
+                // The block's geometry is read live and that is fine: a point
+                // drag does not move the block. The *points* are not read —
+                // their positions are what the drag is changing, and the
+                // deltas below are measured against what this gesture has
+                // already asked for. See `MoveLimits`.
+                let Some(clip) = clips.iter().find(|c| c.id == id) else {
+                    return Vec::new();
+                };
+                let block = clip_rect(&self.view, grid, clip);
+                let area = automation_block(block, clip).area;
+                let unit = snap_unit(self.view.snap, beats_per_bar);
+                let raw = block_tick_at(area, clip.length, cx) - origin_tick;
+                let wanted_tick = if unit > 0 {
+                    (raw as f64 / unit as f64).round() as Tick * unit
+                } else {
+                    raw
+                }
+                .clamp(limits.min_tick, limits.max_tick.max(limits.min_tick));
+                let wanted_value = (block_value_at(area, cy) - origin_value)
+                    .clamp(limits.min_value, limits.max_value.max(limits.min_value));
+                let d_tick = wanted_tick - applied_tick;
+                let d_value = wanted_value - applied_value;
+                if d_tick == 0 && d_value.abs() < 1e-9 {
+                    return Vec::new();
+                }
+                self.gesture = Gesture::MovingPoints {
+                    clip: id,
+                    origin_tick,
+                    origin_value,
+                    applied_tick: wanted_tick,
+                    applied_value: wanted_value,
+                    limits,
+                    pending,
+                };
+                vec![ArrangeEdit::MovePoints {
+                    clip: id,
+                    ids: self.point_selection.clone(),
+                    tick_delta: d_tick,
+                    value_delta: d_value,
+                }]
             }
 
             Gesture::Moving {

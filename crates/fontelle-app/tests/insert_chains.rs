@@ -676,7 +676,23 @@ fn an_automation_clip_aimed_at_nothing_is_harmless() {
 // -------------------------------------------- making one from the window
 
 /// The window's own surface, so this is the path a right-click takes.
+use fontelle_ui::canvas::ArrangeEdit;
 use fontelle_ui::document::{DocumentHost, StudioHost};
+
+/// The automation block in hand, as the arrangement draws it.
+///
+/// The curve editor's window is gone: an automation clip is edited inside its
+/// own block now (`fontelle-ui/tests/automation_blocks.rs`), so what a test
+/// reads is the same flattened block the canvas draws.
+fn open_lane(session: &fontelle_app::Session) -> fontelle_ui::document::ClipInfo {
+    use fontelle_ui::document::{ClipKind, StudioHost};
+    session
+        .clips()
+        .into_iter()
+        .find(|clip| clip.kind == ClipKind::Automation && clip.open)
+        .expect("the clip that was just made is the block in hand")
+}
+
 
 #[test]
 fn a_control_can_be_turned_into_an_automation_lane_and_it_plays() {
@@ -710,13 +726,11 @@ fn a_control_can_be_turned_into_an_automation_lane_and_it_plays() {
         "and after the gesture, it is"
     );
 
-    let view = session
-        .automation()
-        .expect("the clip it made is the one the editor opens");
-    assert_eq!(view.points.len(), 2, "a segment, not a single point");
-    assert!(view.title.contains("band1.gain"));
+    let view = open_lane(&session);
+    assert_eq!(view.curve.len(), 2, "a segment, not a single point");
+    assert!(view.name.contains("band1.gain"));
     assert_eq!(
-        view.points[0].value, view.points[1].value,
+        view.curve[0].value, view.curve[1].value,
         "flat to begin with: a lane that jumped the parameter the moment it \
          was made is one nobody trusts"
     );
@@ -731,13 +745,13 @@ fn a_new_lane_starts_at_the_value_the_control_is_already_at() {
 
     let mut session = rig.into_session();
     session.create_automation(&address, "Master \u{2014} gain", 0);
-    let view = session.automation().unwrap();
+    let view = open_lane(&session);
 
     // -30 dB on a -60..+6 fader is nearly half way up.
     assert!(
-        (view.points[0].value - 0.4545).abs() < 0.01,
+        (view.curve[0].value - 0.4545).abs() < 0.01,
         "the lane starts where the fader is, got {}",
-        view.points[0].value
+        view.curve[0].value
     );
 }
 
@@ -752,15 +766,17 @@ fn drawing_on_the_lane_is_heard() {
     session.create_automation(&address, "Master \u{2014} gain", 0);
 
     // Take it from full down to silence across the clip.
-    let view = session.automation().unwrap();
-    let ids: Vec<_> = view.points.iter().map(|point| point.id).collect();
-    session.edit_automation(fontelle_ui::canvas::AutomationEdit::Move {
+    let view = open_lane(&session);
+    let ids: Vec<_> = view.curve.iter().map(|point| point.id).collect();
+    session.arrange(ArrangeEdit::MovePoints {
+        clip: view.id,
         ids: vec![ids[0]],
         tick_delta: 0,
         value_delta: 1.0,
     });
     session.end_gesture();
-    session.edit_automation(fontelle_ui::canvas::AutomationEdit::Move {
+    session.arrange(ArrangeEdit::MovePoints {
+        clip: view.id,
         ids: vec![ids[1]],
         tick_delta: 0,
         value_delta: -1.0,
@@ -797,15 +813,17 @@ fn undoing_a_drawn_point_takes_it_off_the_lane() {
     let mut session = rig.into_session();
     session.create_automation(&address, "Master \u{2014} gain", 0);
 
-    let before = session.automation().unwrap().points.len();
-    session.edit_automation(fontelle_ui::canvas::AutomationEdit::Add {
+    let lane = open_lane(&session);
+    let before = lane.curve.len();
+    session.arrange(ArrangeEdit::AddPoint {
+        clip: lane.id,
         tick: PPQN,
         value: 0.25,
     });
-    assert_eq!(session.automation().unwrap().points.len(), before + 1);
+    assert_eq!(open_lane(&session).curve.len(), before + 1);
 
     session.undo();
-    assert_eq!(session.automation().unwrap().points.len(), before);
+    assert_eq!(open_lane(&session).curve.len(), before);
 }
 
 // ------------------------------------- automation clips on the arrangement ---
@@ -871,18 +889,21 @@ fn an_automation_block_carries_the_curve_it_will_draw() {
         2,
         "a fresh lane is a flat segment: two points"
     );
-    for (tick, value) in &made.curve {
+    for point in &made.curve {
         assert!(
-            *tick >= 0 && *tick <= made.length,
-            "a point at {tick} is outside the clip it belongs to"
+            point.tick >= 0 && point.tick <= made.length,
+            "a point at {} is outside the clip it belongs to",
+            point.tick
         );
         assert!(
-            (0.0..=1.0).contains(value),
-            "values are normalised, got {value}"
+            (0.0..=1.0).contains(&point.value),
+            "values are normalised, got {}",
+            point.value
         );
     }
-    // In time order, so the canvas can draw it as a polyline without sorting.
-    assert!(made.curve.windows(2).all(|w| w[0].0 <= w[1].0));
+    // In time order, so the canvas can draw it as a polyline — and evaluate
+    // the curve through it — without sorting a copy every frame.
+    assert!(made.curve.windows(2).all(|w| w[0].tick <= w[1].tick));
 }
 
 #[test]
@@ -941,33 +962,42 @@ fn an_automation_clip_gets_a_lane_of_its_own() {
 }
 
 #[test]
-fn automating_the_same_parameter_twice_reuses_its_lane() {
+fn automating_the_same_parameter_twice_reuses_the_clip_it_already_has() {
     use fontelle_ui::document::StudioHost;
 
     // Otherwise every right-click on the same fader adds a strip, and an
     // arrangement grows a lane per gesture rather than per parameter.
+    //
+    // It used to make a *second clip* on the same lane, which was defensible
+    // while a clip was one bar at the playhead. Now a clip spans the song (or
+    // the time selection), so a second one would sit on top of the first —
+    // and §12.2's rule for two clips over one target is "the later one wins",
+    // which here would mean a curve silently replacing the one you drew. So
+    // the second gesture hands back the clip that is already there.
     let rig = Rig::new(false);
     let master = rig.master();
     let address = ParamTarget::TrackGain(master).address();
     let mut session = rig.into_session();
 
     session.create_automation(&address, "Master \u{2014} gain", 0);
-    let after_one = session.lanes().len();
+    let lanes = session.lanes().len();
+    let first = open_lane(&session);
+
     session.create_automation(&address, "Master \u{2014} gain", PPQN * 8);
     assert_eq!(
         session.lanes().len(),
-        after_one,
-        "the second clip for one parameter belongs on the first one's lane"
+        lanes,
+        "a second gesture on one parameter must not add a strip"
     );
+    let again = open_lane(&session);
+    assert_eq!(again.id, first.id, "and it is the clip that was already there");
 
-    let clips = session.clips();
-    let lanes: Vec<usize> = clips
-        .iter()
+    let automation: Vec<_> = session
+        .clips()
+        .into_iter()
         .filter(|c| c.kind == fontelle_ui::document::ClipKind::Automation)
-        .map(|c| c.lane)
         .collect();
-    assert_eq!(lanes.len(), 2);
-    assert_eq!(lanes[0], lanes[1]);
+    assert_eq!(automation.len(), 1, "one parameter, one clip");
 }
 
 #[test]
@@ -1003,8 +1033,8 @@ fn opening_an_automation_block_opens_its_curve_rather_than_the_roll() {
     session.create_automation(&gain, "Master \u{2014} gain", 0);
     session.create_automation(&pan, "Master \u{2014} pan", 0);
     assert!(
-        session.automation().unwrap().title.contains("pan"),
-        "the most recent one is open"
+        open_lane(&session).name.contains("pan"),
+        "the most recent one is the block in hand"
     );
 
     let clips = session.clips();
@@ -1015,8 +1045,8 @@ fn opening_an_automation_block_opens_its_curve_rather_than_the_roll() {
     session.open_clip(gain_clip.id);
 
     assert!(
-        session.automation().unwrap().title.contains("gain"),
-        "clicking a block has to open the curve that is in it"
+        open_lane(&session).name.contains("gain"),
+        "clicking a block has to put that block in hand"
     );
 }
 

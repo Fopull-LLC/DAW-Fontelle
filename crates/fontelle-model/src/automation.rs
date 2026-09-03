@@ -104,36 +104,8 @@ impl AutomationData {
     /// what has to be right, and it is.
     pub fn value_at(&self, tick: Tick) -> Option<f64> {
         let mut points: Vec<AutomationPoint> = self.points.iter().map(|(_, p)| *p).collect();
-        if points.is_empty() {
-            return None;
-        }
         points.sort_by_key(|p| p.tick);
-        // A `Hold` ends the curve where it sits: everything after it is that
-        // value. Truncating here rather than special-casing below means the
-        // rest of this function — and `final_value` — get it for free.
-        if let Some(freeze) = points.iter().position(|p| p.curve.freezes()) {
-            points.truncate(freeze + 1);
-        }
-
-        // Before the first point, the first point's value: a curve that began
-        // somewhere else would be a value nobody drew.
-        let first = points[0];
-        if tick <= first.tick {
-            return Some(first.value.clamp(0.0, 1.0));
-        }
-        let last = points[points.len() - 1];
-        if tick >= last.tick {
-            return Some(last.value.clamp(0.0, 1.0));
-        }
-
-        let index = points.partition_point(|p| p.tick <= tick) - 1;
-        let (from, to) = (points[index], points[index + 1]);
-        if from.curve.holds() {
-            return Some(from.value.clamp(0.0, 1.0));
-        }
-        let span = (to.tick - from.tick).max(1) as f64;
-        let t = from.curve.eased((tick - from.tick) as f64 / span);
-        Some((from.value + (to.value - from.value) * t).clamp(0.0, 1.0))
+        curve_value(&points, tick)
     }
 
     /// The last value this clip produces — what §12.2's second rule says the
@@ -146,4 +118,53 @@ impl AutomationData {
         let last = self.points.iter().map(|(_, p)| p.tick).max()?;
         self.value_at(last)
     }
+}
+
+/// The value of a curve at `tick`, from its points **already in time order**.
+///
+/// `AutomationData::value_at` is this over a sorted copy of the arena. It is
+/// public on its own because the arrangement draws an automation block's
+/// curve from a flattened list of its points (a canvas may not see a
+/// `Project`, INVARIANT 2), and the picture in the block has to be the curve
+/// the audio thread hears — two evaluators would be a place for them to
+/// disagree, and a shape you chose that draws as a straight line is a shape
+/// you cannot see.
+///
+/// `None` for no points — not zero, which would slam every automated
+/// parameter to its minimum the moment somebody made an empty clip.
+pub fn curve_value(sorted: &[AutomationPoint], tick: Tick) -> Option<f64> {
+    if sorted.is_empty() {
+        return None;
+    }
+    debug_assert!(
+        sorted.windows(2).all(|w| w[0].tick <= w[1].tick),
+        "curve_value takes points in time order"
+    );
+    // A `Hold` ends the curve where it sits: everything after it is that
+    // value. Truncating here rather than special-casing below means the rest
+    // of this function — and `final_value` — get it for free.
+    let points = match sorted.iter().position(|p| p.curve.freezes()) {
+        Some(freeze) => &sorted[..=freeze],
+        None => sorted,
+    };
+
+    // Before the first point, the first point's value: a curve that began
+    // somewhere else would be a value nobody drew.
+    let first = points[0];
+    if tick <= first.tick {
+        return Some(first.value.clamp(0.0, 1.0));
+    }
+    let last = points[points.len() - 1];
+    if tick >= last.tick {
+        return Some(last.value.clamp(0.0, 1.0));
+    }
+
+    let index = points.partition_point(|p| p.tick <= tick) - 1;
+    let (from, to) = (points[index], points[index + 1]);
+    if from.curve.holds() {
+        return Some(from.value.clamp(0.0, 1.0));
+    }
+    let span = (to.tick - from.tick).max(1) as f64;
+    let t = from.curve.eased((tick - from.tick) as f64 / span);
+    Some((from.value + (to.value - from.value) * t).clamp(0.0, 1.0))
 }

@@ -12,19 +12,14 @@ this session real time to discover.
 
 ## 1. Where the tree stands
 
-Branch `main`. Everything described in `PROGRESS.md` up to and including the
-2026-09-02 effects pass is **committed** — the uncommitted stretch that ran
-from `ee06e6b` through ten sessions' worth of work was landed on 2026-09-02
-as two commits (the code, then the docs). Read `git log` for the sequence;
-read `PROGRESS.md`'s sections for what each pass built and why.
+Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
+long uncommitted stretch that ran from `ee06e6b` through ten sessions was
+landed on 2026-09-02, and the automation pass after it.
 
-`cargo test --workspace` is green at **2017 passing** and
-`cargo clippy --workspace --all-targets -- -D warnings` is **clean** — the
-handful of pre-existing hits the last session recorded (two unused `Result`s
-in `fontelle-model/tests/inserts.rs`, a `clone` on a `Copy` type, a
-draw function with eight arguments, and four more in test files) were fixed
-before the commit. Keep it that way: clippy at `-D warnings` is part of the
-bar now.
+`cargo test --workspace` is green at **2103 passing** and
+`cargo clippy --workspace --all-targets -- -D warnings` is **clean**. Keep it
+that way: clippy at `-D warnings` is part of the bar now, and every hit the
+older handoffs recorded as "pre-existing" has been fixed.
 
 ## 2. Process rules that are not optional here
 
@@ -46,76 +41,47 @@ bar now.
 
 ## 3. What is still open
 
-Ranked by what I would take first. None of these are from the user's original
-list — that list is closed.
+Ranked by what I would take first.
 
-1. ~~**Seven effects are written and unreachable.**~~ **Corrected, and then
-   partly done.** This item was wrong in a way that cost the next session time,
-   so read the correction before trusting anything else in this list.
-
-   Six of those seven were **`todo!()` stubs**, not working DSP — a config
-   struct, a state struct, a `process` signature and a doc-comment describing
-   the algorithm, with `todo!("...")` as the body. Only the **limiter** was
-   real. So it was never "cheap plumbing"; it was writing the DSP.
-
-   **Delay, reverb and distortion are now written and reachable** (see
-   `PROGRESS.md`'s newest section). The plumbing claim itself held up
-   perfectly: each needed exactly an `EffectKind` variant, a spec table in
-   `fontelle-types/src/effect.rs` and an `EffectState` arm in
-   `fontelle-engine/src/nodes.rs`, and **no UI change at all**.
-
-   **Bitcrush and soften are done too**, so the mixer offers seven effects.
-
-   And the third correction: **the limiter was never unreachable.** Its DSP is
-   complete and it has been running on the master bus in `MasterNode` all
-   along — deliberately not an insert, with a comment on the field saying so.
-   It has no `EffectKind` variant because it is not that kind of thing.
-
-   Still `todo!()`: **the repitcher**, which is varispeed over a *clip* rather
-   than a bus effect. It has no insert slot to live in and giving it one would
-   be inventing a use for it.
-
-   **2026-09-02, later:** the distortion and the bitcrush were rebuilt to
-   `docs/effects-catalogue.md`'s designs — read that document before adding
-   or extending any effect; it is the authority on how far each one goes and
-   in what order the missing ones are built. The catalogue's §4 names two
-   items that gate several others: a **preset picker** in the effect window
-   (seventeen presets exist across three effects and none can be chosen from
-   the window) and an **external sidechain into `EffectNode`**.
-2. ~~**A knob under automation looks like any other.**~~ **Done.** Theme format
-   v6 adds `param_automated`; `InstrumentView::mark_automated` sets the flag
-   and the knob's groove, a switch's chip and the mixer strip's wet/dry dial
-   all wear it.
-3. ~~**A delay cannot be synced to the tempo.**~~ **Done.** The tempo now
-   reaches the audio thread: the sequencer compiles the tempo map onto
-   `CompiledTimeline::tempo` in samples, `TransportSnapshot` carries the `bpm`
-   at the block being rendered, and `DelayConfig::effective_time_ms` turns a
-   note value into a duration. **Anything else that wants the tempo can now
-   have it** — an LFO is the obvious next one — and it costs a field read.
-4. ~~**Automating `patch/voice/polyphony` is inert.**~~ **Done, with a stated
-   ceiling.** Polyphony is a live limit inside the pool rather than the pool's
-   size, since growing a `Vec` on the audio thread is INVARIANT 1's subject. A
-   lane can lower it and raise it back to the size the pool was built at, and
-   **not past that** — the pool is built from the patch, so the knob is the
-   ceiling and turning it rebuilds the graph.
-5. ~~**Cutting an automation clip can step at the seam.**~~ **Done.** The cut
-   reads the curve's value at the seam and puts a point there in both halves,
-   carrying the shape of the segment it fell inside.
-6. ~~**No lane reordering.**~~ **Done as a menu, not a drag.** `Lane::order`,
-   `Project::lane_ids()` and the `MoveLane` command, driven by "Move up" and
-   "Move down" on the row's right-click menu. Dragging a lane header is still
-   not a gesture the arrangement has. This turned up a live bug: `lanes()` and
-   `clips()` disagreed about row order and would have drawn every clip against
-   the wrong row.
-7. ~~**Rename has no caret.**~~ **Done.** `RackChrome` and `TimelineChrome`
-   carry which row is being typed into, and the same one-pixel bar the search
-   box uses goes after the name.
-8. **Unverified: raising an already-open editor window.** The code calls
-   `focus_window()` (X11/Windows/macOS) *and* `request_user_attention()` (the
-   Wayland xdg-activation path, since a Wayland client may not take focus by
-   asking). It could not be verified here — the test harness is a bare nested X
-   server with no window manager, so there is nothing to raise against. Check it
-   on a real KDE session before believing it.
+1. **The effects catalogue's build order, from item 5.** `docs/effects-catalogue.md`
+   §4 is the list and §5 is the recipe; items 1–4 (utility, gate, chorus,
+   filter) are done, and both of the things that gated several rows — the
+   preset picker and the external sidechain — are done too. Next is the
+   **limiter as an insert** (the DSP exists; an afternoon), then the
+   compressor's character/lookahead/link extensions, then delay and reverb.
+   **Presets are owed** on the EQ, the compressor, the chorus, the delay and
+   the reverb, and rule 10 has a test that stops a new effect landing in the
+   "no presets" list by accident.
+2. **Automation: what the block cannot do yet.** Points are placed and dragged
+   one at a time — there is no marquee over several inside a block, and no
+   pencil/line/shape-stamp draw modes (§12.4 names all three). The gestures
+   that exist are in `fontelle-ui/tests/automation_blocks.rs`.
+3. **A tempo lane is a staircase**, not a ramp: `effective_tempo_map` samples
+   it every sixteenth note into constant segments, because `TempoMap` holds
+   only constant segments (§6.2's scope cut). Interpolated segments are a
+   bounded addition and the formula is written down in `project.rs`.
+4. **`effective_tempo_map` is built twice per republish** and calls
+   `automation_at` once per step, each of which sorts a copy of the clip's
+   points. A project with no tempo lane pays nothing, so this only bites once
+   somebody automates the tempo.
+5. **Unverified: the last move of a right-drag on a ruler.** Driving the
+   window with synthetic input, a right-drag that selects a time range
+   sometimes commits one grid step short of where the button came up — the
+   final `MotionNotify` before the release does not always reach the window.
+   `canvas::time_selection` is tested directly and is right; whether this is
+   the XTEST harness (which this file already records as unreliable near a
+   button release) or the window's own event handling is **not settled**.
+   Check it with a real mouse before spending time on it.
+6. **Unverified: raising an already-open editor window.** The code calls
+   `focus_window()` *and* `request_user_attention()` (the Wayland
+   xdg-activation path). It could not be verified here — the test harness is a
+   bare nested X server with no window manager, so there is nothing to raise
+   against. Check it on a real KDE session before believing it.
+7. **The gate's look-ahead is uncompensated latency**, like the master
+   limiter's, and any lookahead insert under a mix below 100 % combs against
+   an undelayed dry. Both wait on delay compensation.
+8. **The ducker, the vocoder and the repitcher** are unwritten; the repitcher
+   is varispeed over a *clip* and is in the wrong crate.
 
 ## 4. Architecture notes that cost time to learn
 
@@ -142,6 +108,44 @@ list — that list is closed.
   the same thing everywhere (transport, history, save, export). Canvas keys
   deliberately stay per-window: Delete means "the selected band" in an EQ and
   "the selected notes" in the roll.
+- **A clip block has two bands** (`canvas::clip_bands`): a caption across the
+  top and the content under it. Both kinds of clip use it — an automation
+  block's curve and a note block's preview sit in the same place, and the
+  name is written in the band rather than across the content.
+- **A note preview is the pattern, tiled** — `ClipInfo::notes` is one pass and
+  `canvas::clip_notes` repeats it, using the same arithmetic `loop_marks`
+  uses, so the notes and the seams cannot disagree. It follows the
+  **compiler's** rules for what a loop plays (a note past the period is out, a
+  pass past the clip's end is cut), because two answers to that question is a
+  picture of a song the document does not play.
+- **Cutting a looped clip makes a plain clip and a loop**, not two loops: the
+  head's passes are written out (`flatten_loop`) and its `loop_length` is
+  cleared, the tail carries on rotated to the phase the cut fell on. The rule
+  that matters is that the song sounds the same either side of a cut, and
+  `cutting_a_loop_changes_nothing_about_what_plays` measures it.
+- **Every accepted command moves `Session::revision`**, and there are exactly
+  two ways into the history (`run` and `apply_for`) so that it cannot be
+  forgotten. There used to be a third, and it was the one that forgot — notes
+  drawn in the roll never reached the block on the arrangement, and no unit
+  test could see it because they all ask `Session::clips()` directly.
+- **An automation clip is not a window.** It used to be, and the window could
+  not be made to do anything. It is edited inside its block on the
+  arrangement: `canvas::automation_block` is the anatomy (a caption band, then
+  the curve area), `ClipPart::Point`/`Curve` are what the hit test returns,
+  and `ArrangeEdit`'s four point variants are what the gestures emit. The
+  block's curve is evaluated by `fontelle_model::curve_value` — **the same
+  function the audio thread's values come from**, so what is drawn is what is
+  heard.
+- **The resize grip and the curve area must not overlap.** `canvas::clip_grip`
+  is the one answer to "where does the grip start", and the curve area stops
+  half a handle short of it. Before that, the last point of every automation
+  clip sat under the grip and could never be grabbed — a clip is created with
+  a point at each end, so this was every clip.
+- **Everything that turns a tick into a sample goes through
+  `Session::effective_tempo`**, never `project.tempo_map`. The latter is the
+  tempo *box*; the former is that map bent by the tempo lane, and it is
+  rebuilt against the same scope the timeline was compiled with. Reading the
+  wrong one draws the playhead in a bar the notes are not in.
 - **There are two effect windows behind one `EditorKind::Effect`**: the EQ's
   curve, and the grid of knobs every other effect gets. They are told apart by
   `self.eq.is_none()`, and exactly one of `eq` / `insert_view` is `Some`.

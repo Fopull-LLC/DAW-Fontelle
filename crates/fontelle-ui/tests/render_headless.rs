@@ -64,11 +64,14 @@ struct Shot {
     theme: Theme,
     layout: fontelle_ui::layout::WindowLayout,
     bar: TransportBarLayout,
+    /// How wide the frame is, because not every shot is [`W`] across — the
+    /// transport bar has controls it only has room for on a real window.
+    width: u32,
 }
 
 impl Shot {
     fn at(&self, x: u32, y: u32) -> Color {
-        let i = ((y * W + x) * 4) as usize;
+        let i = ((y * self.width + x) * 4) as usize;
         Color(
             self.pixels[i..i + 4]
                 .try_into()
@@ -97,8 +100,32 @@ fn shoot(theme: Theme) -> Option<Shot> {
 }
 
 fn shoot_with(theme: Theme, view: TransportView, meters: [Meter; 2]) -> Option<Shot> {
+    shoot_mode(theme, view, meters, false)
+}
+
+/// The same, saying which mode the transport is in — what lights the song/clip
+/// chip.
+fn shoot_mode(
+    theme: Theme,
+    view: TransportView,
+    meters: [Meter; 2],
+    clip_mode: bool,
+) -> Option<Shot> {
+    shoot_sized(theme, view, meters, clip_mode, W)
+}
+
+/// The same, at a given width. The window opens wider than [`W`] in practice
+/// and the transport bar drops controls it has no room for, so a shot of one
+/// of those has to be taken at a width it is there at.
+fn shoot_sized(
+    theme: Theme,
+    view: TransportView,
+    meters: [Meter; 2],
+    clip_mode: bool,
+    width: u32,
+) -> Option<Shot> {
     let shared = headless()?;
-    let layout = window_layout(W as f32, H as f32, &theme.metrics, DEFAULT_TIMELINE_HEIGHT);
+    let layout = window_layout(width as f32, H as f32, &theme.metrics, DEFAULT_TIMELINE_HEIGHT);
     let mut text = TextContext::new();
     let title = text.layout("Fontelle", &theme.font, None);
 
@@ -121,8 +148,10 @@ fn shoot_with(theme: Theme, view: TransportView, meters: [Meter; 2]) -> Option<S
                 readout: &readout,
                 tempo: &tempo,
                 signature: &signature,
+                mode: &tempo,
                 hover: None,
                 marker_sample: 0,
+                clip_mode,
             },
             roll: None,
             rack: None,
@@ -142,7 +171,7 @@ fn shoot_with(theme: Theme, view: TransportView, meters: [Meter; 2]) -> Option<S
     let pixels = shared
         .lock()
         .expect("the shared renderer")
-        .render(&scene, W, H, theme.palette.window)
+        .render(&scene, width, H, theme.palette.window)
         .expect("rendering a scene that fits in memory");
 
     dump(&pixels, &theme.name);
@@ -152,6 +181,7 @@ fn shoot_with(theme: Theme, view: TransportView, meters: [Meter; 2]) -> Option<S
         theme,
         layout,
         bar,
+        width,
     })
 }
 
@@ -597,8 +627,10 @@ fn shoot_roll_with(
                 readout: &readout,
                 tempo: &tempo,
                 signature: &signature,
+                mode: &tempo,
                 hover: None,
                 marker_sample: 0,
+                clip_mode: false,
             },
             roll: Some(RollChrome {
                 layout: roll_l,
@@ -619,6 +651,7 @@ fn shoot_roll_with(
                     fontelle_ui::document::GhostFilter::All
                 },
                 marker_tick: None,
+                loop_range: None,
                 marquee: None,
                 hover: None,
                 lane_menu: lane_menu.as_ref(),
@@ -885,8 +918,10 @@ fn shoot_timeline(clips: &[fontelle_ui::document::ClipInfo]) -> Option<TimelineS
                 readout: &readout,
                 tempo: &tempo,
                 signature: &signature,
+                mode: &tempo,
                 hover: None,
                 marker_sample: 0,
+                clip_mode: false,
             },
             roll: None,
             rack: None,
@@ -909,6 +944,9 @@ fn shoot_timeline(clips: &[fontelle_ui::document::ClipInfo]) -> Option<TimelineS
                 slice: None,
                 focused: false,
                 renaming: None,
+                point_clip: None,
+                point_selection: &[],
+                loop_range: None,
             }),
             mixer: None,
             tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
@@ -953,6 +991,7 @@ fn a_clip(
         loop_length: None,
         kind: fontelle_ui::document::ClipKind::Notes,
         curve: Vec::new(),
+        notes: Vec::new(),
     }
 }
 
@@ -1552,8 +1591,10 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
                 readout: &readout,
                 tempo: &tempo,
                 signature: &signature,
+                mode: &tempo,
                 hover: None,
                 marker_sample: 0,
+                clip_mode: false,
             },
             roll: None,
             rack: None,
@@ -1860,8 +1901,10 @@ fn shoot_rack(renaming: Option<usize>) -> Option<(Vec<u8>, Theme, fontelle_ui::c
                 readout: &text.layout("1.1.0", &theme.font, None),
                 tempo: &text.layout("120.00", &theme.font, None),
                 signature: &text.layout("4/4", &theme.font, None),
+                mode: &text.layout("Song", &theme.font, None),
                 hover: None,
                 marker_sample: 0,
+                clip_mode: false,
             },
             roll: None,
             rack: Some(RackChrome {
@@ -1944,4 +1987,297 @@ fn a_row_being_renamed_shows_a_caret_and_the_others_do_not() {
         accent_in(&quiet, second),
         "and the row nobody is typing into should be unchanged"
     );
+}
+
+// ------------------------------- an automation block draws its own curve ---
+//
+// *"i want the automation graph to be a literal graph drawn inside the clip."*
+// The geometry is `tests/automation_blocks.rs`; this is the half only a real
+// frame can answer — that the curve is **on screen**, in ink you can see
+// against the block it is drawn on. A curve whose colour matched its own
+// background was a real bug in this project once, and no geometry test could
+// have caught it.
+
+/// A four-bar automation block on lane 1, with a ramp through it.
+fn an_automation_clip(values: &[f64]) -> fontelle_ui::document::ClipInfo {
+    let mut arena: Arena<fontelle_types::ClipId, ()> = Arena::default();
+    let mut points: Arena<fontelle_types::PointId, ()> = Arena::default();
+    let last = values.len().saturating_sub(1).max(1) as Tick;
+    let length = PPQN * 16;
+    fontelle_ui::document::ClipInfo {
+        id: arena.insert(()),
+        lane: 1,
+        start: 0,
+        length,
+        name: "Master \u{2014} gain".to_string(),
+        muted: false,
+        open: false,
+        color: [0xb4, 0xa2, 0xe8, 0xff],
+        loop_length: None,
+        kind: fontelle_ui::document::ClipKind::Automation,
+        curve: values
+            .iter()
+            .enumerate()
+            .map(|(i, value)| fontelle_ui::document::CurvePoint {
+                id: points.insert(()),
+                tick: length * i as Tick / last,
+                value: *value,
+                curve: fontelle_model::CurveShape::Linear,
+            })
+            .collect(),
+        notes: Vec::new(),
+    }
+}
+
+#[test]
+fn an_automation_block_draws_a_curve_you_can_see() {
+    use fontelle_ui::canvas::{automation_block, clip_rect};
+
+    let clips = vec![an_automation_clip(&[0.0, 1.0])];
+    let Some(shot) = shoot_timeline(&clips) else {
+        return;
+    };
+    let block = clip_rect(&shot.view, shot.layout.grid, &clips[0]);
+    let area = automation_block(block, &clips[0]).area;
+
+    // The curve's ink is the block's own colour, on the dark ground an
+    // automation block is filled with. Both have to be on screen inside the
+    // area, or the "curve" is a block with nothing in it.
+    let ground = shot.theme.palette.panel_header;
+    let ink = Color(clips[0].color);
+    let mut found_ink = 0;
+    let mut found_ground = 0;
+    for x in (area.x as u32)..(area.right() as u32) {
+        for y in (area.y as u32)..(area.bottom() as u32) {
+            let px = shot.at(x, y);
+            if near(px, ink) {
+                found_ink += 1;
+            }
+            if near(px, ground) {
+                found_ground += 1;
+            }
+        }
+    }
+    assert!(
+        found_ink > 20,
+        "the curve is not on screen: {found_ink} pixels of its ink in {area:?}"
+    );
+    assert!(
+        found_ground > 20,
+        "the block is filled with the curve's own colour, so the line cannot \
+         be seen against it: {found_ground} pixels of ground"
+    );
+}
+
+#[test]
+fn a_rising_curve_is_drawn_rising() {
+    // One is up. Drawn upside down the picture is a lie about the value, and
+    // the mistake is invisible until you put it beside the numbers.
+    use fontelle_ui::canvas::{automation_block, clip_rect};
+
+    let clips = vec![an_automation_clip(&[0.0, 1.0])];
+    let Some(shot) = shoot_timeline(&clips) else {
+        return;
+    };
+    let block = clip_rect(&shot.view, shot.layout.grid, &clips[0]);
+    let area = automation_block(block, &clips[0]).area;
+    let ink = Color(clips[0].color);
+
+    // The **nearest** colour rather than an exact match: a 1.5-pixel stroke
+    // is anti-aliased, so most of a column's coverage is the ink blended into
+    // the ground and an `assert` on the exact value finds nothing at the ends
+    // of the line. What is being asked here is "where is the line in this
+    // column", and that is the pixel least unlike its ink.
+    let distance = |a: Color, b: Color| -> u32 {
+        a.0[..3]
+            .iter()
+            .zip(b.0[..3].iter())
+            .map(|(x, y)| u32::from(x.abs_diff(*y)))
+            .sum()
+    };
+    let line_at = |x: u32| {
+        ((area.y as u32)..(area.bottom() as u32))
+            .map(|y| (distance(shot.at(x, y), ink), y))
+            .min()
+            .filter(|(d, _)| *d < 120)
+            .map(|(_, y)| y)
+    };
+    let left = line_at(area.x as u32 + 2);
+    let right = line_at(area.right() as u32 - 2);
+    let (Some(left), Some(right)) = (left, right) else {
+        panic!("the curve is missing at one end: {left:?} {right:?}");
+    };
+    assert!(
+        right < left,
+        "a curve from 0 to 1 has to end above where it started: {left} then {right}"
+    );
+    // And it genuinely crosses the block rather than sitting in a band: the
+    // two ends are most of the area's height apart.
+    assert!(
+        left - right > (area.height as u32) / 2,
+        "the curve barely moves: {left} to {right} in a {}-tall area",
+        area.height
+    );
+}
+
+// ---------------------------------- a note clip shows the notes in it ---
+//
+// *"make it so the midi clips in the arrangement arent just blank rectangles
+// but instead actually show a preview of the notes drawn out inside of it."*
+// The geometry is `tests/note_preview.rs`; this is the half only a real frame
+// can answer — that the notes are on screen, in ink you can tell from the
+// block they are drawn on.
+
+fn a_note_clip(loop_length: Option<Tick>) -> fontelle_ui::document::ClipInfo {
+    let mut arena: Arena<fontelle_types::ClipId, ()> = Arena::default();
+    let n = |start: Tick, length: Tick, key: u8| fontelle_ui::document::NotePreview {
+        start,
+        length,
+        key,
+    };
+    fontelle_ui::document::ClipInfo {
+        id: arena.insert(()),
+        lane: 1,
+        start: 0,
+        length: PPQN * 16,
+        name: "Keys".to_string(),
+        muted: false,
+        open: false,
+        color: [0x4f, 0x8f, 0xd0, 0xff],
+        loop_length,
+        kind: fontelle_ui::document::ClipKind::Notes,
+        curve: Vec::new(),
+        notes: vec![
+            n(0, PPQN, 60),
+            n(PPQN, PPQN, 64),
+            n(PPQN * 2, PPQN, 67),
+            n(PPQN * 3, PPQN, 72),
+        ],
+    }
+}
+
+#[test]
+fn a_note_clip_draws_its_notes_and_they_can_be_told_from_the_block() {
+    use fontelle_ui::canvas::{clip_bands, clip_notes, clip_rect};
+
+    let clips = vec![a_note_clip(None)];
+    let Some(shot) = shoot_timeline(&clips) else {
+        return;
+    };
+    let block = clip_rect(&shot.view, shot.layout.grid, &clips[0]);
+    let (_, content) = clip_bands(block);
+    let rects = clip_notes(block, shot.layout.grid, &clips[0]);
+    assert_eq!(rects.len(), 4, "four notes to draw");
+
+    // A pixel in the middle of the first note, and one in the content band
+    // that no note covers. They have to be different colours, or the preview
+    // is a block with an invisible pattern on it.
+    let inside = {
+        let r = rects[0];
+        shot.at((r.x + r.width / 2.0) as u32, (r.y + r.height / 2.0) as u32)
+    };
+    let empty = {
+        // The far right of the band: the notes are in the first bar of four.
+        let x = content.right() as u32 - 4;
+        shot.at(x, (content.y + content.height / 2.0) as u32)
+    };
+    assert!(
+        !near(inside, empty),
+        "a note pixel {inside:?} is the same colour as the block {empty:?}"
+    );
+    // And the note is lighter than the block it is on, which is the rule the
+    // ink follows — a preview reads as part of its clip, not as something
+    // lying on top of it.
+    let brightness = |c: Color| u32::from(c.0[0]) + u32::from(c.0[1]) + u32::from(c.0[2]);
+    assert!(
+        brightness(inside) > brightness(empty),
+        "the notes are darker than their block: {inside:?} on {empty:?}"
+    );
+}
+
+#[test]
+fn a_looped_clip_draws_a_pass_in_every_bar_it_covers() {
+    // Four bars of a one-bar pattern is four passes on screen, not one — the
+    // report this whole feature answers is about a clip that looked empty.
+    use fontelle_ui::canvas::{clip_notes, clip_rect};
+
+    let clips = vec![a_note_clip(Some(PPQN * 4))];
+    let Some(shot) = shoot_timeline(&clips) else {
+        return;
+    };
+    let block = clip_rect(&shot.view, shot.layout.grid, &clips[0]);
+    let rects = clip_notes(block, shot.layout.grid, &clips[0]);
+    assert_eq!(rects.len(), 16, "four notes, four passes");
+
+    let brightness = |c: Color| u32::from(c.0[0]) + u32::from(c.0[1]) + u32::from(c.0[2]);
+    let ground = {
+        let r = rects[0];
+        brightness(shot.at((r.x + r.width / 2.0) as u32, (r.bottom() + 2.0) as u32))
+    };
+    // The **last** pass, which is the one a preview that drew the pattern
+    // once would have left blank.
+    let last = rects[rects.len() - 1];
+    let ink = brightness(shot.at(
+        (last.x + last.width / 2.0) as u32,
+        (last.y + last.height / 2.0) as u32,
+    ));
+    assert!(
+        ink > ground,
+        "the last pass is not drawn: {ink} against a ground of {ground}"
+    );
+}
+
+// ------------------------------------------ the song/clip chip is drawn ---
+//
+// *"there should also be a way to swap between clip and song mode currently
+// its always on song."* The chip is on the transport bar, and the one thing a
+// geometry test cannot say is whether it is **on screen** and whether it
+// looks different in the two modes — a switch that does not visibly switch is
+// a switch nobody trusts.
+
+#[test]
+fn the_mode_chip_is_drawn_and_says_which_mode_it_is_in() {
+    let theme = Theme::dark_default();
+    // A width the window actually opens at: at 640 the bar gives the chip up
+    // to keep a usable ruler, which is the rule
+    // `tests/transport.rs::a_narrow_bar_drops_the_mode_chip...` holds.
+    const WIDE: u32 = 1280;
+    let (Some(song), Some(clip)) = (
+        shoot_sized(theme.clone(), live_view(), [Meter::new(); 2], false, WIDE),
+        shoot_sized(theme.clone(), live_view(), [Meter::new(); 2], true, WIDE),
+    ) else {
+        return;
+    };
+
+    let chip = song.bar.mode;
+    assert!(!chip.is_empty(), "there is no chip to draw at {WIDE} across");
+
+    // In clip mode the chip is filled with the accent, because a transport
+    // playing one part of a song rather than the song is a state worth
+    // noticing across the room.
+    let mut accent = 0;
+    let mut differ = 0;
+    for x in (chip.x as u32 + 3)..(chip.right() as u32 - 3) {
+        for y in (chip.y as u32 + 3)..(chip.bottom() as u32 - 3) {
+            if near(clip.at(x, y), theme.palette.accent) {
+                accent += 1;
+            }
+            if !near(clip.at(x, y), song.at(x, y)) {
+                differ += 1;
+            }
+        }
+    }
+    assert!(accent > 20, "clip mode does not light the chip: {accent} accent pixels");
+    assert!(differ > 20, "the two modes draw the chip identically");
+
+    // And nothing outside the chip moved: the mode is not allowed to repaint
+    // the rest of the bar.
+    let elsewhere = song.bar.readout;
+    for x in (elsewhere.x as u32 + 2)..(elsewhere.right() as u32 - 2) {
+        let y = (elsewhere.y + elsewhere.height / 2.0) as u32;
+        assert!(
+            near(clip.at(x, y), song.at(x, y)),
+            "the read-out changed with the mode at x={x}"
+        );
+    }
 }

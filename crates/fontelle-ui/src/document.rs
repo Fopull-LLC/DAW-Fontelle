@@ -21,7 +21,7 @@
 //!   this crate — only the shape of the question.
 
 use fontelle_model::{Arena, Note};
-use fontelle_types::{ClipId, NoteId, PPQN, Sample, Tick};
+use fontelle_types::{ClipId, NoteId, PPQN, PointId, Sample, Tick};
 
 use crate::canvas::{ArrangeEdit, InstrumentView, RollEdit};
 
@@ -97,6 +97,22 @@ pub trait DocumentHost {
     /// change has no single BPM to multiply by (INVARIANT 5) and only the
     /// document holds the map.
     fn sample_of_clip_tick(&self, tick: Tick) -> Sample;
+
+    /// A tick in this clip, as a tick in the **song** — what a time selection
+    /// dragged on the roll's ruler is stored as (TDD §6.3: loop points are
+    /// ticks, and they are the song's).
+    ///
+    /// Defaulted to the identity for a host with no clip offset, which is
+    /// what every test fake is.
+    fn song_tick_of_clip_tick(&self, tick: Tick) -> Tick {
+        tick
+    }
+
+    /// The other direction, for drawing the song's selection on the roll's
+    /// ruler. May land before the clip or after it; the ruler clips it.
+    fn clip_tick_of_song_tick(&self, tick: Tick) -> Tick {
+        tick
+    }
 
     /// Whether there are changes not yet on disk.
     fn is_dirty(&self) -> bool;
@@ -177,14 +193,103 @@ pub struct ClipInfo {
     pub loop_length: Option<Tick>,
     /// Which kind of block this is, and so which way it is drawn.
     pub kind: ClipKind,
-    /// For [`ClipKind::Automation`], the curve to draw: `(tick from the clip's
-    /// start, value 0..1)`, in time order.
+    /// For [`ClipKind::Automation`], the points of its curve, **in time
+    /// order**.
     ///
     /// Flattened onto the block for the reason the rest of `ClipInfo` is: the
     /// canvas may not see a `Project` (INVARIANT 2). Empty for every other
     /// kind, and read on the studio's revision rather than per frame, so a
-    /// `Vec` per automation clip costs nothing per frame.
-    pub curve: Vec<(Tick, f64)>,
+    /// `Vec` per automation clip costs nothing per frame. The block is
+    /// **edited** through these — a point's id is what a drag names — which
+    /// is why they are points rather than a sampled line.
+    pub curve: Vec<CurvePoint>,
+    /// For [`ClipKind::Notes`], the clip's own notes — **the pattern**, in the
+    /// clip's ticks, not expanded across a loop's passes.
+    ///
+    /// *"make it so the midi clips in the arrangement arent just blank
+    /// rectangles but instead actually show a preview of the notes drawn out
+    /// inside of it like how other daws do."*
+    ///
+    /// Unexpanded on purpose: a two-hundred-bar clip looping one bar would be
+    /// two hundred copies of the same list, held per clip, rebuilt on every
+    /// revision. The canvas tiles them the way it already tiles the seams
+    /// (`canvas::loop_marks`), which is also what makes the picture and the
+    /// seams one picture rather than two that can disagree.
+    ///
+    /// Flattened onto the block for the reason the rest of `ClipInfo` is: the
+    /// canvas may not see a `Project` (INVARIANT 2). Empty for every other
+    /// kind.
+    pub notes: Vec<NotePreview>,
+}
+
+/// One note, as the arrangement draws it inside its clip.
+///
+/// Position and pitch and nothing else: a preview is a shape, and velocity,
+/// pan and the rest are the roll's business.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotePreview {
+    /// In the clip's own ticks.
+    pub start: Tick,
+    pub length: Tick,
+    pub key: u8,
+}
+
+/// One point of an automation clip's curve, as the arrangement draws and
+/// edits it (TDD §12.1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CurvePoint {
+    pub id: PointId,
+    /// In the clip's own ticks.
+    pub tick: Tick,
+    /// Normalised, 0..1 — §12.1's unit.
+    pub value: f64,
+    /// The shape of the segment **following** this point.
+    pub curve: fontelle_model::CurveShape,
+}
+
+/// What pressing play plays.
+///
+/// FL Studio's song/pattern switch. *"there should also be a way to swap
+/// between clip and song mode currently its always on song so you cant ONLY
+/// focus one instrument."* Session state rather than the document's: it is
+/// how you are listening, not what the song is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PlayMode {
+    /// The arrangement, end to end.
+    #[default]
+    Song,
+    /// Only the clip being edited, round and round.
+    Clip,
+}
+
+impl PlayMode {
+    /// The other one — the chip on the transport bar toggles.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Song => Self::Clip,
+            Self::Clip => Self::Song,
+        }
+    }
+
+    /// What the chip says.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Song => "Song",
+            Self::Clip => "Clip",
+        }
+    }
+}
+
+/// What an arrangement edit made, handed back so the gesture that made it
+/// can carry on — see [`StudioHost::arrange`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Created {
+    /// Clips a duplicate, a paste or a draw put down. They become the
+    /// selection — see `Timeline::clips_inserted`.
+    pub clips: Vec<ClipId>,
+    /// Points a press on a curve made. The drag that follows moves them —
+    /// see `Timeline::points_inserted`.
+    pub points: Vec<PointId>,
 }
 
 /// Which other instruments' notes the piano roll shows behind its own.
@@ -863,20 +968,27 @@ pub trait StudioHost: DocumentHost {
         None
     }
 
-    /// Makes an automation clip for `address`, at the playhead, and opens it
-    /// (TDD §12.4).
+    /// Makes an automation clip for `address` and selects it on the
+    /// arrangement (TDD §12.4).
+    ///
+    /// **Flat, at the value the control is at now, over the time selection
+    /// — or the whole song when there is none.** *"it creates a new
+    /// automation clip in my arrangement just flat on the value that its
+    /// currently at basically with the clip extending the current length of
+    /// the song or time selection."* A control that already has a clip gets
+    /// that clip selected rather than a second one.
     ///
     /// `label` is what the lane says — the panel knows "Master — EQ band 1
     /// gain" and the document knows only the address, so the words come from
     /// the side that has them. `at` is where the playhead is, which the window
-    /// knows and the document does not: a session's position lives with the
-    /// transport, not in the file.
+    /// knows and the document does not; it is what decides which of several
+    /// clips on the same control is meant.
     ///
     /// One gesture from **any** control that has an address, which is what
     /// §8.2's single addressing scheme buys: the mixer's fader, an EQ band,
-    /// every knob on a compressor and every parameter of whatever effect is
-    /// added next are all automatable by the same code path, with none of them
-    /// wired up individually.
+    /// every knob on a compressor, the tempo box and every parameter of
+    /// whatever effect is added next are all automatable by the same code
+    /// path, with none of them wired up individually.
     fn create_automation(
         &mut self,
         _address: &fontelle_types::ParamAddress,
@@ -885,19 +997,34 @@ pub trait StudioHost: DocumentHost {
     ) {
     }
 
-    /// The automation clip the editor has open, if any.
-    fn automation(&self) -> Option<crate::canvas::AutomationView> {
+    // --- the time selection and the play mode (TDD §6.3) ---
+
+    /// The loop region, in song ticks — the stretch a right-drag on a ruler
+    /// selected. `None` when nothing is selected.
+    fn loop_range(&self) -> Option<(Tick, Tick)> {
         None
     }
 
-    /// The points of that clip, for drawing its curve — the same data the
-    /// audio path reads, so what is on screen is what is heard.
-    fn automation_data(&self) -> Option<fontelle_model::AutomationData> {
-        None
+    /// Sets it, or clears it. One `Command` through the history, and saved
+    /// with the song (`Project::loop_range`); the implementation hands the
+    /// same range to the transport in samples, so a selection is something
+    /// the song loops over the moment it is made.
+    fn set_loop_range(&mut self, _range: Option<(Tick, Tick)>) {}
+
+    fn play_mode(&self) -> PlayMode {
+        PlayMode::Song
     }
 
-    /// Applies one edit as a command, recording it in the history.
-    fn edit_automation(&mut self, _edit: crate::canvas::AutomationEdit) {}
+    /// Switches between the song and the clip being edited. In clip mode the
+    /// transport loops the clip's own bars and the timeline carries that clip
+    /// alone.
+    fn set_play_mode(&mut self, _mode: PlayMode) {}
+
+    /// The bars the clip being edited covers, in song ticks — what clip mode
+    /// loops over, and where the window puts the marker when it switches.
+    fn focused_clip_span(&self) -> Option<(Tick, Tick)> {
+        None
+    }
 
     /// Whether `address` already has an automation clip, so a control under
     /// automation can be drawn as such (§12.2's "distinct ring colour").
@@ -1008,12 +1135,14 @@ pub trait StudioHost: DocumentHost {
     fn clips(&self) -> Vec<ClipInfo>;
     /// Applies one arrangement edit as a command, recording it in the history.
     ///
-    /// Returns the ids of any clips it **created** — empty for every edit that
-    /// creates none. The arrangement needs them for the same reason the roll
+    /// Returns what it **created** — nothing for every edit that creates
+    /// nothing. The arrangement needs the ids for the same reason the roll
     /// needs `DocumentHost::edit`'s: a duplicate's offset is measured from the
     /// selection, so the copy has to become the selection or pressing the key
-    /// twice puts two clips in one place. See `Timeline::clips_inserted`.
-    fn arrange(&mut self, edit: ArrangeEdit) -> Vec<ClipId>;
+    /// twice puts two clips in one place; and a point made by a press is the
+    /// point the drag that follows has to move. See `Timeline::clips_inserted`
+    /// and `Timeline::points_inserted`.
+    fn arrange(&mut self, edit: ArrangeEdit) -> Created;
 
     /// How many clips `Ctrl+C`/`Ctrl+X` are holding — what the arrangement's
     /// Paste button asks so it can say whether it would do anything.

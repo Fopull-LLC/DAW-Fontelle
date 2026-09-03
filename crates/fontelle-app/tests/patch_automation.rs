@@ -19,7 +19,23 @@ use fontelle_engine::{
 };
 use fontelle_model::{AddNotes, Command, Note};
 use fontelle_types::{CompiledTimeline, PPQN, ParamAddress};
+use fontelle_ui::canvas::ArrangeEdit;
 use fontelle_ui::document::StudioHost;
+
+/// The automation block in hand, as the arrangement draws it.
+///
+/// The curve editor's window is gone: an automation clip is edited inside its
+/// own block now (`fontelle-ui/tests/automation_blocks.rs`), so what a test
+/// reads is the same flattened block the canvas draws.
+fn open_lane(session: &fontelle_app::Session) -> fontelle_ui::document::ClipInfo {
+    use fontelle_ui::document::{ClipKind, StudioHost};
+    session
+        .clips()
+        .into_iter()
+        .find(|clip| clip.kind == ClipKind::Automation && clip.open)
+        .expect("the clip that was just made is the block in hand")
+}
+
 
 use common::SR;
 
@@ -117,11 +133,11 @@ fn a_lane_on_the_filters_cutoff_is_audible() {
     let (mut session, mut graphs, _timelines) = studio();
     session.automate_instrument_param(&cutoff, 0);
     // Draw the lane down to nothing: two points, both at the bottom.
-    let data = session.automation_data().expect("the lane is open");
-    let ids: Vec<_> = data.points.iter().map(|(id, _)| id).collect();
-    for id in ids {
-        session.edit_automation(fontelle_ui::canvas::AutomationEdit::Move {
-            ids: vec![id],
+    let lane = open_lane(&session);
+    for point in &lane.curve {
+        session.arrange(ArrangeEdit::MovePoints {
+            clip: lane.id,
+            ids: vec![point.id],
             tick_delta: 0,
             value_delta: -1.0,
         });

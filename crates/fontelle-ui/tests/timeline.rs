@@ -60,6 +60,7 @@ fn clips(specs: &[(usize, Tick, Tick)]) -> Vec<ClipInfo> {
             loop_length: None,
             kind: ClipKind::Notes,
             curve: Vec::new(),
+            notes: Vec::new(),
         })
         .collect()
 }
@@ -418,35 +419,50 @@ fn zooming_the_arrangement_holds_the_bar_under_the_pointer() {
 // arrangement — they play and open, but a lane of them looks like a lane of
 // empty clips."*
 //
-// A block with a caption is the right picture for notes and the wrong one for
-// a curve: what you want to see at a glance is the *shape*, because that is
-// the whole content of the clip. The document half is
-// `fontelle-app/tests/insert_chains.rs`; this is where the points land.
+// The block's anatomy, its handles and its gestures are `automation_blocks.rs`
+// now that the block is where the clip is edited; what stays here is the one
+// property the arrangement's drawing has to keep whatever else changes.
+
+fn curve_points(specs: &[(Tick, f64)]) -> Vec<fontelle_ui::document::CurvePoint> {
+    let mut arena: Arena<fontelle_types::PointId, ()> = Arena::default();
+    specs
+        .iter()
+        .map(|(tick, value)| fontelle_ui::document::CurvePoint {
+            id: arena.insert(()),
+            tick: *tick,
+            value: *value,
+            curve: fontelle_model::CurveShape::Linear,
+        })
+        .collect()
+}
 
 #[test]
 fn a_curve_fills_the_block_it_belongs_to() {
     use fontelle_ui::canvas::automation_polyline;
 
     let block = Rect::new(100.0, 40.0, 200.0, 30.0);
-    let points = automation_polyline(block, PPQN * 4, &[(0, 0.0), (PPQN * 2, 1.0), (PPQN * 4, 0.5)]);
+    let points = automation_polyline(
+        block,
+        PPQN * 4,
+        &curve_points(&[(0, 0.0), (PPQN * 2, 1.0), (PPQN * 4, 0.5)]),
+    );
 
-    assert_eq!(points.len(), 3);
+    assert!(points.len() >= 3);
     for (x, y) in &points {
         assert!(
             (block.x..=block.right()).contains(x) && (block.y..=block.bottom()).contains(y),
             "({x}, {y}) is outside the block {block:?}"
         );
     }
-    // Time runs left to right, and a later point is further right.
-    assert!(points[0].0 < points[1].0 && points[1].0 < points[2].0);
+    // Time runs left to right.
+    assert!(points.windows(2).all(|w| w[0].0 <= w[1].0));
     // And **one is up**: an automation curve drawn upside down is a lie about
     // the value, and the mistake is invisible until you compare it with the
-    // editor.
-    assert!(
-        points[1].1 < points[0].1,
-        "value 1.0 must be above value 0.0: {points:?}"
-    );
-    assert!(points[2].1 < points[0].1 && points[2].1 > points[1].1, "0.5 is between");
+    // editor. The peak is in the middle and the ends are lower.
+    let (first, last) = (points[0], points[points.len() - 1]);
+    let top = points.iter().map(|p| p.1).fold(f32::MAX, f32::min);
+    assert!(top < first.1, "value 1.0 must be above value 0.0: {points:?}");
+    assert!(last.1 < first.1 && last.1 > top, "0.5 is between");
 }
 
 #[test]
@@ -456,25 +472,10 @@ fn the_ends_of_a_curve_are_inside_the_block_rather_than_on_its_edge() {
     use fontelle_ui::canvas::automation_polyline;
 
     let block = Rect::new(0.0, 0.0, 120.0, 24.0);
-    let points = automation_polyline(block, PPQN, &[(0, 0.0), (PPQN, 1.0)]);
-    assert!(points[0].1 < block.bottom(), "the bottom point touches the edge");
-    assert!(points[1].1 > block.y, "the top point touches the edge");
-}
-
-#[test]
-fn a_curve_with_no_length_does_not_divide_by_it() {
-    use fontelle_ui::canvas::automation_polyline;
-
-    let block = Rect::new(0.0, 0.0, 120.0, 24.0);
-    for points in [
-        automation_polyline(block, 0, &[(0, 0.0), (0, 1.0)]),
-        automation_polyline(Rect::ZERO, PPQN, &[(0, 0.5)]),
-        automation_polyline(block, PPQN, &[]),
-    ] {
-        for (x, y) in &points {
-            assert!(x.is_finite() && y.is_finite(), "({x}, {y})");
-        }
-    }
+    let points = automation_polyline(block, PPQN, &curve_points(&[(0, 0.0), (PPQN, 1.0)]));
+    let (first, last) = (points[0], points[points.len() - 1]);
+    assert!(first.1 < block.bottom(), "the bottom point touches the edge");
+    assert!(last.1 > block.y, "the top point touches the edge");
 }
 
 #[test]
@@ -484,7 +485,8 @@ fn a_value_outside_the_normal_range_is_clamped_into_the_block() {
     use fontelle_ui::canvas::automation_polyline;
 
     let block = Rect::new(10.0, 10.0, 100.0, 20.0);
-    let points = automation_polyline(block, PPQN, &[(-PPQN, -3.0), (PPQN * 9, 4.0)]);
+    let points =
+        automation_polyline(block, PPQN, &curve_points(&[(-PPQN, -3.0), (PPQN * 9, 4.0)]));
     for (x, y) in &points {
         assert!((block.x..=block.right()).contains(x), "x {x} escaped");
         assert!((block.y..=block.bottom()).contains(y), "y {y} escaped");

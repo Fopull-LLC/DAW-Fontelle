@@ -25,6 +25,21 @@ use fontelle_engine::{graph_channel, timeline_channel};
 use fontelle_types::CompiledTimeline;
 use fontelle_ui::document::StudioHost;
 
+/// The automation block in hand, as the arrangement draws it.
+///
+/// The curve editor's window is gone: an automation clip is edited inside its
+/// own block now (`fontelle-ui/tests/automation_blocks.rs`), so what a test
+/// reads is the same flattened block the canvas draws.
+fn open_lane(session: &fontelle_app::Session) -> fontelle_ui::document::ClipInfo {
+    use fontelle_ui::document::{ClipKind, StudioHost};
+    session
+        .clips()
+        .into_iter()
+        .find(|clip| clip.kind == ClipKind::Automation && clip.open)
+        .expect("the clip that was just made is the block in hand")
+}
+
+
 use common::SR;
 
 /// A studio with two channels on the master, which is where every channel goes
@@ -222,14 +237,10 @@ fn a_new_lane_starts_at_the_value_the_knob_is_on() {
     fontelle_ui::document::DocumentHost::end_gesture(&mut session);
 
     session.automate_instrument_param(&cutoff, 0);
-    let data = session
-        .automation_data()
-        .expect("the curve editor opens on the lane that was just made");
-    let first = data
-        .points
-        .values()
+    let first = open_lane(&session)
+        .curve
+        .first()
         .map(|point| point.value)
-        .next()
         .expect("a new lane is not empty");
     assert!(
         (first - 0.25).abs() < 0.01,

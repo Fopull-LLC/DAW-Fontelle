@@ -17,7 +17,282 @@ rather than the claim.
 what is still open, and the handful of things about this machine and this
 codebase that cost real time to rediscover.
 
-## 2026-09-02 (latest): four effects, a preset picker, and the external sidechain
+## 2026-09-02 (latest): clips show what is in them, and a cut through a loop
+
+Two reports from using the window, and one bug found only by looking at it.
+
+> *"make it so the midi clips in the arrangement arent just blank rectangles
+> but instead actually show a preview of the notes drawn out inside of it like
+> how other daws do. ensure it actually displays cleanly so the sections
+> actually line up with what youre editing."*
+>
+> *"i dont like that right now when i cut something that loops it seems to
+> change the start and ending of the clip and that is weird. instead we should
+> do more of what garage band does where you split the cut section from the
+> rest of the loops so the rest remains a looped clip and the first part is
+> just a cut clip of what you made... without making any edits the user didnt
+> intend to make themselves essentially."*
+
+**Where the count went:** 2080 → 2103 across the workspace, 0 failing, clippy
+clean at `-D warnings`.
+
+### The notes are in the block
+
+`ClipInfo` carries the clip's own notes now, and `canvas::clip_notes` turns
+them into rectangles. Three decisions, each with a test:
+
+- **The pattern, not the passes.** A two-hundred-bar clip looping one bar
+  would otherwise be two hundred copies of the same list, held per clip and
+  rebuilt on every revision. The canvas tiles them the way it already tiles
+  the seams (`loop_marks`), which is also what makes the notes and the seams
+  one picture rather than two that can disagree — and
+  `a_looped_clip_draws_every_pass_where_its_seams_say_they_are` is that claim.
+- **It lines up.** A note is placed against the block's **whole** rectangle,
+  which is the axis the ruler above it is drawn against — not against the part
+  of the block on screen, which would slide as the arrangement scrolled. Bar 3
+  of the clip is bar 3 of the song.
+- **The compiler's rules, not a second set.** A note at or past the loop's
+  period is content the loop does not contain, and a pass ringing past the
+  clip's end is cut there. Both are what `fontelle_sequencer::compile` does, so
+  the picture is of the song rather than of the document.
+
+The pitch axis is scaled to the notes present with an octave floor, so a clip
+of one note is a note rather than a slab, and a bass part sits low in its block
+while a lead sits high — readable at a glance with no numbers on it. A block
+too short to draw a note in draws none: a row of one-pixel smudges is less
+readable than the plain block the arrangement used to have.
+
+A note clip now has the **caption band** an automation block has, and the name
+is written in it rather than across the middle: the middle is where the content
+is drawn now. `canvas::clip_bands` is that split, one function for both kinds,
+because a caption over the content of one and beside the content of the other
+is two pictures where there should be one.
+
+### A cut through a loop
+
+A cut is no longer two loops. The right-hand half is **the loop, carrying on**;
+the left-hand half is a **plain clip holding the notes that were sounding**,
+its passes written out. Which is what the report asks for, and — more
+importantly — the only version of it that does not change the song: left as a
+one-pass pattern the piece you cut off would go silent after its first bar,
+which is an edit nobody asked for.
+
+`cutting_a_loop_changes_nothing_about_what_plays` is the sharp version of the
+rule, measured over five cut points against every note the project sounds. It
+passed *before* this change too, which is how the tail's existing rotation
+was confirmed sound and kept: what the cut does to the head is the part that
+was wrong.
+
+`flatten_loop` follows the compiler's rules for the same reason the preview
+does. Two answers to "what does this loop play" is a place for them to
+disagree, and the disagreement is a cut that changes the song.
+
+### A revision that never moved
+
+Found by drawing notes in the real window and looking at the block: the roll
+filled up and the arrangement went on showing an empty clip.
+
+The window re-reads its lists only when `Session::revision` moves, and drawing
+a note never moved it. That was harmless while a block carried nothing that
+changed with its notes; the moment the block started showing them it was a
+preview that never updated. **No unit test could have caught it** — every one
+of them asks `Session::clips()` directly, and that has always answered
+correctly.
+
+The cause is worth recording because it is a shape: there were **three** ways
+into the history — `run`, `apply_for`, and `Session::insert` calling
+`History::apply` itself — and the third was the one that forgot. There are two
+now, both bump the revision, and `insert` goes through `apply_for` like every
+other command that hands its ids back.
+
+### Verified in the window, not only in tests
+
+The arrangement was driven with synthetic input over a real frame: notes drawn
+in the roll appear in the block on the next frame, a right-drag on the ruler
+draws the loop band on the ruler and down the grid, and the mode chip is on
+the bar. Two headless render tests hold the parts that only a real frame can
+answer — that a note's ink can be told from the block it is on, and that the
+mode chip looks different in the two modes.
+
+One thing that could **not** be settled that way: the last pointer move before
+a button release is not always delivered by the synthetic-input harness, so a
+right-drag sometimes commits a selection one grid step short of where it was
+released. The gesture itself is `canvas::time_selection`, which is tested
+directly; whether this is the harness or the window is open (see
+`docs/handoff.md`).
+
+## 2026-09-02: automation clips are edited where they sit
+
+Four reports, and they are one feature between them:
+
+> *"right now when i right click a knob and click create automation clip it
+> opens the automation clip as a new separate window. i currently cant even do
+> anything in this window no matter what i click... i want the automation graph
+> to be a literal graph drawn inside the clip for that automation working like
+> how fl studio automation clips work in the arrangement."*
+>
+> *"even the tempo section for example which i currently cannot turn into an
+> automation clip."*
+>
+> *"we should have time looping selections like how fl studio works where you
+> right click and drag on the time bar to loop a time section you are editing
+> either in the piano roll or arrangement."*
+>
+> *"there should also be a way to swap between clip and song mode currently its
+> always on song so you cant ONLY focus one instrument."*
+
+Test-first throughout, and the tests earned their keep — three of the things
+below are bugs no amount of reading would have found.
+
+**Where the count went:** 2017 → 2080 across the workspace, 0 failing.
+`cargo clippy --workspace --all-targets -- -D warnings` is clean, which it was
+not at the start of the session: the four hits the last handoff recorded as
+pre-existing, plus four more in test files, were fixed before the first commit.
+
+### The window is gone; the block is the editor
+
+`EditorKind::Automation` no longer exists. An automation clip is edited inside
+its own block on the arrangement, which is what the report asked for and what
+makes the feature reachable at all — the window it used to open was drawn
+against a layout nothing kept up to date, so clicking in it did nothing
+visible.
+
+A block now has an **anatomy** (`canvas::automation_block`): a caption band
+across the top, which is the clip as every other clip is — grab it to move,
+select, resize or erase — and under it the **curve area**, where a click on
+bare curve makes a point, a drag carries one, and a right-click on one opens a
+menu of the six shapes plus Delete. `ClipPart` gained `Point(PointId)` and
+`Curve { tick, value }`; `ArrangeEdit` gained `AddPoint`, `MovePoints`,
+`RemovePoints` and `SetPointCurve`, so a point edit is an arrangement edit and
+goes through the same history as everything else.
+
+**Two bugs the tests caught, both invisible by inspection.**
+
+- **The last point of every automation clip could not be grabbed.** A clip is
+  created flat with a point at each end, the far one sits on the block's
+  right-hand edge, and `timeline_hit` checks the resize grip *first* — so
+  every press aimed at that point was a press on the grip, and dragging it
+  resized the clip instead. The curve area now stops half a handle short of
+  where the grip begins (`canvas::clip_grip`, one answer to "where does the
+  grip start", read by both). Sizing still works; the point can be taken hold
+  of.
+- **The caption band ate the curve on a short block.** A fixed four-pixel
+  inset out of a fourteen-pixel lane left less curve than caption, which is
+  the wrong way round on a block whose whole content is its shape. The
+  vertical inset scales with the block now.
+
+**The curve in the block is evaluated by the same function the audio thread's
+values come from.** `fontelle_model::curve_value` takes points already in time
+order; `AutomationData::value_at` is that function over a sorted copy of the
+arena, and the canvas calls it directly on the flattened `Vec<CurvePoint>` the
+host hands over. Two evaluators would be a place for them to disagree, and the
+disagreement people hit is a shape you chose that draws as a straight line.
+`ClipInfo::curve` is points with **ids** now rather than `(tick, value)` pairs,
+because the block is edited through them.
+
+Two headless render tests hold what only a real frame can answer: that the
+curve's ink is on screen against a ground you can see it against (a curve
+whose colour matched its own background is a bug this project has actually
+shipped), and that a rising curve is drawn rising.
+
+### The tempo is a parameter like any other
+
+§12.3 has always said so — *"every mixer track volume/pan/send level, and
+**tempo**"* — and the tempo box was the one control with no right-click menu.
+It has one now, and the whole of what made it hard is that a tempo lane is not
+a `ParamValue` on the wire: **the tempo map is generated by evaluating the
+tempo automation**, which §12.3 also says, and which nothing implemented.
+
+`fontelle_model::effective_tempo_map` is where the two become one: the
+document's own map, with any clip aimed at `transport/tempo` sampled every
+sixteenth note into constant segments, a run of equal steps kept as one so a
+flat lane costs one segment. The compiler converts every tick through it, so a
+ritardando moves the notes after it; `CompiledTimeline::tempo` carries the
+ramp to the audio thread; and the window's clock reads the same map, which is
+what keeps the playhead in the bar the notes are in.
+
+`fontelle_types` publishes the one mapping between a normalised lane value and
+a BPM (`TEMPO_MIN_BPM`..`TEMPO_MAX_BPM`, 20 to 300). It is narrower than the
+box's own range on purpose: a lane to a thousand puts every ordinary song in
+the bottom tenth of the block, where a curve is a flat line nobody can edit.
+
+### A clip that spans something worth drawing in
+
+*"it creates a new automation clip in my arrangement just flat on the value
+that its currently at basically with the clip extending the current length of
+the song or time selection."* All three halves of that sentence changed:
+
+- **Flat, at the value the control is at now** — that part was already true
+  and is kept.
+- **Over the time selection, or the whole song.** It used to be one bar at the
+  playhead, which is a clip you have to stretch before you can draw anything.
+- **A second gesture on the same control hands back the clip it already has**,
+  rather than a second clip on the same lane. That was defensible while a clip
+  was one bar; now that a clip spans the song, a second would sit on top of
+  the first, and §12.2's rule for two clips over one target is "the later one
+  wins" — which here means a curve silently replacing the one you drew.
+
+Nothing opens. The lane is on the arrangement, selected, and that is where it
+is drawn in.
+
+### A time selection, on either ruler
+
+`Project::loop_range` has been document state since 2026-08-29 and there was
+no way to set it from the window. Right-drag either ruler — the arrangement's
+or the roll's — and the stretch you drew is the loop: `canvas::time_selection`
+is the arithmetic, one function for both because the gesture is the same, and
+a drag whose ends land on the same grid line is a click, which **clears** the
+selection. That is what makes one button both make and unmake a loop.
+
+The roll's ruler works in the clip's ticks and the document stores the song's,
+so `DocumentHost` gained the two conversions. One loop, drawn on both rulers
+and as a band down both grids.
+
+The range reaches the transport in **both** units together (§6.3's reason: the
+RT thread cannot run a `TempoMap` lookup against a map this thread may be
+editing), which is why `Session` now holds the `Transport`. A tempo change
+moves the loop's samples and leaves its bars alone, and there is a test that
+says so.
+
+### Song and clip
+
+A chip on the transport bar, and `Ctrl+L`. In clip mode the timeline carries
+**one clip** — `fontelle_sequencer::CompileScope::Clip` — and the transport
+loops that clip's own bars; leaving it puts the time selection back.
+
+Two decisions worth recording. A clip scope leaves **other lanes' automation
+out**, tempo included: a lane on another row is not part of the part being
+soloed. And the window's cached tempo map follows the same scope, which is a
+bug the test for it caught — the playhead was being drawn through the
+automated map while the notes had been compiled without it, so in clip mode
+with a tempo lane the playhead was in the wrong bar.
+
+### The transport bar learned to give something up
+
+Adding the mode chip took the ruler to **nothing** at 640 logical pixels — a
+width the window opens at — and the playhead then drew at the same pixel
+wherever the song was. The bar's four read-outs are now dropped from the right
+when there is not room for them and an 80-pixel ruler: the mode chip goes
+first, the position read-out last, because "where am I in the song" is the
+other half of what the bar is for. The same rule the roll's toolbar has always
+followed. `Ctrl+L` exists so the mode is reachable at a width the chip is not.
+
+### Still open
+
+- **A tempo lane costs a map rebuild per republish**, and the rebuild calls
+  `automation_at` once per sixteenth note, each of which sorts a copy of the
+  clip's points. A song with no tempo lane pays nothing (the function returns
+  the document's own map), so this only bites once somebody automates the
+  tempo. Worth a sorted cache on `AutomationData` if it ever shows.
+- **`effective_tempo_map` is built twice per republish** — once for the
+  session's cache and once inside `compile_scoped`. Same note applies.
+- **Only constant segments.** A tempo ramp is a staircase at a sixteenth note,
+  not a true interpolation; `TempoMap` still has the scope cut §6.2 records.
+- **Points cannot be marquee-selected** inside a block, and a drag moves the
+  ones that are selected. Several at once works; selecting several does not
+  yet.
+
+## 2026-09-02: four effects, a preset picker, and the external sidechain
 
 The four P0s at the top of `docs/effects-catalogue.md` §4's build order, each
 written to the standard §3 set, plus **both** of the items that gate more than

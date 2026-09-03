@@ -49,6 +49,7 @@ fn clips(items: &[(Tick, Tick, usize)]) -> Vec<ClipInfo> {
             loop_length: None,
             kind: ClipKind::Notes,
             curve: Vec::new(),
+            notes: Vec::new(),
         })
         .collect()
 }

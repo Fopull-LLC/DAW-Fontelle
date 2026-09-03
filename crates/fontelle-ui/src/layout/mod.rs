@@ -508,9 +508,11 @@ pub enum EditorKind {
     Instrument,
     /// One insert's parameters: the EQ's curve, the compressor's knobs
     /// (TDD §13.4).
+    ///
+    /// **Not an automation clip.** Those used to open in a window of their
+    /// own and now are edited where they sit, inside their block on the
+    /// arrangement — see `canvas::automation_block`.
     Effect,
-    /// An automation clip's points (TDD §12).
-    Automation,
 }
 
 impl EditorKind {
@@ -519,7 +521,6 @@ impl EditorKind {
         match self {
             Self::Instrument => "Instrument",
             Self::Effect => "Effect",
-            Self::Automation => "Automation",
         }
     }
 
@@ -538,7 +539,6 @@ impl EditorKind {
             Self::Instrument => (620, 760),
             // A curve needs width far more than it needs height.
             Self::Effect => (720, 420),
-            Self::Automation => (720, 360),
         }
     }
 

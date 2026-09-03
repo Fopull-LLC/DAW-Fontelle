@@ -153,6 +153,9 @@ pub struct TransportBarLayout {
     /// The time signature — its numerator, over a quarter note. See
     /// [`format_signature`].
     pub signature: Rect,
+    /// Song or clip: what pressing play plays. See
+    /// [`PlayMode`](crate::document::PlayMode).
+    pub mode: Rect,
     /// The song, end to end. Clicking it seeks.
     pub ruler: Rect,
     pub meter: Rect,
@@ -164,48 +167,101 @@ const READOUT_WIDTH: f32 = 160.0;
 const TEMPO_WIDTH: f32 = 72.0;
 /// And for `16/4`.
 const SIGNATURE_WIDTH: f32 = 48.0;
+/// And for `Song` or `Clip`, framed like the two boxes beside it.
+const MODE_WIDTH: f32 = 52.0;
 const METER_WIDTH: f32 = 96.0;
+
+/// The narrowest the ruler may be squeezed to before a box is left out
+/// instead.
+///
+/// The ruler is the playhead and the scrub, and it is the one thing on this
+/// bar there is no other way to reach. Adding the mode chip ahead of it took
+/// it to *nothing* at 640 logical pixels — a width the window opens at — and
+/// the playhead then drew at the same pixel wherever the song was, which is a
+/// transport bar that has stopped telling you anything. So a box that will
+/// not fit is left out rather than squeezed, the same rule the roll's toolbar
+/// follows, and the ruler keeps a width you can aim at.
+const MIN_RULER_WIDTH: f32 = 80.0;
 
 pub fn transport_bar_layout(bar: Rect, metrics: &Metrics) -> TransportBarLayout {
     let pad = metrics.panel_padding;
-    let inner = bar.inset(pad * 0.5);
+    let gap = pad * 0.5;
+    let inner = bar.inset(gap);
     // Square buttons the height of the bar's inside, so they stay round-ish
     // whatever the theme says the bar's height is.
     let button = inner.height.max(0.0);
 
-    let mut x = inner.x;
-    let mut take = |width: f32| {
-        let width = width.min((inner.right() - x).max(0.0));
-        let r = Rect::new(x, inner.y, width, inner.height).clamped();
-        x += width + pad * 0.5;
-        r
-    };
-
-    let play = take(button);
-    let stop = take(button);
-    let loop_toggle = take(button);
-    // Arm sits with the transport it belongs to, and the click next to it:
-    // the two things you set before you press play, in the order you set them.
-    let record = take(button);
-    let metronome = take(button);
-    let readout = take(READOUT_WIDTH);
-    // Beside the position, because "where am I in the song" and "how fast is
-    // it going" are read together. A tempo box at the far end of the bar is
-    // one you have to go and find.
-    let tempo = take(TEMPO_WIDTH);
-    let signature = take(SIGNATURE_WIDTH);
-
-    // The ruler gets what is left after the meter is reserved on the right —
-    // the meter's width is fixed because a meter that changes size changes
-    // what a given bar height *means*.
+    // The meter's width is fixed and it is reserved first, because a meter
+    // that changes size changes what a given bar height *means*.
     let meter = Rect::new(
-        (inner.right() - METER_WIDTH).max(x),
+        (inner.right() - METER_WIDTH).max(inner.x),
         inner.y,
-        METER_WIDTH.min((inner.right() - x).max(0.0)),
+        METER_WIDTH.min(inner.width.max(0.0)),
         inner.height,
     )
     .clamped();
-    let ruler = Rect::new(x, inner.y, (meter.x - pad * 0.5 - x).max(0.0), inner.height).clamped();
+
+    let mut x = inner.x;
+    let take = |x: &mut f32, width: f32| {
+        let width = width.min((inner.right() - *x).max(0.0));
+        let r = Rect::new(*x, inner.y, width, inner.height).clamped();
+        *x += width + gap;
+        r
+    };
+
+    let play = take(&mut x, button);
+    let stop = take(&mut x, button);
+    // Arm sits with the transport it belongs to, and the click next to it:
+    // the two things you set before you press play, in the order you set them.
+    let loop_toggle = take(&mut x, button);
+    let record = take(&mut x, button);
+    let metronome = take(&mut x, button);
+
+    // The four read-outs. How many of them there is room for, given that the
+    // ruler comes first: they are given up from the **right**, so the newest
+    // and least essential — the mode chip — goes before the signature, the
+    // signature before the tempo, and the position read-out is the last to
+    // go, because "where am I in the song" is the other half of what this bar
+    // is for. A box that is left out is an empty rectangle, which nothing
+    // draws and nothing can be clicked on (`Rect::contains` is false for one).
+    const BOXES: [f32; 4] = [READOUT_WIDTH, TEMPO_WIDTH, SIGNATURE_WIDTH, MODE_WIDTH];
+    let room = (meter.x - gap - x).max(0.0);
+    let mut shown = BOXES.len();
+    while shown > 0 {
+        let wanted: f32 = BOXES[..shown].iter().map(|w| w + gap).sum();
+        if room - wanted >= MIN_RULER_WIDTH {
+            break;
+        }
+        shown -= 1;
+    }
+
+    let readout = if shown > 0 {
+        take(&mut x, READOUT_WIDTH)
+    } else {
+        Rect::ZERO
+    };
+    // Beside the position, because "where am I" and "how fast is it going"
+    // are read together. A tempo box at the far end of the bar is one you
+    // have to go and find.
+    let tempo = if shown > 1 {
+        take(&mut x, TEMPO_WIDTH)
+    } else {
+        Rect::ZERO
+    };
+    let signature = if shown > 2 {
+        take(&mut x, SIGNATURE_WIDTH)
+    } else {
+        Rect::ZERO
+    };
+    // The third box that says what a press of play will do: how fast, in what
+    // metre, and of what.
+    let mode = if shown > 3 {
+        take(&mut x, MODE_WIDTH)
+    } else {
+        Rect::ZERO
+    };
+
+    let ruler = Rect::new(x, inner.y, (meter.x - gap - x).max(0.0), inner.height).clamped();
 
     TransportBarLayout {
         bar,
@@ -217,6 +273,7 @@ pub fn transport_bar_layout(bar: Rect, metrics: &Metrics) -> TransportBarLayout 
         readout,
         tempo,
         signature,
+        mode,
         ruler,
         meter,
     }
@@ -238,6 +295,9 @@ pub enum TransportHit {
     Tempo,
     /// The time-signature box, likewise.
     Signature,
+    /// The song/clip chip. The studio's business, like the two boxes before
+    /// it: what the timeline carries is the document host's to decide.
+    Mode,
 }
 
 impl TransportHit {
@@ -255,6 +315,9 @@ impl TransportHit {
             Self::ToggleMetronome => "The click, on every beat",
             Self::Tempo => "Tempo \u{2014} drag, or click and type",
             Self::Signature => "Beats in a bar \u{2014} drag to change",
+            Self::Mode => {
+                "Song plays the arrangement; Clip plays only the clip you are editing \u{2014} Ctrl+L"
+            }
             Self::Scrub(_) => return None,
         })
     }
@@ -293,6 +356,9 @@ pub fn hit(
     }
     if layout.signature.contains(x, y) {
         return Some(TransportHit::Signature);
+    }
+    if layout.mode.contains(x, y) {
+        return Some(TransportHit::Mode);
     }
     if layout.ruler.contains(x, y) {
         return Some(TransportHit::Scrub(sample_at(
@@ -353,7 +419,7 @@ pub fn action(hit: TransportHit, view: &TransportView) -> Option<TransportAction
         TransportHit::ToggleRecord => TransportAction::SetArmed(!view.armed),
         TransportHit::ToggleMetronome => TransportAction::SetMetronome(!view.metronome),
         TransportHit::Scrub(sample) => TransportAction::Mark(sample),
-        TransportHit::Tempo | TransportHit::Signature => return None,
+        TransportHit::Tempo | TransportHit::Signature | TransportHit::Mode => return None,
     })
 }
 

@@ -13,6 +13,10 @@
 //! the two views that are genuinely the document — the notes and the mixer —
 //! stay as tabs, and everything that edits one **device** is a window.
 //!
+//! An automation clip is neither: it is edited inside its own block on the
+//! arrangement (`tests/automation_blocks.rs`), so there is no window kind for
+//! it and the lists below have two entries, not three.
+//!
 //! What is testable without a compositor is the geometry and the vocabulary:
 //! that the tab strip has two tabs and cannot name a third, and that a
 //! floating window's insides are laid out inside it. The windowing itself —
@@ -58,11 +62,7 @@ fn the_editor_column_offers_the_roll_and_the_mixer_and_nothing_else() {
 fn every_kind_of_editor_window_has_a_name_and_a_size_to_open_at() {
     // A window with no title is one you cannot find in a task switcher, and
     // one with no size opens at whatever the compositor feels like.
-    for kind in [
-        EditorKind::Instrument,
-        EditorKind::Effect,
-        EditorKind::Automation,
-    ] {
+    for kind in [EditorKind::Instrument, EditorKind::Effect] {
         assert!(!kind.title().is_empty(), "{kind:?} has no name");
         let (w, h) = kind.default_size();
         let (min_w, min_h) = kind.minimum_size();
@@ -119,11 +119,7 @@ fn each_kind_opens_big_enough_to_use_the_panel_it_carries() {
     // resize before you can see the thing beside it — which is the whole
     // reason these are windows rather than tabs.
     let m = metrics();
-    for kind in [
-        EditorKind::Instrument,
-        EditorKind::Effect,
-        EditorKind::Automation,
-    ] {
+    for kind in [EditorKind::Instrument, EditorKind::Effect] {
         let (w, h) = kind.default_size();
         let panel = editor_window_layout(w as f32, h as f32, &m);
         assert!(

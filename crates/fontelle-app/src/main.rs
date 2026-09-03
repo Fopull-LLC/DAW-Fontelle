@@ -544,6 +544,11 @@ fn play_or_render(
             // restart the audio device.
             .with_graphs(graph_publisher, realised.track_controls.clone())
             .with_param_nodes(realised.param_nodes.clone())
+            // The same transport the bar drives, so a time selection dragged
+            // out on a ruler — and clip mode — reach the thing that loops
+            // (TDD §6.3). The document holds the range in ticks; only this
+            // side can turn it into the samples the RT thread needs.
+            .with_transport(transport.clone())
             // The same switch `EngineHost` above was given, so the button on
             // the transport bar and the node in the schedule stay one thing
             // across every rebuild — see `Session::with_metronome`.

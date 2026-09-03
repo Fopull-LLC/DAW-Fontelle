@@ -409,3 +409,67 @@ fn play_while_playing_is_a_pause_back_to_the_mark() {
     apply(&mut engine, what, marker);
     assert_eq!(engine.commands, ["seek 1234", "play", "stop", "seek 1234"]);
 }
+
+// -------------------------------------------------------- song and clip ---
+//
+// *"there should also be a way to swap between clip and song mode currently
+// its always on song so you cant ONLY focus one instrument."* The chip lives
+// on the transport bar beside the signature, because it changes what pressing
+// play does.
+
+#[test]
+fn the_bar_has_a_mode_chip_and_it_is_a_control() {
+    let l = transport_bar_layout(bar(), &Theme::dark_default().metrics);
+    assert!(!l.mode.is_empty(), "nowhere to switch between song and clip");
+    assert_eq!(l.mode.intersection(&l.bar), l.mode, "inside the bar");
+    for other in [l.play, l.stop, l.loop_toggle, l.record, l.metronome, l.readout, l.tempo, l.signature, l.ruler, l.meter] {
+        assert!(!l.mode.intersects(&other), "the mode chip overlaps {other:?}");
+    }
+    let v = view();
+    let hit_at = hit(&l, &v, l.mode.x + l.mode.width / 2.0, l.mode.y + l.mode.height / 2.0);
+    assert_eq!(hit_at, Some(TransportHit::Mode));
+    assert!(TransportHit::Mode.tip().is_some(), "a chip with no explanation");
+}
+
+#[test]
+fn the_mode_chip_is_the_documents_business_not_the_engines() {
+    // Like the tempo: `action` has nothing to say, and the window asks the
+    // studio instead.
+    assert_eq!(action(TransportHit::Mode, &view()), None);
+}
+
+#[test]
+fn play_mode_steps_between_its_two_values_and_says_which_it_is() {
+    use fontelle_ui::document::PlayMode;
+    assert_eq!(PlayMode::default(), PlayMode::Song);
+    assert_eq!(PlayMode::Song.next(), PlayMode::Clip);
+    assert_eq!(PlayMode::Clip.next(), PlayMode::Song);
+    assert_ne!(PlayMode::Song.label(), PlayMode::Clip.label());
+    assert!(PlayMode::Song.label().len() <= 5, "a chip's word, not a sentence");
+}
+
+#[test]
+fn a_narrow_bar_drops_the_mode_chip_rather_than_squeezing_the_ruler_away() {
+    // The ruler is the playhead and the scrub, and it is the one thing on
+    // this bar there is no other way to reach. Adding a box ahead of it took
+    // it to nothing at 640 pixels — a width the window opens at — and the
+    // playhead then drew at the same pixel wherever the song was. So a box
+    // that will not fit is left out, the same rule the roll's toolbar
+    // follows.
+    let m = Theme::dark_default().metrics;
+    for width in [520.0, 560.0, 640.0, 800.0, 1264.0] {
+        let l = transport_bar_layout(Rect::new(8.0, 8.0, width, 36.0), &m);
+        assert!(
+            l.ruler.width >= 80.0,
+            "at {width} the ruler is {} wide",
+            l.ruler.width
+        );
+        assert!(
+            !l.ruler.intersects(&l.mode),
+            "at {width} the mode chip is over the ruler"
+        );
+    }
+    // And where there is room it is there.
+    let wide = transport_bar_layout(Rect::new(0.0, 0.0, 1264.0, 36.0), &m);
+    assert!(!wide.mode.is_empty(), "a wide bar has room for the chip");
+}

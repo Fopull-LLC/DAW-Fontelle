@@ -28,6 +28,9 @@ pub use id::{
     PersistentId, PointId, PrefabId,
 };
 pub use pan::{PanLaw, pan_unit};
-pub use param::{ParamAddress, ParamSection, ParamSpec, ParamTarget, Taper, Unit};
+pub use param::{
+    ParamAddress, ParamSection, ParamSpec, ParamTarget, TEMPO_MAX_BPM, TEMPO_MIN_BPM, Taper, Unit,
+    normalised_tempo, tempo_from_normalised,
+};
 pub use patch_data::{PatchData, SampleRef};
 pub use time::{PPQN, Sample, Tick};

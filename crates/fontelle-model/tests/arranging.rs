@@ -322,12 +322,24 @@ fn a_cut_at_an_edge_or_outside_does_nothing() {
     assert_eq!(project.clips.len(), 1);
 }
 
-/// **The looped case.** One clip whose content repeats is not the same thing as
-/// several copies, so cutting one has to leave two clips that still loop — and
-/// the right-hand one has to start part-way through the pattern if that is
-/// where the cut landed.
+/// **The looped case.** Reported from using the window:
+///
+/// > *"i dont like that right now when i cut something that loops it seems to
+/// > change the start and ending of the clip and that is weird. instead we
+/// > should do more of what garage band does where you split the cut section
+/// > from the rest of the loops so the rest remains a looped clip and the
+/// > first part is just a cut clip of what you made."*
+///
+/// So a cut through a loop is **not** two loops. The right-hand half is the
+/// loop, carrying on; the left-hand half is a plain clip holding the notes
+/// that were actually sounding over that stretch — the repeats written out.
+///
+/// The thing this is really protecting is the sentence after it: *"without
+/// making any edits the user didnt intend to make themselves"*. A cut must not
+/// change a note of what the song plays, and
+/// [`cutting_a_loop_changes_nothing_about_what_plays`] is that claim measured.
 #[test]
-fn cutting_a_looped_clip_leaves_both_halves_looping() {
+fn cutting_a_loop_leaves_a_plain_clip_and_a_loop_that_carries_on() {
     let (mut project, channel, lane) = a_project();
     // A one-bar pattern, four bars long: four passes.
     let clip = a_clip(
@@ -345,13 +357,100 @@ fn cutting_a_looped_clip_leaves_both_halves_looping() {
 
     let left = project.clips.get(clip).unwrap();
     let right = project.clips.get(tail).unwrap();
-    assert_eq!(left.loop_length, Some(PPQN * 4), "still a loop");
-    assert_eq!(right.loop_length, Some(PPQN * 4), "so is the other half");
+    assert_eq!(
+        left.loop_length, None,
+        "the piece you cut off is a clip of what you made, not a loop"
+    );
+    assert_eq!(right.loop_length, Some(PPQN * 4), "and the rest is still a loop");
     assert_eq!((left.start, left.length), (0, PPQN * 8));
     assert_eq!((right.start, right.length), (PPQN * 8, PPQN * 8));
-    // The cut fell on a whole number of passes, so the right half's pattern is
-    // the one the left half has.
-    assert_eq!(notes_of(&project, tail), notes_of(&project, clip));
+
+    // The left half holds **two passes written out**, because two passes is
+    // what sounded in those two bars. Left as a one-pass pattern it would go
+    // silent for the second bar, which is an edit nobody asked for.
+    assert_eq!(
+        notes_of(&project, clip),
+        vec![
+            (0, PPQN, 60),
+            (PPQN * 2, PPQN, 64),
+            (PPQN * 4, PPQN, 60),
+            (PPQN * 6, PPQN, 64),
+        ]
+    );
+    // The cut fell on a whole number of passes, so the loop that carries on
+    // holds the pattern it always had.
+    assert_eq!(
+        notes_of(&project, tail),
+        vec![(0, PPQN, 60), (PPQN * 2, PPQN, 64)]
+    );
+}
+
+/// A cut through a loop plays back note for note as it did before the cut.
+///
+/// The sharp version of the rule, and the one worth having: whatever the two
+/// halves are made of, the song is the song.
+#[test]
+fn cutting_a_loop_changes_nothing_about_what_plays() {
+    for cut in [PPQN, PPQN * 2, PPQN * 5, PPQN * 8, PPQN * 11] {
+        let (mut project, channel, lane) = a_project();
+        let clip = a_clip(
+            &mut project,
+            lane,
+            channel,
+            PPQN * 4,
+            PPQN * 16,
+            Some(PPQN * 4),
+            vec![a_note(0, PPQN, 60), a_note(PPQN * 2, PPQN, 64)],
+        );
+        let before = sounding(&project);
+
+        let mut command = SplitClip::new(clip, PPQN * 4 + cut);
+        command.apply(&mut project).unwrap();
+        assert_eq!(
+            sounding(&project),
+            before,
+            "a cut at {cut} into the clip changed what the song plays"
+        );
+    }
+}
+
+/// Every note the project sounds, in song ticks, repeats written out.
+///
+/// The one measurement a "the cut changed nothing" claim can be made against —
+/// it does not care which clip a note came out of, which is the whole point.
+fn sounding(project: &Project) -> Vec<(Tick, Tick, u8)> {
+    let mut out = Vec::new();
+    for (_, clip) in project.clips.iter() {
+        let ClipSource::Notes(data) = &clip.source else {
+            continue;
+        };
+        let period = clip.loop_length.filter(|p| *p > 0);
+        for repeat in 0..clip.repeats() {
+            let offset = clip.repeat_start(repeat);
+            for note in data.notes.values() {
+                // The compiler's own rules, and they have to be the same rules
+                // or this measures something the song does not do — see
+                // `fontelle_sequencer::compile`.
+                if period.is_some_and(|p| note.start >= p) {
+                    continue;
+                }
+                let start = note.start + offset;
+                if period.is_some() && start >= clip.length {
+                    continue;
+                }
+                let on = clip.start + start;
+                let mut off = on + note.length;
+                if period.is_some() {
+                    off = off.min(clip.start + clip.length);
+                }
+                if off > on {
+                    out.push((on, off - on, note.key));
+                }
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 /// And when it lands **mid-pattern**, the right-hand half's content is rotated

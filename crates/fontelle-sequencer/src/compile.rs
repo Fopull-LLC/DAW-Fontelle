@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use fontelle_model::{ClipSource, Project};
-use fontelle_types::{ChannelId, CompiledTimeline, EventPayload, NodeId, TimedEvent};
+use fontelle_model::{ClipSource, Project, TempoMap};
+use fontelle_types::{ChannelId, ClipId, CompiledTimeline, EventPayload, NodeId, TimedEvent};
 
 use crate::collision::voice_context_for_clip;
 
@@ -30,7 +30,54 @@ pub fn compile(
     channel_nodes: &HashMap<ChannelId, NodeId>,
     param_nodes: &HashMap<fontelle_types::ParamAddress, NodeId>,
 ) -> CompiledTimeline {
+    compile_scoped(project, channel_nodes, param_nodes, CompileScope::Song)
+}
+
+/// How much of the document a compile reads.
+///
+/// **Clip mode** is FL Studio's pattern mode: the transport plays only the
+/// clip you are editing, round and round, so a part can be heard on its own
+/// while it is written. Fontelle's clips are its patterns, so the equivalent
+/// is a compile that reads one clip — notes or automation — and leaves every
+/// other clip out, other lanes' automation included: a tempo lane elsewhere
+/// in the song is not part of the part being soloed. The loop the transport
+/// runs over the clip's bars is the session's business; this decides what is
+/// on the timeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompileScope {
+    /// Everything: the compile there has always been.
+    Song,
+    /// One clip, where it sits in the song. Not moved to the front: the loop
+    /// the session sets is over the clip's own bars, and the roll draws its
+    /// playhead against the clip's own start.
+    Clip(ClipId),
+}
+
+impl CompileScope {
+    fn includes(self, id: ClipId) -> bool {
+        match self {
+            Self::Song => true,
+            Self::Clip(only) => only == id,
+        }
+    }
+}
+
+/// [`compile`], over `scope` — see [`CompileScope`].
+pub fn compile_scoped(
+    project: &Project,
+    channel_nodes: &HashMap<ChannelId, NodeId>,
+    param_nodes: &HashMap<fontelle_types::ParamAddress, NodeId>,
+    scope: CompileScope,
+) -> CompiledTimeline {
     let mut events = Vec::new();
+
+    // Every tick becomes a sample through the *automated* tempo map (TDD
+    // §12.3), built once for the pass. In clip scope the tempo lane is out
+    // of scope like every other clip, so the box's own map is the one used.
+    let tempo = match scope {
+        CompileScope::Song => fontelle_model::effective_tempo_map(project),
+        CompileScope::Clip(_) => project.tempo_map.clone(),
+    };
 
     // The channel rack's two switches, resolved once for the whole pass. They
     // are *sequencer* mutes — the same reading a lane's has — and they have to
@@ -56,8 +103,8 @@ pub fn compile(
         })
     };
 
-    for (clip_index, (_clip_id, clip)) in project.clips.iter().enumerate() {
-        if clip.muted {
+    for (clip_index, (clip_id, clip)) in project.clips.iter().enumerate() {
+        if clip.muted || !scope.includes(clip_id) {
             continue;
         }
         if project.lanes.get(clip.lane).is_some_and(|lane| lane.muted) {
@@ -118,8 +165,8 @@ pub fn compile(
                 // `fontelle_core::Sampler::slide` for what happens when
                 // nothing is sounding (nothing).
                 if note.slide {
-                    let on = project.tempo_map.tick_to_sample(on_tick);
-                    let off = project.tempo_map.tick_to_sample(off_tick);
+                    let on = tempo.tick_to_sample(on_tick);
+                    let off = tempo.tick_to_sample(off_tick);
                     events.push(TimedEvent {
                         sample: on,
                         target: node_id,
@@ -133,7 +180,7 @@ pub fn compile(
                 }
 
                 events.push(TimedEvent {
-                    sample: project.tempo_map.tick_to_sample(on_tick),
+                    sample: tempo.tick_to_sample(on_tick),
                     target: node_id,
                     payload: EventPayload::NoteOn {
                         key: note.key,
@@ -152,7 +199,7 @@ pub fn compile(
                     },
                 });
                 events.push(TimedEvent {
-                    sample: project.tempo_map.tick_to_sample(off_tick),
+                    sample: tempo.tick_to_sample(off_tick),
                     target: node_id,
                     payload: EventPayload::NoteOff {
                         key: note.key,
@@ -163,7 +210,7 @@ pub fn compile(
         }
     }
 
-    compile_automation(project, param_nodes, &mut events);
+    compile_automation(project, param_nodes, &tempo, scope, &mut events);
 
     // Sorted once, at the end, over notes and automation together: the RT side
     // walks this list forwards and never sorts, so a sweep interleaved out of
@@ -183,16 +230,10 @@ pub fn compile(
         // to know how long a beat is has nowhere else to ask. Converting it
         // here rather than shipping ticks is the point: this pass already owns
         // every tick-to-sample conversion in the project.
-        tempo: project
-            .tempo_map
+        tempo: tempo
             .segments()
             .iter()
-            .map(|segment| {
-                (
-                    project.tempo_map.tick_to_sample(segment.start_tick),
-                    segment.bpm as f32,
-                )
-            })
+            .map(|segment| (tempo.tick_to_sample(segment.start_tick), segment.bpm as f32))
             .collect(),
     }
 }
@@ -271,9 +312,18 @@ const AUTOMATION_EPSILON: f64 = 1e-4;
 /// A target no node owns emits nothing: a project whose automation names a
 /// track that has since been deleted plays, rather than panicking or filling
 /// the timeline with events nobody reads.
+///
+/// **The tempo is not here.** It has no node to send a value to: a tempo lane
+/// is realised as the map every other tick in the pass is converted through
+/// (`fontelle_model::effective_tempo_map`), and a `ParamValue` for it would
+/// be a value nothing reads. `param_nodes` never carries it, so the `continue`
+/// below is what leaves it out — by construction rather than by a special
+/// case.
 fn compile_automation(
     project: &Project,
     param_nodes: &HashMap<fontelle_types::ParamAddress, NodeId>,
+    tempo: &TempoMap,
+    scope: CompileScope,
     events: &mut Vec<TimedEvent>,
 ) {
     for target in fontelle_model::automated_targets(project) {
@@ -283,18 +333,18 @@ fn compile_automation(
         // The span this target is automated over: from the first clip aimed at
         // it to the last one's end. Outside it there is nothing to say — before,
         // the parameter is the knob's; after, it holds what it was last told.
-        let Some((from, to)) = automated_span(project, &target) else {
+        let Some((from, to)) = automated_span(project, &target, scope) else {
             continue;
         };
 
         let mut last: Option<f64> = None;
         let mut tick = from;
         while tick <= to {
-            if let Some(value) = fontelle_model::automation_at(project, &target, tick)
+            if let Some(value) = value_in_scope(project, &target, tick, scope)
                 && last.is_none_or(|previous| (value - previous).abs() > AUTOMATION_EPSILON)
             {
                 events.push(TimedEvent {
-                    sample: project.tempo_map.tick_to_sample(tick),
+                    sample: tempo.tick_to_sample(tick),
                     target: node,
                     payload: EventPayload::ParamValue {
                         target: target.clone(),
@@ -306,8 +356,8 @@ fn compile_automation(
             // Stepped in *samples* rather than ticks, so the rate is the same
             // through a tempo change — a sweep must not get coarser because
             // the song slowed down.
-            let next = project.tempo_map.tick_to_sample(tick) + AUTOMATION_INTERVAL;
-            let stepped = project.tempo_map.sample_to_tick(next).max(tick + 1);
+            let next = tempo.tick_to_sample(tick) + AUTOMATION_INTERVAL;
+            let stepped = tempo.sample_to_tick(next).max(tick + 1);
             if stepped > to && tick < to {
                 tick = to; // one last event exactly at the end
             } else {
@@ -317,15 +367,46 @@ fn compile_automation(
     }
 }
 
-/// The first tick any clip aims at `target`, and the last tick any of them
-/// ends at.
+/// What `target` is automated to at `tick`, reading only the clips in scope.
+///
+/// In song scope this is `fontelle_model::automation_at`, rules and all. In
+/// clip scope only the one clip can speak, and it holds its last value past
+/// its end the way any lane does (§12.2's second rule).
+fn value_in_scope(
+    project: &Project,
+    target: &fontelle_types::ParamAddress,
+    tick: fontelle_types::Tick,
+    scope: CompileScope,
+) -> Option<f64> {
+    match scope {
+        CompileScope::Song => fontelle_model::automation_at(project, target, tick),
+        CompileScope::Clip(id) => {
+            let clip = project.clips.get(id)?;
+            let ClipSource::Automation(data) = &clip.source else {
+                return None;
+            };
+            if clip.muted || data.target != *target || clip.start > tick {
+                return None;
+            }
+            if tick < clip.start + clip.length {
+                data.value_at(tick - clip.start)
+            } else {
+                data.final_value()
+            }
+        }
+    }
+}
+
+/// The first tick any clip in scope aims at `target`, and the last tick any
+/// of them ends at.
 fn automated_span(
     project: &Project,
     target: &fontelle_types::ParamAddress,
+    scope: CompileScope,
 ) -> Option<(fontelle_types::Tick, fontelle_types::Tick)> {
     let mut span: Option<(fontelle_types::Tick, fontelle_types::Tick)> = None;
-    for (_, clip) in project.clips.iter() {
-        if clip.muted {
+    for (id, clip) in project.clips.iter() {
+        if clip.muted || !scope.includes(id) {
             continue;
         }
         let fontelle_model::ClipSource::Automation(data) = &clip.source else {

@@ -160,6 +160,32 @@ impl ParamSpec {
     }
 }
 
+/// The slowest tempo an automation lane can ask for, in beats per minute.
+///
+/// The lane is normalised (§12.1) and the tempo is a number, so there has to
+/// be one agreed mapping between them — and it lives beside
+/// [`ParamTarget::Tempo`] because the lane that draws it, the compiler that
+/// reads it and the box that shows it all need the same answer.
+///
+/// Twenty to three hundred, which is where music is written, rather than the
+/// box's full range: a lane to a thousand puts every ordinary song in the
+/// bottom tenth of the block, where a curve is a flat line nobody can edit.
+pub const TEMPO_MIN_BPM: f64 = 20.0;
+
+/// And the fastest. See [`TEMPO_MIN_BPM`].
+pub const TEMPO_MAX_BPM: f64 = 300.0;
+
+/// The tempo a lane value stands for. Clamped, not extrapolated: a point
+/// dragged past the top of the block is the top of the range.
+pub fn tempo_from_normalised(value: f64) -> f64 {
+    TEMPO_MIN_BPM + value.clamp(0.0, 1.0) * (TEMPO_MAX_BPM - TEMPO_MIN_BPM)
+}
+
+/// Where a tempo sits on the lane, 0..1.
+pub fn normalised_tempo(bpm: f64) -> f64 {
+    ((bpm - TEMPO_MIN_BPM) / (TEMPO_MAX_BPM - TEMPO_MIN_BPM)).clamp(0.0, 1.0)
+}
+
 /// One automatable parameter, named the way §8.2 names it.
 ///
 /// A *parsed view* of a [`ParamAddress`], not a second addressing scheme —

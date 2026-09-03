@@ -165,6 +165,14 @@ pub struct TimelineChrome<'a> {
     /// Which lane header is having its name typed into. See
     /// [`RackChrome::renaming`].
     pub renaming: Option<usize>,
+    /// The selected points of an automation block, and whose they are, so
+    /// they are drawn lit. See `Timeline::point_selection`.
+    pub point_clip: Option<fontelle_types::ClipId>,
+    pub point_selection: &'a [fontelle_types::PointId],
+    /// The time selection, in song ticks — the loop, or the one being
+    /// dragged out on the ruler right now. Drawn on the ruler and as a band
+    /// down the grid, so what will loop is visible where it is edited.
+    pub loop_range: Option<(Tick, Tick)>,
 }
 
 /// Everything the piano roll draws from. All of it is read-only: the roll is a
@@ -192,6 +200,9 @@ pub struct RollChrome<'a> {
     pub ghosts: &'a [GhostNote],
     /// Which filter the chip is on, so it can say so and light up.
     pub ghost_filter: GhostFilter,
+    /// The time selection, in **this clip's** ticks, or `None`. Drawn on the
+    /// ruler and as a band down the grid, like the arrangement's.
+    pub loop_range: Option<(Tick, Tick)>,
     /// Where the **time marker** is within this clip, or `None` when it is
     /// somewhere the clip does not cover. Play starts here.
     pub marker_tick: Option<Tick>,
@@ -290,14 +301,6 @@ pub struct EffectChrome {
     pub bypassed: bool,
 }
 
-/// One automation clip, as the editor draws it.
-pub struct AutomationChrome {
-    pub layout: crate::canvas::AutomationLayout,
-    pub view: crate::canvas::AutomationView,
-    /// The curve, already turned into points.
-    pub curve: Vec<(f32, f32)>,
-    pub hover: Option<fontelle_types::PointId>,
-}
 
 pub struct TransportChrome<'a> {
     pub layout: TransportBarLayout,
@@ -311,10 +314,14 @@ pub struct TransportChrome<'a> {
     pub tempo: &'a TextLayout,
     /// The time signature, likewise.
     pub signature: &'a TextLayout,
+    /// "Song" or "Clip" — see [`PlayMode`](crate::document::PlayMode).
+    pub mode: &'a TextLayout,
     /// What the pointer is over, so the control under it can light up.
     pub hover: Option<TransportHit>,
     /// The **time marker**: where play starts and where a stop comes back to.
     pub marker_sample: i64,
+    /// Whether the transport is in clip mode, so the chip can be lit.
+    pub clip_mode: bool,
 }
 
 /// Builds the whole window picture.
@@ -526,9 +533,6 @@ pub fn draw_editor_window(
         }
         EditorWindowChrome::Effect(effect) => draw_effect(scene, theme, labels, effect),
         EditorWindowChrome::Insert(insert) => draw_instrument(scene, theme, labels, insert),
-        EditorWindowChrome::Automation(automation) => {
-            draw_automation(scene, theme, labels, automation)
-        }
     }
 
     draw_context_menu(scene, theme, labels, menu);
@@ -543,7 +547,6 @@ pub enum EditorWindowChrome<'a> {
     /// see `fontelle_app::effect_panel`. The same chrome the instrument panel
     /// uses, because a grid of knobs is a grid of knobs.
     Insert(InstrumentChrome<'a>),
-    Automation(AutomationChrome),
 }
 
 /// The right-click menu (see [`crate::canvas::context_menu_layout`]).
@@ -704,9 +707,12 @@ pub fn draw_transport_bar(scene: &mut Scene, theme: &Theme, chrome: &TransportCh
             TransportHit::ToggleMetronome => {
                 draw_icon(scene, crate::icon::Icon::Metronome, glyph, colour)
             }
-            // Neither the ruler nor either of the document's boxes is a
-            // glyph button, and each is drawn by its own code below.
-            TransportHit::Scrub(_) | TransportHit::Tempo | TransportHit::Signature => {}
+            // Neither the ruler nor any of the document's boxes is a glyph
+            // button, and each is drawn by its own code below.
+            TransportHit::Scrub(_)
+            | TransportHit::Tempo
+            | TransportHit::Signature
+            | TransportHit::Mode => {}
         }
     }
 
@@ -722,15 +728,25 @@ pub fn draw_transport_bar(scene: &mut Scene, theme: &Theme, chrome: &TransportCh
     // time a read-out here was drawn as a bare word between two buttons, it
     // was reported as a missing feature rather than as a control nobody could
     // see (see the snap chip, and the lane chip before it).
+    // The mode chip is the third box: it says what a press of play will do,
+    // and it is lit in the accent while it says "Clip", because a transport
+    // that plays one part of a song is a state worth noticing.
     for (rect, text, what) in [
         (l.tempo, chrome.tempo, TransportHit::Tempo),
         (l.signature, chrome.signature, TransportHit::Signature),
+        (l.mode, chrome.mode, TransportHit::Mode),
     ] {
         if rect.is_empty() {
             continue;
         }
         let box_rect = rect.inset(2.0);
-        fill_rect_rounded(scene, box_rect, m.corner_radius, p.window);
+        let clip_mode = what == TransportHit::Mode && chrome.clip_mode;
+        fill_rect_rounded(
+            scene,
+            box_rect,
+            m.corner_radius,
+            if clip_mode { p.accent } else { p.window },
+        );
         scene.stroke(
             &Stroke::new(m.border_width as f64),
             Affine::IDENTITY,
@@ -748,7 +764,7 @@ pub fn draw_transport_bar(scene: &mut Scene, theme: &Theme, chrome: &TransportCh
             box_rect,
             box_rect.x + ((box_rect.width - text.width) / 2.0).max(2.0),
             box_rect.y + (box_rect.height - text.height) / 2.0,
-            ink,
+            if clip_mode { p.panel } else { ink },
         );
     }
 
@@ -757,67 +773,6 @@ pub fn draw_transport_bar(scene: &mut Scene, theme: &Theme, chrome: &TransportCh
 }
 
 /// The mixer: a fader, a pan, two switches and a meter per track (TDD §13).
-/// The automation editor: a grid, the curve, and a handle per point.
-fn draw_automation(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &AutomationChrome) {
-    let p = &theme.palette;
-    let m = &theme.metrics;
-    let grid = chrome.layout.grid;
-    if grid.is_empty() {
-        return;
-    }
-    fill_rect(scene, grid, p.panel);
-
-    // A line at nothing, at half and at everything, so a value can be read off
-    // the shape rather than guessed.
-    for fraction in [0.0, 0.5, 1.0] {
-        let y = crate::canvas::auto_y_of_value(grid, fraction);
-        fill_rect(
-            scene,
-            Rect::new(grid.x, y, grid.width, m.border_width.max(1.0)),
-            if fraction == 0.5 {
-                p.grid_line_strong
-            } else {
-                p.grid_line
-            },
-        );
-    }
-
-    if chrome.curve.len() > 1 {
-        let mut path = BezPath::new();
-        path.move_to((chrome.curve[0].0 as f64, chrome.curve[0].1 as f64));
-        for (x, y) in &chrome.curve[1..] {
-            path.line_to((*x as f64, *y as f64));
-        }
-        scene.stroke(
-            &Stroke::new(2.0),
-            Affine::IDENTITY,
-            p.accent.to_peniko(),
-            None,
-            &path,
-        );
-    }
-
-    for (id, rect) in &chrome.layout.handles {
-        let point = chrome.view.points.iter().find(|point| point.id == *id);
-        let lit = chrome.hover == Some(*id) || point.is_some_and(|point| point.selected);
-        fill_rect_rounded(
-            scene,
-            *rect,
-            rect.width / 2.0,
-            if lit { p.accent } else { p.note },
-        );
-    }
-
-    draw_label(
-        scene,
-        labels,
-        &chrome.view.title,
-        chrome.layout.header,
-        m,
-        p.text,
-    );
-}
-
 /// The EQ editor: a grid, the curve, and a handle per band.
 /// The frequencies the EQ's grid is drawn at, and what each line says.
 ///
@@ -3425,6 +3380,17 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
         }
     }
 
+    // The time selection, as a band down the grid: what will loop, where it
+    // is edited. Under the clips, so it tints rather than covers them.
+    if let Some((from, to)) = chrome.loop_range {
+        let x0 = timeline_tick_to_x(v, l.grid, from);
+        let x1 = timeline_tick_to_x(v, l.grid, to);
+        let band = Rect::new(x0, l.grid.y, (x1 - x0).max(0.0), l.grid.height).intersection(&l.grid);
+        if !band.is_empty() {
+            fill_rect(scene, band, p.selection);
+        }
+    }
+
     // The clips.
     for clip in chrome.clips {
         if !lanes.contains(&clip.lane) {
@@ -3433,7 +3399,8 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
         if clip.start + clip.length < ticks.start || clip.start > ticks.end {
             continue;
         }
-        let block = clip_rect(v, l.grid, clip).intersection(&l.grid);
+        let whole = clip_rect(v, l.grid, clip);
+        let block = whole.intersection(&l.grid);
         if block.is_empty() {
             continue;
         }
@@ -3461,7 +3428,21 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
             },
         );
         if automation {
-            draw_automation_curve(scene, theme, &block, clip, body);
+            // Against the **whole** block, not the part on screen: the
+            // anatomy the pointer is tested against is the whole block's,
+            // and a curve measured against the visible part would slide as
+            // the arrangement scrolled. Clipped to the grid instead.
+            let lit: &[fontelle_types::PointId] = if chrome.point_clip == Some(clip.id) {
+                chrome.point_selection
+            } else {
+                &[]
+            };
+            draw_automation_curve(scene, theme, l.grid, whole, clip, body, lit);
+        } else {
+            // And a note clip shows the notes that are in it, for the same
+            // reason: what is *in* a clip is the thing you are looking for
+            // when you scan an arrangement.
+            draw_clip_notes(scene, theme, l.grid, whole, clip, selected);
         }
         // The open clip gets a bright edge: the roll below is showing this one,
         // and nothing else on screen said so.
@@ -3498,8 +3479,19 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
             // Written once per repeat, faint after the first. A four-bar loop
             // that says its name four times is a loop; one that says it once
             // is a long block.
+            //
+            // In the **caption band** rather than down the middle of the
+            // block: the middle is where the content is drawn now, and a name
+            // written across a preview is a name over the thing it names. On
+            // a block too short to have a band it goes back to the centre,
+            // because there is nothing under it there either.
+            let (header, _) = crate::canvas::clip_bands(whole);
             let first = block.x + 5.0;
-            let y = block.y + (block.height - text.height) / 2.0;
+            let y = if header.height >= text.height {
+                header.y + (header.height - text.height) / 2.0
+            } else {
+                block.y + (block.height - text.height) / 2.0
+            };
             let ink = if clip.muted {
                 p.text_muted
             } else if automation {
@@ -3597,24 +3589,120 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
     }
 }
 
-/// One automation block's curve (TDD §12.1).
+/// The notes inside a note clip's block (TDD §16.4).
 ///
-/// A polyline with a dot at each point — the same picture the editor draws,
-/// small. Which is the point: *"a lane of them looks like a lane of empty
-/// clips"* was true because an automation clip was drawn exactly like a note
-/// clip, and the one thing an automation clip has to show is its shape.
+/// *"make it so the midi clips in the arrangement arent just blank rectangles
+/// but instead actually show a preview of the notes drawn out inside of it
+/// like how other daws do."* The geometry is `canvas::clip_notes` — including
+/// which passes of a loop are on screen — so this only has to choose an ink
+/// and put the rectangles down.
+///
+/// The ink is the **block's own colour lightened**, not the palette's note
+/// colour: a preview has to read as part of the clip it is in rather than as
+/// something lying on top of it, and every lane has a different colour to be
+/// part of.
+fn draw_clip_notes(
+    scene: &mut Scene,
+    theme: &Theme,
+    grid: Rect,
+    block: Rect,
+    clip: &ClipInfo,
+    selected: bool,
+) {
+    let rects = crate::canvas::clip_notes(block, grid, clip);
+    if rects.is_empty() {
+        return;
+    }
+    let p = &theme.palette;
+    // On a selected block the body is already the selection colour, so the
+    // notes take the panel's dark ink to stay legible against it.
+    let ink = if selected || clip.muted {
+        p.panel
+    } else {
+        lighten(Color(clip.color), 0.55)
+    };
+
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(
+            grid.x as f64,
+            grid.y as f64,
+            grid.right() as f64,
+            grid.bottom() as f64,
+        ),
+    );
+    for rect in rects {
+        // Rounded only when there is room to see a corner; below that the
+        // rounding eats the note.
+        if rect.height >= 3.0 && rect.width >= 3.0 {
+            fill_rect_rounded(scene, rect, 1.0, ink);
+        } else {
+            fill_rect(scene, rect, ink);
+        }
+    }
+    scene.pop_layer();
+}
+
+/// A colour moved `amount` of the way towards white.
+///
+/// For the note preview: a clip's own colour at full strength is the block it
+/// is drawn on, so the notes have to be a step away from it, and a step
+/// towards white keeps the hue the lane is identified by.
+fn lighten(colour: Color, amount: f32) -> Color {
+    let mix = |c: u8| (f32::from(c) + (255.0 - f32::from(c)) * amount) as u8;
+    Color([mix(colour.0[0]), mix(colour.0[1]), mix(colour.0[2]), colour.0[3]])
+}
+
+/// One automation block's curve (TDD §12.1), and the handles it is edited by.
+///
+/// The picture is the editor: *"i want the automation graph to be a literal
+/// graph drawn inside the clip."* The line goes through
+/// `canvas::automation_polyline`, which evaluates the same function the
+/// audio thread's values come from, and the handles are
+/// `canvas::automation_block`'s — the same rectangles the pointer is tested
+/// against, so what you see is what you can grab.
 fn draw_automation_curve(
     scene: &mut Scene,
     theme: &Theme,
-    block: &Rect,
+    grid: Rect,
+    block: Rect,
     clip: &ClipInfo,
     ink: Color,
+    lit: &[fontelle_types::PointId],
 ) {
-    let points = crate::canvas::automation_polyline(block.inset(1.0), clip.length, &clip.curve);
+    let points = crate::canvas::automation_polyline(block, clip.length, &clip.curve);
     if points.is_empty() {
         return;
     }
     let p = &theme.palette;
+    let anatomy = crate::canvas::automation_block(block, clip);
+
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(
+            grid.x as f64,
+            grid.y as f64,
+            grid.right() as f64,
+            grid.bottom() as f64,
+        ),
+    );
+
+    // A guide at half, so a value can be read off the shape rather than
+    // guessed. Faint: it is a ruling, not a curve.
+    if anatomy.area.height >= 10.0 {
+        let mid = crate::canvas::block_y_of_value(anatomy.area, 0.5);
+        fill_rect(
+            scene,
+            Rect::new(anatomy.area.x, mid, anatomy.area.width, 1.0),
+            p.grid_line,
+        );
+    }
 
     // A flat clip is a single horizontal run and still has to be visible: two
     // points at the same value make a line of zero height, which strokes to
@@ -3634,17 +3722,21 @@ fn draw_automation_curve(
 
     // The points themselves, so a block with two of them reads as a segment
     // you could grab rather than as a rule drawn across the clip. Skipped on a
-    // block too small for them to be anything but noise.
+    // block too small for them to be anything but noise. A selected point is
+    // in the accent, as a selected note is.
     if block.height >= 12.0 {
-        for (x, y) in &points {
+        for (id, rect) in &anatomy.handles {
+            let selected = lit.contains(id);
+            let dot = if selected { rect.inset(1.0) } else { rect.inset(2.0) };
             fill_rect_rounded(
                 scene,
-                Rect::new(x - 1.5, y - 1.5, 3.0, 3.0),
-                1.5,
-                p.text,
+                dot,
+                dot.width / 2.0,
+                if selected { p.accent } else { p.text },
             );
         }
     }
+    scene.pop_layer();
 }
 
 /// The arrangement's bar ruler, with the marker and the playhead on it.
@@ -3690,6 +3782,20 @@ fn draw_timeline_ruler(
             }
         }
         tick += bar;
+    }
+
+    // The selection on the ruler itself, where the drag that made it was:
+    // a solid strip, so it reads as a thing you can take hold of again.
+    if let Some((from, to)) = chrome.loop_range {
+        let x0 = timeline_tick_to_x(v, l.grid, from).max(l.grid.x);
+        let x1 = timeline_tick_to_x(v, l.grid, to).min(l.grid.right());
+        let strip = Rect::new(x0, l.ruler.y + 2.0, (x1 - x0).max(0.0), (l.ruler.height - 4.0).max(0.0))
+            .intersection(&l.ruler);
+        if !strip.is_empty() {
+            fill_rect_rounded(scene, strip, 2.0, p.selection);
+            fill_rect(scene, Rect::new(strip.x, strip.y, 2.0, strip.height), p.accent);
+            fill_rect(scene, Rect::new(strip.right() - 2.0, strip.y, 2.0, strip.height), p.accent);
+        }
     }
 
     for (at, colour, flag) in [
@@ -4259,6 +4365,25 @@ fn draw_ruler_strip(
             }
         }
         tick += bar;
+    }
+
+    // The time selection, the same strip the arrangement's ruler draws, in
+    // this clip's own ticks. Clipped to the grid: a selection that runs past
+    // the clip's end is drawn to the edge and no further.
+    if let Some((from, to)) = chrome.loop_range {
+        let x0 = tick_to_x(v, l.grid, from).max(l.grid.x);
+        let x1 = tick_to_x(v, l.grid, to).min(l.grid.right());
+        let strip = Rect::new(x0, l.ruler.y + 2.0, (x1 - x0).max(0.0), (l.ruler.height - 4.0).max(0.0))
+            .intersection(&l.ruler);
+        if !strip.is_empty() {
+            fill_rect_rounded(scene, strip, 2.0, p.selection);
+            fill_rect(scene, Rect::new(strip.x, strip.y, 2.0, strip.height), p.accent);
+            fill_rect(scene, Rect::new(strip.right() - 2.0, strip.y, 2.0, strip.height), p.accent);
+        }
+        let band = Rect::new(x0, l.grid.y, (x1 - x0).max(0.0), l.grid.height).intersection(&l.grid);
+        if !band.is_empty() {
+            fill_rect(scene, band, p.selection);
+        }
     }
 
     // The time marker's flag, and the playhead's, in the ruler where a person

@@ -3331,6 +3331,19 @@ impl Command for SplitClip {
                 let (front, back) = split_notes(source, offset, original.loop_length);
                 head.notes = front;
                 tail.notes = back;
+                // **The piece you cut off stops being a loop.** Reported from
+                // using the window: *"we should do more of what garage band
+                // does where you split the cut section from the rest of the
+                // loops so the rest remains a looped clip and the first part
+                // is just a cut clip of what you made."*
+                //
+                // Its notes are the repeats written out (see `split_notes`),
+                // so it plays exactly what it did — which is the other half of
+                // the same report: *"without making any edits the user didnt
+                // intend to make themselves"*. Left as a loop it would be a
+                // second thing that repeats when you drag its edge, which is
+                // not what somebody who cut a piece off asked for.
+                left.loop_length = None;
             }
             (
                 ClipSource::Automation(source),
@@ -3496,6 +3509,42 @@ impl Command for UnsplitClip {
 /// so the second half plays the same pattern **rotated** to the phase the cut
 /// landed on: a cut two beats into a one-bar loop leaves a half whose first
 /// note is whatever was on beat three.
+/// A looped clip's passes written out as real notes, over `length` ticks.
+///
+/// What the clip **sounds like**, by the compiler's own rules, so a clip that
+/// stops being a loop keeps playing what it played: a note starting at or past
+/// the period is content the loop does not contain and is left out, and a note
+/// still ringing at the end is cut there, exactly as
+/// `fontelle_sequencer::compile` does it. Two answers to "what does this loop
+/// play" would be a place for them to disagree, and the disagreement is a cut
+/// that changes the song.
+fn flatten_loop(source: &NoteData, period: Tick, length: Tick) -> Arena<NoteId, Note> {
+    let mut out = Arena::default();
+    if period <= 0 || length <= 0 {
+        return out;
+    }
+    let mut base = 0;
+    while base < length {
+        for note in source.notes.values() {
+            if note.start >= period {
+                continue;
+            }
+            let start = base + note.start;
+            if start >= length {
+                continue;
+            }
+            let mut copy = *note;
+            copy.start = start;
+            copy.length = note.length.min(length - start);
+            if copy.length > 0 {
+                out.insert(copy);
+            }
+        }
+        base += period;
+    }
+    out
+}
+
 fn split_notes(
     source: &NoteData,
     offset: Tick,
@@ -3505,12 +3554,15 @@ fn split_notes(
     let mut back = Arena::default();
 
     match period.filter(|p| *p > 0) {
-        // A loop: both halves keep the whole pattern, the second one turned
-        // round to where the cut fell in it.
+        // A loop. The **front** is the passes written out — it is a plain clip
+        // now (see `SplitClip::apply`), so the pattern alone would go silent
+        // after its first pass, and going silent is an edit nobody asked for.
+        // The **back** is still the loop, turned round to the point in the
+        // pattern the cut fell on, so it carries on saying what it was saying.
         Some(period) => {
+            front = flatten_loop(source, period, offset);
             let phase = offset.rem_euclid(period);
             for note in source.notes.values() {
-                front.insert(*note);
                 if phase == 0 {
                     back.insert(*note);
                     continue;
