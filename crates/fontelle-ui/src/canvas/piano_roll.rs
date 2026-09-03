@@ -1496,10 +1496,29 @@ pub struct PianoRoll {
     /// this canvas may not touch it (INVARIANT 2). Same shape as
     /// [`Timeline::take_open`](crate::canvas::Timeline::take_open).
     audition: Option<Audition>,
+    /// The audition a press has *offered*, which only a release with no drag
+    /// in between will take — see [`CLICK_SLOP`] and the note on
+    /// [`take_audition`](PianoRoll::take_audition).
+    ///
+    /// At press time nobody knows yet whether this is a click or the first
+    /// pixel of a drag, so the press cannot decide. This is where it waits.
+    click: Option<Audition>,
+    /// Where the button went down, in screen points. What the slop is measured
+    /// from.
+    pressed_at: (f32, f32),
     /// The phrase Ctrl+C put there, normalised so its earliest note starts at
     /// tick zero — which is what lets a paste land anywhere.
     clipboard: Vec<Note>,
 }
+
+/// How far the pointer may wander between press and release and still have
+/// been a click, in screen points.
+///
+/// A press is never perfectly still. Nought would mean clicking a note to hear
+/// it worked about half the time, which is worse than it never working; a
+/// large number would mean a short drag was silently a click. Three points is
+/// about a hand's worth of jitter and well under one grid row.
+pub const CLICK_SLOP: f32 = 3.0;
 
 impl PianoRoll {
     pub fn new(view: RollView) -> Self {
@@ -1516,6 +1535,8 @@ impl PianoRoll {
             origin: (0, 0),
             modifiers: Modifiers::default(),
             audition: None,
+            click: None,
+            pressed_at: (0.0, 0.0),
             clipboard: Vec::new(),
         }
     }
@@ -1526,10 +1547,18 @@ impl PianoRoll {
 
     /// A key the roll wants sounded, once.
     ///
-    /// **You hear what you touch**: drawing a note, clicking one, and dragging
-    /// one to a new pitch all ask for the pitch they landed on. Deleting one
-    /// does not, and neither does sliding a note along in time — that would
-    /// machine-gun the same pitch for the length of the drag.
+    /// **A bare click on an existing note, and nothing else.** Reported from
+    /// using the window: *"i dont like that every time i edit a note whatsoever
+    /// it plays... only if i click it in place with no drag or anything like
+    /// that to make it clear im just trying to click it to hear it thats when
+    /// it should play. not even on placing the note down either."*
+    ///
+    /// So drawing a note is silent, painting a run of them is silent, moving
+    /// one is silent, and resizing one is silent — because all four of those
+    /// are *editing*, and editing over a rolling transport used to mean
+    /// hearing a wrong note every time your hand moved. Only the click that
+    /// asks a note what it is gets an answer, and it gets it on the way **up**:
+    /// see [`CLICK_SLOP`].
     pub fn take_audition(&mut self) -> Option<Audition> {
         self.audition.take()
     }
@@ -1754,6 +1783,12 @@ impl PianoRoll {
         // a sweep across a sparse bar begins wherever the pointer happened to
         // be, and leaving `self.gesture` at whatever the *previous* gesture
         // left behind is how a right press used to carry on marqueeing.
+        // Every press starts with no click offered and a fresh origin for the
+        // slop to be measured from. Only the one branch below that lands on an
+        // existing note offers one.
+        self.click = None;
+        self.pressed_at = (x, y);
+
         if button == MouseButton::Right || self.tool == Tool::Delete {
             self.gesture = Gesture::Erasing;
             return self.erase_at(hit);
@@ -1779,10 +1814,12 @@ impl PianoRoll {
                     self.selection = vec![id];
                 }
                 // The note you just clicked is the one the next one copies —
-                // and the one you hear, so clicking a note tells you what it
-                // is without having to play the song to find out.
+                // and, *if this turns out to be a click rather than a drag*,
+                // the one you hear, so clicking a note tells you what it is
+                // without having to play the song to find out. The release
+                // decides which of the two it was.
                 self.adopt(notes, id);
-                self.audition = notes.get(id).map(|note| Audition {
+                self.click = notes.get(id).map(|note| Audition {
                     key: note.key,
                     ticks: note.length,
                 });
@@ -1836,10 +1873,8 @@ impl PianoRoll {
                         length: note.length,
                     }
                 };
-                self.audition = Some(Audition {
-                    key,
-                    ticks: note.length,
-                });
+                // Silent: *"not even on placing the note down either should
+                // it play the sound."*
                 vec![RollEdit::Add { note }]
             }
             RollHit::Outside => {
@@ -1868,6 +1903,17 @@ impl PianoRoll {
         // whatever happens to sit at the edge you slid past on your way off
         // the canvas. An erase off the grid must find nothing.
         let (raw_x, raw_y) = (x, y);
+        // A press that has travelled is a drag, and a drag is editing: the
+        // click it offered is off. Measured from where the button went down and
+        // in screen points, because that is what "i didn't move the mouse"
+        // means — a tick-or-row test would call a whole cell's worth of travel
+        // stationary on a zoomed-out grid.
+        if self.click.is_some()
+            && ((raw_x - self.pressed_at.0).abs() > CLICK_SLOP
+                || (raw_y - self.pressed_at.1).abs() > CLICK_SLOP)
+        {
+            self.click = None;
+        }
         let (x, y) = clamp_to_grid(grid, x, y);
         let tick = x_to_tick(&self.view, grid, x);
         let key = y_to_key(&self.view, grid, y);
@@ -1910,10 +1956,6 @@ impl PianoRoll {
                     return Vec::new();
                 }
                 self.gesture = Gesture::Painting { last: (start, key) };
-                self.audition = Some(Audition {
-                    key,
-                    ticks: self.template.length,
-                });
                 vec![RollEdit::Add {
                     note: self.drawn_note(start, key, self.template.length),
                 }]
@@ -1952,19 +1994,6 @@ impl PianoRoll {
                     // No zero-delta edits: a sub-step mouse move is not a
                     // history entry, and it is not a timeline recompile either.
                     return Vec::new();
-                }
-                if d_key != 0 {
-                    // The pitch it landed on, so a transpose can be done by ear
-                    // rather than by counting rows. Only on a pitch change: a
-                    // note slid along in time would otherwise machine-gun.
-                    self.audition =
-                        self.selection
-                            .first()
-                            .and_then(|id| notes.get(*id))
-                            .map(|note| Audition {
-                                key: (i16::from(note.key) + d_key).clamp(0, 127) as u8,
-                                ticks: note.length,
-                            });
                 }
                 self.gesture = Gesture::Moving {
                     applied_tick: wanted_tick,
@@ -2017,6 +2046,9 @@ impl PianoRoll {
     /// event, which is what makes one drag one undo entry.
     pub fn release(&mut self) {
         self.gesture = Gesture::None;
+        // No `release_over`, so nothing can vouch for where the button came
+        // up. An unclaimed offer is dropped rather than sounded.
+        self.click = None;
     }
 
     /// [`release`](Self::release), knowing where the button came up — which a
@@ -2048,6 +2080,11 @@ impl PianoRoll {
             _ => {}
         }
         self.gesture = Gesture::None;
+        // The click, if it survived the drag: this is the *only* place the
+        // roll ever asks for a sound. See [`take_audition`](Self::take_audition).
+        if let Some(click) = self.click.take() {
+            self.audition = Some(click);
+        }
         // Whatever the gesture just left selected is the note the next one is
         // a copy of — which is what makes drawing a note to length change the
         // length of the *next* note too, the way FL Studio does.
@@ -2065,6 +2102,26 @@ impl PianoRoll {
             Gesture::Slicing { from, to } => Some((from, to)),
             _ => None,
         }
+    }
+
+    /// Whether the gesture in progress paints something the document does not
+    /// know about — so the window has to ask for a frame on its own account.
+    ///
+    /// Reported from using the window: *"the cut tool's visuals are often
+    /// totally invisible for me? still works though."* Both halves of that
+    /// were one bug. A drag dirties the panel when it produces an edit, and a
+    /// marquee was special-cased on top of that; a **slice** does neither
+    /// until the button comes up, so nothing repainted and the line was drawn
+    /// into a frame nobody asked for. The "often" is the tell — with the
+    /// transport rolling the playhead repaints anyway and the line appears.
+    ///
+    /// One predicate rather than a list of gestures at each call site,
+    /// because a list is exactly what went stale when the cut tool arrived.
+    pub fn draws_overlay(&self) -> bool {
+        matches!(
+            self.gesture,
+            Gesture::Marquee { .. } | Gesture::Slicing { .. }
+        )
     }
 
     /// Whether a drag in progress is the lane's seam being moved.
@@ -2180,19 +2237,9 @@ impl PianoRoll {
         if tick_delta == 0 && key_delta == 0 {
             return Vec::new();
         }
-        if key_delta != 0 {
-            // You hear what you touch, whether you touched it with the mouse
-            // or not. Only on a pitch change, for the reason a drag along the
-            // time axis is silent.
-            self.audition = self
-                .selection
-                .first()
-                .and_then(|id| notes.get(*id))
-                .map(|note| Audition {
-                    key: (i16::from(note.key) + key_delta).clamp(0, 127) as u8,
-                    ticks: note.length,
-                });
-        }
+        // Silent, like the drag it stands in for. An arrow key held down over
+        // a rolling transport is the same complaint as a drag: *"ill constantly
+        // be hearing wrong notes just because i moved a note around."*
         vec![RollEdit::Move {
             ids: self.selection.clone(),
             tick_delta,

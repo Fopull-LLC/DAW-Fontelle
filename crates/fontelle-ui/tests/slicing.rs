@@ -277,3 +277,77 @@ fn the_stroke_is_visible_while_it_is_being_drawn() {
     roll.release_over(240.0, 180.0, layout.grid, &notes);
     assert_eq!(roll.slice_stroke(), None, "and it is gone when let go");
 }
+
+/// And it is on screen while it is being drawn, which is a different claim.
+///
+/// Reported from using the window: *"the cut tool's visuals are often totally
+/// invisible for me? still works though."* Both halves of that were true and
+/// they are the same bug. The stroke was drawn correctly and the *cut* landed
+/// correctly — but the window only repainted a drag when the drag was a
+/// marquee, and a slice produces neither a marquee nor a document edit. So
+/// nothing dirtied the panel and the last painted frame was the one from
+/// before the stroke existed. The "often" is the giveaway: with the transport
+/// rolling the playhead repaints the panel anyway, and the line appears.
+///
+/// A gesture that paints something the document does not know about has to say
+/// so, and there is exactly one predicate for it rather than a list at each
+/// call site — a list is what went stale when the cut tool was added.
+#[test]
+fn a_gesture_that_paints_its_own_mark_asks_for_the_frame_it_needs() {
+    use fontelle_ui::canvas::{Modifiers, MouseButton, PianoRoll, Tool};
+
+    let v = view();
+    let notes: Arena<NoteId, Note> = Arena::default();
+    let m = Theme::dark_default().metrics;
+    let layout = roll_layout(Rect::new(0.0, 0.0, 900.0, 500.0), &m, 0.0);
+    let mut roll = PianoRoll::new(v);
+    roll.set_modifiers(Modifiers::default());
+
+    assert!(!roll.draws_overlay(), "an idle roll paints nothing of its own");
+
+    roll.tool = Tool::Slice;
+    roll.press(MouseButton::Left, 100.0, 100.0, layout.grid, &notes, 4);
+    roll.drag(240.0, 180.0, layout.grid, &notes, 4);
+    assert!(
+        roll.draws_overlay(),
+        "a half-drawn cut is on screen and nothing in the document says so, \
+         so the window never asks for the frame that would show it"
+    );
+
+    roll.release_over(240.0, 180.0, layout.grid, &notes);
+    assert!(!roll.draws_overlay(), "and it is gone when let go");
+
+    // The marquee is the other one, and the only one the window used to know
+    // about.
+    roll.tool = Tool::Select;
+    roll.press(MouseButton::Left, 100.0, 100.0, layout.grid, &notes, 4);
+    roll.drag(240.0, 180.0, layout.grid, &notes, 4);
+    assert!(roll.draws_overlay());
+}
+
+/// The arrangement has both of the same two gestures and had the same bug.
+#[test]
+fn the_arrangements_own_marks_ask_for_their_frames_too() {
+    use fontelle_ui::canvas::{
+        Modifiers, MouseButton, Timeline, TimelineTool, TimelineView, timeline_layout,
+    };
+
+    let m = Theme::dark_default().metrics;
+    let l = timeline_layout(Rect::new(0.0, 0.0, 900.0, 300.0), &m);
+    let mut timeline = Timeline::new(TimelineView::default());
+    timeline.set_modifiers(Modifiers::default());
+    assert!(!timeline.draws_overlay());
+
+    timeline.set_tool(TimelineTool::Slice);
+    let (x, y) = (l.grid.x + 40.0, l.grid.y + 20.0);
+    timeline.press(MouseButton::Left, x, y, &l, &[], 4);
+    timeline.drag(x + 60.0, y + 30.0, &l, &[], 4);
+    assert!(
+        timeline.draws_overlay(),
+        "a half-drawn cut across the arrangement is on screen and nothing \
+         asks for the frame that would show it"
+    );
+
+    timeline.release_over(x + 60.0, y + 30.0, &l, &[], 4);
+    assert!(!timeline.draws_overlay());
+}

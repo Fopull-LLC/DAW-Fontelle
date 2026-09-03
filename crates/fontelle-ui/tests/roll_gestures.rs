@@ -308,12 +308,32 @@ fn a_move_still_reaches_every_position_between_the_ends() {
 }
 
 // ------------------------------------------------- hearing what you touch ---
+//
+// Reported from using the window, after a long session of editing over a
+// rolling transport:
+//
+// > *"i dont like that every time i edit a note whatsoever it plays, like even
+// > if im just changing the length of a note by dragging its end in or out that
+// > still plays the note. i should only be played a preview if i bare clicked
+// > on the note not if im just editing at all, because this is making it
+// > annoying to edit while its playing because ill constantly be hearing wrong
+// > notes just because i moved a note around or changed its length. only if i
+// > click it in place with no drag or anything like that to make it clear im
+// > just trying to click it to hear it thats when it should play. not even on
+// > placing the note down either should it play the sound."*
+//
+// So there is exactly **one** rule now, and everything below is that rule
+// asked in a different way: a bare click on an existing note sounds it, on the
+// way *up*, and nothing else the mouse does in the grid makes any sound at
+// all. Which means the audition can no longer be decided at press time — at
+// press time nobody knows yet whether this is a click or the beginning of a
+// drag — so a press only *offers* one, and the release is what takes it.
 
 #[test]
-fn pressing_a_note_asks_for_it_to_be_sounded() {
-    // Reported: *"I can't click on notes in the piano roll to hear them."* The
-    // roll had no way to say so — only a *drawn* note was auditioned, and
-    // clicking an existing one was silent.
+fn clicking_a_note_and_letting_go_without_moving_sounds_it() {
+    // Reported earlier, and still true: *"I can't click on notes in the piano
+    // roll to hear them."* A click still has to tell you what a note is
+    // without playing the song to find out.
     let mut roll = roll();
     let arena = notes(&[(0, PPQN, 64)]);
     assert_eq!(
@@ -324,6 +344,13 @@ fn pressing_a_note_asks_for_it_to_be_sounded() {
 
     let (x, y) = at(&roll.view, PPQN / 2, 64);
     roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    assert_eq!(
+        roll.take_audition().map(|a| a.key),
+        None,
+        "a press is not yet a click — it might be the start of a drag"
+    );
+
+    roll.release_over(x, y, grid(), &arena);
     assert_eq!(roll.take_audition().map(|a| a.key), Some(64));
     assert_eq!(
         roll.take_audition().map(|a| a.key),
@@ -333,34 +360,110 @@ fn pressing_a_note_asks_for_it_to_be_sounded() {
 }
 
 #[test]
-fn dragging_a_note_to_a_new_pitch_sounds_the_pitch_it_lands_on() {
+fn a_click_that_wobbles_a_pixel_is_still_a_click() {
+    // A press is never perfectly still. If a hand's worth of jitter counted as
+    // a drag, clicking a note to hear it would work about half the time, which
+    // is worse than it never working.
+    let mut roll = roll();
+    let arena = notes(&[(0, PPQN, 64)]);
+    let (x, y) = at(&roll.view, PPQN / 2, 64);
+    roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    roll.drag(x + 1.0, y + 1.0, grid(), &arena, 4);
+    roll.release_over(x + 1.0, y + 1.0, grid(), &arena);
+    assert_eq!(roll.take_audition().map(|a| a.key), Some(64));
+}
+
+#[test]
+fn dragging_a_note_to_a_new_pitch_never_sounds_it() {
+    // The complaint itself. Dragging a note over a rolling transport used to
+    // machine-gun every row it crossed.
     let mut roll = roll();
     let mut arena = notes(&[(0, PPQN, 60)]);
     let (x, y) = at(&roll.view, PPQN / 2, 60);
     roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
-    roll.take_audition();
 
-    let edits = roll.drag(x, key_to_y(&roll.view, grid(), 67) + 1.0, grid(), &arena, 4);
+    let to = key_to_y(&roll.view, grid(), 67) + 1.0;
+    let edits = roll.drag(x, to, grid(), &arena, 4);
     apply(&mut arena, &edits);
     assert_eq!(
         roll.take_audition().map(|a| a.key),
-        Some(67),
-        "transposing a note has to sound where it landed, or you are dragging blind"
+        None,
+        "moving a note is editing, not listening"
+    );
+
+    roll.release_over(x, to, grid(), &arena);
+    assert_eq!(
+        roll.take_audition().map(|a| a.key),
+        None,
+        "and letting go of a drag is not a click either"
     );
 }
 
 #[test]
-fn a_note_that_is_only_moved_in_time_is_not_re_sounded() {
-    // Otherwise a horizontal drag machine-guns the same pitch.
+fn resizing_a_note_never_sounds_it() {
+    // *"even if im just changing the length of a note by dragging its end in or
+    // out that still plays the note."* The right edge is a drag like any other.
+    let mut roll = roll();
+    let mut arena = notes(&[(0, PPQN * 2, 60)]);
+    let end = tick_to_x(&roll.view, grid(), PPQN * 2) - 2.0;
+    let y = key_to_y(&roll.view, grid(), 60) + 1.0;
+    roll.press(MouseButton::Left, end, y, grid(), &arena, 4);
+
+    let longer = tick_to_x(&roll.view, grid(), PPQN * 4);
+    let edits = roll.drag(longer, y, grid(), &arena, 4);
+    apply(&mut arena, &edits);
+    assert!(arena[*roll.selection().first().unwrap()].length > PPQN * 2);
+
+    roll.release_over(longer, y, grid(), &arena);
+    assert_eq!(roll.take_audition().map(|a| a.key), None);
+}
+
+#[test]
+fn a_note_that_is_only_moved_in_time_is_not_sounded_either() {
     let mut roll = roll();
     let mut arena = notes(&[(0, PPQN, 60)]);
     let (x, y) = at(&roll.view, PPQN / 2, 60);
     roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
-    roll.take_audition();
 
+    let to = tick_to_x(&roll.view, grid(), PPQN * 2);
+    let edits = roll.drag(to, y, grid(), &arena, 4);
+    apply(&mut arena, &edits);
+    roll.release_over(to, y, grid(), &arena);
+    assert_eq!(roll.take_audition().map(|a| a.key), None);
+}
+
+#[test]
+fn drawing_a_note_does_not_sound_it() {
+    // *"not even on placing the note down either should it play the sound."*
+    let mut roll = roll();
+    let arena = notes(&[]);
+    let (x, y) = at(&roll.view, PPQN, 62);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    assert!(
+        edits.iter().any(|e| matches!(e, RollEdit::Add { .. })),
+        "the press still draws a note"
+    );
+    assert_eq!(roll.take_audition().map(|a| a.key), None);
+
+    roll.release_over(x, y, grid(), &arena);
+    assert_eq!(
+        roll.take_audition().map(|a| a.key),
+        None,
+        "and letting go of a note you just drew is not a click on it"
+    );
+}
+
+#[test]
+fn painting_a_run_of_notes_does_not_sound_them() {
+    let mut roll = roll();
+    roll.tool = fontelle_ui::canvas::Tool::Paint;
+    let mut arena = notes(&[]);
+    let (x, y) = at(&roll.view, 0, 60);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    apply(&mut arena, &edits);
     let edits = roll.drag(
         tick_to_x(&roll.view, grid(), PPQN * 2),
-        y,
+        key_to_y(&roll.view, grid(), 64) + 1.0,
         grid(),
         &arena,
         4,
@@ -376,4 +479,10 @@ fn deleting_a_note_does_not_sound_it() {
     let (x, y) = at(&roll.view, PPQN / 2, 60);
     roll.press(MouseButton::Right, x, y, grid(), &arena, 4);
     assert_eq!(roll.take_audition().map(|a| a.key), None);
+    roll.release_over(x, y, grid(), &arena);
+    assert_eq!(
+        roll.take_audition().map(|a| a.key),
+        None,
+        "a right-click erases; it does not audition what it erased"
+    );
 }

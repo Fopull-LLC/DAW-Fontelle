@@ -1956,6 +1956,12 @@ impl ApplicationHandler for WindowApp {
                 // The cut tool's whole edit lands here, like the roll's: a
                 // line half-drawn is not a cut.
                 self.apply_arrange_edits(edits);
+                // **Before** the release, and this order is the whole of it: a
+                // click's audition starts here, on the way up, and
+                // `Auditions::start` clears any release that was scheduled. Ask
+                // for the sound first and the release below schedules *its*
+                // stop; ask for it after and nothing ever stops it.
+                self.sound_roll_request();
                 self.stop_audition();
                 // One drag, one undo entry (§10.6). Only the caller knows the
                 // mouse came up, which is exactly why `History` cannot decide
@@ -5164,9 +5170,14 @@ impl WindowApp {
             &self.clips,
             self.beats_per_bar(),
         );
-        let dragging_box = self.timeline.marquee().is_some();
+        // A marquee **or a cut**: both paint something the document knows
+        // nothing about, so neither dirties the panel by producing an edit.
+        // See `Timeline::draws_overlay` — this used to name the marquee alone,
+        // which is why the cut tool's line was invisible until something else
+        // happened to repaint.
+        let overlay = self.timeline.draws_overlay();
         self.apply_arrange_edits(edits);
-        if dragging_box {
+        if overlay {
             self.tree.invalidate(TIMELINE);
         }
     }
@@ -5406,11 +5417,9 @@ impl WindowApp {
             beats_per_bar,
         );
         self.apply_roll_edits(edits);
-        // What you touch, you hear — even stopped. Drawing a note, clicking an
-        // existing one, and dragging one to a new pitch all sound it, on the
-        // live path rather than by starting the transport: that is the
-        // difference between hearing what you just wrote and playing the song.
-        self.sound_roll_request();
+        // A press asks for no sound of its own any more — it only *offers*
+        // one, and `release_over` decides. See `PianoRoll::take_audition`: a
+        // bare click on a note sounds it, and editing is silent.
         // A press always changes the selection or the gesture, both of which
         // are visible.
         self.tree.invalidate(PANEL);
@@ -6597,12 +6606,11 @@ impl WindowApp {
             return;
         };
         let edits = self.roll.drag(x, y, grid, doc.notes(), beats_per_bar);
-        let dragging_box = self.roll.marquee().is_some();
+        // A marquee or a cut changes nothing in the document and everything on
+        // screen, so it has to dirty the panel on its own account.
+        let overlay = self.roll.draws_overlay();
         self.apply_roll_edits(edits);
-        self.sound_roll_request();
-        if dragging_box {
-            // A marquee changes nothing in the document and everything on
-            // screen, so it has to dirty the panel on its own account.
+        if overlay {
             self.tree.invalidate(PANEL);
         }
     }

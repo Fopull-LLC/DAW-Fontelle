@@ -3495,17 +3495,33 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
         // dark rather than in the lane's colour: the shape is the content, and
         // a bright block with a line on it hides the line. A note block is the
         // other way round — the block *is* what there is to see.
+        //
+        // **Whatever else is true of it**, selection included. Reported from
+        // using the window: *"when an automation clip is selected i cannot see
+        // the graph at all so i have to unselect it to see how it actually
+        // looks."* Selecting used to fill the block in the selection colour and
+        // then stroke the curve in that same colour — a line painted onto its
+        // own background, so the one moment you most need the shape was the one
+        // moment it was gone. A selected block says so with an **edge** and
+        // with the colour of its curve instead; see below.
         fill_rect_rounded(
             scene,
             block.inset(1.0),
             3.0,
-            if automation && !selected {
-                p.panel_header
-            } else {
-                body
-            },
+            if automation { p.panel_header } else { body },
         );
         if automation {
+            if selected {
+                // The edge is what selection means here. Drawn before the
+                // curve so the curve stays the brightest thing in the block.
+                scene.stroke(
+                    &Stroke::new(1.5),
+                    Affine::IDENTITY,
+                    p.note_selected.to_peniko(),
+                    None,
+                    &rounded(block.inset(1.0), 3.0),
+                );
+            }
             // Against the **whole** block, not the part on screen: the
             // anatomy the pointer is tested against is the whole block's,
             // and a curve measured against the visible part would slide as

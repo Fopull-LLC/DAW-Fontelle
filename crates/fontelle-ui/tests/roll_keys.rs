@@ -296,19 +296,21 @@ fn a_keystroke_with_nothing_selected_is_not_an_undo_entry() {
 }
 
 #[test]
-fn a_nudge_that_changes_pitch_asks_for_the_note_to_be_sounded() {
-    // You hear what you touch, whether you touched it with the mouse or not.
+fn a_nudge_is_silent_because_it_is_editing() {
+    // It used to sound the pitch it landed on, on the principle that you hear
+    // what you touch. Reported from using the window, and it applies to an
+    // arrow key exactly as much as to a drag: *"i should only be played a
+    // preview if i bare clicked on the note not if im just editing at all...
+    // ill constantly be hearing wrong notes just because i moved a note
+    // around."* An arrow key held down over a rolling transport machine-guns
+    // for the same reason a drag did.
     let (arena, ids) = notes(&[(0, PPQN, 60)]);
     let mut roll = PianoRoll::new(view());
     roll.select(ids.clone());
 
     roll.nudge(&arena, 0, 4);
-    assert_eq!(roll.take_audition().map(|a| a.key), Some(64));
+    assert_eq!(roll.take_audition().map(|a| a.key), None);
 
     roll.nudge(&arena, PPQN, 0);
-    assert_eq!(
-        roll.take_audition().map(|a| a.key),
-        None,
-        "sliding along in time is not a new note to hear"
-    );
+    assert_eq!(roll.take_audition().map(|a| a.key), None);
 }

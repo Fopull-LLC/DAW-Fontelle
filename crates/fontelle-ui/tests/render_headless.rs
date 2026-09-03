@@ -926,6 +926,15 @@ impl TimelineShot {
 }
 
 fn shoot_timeline(clips: &[fontelle_ui::document::ClipInfo]) -> Option<TimelineShot> {
+    shoot_timeline_selected(clips, &[])
+}
+
+/// The same, with some of the clips selected — what a block looks like once
+/// you have clicked it.
+fn shoot_timeline_selected(
+    clips: &[fontelle_ui::document::ClipInfo],
+    selection: &[fontelle_types::ClipId],
+) -> Option<TimelineShot> {
     use fontelle_ui::canvas::{TimelineView, timeline_layout};
     use fontelle_ui::document::LaneInfo;
     use fontelle_ui::render::TimelineChrome;
@@ -985,7 +994,7 @@ fn shoot_timeline(clips: &[fontelle_ui::document::ClipInfo]) -> Option<TimelineS
                 view: tview,
                 lanes: &lanes,
                 clips,
-                selection: &[],
+                selection,
                 playhead_tick: 0,
                 marker_tick: 0,
                 beats_per_bar: 4,
@@ -2115,6 +2124,51 @@ fn an_automation_block_draws_a_curve_you_can_see() {
         found_ground > 20,
         "the block is filled with the curve's own colour, so the line cannot \
          be seen against it: {found_ground} pixels of ground"
+    );
+}
+
+/// Reported from using the window: *"when an automation clip is selected i
+/// cannot see the graph at all so i have to unselect it to see how it actually
+/// looks before going back to trying to edit it how i want it."*
+///
+/// Exactly true, and for a reason no view-model test could reach. A selected
+/// block was **filled** in the selection colour and its curve was **stroked**
+/// in that same colour, so the line was drawn perfectly onto its own
+/// background — the one moment you most need to see the shape, which is while
+/// you are editing it, was the one moment it was gone.
+///
+/// The rule the fix holds to: an automation block keeps its dark ground
+/// whatever else is true of it, because the ground is what the shape is read
+/// against. Selection says so some other way.
+#[test]
+fn a_selected_automation_block_still_shows_its_curve() {
+    use fontelle_ui::canvas::{automation_block, clip_rect};
+
+    let clips = vec![an_automation_clip(&[0.0, 1.0])];
+    let Some(shot) = shoot_timeline_selected(&clips, &[clips[0].id]) else {
+        return;
+    };
+    let block = clip_rect(&shot.view, shot.layout.grid, &clips[0]);
+    let area = automation_block(block, &clips[0]).area;
+
+    // Whatever the curve is drawn in when the block is selected, there has to
+    // be a *ground* left for it to be drawn against — a block painted edge to
+    // edge in one colour is a block with no graph in it. So: count how many
+    // distinct inks are inside the curve area.
+    let ground = shot.theme.palette.panel_header;
+    let mut on_ground = 0;
+    for x in (area.x as u32)..(area.right() as u32) {
+        for y in (area.y as u32)..(area.bottom() as u32) {
+            if near(shot.at(x, y), ground) {
+                on_ground += 1;
+            }
+        }
+    }
+    assert!(
+        on_ground > 20,
+        "a selected automation block is filled solid, so the curve is painted \
+         onto its own colour and the graph cannot be seen at all: \
+         {on_ground} pixels of ground in {area:?}"
     );
 }
 

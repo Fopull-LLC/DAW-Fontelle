@@ -1124,6 +1124,17 @@ impl Timeline {
 
     /// The cut tool's line, while it is being drawn, so the canvas can show
     /// where the blade is going. A stroke you cannot see is one you aim twice.
+    /// Whether the gesture in progress paints something the document does not
+    /// know about — the arrangement's half of
+    /// [`PianoRoll::draws_overlay`](crate::canvas::PianoRoll::draws_overlay),
+    /// and it had the same invisible-cut-tool bug for the same reason.
+    pub fn draws_overlay(&self) -> bool {
+        matches!(
+            self.gesture,
+            Gesture::Marquee { .. } | Gesture::Slicing { .. }
+        )
+    }
+
     pub fn slice_line(&self) -> Option<((f32, f32), (f32, f32))> {
         match self.gesture {
             Gesture::Slicing { from, to } => Some((from, to)),
