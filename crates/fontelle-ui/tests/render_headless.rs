@@ -1626,6 +1626,7 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
         labels.ensure(caption, &theme.font, &mut text);
     }
     labels.ensure(&output_label, &theme.font, &mut text);
+    labels.ensure("In: none", &theme.font, &mut text);
     for s in &strips {
         labels.ensure(&s.name, &theme.font, &mut text);
         labels.ensure(&format_gain_db(s.gain_db), &theme.font, &mut text);
@@ -1673,6 +1674,7 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
                 active: None,
                 selected: 0,
                 output_label: output_label.clone(),
+                input_label: "In: none".to_string(),
                 insert_drag: None,
                 output_menu: None,
                 send_menu: None,

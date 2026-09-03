@@ -719,3 +719,99 @@ pub fn audition_release(
 ) -> std::time::Instant {
     released.max(started + MIN_AUDITION)
 }
+
+// ------------------------------------------------------------- recording ---
+
+/// What the record button records (TDD §14.7, §15.4).
+///
+/// Reported from using the window: *"when i click record it prompts me what i
+/// would like to record: notes, audio from mic, automation, etc."*
+///
+/// Arming used to mean one thing — keep the notes — because notes were the only
+/// thing there was to keep. There are three now, and which one you meant is not
+/// something a button can guess, so it asks. The answer is remembered:
+/// somebody recording eight vocal takes should answer once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecordMode {
+    /// What a MIDI keyboard plays, into the clip that is open (TDD §14.7).
+    ///
+    /// The default, and deliberately: arming has meant this since MIDI
+    /// recording landed, and a build that silently started recording a
+    /// microphone instead would be a surprise of the worst kind.
+    #[default]
+    Notes,
+    /// What arrives on a record-armed mixer track's input, as a new audio clip
+    /// on the arrangement (TDD §15.4).
+    Audio,
+    /// Every control you move while it rolls, as automation.
+    Automation,
+}
+
+impl RecordMode {
+    pub const ALL: [Self; 3] = [Self::Notes, Self::Audio, Self::Automation];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Notes => "Notes",
+            Self::Audio => "Audio from an input",
+            Self::Automation => "Automation",
+        }
+    }
+
+    pub fn tip(self) -> &'static str {
+        match self {
+            Self::Notes => "Keep what the keyboard plays, into the clip that is open",
+            Self::Audio => "Keep what arrives on the armed mixer track's input",
+            Self::Automation => "Keep every control you move while it rolls",
+        }
+    }
+}
+
+/// The menu the record button opens.
+pub fn record_menu_entries() -> Vec<crate::canvas::MenuEntry> {
+    RecordMode::ALL
+        .iter()
+        .map(|mode| crate::canvas::MenuEntry::new(mode.label()))
+        .collect()
+}
+
+/// How many beats the click counts before the tape starts.
+///
+/// *"after the 4 tap metronome count in it starts recording"* — four, which is
+/// what every studio does. Four **beats of the bar being counted in**, so a
+/// count-in in 3/4 is three and one in 6/8 is six: a fixed four over a waltz
+/// counts you in wrong.
+pub const COUNT_IN_BEATS: u32 = 4;
+
+/// The longest a count-in may be, in seconds.
+///
+/// A bar at 20 bpm is twelve seconds, and somebody who set a slow tempo to work
+/// out a part and then pressed record would think the button was broken.
+const LONGEST_COUNT_IN_SECONDS: i64 = 8;
+
+/// How long the count-in is, in samples.
+///
+/// A count-in is **not** a delay before the transport rolls. The transport
+/// rolls, the click sounds, and the tape starts a bar later — which is what
+/// makes the first beat of the take land on the first beat of the bar rather
+/// than a hand's reaction time after it.
+///
+/// Zero for a project with no tempo yet, rather than dividing by it. Trimmed to
+/// whole beats when a bar this slow would run past
+/// [`LONGEST_COUNT_IN_SECONDS`] — a count-in cut off mid-beat is a click that
+/// stops in the wrong place, which is worse than a shorter one.
+pub fn count_in_samples(samples_per_beat: Sample, beats: u32) -> Sample {
+    if samples_per_beat <= 0 || beats == 0 {
+        return 0;
+    }
+    // The cap is in seconds and nobody tells this function the device's rate —
+    // but it does not need one to be *safe*: assuming the commonest rate makes
+    // the count-in shorter than the cap on a faster device and never longer,
+    // which is the direction to be wrong in. A count-in that is too short is a
+    // bar you can still hear; one that is too long is a button that looks
+    // broken.
+    const ASSUMED_RATE: Sample = 48_000;
+    let longest = LONGEST_COUNT_IN_SECONDS * ASSUMED_RATE;
+    let allowed = (longest / samples_per_beat).clamp(1, i64::from(beats));
+    samples_per_beat.saturating_mul(allowed)
+}

@@ -38,7 +38,7 @@ pub use commands::{
     SetAudioClip, SetChannelPatch, SetChannelRoute, SetClipLoop, SetEqBand, SetFlag,
     SetInsertBypassed,
     RestoreInsertConfig, SetInsertKey, SetInsertMix, SetInsertParam, SetInsertPreset,
-    SetLoopRange, SetNoteProperty, SetNotePropertyEach, SetNoteSlide, SetNoteVelocity,
+    SetLoopRange, SetNoteProperty, SetTrackInput, SetNotePropertyEach, SetNoteSlide, SetNoteVelocity,
     SetNumber, SetPointCurve,
     SetSendLevel, SetSendPreFader, SetTrackOutput, SliceNotes, SplitClip,
 };

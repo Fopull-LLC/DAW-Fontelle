@@ -211,6 +211,12 @@ enum MenuTarget {
     /// The roll's Tools chip. Three tools that open a dialog and two importers
     /// that do not — see `canvas::TOOL_MENU`.
     RollTools,
+    /// The record button: *"when i click record it prompts me what i would
+    /// like to record: notes, audio from mic, automation, etc."*
+    RecordMode,
+    /// A mixer strip's input button (TDD §15.4): which microphone feeds it.
+    /// The strip, by position.
+    TrackInput(usize),
     /// One point of an automation block: its shape, or its removal.
     Point {
         clip: fontelle_types::ClipId,
@@ -240,6 +246,8 @@ impl MenuTarget {
             | Self::Lane(_)
             | Self::Tempo
             | Self::RollTools
+            | Self::RecordMode
+            | Self::TrackInput(_)
             | Self::Point { .. }
             | Self::ImportChoice => None,
         }
@@ -554,6 +562,15 @@ pub struct WindowApp {
     /// Two presses in one place, which is how an audio clip's editor is opened
     /// — see [`crate::pointer::DoubleClick`].
     double_click: crate::pointer::DoubleClick,
+    /// While an audio take is counting in: the song sample the tape starts at.
+    ///
+    /// A count-in is **not** a delay before the transport rolls. The transport
+    /// rolls a bar early, the click sounds over it, and the tape starts at the
+    /// marker — which is what makes the first beat of the take land on the
+    /// first beat of the bar rather than a hand's reaction time after it.
+    count_in_until: Option<fontelle_types::Sample>,
+    /// Where the tape actually started, so the take lands where it was played.
+    take_from: Option<fontelle_types::Sample>,
     /// Which preset chip the pointer is over, in the effect panel. Its own
     /// field rather than a `hover_param`, because a chip has no address —
     /// see `instrument_preset_hit`.
@@ -687,6 +704,9 @@ pub struct WindowApp {
     /// lists — the route chip's numbering and the menu's captions both come
     /// out of it.
     route_names: Vec<String>,
+    /// Which input the selected strip records from — see
+    /// `StudioHost::track_input`.
+    track_input: Option<String>,
     /// What the cursor is showing, so it is only set when it changes — a
     /// `set_cursor` on every pointer move is a round trip to the compositor
     /// per event.
@@ -918,6 +938,8 @@ impl WindowApp {
             hover_param: None,
             hover_audio: None,
             double_click: crate::pointer::DoubleClick::default(),
+            count_in_until: None,
+            take_from: None,
             hover_preset: None,
             hover_key: None,
             hover_tab: None,
@@ -986,6 +1008,7 @@ impl WindowApp {
             renaming: None,
             route_menu: None,
             route_names: Vec::new(),
+            track_input: None,
             pointer: Pointer::Default,
             tool_cursors: std::collections::HashMap::new(),
             browser_title: "Soundfonts".to_string(),
@@ -1064,6 +1087,7 @@ impl WindowApp {
         // inside a closure that already holds a mutable borrow of `self`.
         let beats_per_bar = self.beats_per_bar();
         let output_label = self.output_caption();
+        let input_label = self.input_caption();
         // The tip's box needs the shaped width of its own words, so it is
         // measured here — after `shape_labels`, before the borrow.
         let tooltip = self.due_tip().map(str::to_string).and_then(|caption| {
@@ -1211,6 +1235,7 @@ impl WindowApp {
                     },
                     selected: self.selected_track,
                     output_label: output_label.clone(),
+                    input_label: input_label.clone(),
                     insert_drag: self.insert_drag,
                     output_menu: self.output_menu.as_ref(),
                     send_menu: self.send_menu.as_ref().map(|(_, menu)| menu),
@@ -1318,6 +1343,21 @@ impl WindowApp {
             Some(host) => host.view(),
             None => TransportView::unavailable(),
         };
+        // The count-in, if one is running: the transport rolled a bar early
+        // over a click, and the tape starts when the playhead reaches where
+        // recording was actually asked for.
+        if let Some(target) = self.count_in_until
+            && view.recording
+            && view.position_sample >= target
+        {
+            self.count_in_until = None;
+            self.take_from = Some(target);
+            if let Some(doc) = &mut self.options.document {
+                doc.discard_audio_take();
+            }
+            self.status = "recording".to_string();
+            self.tree.invalidate(BROWSER);
+        }
         // The bars-and-beats read-out through the document's map, not the
         // engine host's copy of it: the host was handed the map at start-up
         // and a tempo change — or a tempo lane — has moved it since. Only
@@ -3029,6 +3069,7 @@ impl WindowApp {
         self.mixer_strips = doc.mixer_strips();
         self.selected_track = doc.selected_mixer_track();
         self.track_output = doc.track_output(self.selected_track);
+        self.track_input = doc.track_input(self.selected_track);
         self.route_names = doc.route_names();
         // The time selection and the play mode, from the document: a loop
         // reopens with the song, and the chip says what play will do.
@@ -3254,6 +3295,8 @@ impl WindowApp {
             want(&mut self.labels, &mut self.text, crate::render::REMOVE);
             let output = self.output_caption();
             want(&mut self.labels, &mut self.text, &output);
+            let input = self.input_caption();
+            want(&mut self.labels, &mut self.text, &input);
             if let Some(options) = self.mixer.options.clone()
                 && let Some(strip) = self.mixer_strips.get(options.track).cloned()
             {
@@ -3296,6 +3339,11 @@ impl WindowApp {
         // styles are both shaped: the other is what the button draws next.
         for kind in fontelle_types::FolderKind::ALL {
             want(&mut self.labels, &mut self.text, kind.tab_label());
+        }
+        // The record menu's three answers, so the menu it opens is never a
+        // frame of empty rows — the fault a fourth browser tab shipped with.
+        for mode in crate::transport::RecordMode::ALL {
+            want(&mut self.labels, &mut self.text, mode.label());
         }
         // Both, not only the one that is on: the chip is pressed and the other
         // caption is what it draws next, and shaping it on the frame after
@@ -3917,6 +3965,18 @@ impl WindowApp {
         crate::render::output_label(&name.unwrap_or_else(|| "Master".to_string()))
     }
 
+    /// What the options column's input row says (TDD §15.4).
+    ///
+    /// The device's name, or that the track records nothing — which is what
+    /// every track says until somebody chooses one, and is a state rather than
+    /// a blank row.
+    fn input_caption(&self) -> String {
+        match &self.track_input {
+            Some(name) => format!("In: {name}"),
+            None => "In: none".to_string(),
+        }
+    }
+
     /// Points the mixer — and the track-options column with it — at `strip`.
     fn select_track(&mut self, strip: usize) {
         if let Some(doc) = &mut self.options.document {
@@ -3936,6 +3996,23 @@ impl WindowApp {
             // shortest possible feedback loop and the easiest to click by
             // accident.
             OptionsHit::Output => self.open_output_menu(),
+            // *"i click a input button that lets my select my mic input to
+            // feed to that mixer track."* A menu of what the machine has,
+            // because the answer cannot be guessed.
+            OptionsHit::Input => {
+                let anchor = self
+                    .mixer
+                    .options
+                    .as_ref()
+                    .map_or(crate::layout::Rect::ZERO, |o| o.input);
+                let bounds = self.layout.window;
+                self.open_menu(
+                    MenuTarget::TrackInput(strip),
+                    anchor.x,
+                    anchor.bottom(),
+                    bounds,
+                );
+            }
             // Which effect is a question the row cannot ask, so it drops the
             // menu rather than guessing. It used to add an EQ every time,
             // which made the compressor unreachable from the window at all.
@@ -5518,12 +5595,58 @@ impl WindowApp {
             // not the engine's, and `press_transport` has already dealt with
             // them by starting a drag.
             if let Some(decision) = action(what, &view) {
-                // Arming throws the last take away, so a new one does not
-                // begin with the end of the one before it still in the ring.
-                if decision == TransportAction::SetArmed(true)
-                    && let Some(doc) = &mut self.options.document
+                // *"when i click record it prompts me what i would like to
+                // record."* Arming is the question, not the answer: the button
+                // opens the menu and the menu arms. Disarming needs no
+                // question, so it goes straight through.
+                if decision == TransportAction::SetArmed(true) {
+                    let bounds = self.layout.window;
+                    let at = self.bar.record;
+                    self.open_menu(MenuTarget::RecordMode, at.x, at.bottom(), bounds);
+                    return;
+                }
+                if decision == TransportAction::SetArmed(false) {
+                    self.arm_recording(false);
+                    return;
+                }
+                // Play, while armed to record audio: roll a **bar early** over
+                // the click, and start the tape when the playhead reaches the
+                // marker. *"after the 4 tap metronome count in it starts
+                // recording."*
+                if decision == TransportAction::Play
+                    && view.armed
+                    && self
+                        .options
+                        .document
+                        .as_ref()
+                        .map(|doc| doc.record_mode() == crate::transport::RecordMode::Audio)
+                        .unwrap_or(false)
                 {
-                    doc.discard_take();
+                    let beat = self
+                        .options
+                        .document
+                        .as_ref()
+                        .map_or(0, |doc| doc.samples_per_beat());
+                    let beats = self
+                        .options
+                        .document
+                        .as_ref()
+                        .map_or(4, |doc| doc.beats_per_bar())
+                        .min(crate::transport::COUNT_IN_BEATS);
+                    let count = crate::transport::count_in_samples(beat, beats);
+                    let target = self.marker;
+                    if count > 0 {
+                        self.count_in_until = Some(target);
+                        self.take_from = None;
+                        // The click, for the bar it is counting: a count-in
+                        // nobody can hear is a bar of silence.
+                        apply(host.as_mut(), TransportAction::SetMetronome(true), self.marker);
+                        self.marker =
+                            apply(host.as_mut(), TransportAction::Mark((target - count).max(0)), self.marker);
+                    } else {
+                        self.count_in_until = None;
+                        self.take_from = Some(target);
+                    }
                 }
                 self.marker = apply(host.as_mut(), decision, self.marker);
             }
@@ -5536,6 +5659,57 @@ impl WindowApp {
         // the transport's position changing at all.
         self.tree.invalidate(TRANSPORT);
         self.tree.invalidate(PANEL);
+    }
+
+    /// Arms or disarms recording, opening or closing the capture stream that
+    /// [`RecordMode::Audio`](crate::transport::RecordMode::Audio) needs.
+    ///
+    /// The stream is opened **on arming** rather than on play, so a microphone
+    /// that is not there is reported while you are still setting up rather than
+    /// in the middle of a take.
+    fn arm_recording(&mut self, armed: bool) {
+        if let Some(host) = &mut self.options.host {
+            self.marker = apply(
+                host.as_mut(),
+                TransportAction::SetArmed(armed),
+                self.marker,
+            );
+        }
+        // Arming throws the last take away, so a new one does not begin with
+        // the end of the one before it still in the ring.
+        if let Some(doc) = &mut self.options.document {
+            doc.discard_take();
+        }
+        self.count_in_until = None;
+        self.take_from = None;
+        let wants_audio = armed
+            && self
+                .options
+                .document
+                .as_ref()
+                .map(|doc| doc.record_mode() == crate::transport::RecordMode::Audio)
+                .unwrap_or(false);
+        if !wants_audio {
+            if let Some(doc) = &mut self.options.document {
+                doc.close_audio_input();
+            }
+            self.tick();
+            self.tree.invalidate(TRANSPORT);
+            return;
+        }
+        self.status = match self
+            .options
+            .document
+            .as_mut()
+            .map(|doc| doc.open_audio_input())
+        {
+            Some(Ok(name)) => format!("Recording from \u{201c}{name}\u{201d}"),
+            Some(Err(said)) => said,
+            None => String::new(),
+        };
+        self.tick();
+        self.tree.invalidate(TRANSPORT);
+        self.tree.invalidate(BROWSER);
     }
 
     /// Bounces the project to a WAV, and says where it went.
@@ -5579,9 +5753,35 @@ impl WindowApp {
     /// that happens to a record button and a window that says nothing leaves
     /// you wondering whether it worked.
     fn keep_take(&mut self, end_sample: fontelle_types::Sample) {
+        // An **audio** take is a different thing to keep, and it is kept
+        // wherever the tape actually started rather than wherever the playhead
+        // was when the transport rolled — see `count_in_until`.
+        let from = self.take_from.take();
+        self.count_in_until = None;
         let Some(doc) = &mut self.options.document else {
             return;
         };
+        if doc.record_mode() == crate::transport::RecordMode::Audio {
+            let at = from.unwrap_or(0);
+            // The device's own rate, not a constant: a take counted in
+            // 48 kHz seconds on a 44.1 kHz interface reads nine per cent
+            // short, which is exactly wrong enough to be believed.
+            let rate = if self.view.sample_rate > 0.0 {
+                self.view.sample_rate
+            } else {
+                48_000.0
+            };
+            self.status = match doc.keep_audio_take(at, end_sample) {
+                0 => "nothing arrived on the input, so nothing was recorded".to_string(),
+                frames => format!("recorded {:.1} seconds", frames as f64 / rate),
+            };
+            self.studio_revision = u64::MAX;
+            self.tree.invalidate(PANEL);
+            self.tree.invalidate(TIMELINE);
+            self.tree.invalidate(BROWSER);
+            self.refresh_title();
+            return;
+        }
         self.status = match doc.keep_take(end_sample) {
             0 => "nothing was played, so nothing was recorded".to_string(),
             1 => "recorded 1 note".to_string(),
@@ -6008,6 +6208,55 @@ impl WindowApp {
                 }
                 None => Vec::new(),
             },
+            // *"when i click record it prompts me what i would like to
+            // record."* The one that is on is greyed, which is how the menu
+            // says which it is.
+            MenuTarget::RecordMode => {
+                let current = self
+                    .options
+                    .document
+                    .as_ref()
+                    .map(|doc| doc.record_mode())
+                    .unwrap_or_default();
+                crate::transport::RecordMode::ALL
+                    .iter()
+                    .map(|mode| {
+                        if *mode == current {
+                            MenuEntry::disabled(mode.label())
+                        } else {
+                            MenuEntry::new(mode.label())
+                        }
+                    })
+                    .collect()
+            }
+            // Every input the machine has, and "none" above them — a track
+            // that records nothing is the state every track starts in and the
+            // one you need to be able to get back to.
+            MenuTarget::TrackInput(strip) => {
+                let strip = *strip;
+                let Some(doc) = self.options.document.as_ref() else {
+                    return Vec::new();
+                };
+                let current = doc.track_input(strip);
+                let mut entries = vec![if current.is_none() {
+                    MenuEntry::disabled("No input")
+                } else {
+                    MenuEntry::new("No input")
+                }];
+                let inputs = doc.audio_inputs();
+                if inputs.is_empty() {
+                    entries.push(MenuEntry::disabled("nothing to record from").after_rule());
+                }
+                for name in inputs {
+                    let entry = if current.as_deref() == Some(name.as_str()) {
+                        MenuEntry::disabled(name)
+                    } else {
+                        MenuEntry::new(name)
+                    };
+                    entries.push(entry);
+                }
+                entries
+            }
             // The tools, each of which opens its own dialog — see
             // `canvas::tools`. A rule above the importers: bringing a file in
             // is not something you do to the selection.
@@ -6208,6 +6457,34 @@ impl WindowApp {
                     }
                     None => {}
                 }
+            }
+            (MenuTarget::RecordMode, index) => {
+                if let Some(mode) = crate::transport::RecordMode::ALL.get(index).copied() {
+                    if let Some(doc) = &mut self.options.document {
+                        doc.set_record_mode(mode);
+                    }
+                    // Choosing what to record *is* arming: the button was
+                    // pressed to arm and the menu was the question it asked, so
+                    // an answer that left it disarmed would need a second press
+                    // of the same button.
+                    self.arm_recording(true);
+                }
+            }
+            (MenuTarget::TrackInput(strip), index) => {
+                let strip = *strip;
+                let chosen = match index.checked_sub(1) {
+                    None => None,
+                    Some(n) => self
+                        .options
+                        .document
+                        .as_ref()
+                        .and_then(|doc| doc.audio_inputs().get(n).cloned()),
+                };
+                if let Some(doc) = &mut self.options.document {
+                    doc.set_track_input(strip, chosen);
+                }
+                self.refresh_studio();
+                self.tree.invalidate(PANEL);
             }
             (MenuTarget::Point { clip, id }, index) => {
                 let (clip, id) = (*clip, *id);

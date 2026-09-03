@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use fontelle_types::{AudioInputId, EffectConfig, EffectKind, MixerTrackId};
+use fontelle_types::{EffectConfig, EffectKind, MixerTrackId};
 
 // `PanLaw` lives in `fontelle-types` so `fontelle-engine`'s `MixerTrackNode`
 // can share this exact type — the engine can't depend on this crate (TDD §4.1).
@@ -101,7 +101,20 @@ pub struct MixerTrack {
     pub sends: Vec<Send>,
     /// `None` = master.
     pub output: Option<MixerTrackId>,
-    pub input: Option<AudioInputId>,
+    /// Which audio input this track records from (TDD §15.4), by **name**.
+    ///
+    /// *"i click a input button that lets my select my mic input to feed to
+    /// that mixer track."*
+    ///
+    /// A name rather than a handle or an index, because the answer is written
+    /// into the document: a project reopened tomorrow has to find the same
+    /// microphone, and a device index is not the same device twice. `None` is a
+    /// track that records nothing, which is every track until somebody says
+    /// otherwise.
+    ///
+    /// A project written before this field held a name carries `null`, which
+    /// reads as `None` — the same value it always had.
+    pub input: Option<String>,
 }
 
 impl MixerTrack {

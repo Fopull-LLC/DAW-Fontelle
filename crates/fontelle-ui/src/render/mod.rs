@@ -267,6 +267,9 @@ pub struct MixerChrome<'a> {
     /// What the options column's output row says — worked out where the route
     /// names are, rather than in the drawing code.
     pub output_label: String,
+    /// And what its **input** row says (TDD §15.4): the device this track
+    /// records from, or that it records nothing.
+    pub input_label: String,
     /// An insert being dragged up or down the chain: the slot it started in
     /// and the slot it is over.
     pub insert_drag: Option<(usize, usize)>,
@@ -1342,6 +1345,26 @@ fn draw_track_options(
     };
 
     row_text(scene, &strip.name, options.title, options.title.x + 2.0, p.text);
+
+    // Where it comes from (TDD §15.4). Above the output row, so the column
+    // reads top to bottom as a signal path.
+    if !options.input.is_empty() {
+        let lit = hovering(OptionsHit::Input);
+        fill_rect_rounded(
+            scene,
+            options.input,
+            m.corner_radius * 0.5,
+            if lit { p.border } else { p.panel_header },
+        );
+        let caption = chrome.input_label.clone();
+        row_text(
+            scene,
+            &caption,
+            options.input,
+            options.input.x + 4.0,
+            if lit { p.text } else { p.text_muted },
+        );
+    }
 
     // Where it goes (§13.2).
     if !options.output.is_empty() {

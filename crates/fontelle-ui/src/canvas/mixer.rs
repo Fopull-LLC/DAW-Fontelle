@@ -209,6 +209,15 @@ pub struct TrackOptionsLayout {
     pub frame: Rect,
     /// The track's name, and where a rename starts.
     pub title: Rect,
+    /// Which audio input this track records from (TDD §15.4). Press to choose
+    /// another.
+    ///
+    /// *"i click a input button that lets my select my mic input to feed to
+    /// that mixer track."* Beside the output row, because they are the same
+    /// question pointed two ways — where the sound comes from and where it
+    /// goes — and a column that reads top to bottom as a signal path is one you
+    /// do not have to hunt in.
+    pub input: Rect,
     /// Where the track's output goes. Press to choose another (§13.2).
     pub output: Rect,
     /// The heading over the chain.
@@ -444,6 +453,7 @@ fn options_layout(
     let mut top = inner.y;
     let title = take(&mut top, inner, row);
     take(&mut top, inner, GAP);
+    let input = take(&mut top, inner, row);
     let output = take(&mut top, inner, row);
     take(&mut top, inner, GAP);
     let inserts_title = take(&mut top, inner, row);
@@ -501,6 +511,7 @@ fn options_layout(
         track,
         frame,
         title,
+        input,
         output,
         inserts_title,
         inserts,
@@ -775,6 +786,8 @@ fn strip_layout(
 pub enum OptionsHit {
     /// The track's name, where a rename starts.
     Rename,
+    /// Which input this track records from (TDD §15.4).
+    Input,
     /// Where the track's output goes (§13.2).
     Output,
     /// Open the effect in this slot.
@@ -831,6 +844,7 @@ impl OptionsHit {
     pub fn tip(self) -> &'static str {
         match self {
             Self::Rename => "This is the track the options below are about",
+            Self::Input => "Which input this track records from",
             Self::Output => "Where this track's sound goes",
             Self::Insert(_) => "Open this effect's controls",
             Self::Bypass(_) => "Switch this effect out, keeping its settings",
@@ -970,6 +984,9 @@ fn options_hit(options: &TrackOptionsLayout, x: f32, y: f32) -> MixerHit {
     }
     if options.add_send.contains(x, y) {
         return MixerHit::Options(OptionsHit::AddSend);
+    }
+    if options.input.contains(x, y) {
+        return MixerHit::Options(OptionsHit::Input);
     }
     if options.output.contains(x, y) {
         return MixerHit::Options(OptionsHit::Output);

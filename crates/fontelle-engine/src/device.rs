@@ -35,6 +35,11 @@ impl std::error::Error for DeviceError {}
 pub struct AudioDevice {
     host: cpal::Host,
     stream: Option<cpal::Stream>,
+    /// The capture stream, when one is open — see
+    /// [`start_input_stream`](AudioDevice::start_input_stream). Separate from
+    /// `stream` because they are opened and closed at different moments: the
+    /// output lives for the session and the input only while a track is armed.
+    input: Option<cpal::Stream>,
 }
 
 impl AudioDevice {
@@ -42,6 +47,7 @@ impl AudioDevice {
         Self {
             host: cpal::default_host(),
             stream: None,
+            input: None,
         }
     }
 
@@ -50,6 +56,153 @@ impl AudioDevice {
             .default_output_device()
             .and_then(|d| d.description().ok())
             .map(|desc| desc.name().to_string())
+    }
+
+    /// Every input the host can see, by name (TDD §15.4).
+    ///
+    /// *"i click a input button that lets my select my mic input."* Names
+    /// rather than handles, because the answer is written into the document —
+    /// a project reopened tomorrow has to find the same microphone, and a
+    /// device index is not the same device twice.
+    ///
+    /// A machine with no microphone gets an empty list, which is a state and
+    /// not a failure.
+    ///
+    /// # Why this is filtered, and how
+    ///
+    /// Found by opening the menu on a real machine: ALSA offered **thirty-two**
+    /// inputs. Four of them were the same Scarlett; most of the rest were
+    /// plumbing — *"Rate Converter Plugin Using Libav/FFmpeg Library"*,
+    /// *"Plugin for channel upmix (4,6,8)"* — and half of them cannot capture
+    /// at all. A menu like that is one nobody can find their microphone in.
+    ///
+    /// So each device is **asked whether it will open**, which is a real
+    /// question rather than a guess at what a name means, and the list is
+    /// deduplicated. On that machine it goes from thirty-two rows to seven.
+    /// The probe costs an open per device, which is fine for something that
+    /// happens when a menu is clicked and would not be if it happened per
+    /// frame.
+    pub fn input_names(&self) -> Vec<String> {
+        let Ok(devices) = self.host.input_devices() else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = Vec::new();
+        for device in devices {
+            // The order matters: `default_input_config` is the expensive half
+            // and the one that makes ALSA print its own complaints, so a
+            // device with no usable name is dropped before it is probed.
+            let Some(name) = device
+                .description()
+                .ok()
+                .map(|desc| desc.name().to_string())
+                .filter(|name| !name.trim().is_empty())
+            else {
+                continue;
+            };
+            if names.contains(&name) {
+                continue;
+            }
+            if device.default_input_config().is_err() {
+                continue;
+            }
+            names.push(name);
+        }
+        names
+    }
+
+    /// The host's default input, **if it is one this program would offer**.
+    ///
+    /// The filter is not pedantry: on the machine this was written on, ALSA's
+    /// `default` PCM describes itself as *"Default Audio Device"* and then
+    /// refuses to open for capture. Naming it anyway would put a device in
+    /// front of somebody that cannot record, which is the one thing this
+    /// question must not do — so the two answers agree by construction.
+    pub fn default_input_name(&self) -> Option<String> {
+        let name = self
+            .host
+            .default_input_device()
+            .and_then(|d| d.description().ok())
+            .map(|desc| desc.name().to_string())
+            .filter(|name| !name.trim().is_empty())?;
+        self.input_names().contains(&name).then_some(name)
+    }
+
+    /// Opens an input stream on the device called `name`, pushing every block
+    /// it delivers into `writer` (TDD §15.4).
+    ///
+    /// Returns the rate and channel count the device actually opened at, which
+    /// are **not** negotiable the way the output's are: a microphone runs at
+    /// what its interface runs at, and asking for something else either fails
+    /// or resamples behind your back. The take records the rate it was
+    /// captured at and the clip player reads it at the ratio to the device's —
+    /// the same arrangement an imported file gets, for the same reason.
+    ///
+    /// The callback does one thing: push and return. §15.4's rule — *"the RT
+    /// thread never touches the filesystem"* — and INVARIANT 1's. Everything
+    /// else, the WAV included, happens on a thread that is allowed to be slow.
+    ///
+    /// Wrapped in `catch_unwind` for the reason the output callback is: a Rust
+    /// panic unwinding across ALSA's C boundary is undefined behaviour and
+    /// hard-aborts the process regardless of its cause.
+    pub fn start_input_stream(
+        &mut self,
+        name: Option<&str>,
+        writer: crate::InputWriter,
+    ) -> Result<(u32, u16), DeviceError> {
+        let device = match name {
+            Some(wanted) => self
+                .host
+                .input_devices()
+                .map_err(|e| DeviceError(e.to_string()))?
+                .find(|device| {
+                    device
+                        .description()
+                        .map(|d| d.name() == wanted)
+                        .unwrap_or(false)
+                })
+                .ok_or_else(|| DeviceError(format!("no input called \u{201c}{wanted}\u{201d}")))?,
+            None => self
+                .host
+                .default_input_device()
+                .ok_or_else(|| DeviceError("no default input device".into()))?,
+        };
+
+        let config = device
+            .default_input_config()
+            .map_err(|e| DeviceError(e.to_string()))?
+            .config();
+        let sample_rate = config.sample_rate;
+        let channels = config.channels;
+
+        let mut writer = ManuallyDrop::new(writer);
+        let mut poisoned = false;
+        let stream = device
+            .build_input_stream(
+                config,
+                move |data: &[f32], _info: &cpal::InputCallbackInfo| {
+                    if poisoned {
+                        return;
+                    }
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        writer.write(data);
+                    }));
+                    if result.is_err() {
+                        eprintln!("fontelle: the input callback panicked; capture stopped");
+                        poisoned = true;
+                    }
+                },
+                |e| eprintln!("fontelle: input stream error: {e}"),
+                None,
+            )
+            .map_err(|e| DeviceError(e.to_string()))?;
+        stream.play().map_err(|e| DeviceError(e.to_string()))?;
+        self.input = Some(stream);
+        Ok((sample_rate, channels))
+    }
+
+    /// Closes the input stream, if one is open.
+    pub fn stop_input(&mut self) {
+        self.input = None;
     }
 
     /// Builds and starts the output stream, driving `graph` from the real

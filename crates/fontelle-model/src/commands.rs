@@ -3210,6 +3210,64 @@ impl Command for RemoveAudioClip {
     }
 }
 
+/// Which audio input a mixer track records from (TDD §15.4).
+///
+/// *"i click a input button that lets my select my mic input to feed to that
+/// mixer track."* A command rather than a plain field write, because it is
+/// written into the document and therefore has to be undoable and has to be
+/// saved — the same reasoning that made the track's output one.
+pub struct SetTrackInput {
+    track: MixerTrackId,
+    input: Option<String>,
+    before: Option<Option<String>>,
+}
+
+impl SetTrackInput {
+    pub fn new(track: MixerTrackId, input: Option<String>) -> Self {
+        Self {
+            track,
+            input,
+            before: None,
+        }
+    }
+}
+
+impl Command for SetTrackInput {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let Some(track) = doc.mixer.tracks.get_mut(self.track) else {
+            return Err(CommandError("that mixer track is not there".into()));
+        };
+        if self.before.is_none() {
+            self.before = Some(track.input.clone());
+        }
+        track.input = self.input.clone();
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.before {
+            Some(input) => Box::new(SetTrackInput::new(self.track, input.clone())),
+            None => Box::new(NotApplied("choosing an input")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Choose input"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() * 2
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// Sets every property of one audio clip at once (TDD §15.1).
 ///
 /// **All of them together**, rather than a command per knob, and the reason is

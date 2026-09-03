@@ -82,6 +82,22 @@ pub struct Session {
     /// [`crate::Realised::audio_nodes`]. Beside the two above and replaced with
     /// them, for the same reason.
     audio_nodes: HashMap<Option<MixerTrackId>, NodeId>,
+    /// What the record button records (TDD §14.7, §15.4) — see
+    /// `fontelle_ui::transport::RecordMode`. Window state rather than
+    /// document state: which kind of thing you are about to capture is no more
+    /// part of a song than which tool is selected is.
+    record_mode: fontelle_ui::transport::RecordMode,
+    /// The audio-input ring, while a capture stream is open, and what the
+    /// device opened at. `None` is a session with no microphone attached,
+    /// which is nearly all of them.
+    input: Option<fontelle_engine::InputReader>,
+    /// The take as it accumulates, drained off the ring by `pump`.
+    input_take: fontelle_engine::InputCapture,
+    input_rate: u32,
+    /// The device the capture stream belongs to. Kept because dropping it
+    /// closes the stream, and a stream closed the moment it was opened is a
+    /// microphone that records nothing with no error anywhere.
+    input_device: Option<fontelle_engine::AudioDevice>,
     /// The live end of every mixer track's fader and meter, as the graph that
     /// is currently playing sees them.
     ///
@@ -284,6 +300,128 @@ pub struct Session {
 const PREVIEW_BUCKETS: usize = 512;
 
 impl Session {
+
+    /// Hands the session the reading end of an audio-input ring, and what the
+    /// device it came from opened at (TDD §15.4).
+    ///
+    /// The device is opened by whoever owns one — the window, or a test that
+    /// pushes samples in by hand — because `AudioDevice` is the engine's and a
+    /// session has no business holding a sound card. What it holds is the ring.
+    pub fn set_audio_input(
+        &mut self,
+        reader: fontelle_engine::InputReader,
+        sample_rate: u32,
+        channels: u16,
+    ) {
+        self.input = Some(reader);
+        self.input_rate = sample_rate;
+        self.input_take = fontelle_engine::InputCapture::new(channels);
+    }
+
+    /// Closes the capture. Whatever had been captured is thrown away — a take
+    /// nobody kept is a take nobody wanted.
+    pub fn clear_audio_input(&mut self) {
+        self.input = None;
+        self.input_take.clear();
+    }
+
+    /// Turns whatever the input has captured into an audio clip on the
+    /// arrangement, and says how many frames it kept (TDD §15.4).
+    ///
+    /// `at` is the song sample recording started at, so the take lands where it
+    /// was played rather than at the top of the song.
+    ///
+    /// **Written to the project's own `recordings/` folder** (§17.1), under a
+    /// name nothing there has: v1 records a new clip per take, and two takes
+    /// sharing a filename would be one take and a clip pointing at somebody
+    /// else's audio.
+    ///
+    /// Nothing captured is nothing kept: no file, no clip, and not a failure.
+    /// Pressing record and stopping without playing is an ordinary thing to do.
+    pub fn keep_audio_take(&mut self, at: fontelle_types::Sample, end_sample: fontelle_types::Sample) -> usize {
+        // Drain whatever is still in the ring first, or the last blocks of the
+        // take — the end of the phrase — are the ones that get lost.
+        self.pump();
+        let _ = end_sample;
+        let frames = self.input_take.frames();
+        if frames == 0 {
+            return 0;
+        }
+        let channels = self.input_take.channels();
+        let rate = if self.input_rate == 0 {
+            self.options.sample_rate
+        } else {
+            self.input_rate
+        };
+        let samples = self.input_take.take();
+
+        let Some(path) = self.take_path() else {
+            self.message = Some("save the project first \u{2014} a take needs somewhere to live".into());
+            return 0;
+        };
+        let mut writer = match fontelle_assets::WavWriter::create(&path, rate, channels) {
+            Ok(writer) => writer,
+            Err(e) => {
+                self.message = Some(e.to_string());
+                return 0;
+            }
+        };
+        if let Err(e) = writer.write(&samples).and_then(|()| writer.finish()) {
+            self.message = Some(e.to_string());
+            return 0;
+        }
+
+        // Straight back in through the ordinary import path, so a take and a
+        // dropped file are the same kind of thing from here on — one code path
+        // for the waveform, the editor, the playback and the undo.
+        match self.import_audio_at(&path, at, self.armed_track()) {
+            Ok(_) => frames,
+            Err(e) => {
+                self.message = Some(e);
+                0
+            }
+        }
+    }
+
+    /// Where the next take goes: `<bundle>/recordings/Take N.wav`, under a name
+    /// nothing in the folder has.
+    ///
+    /// `None` for a project that has never been saved — INVARIANT 10 says
+    /// Fontelle writes nowhere the user has not named, and a take dropped in a
+    /// temp directory is one nobody can find and one a bundle export would
+    /// miss.
+    fn take_path(&self) -> Option<PathBuf> {
+        let bundle = self.bundle.as_ref()?;
+        let dir = bundle.join("recordings");
+        std::fs::create_dir_all(&dir).ok()?;
+        for n in 1..10_000 {
+            let path = dir.join(format!("Take {n}.wav"));
+            if !path.exists() {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    /// The mixer track a take is recorded through, if there is one.
+    ///
+    /// *"when its recording its going through that track."* The **selected**
+    /// strip, which is the one whose input button you just pressed — and
+    /// `None` for the master, which is where a take goes when nobody has built
+    /// a strip for it.
+    fn armed_track(&self) -> Option<MixerTrackId> {
+        let ids = self.mixer_track_ids();
+        let id = ids.get(self.selected_track).copied()?;
+        if Some(id) == self.project.mixer.master {
+            return None;
+        }
+        // Only a track that is actually recording something: a take routed to
+        // whichever strip happened to be selected would surprise anybody who
+        // had clicked one to change its fader.
+        let track = self.project.mixer.tracks.get(id)?;
+        track.input.as_ref().map(|_| id)
+    }
+
     /// The waveform an audio clip's block draws (TDD §15.3).
     ///
     /// See [`PREVIEW_BUCKETS`] for how much of it there is.
@@ -358,6 +496,11 @@ impl Session {
             channel_nodes,
             param_nodes: HashMap::new(),
             audio_nodes: HashMap::new(),
+            record_mode: fontelle_ui::transport::RecordMode::default(),
+            input: None,
+            input_take: fontelle_engine::InputCapture::new(1),
+            input_rate: 0,
+            input_device: None,
             track_controls: HashMap::new(),
             effect_controls: HashMap::new(),
             spectrum_taps: HashMap::new(),
@@ -2167,28 +2310,48 @@ impl Session {
     /// project's tempo map: a clip whose end is not where the sound ends is one
     /// every later trim is measured against wrongly.
     fn import_audio_file(&mut self, path: &Path) -> Result<String, String> {
+        // Where it lands: the time selection's start if there is one, and
+        // otherwise the top of the song. The same rule an imported score
+        // follows.
+        let start = self.project.loop_range.map(|(from, _)| from.max(0)).unwrap_or(0);
+        let at = self.project.tempo_map.tick_to_sample(start);
+        let name = self.import_audio_at(path, at, None)?;
+        Ok(format!("Imported \u{201c}{name}\u{201d}"))
+    }
+
+    /// Brings a sound in at song sample `at`, routed to `track`, and hands back
+    /// what it is called.
+    ///
+    /// The one path a sound arrives by, whether it was dropped on the window,
+    /// picked out of the Import tab, or just recorded — so the waveform, the
+    /// editor, the playback and the undo are one code path rather than two that
+    /// can disagree.
+    fn import_audio_at(
+        &mut self,
+        path: &Path,
+        at: fontelle_types::Sample,
+        track: Option<MixerTrackId>,
+    ) -> Result<String, String> {
         let name = file_label(path);
         let imported = self.library.import_audio(path).map_err(|e| e.to_string())?;
         if imported.frames == 0 || imported.sample_rate == 0 {
             return Err(format!("there is no sound in {name}"));
         }
 
-        // Where it lands: the time selection's start if there is one, and
-        // otherwise the top of the song. The same rule an imported score
-        // follows.
-        let start = self.project.loop_range.map(|(from, _)| from.max(0)).unwrap_or(0);
+        let start = self.project.tempo_map.sample_to_tick(at.max(0)).max(0);
         // Its own duration in ticks, through the tempo map that already owns
         // every sample-to-tick conversion in the project.
         let samples = (imported.frames as f64 * self.options.sample_rate as f64
             / f64::from(imported.sample_rate)) as i64;
-        let at = self.project.tempo_map.tick_to_sample(start);
-        let length = self.project.tempo_map.sample_to_tick(at + samples) - start;
+        let from = self.project.tempo_map.tick_to_sample(start);
+        let length = self.project.tempo_map.sample_to_tick(from + samples) - start;
         let length = length.max(fontelle_model::MIN_CLIP_LENGTH);
 
-        let data = fontelle_types::AudioClipData::whole(
+        let mut data = fontelle_types::AudioClipData::whole(
             imported.asset.clone(),
             imported.frames as fontelle_types::Sample,
         );
+        data.mixer_track = track;
         let command = Box::new(fontelle_model::AddAudioClip::new(
             name.clone(),
             data,
@@ -2200,7 +2363,7 @@ impl Session {
         // and the one they are holding does not have this file in it.
         self.rebuild_graph();
         self.republish();
-        Ok(format!("Imported \u{201c}{name}\u{201d}"))
+        Ok(name)
     }
 
     /// Imports an FL Studio score into the clip that is open.
@@ -3209,6 +3372,92 @@ impl StudioHost for Session {
             "{name} is not something Fontelle can open \u{2014} it reads .wav, .flac, .mp3, \
              .ogg, .mid, .fsc and .sf2 files"
         ))
+    }
+
+    fn record_mode(&self) -> fontelle_ui::transport::RecordMode {
+        self.record_mode
+    }
+
+    fn set_record_mode(&mut self, mode: fontelle_ui::transport::RecordMode) {
+        self.record_mode = mode;
+        self.revision += 1;
+    }
+
+    fn audio_inputs(&self) -> Vec<String> {
+        // Asked of the host every time rather than cached: a microphone
+        // plugged in while the window is open should appear in the menu, and
+        // enumerating a handful of devices costs nothing beside opening one.
+        fontelle_engine::AudioDevice::default_host().input_names()
+    }
+
+    fn track_input(&self, strip: usize) -> Option<String> {
+        let id = self.mixer_track_ids().get(strip).copied()?;
+        self.project.mixer.tracks.get(id)?.input.clone()
+    }
+
+    fn set_track_input(&mut self, strip: usize, input: Option<String>) {
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return;
+        };
+        self.run(Box::new(fontelle_model::SetTrackInput::new(id, input)));
+        self.history.break_gesture();
+    }
+
+    fn open_audio_input(&mut self) -> Result<String, String> {
+        let ids = self.mixer_track_ids();
+        let Some(id) = ids.get(self.selected_track).copied() else {
+            return Err("choose a mixer track to record through first".into());
+        };
+        let Some(name) = self
+            .project
+            .mixer
+            .tracks
+            .get(id)
+            .and_then(|track| track.input.clone())
+        else {
+            return Err(
+                "that track has no input \u{2014} click its input button and choose one".into(),
+            );
+        };
+        let mut device = fontelle_engine::AudioDevice::default_host();
+        // A second of audio at 48 kHz stereo, which is orders of magnitude more
+        // than the gap between two drains. §15.4's ring, sized so a stall in
+        // the window cannot cost a take.
+        let (writer, reader) = fontelle_engine::input_capture_channel(96_000 * 2);
+        match device.start_input_stream(Some(&name), writer) {
+            Ok((rate, channels)) => {
+                self.set_audio_input(reader, rate, channels);
+                // The device is kept, or the stream is dropped and closed the
+                // moment this returns.
+                self.input_device = Some(device);
+                Ok(name)
+            }
+            Err(e) => Err(format!("could not open \u{201c}{name}\u{201d}: {e}")),
+        }
+    }
+
+    fn close_audio_input(&mut self) {
+        self.clear_audio_input();
+        self.input_device = None;
+    }
+
+    fn discard_audio_take(&mut self) {
+        // The ring first: what is in it is the count-in bar, and leaving it
+        // there would put a woodblock at the front of the take.
+        self.pump();
+        self.input_take.clear();
+    }
+
+    fn samples_per_beat(&self) -> fontelle_types::Sample {
+        i64::from(crate::beat_samples(&self.project))
+    }
+
+    fn keep_audio_take(
+        &mut self,
+        at: fontelle_types::Sample,
+        end_sample: fontelle_types::Sample,
+    ) -> usize {
+        Session::keep_audio_take(self, at, end_sample)
     }
 
     fn audio_clip(&self, clip: ClipId) -> Option<fontelle_types::AudioClipData> {
@@ -4651,6 +4900,15 @@ impl StudioHost for Session {
         // being played — the same rule the CLI's own recording loop follows.
         if let Some(capture) = &mut self.capture {
             capture.drain_into(&mut self.take);
+        }
+        // And the audio input's, for the same reason: a ring nobody empties
+        // fills, and a full ring is a take with a hole in it.
+        if let Some(input) = &mut self.input {
+            let mut block = Vec::new();
+            input.drain_into(&mut block);
+            if !block.is_empty() {
+                self.input_take.push(&block);
+            }
         }
         if let Some(graphs) = &mut self.graphs {
             // Where a `CompiledGraph` the audio thread stopped using is freed:

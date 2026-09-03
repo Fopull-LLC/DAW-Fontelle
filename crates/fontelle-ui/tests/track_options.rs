@@ -559,3 +559,65 @@ fn a_column_too_short_for_the_sends_keeps_the_chain() {
         assert!(row.frame.y >= o.frame.y - 1e-3);
     }
 }
+
+// ---------------------------------------------------------- the input ---
+//
+// Reported from using the window:
+//
+// > *"basically i go in the mixer make a new track, name it to like mic or
+// > something then i click a input button that lets my select my mic input to
+// > feed to that mixer track."*
+//
+// A row of its own beside the output row, because they are the same question
+// pointed two ways: where the sound comes from, and where it goes. Next to each
+// other so a strip reads top to bottom as a signal path.
+
+#[test]
+fn the_options_column_carries_an_input_row_beside_the_output_one() {
+    let l = mixer_layout_for(body(), &metrics(), &strips(), 0, Some(0));
+    let o = l.options.as_ref().expect("an options column");
+    assert!(!o.input.is_empty(), "there is nowhere to choose an input");
+    assert!(!o.input.intersects(&o.output), "the two rows overlap");
+    assert!(!o.input.intersects(&o.title));
+    assert_eq!(o.input.intersection(&o.frame), o.input, "it escapes the column");
+    // Beside the output, not somewhere down among the effects: where a signal
+    // comes from belongs with where it goes.
+    assert!(
+        (o.input.y - o.output.y).abs() < o.frame.height / 3.0,
+        "the input row is nowhere near the output row"
+    );
+}
+
+#[test]
+fn clicking_the_input_row_asks_about_the_input() {
+    let l = mixer_layout_for(body(), &metrics(), &strips(), 0, Some(0));
+    let o = l.options.as_ref().expect("an options column");
+    let (x, y) = centre(o.input);
+    assert_eq!(mixer_hit(&l, x, y), MixerHit::Options(OptionsHit::Input));
+    assert!(!OptionsHit::Input.tip().is_empty());
+}
+
+#[test]
+fn the_input_row_never_overlaps_anything_else_in_the_column() {
+    let o = options(0);
+    let parts: Vec<(&str, Rect)> = vec![
+        ("title", o.title),
+        ("input", o.input),
+        ("output", o.output),
+        ("inserts title", o.inserts_title),
+        ("add insert", o.add_insert),
+        ("sends title", o.sends_title),
+        ("add send", o.add_send),
+    ];
+    for (i, (a_name, a)) in parts.iter().enumerate() {
+        if a.is_empty() {
+            continue;
+        }
+        for (b_name, b) in parts.iter().skip(i + 1) {
+            if b.is_empty() {
+                continue;
+            }
+            assert!(!a.intersects(b), "{a_name} is over {b_name}");
+        }
+    }
+}

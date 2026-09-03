@@ -11,6 +11,7 @@ mod midi_import;
 mod peaks;
 mod sf2_import;
 mod sfz_import;
+mod wav_writer;
 
 pub use fsc_import::{FscNote, FscScore, import_fsc, read_fsc};
 pub use library::{LibraryEntry, SoundfontLibrary};
@@ -26,3 +27,4 @@ pub use sf2_import::{
     import_sf2_preset, list_presets, load_sf2_samples,
 };
 pub use sfz_import::import_sfz;
+pub use wav_writer::WavWriter;

@@ -3,6 +3,7 @@
 //! allocates, locks, blocks, or performs a syscall — enforced in debug/test builds
 //! by [`rt_guard::RtGuardAllocator`].
 
+mod audio_input;
 mod device;
 mod effect_channel;
 mod graph;
@@ -15,6 +16,7 @@ mod spectrum_tap;
 mod timeline_channel;
 mod transport;
 
+pub use audio_input::{InputCapture, InputReader, InputWriter, input_capture_channel};
 pub use device::{AudioDevice, BLOCK_SIZE, DeviceError};
 pub use effect_channel::{EffectControls, EffectSource, effect_channel};
 pub use fontelle_fx::LimiterConfig;

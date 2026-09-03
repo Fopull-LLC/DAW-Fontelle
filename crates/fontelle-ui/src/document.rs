@@ -1317,6 +1317,71 @@ pub trait StudioHost: DocumentHost {
     /// ask for.
     fn move_lane(&mut self, _lane: usize, _delta: isize) {}
 
+    // --- recording (TDD §14.7, §15.4) ---
+    /// What the record button records — see
+    /// [`RecordMode`](crate::transport::RecordMode).
+    ///
+    /// Remembered rather than asked every time: somebody recording eight vocal
+    /// takes should answer once.
+    fn record_mode(&self) -> crate::transport::RecordMode {
+        crate::transport::RecordMode::default()
+    }
+
+    fn set_record_mode(&mut self, _mode: crate::transport::RecordMode) {}
+
+    /// Every audio input the machine has, by name (TDD §15.4).
+    ///
+    /// Empty on a machine with no microphone, which is a state and not a
+    /// failure.
+    fn audio_inputs(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Which input a mixer strip records from, if any.
+    fn track_input(&self, _strip: usize) -> Option<String> {
+        None
+    }
+
+    /// Sets it. `None` is a track that records nothing.
+    fn set_track_input(&mut self, _strip: usize, _input: Option<String>) {}
+
+    /// Opens the capture stream on whatever the armed mixer strip's input
+    /// names, and says which one (TDD §15.4).
+    ///
+    /// `Err` carries a sentence for the status line: no strip armed, no input
+    /// chosen, or a microphone that is not there. Opened on **arming** rather
+    /// than on play, so a missing device is reported while you are still
+    /// setting up rather than in the middle of a take.
+    fn open_audio_input(&mut self) -> Result<String, String> {
+        Err(String::new())
+    }
+
+    /// Closes it, throwing away anything captured.
+    fn close_audio_input(&mut self) {}
+
+    /// Throws away what the input has captured so far, keeping the stream open.
+    ///
+    /// What the end of a count-in calls: the bar you were counted in over is
+    /// on the ring too, and a take that began with it would begin with a
+    /// woodblock.
+    fn discard_audio_take(&mut self) {}
+
+    /// How long one beat of this project is, in samples — what a count-in is
+    /// measured in.
+    fn samples_per_beat(&self) -> fontelle_types::Sample {
+        0
+    }
+
+    /// Turns whatever the input captured into an audio clip at song sample
+    /// `at`, and says how many frames it kept.
+    fn keep_audio_take(
+        &mut self,
+        _at: fontelle_types::Sample,
+        _end_sample: fontelle_types::Sample,
+    ) -> usize {
+        0
+    }
+
     // --- recording (TDD §14.7, item 9 of the plan) ---
     /// Turns whatever has been played since recording started into notes on
     /// the open clip, and returns how many.
