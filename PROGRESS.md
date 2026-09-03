@@ -17,7 +17,128 @@ rather than the claim.
 what is still open, and the handful of things about this machine and this
 codebase that cost real time to rediscover.
 
-## 2026-09-03 (latest): files come in, and the roll grows a bench
+## 2026-09-03 (latest): audio arrives — import, playback, an editor, and recording
+
+> *"right now we can basically only do things with soundfonts but i want to also
+> be able to record my voice into the daw or import different sounds and loops
+> and whatnot to make songs with."*
+
+**Where the count went:** 2265 → 2450 across the workspace, 0 failing, clippy
+clean at `-D warnings`. Six commits, each one usable on its own.
+
+### Four things the window got wrong, fixed first
+
+All four reported from using it, and all four the same shape as the ones before:
+the state was right, the geometry was right, and the last step was wrong.
+
+- **A selected automation clip hid its own graph.** The block was filled in the
+  selection colour and the curve was then stroked in that same colour — a line
+  painted onto its own background, so the one moment you most need the shape was
+  the one moment it was gone. An automation block keeps its dark ground now
+  whatever else is true of it and says it is selected with an edge. Asserted in
+  pixels through the real vello pipeline.
+- **Editing a note played it.** There is one rule now: a bare click on an
+  existing note sounds it, and everything else is silent — drawing, painting,
+  moving, resizing, and the arrow keys that stand in for a drag. Which means the
+  audition cannot be decided at press time, because at press time nobody knows
+  yet whether this is a click or the first pixel of a drag: a press *offers* one,
+  three points of slop absorb a hand's jitter, and the release takes it.
+- **The cut tool's line was invisible** — *"often totally invisible for me? still
+  works though."* Both halves were one bug: a drag dirties the panel when it
+  produces an edit and a marquee was special-cased on top of that, but a slice
+  does neither until the button comes up. `draws_overlay` asks the question once
+  rather than listing gestures at each call site.
+- **The Tools panel was one bench.** Every tool's settings and every tool's
+  button at once, which is how a transpose amount came to sit three rows above a
+  button belonging to a different tool — and why the settings tab's *keyboard*
+  transpose read as its missing half. The chip opens a **menu** now and each tool
+  is its own dialog with its own Apply; the settings row says whose transpose it
+  is.
+
+### Audio, in five layers
+
+Each layer is testable without a device, and all of it is tested that way.
+
+**Decode and peaks** (`fontelle-assets`). Symphonia was already a dependency and
+had never been called. The decoder deliberately does *not* resample — a file
+records the rate it was written at and the player reads it at whatever ratio the
+device asks for, because resampling on import throws the original away.
+`generate_peaks` was a `todo!()`; it is min/max per bucket at every
+power-of-two resolution, folded upward from the finest, which makes *"zooming
+out never loses the peak"* true by construction.
+
+**What a clip is** (`fontelle-types::AudioClipData`, §15.1). A reference plus a
+list of numbers: trim, boost, pan, pitch, speed, reverse, two fades, a filter, a
+loop mode, and the file's own rate. It lives in `fontelle-types` because both
+ends need it and the engine may not depend on the document. The filter *is*
+`FilterConfig`, so the cutoff and resonance that were asked for arrive with a
+whole synthesiser filter behind them and no new DSP.
+
+**Playback** (`AudioClipNode`). A clip is not an event and that is the whole
+design: a note compiles to moments the RT thread walks a cursor through, and a
+stream is a range to be inside of. So it compiles to an `AudioPlacement` beside
+the events rather than among them. The node renders the same samples in blocks
+of 1, 7, 85, 128 and 512 — this project has already shipped that bug once,
+audible as bitcrushing — and reads a 44.1 kHz loop on a 48 kHz device at the
+ratio between them.
+
+**The window.** A take arrives on a row of its own with its waveform in it,
+drawn against the clip's own trimmed range in play order, so a reversed clip
+draws backwards and the fades shape the picture exactly as they shape the sound.
+Double-clicking one opens an editor of nineteen rows under four headings.
+`FolderKind` grew an `Audio` variant, which was meant to be the whole change —
+except the Import tab had two *named* chip fields for a two-valued enum, so three
+kinds drew two buttons. Same class as the fourth browser tab that shipped with no
+words on it, fixed the same way.
+
+**Recording.** The record button opens a menu — *"prompts me what i would like to
+record: notes, audio from mic, automation"* — and choosing is what arms. The
+mixer strip grew an input row above its output row. The count-in is not a delay:
+the transport rolls a bar early over the click and the tape starts at the marker.
+The take goes through §15.4's ring (push and return, never allocating, counting
+what it drops) to a WAV whose header is rewritten after every block, into the
+project's own `recordings/`, and then back in through **the same import path a
+dropped file takes**.
+
+### What the window found that no test could
+
+- **Thirty-two microphones.** Opening the input menu on this machine listed every
+  ALSA PCM: the same Scarlett four times, and most of the rest plumbing —
+  *"Rate Converter Plugin Using Libav/FFmpeg Library"*, *"Plugin for channel
+  upmix (4,6,8)"*. The list is filtered by **asking each device whether it will
+  open**, which is a real question rather than a guess at what a name means, and
+  deduplicated: thirty-two rows became seven. The same probe caught a second
+  thing — ALSA's own `default` PCM calls itself *"Default Audio Device"* and then
+  refuses to open for capture — so `default_input_name` goes through the same
+  filter and the window cannot offer a default that cannot record.
+- **A waveform that did not follow its own numbers.** The editor cached the
+  preview beside the properties; the first fade stepped redrew the block on the
+  timeline and left the strip in the window alone. It is read off the
+  arrangement's own list at draw time now, so the two are literally one picture.
+- **A menu opened off the right-hand edge**, which is how the thirty-two-row list
+  was noticed at all.
+
+### What is not done
+
+- **No input monitoring.** The take is captured and plays back; you do not hear
+  yourself through the track while recording. That needs the capture ring routed
+  into the graph — a node and a second ring — and it is where latency and
+  feedback live.
+- **`ClipEq` and `time_lock`** from §15.1 are deliberately absent. Time-lock
+  needs the stretch engine (§3.3, v2); a third tone control on a clip that
+  already carries a whole multimode filter is a panel nobody can read.
+- **Fade handles on the block** (§15.2). The fades are edited in the dialog and
+  drawn on the block; dragging a block's corner does not yet make one, and the
+  automatic crossfade on overlap is not built.
+- **Long files are held whole.** §7.7's streaming threshold is about soundfonts;
+  an audio clip is a take or a loop and holding it is the simple thing that
+  works. A twenty-minute import is twenty minutes of `f32` in memory.
+- **Drag-and-drop is still wired but not watched.** Unchanged from the pass
+  before: `.wav` now joins `.mid`, `.fsc` and `.sf2` in `drop_file`, and all of
+  them are tested, but no XDND drop has been synthesised against the nested
+  server.
+
+## 2026-09-03: files come in, and the roll grows a bench
 
 > *"i want you to help implement a midi and fsc file import feature. should be
 > able to drag the files in or in the piano roll there should be a tools tab

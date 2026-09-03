@@ -4140,6 +4140,38 @@ impl Command for SplitClip {
                 // not what somebody who cut a piece off asked for.
                 left.loop_length = None;
             }
+            // An audio clip is cut by moving **where in the file each half
+            // starts**, which is the only thing there is to move: leaving both
+            // halves pointing at the front would give you the same audio
+            // twice, quietly, with the picture agreeing with it.
+            //
+            // The seam is found the way the *player* finds it — song samples
+            // into the block, at the file's rate, times the clip's own speed —
+            // and not by dividing the source range in proportion to the block.
+            // Proportion is right exactly when the clip is the same length as
+            // its audio; a one-shot on a long block would have its seam put
+            // somewhere it never plays.
+            (ClipSource::Audio(source), ClipSource::Audio(head), ClipSource::Audio(tail)) => {
+                let device_rate = doc.tempo_map.sample_rate_hz().max(1.0);
+                let into_block = doc.tempo_map.tick_to_sample(self.at)
+                    - doc.tempo_map.tick_to_sample(original.start);
+                let clip_frames =
+                    into_block.max(0) as f64 * f64::from(source.sample_rate) / device_rate;
+                let seam = (clip_frames * source.rate()) as Tick;
+                let seam = seam.clamp(0, source.source_frames());
+                if source.reverse {
+                    // A reversed clip plays from its far end back, so the
+                    // **first** half is the last `seam` frames of the range.
+                    head.source_start = source.source_end - seam;
+                    tail.source_end = source.source_end - seam;
+                } else {
+                    head.source_end = source.source_start + seam;
+                    tail.source_start = source.source_start + seam;
+                }
+                // The piece you cut off stops being a loop, for the reason a
+                // note clip's does.
+                left.loop_length = None;
+            }
             (
                 ClipSource::Automation(source),
                 ClipSource::Automation(head),

@@ -181,7 +181,7 @@ fn a_clip_dropped_on_a_track_compiles_to_a_placement_on_that_tracks_player() {
         locked: false,
         order: 0,
     });
-    let mut data = AudioClipData::whole(imported.asset.clone(), imported.frames as i64);
+    let mut data = AudioClipData::whole(imported.asset.clone(), imported.frames as i64, imported.sample_rate);
     data.mixer_track = Some(track);
     project.clips.insert(Clip {
         lane,

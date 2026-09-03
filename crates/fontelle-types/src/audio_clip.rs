@@ -175,6 +175,18 @@ pub struct AudioClipData {
     /// moving these; the file is untouched either way.
     pub source_start: Sample,
     pub source_end: Sample,
+    /// The rate the **file** was recorded at.
+    ///
+    /// Held on the clip rather than looked up in whatever is holding the audio,
+    /// because it is what relates the clip's *time* to the file's *frames* and
+    /// two of the things that need it cannot see an audio store: the editor
+    /// showing a fade in milliseconds, and the cut tool deciding where in the
+    /// file a seam falls. A split that guessed proportionally is right exactly
+    /// when the clip is the same length as its audio.
+    ///
+    /// Zero for a clip whose file could not be read, which every reader treats
+    /// as "say nothing about time" rather than dividing by it.
+    pub sample_rate: u32,
     /// *"changing the boost"*.
     pub gain_db: f32,
     /// −1 (left) to 1 (right).
@@ -208,12 +220,13 @@ impl AudioClipData {
     /// exactly like the file, and opening the editor and closing it again has
     /// to not be an edit — which is only true if every knob starts where it
     /// does nothing.
-    pub fn whole(asset: AssetRef, frames: Sample) -> Self {
+    pub fn whole(asset: AssetRef, frames: Sample, sample_rate: u32) -> Self {
         Self {
             asset,
             mixer_track: None,
             source_start: 0,
             source_end: frames.max(0),
+            sample_rate,
             gain_db: 0.0,
             pan: 0.0,
             pitch_semitones: 0.0,
@@ -242,7 +255,17 @@ impl AudioClipData {
                 kind: crate::AssetKind::Sample,
             },
             0,
+            0,
         )
+    }
+
+    /// How long it is, at the file's own rate. Zero when the rate is not
+    /// known.
+    pub fn seconds(&self) -> f64 {
+        if self.sample_rate == 0 {
+            return 0.0;
+        }
+        self.source_frames() as f64 / f64::from(self.sample_rate)
     }
 
     /// How many frames of the file this clip covers.

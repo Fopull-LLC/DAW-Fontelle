@@ -35,7 +35,7 @@ fn an_asset() -> AssetRef {
 
 /// A clip over a file of `frames` frames, everything at its default.
 fn clip(frames: i64) -> AudioClipData {
-    AudioClipData::whole(an_asset(), frames)
+    AudioClipData::whole(an_asset(), frames, 48_000)
 }
 
 // ---------------------------------------------------------- the defaults ---
@@ -73,6 +73,19 @@ fn a_clip_carries_the_mixer_track_it_arrives_on() {
     // when a file is dropped.
     let c = clip(100);
     assert_eq!(c.mixer_track, None);
+}
+
+#[test]
+fn a_clip_remembers_the_rate_its_file_was_recorded_at() {
+    // Not derivable from anything else on the clip, and needed by everything
+    // that has to relate the clip's **time** to the file's **frames**: the
+    // editor showing a fade in milliseconds, and — the one that made this a
+    // field rather than a lookup — the cut tool deciding where in the file a
+    // seam falls. A split that guessed proportionally is right exactly when
+    // the clip is the same length as its audio.
+    let c = AudioClipData::whole(an_asset(), 48_000, 44_100);
+    assert_eq!(c.sample_rate, 44_100);
+    assert!((c.seconds() - 48_000.0 / 44_100.0).abs() < 1e-9);
 }
 
 #[test]

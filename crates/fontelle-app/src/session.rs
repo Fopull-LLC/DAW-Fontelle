@@ -2350,6 +2350,7 @@ impl Session {
         let mut data = fontelle_types::AudioClipData::whole(
             imported.asset.clone(),
             imported.frames as fontelle_types::Sample,
+            imported.sample_rate,
         );
         data.mixer_track = track;
         let command = Box::new(fontelle_model::AddAudioClip::new(
@@ -3468,13 +3469,14 @@ impl StudioHost for Session {
     }
 
     fn audio_clip_rate(&self, clip: ClipId) -> u32 {
-        let Some(ClipSource::Audio(data)) = self.project.clips.get(clip).map(|c| &c.source) else {
-            return 0;
-        };
-        self.library
-            .audio_store()
-            .get(data.asset.id)
-            .map_or(0, |buffer| buffer.sample_rate)
+        // Off the clip, which carries it — see `AudioClipData::sample_rate`.
+        // It used to be looked up in the audio store, which meant a clip whose
+        // file had not been decoded yet read as "no rate" and showed its fades
+        // in nothing.
+        match self.project.clips.get(clip).map(|c| &c.source) {
+            Some(ClipSource::Audio(data)) => data.sample_rate,
+            _ => 0,
+        }
     }
 
     fn set_audio_clip(&mut self, clip: ClipId, data: fontelle_types::AudioClipData) {

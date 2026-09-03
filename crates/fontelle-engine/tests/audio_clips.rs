@@ -95,7 +95,7 @@ fn rig(buffer: AudioBuffer) -> Rig {
 
 impl Rig {
     fn clip(&self, frames: i64) -> AudioClipData {
-        AudioClipData::whole(an_asset(self.asset), frames)
+        AudioClipData::whole(an_asset(self.asset), frames, 48_000)
     }
 
     fn placement(&mut self, data: AudioClipData, start: i64, length: i64) -> AudioPlacement {

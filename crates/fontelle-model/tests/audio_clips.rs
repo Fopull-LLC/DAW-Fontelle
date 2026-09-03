@@ -23,7 +23,7 @@ fn an_asset(name: &str) -> AssetRef {
 }
 
 fn a_clip(name: &str) -> AudioClipData {
-    AudioClipData::whole(an_asset(name), 48_000)
+    AudioClipData::whole(an_asset(name), 48_000, 48_000)
 }
 
 fn import(name: &str, start: i64, length: i64) -> AddAudioClip {
@@ -243,4 +243,118 @@ fn edits_to_two_different_clips_are_two_history_entries() {
     let mut a = SetAudioClip::new(first_id, data_of(&project, first_id));
     let b = SetAudioClip::new(second_id, data_of(&project, second_id));
     assert!(!a.merge_with(&b), "two clips coalesced into one entry");
+}
+
+// ------------------------------------------------------------ cutting one ---
+//
+// *"should work cleanly with all the tools like cutting and whatnot."*
+//
+// A note clip is cut by dealing its notes out either side of the seam; an
+// automation clip by putting a point on the seam so neither half steps. An
+// audio clip is neither: what has to move is **where in the file each half
+// starts**, and a split that left both halves pointing at the front of the file
+// would give you the same audio twice, quietly, with the picture agreeing with
+// it.
+
+use fontelle_model::SplitClip;
+
+/// A take on the arrangement whose **block is exactly as long as its audio**:
+/// 48 000 frames at 48 kHz is one second, and one second at 120 bpm is two
+/// beats. That matters here and nowhere else — the seam is found the way the
+/// player finds it, so a block longer than its audio has cut points that fall
+/// past the end of the take, which is correct and makes for a confusing test.
+const TAKE_LENGTH: i64 = PPQN * 2;
+
+#[test]
+fn cutting_a_take_in_half_gives_two_halves_of_the_take() {
+    let mut project = Project::new("audio");
+    let mut import = AddAudioClip::new("Take.wav", a_clip("Take.wav"), 0, TAKE_LENGTH);
+    import.apply(&mut project).expect("applies");
+    let id = import.clip().expect("a clip");
+    let whole = data_of(&project, id);
+
+    let mut cut = SplitClip::new(id, TAKE_LENGTH / 2);
+    cut.apply(&mut project).expect("cuts");
+
+    let mut clips: Vec<_> = project.clips.iter().map(|(id, c)| (id, c.clone())).collect();
+    clips.sort_by_key(|(_, c)| c.start);
+    assert_eq!(clips.len(), 2);
+
+    let (left, right) = (data_of(&project, clips[0].0), data_of(&project, clips[1].0));
+    assert_eq!(left.source_start, whole.source_start, "the front moved");
+    assert_eq!(
+        left.source_end, right.source_start,
+        "the two halves do not meet: {} then {}",
+        left.source_end, right.source_start
+    );
+    assert_eq!(right.source_end, whole.source_end, "the back moved");
+    // And together they are the take: no frames lost, none played twice.
+    assert_eq!(
+        left.source_frames() + right.source_frames(),
+        whole.source_frames()
+    );
+    assert!(left.source_frames() > 0 && right.source_frames() > 0, "a half is empty");
+}
+
+#[test]
+fn a_cut_lands_where_the_blade_did_rather_than_halfway() {
+    // A quarter of the way along a four-bar clip is a quarter of the way into
+    // the audio, not a half. A split that always divided evenly would be right
+    // exactly once.
+    let mut project = Project::new("audio");
+    let mut import = AddAudioClip::new("Take.wav", a_clip("Take.wav"), 0, TAKE_LENGTH);
+    import.apply(&mut project).expect("applies");
+    let id = import.clip().expect("a clip");
+    let whole = data_of(&project, id);
+
+    let mut cut = SplitClip::new(id, TAKE_LENGTH / 4);
+    cut.apply(&mut project).expect("cuts");
+    let mut clips: Vec<_> = project.clips.iter().map(|(id, c)| (id, c.clone())).collect();
+    clips.sort_by_key(|(_, c)| c.start);
+    let left = data_of(&project, clips[0].0);
+    let quarter = whole.source_frames() / 4;
+    assert!(
+        (left.source_frames() - quarter).abs() <= 2,
+        "a quarter of {} frames came out as {}",
+        whole.source_frames(),
+        left.source_frames()
+    );
+}
+
+#[test]
+fn cutting_a_reversed_take_keeps_both_halves_reversed_and_in_order() {
+    // The pieces are still the pieces: what you hear from the left half is the
+    // first half of what the whole clip played, backwards audio and all.
+    let mut project = Project::new("audio");
+    let mut data = a_clip("Take.wav");
+    data.reverse = true;
+    let mut import = AddAudioClip::new("Take.wav", data, 0, TAKE_LENGTH);
+    import.apply(&mut project).expect("applies");
+    let id = import.clip().expect("a clip");
+
+    let mut cut = SplitClip::new(id, TAKE_LENGTH / 2);
+    cut.apply(&mut project).expect("cuts");
+    for (_, clip) in project.clips.iter() {
+        let ClipSource::Audio(data) = &clip.source else {
+            panic!("not audio")
+        };
+        assert!(data.reverse, "a half forgot it was reversed");
+        assert!(data.source_frames() > 0, "a half has no audio in it");
+    }
+}
+
+#[test]
+fn cutting_a_take_undoes_back_to_one_take() {
+    let mut project = Project::new("audio");
+    let mut import = AddAudioClip::new("Take.wav", a_clip("Take.wav"), 0, TAKE_LENGTH);
+    import.apply(&mut project).expect("applies");
+    let id = import.clip().expect("a clip");
+    let whole = data_of(&project, id);
+
+    let mut cut = SplitClip::new(id, TAKE_LENGTH / 2);
+    cut.apply(&mut project).expect("cuts");
+    cut.invert().apply(&mut project).expect("uncuts");
+
+    assert_eq!(project.clips.len(), 1);
+    assert_eq!(data_of(&project, id), whole);
 }

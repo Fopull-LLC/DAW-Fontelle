@@ -98,7 +98,7 @@ impl Rig {
 #[test]
 fn an_audio_clip_becomes_a_placement_at_the_sample_the_tick_maps_to() {
     let mut r = rig();
-    r.place(PPQN * 4, PPQN * 8, AudioClipData::whole(an_asset(), 100_000));
+    r.place(PPQN * 4, PPQN * 8, AudioClipData::whole(an_asset(), 100_000, 48_000));
     let timeline = r.compile();
 
     assert_eq!(timeline.audio.len(), 1);
@@ -113,14 +113,14 @@ fn an_audio_clip_becomes_a_placement_at_the_sample_the_tick_maps_to() {
 fn an_audio_clip_produces_no_events_at_all() {
     // It is not a note and it must not look like one to anything downstream.
     let mut r = rig();
-    r.place(0, PPQN * 4, AudioClipData::whole(an_asset(), 100_000));
+    r.place(0, PPQN * 4, AudioClipData::whole(an_asset(), 100_000, 48_000));
     assert!(r.compile().events.is_empty());
 }
 
 #[test]
 fn a_muted_clip_is_not_placed() {
     let mut r = rig();
-    let id = r.place(0, PPQN * 4, AudioClipData::whole(an_asset(), 1000));
+    let id = r.place(0, PPQN * 4, AudioClipData::whole(an_asset(), 1000, 48_000));
     r.project.clips[id].muted = true;
     assert!(r.compile().audio.is_empty());
 }
@@ -128,7 +128,7 @@ fn a_muted_clip_is_not_placed() {
 #[test]
 fn a_clip_on_a_muted_lane_is_not_placed() {
     let mut r = rig();
-    let id = r.place(0, PPQN * 4, AudioClipData::whole(an_asset(), 1000));
+    let id = r.place(0, PPQN * 4, AudioClipData::whole(an_asset(), 1000, 48_000));
     let lane = r.project.clips[id].lane;
     r.project.lanes[lane].muted = true;
     assert!(r.compile().audio.is_empty());
@@ -139,7 +139,7 @@ fn a_clip_routed_to_a_track_with_no_player_is_left_out_rather_than_panicking() {
     // The document can name a mixer track before the graph has caught up with
     // it — a clip dropped on a track made the same frame.
     let mut r = rig();
-    let id = r.place(0, PPQN * 4, AudioClipData::whole(an_asset(), 1000));
+    let id = r.place(0, PPQN * 4, AudioClipData::whole(an_asset(), 1000, 48_000));
     let elsewhere = r.project.mixer.tracks.insert(fontelle_model::MixerTrack::new("Other"));
     let ClipSource::Audio(data) = &mut r.project.clips[id].source else {
         unreachable!()
@@ -155,7 +155,7 @@ fn a_looped_clip_carries_its_period_in_samples() {
     // one range that comes round. Unrolling it would also make a sixteen-bar
     // one-bar loop sixteen filter states instead of one.
     let mut r = rig();
-    let id = r.place(0, PPQN * 16, AudioClipData::whole(an_asset(), 100_000));
+    let id = r.place(0, PPQN * 16, AudioClipData::whole(an_asset(), 100_000, 48_000));
     r.project.clips[id].loop_length = Some(PPQN * 4);
     let timeline = r.compile();
 
@@ -168,7 +168,7 @@ fn the_placement_carries_the_clips_own_properties() {
     // The player reads them on the audio thread and has no way to ask the
     // document anything (INVARIANT 4), so they travel with the placement.
     let mut r = rig();
-    let mut data = AudioClipData::whole(an_asset(), 100_000);
+    let mut data = AudioClipData::whole(an_asset(), 100_000, 48_000);
     data.gain_db = -4.5;
     data.reverse = true;
     r.place(0, PPQN * 4, data);
@@ -180,8 +180,8 @@ fn the_placement_carries_the_clips_own_properties() {
 #[test]
 fn clip_mode_leaves_out_every_clip_but_the_one_being_edited() {
     let mut r = rig();
-    let first = r.place(0, PPQN * 4, AudioClipData::whole(an_asset(), 1000));
-    r.place(PPQN * 8, PPQN * 4, AudioClipData::whole(an_asset(), 1000));
+    let first = r.place(0, PPQN * 4, AudioClipData::whole(an_asset(), 1000, 48_000));
+    r.place(PPQN * 8, PPQN * 4, AudioClipData::whole(an_asset(), 1000, 48_000));
 
     let audio: HashMap<Option<MixerTrackId>, NodeId> =
         [(Some(r.track), r.player)].into_iter().collect();
@@ -202,7 +202,7 @@ fn a_clip_on_the_master_is_placed_on_whatever_plays_the_master() {
     // `None` is the master, matching `Channel::mixer_track`, and a file dropped
     // on the arrangement before anybody has built a mixer track has to sound.
     let mut r = rig();
-    let id = r.place(0, PPQN * 4, AudioClipData::whole(an_asset(), 1000));
+    let id = r.place(0, PPQN * 4, AudioClipData::whole(an_asset(), 1000, 48_000));
     let ClipSource::Audio(data) = &mut r.project.clips[id].source else {
         unreachable!()
     };

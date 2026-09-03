@@ -48,6 +48,7 @@ fn a_clip() -> AudioClipData {
             kind: AssetKind::Sample,
         },
         48_000,
+        48_000,
     )
 }
 
