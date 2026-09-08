@@ -358,3 +358,99 @@ fn active_sensing_and_clock_produce_nothing() {
     }
     assert!(out.events.is_empty());
 }
+
+// ------------------------------- the wheels reach the instrument (2026-09-05)
+
+/// A mod wheel is forwarded as a **controller** event, on the router's
+/// current target.
+///
+/// Until now every controller but the sustain pedal was dropped at the
+/// router — *"a keyboard's wheels reach nothing"* — because the nodes they
+/// would address exposed no parameters. Hosted plugins do, and so do the
+/// built-in instruments soon; the router now forwards what it decodes, as
+/// performance events rather than as automation (`EventPayload::Controller`
+/// is not a `ParamValue`: it has no §8.2 address, it is what a hand did).
+#[test]
+fn a_mod_wheel_is_forwarded_as_a_controller() {
+    let mut r = router(DeviceMapping::default());
+    let mut out = Recorder::default();
+    assert_eq!(r.handle(&[CC, 1, 100], &mut out), 1);
+    assert_eq!(out.events.len(), 1);
+    assert!(
+        matches!(
+            out.events[0].payload,
+            EventPayload::Controller {
+                controller: 1,
+                value: 100
+            }
+        ),
+        "{:?}",
+        out.events[0].payload
+    );
+    assert_eq!(out.events[0].target, target());
+}
+
+/// Pitch bend arrives centred at zero, the way the decoder reads it.
+#[test]
+fn a_pitch_bend_is_forwarded_centred_at_zero() {
+    let mut r = router(DeviceMapping::default());
+    let mut out = Recorder::default();
+    r.handle(&[0xE0, 0x00, 0x40], &mut out);
+    r.handle(&[0xE0, 0x7F, 0x7F], &mut out);
+    r.handle(&[0xE0, 0x00, 0x00], &mut out);
+    let bends: Vec<i16> = out
+        .events
+        .iter()
+        .filter_map(|e| match e.payload {
+            EventPayload::PitchBend { value } => Some(value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bends, vec![0, 8191, -8192]);
+}
+
+/// Channel pressure — aftertouch — is forwarded too.
+#[test]
+fn channel_pressure_is_forwarded() {
+    let mut r = router(DeviceMapping::default());
+    let mut out = Recorder::default();
+    r.handle(&[0xD0, 64], &mut out);
+    assert!(matches!(
+        out.events[0].payload,
+        EventPayload::ChannelPressure { value: 64 }
+    ));
+}
+
+/// The sustain pedal is **still the router's own**: it defers note-offs
+/// rather than being forwarded, exactly as before, so an instrument never
+/// sees CC 64 and the router's bookkeeping stays the one that holds notes.
+#[test]
+fn the_sustain_pedal_is_not_forwarded_as_a_controller() {
+    let mut r = router(DeviceMapping::default());
+    let mut out = Recorder::default();
+    assert_eq!(r.handle(&[CC, 64, 127], &mut out), 0);
+    assert_eq!(r.handle(&[CC, 64, 0], &mut out), 0);
+    assert!(out.events.is_empty(), "{:?}", out.events);
+}
+
+/// A controller on a channel the device filter excludes goes nowhere, like
+/// a note on that channel.
+#[test]
+fn a_controller_on_a_filtered_channel_is_dropped() {
+    let mut r = router(DeviceMapping {
+        channel_filter: Some(2),
+        ..DeviceMapping::default()
+    });
+    let mut out = Recorder::default();
+    assert_eq!(r.handle(&[CC | 5, 1, 100], &mut out), 0);
+    assert_eq!(r.handle(&[CC | 2, 1, 100], &mut out), 1);
+}
+
+/// And a program change still goes nowhere: nothing here takes one, and an
+/// event nothing reads would look like a working feature.
+#[test]
+fn a_program_change_still_goes_nowhere() {
+    let mut r = router(DeviceMapping::default());
+    let mut out = Recorder::default();
+    assert_eq!(r.handle(&[0xC0, 5], &mut out), 0);
+}

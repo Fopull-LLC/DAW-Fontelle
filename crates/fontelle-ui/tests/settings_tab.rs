@@ -46,9 +46,9 @@ fn centre(r: Rect) -> (f32, f32) {
 fn the_panel_has_three_tabs_and_none_of_them_overlap() {
     let l = settings(6);
     let tabs = [
-        ("sounds", l.sounds_tab),
-        ("projects", l.projects_tab),
-        ("settings", l.settings_tab),
+        ("sounds", l.tab(BrowserMode::Sounds)),
+        ("projects", l.tab(BrowserMode::Projects)),
+        ("settings", l.tab(BrowserMode::Settings)),
     ];
     for (name, tab) in tabs {
         assert!(!tab.is_empty(), "the {name} tab has nowhere to go");
@@ -60,7 +60,10 @@ fn the_panel_has_three_tabs_and_none_of_them_overlap() {
     }
     for (i, (a_name, a)) in tabs.iter().enumerate() {
         for (b_name, b) in tabs.iter().skip(i + 1) {
-            assert!(!a.intersects(b), "the {a_name} tab is over the {b_name} tab");
+            assert!(
+                !a.intersects(b),
+                "the {a_name} tab is over the {b_name} tab"
+            );
         }
     }
 }
@@ -68,7 +71,7 @@ fn the_panel_has_three_tabs_and_none_of_them_overlap() {
 #[test]
 fn clicking_the_settings_tab_asks_for_that_mode() {
     let l = mode(BrowserMode::Sounds, 4);
-    let (x, y) = centre(l.settings_tab);
+    let (x, y) = centre(l.tab(BrowserMode::Settings));
     assert_eq!(
         browser_hit(&l, x, y),
         BrowserHit::Mode(BrowserMode::Settings)
@@ -76,15 +79,15 @@ fn clicking_the_settings_tab_asks_for_that_mode() {
 }
 
 #[test]
-fn the_tabs_are_the_same_three_places_whichever_one_is_open() {
+fn the_tabs_are_in_the_same_places_whichever_one_is_open() {
     // A tab that moves when you press it is one you have to find again.
     let a = mode(BrowserMode::Sounds, 4);
     let b = mode(BrowserMode::Projects, 4);
     let c = settings(4);
     for l in [&b, &c] {
-        assert_eq!(a.sounds_tab, l.sounds_tab);
-        assert_eq!(a.projects_tab, l.projects_tab);
-        assert_eq!(a.settings_tab, l.settings_tab);
+        for mode in BrowserMode::ALL {
+            assert_eq!(a.tab(mode), l.tab(mode), "{mode:?}");
+        }
     }
 }
 
@@ -97,7 +100,10 @@ fn a_setting_row_reports_itself_the_way_every_other_row_does() {
     let l = settings(6);
     assert!(!l.file_rows.is_empty());
     let (index, rect) = l.file_rows[3];
-    assert_eq!(browser_hit(&l, rect.x + 4.0, rect.y + 2.0), BrowserHit::File(index));
+    assert_eq!(
+        browser_hit(&l, rect.x + 4.0, rect.y + 2.0),
+        BrowserHit::File(index)
+    );
 }
 
 #[test]
@@ -149,9 +155,9 @@ fn the_status_line_still_has_somewhere_to_be() {
 fn nothing_in_the_settings_tab_is_drawn_on_top_of_anything_else() {
     let l = settings(40);
     let named = [
-        ("sounds tab", l.sounds_tab),
-        ("projects tab", l.projects_tab),
-        ("settings tab", l.settings_tab),
+        ("sounds tab", l.tab(BrowserMode::Sounds)),
+        ("projects tab", l.tab(BrowserMode::Projects)),
+        ("settings tab", l.tab(BrowserMode::Settings)),
         ("list", l.files),
         ("status", l.status),
         ("open folder", l.open_folder),
@@ -168,7 +174,10 @@ fn nothing_in_the_settings_tab_is_drawn_on_top_of_anything_else() {
         }
     }
     for (_, row) in &l.file_rows {
-        assert!(row.bottom() <= l.files.bottom() + 0.001, "row {row:?} escapes");
+        assert!(
+            row.bottom() <= l.files.bottom() + 0.001,
+            "row {row:?} escapes"
+        );
     }
 }
 
@@ -185,9 +194,9 @@ fn a_panel_too_small_for_any_of_it_yields_empty_rects_never_negative_ones() {
             0,
         );
         for r in [
-            l.sounds_tab,
-            l.projects_tab,
-            l.settings_tab,
+            l.tab(BrowserMode::Sounds),
+            l.tab(BrowserMode::Projects),
+            l.tab(BrowserMode::Settings),
             l.search,
             l.files,
             l.presets,

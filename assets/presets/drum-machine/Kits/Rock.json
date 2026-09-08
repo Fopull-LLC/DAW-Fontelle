@@ -1,0 +1,1581 @@
+{
+  "format_version": 1,
+  "device": {
+    "instrument": "DrumMachine"
+  },
+  "name": "Rock",
+  "category": "Kits",
+  "payload": {
+    "patch": {
+      "format_version": 1,
+      "body": {
+        "envelopes": [
+          {
+            "attack_s": 0.0,
+            "attack_shape": 0.0,
+            "curve": "Decibel",
+            "decay_s": 0.0,
+            "decay_shape": 0.0,
+            "delay_s": 0.0,
+            "hold_s": 0.0,
+            "release_s": 4.0,
+            "release_shape": 0.0,
+            "sustain_level": 1.0
+          },
+          {
+            "attack_s": 0.0,
+            "attack_shape": 0.0,
+            "curve": "Decibel",
+            "decay_s": 0.30000001192092896,
+            "decay_shape": 0.0,
+            "delay_s": 0.0,
+            "hold_s": 0.0,
+            "release_s": 0.10000000149011612,
+            "release_shape": 0.0,
+            "sustain_level": 0.0
+          }
+        ],
+        "filters": [
+          {
+            "character": 0.0,
+            "cutoff_hz": 20000.0,
+            "drive": 0.0,
+            "enabled": true,
+            "key_track": 0.0,
+            "mode": "Lowpass",
+            "model": "Clean",
+            "resonance": 0.699999988079071,
+            "slope": "Db12"
+          },
+          {
+            "character": 0.0,
+            "cutoff_hz": 20.0,
+            "drive": 0.0,
+            "enabled": false,
+            "key_track": 0.0,
+            "mode": "Highpass",
+            "model": "Clean",
+            "resonance": 0.699999988079071,
+            "slope": "Db12"
+          }
+        ],
+        "fx": [],
+        "layers": [
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              35,
+              35
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 35,
+            "source": {
+              "Drum": {
+                "bend_s": 0.07149999588727951,
+                "bend_semitones": 31.200000762939453,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.4829999804496765,
+                "drive": 0.2800000011920929,
+                "gain_db": 0.0,
+                "metal": 0.0,
+                "model": "Kick",
+                "noise": 0.05000000074505806,
+                "snap": 0.3449999988079071,
+                "tone_hz": 336.0,
+                "tune_hz": 39.599998474121094
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              36,
+              36
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 36,
+            "source": {
+              "Drum": {
+                "bend_s": 0.05199999734759331,
+                "bend_semitones": 28.80000114440918,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.39100000262260437,
+                "drive": 0.2800000011920929,
+                "gain_db": 0.0,
+                "metal": 0.0,
+                "model": "Kick",
+                "noise": 0.05999999865889549,
+                "snap": 0.46000000834465027,
+                "tone_hz": 440.9999694824219,
+                "tune_hz": 46.79999923706055
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              37,
+              37
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 37,
+            "source": {
+              "Drum": {
+                "bend_s": 0.006000000052154064,
+                "bend_semitones": 12.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.06300000101327896,
+                "drive": 0.2800000011920929,
+                "gain_db": -3.0,
+                "metal": 0.0,
+                "model": "Rim",
+                "noise": 0.550000011920929,
+                "snap": 0.6324999928474426,
+                "tone_hz": 1994.9998779296875,
+                "tune_hz": 420.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              38,
+              38
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 38,
+            "source": {
+              "Drum": {
+                "bend_s": 0.012000000104308128,
+                "bend_semitones": 6.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.26600000262260437,
+                "drive": 0.2800000011920929,
+                "gain_db": -1.0,
+                "metal": 0.0,
+                "model": "Snare",
+                "noise": 0.6000000238418579,
+                "snap": 0.4024999737739563,
+                "tone_hz": 1574.9998779296875,
+                "tune_hz": 180.5
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              39,
+              39
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 39,
+            "source": {
+              "Drum": {
+                "bend_s": 0.009999999776482582,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.30799999833106995,
+                "drive": 0.2800000011920929,
+                "gain_db": -2.0,
+                "metal": 0.0,
+                "model": "Clap",
+                "noise": 1.0,
+                "snap": 0.23000000417232513,
+                "tone_hz": 1364.9998779296875,
+                "tune_hz": 300.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              40,
+              40
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 40,
+            "source": {
+              "Drum": {
+                "bend_s": 0.009999999776482582,
+                "bend_semitones": 5.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.18199999630451202,
+                "drive": 0.2800000011920929,
+                "gain_db": -2.0,
+                "metal": 0.0,
+                "model": "Snare",
+                "noise": 0.6000000238418579,
+                "snap": 0.5174999833106995,
+                "tone_hz": 2205.0,
+                "tune_hz": 228.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              41,
+              41
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 41,
+            "source": {
+              "Drum": {
+                "bend_s": 0.09099999815225601,
+                "bend_semitones": 9.600000381469727,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.75,
+                "drive": 0.2800000011920929,
+                "gain_db": -3.0,
+                "metal": 0.0,
+                "model": "Tom",
+                "noise": 0.10000000149011612,
+                "snap": 0.23000000417232513,
+                "tone_hz": 734.9999389648438,
+                "tune_hz": 92.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              42,
+              42
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 42,
+            "source": {
+              "Drum": {
+                "bend_s": 0.004999999888241291,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.054999999701976776,
+                "drive": 0.2800000011920929,
+                "gain_db": -7.0,
+                "metal": 0.0,
+                "model": "ClosedHat",
+                "noise": 1.0,
+                "snap": 0.17249999940395355,
+                "tone_hz": 8610.0,
+                "tune_hz": 320.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              43,
+              43
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 43,
+            "source": {
+              "Drum": {
+                "bend_s": 0.08449999243021011,
+                "bend_semitones": 9.600000381469727,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.6749999523162842,
+                "drive": 0.2800000011920929,
+                "gain_db": -3.0,
+                "metal": 0.0,
+                "model": "Tom",
+                "noise": 0.10000000149011612,
+                "snap": 0.23000000417232513,
+                "tone_hz": 818.9999389648438,
+                "tune_hz": 110.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              44,
+              44
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 44,
+            "source": {
+              "Drum": {
+                "bend_s": 0.004999999888241291,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.07500000298023224,
+                "drive": 0.2800000011920929,
+                "gain_db": -8.0,
+                "metal": 0.0,
+                "model": "ClosedHat",
+                "noise": 1.0,
+                "snap": 0.11500000208616257,
+                "tone_hz": 7139.99951171875,
+                "tune_hz": 300.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              45,
+              45
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 45,
+            "source": {
+              "Drum": {
+                "bend_s": 0.07799999415874481,
+                "bend_semitones": 9.600000381469727,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.6000000238418579,
+                "drive": 0.2800000011920929,
+                "gain_db": -3.0,
+                "metal": 0.0,
+                "model": "Tom",
+                "noise": 0.10000000149011612,
+                "snap": 0.23000000417232513,
+                "tone_hz": 892.4999389648438,
+                "tune_hz": 132.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              46,
+              46
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 46,
+            "source": {
+              "Drum": {
+                "bend_s": 0.004999999888241291,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.41999998688697815,
+                "drive": 0.2800000011920929,
+                "gain_db": -8.0,
+                "metal": 0.0,
+                "model": "OpenHat",
+                "noise": 1.0,
+                "snap": 0.1379999965429306,
+                "tone_hz": 8189.99951171875,
+                "tune_hz": 320.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              47,
+              47
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 47,
+            "source": {
+              "Drum": {
+                "bend_s": 0.07149999588727951,
+                "bend_semitones": 9.600000381469727,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.5400000214576721,
+                "drive": 0.2800000011920929,
+                "gain_db": -3.0,
+                "metal": 0.0,
+                "model": "Tom",
+                "noise": 0.10000000149011612,
+                "snap": 0.23000000417232513,
+                "tone_hz": 944.9999389648438,
+                "tune_hz": 158.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              48,
+              48
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 48,
+            "source": {
+              "Drum": {
+                "bend_s": 0.06499999761581421,
+                "bend_semitones": 9.600000381469727,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.47999998927116394,
+                "drive": 0.2800000011920929,
+                "gain_db": -3.0,
+                "metal": 0.0,
+                "model": "Tom",
+                "noise": 0.10000000149011612,
+                "snap": 0.23000000417232513,
+                "tone_hz": 1029.0,
+                "tune_hz": 186.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              49,
+              49
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 49,
+            "source": {
+              "Drum": {
+                "bend_s": 0.004999999888241291,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 1.600000023841858,
+                "drive": 0.2800000011920929,
+                "gain_db": -10.0,
+                "metal": 0.0,
+                "model": "Cymbal",
+                "noise": 1.0,
+                "snap": 0.11500000208616257,
+                "tone_hz": 5459.99951171875,
+                "tune_hz": 520.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              50,
+              50
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 50,
+            "source": {
+              "Drum": {
+                "bend_s": 0.05849999934434891,
+                "bend_semitones": 9.600000381469727,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.42000001668930054,
+                "drive": 0.2800000011920929,
+                "gain_db": -3.0,
+                "metal": 0.0,
+                "model": "Tom",
+                "noise": 0.10000000149011612,
+                "snap": 0.23000000417232513,
+                "tone_hz": 1102.5,
+                "tune_hz": 220.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              51,
+              51
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 51,
+            "source": {
+              "Drum": {
+                "bend_s": 0.004999999888241291,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 1.2000000476837158,
+                "drive": 0.2800000011920929,
+                "gain_db": -11.0,
+                "metal": 0.0,
+                "model": "Cymbal",
+                "noise": 1.0,
+                "snap": 0.2529999911785126,
+                "tone_hz": 7769.99951171875,
+                "tune_hz": 620.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              52,
+              52
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 52,
+            "source": {
+              "Drum": {
+                "bend_s": 0.004999999888241291,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 1.100000023841858,
+                "drive": 0.2800000011920929,
+                "gain_db": -11.0,
+                "metal": 0.0,
+                "model": "Cymbal",
+                "noise": 1.0,
+                "snap": 0.16099999845027924,
+                "tone_hz": 4410.0,
+                "tune_hz": 470.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              53,
+              53
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 53,
+            "source": {
+              "Drum": {
+                "bend_s": 0.004999999888241291,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.44999998807907104,
+                "drive": 0.2800000011920929,
+                "gain_db": -10.0,
+                "metal": 0.0,
+                "model": "Cowbell",
+                "noise": 0.30000001192092896,
+                "snap": 0.3449999988079071,
+                "tone_hz": 3569.999755859375,
+                "tune_hz": 760.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              54,
+              54
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 54,
+            "source": {
+              "Drum": {
+                "bend_s": 0.004999999888241291,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.1599999964237213,
+                "drive": 0.2800000011920929,
+                "gain_db": -10.0,
+                "metal": 0.0,
+                "model": "ClosedHat",
+                "noise": 1.0,
+                "snap": 0.3449999988079071,
+                "tone_hz": 9975.0,
+                "tune_hz": 500.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              55,
+              55
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 55,
+            "source": {
+              "Drum": {
+                "bend_s": 0.004999999888241291,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.699999988079071,
+                "drive": 0.2800000011920929,
+                "gain_db": -11.0,
+                "metal": 0.0,
+                "model": "Cymbal",
+                "noise": 1.0,
+                "snap": 0.1379999965429306,
+                "tone_hz": 8820.0,
+                "tune_hz": 700.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              56,
+              56
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 56,
+            "source": {
+              "Drum": {
+                "bend_s": 0.004999999888241291,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.3199999928474426,
+                "drive": 0.2800000011920929,
+                "gain_db": -8.0,
+                "metal": 0.0,
+                "model": "Cowbell",
+                "noise": 0.15000000596046448,
+                "snap": 0.2874999940395355,
+                "tone_hz": 2729.999755859375,
+                "tune_hz": 540.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              57,
+              57
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 57,
+            "source": {
+              "Drum": {
+                "bend_s": 0.004999999888241291,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 1.399999976158142,
+                "drive": 0.2800000011920929,
+                "gain_db": -10.0,
+                "metal": 0.0,
+                "model": "Cymbal",
+                "noise": 1.0,
+                "snap": 0.11500000208616257,
+                "tone_hz": 6299.99951171875,
+                "tune_hz": 580.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              58,
+              58
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 58,
+            "source": {
+              "Drum": {
+                "bend_s": 0.019999999552965164,
+                "bend_semitones": 4.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.6000000238418579,
+                "drive": 0.2800000011920929,
+                "gain_db": -10.0,
+                "metal": 0.0,
+                "model": "Perc",
+                "noise": 0.699999988079071,
+                "snap": 0.46000000834465027,
+                "tone_hz": 3149.999755859375,
+                "tune_hz": 340.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              59,
+              59
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 59,
+            "source": {
+              "Drum": {
+                "bend_s": 0.004999999888241291,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 1.0,
+                "drive": 0.2800000011920929,
+                "gain_db": -11.0,
+                "metal": 0.0,
+                "model": "Cymbal",
+                "noise": 1.0,
+                "snap": 0.23000000417232513,
+                "tone_hz": 8400.0,
+                "tune_hz": 660.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              60,
+              60
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 60,
+            "source": {
+              "Drum": {
+                "bend_s": 0.017999999225139618,
+                "bend_semitones": 5.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.1599999964237213,
+                "drive": 0.2800000011920929,
+                "gain_db": -6.0,
+                "metal": 0.0,
+                "model": "Perc",
+                "noise": 0.1599999964237213,
+                "snap": 0.3449999988079071,
+                "tone_hz": 1889.9998779296875,
+                "tune_hz": 340.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              61,
+              61
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 61,
+            "source": {
+              "Drum": {
+                "bend_s": 0.019999999552965164,
+                "bend_semitones": 5.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.1899999976158142,
+                "drive": 0.2800000011920929,
+                "gain_db": -6.0,
+                "metal": 0.0,
+                "model": "Perc",
+                "noise": 0.1599999964237213,
+                "snap": 0.32199999690055847,
+                "tone_hz": 1574.9998779296875,
+                "tune_hz": 260.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              62,
+              62
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 62,
+            "source": {
+              "Drum": {
+                "bend_s": 0.014000000432133675,
+                "bend_semitones": 4.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.10000000149011612,
+                "drive": 0.2800000011920929,
+                "gain_db": -6.0,
+                "metal": 0.0,
+                "model": "Perc",
+                "noise": 0.2199999988079071,
+                "snap": 0.39100000262260437,
+                "tone_hz": 1679.9998779296875,
+                "tune_hz": 300.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              63,
+              63
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 63,
+            "source": {
+              "Drum": {
+                "bend_s": 0.024000000208616257,
+                "bend_semitones": 5.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.23999999463558197,
+                "drive": 0.2800000011920929,
+                "gain_db": -6.0,
+                "metal": 0.0,
+                "model": "Perc",
+                "noise": 0.14000000059604645,
+                "snap": 0.29899999499320984,
+                "tone_hz": 1364.9998779296875,
+                "tune_hz": 230.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              64,
+              64
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 64,
+            "source": {
+              "Drum": {
+                "bend_s": 0.02800000086426735,
+                "bend_semitones": 5.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.30000001192092896,
+                "drive": 0.2800000011920929,
+                "gain_db": -6.0,
+                "metal": 0.0,
+                "model": "Perc",
+                "noise": 0.11999999731779099,
+                "snap": 0.2759999930858612,
+                "tone_hz": 1155.0,
+                "tune_hz": 175.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              65,
+              65
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 65,
+            "source": {
+              "Drum": {
+                "bend_s": 0.01600000075995922,
+                "bend_semitones": 6.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.2199999988079071,
+                "drive": 0.2800000011920929,
+                "gain_db": -7.0,
+                "metal": 0.0,
+                "model": "Perc",
+                "noise": 0.25999999046325684,
+                "snap": 0.46000000834465027,
+                "tone_hz": 2520.0,
+                "tune_hz": 380.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              66,
+              66
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 66,
+            "source": {
+              "Drum": {
+                "bend_s": 0.019999999552965164,
+                "bend_semitones": 6.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.2800000011920929,
+                "drive": 0.2800000011920929,
+                "gain_db": -7.0,
+                "metal": 0.0,
+                "model": "Perc",
+                "noise": 0.23999999463558197,
+                "snap": 0.43699997663497925,
+                "tone_hz": 2100.0,
+                "tune_hz": 290.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              67,
+              67
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 67,
+            "source": {
+              "Drum": {
+                "bend_s": 0.004999999888241291,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.25999999046325684,
+                "drive": 0.2800000011920929,
+                "gain_db": -9.0,
+                "metal": 0.0,
+                "model": "Cowbell",
+                "noise": 0.11999999731779099,
+                "snap": 0.2759999930858612,
+                "tone_hz": 3359.999755859375,
+                "tune_hz": 800.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              68,
+              68
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 68,
+            "source": {
+              "Drum": {
+                "bend_s": 0.004999999888241291,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.30000001192092896,
+                "drive": 0.2800000011920929,
+                "gain_db": -9.0,
+                "metal": 0.0,
+                "model": "Cowbell",
+                "noise": 0.11999999731779099,
+                "snap": 0.2759999930858612,
+                "tone_hz": 2834.999755859375,
+                "tune_hz": 640.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              69,
+              69
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 69,
+            "source": {
+              "Drum": {
+                "bend_s": 0.004999999888241291,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.07999999821186066,
+                "drive": 0.2800000011920929,
+                "gain_db": -11.0,
+                "metal": 0.0,
+                "model": "ClosedHat",
+                "noise": 1.0,
+                "snap": 0.39100000262260437,
+                "tone_hz": 7349.99951171875,
+                "tune_hz": 400.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -10.0,
+            "key_range": [
+              70,
+              70
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 70,
+            "source": {
+              "Drum": {
+                "bend_s": 0.004999999888241291,
+                "bend_semitones": 0.0,
+                "body": "Sine",
+                "crush": 0.0,
+                "decay_s": 0.05000000074505806,
+                "drive": 0.2800000011920929,
+                "gain_db": -11.0,
+                "metal": 0.0,
+                "model": "ClosedHat",
+                "noise": 1.0,
+                "snap": 0.46000000834465027,
+                "tone_hz": 10290.0,
+                "tune_hz": 400.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          }
+        ],
+        "lfos": [],
+        "macros": [
+          {
+            "name": "",
+            "value": 0.0
+          },
+          {
+            "name": "",
+            "value": 0.0
+          },
+          {
+            "name": "",
+            "value": 0.0
+          },
+          {
+            "name": "",
+            "value": 0.0
+          }
+        ],
+        "mod_matrix": {
+          "routes": []
+        },
+        "output_db": 0.0,
+        "voice_config": {
+          "bend_range_semitones": 2.0,
+          "glide_legato_only": false,
+          "glide_time_s": 0.0,
+          "polyphony": 64,
+          "retrigger": "Poly",
+          "steal_policy": "Oldest",
+          "unison": {
+            "detune_cents": 0.0,
+            "randomise_phase": false,
+            "spread": 0.0,
+            "voices": 1
+          }
+        }
+      }
+    }
+  }
+}

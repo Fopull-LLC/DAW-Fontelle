@@ -40,7 +40,7 @@ pub struct SvfCoeffs {
 /// Below this the `1/Q` damping term explodes; well under any musical setting,
 /// and low enough that a caller asking for zero gets self-oscillation rather
 /// than a division blow-up.
-const MIN_Q: f32 = 0.025;
+pub(crate) const MIN_Q: f32 = 0.025;
 
 impl SvfFilter {
     pub fn new() -> Self {

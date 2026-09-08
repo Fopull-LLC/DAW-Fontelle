@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Bitcrush"
+  },
+  "name": "broken clock",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Bitcrush": {
+        "input_db": 0.0,
+        "bits": 10.0,
+        "quantiser": "Round",
+        "dither": "Off",
+        "rate_hz": 12000.0,
+        "decimation": "Hold",
+        "jitter": 0.6,
+        "anti_alias": false,
+        "post_lp_hz": 20000.0,
+        "output_db": 0.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

@@ -19,7 +19,7 @@ mod common;
 
 use std::sync::Arc;
 
-use fontelle_app::{RealiseOptions, SampleLibrary, Session, blank_project};
+use fontelle_app::{RealiseOptions, SampleLibrary, Session};
 use fontelle_engine::{BLOCK_SIZE, Transport, graph_channel, timeline_channel};
 use fontelle_model::{AddNotes, Command, Note};
 use fontelle_types::{CompiledTimeline, EventPayload, PPQN, ParamTarget, Tick};
@@ -42,13 +42,14 @@ fn a_note(start: Tick, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
 /// A studio over the built-in synth with one note in its first clip, and the
 /// transport the window would drive.
 fn studio() -> (Session, Arc<Transport>) {
-    let mut project = blank_project(8, 120.0, SR);
+    let mut project = common::a_project_with_a_clip(8, 120.0, SR);
     let clip = Session::first_clip(&project).expect("a blank project has one clip");
     AddNotes::new(clip, vec![a_note(0, 60)])
         .apply(&mut project)
@@ -66,10 +67,18 @@ fn studio() -> (Session, Arc<Transport>) {
         fontelle_app::realise(&project, &library, options).expect("a blank project must realise");
     let (graphs, _source) = graph_channel(realised.graph);
     let transport = Arc::new(Transport::new());
-    let session = Session::new(project, library, channel_nodes, publisher, options, clip, None)
-        .with_graphs(graphs, realised.track_controls)
-        .with_param_nodes(realised.param_nodes)
-        .with_transport(Arc::clone(&transport));
+    let session = Session::new(
+        project,
+        library,
+        channel_nodes,
+        publisher,
+        options,
+        clip,
+        None,
+    )
+    .with_graphs(graphs, realised.track_controls)
+    .with_param_nodes(realised.param_nodes)
+    .with_transport(Arc::clone(&transport));
     (session, transport)
 }
 
@@ -101,7 +110,10 @@ fn a_new_automation_clip_spans_the_song_and_lies_flat_at_the_value() {
     let clips = automation_clips(&session);
     assert_eq!(clips.len(), 1);
     let clip = &clips[0];
-    assert_eq!(clip.start, 0, "from the front of the song, wherever the playhead was");
+    assert_eq!(
+        clip.start, 0,
+        "from the front of the song, wherever the playhead was"
+    );
     assert_eq!(clip.length, session.song_length(), "to the end of it");
     assert_eq!(clip.curve.len(), 2, "a flat segment");
     assert_eq!(clip.curve[0].tick, 0);
@@ -157,7 +169,10 @@ fn the_tempo_can_become_a_clip_and_it_starts_at_the_boxs_tempo() {
     assert!(session.is_automated(&tempo));
     // And the song still plays at 96: a flat lane changes nothing.
     let table = session.compiled().tempo;
-    assert!(table.iter().all(|(_, bpm)| (*bpm - 96.0).abs() < 1e-3), "{table:?}");
+    assert!(
+        table.iter().all(|(_, bpm)| (*bpm - 96.0).abs() < 1e-3),
+        "{table:?}"
+    );
 }
 
 #[test]
@@ -180,7 +195,10 @@ fn drawing_on_the_tempo_lane_bends_the_song() {
     let table = session.compiled().tempo;
     assert!(table.len() > 4, "a ramp is many segments: {table:?}");
     let (first, last_bpm) = (table[0].1, table[table.len() - 1].1);
-    assert!((first - 120.0).abs() < 1e-3, "starts where the box is: {first}");
+    assert!(
+        (first - 120.0).abs() < 1e-3,
+        "starts where the box is: {first}"
+    );
     assert!(
         (last_bpm - fontelle_types::TEMPO_MAX_BPM as f32).abs() < 1.0,
         "ends at the top of the lane: {last_bpm}"
@@ -204,7 +222,10 @@ fn the_time_selection_reaches_the_transport_in_ticks_and_samples() {
     assert_eq!(transport.loop_range_tick(), (BAR, BAR * 3));
     assert_eq!(
         transport.loop_range_sample(),
-        (session.sample_of_song_tick(BAR), session.sample_of_song_tick(BAR * 3))
+        (
+            session.sample_of_song_tick(BAR),
+            session.sample_of_song_tick(BAR * 3)
+        )
     );
     assert!(transport.is_looping(), "a selection is something you loop");
 
@@ -253,16 +274,24 @@ fn notes_on(timeline: &CompiledTimeline) -> Vec<u8> {
 #[test]
 fn clip_mode_plays_only_the_clip_being_edited_round_and_round() {
     let (mut session, transport) = studio();
-    // A second channel with a note of its own, so there is something to
-    // leave out.
+    // A second channel with a clip and a note of its own, so there is
+    // something to leave out. Drawn, because a channel no longer comes with
+    // a clip (a clip holds several instruments now — see
+    // `multi_instrument_clips.rs`).
     session.add_channel().expect("a channel can be added");
+    let made = session.arrange(fontelle_ui::canvas::ArrangeEdit::Add {
+        lane: 0,
+        start: BAR * 8,
+    });
     let second = session
         .clips()
         .into_iter()
-        .find(|clip| clip.name != session.clips()[0].name)
-        .expect("the new channel got a clip");
+        .find(|clip| clip.id == made.clips[0])
+        .expect("the drawn clip");
     session.open_clip(second.id);
-    session.edit(fontelle_ui::canvas::RollEdit::Add { note: a_note(0, 72) });
+    session.edit(fontelle_ui::canvas::RollEdit::Add {
+        note: a_note(0, 72),
+    });
     session.end_gesture();
     assert_eq!(session.play_mode(), PlayMode::Song);
     let mut whole = notes_on(&session.compiled());
@@ -271,7 +300,11 @@ fn clip_mode_plays_only_the_clip_being_edited_round_and_round() {
 
     session.set_play_mode(PlayMode::Clip);
     assert_eq!(session.play_mode(), PlayMode::Clip);
-    assert_eq!(notes_on(&session.compiled()), vec![72], "clip mode plays the open clip alone");
+    assert_eq!(
+        notes_on(&session.compiled()),
+        vec![72],
+        "clip mode plays the open clip alone"
+    );
     assert!(transport.is_looping(), "and loops it");
     assert_eq!(
         transport.loop_range_tick(),
@@ -287,7 +320,10 @@ fn clip_mode_plays_only_the_clip_being_edited_round_and_round() {
     let mut whole = notes_on(&session.compiled());
     whole.sort();
     assert_eq!(whole, vec![60, 72]);
-    assert!(!transport.is_looping(), "back to the song, and no selection to loop");
+    assert!(
+        !transport.is_looping(),
+        "back to the song, and no selection to loop"
+    );
 }
 
 #[test]
@@ -295,7 +331,11 @@ fn leaving_clip_mode_restores_the_time_selection() {
     let (mut session, transport) = studio();
     session.set_loop_range(Some((BAR, BAR * 2)));
     session.set_play_mode(PlayMode::Clip);
-    assert_eq!(transport.loop_range_tick(), (0, BAR * 8), "the clip's bars while in clip mode");
+    assert_eq!(
+        transport.loop_range_tick(),
+        (0, BAR * 8),
+        "the clip's bars while in clip mode"
+    );
     session.set_play_mode(PlayMode::Song);
     assert_eq!(transport.loop_range_tick(), (BAR, BAR * 2));
     assert!(transport.is_looping());
@@ -305,6 +345,10 @@ fn leaving_clip_mode_restores_the_time_selection() {
 fn opening_another_clip_in_clip_mode_follows_it() {
     let (mut session, transport) = studio();
     session.add_channel().expect("a channel can be added");
+    session.arrange(fontelle_ui::canvas::ArrangeEdit::Add {
+        lane: 0,
+        start: BAR * 8,
+    });
     let clips = session.clips();
     session.set_play_mode(PlayMode::Clip);
     session.open_clip(clips[1].id);
@@ -329,11 +373,19 @@ fn point_edits_are_arrangement_edits_and_hand_back_what_they_made() {
         value: 0.25,
     });
     assert!(made.clips.is_empty());
-    assert_eq!(made.points.len(), 1, "the id of the point, for the drag that follows");
+    assert_eq!(
+        made.points.len(),
+        1,
+        "the id of the point, for the drag that follows"
+    );
     let id = made.points[0];
     let after = automation_clips(&session)[0].clone();
     assert_eq!(after.curve.len(), 3);
-    let point = after.curve.iter().find(|p| p.id == id).expect("the new point is on the curve");
+    let point = after
+        .curve
+        .iter()
+        .find(|p| p.id == id)
+        .expect("the new point is on the curve");
     assert_eq!(point.tick, BAR);
     assert!((point.value - 0.25).abs() < 1e-9);
     assert!(
@@ -374,7 +426,11 @@ fn point_edits_are_arrangement_edits_and_hand_back_what_they_made() {
     });
     assert_eq!(automation_clips(&session)[0].curve.len(), 2);
     session.undo();
-    assert_eq!(automation_clips(&session)[0].curve.len(), 3, "an undo puts it back");
+    assert_eq!(
+        automation_clips(&session)[0].curve.len(),
+        3,
+        "an undo puts it back"
+    );
 }
 
 #[test]
@@ -394,7 +450,12 @@ fn a_dragged_point_is_one_undo_entry() {
     }
     session.end_gesture();
     session.undo();
-    let back = automation_clips(&session)[0].curve.iter().find(|p| p.id == id).unwrap().value;
+    let back = automation_clips(&session)[0]
+        .curve
+        .iter()
+        .find(|p| p.id == id)
+        .unwrap()
+        .value;
     assert!(
         (back - clip.curve[0].value).abs() < 1e-9,
         "one undo takes the whole drag back, got {back}"

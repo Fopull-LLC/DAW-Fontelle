@@ -216,6 +216,96 @@ impl SampleLibrary {
         })
     }
 
+    /// Brings a plain audio file in as a **sampler** sample (TDD §7.1).
+    ///
+    /// *"i cannot drag an audio clip from the audio import tab into the
+    /// channel rack to turn it into a sampler."* The two stores are different
+    /// and deliberately so — an audio clip's audio lives in the `AudioStore`
+    /// and is stereo, and a sampler layer's lives in the `SampleStore` and is
+    /// mono (see `fontelle_core::SampleBuffer`) — so bringing a file in as an
+    /// instrument is not the same act as dropping it on the arrangement, and
+    /// this is the other one.
+    ///
+    /// **Folded to mono by averaging**, not by taking the left channel: a
+    /// stereo file whose sides differ would otherwise lose half of itself, and
+    /// half of a stereo drum loop is a quieter, thinner drum loop rather than
+    /// an obviously wrong one.
+    ///
+    /// Registered with the file it came from, so a patch built on it survives
+    /// the round trip through a saved project — [`Self::reload_sample`] is the
+    /// other half of that.
+    pub fn import_sample(&mut self, path: &Path) -> Result<ImportedSample, ImportError> {
+        let path = path.to_path_buf();
+        let decoded = fontelle_assets::import_audio(&path)?;
+        if decoded.frames == 0 || decoded.sample_rate == 0 {
+            return Err(ImportError(format!(
+                "there is no sound in {}",
+                path.display()
+            )));
+        }
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let file = SampleRef {
+            file: AssetRef::unregistered(path.clone(), 0, size, fontelle_types::AssetKind::Sample),
+            // One file, one sample: a wav has no preset index to disambiguate.
+            sample: 0,
+        };
+        // Already in: a file dropped twice is one sample, so two channels
+        // built on it share the audio rather than decoding it again.
+        if let Some(id) = self.by_file.get(&file).copied() {
+            return Ok(ImportedSample {
+                id,
+                file,
+                sample_rate: decoded.sample_rate,
+                frames: decoded.frames,
+            });
+        }
+        let buffer = mono(&decoded.samples, decoded.channels, decoded.sample_rate);
+        let id = self.store_mut().insert(buffer);
+        self.names.insert(
+            id,
+            path.file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Sample".to_string()),
+        );
+        self.by_file.insert(file.clone(), id);
+        self.by_id.insert(id, file.clone());
+        Ok(ImportedSample {
+            id,
+            file,
+            sample_rate: decoded.sample_rate,
+            frames: decoded.frames,
+        })
+    }
+
+    /// Puts a sample a saved patch names back, out of the file it names.
+    ///
+    /// [`Self::reload_sf2_samples`]'s counterpart for a plain audio file, and
+    /// what stops a sampler built by dropping a wav on the rack from opening
+    /// silent (`bundle::open` dispatches on `AssetKind`).
+    pub fn reload_sample(&mut self, file: &AssetRef) -> Result<(), ImportError> {
+        let want = SampleRef {
+            file: file.clone(),
+            sample: 0,
+        };
+        let decoded = fontelle_assets::import_audio(&file.path)?;
+        let buffer = mono(&decoded.samples, decoded.channels, decoded.sample_rate);
+        // A fresh id is fine — and is what `reload_sf2_samples` does too:
+        // a patch stores its layers' **provenance** (`SampleRef`) and resolves
+        // them through `SampleLibrary::resolve` on load, so what has to match
+        // is the file it names, not the slot it happened to sit in.
+        let id = self.store_mut().insert(buffer);
+        self.names.insert(
+            id,
+            file.path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Sample".to_string()),
+        );
+        self.by_file.insert(want.clone(), id);
+        self.by_id.insert(id, want);
+        Ok(())
+    }
+
     /// Every audio clip's audio, in the form the graph takes.
     pub fn audio_store(&self) -> Arc<fontelle_core::AudioStore> {
         self.audio.clone()
@@ -231,5 +321,36 @@ impl SampleLibrary {
 
     fn store_mut(&mut self) -> &mut SampleStore {
         Arc::make_mut(&mut self.store)
+    }
+}
+
+/// One audio file, brought in as a sampler sample.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportedSample {
+    /// Where it landed in the sample store — what a `Source::Sample` names.
+    pub id: AssetId,
+    /// And where it came from, so a saved patch can find it again.
+    pub file: SampleRef,
+    pub sample_rate: u32,
+    pub frames: usize,
+}
+
+/// Folds interleaved audio down to the one channel a sampler layer plays.
+///
+/// By **averaging**, so a stereo file keeps both sides rather than losing one
+/// — see `SampleLibrary::import_sample`.
+fn mono(samples: &[f32], channels: u16, sample_rate: u32) -> SampleBuffer {
+    let channels = channels.max(1) as usize;
+    let data: Vec<f32> = if channels == 1 {
+        samples.to_vec()
+    } else {
+        samples
+            .chunks(channels)
+            .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+            .collect()
+    };
+    SampleBuffer {
+        data: std::sync::Arc::from(data),
+        sample_rate,
     }
 }

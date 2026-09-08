@@ -74,6 +74,7 @@ fn tone_patch(library: &mut SampleLibrary) -> Patch {
         cutoff_hz: 20_000.0,
         resonance: 0.0,
         enabled: false,
+        ..Default::default()
     };
     let instant = EnvelopeConfig {
         delay_s: 0.0,
@@ -83,6 +84,7 @@ fn tone_patch(library: &mut SampleLibrary) -> Patch {
         sustain_level: 1.0,
         release_s: 0.001,
         curve: EnvelopeCurve::Linear,
+        ..Default::default()
     };
     Patch {
         layers: vec![Layer {
@@ -113,6 +115,7 @@ fn tone_patch(library: &mut SampleLibrary) -> Patch {
         lfos: Vec::new(),
         mod_matrix: ModMatrix::default(),
         voice_config: VoiceConfig::default(),
+        ..Default::default()
     }
 }
 
@@ -146,10 +149,13 @@ impl Rig {
 
         let patch = tone_patch(&mut library);
         let channel = project.channels.insert(Channel {
+            preset: None,
+            instrument: None,
             name: "tone".into(),
             color: [0; 4],
             mixer_track: track,
             patch_data: None,
+            plugin: None,
             pan: 0.0,
             muted: false,
             soloed: false,
@@ -171,6 +177,7 @@ impl Rig {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         });
         project.clips.insert(Clip {
             lane,
@@ -263,7 +270,9 @@ impl Rig {
 
     /// Puts a fresh effect of `kind` on `track`, at its defaults.
     fn add_insert(&mut self, track: MixerTrackId, kind: EffectKind) -> usize {
-        AddInsert::new(track, kind).apply(&mut self.project).unwrap();
+        AddInsert::new(track, kind)
+            .apply(&mut self.project)
+            .unwrap();
         self.project.mixer.tracks[track].inserts.len() - 1
     }
 }
@@ -693,7 +702,6 @@ fn open_lane(session: &fontelle_app::Session) -> fontelle_ui::document::ClipInfo
         .expect("the clip that was just made is the block in hand")
 }
 
-
 #[test]
 fn a_control_can_be_turned_into_an_automation_lane_and_it_plays() {
     // The user's sentence, end to end and through the trait the window calls:
@@ -990,7 +998,10 @@ fn automating_the_same_parameter_twice_reuses_the_clip_it_already_has() {
         "a second gesture on one parameter must not add a strip"
     );
     let again = open_lane(&session);
-    assert_eq!(again.id, first.id, "and it is the clip that was already there");
+    assert_eq!(
+        again.id, first.id,
+        "and it is the clip that was already there"
+    );
 
     let automation: Vec<_> = session
         .clips()

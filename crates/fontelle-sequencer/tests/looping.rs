@@ -32,6 +32,7 @@ fn a_note(start: Tick, length: Tick, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -44,10 +45,13 @@ fn compile_clip(
     let mut project = Project::new("looping");
     project.tempo_map = TempoMap::new(BPM, SR);
     let channel = project.channels.insert(fontelle_model::Channel {
+        preset: None,
+        instrument: None,
         name: "ch".into(),
         color: [0; 4],
         mixer_track: None,
         patch_data: None,
+        plugin: None,
         pan: 0.0,
         muted: false,
         soloed: false,

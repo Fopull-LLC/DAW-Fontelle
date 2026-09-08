@@ -224,7 +224,13 @@ fn rt_safe_copy(event: &TimedEvent) -> Option<TimedEvent> {
         },
         fontelle_types::EventPayload::ClipStart => fontelle_types::EventPayload::ClipStart,
         fontelle_types::EventPayload::ClipStop => fontelle_types::EventPayload::ClipStop,
-        fontelle_types::EventPayload::ParamValue { .. } => return None,
+        // Not captured: a recording is notes (`fontelle_model::recording`),
+        // and a wheel move written into a take would be a controller lane
+        // this program cannot draw yet. The instrument still hears it live.
+        fontelle_types::EventPayload::ParamValue { .. }
+        | fontelle_types::EventPayload::Controller { .. }
+        | fontelle_types::EventPayload::PitchBend { .. }
+        | fontelle_types::EventPayload::ChannelPressure { .. } => return None,
     };
     Some(TimedEvent {
         sample: event.sample,
@@ -548,6 +554,26 @@ pub struct IdleGate {
     /// audible, so `ringing` holds the graph awake anyway. There is no state
     /// here that outlives the sound it is standing in for.
     held: u32,
+    /// Whether an input stream is open and being monitored.
+    ///
+    /// A fourth reason to be awake, and the only one that is neither an event
+    /// nor a measurement: *"i should be able to hear routed input playing even
+    /// when song isnt playing or im not recording."* It cannot be inferred
+    /// from the output, because the honest state of a microphone in a quiet
+    /// room is silence — a gate that measured its way to sleep would swallow
+    /// the first word spoken into it.
+    monitoring: bool,
+    /// Whether a plugin's own editor is open.
+    ///
+    /// A fifth reason, and like `monitoring` one that cannot be measured:
+    /// an LV2 editor talks to its plugin only through `run` — the file it
+    /// was handed rides an atom the plugin reads at the top of a block, and
+    /// the *"I loaded it"* answer comes out of one. A gate that slept
+    /// underneath an open editor was a sampler that could not be given a
+    /// sample while the song was stopped, which is exactly when one is. Read
+    /// off the transport each callback (`Transport::is_attended`), written by
+    /// the window that owns the editors.
+    attended: bool,
     /// Blocks still owed to live input before the measurement is believed.
     ///
     /// For the note whose note-on and note-off land in the *same* drain — a
@@ -567,8 +593,20 @@ impl IdleGate {
         Self {
             ringing: false,
             held: 0,
+            monitoring: false,
+            attended: false,
             settling: 0,
         }
+    }
+
+    /// Says whether a live input is open. See the field.
+    pub fn set_monitoring(&mut self, on: bool) {
+        self.monitoring = on;
+    }
+
+    /// Says whether a plugin's own editor is open. See the field.
+    pub fn set_attended(&mut self, on: bool) {
+        self.attended = on;
     }
 
     /// Takes account of this block's live input. Call once per callback with
@@ -606,11 +644,18 @@ impl IdleGate {
 
     /// Whether to run the graph despite a stopped transport.
     ///
-    /// Three independent reasons, and they answer different questions:
+    /// Five independent reasons, and they answer different questions:
     /// something arrived this block, something is being *played* and has not
-    /// been let go, or something is still *making sound*.
+    /// been let go, something is still *making sound*, a microphone is open
+    /// and the graph is what carries it to the speakers, or somebody is at a
+    /// plugin's own controls and the graph is what carries their words to it.
     pub fn is_awake(&self, live_events: usize) -> bool {
-        live_events > 0 || self.held > 0 || self.settling > 0 || self.ringing
+        live_events > 0
+            || self.held > 0
+            || self.settling > 0
+            || self.ringing
+            || self.monitoring
+            || self.attended
     }
 
     /// Records what the block just rendered actually produced. `peak` is the
@@ -673,6 +718,27 @@ mod idle_gate_tests {
             key,
             voice_context: 0,
         })
+    }
+
+    // --- somebody at a plugin's controls (2026-09-05) ----------------------
+
+    /// An open plugin editor keeps the graph awake with nothing sounding.
+    ///
+    /// An LV2 editor talks to its plugin only through `run`: the file it was
+    /// handed rides an atom the plugin reads at the top of a block, and the
+    /// "I loaded it" answer comes out of one. A gate that slept underneath
+    /// an open editor was a sampler that could never be given a sample
+    /// while the song was stopped — which is exactly when one is.
+    #[test]
+    fn an_attended_plugin_keeps_the_graph_awake() {
+        let mut gate = IdleGate::new();
+        assert!(!gate.is_awake(0));
+        gate.set_attended(true);
+        assert!(gate.is_awake(0), "somebody is at the plugin's controls");
+        gate.observe(0.0);
+        assert!(gate.is_awake(0), "and silence does not put it to sleep");
+        gate.set_attended(false);
+        assert!(!gate.is_awake(0), "the editor closed: idle again");
     }
 
     // --- what a player is holding (reported from a real keyboard) ---------
@@ -762,7 +828,10 @@ mod idle_gate_tests {
         let mut gate = IdleGate::new();
         gate.take_live(&[on(60), off(60)]);
         gate.observe(0.0);
-        assert!(gate.is_awake(0), "it has not been given a block to sound in");
+        assert!(
+            gate.is_awake(0),
+            "it has not been given a block to sound in"
+        );
     }
 
     #[test]

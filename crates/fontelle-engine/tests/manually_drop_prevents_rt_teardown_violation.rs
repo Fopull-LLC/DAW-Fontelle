@@ -39,6 +39,7 @@ fn heap_owning_patch() -> Patch {
         cutoff_hz: 20_000.0,
         resonance: 0.0,
         enabled: false,
+        ..Default::default()
     };
     let env = EnvelopeConfig {
         delay_s: 0.0,
@@ -48,6 +49,7 @@ fn heap_owning_patch() -> Patch {
         sustain_level: 1.0,
         release_s: 0.0,
         curve: EnvelopeCurve::Linear,
+        ..Default::default()
     };
     // Several layers, several distinct sample buffers -- matches the shape
     // that actually crashed (Square.sf2 imports as 7 layers/7 store entries),
@@ -86,6 +88,7 @@ fn heap_owning_patch() -> Patch {
         lfos: Vec::new(),
         mod_matrix: ModMatrix::default(),
         voice_config: VoiceConfig::default(),
+        ..Default::default()
     }
 }
 

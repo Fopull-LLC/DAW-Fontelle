@@ -19,9 +19,7 @@
 //! itself is `fontelle-engine`'s, and it reads these same functions, which is
 //! the point of them living here.
 
-use fontelle_types::{
-    AssetKind, AssetRef, AudioClipData, ClipLoopMode, Fade, FadeCurve,
-};
+use fontelle_types::{AssetKind, AssetRef, AudioClipData, ClipLoopMode, Fade, FadeCurve};
 
 fn an_asset() -> AssetRef {
     AssetRef {
@@ -128,7 +126,11 @@ fn a_trimmed_clip_starts_where_the_trim_says() {
 fn speed_moves_through_the_file_faster_or_slower() {
     let mut c = clip(1000);
     c.speed = 2.0;
-    assert_eq!(c.source_position(100.0), 200.0, "double speed is twice as far in");
+    assert_eq!(
+        c.source_position(100.0),
+        200.0,
+        "double speed is twice as far in"
+    );
     c.speed = 0.5;
     assert_eq!(c.source_position(100.0), 50.0);
 }
@@ -194,6 +196,7 @@ fn a_fade_in_rises_from_nothing_to_everything_across_its_length() {
     c.fade_in = Fade {
         frames: 100,
         curve: FadeCurve::Linear,
+        tension: 0.0,
     };
     assert_eq!(c.fade_gain(0.0), 0.0);
     assert!((c.fade_gain(50.0) - 0.5).abs() < 1e-6);
@@ -207,6 +210,7 @@ fn a_fade_out_falls_to_nothing_at_the_clips_last_frame() {
     c.fade_out = Fade {
         frames: 200,
         curve: FadeCurve::Linear,
+        tension: 0.0,
     };
     assert_eq!(c.fade_gain(800.0), 1.0);
     assert!((c.fade_gain(900.0) - 0.5).abs() < 1e-6);
@@ -219,8 +223,16 @@ fn two_fades_that_overlap_multiply_rather_than_fighting() {
     // a real thing to ask for by dragging, and it has to produce a shape rather
     // than a discontinuity where one wins.
     let mut c = clip(100);
-    c.fade_in = Fade { frames: 100, curve: FadeCurve::Linear };
-    c.fade_out = Fade { frames: 100, curve: FadeCurve::Linear };
+    c.fade_in = Fade {
+        frames: 100,
+        curve: FadeCurve::Linear,
+        tension: 0.0,
+    };
+    c.fade_out = Fade {
+        frames: 100,
+        curve: FadeCurve::Linear,
+        tension: 0.0,
+    };
     assert_eq!(c.fade_gain(0.0), 0.0);
     assert_eq!(c.fade_gain(100.0), 0.0);
     let middle = c.fade_gain(50.0);
@@ -233,7 +245,11 @@ fn every_fade_curve_runs_from_nothing_to_everything_and_never_leaves_the_range()
     // on a full mix is a clip.
     for curve in FadeCurve::ALL {
         let mut c = clip(1000);
-        c.fade_in = Fade { frames: 100, curve };
+        c.fade_in = Fade {
+            frames: 100,
+            curve,
+            tension: 0.0,
+        };
         assert_eq!(c.fade_gain(0.0), 0.0, "{curve:?} does not start at nothing");
         assert!(
             (c.fade_gain(100.0) - 1.0).abs() < 1e-6,
@@ -263,7 +279,11 @@ fn the_boost_is_decibels_and_zero_is_untouched() {
     let mut c = clip(10);
     assert!((c.gain() - 1.0).abs() < 1e-6);
     c.gain_db = 6.0206;
-    assert!((c.gain() - 2.0).abs() < 1e-3, "+6 dB is twice, got {}", c.gain());
+    assert!(
+        (c.gain() - 2.0).abs() < 1e-3,
+        "+6 dB is twice, got {}",
+        c.gain()
+    );
     c.gain_db = -6.0206;
     assert!((c.gain() - 0.5).abs() < 1e-3);
 }
@@ -272,7 +292,10 @@ fn the_boost_is_decibels_and_zero_is_untouched() {
 fn the_boost_stops_somewhere_rather_than_going_to_infinity() {
     let mut c = clip(10);
     c.gain_db = 1e9;
-    assert!(c.gain().is_finite(), "a typo in a text field must not be +inf");
+    assert!(
+        c.gain().is_finite(),
+        "a typo in a text field must not be +inf"
+    );
 }
 
 // ------------------------------------------------------------ the file ---
@@ -285,7 +308,11 @@ fn a_clip_written_to_json_and_read_back_is_the_same_clip() {
     // catches.
     let mut c = clip(48_000);
     c.gain_db = -3.0;
-    c.fade_in = Fade { frames: 512, curve: FadeCurve::SCurve };
+    c.fade_in = Fade {
+        frames: 512,
+        curve: FadeCurve::SCurve,
+        tension: 0.0,
+    };
     c.filter.cutoff_hz = 800.0;
     c.filter.resonance = 0.4;
     c.reverse = true;

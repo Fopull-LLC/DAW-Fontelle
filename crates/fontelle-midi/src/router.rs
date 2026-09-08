@@ -180,11 +180,7 @@ impl MidiRouter {
     /// The same, following a target the caller can move — §14.3's routing,
     /// pointed at whichever instrument the window has selected rather than at
     /// whichever channel happened to be first in the song.
-    pub fn following(
-        target: Arc<LiveTarget>,
-        voice_context: u32,
-        mapping: DeviceMapping,
-    ) -> Self {
+    pub fn following(target: Arc<LiveTarget>, voice_context: u32, mapping: DeviceMapping) -> Self {
         let current_settings = InputSettings {
             velocity_curve: mapping.velocity_curve,
             velocity_range: mapping.velocity_range,
@@ -378,16 +374,27 @@ impl MidiRouter {
                     self.release(sink, channel as usize, Which::Sustained)
                 }
             }
-            // Every other controller is silently dropped, and that is the
-            // honest state of things rather than an oversight: routing a CC
-            // to a parameter is the MIDI-learn table (§14.4) resolving it to a
-            // `ParamAddress`, and the nodes it would address expose no
-            // parameters yet. Emitting `ParamValue` events that nothing reads
-            // would look like a working feature.
-            MidiMessage::ControlChange { .. }
-            | MidiMessage::PitchBend { .. }
-            | MidiMessage::ChannelPressure { .. }
-            | MidiMessage::ProgramChange { .. } => 0,
+            // Every other controller, the pitch wheel and aftertouch are
+            // **forwarded whole**, as performance events on the current
+            // target — not as `ParamValue`s, which name one of this program's
+            // controls by address and are the learn table's business (§14.4).
+            // A hosted instrument gets them as the MIDI it would have
+            // received; a built-in decides for itself what a wheel means.
+            // The sustain pedal above is the one controller the router keeps,
+            // because holding notes is its bookkeeping and not the
+            // instrument's.
+            MidiMessage::ControlChange {
+                controller, value, ..
+            } => self.send(sink, EventPayload::Controller { controller, value }),
+            MidiMessage::PitchBend { value, .. } => {
+                self.send(sink, EventPayload::PitchBend { value })
+            }
+            MidiMessage::ChannelPressure { value, .. } => {
+                self.send(sink, EventPayload::ChannelPressure { value })
+            }
+            // A program change still goes nowhere: nothing here takes one,
+            // and an event nothing reads would look like a working feature.
+            MidiMessage::ProgramChange { .. } => 0,
             MidiMessage::AllNotesOff { channel } | MidiMessage::AllSoundOff { channel } => {
                 // The two differ in whether release tails are allowed to ring,
                 // and at this layer there is no way to say "stop now" — a

@@ -672,10 +672,19 @@ fn a_pitch_route_reaches_every_layer_not_just_the_first() {
 fn a_zone_with_no_modulation_generators_gets_no_modulation_routes() {
     let patch = import_filter_fixture("nomod", vec![]);
     for route in &patch.mod_matrix.routes {
+        // The spec's defaults, and nothing else: velocity's two, and the
+        // wheel's and aftertouch's vibrato, which are a *via* on the
+        // vibrato LFO rather than a source of their own.
+        let is_default = matches!(route.source, ModSource::Velocity)
+            || (route.source == ModSource::Lfo(1)
+                && matches!(
+                    route.via,
+                    Some(ModSource::ModWheel) | Some(ModSource::Aftertouch)
+                ));
         assert!(
-            matches!(route.source, ModSource::Velocity),
-            "only SF2's own default modulators may be seeded, found {:?}",
-            route.source
+            is_default,
+            "only SF2's own default modulators may be seeded, found {:?} via {:?}",
+            route.source, route.via
         );
     }
 }
@@ -873,4 +882,87 @@ fn reloading_a_saved_patchs_samples_brings_their_names_back() {
         store.get(loaded[&1].asset).is_some(),
         "and the audio is in the store under the id it reports"
     );
+}
+
+// --- SF2's default modulators for the wheels (2026-09-06) ---
+
+/// SF2 2.04 §8.4.2 default modulator 2: **mod wheel (CC 1) -> vibrato LFO
+/// pitch depth, 50 cents**, present on every zone unless the file overrides
+/// it. It is why a mod wheel adds vibrato on any soundfont in any player,
+/// and without it Fontelle's wheel moved nothing on an imported instrument
+/// however hard it was pushed.
+///
+/// It rides `ModRoute::via` — the vibrato LFO aimed at pitch, *scaled by*
+/// the wheel — which is the case §7.5 says `via` exists for.
+#[test]
+fn seeds_the_sf2_default_mod_wheel_to_vibrato_modulator() {
+    // No `vibLfoToPitch` generator at all: the wheel's own 50 cents is a
+    // default modulator and does not depend on the file asking for vibrato.
+    let patch = import_filter_fixture("wheelvib", vec![]);
+
+    let route = patch
+        .mod_matrix
+        .routes
+        .iter()
+        .find(|r| r.via == Some(ModSource::ModWheel))
+        .copied()
+        .expect("every zone carries the wheel's vibrato");
+
+    assert_eq!(route.source, ModSource::Lfo(1), "the vibrato LFO");
+    assert_eq!(route.destination, ModDest::LayerPitch(0));
+    assert_eq!(route.curve, Curve::Linear);
+    assert!(!route.invert);
+    let expected = 50.0 / ModDest::LayerPitch(0).full_scale();
+    assert!(
+        (route.depth - expected).abs() < 1e-6,
+        "50 cents in the destination's units: got {}, want {expected}",
+        route.depth
+    );
+}
+
+/// And default modulator 6: **channel pressure -> vibrato LFO pitch depth**,
+/// the same 50 cents. Aftertouch leaning into vibrato is what makes a held
+/// note on a soundfont sound played rather than pressed.
+#[test]
+fn seeds_the_sf2_default_aftertouch_to_vibrato_modulator() {
+    let patch = import_filter_fixture("touchvib", vec![]);
+    let route = patch
+        .mod_matrix
+        .routes
+        .iter()
+        .find(|r| r.via == Some(ModSource::Aftertouch))
+        .copied()
+        .expect("every zone carries aftertouch vibrato");
+    assert_eq!(route.source, ModSource::Lfo(1));
+    assert_eq!(route.destination, ModDest::LayerPitch(0));
+    let expected = 50.0 / ModDest::LayerPitch(0).full_scale();
+    assert!((route.depth - expected).abs() < 1e-6, "{}", route.depth);
+}
+
+/// One per **layer**, like every other per-layer route the importer seeds: a
+/// key-split instrument whose second layer had no wheel would answer the
+/// wheel on half the keyboard.
+#[test]
+fn the_wheels_vibrato_is_seeded_for_every_layer() {
+    let mut fixture = filter_fixture(vec![]);
+    fixture.extra_zones = vec![ZoneSpec {
+        generators: vec![
+            gen_range(GEN_KEY_RANGE, 0, 127),
+            gen_range(GEN_VEL_RANGE, 0, 127),
+        ],
+    }];
+    let path = write_fixture_to_temp_file("wheelsplit", &build_sf2(&fixture));
+    let mut store = SampleStore::new();
+    let patch = import_sf2(&path, &mut store).expect("imports").patch;
+    assert_eq!(patch.layers.len(), 2, "the fixture has two zones");
+
+    for layer in 0..2u8 {
+        assert!(
+            patch.mod_matrix.routes.iter().any(|r| {
+                r.via == Some(ModSource::ModWheel) && r.destination == ModDest::LayerPitch(layer)
+            }),
+            "layer {layer} has no wheel vibrato: {:#?}",
+            patch.mod_matrix.routes
+        );
+    }
 }

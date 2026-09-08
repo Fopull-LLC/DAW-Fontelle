@@ -17,7 +17,2764 @@ rather than the claim.
 what is still open, and the handful of things about this machine and this
 codebase that cost real time to rediscover.
 
-## 2026-09-03 (latest): audio arrives — import, playback, an editor, and recording
+**Next up: item 12 of the M0 plan — the real-project shakedown.** Flopsynth is
+finished, bank and window and preset system (see the sections below), so
+the thing that is missing is the same thing that has been missing since §3:
+somebody making an actual multi-part piece in the window, on hardware, end to
+end, and fixing what that finds. Every gate this project has closed was closed
+by using the thing rather than by reading it.
+
+The one open engineering question is **Flopsynth's cost per voice**, which is
+over the budget its plan set. The numbers and where the time goes are at the
+end of the section below; the plan's own instruction is that this is a design
+conversation rather than a target to loosen.
+
+## 2026-09-07 (latest): the text stopped flickering, and the piano stopped being a clavinet
+
+Two reports from using it, and both were real faults with a measurable cause.
+
+> *"the text constantly keeps flickering while trying to navigate the app"*
+
+**`Labels` was emptying itself in the middle of the frame it was filling.**
+The shaped-label cache is bounded at 512 strings, and over the cap it was
+cleared *wholesale* — but `ensure` is called from `shape_labels`, which is the
+frame's own shaping pass, so every string shaped before the clear was gone by
+the time the (pure) renderer looked it up, and `Labels::get` returning `None`
+draws as nothing. One frame of missing text, and then the next frame refilled
+toward the cap and did it again. Navigating is what fills it: a browser page
+of soundfont names and details, an editor window's captions and read-outs,
+the roll's key names, all strings that come from data rather than the theme.
+
+Every string now carries the frame that last asked for it (`Labels::
+begin_frame`, called at the top of `shape_labels`), and a full cache drops
+only what the *current* frame has not asked for. A frame that wants more than
+the cap keeps all of it, which is the right trade: one frame of extra memory
+against text that vanishes. `tests/text_layout.rs` holds both halves — a
+frame of 700 strings keeps every one, and a cache that fills lets the
+previous frame's go. Confirmed on the nested X server before and after.
+
+> *"the grand piano sound doesnt sound realistic at all"* … and, after the
+> first pass, *"sounds more like a clav or something"*
+
+The second report was the useful one, because a clavinet is a *specific*
+wrong answer and it named two measurable faults. Both are now tests in
+`crates/fontelle-core/tests/grand_piano.rs`, which is the file to read before
+touching this row.
+
+**The spectrum was hollow.** The `Struck` table was built as `sin(πhβ)/h` —
+the *velocity* distribution of a struck string — which puts the second
+partial level with the first; with the old octave layer on top of it, the
+second partial measured **3.8 dB over the fundamental**. That is a nasal,
+hollow spectrum and it is a clavinet's. What is heard is the *displacement*,
+`sin(πhβ)/h²`, and the hammer's hardness tilts that exponent (2.6 soft to 1.3
+hard) rather than only moving a felt corner — which is also where velocity's
+brightness now comes from, the string's own spectrum rather than a filter
+sweep. It stays above `h^0.9` at every position, which is the exponent at
+which the comb would make it hollow again.
+
+**There was one slope where a piano has two.** A piano loses most of its
+energy in the first half-second and then rings on quietly for tens of
+seconds; this row drew a straight −14 dB/s line and was thirty decibels down
+in 1.8 seconds, which is an electric piano. The prompt sound is now its own
+layer — the same string struck harder, brighter, on a fast envelope of its
+own — sitting over a long aftersound. Middle C now falls 30 dB in 5.7
+seconds, C7 in 1.4, C2 in 13.7.
+
+**Three traps found on the way, all worth knowing:**
+
+- **A gain route reads an envelope's level and multiplies it into decibels**,
+  so a `Decibel`-curve envelope on `LayerGain` is exponential twice over. The
+  prompt layer was fifty decibels down fifty milliseconds in — a flash, not a
+  prompt sound — and the strike came out no brighter than the ring it was
+  meant to be shining over. Modulation envelopes on a gain want `Linear`; the
+  *amp* envelope is the opposite case and wants `Decibel`, because its level
+  is the gain rather than a number of decibels.
+- **A layer at exactly `SILENT_DB` is skipped by the voice** until a route
+  lifts it, and a route is read at the start of a block — which for a knock
+  twelve milliseconds long was most of the knock. Anything a fast envelope
+  brings in sits just *above* the floor.
+- **A spectral centroid cannot see brightness on a fundamental-dominated
+  spectrum.** It is a magnitude-weighted mean, so once the fundamental is
+  properly the strongest partial it is pinned there: a strike an ear hears as
+  far brighter than its own ring read a fifth of an octave apart. The tests
+  measure a *tilt* instead — partials 4–16 against 1–3, in decibels — which
+  is what "bright" means for a harmonic tone.
+
+**`ModDest::EnvelopeStageTime` was never implemented.** It has been in the
+matrix since the matrix existed and is offered in Flopsynth's own address
+table as "Env N decay time", and the voice never read it — a route to it was
+a knob that moved nothing. It is applied now, in **octaves of time** (a
+full-depth route spans eight, like cutoff and pitch), for every envelope, and
+it is what makes the piano's decay follow the key: the stored time is the
+*treble's* and an inverted key route stretches it towards the bottom.
+`crates/fontelle-core/tests/envelope_times.rs` covers it on its own.
+
+The bank is still 211, every gate passes, and the trim was re-measured with
+`preset_probe` after each change. Nobody has *listened* yet — `cargo run
+--release -p fontelle-app -- --play-flopsynth "Grand Piano"` is the fourth
+column and no analyser can stand in for it.
+
+## 2026-09-07: a piano to open on, instruments untied from tracks, and prefabs
+
+Three asks in one message, and the third is the one that changes the model.
+
+> *"instead of starting with a 3osc it starts you with a flopsynth instrument
+> on a grand piano preset and instead of there being a clip in the arrangement
+> already make there be no clip yet."*
+
+**`blank_project` opens on Flopsynth playing a new `Grand Piano` row** of the
+bank (`STARTING_PRESET`), channel named after it, and puts **no clip** on the
+arrangement — ten rows, nothing on any of them. `tests/starting_project.rs`
+holds all three claims. The bank declined a grand piano on principle ("a
+sampled instrument"); what was authored is the *shape* of one: three strings
+five cents apart, a hammer gated silent at rest, upper partials on their own
+envelope, a sine at the fundamental for weight, no sustain, a 100 ms damper,
+and **no sub octave** — a `SubSine` at −21 dB measured as four fifths of the
+spectrum. Two traps in the tuning, both now in the row's comments: a layer
+arrives as `FilterRoute::Serial` (F1 *then* F2), so the strings went through
+the hammer's high-pass until routed to F1; and the octave layer beat the
+fundamental in the analyser's bins until the sine went in. The bank is 211,
+every gate passes, and every other preset is byte-identical to before —
+verified against the JSON embedded in a pre-change `libfontelle_app` rlib,
+which is how a global `str.replace` that had silently retuned seven other
+rows was caught and reverted.
+
+Tests that wanted *a clip to work on* now take one from
+`common::a_project_with_a_clip`; the shakedown draws its own blocks, which is
+what "the way a person makes one" meant anyway. **And `main.rs` had gated the
+whole studio session on `first_clip`** — the window opened with no rack, no
+browser and no arrangement the first time it was launched, and no test saw
+it. The gate is gone (`Session::adopt` always opened clip-less projects this
+way); the fault was found by looking, on the nested X server.
+
+> *"make it so duplicating an instrument literally just makes a new instrument
+> that has the exact same params so it sounds the same but it shouldnt have
+> the same notes ... shouldnt affect the arrangement at all."*
+
+**`DuplicateChannel` copies the channel and nothing else** — no clips, no
+lane. It had copied the clips onto a row of their own, which was coherent
+while a clip was one instrument's track and stopped being when a clip could
+hold several (`Note::channel`). Three tests in `tests/arranging.rs`, including
+that undoing a duplicate takes nothing of the original's with it.
+
+> *"the prefab system for having clips that you can basically draw into your
+> arrangement that making a change in that prefab clip affects all the clips
+> in the arrangement that are referencing that prefab."*
+
+**Prefabs, TDD §10.5, mirror instances shipped.** A `Prefab` is named content
+off the arrangement; a **place** is a `Clip` whose `prefab_link` names it and
+whose own `source` is *empty*. The model's one rule, and the one every reader
+now follows: **read a clip through `Project::clip_source`, never
+`clip.source`** — borrowed for a mirror, owned only when there is something to
+resolve. Note commands take `impl Into<NoteHome>` (a `ClipId` still reads as
+one), `Project::note_home(clip)` says which of the two an edit to a clip
+means, and `Session::note_target()` adds the second way in Ty asked for: pick
+the prefab in the list, pick the instrument in the rack, edit the roll.
+`AddPrefab`, `AddPrefabInstance`, `RenamePrefab`, `DetachPrefab`,
+`RemovePrefab` and `MakePrefabFromClip` (in place — same `ClipId`); the last
+three **bake** the resolved content into every place first, so deleting a
+prefab never empties eight bars of somebody's song. The compiler resolves
+places on the model thread (INVARIANT 3), places cut rather than grow, loop,
+and mute like any clip. Fourteen model tests, nine sequencer tests, fourteen
+session tests.
+
+**The panel.** The rack has a tab strip — *Instruments | Prefabs* —
+shared by both lists (`canvas::tab_strip`) so it cannot move when pressed;
+the prefab list is the rack's shape (whole rows, pinned `+ Make prefab`,
+virtualised, its own scroll), each row carrying a use count (an em dash for
+"nowhere"), right-click to rename or delete, click to open in the roll, click
+again to put the roll back on the arrangement. With a prefab picked, the draw
+tool puts a **place** down, captioned with the prefab's name rather than the
+instrument's. Fifteen geometry tests in `fontelle-ui/tests/prefab_panel.rs`;
+the workflow itself was driven by XTEST and looked at.
+
+**Deliberately not built, and why:** `OverrideMap` is carried in the format
+and **not applied** — a note has no `PersistentId` yet, so an `ElementId`
+cannot address one; `prefab::apply` says so rather than shipping a no-op under
+a working function's name. Variants are structure-only. And there is **no
+gesture yet for "make a prefab from this clip"**: the host method exists and
+is tested, but the arrangement has no clip context menu (the right button
+erases), and whether to give it one is Ty's call.
+
+**On the process:** this session ran the full suite six times and each run
+told it what a targeted run would have in a minute, while the one regression
+that mattered — the empty window — no test could see. Ty's rule, now in
+`docs/handoff.md` §2: the workspace suite runs **once, at the end**; the loop
+runs the binaries you touched, and anything visual gets looked at.
+
+## 2026-09-07: five reports from playing it, and the window-raising one
+
+A session of reports from using the studio. Four were small; the fifth had
+been reported twice before and was wrong both times, so it is written up in
+`docs/handoff.md` §4 under *"Raising a window on the user's desktop"* rather
+than only here.
+
+**Plugins are scanned while the studio opens.** > *"can you make it load
+plugins when the program starts instead of loading them when you go to add a
+plugin."* `Session::scan_plugins` walks the folders and answers
+`(found, would not load)`; `main` calls it beside `open_bank` and prints the
+count, and the settings tab's *Rescan* goes through the same function. The
+lazy `PluginRack::scan_once` stays, so a headless render and every test rig
+still pay nothing — but in a window the list is there before any menu opens,
+which is what a menu that hung for three seconds on 1047 plugins was.
+
+**A menu takes the wheel in an editor window, and its thumb can be dragged.**
+Only the studio handed the wheel to an open menu, so the preset drop-down in
+Flopsynth's own window — 210 presets — could never be scrolled past its first
+section (`WindowApp::wheel_menu`, called from both windows now). The scrollbar
+was drawn and had no hit test at all; `ContextMenu::scrollbar_track`,
+`thumb_grab` and `drag_thumb` are the geometry, `Drag::MenuScroll` is the
+gesture, and a press *beside* the thumb takes hold of it by its middle,
+because a four-pixel target you have to aim at is worse than the wheel.
+
+**The stuck note.** > *"after playing notes it seems to want to often just
+hold a note forever if i spam lower notes."* `Sampler::note_off` asked the
+pool for the first *active* voice on the key — and a voice in its release tail
+is still active. Press a key, let go, press it again before the first has
+finished ringing, and the note-off went to the voice that had already had one;
+the voice actually being held was left with nothing that could ever address
+it, sustaining forever on any patch whose envelope sustains. Low notes reached
+it first because their tails are longest, and each press handed the orphan on
+to a new voice, which is why it kept happening once it started. A `Voice` now
+knows whether its key is **down** as well as whether it is **sounding**, and
+`VoicePool::find_active_mut` considers only held voices, newest first — so a
+lost note-off strands an old voice the steal path reclaims rather than the one
+being played. `sampler::tests::a_key_pressed_again_while_it_rings_out_still_gets_its_note_off`
+reproduces the report exactly and is the regression.
+
+**An instrument or effect that is added or changed opens its window**
+(`open_chosen_instrument`, `open_newest_insert`), from every path that chooses
+one. Browsing presets deliberately does not.
+
+**And the window-raising one, third time lucky.** > *"it does flash in my
+taskbar like its trying to focus that window but its not actually bringing the
+window to the front."* Under Wayland `focus_window` and `set_window_level` are
+empty functions in winit — the two previous attempts were built on calls the
+compositor never sees. The mechanism is xdg-activation, and KWin honours a
+token only if it carries the serial of the interaction that asked for it
+(`Workspace::mayActivate`); a token without one is refused, and the refusal
+path is `demandAttention()` — the flash Ty saw. winit exposes no input serial,
+so `fontelle-ui`'s new `activation` module opens a second event queue on
+winit's own `wl_display`, binds `xdg_activation_v1` and the seat, keeps the
+largest button/key serial its own pointer and keyboard hear, and asks for a
+token on the studio's surface with that serial on it. Confirmed working on
+Ty's Plasma 6.7.4 desktop. **The sandbox cannot test this** — the nested X
+server has no compositor — so `docs/handoff.md` has the full derivation,
+including the two dead ends, so that nobody walks the ladder a fourth time.
+
+## 2026-09-07: the bank, widened to two hundred and ten
+
+> *"expand the roster of built in presets for flopsynth even further.
+> variety of high quality instrument sounds."* — Ty
+
+**Eighty-two new presets**, taking Flopsynth's bank from 128 to **210** in
+the same fourteen categories, weighted towards the instruments the brief
+asks for: eight guitars and a sitar and a koto under Pluck, eight more
+winds (both saxes, trombone, tuba, bassoon, piccolo, a muted trumpet, a
+shakuhachi), an accordion and a melodica and two more electric pianos, six
+more strings from a viola to a mute, six organ registrations, six bells,
+and six acoustic-leaning basses. `cargo test --workspace` is **3463
+passing, 0 failing** and `cargo clippy --workspace --all-targets -D
+warnings` is clean.
+
+**The gate moved first, as it should have.**
+`there_are_at_least_a_hundred_and_twenty_and_every_category_has_at_least_six`
+is now `…_two_hundred_and_every_category_has_at_least_ten` — written,
+watched to fail at 128, and only then filled. Ten to a category rather than
+six because a shelf you read in one glance is a list, not somewhere to look.
+
+**`cargo run -p fontelle-core --example preset_probe --release` is new, and
+is the reason this was one pass rather than thirty.** The module's docs had
+claimed it existed since the bank was written; it did not. It renders the
+whole bank once and prints what the tests measure — each preset's level, the
+**number to add to its `.out(…)`**, its peak on a loud chord, and its nearest
+neighbour inside its category on the five axes. With a category named it also
+prints the axes themselves, which is what a collision actually needs: a pair
+that reads "too close" is close on *one* axis, and knowing which one is the
+whole of the fix. The eighty-two loudness trims are its output, not a guess.
+
+**Three things the measurement found that listening would have taken longer
+to, and that the next person adding rows should know:**
+
+- **The sub goes *around* the filter** (`bass`, and rightly — §7.3). So on a
+  patch whose filter is a narrow window, the sub *is* the output, and four
+  basses built on different ideas measured as one preset because all anyone
+  could hear was the same sine. Metallic and Bowed now have no sub at all and
+  Fretless has it 8 dB down; the plan's Bass note says so.
+- **The organ archetype's key click is a continuous −30 dB of high-passed
+  noise** with an envelope on top, not a gated burst. On any registration
+  whose own spectrum is thin, that hiss is the whole profile — which is why
+  three drawbar registrations read as the same preset. Gospel and Theatre turn
+  it down to −44 dB and give velocity somewhere audible to go instead.
+- **An effect cannot make two presets different**, because the pairwise test
+  renders through `Sampler` and the chain runs in `SamplerNode` (§2.2). Rock
+  Organ was a Drawbar Jazz with a distortion on it; the saturation had to move
+  into the ladder's own drive before it was a second preset.
+
+One thing outside this work: `canvas/effect.rs` still imported `Taper` and
+`Unit` into a function that no longer uses them, left over from the previous
+session's `effect_params` extraction. It fails `clippy -D warnings` on a cold
+build, so it is fixed here.
+
+**Still not done, and still worth doing:** nobody has *listened* to the new
+eighty-two. Three numbers are necessary and not sufficient — the bank is
+provably distinct and provably level, which is not the same as good.
+`cargo run --release -- --play-flopsynth "<name>"` plays one and `list`
+prints all 210.
+
+## 2026-09-07: Flopsynth's window, looked at
+
+> *"right now all of the presets cannot cleanly display and fit on screen.
+> also the synth settings seem to be going off screen particularly the noise
+> section. the design also feels pretty basic for the synth, we should make it
+> look spacey and futuristic."* — Ty
+
+The section below this one built the window and never opened it on the
+Init patch at the size it opens at. Doing that found five things no geometry
+test with four cards in it could see, and this session is the fixes, the
+tests that now hold them with **the whole page**, and the look.
+
+`cargo test --workspace` is **3463 passing, 0 failing**;
+`cargo clippy --workspace --all-targets -- -D warnings` is clean. Every piece
+below was written test-first and seen to fail first — the layout tests
+against the new `FlopsynthCard` fields, the app tests against host methods
+that did not exist.
+
+### What was wrong
+
+1. **The cards were placed in list order, not band order.** The host lists
+   the channel and the voice first because that is where the parameter list
+   begins; the layout honoured the band only when it *changed*, so the two
+   last-band cards sat above the oscillators.
+2. **The Synth page was a band and a half taller than the window.** Five
+   sources in one row wrapped the noise under the oscillators, and the three
+   filters, both envelopes and the macros were never drawn at all — the
+   window does not scroll (§8.1 rule 7), so they were simply gone.
+3. **The Presets page was blank.** `page_of` sent no card there and nothing
+   else was drawn.
+4. **The preset drop-down was one column three thousand pixels tall**, of
+   which the window showed thirty rows and hinted at nothing — no thumb, no
+   typing.
+5. **Escape on an open drop-down closed the whole editor**, because the
+   editor's key path gave Escape to the window before a menu could take it.
+
+### The page that fits (`canvas/flopsynth.rs`)
+
+- **A card declares its shape.** `FlopsynthCard` carries `aside` and
+  `columns` beside `row`, set by `fontelle-app/src/flopsynth.rs::shape_of`
+  — the layer that knows what each card *is*. The three oscillators are six
+  cells across; the sub and the noise are **set aside** in a column down the
+  right-hand edge, three across, beside the oscillators *and* the filters;
+  the channel's two knobs end the filters' row, where the sound goes out;
+  the voice and the macros stand beside the two envelopes. Three bands, and
+  the bands are sorted before they are placed.
+- **A chooser with long names takes two cells** (`cell_span`, threshold
+  `WIDE_CHOICE`): "NES Pulse 12.5" in a fifty-pixel cell was "NES Pu".
+- **Cells are 52 × 54 with a 24-pixel knob**, captioned at the small label
+  size (`text::SMALL_LABEL`, eleven pixels; `Labels::ensure_small`). A
+  hundred and thirty controls do not fit at thirteen.
+- **When the page still would not fit, everything gives in order**: air,
+  then the pictures to a soft floor, then every cell together down to
+  `CELL_FLOOR` (0.8), then the pictures to their hard floor. At the minimum
+  window size the whole page is there, smaller, rather than with its bottom
+  band missing. `flop_knob_rect` is read off the cell, so the knob shrinks
+  with it and the modulation ring still clears the caption.
+- The Modulation page's matrix **takes the room under the cards** instead of
+  sitting two rows tall at the bottom with a dead band above it.
+- Held by `the_whole_synth_page_fits_the_window_it_opens_at` and its
+  neighbours, which build the real thirteen-card page and check it at
+  `FLOPSYNTH_SIZE` and `FLOPSYNTH_MINIMUM`; and by
+  `the_synth_page_declares_each_cards_shape` in `fontelle-app`, which does
+  the same with the view the session actually builds.
+
+### The bank you can see
+
+- **The Presets page is §8.6's**: shelves down the left (★ Favourites when
+  there are any, All, every category, Mine when there are any), the presets
+  under a search box in the middle, and the loaded preset described on the
+  right. A row is `ApplyPreset` and a star is the favourite the bar's star
+  is; it invents no mechanism. Typing goes to the search whenever the page
+  is showing, Escape clears it before it closes anything, and the wheel
+  scrolls the list. On the mixed shelves a row wears its category.
+- **A menu too tall for the window lays out in columns** when the columns
+  fit (`ContextMenu::columns`), the way every big menu in every DAW does:
+  the 128-preset drop-down is five columns with every heading visible at
+  once. A list too long even for that — the 357-plugin picker — scrolls as
+  before, and **shows a thumb** now (`ContextMenu::scrollbar`).
+- **The drop-down filters as you type**, the plugin picker's rule
+  (`preset_menu(choices, query)`), with a first row saying what has been
+  typed and the empty sections dropped.
+
+### The chain you can edit (§8.5)
+
+The Init patch's Effects page was an empty sky with no word on it, and no
+way to put anything there. It has a **`+ effect`** button now, whose list is
+`fontelle_core::flopsynth::PATCH_FX_KINDS` — the eight zero-latency kinds in
+§3.9's order; the gate looks ahead and is not offered — and every effect
+card has a ✕ in its header. `add_patch_effect` / `remove_patch_effect` are
+structural edits through `store_patch`, so they undo. An effect card is
+built by `canvas::effect_params`, the same function the effect window uses,
+so a chorus's mode is a chooser that says its names rather than a knob
+reading "0.00".
+
+### The look
+
+The one place this program draws a gradient. The ground is the theme's
+`window` graded towards the accent with a nebula in the accent at one corner
+and in the modulation violet at the other, and ninety stars from a fixed
+scatter. Cards are glass — a graded translucent panel with a highlight along
+its top edge and its family's rule under its name: the three oscillators in
+the theme's three ramps (§8.1 rule 2), the filters in the accent, everything
+that *moves* something in the violet. Knobs are domed and their value arc
+glows; choosers are chips carrying their value with a wedge; switches are
+pills with a dot. Pictures sit in a scope with a faint grid, the curve lit
+under a wide faint stroke, the response and envelope filled beneath. The tab
+strip is one track with the page you are on lit in it. Everything is the
+palette's own colours mixed, so the light theme gets a pale version of the
+same sky.
+
+### A trap worth recording
+
+**A grab off the nested X server is one presented frame behind.** Every
+"the click did nothing" this session — the row that did not load, the
+search that did not filter, the drop-down that did not open — was the
+program having done it and the screenshot showing the frame before. Nudge
+the pointer and grab again before believing a screenshot; `docs/handoff.md`
+§5 has the rule.
+
+### Left alone, on purpose
+
+- Reordering an effect slot by dragging its header (§8.5) and the About
+  column's macro and wheel lines (§8.6) are not built; the header carries
+  `FlopsynthHit::Header` for the first, and `preset_about` is where the
+  second goes.
+- The cost per voice is where the section below left it.
+
+## 2026-09-06: a preset system for every device, Flopsynth's window, and what a voice costs
+
+The rest of `docs/flopsynth-plan.md`: **§P (the preset system), phases 4–6 (the
+window), §P.8 (the browser tab), §P.9 (the removals) and §10 (the bench)**.
+The section below this one is the synthesiser itself, which was already
+sounding; this is everything around it.
+
+`cargo test --workspace` is **3437 passing, 0 failing**;
+`cargo clippy --workspace --all-targets -- -D warnings` is clean. Every piece
+below was written test-first and seen to fail first.
+
+### A preset is a file, for every device
+
+> *"a preset system kind of like FL Studio's baked into the DAW itself that
+> works for every instrument and effect so we don't have to hardcode presets in
+> every plugin ... when you have a `*` for unsaved edits you're able to save it
+> either to the same preset or save as to a new preset in your bank."*
+
+- **The bank** (`fontelle-app/src/preset_bank.rs`). Factory presets are files
+  in `assets/presets/<device>/<category>/<name>.json`, embedded at build time
+  by a forty-line `build.rs`; user presets are the same files in a folder the
+  user owns (`Settings::preset_dir`, defaulting under the XDG data directory).
+  **167 factory presets ship**: Flopsynth's 128, the drum machine's 22, and the
+  distortion's, bitcrush's and Soften's 17.
+- **`cargo xtask export-factory-presets`** is where they come from. The recipes
+  that used to be constructor code — `DistortionConfig::from_preset`,
+  `drum_kit(style)`, Flopsynth's `FACTORY` — are now the *authoring tool* the
+  export runs, in the position `DrumKitStyle` always had. Running it twice
+  writes nothing the second time, which is a test.
+- **One bar in every editor window** (`canvas/preset_bar.rs`): `◀ ▶`, the name
+  with its `*`, a drop-down grouped by category with favourites first, a star,
+  Save and Save as…. The same bar over a synthesiser, a drum machine, a reverb
+  and a hosted plugin, because what a device contributes is nothing but *what
+  its state is*.
+- **The `*` rule is Ty's** (§P.6): the name is remembered and the cleanliness
+  is *recognised*. A device carries the `PresetRef` it was loaded from through
+  every edit and never stores whether it is dirty — that is computed against
+  the bank's copy of the file, which is why one undo makes the star go out with
+  nothing to remember.
+- **A fifth browser tab** lists every preset for every device, with a search
+  across the whole bank. An instrument preset clicked there lands on the
+  selected channel, switching its kind if it has to; an effect preset lands in
+  the insert whose window is open, and says so when none is.
+- **Two commands** carry it in the document: `ApplyPreset` writes the state and
+  the name in one undo entry, `SetPresetRef` writes only the name — which is
+  what a save does after the file is on disk, so undoing a save puts the old
+  name back and leaves the file alone.
+- **The chip rows are gone** (§P.9). `EffectConfig::{presets, apply_preset,
+  matching_preset}`, `SetInsertPreset`, `set_instrument_preset` and the panel's
+  preset row went with them: one preset mechanism, not two.
+
+**A latent defect found on the way:** `serde_json`'s default float parser can
+land a ULP away from the number in the file, so a patch written and read back
+was not the patch that was written — a preset read as *edited* the moment it
+was loaded, and every float in every project shifted on every open. The
+`float_roundtrip` feature is on across the workspace now.
+
+### Flopsynth's window
+
+- **Four pages** — Synth, Modulation, Effects, Presets — as a tab strip along
+  the top of the body. The cards are filtered to the page by what they *are*
+  (`fontelle-app/src/flopsynth.rs::page_of`), so the window is still the signal
+  path rather than a list.
+- **The gestures of §8.7.** A wave picture is dragged sideways for position; a
+  filter's response is dragged in both directions for corner and resonance; an
+  envelope's four corners are dragged, times sideways and the sustain up. Each
+  moves a control the panel already draws, found by the tail of its address —
+  so a picture and a knob can never disagree about what they are.
+- **Drag-to-assign.** A source badge on the Modulation page is dragged onto a
+  knob: every control that can take a route lights a violet ring while it is in
+  flight, and releasing on one makes the route at half depth. The ring itself
+  is a control — a band four pixels outside the groove — so a modulated knob
+  can still be *turned*, and dragging the ring is the depth of the newest route
+  to it.
+- **The matrix** is rows rather than a card of knobs: source, destination, a
+  bipolar slider and a remove button, with the depth on the ordinary live wire
+  like every other parameter.
+- **A fifth palette token, `modulation`** (theme format v7): violet, from
+  outside the three ramps, because at three pixels an arc has to be tellable
+  from the accent, the playhead, a note *and* the automation amber.
+- **A voice meter and an LFO dot.** How many voices are sounding is read off
+  the audio thread's own state through a new `VoiceMeter` — the first read-out
+  in this program that is not a fact the document has — and the newest voice's
+  LFO phases come back the same way, so the dot on each shape says what the LFO
+  is *doing* rather than what it is set to.
+- **`--help`**, which this program did not have.
+
+Two things the headless shot caught that no geometry test could: the `◀ ▶`
+chevrons were drawn pointing the wrong way, and the modulation arc struck
+through the caption of the knob it belonged to. The second is why the control
+cell is 74 px tall rather than §8.8's 60 — a bipolar arc grows from straight
+up, which is the topmost point of the circle, so a ring outside the groove
+needs room above the knob that a cell sized before the ring existed did not
+have.
+
+### What a voice costs, and what was done about it
+
+`crates/fontelle-core/benches/flopsynth.rs` is the first bench in this tree
+(TDD §20.5 asked for them from day one and `benches/` has been empty since).
+One iteration is **one second of audio at 48 kHz**, so the wall time *is* the
+share of one core.
+
+| case | budget (§10) | before | after |
+|---|---|---|---|
+| one voice of Init | 0.3 % | 1.65 % | **0.54 %** |
+| one voice of Supersaw | 1.2 % | 3.29 % | **1.31 %** |
+| sixteen voices of Choir Ahh | 8 % | 49 % | **26 %** |
+| the wavetable bank, all 39 tables | — | — | 54 ms, once |
+
+Three optimisations, each test-guarded:
+
+1. **A silent layer nobody reads is not rendered.** The Init patch is five
+   layers with one of them up; the other four were costing a table read, a
+   unison stack and a filter feed per sample for silence. The exception is
+   stated and tested: a layer at the floor that another layer *modulates with*
+   is still rendered, because a modulator's level is how much of it you hear
+   and not whether it modulates.
+2. **A filter's coefficients are built when they move.** `SvfFilter::coeffs`
+   pre-warps the corner with a `tan` and was being called **per sample** —
+   twice at 24 dB, three times on a formant. The settings only move every
+   `FILTER_STEP` samples. This was two thirds of an Init voice.
+3. **A unison stack's per-voice constants likewise.** A detune ratio (a
+   `powf`), a phase step and a pair of pan gains, per voice per sample, for
+   numbers that only change per block. "Supersaw" is three oscillators of seven
+   voices, so that was twenty-one `powf`s a sample for constants. Supersaw went
+   from 2.4 % to 1.31 % on this one.
+
+**Where the remaining cost is**, measured rather than guessed
+(`flopsynth/where-it-goes`): of an Init voice's 5.4 ms, the filters are about
+2.0 and the mod matrix about 0.6; the other 2.8 is one oscillator, the amp
+envelope and the per-sample bus routing. Meeting 0.3 % means the whole voice
+costing what one bare oscillator costs today. §10 names two more levers — a
+two-frame read when the position sits on a frame (landed, and it does not fire
+for the presets measured, because their positions sit between frames) and
+`f32::tanh` → a rational approximation. Past those it is a design conversation
+about the fixed topology, which is what §10 says to have.
+
+## 2026-09-06: Flopsynth — the synthesiser, its bank, and everything under them
+
+> *"a new built in synthesizer plugin. this will be our main synth for the daw
+> kind of like how fl studio has flex ... should be an advanced synthesizer
+> inspired by the likes of omnisphere and Serum ... should have lots of built
+> in presets in a bank for tons of instruments organized by type."*
+
+`docs/flopsynth-plan.md`, phases 0 through 3, plus the panel that makes it
+editable and the browser row that makes its bank reachable. **3,300-odd tests
+green, clippy clean.** Every piece below was written test-first and seen to
+fail first.
+
+### What it is
+
+An ordinary `fontelle_core::Patch` whose layers carry a new `Source::Synth`
+— the drum machine's lesson taken again, so save, load, automation, the key
+map, the mixer and undo never had to be told it exists. `InstrumentKind` is
+six now; a Flopsynth channel arrives playing and needs no files, because
+every wavetable it reads is **generated from a spectrum recipe at first use**.
+
+### The sound (`fontelle-dsp`, `fontelle-core`)
+
+- **Thirty-nine wavetables**, in nine families, each a frames × mip pyramid
+  built lazily behind a `OnceLock` and resolved in `prepare` (INVARIANT 1).
+  Ten mip levels rather than seven, because seven stops at sixteen harmonics
+  and sixteen harmonics of A8 is 112 kHz.
+- **The oscillator**: eight-voice unison with a bias so a wide stack sounds
+  wide, seven warp modes each a continuum that is a wire at zero, through-zero
+  FM and RM reading a *later* layer, hard sync whose slave restarts on the
+  master's overshoot, and tilted noise.
+- **Four filter models** behind one slot — Clean (with a 24 dB cascade),
+  Ladder, Formant and Comb — plus drive, key tracking and a character knob
+  whose caption is the model's.
+- **Envelope shapes**, a per-voice LFO with tempo sync, free-run, one-shot,
+  fade and smoothing, macros, `Random` and `NoteOnCounter` implemented, eight
+  new modulation destinations, and a per-layer filter route through four buses.
+- The format went to **version 1** with a migration (`Lfo::shape` became
+  `Lfo::wave`), and every patch the tree could write before still round-trips.
+
+### Three bugs the tests found, which would all have shipped
+
+- **The ladder self-oscillated at half resonance when bright.** Its feedback
+  was taken from the previous sample, and a sample of delay is a phase lag
+  proportional to frequency — so near Nyquist the loop hit −180° with the
+  stages barely attenuating. Any preset sweeping a ladder upward screeched.
+  The loop is solved algebraically now, the way the SVF's is.
+- **Phase 0 of every table was a cosine, not a sine**, so a note-on started at
+  full amplitude — a click on every note.
+- **An FM modulator turned down to silence stopped modulating**, because the
+  modulator's sample was read *after* its level knob. A dedicated FM operator
+  is exactly the thing nobody wants to hear.
+
+### The bank
+
+**A hundred and twenty-eight presets in fourteen categories**, written as a
+table of rows over a dozen archetypes (`flopsynth/presets.rs`) rather than as
+JSON, because a row reads as a sentence and two hundred fields do not. Held by
+`fontelle-core/tests/flopsynth_presets.rs`: every preset sounds, every one
+stays inside full scale on a four-note chord at velocity 127, every one sits
+within 3 dB of the bank's median, and **every pair inside a category is
+measurably apart** — on five axes, because the four the plan named cannot tell
+two vowels apart and the fifth (a ten-band spectral profile) can.
+
+Loudness was matched by measuring the whole bank and writing the column, not
+by ear (§13's third risk). `--play-flopsynth <name>` plays one, `list` prints
+them all — which is the listening half of the gate, because three numbers are
+necessary and not sufficient.
+
+### Reaching it
+
+- **`Session::set_instrument_param` no longer rebuilds the graph** for a patch
+  parameter (§2.3): the document is written quietly and the value goes on the
+  live wire, so a cutoff can be swept under a held chord without every mouse
+  move cutting every sounding note. A layer's *table* is the one exception,
+  because resolving one locks the wavetable bank.
+- **The instrument's own effects chain** runs in `SamplerNode` after the voice
+  sum, so a preset's chorus and reverb are part of the preset.
+- **The panel draws every control** — nineteen cards, a hundred and fifty
+  knobs, all automatable, all on the wire. It is the general grid and not yet
+  §8's bespoke canvas; the addresses are the ones the canvas will use.
+- **Flopsynth's bank is a row in the Sounds tab**, opening to its presets
+  grouped by category, with the search and the click-to-install the soundfont
+  list already had.
+
+### Still to do
+
+Nothing in `docs/flopsynth-plan.md` — see the section above this one, which is
+the rest of it. What is left is the cost per voice, which the plan budgets and
+this build does not meet.
+
+## 2026-09-06: the plan's leftovers, a clip's end, and delay compensation
+
+Two instructions, in order: *"follow through on everything still remaining
+open"*, and then *"clip endings don't actually cut the clip short audibly
+right now it keeps playing"*. The report is under "The clip's end" below;
+what follows here is the first half — the four things the previous session
+named
+(`--render-wav` has no rack, LV2 `isSideChain`, slides into hosted
+instruments, the VST3 bridge) and the rest of TDD §8.4's "Still not done".
+**All of it is closed but the VST3 bridge**, which is a separate private
+repository built against Steinberg's SDK and cannot be written in this tree
+(§3.4 is the reason it lives outside it). Every piece below was written
+test-first and seen to fail first.
+
+`cargo test --workspace` is **3218 passing, 0 failing**;
+`cargo clippy --workspace --all-targets -- -D warnings` is clean.
+
+### The offline bounce hosts plugins
+
+`--render-wav` realised its graph with no rack at all, so a channel playing a
+plugin bounced as **silence** — the one path in the program where the
+document's plugins were not hosted, and a mistake nobody would notice until
+they listened to the file. `fontelle_app::bounce` is the three steps the
+studio's `rebuild_graph` takes (open what the document names, build the graph
+around it, play) plus the one a headless run needs and a window never does:
+when the graph is dropped every `PluginNode` parks its processor, so
+`PluginRack::close_all` can retire every plugin rather than leak it at exit.
+A plugin the project names that is not installed leaves its channel silent
+and **says so** — §17.4's rule for a missing file, applied to a missing
+plugin — and so does a settings file that would not read, because a rack
+looking in the wrong folders reports "not installed" and that is the wrong
+diagnosis. Three tests in `fontelle-app/tests/plugin_hosting.rs`; the
+headless *play* path got the same rack while there.
+
+**Heard, in the real binary.** A project whose one channel plays the fixture
+sine, `--open ... --render-wav` against an isolated `XDG_CONFIG_HOME`:
+120 000 frames at a 0.354 peak, where the same command wrote a silent file
+before.
+
+### LV2 sidechains
+
+LV2 declares a sidechain with a **port property**, `lv2:isSideChain`, on an
+audio input rather than with a separate port the way CLAP does. `lv2::open`
+reads it off the plugin's own Turtle and folds those inputs into the same
+second port a CLAP sidechain presents, so `HostedPlugin::takes_key` is one
+question with one answer whatever the format and everything upstream — the
+key chips on the plugin panel, `EffectSlot::effective_key`, the scheduling
+edge — was already right. The processor keeps its input buffers **main-first**
+and connects them in *port* order, which is livi's contract; the key is
+written every block, silence included, so one handed over once does not go on
+ducking. The fixture gain grew a `lv2:isSideChain` port at index 4 and
+**ducks** by it sample for sample: a key that is heard rather than detected,
+so a host that put the bus on the key port would be heard silencing itself —
+which is exactly what four older tests said the moment the port existed and
+the host had not been taught about it yet.
+
+### Slides into a hosted instrument
+
+A slide note names only the key it goes *to*, and a plugin will not say what
+it is playing, so `PluginNode` now keeps the score's own answer: a fixed
+table (no `Vec`, INVARIANT 1) of every note it has started and not ended,
+with where that note's pitch is. A slide bends every note in its voice
+context — a slide under a chord moves the chord, as
+`fontelle_core::Sampler::slide` has always done — gliding at **block rate**,
+which is the rate `Voice::advance_glide` moves at and for the reason it
+gives. The pitch reaches a CLAP plugin as a `Tuning` note expression on the
+key, in semitones and unbounded, so a slide of an octave is an octave; an
+LV2 or bridged plugin gets a **channel bend** clamped to two semitones,
+because MIDI has no per-note pitch and MPE is not spoken here. A note that
+ends puts its own bend back and any note still bent is told its pitch again,
+so a channel-wide plugin does not start the next note bent. Five tests
+across `fontelle-host` and `fontelle-engine/tests/plugin_nodes.rs`.
+
+### The wheels, into a built-in instrument (§7.4's half of item 3)
+
+The hosting pass carried a controller into whatever language a plugin speaks
+and left this half open, so a soundfont played from a keyboard heard the
+notes and nothing of the hand playing them: `ModSource::ModWheel`,
+`PitchBend` and `Aftertouch` had been in the matrix since it was written and
+read as a flat zero.
+
+`fontelle_core::Performance` is the channel-wide, **live** half of playing —
+read at render rather than captured at note-on, beside the channel's own pan
+and for the same reason: a wheel has to move what is already sounding. Two of
+the three are matrix sources and nothing else, because where a wheel goes is
+the patch's decision and inventing one would be a mapping nobody asked for.
+The **bend** is the exception: it is applied to the note's own pitch over
+`VoiceConfig::bend_range_semitones` (two by default, which is what SF2's
+always-present pitch-wheel modulator amounts to) *and* readable as a source,
+because every keyboard bends pitch and a patch should not have to wire a
+route for it. A reset lets go of all three — a transport stop that left a
+bend on would start the next note bent.
+
+`SamplerNode` translates the three payloads, mapping **CC 1** and dropping
+every other controller: the same rule the host follows for a CLAP-only
+plugin, and for the same reason. And imported soundfonts get SF2 2.04
+§8.4.2's default modulators **2 and 6** — the mod wheel and channel pressure
+each scaling the vibrato LFO's pitch by 50 cents, through `ModRoute::via`,
+which is the case §7.5 says `via` exists for. That is why a wheel adds
+vibrato on any soundfont in any player, and Fontelle's did nothing.
+
+Seven tests in `fontelle-core/tests/performance.rs`, three in
+`fontelle-assets`, and two end to end in `fontelle-app/tests/live_midi.rs` —
+raw MIDI bytes into a `MidiRouter`, out as a bent note.
+
+**Two test bugs worth writing down**, both caught by the tests-first rule
+doing its job rather than by luck. The first draft of the bend test measured
+eight blocks, where a whole tone is worth *one* crossing more than nothing —
+and it passed before the feature existed. Sixty-four blocks make two
+semitones twenty crossings, and the test then failed honestly. The second:
+the master limiter looks ahead **two milliseconds**, which is 96 samples of a
+128-sample block, so the block a change lands in still carries most of a
+block of what came before it and its peak is that. A level read directly
+says a wheel took a block longer than it did; `Callback::settled` renders one
+block and measures the next.
+
+### Bridge ABI 3: the rest of a performance
+
+The table carried notes and nothing else of a performance, so a bridged
+instrument was the one kind that could not be played with a wheel — and a
+VST3 bridge is the whole point of the seam. `controller`, `pitch_bend` and
+`channel_pressure` are on the end of the table now, channel-wide and in time
+order with the notes, and **performance rather than automation**: a knob the
+document moves still arrives through `set_param` by its own id. A slide
+converts to the bend that reaches it, as for LV2; per-note pitch is what an
+ABI 4 would add, once there is a bridge that wants it, which is §8.4's
+standing instruction about not adding abstractions before there is a host for
+them. `fontelle-testbridge`'s sine scales its level by the wheel, ducks under
+pressure and bends two semitones — the same shape both in-tree fixtures have,
+so a bridge that swapped two of them is told apart from one that got it
+right. Three tests in `fontelle-host/tests/bridges.rs`.
+
+### The clip's end, and what it means
+
+> *"clip endings don't actually cut the clip short audibly right now it
+> keeps playing"*
+
+Dragging a clip's right edge in made the block shorter and changed nothing
+about what came out of the speakers: a note written past the new end still
+sounded, and a note crossing it still rang to its own length. Only **looped**
+clips clamped, because a loop whose last pass runs longer than the others is
+obviously wrong — but the rule was never about looping. An audio clip's
+placement has always been `clip.start .. clip.start + clip.length`; this is
+the note half of the same rule, and there is one rule now: a note that starts
+at or after the end does not sound, and a note that runs past it is **cut**
+there. Cut, not silenced — the note-off lands at the clip's end and the
+instrument's release rings out from it, because stopping the sound dead on a
+boundary is a click. Eight tests in
+`fontelle-sequencer/tests/clip_bounds.rs`.
+
+**And it loops cleanly from there**, which was the second half of the
+instruction. Inside a loop the cut happens at the end of every *pass*, not
+only at the clip's end: a note written longer than the period used to ring on
+through the passes after it, so the second pass played over the first one's
+tail and the third over both. A loop that gets thicker as it goes is not a
+loop. Four more tests in the same file.
+
+**A clip does not grow to contain what is put in it.** The first attempt at
+this made drawing, dragging or stretching a note past the end grow the clip —
+so that a note drawn out there would still sound — and that was corrected:
+
+> *"the clip should not grow to contain what you put in it it should just cut
+> off wherever you put the ending to be and then cleanly loop from that
+> point"*
+
+So the growth is gone and the end is the end. What the correction costs is
+visibility: a note written past the end is silent, and nothing said so. The
+roll **shades the grid past the clip's end** now
+(`canvas::roll_past_end`, five tests on the geometry, `Session::clip_length`
+for where the number comes from) — the same "nothing here sounds" ink the
+dead rows of a drum kit use, and two more tests over the headless renderer's
+pixels. **Looked at**, not only measured: `FONTELLE_UI_DUMP` writes the frame
+out, and the striped grid stops where the clip does.
+
+That pixel test was wrong first, and it is worth recording why: both of its
+samples landed **exactly on grid lines**, which are drawn over the shade, so
+it read `grid_line_sub` on either side of the boundary and would have passed
+with no shade at all. Sampling five pixels off a snap boundary is what makes
+it a test of the fill.
+
+**Heard, in the real binary.** The same project rendered twice through
+`--render-wav`, one clip two beats long and one eight: the sound stops at
+1.00 s and at 4.00 s. Before, both played for four seconds.
+
+Two session tests drew a note at beat eight of a three-and-a-half-beat demo
+clip and had been passing by playing something the arrangement does not show.
+They draw inside the clip now, which is what they were always claiming to
+test.
+
+### Delay compensation (TDD §5.5)
+
+`AudioNode::latency_samples` had existed since the graph did and **nothing
+read it**. Two things were wrong because of that, and the first is the one a
+person would notice.
+
+**An insert that looks ahead combed against its own dry.** A gate with
+look-ahead delays what it outputs; the dry the mix control blends back in was
+the block as it *arrived*, so the two summed into a comb filter. Not half the
+effect — a different effect, and on a gate doing nothing at all it should be
+inaudible. `EffectNode` delays the dry by the same look-ahead now, and a
+fully open gate at any mix is the wire it claims to be, sample for sample.
+
+**And a look-ahead track was late against every other track.** The
+compensator is `DelayNode`: a fixed number of samples of nothing, no feedback
+and no mix, which is what makes it not `fontelle_fx::Delay`. `realise` works
+out from the document — before a node is built — what arrives at each track's
+bus and what leaves it, then holds back every track quicker than its
+siblings, and holds the **sources** back once at the one point where a bus
+carries them and nothing else. `Realised::latency_samples` is measured off
+the *built* graph rather than added up from the document, so the number the
+user is told includes nodes the builder did not know about (the master
+limiter's two milliseconds among them).
+
+**A plugin's own number now reaches it.** `HostedPlugin::latency_samples`
+reads CLAP's `latency` extension when the plugin declares one; the rack
+carries it in `PluginWiring`, `PluginNode` reports it, and the chain sum uses
+it — so a mastering limiter or a linear-phase EQ on one track no longer drags
+that track behind the mix. LV2 answers through an output control port this
+build does not read, and a bridge's table has no entry for it; both report
+zero, which is what a host that cannot ask has to assume.
+
+**Two things are deliberately not compensated, and say so where they
+happen.** A plugin *instrument* that reports latency is late against the
+other channels on its track, because every channel adds into one shared bus
+and holding one back would hold back everything already in it — the fix is
+per-source buffers. And the **live bypass** switch moves a track by its
+insert's latency until the next rebuild, because a bypass that still delayed
+would not be a bypass.
+
+Five tests in `fontelle-engine/tests/latency.rs`, three in
+`fontelle-engine/tests/inserts.rs`, three in
+`fontelle-app/tests/latency_compensation.rs` (which measure where a click
+lands, not what a number says), and one each in `fontelle-host` and
+`fontelle-app` for the plugin's declared number.
+
+### What is still open after this
+
+- **The VST3 bridge itself.** A separate private repository against
+  Steinberg's SDK; this tree holds the ABI (v3), the loader, and a
+  SDK-free bridge that proves both. Nothing else in `docs/plugin-compatibility-plan.md`
+  remains.
+- **Per-source delay compensation.** A plugin instrument that reports latency
+  is still late against the other channels on its track; every channel adds
+  into one shared bus, so the fix is giving sources buffers of their own.
+- **LV2 latency**, which is an output control port designated `lv2:latency`
+  that this build does not read, and latency over the bridge ABI.
+- **Per-note pitch over the bridge ABI**, waiting on a bridge that can carry it.
+- **Copying or relativising a sample an LV2 plugin loaded** (§17.4's import
+  prompt, for plugin-loaded files) — a real design decision, deliberately
+  not made here.
+- The three items in `docs/handoff.md` §3 that are about the *window* rather
+  than about plugins: input monitoring has never been heard through a
+  speaker, the arrangement's newer gestures have not been driven by hand,
+  and fade handles show only on the selected block.
+
+## 2026-09-05: the compatibility plan, top down — and two more crashes
+
+> *"its crashing the daw a lot for several plugins when opening their
+> instrument window and also when adding a plugin instrument i cannot hear
+> my other instruments anymore at the same time"*
+
+`docs/plugin-compatibility-plan.md`'s items 1–3 landed whole, the first
+half of item 4 with them, and the two faults in the report first — both
+were the host's, both had a core dump, and neither had a test until now.
+Every piece below was written test-first against the two fixture bundles,
+which grew a plugin each and learnt four things between them.
+
+### The two faults
+
+**"I cannot hear my other instruments."** `PluginNode` wrote the plugin's
+block *over* its bus. The graph clears every bus once a block and each
+source adds into it — that is what lets several channels share a track —
+so a plugin instrument silenced every channel scheduled before it on the
+same bus, which on a project whose channels all go to the master was every
+other instrument. It renders into scratch of its own now (sized in
+`prepare`, INVARIANT 1), takes the channel's level and pan there, and
+**adds**. Two tests in `fontelle-engine/tests/plugin_nodes.rs`, the second
+of which checks the channel's gain no longer scales what the others wrote.
+
+**"Crashing when opening their instrument window."** Three of today's
+core dumps were the same address — zero — reached from
+`HostedPlugin::tick_editor` with **JuceOPL.lv2** loaded. LV2 says a UI's
+`port_event` *"may be NULL if the UI is not interested in any port
+events"*, and JuceOPL's is; `lv2_raw` types the field as a plain function
+pointer, which in Rust cannot be null, so reading a NULL through it is
+undefined behaviour and the release optimiser folded the later null check
+away. The studio called address zero the first time a knob moved.
+`lv2_ui` reads the descriptor through its own `#[repr(C)]` struct with
+`Option` wherever C may be NULL — `instantiate`, `cleanup`, `port_event`,
+`extension_data`, and the idle interface's `idle` — and the fixture bundle
+gained a fourth plugin, **`deaf`**, whose editor has neither `port_event`
+nor `extension_data`: `an_editor_with_no_port_event_is_not_told_about_a_knob`.
+The gdb route, for next time: `coredumpctl dump <pid> -o core`, then
+`gdb -batch -ex bt` on it — systemd's own unwinder stops at a null PC, gdb
+does not — and `x/14i $pc-48` in the caller shows which call it was.
+
+The fourth dump was SpectMorph's **LV2** editor dying inside its own
+constructor at `open_editor`. It could not be reproduced: both SpectMorph
+rows (CLAP and LV2) open and draw in the studio now, alive, no new dump.
+The likeliest reading is below under the idle gate — an editor handed a
+plugin that had never run — and it is recorded as a reading, not a fix.
+While there: the picker lists the two SpectMorphs as two identical rows,
+which is a fact about the row and worth a format tag next time.
+
+### 1. LV2 state — the sampler's file survives a save
+
+`state:interface` is on the **instance**, the instance rides in the
+processor, and LV2 forbids calling `save` while `run` executes. The design
+decision the plan named was made the way it recommended: **through the
+bay**. `ProcessorBay` carries a request now — `recall(timeout)` raises it,
+the node sees it at the top of its next block and parks the processor
+(`try_park`, never waiting), the main thread takes it, reads the state
+with the processor in hand (`HostedPlugin::snapshot_with`), and parks it
+back for the node to pick up. The silence is bounded and measured: one
+block to hand over, one to take back, and however long the read takes —
+`an_lv2_plugins_own_state_is_saved_while_the_graph_is_playing_it` renders
+on a thread while the main thread snapshots, and asserts the counter it
+reads came off the running instance, that the snapshot took under half a
+second, and that the processor went back and kept running. A recall
+nobody answers — a stopped audio thread — gives up after 250 ms and
+withdraws its request, and the snapshot then carries what the plugin was
+last *given*, with a message. Before a plugin has run there is no
+instance to ask, so a restored state is **kept** and applied the moment
+the instance exists (`Lv2Plugin::activate`, before its first block —
+the one moment LV2 lets a host restore any plugin without asking whether
+it is thread-safe), and read off the instance again on `deactivate`.
+
+The interface itself is hand-rolled in `fontelle_host::lv2_state` rather
+than borrowed from lilv's state API, which serialises to Turtle and owns
+the path mapping against a directory: this program keeps one blob in one
+JSON file and decides for itself what a path means. `Lv2State` is the
+list of properties a plugin stored (key and type as **URIs**, since a
+URID is a number one process agreed on), encoded as its own small
+length-prefixed form, base64 in `project.json` exactly where a CLAP blob
+goes. It is public and decodable, because *"the sampler forgot its file"*
+and *"the sampler never stored one"* look the same from outside.
+
+**Paths — the second decision.** `state:mapPath` and `state:freePath` are
+offered, because a sampler that finds them missing may refuse to store
+its file at all, and `abstract_path` answers **identity**: the abstract
+path is the absolute one. That is the rule an audio clip referenced in
+place already follows (§17.4's headless default: *reference, never copy*)
+— a project names the file by where it is. Making the abstract form
+project-relative, or copying the sample into the project, is the import
+prompt's decision (§17.4's remembered-default-with-an-escape-hatch) and
+belongs to the pass that builds one for plugin-loaded files; `makePath`
+is not offered because nothing here has a folder to hand a plugin to
+write into. The fixture gain keeps two properties no port exposes — a run
+counter (`atom:Int`) and its own bundle folder as an `atom:Path` that
+goes through `mapPath` both ways — and **refuses a restore whose path
+did not map back**, so the round trip is asserted by the plugin itself.
+Seven tests in `fontelle-host/tests/lv2.rs`, three in `tests/bay.rs`, two
+in `fontelle-app/tests/plugin_hosting.rs`.
+
+### 2. Every port, and sidechains
+
+The "every port" half of this item had already landed with the crash fix
+above it; what was left was the key. CLAP has no sidechain flag — a
+sidechain is any input port that is not the main one — so `PortLayout`
+now names it (`key()`), `HostedPlugin::takes_key` says whether there is
+one, and `HostedProcessor::process_insert_keyed` puts a mono key on every
+channel of that port (and silence there on every other block, so a key
+handed over once does not go on ducking after its tap is gone). The
+extra **outputs** stay dropped, written down as such: summing a drum
+plugin's individual outs into its main pair would make it twice as loud
+as it is. The fixture gain grew a mono sidechain input beside its main
+pair and a mono aux output that carries the key back out — so a host
+that summed the aux would be heard putting the key on the bus — and
+**ducks** by the key sample for sample, a key that is *heard* rather than
+detected so a test can say exactly what it expects.
+
+Upstream it rides what the compressor already had: `EffectSlot::key`,
+`key_listeners`, the `KeyTap` the source track's node fills, the
+scheduling edge. Two rules moved. `EffectSlot::effective_key` says a key
+on a **plugin** slot is always an edge — whether the plugin has a port
+for it is the host's knowledge, and an edge that feeds nothing only
+orders the graph — and `SetInsertKey` lets a plugin slot be keyed
+(`fontelle-model/tests/plugins.rs`, where the test that said the opposite
+now says this). `realise` hands the tap to `PluginNode::with_key`, which
+copies it into a buffer sized in `prepare`. The plugin's panel offers the
+same key chips a compressor's does when the rack says the plugin takes
+one (`insert_view`), so the routing is one click away rather than a
+field only a test can set. LV2's `lv2:isSideChain` port property is the
+next thing here; an LV2 insert given a key ignores it, and a test says so.
+
+### 3. Pitch bend, mod wheel, aftertouch
+
+`EventPayload` gained `Controller { controller, value }`, `PitchBend {
+value }` and `ChannelPressure { value }`, documented as what they are —
+**performance events, not automation**: a `ParamValue` names one of this
+program's controls by its §8.2 address and comes out of a lane or the
+learn table, while these are the raw fact that a hand moved a wheel,
+carried whole for the instrument to interpret. The router forwards every
+controller, bend and pressure it decodes on the current target; the
+sustain pedal stays its own (holding notes is the router's bookkeeping,
+not the instrument's) and a program change still goes nowhere. Six tests
+in `fontelle-midi/tests/router.rs`.
+
+Into a plugin, in the language its note port speaks —
+`fontelle_host::NoteDialect`, read off the port's declared dialects with
+MIDI winning when it is *supported*, whatever the plugin prefers, because
+the preference is about notes and MIDI is the honest carrier for a wheel.
+LV2 is three more bytes in the atom sequence. CLAP with MIDI is a
+`MidiEvent` on the note port. CLAP without is the nearest **note
+expression** on every note: the wheel as vibrato, aftertouch as
+pressure, the bend as two semitones of tuning; 7, 10, 11 and 74 as
+volume, pan, expression and brightness; anything else dropped rather
+than invented onto a parameter. `fontelle-testplug`'s sine ships
+**twice** for this — `SinePlugin<true>` speaking MIDI beside CLAP and
+`SINE_CLAP_ONLY` speaking CLAP alone — and both sines (and the LV2 one)
+scale their level by the wheel, bend two semitones, and *duck* under
+pressure, the opposite of the wheel so a host that sent one as the other
+is told apart from one that got it right. Twelve host tests across
+`hosting.rs` and `lv2.rs`, two on the node. Bridged plugins get none of
+this yet: the ABI carries notes and nothing else of a performance.
+
+Not done, and said where: a slide into a hosted instrument is now
+*expressible* as a tuning expression, but a `NoteSlide` names only the
+key it goes to and the node keeps no table of what is sounding to bend
+from; and what a `fontelle-core` voice does with a wheel is §7.4's
+question, for its own pass.
+
+### 4. Bridge ABI 2 — the editor half
+
+Items 1–3 were finished, tested and clippy-clean, so the first half of
+item 4 followed as instructed. `fontelle-bridge-abi` is **version 2**:
+five entry points at the end of the table — `has_editor`, `open_editor`
+into an X11 window id (writing the size it wants), `close_editor`, a
+per-frame `tick_editor`, and `resize_editor` — hanging off the same
+`PluginWindow` the two hosted formats use. The host reads every
+parameter back off the bridge after each tick, which is how a knob moved
+in a bridged editor reaches the document, since the ABI has no parameter
+events. `fontelle-testbridge`'s gain has no face and its sine has one
+that draws nothing and writes a level on its first tick — the same trick
+the LV2 fixture editor plays — so both answers are fixtures. Three tests
+in `fontelle-host/tests/bridges.rs`. The bridge itself is still the
+separate repository and is not written.
+
+### Counts that moved, on purpose
+
+The CLAP fixture bundle holds four plugins now and the LV2 one four, so
+the scan counts in `scanning.rs`, `lv2.rs`, `plugin_hosting.rs` and
+`plugin_ui.rs` moved with them — the tests doing their job.
+
+### Seen in the real window — and two more things it found
+
+Driven on the nested `Xwayland :99` with an isolated `XDG_CONFIG_HOME` so
+nothing touched the real settings or projects folder: *+ Add instrument*
+→ *Plugin…* → `x12` → *LSP Multi-Sampler x12 Stereo — LSP LV2*, *Open
+instrument*, LSP's own editor at 1100×675, its file dialog steered to
+`/usr/share/sounds/alsa/Front_Center.wav`, OPEN. **Nothing loaded.** The
+same clicks in the `plugin_editor` probe loaded and drew the waveform, and
+a new `PROBE_THREADED=1` mode (the processor on a thread of its own, as
+the studio runs it) loaded too — so the difference was the studio. A
+trace switch, `FONTELLE_ATOM_TRACE`, said it in one line: *editor wrote
+88 bytes to port 75; plugin ran 854 blocks; to plugin 4/0 taken*. The
+editor was talking; the plugin had stopped listening 2.5 seconds after
+it was activated, and stayed stopped.
+
+**The idle gate.** §6.3 says a stopped transport does not process the
+graph, and `IdleGate` is what makes that true: with nothing held on a
+keyboard, nothing ringing and no input monitored, the audio thread runs
+no nodes at all. An LV2 editor talks to its plugin *only* through `run` —
+the file it was handed rides an atom the plugin reads at the top of a
+block, and *"I loaded it"* comes out of one — so a gate that slept under
+an open editor was a sampler that could never be given a sample while the
+song was stopped, which is exactly when one is. A fifth reason to be
+awake: **attended**. The window writes `Transport::set_attended` from
+`tick_plugin_editors`, the callback reads it every block, and
+`an_attended_plugin_keeps_the_graph_awake` pins it. With that the load
+went through — *plugin ran 13059 blocks; to plugin 3/3 taken; to editor
+4/4* — and the waveform drew. This is also the likeliest reading of the
+SpectMorph LV2 dump: its editor reads a plan its plugin builds in `run`,
+and that plugin had never run.
+
+**Saved, and read back.** Ctrl+S; `project.json` carries a 570 KB blob of
+4948 properties, among them `sf_0_0` as an `atom:Path` holding
+`/usr/share/sounds/alsa/Front_Center.wav` — identity-mapped, as decided.
+`[bay] recalled after 3.2ms` and `5.3ms` in the same log are the studio's
+own autosave fetching the running instance's state through the bay: the
+silence item 1 was told to bound, measured in the window.
+
+**Reopened cold, and silent.** `--open <project> --window` came up with
+the sampler channel silent and *Open instrument* showing an empty panel:
+the window's first graph is built in `main.rs` before the session exists
+and **without a rack**, and nothing rebuilt it. A project that names
+plugins is now hosted on the session's first `pump` — after every builder
+has run and the settings' plugin folders are known —
+`a_project_that_names_a_plugin_hosts_it_before_any_edit`. After that the
+editor opened showing the file with nothing sent from the editor
+(`to_plugin=0`: it came from the state), and a note on MIDI 57 was heard:
+`parec --monitor-stream` on Fontelle's own PipeWire stream, play pressed
+in the window, a 0.26-peak burst from 2.9 s to 4.2 s — the 1.4-second
+sample. Item 1's *"done when"*, end to end.
+
+**Not done, and named:** the CLI's `--render-wav` bounce has no rack and
+renders plugins as silence; that is its own pass.
+
+## 2026-09-05: three plugin faults, from one report
+
+> *"a lot of drum synth plugin keeps making the daw crash and like
+> spectremorph for example i tried it seemed to try loading a custom ui and
+> then everything crashed and lots of them dont seem to have custom ui and
+> the ones that seem to be trying to open a custom ui most often are just
+> closing their window as soon as it opens"*
+
+Reproduced with `fontelle-host`'s `plugin_editor` example against the
+installed plugins rather than in the window, which is what made each of the
+three separable. All three are fixed, tests first, and every one of them
+was the host's fault.
+
+### 1. The crash: a CLAP plugin is handed **every** port it declares
+
+`ClapProcessor` passed one input port and one output port — the main pair —
+whatever the plugin had declared. The OneTrick drum synths declare eight to
+eleven output ports (individual drum outs), and nih-plug, which they are
+built on, reads its auxiliary ports straight off the end of whatever array
+the host gave it (its bounds check is `>` where it should be `>=`). Handed
+one descriptor, SIMIAN2 and URCHIN read a second off the heap and cleared
+memory at address `0x13` in their **first block**, before a note was played
+— so the DAW died the moment one landed on a channel, editor or no editor.
+Surge XT declares three output ports and had only been surviving by luck.
+
+`read_audio_ports` now reads the whole layout (`PortLayout`: channel count
+per port, and which is main), `ClapProcessor` keeps one buffer set per port
+and hands them all over every block; the bus is still copied to and from
+the main port alone, the rest are silent in and dropped out. The sine
+fixture declares a mono *sub* port beside its main pair and refuses to
+render when handed fewer ports than it declared —
+`every_port_a_plugin_declares_is_handed_over` in
+`fontelle-host/tests/hosting.rs`. Before: memset to `0x13`; after: forty
+blocks and a drum hit at -6 dB from each of SIMIAN2, URCHIN and B-BOI.
+
+### 2. The window that closed itself: a `false` from `show` is advisory
+
+clap-helpers' default `guiShow` returns **false** unless a plugin overrides
+it, and plugins that put their window up in `set_parent` — SpectMorph, the
+OneTrick series — never do. `open_editor` read that false as a refusal,
+destroyed the editor it had just embedded, and the window went with it:
+*"closing their window as soon as it opens"*, exactly. Once `set_parent`
+has succeeded the editor exists; what `show` says after that is ignored.
+`fontelle-testplug` gained a third plugin, `FacePlugin` (a note effect, so
+it is on neither of the menus' lists), whose `show` answers the way those
+do — `a_plugin_whose_show_says_no_still_has_its_editor`. The fixture bundle
+holds three plugins now; the scan tests that counted two say three.
+
+### 3. The editors that never appeared: `instance-access` for LV2 UIs
+
+drumsynth's editor printed *"Host does not support instance-access, cannot
+use UI"* and refused to instantiate. That feature — the plugin's own
+`LV2_Handle`, handed to its UI — is discouraged by the specification and
+required by every DPF-built editor there is: Cardinal, Dexed, drumsynth,
+drumgizmo, geonkick and some two dozen more of the bundles on this machine.
+`Lv2Plugin` now publishes the running instance's handle (`activate` writes
+it, the `Lv2Processor`'s drop clears it, compare-and-swap so a newer
+instance's handle is never clobbered), and `Lv2Ui::open` passes it as the
+feature when there is one. **The rule that makes it safe:** the pointer a
+UI took at instantiate cannot be revoked, so an LV2 editor is closed before
+the instance it was handed can go — `HostedPlugin::activate` closes it
+first, and `PluginRack::retire` already closed editors before dropping a
+plugin. The fixture gain's UI checks the handle really is a `Gain` by a
+magic word and greets with `HELLO_FROM_THE_INSTANCE` instead of
+`HELLO_FROM_THE_EDITOR`; three tests in `fontelle-host/tests/lv2.rs`.
+drumsynth's editor opens and draws now (682x320, its own size).
+
+**Still true, and not a bug here:** an LV2 plugin whose UI is Gtk or Qt
+(drumkv1, synthv1, Calf's none) keeps the generated panel — see the
+`lv2_ui` module note on why this is not suil.
+
+**The probe route, for next time:** `cargo run -p fontelle-host --example
+plugin_editor -- <bundle>` on `DISPLAY=:1`, and when it dies, `coredumpctl
+-1 info` for the frames and `gdb -batch` with a breakpoint on
+`clack-host`'s `process.rs:504` to dump the `clap_process` it was handed.
+That is how the `0x13` was found, and it took a fraction of the time
+driving the window would have.
+
+## 2026-09-05: stars — favourites in every picker
+
+> *"make it so that i can favorite (star) plugins, instruments, effects,
+> etc. so that the favorites are always the most visible (highlighted
+> appearance) and there should be a favorites section at the top of every
+> dropdown basically that includes all of your applicable favorites if there
+> are any."*
+
+Every row that names a thing you can add — a built-in effect on the mixer's
+*+ fx* menu, a kind on the rack's *New instrument* / *Change instrument*
+menus, and every plugin in the picker — now has a **star at its right end**.
+Pressing the star toggles it; the menu stays open, rebuilt where it was and
+scrolled where it was, so starring three effects is three presses and not
+three trips. A starred row is drawn **lit** (an accent wash under it, a
+filled star) wherever it appears, and whenever anything in a menu is starred
+a **Favorites** section goes first, under the heading and above a rule,
+holding every applicable favourite. The full list follows unchanged.
+
+**A starred plugin is one press away, not two.** A favourite plugin effect
+sits in the *+ fx* menu's favourites section itself, and a favourite plugin
+instrument in *New instrument*'s — the row behind *Plugin…* was the reason
+to star it. A favourite that names a plugin not installed on this machine is
+left out rather than offered as a row that would do nothing. Those two menus
+scan for plugins once, on opening, **only if** some favourite is a plugin:
+somebody who never starred one never waits for a scan they did not ask for.
+
+**Where it is kept.** `fontelle_types::Favorite` — `Effect(EffectKind)`,
+`Instrument(InstrumentKind)`, `Plugin(PluginKey)` — in the **settings file**
+(`Settings::favorites`, format version **4**), not the project: a favourite is
+a fact about the person, and the same reverb is a favourite in every song.
+Written as `{"effect":"Reverb"}` / `{"plugin":"clap:com.u-he.diva"}` so the
+file stays readable; saved at once, like a folder choice; and not an edit
+(the project does not go dirty for it). A plugin is named by its `PluginKey`,
+so it stays starred after being reinstalled somewhere else.
+
+**How it is built** — `crates/fontelle-ui/src/canvas/favorites.rs`. Each of
+the three menus is one pure function returning **the rows and what each row
+means** as a pair (`effect_menu_rows` → `EffectRow`, `instrument_menu_rows` →
+`InstrumentRow`, `plugin_picker_rows` → `PickerRow`); the window builds the
+menu from one half and answers a press from the other, so they cannot
+disagree about which row was the reverb. This retired the mixer's bespoke
+`EffectMenu` — *+ fx* is a `ContextMenu` like every other menu now
+(`MenuTarget::AddEffect`), which is what let it scroll, star and carry a
+section without a second implementation of all three. `MenuEntry` grew
+`star: Option<bool>`; `ContextMenu::star_rect` and `context_menu_star_hit`
+divide a row between its caption and its star, and `context_menu_hit` no
+longer answers for the star's part. The star is `Icon::Star` /
+`Icon::StarFilled`, drawn as paths like every other icon. The host seam is
+two methods on `StudioHost`: `favorites()` and `toggle_favorite()`, and
+`PluginListing` now carries its `key` so the window can say which rows are
+starred (it still *chooses* by position — INVARIANT 2).
+
+Tests, written first: `fontelle-types/tests/favorites.rs` (the written
+form), `fontelle-app/tests/favorites.rs` (the toggle, the file, the session,
+not-dirty), `fontelle-ui/tests/favorites.rs` (the three menus' rows with and
+without favourites, the star's geometry, a greyed row's star still answering,
+a star scrolled out of sight not answering, a starred menu being wider).
+
+**Not done, on purpose:** the soundfont browser's presets. They are a panel
+with search headings, not a dropdown, and starring one is a browser feature
+of its own (a *Favorites* heading in the bank) rather than a menu row — asked
+for next, it would go through the same `Favorite` type with a fourth variant.
+
+## 2026-09-05: the LV2 half of a plugin's own face
+
+> *"close the gaps that still stand"*
+
+The gaps were: LV2 plugins got the generated panel, so an LV2 sampler could
+never be handed a file; and the autotune "created no audible or visual
+difference". Both are the same gap, and it is closed.
+
+### `fontelle_host::lv2_ui` — an LV2 editor, hosted
+
+Found through lilv off the plugin's own Turtle, `dlopen`ed, matched **by URI**
+— LSP ships a single `lsp-plugins-lv2ui.so` answering for three hundred
+plugins, so a host that takes the first descriptor opens the wrong editor, and
+the walk to find the right one has to be longer than 64 — then instantiated
+with `ui:parent` pointing at the very same `PluginWindow` a CLAP plugin gets.
+`idle` runs off the same per-frame tick; `ui:resize` is how it asks for its
+window; a control port moved in the studio reaches it through `port_event` and
+what it writes comes back on the parameter wire.
+
+**The one rule that makes the loop stable** is at the bottom of `Lv2Ui::tick`:
+what the editor wrote is never sent back to it. Without that, a knob under the
+mouse fights the host for its own position.
+
+**Not suil.** Of the seventeen bundles installed here that ship a UI,
+seventeen ship X11 — so suil would only add Gtk and Qt, and a wrapper for
+toolkits nothing here uses is a dependency for nobody. And the Calf half of
+what I said last time was wrong: Calf ships **no UI at all**, not a Gtk one. It
+keeps the generated panel because it has nothing else, which is a fact about
+Calf rather than a gap in here.
+
+### `fontelle_host::atom` — because a float cannot say "load this file"
+
+An LSP sampler's whole state is a file it was handed, and it is handed one as a
+`patch:Set` **atom** written by its editor. A host that carries floats and
+drops atoms opens a sampler's editor onto a sampler that can never be given a
+sample — which is exactly the shape the gap had.
+
+Two fixed-capacity rings, allocated once, `try_lock`ed rather than waited on
+(the `ProcessorBay` trade), carrying whole atoms between the editor on the main
+thread and the plugin on the audio thread. The subtle part is *when*: the
+editor's messages go into the atom sequence **as the block that just ran is
+emptied**, so they sit at frame zero ahead of the next block's notes. Appending
+them at the top of the next `run` would put an atom at frame 0 after a note at
+frame 100, and a plugin is entitled to stop reading a sequence at the first
+event out of order. The cost is one block of latency on a command: 2.7 ms.
+
+### What it was tested against
+
+`fontelle-testlv2` grew **two editors and a third plugin**, so the host's half
+is exercised with no display at all:
+
+- the gain's editor writes a parameter on its first idle *only if it was given
+  a window*, and mirrors whatever it is told about one port onto another — so
+  one assertion covers found, loaded, parented, driven, told, and heard back;
+- the sine's editor speaks only in **atoms**: it sends a MIDI note-on through
+  `atom:eventTransfer`, and the sine now has an atom output port to answer on,
+  so the test asserts a *sound* and then asserts the reply arrived;
+- and a third plugin that ships no editor at all, because "the host must
+  survive a plugin with no face" is Calf's whole suite and deserved a fixture
+  rather than an assumption.
+
+31 tests in `fontelle-host/tests/lv2.rs`, 5 more for the ring itself.
+
+### And on the real ones
+
+- **x42-Autotune** (the one from the report): editor opens, asks for 615×108
+  through `ui:resize`, and draws its keyboard, Mode, Tuning, Bias, Filter,
+  Corr. and Offset.
+- **LSP Multi-Sampler x24 Stereo**: editor opens at 1100×675 with *"Click or
+  drag to load"* — driven in the studio window, from *Open instrument* on its
+  channel. `AtomPipe::carried` says 1 atom to the plugin and 1001 back in eight
+  seconds, so the wire the file loading rides on is live and measured.
+
+**Bridged editors stay open**, and deliberately: the ABI has no GUI entry
+points, and adding them now would be a speculative abstraction against zero
+consumers — the VST3 bridge is not written. The shape when it is, is recorded
+in the TDD.
+
+## 2026-09-05: plugins that make a sound, and show their own face
+
+> *"i added plugin instruments but cant hear them and they arent really
+> displaying cleanly in the instrument menu. shouldnt these also be showing the
+> custom plugins own display in their windows not a auto made one from the
+> parameters."*
+
+Five things, and the first one is why the rest looked worse than they were.
+
+### 1. Every plugin parameter was being set to its minimum
+
+Fontelle seeded its parameter wire from CLAP's `param_info.default_value` and
+then `activate` marked the lot to be sent, so the first block a plugin ever
+rendered carried "set every parameter to its default" as the host understood
+it. **Surge XT reports `default_value` as zero for all seven hundred and
+seventy-five of its parameters.** Its `get_value`, on the freshly instantiated
+plugin, returns the real setting — Global Volume at -2.03 dB, Polyphony Limit
+at 16. So the host turned the global volume to -48 dB before a note was played,
+and the synth was silent. The screenshot in the report says it outright:
+*Global Volume -48.00 dB*, *Polyphony Limit 2*, every send at *-inf*.
+
+`read_params` now asks the plugin what each parameter **is**, and falls back to
+what its description **claims** only when it will not say. `fontelle-testplug`'s
+sine grew an `Output` parameter that tells the same lie on purpose and that the
+sine is multiplied by, so five tests fail without the fix and pass with it.
+
+Measured on this machine: Surge XT went from peak 0.0 to peak 0.21 for a held
+note through `realise_hosting` and `render_offline` — the whole app chain, not
+just the host. Calf Organ (LV2) renders at 0.13, unchanged.
+
+While in there: an instrument that declares audio **inputs** is now handed them,
+zero-filled, instead of an empty port array. CLAP says the host passes as many
+ports as the plugin declared and several plugins check.
+
+### 2. A plugin instrument could not be replaced with another plugin
+
+*"currently cant replace a plugin instrument with another plugin instrument."*
+
+The *Change instrument* menu greyed out the kind you already were — right for
+the four built-ins, where choosing again would throw away what you had edited,
+and wrong for **Plugin**, which is not a kind you *are* but a promise to name
+one. On a channel already playing a plugin, the one row that leads to the
+plugin picker was the one row you could not press. It is the same mistake the
+record button's mode menu made (*"i was locked out of the audio option"*) and
+it has the same answer: mark it, do not disable it. `Plugin…` now carries an
+ellipsis in both instrument menus, which are one list
+(`canvas::instrument_menu_entries`) rather than two that can drift.
+
+### 3. The plugin panel read badly
+
+CLAP's `module` is a path and plugins write it with separators, so Surge's
+groups were headed `/Macros/` and `/Global & FX/` — drawn raw, slashes and all.
+They are turned back into words now. A caption too long for its ninety-two-pixel
+cell is elided with a mark rather than clipped mid-word ("Polyphony Limi" reads
+as a misspelling; "Polyphony Limi…" reads as a name that did not fit). A
+parameter the plugin says is read-only is no longer drawn as a knob you can
+turn — it is still automatable and still saved, since both go by the plugin's
+own id.
+
+### 4. A plugin's own editor, in its own window
+
+This is the real answer to *"shouldnt these also be showing the custom plugins
+own display"*, and it is new: `fontelle_host::gui`.
+
+- **An X11 window, made with `x11rb`.** Surge XT's CLAP build supports *x11,
+  embedded* and refuses floating, Wayland and floating-Wayland — the ordinary
+  answer from anything built on JUCE. One process has one `winit` backend, so
+  matching that with a `winit` window would mean moving the whole studio onto
+  XWayland. Making just this window directly leaves the studio alone.
+- **Three host extensions**, because a CLAP editor has no thread of its own: it
+  repaints when the host fires the timer it registered (`clap_host_timer_support`)
+  and sees a click when the host says its connection is readable
+  (`clap_host_posix_fd_support`), and it asks its window to resize through
+  `clap_host_gui`. `HostedPlugin::tick_editor` pays the first two once a frame,
+  out of `about_to_wait`; `arm_deadline` holds the loop awake at 60 Hz while an
+  editor is open, because otherwise the studio sleeps and the plugin freezes.
+  **A window that opens grey and stays grey is those two calls missing.**
+- **`PluginRack` owns the window**, beside the plugin, so `retire` closes the
+  editor before the plugin it belongs to can go.
+- A plugin with no editor — which is every LV2 and bridged one in this build —
+  answers `false` and gets the generated panel, which is what the panel is for.
+
+Driven in the real window to confirm it: added a Surge XT channel, right-clicked
+it, chose *Open instrument*, and Surge's own editor came up at 1141×711 beside
+the studio, drawn and live. `cargo run -p fontelle-host --example plugin_editor`
+is the tool that does the same thing without the studio, and `PROBE_DUMP` writes
+out what the plugin drew — taken off the window rather than off the screen, so
+it works on this desktop, which has no screenshot tool that will co-operate.
+
+### 5. Naming a project, and saving one that has no file
+
+> *"when i make a new project i need to be prompted to name it and also when im
+> not in a project yet, i currently cant save that blank no project into a new
+> project ... if i try to save and theirs no project directory it can just make
+> a new one ... giving you the option to name it and stuff."*
+
+Ctrl+S on a studio with no file used to answer *"this project has no file yet —
+open it with `--save <path>`"*, which is a sentence about the command line to
+somebody who is looking at a window. Both gestures now put a **name prompt** up:
+a menu whose heading carries what you have typed with a caret, Enter presses it,
+Escape cancels. It is a menu rather than a new modal because a menu already lays
+out, draws, hit-tests and takes the keyboard — the plugin picker has typed into
+one since yesterday.
+
+Underneath: `Session::save_as` and `Session::new_project_named`, and a name is
+made **safe** before it is made unique — INVARIANT 10, since a name box is the
+one place somebody can type `../../etc/passwd` and a project must not land
+there. Eight tests in `tests/naming_projects.rs`.
+
+## 2026-09-05: the plugin menu that was never drawn
+
+> *"its still not seeing my plugins right now but i updated i installed them
+> and restarted"*
+
+It could see them. The scan was perfect — 370 plugins, 13 instruments, 357
+effects, no failures, Surge XT among them — and the Settings tab said "370
+plugins" at the bottom of the window while the report was being written.
+
+**Clicking *"Plugin…"* opened nothing at all**, and a menu that refuses to
+exist is indistinguishable, from the outside, from a program that cannot see
+the plugins.
+
+### One line, and it was a reasonable line
+
+`canvas::context_menu_layout` refused to lay out any menu taller than the
+room it was given:
+
+```rust
+if entries.is_empty() || bounds.is_empty() || width <= 0.0 || height > bounds.height {
+    return ContextMenu::default();     // "better than a sliver listing two of six things"
+}
+```
+
+That is right for the six-line menus the window had when it was written, and
+it was even tested (`a_menu_that_will_not_fit_is_not_drawn`). Then 357 LV2
+effects arrived: 359 entries at 22 pixels is a menu **7904 pixels tall**, the
+guard fired, `open_menu` saw an empty menu and returned, and the row did
+nothing. Plugin *instruments* were fine the whole time — 15 entries is 336
+pixels, and it fit.
+
+The rule is now **a menu longer than its room scrolls; only a menu with no
+room for a single whole row is not drawn.** The old test passes unchanged: 4
+entries in 10 pixels still has room for none of them.
+
+### What the menu grew
+
+- **Scrolling.** `ContextMenu` keeps its scroll, its row height and its
+  content height, so `scroll_by` is a function of the menu alone rather than a
+  re-layout needing the caller to have kept the anchor. An entry scrolled out
+  of sight gets an **empty rectangle**, which is the one rule for what is
+  showing: the renderer already skipped empty rows and `context_menu_hit`
+  already could not land on one, so what is drawn and what can be clicked
+  cannot disagree. The wheel over an open menu is the menu's before it is
+  anything else's, three rows a notch.
+- **Type to filter.** Sixteen screens of scrolling is not a picker, so the
+  plugin menu filters as you type: a plain case-insensitive substring over the
+  name *and* the vendor, re-laid-out in place on each keystroke. The heading
+  carries the query ("Plugin effects — verb"), because a filtered menu that
+  does not show its filter is a menu that has lost your plugins; an empty
+  result says *"nothing matches"* rather than *"none found"*. Backspace and
+  Escape do what they should. Only the plugin picker filters — six entries
+  need no search box.
+
+### Driven in the real window, which is the only place this was visible
+
+None of it had a failing test and none of it could have: the geometry was
+correct for every menu that existed. Verified through the nested X server and
+XTEST (`seeing-fontelles-gui`): the mixer's *"+ Add effect"*, then
+*"Plugin…"*, and the picker opens with 357 effects in a frame capped to the
+window; the wheel reaches the last row (`Rescan plugin folders`); typing
+`verb` narrows it to six reverbs from Calf, Dragonfly and LSP.
+
+Two notes for whoever drives that harness next. `pkill -f` and `pgrep -f`
+**match the driving shell's own command line** — three sessions were killed
+mid-run before that was spotted; use a pid file. And the frame really is
+stale: two screenshots here showed a menu that had already closed, and both
+times a second grab a second later was right.
+
+### Installing the plugins broke four tests, and they were right to break
+
+The moment 370 real plugins existed on this machine, four tests that say *"the
+rack lists what is in the folders it is given"* started counting them:
+`PluginRack::folders` always walked the folders the formats nominate **as well
+as** the ones it was handed, so `set_folders` never meant "only these". It had
+simply never mattered, because the standard folders were empty.
+
+`PluginRack::search_standard_folders(bool)` is the switch — on for the studio,
+which has to find what an installer put where it was told to, off for a
+fixture — and `Session::with_plugin_folders` turns it off with them, since a
+test naming its folders means exactly those. `PluginRack` also lost its
+`#[derive(Default)]`: `standard: false` is the one field a derive gets wrong,
+and it would be a studio that finds no plugins at all.
+
+This is `fontelle-testplug`'s argument arriving from the other end. A fixture
+keeps a test off the developer's machine; this keeps the *machine* out of the
+test.
+
+**9 tests** (`fontelle-ui/tests/context_menu.rs`, 13 in the file now; plus the
+rack's isolation switch), and `cargo test --workspace` is green at **3018**
+with clippy clean at `-D warnings`.
+
+`fontelle-ui/src/canvas/menu.rs` · `WindowApp::{relayout_menu,
+menu_filter_key}` · `MENU_WHEEL_ROWS`.
+
+### Still open
+
+**A tooltip is drawn over an open menu** — the control underneath keeps its
+tip while a menu covers it. Seen in two of the screenshots. Pre-existing and
+cosmetic, and the same shape as a bug this window has had before.
+
+## 2026-09-04: kits you can tell apart, a chip that says which, LV2, and a door for the formats that cannot come in
+
+> *"the drumkits in the drum machine kind of all sound very similar and also not
+> noticing much feedback for when i actually change a selection of kit
+> visually like not much user feedback. also i agree with implementing LV2 for
+> sure, and if vst3 and vst2 are legally murky we could always try and add it
+> in a way that keeps it completely separate to the open source stuff and never
+> gets included with it ... that way i can locally use vsts lv2s or clap
+> plugins"*
+
+Three things, in the order they were asked for.
+
+### The kits sounded alike, and a test now listens
+
+The report was measured before anything was changed: every kit's closed hat
+had its spectral centre between 10 and 13 kHz and lasted the same 25 ms, every
+kick sat between 80 and 110 Hz, and LinnDrum against Rock differed by fifteen
+percent on one number. The old test (`every_style_is_actually_a_different_kit`)
+could not see it — two tables that differ in the third decimal are "two kits"
+to `!=` and one kit to an ear.
+
+The cause was the number of **axes**. Every hit had one noise source (white
+noise through one filter) and every kit was a handful of multipliers on decay,
+tone and drive — so the styles could only be shorter or longer, brighter or
+darker versions of one drum. What tells an 808 from a 909 from a LinnDrum is
+the *source*, and two knobs were added to `DrumVoice` for it:
+
+- **`metal`** — blends the noise from white noise to the 808's six square
+  oscillators, at the ratios the 808 uses (205, 304, 370, 523, 540, 800 Hz
+  over 205), tuned from the hit's `tune_hz` so a 606's hats sit above an
+  808's. Through a filter of its own so the two sources are balanced *after*
+  the corner where the ear hears them: measured, a bank of squares carries a
+  tenth of white noise's power above a hat's corner, and `METAL_LEVEL` is that
+  make-up. The six start at staggered phases, or a hat opened with a click six
+  times the size of any one of them.
+- **`crush`** — one converter doing both a sample-rate reduction (a held
+  sample, down to a thirteenth of the host rate) and a bit-depth reduction
+  (down to four bits). After the drive, which is the order the hardware had.
+
+`KitCharacter` grew the axes a genre actually differs on — `bend`/`bend_time`
+(the kick's punch: an 808 has almost none, a 909 is mostly sweep), `hat_tune`,
+`hat_tone`, `metal`, `crush`, `snare_tune`, and a `kick_body` separate from
+the rest — and all twenty-two recipes were rewritten around them.
+
+**The test that holds it** is `every_pair_of_kits_is_audibly_apart`
+(`fontelle-core/tests/drum_kit.rs`): render each kit's kick, snare and closed
+hat, read three things an ear reads (seconds to fall thirty decibels, spectral
+centroid, peak over RMS) as logs, and demand that every one of the 231 pairs
+differs by at least `APART = 0.35` (about forty percent) on at least one of
+them. It failed on eight pairs after the first rewrite and the recipes were
+pushed until it passed; that is what "different kits" means now, and a recipe
+edit that makes two kits the same will be told so.
+
+Both knobs are read from a project with a default of zero, so a kit written
+before they existed sounds exactly as it did.
+
+### The chip lights
+
+A preset writes the knobs and then has nothing further to say (rule 10), so
+nothing *remembered* which kit was chosen — and the preset row was drawn with
+no chosen chip, on every effect as well as on the drum machine. The panel now
+**looks** instead of remembering: `DrumKitStyle::matching(&patch)` answers
+"which kit are these thirty-six layers exactly" and
+`EffectConfig::matching_preset()` the same for an effect, and
+`InstrumentView::preset` is drawn filled. The moment one hit or one knob is
+touched it is nobody's preset and no chip lights, which is the truth. A new
+drum machine says "Studio" from its first frame; undo moves the mark back.
+
+### LV2, through lilv
+
+`fontelle-host` hosts LV2 now, and it is what §8.4 said the second format
+would be: an arm in a `match` and not a second host. `HostedPlugin` and
+`HostedProcessor` are the same two types with a format enum inside, and
+nothing in `fontelle-engine` or `fontelle-app` changed to get an LV2 synth on
+a channel or an LV2 effect in a chain.
+
+What is different about LV2, and where it is absorbed (`fontelle-host/src/lv2.rs`):
+
+- **A bundle is a folder** — the library beside Turtle files — and everything
+  a menu shows is read from the Turtle by lilv. A scan `dlopen`s nothing.
+- **A parameter is a control port**; its id is the port index, which LV2 makes
+  stable. There are no parameter events: the wire is written into the ports at
+  the top of each block.
+- **Notes are MIDI in an atom sequence**, stamped with their frame, and the
+  fixture honours the frame so the placement test works.
+- **One object, not two.** An LV2 instance is one handle, so the whole
+  instance rides in the processor and is made at `activate`, freed at
+  `deactivate`.
+- **One lilv world per bundle**, loading only that bundle, because the folders
+  Fontelle searches are the user's and not `LV2_PATH` — and an environment
+  variable is process-wide, which a test suite on sixteen threads cannot set.
+  Classes and port types are read off the plugin's own data instead of the
+  specification's class tree, which is enough for a scanner and a host.
+- **One feature set per host** (`livi` starts a worker thread per feature
+  set), shared by every LV2 plugin the host opens.
+- **No state extension yet.** An LV2 plugin is saved as its control ports;
+  a sampler keeping a file in `state:interface` comes back empty. Next.
+
+**The bug the tests found:** `PluginRack` drops its host before its parked
+processors, a lilv instance holds no reference to the world that loaded its
+library, and the world `dlclose`s that library when freed — so the first
+end-to-end render segfaulted on the way out. `Lv2Processor::_world` is the
+plugin handle kept only to pin the world.
+
+`fontelle-testlv2` is a real LV2 bundle built here — gain and sine again,
+written against the raw C structs so nothing sits between the test and the
+ABI — and its two Turtle files are constants a test helper writes beside the
+library. **`cargo build -p fontelle-testlv2`** builds the `.so`; depending on
+the crate does not (the same trap `fontelle-testplug` documents).
+
+### A door for the formats that cannot come in
+
+§3.4's problem is that the VST3 SDK is GPLv3-or-proprietary and the VST2 SDK
+is withdrawn, so neither can be linked from this tree. The answer built is
+the one §8.4 anticipated: a **bridge**.
+
+- **`fontelle-bridge-abi`** (MIT/Apache, ~150 lines) is the whole shared
+  surface: a `#[repr(C)]` table of function pointers — scan, open, params,
+  activate, process, notes, state — with a version number and a thread
+  contract that is the one every plugin API draws (process/notes/reset on the
+  audio thread, the rest on main, the bridge synchronises the two).
+- **`fontelle_host::Bridges`** loads every library in Fontelle's own folder
+  (`$XDG_DATA_HOME/fontelle/bridges`, or `FONTELLE_BRIDGES`), checks the ABI
+  version, and refuses one that claims a natively hosted format. A bridged
+  plugin is the third arm of the same two enums. `PluginFormat::hosted` still
+  says what *this build* loads; `PluginHost::can_host` adds what is installed.
+- **Fontelle never links a bridge and a bridge never links Fontelle.** What a
+  bridge links — the SDK, `yabridge`'s output — is built from a repository of
+  its own under its own licence, and never enters this one.
+- **`fontelle-testbridge`** is a bridge with no SDK in it (its "bundles" are
+  folders with a `plugins.txt`), and is what the tests load. What they prove
+  is the loader and the seam.
+
+**The VST3 bridge itself is not written.** It is a separate, private
+repository's worth of COM-style FFI against Steinberg's SDK, and it is the
+next thing for anyone who wants a Windows plugin collection in here (through
+`yabridge`, which turns a Windows VST3 into a Linux VST3 — so one bridge
+covers both). The seam it plugs into is done and tested.
+
+### Where it is, and the count
+
+`fontelle-dsp/src/drum.rs` · `fontelle-core/src/drum_kit.rs` ·
+`fontelle-types::EffectConfig::matching_preset` · `InstrumentView::preset` ·
+`fontelle-host/src/{lv2,bridge}.rs` · `fontelle-bridge-abi` ·
+`fontelle-testlv2` · `fontelle-testbridge` · `PluginRack::set_bridge_folders`.
+
+`cargo test --workspace` is green at **3010 (2944 before this)** and clippy at
+`-D warnings` is clean.
+
+## 2026-09-04: plugins somebody else wrote, actually running
+
+> *"close the remaining gaps to make our instruments and plugins completely
+> modular to allow for third party effect plugins and instrument vsts etc."*
+
+**Fontelle hosts CLAP plugins.** Not a scaffold and not a mock: it walks the
+folders CLAP nominates, `dlopen`s what it finds, instantiates a plugin, reads
+its parameters, feeds it notes and audio on the RT thread, saves its state into
+`project.json`, and puts it back the way it was when the project is reopened.
+An instrument plugin plays from the piano roll; an effect plugin sits in an
+insert chain.
+
+### The prediction in §8.4 was right
+
+The TDD said: *"the `AudioNode` trait (§5.1) and the parameter contract (§8.2)
+are the entire boundary a future CLAP host would plug into … do not add
+speculative hosting abstractions now."* That is exactly what it cost:
+
+- **One new node type.** `fontelle_engine::PluginNode`, ~150 lines, which does
+  what `EffectNode` and `SamplerNode` do except that it hands the block to
+  somebody else's code.
+- **No new addressing scheme.** An insert's plugin parameter is
+  `mixer:<track>/insert[0]/param/<clap id>` — the address inserts already had.
+  An instrument's is `channel:<id>/patch/plugin/param/<clap id>`, which parses
+  because `ParamTarget::ChannelPatch` was written to take anything after
+  `patch/`. Both end `/param/<id>`, and that is the only rule the node reads.
+  Automation, undo, right-click-to-automate and preset storage all worked
+  without being touched.
+- **No new panel.** `describe_plugin` builds the same `InstrumentView` the
+  soundfont editor and the effect windows are drawn from. A plugin's parameters
+  differ from a built-in effect's in exactly one way — their names arrive at run
+  time instead of living in the binary — which is why `HostedParam` has `String`
+  where `ParamSpec` has `&'static str`, and why that is the only difference.
+
+### Where a plugin lives, and why it cannot live in the graph
+
+This is the one genuinely hard part, and it is worth reading before touching any
+of it.
+
+A CLAP plugin may be **activated once**. Its main-thread handle and its audio
+processor are two objects, on two threads, by specification — `clack` encodes
+that in the types, and a `PluginInstance` dropped while its processor is still
+out is deliberately *leaked* rather than freed on the wrong thread. Meanwhile
+this engine rebuilds the graph **whole** on every structural edit, and builds
+the new one *while the old one is still playing*. So at the moment a new plugin
+node is constructed, the processor it needs is inside the node it replaces.
+
+So a plugin does not belong to a graph. It belongs to `fontelle_app::PluginRack`,
+for as long as the document has a slot for it, and the graph gets a share of two
+things:
+
+- a **`ProcessorBay`**, where the processor waits between graphs. A retired node
+  parks it on the way out — in `GraphPublisher::reclaim`, which was already *the*
+  one place a live graph dies, on the main thread. The new node takes it the
+  first time it renders, with a `try_lock` that never waits: a block that cannot
+  have it renders **pass-through** (not silence — a hole in the mix is worse
+  than a few unprocessed blocks), and tries again next block.
+- the **`ParamValues`** a knob writes on: one atomic per parameter plus a moved
+  flag, drained into CLAP events at the top of each block. The same shape
+  `TrackControls` uses for a fader, for the same reason — the document is still
+  the source of truth, this is how a drag is *heard* before the next rebuild.
+
+A plugin whose slot the document stops asking for is **retired**, not dropped,
+and swept once its processor has come home.
+
+### The document
+
+- `PluginKey` — `clap:com.u-he.diva`. The **plugin's own id, never a path**:
+  INVARIANT 8's rule for audio applied to plugins. A project names what a thing
+  is; the machine resolves where it is.
+- `EffectSlot::plugin` and `Channel::plugin`, both `#[serde(default,
+  skip_serializing_if)]`, so every project written before this opens unchanged
+  and is written back unchanged. `EffectSlot::kind()` now returns
+  `Option<EffectKind>` — `None` means "this slot is somebody else's plugin and
+  every question about `EffectConfig` is the wrong question", and the compiler
+  found all sixteen places that needed to ask.
+- Values are stored **plain**, in the plugin's units, not normalised. CLAP's own
+  advice, and the argument is the same as for a taper: a plugin that widens a
+  range in an update should keep sounding the same, and only the plain number
+  can promise that.
+- State is the plugin's opaque blob (base64 — `fontelle-types/src/base64.rs`,
+  forty lines rather than a dependency that reads project files) **plus** every
+  parameter. Both: the blob carries what no parameter can, and the parameters
+  are what this program can automate. A plugin with no state extension is
+  restored from the parameters alone, which is the case `fontelle-testplug`'s
+  sine exists to keep honest.
+
+### Testing a foreign ABI
+
+`crates/fontelle-testplug` is **a real CLAP bundle built in this repository** —
+a gain effect and a sine instrument, ~500 lines. The host's tests load it through
+the real entry point across the real ABI.
+
+The alternative was worse in both directions. A mock tests the mock; a test
+against whatever the developer has installed tests that machine. The fixture
+also earns its keep by being *deliberately awkward*: two plugins in one bundle
+(the ordinary case, and a scanner that had only ever seen bundles of one would
+be wrong in a way nobody noticed), one plugin with the state extension and one
+without, a stepped parameter, and an instrument that honours event **timestamps**
+— which is how the host's sample-accurate note placement is checked at all.
+
+**One trap, and there is a guard for it now.** Depending on `fontelle-testplug`
+builds its *rlib*; the `.clap` a test loads is the *cdylib*, which only a build
+of that package itself produces. So `cargo test -p fontelle-host` alone can run
+new tests against an old plugin and fail for reasons that are nowhere in the
+diff — it cost half an hour. The test helpers now refuse to run if the built
+plugin is older than its source and say what to type.
+
+### What is not in it
+
+- **No plugin editor windows.** A plugin is edited on Fontelle's generic panel.
+  This is the largest remaining gap and it is a real one: a synth whose sound is
+  drawn rather than dialled is much less useful without its own UI. It needs
+  `clap_plugin_gui` and a child window, which §16 says the windowing layer was
+  built multi-window for.
+- **No latency compensation** for a plugin that reports latency.
+  `PluginNode::latency_samples` returns zero, which is the honest answer to what
+  this build does; a wrong number would misalign every other track.
+- **No note expressions or slides** into a hosted instrument, and no CLAP
+  sidechain input ports (`EffectSlot::effective_key` returns `None` for a plugin
+  — an edge that fed nothing would still order the graph).
+- **No VST3 or LV2.** `PluginFormat` names all three and `hosted()` says which
+  can actually be loaded, so a project from a machine that had one says *"a VST3
+  named X is missing"* rather than failing to parse. §3.4 is why VST3 is last.
+
+### Where it is
+
+`fontelle-host` (scan, load, run) · `fontelle-testplug` (the fixture) ·
+`fontelle_engine::PluginNode` · `fontelle_app::PluginRack` ·
+`fontelle_app::realise_hosting` · `fontelle_types::{PluginKey, PluginState}` ·
+`fontelle_model::{AddPluginInsert, SetChannelPlugin, SetPluginParam}` ·
+`Settings::plugin_dirs`.
+
+**110 tests**, and `cargo test --workspace` is green at **2944** (2834 before
+this):
+
+| where | tests | what they hold |
+| --- | ---: | --- |
+| `fontelle-types/tests/plugin.rs` | 9 | keys, formats, what a slot stores |
+| `fontelle-types/tests/base64.rs` | 5 | RFC 4648's own vectors, and every byte |
+| `fontelle-host/tests/scanning.rs` | 9 | walking folders, and what will not load |
+| `fontelle-host/tests/hosting.rs` | 19 | opening, reading, setting, hearing, saving |
+| `fontelle-host/tests/bay.rs` | 3 | the handover between graphs |
+| `fontelle-model/tests/plugins.rs` | 14 | the document, its commands, its undo |
+| `fontelle-engine/tests/plugin_nodes.rs` | 12 | the node in a block |
+| `fontelle-engine/tests/plugin_no_allocation.rs` | 3 | INVARIANT 1, under a guarding allocator |
+| `fontelle-app/tests/plugin_hosting.rs` | 15 | end to end: chosen, realised, heard |
+| `fontelle-app/tests/plugin_ui.rs` | 14 | the browser, the panels, the knobs |
+| `fontelle-app/tests/plugin_folders.rs` | 7 | where it looks, and what the tab says |
+
+The allocation ones are worth singling out. `no_allocation_during_render.rs`
+exists because a per-block `Vec` in `process_block` was found on real hardware
+and nowhere else; the plugin file is the same guard over the hosting path, and
+it **caught the same bug again** — draining the parameter wire into a scratch
+`Vec` is the obvious spelling and allocates once a block. What it can promise is
+only Fontelle's half: a real plugin that allocates is not a bug in this code and
+this test would not see it.
+
+## 2026-09-04: a drum machine, and it is not a special case
+
+> *"i want you to create a new instrument, a built in general purpose drum
+> machine that can just make a variety of drum styles and sounds and you can
+> play them all in the piano roll all labeled and stuff should have lots of
+> presets for different styles and genres of kits. should be encorperated like
+> any other vst would be."*
+
+**A kit is an ordinary `Patch`.** That is the whole design, and it is what
+*"like any other vst"* turned out to mean in this codebase: thirty-six layers,
+one per key, each carrying `Source::Drum(DrumVoice)`. Nothing else had to be
+told it exists — it is saved by `to_data`, read by `from_data`, **labelled by
+the key map already** (a kit's layers are one-key zones, so `keymap.rs` reads it
+as a key map and only had to be told where the names live), filtered by the
+patch's two filters, routed by the channel's mixer track, and addressed by §8.2
+like any other patch. Below the panel the new code is one `Source` variant and
+about twenty lines in `Voice`.
+
+### The hits are synthesised, not sampled
+
+`fontelle-dsp/src/drum.rs`. A sampled kit is a folder of files, and this
+program's whole position is that a file supplies *defaults you then own* — so a
+synthesised kit is that position taken to the drums. Every hit is ten numbers,
+so every hit is tunable, twenty-two kits cost twenty-two rows instead of sixty
+megabytes, and **the drum machine is the only instrument here that works on a
+fresh install with no bank configured**.
+
+Ten models — kick, snare, tom, two hats, clap, cymbal, rim, cowbell, perc — and
+each is the same three parts in different proportions: a pitched **body** whose
+pitch falls, a **noise** half through a filter, and a **snap** at the front. The
+model decides what is wired to what; `DrumVoice` decides how it sounds.
+Everything expensive is computed in `trigger` rather than per sample, and
+`DrumSynth` is `Copy` and fixed-size so a voice slot can hold one (INVARIANT 1).
+`fontelle-dsp/tests/drum.rs` (14) — what a test can honestly say about a drum is
+that it sounds, that it *stops*, that it stops when it was told to, that it stays
+inside full scale, and that two settings are two sounds.
+
+### General MIDI, so a drum file lands right
+
+`GM_DRUM_MAP` is keys 35–70 — kick on 36, snare on 38, closed hat on 42. Chosen
+over a run of keys from zero because it is what every drum MIDI file, every pad
+controller and every other drum plugin agrees on, so a part written elsewhere
+plays here and vice versa.
+
+### Twenty-two kits from a table, not seven thousand numbers
+
+Studio, 808, 909, 707, 606, LinnDrum, Trap, Boom Bap, Lo-Fi, House, Techno,
+Drum & Bass, Garage, Rock, Metal, Funk, Jazz Brushes, Latin, Cinematic,
+Chiptune, Industrial, Ambient.
+
+Written out longhand that is thirty-six hits times ten numbers times
+twenty-two, and the twentieth would be a copy of the fourth with two edits. So
+there is **one** kit — the GM slots, each with its plain studio settings — and a
+`KitCharacter` per style: eleven numbers saying how this genre differs. An 808's
+kick rings and its hats are short; metal is a clicky triggered kick and a gated
+snare; chiptune is square waves. Each row reads as a recipe. What lands on the
+channel afterwards is thirty-six independent voices — a preset writes the knobs
+and then has nothing further to say (rule 10), so nothing remembers which kit it
+came from and every hit stays editable.
+
+They are the **preset chips** on the instrument panel, which had no preset row
+until there was an instrument with something to put in one
+(`StudioHost::set_instrument_preset`).
+
+### A drum part is a chord
+
+The one thing the tests found rather than confirmed: seven hits landing on one
+tick summed to **2.5** — well past full scale. `KIT_HEADROOM_DB` is ten decibels
+under, on the layer rather than on the hit so a hit's own `gain_db` still reads
+as "the crash is ten under the kick". Same argument `basic_synth` makes about
+its saw, and the same reason: the master limiter *would* catch it, and a kit
+that lives in the limiter is a kit that sounds squashed with nothing to point
+at.
+
+### A hit ends itself
+
+The drum machine's one departure from every other instrument here. The kit's amp
+envelope is held **open** — attack and decay at zero, sustain at full — so the
+length of a sound is the hit's own `decay_s` rather than the patch envelope's. A
+kick and a hat sharing one decay would not be a kit, and a drum whose length is
+set in two places is a drum whose knob appears not to work. The slot marks
+itself inactive when the hit finishes, so a note held for a bar costs nothing
+after the drum has gone.
+
+`fontelle-core/tests/drum_kit.rs` (20), `fontelle-app/tests/drum_machine.rs` (9).
+
+### What is not in it
+
+**Per-hit editing on the panel.** A kit is thirty-six hits of six knobs and that
+is two hundred and sixteen controls; the panel would need a notion of a
+*selected hit* to draw one at a time, which is a real piece of UI and not a
+line. The kits, the two patch filters and the amp envelope are the shaping that
+is there today, and all three work on a kit because none of them was told it was
+one. Per-hit addresses would hang off the `patch/layer[n]/` scheme that already
+exists.
+
+## 2026-09-04: Ctrl+L joins a phrase up
+
+> *"if i press ctrl l with a note selection in the piano roll it makes all the
+> notes lengths not have gaps like how it does in fl studio with that same
+> keybind. just makes all the notes cleanly connect to eachother basically in
+> length."*
+
+FL's Quick Legato. The arithmetic is `fontelle_model::legato_lengths` and it is
+pure, so the three rules that are easy to get wrong are answered once and
+tested rather than being buried in a window:
+
+- **A start, not a note, is what a note reaches.** Notes sharing a tick are one
+  musical event: a chord's notes all reach the *next* event, and none of them is
+  "the next note" for the other two. Grouping by note would collapse every voice
+  of a chord but the top one to nothing.
+- **It shortens as well as lengthens.** A note running under the one after it is
+  pulled back to it. "At least touch" would mean a phrase run through the tool
+  twice kept growing, with no way back.
+- **The last event keeps the length it had.** There is nothing after it to
+  touch, and picking a length for it would be the tool inventing something
+  nobody asked for.
+
+It acts on the **selection and nothing else** — a note left out is neither
+resized nor used as the thing the note before it should reach — and it is one
+edit: `SetNoteLengths` writes a length per note (absolute, unlike `ResizeNotes`'
+single delta) and inverts by restoring the ones it found, so one Ctrl+Z takes
+the whole phrase back. A phrase already joined up asks for nothing, so pressing
+it twice costs one undo rather than two.
+
+**The key does two things and the selection decides which.** `Ctrl+L` was the
+play-mode toggle, which is still what it does with no notes in hand — the chip
+on the transport bar is the other way and a narrow window has no room for it
+(`MIN_RULER_WIDTH`), so that mode has to stay reachable. The two can never both
+apply: legato needs a note selection in the roll, and the play mode is not about
+notes at all.
+
+There is a **Legato** row on the Tools chip's menu too, with the shortcut
+written on it — a key nobody is told about is a key nobody presses. Both ways in
+go through `canvas::legato_edits`, so the menu row and the keystroke cannot
+drift into meaning different things. `fontelle-model/tests/note_tools.rs` (10),
+`fontelle-ui/tests/roll_keys.rs` (7), `fontelle-ui/tests/tools_panel.rs` (2).
+
+## 2026-09-04: controls that are controls, and a lane you draw on
+
+> *"make ctrl + m toggle the metronome, make pressing M while having a mixer
+> track selected toggles its mute and pressing N solos ... make the piano rolls
+> velocity controls less like a slider you drag up and down and more like fls
+> where youre kind of drawing it ... currently its hard to actually edit
+> multiple notes velocities at once or in a long string or if notes are
+> overlapping eachother or start at the same time ... a lot of options that
+> could be knobs or sliders or dropdowns for some reason are instead shown as
+> buttons you click to toggle through a list of options in order iteratively
+> ... the pitch changing should be a knob ... when stretch is off on an audio
+> clip, when i change the pitch it still is visually stretching the clip in the
+> arrangement ... extending a loop on a clip is affecting the fade lengths."*
+
+### The property lane is a canvas now
+
+It was one little fader per note: the press caught a note and the drag moved
+that one note, however far sideways it went. Three complaints in one, and the
+fix is one idea — **the lane is a thing you draw on**.
+
+A stroke takes every bar it *crosses*, including the ones it skipped between
+two mouse reports (a mouse reports about a hundred times a second and a hand
+crosses four bars in less than that), and each of them is set to the height the
+pointer was **over it** rather than to where the pointer ended up — so a ramp
+drawn quickly is a ramp rather than a flat row at the final value.
+
+A *column* is now a question about note **starts**, because that is where the
+lane draws its bars. Asking it the other way — which note covers this tick —
+is what made *"notes overlapping eachother or start at the same time"*
+unreachable: three of a chord's four bars are behind the topmost, and a held
+pad answered for every column it lay under. There is one fallback, deliberately:
+with no bar anywhere near the brush, the note covering that tick is taken, so a
+lone held note is still grabbable anywhere along it.
+
+The one gesture that does *not* follow the pointer is the old one — press on a
+bar that is already **selected** and the whole selection takes the value and
+keeps taking it, which is what flattens a chord in one movement and is the only
+way to aim a stroke at chosen notes rather than at everything under the brush.
+`fontelle-ui/tests/roll_interaction.rs` (8 new).
+
+### Controls that are the shape of what they set
+
+*"a lot of options that could be knobs or sliders or dropdowns ... are instead
+shown as buttons you click to toggle through a list of options in order
+iteratively. this is really annoying."*
+
+The audio clip editor was the named example and had one gesture for eighteen
+different kinds of value. Every row now says what it **is**
+(`canvas::AudioControl`) and gets the control that shape deserves: a **slider**
+for anything continuous, a **switch** for anything on or off, a **drop-down**
+for anything that is one of a list. Stepping survives as the **wheel**, which
+is what a wheel over a control should do anyway and is how a value is nudged by
+exactly one of its own units.
+
+A slider rather than a knob because the panel is a list of rows: a knob in a
+22-pixel row is a smudge with no readable travel. The tracks are detented at
+the values a mix is built out of — unity gain, dead centre, normal speed — and
+pitch quantises to whole semitones, because four octaves each way over a couple
+of hundred points is about two points a semitone and a track that offered cents
+is a track that cannot reliably land on a note. Speed and cutoff run
+logarithmically, exactly as their stepping already did. The fill grows from
+each row's **neutral**, so a cut and a boost read as opposite things.
+`fontelle-ui/tests/audio_editor.rs` (14 new).
+
+The same complaint, in the two other places it was true:
+
+- A `ParamKind::Choice` on the instrument panel or on an effect's own drops its
+  list instead of stepping. The row of pips stays — it is how the control reads
+  at a glance — and a press now opens the list, so the sixth option is one
+  press away rather than five sounds you did not ask for.
+- The **snap chips**, on both toolbars. `SNAP_DIVISIONS` is the cycle written
+  down as a list; the chip drops it and `S` still steps it, and a test holds the
+  two walks together. Both chips wear a caret now, the rule the lane chip
+  already followed: a control that opens something has to look like one.
+
+`open_menu` learned that the press which *shut* a menu is not the press that
+reopens it (`dismissed`), so every drop-down that hangs off a chip is a toggle
+rather than a flicker.
+
+### Three keys
+
+- **Ctrl+M** is the metronome, and it is in `global_key` beside Space — wanting
+  the click on while you play a part in is not a statement about which panel you
+  were last looking at, and the editor windows answer that function too. Muting
+  the selected clips moved to **Ctrl+Shift+M**.
+- **M** and **N** mute and solo the **selected mixer strip**, bare, while the
+  mixer is the open tab. Which strip is the one the track-options column is
+  already pointed at, so the answer is on screen before the key is pressed.
+  `canvas::mixer_key`, `fontelle-ui/tests/mixer.rs` (2 new).
+
+### Two bugs behind the pictures
+
+**Repitching drew a stretch.** *"when stretch is off ... it still is visually
+stretching the clip in the arrangement (tested on a looping audio clip)."* The
+block already gets shorter — `natural_length` divides by the rate, because
+varispeed is what pitch *is* until the stretch engine lands (§3.3) — and the
+waveform inside it was then scaled by the rate a **second** time: the buckets
+were addressed in file frames and handed to `source_position`, which multiplies
+by the rate. An octave up drew half the file across the whole strip and smeared
+its last bucket over the rest. `Resample` is the one mode where that scaling is
+right, because there the block is the constant and the player's own ratio folds
+the pass length in — so the two modes ask for two different spans, and now do.
+`fontelle-app/tests/stretch_toggle.rs` (2 new).
+
+**Extending a loop lengthened the fades.** A fade is frames of the **file** —
+that is what `fade_anatomy` places the handles against and what the host stores
+— and `fade_curve` was measuring against the *block*. Dragging a one-bar loop
+out to four bars drew a fade four times as long over a clip whose fade had not
+moved, and the curve and its own handle stopped agreeing.
+`fontelle-ui/tests/clip_fades.rs` (2 new).
+
+**Still true, and not a bug:** with stretch off, moving the pitch still changes
+how long the clip *plays* for, because resampling is the only repitch there is
+until the stretch engine (§3.3, v2). What changed is that the picture no longer
+lies about it on top.
+
+## 2026-09-04: a drag that stays where you put it, and room to work in
+
+> *"i cannot loop clips ... when i drag things they often go wayyyy off into
+> infinity for me like with the slightest mouse movement ... i cant figure out
+> how to turn [a loop] back into just a normal clip ... adjust the sizing
+> between the soundfonts top section and bottom section ... add a lane above or
+> a lane below the lane i right clicked ... instead of only starting with 1
+> lane make it like 10 ... decrease the default size of the mixer/piano roll
+> area vs the arrangement ... if i click the eq effect in the mixer track
+> effect rack to focus its window, it doesnt seemingly do anything ... go
+> through the selected instruments with arrow keys ... press enter while its
+> selected."*
+
+### The drag that ran away, and why it was the mouse
+
+*"they often go wayyyy off into infinity ... with the slightest mouse
+movement"*, and *"pretty much universally all places i can drag something that
+moves the view"* — which is the clue. Every one of those places is edge
+scrolling, and `edge_scroll` answered **how far to move the view because of
+this pointer event**. The window applied it once per `CursorMoved`.
+
+So the speed of the scroll was the *mouse's report rate*. Nobody chose that and
+it differs by an order of magnitude between one mouse and the next: at the
+arrangement's default zoom a single event one pixel outside the grid moved 40
+ticks, so a 1000 Hz mouse moved 40 000 ticks a second — ten bars — for a
+pointer that was barely outside, and a couple of hundred bars a second for one
+thrown at the edge. Its own test bounded the travel *per event*, which is
+exactly the wrong invariant: a thousand bounded events a second is still a
+thousand of them.
+
+It is a **rate** now — `edge_scroll_rate`, in pixels per second — and the
+window integrates it against a real clock. `EdgeScroll` keeps the part of a
+tick that has not added up yet, because the opposite failure is just as easy:
+at a fine zoom one millisecond of travel is a fraction of a tick, and
+truncating each step on its own would scroll nothing at all on a fast mouse.
+`dt` is clamped, since wall-clock has holes in it and thirty seconds of
+catch-up is the same runaway arriving by another door.
+`fontelle-ui/tests/edge_scroll.rs` (8), and `roll_polish.rs`'s old per-event
+bound is now a per-second one.
+
+### A loop you can undo
+
+*"i cant figure out (if there even is a way) how to turn it back into just a
+normal clip i can extend the length of."* There was not one. Now the gesture
+that made it undoes it: the same edge grip, **without** Shift, dragged back to
+the period. A block no longer than one pass has nothing to repeat, so calling
+it a loop was a state you could be in and could not see. Not while Shift is
+held — that drag is *asking* for a loop, and one that unlooped on its way past
+its own period could never make a short one. `fontelle-ui/tests/looping.rs`
+(6 new).
+
+### Room to work in
+
+Ten rows in a new project rather than one (*"its too barren"*), and the
+arrangement opens at 300 px rather than 200.
+
+**Getting that number right took two wrong answers, and both are worth writing
+down.** Measured at the window the studio actually opens at, 1280x720:
+
+| height | rows shown | keys of roll |
+|--------|-----------:|-------------:|
+| 200 (before) | 3 | 21 |
+| 300 (now)    | 6 | 14 |
+| 340          | 7 | 11 |
+| 430          | 8 | 8  |
+
+430 was the first try and 340 the second; both left the piano roll around
+**eleven keys of grid** — under an octave. `MIN_EDITOR_HEIGHT` caught neither,
+because it bounds the panel **frame** and what had gone was the room *inside*
+it: at 340 the frame was 316 px, comfortably above its 220 floor, with 152 px
+of grid in it.
+
+Two things came out of that. The invariant now held is on the **grid**
+(`the_editor_keeps_an_octave`), not the frame. And the tests measure
+**1280x720** rather than the 1400x820 they first used — a window the app never
+opens, which is how a default can pass its own test and still be wrong.
+*"Decrease the mixer/piano roll area"* is not "shrink it to nothing".
+`fontelle-app/tests/lanes.rs`, `fontelle-ui/tests/arrangement_room.rs`.
+
+Ten rows had one ripple worth knowing about: `importing.rs`'s
+`answering_all_brings_every_part_in_under_its_own_name` counted lanes as
+`3` — "a row each, plus the one that was there" — which quietly encoded the old
+starting count. It measures the **delta** now, because "one row per imported
+part" is the invariant and the number of rows a project opens with is a default
+that has already moved once.
+
+A right-clicked row offers **Add lane above** and **Add lane below** instead of
+one "Add lane" that went to the end. `AddLane::at` renumbers the stack rather
+than touching lane ids, because a clip names a lane id and renumbering the
+arena would move somebody's music to another row — the same rule `MoveLane`
+already followed.
+
+### A seam in the soundfont panel
+
+The bank and its presets were split by a constant, which is right until one
+list is forty rows and the other is two. There is a strip between them now that
+drags, the same shape as the sidebar's own seam and with the same floors:
+neither list can be pushed away to nothing, because the seam goes with it and
+then there is nothing left to grab. `fontelle-ui/tests/browser_split.rs` (8).
+
+### Arrow keys in the bank
+
+Clicking a preset row gives the list the keyboard: up and down walk it, Enter
+chooses, Escape hands the arrows back to the notes and clips. Headings are
+**stepped over** rather than landed on — a search across the collection puts one
+over every run of hits, and a focus that stops on them makes the down arrow
+appear to do nothing every few presses — and the ends hold rather than wrap.
+The focused row is outlined where the playing one is washed, so "where the
+keyboard is" and "what is on the channel" stay two different marks.
+`fontelle-ui/tests/browser_keys.rs` (8).
+
+### The window that would not come forward
+
+*"if its an effect for example like an eq and i click the eq effect in the mixer
+track effect rack to focus its window, it doesnt seemingly do anything ... the
+window already existing means that it will not focus to the top."* `raise_editor`
+called `focus_window` and `request_user_attention`, and under Wayland the first
+is a documented no-op — a client may not take the focus by asking, it has to be
+given it. So the window stayed where it was.
+
+It now un-minimises and un-hides first (a window in the taskbar is not behind
+the studio, it is nowhere, and every other call is a no-op on one that is not
+mapped), then asks for focus, then **raises itself above the others for one
+frame** and drops back to an ordinary window on its next draw. A restack is a
+thing the compositor will do on request where a focus change is not, which is
+the part that makes this work on KDE Plasma; held for a frame rather than
+dropped in the same breath because a compositor that batched the two calls
+would see no change at all.
+
+### The five that were open, now closed
+
+**An instrument is a *kind* now, and the choice is stored.** There was no such
+notion: a `Patch` is layers, and which of the three you had was read off their
+`Source`. That works for a patch with something in it and not at all for an
+empty one — a sampler with no sample and a soundfont player with no soundfont
+are the same empty patch, and both are states you sit in while deciding what to
+load. So `Channel::instrument` keeps the **choice** and the patch follows from
+it. `+ Add instrument` asks which; a channel's menu has **Change instrument**
+with the kind you are already on greyed, because choosing it would throw away
+whatever you had edited. A project written before the field derives it from
+what is loaded — which is exactly the derivation the field replaces, so an old
+project opens saying what it always was. `fontelle-app/tests/instrument_kinds.rs`.
+
+**A preview voice, so hearing an instrument is not choosing one.** The reason
+clicking a soundfont worked the weird way round is structural: the only
+instruments that existed were the ones on channels, so the only way to hear one
+was to *put it on a channel*. `Realised::preview_node` is a sampler on the
+master bus that is in **no** `channel_nodes` map — the sequencer never names it,
+so it is silent unless the window sends it a live note. On the master
+deliberately: a preview must not pick up whatever inserts a track is carrying,
+or *"how does this soundfont sound"* is answered through somebody's sidechained
+compressor. Click plays middle C, Ctrl an octave down, Shift up; double-click
+or Enter assigns; playing the keyboard or a note aims the live path back at
+your own instrument. `fontelle-app/tests/preview_voice.rs`.
+
+**Rendering a row to audio.** `CompileScope::Lane` compiles one row and nothing
+else — a scope that let the rest of the song through would put the whole mix in
+every "track" render. Right-click offers **Render to audio**, prompting only
+when there is a time selection to choose between.
+
+One decision the tests forced: a **range** render bounces exactly the range,
+and only a whole-row render keeps the two-bar release tail. The first version
+kept the tail either way, which made a two-bar selection come back four bars
+long — a render that does not line up with the selection it came from.
+`fontelle-sequencer/tests/lane_scope.rs`, `fontelle-app/tests/render_lane.rs`.
+
+**A sampler from a file, and a name field to drop one on.** This needed
+something that did not exist. The two stores are different **on purpose**: an
+audio clip's audio is stereo in the `AudioStore`, a sampler layer's is mono in
+the `SampleStore` (`fontelle_core::SampleBuffer`). So dropping a file on the
+arrangement and dropping it on the rack are two different acts on one file, and
+only the first existed. `SampleLibrary::import_sample` folds to mono **by
+averaging** rather than taking the left channel — half of a stereo drum loop is
+a thinner drum loop rather than an obviously wrong one — and registers real
+provenance; `bundle.rs` gained an `AssetKind::Sample` reload arm, without which
+a sampler built this way would open silent.
+
+A row dragged out of the browser means different things by where it lands: the
+rack makes a new instrument of it, and the instrument window's **name field**
+assigns to the one already there. The name is drawn as a field rather than a
+bar because a field is a thing you put something *in*, which is what it is for.
+`fontelle-app/tests/sampler_from_file.rs`.
+
+### Still open from the same report
+
+*(All five below were built in the section above; kept because the reasoning
+about **why** each was awkward is the part worth not re-deriving.)*
+
+
+- **A soundfont clicked in the bank should sound at C**, an octave down with
+  Ctrl and up with Shift. This needs a preview voice: `audition_on` puts its
+  note on the *selected channel's* node, so hearing a preset that is not loaded
+  anywhere means a sampler in the graph that is not in the document, threaded
+  through `realise` and rebuilt when the preset changes. Until it exists,
+  clicking a preset still **assigns** it (as it always has) rather than doing
+  nothing, and Enter now does the same from the keyboard.
+- **An instrument selection menu** — SoundFont player, 3OSC, Sampler — and
+  replacing one kind with another. There is no instrument *kind* in the model
+  today: a `Patch` is layers, and which of the three it is has to be read off
+  their `Source`. Doing this properly is a field on `Channel`, a command to set
+  it, and the rack and the editor switching on it.
+- **Dragging an audio file from the Import tab into the rack** to make a
+  sampler, and **dropping a soundfont onto the instrument window's name field**.
+  Both need a drag *out of* the browser, which the panel has no notion of yet.
+- **Rendering a track to an audio clip** — right-click, prompt for the time
+  selection when there is one, and a new lane named `<name> (rendered)`
+  underneath. The offline render path exists (`export_wav`); what is missing is
+  rendering *one* track's scope into the audio store and putting a clip on the
+  arrangement.
+
+## 2026-09-04: a switch that says whether a drag stretches or cuts
+
+> *"i cannot loop clips, whenever i drag them it is ALWAYS stretching them. we
+> should make it so theres a stretch on/off toggle control with the arrangement
+> controls and that defines whether it cuts the clip or stretches it and then
+> also resolve the issue of it trying to stretch while looping and whatnot so
+> it all works together cleanly."*
+
+**Where the count went:** 2628 -> 2662 across the workspace, 0 failing, clippy
+clean at `-D warnings`. Written test-first; the test files are named below.
+
+### The picture was the half that lied
+
+Dragging an audio clip's edge never did stretch the sound. `ClipStretch::Off`
+is the default and it means *the block is a window onto the file* — the player
+reads at the file's own rate and goes quiet when the file runs out. What
+stretched was the **waveform**: `clip_waveform` mapped its columns across the
+whole block, so a clip dragged to twice its length drew its take spread over
+twice the space. The report is what that looks like from the outside, and it is
+a fair reading of it: the picture said "stretched" on every drag.
+
+So the fix is two things that had to arrive together — a switch that says which
+of the two a drag means, and a picture that draws whichever one is happening.
+
+### The switch
+
+`TimelineControl::Stretch` sits beside the snap chip, because it is the same
+kind of control: not an action but what the *next* drag means. It draws its
+word rather than a glyph, for the reason the snap chip does — the state is the
+useful half. **Off by default**, since a take has to sound like the take.
+
+The mode is decided **at the press** and kept for the whole drag, the same rule
+`looping` already followed: a switch flipped mid-drag must not change what the
+drag has been doing. On the first step it emits one `ArrangeEdit::SetStretch`
+for exactly the clips it would change — note clips are never named, and a clip
+already in that mode is not told again — and the host writes it to the clip's
+own `ClipStretch`, which is what the player reads. The mode goes **before** the
+resize in the same list, so the block grows on a clip that already knows what a
+longer block means. `fontelle-ui/tests/stretch_toggle.rs` (22),
+`fontelle-app/tests/stretch_toggle.rs` (5).
+
+Shift on the same grip still loops, and now the two compose in a fixed order:
+mode, then period, then size. With the switch off, Shift-dragging a stretched
+clip un-stretches it, loops it and grows it — every pass the file at its own
+rate, however far the block is pulled.
+
+### The picture, per pass and per mode
+
+`canvas::content_ticks` and `content_fraction` are the one answer to *where in
+the file is this column*, and the waveform, the fade handles, the fade drag and
+the crossfade curves all ask them, so the four cannot disagree:
+
+- Not stretched, the file takes the ticks it takes (`AudioPreview::natural_length`,
+  which the host measures through the tempo map, so a tempo change moves it,
+  and divides by `AudioClipData::rate` so a clip an octave up is over in half
+  the ticks). Past its end **no column is drawn** — the take is not quiet
+  there, it is over.
+- Stretched, the file fills its pass whatever the pass is.
+- A pass is the **period** when the arrangement repeats the clip, so a loop
+  draws its file again at every seam instead of once across the whole block.
+- A clip whose rate is not known yet fills its block: §15.3's "draw what
+  exists", never a blank.
+
+A fade moved with it, and had to: a fade is frames of the **file**, so on an
+unstretched block longer than its file the out handle now sits where the sound
+stops rather than at a corner nothing is playing under.
+
+### The blade, which was broken for both
+
+`SplitClip` found its seam at the file's own rate, counted from the block's
+start. That is right only for a clip that neither stretches nor repeats, and
+for the other two it lands past the end of the file, clamps, and hands one half
+the whole take and the other half nothing. Now:
+
+- **Not looping**, the seam is found the way the player finds it, through
+  `AudioClipData::read_ratio` — so a stretched clip is cut where it sounds.
+- **Looping**, the cut divides the *arrangement* and not the file: both halves
+  keep the whole take and go on repeating it, and each half's own block
+  truncates its last pass. Trimming them to the blade is the tempting answer
+  and the wrong one — a trimmed half still repeats every period, so every pass
+  after the first would play the shortened range and then sit silent for the
+  rest of the period. One right frame at the blade bought with a hole in every
+  bar.
+
+This also reversed a rule inherited from note clips: an audio clip's front half
+**keeps** its loop. A note clip's stops because `split_notes` writes its repeats
+out and it plays them anyway; there is nothing to write out for a take, so a
+front half that stopped looping would play the file once and then sit silent
+for the passes it used to play. `fontelle-model/tests/audio_clips.rs` (3 new),
+`fontelle-engine/tests/audio_clips.rs` (2 new, the arrangement's repeat against
+each mode).
+
+### Seen, not assumed
+
+The four rows and the switch were shot through the real vello renderer
+(`render_headless.rs`, `a_take_is_drawn_where_it_sounds_and_the_switch_says_which_way_it_is_set`,
+which dumps `timeline-stretch-{on,off}.png` and reads the chip's own pixels to
+prove it looks different on and off). The chip was then pressed in the real
+window over a nested X server and it lit; all 13 controls still fit the bar.
+
+### Known limit
+
+A looped audio clip cut **mid-pass** restarts its loop at the blade, because a
+clip stores where in the *file* it begins and not where in the *pass* — the
+phase a mid-pass half would need has nowhere to live. Exact when the cut lands
+on a seam, which is what the snapped grid gives you. Storing a loop phase on
+`AudioClipData` would close it and is a real model change, not a tidy-up.
+
+## 2026-09-03: one rule for the rack, fades you can grab, and a microphone that stays found
+
+> *"for some reason its not recognizing my logitech camera mic input ... when i
+> record it was working at first until i pressed stop to finish the recording
+> and the clip didint get made ... i was locked out of the audio option ...
+> whenever i click in the arrangement its making a new clip ... i want it to be
+> a double click ... a single click should instead place a exact copy of
+> whatever your last selection is ... swap between piano roll and mixer by
+> pressing 1 and 2 ... its guessing what instrument i want based on the lane
+> which is super weird ... clips can have multiple instruments, we just base
+> our interactions on what your currently selected instrument in the channel
+> rack is ... the edges of clips are always visible ... a kind of diagonal
+> stripe pattern on the overlapping part ... blend together like a transition
+> ... drag in from the start or end of an audio clip to create a clip fade ...
+> bend the control node to bend the curve like fl studios too."*
+
+**Where the count went:** 2489 → 2628 across the workspace, 0 failing,
+clippy clean at `-D warnings`. Every item below was written test-first; the
+test files are named where they are the proof.
+
+### The microphone, and why it kept changing its name
+
+The input list was ALSA's PCM names, filtered by asking each whether it would
+open. On this desktop **PipeWire holds the hardware**: when another program
+was listening to the camera through PipeWire (it was — `fuser` on the capture
+device said so), every direct ALSA open failed and the camera vanished; when
+nothing was, whichever of ALSA's aliases for the card opened first named it —
+*"Logi Webcam C920e, USB Audio"* one day, *"Logi Webcam C920e"* the next.
+
+So on a PipeWire machine the sources are asked of PipeWire (`pw-dump`, parsed
+with `serde_json` — a bindgen dependency on `libpipewire` for a question asked
+when a menu opens was not worth it), named by `node.description` and opened
+through PipeWire's own ALSA plugin as `pipewire:NODE=<name>`, which **shares**
+the device with whoever else has it. The output has always gone through
+PipeWire (`default` *is* the plugin here), so this puts one sound server on
+both ends. `crate::pipewire` in `fontelle-engine`; a machine without PipeWire
+gets the ALSA list it always had. A name a project saved under the old scheme
+still finds its source — `find_pipewire_source` reads the card name in front
+of the comma. Checked on real hardware: `pipewire_sources.rs`'s ignored test
+opened this machine's first source and saw 14 336 frames in 300 ms, with the
+monitor seeing 128-frame blocks.
+
+### The take that was not kept, twice
+
+Two bugs behind one report. **The clip did not get made** because the studio
+had been started with no arguments and had no bundle, and `keep_audio_take`
+refused — and the window reported every refusal as *"nothing arrived on the
+input"*, so the person went looking at cables. The take now **makes the
+project real**: saved into the projects folder under its own name, as the
+Projects tab's *New* would, and the take goes into it (INVARIANT 10: the
+projects folder is a place the user named). Only with no projects folder
+either does it refuse, and then it says exactly that; `keep_audio_take`
+returns `Result<usize, String>` so the window cannot mistake a refusal for
+silence again.
+
+**Locked out of the audio option** was the record menu greying out the mode
+that was on — meant as "this is the one", read as "you cannot have this" —
+and choosing is how the button arms. `record_menu_entries_for` marks the
+current mode with a tick and keeps it choosable.
+
+### One rule for the rack
+
+> *"it should instead just be based on whatever instrument you have selected
+> in the channel rack."*
+
+`Note::channel: Option<ChannelId>` — a note may play a channel other than
+its clip's — and one rule everywhere: **the rack's selection is the
+instrument every interaction means.** A drawn clip is on the selected
+channel (it used to guess from the lane). A note drawn, pasted or recorded
+goes on the selected channel in whichever clip is open, `None` when that is
+the clip's own so an unmixed project is saved as it always was. The roll
+shows the open clip's notes *on the selected channel* — `Session::roll_notes`,
+a view rebuilt by `touch()`, which is now the one way the revision moves —
+and ghosts the rest. Opening a clip does not move the rack; selecting a
+channel does not move the roll off the clip in hand; and a new channel no
+longer brings a lane and a clip with it, because a clip is a place and a
+channel is an instrument. The compiler resolves mute, solo and the node per
+note. The caption says `Drums +1` when a block holds more than its own
+instrument. TDD §10.4 records the change. `multi_instrument_clips.rs`,
+`note_channels.rs` (model and sequencer).
+
+### A click stamps, a double-click draws
+
+FL's playlist: the thing in hand is what a click puts down. Here it is **the
+last clip chosen**, of any kind, and a press on empty grid asks for
+`ArrangeEdit::Stamp` — an exact copy, notes and settings and loop, at that
+row and bar. A double-click takes the copy its first press made back and
+draws a blank clip in its place, so a double-click leaves exactly one clip
+behind (`Timeline::double_press`). Nothing ever chosen still draws.
+`arrange_stamp.rs` in both crates.
+
+`1` and `2` show the roll and the mixer (`layout::editor_tab_for_key`). The
+number row used to pick tools, a second binding for keys that had FL's
+letters, and went unused for exactly that reason.
+
+### Edges, stripes, and the crossfade
+
+Every block gets a dark edge line **after** all the bodies are painted, so
+two blocks of one colour end to end are two blocks and a block painted over
+another still shows where the one under it ends. Where two clips on a row
+lie over each other, `canvas::clip_overlaps` gives the shared rectangle and
+the renderer hatches it. `clip_overlaps.rs`, and a headless render test that
+reads the pixels.
+
+The overlap also **draws the crossfade it is playing**: two curves across
+the striped section, the later clip rising and the earlier falling, crossing
+at three decibels down apiece — FL's picture, over the stripes rather than
+instead of them. *"i do want it to also show the graph line drawn to show
+the fade on the overlap ... just with them crossing through eachother."*
+They are the player's envelope and not a decoration, so they follow the
+compiler's rules exactly: equal power, times each clip's own fade where it
+falls on it, and only a clip whose **end** the overlap reaches draws a
+falling curve — which is why a clip dropped wholly inside another shows one
+curve and not two. `canvas::clip_overlaps` answers where the overlap is and
+what it sounds like in one pass, so the stripes and the curves cannot
+disagree.
+
+Two **audio** clips overlapping also crossfade, over exactly the overlap —
+*"the timing based on how long the overlap section is."* `AudioPlacement`
+carries `crossfade_in`/`crossfade_out` in song samples, worked out by the
+compiler (which can see both clips and owns the conversions), and
+`auto_gain` applies an **equal-power** curve — two different recordings
+blended linearly dip three decibels in the middle, and a dip is not a
+transition. It is a fact about the *placement*, not the clip: a clip's own
+fades go with it wherever it is put, the crossfade is about the clip beside
+it, and both apply. `crossfade.rs` in types, sequencer and engine.
+
+### Fade handles, and the node that bends them
+
+FL's anatomy, kept: a handle at each top corner of an audio block; drag it
+along the block and the clip fades over the distance dragged; with a fade in
+place the handle sits where the fade ends. A **node** at the midpoint of the
+curve bends it — `Fade::tension`, −1..1, a power curve over the fade's shape
+whose ends never move, with `tension_for_midpoint` as the inverse so the
+node lands under the pointer. The canvas speaks in fractions of the block
+(`SetFade`, `SetFadeTension`); the session turns a fraction into frames of
+the clip's own audio, the same conversion the block's preview makes the
+other way. `Fade::at` is the one reading of a fade: the player, the block
+and the editor's waveform all go through it. `clip_fades.rs` in both crates,
+`fade_bend.rs` in types.
+
+### Left over from the previous session, found by running the suite
+
+- `shoot_sized` in `render_headless.rs` wrote a wide frame through `dump`,
+  which assumes the standard size — so the encoder panicked, and only ever
+  when `FONTELLE_UI_DUMP` was set, which is exactly when somebody is trying
+  to look at the window. It writes through `dump_sized` now.
+
+- A test in `realise.rs` wrote two seconds of tone into the monitor ring in
+  one call, and the monitor now sizes its slack from the largest block it
+  has seen — so it waited for ever. Real inputs deliver blocks; the test now
+  does too.
+- `render_headless.rs` was missing the `recording` field the previous session
+  added to `TimelineChrome`, and `tempo_showing` was written and never wired:
+  the transport's tempo box now reads it.
+
+### What is not done
+
+- **Fade handles are drawn only on the selected block.** FL shows them on
+  hover; this window has no per-block hover. The curve and its shading are
+  always drawn.
+- **The automatic crossfade cannot be switched off**, and it is one curve.
+  TDD §15.2 says the overlap *offers* a crossfade; this always gives one.
+- **A clip inside another** fades in over all of itself and the outer clip
+  does not fade out, because its end is not in the overlap. That is a
+  decision, recorded in `crossfade.rs`; it may want revisiting once heard.
+  The block draws the same one-sided picture, on purpose.
+- **A clip on a muted row still draws its crossfade**, because `ClipInfo`
+  carries no lane mute — the same blind spot the waveform and the fade
+  handles already have.
+- **Monitoring through the speakers is still unheard.** Capture through
+  PipeWire was checked; the loop out to a speaker was not.
+- **The PipeWire list is read by running `pw-dump`** on every menu open and
+  every device open. Twenty milliseconds here; a bindgen dependency if it is
+  ever not.
+
+## 2026-09-03: you can hear yourself, and a strip has a name you can type
+
+> *"currently i cannot rename mixer tracks i want to be able to click on their
+> name to type in that field ... please also make it so i can monitor my inputs
+> so it should work like fl, tracks are already automatically routed to master
+> so i should be able to hear routed input playing even when song isnt playing
+> or im not recording."*
+
+**Where the count went:** 2452 → 2489 across the workspace, 0 failing, clippy
+clean at `-D warnings`.
+
+Three things, and the second and third are the same thing seen from either end
+of the signal path.
+
+### Renaming a strip
+
+There is one rule and it lives in `canvas::name_press`, not in an event
+handler: **the first click on a name selects the strip, and a click on the name
+of the strip already selected renames it.** Two clicks from anywhere in the
+mixer, one from the track you are already working on, and a rename that can
+never happen on the way to choosing a different strip. The track-options
+column's title is a single click, because that column is already about that
+track and there is nothing for a press on it to choose.
+
+Nothing new was needed underneath: `RenameMixerTrack` has always existed and
+coalesced, and the caret is the one the rack's rows and the arrangement's lanes
+already draw. What was missing was the gesture, and the comment where the
+gesture should have been said so — *"a rename needs a text field, and the panel
+has none yet."*
+
+### Monitoring, and the second ring
+
+`InputWriter`'s ring goes from the input callback to the **disk** thread; that
+is what a take is. Monitoring goes from the input callback to the **output**
+callback. They cannot be one ring — two consumers draining at different rates
+on different threads would each be stealing the other's samples, and the one
+that lost would be the take — so `InputMonitor` is a second, written by the
+same callback in the same breath, and `MonitorNode` reads it at the head of the
+monitored track's chain. Through the track, not beside it: the fader, the
+inserts and the routing are what the report means by *"i should be able to hear
+it because of it routing my input track to master"*.
+
+Three things about it are worth writing down.
+
+**The device opens because a track names an input, not because record was
+pressed.** That is the whole of *"even when song isnt playing or im not
+recording"*, and it is why `armed_track` is now the track that **names** an
+input rather than whichever strip happens to be selected — selection is where
+you are looking, an input is a decision you made. `sync_audio_input` is called
+once a frame and is two comparisons when nothing has changed.
+
+**The stream being open is not the take being kept.** A microphone left plugged
+in would otherwise grow a take for as long as the window stayed open, so the
+ring is always drained and only kept while `capturing`. Arming discards
+whatever monitoring had left in it, or every take would start with however long
+ago you chose the input.
+
+**Two clocks, and they drift both ways.** An input device and an output device
+are two crystals and nothing keeps them in step. Towards empty the node runs
+dry, goes silent and re-primes — a hole is honest, and the last block played
+again is a stutter that sounds like the microphone rather than like the
+software. Towards full the ring would reach its end and drop *every* block from
+then on, so the reader catches up once and carries on. The slack it holds
+before the first sample is latency and `latency_samples` reports it. A
+transport stop does **not** interrupt it: that cuts what the song started, and a
+microphone is not the song.
+
+The idle gate grew its fourth reason to be awake, and it is the only one that
+is neither an event nor a measurement — the honest state of a microphone in a
+quiet room is silence, and a gate that measured its way to sleep would swallow
+the first word spoken into it.
+
+### A track that goes nowhere
+
+> *"but if i chose to not route it to master, i wont be hearing my own input but
+> it will still be recording the audio clip."*
+
+`output: None` has always meant *the master*, so there was no way to say
+**nowhere**. `MixerTrack::output_on` is that switch, and it is deliberately not
+a third mute: a track's **sends still carry**, which is how a track feeding only
+a reverb is built. The bus sum *is* the routing edge, so switching it off is
+simply not scheduling one — the track still runs and its inserts still run, and
+nothing takes the result anywhere. The destination is kept, so switching it back
+on puts the track where it was rather than at the master.
+
+And the last clause of the report, which is the reason the switch is worth
+having at all:
+
+> *"for ease of use make it so that if the input track has no output send it
+> automatically will just route it to master for the clip you record ... that
+> way your recording will actually be audible after playing it even if you
+> werent using monitoring."*
+
+`Mixer::reaches_master` is one walk in the document, and both halves read it:
+whether monitoring is audible, and — when it is not — where the take goes. It
+is a **walk** rather than one hop, because a mic feeding a group whose own
+output is off is exactly as inaudible as one switched off itself, and a test on
+the track alone would have missed it.
+
+### What is not done
+
+- **An un-routed track says so in the track-options column and in its output
+  menu, and not on the strip itself.** "Why is this one silent" is exactly the
+  kind of invisible state this file keeps recording, and a strip-level mark is
+  the obvious next thing.
+- **No input monitoring has been heard.** The path is tested end to end through
+  the real node and the real graph with a synthetic ring, and the device layer
+  is real, but no microphone was opened and no sound was made on a speaker.
+  Arm a real input and listen; it is a one-minute check.
+- **Monitoring is one input at a time.** `AudioDevice` holds one capture
+  stream, so the armed track is the one that is heard. Two microphones on two
+  strips is a second stream and a second ring.
+- **Latency is reported and not compensated**, like the gate's and the master
+  limiter's. `MonitorNode::latency_samples` is a block.
+
+## 2026-09-03: audio arrives — import, playback, an editor, and recording
 
 > *"right now we can basically only do things with soundfonts but i want to also
 > be able to record my voice into the daw or import different sounds and loops

@@ -14,7 +14,7 @@
 
 mod common;
 
-use fontelle_app::{RealiseOptions, SampleLibrary, Session, blank_project};
+use fontelle_app::{RealiseOptions, SampleLibrary, Session};
 use fontelle_engine::{graph_channel, timeline_channel};
 use fontelle_model::{AddMixerTrack, Command};
 use fontelle_types::{CompiledTimeline, EffectKind};
@@ -23,7 +23,7 @@ use fontelle_ui::document::StudioHost;
 use common::SR;
 
 fn studio() -> Session {
-    let mut project = blank_project(8, 120.0, SR);
+    let mut project = common::a_project_with_a_clip(8, 120.0, SR);
     AddMixerTrack::new("Keys".to_string())
         .apply(&mut project)
         .expect("a mixer track must be addable");
@@ -39,9 +39,17 @@ fn studio() -> Session {
     let realised =
         fontelle_app::realise(&project, &library, options).expect("a blank project must realise");
     let (graphs, _source) = graph_channel(realised.graph);
-    Session::new(project, library, channel_nodes, publisher, options, clip, None)
-        .with_graphs(graphs, realised.track_controls)
-        .with_param_nodes(realised.param_nodes)
+    Session::new(
+        project,
+        library,
+        channel_nodes,
+        publisher,
+        options,
+        clip,
+        None,
+    )
+    .with_graphs(graphs, realised.track_controls)
+    .with_param_nodes(realised.param_nodes)
 }
 
 /// A studio with a compressor on the first track.
@@ -70,7 +78,10 @@ fn a_compressor_has_a_panel_of_its_own_parameters() {
         .map(|param| param.label.as_str())
         .collect();
     for wanted in ["Threshold", "Ratio", "Attack", "Release", "Makeup"] {
-        assert!(names.contains(&wanted), "{wanted} is missing from {names:?}");
+        assert!(
+            names.contains(&wanted),
+            "{wanted} is missing from {names:?}"
+        );
     }
 }
 
@@ -259,38 +270,25 @@ fn knobs_of(config: &fontelle_types::EffectConfig) -> Vec<(String, f32)> {
 }
 
 #[test]
-fn the_panel_carries_the_effects_named_starting_points() {
-    // Soften has had four presets and no way to choose one since it was
-    // written; the distortion and the bitcrush now have seven and six. The
-    // panel is built from `presets()` the same way its knobs are built from
-    // `specs()`, so an effect that ships presets gets a picker for free.
-    let (session, strip, slot) = with_a_distortion();
-    let view = session.insert_view(strip, slot).expect("a panel");
-    assert_eq!(
-        view.presets,
-        fontelle_types::DistortionPreset::ALL
-            .iter()
-            .map(|preset| preset.label().to_string())
-            .collect::<Vec<_>>()
-    );
-
-    // And an effect with none has an empty row rather than a row of nothing.
-    let (session, strip, slot) = with_a_compressor();
-    assert!(session.insert_view(strip, slot).unwrap().presets.is_empty());
-}
-
-#[test]
-fn choosing_a_preset_writes_every_knob_it_stands_for() {
+fn an_effects_preset_comes_out_of_the_bank_and_writes_every_knob() {
+    // The panel's chip row is gone (`docs/flopsynth-plan.md` §P.9): the seven
+    // distortions are **files** now, and the preset bar in the window's header
+    // loads one the same way it loads a synth patch or a drum kit. What has
+    // not changed is what a preset *is* — a constructor that writes the whole
+    // panel, so a preset that left some knobs where it found them would be a
+    // preset whose sound depends on what was there before it.
     let (mut session, strip, slot) = with_a_distortion();
     let before = knobs(&session, strip, slot);
+    let device = fontelle_ui::canvas::PresetDevice::Insert { strip, slot };
 
     // "fuzz", which is a diode curve with bias, sag and a high-pass in front
     // of it — nothing a person would find by turning one knob.
-    let fuzz = fontelle_types::DistortionPreset::ALL
+    let at = session
+        .preset_choices(device)
         .iter()
-        .position(|preset| preset.label() == "fuzz")
-        .expect("the fuzz preset");
-    session.set_insert_preset(strip, slot, fuzz);
+        .position(|choice| choice.name == "fuzz")
+        .expect("the distortion ships a fuzz");
+    session.apply_preset(device, at);
 
     let wanted = fontelle_types::EffectConfig::Distortion(
         fontelle_types::DistortionConfig::from_preset(fontelle_types::DistortionPreset::Fuzz),
@@ -298,7 +296,7 @@ fn choosing_a_preset_writes_every_knob_it_stands_for() {
     assert_eq!(
         knobs(&session, strip, slot),
         knobs_of(&wanted),
-        "the panel is not where the constructor puts it"
+        "the file is not where the recipe that wrote it puts the panel"
     );
     assert_ne!(knobs(&session, strip, slot), before, "nothing moved");
 }
@@ -309,9 +307,10 @@ fn a_preset_is_one_thing_to_undo() {
     // history for one click is a history nobody can walk.
     use fontelle_ui::document::DocumentHost;
     let (mut session, strip, slot) = with_a_distortion();
+    let device = fontelle_ui::canvas::PresetDevice::Insert { strip, slot };
     let before = knobs(&session, strip, slot);
 
-    session.set_insert_preset(strip, slot, 1);
+    session.apply_preset(device, 1);
     session.end_gesture();
     let after = knobs(&session, strip, slot);
     assert_ne!(after, before);
@@ -328,12 +327,14 @@ fn a_preset_is_one_thing_to_undo() {
 }
 
 #[test]
-fn a_preset_an_effect_does_not_have_changes_nothing() {
-    // Reachable from a panel built before the slot's kind changed, and from a
-    // project file. It is a refusal rather than a silent write of preset zero.
-    let (mut session, strip, slot) = with_a_compressor();
-    let before = knobs(&session, strip, slot);
-    session.set_insert_preset(strip, slot, 0);
-    session.set_insert_preset(strip, slot, 99);
-    assert_eq!(knobs(&session, strip, slot), before);
+fn an_effect_with_no_presets_of_its_own_offers_none() {
+    // The compressor's are *owed* rather than absent by decision — see
+    // `effect_families.rs` — and an empty list is what that looks like from
+    // the panel, rather than somebody else's presets appearing on it.
+    let (session, strip, slot) = with_a_compressor();
+    assert!(
+        session
+            .preset_choices(fontelle_ui::canvas::PresetDevice::Insert { strip, slot })
+            .is_empty()
+    );
 }

@@ -23,7 +23,7 @@
 
 mod common;
 
-use fontelle_app::{RealiseOptions, SampleLibrary, blank_project};
+use fontelle_app::{RealiseOptions, SampleLibrary};
 use fontelle_model::{AddMixerTrack, Command, SetInsertKey};
 use fontelle_types::{CompressorConfig, EffectConfig, EffectKind, MixerTrackId};
 
@@ -41,7 +41,7 @@ fn options() -> RealiseOptions {
 
 /// A project with two extra tracks: a source to key from and a target to key.
 fn two_tracks() -> (fontelle_model::Project, MixerTrackId, MixerTrackId) {
-    let mut project = blank_project(8, 120.0, SR);
+    let mut project = common::a_project_with_a_clip(8, 120.0, SR);
     AddMixerTrack::new("Kick".to_string())
         .apply(&mut project)
         .expect("a track");
@@ -81,7 +81,9 @@ fn ducking_compressor(project: &mut fontelle_model::Project, track: MixerTrackId
     });
     let node = &mut project.mixer.tracks[track];
     node.inserts.push(fontelle_model::EffectSlot {
+        preset: None,
         config,
+        plugin: None,
         bypassed: false,
         key: None,
     });
@@ -109,7 +111,11 @@ fn a_track_cannot_key_an_insert_on_itself() {
     // they wanted is the ordinary internal detector, which is what no key is.
     let (mut project, _, pad) = two_tracks();
     let slot = ducking_compressor(&mut project, pad);
-    assert!(SetInsertKey::new(pad, slot, Some(pad)).apply(&mut project).is_err());
+    assert!(
+        SetInsertKey::new(pad, slot, Some(pad))
+            .apply(&mut project)
+            .is_err()
+    );
     assert_eq!(project.mixer.tracks[pad].inserts[slot].key, None);
 }
 
@@ -164,7 +170,10 @@ fn a_key_on_an_effect_that_lost_its_detector_is_not_an_edge() {
         .expect("a legal key");
     project.mixer.tracks[pad].inserts[slot].config = EffectConfig::new(EffectKind::Reverb);
     assert_eq!(project.mixer.tracks[pad].inserts[slot].key, Some(kick));
-    assert_eq!(project.mixer.tracks[pad].inserts[slot].effective_key(), None);
+    assert_eq!(
+        project.mixer.tracks[pad].inserts[slot].effective_key(),
+        None
+    );
 }
 
 // ------------------------------------------------------------------ the order

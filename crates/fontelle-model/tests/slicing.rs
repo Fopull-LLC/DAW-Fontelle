@@ -30,6 +30,7 @@ fn a_note(start: i64, length: i64, key: u8) -> Note {
         mod_x: 3,
         mod_y: 9,
         slide: false,
+        channel: None,
     }
 }
 
@@ -38,10 +39,13 @@ fn fixture(notes: Vec<Note>) -> (Project, ClipId, Vec<NoteId>) {
     let mut project = Project::new("slicing");
     project.tempo_map = TempoMap::new(120.0, 48_000.0);
     let channel = project.channels.insert(fontelle_model::Channel {
+        preset: None,
+        instrument: None,
         name: "ch".into(),
         color: [0; 4],
         mixer_track: None,
         patch_data: None,
+        plugin: None,
         pan: 0.0,
         muted: false,
         soloed: false,

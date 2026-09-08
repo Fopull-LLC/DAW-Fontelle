@@ -56,6 +56,7 @@ fn build_graph_with(stereo_mixer: bool) -> CompiledGraph {
         cutoff_hz: 20_000.0,
         resonance: 0.0,
         enabled: false,
+        ..Default::default()
     };
     let env = EnvelopeConfig {
         delay_s: 0.001,
@@ -65,6 +66,7 @@ fn build_graph_with(stereo_mixer: bool) -> CompiledGraph {
         sustain_level: 1.0,
         release_s: 0.001,
         curve: EnvelopeCurve::Linear,
+        ..Default::default()
     };
     let patch = Patch {
         layers: vec![Layer {
@@ -87,6 +89,7 @@ fn build_graph_with(stereo_mixer: bool) -> CompiledGraph {
         lfos: Vec::new(),
         mod_matrix: ModMatrix::default(),
         voice_config: VoiceConfig::default(),
+        ..Default::default()
     };
 
     let mut sampler = Sampler::new(patch);

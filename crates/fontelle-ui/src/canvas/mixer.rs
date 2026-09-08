@@ -843,7 +843,7 @@ impl OptionsHit {
     /// What a hover tip says (see [`crate::tooltip`]).
     pub fn tip(self) -> &'static str {
         match self {
-            Self::Rename => "This is the track the options below are about",
+            Self::Rename => "Click to rename this track",
             Self::Input => "Which input this track records from",
             Self::Output => "Where this track's sound goes",
             Self::Insert(_) => "Open this effect's controls",
@@ -870,7 +870,8 @@ impl MixerHit {
     /// read-out under it already says what it is.
     pub fn tip(self) -> Option<&'static str> {
         Some(match self {
-            Self::Name(_) | Self::Strip(_) => "Select this track",
+            Self::Name(_) => "Select this track \u{2014} click its name again to rename it",
+            Self::Strip(_) => "Select this track",
             Self::Fader(_) => "Level \u{2014} drag; double the detent snaps to unity",
             Self::Pan(_) => "Balance \u{2014} drag; the centre has a detent",
             Self::Mute(_) => "Silence this track",
@@ -882,6 +883,71 @@ impl MixerHit {
             Self::Options(what) => what.tip(),
             Self::Nothing => return None,
         })
+    }
+}
+
+/// What a press on a strip's **name** does.
+///
+/// > *"currently i cannot rename mixer tracks i want to be able to click on
+/// > their name to type in that field and just be able to rename super quickly
+/// > and easily like that for my mixer tracks."*
+///
+/// One gesture with two jobs, so the question is asked once, here, rather than
+/// decided inside an event handler where nothing could check it: the name row
+/// is also how a strip is *chosen*, and a press that always started typing
+/// would mean every trip round the mixer left a track half-renamed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamePress {
+    /// Point the options column at this strip.
+    Select,
+    /// Start typing over its name.
+    Rename,
+}
+
+/// Which of the two a press on `strip`'s name is, given which strip the mixer
+/// is already pointed at.
+///
+/// The rule is the one every file manager uses and nobody has to be taught:
+/// **the first click selects, and a click on the name of what is already
+/// selected renames it.** So renaming is two clicks from anywhere and one from
+/// the track you are working on, and it can never happen on the way to
+/// choosing a different strip.
+pub fn name_press(strip: usize, selected: usize) -> NamePress {
+    if strip == selected {
+        NamePress::Rename
+    } else {
+        NamePress::Select
+    }
+}
+
+/// What a bare letter means while the mixer is the editor's open tab.
+///
+/// > *"pressing M while having a mixer track selected toggles its mute and
+/// > pressing N solos."*
+///
+/// The two switches on a strip are the two things you reach for over and over
+/// while a mix is coming together, and both of them are a 12-pixel square you
+/// have to aim at. From the keyboard they are the selected strip's — the same
+/// strip the track-options column is already pointed at, so *which* track a
+/// press means is a thing already on screen rather than a thing to remember.
+///
+/// **Bare, with no modifier.** `Ctrl+M` is the metronome and means the same in
+/// every window (see `App::global_key`); these two are about a strip and so
+/// belong to the panel that has one. `N` for solo rather than `S`, which is
+/// the snap chip's, and it is the letter beside `M`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MixerKey {
+    Mute,
+    Solo,
+}
+
+/// [`MixerKey`] for a typed character, or `None` for one that means nothing
+/// here — already lowercased, the way the window's key handler has it.
+pub fn mixer_key(key: &str) -> Option<MixerKey> {
+    match key {
+        "m" => Some(MixerKey::Mute),
+        "n" => Some(MixerKey::Solo),
+        _ => None,
     }
 }
 

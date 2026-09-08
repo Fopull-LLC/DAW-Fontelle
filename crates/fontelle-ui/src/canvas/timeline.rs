@@ -19,7 +19,7 @@
 
 use std::ops::Range;
 
-use fontelle_types::{ClipId, PPQN, PointId, Tick};
+use fontelle_types::{ClipId, ClipStretch, PPQN, PointId, Tick};
 
 use crate::canvas::automation::{automation_block, block_tick_at, block_value_at};
 use crate::canvas::piano_roll::{SnapDivision, snap_tick, snap_unit};
@@ -78,6 +78,234 @@ pub const NOTE_PREVIEW_MIN_KEYS: u8 = 12;
 /// block the arrangement used to draw.
 const MIN_NOTE_BLOCK_PX: f32 = 10.0;
 
+/// Which end of a clip a fade is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FadeEnd {
+    In,
+    Out,
+}
+
+/// How wide a fade handle is, at most.
+const FADE_HANDLE_PX: f32 = 10.0;
+
+/// How big the node on a fade's curve is.
+const FADE_NODE_PX: f32 = 8.0;
+
+/// An audio block's fade handles (TDD §15.2) — see [`fade_anatomy`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FadeAnatomy {
+    /// The handle at the top-left corner, or — with a fade in place — at
+    /// the top of the block where the fade ends.
+    pub handle_in: Rect,
+    /// The same at the top-right, where the fade out begins.
+    pub handle_out: Rect,
+    /// The node at the midpoint of the fade-in curve, when there is one.
+    pub node_in: Option<Rect>,
+    pub node_out: Option<Rect>,
+}
+
+/// The fade handles of an audio block, and `None` for any other kind.
+///
+/// > *"you can manually (like fl studios clip fades) drag in from the start
+/// > or end of an audio clip to create a clip fade ... and you can bend the
+/// > control node to bend the curve like fl studios too."*
+///
+/// FL's anatomy: a handle at each **top corner**, in the caption band.
+/// Dragged along the block it sets the fade's length; with a fade in place
+/// it sits where the fade ends, so what you grab is what you set. A fade
+/// also has a **node** at the midpoint of its curve, in the content band,
+/// which is what bends it. Both are measured against the block's whole
+/// rectangle, the same one the waveform and the pointer are.
+pub fn fade_anatomy(block: Rect, clip: &ClipInfo) -> Option<FadeAnatomy> {
+    if clip.kind != ClipKind::Audio || block.width <= 0.0 {
+        return None;
+    }
+    let (header, content) = clip_bands(block);
+    let size = FADE_HANDLE_PX.min(block.width / 2.0).max(1.0);
+    let fade_in = clip.audio.fade_in.clamp(0.0, 1.0);
+    let fade_out = clip.audio.fade_out.clamp(0.0, 1.0);
+    // Against the **file**, not the block: a fade is frames of the file and
+    // the player measures it from the file's own start and end, so on an
+    // unstretched block longer than its file the out handle sits where the
+    // sound stops rather than at a corner nothing is playing under.
+    let (file_px, file_end) = content_span(block, clip);
+    let end_in = block.x + file_px * fade_in;
+    let start_out = file_end - file_px * fade_out;
+    // Never off the block: a handle drawn past the corner is one nobody can
+    // find, and the hit-test is measured inside the block.
+    let clamp_x = |x: f32| x.clamp(block.x, (block.right() - size).max(block.x));
+    let handle_in = if fade_in > 0.0 {
+        Rect::new(clamp_x(end_in - size / 2.0), header.y, size, header.height)
+    } else {
+        Rect::new(block.x, header.y, size, header.height)
+    };
+    let handle_out = if fade_out > 0.0 {
+        Rect::new(
+            clamp_x(start_out - size / 2.0),
+            header.y,
+            size,
+            header.height,
+        )
+    } else {
+        Rect::new(clamp_x(file_end - size), header.y, size, header.height)
+    };
+    let node = |x: f32, tension: f32| {
+        if content.height <= 0.0 {
+            return None;
+        }
+        let gain = fontelle_types::bend(0.5, tension) as f32;
+        let y = content.bottom() - content.height * gain;
+        Some(Rect::new(
+            x - FADE_NODE_PX / 2.0,
+            y - FADE_NODE_PX / 2.0,
+            FADE_NODE_PX,
+            FADE_NODE_PX,
+        ))
+    };
+    let node_in = (fade_in > 0.0)
+        .then(|| {
+            node(
+                block.x + file_px * fade_in * 0.5,
+                clip.audio.fade_in_tension,
+            )
+        })
+        .flatten();
+    let node_out = (fade_out > 0.0)
+        .then(|| {
+            node(
+                file_end - file_px * fade_out * 0.5,
+                clip.audio.fade_out_tension,
+            )
+        })
+        .flatten();
+    Some(FadeAnatomy {
+        handle_in,
+        handle_out,
+        node_in,
+        node_out,
+    })
+}
+
+/// How many points a fade curve is drawn with.
+const FADE_CURVE_POINTS: usize = 24;
+
+/// One pass of an audio clip, in ticks: its period when it loops, and the
+/// whole block when it does not.
+fn pass_ticks(clip: &ClipInfo) -> Tick {
+    clip.loop_length
+        .filter(|p| *p > 0)
+        .unwrap_or(clip.length)
+        .max(1)
+}
+
+/// How many ticks of each pass the clip's **file** covers.
+///
+/// This is the whole of the difference between the two things an edge drag
+/// can mean (the Stretch switch, [`TimelineControl::Stretch`]):
+///
+/// - **Stretched**, the file fills its pass, whatever the pass is — drag the
+///   block longer and the file plays slower to fill it.
+/// - **Not stretched**, the file plays at its own rate and takes the ticks
+///   it takes (`AudioPreview::natural_length`); the block is a window onto
+///   it, and dragging the block longer shows silence past the file's end.
+///
+/// A clip whose natural length is not known yet is drawn filling its pass,
+/// which is §15.3's "draw what exists" — never nothing.
+pub fn content_ticks(clip: &ClipInfo) -> Tick {
+    let pass = pass_ticks(clip);
+    if clip.audio.stretched || clip.audio.natural_length <= 0 {
+        pass
+    } else {
+        clip.audio.natural_length
+    }
+}
+
+/// Where along the clip's file the point `along` ticks into the block falls,
+/// 0..1 — or `None` where the block is past the file's end, which is silence.
+///
+/// One answer for the waveform, the fade handles, the fade drag and the
+/// crossfade curves, so the four cannot disagree about where the sound is.
+/// Ticks rather than pixels, and fractional, because a column of the
+/// waveform is narrower than a tick at some zooms and wider at others.
+pub fn content_fraction(clip: &ClipInfo, along: f32) -> Option<f32> {
+    let pass = pass_ticks(clip) as f32;
+    let within = if clip.loop_length.is_some_and(|p| p > 0) {
+        along.rem_euclid(pass)
+    } else {
+        along
+    };
+    let content = content_ticks(clip) as f32;
+    if within < 0.0 || within >= content {
+        return None;
+    }
+    Some(within / content)
+}
+
+/// The file's span on `block`, in screen points: how wide one pass of it is
+/// drawn, and where the **first** pass ends — clamped to the block, since
+/// that is all there is to draw on.
+fn content_span(block: Rect, clip: &ClipInfo) -> (f32, f32) {
+    let per_tick = if clip.length > 0 {
+        block.width / clip.length as f32
+    } else {
+        0.0
+    };
+    let file_px = (content_ticks(clip) as f32 * per_tick).max(1.0);
+    let file_end = (block.x + file_px).min(block.right());
+    (file_px, file_end)
+}
+
+/// One fade's curve across the content band, in screen points — the shape
+/// the player uses, drawn: silence at the block's corner, full where the
+/// fade ends, bent by the fade's tension. Empty for no fade, and for any
+/// block that is not audio.
+pub fn fade_curve(block: Rect, clip: &ClipInfo, end: FadeEnd) -> Vec<(f32, f32)> {
+    if clip.kind != ClipKind::Audio {
+        return Vec::new();
+    }
+    let (_, content) = clip_bands(block);
+    if content.width <= 0.0 || content.height <= 0.0 {
+        return Vec::new();
+    }
+    let (fraction, tension) = match end {
+        FadeEnd::In => (clip.audio.fade_in, clip.audio.fade_in_tension),
+        FadeEnd::Out => (clip.audio.fade_out, clip.audio.fade_out_tension),
+    };
+    let fraction = fraction.clamp(0.0, 1.0);
+    if fraction <= 0.0 {
+        return Vec::new();
+    }
+    // Against the **file**, not the block — the same span `fade_anatomy`
+    // places the handles against, and for the same reason: a fade is frames of
+    // the file, so a block dragged out past its file must not draw a longer
+    // one. *"extending a loop on a clip is affecting the fade lengths on the
+    // clip"* was this measured against `content.width` instead, which made the
+    // curve and its own handle disagree by however far the block had been
+    // dragged.
+    let (file_px, file_end) = content_span(block, clip);
+    let span = file_px * fraction;
+    (0..=FADE_CURVE_POINTS)
+        .map(|i| {
+            let t = i as f32 / FADE_CURVE_POINTS as f32;
+            let gain = fontelle_types::bend(f64::from(t), tension) as f32;
+            match end {
+                FadeEnd::In => (
+                    content.x + span * t,
+                    content.bottom() - content.height * gain,
+                ),
+                // Mirrored: full where the fade starts, silence at the end —
+                // and "the end" is where the file stops, not where the block
+                // does.
+                FadeEnd::Out => (
+                    file_end - span * (1.0 - t),
+                    content.bottom()
+                        - content.height * fontelle_types::bend(f64::from(1.0 - t), tension) as f32,
+                ),
+            }
+        })
+        .collect()
+}
+
 /// The waveform inside an audio clip's block (TDD §15.3).
 ///
 /// Reported from using the window: *"i should be able to see the waveform of
@@ -118,13 +346,21 @@ pub fn clip_waveform(block: Rect, visible: Rect, clip: &ClipInfo) -> Vec<Rect> {
     let middle = content.y + content.height / 2.0;
     let half = content.height / 2.0;
     let peaks = &clip.audio.peaks;
+    let ticks_per_px = clip.length.max(1) as f32 / content.width;
     let mut columns = Vec::with_capacity((to - from) as usize + 1);
     let mut x = from;
     while x < to {
-        // Where this column sits along the block, 0..1 — measured against the
-        // whole content band rather than the visible part, so the picture does
-        // not slide as the arrangement scrolls.
-        let t = ((x - content.x) / content.width).clamp(0.0, 1.0);
+        // Where this column sits along the **file**, 0..1 — through the
+        // clip's passes and its mode (`content_fraction`), and measured
+        // against the whole content band rather than the visible part, so
+        // the picture does not slide as the arrangement scrolls. Past the
+        // file's end there is no column: the sound is over there, and a line
+        // would say it was quiet.
+        let along = (x + 0.5 - content.x) * ticks_per_px;
+        let Some(t) = content_fraction(clip, along) else {
+            x += 1.0;
+            continue;
+        };
         let bucket = ((t * peaks.len() as f32) as usize).min(peaks.len() - 1);
         let (low, high) = peaks[bucket];
         let envelope = preview_fade(&clip.audio, t);
@@ -148,10 +384,12 @@ pub fn clip_waveform(block: Rect, visible: Rect, clip: &ClipInfo) -> Vec<Rect> {
 fn preview_fade(audio: &crate::document::AudioPreview, t: f32) -> f32 {
     let mut gain = 1.0;
     if audio.fade_in > 0.0 {
-        gain *= (t / audio.fade_in).clamp(0.0, 1.0);
+        let along = (t / audio.fade_in).clamp(0.0, 1.0);
+        gain *= fontelle_types::bend(f64::from(along), audio.fade_in_tension) as f32;
     }
     if audio.fade_out > 0.0 {
-        gain *= ((1.0 - t) / audio.fade_out).clamp(0.0, 1.0);
+        let along = ((1.0 - t) / audio.fade_out).clamp(0.0, 1.0);
+        gain *= fontelle_types::bend(f64::from(along), audio.fade_out_tension) as f32;
     }
     gain
 }
@@ -189,10 +427,9 @@ pub fn clip_notes(block: Rect, visible: Rect, clip: &ClipInfo) -> Vec<Rect> {
     // note is not one slab. Centred on what is present, so a bass part sits
     // low in its block and a lead sits high — which is a thing you can read at
     // a glance without any numbers.
-    let (low, high) = clip
-        .notes
-        .iter()
-        .fold((u8::MAX, u8::MIN), |(lo, hi), n| (lo.min(n.key), hi.max(n.key)));
+    let (low, high) = clip.notes.iter().fold((u8::MAX, u8::MIN), |(lo, hi), n| {
+        (lo.min(n.key), hi.max(n.key))
+    });
     let span = u32::from(high - low) + 1;
     let span = span.max(u32::from(NOTE_PREVIEW_MIN_KEYS));
     // Centred: half the slack below the lowest note and half above the
@@ -240,8 +477,7 @@ pub fn clip_notes(block: Rect, visible: Rect, clip: &ClipInfo) -> Vec<Rect> {
                 }
                 let x = content.x + start as f32 * per_tick;
                 let width = ((end - start) as f32 * per_tick).max(1.0);
-                let top = content.bottom()
-                    - (i32::from(note.key) - bottom_key + 1) as f32 * row;
+                let top = content.bottom() - (i32::from(note.key) - bottom_key + 1) as f32 * row;
                 let rect = Rect::new(x, top, width, row.max(1.0))
                     .clamped()
                     .intersection(&content);
@@ -353,6 +589,18 @@ pub enum TimelineControl {
     Slice,
     /// Cycles the arrangement's snap; the chip says which division is on.
     Snap,
+    /// What dragging an audio clip's edge does: **on**, the file is fitted
+    /// to the block, so a longer block is a slower file; **off**, the file
+    /// keeps its own speed and the block is a window onto it, so a longer
+    /// block runs into silence and a shorter one cuts the file off.
+    ///
+    /// *"i cannot loop clips, whenever i drag them it is ALWAYS stretching
+    /// them. we should make it so theres a stretch on/off toggle control
+    /// with the arrangement controls and that defines whether it cuts the
+    /// clip or stretches it."* Off by default, because a take has to sound
+    /// like the take. A switch rather than a modifier because it is a
+    /// setting you work in, not a thing you hold.
+    Stretch,
     /// The selection again, after itself — the answer to *"I made this drum
     /// loop but I can't repeat it"*.
     ///
@@ -385,6 +633,7 @@ impl TimelineControl {
             Self::Select => "Sel",
             Self::Slice => "Cut",
             Self::Snap => "snap",
+            Self::Stretch => "Stretch",
             Self::Repeat => "Repeat",
             Self::Loop => "Loop",
             Self::Cut => "Cut",
@@ -416,8 +665,9 @@ impl TimelineControl {
             Self::Mute => Icon::Mute,
             Self::ZoomOut => Icon::ZoomOut,
             Self::ZoomIn => Icon::ZoomIn,
-            // The snap chip says its division, which is a value.
-            Self::Snap => return None,
+            // The snap chip says its division, which is a value — and the
+            // stretch switch says its word, which is the state you read.
+            Self::Snap | Self::Stretch => return None,
         })
     }
 
@@ -435,7 +685,10 @@ impl TimelineControl {
             Self::Draw => "Draw clips on empty bars",
             Self::Select => "Select clips; drag on empty bars to marquee",
             Self::Slice => "Cut a clip in two where you click it",
-            Self::Snap => "What clips snap to \u{2014} click to cycle",
+            Self::Snap => "What clips snap to \u{2014} click to choose",
+            Self::Stretch => {
+                "Dragging an audio clip's edge fits the file to the block \u{2014} off, it cuts"
+            }
             // The two readings of "repeat this" are two buttons on purpose,
             // and the tips are where the difference is said out loud.
             Self::Repeat => "Copy the selection after itself \u{2014} edits apart",
@@ -460,7 +713,7 @@ impl TimelineControl {
             Self::Cut => Some("Ctrl+X"),
             Self::Copy => Some("Ctrl+C"),
             Self::Paste => Some("Ctrl+V"),
-            Self::Mute => Some("Ctrl+M"),
+            Self::Mute => Some("Ctrl+Shift+M"),
             _ => None,
         }
     }
@@ -474,13 +727,16 @@ pub struct TimelineToolbar {
 /// The controls, left to right: what the grid is, then what to do to a clip,
 /// then how close you are looking. The same order as the roll's toolbar, for
 /// the same reason — the two panels are read the same way.
-const TIMELINE_TOOLBAR: [(TimelineControl, f32); 12] = [
+const TIMELINE_TOOLBAR: [(TimelineControl, f32); 13] = [
     // The tools first: they decide what every other press on the grid means,
     // and the roll's toolbar is read the same way round.
     (TimelineControl::Draw, 26.0),
     (TimelineControl::Select, 26.0),
     (TimelineControl::Slice, 26.0),
-    (TimelineControl::Snap, 52.0),
+    (TimelineControl::Snap, 62.0),
+    // Beside snap, because it is the same kind of thing: not an action but
+    // what the next drag means.
+    (TimelineControl::Stretch, 52.0),
     // Loop next to Repeat, deliberately: they are the two readings of "play
     // this again" and seeing them side by side is what teaches the
     // difference. One makes copies you edit separately; the other makes one
@@ -637,6 +893,134 @@ pub fn clip_cuts(
     cuts
 }
 
+/// Two blocks on one row, and the part of the row they both claim.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipOverlap {
+    /// What they share, clipped to the grid — where the stripes go.
+    pub area: Rect,
+    /// The **later** clip coming in over the overlap, as a polyline across
+    /// the content band. Empty unless the two actually crossfade — see
+    /// [`clip_overlaps`].
+    pub fade_in: Vec<(f32, f32)>,
+    /// The **earlier** clip going out over it, crossing the other.
+    pub fade_out: Vec<(f32, f32)>,
+}
+
+/// Where clips on one row lie over each other, and what that overlap sounds
+/// like.
+///
+/// *"when theyre overlapped, there should be a kind of diagonal stripe
+/// pattern on the overlapping part so the user can see what parts are
+/// overlapping."* One entry per overlapping **pair**, measured on the same
+/// block rectangles the pointer is tested against and clipped to the grid,
+/// so the stripes fall exactly where two blocks share pixels. Clips that
+/// only touch share nothing: end-to-end is the ordinary shape of a song, and
+/// a stripe at every seam would say every song was wrong.
+///
+/// # The curves
+///
+/// > *"i do want it to also show the graph line drawn to show the fade on
+/// > the overlap as well so it resembles the other fades but just with them
+/// > crossing through eachother like how fls displays."*
+///
+/// Two overlapping **audio** clips crossfade, and the stripes alone say that
+/// something happens there without saying what. So the pair carries the two
+/// curves as well: the later clip rising, the earlier one falling, crossing
+/// at three decibels down apiece.
+///
+/// They are the player's own envelope rather than a decoration, and the
+/// rules are the compiler's (`fontelle_sequencer`), so that what is drawn is
+/// what is heard:
+///
+/// - **Equal power** — a sine against a cosine, the shape
+///   `AudioPlacement::auto_gain` applies. Two different recordings blended
+///   linearly dip three decibels in the middle.
+/// - **Times the clip's own fade**, because both apply: a clip's fades go
+///   with it wherever it is put, and the crossfade is about the clip beside
+///   it.
+/// - Only a clip whose **end** the overlap reaches fades out, so a clip
+///   dropped wholly inside another comes in and the outer one carries on.
+/// - A muted clip, and anything that is not audio, is placed with no
+///   crossfade — and is drawn with none. (A clip on a muted *row* is the one
+///   case this cannot see, the same blind spot the waveform and the fade
+///   handles have.)
+pub fn clip_overlaps(view: &TimelineView, grid: Rect, clips: &[ClipInfo]) -> Vec<ClipOverlap> {
+    let mut shared = Vec::new();
+    for (i, a) in clips.iter().enumerate() {
+        for b in &clips[i + 1..] {
+            if a.lane != b.lane {
+                continue;
+            }
+            let from = a.start.max(b.start);
+            let to = (a.start + a.length).min(b.start + b.length);
+            if to <= from {
+                continue;
+            }
+            let area = clip_rect(view, grid, a)
+                .intersection(&clip_rect(view, grid, b))
+                .intersection(&grid);
+            if area.is_empty() {
+                continue;
+            }
+            // Which one is leaving and which is arriving, tie broken the way
+            // the compiler breaks it — by position in the list.
+            let (earlier, later) = if a.start <= b.start { (a, b) } else { (b, a) };
+            let (mut fade_in, mut fade_out) = (Vec::new(), Vec::new());
+            let crossfades = [earlier, later]
+                .iter()
+                .all(|clip| clip.kind == ClipKind::Audio && !clip.muted);
+            if crossfades {
+                // Against the **whole** span, not the part on screen: a
+                // curve measured from the visible part would slide as the
+                // arrangement scrolled. The renderer clips it to `area`.
+                let x0 = timeline_tick_to_x(view, grid, from);
+                let x1 = timeline_tick_to_x(view, grid, to);
+                let (_, content) = clip_bands(clip_rect(view, grid, earlier));
+                if content.height > 0.0 && x1 > x0 {
+                    let point = |clip: &ClipInfo, t: f32, gain: f32| {
+                        let x = x0 + (x1 - x0) * t;
+                        // The clip's own fade where this point falls on it —
+                        // and nothing at all past its file's end, which is
+                        // where an unstretched clip has gone quiet.
+                        let block = clip_rect(view, grid, clip);
+                        let along = if block.width > 0.0 {
+                            (x - block.x) * clip.length as f32 / block.width
+                        } else {
+                            0.0
+                        };
+                        let own = content_fraction(clip, along)
+                            .map_or(0.0, |t| preview_fade(&clip.audio, t));
+                        (x, content.bottom() - content.height * gain * own)
+                    };
+                    fade_in = (0..=FADE_CURVE_POINTS)
+                        .map(|i| {
+                            let t = i as f32 / FADE_CURVE_POINTS as f32;
+                            point(later, t, (t * std::f32::consts::FRAC_PI_2).sin())
+                        })
+                        .collect();
+                    // Only a clip the overlap carries to its end has a tail
+                    // to fade: a clip dropped inside another does not end
+                    // here, and neither does the one around it.
+                    if earlier.start + earlier.length <= later.start + later.length {
+                        fade_out = (0..=FADE_CURVE_POINTS)
+                            .map(|i| {
+                                let t = i as f32 / FADE_CURVE_POINTS as f32;
+                                point(earlier, t, (t * std::f32::consts::FRAC_PI_2).cos())
+                            })
+                            .collect();
+                    }
+                }
+            }
+            shared.push(ClipOverlap {
+                area,
+                fade_in,
+                fade_out,
+            });
+        }
+    }
+    shared
+}
+
 pub fn clip_rect(view: &TimelineView, grid: Rect, clip: &ClipInfo) -> Rect {
     let x0 = timeline_tick_to_x(view, grid, clip.start);
     let x1 = timeline_tick_to_x(view, grid, clip.start + clip.length);
@@ -681,11 +1065,21 @@ pub fn timeline_zoom_y(view: &mut TimelineView, factor: f32) {
 pub enum ClipPart {
     Body,
     RightEdge,
+    /// The fade handle at one top corner of an audio block — see
+    /// [`fade_anatomy`]. Dragged along the block, it sets how long the fade
+    /// at that end is.
+    FadeHandle(FadeEnd),
+    /// The node at the midpoint of an audio block's fade curve. Dragged up
+    /// or down, it bends the fade.
+    FadeNode(FadeEnd),
     /// A point of an automation block's curve.
     Point(PointId),
     /// The curve area of an automation block, away from any point, at this
     /// tick **of the clip** (unsnapped) and this value.
-    Curve { tick: Tick, value: f64 },
+    Curve {
+        tick: Tick,
+        value: f64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -733,7 +1127,25 @@ pub fn timeline_hit(
             continue;
         }
         let handle = clip_grip(block);
-        let part = if x >= block.right() - handle {
+        // An audio block's fade handles and nodes come before its grip: the
+        // out handle shares the top-right corner with the grip, and a corner
+        // that always meant "resize" would leave no way to fade out.
+        let fade = fade_anatomy(block, clip).and_then(|anatomy| {
+            if anatomy.node_in.is_some_and(|node| node.contains(x, y)) {
+                Some(ClipPart::FadeNode(FadeEnd::In))
+            } else if anatomy.node_out.is_some_and(|node| node.contains(x, y)) {
+                Some(ClipPart::FadeNode(FadeEnd::Out))
+            } else if anatomy.handle_in.contains(x, y) {
+                Some(ClipPart::FadeHandle(FadeEnd::In))
+            } else if anatomy.handle_out.contains(x, y) {
+                Some(ClipPart::FadeHandle(FadeEnd::Out))
+            } else {
+                None
+            }
+        });
+        let part = if let Some(part) = fade {
+            part
+        } else if x >= block.right() - handle {
             ClipPart::RightEdge
         } else if clip.kind == ClipKind::Automation {
             automation_part(block, clip, x, y)
@@ -849,6 +1261,32 @@ pub enum ArrangeEdit {
         lane: usize,
         start: Tick,
     },
+    /// A copy of `source` — whatever kind of clip it is, notes and settings
+    /// and all — put down on `lane` at `start`.
+    ///
+    /// *"a single click should instead place a exact copy of whatever your
+    /// last selection is."* The host copies; the canvas only says which and
+    /// where, because it cannot see what a clip holds (INVARIANT 2).
+    Stamp {
+        source: ClipId,
+        lane: usize,
+        start: Tick,
+    },
+    /// An audio clip's fade at one end, as a **fraction of the block** —
+    /// the canvas can see the block and not the file, and the host turns it
+    /// into frames (TDD §15.2). Absolute, not a delta: a fade is *how far
+    /// the handle was dragged*, which is a position.
+    SetFade {
+        clip: ClipId,
+        end: FadeEnd,
+        fraction: f32,
+    },
+    /// The bend of that fade's curve, −1..1 — see `fontelle_types::Fade`.
+    SetFadeTension {
+        clip: ClipId,
+        end: FadeEnd,
+        tension: f32,
+    },
     /// Cut each of these clips in two, at the song tick given.
     ///
     /// The arrangement's cut tool. One edit carrying every clip the stroke
@@ -867,6 +1305,17 @@ pub enum ArrangeEdit {
     SetLoop {
         ids: Vec<ClipId>,
         loop_length: Option<Tick>,
+    },
+    /// Put these audio clips in this mode — see [`TimelineControl::Stretch`].
+    ///
+    /// Sent once, as the first step of an edge drag, and only for the clips
+    /// the switch would actually change; a note clip is never named, since
+    /// its edge drag has only ever cut. The host writes it to the clip's own
+    /// `ClipStretch`, which is what the player reads, so the switch and the
+    /// sound cannot disagree.
+    SetStretch {
+        ids: Vec<ClipId>,
+        stretch: ClipStretch,
     },
     /// Put a point on an automation clip's curve, at `tick` **of the clip**.
     ///
@@ -1004,10 +1453,27 @@ enum Gesture {
         /// reason `shortest` is — the drag is changing the clip it would
         /// otherwise be reading.
         period: Tick,
+        /// The Stretch switch as it was at the press, kept for the reason
+        /// `looping` is: flipped halfway through a drag, it must not change
+        /// what the drag has been doing.
+        stretch: bool,
     },
     Marquee {
         from: (f32, f32),
         to: (f32, f32),
+    },
+    /// A fade handle, carried along the block. What has been asked for so
+    /// far, so a stationary pointer asks for nothing new.
+    Fading {
+        clip: ClipId,
+        end: FadeEnd,
+        applied: Option<f32>,
+    },
+    /// A fade's node, carried up or down the content band.
+    Bending {
+        clip: ClipId,
+        end: FadeEnd,
+        applied: Option<f32>,
     },
     /// Points on an automation block's curve, carried. **Relative**, like a
     /// note drag and for the same reason: several can move at once and they
@@ -1057,6 +1523,9 @@ pub enum TimelineTool {
 pub struct Timeline {
     pub view: TimelineView,
     tool: TimelineTool,
+    /// The Stretch switch — see [`TimelineControl::Stretch`]. Off until it
+    /// is pressed.
+    stretch: bool,
     selection: Vec<ClipId>,
     gesture: Gesture,
     /// What is held down. The window pushes these in rather than the canvas
@@ -1081,6 +1550,18 @@ pub struct Timeline {
     /// same handshake `open` is, for the same reason: the menu is the
     /// window's.
     point_menu: Option<(ClipId, PointId)>,
+    /// **The clip in hand**: the last one chosen, of any kind, which is what
+    /// a press on empty grid puts a copy of down. Outlives the selection —
+    /// Escape drops the selection and keeps this, the way FL keeps the
+    /// pattern you picked after you click away from it. See
+    /// [`ArrangeEdit::Stamp`].
+    stamp: Option<ClipId>,
+    /// The last press asked for a stamp, and the copy it makes is not known
+    /// yet. `clips_inserted` turns it into `stamped`.
+    stamp_pending: Option<(usize, Tick)>,
+    /// The copy the last press put down, and where. What a double-press
+    /// takes back on its way to drawing a blank clip there instead.
+    stamped: Option<(ClipId, usize, Tick)>,
 }
 
 impl Timeline {
@@ -1088,6 +1569,7 @@ impl Timeline {
         Self {
             view,
             tool: TimelineTool::default(),
+            stretch: false,
             selection: Vec::new(),
             gesture: Gesture::None,
             modifiers: Modifiers::default(),
@@ -1096,7 +1578,15 @@ impl Timeline {
             point_clip: None,
             point_selection: Vec::new(),
             point_menu: None,
+            stamp: None,
+            stamp_pending: None,
+            stamped: None,
         }
+    }
+
+    /// The clip a press on empty grid would copy, if any.
+    pub fn stamp_source(&self) -> Option<ClipId> {
+        self.stamp
     }
 
     pub fn selection(&self) -> &[ClipId] {
@@ -1332,10 +1822,36 @@ impl Timeline {
                     value,
                 }]
             }
+            // A fade handle or node: the fade is what moves, and nothing
+            // else — the clip is chosen, not picked up and not opened.
+            TimelineHit::Clip(id, ClipPart::FadeHandle(end)) => {
+                self.selection = vec![id];
+                self.stamp = Some(id);
+                self.clear_point_selection();
+                self.gesture = Gesture::Fading {
+                    clip: id,
+                    end,
+                    applied: None,
+                };
+                Vec::new()
+            }
+            TimelineHit::Clip(id, ClipPart::FadeNode(end)) => {
+                self.selection = vec![id];
+                self.stamp = Some(id);
+                self.clear_point_selection();
+                self.gesture = Gesture::Bending {
+                    clip: id,
+                    end,
+                    applied: None,
+                };
+                Vec::new()
+            }
             TimelineHit::Clip(id, part) => {
                 if !self.selection.contains(&id) {
                     self.selection = vec![id];
                 }
+                // Chosen, so it is the thing in hand from here on.
+                self.stamp = Some(id);
                 // A block picked up is a block, not its points: whatever
                 // points were selected — on it or on another — let go.
                 self.clear_point_selection();
@@ -1358,14 +1874,17 @@ impl Timeline {
                         // into a stretch under the pointer.
                         looping: self.modifiers.shift,
                         period: self.loop_period(clips),
+                        stretch: self.stretch,
                     },
-                    ClipPart::Body | ClipPart::Point(_) | ClipPart::Curve { .. } => {
-                        Gesture::Moving {
-                            applied_tick: 0,
-                            applied_lane: 0,
-                            limits: MoveLimits::of(&self.selection, clips),
-                        }
-                    }
+                    ClipPart::Body
+                    | ClipPart::Point(_)
+                    | ClipPart::Curve { .. }
+                    | ClipPart::FadeHandle(_)
+                    | ClipPart::FadeNode(_) => Gesture::Moving {
+                        applied_tick: 0,
+                        applied_lane: 0,
+                        limits: MoveLimits::of(&self.selection, clips),
+                    },
                 };
                 Vec::new()
             }
@@ -1388,6 +1907,21 @@ impl Timeline {
                 // it, and the snap is right there in the toolbar saying what
                 // it should have been.
                 let start = timeline_snap(&self.view, tick, beats_per_bar).max(0);
+                // *"a single click should instead place a exact copy of
+                // whatever your last selection is."* A copy of the clip in
+                // hand, when there is one and it is still there; a blank
+                // clip is what a press means when there is nothing to copy.
+                // A double-press is the other way to a blank clip — see
+                // `double_press`.
+                self.stamped = None;
+                if let Some(source) = self.stamp.filter(|id| clips.iter().any(|c| c.id == *id)) {
+                    self.stamp_pending = Some((lane, start));
+                    return vec![ArrangeEdit::Stamp {
+                        source,
+                        lane,
+                        start,
+                    }];
+                }
                 vec![ArrangeEdit::Add { lane, start }]
             }
             _ => {
@@ -1395,6 +1929,59 @@ impl Timeline {
                 let _ = beats_per_bar;
                 Vec::new()
             }
+        }
+    }
+
+    /// The second press of a double-click.
+    ///
+    /// *"i want it to be a double click to create a new empty clip."* A
+    /// double-click is one gesture, and its first press has already gone
+    /// through [`press`](Self::press) — which on empty grid stamped a copy
+    /// of the clip in hand. So this takes that copy back and asks for a
+    /// blank clip in the same place, and a double-click leaves exactly one
+    /// clip behind. With nothing in hand the first press drew a clip
+    /// already, and this asks for nothing more.
+    ///
+    /// Anywhere else — on some other block — it asks for nothing: opening a
+    /// block on a double-click is the window's business, and a gesture that
+    /// deleted the block under it would be the worst kind of surprise.
+    pub fn double_press(
+        &mut self,
+        button: MouseButton,
+        x: f32,
+        y: f32,
+        layout: &TimelineLayout,
+        clips: &[ClipInfo],
+        beats_per_bar: u32,
+    ) -> Vec<ArrangeEdit> {
+        self.gesture = Gesture::None;
+        if button != MouseButton::Left {
+            return Vec::new();
+        }
+        let hit = timeline_hit(&self.view, layout, clips, x, y);
+        match (hit, self.stamped.take()) {
+            // The copy the first press put down is under the pointer, or the
+            // host has not put it there yet: either way it goes, and a blank
+            // clip takes its place.
+            (TimelineHit::Clip(id, _), Some((stamped, lane, start))) if id == stamped => {
+                self.selection.clear();
+                vec![
+                    ArrangeEdit::Remove(vec![stamped]),
+                    ArrangeEdit::Add { lane, start },
+                ]
+            }
+            (TimelineHit::Empty { .. }, Some((stamped, lane, start))) => {
+                self.selection.clear();
+                vec![
+                    ArrangeEdit::Remove(vec![stamped]),
+                    ArrangeEdit::Add { lane, start },
+                ]
+            }
+            (TimelineHit::Empty { tick, lane }, None) => {
+                let start = timeline_snap(&self.view, tick, beats_per_bar).max(0);
+                vec![ArrangeEdit::Add { lane, start }]
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -1436,6 +2023,78 @@ impl Timeline {
             Gesture::Slicing { from, .. } => {
                 self.gesture = Gesture::Slicing { from, to: (x, y) };
                 Vec::new()
+            }
+
+            // The raw pointer, not the clamped one: a handle dragged past
+            // the block's end means the whole block, and one dragged back
+            // past the corner means no fade. The block is read live and
+            // that is fine — a fade drag does not move the block.
+            Gesture::Fading {
+                clip: id,
+                end,
+                applied,
+            } => {
+                let Some(clip) = clips.iter().find(|c| c.id == id) else {
+                    return Vec::new();
+                };
+                let block = clip_rect(&self.view, grid, clip);
+                if block.width <= 0.0 {
+                    return Vec::new();
+                }
+                // A fraction of the **file**, which is what the host turns
+                // into frames — measured the way `fade_anatomy` places the
+                // handles, so the handle lands under the pointer.
+                let (file_px, file_end) = content_span(block, clip);
+                let raw = match end {
+                    FadeEnd::In => (x - block.x) / file_px,
+                    FadeEnd::Out => (file_end - x) / file_px,
+                };
+                let fraction = raw.clamp(0.0, 1.0);
+                if applied == Some(fraction) {
+                    return Vec::new();
+                }
+                self.gesture = Gesture::Fading {
+                    clip: id,
+                    end,
+                    applied: Some(fraction),
+                };
+                vec![ArrangeEdit::SetFade {
+                    clip: id,
+                    end,
+                    fraction,
+                }]
+            }
+
+            // The node's height is the gain wanted at the fade's midpoint,
+            // and the tension is whatever puts the curve through it — so the
+            // node lands under the pointer rather than near it.
+            Gesture::Bending {
+                clip: id,
+                end,
+                applied,
+            } => {
+                let Some(clip) = clips.iter().find(|c| c.id == id) else {
+                    return Vec::new();
+                };
+                let (_, content) = clip_bands(clip_rect(&self.view, grid, clip));
+                if content.height <= 0.0 {
+                    return Vec::new();
+                }
+                let gain = ((content.bottom() - y) / content.height).clamp(0.0, 1.0);
+                let tension = fontelle_types::tension_for_midpoint(gain);
+                if applied == Some(tension) {
+                    return Vec::new();
+                }
+                self.gesture = Gesture::Bending {
+                    clip: id,
+                    end,
+                    applied: Some(tension),
+                };
+                vec![ArrangeEdit::SetFadeTension {
+                    clip: id,
+                    end,
+                    tension,
+                }]
             }
 
             Gesture::MovingPoints {
@@ -1536,6 +2195,7 @@ impl Timeline {
                 shortest,
                 looping,
                 period,
+                stretch,
             } => {
                 if self.selection.is_empty() {
                     return Vec::new();
@@ -1561,8 +2221,64 @@ impl Timeline {
                     shortest,
                     looping,
                     period,
+                    stretch,
                 };
                 let mut edits = Vec::new();
+                // **A loop dragged back to its period stops being one.**
+                // Reported from using the window: *"i cant figure out (if
+                // there even is a way) how to turn it back into just a normal
+                // clip i can extend the length of ... if i drag it back to the
+                // original length it is no longer a looping clip."*
+                //
+                // The gesture is the one that made it, without Shift, and the
+                // rule is the arithmetic of what a loop is: a block no longer
+                // than one pass has nothing to repeat, so calling it a loop is
+                // a state you can be in and cannot see. Undoing it here is
+                // what makes the edge grip a toggle rather than a trapdoor.
+                //
+                // Not while Shift is held: that drag is *asking* for a loop,
+                // and one that unlooped on its way past its own period could
+                // never make a short one.
+                if !looping {
+                    let ids: Vec<ClipId> = self
+                        .selected(clips)
+                        .filter(|clip| {
+                            clip.loop_length
+                                .is_some_and(|period| period > 0 && clip.length + delta <= period)
+                        })
+                        .map(|clip| clip.id)
+                        .collect();
+                    if !ids.is_empty() {
+                        edits.push(ArrangeEdit::SetLoop {
+                            ids,
+                            loop_length: None,
+                        });
+                    }
+                }
+                // The mode first, once, and only where it would change: what
+                // a longer block *means* has to be settled before the block
+                // gets longer, and a clip already in the mode has nothing to
+                // be told. Note clips are never named — their edge has only
+                // ever cut, and the switch is not about them.
+                if first {
+                    let ids: Vec<ClipId> = self
+                        .selected(clips)
+                        .filter(|clip| {
+                            clip.kind == ClipKind::Audio && clip.audio.stretched != stretch
+                        })
+                        .map(|clip| clip.id)
+                        .collect();
+                    if !ids.is_empty() {
+                        edits.push(ArrangeEdit::SetStretch {
+                            ids,
+                            stretch: if stretch {
+                                ClipStretch::Resample
+                            } else {
+                                ClipStretch::Off
+                            },
+                        });
+                    }
+                }
                 // The loop is set once, on the first step of the drag, and the
                 // clip then simply grows. Setting it every step would work and
                 // would also mean a history entry per pixel that says nothing
@@ -1606,6 +2322,10 @@ impl Timeline {
                     .filter(|clip| clip_rect(&self.view, layout.grid, clip).intersects(&taut(box_)))
                     .map(|clip| clip.id)
                     .collect();
+                // A box around one clip chose it as surely as a click did.
+                if let Some(last) = self.selection.last() {
+                    self.stamp = Some(*last);
+                }
             }
             // The cut tool's whole edit lands here: a line half-drawn is not a
             // cut, and one gesture is one history entry.
@@ -1659,6 +2379,20 @@ impl Timeline {
 
     pub fn set_tool(&mut self, tool: TimelineTool) {
         self.tool = tool;
+    }
+
+    /// Whether an edge drag on an audio clip fits the file to the block —
+    /// see [`TimelineControl::Stretch`].
+    pub fn stretch(&self) -> bool {
+        self.stretch
+    }
+
+    pub fn set_stretch(&mut self, stretch: bool) {
+        self.stretch = stretch;
+    }
+
+    pub fn toggle_stretch(&mut self) {
+        self.stretch = !self.stretch;
     }
 
     // ---------------------------------------------------- from the keyboard ---
@@ -1766,6 +2500,17 @@ impl Timeline {
     pub fn clips_inserted(&mut self, ids: Vec<ClipId>) {
         if ids.is_empty() {
             return;
+        }
+        // The copy a press just stamped is the thing in hand now — which is
+        // what makes a row of presses a row of the same clip — and it is
+        // what a double-press takes back. See `double_press`.
+        if let Some((lane, start)) = self.stamp_pending.take()
+            && let Some(copy) = ids.first()
+        {
+            self.stamp = Some(*copy);
+            self.stamped = Some((*copy, lane, start));
+        } else if let Some(last) = ids.last() {
+            self.stamp = Some(*last);
         }
         self.selection = ids;
     }

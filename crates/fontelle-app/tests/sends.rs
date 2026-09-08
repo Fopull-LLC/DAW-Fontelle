@@ -17,7 +17,8 @@
 
 use fontelle_app::{RealiseOptions, SampleLibrary, realise, render_offline};
 use fontelle_core::{
-    FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, Source, VoiceConfig,
+    FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, Source,
+    VoiceConfig,
 };
 use fontelle_dsp::{EnvelopeConfig, EnvelopeCurve, Interpolation, SvfMode};
 use fontelle_model::{
@@ -52,6 +53,7 @@ fn flat_patch(library: &mut SampleLibrary) -> Patch {
         cutoff_hz: 20_000.0,
         resonance: 0.0,
         enabled: false,
+        ..Default::default()
     };
     let instant = EnvelopeConfig {
         delay_s: 0.0,
@@ -61,6 +63,7 @@ fn flat_patch(library: &mut SampleLibrary) -> Patch {
         sustain_level: 1.0,
         release_s: 0.001,
         curve: EnvelopeCurve::Linear,
+        ..Default::default()
     };
     Patch {
         layers: vec![Layer {
@@ -83,6 +86,7 @@ fn flat_patch(library: &mut SampleLibrary) -> Patch {
         lfos: Vec::new(),
         mod_matrix: ModMatrix::default(),
         voice_config: VoiceConfig::default(),
+        ..Default::default()
     }
 }
 
@@ -107,10 +111,13 @@ impl Rig {
         let mut library = SampleLibrary::new();
         let patch = flat_patch(&mut library);
         let channel = project.channels.insert(Channel {
+            preset: None,
+            instrument: None,
             name: "tone".into(),
             color: [0; 4],
             mixer_track: Some(source),
             patch_data: None,
+            plugin: None,
             pan: 0.0,
             muted: false,
             soloed: false,
@@ -140,6 +147,7 @@ impl Rig {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         });
         project.clips.insert(Clip {
             lane,
@@ -166,7 +174,9 @@ impl Rig {
 
     fn run(&mut self, command: impl Command + 'static) {
         let mut command = command;
-        command.apply(&mut self.project).expect("the command applies");
+        command
+            .apply(&mut self.project)
+            .expect("the command applies");
     }
 
     /// What reaches the speakers, once everything has settled.
@@ -241,10 +251,7 @@ fn the_send_level_is_what_decides_how_much_arrives() {
     rig.run(SetSendLevel::new(rig.source, 0, -12.0));
     let quiet = rig.level();
     rig.run(SetSendLevel::new(rig.source, 0, 0.0));
-    assert!(
-        rig.level() > quiet,
-        "the level did not change what arrived"
-    );
+    assert!(rig.level() > quiet, "the level did not change what arrived");
 }
 
 #[test]

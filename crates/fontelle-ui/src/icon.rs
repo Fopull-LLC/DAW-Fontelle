@@ -123,10 +123,17 @@ pub enum Icon {
     /// the clipboard" on the same toolbar. Cutting a clip in two and taking it
     /// away are two different things and cannot share a picture.
     Blade,
+    /// A favourite that is not one yet: the hollow star on a menu row, which
+    /// a press lights.
+    Star,
+    /// And one that is. Two icons rather than one drawn two ways, because
+    /// the filled star is what a favourite *looks like* wherever it is drawn
+    /// and the cursor rasteriser only knows icons.
+    StarFilled,
 }
 
 /// Every icon, for a test that has to check all of them.
-pub const EVERY_ICON: [Icon; 32] = [
+pub const EVERY_ICON: [Icon; 34] = [
     Icon::Play,
     Icon::Stop,
     Icon::Record,
@@ -159,6 +166,8 @@ pub const EVERY_ICON: [Icon; 32] = [
     Icon::NewFile,
     Icon::Curve,
     Icon::Blade,
+    Icon::Star,
+    Icon::StarFilled,
 ];
 
 /// What `icon` is made of, in the unit box.
@@ -237,6 +246,32 @@ pub fn shapes(icon: Icon) -> Vec<Shape> {
         // Two blades crossing, and the two finger loops under them.
         // The line it leaves, and the blade that made it. The blade is filled
         // so it reads as an object rather than as a second stroke.
+        // Ten points round a circle, alternating the tip radius and the notch
+        // radius — the same star both ways, stroked or filled.
+        Icon::Star => vec![Shape::closed(&[
+            (0.50, 0.07),
+            (0.62, 0.38),
+            (0.95, 0.39),
+            (0.69, 0.60),
+            (0.78, 0.92),
+            (0.50, 0.74),
+            (0.22, 0.92),
+            (0.31, 0.60),
+            (0.05, 0.39),
+            (0.38, 0.38),
+        ])],
+        Icon::StarFilled => vec![Shape::poly(&[
+            (0.50, 0.07),
+            (0.62, 0.38),
+            (0.95, 0.39),
+            (0.69, 0.60),
+            (0.78, 0.92),
+            (0.50, 0.74),
+            (0.22, 0.92),
+            (0.31, 0.60),
+            (0.05, 0.39),
+            (0.38, 0.38),
+        ])],
         Icon::Blade => vec![
             Shape::line(&[(0.50, 0.04), (0.50, 0.96)]),
             Shape::poly(&[(0.14, 0.74), (0.60, 0.10), (0.74, 0.22), (0.28, 0.86)]),

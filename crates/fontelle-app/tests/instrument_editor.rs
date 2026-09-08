@@ -20,7 +20,7 @@
 
 mod common;
 
-use fontelle_app::{RealiseOptions, SampleLibrary, Session, blank_project};
+use fontelle_app::{RealiseOptions, SampleLibrary, Session};
 use fontelle_engine::{graph_channel, timeline_channel};
 use fontelle_types::CompiledTimeline;
 use fontelle_ui::document::StudioHost;
@@ -46,7 +46,7 @@ use common::SR;
 /// until somebody routes it somewhere else. The second is added the way the
 /// rack's button adds one — blank, playing the built-in synth.
 fn two_channels() -> Session {
-    let project = blank_project(8, 120.0, SR);
+    let project = common::a_project_with_a_clip(8, 120.0, SR);
     let clip = Session::first_clip(&project).expect("a blank project has one clip");
     let channel_nodes = fontelle_app::channel_nodes(&project);
     let (publisher, _timeline) = timeline_channel(CompiledTimeline::empty());

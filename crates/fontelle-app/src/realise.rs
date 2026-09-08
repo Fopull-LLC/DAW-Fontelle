@@ -17,8 +17,7 @@ use std::collections::{HashMap, HashSet};
 use fontelle_core::{Patch, PatchFormatError, PrepareContext, Sampler, UnresolvedSample};
 use fontelle_engine::{
     BufferPool, CompiledGraph, MasterMeter, Metronome, MetronomeNode, MixerTrackNode, SamplerNode,
-    SendControls, SendNode,
-    ScheduledNode, TrackControls,
+    ScheduledNode, SendControls, SendNode, TrackControls,
 };
 use fontelle_model::{Command, CommandError, MixerTrack, Project};
 use fontelle_types::{ChannelId, MixerTrackId, NodeId, PatchData, SampleRef};
@@ -65,6 +64,21 @@ pub struct Realised {
     /// matching `AudioClipData::mixer_track`, so a clip that names the master
     /// and one that leaves it unset play through one player rather than two.
     pub audio_nodes: HashMap<Option<MixerTrackId>, NodeId>,
+    /// The **preview voice**: a sampler on the master bus that is not in the
+    /// document (TDD §14.1's live path, pointed somewhere new).
+    ///
+    /// *"if i click a soundfont in the soundfont menu it plays that instrument
+    /// at a c tone ... so i can easily click on instruments and hear how they
+    /// sound."* Hearing a preset means playing it, and until now the only
+    /// instruments that existed were the ones on channels — so the only way to
+    /// hear a soundfont was to **put it on a channel**, which is the thing
+    /// that was reported as weird.
+    ///
+    /// It is a node like any other and it is in no `channel_nodes` map, so the
+    /// sequencer never sends it anything and it is silent unless the window
+    /// asks. `Session` aims its live events here while a preview is sounding
+    /// and back at the selected channel afterwards.
+    pub preview_node: NodeId,
     /// Master levels for anything off the RT thread. Has to be taken before
     /// the graph goes to the audio callback, because after that nothing owns
     /// the node.
@@ -79,6 +93,14 @@ pub struct Realised {
     /// deserialises every channel's patch — fine for a click, hopeless for a
     /// drag.
     pub track_controls: HashMap<MixerTrackId, std::sync::Arc<TrackControls>>,
+    /// One voice meter per channel, so a window can say how many notes its
+    /// instrument is playing (`docs/flopsynth-plan.md` §11, phase 6).
+    ///
+    /// **Minted per rebuild**, like `track_controls` and unlike the spectrum
+    /// taps: a meter is written by the node and read by the window, so a stale
+    /// one from a graph that no longer exists would report a count that never
+    /// moves — which is worse than reporting none.
+    pub voice_meters: HashMap<ChannelId, std::sync::Arc<fontelle_engine::VoiceMeter>>,
     /// The live end of every insert on every track, addressed the way the
     /// mixer panel addresses one: the strip, and the slot in its chain.
     ///
@@ -97,8 +119,7 @@ pub struct Realised {
     /// re-paired, and an EQ window that went blank every time somebody added a
     /// channel would be a window you could not use while you worked. See
     /// [`fontelle_engine::SpectrumTap`].
-    pub spectrum_taps:
-        HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    pub spectrum_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
     /// Every automatable parameter this graph has, by its stable address
     /// (INVARIANT 7), and the node that owns it.
     ///
@@ -123,6 +144,15 @@ pub struct Realised {
     /// a project sent to somebody else must not arrive with a woodblock on
     /// every beat — so it is a session setting the window toggles.
     pub metronome: std::sync::Arc<Metronome>,
+    /// What the whole graph costs in latency, in samples at the device's
+    /// rate — TDD §5.5's *"reported total latency is surfaced in the audio
+    /// settings UI so the user can see what their configuration actually
+    /// costs"*.
+    ///
+    /// Measured off the built graph rather than added up from the document:
+    /// every node has been prepared by then, so this is what the schedule
+    /// really does, the master limiter's look-ahead included.
+    pub latency_samples: u32,
     /// Samples a channel's patch pointed at that this library does not have
     /// (TDD §17.4). Those layers are silent and the project still plays; the
     /// references are here for a relink dialog to work on.
@@ -224,10 +254,14 @@ fn depth_to_master(
         let Some(node) = project.mixer.tracks.get(track) else {
             return 0;
         };
-        // `output: None` means master (TDD §13.1), which is depth one.
-        let mut deepest = match node.output {
-            Some(next) => walk(project, next, master, keyed_by, seen) + 1,
-            None => 1,
+        // `output: None` means master (TDD §13.1), which is depth one — and
+        // an output switched off is no edge at all, so a track feeding
+        // nothing but its sends is ordered by those alone. See
+        // `MixerTrack::output_on`.
+        let mut deepest = match (node.output_on, node.output) {
+            (false, _) => 0,
+            (true, Some(next)) => walk(project, next, master, keyed_by, seen) + 1,
+            (true, None) => 1,
         };
         for send in &node.sends {
             deepest = deepest.max(walk(project, send.target, master, keyed_by, seen) + 1);
@@ -245,8 +279,6 @@ fn depth_to_master(
     }
     walk(project, track, master, keyed_by, &mut HashSet::new())
 }
-
-
 
 /// The tracks a solo leaves audible.
 ///
@@ -279,7 +311,14 @@ fn soloed_audible(project: &Project, master: MixerTrackId) -> Option<HashSet<Mix
         let Some(node) = project.mixer.tracks.get(track) else {
             return Vec::new();
         };
-        let mut out: Vec<MixerTrackId> = vec![node.output.unwrap_or(master)];
+        // The output only when it is connected: a soloed track behind a bus
+        // that goes nowhere is inaudible either way, and calling the bus
+        // audible would leave everything else on it open too.
+        let mut out: Vec<MixerTrackId> = node
+            .output_on
+            .then(|| node.output.unwrap_or(master))
+            .into_iter()
+            .collect();
         out.extend(node.sends.iter().map(|send| send.target));
         out
     };
@@ -372,7 +411,14 @@ pub fn realise_with(
     existing: &HashMap<MixerTrackId, std::sync::Arc<TrackControls>>,
     metronome: Option<std::sync::Arc<Metronome>>,
 ) -> Result<Realised, RealiseError> {
-    realise_keeping(project, library, options, existing, metronome, &HashMap::new())
+    realise_keeping(
+        project,
+        library,
+        options,
+        existing,
+        metronome,
+        &HashMap::new(),
+    )
 }
 
 /// As [`realise_with`], keeping the analyser taps too — see
@@ -384,6 +430,111 @@ pub fn realise_keeping(
     existing: &HashMap<MixerTrackId, std::sync::Arc<TrackControls>>,
     metronome: Option<std::sync::Arc<Metronome>>,
     existing_taps: &HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+) -> Result<Realised, RealiseError> {
+    realise_monitoring(
+        project,
+        library,
+        options,
+        existing,
+        metronome,
+        existing_taps,
+        None,
+    )
+}
+
+/// A live input, and the mixer track it is heard through (TDD §15.4).
+///
+/// The graph half of *"i should be able to hear routed input playing even when
+/// song isnt playing."* Which track it names is what makes the monitor go
+/// through that strip's inserts, its fader and its routing — so switching that
+/// track's output off silences the monitor and nothing else.
+#[derive(Clone)]
+pub struct MonitorPlan {
+    pub monitor: std::sync::Arc<fontelle_engine::InputMonitor>,
+    /// `None` is the master, the same convention `AudioClipData::mixer_track`
+    /// follows.
+    pub track: Option<MixerTrackId>,
+}
+
+/// As [`realise_keeping`], with a live input played into one of the tracks.
+///
+/// The deepest of the family, and the only one that knows about a microphone.
+/// Every offline path — a bounce, a test, a render — goes through one of the
+/// wrappers and gets `None`, which is what keeps the microphone out of the
+/// exported file.
+pub fn realise_monitoring(
+    project: &Project,
+    library: &SampleLibrary,
+    options: RealiseOptions,
+    existing: &HashMap<MixerTrackId, std::sync::Arc<TrackControls>>,
+    metronome: Option<std::sync::Arc<Metronome>>,
+    existing_taps: &HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    monitor: Option<&MonitorPlan>,
+) -> Result<Realised, RealiseError> {
+    realise_previewing(
+        project,
+        library,
+        options,
+        existing,
+        metronome,
+        existing_taps,
+        monitor,
+        None,
+    )
+}
+
+/// As [`realise_monitoring`], with an instrument loaded into the **preview
+/// voice** — see [`Realised::preview_node`].
+///
+/// `None` leaves it empty, which is silence: a patch with no layers renders
+/// nothing whatever it is sent.
+#[allow(clippy::too_many_arguments)]
+pub fn realise_previewing(
+    project: &Project,
+    library: &SampleLibrary,
+    options: RealiseOptions,
+    existing: &HashMap<MixerTrackId, std::sync::Arc<TrackControls>>,
+    metronome: Option<std::sync::Arc<Metronome>>,
+    existing_taps: &HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    monitor: Option<&MonitorPlan>,
+    preview: Option<&Patch>,
+) -> Result<Realised, RealiseError> {
+    realise_hosting(
+        project,
+        library,
+        options,
+        existing,
+        metronome,
+        existing_taps,
+        monitor,
+        preview,
+        &HashMap::new(),
+    )
+}
+
+/// As [`realise_previewing`], with the plugins this session has open
+/// (TDD §8.4).
+///
+/// The deepest of the family, and the only one that knows a plugin exists.
+/// Every other entry point passes an empty map, which is what keeps an offline
+/// render, a test and a bounce from having to own a plugin host — a project
+/// realised without one simply has silence where its plugins were, and says so
+/// nowhere, because there is nothing to say to a file.
+///
+/// What arrives here is **not** a plugin: it is the pair of shared handles
+/// `fontelle_app::plugins` keeps alive across rebuilds. See [`crate::PluginRack`]
+/// for why a plugin cannot belong to a graph.
+#[allow(clippy::too_many_arguments)]
+pub fn realise_hosting(
+    project: &Project,
+    library: &SampleLibrary,
+    options: RealiseOptions,
+    existing: &HashMap<MixerTrackId, std::sync::Arc<TrackControls>>,
+    metronome: Option<std::sync::Arc<Metronome>>,
+    existing_taps: &HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    monitor: Option<&MonitorPlan>,
+    preview: Option<&Patch>,
+    plugins: &HashMap<crate::PluginSlot, crate::PluginWiring>,
 ) -> Result<Realised, RealiseError> {
     if project.mixer.has_cycle() {
         return Err(RealiseError::MixerCycle);
@@ -422,12 +573,76 @@ pub fn realise_keeping(
     // Declared here rather than beside the tracks below because the channels
     // register theirs as they are built — see `ParamTarget::ChannelGain`.
     let mut param_nodes: HashMap<fontelle_types::ParamAddress, NodeId> = HashMap::new();
+    let mut voice_meters: HashMap<ChannelId, std::sync::Arc<fontelle_engine::VoiceMeter>> =
+        HashMap::new();
 
     // --- Sources first. They only ever add into a bus, so their order among
     // themselves does not matter; what does matter is that every one of them
     // has run before the fader on the bus it feeds, and every fader comes
     // after this loop.
     for (channel_id, channel) in project.channels.iter() {
+        // A channel playing a plugin: the plugin is the instrument, and
+        // whatever patch it used to have is left where it is and not played
+        // (see `Channel::plugin`).
+        if channel.instrument == Some(fontelle_types::InstrumentKind::Plugin) {
+            let bus = channel
+                .mixer_track
+                .and_then(|id| bus_of.get(&id).copied())
+                .unwrap_or([0, 1]);
+            param_nodes.insert(
+                fontelle_types::ParamTarget::ChannelGain(channel_id).address(),
+                channel_nodes[&channel_id],
+            );
+            param_nodes.insert(
+                fontelle_types::ParamTarget::ChannelPan(channel_id).address(),
+                channel_nodes[&channel_id],
+            );
+            if let Some(wiring) = plugins.get(&crate::PluginSlot::Channel(channel_id)) {
+                // Every one of the plugin's knobs, addressed the way §8.2
+                // addresses a patch's — `channel:<id>/patch/plugin/param/<id>`
+                // — so a lane drawn on one reaches this node without a second
+                // scheme (INVARIANT 7).
+                for param in wiring.values.all() {
+                    param_nodes.insert(
+                        fontelle_types::ParamTarget::ChannelPatch {
+                            channel: channel_id,
+                            param: crate::plugins::param_address(param.0),
+                        }
+                        .address(),
+                        channel_nodes[&channel_id],
+                    );
+                }
+                schedule.push(ScheduledNode {
+                    id: channel_nodes[&channel_id],
+                    node: Box::new(
+                        fontelle_engine::PluginNode::new(
+                            std::sync::Arc::clone(&wiring.bay),
+                            std::sync::Arc::clone(&wiring.values),
+                            fontelle_engine::PluginRole::Instrument,
+                        )
+                        // The channel's own level and placement, not its
+                        // track's — see `Channel::gain_db`. A plugin knows
+                        // nothing about either.
+                        .on_channel(channel.gain_db, channel.pan)
+                        // And what it says it delays by, so anything walking
+                        // the built schedule sees it. **Not compensated**:
+                        // every channel adds into one shared bus, so holding
+                        // one back would hold back everything already in it.
+                        // A plugin instrument that reports latency is late
+                        // against the other channels on its track until
+                        // sources get buffers of their own.
+                        .with_latency(wiring.latency),
+                    ),
+                    input_buffers: Vec::new(),
+                    output_buffers: bus.to_vec(),
+                });
+            }
+            // No wiring means the plugin is not installed on this machine, or
+            // this is a render that has no host. The channel is silent and the
+            // project still opens — §17.4's rule for a missing file, applied
+            // to a missing plugin.
+            continue;
+        }
         let Some(data) = &channel.patch_data else {
             continue; // no instrument chosen yet — it plays nothing
         };
@@ -484,11 +699,44 @@ pub fn realise_keeping(
                 channel_nodes[&channel_id],
             );
         }
+        let meter = std::sync::Arc::new(fontelle_engine::VoiceMeter::new());
+        voice_meters.insert(channel_id, meter.clone());
         schedule.push(ScheduledNode {
             id: channel_nodes[&channel_id],
-            node: Box::new(SamplerNode::new(sampler, library.store())),
+            node: Box::new(SamplerNode::new(sampler, library.store()).with_meter(meter)),
             input_buffers: Vec::new(),
             output_buffers: bus.to_vec(),
+        });
+    }
+
+    // --- The preview voice (see `Realised::preview_node`). One more sampler,
+    // on the master bus, holding whatever the browser last asked to hear. It
+    // is in no `channel_nodes` map, so the compiled timeline never names it
+    // and it makes no sound at all unless the window sends it a live note.
+    //
+    // On the **master** deliberately: a preview is not part of the song and
+    // must not pick up whatever inserts a track happens to be carrying, or
+    // "how does this soundfont sound" would be answered through somebody's
+    // sidechained compressor.
+    let preview_node = mint(&mut next_id);
+    {
+        // Silence until the browser asks for something: an empty patch has no
+        // layers, so a note sent to it renders nothing rather than a saw.
+        let patch = preview.cloned().unwrap_or_else(|| Patch {
+            layers: Vec::new(),
+            ..Patch::basic_synth()
+        });
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&PrepareContext {
+            sample_rate: options.sample_rate as f32,
+            max_block_size: options.block_size as u32,
+        });
+        sampler.set_quality(options.quality);
+        schedule.push(ScheduledNode {
+            id: preview_node,
+            node: Box::new(SamplerNode::new(sampler, library.store())),
+            input_buffers: Vec::new(),
+            output_buffers: bus_of[&master].to_vec(),
         });
     }
 
@@ -521,6 +769,26 @@ pub fn realise_keeping(
             input_buffers: Vec::new(),
             output_buffers: bus.to_vec(),
         });
+    }
+
+    // --- And the live input, if there is one, on the one track it is
+    // monitored through (TDD §15.4). Among the sources for the same reason
+    // the clip player is: it only adds into a bus, and it has to have run
+    // before the inserts and the fader of the track it arrives on — which is
+    // the whole point, because that strip is what the report says should
+    // control it.
+    if let Some(plan) = monitor {
+        let track = plan.track.unwrap_or(master);
+        if let Some(bus) = bus_of.get(&track) {
+            schedule.push(ScheduledNode {
+                id: mint(&mut next_id),
+                node: Box::new(fontelle_engine::MonitorNode::new(std::sync::Arc::clone(
+                    &plan.monitor,
+                ))),
+                input_buffers: Vec::new(),
+                output_buffers: bus.to_vec(),
+            });
+        }
     }
 
     // --- Then every track, deepest first, so a group's fader runs only after
@@ -559,6 +827,80 @@ pub fn realise_keeping(
         })
         .collect();
 
+    // --- Delay compensation (TDD §5.5).
+    //
+    // An insert that looks ahead delays the track it is on, and until this
+    // nothing read `AudioNode::latency_samples`: a look-ahead gate on the
+    // snare put the snare up to ten milliseconds behind the rest of the kit,
+    // which nobody hears as a bug — it sounds like a loose player.
+    //
+    // Two tables, both from the **document**, so they are known before a
+    // single node is built: what arrives at each track's bus, and what
+    // leaves it. `tracks` is already deepest-first, so every child is
+    // measured before the parent that sums it.
+    let latency_of_chain = |id: MixerTrackId, track: &MixerTrack| -> u32 {
+        track
+            .inserts
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| !slot.bypassed)
+            .map(|(index, slot)| match &slot.plugin {
+                // What the plugin declared, through the rack — a mastering
+                // limiter or a linear-phase EQ hands its block back late and
+                // says so. A slot whose plugin would not open is not in the
+                // wiring and costs nothing, which is also what it does.
+                Some(_) => plugins
+                    .get(&crate::PluginSlot::Insert {
+                        track: id,
+                        slot: index,
+                    })
+                    .map_or(0, |wiring| wiring.latency),
+                None => fontelle_engine::insert_latency_samples(
+                    &slot.config,
+                    options.sample_rate as f32,
+                ),
+            })
+            .sum()
+    };
+    let mut children: HashMap<MixerTrackId, Vec<MixerTrackId>> = HashMap::new();
+    for (id, track) in project.mixer.tracks.iter() {
+        if id != master && track.output_on {
+            children
+                .entry(track.output.unwrap_or(master))
+                .or_default()
+                .push(id);
+        }
+    }
+    let mut arrival: HashMap<MixerTrackId, u32> = HashMap::new();
+    let mut leaves: HashMap<MixerTrackId, u32> = HashMap::new();
+    for id in tracks.iter().copied().chain(std::iter::once(master)) {
+        let at = children
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .filter_map(|child| leaves.get(child).copied())
+            .max()
+            .unwrap_or(0);
+        arrival.insert(id, at);
+        leaves.insert(id, at + latency_of_chain(id, &project.mixer.tracks[id]));
+    }
+    // The **sources** — every channel, every audio clip player, the live
+    // input — have added into their buses above and cost nothing, so on a
+    // bus that also receives a delayed track they are early. Held back here,
+    // which is the one moment a bus holds its sources and nothing else:
+    // every track's sum happens in the loop below.
+    for (id, at) in arrival.iter() {
+        if *at == 0 {
+            continue;
+        }
+        schedule.push(ScheduledNode {
+            id: NodeId::default(),
+            node: Box::new(fontelle_engine::DelayNode::new(*at)),
+            input_buffers: bus_of[id].to_vec(),
+            output_buffers: bus_of[id].to_vec(),
+        });
+    }
+
     let mut track_controls: HashMap<MixerTrackId, std::sync::Arc<TrackControls>> = HashMap::new();
     let mut effect_controls: HashMap<(MixerTrackId, usize), fontelle_engine::EffectControls> =
         HashMap::new();
@@ -572,6 +914,7 @@ pub fn realise_keeping(
         let track = &project.mixer.tracks[id];
         let bus = bus_of[&id].to_vec();
         schedule_inserts(
+            plugins,
             &mut schedule,
             &mut effect_controls,
             &mut spectrum_taps,
@@ -647,17 +990,41 @@ pub fn realise_keeping(
                 output_buffers: bus.clone(),
             });
         }
-        let output = track.output.unwrap_or(master);
-        schedule.push(ScheduledNode {
-            id: NodeId::default(),
-            node: Box::new(fontelle_engine::BusSumNode),
-            input_buffers: bus,
-            output_buffers: bus_of.get(&output).copied().unwrap_or([0, 1]).to_vec(),
-        });
+        // The bus sum **is** the routing edge, so a track switched off is one
+        // whose sum is simply not scheduled: it still runs, its inserts still
+        // run, its sends still carry, and nothing takes the result anywhere.
+        // *"if i chose to not route it to master, i wont be hearing my own
+        // input but it will still be recording the audio clip."*
+        if track.output_on {
+            let output = track.output.unwrap_or(master);
+            // Held back to meet whatever else arrives at that bus — see the
+            // tables above. A track that is the slowest of its siblings gets
+            // nothing; every other one gets the difference.
+            let pad = arrival
+                .get(&output)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(leaves.get(&id).copied().unwrap_or(0));
+            if pad > 0 {
+                schedule.push(ScheduledNode {
+                    id: NodeId::default(),
+                    node: Box::new(fontelle_engine::DelayNode::new(pad)),
+                    input_buffers: bus.clone(),
+                    output_buffers: bus.clone(),
+                });
+            }
+            schedule.push(ScheduledNode {
+                id: NodeId::default(),
+                node: Box::new(fontelle_engine::BusSumNode),
+                input_buffers: bus,
+                output_buffers: bus_of.get(&output).copied().unwrap_or([0, 1]).to_vec(),
+            });
+        }
     }
 
     // Master's own chain, before its fader, exactly as every other track's.
     schedule_inserts(
+        plugins,
         &mut schedule,
         &mut effect_controls,
         &mut spectrum_taps,
@@ -727,13 +1094,17 @@ pub fn realise_keeping(
         buffer_pool: BufferPool::with_capacity(buffer_count, options.block_size),
     };
     graph.prepare(options.sample_rate as f32, options.block_size as u32);
+    let latency_samples = graph_latency(&graph, buffer_count);
 
     Ok(Realised {
         graph,
+        latency_samples,
         channel_nodes,
         audio_nodes,
+        preview_node,
         master: meter,
         track_controls,
+        voice_meters,
         effect_controls,
         param_nodes,
         spectrum_taps,
@@ -741,6 +1112,35 @@ pub fn realise_keeping(
         metronome,
         unresolved,
     })
+}
+
+/// What the built graph costs in latency, in samples — see
+/// [`Realised::latency_samples`].
+///
+/// The schedule in the order the audio thread walks it, carrying a latency
+/// per buffer: a node's output is as late as its latest input plus whatever
+/// it adds, and a bus is as late as its latest contributor. That is the
+/// same reasoning the compensation above does on the document, done here on
+/// the nodes that were actually built — so a node whose latency the builder
+/// did not know about still shows up in the number the user is told.
+fn graph_latency(graph: &CompiledGraph, buffer_count: usize) -> u32 {
+    let mut per_buffer = vec![0u32; buffer_count.max(2)];
+    for node in &graph.schedule {
+        let incoming = node
+            .input_buffers
+            .iter()
+            .filter_map(|index| per_buffer.get(*index).copied())
+            .max()
+            .unwrap_or(0);
+        let outgoing = incoming + node.node.latency_samples();
+        for index in &node.output_buffers {
+            if let Some(slot) = per_buffer.get_mut(*index) {
+                *slot = (*slot).max(outgoing);
+            }
+        }
+    }
+    // The master pair, which is what reaches the device.
+    per_buffer[0].max(per_buffer[1])
 }
 
 /// How long one beat of `project` is, in samples.
@@ -848,6 +1248,7 @@ fn schedule_sends(
 /// scheduler does not have to find a spare buffer per slot.
 #[allow(clippy::too_many_arguments)]
 fn schedule_inserts(
+    plugins: &HashMap<crate::PluginSlot, crate::PluginWiring>,
     schedule: &mut Vec<ScheduledNode>,
     controls: &mut HashMap<(MixerTrackId, usize), fontelle_engine::EffectControls>,
     taps: &mut HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
@@ -860,6 +1261,58 @@ fn schedule_inserts(
     bus: &[usize],
 ) {
     for (index, slot) in track.inserts.iter().enumerate() {
+        // An insert holding somebody else's plugin. Everything below this —
+        // the live control channel, the analyser tap, the sidechain key — is
+        // about an `EffectConfig`, which a plugin does not have.
+        if slot.is_plugin() {
+            let node_id = mint(next_id);
+            if let Some(wiring) = plugins.get(&crate::PluginSlot::Insert {
+                track: id,
+                slot: index,
+            }) {
+                for param in wiring.values.all() {
+                    param_nodes.insert(
+                        fontelle_types::ParamTarget::Insert {
+                            track: id,
+                            slot: index,
+                            param: param.0.to_string(),
+                        }
+                        .address(),
+                        node_id,
+                    );
+                }
+                let mut node = fontelle_engine::PluginNode::new(
+                    std::sync::Arc::clone(&wiring.bay),
+                    std::sync::Arc::clone(&wiring.values),
+                    fontelle_engine::PluginRole::Effect,
+                )
+                // The live switch, not the document's value baked in: a
+                // bypass is flicked while listening.
+                .with_bypass(std::sync::Arc::clone(&wiring.bypassed))
+                // What it declared it delays by. The chain sum above reads
+                // the same number off the same wiring, so what the graph
+                // compensates for and what this node claims cannot drift.
+                .with_latency(wiring.latency);
+                // The external key, into the plugin's sidechain port — the
+                // same tap a built-in compressor reads, filled by the same
+                // node on the source track. The same rules as below: a key
+                // naming a deleted track is dropped.
+                if let Some(key) = slot.effective_key()
+                    && let Some(tap) = key_taps.get(&key)
+                {
+                    node = node.with_key(std::sync::Arc::clone(tap));
+                }
+                schedule.push(ScheduledNode {
+                    id: node_id,
+                    node: Box::new(node),
+                    input_buffers: bus.to_vec(),
+                    output_buffers: bus.to_vec(),
+                });
+            }
+            // A plugin that is not installed is a slot that passes signal
+            // through: nothing is scheduled, and the chain carries on.
+            continue;
+        }
         let (mut live, source) = fontelle_engine::effect_channel(slot.config);
         live.set_bypassed(slot.bypassed);
         let mut node = fontelle_engine::EffectNode::new(slot.config).with_controls(source);

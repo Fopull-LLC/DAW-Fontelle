@@ -11,7 +11,7 @@ mod common;
 
 use std::path::PathBuf;
 
-use fontelle_app::{RealiseOptions, SampleLibrary, Session, blank_project};
+use fontelle_app::{RealiseOptions, SampleLibrary, Session};
 use fontelle_assets::fixtures::{
     GEN_KEY_RANGE, GEN_OVERRIDING_ROOT_KEY, GEN_SAMPLE_MODES, KIT, Sf2Fixture, ZoneSpec,
     build_drum_kit_sf2, build_sf2, gen_range, gen_val,
@@ -59,6 +59,30 @@ fn a_bank(name: &str) -> PathBuf {
 
 /// A session over an empty project, with a bank folder pointed at `dir`, and
 /// the RT thread's end of both channels.
+/// The bank's rows: the list the panel draws, without Flopsynth's own row.
+fn bank_files(session: &Session) -> Vec<fontelle_ui::document::LibraryEntry> {
+    let files = session.library_files();
+    let offset = usize::from(files.first().is_some_and(|first| first.name == "Flopsynth"));
+    files.into_iter().skip(offset).collect()
+}
+
+/// Opens soundfont `index` of the **bank**, whatever row the panel draws it at.
+///
+/// The Sounds tab carries Flopsynth's own row above the soundfont bank — see
+/// `Session::shows_flopsynth_row` — so a test about a soundfont says which
+/// soundfont and lets this work out which row that is. Thirty-one call sites
+/// in this file wanted "the fixture", and thirty-one hard-coded zeroes would
+/// be thirty-one things to find the next time a row is added.
+fn open_soundfont(session: &mut Session, index: usize) -> Result<(), String> {
+    let offset = usize::from(
+        session
+            .library_files()
+            .first()
+            .is_some_and(|first| first.name == "Flopsynth"),
+    );
+    session.open_file(index + offset)
+}
+
 fn studio(dir: &std::path::Path) -> (Session, fontelle_engine::GraphSource) {
     let (session, graphs, _timeline) = studio_with_timeline(dir);
     (session, graphs)
@@ -74,7 +98,7 @@ fn studio_with_timeline(
     fontelle_engine::GraphSource,
     fontelle_engine::TimelineSource,
 ) {
-    let project = blank_project(8, 120.0, SR);
+    let project = common::a_project_with_a_clip(8, 120.0, SR);
     let clip = Session::first_clip(&project).expect("a blank project has one clip");
     let channel_nodes = fontelle_app::channel_nodes(&project);
     let (publisher, timeline_source) = timeline_channel(CompiledTimeline::empty());
@@ -123,7 +147,7 @@ fn the_browser_finds_the_soundfonts_in_the_bank_folder() {
     let dir = a_bank("finds");
     let (session, _source) = studio(&dir);
 
-    let files = session.library_files();
+    let files = bank_files(&session);
     assert_eq!(files.len(), 1, "the bank folder holds one soundfont");
     assert_eq!(files[0].name, "Test Piano");
     assert!(
@@ -144,8 +168,11 @@ fn opening_a_file_lists_its_presets_without_loading_any_audio() {
         session.library_presets().is_empty(),
         "nothing is open yet, so there is nothing to list"
     );
-    session.open_file(0).expect("the fixture must open");
-    assert_eq!(session.selected_file(), Some(0));
+    open_soundfont(&mut session, 0).expect("the fixture must open");
+    assert!(
+        session.selected_file().is_some(),
+        "the open soundfont is the lit row"
+    );
     assert!(!session.library_presets().is_empty());
 
     std::fs::remove_dir_all(&dir).ok();
@@ -155,7 +182,7 @@ fn opening_a_file_lists_its_presets_without_loading_any_audio() {
 fn the_search_filters_the_bank_and_forgets_the_open_file() {
     let dir = a_bank("search");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
 
     session.set_query("piano");
     assert_eq!(session.library_files().len(), 1);
@@ -185,8 +212,12 @@ fn the_search_filters_the_bank_and_forgets_the_open_file() {
 /// guess. What that cost is what somebody using the studio reported: a channel
 /// that plays nothing has no panel, no keys that sound and no knob that does
 /// anything, so the button that makes one looks broken — *"when clicking new
-/// instrument, right now it doesnt do anything"*. Three oscillators is not a
-/// guess about what you want to hear, it is something to hear while you decide.
+/// instrument, right now it doesnt do anything"*. An instrument is not a guess
+/// about what you want to hear, it is something to hear while you decide.
+///
+/// Which instrument moved once: it was a bare three-oscillator saw and is now
+/// Flopsynth on the bank's Grand Piano, because *"instead of starting with a
+/// 3osc it starts you with a flopsynth instrument on a grand piano preset"*.
 #[test]
 fn a_blank_project_starts_with_one_channel_playing_the_built_in_synth() {
     let dir = a_bank("blank");
@@ -200,10 +231,13 @@ fn a_blank_project_starts_with_one_channel_playing_the_built_in_synth() {
     );
     assert!(!channels[0].muted && !channels[0].soloed);
     assert!(
-        session
-            .instrument()
-            .is_some_and(|view| view.groups.iter().any(|g| g.name == "Oscillators")),
-        "and its panel is the synth's"
+        session.instrument().is_some_and(|view| !view.groups.is_empty()),
+        "and it has a panel to edit"
+    );
+    assert_eq!(
+        session.channel_kind(0),
+        Some(fontelle_types::InstrumentKind::Flopsynth),
+        "and the panel is Flopsynth's"
     );
 
     std::fs::remove_dir_all(&dir).ok();
@@ -213,7 +247,7 @@ fn a_blank_project_starts_with_one_channel_playing_the_built_in_synth() {
 fn choosing_a_preset_puts_it_on_the_selected_channel_and_republishes_the_graph() {
     let dir = a_bank("choose");
     let (mut session, mut source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
 
     let before = session.revision();
     session
@@ -237,10 +271,10 @@ fn choosing_a_preset_puts_it_on_the_selected_channel_and_republishes_the_graph()
 }
 
 #[test]
-fn adding_a_channel_gives_it_a_clip_and_opens_it_in_the_roll() {
+fn adding_a_channel_selects_it_and_the_roll_writes_it_into_the_open_clip() {
     let dir = a_bank("add");
     let (mut session, mut source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
 
     session.add_channel_with(0).expect("must add");
     assert_eq!(session.channels().len(), 2);
@@ -251,10 +285,13 @@ fn adding_a_channel_gives_it_a_clip_and_opens_it_in_the_roll() {
     );
     assert!(session.channels()[1].has_instrument);
 
-    // The roll follows it, and the clip it opened is empty and belongs to the
-    // new channel.
+    // A channel no longer comes with a clip of its own: a clip holds several
+    // instruments (see `multi_instrument_clips.rs`), so the roll stays on
+    // the clip that is open — which has nothing on the new channel yet —
+    // and what is drawn goes into that clip, on the new channel.
+    assert_eq!(session.clips().len(), 1, "no clip was made for the channel");
     assert!(session.notes().is_empty());
-    session.edit(RollEdit::Add {
+    let ids = session.edit(RollEdit::Add {
         note: Note {
             start: 0,
             length: PPQN,
@@ -266,22 +303,21 @@ fn adding_a_channel_gives_it_a_clip_and_opens_it_in_the_roll() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     });
     assert_eq!(session.notes().len(), 1);
-    let clips: Vec<usize> = session
-        .project()
-        .clips
-        .values()
-        .map(|clip| match &clip.source {
-            ClipSource::Notes(data) => data.notes.len(),
-            _ => 0,
-        })
-        .collect();
+    let project = session.project();
+    let channels: Vec<_> = project.channels.keys().collect();
+    let clip = project.clips.values().next().expect("the one clip");
+    let ClipSource::Notes(data) = &clip.source else {
+        panic!("a note clip")
+    };
+    assert_eq!(data.notes.len(), 1);
     assert_eq!(
-        clips,
-        vec![0, 1],
-        "the note went into the new channel's clip, not the first one's"
+        data.notes[ids[0]].channel,
+        Some(channels[1]),
+        "the note plays the new channel, in the clip that was open"
     );
     assert!(source.take_update());
 
@@ -292,7 +328,7 @@ fn adding_a_channel_gives_it_a_clip_and_opens_it_in_the_roll() {
 fn selecting_a_channel_opens_that_channels_clip() {
     let dir = a_bank("select");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.add_channel_with(0).unwrap();
 
     // A note on each, so the two clips are tellable apart.
@@ -308,6 +344,7 @@ fn selecting_a_channel_opens_that_channels_clip() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     });
     session.select_channel(0);
@@ -326,7 +363,7 @@ fn selecting_a_channel_opens_that_channels_clip() {
 fn muting_a_channel_is_a_command_and_reaches_the_audio_thread() {
     let dir = a_bank("mute");
     let (mut session, mut source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
     while source.take_update() {}
 
@@ -370,7 +407,7 @@ fn choosing_an_instrument_can_be_taken_back() {
     let dir = a_bank("undo-instrument");
     let (mut session, _source) = studio(&dir);
     let before = session.channels()[0].name.clone();
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
     let chosen = session.channels()[0].name.clone();
     assert_ne!(chosen, before, "the row says what it is playing now");
@@ -406,7 +443,7 @@ fn a_clip_tick_converts_to_a_sample_through_the_documents_own_tempo_map() {
 fn adding_a_channel_can_be_taken_back() {
     let dir = a_bank("undo");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.add_channel_with(0).unwrap();
     assert_eq!(session.channels().len(), 2);
 
@@ -447,6 +484,7 @@ fn drawing_a_note_hands_back_the_id_the_drag_needs() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     });
     assert_eq!(
@@ -481,6 +519,7 @@ fn a_velocity_edit_reaches_the_document() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     });
 
@@ -551,7 +590,7 @@ fn the_bank_folder_is_reachable_and_changeable_from_inside_the_studio() {
     session.set_library_dirs(vec![other.clone()], false);
     assert_eq!(session.library_dirs(), vec![other.clone()]);
     assert!(
-        session.library_files().is_empty(),
+        bank_files(&session).is_empty(),
         "the new folder has no soundfonts in it, and the old one's must be gone"
     );
     let (saved, error) = fontelle_app::settings::Settings::load_from(&dir.join("settings.json"));
@@ -564,9 +603,14 @@ fn the_bank_folder_is_reachable_and_changeable_from_inside_the_studio() {
     // With **two** configured folders the browser's top level is the two
     // folders, not a flat list of everything under them — that is the whole of
     // `tests/browsing.rs`. The fixture being back is a search away.
-    assert_eq!(session.library_files().len(), 2, "one row per folder");
+    assert_eq!(bank_files(&session).len(), 2, "one row per folder");
     session.set_query("piano");
-    assert_eq!(session.library_files().len(), 1, "the fixture is back");
+    assert_eq!(
+        session.library_files().len(),
+        1,
+        "the fixture is back — and a search lists soundfonts only, so
+         Flopsynth's row is not among them"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -607,7 +651,7 @@ fn the_studio_says_which_preset_the_selected_channel_is_playing() {
         None,
         "nothing is open and nothing is chosen"
     );
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     assert_eq!(
         session.selected_preset(),
         None,
@@ -628,7 +672,7 @@ fn the_studio_says_which_preset_the_selected_channel_is_playing() {
 fn a_second_channel_has_its_own_chosen_preset() {
     let dir = a_bank("selected-preset-two");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
 
     // A second channel with nothing on it: the highlight must follow the rack's
@@ -645,7 +689,7 @@ fn a_second_channel_has_its_own_chosen_preset() {
 fn changing_a_channels_instrument_renames_it_to_the_preset() {
     let dir = a_bank("rename");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
 
     let preset = session.library_presets()[0].name.clone();
     session.set_channel_instrument(0).unwrap();
@@ -675,14 +719,24 @@ fn changing_a_channels_instrument_renames_it_to_the_preset() {
 fn the_arrangement_lists_every_clip_on_its_own_lane() {
     let dir = a_bank("arrange-list");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
     session.add_channel_with(0).unwrap();
+    // A second clip, drawn: a channel is an instrument and does not bring a
+    // clip with it.
+    session.arrange(ArrangeEdit::Add {
+        lane: 0,
+        start: PPQN * 32,
+    });
 
     let lanes = session.lanes();
     let clips = session.clips();
-    assert!(lanes.len() >= 2, "two channels, two lanes: {lanes:?}");
-    assert_eq!(clips.len(), 2, "one clip each: {clips:?}");
+    assert!(!lanes.is_empty(), "a row to draw on: {lanes:?}");
+    assert_eq!(
+        clips.len(),
+        2,
+        "the first clip and the drawn one: {clips:?}"
+    );
     for clip in &clips {
         assert!(
             clip.lane < lanes.len(),
@@ -706,24 +760,34 @@ fn the_arrangement_lists_every_clip_on_its_own_lane() {
 fn clicking_a_clip_on_the_arrangement_opens_it_in_the_roll() {
     let dir = a_bank("arrange-open");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
     session.add_channel_with(0).unwrap();
     assert_eq!(session.selected_channel(), 1);
+    let made = session.arrange(ArrangeEdit::Add {
+        lane: 0,
+        start: PPQN * 32,
+    });
+    assert!(
+        session
+            .clips()
+            .iter()
+            .any(|c| c.id == made.clips[0] && c.open)
+    );
 
     let first = session
         .clips()
         .into_iter()
-        .find(|c| c.lane == 0)
-        .expect("a clip on the first lane");
+        .find(|c| c.start == 0)
+        .expect("the first clip");
     session.open_clip(first.id);
+    assert!(session.clips().iter().any(|c| c.id == first.id && c.open));
     assert_eq!(
         session.selected_channel(),
-        0,
-        "opening a clip selects the channel that owns it — the rack, the roll \
-         and the arrangement are three views of one selection"
+        1,
+        "opening a clip leaves the rack where it is — the rack is the instrument \
+         you chose, and the clip is the place you are writing it"
     );
-    assert!(session.clips().iter().any(|c| c.id == first.id && c.open));
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -732,7 +796,7 @@ fn clicking_a_clip_on_the_arrangement_opens_it_in_the_roll() {
 fn dragging_a_clip_on_the_arrangement_is_a_command_and_reaches_the_audio_thread() {
     let dir = a_bank("arrange-move");
     let (mut session, _source, mut timeline) = studio_with_timeline(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
     session.edit(RollEdit::Add {
         note: Note {
@@ -746,6 +810,7 @@ fn dragging_a_clip_on_the_arrangement_is_a_command_and_reaches_the_audio_thread(
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     });
     let was = timeline
@@ -781,7 +846,7 @@ fn dragging_a_clip_on_the_arrangement_is_a_command_and_reaches_the_audio_thread(
 fn the_arrangement_can_resize_duplicate_mute_and_delete_clips() {
     let dir = a_bank("arrange-edits");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
     let clip = session.clips().remove(0);
 
@@ -836,7 +901,7 @@ fn a_song_tick_converts_to_a_sample_and_back_through_the_tempo_map() {
 fn muting_a_lane_silences_it_without_touching_its_clips() {
     let dir = a_bank("arrange-lane-mute");
     let (mut session, _source, mut timeline) = studio_with_timeline(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
     session.edit(RollEdit::Add {
         note: Note {
@@ -850,6 +915,7 @@ fn muting_a_lane_silences_it_without_touching_its_clips() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     });
     assert!(!timeline.current().events.is_empty());
@@ -926,7 +992,7 @@ fn strip_the_instrument(session: &mut Session) {
 fn the_instrument_editor_exposes_the_patch_the_soundfont_seeded() {
     let dir = a_bank("vst-view");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
 
     let view = session
@@ -967,7 +1033,7 @@ fn the_instrument_editor_exposes_the_patch_the_soundfont_seeded() {
 fn moving_a_knob_changes_the_patch_and_reaches_the_audio_thread() {
     let dir = a_bank("vst-edit");
     let (mut session, mut source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
     while source.take_update() {}
 
@@ -979,11 +1045,21 @@ fn moving_a_knob_changes_the_patch_and_reaches_the_audio_thread() {
     let after = param_of(&now, "filter[0]/cutoff");
     assert!((after.value - 0.25).abs() < 0.01, "got {}", after.value);
     assert_ne!(after.display, was, "the read-out did not follow the knob");
+    // **Not a rebuild.** A patch parameter now goes onto the live wire and the
+    // running sampler applies it between one block and the next
+    // (`docs/flopsynth-plan.md` §2.3) — which is what lets a cutoff be swept
+    // under a held chord without every mouse move cutting every sounding note.
+    // The old shape of this assertion was `source.take_update()`, and the
+    // claim it was making — *"otherwise you cannot hear what you just
+    // turned"* — is still the claim; only the mechanism moved.
     assert!(
-        source.take_update(),
-        "a patch change rebuilds the graph — otherwise you cannot hear what you \
-         just turned"
+        !source.take_update(),
+        "a knob must not rebuild the graph any more: a new graph means a new \
+         voice pool, which cuts whatever is sounding"
     );
+    // Where it *is* heard is `tests/flopsynth_live.rs`, which holds a note
+    // down through sixty-four of these and measures both that the note
+    // survives and that the filter is heard moving.
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -994,7 +1070,7 @@ fn a_switch_and_a_choice_both_write_through() {
 
     let dir = a_bank("vst-switch");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
 
     let view = session.instrument().unwrap();
@@ -1024,7 +1100,7 @@ fn a_switch_and_a_choice_both_write_through() {
 fn turning_a_knob_is_one_undo_rather_than_one_per_pixel() {
     let dir = a_bank("vst-undo");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
 
     let cutoff = param_of(&session.instrument().unwrap(), "filter[0]/cutoff").clone();
@@ -1052,7 +1128,7 @@ fn a_parameter_address_that_means_nothing_is_ignored_rather_than_a_panic() {
 
     let dir = a_bank("vst-nonsense");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
 
     let before = session.instrument().unwrap();
@@ -1075,7 +1151,7 @@ fn the_onion_skin_shows_other_channels_notes_lined_up_in_time() {
 
     let dir = a_bank("ghosts");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
 
     // A note on the first channel, then a second channel with its own.
@@ -1091,6 +1167,7 @@ fn the_onion_skin_shows_other_channels_notes_lined_up_in_time() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     };
     session.edit(a_note(PPQN * 2, 60));
@@ -1128,7 +1205,7 @@ fn the_onion_skin_can_be_filtered_to_one_instrument() {
 
     let dir = a_bank("ghost-filter");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
     session.add_channel_with(0).unwrap();
     session.add_channel_with(0).unwrap();
@@ -1145,6 +1222,7 @@ fn the_onion_skin_can_be_filtered_to_one_instrument() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     };
     for (channel, key) in [(0usize, 60u8), (1, 64), (2, 67)] {
@@ -1175,7 +1253,7 @@ fn a_ghost_carries_the_colour_of_the_instrument_it_came_from() {
 
     let dir = a_bank("ghost-colour");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
     session.edit(RollEdit::Add {
         note: Note {
@@ -1189,6 +1267,7 @@ fn a_ghost_carries_the_colour_of_the_instrument_it_came_from() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     });
     session.add_channel_with(0).unwrap();
@@ -1222,7 +1301,7 @@ fn a_kit_bank(name: &str) -> PathBuf {
 fn a_drum_kit_on_a_channel_names_its_hits_and_greys_the_rest() {
     let dir = a_kit_bank("kit-map");
     let (mut session, _graph) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session
         .set_channel_instrument(0)
         .expect("the kit must load");
@@ -1403,7 +1482,11 @@ fn duplicating_and_pasting_report_the_clips_they_made() {
         ids: vec![first],
         tick_offset: PPQN * 16,
     });
-    assert_eq!(made.clips.len(), 1, "a duplicate makes one clip and says which");
+    assert_eq!(
+        made.clips.len(),
+        1,
+        "a duplicate makes one clip and says which"
+    );
     assert_ne!(made.clips[0], first, "and it is not the one it copied");
     assert!(session.project().clips.get(made.clips[0]).is_some());
 
@@ -1411,12 +1494,21 @@ fn duplicating_and_pasting_report_the_clips_they_made() {
     let pasted = session.arrange(ArrangeEdit::Paste { at: PPQN * 32 });
     assert_eq!(pasted.clips.len(), 1, "a paste reports what it put down");
     assert_eq!(
-        session.project().clips.get(pasted.clips[0]).map(|c| c.start),
+        session
+            .project()
+            .clips
+            .get(pasted.clips[0])
+            .map(|c| c.start),
         Some(PPQN * 32)
     );
 
     // The edits that create nothing say so.
-    assert!(session.arrange(ArrangeEdit::Copy(vec![first])).clips.is_empty());
+    assert!(
+        session
+            .arrange(ArrangeEdit::Copy(vec![first]))
+            .clips
+            .is_empty()
+    );
     assert!(
         session
             .arrange(ArrangeEdit::SetMuted {
@@ -1527,6 +1619,7 @@ fn cutting_a_note_makes_two_that_meet_where_it_was_cut() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     });
     assert_eq!(ids.len(), 1);
@@ -1573,7 +1666,7 @@ fn a_keyboard_plays_the_channel_the_window_has_selected() {
     let target = std::sync::Arc::new(fontelle_midi::LiveTarget::default());
     let mut session = session.with_live_target(std::sync::Arc::clone(&target));
 
-    session.open_file(0).expect("the fixture must open");
+    open_soundfont(&mut session, 0).expect("the fixture must open");
     session.add_channel_with(0).unwrap();
     assert!(session.channels().len() >= 2);
 
@@ -1623,7 +1716,7 @@ fn choosing_an_instrument_keeps_the_keyboard_pointed_at_it() {
     let target = std::sync::Arc::new(fontelle_midi::LiveTarget::default());
     let mut session = session.with_live_target(std::sync::Arc::clone(&target));
 
-    session.open_file(0).expect("the fixture must open");
+    open_soundfont(&mut session, 0).expect("the fixture must open");
     session.set_channel_instrument(0).expect("must load");
 
     assert_eq!(
@@ -1675,7 +1768,7 @@ fn each_channel_keeps_its_own_view() {
     let dir = a_bank("key-style-per-channel");
     let (session, _source) = studio(&dir);
     let mut session = session;
-    session.open_file(0).expect("the fixture must open");
+    open_soundfont(&mut session, 0).expect("the fixture must open");
     session.add_channel_with(0).unwrap();
     assert!(session.channels().len() >= 2);
 
@@ -1745,7 +1838,7 @@ fn a_studio_with_no_target_attached_still_works() {
     // pay for the feature.
     let dir = a_bank("live-none");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).expect("the fixture must open");
+    open_soundfont(&mut session, 0).expect("the fixture must open");
     session.add_channel_with(0).unwrap();
     session.select_channel(0);
     std::fs::remove_dir_all(&dir).ok();
@@ -1767,12 +1860,19 @@ fn a_studio_with_no_target_attached_still_works() {
 fn a_row_can_be_moved_up_the_stack_and_takes_its_clips_with_it() {
     let dir = a_bank("lane-order");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
     session.add_channel_with(0).unwrap();
+    // A second row, and a clip on it, so there is something to carry: a
+    // channel is an instrument and brings no row of its own.
+    session.add_lane();
+    session.arrange(ArrangeEdit::Add {
+        lane: 1,
+        start: PPQN * 8,
+    });
 
     let before: Vec<String> = session.lanes().iter().map(|l| l.name.clone()).collect();
-    assert!(before.len() >= 2, "two channels, two rows: {before:?}");
+    assert!(before.len() >= 2, "two rows: {before:?}");
 
     // Which row each clip is on, by the row's *name*, so the claim survives
     // the rows moving underneath it.
@@ -1814,7 +1914,7 @@ fn a_row_can_be_moved_up_the_stack_and_takes_its_clips_with_it() {
 fn moving_a_row_off_the_end_of_the_stack_is_harmless() {
     let dir = a_bank("lane-order-edge");
     let (mut session, _source) = studio(&dir);
-    session.open_file(0).unwrap();
+    open_soundfont(&mut session, 0).unwrap();
     session.set_channel_instrument(0).unwrap();
     session.add_channel_with(0).unwrap();
 
@@ -1851,7 +1951,11 @@ fn a_clips_block_carries_the_notes_that_are_in_it() {
     let clip = Session::first_clip(session.project()).expect("a clip");
     session.open_clip(clip);
 
-    let written = [(0, PPQN, 60u8), (PPQN * 2, PPQN / 2, 67), (PPQN * 5, PPQN, 55)];
+    let written = [
+        (0, PPQN, 60u8),
+        (PPQN * 2, PPQN / 2, 67),
+        (PPQN * 5, PPQN, 55),
+    ];
     for (start, length, key) in written {
         session.edit(RollEdit::Add {
             note: fontelle_model::Note {
@@ -1865,6 +1969,7 @@ fn a_clips_block_carries_the_notes_that_are_in_it() {
                 mod_x: 0,
                 mod_y: 0,
                 slide: false,
+                channel: None,
             },
         });
         session.end_gesture();
@@ -1952,6 +2057,7 @@ fn writing_a_note_tells_the_window_its_lists_have_changed() {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     };
 
     let before = session.revision();

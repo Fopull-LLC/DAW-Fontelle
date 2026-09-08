@@ -49,6 +49,7 @@ fn note(start: Tick, length: Tick, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -303,7 +304,10 @@ fn a_gesture_that_paints_its_own_mark_asks_for_the_frame_it_needs() {
     let mut roll = PianoRoll::new(v);
     roll.set_modifiers(Modifiers::default());
 
-    assert!(!roll.draws_overlay(), "an idle roll paints nothing of its own");
+    assert!(
+        !roll.draws_overlay(),
+        "an idle roll paints nothing of its own"
+    );
 
     roll.tool = Tool::Slice;
     roll.press(MouseButton::Left, 100.0, 100.0, layout.grid, &notes, 4);

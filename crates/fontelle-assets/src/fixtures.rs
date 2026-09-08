@@ -706,3 +706,42 @@ pub fn build_wav(sample_rate: u32, channels: u16, samples: &[f32]) -> Vec<u8> {
     out.extend_from_slice(&body);
     out
 }
+
+/// A RIFF/WAVE file whose `data` chunk is an **Ogg stream**, tagged with one of
+/// the Vorbis ACM format tags — the shape FL Studio ships every sample in its
+/// packs as.
+///
+/// The `fmt ` chunk is written the way those files write it, which is the point
+/// of the fixture: `nBlockAlign` of 1 and a `wBitsPerSample` that describes
+/// nothing, because none of it describes a Vorbis stream. What the sound
+/// actually is lives in the Ogg headers, and `sample_rate` and `channels` here
+/// are only what the *wrapper* claims — a test can pass one thing and embed
+/// another to prove which one is believed.
+pub fn build_vorbis_wav(sample_rate: u32, channels: u16, format_tag: u16, ogg: &[u8]) -> Vec<u8> {
+    let mut fmt = Vec::with_capacity(26);
+    fmt.extend_from_slice(&format_tag.to_le_bytes());
+    fmt.extend_from_slice(&channels.to_le_bytes());
+    fmt.extend_from_slice(&sample_rate.to_le_bytes());
+    // An average byte rate, a block align of one and sixteen bits: what the
+    // real files say, none of it usable.
+    fmt.extend_from_slice(&20_000u32.to_le_bytes());
+    fmt.extend_from_slice(&1u16.to_le_bytes());
+    fmt.extend_from_slice(&16u16.to_le_bytes());
+    // `cbSize`, then the eight bytes of ACM private data that follow it.
+    fmt.extend_from_slice(&8u16.to_le_bytes());
+    fmt.extend_from_slice(&[0x24, 0x07, 0x09, 0x20, 0x10, 0x07, 0x09, 0x20]);
+
+    let mut body = Vec::new();
+    body.extend_from_slice(b"WAVE");
+    write_chunk(&mut body, b"fmt ", &fmt);
+    // A `fact` chunk sits between the two in the real files, so the walk that
+    // finds `data` has to step over a chunk it does not know.
+    write_chunk(&mut body, b"fact", &0u32.to_le_bytes());
+    write_chunk(&mut body, b"data", ogg);
+
+    let mut out = Vec::with_capacity(body.len() + 8);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    out.extend_from_slice(&body);
+    out
+}

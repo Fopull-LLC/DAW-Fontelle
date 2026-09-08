@@ -41,6 +41,7 @@ fn note(start: Tick, length: Tick, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -312,5 +313,141 @@ fn a_nudge_is_silent_because_it_is_editing() {
     assert_eq!(roll.take_audition().map(|a| a.key), None);
 
     roll.nudge(&arena, PPQN, 0);
+    assert_eq!(roll.take_audition().map(|a| a.key), None);
+}
+
+// ------------------------------------------------------------- legato ---
+//
+// > *"if i press ctrl l with a note selection in the piano roll it makes all
+// > the notes lengths not have gaps like how it does in fl studio with that
+// > same keybind. just makes all the notes cleanly connect to eachother
+// > basically in length."*
+//
+// FL's Quick Legato. The arithmetic is `fontelle_model::legato_lengths` and is
+// tested there; this is the roll's half — that it acts on the **selection**,
+// that it is one edit, and that it asks for nothing when there is nothing to
+// close up.
+
+fn lengths(edits: &[RollEdit], ids: &[NoteId]) -> Vec<Tick> {
+    let [
+        RollEdit::SetLengths {
+            ids: named,
+            lengths,
+        },
+    ] = edits
+    else {
+        panic!("expected one length edit, got {edits:?}")
+    };
+    ids.iter()
+        .map(|id| {
+            let at = named
+                .iter()
+                .position(|hit| hit == id)
+                .unwrap_or_else(|| panic!("{id:?} was not named by {edits:?}"));
+            lengths[at]
+        })
+        .collect()
+}
+
+#[test]
+fn legato_closes_the_gaps_between_the_selected_notes() {
+    let (arena, ids) = notes(&[
+        (0, PPQN / 4, 60),
+        (PPQN, PPQN / 4, 62),
+        (PPQN * 2, PPQN / 4, 64),
+    ]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids.clone());
+    let edits = roll.legato(&arena);
+    assert_eq!(lengths(&edits, &ids), vec![PPQN, PPQN, PPQN / 4]);
+}
+
+#[test]
+fn legato_only_touches_what_is_selected() {
+    // The note left out is neither moved nor treated as the thing the one
+    // before it should reach: a selection is a statement about which notes
+    // this is *about*.
+    let (arena, ids) = notes(&[
+        (0, PPQN / 4, 60),
+        (PPQN, PPQN / 4, 62),
+        (PPQN * 2, PPQN / 4, 64),
+    ]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(vec![ids[0], ids[2]]);
+    let edits = roll.legato(&arena);
+    let [
+        RollEdit::SetLengths {
+            ids: named,
+            lengths,
+        },
+    ] = &edits[..]
+    else {
+        panic!("expected one length edit, got {edits:?}")
+    };
+    assert!(!named.contains(&ids[1]), "an unselected note was resized");
+    let at = named.iter().position(|hit| *hit == ids[0]).unwrap();
+    assert_eq!(
+        lengths[at],
+        PPQN * 2,
+        "the first note reaches the next *selected* one"
+    );
+}
+
+#[test]
+fn legato_with_nothing_selected_asks_for_nothing() {
+    let (arena, _) = notes(&[(0, PPQN / 4, 60), (PPQN, PPQN / 4, 62)]);
+    let mut roll = PianoRoll::new(view());
+    assert!(roll.legato(&arena).is_empty());
+}
+
+#[test]
+fn legato_on_a_phrase_that_is_already_joined_up_asks_for_nothing() {
+    // An edit that changes nothing is not an undo entry — the rule every
+    // other tool in this window keeps, and the reason pressing Ctrl+L twice
+    // does not cost two presses of Ctrl+Z.
+    let (arena, ids) = notes(&[(0, PPQN, 60), (PPQN, PPQN, 62), (PPQN * 2, PPQN, 64)]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids);
+    assert!(roll.legato(&arena).is_empty());
+}
+
+#[test]
+fn legato_on_one_note_asks_for_nothing() {
+    // There is nothing after it to touch, so there is nothing to do.
+    let (arena, ids) = notes(&[(PPQN, PPQN / 4, 60)]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids);
+    assert!(roll.legato(&arena).is_empty());
+}
+
+#[test]
+fn legato_is_one_edit_however_many_lengths_it_writes() {
+    // One press of the tool is one thing somebody did, and one press of
+    // Ctrl+Z has to take all of it back.
+    let (arena, ids) = notes(&[
+        (0, 10, 60),
+        (PPQN, 10, 62),
+        (PPQN * 3, 10, 64),
+        (PPQN * 7, 10, 65),
+    ]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids.clone());
+    let edits = roll.legato(&arena);
+    assert_eq!(edits.len(), 1, "got {edits:?}");
+    assert_eq!(
+        lengths(&edits, &ids),
+        vec![PPQN, PPQN * 2, PPQN * 4, 10],
+        "each reaches the next, and the last keeps what it had"
+    );
+}
+
+#[test]
+fn legato_is_silent_because_it_is_editing() {
+    // The same rule an arrow key follows: *"i should only be played a preview
+    // if i bare clicked on the note not if im just editing at all."*
+    let (arena, ids) = notes(&[(0, PPQN / 4, 60), (PPQN, PPQN / 4, 62)]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids);
+    roll.legato(&arena);
     assert_eq!(roll.take_audition().map(|a| a.key), None);
 }

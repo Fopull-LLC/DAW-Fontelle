@@ -79,6 +79,10 @@ pub enum ToolAction {
     Add,
     Subtract,
     Randomize,
+    /// Quick Legato: stretch every selected note until it touches the one
+    /// after it. No dialog, because there is nothing to ask — see
+    /// `fontelle_model::legato_lengths`.
+    Legato,
     /// Open the MIDI file browser. Not an edit — see this module's own note.
     ImportMidi,
     /// Open the FL score browser.
@@ -155,6 +159,9 @@ impl ToolMenuItem {
     pub fn label(self) -> String {
         match self {
             Self::Open(kind) => format!("{}\u{2026}", kind.title()),
+            // The shortcut on the row, because a tool nobody can find is a
+            // tool nobody uses — and this one is FL's muscle memory.
+            Self::Run(ToolAction::Legato) => "Legato \u{2014} Ctrl+L".to_string(),
             Self::Run(ToolAction::ImportMidi) => "Import MIDI file\u{2026}".to_string(),
             Self::Run(ToolAction::ImportScore) => "Import FL score\u{2026}".to_string(),
             // No other action reaches the menu directly: the three that take
@@ -165,10 +172,13 @@ impl ToolMenuItem {
 }
 
 /// The menu the Tools chip opens, in the order it lists it.
-pub const TOOL_MENU: [ToolMenuItem; 5] = [
+pub const TOOL_MENU: [ToolMenuItem; 6] = [
     ToolMenuItem::Open(ToolKind::Transpose),
     ToolMenuItem::Open(ToolKind::Adjust),
     ToolMenuItem::Open(ToolKind::Randomize),
+    // With the three that ask something first, because it is an edit to the
+    // selection like they are — it simply has nothing to ask.
+    ToolMenuItem::Run(ToolAction::Legato),
     ToolMenuItem::Run(ToolAction::ImportMidi),
     ToolMenuItem::Run(ToolAction::ImportScore),
 ];
@@ -302,9 +312,7 @@ impl Tools {
             ToolRow::AddNow => "Add it to every selected note, keeping their differences",
             ToolRow::SubtractNow => "Take it off every selected note",
             ToolRow::RandomAmount => "How far the randomizer may stray. 0% leaves it alone",
-            ToolRow::RandomMode => {
-                "Around: wobble each note. Anywhere: forget what was there"
-            }
+            ToolRow::RandomMode => "Around: wobble each note. Anywhere: forget what was there",
             ToolRow::RandomizeNow => "Roll again \u{2014} press it twice for a different answer",
         })
     }
@@ -413,6 +421,9 @@ impl Tools {
                     values,
                 }]
             }
+            // The same function the keyboard's Ctrl+L reaches, so the menu
+            // and the key cannot come to mean different things.
+            ToolAction::Legato => super::legato_edits(selection, notes),
             // The window's to carry out — this crate may not read a file.
             ToolAction::ImportMidi | ToolAction::ImportScore => Vec::new(),
         }

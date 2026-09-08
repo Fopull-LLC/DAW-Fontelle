@@ -31,9 +31,13 @@
 //! - **It runs on the audio thread**, so it allocates nothing: the address is
 //!   split as a `&str` and everything else is a field write (INVARIANT 1).
 
-use fontelle_dsp::{Interpolation, OscKind, SvfMode};
+use fontelle_dsp::{
+    FilterModel, FilterRoute, FilterSlope, Interpolation, MAX_UNISON, OscKind, SvfMode,
+    SynthSource, WarpMode, WavetableId,
+};
+use fontelle_types::{LfoWave, NoteDivision};
 
-use crate::patch::Patch;
+use crate::patch::{LfoMode, MACRO_COUNT, Patch, Source};
 use crate::playback::PlaybackConfig;
 
 /// The loudest and quietest a level goes, in dB. Shared by a channel's own
@@ -98,6 +102,43 @@ pub const SHAPES: [(OscKind, &str); 5] = [
 /// a sub and a top octave need and further than anybody reaches.
 pub const OCTAVES: [i32; 5] = [-2, -1, 0, 1, 2];
 
+/// How far a Flopsynth oscillator transposes, in semitones either way.
+///
+/// Three octaves rather than the two the `OCTAVES` chooser offers, and in
+/// **semitones** rather than octaves, because FM ratios are intervals: the
+/// DX e-piano's tine is the modulator 43 semitones above the carrier, and an
+/// octave chooser cannot say that.
+pub const SEMITONE_RANGE: f32 = 36.0;
+
+/// The widest a pitch bend may be set to, in semitones. Two octaves is what a
+/// whammy patch wants and further than a keyboard sends.
+pub const BEND_MAX_SEMITONES: f32 = 24.0;
+
+/// A patch's output trim. Asymmetric on purpose: presets are loudness-matched
+/// *downwards* far more often than up, and the +12 is there for the quiet ones
+/// rather than as an invitation.
+pub const OUTPUT_MIN_DB: f32 = -24.0;
+pub const OUTPUT_MAX_DB: f32 = 12.0;
+
+/// An LFO's free-running rate. From one cycle in a hundred seconds — a pad
+/// that never quite repeats — to well past where it stops being a rhythm and
+/// starts being a tone.
+pub const LFO_MIN_HZ: f32 = 0.01;
+pub const LFO_MAX_HZ: f32 = 40.0;
+
+/// The longest an LFO's delay or fade may be.
+pub const LFO_TIME_MAX_S: f32 = 10.0;
+
+/// How far a Flopsynth oscillator's unison detunes, in cents.
+pub const UNISON_DETUNE_MAX_CENTS: f32 = 100.0;
+
+/// The three voice modes, in the order the chooser steps through them.
+pub const VOICE_MODES: [(crate::voice::RetriggerMode, &str); 3] = [
+    (crate::voice::RetriggerMode::Poly, "Poly"),
+    (crate::voice::RetriggerMode::Mono, "Mono"),
+    (crate::voice::RetriggerMode::Legato, "Legato"),
+];
+
 // ------------------------------------------------------------- the write ---
 
 /// Applies one control to `patch`. Returns whether anything changed.
@@ -119,6 +160,18 @@ pub fn set(patch: &mut Patch, address: &str, value: f32) -> bool {
         }
         "patch/voice/legato" => {
             patch.voice_config.glide_legato_only = value >= 0.5;
+            true
+        }
+        "patch/voice/mode" => {
+            patch.voice_config.retrigger = VOICE_MODES[choice_index(value, VOICE_MODES.len())].0;
+            true
+        }
+        "patch/voice/bend_range" => {
+            patch.voice_config.bend_range_semitones = lerp(value, 0.0, BEND_MAX_SEMITONES);
+            true
+        }
+        "patch/output" => {
+            patch.output_db = lerp(value, OUTPUT_MIN_DB, OUTPUT_MAX_DB);
             true
         }
         "patch/quality" => {
@@ -145,9 +198,79 @@ pub fn set(patch: &mut Patch, address: &str, value: f32) -> bool {
             if let Some((index, field)) = indexed(address, "patch/layer[") {
                 return set_layer(patch, index, field, value);
             }
+            if let Some((index, field)) = indexed(address, "patch/lfo[") {
+                return set_lfo(patch, index, field, value);
+            }
+            if let Some((index, field)) = indexed(address, "patch/mod[") {
+                if field != "depth" {
+                    return false;
+                }
+                let Some(route) = patch.mod_matrix.routes.get_mut(index) else {
+                    return false;
+                };
+                // Bipolar: a route that could only add would be half a matrix.
+                route.depth = value * 2.0 - 1.0;
+                return true;
+            }
+            if let Some((index, field)) = indexed(address, "patch/fx[") {
+                return set_fx(patch, index, field, value);
+            }
+            // `patch/macro[n]` has no field after it — it *is* the knob — so it
+            // is matched on its own rather than through `indexed`.
+            if let Some(rest) = address.strip_prefix("patch/macro[")
+                && let Some(number) = rest.strip_suffix(']')
+                && let Ok(index) = number.parse::<usize>()
+                && index < MACRO_COUNT
+            {
+                patch.macros[index].value = value;
+                return true;
+            }
             false
         }
     }
+}
+
+fn set_lfo(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool {
+    let Some(lfo) = patch.lfos.get_mut(index) else {
+        return false;
+    };
+    match field {
+        "wave" => lfo.wave = LfoWave::ALL[choice_index(value, LfoWave::ALL.len())],
+        "rate" => lfo.rate_hz = lerp_log(value, LFO_MIN_HZ, LFO_MAX_HZ),
+        "sync" => lfo.sync = value >= 0.5,
+        "division" => {
+            lfo.division = NoteDivision::ALL[choice_index(value, NoteDivision::ALL.len())];
+        }
+        "depth" => lfo.depth = value,
+        // The same cubic taper an envelope stage gets, and for the same
+        // reason: the first tenth of the dial has to cover a vibrato's
+        // quarter-second delay and the last has to reach a pad's ten seconds.
+        "delay" => lfo.delay_s = value.clamp(0.0, 1.0).powi(3) * LFO_TIME_MAX_S,
+        "fade" => lfo.fade_s = value.clamp(0.0, 1.0).powi(3) * LFO_TIME_MAX_S,
+        "phase" => lfo.phase = value,
+        "mode" => lfo.mode = LfoMode::ALL[choice_index(value, LfoMode::ALL.len())],
+        "smooth" => lfo.smooth = value,
+        _ => return false,
+    }
+    true
+}
+
+fn set_fx(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool {
+    let Some(slot) = patch.fx.get_mut(index) else {
+        return false;
+    };
+    if field == "enabled" {
+        slot.enabled = value >= 0.5;
+        return true;
+    }
+    // Everything else is the effect's own parameter, by the id its `ParamSpec`
+    // gave it — which is already RT-safe and already the list automation works
+    // from, so a patch effect's knobs are automatable the day they exist.
+    if slot.config.specs().iter().any(|spec| spec.id == field) {
+        slot.config.set_normalised(field, value);
+        return true;
+    }
+    false
 }
 
 fn set_filter(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool {
@@ -159,6 +282,11 @@ fn set_filter(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool 
         "mode" => filter.mode = FILTER_MODES[choice_index(value, FILTER_MODES.len())].0,
         "cutoff" => filter.cutoff_hz = lerp_log(value, CUTOFF_MIN_HZ, CUTOFF_MAX_HZ),
         "resonance" => filter.resonance = value,
+        "slope" => filter.slope = FilterSlope::ALL[choice_index(value, FilterSlope::ALL.len())],
+        "model" => filter.model = FilterModel::ALL[choice_index(value, FilterModel::ALL.len())],
+        "drive" => filter.drive = value,
+        "key_track" => filter.key_track = value,
+        "character" => filter.character = value,
         _ => return false,
     }
     true
@@ -175,6 +303,11 @@ fn set_envelope(patch: &mut Patch, index: usize, field: &str, value: f32) -> boo
         "decay" => env.decay_s = lerp_stage(value),
         "sustain" => env.sustain_level = value,
         "release" => env.release_s = lerp_stage(value),
+        // Bipolar: the middle of the dial is the straight line every envelope
+        // had before shapes existed.
+        "attack_shape" => env.attack_shape = value * 2.0 - 1.0,
+        "decay_shape" => env.decay_shape = value * 2.0 - 1.0,
+        "release_shape" => env.release_shape = value * 2.0 - 1.0,
         _ => return false,
     }
     true
@@ -184,7 +317,17 @@ fn set_layer(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool {
     let Some(layer) = patch.layers.get_mut(index) else {
         return false;
     };
+    // Flopsynth's own controls live under `synth/`, so that a layer's level
+    // and pan stay the addresses they have always been and only what is new
+    // is new (INVARIANT 7).
+    if let Some(field) = field.strip_prefix("synth/") {
+        let Source::Synth(osc) = &mut layer.source else {
+            return false;
+        };
+        return set_synth(osc, field, value);
+    }
     let is_oscillator = matches!(layer.source, crate::patch::Source::Oscillator(_));
+    let is_synth = matches!(layer.source, Source::Synth(_));
     match field {
         "gain" => layer.gain_db = lerp(value, GAIN_MIN_DB, GAIN_MAX_DB),
         "pan" => layer.pan = value * 2.0 - 1.0,
@@ -205,7 +348,14 @@ fn set_layer(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool {
             layer.root_key = root_key_for(OCTAVES[choice_index(value, OCTAVES.len())]);
         }
         "tune" => {
-            if !is_oscillator {
+            // Accepted on a synth layer as well as an oscillator one: the fine
+            // tune is the *layer's*, not the source's, and a Flopsynth
+            // oscillator wants one as much as anything else does. `shape` and
+            // `octave` are not extended, because a Flopsynth layer has neither
+            // — its waveform is a table and its transposition is
+            // `synth/semitones`, and writing a root key nobody can see would
+            // be a control that moves the sound and shows nothing.
+            if !is_oscillator && !is_synth {
                 return false;
             }
             layer.fine_tune_cents = lerp(value, -DETUNE_CENTS, DETUNE_CENTS);
@@ -214,6 +364,55 @@ fn set_layer(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool {
     }
     true
 }
+
+fn set_synth(osc: &mut fontelle_dsp::SynthOsc, field: &str, value: f32) -> bool {
+    match field {
+        "table" => {
+            // A noise layer has no table, and one given one would stop being
+            // the noise layer — which is a change the window has no way to
+            // show and nobody asked for.
+            if matches!(osc.source, SynthSource::Noise) {
+                return false;
+            }
+            osc.source =
+                SynthSource::Table(WavetableId::ALL[choice_index(value, WavetableId::ALL.len())]);
+        }
+        "position" => osc.position = value,
+        "warp_mode" => osc.warp = WarpMode::ALL[choice_index(value, WarpMode::ALL.len())],
+        "warp" => osc.warp_amount = value,
+        "modulator" => {
+            // Position 0 is "none"; the rest are layer indices 1..=4. A
+            // modulator that is not a *later* layer is refused by the panel
+            // (`flopsynth::apply_edit`), not here — this is the address table,
+            // and an address that silently rewrote its own value would be one
+            // whose read-out disagreed with what it wrote.
+            let index = choice_index(value, MODULATOR_CHOICES);
+            osc.modulator = (index > 0).then_some(index as u8);
+        }
+        "semitones" => {
+            osc.semitones = lerp(value, -SEMITONE_RANGE, SEMITONE_RANGE).round() as i8;
+        }
+        "phase" => osc.phase = value,
+        "random_phase" => osc.random_phase = value >= 0.5,
+        "key_track" => osc.key_track = value >= 0.5,
+        "route" => {
+            osc.filter_route = FilterRoute::ALL[choice_index(value, FilterRoute::ALL.len())];
+        }
+        "unison/voices" => {
+            osc.unison.voices = lerp(value, 1.0, MAX_UNISON as f32).round() as u8;
+        }
+        "unison/detune" => osc.unison.detune_cents = lerp(value, 0.0, UNISON_DETUNE_MAX_CENTS),
+        "unison/blend" => osc.unison.blend = value,
+        "unison/width" => osc.unison.width = value,
+        "noise_colour" => osc.noise_colour = value,
+        _ => return false,
+    }
+    true
+}
+
+/// How many positions the modulator chooser has: "none", plus the four layers
+/// that could be later than layer 0.
+pub const MODULATOR_CHOICES: usize = 5;
 
 // -------------------------------------------------------------- the read ---
 
@@ -230,6 +429,18 @@ pub fn value(patch: &Patch, address: &str) -> Option<f32> {
         )),
         "patch/voice/glide" => Some(unlerp(patch.voice_config.glide_time_s, 0.0, GLIDE_MAX_S)),
         "patch/voice/legato" => Some(bool_value(patch.voice_config.glide_legato_only)),
+        "patch/voice/mode" => {
+            let at = VOICE_MODES
+                .iter()
+                .position(|(m, _)| *m == patch.voice_config.retrigger)?;
+            Some(choice_value(at, VOICE_MODES.len()))
+        }
+        "patch/voice/bend_range" => Some(unlerp(
+            patch.voice_config.bend_range_semitones,
+            0.0,
+            BEND_MAX_SEMITONES,
+        )),
+        "patch/output" => Some(unlerp(patch.output_db, OUTPUT_MIN_DB, OUTPUT_MAX_DB)),
         "patch/quality" => {
             // Every layer carries the same one — see `set`. The first is the
             // patch's answer, and a patch with no layers has none.
@@ -248,6 +459,17 @@ pub fn value(patch: &Patch, address: &str) -> Option<f32> {
                     }
                     "cutoff" => Some(unlerp_log(filter.cutoff_hz, CUTOFF_MIN_HZ, CUTOFF_MAX_HZ)),
                     "resonance" => Some(filter.resonance.clamp(0.0, 1.0)),
+                    "slope" => {
+                        let at = FilterSlope::ALL.iter().position(|s| *s == filter.slope)?;
+                        Some(choice_value(at, FilterSlope::ALL.len()))
+                    }
+                    "model" => {
+                        let at = FilterModel::ALL.iter().position(|m| *m == filter.model)?;
+                        Some(choice_value(at, FilterModel::ALL.len()))
+                    }
+                    "drive" => Some(filter.drive.clamp(0.0, 1.0)),
+                    "key_track" => Some(filter.key_track.clamp(0.0, 1.0)),
+                    "character" => Some(filter.character.clamp(0.0, 1.0)),
                     _ => None,
                 };
             }
@@ -260,11 +482,74 @@ pub fn value(patch: &Patch, address: &str) -> Option<f32> {
                     "decay" => Some(unlerp_stage(env.decay_s)),
                     "sustain" => Some(env.sustain_level.clamp(0.0, 1.0)),
                     "release" => Some(unlerp_stage(env.release_s)),
+                    "attack_shape" => Some((env.attack_shape.clamp(-1.0, 1.0) + 1.0) / 2.0),
+                    "decay_shape" => Some((env.decay_shape.clamp(-1.0, 1.0) + 1.0) / 2.0),
+                    "release_shape" => Some((env.release_shape.clamp(-1.0, 1.0) + 1.0) / 2.0),
                     _ => None,
                 };
             }
+            if let Some((index, field)) = indexed(address, "patch/lfo[") {
+                let lfo = patch.lfos.get(index)?;
+                return match field {
+                    "wave" => {
+                        let at = LfoWave::ALL.iter().position(|w| *w == lfo.wave)?;
+                        Some(choice_value(at, LfoWave::ALL.len()))
+                    }
+                    "rate" => Some(unlerp_log(lfo.rate_hz, LFO_MIN_HZ, LFO_MAX_HZ)),
+                    "sync" => Some(bool_value(lfo.sync)),
+                    "division" => {
+                        let at = NoteDivision::ALL.iter().position(|d| *d == lfo.division)?;
+                        Some(choice_value(at, NoteDivision::ALL.len()))
+                    }
+                    "depth" => Some(lfo.depth.clamp(0.0, 1.0)),
+                    "delay" => Some(
+                        (lfo.delay_s.max(0.0) / LFO_TIME_MAX_S)
+                            .clamp(0.0, 1.0)
+                            .cbrt(),
+                    ),
+                    "fade" => Some(
+                        (lfo.fade_s.max(0.0) / LFO_TIME_MAX_S)
+                            .clamp(0.0, 1.0)
+                            .cbrt(),
+                    ),
+                    "phase" => Some(lfo.phase.clamp(0.0, 1.0)),
+                    "mode" => {
+                        let at = LfoMode::ALL.iter().position(|m| *m == lfo.mode)?;
+                        Some(choice_value(at, LfoMode::ALL.len()))
+                    }
+                    "smooth" => Some(lfo.smooth.clamp(0.0, 1.0)),
+                    _ => None,
+                };
+            }
+            if let Some((index, field)) = indexed(address, "patch/mod[") {
+                if field != "depth" {
+                    return None;
+                }
+                let route = patch.mod_matrix.routes.get(index)?;
+                return Some((route.depth.clamp(-1.0, 1.0) + 1.0) / 2.0);
+            }
+            if let Some((index, field)) = indexed(address, "patch/fx[") {
+                let slot = patch.fx.get(index)?;
+                if field == "enabled" {
+                    return Some(bool_value(slot.enabled));
+                }
+                return slot.config.normalised(field);
+            }
+            if let Some(rest) = address.strip_prefix("patch/macro[")
+                && let Some(number) = rest.strip_suffix(']')
+                && let Ok(index) = number.parse::<usize>()
+                && index < MACRO_COUNT
+            {
+                return Some(patch.macros[index].value.clamp(0.0, 1.0));
+            }
             if let Some((index, field)) = indexed(address, "patch/layer[") {
                 let layer = patch.layers.get(index)?;
+                if let Some(field) = field.strip_prefix("synth/") {
+                    let Source::Synth(osc) = &layer.source else {
+                        return None;
+                    };
+                    return synth_value(osc, field);
+                }
                 return match field {
                     "gain" => Some(unlerp(layer.gain_db, GAIN_MIN_DB, GAIN_MAX_DB)),
                     "pan" => Some((layer.pan.clamp(-1.0, 1.0) + 1.0) / 2.0),
@@ -279,11 +564,20 @@ pub fn value(patch: &Patch, address: &str) -> Option<f32> {
                         if !matches!(layer.source, crate::patch::Source::Oscillator(_)) {
                             return None;
                         }
-                        let at = OCTAVES.iter().position(|o| *o == octave_of(layer.root_key))?;
+                        let at = OCTAVES
+                            .iter()
+                            .position(|o| *o == octave_of(layer.root_key))?;
                         Some(choice_value(at, OCTAVES.len()))
                     }
                     "tune" => {
-                        if !matches!(layer.source, crate::patch::Source::Oscillator(_)) {
+                        // Accepted on a synth layer as well as an oscillator
+                        // one, because `set` is — and a read-out that
+                        // disagreed with what it wrote is exactly the defect
+                        // this module's docs say is not expressible.
+                        if !matches!(
+                            layer.source,
+                            crate::patch::Source::Oscillator(_) | Source::Synth(_)
+                        ) {
                             return None;
                         }
                         Some(unlerp(
@@ -297,6 +591,53 @@ pub fn value(patch: &Patch, address: &str) -> Option<f32> {
             }
             None
         }
+    }
+}
+
+fn synth_value(osc: &fontelle_dsp::SynthOsc, field: &str) -> Option<f32> {
+    match field {
+        "table" => match osc.source {
+            SynthSource::Table(id) => {
+                let at = WavetableId::ALL.iter().position(|t| *t == id)?;
+                Some(choice_value(at, WavetableId::ALL.len()))
+            }
+            SynthSource::Noise => None,
+        },
+        "position" => Some(osc.position.clamp(0.0, 1.0)),
+        "warp_mode" => {
+            let at = WarpMode::ALL.iter().position(|w| *w == osc.warp)?;
+            Some(choice_value(at, WarpMode::ALL.len()))
+        }
+        "warp" => Some(osc.warp_amount.clamp(0.0, 1.0)),
+        "modulator" => Some(choice_value(
+            osc.modulator
+                .map_or(0, |m| usize::from(m).min(MODULATOR_CHOICES - 1)),
+            MODULATOR_CHOICES,
+        )),
+        "semitones" => Some(unlerp(
+            f32::from(osc.semitones),
+            -SEMITONE_RANGE,
+            SEMITONE_RANGE,
+        )),
+        "phase" => Some(osc.phase.clamp(0.0, 1.0)),
+        "random_phase" => Some(bool_value(osc.random_phase)),
+        "key_track" => Some(bool_value(osc.key_track)),
+        "route" => {
+            let at = FilterRoute::ALL
+                .iter()
+                .position(|r| *r == osc.filter_route)?;
+            Some(choice_value(at, FilterRoute::ALL.len()))
+        }
+        "unison/voices" => Some(unlerp(f32::from(osc.unison.voices), 1.0, MAX_UNISON as f32)),
+        "unison/detune" => Some(unlerp(
+            osc.unison.detune_cents,
+            0.0,
+            UNISON_DETUNE_MAX_CENTS,
+        )),
+        "unison/blend" => Some(osc.unison.blend.clamp(0.0, 1.0)),
+        "unison/width" => Some(osc.unison.width.clamp(0.0, 1.0)),
+        "noise_colour" => Some(osc.noise_colour.clamp(0.0, 1.0)),
+        _ => None,
     }
 }
 

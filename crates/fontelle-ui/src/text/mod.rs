@@ -167,15 +167,47 @@ fn family(name: &str) -> Family<'_> {
 /// into this and hands it over by reference.
 ///
 /// Bounded rather than unbounded: scrolling a big soundfont collection would
-/// otherwise accumulate a shaped layout per file ever seen. Over the cap it is
-/// emptied wholesale, which costs one frame of re-shaping and never grows.
+/// otherwise accumulate a shaped layout per file ever seen. Over the cap,
+/// **what goes is what the current frame has not asked for** — never a string
+/// shaped for the frame being built.
+///
+/// That last clause is the reported bug. The cache used to be emptied
+/// wholesale the moment it filled, which is to say in the middle of a frame's
+/// shaping pass: every string shaped *before* that moment was gone by the
+/// time the renderer looked it up and drew as nothing, for one frame, and a
+/// window whose working set sat near the cap did it on nearly every frame.
+/// *"The text constantly keeps flickering while trying to navigate the
+/// app."* The window says where a frame begins ([`Labels::begin_frame`]),
+/// every string carries the frame that last asked for it, and a frame that
+/// wants more than the cap simply keeps all of it.
 #[derive(Default)]
 pub struct Labels {
-    shaped: HashMap<String, TextLayout>,
+    shaped: HashMap<String, Shaped>,
+    /// The same strings at [`SMALL_LABEL`] of the chrome's size, kept apart
+    /// so that a caption and a heading spelt the same way can both be drawn.
+    small: HashMap<String, Shaped>,
+    /// Which frame is being shaped. Bumped by [`Labels::begin_frame`].
+    frame: u64,
 }
 
-/// How many shaped strings to keep. A screenful of every panel at once is well
-/// under a hundred.
+/// A layout and the frame that last asked for it.
+struct Shaped {
+    frame: u64,
+    layout: TextLayout,
+}
+
+/// How much smaller a small label is than the chrome's text.
+///
+/// Flopsynth's knob captions are drawn at this size: a hundred and thirty
+/// controls do not fit on one page at thirteen pixels, and "mod from" in a
+/// fifty-pixel cell does not either. Eleven pixels at the default size —
+/// what every synthesiser's panel is captioned in.
+pub const SMALL_LABEL: f32 = 0.85;
+
+/// How many shaped strings to keep before the ones no longer on screen are
+/// let go. A screenful of every panel at once is a few hundred; the roll's
+/// key names, a browser page of names and details, and an editor window's
+/// captions and read-outs all count.
 const LABEL_CAP: usize = 512;
 
 impl Labels {
@@ -183,22 +215,60 @@ impl Labels {
         Self::default()
     }
 
+    /// Marks the start of a frame's shaping pass.
+    ///
+    /// Everything shaped after this and before the next call is *this
+    /// frame's* and survives the cache filling; everything older is what a
+    /// full cache lets go of.
+    pub fn begin_frame(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+    }
+
     /// Shapes `text` if it has not been shaped already.
     pub fn ensure(&mut self, text: &str, font: &FontTokens, context: &mut TextContext) {
-        if self.shaped.contains_key(text) {
+        let frame = self.frame;
+        if let Some(entry) = self.shaped.get_mut(text) {
+            entry.frame = frame;
             return;
         }
         if self.shaped.len() >= LABEL_CAP {
-            self.shaped.clear();
+            self.shaped.retain(|_, entry| entry.frame == frame);
         }
         let layout = context.layout(text, font, None);
-        self.shaped.insert(text.to_string(), layout);
+        self.shaped
+            .insert(text.to_string(), Shaped { frame, layout });
+    }
+
+    /// Shapes `text` at [`SMALL_LABEL`] of `font`'s size, if it has not been
+    /// already. Asked back with [`Labels::get_small`].
+    pub fn ensure_small(&mut self, text: &str, font: &FontTokens, context: &mut TextContext) {
+        let frame = self.frame;
+        if let Some(entry) = self.small.get_mut(text) {
+            entry.frame = frame;
+            return;
+        }
+        if self.small.len() >= LABEL_CAP {
+            self.small.retain(|_, entry| entry.frame == frame);
+        }
+        let small = FontTokens {
+            family: font.family.clone(),
+            size: font.size * SMALL_LABEL,
+            line_height: font.line_height,
+        };
+        let layout = context.layout(text, &small, None);
+        self.small
+            .insert(text.to_string(), Shaped { frame, layout });
+    }
+
+    /// The small form of `text`, or `None` when nobody shaped it small.
+    pub fn get_small(&self, text: &str) -> Option<&TextLayout> {
+        self.small.get(text).map(|entry| &entry.layout)
     }
 
     /// The shaped form, or `None` when nobody asked for it this frame — which
     /// draws as nothing rather than as a panic.
     pub fn get(&self, text: &str) -> Option<&TextLayout> {
-        self.shaped.get(text)
+        self.shaped.get(text).map(|entry| &entry.layout)
     }
 
     pub fn len(&self) -> usize {

@@ -14,11 +14,14 @@ use crate::collision::voice_context_for_clip;
 /// happen here, on the model thread, ahead of time: playback cost is therefore
 /// independent of how deeply prefabs are nested (INVARIANT 3).
 ///
-/// **M0 scope:** only `ClipSource::Notes` clips are read — automation clips
-/// (M4) and audio clips (M6) are silently skipped. `clip.prefab_link` is
-/// ignored; only `clip.source` itself is compiled, so prefab resolution
-/// (TDD §10.5) isn't wired in yet — that lands with M3's real timeline UI.
-/// See `PROGRESS.md`.
+/// **Prefab instances are resolved here**, on the model thread, which is
+/// INVARIANT 3: the RT thread never sees the prefab graph, and playback cost
+/// is therefore independent of how many places a prefab is drawn in. Nothing
+/// below reads `clip.source` directly — every read goes through
+/// [`Project::clip_source`], because a clip that follows a prefab holds no
+/// notes of its own and reading its own source gets an empty arena. That is
+/// the failure mode this whole design has: silent instances, and every test
+/// written before prefabs existed still passing.
 ///
 /// `channel_nodes` maps each document `ChannelId` to the engine-side `NodeId`
 /// its compiled `SamplerNode` was assigned when the audio graph was built.
@@ -96,13 +99,27 @@ pub enum CompileScope {
     /// the session sets is over the clip's own bars, and the roll draws its
     /// playhead against the clip's own start.
     Clip(ClipId),
+    /// One **row** of the arrangement, where it sits in the song.
+    ///
+    /// What rendering a track to audio compiles (*"the ability to render a
+    /// track into an audio clip"*): everything on that row and nothing else,
+    /// so the bounce is the row rather than the row plus whatever happened to
+    /// be playing beside it.
+    ///
+    /// The automation on *other* rows is left out with it, exactly as a clip
+    /// scope leaves it out — a row is the unit being soloed, and a curve on
+    /// another row is not part of it.
+    Lane(fontelle_types::LaneId),
 }
 
 impl CompileScope {
-    fn includes(self, id: ClipId) -> bool {
+    /// Whether `clip` is in this scope. `lane` is the row it sits on, which
+    /// only [`Lane`](Self::Lane) reads.
+    fn includes(self, id: ClipId, lane: fontelle_types::LaneId) -> bool {
         match self {
             Self::Song => true,
             Self::Clip(only) => only == id,
+            Self::Lane(only) => only == lane,
         }
     }
 }
@@ -136,13 +153,19 @@ pub fn compile_with(
     let param_nodes = nodes.params;
     let mut events = Vec::new();
     let mut audio = Vec::new();
+    // Which row each placement is on, beside it: the crossfade below is a
+    // question about two clips on one row, and a placement does not carry
+    // its lane (the audio thread has no use for one).
+    let mut audio_lanes: Vec<fontelle_types::LaneId> = Vec::new();
 
     // Every tick becomes a sample through the *automated* tempo map (TDD
     // §12.3), built once for the pass. In clip scope the tempo lane is out
     // of scope like every other clip, so the box's own map is the one used.
     let tempo = match scope {
         CompileScope::Song => fontelle_model::effective_tempo_map(project),
-        CompileScope::Clip(_) => project.tempo_map.clone(),
+        // In a narrowed scope the tempo lane is out of it like every other
+        // clip, so the box's own map is the one used.
+        CompileScope::Clip(_) | CompileScope::Lane(_) => project.tempo_map.clone(),
     };
 
     // The channel rack's two switches, resolved once for the whole pass. They
@@ -170,25 +193,43 @@ pub fn compile_with(
     };
 
     for (clip_index, (clip_id, clip)) in project.clips.iter().enumerate() {
-        if clip.muted || !scope.includes(clip_id) {
+        if clip.muted || !scope.includes(clip_id, clip.lane) {
             continue;
         }
         if project.lanes.get(clip.lane).is_some_and(|lane| lane.muted) {
             continue;
         }
 
+        // **What this clip actually holds** — its own content, or the content
+        // of the prefab it follows. `clip.source` is empty for an instance;
+        // see this function's docs and `Project::clip_source`. The clip's
+        // *placement* — its row, start, length and loop — is still its own,
+        // which is the whole distinction: a prefab is the notes, and a place
+        // for it is the window on them.
+        //
+        // Borrowed for a mirror instance, so the common case allocates
+        // nothing; owned only when there is something to resolve.
+        let Some(source) = project.clip_source(clip_id) else {
+            continue;
+        };
+        let source = source.as_ref();
+
         // An audio clip is not events (TDD §15): it is a range on the song
         // that a block either falls inside or does not, so it compiles to a
         // placement and there is nothing to schedule.
-        if let ClipSource::Audio(data) = &clip.source {
+        if let ClipSource::Audio(data) = source {
             let Some(&target) = nodes.audio.get(&data.mixer_track) else {
                 continue; // no player for that track yet
             };
+            audio_lanes.push(clip.lane);
             audio.push(AudioPlacement {
                 target,
                 clip: clip_id,
                 range: tempo.tick_to_sample(clip.start)
                     ..tempo.tick_to_sample(clip.start + clip.length),
+                // Filled in below, once every placement on the row is known.
+                crossfade_in: 0,
+                crossfade_out: 0,
                 // **Not** unrolled into one placement per pass, which is what
                 // a looped note clip does. A note is a moment and has to be
                 // emitted again on every pass; a stream is one range that
@@ -196,8 +237,7 @@ pub fn compile_with(
                 // one-bar loop sixteen filter states instead of one.
                 repeat: match clip.loop_length.filter(|p| *p > 0) {
                     Some(period) => {
-                        tempo.tick_to_sample(clip.start + period)
-                            - tempo.tick_to_sample(clip.start)
+                        tempo.tick_to_sample(clip.start + period) - tempo.tick_to_sample(clip.start)
                     }
                     None => 0,
                 },
@@ -206,16 +246,8 @@ pub fn compile_with(
             continue;
         }
 
-        let ClipSource::Notes(note_data) = &clip.source else {
+        let ClipSource::Notes(note_data) = source else {
             continue; // automation clips are compiled below
-        };
-
-        if !audible(note_data.channel) {
-            continue; // muted in the rack, or another channel is soloed
-        }
-
-        let Some(&node_id) = channel_nodes.get(&note_data.channel) else {
-            continue; // channel not wired into the compiled graph yet
         };
 
         let voice_context = voice_context_for_clip(clip_index as u32);
@@ -238,21 +270,60 @@ pub fn compile_with(
                 if period.is_some_and(|p| note.start >= p) {
                     continue;
                 }
+                // **Per note**, not per clip: a clip may hold several
+                // instruments (`Note::channel`), so which channel is muted,
+                // soloed or wired is asked of the channel this note plays.
+                // A note naming a channel with no node yet is left out
+                // rather than played on the clip's — a bass line on the
+                // drums for one frame is worse than a bass line late.
+                let channel = note.channel_or(note_data.channel);
+                if !audible(channel) {
+                    continue; // muted in the rack, or another channel is soloed
+                }
+                let Some(&node_id) = channel_nodes.get(&channel) else {
+                    continue; // channel not wired into the compiled graph yet
+                };
                 let start = note.start + offset;
-                // A repeat that begins after the clip ends does not sound.
-                // **Only looped clips are bounded this way**: a plain clip's
-                // length has never limited its notes, and changing that is a
-                // separate decision from this one (see PROGRESS.md).
-                if period.is_some() && start >= clip.length {
+                // **The clip's end is the end**, whether or not it loops.
+                //
+                // > *"clip endings don't actually cut the clip short audibly
+                // > right now it keeps playing"*
+                //
+                // A clip's length is the window on its content, which is
+                // what an audio clip's placement has always meant
+                // (`clip.start .. clip.start + clip.length`, above) and what
+                // dragging a right edge in is *for*. Until this, only a
+                // looped clip clamped — a loop whose last pass is longer than
+                // the others is obviously wrong — while a plain clip drawn
+                // shorter than its notes went on playing all of them, so
+                // trimming one changed the picture and nothing else.
+                //
+                // A note that begins at the end is outside it: the range is
+                // half-open, so a clip ending at bar two and one beginning
+                // there do not both sound the same tick.
+                if start >= clip.length {
                     continue;
                 }
                 let on_tick = clip.start + start;
-                let mut off_tick = on_tick + note.length;
-                if period.is_some() {
-                    // A loop that rings past its own end is a loop whose last
-                    // pass sounds different from the others.
-                    off_tick = off_tick.min(clip.start + clip.length);
-                }
+                // Cut, not silenced: the note-off lands on the boundary and
+                // the instrument's own release rings out from there. Stopping
+                // the sound dead there would be a click.
+                //
+                // **Two boundaries, and the nearer one wins.** The clip's own
+                // end, and — inside a loop — the end of *this pass*:
+                //
+                // > *"it should just cut off wherever you put the ending to
+                // > be and then cleanly loop from that point"*
+                //
+                // A note written longer than the period used to ring on
+                // through the passes after it, so the second pass played over
+                // the first one's tail and the third over both. A loop that
+                // gets thicker as it goes is not a loop; every pass sounds
+                // like the one before it now.
+                let pass_end = period.map_or(i64::MAX, |period| clip.start + offset + period);
+                let off_tick = (on_tick + note.length)
+                    .min(pass_end)
+                    .min(clip.start + clip.length);
 
                 // A **slide note** starts no voice and ends none: it bends
                 // whatever is already sounding on this channel to its pitch,
@@ -312,6 +383,44 @@ pub fn compile_with(
     // order would be applied backwards.
     sort_events(&mut events);
 
+    // The automatic crossfade (TDD §15.2): where two audio clips on one row
+    // overlap, the earlier fades out over the overlap and the later fades in
+    // over it. *"it should also blend together like a transition the timing
+    // based on how long the overlap section is."* Measured here because
+    // this pass can see both clips at once and already owns every
+    // tick-to-sample conversion. Muted clips and muted rows never got a
+    // placement, so nothing fades against them — the clip beside a muted
+    // one plays plain, as it would with the muted one deleted.
+    //
+    // A clip that ends *inside* the other — dropped wholly within a longer
+    // one — has no tail in the overlap to fade, and none is invented: only
+    // a clip whose end the overlap reaches fades out, and only a clip whose
+    // start it reaches fades in.
+    for i in 0..audio.len() {
+        for j in (i + 1)..audio.len() {
+            if audio_lanes[i] != audio_lanes[j] {
+                continue;
+            }
+            let (earlier, later) = if audio[i].range.start <= audio[j].range.start {
+                (i, j)
+            } else {
+                (j, i)
+            };
+            let from = audio[earlier].range.start.max(audio[later].range.start);
+            let to = audio[earlier].range.end.min(audio[later].range.end);
+            let overlap = to - from;
+            if overlap <= 0 {
+                continue;
+            }
+            if audio[later].range.start >= from {
+                audio[later].crossfade_in = audio[later].crossfade_in.max(overlap);
+            }
+            if audio[earlier].range.end <= to {
+                audio[earlier].crossfade_out = audio[earlier].crossfade_out.max(overlap);
+            }
+        }
+    }
+
     CompiledTimeline {
         events,
         audio,
@@ -354,7 +463,14 @@ pub fn compile_with(
 ///    notes that have not started.
 fn rank(payload: &EventPayload) -> u8 {
     match payload {
-        EventPayload::ParamValue { .. } => 0,
+        // A performance event is never compiled from a clip — it comes off a
+        // device, live — but the order has to answer for every payload, and
+        // a wheel that arrived at the same sample as a note belongs before
+        // it, where a parameter does.
+        EventPayload::ParamValue { .. }
+        | EventPayload::Controller { .. }
+        | EventPayload::PitchBend { .. }
+        | EventPayload::ChannelPressure { .. } => 0,
         EventPayload::ClipStop => 1,
         EventPayload::NoteOff { .. } => 2,
         EventPayload::NoteSlide { .. } => 3,
@@ -476,9 +592,36 @@ fn value_in_scope(
 ) -> Option<f64> {
     match scope {
         CompileScope::Song => fontelle_model::automation_at(project, target, tick),
+        // A row's own curves, read the way the song's are but from that row
+        // alone — the last clip on it that aims at `target`.
+        CompileScope::Lane(lane) => {
+            let mut best: Option<f64> = None;
+            for (id, clip) in project.clips.iter() {
+                if clip.muted || clip.lane != lane {
+                    continue;
+                }
+                // Through `clip_source` like every other read, so an
+                // automation prefab drawn in four places sweeps in all four.
+                let Some(source) = project.clip_source(id) else {
+                    continue;
+                };
+                let ClipSource::Automation(data) = source.as_ref() else {
+                    continue;
+                };
+                if &data.target != target {
+                    continue;
+                }
+                if tick < clip.start {
+                    continue;
+                }
+                best = data.value_at(tick - clip.start).or(best);
+            }
+            best
+        }
         CompileScope::Clip(id) => {
             let clip = project.clips.get(id)?;
-            let ClipSource::Automation(data) = &clip.source else {
+            let source = project.clip_source(id)?;
+            let ClipSource::Automation(data) = source.as_ref() else {
                 return None;
             };
             if clip.muted || data.target != *target || clip.start > tick {
@@ -502,10 +645,13 @@ fn automated_span(
 ) -> Option<(fontelle_types::Tick, fontelle_types::Tick)> {
     let mut span: Option<(fontelle_types::Tick, fontelle_types::Tick)> = None;
     for (id, clip) in project.clips.iter() {
-        if clip.muted || !scope.includes(id) {
+        if clip.muted || !scope.includes(id, clip.lane) {
             continue;
         }
-        let fontelle_model::ClipSource::Automation(data) = &clip.source else {
+        let Some(source) = project.clip_source(id) else {
+            continue;
+        };
+        let fontelle_model::ClipSource::Automation(data) = source.as_ref() else {
             continue;
         };
         if data.target != *target {
@@ -537,10 +683,13 @@ mod tests {
         project.tempo_map = TempoMap::new(BPM, SR);
 
         let channel_id = project.channels.insert(fontelle_model::Channel {
+            preset: None,
+            instrument: None,
             name: "ch".into(),
             color: [0, 0, 0, 255],
             mixer_track: None,
             patch_data: None,
+            plugin: None,
             pan: 0.0,
             muted: false,
             soloed: false,
@@ -569,6 +718,7 @@ mod tests {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         });
 
         project.clips.insert(Clip {

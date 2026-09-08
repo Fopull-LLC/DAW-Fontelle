@@ -368,7 +368,9 @@ fn a_track_cannot_be_routed_into_itself() {
     let bus = add.track().unwrap();
 
     assert!(
-        SetTrackOutput::new(bus, Some(bus)).apply(&mut project).is_err(),
+        SetTrackOutput::new(bus, Some(bus))
+            .apply(&mut project)
+            .is_err(),
         "a track routed into itself is a feedback loop the graph compiler \
          cannot build"
     );
@@ -482,11 +484,9 @@ fn a_send_can_be_made_and_taken_back() {
     let vox = add_vox.track().unwrap();
 
     assert!(project.mixer.tracks[vox].sends.is_empty());
-    round_trip(
-        Box::new(AddSend::new(vox, reverb)),
-        &mut project,
-        |p| format!("{}", p.mixer.tracks[vox].sends.len()),
-    );
+    round_trip(Box::new(AddSend::new(vox, reverb)), &mut project, |p| {
+        format!("{}", p.mixer.tracks[vox].sends.len())
+    });
 
     let sends = &project.mixer.tracks[vox].sends;
     assert_eq!(sends.len(), 1);
@@ -709,4 +709,174 @@ fn deleting_a_track_takes_the_sends_that_fed_it_with_it() {
         "undoing the deletion has to restore the send too"
     );
     assert_eq!(project.mixer.tracks[vox].sends[0].target, reverb);
+}
+
+// --------------------------------------------- a track that goes nowhere ---
+//
+// > *"but if i chose to not route it to master, i wont be hearing my own input
+// > but it will still be recording the audio clip so i can then assign it to a
+// > different mixer track"*
+//
+// `output: None` has always meant *the master*, which left no way to say
+// **nowhere**. That is a real destination and not an oversight: it is how a
+// track feeds a reverb through a send and nothing else, and — the reason it
+// was asked for — how you record an input without hearing it.
+
+#[test]
+fn a_track_starts_routed_and_can_be_switched_off_and_back_on() {
+    let mut project = project();
+    let mut add = AddMixerTrack::new("Mic");
+    add.apply(&mut project).unwrap();
+    let mic = add.track().unwrap();
+    assert!(
+        project.mixer.tracks[mic].output_on,
+        "a new track has to arrive routed \u{2014} an inaudible one looks broken"
+    );
+
+    round_trip(
+        Box::new(SetFlag::new(FlagTarget::TrackOutputOn(mic), false)),
+        &mut project,
+        |p| format!("{}", p.mixer.tracks[mic].output_on),
+    );
+    assert!(!project.mixer.tracks[mic].output_on);
+
+    SetFlag::new(FlagTarget::TrackOutputOn(mic), true)
+        .apply(&mut project)
+        .unwrap();
+    assert!(project.mixer.tracks[mic].output_on);
+}
+
+#[test]
+fn switching_the_output_off_keeps_the_destination_it_had() {
+    // So that turning it back on puts it back where it was, rather than at the
+    // master: the switch is about *whether*, not *where*.
+    let mut project = project();
+    let mut add_bus = AddMixerTrack::new("Drums");
+    add_bus.apply(&mut project).unwrap();
+    let bus = add_bus.track().unwrap();
+    let mut add_kick = AddMixerTrack::new("Kick");
+    add_kick.apply(&mut project).unwrap();
+    let kick = add_kick.track().unwrap();
+    SetTrackOutput::new(kick, Some(bus))
+        .apply(&mut project)
+        .unwrap();
+
+    SetFlag::new(FlagTarget::TrackOutputOn(kick), false)
+        .apply(&mut project)
+        .unwrap();
+    assert_eq!(project.mixer.tracks[kick].output, Some(bus));
+}
+
+#[test]
+fn the_master_cannot_be_switched_off() {
+    // Its output is the speakers. Switching it off is silence with no control
+    // anywhere that explains it.
+    let mut project = project();
+    let master = project.mixer.master.expect("a project has a master");
+    assert!(
+        SetFlag::new(FlagTarget::TrackOutputOn(master), false)
+            .apply(&mut project)
+            .is_err()
+    );
+}
+
+#[test]
+fn whether_a_track_reaches_the_master_is_a_question_the_mixer_answers() {
+    // What decides where a take is put so it can be heard, and what decides
+    // whether monitoring is audible. One walk, in the document, rather than
+    // the same walk written twice in two crates.
+    let mut project = project();
+    let master = project.mixer.master.expect("a project has a master");
+    let mut add_bus = AddMixerTrack::new("Drums");
+    add_bus.apply(&mut project).unwrap();
+    let bus = add_bus.track().unwrap();
+    let mut add_kick = AddMixerTrack::new("Kick");
+    add_kick.apply(&mut project).unwrap();
+    let kick = add_kick.track().unwrap();
+    SetTrackOutput::new(kick, Some(bus))
+        .apply(&mut project)
+        .unwrap();
+
+    assert!(
+        project.mixer.reaches_master(master),
+        "the master is the master"
+    );
+    assert!(project.mixer.reaches_master(bus));
+    assert!(
+        project.mixer.reaches_master(kick),
+        "through the bus it feeds"
+    );
+
+    // The bus switched off takes everything behind it with it — which is the
+    // case a test on the track alone would miss.
+    SetFlag::new(FlagTarget::TrackOutputOn(bus), false)
+        .apply(&mut project)
+        .unwrap();
+    assert!(!project.mixer.reaches_master(bus));
+    assert!(
+        !project.mixer.reaches_master(kick),
+        "a track feeding a bus that goes nowhere goes nowhere"
+    );
+
+    SetFlag::new(FlagTarget::TrackOutputOn(bus), true)
+        .apply(&mut project)
+        .unwrap();
+    assert!(project.mixer.reaches_master(kick));
+}
+
+#[test]
+fn a_send_is_not_an_output_and_switching_one_off_does_not_touch_the_other() {
+    // A track feeding a reverb through a send and nothing else is an ordinary
+    // console arrangement, and it is exactly what the switch is for.
+    let mut project = project();
+    let mut add_reverb = AddMixerTrack::new("Reverb");
+    add_reverb.apply(&mut project).unwrap();
+    let reverb = add_reverb.track().unwrap();
+    let mut add_vox = AddMixerTrack::new("Vox");
+    add_vox.apply(&mut project).unwrap();
+    let vox = add_vox.track().unwrap();
+    AddSend::new(vox, reverb).apply(&mut project).unwrap();
+
+    SetFlag::new(FlagTarget::TrackOutputOn(vox), false)
+        .apply(&mut project)
+        .unwrap();
+    assert_eq!(
+        project.mixer.tracks[vox].sends.len(),
+        1,
+        "the send went with it"
+    );
+    assert!(!project.mixer.has_cycle());
+}
+
+#[test]
+fn a_project_written_before_the_switch_existed_reads_as_routed() {
+    // The field is new; every project on disk predates it. Absent has to mean
+    // *on*, or opening yesterday's song plays silence.
+    let mut project = project();
+    let mut add = AddMixerTrack::new("Mic");
+    add.apply(&mut project).unwrap();
+    let mic = add.track().unwrap();
+
+    let mut json: serde_json::Value =
+        serde_json::to_value(&project).expect("a project must serialise");
+    let stripped = strip_key(&mut json, "output_on");
+    assert!(stripped, "nothing named output_on was written");
+    let reopened: Project = serde_json::from_value(json).expect("an older project must still open");
+    assert!(reopened.mixer.tracks[mic].output_on);
+}
+
+/// Removes every `key` anywhere in `value`, and says whether it found any —
+/// which is how a project from before a field is made out of one from after.
+fn strip_key(value: &mut serde_json::Value, key: &str) -> bool {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut found = map.remove(key).is_some();
+            for (_, child) in map.iter_mut() {
+                found |= strip_key(child, key);
+            }
+            found
+        }
+        serde_json::Value::Array(items) => items.iter_mut().any(|item| strip_key(item, key)),
+        _ => false,
+    }
 }

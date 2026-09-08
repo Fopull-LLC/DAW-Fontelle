@@ -61,6 +61,7 @@ fn clip(length: Tick, peaks: Vec<(f32, f32)>) -> ClipInfo {
             peaks,
             ..AudioPreview::default()
         },
+        prefab: None,
     }
 }
 

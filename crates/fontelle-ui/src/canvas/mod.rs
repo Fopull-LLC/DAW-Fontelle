@@ -2,77 +2,140 @@ mod audio_clip;
 mod automation;
 mod browser;
 mod effect;
+mod favorites;
+mod flopsynth;
 mod instrument;
 mod menu;
 mod mixer;
 mod piano_roll;
+mod prefabs;
+mod preset_bar;
 mod rack;
 mod timeline;
 mod tools;
 
 pub use audio_clip::{
-    AUDIO_ROWS, AudioEditorLayout, AudioField, audio_editor_hit, audio_editor_layout,
-    audio_row_label, audio_row_tip, audio_row_value, audio_row_value_at, nudge_audio_row,
+    AUDIO_ROWS, AudioControl, AudioEditorLayout, AudioField, MASTER_ROUTE, MAX_CLIP_PITCH,
+    MIN_CLIP_PITCH, audio_editor_hit, audio_editor_layout, audio_row_choices, audio_row_chosen,
+    audio_row_control, audio_row_control_rect, audio_row_fraction, audio_row_is_on,
+    audio_row_label, audio_row_neutral, audio_row_tip, audio_row_value, audio_row_value_at,
+    audio_slider_at, audio_slider_x_of, choose_audio_route, choose_audio_row, nudge_audio_row,
+    nudge_route, set_audio_row_fraction, toggle_audio_row,
 };
 pub use automation::{
-    AutomationBlock, CURVE_SHAPES, automation_block, automation_polyline,
-    block_tick_at, block_value_at, block_x_of_tick, block_y_of_value, curve_label, next_curve,
+    AutomationBlock, CURVE_SHAPES, automation_block, automation_polyline, block_tick_at,
+    block_value_at, block_x_of_tick, block_y_of_value, curve_label, next_curve,
 };
 pub use browser::{
-    BrowserHit, BrowserLayout, BrowserMode, browser_hit, browser_layout, browser_layout_for,
-    row_under, scrolled,
+    BrowserHit, BrowserLayout, BrowserMode, browser_file_share_at, browser_focus_step, browser_hit,
+    browser_layout, browser_layout_for, browser_layout_split, browser_row_carries, row_under,
+    scrolled,
 };
 pub use effect::{
-    EQ_MAX_DB, EQ_MAX_HZ, EQ_MIN_HZ, EffectMenu, EqField, EqHandle, EqHit, EqLayout, InsertInfo,
-    NO_KEY,
-    band_home_hz, effect_menu_hit, effect_menu_layout, effect_view, eq_band_curve_points,
-    eq_curve_points,
-    eq_field_caption, eq_freq_at, eq_gain_at, eq_hit, eq_layout, eq_layout_for, eq_nudge_freq,
-    eq_nudge_gain, eq_nudge_mix, eq_nudge_q, eq_x_of_freq, eq_y_of_gain, format_hz,
-    next_band_channel, next_band_type, SPECTRUM_BANDS, SPECTRUM_BOTTOM_DB, SPECTRUM_TOP_DB,
-    spectrum_band_hz, spectrum_points,
+    EQ_MAX_DB, EQ_MAX_HZ, EQ_MIN_HZ, EqField, EqHandle, EqHit, EqLayout, InsertInfo, NO_KEY,
+    SPECTRUM_BANDS, SPECTRUM_BOTTOM_DB, SPECTRUM_TOP_DB, band_home_hz, effect_params, effect_view,
+    eq_band_curve_points, eq_curve_points, eq_field_caption, eq_freq_at, eq_gain_at, eq_hit,
+    eq_layout, eq_layout_for, eq_nudge_freq, eq_nudge_gain, eq_nudge_mix, eq_nudge_q, eq_x_of_freq,
+    eq_y_of_gain, format_hz, next_band_channel, next_band_type, spectrum_band_hz, spectrum_points,
+};
+pub use favorites::{
+    EffectRow, FAVORITES_HEADING, InstrumentRow, PickerRow, RESCAN_PLUGINS, effect_menu_rows,
+    instrument_menu_rows, plugin_picker_rows,
+};
+pub use flopsynth::{
+    ADD_EFFECT, BADGE_H, BADGE_W, CARD_GAP, CARD_HEADER, CARD_PAD, CELL_FLOOR, CardLayout, EnvNode,
+    FLOP_CELL_H, FLOP_CELL_W, FLOP_KNOB, FlopsynthCard, FlopsynthHit, FlopsynthLayout,
+    FlopsynthPage, FlopsynthPicture, FlopsynthRoute, FlopsynthView, MATRIX_ROW, MatrixHit,
+    MatrixRow, NODE_GRAB, PICTURE_FLOOR, PICTURE_HEIGHT, PRESET_ROW, PresetBrowse, PresetShelf,
+    PresetsHit, PresetsLayout, RESPONSE_BOTTOM_DB, RESPONSE_TOP_DB, RING_BAND, RING_GAP,
+    TAB_HEIGHT, WIDE_CHOICE, badge_at, cell_span, control_at, env_curve_points, env_node_at,
+    env_node_drag, filter_xy_at, flop_knob_rect, flopsynth_hit, flopsynth_layout, flopsynth_tab_at,
+    lfo_curve_points, matrix_depth_at, matrix_hit, picture_control, preset_about, preset_page_rows,
+    preset_shelves, presets_hit, response_curve_points, ring_depth, ring_hit, wave_curve_points,
+    wave_position_at,
 };
 pub use instrument::{
-    CELL_HEIGHT, CELL_WIDTH, InstrumentGroup, InstrumentLayout, InstrumentParam, InstrumentView,
-    MIXER_GAIN, MIXER_PAN, PRESET_HEIGHT, PRESET_WIDTH, ParamKind, choice_index, instrument_hit,
-    instrument_key_hit, instrument_layout, instrument_preset_hit, knob_value,
-    next_value,
+    CELL_HEIGHT, CELL_WIDTH, CHIP_HEIGHT, CHIP_WIDTH, InstrumentGroup, InstrumentLayout,
+    InstrumentParam, InstrumentView, MIXER_GAIN, MIXER_PAN, ParamKind, choice_index,
+    instrument_hit, instrument_key_hit, instrument_layout, knob_value, next_value,
 };
 pub use menu::{
-    ContextMenu, MENU_TEXT_INSET, MenuEntry, context_menu_hit, context_menu_layout,
+    CHOSEN_MARK, ContextMenu, MENU_TEXT_INSET, MenuEntry, NAME_CARET, STAR_WIDTH, context_menu_hit,
+    context_menu_layout, context_menu_star_hit, instrument_menu_entries, menu_matches,
+    name_prompt_entries,
 };
+pub use preset_bar::{
+    NO_PRESET, PRESET_MENU_HEADING, PresetBarHit, PresetBarLayout, PresetBarView, PresetChoice,
+    PresetDevice, PresetMenuRow, USER_MARK, preset_bar_hit, preset_bar_layout, preset_bar_name,
+    preset_menu,
+};
+/// Where a zoom should land, given the grid it is zooming and where the
+/// pointer is.
+///
+/// > *"i dont like when i zoom in and out its based around where my playhead
+/// > is and i dont like that i want it to be based on my cursor for maximum
+/// > user control."*
+///
+/// **The pointer when it is over the grid, and the middle otherwise.** The
+/// wheel already worked this way; the toolbar buttons and the `+`/`-` keys
+/// took the middle unconditionally, which on a view scrolled to follow the
+/// playhead is the playhead near enough — which is exactly what that reads as.
+///
+/// The fallback is not a compromise: a button pressed with the pointer down on
+/// the toolbar has no meaningful anchor of its own, and the middle of what you
+/// are looking at is the one answer that does not throw the view somewhere you
+/// were not.
+///
+/// One function rather than the rule written at each of the three call sites,
+/// because three copies is somewhere for them to disagree — which is how two
+/// of them came to be wrong while the third was right.
+pub fn zoom_anchor(grid: crate::layout::Rect, cursor: (f32, f32)) -> f32 {
+    let (x, y) = cursor;
+    if grid.contains(x, y) {
+        x
+    } else {
+        grid.x + grid.width / 2.0
+    }
+}
+
 pub use mixer::{
     FADER_DETENT_PX, InsertRowLayout, MAX_FADER_DB, MAX_SEND_DB, MIN_FADER_DB, MIN_SEND_DB,
-    MixerHit, MixerLayout, MixerStripLayout, OPTIONS_WIDTH, OptionsHit, PAN_DETENT_PX,
-    STRIP_WIDTH, SendRowLayout, TrackOptionsLayout, fader_db_at, fader_y_of_db, format_gain_db,
-    format_mix, format_pan, format_send_db, insert_mix_dial, mixer_hit, mixer_layout, mixer_layout_for, pan_at,
-    pan_x_of, send_level_at, send_x_of_level, unity_fraction,
+    MixerHit, MixerKey, MixerLayout, MixerStripLayout, NamePress, OPTIONS_WIDTH, OptionsHit,
+    PAN_DETENT_PX, STRIP_WIDTH, SendRowLayout, TrackOptionsLayout, fader_db_at, fader_y_of_db,
+    format_gain_db, format_mix, format_pan, format_send_db, insert_mix_dial, mixer_hit, mixer_key,
+    mixer_layout, mixer_layout_for, name_press, pan_at, pan_x_of, send_level_at, send_x_of_level,
+    unity_fraction,
 };
 pub use piano_roll::{
-    Audition, DEFAULT_LANE_HEIGHT, DrawDrag, KEYBOARD_WIDTH, KeyStyle, LANE_PROPERTIES, LaneMenu,
-    LaneProperty, MAX_LANE_FRACTION, MIN_LANE_HEIGHT, Modifiers, MouseButton, NAMED_KEYBOARD_WIDTH,
-    NotePart, PianoRoll, RollControl, RollEdit, RollHit, RollLayout, RollView, SnapDivision, Tool,
-    ToolbarLayout, clamp_to_grid, edge_scroll, hit_test, key_to_y, keyboard_width, lane_baseline_y,
-    lane_caption, lane_height_at, lane_menu_hit, lane_menu_layout, lane_value_of_y,
-    key_row, keyboard_width_for, lane_y_of_value, note_at_tick, roll_layout,
-    roll_layout_with_keys, slice_cuts, snap_tick,
-    snap_unit, subdivision_unit, tick_to_x, toolbar_hit, toolbar_layout, tools_caption,
-    velocity_of_y,
-    velocity_to_y, visible_keys, visible_ticks, x_to_tick, y_to_key, zoom_x, zoom_y,
+    Audition, DEFAULT_LANE_HEIGHT, DrawDrag, EdgeScroll, KEYBOARD_WIDTH, KeyStyle, LANE_PROPERTIES,
+    LaneMenu, LaneProperty, MAX_LANE_FRACTION, MIN_LANE_HEIGHT, Modifiers, MouseButton,
+    NAMED_KEYBOARD_WIDTH, NotePart, PianoRoll, RollControl, RollEdit, RollHit, RollLayout,
+    RollView, SNAP_DIVISIONS, SnapDivision, Tool, ToolbarLayout, clamp_to_grid, edge_scroll_rate,
+    hit_test, key_row, key_to_y, keyboard_width, keyboard_width_for, lane_baseline_y, lane_caption,
+    lane_height_at, lane_menu_hit, lane_menu_layout, lane_value_of_y, lane_y_of_value,
+    legato_edits, note_at_tick, roll_layout, roll_layout_with_keys, roll_past_end, slice_cuts,
+    snap_caption, snap_tick, snap_unit, subdivision_unit, tick_to_x, toolbar_hit, toolbar_layout,
+    tools_caption, velocity_of_y, velocity_to_y, visible_keys, visible_ticks, x_to_tick, y_to_key,
+    zoom_x, zoom_y,
+};
+pub use prefabs::{
+    PrefabHit, PrefabLayout, PrefabRow, prefab_hit, prefab_layout,
+    scroll_to_show as prefab_scroll_to_show,
 };
 pub use rack::{
-    NEW_TRACK, RackHit, RackLayout, RackRow, RouteChoice, RouteMenu, rack_hit, rack_layout,
-    route_label, route_menu_hit, route_menu_layout, route_menu_layout_excluding, scroll_to_show,
+    NEW_TRACK, NO_OUTPUT, RackHit, RackLayout, RackRow, RouteChoice, RouteMenu, output_menu_layout,
+    rack_hit, rack_layout, route_label, route_menu_hit, route_menu_layout,
+    route_menu_layout_excluding, scroll_to_show, tab_at, tab_strip,
 };
 pub use timeline::{
-    ArrangeEdit, ClipPart, MAX_LANE_ROW, MAX_TIMELINE_PPT, MIN_LANE_ROW, MIN_TIMELINE_PPT,
-    Timeline, TimelineControl, TimelineHit, TimelineLayout, TimelineTool, TimelineToolbar,
-    CLIP_HEADER_PX, NOTE_PREVIEW_MIN_KEYS,
-    TimelineView, clip_bands, clip_cuts, clip_grip, clip_notes, clip_rect, clip_waveform, lane_to_y, loop_marks,
-    time_selection, timeline_hit,
-    timeline_layout, timeline_snap,
-    timeline_tick_to_x, timeline_toolbar_hit, timeline_toolbar_layout, timeline_visible_ticks,
-    timeline_x_to_tick, timeline_zoom_x, timeline_zoom_y, visible_lanes, y_to_lane,
+    ArrangeEdit, CLIP_HEADER_PX, ClipOverlap, ClipPart, FadeAnatomy, FadeEnd, MAX_LANE_ROW,
+    MAX_TIMELINE_PPT, MIN_LANE_ROW, MIN_TIMELINE_PPT, NOTE_PREVIEW_MIN_KEYS, Timeline,
+    TimelineControl, TimelineHit, TimelineLayout, TimelineTool, TimelineToolbar, TimelineView,
+    clip_bands, clip_cuts, clip_grip, clip_notes, clip_overlaps, clip_rect, clip_waveform,
+    content_fraction, content_ticks, fade_anatomy, fade_curve, lane_to_y, loop_marks,
+    time_selection, timeline_hit, timeline_layout, timeline_snap, timeline_tick_to_x,
+    timeline_toolbar_hit, timeline_toolbar_layout, timeline_visible_ticks, timeline_x_to_tick,
+    timeline_zoom_x, timeline_zoom_y, visible_lanes, y_to_lane,
 };
 pub use tools::{
     TOOL_MENU, TOOL_ROWS, ToolAction, ToolKind, ToolMenuItem, ToolRow, Tools, ToolsDialog,

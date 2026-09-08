@@ -53,6 +53,7 @@ fn note(start: Tick, length: Tick, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -772,4 +773,347 @@ fn alt_pastes_free_of_the_grid() {
         panic!("expected one insert, got {edits:?}");
     };
     assert_eq!(pasted[0].start, PPQN * 8 + 17, "Alt means exactly there");
+}
+
+// ------------------------------------------------- painting the lane (FL) ---
+//
+// Reported from using the window:
+//
+// > *"make the piano rolls velocity controls less like a slider you drag up
+// > and down and more like fls where youre kind of drawing it and the notes at
+// > the same part your mouse is at horizontally just match where youre
+// > clicking while youre clicking ... currently its hard to actually edit
+// > multiple notes velocities at once or in a long string or if notes are
+// > overlapping eachother or start at the same time."*
+//
+// Two changes, and they are one idea: the lane is a **canvas you draw on**
+// rather than one slider per note. A drag takes whatever bar it crosses,
+// including the ones it skipped over between two mouse reports; and a column
+// means every bar standing in it, not the topmost note covering that tick.
+
+/// The velocity written by an edit, and the notes it names.
+fn lane_edit(edits: &[RollEdit]) -> (Vec<NoteId>, i32) {
+    let [RollEdit::SetProperty { ids, value, .. }] = edits else {
+        panic!("expected one property edit, got {edits:?}")
+    };
+    (ids.clone(), *value)
+}
+
+fn lane() -> Rect {
+    Rect::new(grid().x, 500.0, grid().width, 80.0)
+}
+
+/// Every note an edit names, and what it was set to.
+fn lane_values(edits: &[RollEdit]) -> Vec<(NoteId, i32)> {
+    let mut out = Vec::new();
+    for edit in edits {
+        let RollEdit::SetProperty { ids, value, .. } = edit else {
+            panic!("expected property edits, got {edits:?}")
+        };
+        out.extend(ids.iter().map(|id| (*id, *value)));
+    }
+    out
+}
+
+fn value_of(edits: &[RollEdit], id: NoteId) -> i32 {
+    lane_values(edits)
+        .into_iter()
+        .find(|(hit, _)| *hit == id)
+        .unwrap_or_else(|| panic!("{id:?} was not written by {edits:?}"))
+        .1
+}
+
+#[test]
+fn dragging_across_the_lane_paints_every_bar_it_passes() {
+    let mut roll = roll();
+    let arena = notes(&[
+        (0, PPQN, 60),
+        (PPQN, PPQN, 62),
+        (PPQN * 2, PPQN, 64),
+        (PPQN * 3, PPQN, 65),
+    ]);
+    let ids: Vec<NoteId> = arena.keys().collect();
+    let (lane, grid) = (lane(), grid());
+
+    // Down on the first bar, near the bottom: quiet.
+    let quiet = lane.bottom() - 6.0;
+    let edits = roll.press_lane(tick_to_x(&roll.view, grid, 0), quiet, lane, grid, &arena);
+    let (hit, first) = lane_edit(&edits);
+    assert_eq!(hit, vec![ids[0]]);
+    assert!(first < 20, "the bottom of the lane is quiet, got {first}");
+
+    // Then straight across, still low. Each bar it reaches is written as it
+    // is reached — the stroke is a stroke, not four separate grabs.
+    for (n, id) in ids.iter().enumerate().skip(1) {
+        let x = tick_to_x(&roll.view, grid, PPQN * n as Tick);
+        let edits = roll.drag_lane(x, quiet, lane, grid, &arena);
+        assert!(
+            value_of(&edits, *id) < 20,
+            "step {n} of the stroke: {edits:?}"
+        );
+    }
+}
+
+#[test]
+fn a_fast_drag_paints_the_bars_it_jumped_over() {
+    // A mouse reports a hundred times a second and a hand crosses four bars
+    // in less than that, so a lane that only wrote the column it landed in
+    // would leave holes in a stroke that looked continuous.
+    //
+    // And each bar takes the height the pointer was **over it**, not the
+    // height it finished at: one report spanning a whole ramp has to come out
+    // as the ramp, or drawing quickly and drawing slowly are different tools.
+    let mut roll = roll();
+    let arena = notes(&[
+        (0, PPQN, 60),
+        (PPQN, PPQN, 62),
+        (PPQN * 2, PPQN, 64),
+        (PPQN * 3, PPQN, 65),
+    ]);
+    let ids: Vec<NoteId> = arena.keys().collect();
+    let (lane, grid) = (lane(), grid());
+
+    roll.press_lane(
+        tick_to_x(&roll.view, grid, 0),
+        lane.bottom() - 4.0,
+        lane,
+        grid,
+        &arena,
+    );
+    let far = tick_to_x(&roll.view, grid, PPQN * 3);
+    let edits = roll.drag_lane(far, lane.y + 4.0, lane, grid, &arena);
+    let written = lane_values(&edits);
+    for id in &ids[1..] {
+        assert!(
+            written.iter().any(|(hit, _)| hit == id),
+            "a bar was jumped over: {written:?}"
+        );
+    }
+    let ramp: Vec<i32> = ids.iter().map(|id| value_of(&edits, *id)).collect();
+    for pair in ramp.windows(2) {
+        assert!(
+            pair[1] > pair[0],
+            "the stroke rose, so the bars should: {ramp:?}"
+        );
+    }
+    assert!(ramp[0] < 20 && *ramp.last().unwrap() > 110, "{ramp:?}");
+}
+
+#[test]
+fn a_column_means_every_note_that_starts_in_it() {
+    // *"or if notes are overlapping eachother or start at the same time."* A
+    // chord's bars stand on top of one another in the lane, and picking the
+    // topmost meant three of the four notes could not be reached at all.
+    let mut roll = roll();
+    let arena = notes(&[(0, PPQN, 60), (0, PPQN, 64), (0, PPQN, 67)]);
+    let ids: Vec<NoteId> = arena.keys().collect();
+    let (lane, grid) = (lane(), grid());
+
+    let edits = roll.press_lane(
+        tick_to_x(&roll.view, grid, 0),
+        lane.y + 6.0,
+        lane,
+        grid,
+        &arena,
+    );
+    let (hit, value) = lane_edit(&edits);
+    assert_eq!(hit.len(), 3, "the whole chord, not the top note: {hit:?}");
+    for id in &ids {
+        assert!(hit.contains(id));
+    }
+    assert!(value > 110, "got {value}");
+}
+
+#[test]
+fn a_long_note_underneath_a_chord_does_not_come_with_it() {
+    // The pad is still reachable — its own bar is at its own start — but a
+    // stroke over the chord on top of it is about the chord. Picking by the
+    // note's *span* is what used to make a held pad answer for every column
+    // it covered.
+    let mut roll = roll();
+    let arena = notes(&[(0, PPQN * 8, 48), (PPQN * 4, PPQN, 72)]);
+    let ids: Vec<NoteId> = arena.keys().collect();
+    let (lane, grid) = (lane(), grid());
+
+    let edits = roll.press_lane(
+        tick_to_x(&roll.view, grid, PPQN * 4),
+        lane.y + 6.0,
+        lane,
+        grid,
+        &arena,
+    );
+    let (hit, _) = lane_edit(&edits);
+    assert_eq!(
+        hit,
+        vec![ids[1]],
+        "the short note's bar is the one in that column"
+    );
+
+    // And the pad, from its own bar.
+    let edits = roll.press_lane(
+        tick_to_x(&roll.view, grid, 0),
+        lane.y + 6.0,
+        lane,
+        grid,
+        &arena,
+    );
+    assert_eq!(lane_edit(&edits).0, vec![ids[0]]);
+}
+
+#[test]
+fn a_lone_held_note_is_still_grabbable_anywhere_along_it() {
+    // The forgiving half, and the reason the column rule has a fallback: with
+    // nothing else in the column, a bar you can only hit at the note's exact
+    // start is a bar nobody can hit.
+    let mut roll = roll();
+    let arena = notes(&[(0, PPQN * 4, 60)]);
+    let ids: Vec<NoteId> = arena.keys().collect();
+    let (lane, grid) = (lane(), grid());
+    let edits = roll.press_lane(
+        tick_to_x(&roll.view, grid, PPQN * 2),
+        lane.y + 6.0,
+        lane,
+        grid,
+        &arena,
+    );
+    assert_eq!(lane_edit(&edits).0, vec![ids[0]]);
+}
+
+#[test]
+fn grabbing_a_selected_bar_still_flattens_the_whole_selection() {
+    // The one gesture that does *not* follow the pointer: with a selection in
+    // hand, the lane sets the lot and keeps setting the lot however far the
+    // drag travels. That is what makes flattening a chord one gesture, and it
+    // is also the only way to aim a stroke at chosen notes rather than at
+    // everything under the brush.
+    let mut roll = roll();
+    let arena = notes(&[(0, PPQN, 60), (PPQN * 4, PPQN, 62), (PPQN * 8, PPQN, 64)]);
+    let ids: Vec<NoteId> = arena.keys().collect();
+    let (lane, grid) = (lane(), grid());
+    roll.select_all(&arena);
+
+    let edits = roll.press_lane(
+        tick_to_x(&roll.view, grid, 0),
+        lane.y + 6.0,
+        lane,
+        grid,
+        &arena,
+    );
+    assert_eq!(lane_edit(&edits).0.len(), 3);
+
+    // Dragged sideways over the second bar, and it is still all three.
+    let edits = roll.drag_lane(
+        tick_to_x(&roll.view, grid, PPQN * 4),
+        lane.bottom() - 6.0,
+        lane,
+        grid,
+        &arena,
+    );
+    let (hit, value) = lane_edit(&edits);
+    assert_eq!(hit.len(), 3, "the selection, not what the pointer crossed");
+    for id in &ids {
+        assert!(hit.contains(id));
+    }
+    assert!(value < 20);
+}
+
+#[test]
+fn a_stationary_pointer_asks_for_nothing_new_in_the_lane() {
+    // The same rule the fade drag keeps: a held mouse is not a hundred
+    // history entries a second.
+    let mut roll = roll();
+    let arena = notes(&[(0, PPQN, 60)]);
+    let (lane, grid) = (lane(), grid());
+    let x = tick_to_x(&roll.view, grid, 0);
+    assert!(
+        !roll
+            .press_lane(x, lane.y + 6.0, lane, grid, &arena)
+            .is_empty()
+    );
+    assert!(
+        roll.drag_lane(x, lane.y + 6.0, lane, grid, &arena)
+            .is_empty(),
+        "the pointer has not moved and the value has not changed"
+    );
+}
+
+#[test]
+fn a_stroke_over_empty_lane_writes_nothing_and_keeps_going() {
+    // A gap in a phrase is a gap in the stroke, not the end of it: the drag
+    // stays live so the bars after the rest are still painted.
+    let mut roll = roll();
+    let arena = notes(&[(0, PPQN, 60), (PPQN * 8, PPQN, 62)]);
+    let ids: Vec<NoteId> = arena.keys().collect();
+    let (lane, grid) = (lane(), grid());
+
+    roll.press_lane(
+        tick_to_x(&roll.view, grid, 0),
+        lane.y + 6.0,
+        lane,
+        grid,
+        &arena,
+    );
+    let gap = tick_to_x(&roll.view, grid, PPQN * 4);
+    assert!(
+        roll.drag_lane(gap, lane.y + 6.0, lane, grid, &arena)
+            .is_empty(),
+        "nothing is under the brush there"
+    );
+    let edits = roll.drag_lane(
+        tick_to_x(&roll.view, grid, PPQN * 8),
+        lane.bottom() - 6.0,
+        lane,
+        grid,
+        &arena,
+    );
+    assert_eq!(lane_edit(&edits).0, vec![ids[1]]);
+}
+
+// ------------------------------------------------------------ the snap chip ---
+
+#[test]
+fn the_snap_chip_lists_every_division_in_the_order_it_steps_them() {
+    // *"a lot of options that could be knobs or sliders or dropdowns for some
+    // reason are instead shown as buttons you click to toggle through a list
+    // of options in order iteratively."* The chip drops this list now; `S`
+    // still walks it, and the two have to be the same walk or the menu and
+    // the key disagree about what comes next.
+    use fontelle_ui::canvas::SNAP_DIVISIONS;
+    assert!(SNAP_DIVISIONS.len() >= 6);
+    for pair in SNAP_DIVISIONS.windows(2) {
+        assert_eq!(
+            pair[0].next(),
+            pair[1],
+            "{:?} does not step to {:?}",
+            pair[0],
+            pair[1]
+        );
+    }
+    assert_eq!(
+        SNAP_DIVISIONS.last().unwrap().next(),
+        SNAP_DIVISIONS[0],
+        "the cycle comes round"
+    );
+}
+
+#[test]
+fn the_snap_chip_wears_a_caret_because_it_drops_a_list() {
+    // The lane chip's rule, applied to the chip that got the same treatment:
+    // a control that opens something has to look like one.
+    let caption = fontelle_ui::canvas::snap_caption(SnapDivision::Step);
+    assert!(caption.starts_with(SnapDivision::Step.label()));
+    assert!(caption.ends_with('\u{25be}'), "no caret on {caption:?}");
+}
+
+#[test]
+fn the_snap_chip_still_has_room_for_what_it_says() {
+    // A caret costs width, and a chip whose caption is clipped is a chip
+    // nobody can read.
+    let bar = toolbar_layout(Rect::new(0.0, 0.0, 900.0, 26.0), &metrics());
+    let (_, chip) = bar
+        .items
+        .iter()
+        .find(|(control, _)| *control == RollControl::Snap)
+        .expect("the snap chip");
+    assert!(chip.width >= 60.0, "the snap chip is {} wide", chip.width);
 }

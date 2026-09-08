@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Soften"
+  },
+  "name": "standard",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Soften": {
+        "shelf_amount": 0.5,
+        "suppressor_amount": 0.5,
+        "transient_amount": 0.35,
+        "air_restore_amount": 0.4,
+        "mix": 1.0
+      }
+    }
+  }
+}

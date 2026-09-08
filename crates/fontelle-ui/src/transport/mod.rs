@@ -312,7 +312,7 @@ impl TransportHit {
             Self::Stop => "Stop, and go back to the marker \u{2014} Space",
             Self::ToggleLoop => "Loop between the markers",
             Self::ToggleRecord => "Arm recording: play, and keep the take",
-            Self::ToggleMetronome => "The click, on every beat",
+            Self::ToggleMetronome => "The click, on every beat \u{2014} Ctrl+M",
             Self::Tempo => "Tempo \u{2014} drag, or click and type",
             Self::Signature => "Beats in a bar \u{2014} drag to change",
             Self::Mode => {
@@ -772,6 +772,32 @@ pub fn record_menu_entries() -> Vec<crate::canvas::MenuEntry> {
     RecordMode::ALL
         .iter()
         .map(|mode| crate::canvas::MenuEntry::new(mode.label()))
+        .collect()
+}
+
+/// What is written in front of the mode that is on.
+pub const RECORD_MODE_MARK: &str = "\u{2713} ";
+
+/// The same menu, saying which mode is on — **and still offering it**.
+///
+/// Reported from using the window: *"i pressed the record button again but i
+/// was locked out of the audio option and i couldnt record again."* The menu
+/// used to grey out the current mode, which read as "this is the one" to the
+/// person who wrote it and as "you cannot have this" to the person recording
+/// a second take: after one audio take, *Audio* could never be chosen again,
+/// and choosing is how the button arms. So the current mode is marked, not
+/// disabled, and choosing it is the ordinary way to record the same thing
+/// twice.
+pub fn record_menu_entries_for(current: RecordMode) -> Vec<crate::canvas::MenuEntry> {
+    RecordMode::ALL
+        .iter()
+        .map(|mode| {
+            if *mode == current {
+                crate::canvas::MenuEntry::new(format!("{RECORD_MODE_MARK}{}", mode.label()))
+            } else {
+                crate::canvas::MenuEntry::new(mode.label())
+            }
+        })
         .collect()
 }
 

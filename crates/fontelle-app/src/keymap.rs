@@ -98,7 +98,16 @@ pub fn key_map(patch: &Patch, library: &SampleLibrary) -> KeyMap {
         let name = nameable
             .then(|| match layer.source {
                 Source::Sample { file } | Source::Sf2Zone { file, .. } => library.name(file),
-                Source::Oscillator(_) => None,
+                // A drum machine's hits are named by the kit rather than by a
+                // file, and that is the whole of what makes *"you can play
+                // them all in the piano roll all labeled"* true: a kit's
+                // layers are one-key zones, so this function already reads it
+                // as a key map — it only had to be told where the names are.
+                Source::Drum(_) => drum_name(layer),
+                // A Flopsynth layer plays every key, so it is never a key
+                // map and never nameable — the same answer an oscillator
+                // gets, and for the same reason.
+                Source::Oscillator(_) | Source::Synth(_) => None,
             })
             .flatten();
 
@@ -120,4 +129,22 @@ pub fn key_map(patch: &Patch, library: &SampleLibrary) -> KeyMap {
     }
 
     KeyMap::new(keys)
+}
+
+/// What a drum layer is called, by the key it sits on.
+///
+/// Read off [`fontelle_core::GM_DRUM_MAP`] rather than stored on the layer,
+/// because a `Source::Drum` carries a *sound* and not a name — the same
+/// separation every other source keeps, where the audio is the layer's and the
+/// label comes from beside it. A hit moved off the General MIDI map is
+/// unnamed rather than mislabelled: a wrong name on a row is worse than none.
+fn drum_name(layer: &fontelle_core::Layer) -> Option<&'static str> {
+    let (low, high) = layer.key_range;
+    if low != high {
+        return None;
+    }
+    fontelle_core::GM_DRUM_MAP
+        .iter()
+        .find(|slot| slot.key == low)
+        .map(|slot| slot.name)
 }

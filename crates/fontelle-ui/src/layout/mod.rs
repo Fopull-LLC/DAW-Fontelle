@@ -188,7 +188,34 @@ pub struct WindowLayout {
 }
 
 /// How tall the arrangement is until somebody drags it.
-pub const DEFAULT_TIMELINE_HEIGHT: f32 = 200.0;
+///
+/// Sized for the ten rows a new project starts with
+/// (`fontelle_app::STARTING_LANES`) rather than the three that 200 px showed.
+/// *"instead of only starting with 1 lane ... make it like 10 or something"*
+/// and *"decrease the default size of the mixer/piano roll area vs the
+/// arrangement which should get some space too"* are one change, not two: ten
+/// rows in two hundred pixels is three rows and a scrollbar.
+///
+/// **Not as tall as it could be, and that is the other half of the choice.**
+/// At the window the studio opens at (1280x720) the trade is measured:
+///
+/// | height | rows shown | keys of roll |
+/// |--------|-----------:|-------------:|
+/// | 200 (before) | 3 | 21 |
+/// | 300 (now)    | 6 | 14 |
+/// | 340          | 7 | 11 |
+///
+/// So this doubles the rows you can see and leaves the roll just over an
+/// octave, which is what *"decrease the mixer/piano roll area"* asked for
+/// rather than "shrink it to nothing". Two earlier attempts got it wrong in
+/// the same way and are worth not repeating: 430 and then 340 both left the
+/// roll **eleven keys**, and `MIN_EDITOR_HEIGHT` caught neither, because it
+/// bounds the panel *frame* while what had gone was the room inside it.
+///
+/// Still only a default. `Docks::timeline_height` is what the seam drags, and
+/// `clamp_timeline_height` keeps the editor above [`MIN_EDITOR_HEIGHT`] on a
+/// window too short to give both what they would like.
+pub const DEFAULT_TIMELINE_HEIGHT: f32 = 300.0;
 
 /// The shortest the arrangement may be dragged before it is simply hidden.
 pub const MIN_TIMELINE_HEIGHT: f32 = 80.0;
@@ -546,6 +573,9 @@ impl EditorKind {
             // before you can read it. Narrow for the same reason a plugin
             // editor is: it goes beside the thing it is editing.
             Self::Instrument => (620, 760),
+            // Flopsynth is not this shape and cannot be — see
+            // `flopsynth_default_size`, which is what the window actually
+            // opens at when the channel is one.
             // A curve needs width far more than it needs height.
             Self::Effect => (720, 420),
             // A column of rows with a waveform over it. Narrow, so it sits
@@ -562,6 +592,23 @@ impl EditorKind {
     }
 }
 
+/// The size Flopsynth's window opens at (`docs/flopsynth-plan.md` §8.8).
+///
+/// **Wide**, where the knob grid is tall: the grid is a column of sections and
+/// this is a picture of a signal path, three oscillators across the top. Ty
+/// asked for the recommendation and this is it, sized for a 1920-wide screen
+/// beside the arrangement.
+///
+/// Its own function rather than another arm of
+/// [`EditorKind::default_size`], because the kind is `Instrument` either way:
+/// what decides is *which instrument is on the channel*, which the layout
+/// module cannot see and the window can.
+pub const FLOPSYNTH_SIZE: (u32, u32) = (1180, 740);
+
+/// And the smallest it may be dragged to. Below this the cards have lost their
+/// air and their pictures and there is nothing left to give (§8.8).
+pub const FLOPSYNTH_MINIMUM: (u32, u32) = (980, 620);
+
 /// The insides of a floating editor window: a header carrying its name, and
 /// the body the panel is drawn in.
 ///
@@ -569,7 +616,10 @@ impl EditorKind {
 /// these windows are the ones that were drawn into the editor column, and they
 /// take a body rectangle either way.
 pub fn editor_window_layout(width: f32, height: f32, metrics: &Metrics) -> PanelLayout {
-    panel(Rect::new(0.0, 0.0, width.max(0.0), height.max(0.0)), metrics)
+    panel(
+        Rect::new(0.0, 0.0, width.max(0.0), height.max(0.0)),
+        metrics,
+    )
 }
 
 /// Where the editor column's tabs are, in its panel header.
@@ -606,6 +656,21 @@ pub fn editor_tabs(header: Rect, metrics: &Metrics) -> EditorTabs {
     let mixer = take();
     let roll = take();
     EditorTabs { roll, mixer }
+}
+
+/// Which tab a number key shows, if any.
+///
+/// *"i want to easily be able to swap between piano roll and mixer by
+/// pressing 1 and 2 that would be fast and very nice."* The number row used
+/// to pick tools — a second binding for keys that already had FL's letters —
+/// and went unused for exactly that reason. The two views that are genuinely
+/// *the document* get the two keys nearest the hand instead.
+pub fn editor_tab_for_key(key: &str) -> Option<EditorTab> {
+    match key {
+        "1" => Some(EditorTab::Roll),
+        "2" => Some(EditorTab::Mixer),
+        _ => None,
+    }
 }
 
 /// Which tab is under the pointer.

@@ -13,7 +13,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use fontelle_app::{RealiseOptions, SampleLibrary, Session, blank_project};
+use fontelle_app::{RealiseOptions, SampleLibrary, Session};
 use fontelle_assets::fixtures::{FscNoteSpec, build_fsc};
 use fontelle_engine::{graph_channel, timeline_channel};
 use fontelle_model::ClipSource;
@@ -35,7 +35,7 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 fn a_session(dir: &Path) -> Session {
-    let project = blank_project(8, 120.0, SR);
+    let project = common::a_project_with_a_clip(8, 120.0, SR);
     let clip = Session::first_clip(&project).expect("a blank project has one clip");
     let channel_nodes = fontelle_app::channel_nodes(&project);
     let (publisher, _timeline) = timeline_channel(CompiledTimeline::empty());
@@ -183,7 +183,11 @@ fn a_folder_already_in_the_settings_file_is_read_without_anything_being_changed(
     // The only thing the window does: open the tab.
     session.set_browser_mode(BrowserMode::Import);
 
-    let names: Vec<String> = session.import_files().iter().map(|e| e.name.clone()).collect();
+    let names: Vec<String> = session
+        .import_files()
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
     assert_eq!(names, vec!["Ready"], "the configured folder was never read");
     assert!(
         !session.import_status().contains("sf2"),
@@ -199,7 +203,11 @@ fn a_folder_already_in_the_settings_file_is_read_without_anything_being_changed(
 fn the_import_list_shows_the_files_of_the_kind_it_is_on_and_no_others() {
     let dir = scratch("mixed");
     std::fs::write(dir.join("Song.mid"), build_midi(&[("Bass", 0, &[36])])).unwrap();
-    std::fs::write(dir.join("Chords.fsc"), build_fsc("20.9.0", 96, &[a_fsc_note(0, 60)])).unwrap();
+    std::fs::write(
+        dir.join("Chords.fsc"),
+        build_fsc("20.9.0", 96, &[a_fsc_note(0, 60)]),
+    )
+    .unwrap();
     std::fs::write(dir.join("Notes.txt"), b"not a music file").unwrap();
 
     let mut session = a_session(&dir);
@@ -208,11 +216,19 @@ fn the_import_list_shows_the_files_of_the_kind_it_is_on_and_no_others() {
     // each tab must show only its own.
     session.set_import_folder(FolderKind::Scores, Some(dir.clone()));
     use_folder(&mut session, FolderKind::Midi, &dir);
-    let names: Vec<String> = session.import_files().iter().map(|e| e.name.clone()).collect();
+    let names: Vec<String> = session
+        .import_files()
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
     assert_eq!(names, vec!["Song"], "only the .mid, and by its stem");
 
     session.set_import_kind(FolderKind::Scores);
-    let names: Vec<String> = session.import_files().iter().map(|e| e.name.clone()).collect();
+    let names: Vec<String> = session
+        .import_files()
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
     assert_eq!(names, vec!["Chords"]);
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -223,14 +239,21 @@ fn switching_to_a_kind_with_no_folder_says_so_rather_than_showing_the_other_ones
     // would list `.mid` files under a tab that says Scores.
     let dir = scratch("one-of-two-folders");
     std::fs::write(dir.join("Song.mid"), build_midi(&[("Bass", 0, &[36])])).unwrap();
-    std::fs::write(dir.join("Chords.fsc"), build_fsc("20.9.0", 96, &[a_fsc_note(0, 60)])).unwrap();
+    std::fs::write(
+        dir.join("Chords.fsc"),
+        build_fsc("20.9.0", 96, &[a_fsc_note(0, 60)]),
+    )
+    .unwrap();
 
     let mut session = a_session(&dir);
     use_folder(&mut session, FolderKind::Midi, &dir);
     assert_eq!(session.import_files().len(), 1);
 
     session.set_import_kind(FolderKind::Scores);
-    assert!(session.import_files().is_empty(), "it borrowed the other folder");
+    assert!(
+        session.import_files().is_empty(),
+        "it borrowed the other folder"
+    );
     assert!(
         session.import_status().to_lowercase().contains("settings"),
         "got {:?}",
@@ -268,11 +291,18 @@ fn the_import_list_walks_into_subdirectories() {
     // Into it, and into the one inside that.
     session.open_import(row_named(&session, "Drums")).unwrap();
     session.open_import(row_named(&session, "Fills")).unwrap();
-    let names: Vec<String> = session.import_files().iter().map(|e| e.name.clone()).collect();
+    let names: Vec<String> = session
+        .import_files()
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
     assert!(names.contains(&"Roll".to_string()), "got {names:?}");
     // And back out, which is the row that makes a tree navigable rather than
     // a one-way trip.
-    assert!(names.contains(&"..".to_string()), "no way back up: {names:?}");
+    assert!(
+        names.contains(&"..".to_string()),
+        "no way back up: {names:?}"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -289,7 +319,11 @@ fn the_search_looks_across_the_whole_folder_tree() {
     let mut session = a_session(&dir);
     use_folder(&mut session, FolderKind::Midi, &dir);
     session.set_query("fanf");
-    let names: Vec<String> = session.import_files().iter().map(|e| e.name.clone()).collect();
+    let names: Vec<String> = session
+        .import_files()
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
     assert_eq!(names, vec!["Fanfare"], "found from the top of the tree");
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -307,7 +341,11 @@ fn the_import_search_is_not_the_soundfont_search() {
     assert_eq!(session.query(), "", "the import box started empty");
     session.set_query("drums");
     session.set_browser_mode(BrowserMode::Sounds);
-    assert_eq!(session.query(), "piano", "and the soundfont box kept its own");
+    assert_eq!(
+        session.query(),
+        "piano",
+        "and the soundfont box kept its own"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -402,14 +440,25 @@ fn answering_all_brings_every_part_in_under_its_own_name() {
 
     let mut session = a_session(&dir);
     use_folder(&mut session, FolderKind::Midi, &dir);
+    // Whatever the document started with — a blank project's row count is a
+    // default that has moved once already (`fontelle_app::STARTING_LANES`) and
+    // is not what this test is about. The invariant is **a row per part**.
+    let lanes_before = session.lanes().len();
     session.open_import(row_named(&session, "Song")).unwrap();
     session.answer_import(0);
 
     let names = channel_names(&session);
     assert!(names.contains(&"Bass".to_string()), "got {names:?}");
     assert!(names.contains(&"Lead".to_string()), "got {names:?}");
-    assert!(session.import_prompt().is_none(), "the question is answered");
-    assert_eq!(session.lanes().len(), 3, "a row each, plus the one that was there");
+    assert!(
+        session.import_prompt().is_none(),
+        "the question is answered"
+    );
+    assert_eq!(
+        session.lanes().len(),
+        lanes_before + 2,
+        "a row each for Bass and Lead, on top of what was there"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -474,7 +523,11 @@ fn undoing_an_import_takes_the_whole_file_back_out_in_one_press() {
     assert_ne!(channel_names(&session), before);
 
     session.undo();
-    assert_eq!(channel_names(&session), before, "one press took it all back");
+    assert_eq!(
+        channel_names(&session),
+        before,
+        "one press took it all back"
+    );
     assert_eq!(session.lanes().len(), lanes_before);
     std::fs::remove_dir_all(&dir).ok();
 }

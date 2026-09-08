@@ -25,6 +25,8 @@
 //!   feature that makes a large collection usable, and a search that only
 //!   looked in the folder you happen to be standing in would not be it.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 
 use fontelle_app::bank::{BankRow, SoundfontBank};
@@ -213,9 +215,7 @@ fn a_folder_row_says_how_many_soundfonts_are_under_it() {
         bank.rows()
             .iter()
             .find_map(|row| match row {
-                BankRow::Folder {
-                    name, files, ..
-                } if name == want => Some(*files),
+                BankRow::Folder { name, files, .. } if name == want => Some(*files),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("no folder {want}"))
@@ -348,7 +348,7 @@ mod through_the_session {
     //! The same thing again, driven the way the window drives it — one list of
     //! rows and one "activate row N", because that is all a panel has.
 
-    use fontelle_app::{RealiseOptions, SampleLibrary, Session, blank_project};
+    use fontelle_app::{RealiseOptions, SampleLibrary, Session};
     use fontelle_engine::timeline_channel;
     use fontelle_types::CompiledTimeline;
     use fontelle_ui::document::{LibraryKind, StudioHost};
@@ -358,7 +358,7 @@ mod through_the_session {
     const SR: u32 = 48_000;
 
     fn studio(dir: &std::path::Path) -> Session {
-        let project = blank_project(8, 120.0, SR);
+        let project = crate::common::a_project_with_a_clip(8, 120.0, SR);
         let clip = Session::first_clip(&project).expect("a blank project has one clip");
         let channel_nodes = fontelle_app::channel_nodes(&project);
         let (publisher, _timeline) = timeline_channel(CompiledTimeline::empty());
@@ -383,12 +383,40 @@ mod through_the_session {
         session
     }
 
+    /// The **bank's** rows: the list the panel draws, without the built-in
+    /// instrument's row at the top of it.
+    ///
+    /// Flopsynth is in this list because everything a hundred and twenty-eight
+    /// presets need is already here — a search, a virtualised draw, headings,
+    /// a click that puts one on a channel. It is not a soundfont, though, and
+    /// every test in this module is about soundfonts, so they all ask for the
+    /// bank rather than for the list.
     fn rows(session: &Session) -> Vec<(String, LibraryKind)> {
+        bank_rows(session)
+    }
+
+    fn bank_rows(session: &Session) -> Vec<(String, LibraryKind)> {
         session
             .library_files()
             .into_iter()
+            .skip(built_in_rows(session))
             .map(|e| (e.name, e.kind))
             .collect()
+    }
+
+    /// How many rows in front of the bank belong to the built-in instruments.
+    fn built_in_rows(session: &Session) -> usize {
+        usize::from(
+            session
+                .library_files()
+                .first()
+                .is_some_and(|first| first.name == "Flopsynth"),
+        )
+    }
+
+    /// A row index into the bank, as an index into the list the panel draws.
+    fn bank_row(session: &Session, index: usize) -> usize {
+        index + built_in_rows(session)
     }
 
     #[test]
@@ -414,7 +442,9 @@ mod through_the_session {
         let dir = a_collection("session-open");
         let mut session = studio(&dir);
 
-        session.open_file(0).expect("Drums is a folder");
+        session
+            .open_file(bank_row(&session, 0))
+            .expect("Drums is a folder");
         assert_eq!(
             rows(&session),
             vec![
@@ -441,8 +471,9 @@ mod through_the_session {
         let dir = a_collection("session-detail");
         let session = studio(&dir);
         let entries = session.library_files();
-        assert_eq!(entries[0].name, "Drums");
-        assert_eq!(entries[0].detail, "2 sf2");
+        let first = built_in_rows(&session);
+        assert_eq!(entries[first].name, "Drums");
+        assert_eq!(entries[first].detail, "2 sf2");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -452,7 +483,9 @@ mod through_the_session {
         // other one must not lose where you were standing.
         let dir = a_collection("session-search");
         let mut session = studio(&dir);
-        session.open_file(0).expect("into Drums");
+        session
+            .open_file(bank_row(&session, 0))
+            .expect("into Drums");
 
         session.set_query("vio");
         let found = rows(&session);
@@ -462,6 +495,8 @@ mod through_the_session {
             "a search reaches outside the folder you are in"
         );
         assert_eq!(
+            // A search lists soundfonts wherever they are, and the built-in
+            // instrument is not one — so its row is not in a search's results.
             session.library_files()[0].detail,
             "Orchestral/Strings",
             "and says where it found it"
@@ -484,8 +519,9 @@ mod through_the_session {
         let dir = a_collection("session-highlight");
         let mut session = studio(&dir);
 
-        // The loose piano is the third row at the top level.
-        session.open_file(2).ok();
+        // The loose piano is the third row of the bank.
+        let at = bank_row(&session, 2);
+        session.open_file(at).ok();
         let before = session.selected_file();
         assert!(before.is_some(), "something is open");
 
@@ -513,7 +549,9 @@ mod through_the_session {
             session.library_status()
         );
 
-        session.open_file(0).expect("into Drums");
+        session
+            .open_file(bank_row(&session, 0))
+            .expect("into Drums");
         assert!(
             session.library_status().contains("Drums"),
             "a browser you can walk into has to say where you are: {}",
@@ -539,12 +577,14 @@ mod through_the_session {
         let mut session = studio(&dir);
         assert_eq!(session.library_count(), 5, "every soundfont under the root");
         assert_eq!(
-            session.library_files().len(),
+            bank_rows(&session).len(),
             3,
             "and three rows in front of you: two folders and a file"
         );
 
-        session.open_file(0).expect("into Drums");
+        session
+            .open_file(bank_row(&session, 0))
+            .expect("into Drums");
         assert_eq!(
             session.library_count(),
             5,
@@ -558,7 +598,22 @@ mod through_the_session {
     fn a_bank_with_no_folder_configured_still_has_something_to_say() {
         let dir = scratch("session-empty");
         let session = studio(&dir);
-        assert!(session.library_files().is_empty());
+        assert!(
+            bank_rows(&session).is_empty(),
+            "there are no soundfonts, because there is no folder to have any in"
+        );
+        // **And there is still something to play.** The built-in instrument's
+        // row needs no folder and no files, so a fresh install with nothing
+        // configured is not an empty screen — which is the whole of what this
+        // test is named for.
+        assert_eq!(
+            session
+                .library_files()
+                .first()
+                .map(|row| row.name.clone())
+                .unwrap_or_default(),
+            "Flopsynth"
+        );
         assert!(!session.library_status().is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -586,7 +641,7 @@ mod through_the_session {
 // which is the same place the graph's are freed.
 
 mod presets {
-    use fontelle_app::{RealiseOptions, SampleLibrary, Session, blank_project};
+    use fontelle_app::{RealiseOptions, SampleLibrary, Session};
     use fontelle_engine::timeline_channel;
     use fontelle_types::CompiledTimeline;
     use fontelle_ui::document::{LibraryKind, StudioHost};
@@ -594,6 +649,24 @@ mod presets {
     use super::scratch;
 
     const SR: u32 = 48_000;
+
+    /// Opens soundfont `index` of the **bank**, whatever row the panel is
+    /// drawing it at.
+    ///
+    /// The Sounds tab carries the built-in instrument's row above the bank —
+    /// see `through_the_session::rows` — and these tests are about soundfonts,
+    /// so they say which soundfont rather than which row.
+    fn open_soundfont(session: &mut Session, index: usize) {
+        let offset = usize::from(
+            session
+                .library_files()
+                .first()
+                .is_some_and(|first| first.name == "Flopsynth"),
+        );
+        session
+            .open_file(index + offset)
+            .expect("that soundfont opens");
+    }
 
     /// Two soundfonts, neither of them *named* after anything inside it.
     fn a_library(name: &str) -> std::path::PathBuf {
@@ -613,7 +686,7 @@ mod presets {
     }
 
     fn studio(dir: &std::path::Path) -> Session {
-        let project = blank_project(8, 120.0, SR);
+        let project = crate::common::a_project_with_a_clip(8, 120.0, SR);
         let clip = Session::first_clip(&project).expect("a blank project has one clip");
         let channel_nodes = fontelle_app::channel_nodes(&project);
         let (publisher, _timeline) = timeline_channel(CompiledTimeline::empty());
@@ -671,7 +744,9 @@ mod presets {
 
         let found = rows(&session);
         assert!(
-            found.iter().any(|(name, kind)| name == "Tuba" && *kind == LibraryKind::File),
+            found
+                .iter()
+                .any(|(name, kind)| name == "Tuba" && *kind == LibraryKind::File),
             "the preset inside Brass Pack was not found: {found:?}"
         );
         assert!(
@@ -806,7 +881,7 @@ mod presets {
     fn clearing_the_search_goes_back_to_this_soundfonts_presets() {
         let dir = a_library("preset-clear");
         let mut session = studio(&dir);
-        session.open_file(0).expect("Brass Pack opens");
+        open_soundfont(&mut session, 0);
         assert_eq!(
             rows(&session),
             vec![

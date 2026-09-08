@@ -46,10 +46,13 @@ fn projects(count: usize) -> fontelle_ui::canvas::BrowserLayout {
 #[test]
 fn the_panel_has_a_tab_for_each_mode_and_they_do_not_overlap() {
     let l = sounds(4, 4);
-    assert!(!l.sounds_tab.is_empty());
-    assert!(!l.projects_tab.is_empty());
-    assert!(!l.sounds_tab.intersects(&l.projects_tab));
-    for tab in [l.sounds_tab, l.projects_tab] {
+    assert!(!l.tab(BrowserMode::Sounds).is_empty());
+    assert!(!l.tab(BrowserMode::Projects).is_empty());
+    assert!(
+        !l.tab(BrowserMode::Sounds)
+            .intersects(&l.tab(BrowserMode::Projects))
+    );
+    for tab in [l.tab(BrowserMode::Sounds), l.tab(BrowserMode::Projects)] {
         assert_eq!(tab.intersection(&l.body), tab, "{tab:?} escapes the panel");
     }
 }
@@ -58,9 +61,9 @@ fn the_panel_has_a_tab_for_each_mode_and_they_do_not_overlap() {
 fn clicking_a_tab_asks_for_that_mode() {
     let l = sounds(4, 4);
     let mid = |r: Rect| (r.x + r.width / 2.0, r.y + r.height / 2.0);
-    let (x, y) = mid(l.sounds_tab);
+    let (x, y) = mid(l.tab(BrowserMode::Sounds));
     assert_eq!(browser_hit(&l, x, y), BrowserHit::Mode(BrowserMode::Sounds));
-    let (x, y) = mid(l.projects_tab);
+    let (x, y) = mid(l.tab(BrowserMode::Projects));
     assert_eq!(
         browser_hit(&l, x, y),
         BrowserHit::Mode(BrowserMode::Projects)
@@ -72,7 +75,7 @@ fn the_tabs_sit_above_the_search_box_and_not_on_it() {
     // The search filters whichever list is showing, so it belongs *under* the
     // switch that decides which list that is.
     let l = sounds(4, 4);
-    assert!(l.sounds_tab.bottom() <= l.search.y + 0.001);
+    assert!(l.tab(BrowserMode::Sounds).bottom() <= l.search.y + 0.001);
 }
 
 // ------------------------------------------------------- the projects list ---
@@ -146,8 +149,8 @@ fn a_panel_too_small_for_any_of_it_yields_empty_rects_never_negative_ones() {
         for mode in [BrowserMode::Sounds, BrowserMode::Projects] {
             let l = browser_layout_for(Rect::new(0.0, 0.0, w, h), &metrics(), mode, 8, 8, 0, 0);
             for r in [
-                l.sounds_tab,
-                l.projects_tab,
+                l.tab(BrowserMode::Sounds),
+                l.tab(BrowserMode::Projects),
                 l.search,
                 l.files,
                 l.presets,
@@ -175,8 +178,8 @@ fn nothing_in_the_footer_is_drawn_on_top_of_anything_else() {
     // already wrong once and the first is what a person actually sees.
     let l = projects(3);
     let named = [
-        ("sounds tab", l.sounds_tab),
-        ("projects tab", l.projects_tab),
+        ("sounds tab", l.tab(BrowserMode::Sounds)),
+        ("projects tab", l.tab(BrowserMode::Projects)),
         ("search", l.search),
         ("list", l.files),
         ("status", l.status),

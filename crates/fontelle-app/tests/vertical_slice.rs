@@ -40,6 +40,7 @@ fn synthetic_patch(store: &mut SampleStore) -> Patch {
         cutoff_hz: 20_000.0,
         resonance: 0.0,
         enabled: false,
+        ..Default::default()
     };
     let instant = EnvelopeConfig {
         delay_s: 0.0,
@@ -49,6 +50,7 @@ fn synthetic_patch(store: &mut SampleStore) -> Patch {
         sustain_level: 1.0,
         release_s: 0.01,
         curve: EnvelopeCurve::Linear,
+        ..Default::default()
     };
     Patch {
         layers: vec![Layer {
@@ -71,6 +73,7 @@ fn synthetic_patch(store: &mut SampleStore) -> Patch {
         lfos: Vec::new(),
         mod_matrix: ModMatrix::default(),
         voice_config: VoiceConfig::default(),
+        ..Default::default()
     }
 }
 
@@ -102,10 +105,13 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
 
     let track = project.mixer.tracks.insert(MixerTrack::new("ch"));
     let channel_id = project.channels.insert(Channel {
+        preset: None,
+        instrument: None,
         name: "ch".into(),
         color: [0, 0, 0, 255],
         mixer_track: Some(track),
         patch_data: None,
+        plugin: None,
         pan: 0.0,
         muted: false,
         soloed: false,
@@ -134,6 +140,7 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     });
     project.clips.insert(Clip {
         lane: lane_id,

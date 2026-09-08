@@ -29,6 +29,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Likewise: what a star on a menu row remembers.
+pub use fontelle_types::Favorite;
 /// Re-exported so the settings file's own vocabulary is in one place, while
 /// the window — which may not depend on this crate — can still name it.
 pub use fontelle_types::FolderKind;
@@ -38,10 +40,11 @@ pub use fontelle_types::FolderKind;
 /// do with either.
 ///
 /// Two since the settings file grew [`MidiInputSettings`], three since it grew
-/// the two import folders. Every added field carries `#[serde(default)]`, so
-/// an older file still reads — the bump is so that an *older build* handed a
-/// newer file says "upgrade Fontelle" rather than "unknown field `midi_dir`".
-pub const SETTINGS_FORMAT_VERSION: u32 = 3;
+/// the two import folders, four since it grew the favourites. Every added
+/// field carries `#[serde(default)]`, so an older file still reads — the bump
+/// is so that an *older build* handed a newer file says "upgrade Fontelle"
+/// rather than "unknown field `midi_dir`".
+pub const SETTINGS_FORMAT_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -84,6 +87,40 @@ pub struct Settings {
     /// Fontelle touches nothing the user has not named.
     #[serde(default)]
     pub audio_dir: Option<PathBuf>,
+    /// Where the user's own presets are kept (`docs/flopsynth-plan.md` §P.3).
+    ///
+    /// `None` is not "ask" here, unlike the three above, and the difference is
+    /// which way the files move. Those three name a folder somebody *already
+    /// filled* and Fontelle would be guessing to pick one; this is a folder
+    /// Fontelle **writes**, and a program that cannot say where "Save as…"
+    /// puts a file has no Save as…. So `None` means
+    /// [`default_preset_dir`](Settings::default_preset_dir) — Fontelle's own
+    /// data directory, which INVARIANT 10 already lets it own, the same
+    /// position the soundfont bank's default takes.
+    #[serde(default)]
+    pub preset_dir: Option<PathBuf>,
+    /// Folders to look in for plugins, **beyond** the ones the format
+    /// nominates (TDD §8.4).
+    ///
+    /// The standard locations are searched without being listed here — CLAP
+    /// names them, and a host that made somebody type them in would be asking
+    /// them to know where their own installer put things. This is for the
+    /// other case: a collection on a second disk, a build directory, a Wine
+    /// prefix. The same reason `score_dir` exists.
+    ///
+    /// `default` so a settings file written before plugins could be hosted is
+    /// not a broken one.
+    #[serde(default)]
+    pub plugin_dirs: Vec<PathBuf>,
+    /// What has been starred: the effects, instruments and plugins the menus
+    /// put first and draw lit. See [`fontelle_types::Favorite`] for why this
+    /// is here and not in the project.
+    ///
+    /// In the order they were starred. A list rather than a set so the file
+    /// is stable under a text editor, and short enough that it does not
+    /// matter — see [`Settings::toggle_favorite`], which keeps it one of each.
+    #[serde(default)]
+    pub favorites: Vec<Favorite>,
 }
 
 impl Default for Settings {
@@ -97,6 +134,33 @@ impl Default for Settings {
             midi_dir: None,
             score_dir: None,
             audio_dir: None,
+            preset_dir: None,
+            plugin_dirs: Vec::new(),
+            favorites: Vec::new(),
+        }
+    }
+}
+
+impl Settings {
+    /// Whether `favorite` has been starred.
+    pub fn is_favorite(&self, favorite: &Favorite) -> bool {
+        self.favorites.contains(favorite)
+    }
+
+    /// Stars `favorite` if it is not, and un-stars it if it is. Whether it is
+    /// a favourite **afterwards** — what the status line says.
+    ///
+    /// A toggle rather than an add and a remove, because a star is one
+    /// control pressed one way: the same press on the same star takes it back
+    /// off. Every copy goes when it goes, so a list that somehow held two of
+    /// something cannot leave one behind.
+    pub fn toggle_favorite(&mut self, favorite: Favorite) -> bool {
+        if self.is_favorite(&favorite) {
+            self.favorites.retain(|f| *f != favorite);
+            false
+        } else {
+            self.favorites.push(favorite);
+            true
         }
     }
 }
@@ -185,6 +249,18 @@ impl VelocityCurveSetting {
 /// one shape where those cannot drift apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingRow {
+    /// Points Fontelle at a folder of plugins, on top of the ones CLAP
+    /// nominates (TDD §8.4). A button: a click opens a picker.
+    PluginFolder,
+    /// Where "Save as…" puts a preset, and where the bank reads the user's
+    /// own back from (§P.3).
+    PresetFolder,
+    /// Walks the plugin folders again. Also a button.
+    ///
+    /// Its own row because a scan `dlopen`s every bundle it finds, so it does
+    /// not happen on its own — and because installing a plugin while Fontelle
+    /// is open is the ordinary case, not an unusual one.
+    RescanPlugins,
     /// A section title. Nothing to set, and a click does nothing — it is what
     /// says which of these settings belong together. It is deliberately *not*
     /// the only thing saying so: see [`SettingRow::Transpose`]'s label.
@@ -206,7 +282,7 @@ pub enum SettingRow {
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 11] = [
+pub const SETTING_ROWS: [SettingRow; 16] = [
     SettingRow::Heading("MIDI input"),
     SettingRow::VelocityCurve,
     SettingRow::FixedVelocity,
@@ -221,6 +297,16 @@ pub const SETTING_ROWS: [SettingRow; 11] = [
     SettingRow::Folder(FolderKind::Midi),
     SettingRow::Folder(FolderKind::Scores),
     SettingRow::Folder(FolderKind::Audio),
+    // Its own heading: a plugin folder is not somewhere files are imported
+    // *from*, it is somewhere instruments and effects are found (TDD §8.4).
+    SettingRow::Heading("Plugins"),
+    SettingRow::PluginFolder,
+    SettingRow::RescanPlugins,
+    // Its own heading too, and for the same reason: a preset folder is not a
+    // place files are imported from, it is the one folder in this list
+    // Fontelle *writes* to.
+    SettingRow::Heading("Presets"),
+    SettingRow::PresetFolder,
 ];
 
 /// How far transpose goes either way. Two octaves is as far as anybody moves a
@@ -249,7 +335,22 @@ impl SettingRow {
             Self::Transpose => "Keyboard transpose",
             Self::ChannelFilter => "Channel",
             Self::Folder(kind) => kind.label(),
+            // What it *does*, because it is a button and because it adds
+            // rather than replaces: the standard CLAP locations are searched
+            // whether or not anything is listed here.
+            Self::PluginFolder => "Add plugin folder",
+            Self::PresetFolder => "My presets",
+            Self::RescanPlugins => "Rescan plugins",
         }
+    }
+
+    /// Whether this row is one of the plugin buttons.
+    ///
+    /// Asked of the row rather than matched at the call site, for the reason
+    /// [`folder`](Self::folder) is: the one place a settings row is pressed
+    /// should not have to know which variants are which.
+    pub fn is_plugin_row(self) -> bool {
+        matches!(self, Self::PluginFolder | Self::RescanPlugins)
     }
 
     /// Which folder this row is about, for the rows that are about one.
@@ -295,6 +396,21 @@ impl SettingRow {
                 // starts in.
                 None => "Not set \u{2014} click".to_string(),
             },
+            // One folder is named; several are counted. Running three paths
+            // together in a 248-pixel column would name none of them.
+            Self::PluginFolder => match settings.plugin_dirs.as_slice() {
+                [] => "Not set \u{2014} click".to_string(),
+                [one] => crate::desktop::elide_path(one, 2),
+                many => format!("{} folders", many.len()),
+            },
+            // Never blank, and never "not set": this folder always has an
+            // answer, because Fontelle writes to it (see the field).
+            Self::PresetFolder => match settings.user_preset_dir() {
+                Some(path) => crate::desktop::elide_path(&path, 2),
+                None => "Nowhere \u{2014} click".to_string(),
+            },
+            // A button says what pressing it does rather than what it is at.
+            Self::RescanPlugins => "Click".to_string(),
         }
     }
 
@@ -311,11 +427,15 @@ impl SettingRow {
         }
         let step = delta.signum();
         match self {
-            // Neither of these is a value to step. A folder row is a button,
-            // and its press is the host's — this module may not open a
-            // dialog. What matters here is that it does not quietly step the
-            // row above it instead.
-            Self::Heading(_) | Self::Folder(_) => {}
+            // None of these is a value to step. A folder row and the two
+            // plugin rows are buttons, and their press is the host's — this
+            // module may not open a dialog or `dlopen` anything. What matters
+            // here is that they do not quietly step the row above instead.
+            Self::Heading(_)
+            | Self::Folder(_)
+            | Self::PresetFolder
+            | Self::PluginFolder
+            | Self::RescanPlugins => {}
             Self::VelocityCurve => {
                 let all = VelocityCurveSetting::ALL;
                 let at = all
@@ -404,6 +524,25 @@ impl Settings {
     pub fn default_soundfont_dir_from(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
         Self::xdg_from(env, "XDG_DATA_HOME", ".local/share")
             .map(|base| base.join("fontelle").join("soundfonts"))
+    }
+
+    /// `$XDG_DATA_HOME/fontelle/presets`, or `$HOME/.local/share/...`.
+    pub fn default_preset_dir_from(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
+        Self::xdg_from(env, "XDG_DATA_HOME", ".local/share")
+            .map(|base| base.join("fontelle").join("presets"))
+    }
+
+    pub fn default_preset_dir() -> Option<PathBuf> {
+        Self::default_preset_dir_from(&|key| std::env::var(key).ok())
+    }
+
+    /// Where user presets are written and read.
+    ///
+    /// The setting if there is one, Fontelle's own data directory otherwise —
+    /// see the field for why this one has a default at all when the import
+    /// folders do not.
+    pub fn user_preset_dir(&self) -> Option<PathBuf> {
+        self.preset_dir.clone().or_else(Self::default_preset_dir)
     }
 
     fn xdg_from(

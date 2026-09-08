@@ -22,6 +22,14 @@ pub enum ModSource {
     /// none of them changes meaning.
     NoteModX,
     NoteModY,
+    /// One of the patch's four macro knobs (`Patch::macros`).
+    ///
+    /// A macro is a source and **nothing else**: its whole meaning is the
+    /// routes that read it, which is what turns a preset's "Brightness" into
+    /// one knob rather than four. Added after the variants above, which
+    /// matters for the saved format: serde names variants, so no existing
+    /// patch file can name this and none of them changes meaning.
+    Macro(u8),
 }
 
 /// Any continuous patch parameter, addressed by stable ID (TDD §7.5). Minimum set:
@@ -42,6 +50,22 @@ pub enum ModDest {
     LfoRate(u8),
     LfoDepth(u8),
     UnisonDetune,
+    // --- Flopsynth's, all indexed by layer or slot as the ones above are ---
+    /// Where in a wavetable an oscillator reads.
+    OscPosition(u8),
+    /// How hard its warp is applied.
+    OscWarp(u8),
+    OscUnisonDetune(u8),
+    OscUnisonBlend(u8),
+    FilterDrive(u8),
+    FilterCharacter(u8),
+    LfoPhase(u8),
+    /// The voice's own gain after the amp envelope, in **decibels**.
+    ///
+    /// Voice-wide rather than per layer, so a tremolo is one route rather
+    /// than five — which is the difference between a preset a person can
+    /// read and one they cannot.
+    Amp,
 }
 
 /// How a route reshapes its source before applying depth.
@@ -132,6 +156,23 @@ impl ModDest {
         match self {
             Self::FilterCutoff(_) | Self::LayerPitch(_) => 9_600.0, // cents, 8 octaves
             Self::LayerGain(_) => 96.0,                             // dB
+            // **Octaves of time.** A stage time is a duration, and durations
+            // are heard in ratios: "twice as long" means the same thing on a
+            // ten-millisecond click as on a ten-second pad, so a full-depth
+            // route spans eight octaves either way, like cutoff and pitch.
+            // Enough for a piano's bass string to ring sixty times longer
+            // than its top one from a single key-tracking route.
+            Self::EnvelopeStageTime(_, _) => 8.0,
+            // A hundred cents — a semitone either way, matching the detune
+            // knob's own range, so a full-depth route moves it end to end
+            // rather than off the end.
+            Self::OscUnisonDetune(_) => 100.0,
+            // Twenty-four decibels: enough for a tremolo to reach silence at
+            // the bottom of its swing and not so much that an ordinary depth
+            // sits in the bottom of the dial.
+            Self::Amp => 24.0,
+            // Position, warp, blend, drive and character are all whole-knob
+            // parameters: full depth is the whole of their travel.
             _ => 1.0,
         }
     }

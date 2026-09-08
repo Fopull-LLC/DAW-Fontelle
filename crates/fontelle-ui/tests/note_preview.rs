@@ -63,6 +63,7 @@ fn clip(length: Tick, loop_length: Option<Tick>, notes: Vec<NotePreview>) -> Cli
         curve: Vec::new(),
         notes,
         audio: Default::default(),
+        prefab: None,
     }
 }
 

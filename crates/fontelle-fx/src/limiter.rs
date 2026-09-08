@@ -241,8 +241,10 @@ impl Limiter {
         }
     }
 
-    /// The limiter's own latency, in samples — what the graph has to
-    /// compensate elsewhere once delay compensation exists.
+    /// The limiter's own latency, in samples. On the master it delays the
+    /// whole mix equally, so nothing is out of time with anything else; it
+    /// is in what `Realised::latency_samples` reports, which is the number
+    /// that says what a configuration costs (TDD §5.5).
     pub fn latency_samples(&self) -> u32 {
         self.delay_len as u32
     }

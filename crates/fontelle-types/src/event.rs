@@ -71,6 +71,35 @@ pub enum EventPayload {
         target: ParamAddress,
         value: f64,
     },
+    /// A continuous controller moved — the mod wheel, an expression pedal —
+    /// on the instrument the event is addressed to (TDD §14.1).
+    ///
+    /// **A performance event, not automation.** It will look like
+    /// [`ParamValue`](Self::ParamValue) to whoever reads this next, and the
+    /// two are deliberately different things: a `ParamValue` names one of
+    /// this program's controls by its §8.2 address and comes out of a lane
+    /// or a learn table, while this is the raw fact that a hand moved a wheel,
+    /// carried whole to the instrument for *it* to interpret — a hosted
+    /// plugin as the MIDI it would have received, a built-in as whatever
+    /// its voice decides a wheel means. Nothing here has an address, and
+    /// turning one into a `ParamValue` is the learn table's job (§14.4),
+    /// not the wire's. `controller` is the MIDI number, `0..=127`; `value`
+    /// likewise.
+    Controller {
+        controller: u8,
+        value: u8,
+    },
+    /// The pitch wheel, centred at `0` and spanning `-8192..=8191` — the
+    /// same performance event as [`Controller`](Self::Controller) and the same
+    /// rule: an instrument decides what a bend means (a hosted plugin has its
+    /// own bend range; a built-in's is a voice question, §7.4).
+    PitchBend {
+        value: i16,
+    },
+    /// Channel aftertouch, `0..=127`. Likewise.
+    ChannelPressure {
+        value: u8,
+    },
     ClipStart,
     ClipStop,
 }

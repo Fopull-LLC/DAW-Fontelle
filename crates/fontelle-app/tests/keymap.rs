@@ -41,6 +41,7 @@ fn disabled() -> FilterSlot {
         cutoff_hz: 20_000.0,
         resonance: 0.0,
         enabled: false,
+        ..Default::default()
     }
 }
 
@@ -53,6 +54,7 @@ fn instant() -> EnvelopeConfig {
         sustain_level: 1.0,
         release_s: 0.001,
         curve: EnvelopeCurve::Linear,
+        ..Default::default()
     }
 }
 
@@ -92,6 +94,7 @@ fn patch_of(library: &mut SampleLibrary, layers: &[(&str, (u8, u8))]) -> Patch {
         lfos: Vec::new(),
         mod_matrix: ModMatrix::default(),
         voice_config: VoiceConfig::default(),
+        ..Default::default()
     }
 }
 

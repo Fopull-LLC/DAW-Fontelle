@@ -20,9 +20,21 @@ fontelle-fx = { path = "../fontelle-fx" }
 fontelle-model = { path = "../fontelle-model" }
 fontelle-sequencer = { path = "../fontelle-sequencer" }
 fontelle-engine = { path = "../fontelle-engine" }
+fontelle-host = { path = "../fontelle-host" }
 fontelle-midi = { path = "../fontelle-midi" }
 fontelle-assets = { path = "../fontelle-assets" }
 fontelle-ui = { path = "../fontelle-ui" }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+# `float_roundtrip`: without it serde_json's fast float parser can land a
+# ULP away from the number in the file, so a patch written and read back
+# is not the patch that was written — which makes a preset read as edited
+# the moment it is loaded (§P.6) and perturbs every float in every project
+# on every open.
+serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 slotmap = "1.1.1"
+
+[dev-dependencies]
+# Built for its side effect: the CLAP bundle `tests/plugin_hosting.rs` loads.
+fontelle-testplug = { path = "../fontelle-testplug" }
+fontelle-testlv2 = { path = "../fontelle-testlv2" }
+fontelle-testbridge = { path = "../fontelle-testbridge" }

@@ -111,7 +111,7 @@ fn main() {
         };
         println!(
             "  lfo {i}{name}: {:.3} Hz  delay {:.3}s  depth {:.3}  {:?}",
-            l.rate_hz, l.delay_s, l.depth, l.shape
+            l.rate_hz, l.delay_s, l.depth, l.wave
         );
     }
 

@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Its own number, separate from the project's and the patch's: a colour token
 /// added to the chrome has nothing to do with either.
-pub const THEME_FORMAT_VERSION: u32 = 6;
+pub const THEME_FORMAT_VERSION: u32 = 7;
 
 /// An 8-bit sRGB colour with alpha, written to file as hex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +85,12 @@ impl Color {
             byte(4)?,
             if hex.len() == 8 { byte(6)? } else { 0xff },
         ]))
+    }
+
+    /// The same colour at another opacity — what a tint over a row is.
+    pub const fn with_alpha(self, alpha: u8) -> Self {
+        let [r, g, b, _] = self.0;
+        Self([r, g, b, alpha])
     }
 
     /// The form `vello` paints with.
@@ -204,6 +210,18 @@ pub struct Palette {
     /// Amber, which is the one hue left that neither the accent, the playhead,
     /// a note nor a clipping meter has already claimed.
     pub param_automated: Color,
+
+    // --- modulation (added in theme format v7) ---
+    /// The dashed arc round a control something in the mod matrix reaches, and
+    /// the source badges it is dragged from (`docs/flopsynth-plan.md` §8.1
+    /// rule 6).
+    ///
+    /// **A fifth ink, from outside the three ramps**, and it has to be: at
+    /// three pixels the arc has to be tellable from the accent, the playhead,
+    /// a note *and* the automation amber, and a modulation arc in any of those
+    /// is a control whose owner you have to guess at. Violet is the hue none
+    /// of them has claimed.
+    pub modulation: Color,
 }
 
 /// Sizes and radii, in logical pixels.
@@ -300,6 +318,7 @@ impl Theme {
                 key_dead: Color::rgb(0x53, 0x63, 0x68),
                 note_silent: Color::rgb(0x2b, 0x3b, 0x48),
                 param_automated: Color::rgb(0xd0, 0x8a, 0x3c),
+                modulation: Color::rgb(0x9a, 0x6f, 0xd0),
             },
             metrics: METRICS,
             font: FontTokens {
@@ -341,6 +360,9 @@ impl Theme {
                 key_dead: Color::rgb(0xcf, 0xd8, 0xda),
                 note_silent: Color::rgb(0x9c, 0xac, 0xbb),
                 param_automated: Color::rgb(0x8a, 0x55, 0x14),
+                // Darker, for the same reason every other ink is on a light
+                // ground: a violet that reads on charcoal is a smudge on paper.
+                modulation: Color::rgb(0x6b, 0x3f, 0xa8),
             },
             metrics: METRICS,
             font: FontTokens {
@@ -506,6 +528,18 @@ fn migrate(mut json: serde_json::Value, mut from: u32) -> Result<serde_json::Val
                 .or_insert_with(|| serde_json::json!(dark.param_automated.to_hex()));
         }
         from = 6;
+    }
+
+    if from == 6 {
+        // v7 gave a modulated control an arc of its own (§8.1 rule 6). A v6
+        // file was written before there was a matrix to draw one from.
+        let dark = Theme::dark_default().palette;
+        if let Some(palette) = json.get_mut("palette").and_then(|p| p.as_object_mut()) {
+            palette
+                .entry("modulation")
+                .or_insert_with(|| serde_json::json!(dark.modulation.to_hex()));
+        }
+        from = 7;
     }
 
     if from != THEME_FORMAT_VERSION {

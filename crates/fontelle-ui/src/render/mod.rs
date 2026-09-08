@@ -62,8 +62,12 @@ pub struct Chrome<'a> {
     /// Which tab the pointer is over.
     pub hover_tab: Option<EditorTab>,
     /// The channel rack down the left. `None` when there is no studio behind
-    /// the window at all.
+    /// the window at all, and `None` when the panel is showing its other tab.
     pub rack: Option<RackChrome<'a>>,
+    /// The prefab list, when that is the tab showing (TDD §10.5). Exactly one
+    /// of this and [`rack`](Self::rack) is `Some` while there is a studio —
+    /// they are one panel.
+    pub prefabs: Option<PrefabChrome<'a>>,
     pub browser: Option<BrowserChrome<'a>>,
     /// The arrangement above the editor. `None` when it is hidden.
     pub timeline: Option<TimelineChrome<'a>>,
@@ -113,6 +117,17 @@ pub struct RackChrome<'a> {
     pub renaming: Option<usize>,
 }
 
+/// The prefab list's contents (TDD §10.5).
+pub struct PrefabChrome<'a> {
+    pub panel: PanelLayout,
+    pub layout: crate::canvas::PrefabLayout,
+    pub prefabs: &'a [crate::document::PrefabInfo],
+    /// What the pointer is over, so a row lights up.
+    pub hover: Option<crate::canvas::PrefabHit>,
+    /// Which row is having its name typed into, so a caret is drawn on it.
+    pub renaming: Option<usize>,
+}
+
 /// The soundfont browser's contents (TDD §17.5).
 pub struct BrowserChrome<'a> {
     pub panel: PanelLayout,
@@ -124,6 +139,10 @@ pub struct BrowserChrome<'a> {
     /// Which preset the selected channel is playing, so the browser can say
     /// which instrument is on it.
     pub selected_preset: Option<usize>,
+    /// Which preset row has the **keyboard**, against `selected_preset`'s
+    /// "which one is on the channel". Two different questions, so two marks:
+    /// an outline for where the arrow keys are, a wash for what is playing.
+    pub focus_preset: Option<usize>,
     /// Whether the search box has the keyboard, so the caret is drawn.
     pub searching: bool,
     /// What the pointer is over, so a button can light up.
@@ -156,6 +175,9 @@ pub struct TimelineChrome<'a> {
     pub toolbar: TimelineToolbar,
     /// Which tool is on, so its chip is lit.
     pub tool: crate::canvas::TimelineTool,
+    /// Whether the Stretch switch is on, so its chip is lit — see
+    /// `TimelineControl::Stretch`.
+    pub stretch: bool,
     /// Which one the pointer is over, so it lights before it is pressed.
     pub hover: Option<TimelineControl>,
     /// Whether there is anything on the clip clipboard, so Paste can say
@@ -176,6 +198,18 @@ pub struct TimelineChrome<'a> {
     /// dragged out on the ruler right now. Drawn on the ruler and as a band
     /// down the grid, so what will loop is visible where it is edited.
     pub loop_range: Option<(Tick, Tick)>,
+    /// The take being recorded, in song ticks, while one is being recorded.
+    ///
+    /// > *"i cannot see the clip being made as im recording please add that so
+    /// > i can see the clip being recorded in the arrangement as im
+    /// > recording."*
+    ///
+    /// Not a clip: it is not in the document and will not be until the
+    /// transport stops, so it is drawn as a band rather than as a block, at
+    /// the bottom of the grid where `AddAudioClip` will put the row it makes.
+    /// Drawing it as an ordinary clip would be a picture of a document that
+    /// does not exist yet.
+    pub recording: Option<(Tick, Tick)>,
 }
 
 /// Everything the piano roll draws from. All of it is read-only: the roll is a
@@ -219,6 +253,12 @@ pub struct RollChrome<'a> {
     /// What the Tools panel is set to, which is where its rows read their
     /// names and values from.
     pub tools: &'a crate::canvas::Tools,
+    /// How long the clip being edited is, in its own ticks, or `None` for a
+    /// host with no clip. The grid past it is shaded: a note written there
+    /// does not sound, because a clip's length is the window on its content
+    /// (TDD §11.4), and a silent note with nothing to show for it is a bug
+    /// report waiting to happen.
+    pub clip_length: Option<Tick>,
     /// The cut tool's line while it is being drawn, in screen points.
     pub slice: Option<((f32, f32), (f32, f32))>,
     /// Whether the strip down the side is a keyboard or a list of names.
@@ -264,6 +304,9 @@ pub struct MixerChrome<'a> {
     /// Which strip the options column is about, drawn with a ring so the
     /// column and the strip it describes are visibly one thing.
     pub selected: usize,
+    /// The strip whose name is being typed over, if one is — drawn with a
+    /// caret, the same as the rack's rows and the arrangement's lanes.
+    pub renaming: Option<usize>,
     /// What the options column's output row says — worked out where the route
     /// names are, rather than in the drawing code.
     pub output_label: String,
@@ -278,9 +321,6 @@ pub struct MixerChrome<'a> {
     /// The send menu, likewise — a separate field because the two are over the
     /// same list and mean different things, and only one is ever open.
     pub send_menu: Option<&'a crate::canvas::RouteMenu>,
-    /// And the menu of effects a track can be given, which is over a different
-    /// list again.
-    pub effect_menu: Option<&'a crate::canvas::EffectMenu>,
     pub route_names: &'a [String],
     /// Where the selected track's output goes, as an index into
     /// `route_names` — so the menu can say where you are as well as where you
@@ -311,7 +351,6 @@ pub struct EffectChrome {
     pub title: String,
     pub bypassed: bool,
 }
-
 
 pub struct TransportChrome<'a> {
     pub layout: TransportBarLayout,
@@ -364,6 +403,18 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
             p.text,
         );
         draw_rack(scene, theme, chrome.labels, rack);
+    }
+    if let Some(prefabs) = &chrome.prefabs {
+        draw_panel_frame(scene, theme, &prefabs.panel);
+        draw_label(
+            scene,
+            chrome.labels,
+            "Prefabs",
+            prefabs.panel.header,
+            m,
+            p.text,
+        );
+        draw_prefabs(scene, theme, chrome.labels, prefabs);
     }
     if let Some(browser) = &chrome.browser {
         draw_panel_frame(scene, theme, &browser.panel);
@@ -509,6 +560,11 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
 /// thing the plugin path cannot be built on. The *drawing* did not change: the
 /// same three functions take the same three chromes, against a body rectangle
 /// that is now a window's rather than a column's.
+// Eight, because a floating editor window is made of eight things: a scene, a
+// theme, a layout, the shaped labels, its title, its panel, its preset bar and
+// the menu that may be open over it. A struct to carry them would be a struct
+// that exists to satisfy a lint.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_editor_window(
     scene: &mut Scene,
     theme: &Theme,
@@ -516,6 +572,10 @@ pub fn draw_editor_window(
     labels: &Labels,
     title: &TextLayout,
     chrome: &EditorWindowChrome<'_>,
+    // The preset bar, when this window is showing a device that can have one.
+    // Every editor window carries it (§P.7) — every one but the audio clip
+    // editor, whose subject is a clip and not a device.
+    preset: Option<&PresetBarChrome<'_>>,
     // The right-click menu, when the one that is open belongs to *this*
     // window — a knob's, opened on the instrument editor.
     menu: Option<&crate::canvas::ContextMenu>,
@@ -533,6 +593,17 @@ pub fn draw_editor_window(
         p.text,
     );
 
+    if let Some(preset) = preset {
+        draw_preset_bar(
+            scene,
+            theme,
+            labels,
+            &preset.layout,
+            preset.view,
+            preset.hover,
+        );
+    }
+
     match chrome {
         EditorWindowChrome::Instrument(Some(instrument)) => {
             draw_instrument(scene, theme, labels, instrument)
@@ -542,6 +613,7 @@ pub fn draw_editor_window(
         EditorWindowChrome::Instrument(None) => {
             draw_label(scene, labels, NO_INSTRUMENT, layout.body, m, p.text_muted)
         }
+        EditorWindowChrome::Flopsynth(flopsynth) => draw_flopsynth(scene, theme, labels, flopsynth),
         EditorWindowChrome::Effect(effect) => draw_effect(scene, theme, labels, effect),
         EditorWindowChrome::Insert(insert) => draw_instrument(scene, theme, labels, insert),
         EditorWindowChrome::AudioClip(clip) => draw_audio_editor(scene, theme, labels, clip),
@@ -587,12 +659,18 @@ fn draw_audio_editor(
                 let t = ((x - area.x) / area.width).clamp(0.0, 1.0);
                 let bucket = ((t * peaks.len() as f32) as usize).min(peaks.len() - 1);
                 let (low, high) = peaks[bucket];
+                // Through the same bend the player and the block use, so
+                // the three pictures of a fade are one picture.
                 let mut gain = 1.0;
                 if chrome.preview.fade_in > 0.0 {
-                    gain *= (t / chrome.preview.fade_in).clamp(0.0, 1.0);
+                    let along = (t / chrome.preview.fade_in).clamp(0.0, 1.0);
+                    gain *= fontelle_types::bend(f64::from(along), chrome.preview.fade_in_tension)
+                        as f32;
                 }
                 if chrome.preview.fade_out > 0.0 {
-                    gain *= ((1.0 - t) / chrome.preview.fade_out).clamp(0.0, 1.0);
+                    let along = ((1.0 - t) / chrome.preview.fade_out).clamp(0.0, 1.0);
+                    gain *= fontelle_types::bend(f64::from(along), chrome.preview.fade_out_tension)
+                        as f32;
                 }
                 let top = middle - (high.clamp(-1.0, 1.0) * half * gain).max(0.0);
                 let bottom = middle - (low.clamp(-1.0, 1.0) * half * gain).min(0.0);
@@ -610,7 +688,9 @@ fn draw_audio_editor(
         if rect.is_empty() {
             continue;
         }
-        let heading = matches!(field, crate::canvas::AudioField::Heading(_));
+        use crate::canvas::AudioControl;
+        let control = crate::canvas::audio_row_control(*field);
+        let heading = control == AudioControl::None;
         if !heading && chrome.hover == Some(*field) {
             fill_rect_rounded(scene, rect.inset(1.0), m.corner_radius, p.panel_header);
         }
@@ -625,28 +705,355 @@ fn draw_audio_editor(
                 if heading { p.text_muted } else { p.text },
             );
         }
-        // Right-aligned against the row's far edge, so a column of values
-        // reads down the panel rather than wandering with the names.
-        let value = crate::canvas::audio_row_value_at(chrome.clip, *field, chrome.sample_rate);
-        if value.is_empty() {
+        let value = crate::canvas::audio_row_value_at(
+            chrome.clip,
+            *field,
+            chrome.sample_rate,
+            chrome.route_label,
+        );
+        let track = crate::canvas::audio_row_control_rect(*rect, m);
+        // The control itself, under the number. Which one it is is the row's
+        // to say (`AudioControl`), so the panel cannot draw a track over
+        // something that is clicked or a switch over something that is
+        // dragged.
+        match control {
+            AudioControl::None => {}
+            AudioControl::Slider => draw_audio_track(scene, theme, chrome, *field, track),
+            AudioControl::Switch => {
+                let on = crate::canvas::audio_row_is_on(chrome.clip, *field);
+                draw_audio_switch(scene, theme, track, on);
+            }
+            // A field with a chevron on it, which is what a drop-down looks
+            // like everywhere: the list is a press away, not eighteen.
+            AudioControl::Choice => {
+                fill_rect_rounded(scene, track, m.corner_radius, p.panel_header);
+                draw_chevron(scene, track, p.text_muted);
+            }
+        }
+        // A switch says which way it is by *being* that way; the word "on"
+        // beside a pill that is visibly on is a word nobody reads.
+        if value.is_empty() || control == AudioControl::Switch {
             continue;
         }
-        if let Some(text) = labels.get(&value) {
+        // Over the control, right-aligned, so a column of values reads down
+        // the panel — and so a track's number is on the track rather than
+        // beside it, where it would need a column of its own.
+        let Some(text) = labels.get(&value) else {
+            continue;
+        };
+        let right = match control {
+            // Clear of the chevron.
+            AudioControl::Choice => track.right() - CHEVRON_PX * 2.0,
+            _ => track.right() - inset.min(track.width / 4.0),
+        };
+        draw_text_clipped(
+            scene,
+            text,
+            rect.union(&track),
+            right - text.width,
+            rect.y + (rect.height - text.height) / 2.0,
+            if control == AudioControl::Slider {
+                p.text
+            } else {
+                p.accent
+            },
+        );
+    }
+}
+
+/// How wide a drop-down's chevron is.
+const CHEVRON_PX: f32 = 7.0;
+
+/// One slider on the audio clip editor: a groove, and a bar over it that grows
+/// from wherever that row's *neutral* is.
+///
+/// Growing from neutral rather than from the left is what makes a cut and a
+/// boost read as opposite things: a fill that always started at the left edge
+/// would draw a clip trimmed two decibels and one boosted twenty as the same
+/// gesture by different amounts. See `canvas::audio_row_neutral`.
+fn draw_audio_track(
+    scene: &mut Scene,
+    theme: &Theme,
+    chrome: &AudioEditorChrome<'_>,
+    field: crate::canvas::AudioField,
+    track: Rect,
+) {
+    let p = &theme.palette;
+    if track.is_empty() {
+        return;
+    }
+    let radius = (track.height / 2.0).min(theme.metrics.corner_radius);
+    fill_rect_rounded(scene, track, radius, p.panel_header);
+    let Some(value) = crate::canvas::audio_row_fraction(chrome.clip, field) else {
+        return;
+    };
+    let from = crate::canvas::audio_row_neutral(field).unwrap_or(0.0);
+    let (low, high) = if from <= value {
+        (from, value)
+    } else {
+        (value, from)
+    };
+    let fill = Rect::new(
+        track.x + track.width * low,
+        track.y,
+        (track.width * (high - low)).max(0.0),
+        track.height,
+    )
+    .intersection(&track);
+    if !fill.is_empty() {
+        fill_rect_rounded(scene, fill, radius, p.accent);
+    }
+    // The handle, so the value has a thing you can see yourself grabbing —
+    // and so a value sitting exactly on its neutral is still visible.
+    let handle = Rect::new(
+        (track.x + track.width * value - 1.5).clamp(track.x, track.right() - 3.0),
+        track.y,
+        3.0,
+        track.height,
+    )
+    .intersection(&track);
+    fill_rect_rounded(scene, handle, 1.5, p.text);
+}
+
+/// One switch: a pill that lights up.
+fn draw_audio_switch(scene: &mut Scene, theme: &Theme, track: Rect, on: bool) {
+    let p = &theme.palette;
+    if track.is_empty() {
+        return;
+    }
+    // A pill at the right-hand end of the control column, not the whole of it:
+    // a switch as wide as a slider reads as a slider.
+    let width = (track.height * 2.0).min(track.width);
+    let pill = Rect::new(track.right() - width, track.y, width, track.height);
+    let radius = pill.height / 2.0;
+    fill_rect_rounded(
+        scene,
+        pill,
+        radius,
+        if on { p.accent } else { p.panel_header },
+    );
+    let knob = (pill.height - 4.0).max(2.0);
+    let x = if on {
+        pill.right() - knob - 2.0
+    } else {
+        pill.x + 2.0
+    };
+    fill_rect_rounded(
+        scene,
+        Rect::new(x, pill.y + 2.0, knob, knob),
+        knob / 2.0,
+        if on { p.window } else { p.text_muted },
+    );
+}
+
+/// The little downward wedge that says a field drops a list.
+fn draw_chevron(scene: &mut Scene, field: Rect, colour: crate::theme::Color) {
+    if field.width < CHEVRON_PX * 2.0 {
+        return;
+    }
+    let x = field.right() - CHEVRON_PX - 4.0;
+    let middle = field.y + field.height / 2.0;
+    // Two short rules meeting in the middle, which is all a wedge is at this
+    // size and is cheaper than a path.
+    for step in 0..3 {
+        let step = step as f32;
+        fill_rect(
+            scene,
+            Rect::new(x + step, middle - 1.0 + step, 1.0, 1.0),
+            colour,
+        );
+        fill_rect(
+            scene,
+            Rect::new(x + CHEVRON_PX - 1.0 - step, middle - 1.0 + step, 1.0, 1.0),
+            colour,
+        );
+    }
+}
+
+/// The captions that never change, so they can be shaped once.
+pub const SAVE: &str = "Save";
+pub const SAVE_AS: &str = "Save as\u{2026}";
+
+/// The preset bar, across the right-hand end of an editor window's header
+/// (`docs/flopsynth-plan.md` §P.7).
+///
+/// One drawing for every device, which is the whole of §P: what a device
+/// contributes is its state, and the bar above it is the same bar.
+///
+/// A rectangle the layout left empty is skipped — the one rule that keeps what
+/// is drawn and what can be pressed from being two lists that disagree.
+pub fn draw_preset_bar(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    layout: &crate::canvas::PresetBarLayout,
+    view: &crate::canvas::PresetBarView,
+    hover: Option<crate::canvas::PresetBarHit>,
+) {
+    use crate::canvas::PresetBarHit;
+
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    if layout.frame.is_empty() {
+        return;
+    }
+
+    // The two arrows: a chevron each, lying on their sides. Drawn rather than
+    // typed, because "◀" is a glyph a system font may not have and a missing
+    // glyph is a box where a button should be.
+    for (rect, forwards) in [(layout.previous, false), (layout.next, true)] {
+        if rect.is_empty() {
+            continue;
+        }
+        let lit = hover
+            == Some(match forwards {
+                true => PresetBarHit::Next,
+                false => PresetBarHit::Previous,
+            });
+        if lit {
+            fill_rect_rounded(scene, rect, m.corner_radius, p.panel);
+        }
+        draw_side_chevron(scene, rect, forwards, p.text);
+    }
+
+    // The name: a field, because it drops a list — the same sunken-and-
+    // outlined shape the instrument panel's name field has, for the same
+    // reason (it is a thing you put something *in*).
+    if !layout.name.is_empty() {
+        fill_rect_rounded(scene, layout.name, m.corner_radius, p.window);
+        stroke_rect_rounded(
+            scene,
+            layout.name,
+            m.corner_radius,
+            1.0,
+            match hover == Some(PresetBarHit::Name) {
+                true => p.accent,
+                false => p.border,
+            },
+        );
+        if let Some(text) = labels.get(&crate::canvas::preset_bar_name(view)) {
             draw_text_clipped(
                 scene,
                 text,
-                *rect,
-                rect.right() - inset - text.width,
+                // Short of the chevron, so a long name is elided by the field
+                // rather than running under the wedge.
+                Rect::new(
+                    layout.name.x,
+                    layout.name.y,
+                    (layout.name.width - CHEVRON_PX - 8.0).max(0.0),
+                    layout.name.height,
+                ),
+                layout.name.x + 6.0,
+                layout.name.y + (layout.name.height - text.height) / 2.0,
+                p.text,
+            );
+        }
+        draw_chevron(scene, layout.name, p.text_muted);
+    }
+
+    // The category, muted: it says what kind of thing this is, and is not the
+    // thing you came to read.
+    if !layout.category.is_empty()
+        && let Some(text) = labels.get(&view.category)
+    {
+        draw_text_clipped(
+            scene,
+            text,
+            layout.category,
+            layout.category.x + 2.0,
+            layout.category.y + (layout.category.height - text.height) / 2.0,
+            match hover == Some(PresetBarHit::Category) {
+                true => p.text,
+                false => p.text_muted,
+            },
+        );
+    }
+
+    if !layout.star.is_empty() {
+        let icon = match view.favourite {
+            true => crate::icon::Icon::StarFilled,
+            false => crate::icon::Icon::Star,
+        };
+        draw_icon(
+            scene,
+            icon,
+            layout.star.inset(STAR_INSET),
+            match (view.favourite, hover == Some(PresetBarHit::Star)) {
+                (true, _) => p.accent,
+                (false, true) => p.text,
+                (false, false) => p.text_muted,
+            },
+        );
+    }
+
+    // The two buttons. **Save is drawn even when it cannot write** — a factory
+    // preset is read-only and hiding the button teaches nobody why.
+    for (rect, caption, enabled, hit) in [
+        (layout.save, SAVE, view.can_save, PresetBarHit::Save),
+        (layout.save_as, SAVE_AS, true, PresetBarHit::SaveAs),
+    ] {
+        if rect.is_empty() {
+            continue;
+        }
+        fill_rect_rounded(scene, rect, m.corner_radius, p.panel);
+        if enabled && hover == Some(hit) {
+            stroke_rect_rounded(scene, rect, m.corner_radius, 1.0, p.accent);
+        }
+        if let Some(text) = labels.get(caption) {
+            draw_text_clipped(
+                scene,
+                text,
+                rect,
+                rect.x + (rect.width - text.width).max(0.0) / 2.0,
                 rect.y + (rect.height - text.height) / 2.0,
-                p.accent,
+                match enabled {
+                    true => p.text,
+                    false => p.text_muted,
+                },
             );
         }
     }
 }
 
+/// A chevron lying on its side: `‹` or `›`.
+///
+/// The same two-rule construction [`draw_chevron`] uses, turned a quarter
+/// turn, so the three wedges in this window are one shape at three angles
+/// rather than three drawings.
+fn draw_side_chevron(scene: &mut Scene, area: Rect, forwards: bool, colour: crate::theme::Color) {
+    let middle_x = area.x + area.width / 2.0;
+    let middle_y = area.y + area.height / 2.0;
+    // The **apex** is at step 0 and the arms open away from it, so a wedge
+    // that points right has its apex on the right: `x` walks *back* from the
+    // apex as the arms spread. Drawn the other way round first, which put a
+    // `>` on the button that means "the one before this".
+    for step in 0..4 {
+        let step = step as f32;
+        let x = match forwards {
+            true => middle_x + 2.0 - step,
+            false => middle_x - 2.0 + step,
+        };
+        fill_rect(scene, Rect::new(x, middle_y - step, 1.0, 1.0), colour);
+        fill_rect(scene, Rect::new(x, middle_y + step, 1.0, 1.0), colour);
+    }
+}
+
+/// The preset bar in one editor window's header.
+pub struct PresetBarChrome<'a> {
+    pub layout: crate::canvas::PresetBarLayout,
+    pub view: &'a crate::canvas::PresetBarView,
+    pub hover: Option<crate::canvas::PresetBarHit>,
+}
+
 /// Which panel a floating editor window is drawing, and what it needs.
 pub enum EditorWindowChrome<'a> {
     Instrument(Option<InstrumentChrome<'a>>),
+    /// **Flopsynth**, which draws a picture of a signal path because that is
+    /// what a synthesiser is (`docs/flopsynth-plan.md` §8). Its own variant
+    /// rather than a flag on `Instrument`, for the reason `Effect` is one: the
+    /// EQ's window and the knob grid are told apart here, and a third kind of
+    /// instrument window is the same decision one more time.
+    Flopsynth(FlopsynthChrome<'a>),
     /// An EQ, which draws a curve because a curve is what an EQ is.
     Effect(EffectChrome),
     /// Every other effect: a grid of knobs read off its own parameter list —
@@ -666,6 +1073,11 @@ pub struct AudioEditorChrome<'a> {
     /// the arrangement draws, so the two pictures cannot disagree.
     pub preview: &'a crate::document::AudioPreview,
     pub sample_rate: u32,
+    /// What the clip's mixer track is **called**, worked out where the route
+    /// names are rather than in the drawing code — the same arrangement
+    /// `MixerChrome::output_label` has, and for the same reason: a canvas may
+    /// not see a `Project` (INVARIANT 2).
+    pub route_label: &'a str,
     pub hover: Option<crate::canvas::AudioField>,
 }
 
@@ -689,11 +1101,42 @@ pub fn draw_context_menu(
     // A border against the panel's own ground, for the reason `draw_lane_menu`
     // gives: it reads as "in front of" without needing a blur.
     fill_rect_rounded(scene, menu.frame, m.corner_radius, p.border);
-    fill_rect_rounded(scene, menu.frame.inset(1.0), m.corner_radius, p.panel_header);
+    fill_rect_rounded(
+        scene,
+        menu.frame.inset(1.0),
+        m.corner_radius,
+        p.panel_header,
+    );
+    // A menu laid out in columns has a rule between them, so the eye reads
+    // three lists rather than one wide one; a menu that scrolls has a thumb,
+    // so the wheel is something you know to reach for.
+    for column in 0..menu.columns() {
+        fill_rect(scene, menu.column_rule(column), p.border);
+    }
+    let thumb = menu.scrollbar();
+    if !thumb.is_empty() {
+        fill_rect_rounded(
+            scene,
+            thumb,
+            thumb.width / 2.0,
+            p.text_muted.with_alpha(0xa0),
+        );
+    }
 
-    for (row, entry) in menu.rows.iter().zip(menu.entries.iter()) {
+    for (index, (row, entry)) in menu.rows.iter().zip(menu.entries.iter()).enumerate() {
         if row.is_empty() {
             continue;
+        }
+        // A favourite is **lit**: a wash of the accent under the whole row,
+        // so it is the most visible thing in the list wherever it appears —
+        // in the favourites section and again in the full list below.
+        if entry.is_favorite() {
+            fill_rect_rounded(
+                scene,
+                *row,
+                m.corner_radius,
+                p.accent.with_alpha(FAVORITE_WASH),
+            );
         }
         if entry.separator && row.y > menu.frame.y + 1.0 {
             fill_rect(
@@ -702,13 +1145,28 @@ pub fn draw_context_menu(
                 p.border,
             );
         }
+        // The star, at the row's right end, on rows that can have one. Lit in
+        // the accent when it is a favourite; a quiet outline when it is not,
+        // which says "this could be" without shouting on every row.
+        let star = menu.star_rect(index);
+        if !star.is_empty() {
+            let (icon, ink) = if entry.is_favorite() {
+                (crate::icon::Icon::StarFilled, p.accent)
+            } else {
+                (crate::icon::Icon::Star, p.text_muted)
+            };
+            draw_icon(scene, icon, star.inset(STAR_INSET), ink);
+        }
         let Some(text) = labels_get(labels, &entry.label) else {
             continue;
         };
+        // The caption stops where the star starts, rather than running under
+        // it.
+        let caption = Rect::new(row.x, row.y, (row.width - star.width).max(0.0), row.height);
         draw_text_clipped(
             scene,
             text,
-            *row,
+            caption,
             row.x + crate::canvas::MENU_TEXT_INSET,
             row.y + (row.height - text.height) / 2.0,
             // A greyed entry is drawn in the same ink as a panel's border,
@@ -717,6 +1175,15 @@ pub fn draw_context_menu(
         );
     }
 }
+
+/// How strong the accent wash under a favourite row is. Enough to read as
+/// highlighted against the menu's ground; not so much that the caption on it
+/// loses contrast.
+const FAVORITE_WASH: u8 = 0x38;
+
+/// How far the star sits in from its own box, so it does not touch the row's
+/// edge or the rule above it.
+const STAR_INSET: f32 = 4.0;
 
 fn draw_tooltip(scene: &mut Scene, theme: &Theme, chrome: &Chrome<'_>) {
     let Some((caption, rect)) = chrome.tooltip else {
@@ -910,9 +1377,7 @@ const EQ_GRID_HZ: [(f32, &str); 6] = [
 
 /// Every caption the axis needs shaped, so the window that owns the font cache
 /// can prepare them without knowing how the grid is drawn.
-pub const EQ_AXIS_CAPTIONS: [&str; 9] = [
-    "50", "100", "500", "1k", "5k", "10k", "+12", "0", "-12",
-];
+pub const EQ_AXIS_CAPTIONS: [&str; 9] = ["50", "100", "500", "1k", "5k", "10k", "+12", "0", "-12"];
 
 fn draw_effect(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &EffectChrome) {
     use crate::canvas::{EQ_MAX_DB, EqField, eq_x_of_freq, eq_y_of_gain};
@@ -997,10 +1462,7 @@ fn draw_effect(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Effec
             &fill,
         );
         let mut path = BezPath::new();
-        path.move_to((
-            chrome.spectrum[0].0 as f64,
-            chrome.spectrum[0].1 as f64,
-        ));
+        path.move_to((chrome.spectrum[0].0 as f64, chrome.spectrum[0].1 as f64));
         for (x, y) in &chrome.spectrum[1..] {
             path.line_to((*x as f64, *y as f64));
         }
@@ -1017,10 +1479,7 @@ fn draw_effect(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Effec
     // shows, so a cut can be seen against the shape it is being made in.
     if chrome.band_curve.len() > 1 {
         let mut path = BezPath::new();
-        path.move_to((
-            chrome.band_curve[0].0 as f64,
-            chrome.band_curve[0].1 as f64,
-        ));
+        path.move_to((chrome.band_curve[0].0 as f64, chrome.band_curve[0].1 as f64));
         for (x, y) in &chrome.band_curve[1..] {
             path.line_to((*x as f64, *y as f64));
         }
@@ -1070,7 +1529,8 @@ fn draw_effect(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Effec
 
     for handle in &chrome.layout.handles {
         let selected = chrome.layout.selected == handle.band;
-        let lit = selected || chrome.active == Some(handle.band) || chrome.hover == Some(handle.band);
+        let lit =
+            selected || chrome.active == Some(handle.band) || chrome.hover == Some(handle.band);
         fill_rect_rounded(
             scene,
             handle.rect,
@@ -1165,7 +1625,8 @@ fn draw_effect(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Effec
                 p.panel
             },
         );
-        let caption = crate::canvas::eq_field_caption(*field, &chrome.config, chrome.layout.selected);
+        let caption =
+            crate::canvas::eq_field_caption(*field, &chrome.config, chrome.layout.selected);
         if let Some(text) = labels_get(labels, &caption) {
             draw_text_clipped(
                 scene,
@@ -1255,42 +1716,6 @@ fn draw_mixer(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &MixerC
 
     // Last, over everything: an open menu is above the panel it hangs from.
     draw_output_menu(scene, theme, labels, chrome);
-    draw_effect_menu(scene, theme, labels, chrome);
-}
-
-/// The menu of effects a track can be given.
-fn draw_effect_menu(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &MixerChrome<'_>) {
-    let Some(menu) = chrome.effect_menu else {
-        return;
-    };
-    if menu.frame.is_empty() {
-        return;
-    }
-    let p = &theme.palette;
-    let m = &theme.metrics;
-    fill_rect_rounded(scene, menu.frame, m.corner_radius, p.border);
-    fill_rect_rounded(
-        scene,
-        menu.frame.inset(1.0),
-        m.corner_radius,
-        p.panel_header,
-    );
-    for (kind, rect) in &menu.items {
-        if rect.is_empty() {
-            continue;
-        }
-        let Some(text) = labels_get(labels, kind.label()) else {
-            continue;
-        };
-        draw_text_clipped(
-            scene,
-            text,
-            *rect,
-            rect.x + m.panel_padding.min(rect.width),
-            rect.y + (rect.height - text.height) / 2.0,
-            p.text,
-        );
-    }
 }
 
 /// The track-options column (TDD §13.2, §13.4).
@@ -1344,7 +1769,26 @@ fn draw_track_options(
         }
     };
 
-    row_text(scene, &strip.name, options.title, options.title.x + 2.0, p.text);
+    row_text(
+        scene,
+        &strip.name,
+        options.title,
+        options.title.x + 2.0,
+        p.text,
+    );
+    if chrome.renaming == Some(options.track) {
+        // The width is read separately from the draw, so a name backspaced
+        // down to nothing still shows a caret: an empty field with nothing in
+        // it at all is one you cannot tell from a dead panel, and clearing the
+        // name is the first thing anybody does when renaming.
+        let width = labels_get(labels, &strip.name).map_or(0.0, |text| text.width);
+        draw_caret(
+            scene,
+            p.accent,
+            options.title,
+            options.title.x + 3.0 + width,
+        );
+    }
 
     // Where it comes from (TDD §15.4). Above the output row, so the column
     // reads top to bottom as a signal path.
@@ -1400,9 +1844,7 @@ fn draw_track_options(
         // Where the dragged row would land, drawn as the row's own highlight
         // so a reorder shows what it is about to do rather than only what it
         // has done.
-        let landing = chrome
-            .insert_drag
-            .is_some_and(|(_, over)| over == row.slot);
+        let landing = chrome.insert_drag.is_some_and(|(_, over)| over == row.slot);
         let lit = landing
             || hovering(OptionsHit::Insert(row.slot))
             || hovering(OptionsHit::Grip(row.slot))
@@ -1444,7 +1886,11 @@ fn draw_track_options(
             &insert.label,
             row.name,
             row.name.x + 2.0,
-            if insert.bypassed { p.text_muted } else { p.text },
+            if insert.bypassed {
+                p.text_muted
+            } else {
+                p.text
+            },
         );
         // Wet/dry, as a **dial** with its number beside it. A knob rather than
         // a groove because that is what it is: a mix is a setting you turn to
@@ -1476,7 +1922,11 @@ fn draw_track_options(
                     beside,
                     beside.x,
                     beside.y + (beside.height - text.height) / 2.0,
-                    if insert.bypassed { p.text_muted } else { p.text },
+                    if insert.bypassed {
+                        p.text_muted
+                    } else {
+                        p.text
+                    },
                 );
             }
         }
@@ -1545,7 +1995,11 @@ fn draw_track_options(
             if send.pre_fader { SEND_PRE } else { SEND_POST },
             row.tap,
             row.tap.x + 1.0,
-            if send.pre_fader { p.accent } else { p.text_muted },
+            if send.pre_fader {
+                p.accent
+            } else {
+                p.text_muted
+            },
         );
         row_text(
             scene,
@@ -1784,6 +2238,7 @@ fn draw_mixer_strip(
         );
     }
 
+    let renaming = chrome.renaming == Some(layout.index);
     if let Some(text) = labels_get(labels, &strip.name) {
         draw_text_clipped(
             scene,
@@ -1791,12 +2246,19 @@ fn draw_mixer_strip(
             layout.name,
             layout.name.x + 2.0,
             layout.name.y + (layout.name.height - text.height) / 2.0,
-            if hovering(MixerHit::Name(layout.index)) {
+            if renaming || hovering(MixerHit::Name(layout.index)) {
                 p.text
             } else {
                 p.text_muted
             },
         );
+    }
+    // The same caret the rack's rows and the arrangement's lanes get, so "this
+    // is a field you are typing in" looks the same everywhere — and outside
+    // the name's own `if let`, so a name backspaced to nothing still has one.
+    if renaming {
+        let width = labels_get(labels, &strip.name).map_or(0.0, |text| text.width);
+        draw_caret(scene, p.accent, layout.name, layout.name.x + 3.0 + width);
     }
 
     // --- the pan: a groove, and the distance it has been moved off centre.
@@ -2103,6 +2565,14 @@ pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome
                 p.grid_line_strong,
             );
         }
+    }
+
+    // Past the clip's end, before the lines so the grid still reads through
+    // it: nothing written out here sounds. See `canvas::roll_past_end`.
+    if let Some(length) = chrome.clip_length
+        && let Some(rect) = crate::canvas::roll_past_end(v, grid, length)
+    {
+        fill_rect(scene, rect, p.row_dead);
     }
 
     // Vertical lines, in **three** levels, drawn faintest first so the
@@ -2563,6 +3033,7 @@ fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
 
     let ghost_caption = chrome.ghost_filter.label();
     let lane_caption = crate::canvas::lane_caption(chrome.lane_property);
+    let snap_caption = crate::canvas::snap_caption(chrome.snap);
     let tools_caption = crate::canvas::tools_caption();
     for (control, rect) in &chrome.toolbar.items {
         if rect.is_empty() {
@@ -2613,7 +3084,7 @@ fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
         // The snap and lane chips say which division and which property are
         // live rather than their own names: the state is the useful half.
         let caption = match control {
-            RollControl::Snap => chrome.snap.label(),
+            RollControl::Snap => &snap_caption,
             RollControl::Lane => &lane_caption,
             RollControl::Ghost => &ghost_caption,
             // The chip says which view the strip is in, the way the snap chip
@@ -2700,9 +3171,164 @@ fn draw_label(
     );
 }
 
+/// The strip that switches the left-hand panel between its two lists.
+///
+/// One function, called by both, because the two lists share the strip's
+/// geometry (`canvas::tab_strip`) and a strip drawn two ways would be two
+/// strips.
+fn draw_rack_tabs(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    tabs: &[(crate::document::RackTab, Rect)],
+    showing: crate::document::RackTab,
+    hover: Option<crate::document::RackTab>,
+) {
+    let p = &theme.palette;
+    for (tab, rect) in tabs {
+        if rect.is_empty() {
+            continue;
+        }
+        let on = *tab == showing;
+        // The showing tab wears the panel's own ground so it reads as part of
+        // the list under it; the other wears the header's, so the strip reads
+        // as two tabs rather than as a heading.
+        fill_rect(scene, *rect, if on { p.panel } else { p.panel_header });
+        if !on && hover == Some(*tab) {
+            fill_rect(scene, *rect, p.row_accidental);
+        }
+        if let Some(text) = labels.get(tab.label()) {
+            draw_text_clipped(
+                scene,
+                text,
+                *rect,
+                rect.x + ((rect.width - text.width) / 2.0).max(0.0),
+                rect.y + (rect.height - text.height) / 2.0,
+                if on { p.text } else { p.text_muted },
+            );
+        }
+        // A line under the one that is showing — the tab mark this window
+        // already uses on the editor column's tabs.
+        if on {
+            fill_rect(
+                scene,
+                Rect::new(rect.x, rect.bottom() - 2.0, rect.width, 2.0),
+                p.accent,
+            );
+        }
+    }
+}
+
+/// The prefab list (TDD §10.5) — the panel's other tab.
+fn draw_prefabs(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &PrefabChrome<'_>) {
+    use crate::canvas::PrefabHit;
+    let p = &theme.palette;
+    let l = &chrome.layout;
+
+    draw_rack_tabs(
+        scene,
+        theme,
+        labels,
+        &l.tabs,
+        crate::document::RackTab::Prefabs,
+        match chrome.hover {
+            Some(PrefabHit::Tab(tab)) => Some(tab),
+            _ => None,
+        },
+    );
+
+    let hovered = match chrome.hover {
+        Some(PrefabHit::Row(index)) => Some(index),
+        _ => None,
+    };
+    for row in &l.rows {
+        let Some(prefab) = chrome.prefabs.get(row.index) else {
+            continue;
+        };
+        if prefab.open {
+            fill_rect(scene, row.frame, p.selection);
+        } else if hovered == Some(row.index) {
+            fill_rect(scene, row.frame, p.row_accidental);
+        }
+        if let Some(text) = labels.get(&prefab.name) {
+            draw_text_clipped(
+                scene,
+                text,
+                row.name,
+                row.name.x + 6.0,
+                row.name.y + (row.name.height - text.height) / 2.0,
+                p.text,
+            );
+            if chrome.renaming == Some(row.index) {
+                draw_caret(scene, p.accent, row.name, row.name.x + 7.0 + text.width);
+            }
+        }
+        // How many places it is drawn in. In the muted ink and with no frame
+        // around it, because it is a read-out and not a control — a boxed
+        // number beside a boxed number on the rack's rows would read as a
+        // second route chip.
+        let caption = prefab_uses_label(prefab.uses);
+        if let Some(text) = labels.get(&caption) {
+            draw_text_clipped(
+                scene,
+                text,
+                row.uses,
+                row.uses.x + ((row.uses.width - text.width) / 2.0).max(0.0),
+                row.uses.y + (row.uses.height - text.height) / 2.0,
+                if prefab.uses == 0 {
+                    p.text_muted
+                } else {
+                    p.text
+                },
+            );
+        }
+    }
+
+    fill_rect_rounded(scene, l.add, theme.metrics.corner_radius, p.accent);
+    if let Some(text) = labels.get(ADD_PREFAB) {
+        draw_text_clipped(
+            scene,
+            text,
+            l.add,
+            l.add.x + ((l.add.width - text.width) / 2.0).max(0.0),
+            l.add.y + (l.add.height - text.height) / 2.0,
+            p.panel,
+        );
+    }
+}
+
+/// What a prefab row's count says. In one place so the window shapes exactly
+/// the string the renderer will look for.
+///
+/// An em dash rather than "0" for a prefab drawn nowhere: a zero in a column
+/// of numbers reads as a measurement, and "not used yet" is an absence.
+pub fn prefab_uses_label(uses: usize) -> String {
+    if uses == 0 {
+        "\u{2014}".to_string()
+    } else {
+        uses.to_string()
+    }
+}
+
+/// The caption on the prefab list's add button, in one place so the window can
+/// shape exactly the string the renderer will look for.
+pub const ADD_PREFAB: &str = "+ Make prefab";
+
 fn draw_rack(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RackChrome<'_>) {
     let p = &theme.palette;
     let l = &chrome.layout;
+
+    draw_rack_tabs(
+        scene,
+        theme,
+        labels,
+        &l.tabs,
+        crate::document::RackTab::Instruments,
+        match chrome.hover {
+            Some(RackHit::Tab(tab)) => Some(tab),
+            _ => None,
+        },
+    );
 
     let hovered = match chrome.hover {
         Some(RackHit::Row(index) | RackHit::Mute(index) | RackHit::Solo(index)) => Some(index),
@@ -2881,6 +3507,13 @@ fn draw_route_menu(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &R
 /// exactly the string the renderer will look for.
 pub const ADD_CHANNEL: &str = "+ Add instrument";
 
+/// The last row of the category chooser: makes one rather than choosing one.
+///
+/// A category is a folder (§P.3), so a person's categories are free-form and
+/// "Save as…" is where a new one comes from — there is no other gesture in the
+/// program that makes one, and there does not need to be.
+pub const NEW_CATEGORY: &str = "New category\u{2026}";
+
 /// The editor column's tab captions. Two, since the instrument, the effect
 /// and the automation curve became windows of their own — see
 /// [`draw_editor_window`].
@@ -2915,6 +3548,10 @@ pub const REMOVE: &str = "\u{00d7}";
 pub fn output_label(name: &str) -> String {
     format!("Out \u{25b8} {name}")
 }
+
+/// What the growing block says while a take is being recorded, in one place so
+/// the window can shape exactly the string the renderer will look for.
+pub const RECORDING: &str = "Recording";
 
 /// What the instrument tab says when the channel is playing nothing.
 pub const NO_INSTRUMENT: &str =
@@ -3121,23 +3758,43 @@ fn draw_instrument(
         return;
     }
 
-    // The two chip rows, above the first heading. A chip rather than a knob,
-    // because choosing one is a different gesture from turning one: a preset
-    // writes the whole panel and then has nothing further to say (rule 10),
-    // and a key names a track, which is not a number with a range.
+    // **The name, as a field.** *"the name section in the instrument window
+    // for the soundfont player should be kind of like field instead of a bar
+    // and i should be able to drag soundfonts into it."* A field is a thing
+    // you can put something *in*, and that is what this one is for — it is the
+    // drop target for a soundfont carried out of the browser, so it is drawn
+    // sunken and outlined rather than as a filled strip.
+    if !l.name.is_empty() {
+        fill_rect_rounded(scene, l.name, m.corner_radius, p.window);
+        stroke_rect_rounded(scene, l.name, m.corner_radius, 1.0, p.border);
+        if let Some(text) = labels.get(&chrome.view.title) {
+            draw_text_clipped(
+                scene,
+                text,
+                l.name,
+                l.name.x + 6.0,
+                l.name.y + (l.name.height - text.height) / 2.0,
+                p.text,
+            );
+        }
+    }
+
+    // The key row, above the first heading. A chip rather than a knob, because
+    // a key names a track and a track is not a number with a range — and
+    // because choosing one is a press rather than a turn.
     //
-    // The **chosen** chip is filled rather than outlined. A preset row has no
-    // chosen one — nothing stays selected once its knobs have been turned —
-    // and the key row always does, because "no key" is one of them.
-    for (chips, names, chosen, hovered) in [
-        (
-            &l.presets,
-            &chrome.view.presets,
-            None,
-            chrome.hover_preset,
-        ),
-        (&l.keys, &chrome.view.keys, chrome.view.key, chrome.hover_key),
-    ] {
+    // The **chosen** chip is filled rather than outlined. There is always one,
+    // because "no key" is one of them.
+    //
+    // The preset row that used to sit above this one is gone: a preset is a
+    // file now and the bar in the window's header is where every device's
+    // are chosen (`docs/flopsynth-plan.md` §P.9).
+    for (chips, names, chosen, hovered) in [(
+        &l.keys,
+        &chrome.view.keys,
+        chrome.view.key,
+        chrome.hover_key,
+    )] {
         for (index, rect) in chips {
             let Some(name) = names.get(*index) else {
                 continue;
@@ -3245,9 +3902,7 @@ fn draw_instrument(
         }
 
         match &param.kind {
-            ParamKind::Knob => {
-                draw_knob(scene, theme, control, param.value, hot, param.automated)
-            }
+            ParamKind::Knob => draw_knob(scene, theme, control, param.value, hot, param.automated),
             ParamKind::Switch => {
                 let on = param.value >= 0.5;
                 let chip = control.inset((control.height * 0.25).min(control.width * 0.3));
@@ -3328,14 +3983,7 @@ fn draw_instrument(
 /// check as well as one an eye can see.
 const AUTOMATION_RING_WIDTH: f32 = 2.0;
 
-fn draw_knob(
-    scene: &mut Scene,
-    theme: &Theme,
-    area: Rect,
-    value: f32,
-    hot: bool,
-    automated: bool,
-) {
+fn draw_knob(scene: &mut Scene, theme: &Theme, area: Rect, value: f32, hot: bool, automated: bool) {
     let p = &theme.palette;
     if area.is_empty() {
         return;
@@ -3448,6 +4096,7 @@ fn draw_timeline_toolbar(
     if chrome.layout.toolbar.is_empty() {
         return;
     }
+    let timeline_snap = crate::canvas::snap_caption(chrome.view.snap);
     fill_rect(scene, chrome.layout.toolbar, p.panel_header);
 
     let selected = !chrome.selection.is_empty();
@@ -3458,6 +4107,7 @@ fn draw_timeline_toolbar(
         // What this button would do, if pressed now.
         let live = match control {
             TimelineControl::Snap
+            | TimelineControl::Stretch
             | TimelineControl::ZoomOut
             | TimelineControl::ZoomIn
             | TimelineControl::Draw
@@ -3473,12 +4123,18 @@ fn draw_timeline_toolbar(
             TimelineControl::Draw => chrome.tool == crate::canvas::TimelineTool::Draw,
             TimelineControl::Select => chrome.tool == crate::canvas::TimelineTool::Select,
             TimelineControl::Slice => chrome.tool == crate::canvas::TimelineTool::Slice,
+            TimelineControl::Stretch => chrome.stretch,
             _ => false,
         };
         // The snap chip is a read-out and always carries its frame: a bare
         // word in a toolbar is not something anyone reads as a control. That
         // is exactly how the roll's snap chip came to be reported missing.
-        if on || *control == TimelineControl::Snap || chrome.hover == Some(*control) {
+        // The stretch switch is a word too, and an unlit word beside the snap
+        // chip would read as a caption for it rather than as a switch of its own.
+        if on
+            || matches!(control, TimelineControl::Snap | TimelineControl::Stretch)
+            || chrome.hover == Some(*control)
+        {
             fill_rect_rounded(
                 scene,
                 *rect,
@@ -3507,7 +4163,7 @@ fn draw_timeline_toolbar(
             continue;
         }
         let caption = match control {
-            TimelineControl::Snap => chrome.view.snap.label(),
+            TimelineControl::Snap => &timeline_snap,
             other => other.label(),
         };
         let Some(text) = labels.get(caption) else {
@@ -3682,6 +4338,10 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
             // *"i should be able to see the waveform of the audio inside the
             // clip."* Same band as the note preview, same reason.
             draw_clip_waveform(scene, theme, l.grid, whole, clip, selected);
+            // And its fades over the waveform: the curve the player uses,
+            // the part it takes away shaded, and — on the chosen block —
+            // the handles that set it (TDD §15.2). See `canvas::fade_anatomy`.
+            draw_clip_fades(scene, theme, l.grid, whole, clip, selected);
         } else {
             // And a note clip shows the notes that are in it, for the same
             // reason: what is *in* a clip is the thing you are looking for
@@ -3763,6 +4423,38 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
                 );
             }
         }
+    }
+
+    // Every block's edge, over everything: *"make it so that the edges of
+    // clips are always visible and dont blend into eachother when they get
+    // close or even overlapped."* Drawn after all the bodies rather than
+    // with each, because a block painted later covers the end of the one
+    // before it, and an edge painted with its body is under the next body.
+    // One dark line, the ground's own colour, so two blocks of one colour
+    // side by side are two blocks.
+    for clip in chrome.clips {
+        if !lanes.contains(&clip.lane) {
+            continue;
+        }
+        let block = clip_rect(v, l.grid, clip).intersection(&l.grid);
+        if block.is_empty() {
+            continue;
+        }
+        scene.stroke(
+            &Stroke::new(1.0),
+            Affine::IDENTITY,
+            p.window.to_peniko(),
+            None,
+            &rounded(block.inset(1.0), 3.0),
+        );
+    }
+    // And where two blocks on a row lie over each other, stripes across the
+    // part they share — see `canvas::clip_overlaps`. Diagonal, so they read
+    // as a marking rather than as content: nothing else on the arrangement
+    // runs at an angle. Over the stripes, when the two are audio, the
+    // crossfade they are actually playing: two curves crossing.
+    for shared in crate::canvas::clip_overlaps(v, l.grid, chrome.clips) {
+        draw_clip_overlap(scene, theme, &shared);
     }
 
     if let Some(box_) = chrome.marquee {
@@ -3897,7 +4589,12 @@ fn draw_clip_notes(
 /// towards white keeps the hue the lane is identified by.
 fn lighten(colour: Color, amount: f32) -> Color {
     let mix = |c: u8| (f32::from(c) + (255.0 - f32::from(c)) * amount) as u8;
-    Color([mix(colour.0[0]), mix(colour.0[1]), mix(colour.0[2]), colour.0[3]])
+    Color([
+        mix(colour.0[0]),
+        mix(colour.0[1]),
+        mix(colour.0[2]),
+        colour.0[3],
+    ])
 }
 
 /// How far towards white a waveform is drawn against its block.
@@ -3942,6 +4639,167 @@ fn draw_clip_waveform(
         }
         fill_rect(scene, column, ink);
     }
+}
+
+/// An audio block's fades: each curve, the region above it shaded, and
+/// the handles and nodes when the block is selected.
+///
+/// The curve is `canvas::fade_curve` — the same bend the player applies —
+/// and the handles are `canvas::fade_anatomy`'s, the same rectangles the
+/// pointer is tested against, so what you see is what you can grab. Drawn
+/// clipped to the grid, like everything else on the block.
+fn draw_clip_fades(
+    scene: &mut Scene,
+    theme: &Theme,
+    grid: Rect,
+    block: Rect,
+    clip: &ClipInfo,
+    selected: bool,
+) {
+    let Some(anatomy) = crate::canvas::fade_anatomy(block, clip) else {
+        return;
+    };
+    let p = &theme.palette;
+    let (_, content) = crate::canvas::clip_bands(block);
+    let visible = block.intersection(&grid);
+    if visible.is_empty() {
+        return;
+    }
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(
+            visible.x as f64,
+            visible.y as f64,
+            visible.right() as f64,
+            visible.bottom() as f64,
+        ),
+    );
+    let ink = if selected { p.panel } else { p.text };
+    let shade = Color([p.window.0[0], p.window.0[1], p.window.0[2], 0x70]);
+    for end in [crate::canvas::FadeEnd::In, crate::canvas::FadeEnd::Out] {
+        let points = crate::canvas::fade_curve(block, clip, end);
+        if points.len() < 2 {
+            continue;
+        }
+        // The part the fade takes away: everything above the curve, from
+        // the corner the fade starts at to the top of the band where it
+        // ends. Shaded rather than cut out, so the waveform under it is
+        // still there to be read.
+        let mut region = BezPath::new();
+        let (first, last) = (points[0], points[points.len() - 1]);
+        region.move_to(Point::new(f64::from(first.0), f64::from(content.y)));
+        for (x, y) in &points {
+            region.line_to(Point::new(f64::from(*x), f64::from(*y)));
+        }
+        region.line_to(Point::new(f64::from(last.0), f64::from(content.y)));
+        region.close_path();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            shade.to_peniko(),
+            None,
+            &region,
+        );
+        let mut line = BezPath::new();
+        line.move_to(Point::new(f64::from(first.0), f64::from(first.1)));
+        for (x, y) in &points[1..] {
+            line.line_to(Point::new(f64::from(*x), f64::from(*y)));
+        }
+        scene.stroke(
+            &Stroke::new(1.5),
+            Affine::IDENTITY,
+            ink.to_peniko(),
+            None,
+            &line,
+        );
+    }
+    if selected {
+        // The handles, only on the block in hand: a corner mark on every
+        // take would be a mark nobody asked to read. FL shows its fade
+        // handles on the clip under the pointer; the chosen block is the
+        // nearest thing this window has to that.
+        for handle in [anatomy.handle_in, anatomy.handle_out] {
+            let mark = Rect::new(
+                handle.x + 1.0,
+                handle.y + 1.0,
+                (handle.width - 2.0).max(1.0),
+                (handle.height - 2.0).max(1.0),
+            );
+            fill_rect_rounded(scene, mark, 2.0, ink);
+        }
+        for node in [anatomy.node_in, anatomy.node_out].into_iter().flatten() {
+            fill_rect_rounded(scene, node, node.width / 2.0, ink);
+            stroke_rect_rounded(scene, node, node.width / 2.0, 1.0, p.accent);
+        }
+    }
+    scene.pop_layer();
+}
+
+/// How far apart the overlap stripes are, in points.
+const OVERLAP_STRIPE_STEP: f32 = 6.0;
+
+/// Diagonal stripes across `shared`, the part of a row two clips both
+/// claim. Clipped to the rectangle, so a stripe never leaves it.
+fn draw_clip_overlap(scene: &mut Scene, theme: &Theme, overlap: &crate::canvas::ClipOverlap) {
+    let shared = overlap.area;
+    if shared.is_empty() {
+        return;
+    }
+    let p = &theme.palette;
+    let ink = Color([p.text.0[0], p.text.0[1], p.text.0[2], 0x60]);
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(
+            shared.x as f64,
+            shared.y as f64,
+            shared.right() as f64,
+            shared.bottom() as f64,
+        ),
+    );
+    // Each stripe climbs one height across one height, from a start far
+    // enough left that the first one still crosses the top-left corner.
+    let mut x = shared.x - shared.height;
+    while x < shared.right() {
+        scene.stroke(
+            &Stroke::new(1.5),
+            Affine::IDENTITY,
+            ink.to_peniko(),
+            None,
+            &vello::kurbo::Line::new(
+                (x as f64, shared.bottom() as f64),
+                ((x + shared.height) as f64, shared.y as f64),
+            ),
+        );
+        x += OVERLAP_STRIPE_STEP;
+    }
+    // The crossfade, over the stripes: *"so it resembles the other fades but
+    // just with them crossing through eachother."* The same ink and the same
+    // weight as a clip's own fade curve, because it is the same kind of
+    // statement — this is the envelope, and here is its shape.
+    for curve in [&overlap.fade_in, &overlap.fade_out] {
+        if curve.len() < 2 {
+            continue;
+        }
+        let mut line = BezPath::new();
+        line.move_to(Point::new(f64::from(curve[0].0), f64::from(curve[0].1)));
+        for (x, y) in &curve[1..] {
+            line.line_to(Point::new(f64::from(*x), f64::from(*y)));
+        }
+        scene.stroke(
+            &Stroke::new(1.5),
+            Affine::IDENTITY,
+            p.text.to_peniko(),
+            None,
+            &line,
+        );
+    }
+    scene.pop_layer();
 }
 
 /// One automation block's curve (TDD §12.1), and the handles it is edited by.
@@ -4015,7 +4873,11 @@ fn draw_automation_curve(
     if block.height >= 12.0 {
         for (id, rect) in &anatomy.handles {
             let selected = lit.contains(id);
-            let dot = if selected { rect.inset(1.0) } else { rect.inset(2.0) };
+            let dot = if selected {
+                rect.inset(1.0)
+            } else {
+                rect.inset(2.0)
+            };
             fill_rect_rounded(
                 scene,
                 dot,
@@ -4077,12 +4939,66 @@ fn draw_timeline_ruler(
     if let Some((from, to)) = chrome.loop_range {
         let x0 = timeline_tick_to_x(v, l.grid, from).max(l.grid.x);
         let x1 = timeline_tick_to_x(v, l.grid, to).min(l.grid.right());
-        let strip = Rect::new(x0, l.ruler.y + 2.0, (x1 - x0).max(0.0), (l.ruler.height - 4.0).max(0.0))
-            .intersection(&l.ruler);
+        let strip = Rect::new(
+            x0,
+            l.ruler.y + 2.0,
+            (x1 - x0).max(0.0),
+            (l.ruler.height - 4.0).max(0.0),
+        )
+        .intersection(&l.ruler);
         if !strip.is_empty() {
             fill_rect_rounded(scene, strip, 2.0, p.selection);
-            fill_rect(scene, Rect::new(strip.x, strip.y, 2.0, strip.height), p.accent);
-            fill_rect(scene, Rect::new(strip.right() - 2.0, strip.y, 2.0, strip.height), p.accent);
+            fill_rect(
+                scene,
+                Rect::new(strip.x, strip.y, 2.0, strip.height),
+                p.accent,
+            );
+            fill_rect(
+                scene,
+                Rect::new(strip.right() - 2.0, strip.y, 2.0, strip.height),
+                p.accent,
+            );
+        }
+    }
+
+    // The take as it is being recorded — *"i can see the clip being recorded
+    // in the arrangement as im recording"*. A band one row tall at the foot of
+    // the grid, which is where the row it becomes will be added, and drawn in
+    // the record colour so that it cannot be mistaken for a clip that is
+    // already there.
+    if let Some((from, to)) = chrome.recording {
+        let x0 = timeline_tick_to_x(v, l.grid, from).max(l.grid.x);
+        let x1 = timeline_tick_to_x(v, l.grid, to).min(l.grid.right());
+        let height = v.lane_height.min(l.grid.height);
+        let band = Rect::new(
+            x0,
+            l.grid.bottom() - height,
+            // Never nothing: the instant recording starts, the band is a
+            // sliver rather than absent, or the first thing you see is the
+            // window not reacting.
+            (x1 - x0).max(2.0),
+            height,
+        )
+        .intersection(&l.grid);
+        if !band.is_empty() {
+            fill_rect_rounded(scene, band, theme.metrics.corner_radius, p.meter_peak);
+            stroke_rect_rounded(
+                scene,
+                band.inset(0.5),
+                theme.metrics.corner_radius,
+                1.0,
+                p.accent,
+            );
+            if let Some(text) = labels.get(RECORDING) {
+                draw_text_clipped(
+                    scene,
+                    text,
+                    band,
+                    band.x + 4.0,
+                    band.y + (band.height - text.height) / 2.0,
+                    p.panel,
+                );
+            }
         }
     }
 
@@ -4147,12 +5063,7 @@ fn draw_browser(
 
     // The mode switch, above everything: the search filters whichever list is
     // showing, so this is the thing that has to be read first.
-    for (mode, rect) in crate::canvas::BrowserMode::ALL.into_iter().zip([
-        l.sounds_tab,
-        l.projects_tab,
-        l.import_tab,
-        l.settings_tab,
-    ]) {
+    for (mode, rect) in l.tabs.iter().map(|(mode, rect)| (*mode, *rect)) {
         if rect.is_empty() {
             continue;
         }
@@ -4310,7 +5221,8 @@ fn draw_browser(
                     rows: &[(usize, Rect)],
                     entries: &[LibraryEntry],
                     selected: Option<usize>,
-                    hovered: Option<usize>| {
+                    hovered: Option<usize>,
+                    focused: Option<usize>| {
         if area.is_empty() {
             return;
         }
@@ -4326,6 +5238,13 @@ fn draw_browser(
                 fill_rect(scene, Rect::new(rect.x, rect.y, 2.0, rect.height), p.accent);
             } else if hovered == Some(*index) {
                 fill_rect(scene, *rect, p.row_accidental);
+            }
+            // Where the arrow keys are, drawn as an outline so it can sit on
+            // top of the row that is playing without either mark hiding the
+            // other — *"go through the selected instruments with arrow keys
+            // after it being clicked on to focus it"*.
+            if focused == Some(*index) {
+                stroke_rect_rounded(scene, rect.inset(1.0), 2.0, 1.0, p.accent);
             }
             let detail = labels.get(&entry.detail);
             let detail_width = detail.map_or(0.0, |d| d.width);
@@ -4404,6 +5323,7 @@ fn draw_browser(
         chrome.files,
         chrome.selected_file,
         hover_file,
+        None,
     );
     list(
         l.presets,
@@ -4411,6 +5331,7 @@ fn draw_browser(
         chrome.presets,
         chrome.selected_preset,
         hover_preset,
+        chrome.focus_preset,
     );
 
     // The status line: where the bank is, or what just went wrong. Its own row
@@ -4489,6 +5410,7 @@ pub fn search_hint(mode: crate::canvas::BrowserMode) -> &'static str {
         // There is no box in this mode — see `browser_layout_for` — but a
         // function over an enum answers for every case of it.
         crate::canvas::BrowserMode::Settings => "search settings\u{2026}",
+        crate::canvas::BrowserMode::Presets => "search presets\u{2026}",
     }
 }
 
@@ -4539,7 +5461,15 @@ fn draw_keyboard(
     if l.keys.is_empty() {
         return;
     }
-    fill_rect(scene, l.keys, if style == KeyStyle::Piano { p.key_white } else { p.panel });
+    fill_rect(
+        scene,
+        l.keys,
+        if style == KeyStyle::Piano {
+            p.key_white
+        } else {
+            p.panel
+        },
+    );
 
     for key in visible_keys(v, l.grid) {
         // The same snapped rectangle the grid's rows and the notes use, so a
@@ -4604,9 +5534,7 @@ fn draw_keyboard(
         }
         let caption = match style {
             KeyStyle::Piano => named.map(str::to_string).or(octave),
-            KeyStyle::Names => named
-                .map(str::to_string)
-                .or_else(|| Some(key_name(key))),
+            KeyStyle::Names => named.map(str::to_string).or_else(|| Some(key_name(key))),
         };
         let Some(caption) = caption else {
             continue;
@@ -4697,12 +5625,25 @@ fn draw_ruler_strip(
     if let Some((from, to)) = chrome.loop_range {
         let x0 = tick_to_x(v, l.grid, from).max(l.grid.x);
         let x1 = tick_to_x(v, l.grid, to).min(l.grid.right());
-        let strip = Rect::new(x0, l.ruler.y + 2.0, (x1 - x0).max(0.0), (l.ruler.height - 4.0).max(0.0))
-            .intersection(&l.ruler);
+        let strip = Rect::new(
+            x0,
+            l.ruler.y + 2.0,
+            (x1 - x0).max(0.0),
+            (l.ruler.height - 4.0).max(0.0),
+        )
+        .intersection(&l.ruler);
         if !strip.is_empty() {
             fill_rect_rounded(scene, strip, 2.0, p.selection);
-            fill_rect(scene, Rect::new(strip.x, strip.y, 2.0, strip.height), p.accent);
-            fill_rect(scene, Rect::new(strip.right() - 2.0, strip.y, 2.0, strip.height), p.accent);
+            fill_rect(
+                scene,
+                Rect::new(strip.x, strip.y, 2.0, strip.height),
+                p.accent,
+            );
+            fill_rect(
+                scene,
+                Rect::new(strip.right() - 2.0, strip.y, 2.0, strip.height),
+                p.accent,
+            );
         }
         let band = Rect::new(x0, l.grid.y, (x1 - x0).max(0.0), l.grid.height).intersection(&l.grid);
         if !band.is_empty() {
@@ -5116,6 +6057,1436 @@ pub(crate) fn block_on<F: std::future::Future>(future: F) -> F::Output {
         match future.as_mut().poll(&mut cx) {
             Poll::Ready(value) => return value,
             Poll::Pending => std::thread::park(),
+        }
+    }
+}
+
+/// Flopsynth's window (`docs/flopsynth-plan.md` §8).
+pub struct FlopsynthChrome<'a> {
+    pub layout: crate::canvas::FlopsynthLayout,
+    pub view: &'a crate::canvas::FlopsynthView,
+    /// Which control the pointer is over, as `(card, param)`.
+    pub hover: Option<(usize, usize)>,
+    /// Which control is being dragged.
+    pub active: Option<(usize, usize)>,
+    /// How deep the newest route to each control is, for the controls
+    /// something modulates: `(card, param)` to a bipolar depth. What draws the
+    /// arc (§8.1 rule 6).
+    pub modulated: Vec<((usize, usize), f32)>,
+    /// A source badge being carried: which source, and where the pointer is.
+    /// While one is in flight every control that could take it is lit.
+    pub assigning: Option<(usize, (f32, f32))>,
+    /// Which controls could take it — the same list, worked out once by the
+    /// host rather than asked per knob while a drag is running.
+    pub destinations: Vec<(usize, usize)>,
+    /// The Presets page's About column, line by line (`canvas::preset_about`).
+    pub about: Vec<String>,
+    /// Where the pointer is, for the rows of the Presets page that light up
+    /// under it — the shelves and the presets, which the hit test already
+    /// names and the renderer only has to ask about.
+    pub hover_at: (f32, f32),
+}
+
+/// What the Presets page's search box says.
+///
+/// A function rather than a `format!` at the call site, for
+/// [`voice_count_label`]'s reason: the window shapes its text ahead of
+/// drawing it and the two have to ask for the same string.
+pub fn search_caption(query: &str) -> String {
+    if query.is_empty() {
+        PRESET_SEARCH_HINT.to_string()
+    } else {
+        format!("{query}{}", crate::canvas::NAME_CARET)
+    }
+}
+
+/// The search box with nothing typed in it.
+pub const PRESET_SEARCH_HINT: &str = "Search presets \u{2014} type to filter";
+/// What the list says when the search leaves nothing.
+pub const NO_PRESETS_MATCH: &str = "nothing matches";
+/// The tag on a row that is the user's own preset.
+pub const MINE_TAG: &str = "mine";
+
+/// A polyline, clipped to the rectangle it belongs in.
+///
+/// Clipped rather than trusted: a curve is computed from numbers a person is
+/// dragging, and one that ran outside its own card would draw over the card
+/// next to it.
+fn stroke_polyline(
+    scene: &mut Scene,
+    points: &[(f32, f32)],
+    clip: Rect,
+    width: f32,
+    colour: crate::theme::Color,
+) {
+    if points.len() < 2 || clip.is_empty() {
+        return;
+    }
+    let mut path = BezPath::new();
+    path.move_to(Point::new(points[0].0 as f64, points[0].1 as f64));
+    for (x, y) in &points[1..] {
+        path.line_to(Point::new(*x as f64, *y as f64));
+    }
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(
+            clip.x as f64,
+            clip.y as f64,
+            clip.right() as f64,
+            clip.bottom() as f64,
+        ),
+    );
+    scene.stroke(
+        &Stroke::new(width as f64),
+        Affine::IDENTITY,
+        colour.to_peniko(),
+        None,
+        &path,
+    );
+    scene.pop_layer();
+}
+
+/// A polyline with a glow under it: the same line twice, wide and faint and
+/// then thin and bright, which is what makes a curve read as *lit* rather
+/// than drawn.
+fn glow_polyline(scene: &mut Scene, points: &[(f32, f32)], clip: Rect, colour: Color) {
+    stroke_polyline(scene, points, clip, 5.0, colour.with_alpha(0x38));
+    stroke_polyline(scene, points, clip, 1.5, lighten(colour, 0.25));
+}
+
+/// The area under a polyline, down to the bottom of `clip`.
+fn fill_under_polyline(scene: &mut Scene, points: &[(f32, f32)], clip: Rect, colour: Color) {
+    if points.len() < 2 || clip.is_empty() {
+        return;
+    }
+    let mut path = BezPath::new();
+    path.move_to(Point::new(points[0].0 as f64, clip.bottom() as f64));
+    for (x, y) in points {
+        path.line_to(Point::new(*x as f64, *y as f64));
+    }
+    path.line_to(Point::new(
+        points[points.len() - 1].0 as f64,
+        clip.bottom() as f64,
+    ));
+    path.close_path();
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(
+            clip.x as f64,
+            clip.y as f64,
+            clip.right() as f64,
+            clip.bottom() as f64,
+        ),
+    );
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        colour.to_peniko(),
+        None,
+        &path,
+    );
+    scene.pop_layer();
+}
+
+/// One colour part of the way to another.
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
+    Color([
+        mix(a.0[0], b.0[0]),
+        mix(a.0[1], b.0[1]),
+        mix(a.0[2], b.0[2]),
+        mix(a.0[3], b.0[3]),
+    ])
+}
+
+/// A rounded rectangle filled top to bottom from one colour to another.
+fn fill_rect_vertical(scene: &mut Scene, r: Rect, radius: f32, top: Color, bottom: Color) {
+    use vello::peniko::{Brush, Gradient};
+    if r.is_empty() {
+        return;
+    }
+    let gradient = Gradient::new_linear(
+        Point::new(r.x as f64, r.y as f64),
+        Point::new(r.x as f64, r.bottom() as f64),
+    )
+    .with_stops([(0.0, top.to_peniko()), (1.0, bottom.to_peniko())]);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        &Brush::Gradient(gradient),
+        None,
+        &rounded(r, radius),
+    );
+}
+
+/// A soft disc of colour fading to nothing at its edge — what a nebula is
+/// made of, and the halo round a lit knob.
+fn fill_glow(scene: &mut Scene, centre: (f32, f32), radius: f32, colour: Color, alpha: u8) {
+    use vello::peniko::{Brush, Gradient};
+    if radius <= 0.0 {
+        return;
+    }
+    let gradient = Gradient::new_radial(Point::new(centre.0 as f64, centre.1 as f64), radius)
+        .with_stops([
+            (0.0, colour.with_alpha(alpha).to_peniko()),
+            (1.0, colour.with_alpha(0).to_peniko()),
+        ]);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        &Brush::Gradient(gradient),
+        None,
+        &vello::kurbo::Circle::new((centre.0 as f64, centre.1 as f64), radius as f64),
+    );
+}
+
+/// One card's picture.
+///
+/// Every one is drawn from numbers the *voice* reads — the oscillator's
+/// current frame, the filter's own response, the envelope's own stages — for
+/// the reason §8.1 rule 5 gives: a picture that lies is believed.
+fn draw_flopsynth_picture(
+    scene: &mut Scene,
+    theme: &Theme,
+    rect: Rect,
+    picture: &crate::canvas::FlopsynthPicture,
+) {
+    use crate::canvas::{
+        FlopsynthPicture, env_curve_points, response_curve_points, wave_curve_points,
+    };
+    let p = &theme.palette;
+    if rect.is_empty() {
+        return;
+    }
+    // The well the picture sits in: sunken and darker than the card, with a
+    // faint grid behind the curve, so it reads as a scope rather than as
+    // another control.
+    fill_rect_rounded(
+        scene,
+        rect,
+        theme.metrics.corner_radius,
+        p.window.with_alpha(0xd8),
+    );
+    stroke_rect_rounded(scene, rect, theme.metrics.corner_radius, 1.0, p.border);
+    let inner = rect.inset(2.0);
+    if inner.is_empty() {
+        return;
+    }
+    let grid = p.border.with_alpha(0x60);
+    for step in 1..4 {
+        let x = inner.x + inner.width * step as f32 / 4.0;
+        fill_rect(scene, Rect::new(x, inner.y, 1.0, inner.height), grid);
+    }
+    for step in [0.25, 0.75] {
+        let y = inner.y + inner.height * step;
+        fill_rect(scene, Rect::new(inner.x, y, inner.width, 1.0), grid);
+    }
+
+    match picture {
+        FlopsynthPicture::None => {}
+        FlopsynthPicture::Wave { points, position } => {
+            // The zero line, so a wave's asymmetry is visible rather than
+            // merely present.
+            fill_rect(
+                scene,
+                Rect::new(inner.x, inner.y + inner.height * 0.5, inner.width, 1.0),
+                p.border,
+            );
+            glow_polyline(scene, &wave_curve_points(inner, points), inner, p.accent);
+            // Where the position knob sits across the table's frames, so the
+            // picture says *which* frame it is showing.
+            let x = inner.x + inner.width * position.clamp(0.0, 1.0);
+            fill_rect(
+                scene,
+                Rect::new(x - 0.5, inner.y, 1.0, inner.height),
+                p.playhead,
+            );
+        }
+        FlopsynthPicture::Response {
+            points,
+            cutoff,
+            resonance,
+        } => {
+            // Unity, so "this filter is doing nothing here" is readable.
+            let unity = crate::canvas::RESPONSE_TOP_DB
+                / (crate::canvas::RESPONSE_TOP_DB - crate::canvas::RESPONSE_BOTTOM_DB);
+            fill_rect(
+                scene,
+                Rect::new(
+                    inner.x,
+                    inner.bottom() - inner.height * (1.0 - unity),
+                    inner.width,
+                    1.0,
+                ),
+                p.border,
+            );
+            let curve = response_curve_points(inner, points);
+            fill_under_polyline(scene, &curve, inner, p.accent.with_alpha(0x2a));
+            glow_polyline(scene, &curve, inner, p.accent);
+            // The handle: where a drag on this picture is holding.
+            let x = inner.x + inner.width * cutoff.clamp(0.0, 1.0);
+            let y = inner.bottom() - inner.height * resonance.clamp(0.0, 1.0);
+            fill_rect_rounded(
+                scene,
+                Rect::new(x - 3.0, y - 3.0, 6.0, 6.0),
+                3.0,
+                p.playhead,
+            );
+        }
+        FlopsynthPicture::Envelope {
+            attack,
+            decay,
+            sustain,
+            release,
+        } => {
+            let points = env_curve_points(inner, *attack, *decay, *sustain, *release);
+            fill_under_polyline(scene, &points, inner, p.modulation.with_alpha(0x2a));
+            glow_polyline(scene, &points, inner, p.modulation);
+            // A node at each corner, so the shape reads as four stages rather
+            // than as one line.
+            for (x, y) in points.iter().skip(1).take(points.len().saturating_sub(2)) {
+                fill_rect_rounded(
+                    scene,
+                    Rect::new(x - 2.0, y - 2.0, 4.0, 4.0),
+                    2.0,
+                    p.playhead,
+                );
+            }
+        }
+        FlopsynthPicture::Lfo { points, phase } => {
+            fill_rect(
+                scene,
+                Rect::new(inner.x, inner.y + inner.height * 0.5, inner.width, 1.0),
+                p.border,
+            );
+            let curve = wave_curve_points(inner, points);
+            glow_polyline(scene, &curve, inner, p.modulation);
+            // The dot: where the newest voice is in the cycle. The shape says
+            // what the LFO is; this says what it is doing (§11, phase 6).
+            //
+            // Read off the drawn curve rather than computed a second way, so
+            // it cannot sit off the line it is meant to be on — the same rule
+            // the envelope's nodes follow.
+            if !curve.is_empty() {
+                let at = (phase.clamp(0.0, 1.0) * (curve.len() - 1) as f32).round() as usize;
+                let (x, y) = curve[at.min(curve.len() - 1)];
+                fill_rect_rounded(
+                    scene,
+                    Rect::new(x - 2.5, y - 2.5, 5.0, 5.0),
+                    2.5,
+                    p.playhead,
+                );
+            }
+        }
+    }
+}
+
+/// Flopsynth's window: cards laid out as the signal flows.
+///
+/// The drawing has almost nothing to decide — every rectangle and every
+/// polyline comes from `canvas/flopsynth.rs`, which is pure and tested (§8.1
+/// rule 10). What is left here is colour.
+/// The page tabs, the badges and the matrix — everything on Flopsynth's window
+/// that is not a card.
+fn draw_flopsynth_chrome(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &FlopsynthChrome<'_>,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let l = &chrome.layout;
+
+    // The tab strip: one track with the page you are on lit in it, the shape
+    // of a segmented switch rather than four separate buttons.
+    if let (Some((_, first)), Some((_, last))) = (l.tabs.first(), l.tabs.last())
+        && !first.is_empty()
+    {
+        let track = Rect::new(
+            first.x - 2.0,
+            first.y - 2.0,
+            last.right() - first.x + 4.0,
+            first.height + 4.0,
+        );
+        fill_rect_rounded(
+            scene,
+            track,
+            track.height / 2.0,
+            p.panel_header.with_alpha(0xd0),
+        );
+        stroke_rect_rounded(scene, track, track.height / 2.0, 1.0, p.border);
+    }
+    for (page, rect) in &l.tabs {
+        if rect.is_empty() {
+            continue;
+        }
+        let here = *page == chrome.view.page;
+        if here {
+            fill_glow(
+                scene,
+                (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0),
+                rect.width * 0.7,
+                p.accent,
+                0x50,
+            );
+            fill_rect_vertical(
+                scene,
+                *rect,
+                rect.height / 2.0,
+                lighten(p.accent, 0.15),
+                p.accent,
+            );
+        }
+        if let Some(text) = labels.get(page.label()) {
+            draw_text_clipped(
+                scene,
+                text,
+                *rect,
+                rect.x + ((rect.width - text.width) / 2.0).max(2.0),
+                rect.y + (rect.height - text.height) / 2.0,
+                if here { p.window } else { p.text_muted },
+            );
+        }
+    }
+
+    // How many voices are sounding, at the right-hand end of the tab strip.
+    //
+    // A read-out and not a control, so it is text rather than a box:
+    // polyphony is a number somebody *sets*, and the only way to know whether
+    // sixteen is enough for what they are playing is to watch this (§11,
+    // phase 6). Off the audio thread's own state — see `VoiceMeter`.
+    if let Some((_, first)) = l.tabs.first()
+        && let Some(text) = labels.get(&voice_count_label(chrome.view.voices))
+    {
+        let strip = Rect::new(l.body.x, first.y, l.body.width, first.height);
+        draw_text_clipped(
+            scene,
+            text,
+            strip,
+            strip.right() - text.width - m.panel_padding,
+            strip.y + (strip.height - text.height) / 2.0,
+            match chrome.view.voices {
+                0 => p.text_muted,
+                _ => p.accent,
+            },
+        );
+    }
+
+    // The source badges. Violet, because they are the thing the violet arcs
+    // come from — one ink for one idea (§8.1 rule 6).
+    for (index, rect) in l.badges.iter().enumerate() {
+        let Some(name) = chrome.view.sources.get(index) else {
+            continue;
+        };
+        if rect.is_empty() {
+            continue;
+        }
+        let carried = chrome.assigning.map(|(which, _)| which) == Some(index);
+        fill_rect_rounded(
+            scene,
+            *rect,
+            m.corner_radius,
+            if carried { p.modulation } else { p.panel },
+        );
+        stroke_rect_rounded(scene, *rect, m.corner_radius, 1.0, p.modulation);
+        if let Some(text) = labels.get(name) {
+            draw_text_clipped(
+                scene,
+                text,
+                *rect,
+                rect.x + 5.0,
+                rect.y + (rect.height - text.height) / 2.0,
+                if carried { p.window } else { p.text },
+            );
+        }
+    }
+
+    // The matrix.
+    if !l.matrix.is_empty() {
+        fill_rect_rounded(scene, l.matrix, m.corner_radius, p.panel);
+        stroke_rect_rounded(scene, l.matrix, m.corner_radius, 1.0, p.border);
+        let header = Rect::new(
+            l.matrix.x,
+            l.matrix.y,
+            l.matrix.width,
+            crate::canvas::CARD_HEADER.min(l.matrix.height),
+        );
+        fill_rect(scene, header, p.panel_header);
+        if let Some(text) = labels.get(MATRIX_HEADING) {
+            draw_text_clipped(
+                scene,
+                text,
+                header,
+                header.x + 6.0,
+                header.y + (header.height - text.height) / 2.0,
+                p.text_muted,
+            );
+        }
+        if chrome.view.routes.is_empty()
+            && let Some(text) = labels.get(NO_ROUTES)
+        {
+            let body = Rect::new(
+                l.matrix.x,
+                header.bottom(),
+                l.matrix.width,
+                (l.matrix.height - header.height).max(0.0),
+            );
+            draw_text_clipped(scene, text, body, body.x + 8.0, body.y + 6.0, p.text_muted);
+        }
+        for (index, row) in l.routes.iter().enumerate() {
+            let Some(route) = chrome.view.routes.get(index) else {
+                continue;
+            };
+            for (rect, text) in [
+                (row.source, route.source.as_str()),
+                (row.destination, route.destination.as_str()),
+            ] {
+                if let Some(label) = labels.get(text) {
+                    draw_text_clipped(
+                        scene,
+                        label,
+                        rect,
+                        rect.x + 2.0,
+                        rect.y + (rect.height - label.height) / 2.0,
+                        p.text,
+                    );
+                }
+            }
+            // The depth slider: a groove, a centre mark, and a bar growing
+            // from the middle — bipolar, because a depth is.
+            if !row.depth.is_empty() {
+                fill_rect_rounded(scene, row.depth, 2.0, p.window);
+                let middle = row.depth.x + row.depth.width / 2.0;
+                fill_rect(
+                    scene,
+                    Rect::new(middle - 0.5, row.depth.y, 1.0, row.depth.height),
+                    p.border,
+                );
+                let reach = row.depth.width / 2.0 * route.depth.clamp(-1.0, 1.0);
+                let bar = Rect::new(
+                    middle.min(middle + reach),
+                    row.depth.y + 2.0,
+                    reach.abs(),
+                    (row.depth.height - 4.0).max(0.0),
+                );
+                fill_rect_rounded(scene, bar, 2.0, p.modulation);
+            }
+            if !row.remove.is_empty() {
+                draw_icon(
+                    scene,
+                    crate::icon::Icon::Trash,
+                    row.remove.inset(3.0),
+                    p.text_muted,
+                );
+            }
+        }
+    }
+
+    // The badge under the pointer while it is being carried, so a drag has
+    // something in hand rather than only a cursor.
+    if let Some((index, (x, y))) = chrome.assigning
+        && let Some(name) = chrome.view.sources.get(index)
+    {
+        let rect = Rect::new(
+            x + 8.0,
+            y - crate::canvas::BADGE_H / 2.0,
+            crate::canvas::BADGE_W,
+            crate::canvas::BADGE_H,
+        );
+        fill_rect_rounded(scene, rect, m.corner_radius, p.modulation);
+        if let Some(text) = labels.get(name) {
+            draw_text_clipped(
+                scene,
+                text,
+                rect,
+                rect.x + 5.0,
+                rect.y + (rect.height - text.height) / 2.0,
+                p.window,
+            );
+        }
+    }
+}
+
+/// What the voice read-out says.
+///
+/// A function rather than a `format!` at the call site, because the window
+/// shapes its text ahead of drawing it and the two have to ask for the same
+/// string — a caption shaped under one spelling and drawn under another is a
+/// blank space.
+pub fn voice_count_label(voices: usize) -> String {
+    match voices {
+        0 => "silent".to_string(),
+        1 => "1 voice".to_string(),
+        n => format!("{n} voices"),
+    }
+}
+
+/// The matrix panel's heading, and what it says when it is empty.
+pub const MATRIX_HEADING: &str = "Modulation matrix";
+pub const NO_ROUTES: &str = "no routes \u{2014} drag a source onto a knob";
+
+/// The arc round a control something modulates (§8.1 rule 6).
+///
+/// **Outside the groove**, in the band `canvas::ring_hit` answers to, so what
+/// is drawn and what can be grabbed are the same ring.
+///
+/// It follows the knob's own 270° sweep — seven o'clock round to five o'clock
+/// — rather than a full circle, for two reasons. It reads as *this* knob's
+/// arc, and it never reaches the top of the cell: a cell is sixty pixels tall
+/// and the caption sits in its first fourteen, so a ring that went over the
+/// top struck through the word naming the knob it belonged to. A bipolar depth
+/// grows from straight up, which is the middle of that sweep.
+fn draw_modulation_ring(scene: &mut Scene, theme: &Theme, cell: Rect, depth: f32, lit: bool) {
+    use vello::kurbo::{BezPath, Stroke};
+
+    let knob = crate::canvas::flop_knob_rect(cell);
+    if knob.is_empty() {
+        return;
+    }
+    let radius = knob.width / 2.0 + crate::canvas::RING_GAP + crate::canvas::RING_BAND / 2.0;
+    let (cx, cy) = (knob.x + knob.width / 2.0, knob.y + knob.height / 2.0);
+    // `draw_knob`'s own angles, so the two are one control: `t` runs 0..1 over
+    // the sweep and `0.5` is straight up.
+    let point = |t: f32| {
+        let a = (-0.75 + 1.5 * t) * std::f32::consts::PI;
+        (
+            (cx + radius * a.sin()) as f64,
+            (cy - radius * a.cos()) as f64,
+        )
+    };
+    let arc = |from: f32, to: f32| {
+        let mut path = BezPath::new();
+        const STEPS: usize = 32;
+        for step in 0..=STEPS {
+            let t = from + (to - from) * step as f32 / STEPS as f32;
+            let at = point(t);
+            if step == 0 {
+                path.move_to(at);
+            } else {
+                path.line_to(at);
+            }
+        }
+        path
+    };
+
+    // From straight up, out to the depth: right for a positive route and left
+    // for a negative one, which is what bipolar means on a dial.
+    let reach = 0.5 + depth.clamp(-1.0, 1.0) * 0.5;
+    scene.stroke(
+        &Stroke::new(2.0),
+        vello::kurbo::Affine::IDENTITY,
+        theme.palette.modulation.to_peniko(),
+        None,
+        &arc(0.5, reach),
+    );
+    if lit {
+        // The whole sweep while a badge is over it: "this one will take it".
+        scene.stroke(
+            &Stroke::new(1.0),
+            vello::kurbo::Affine::IDENTITY,
+            theme.palette.modulation.to_peniko(),
+            None,
+            &arc(0.0, 1.0),
+        );
+    }
+}
+
+fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &FlopsynthChrome<'_>) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let l = &chrome.layout;
+    if l.body.is_empty() {
+        return;
+    }
+
+    // The ground first: the window's own colour graded and lit, with the
+    // cards over it. Nothing else in this program draws a gradient, and this
+    // window is the one place the brief asked for a *look* — "spacey and
+    // futuristic" — rather than a panel.
+    draw_flop_ground(scene, theme, l.body);
+    draw_flopsynth_chrome(scene, theme, labels, chrome);
+    if chrome.view.page == crate::canvas::FlopsynthPage::Presets {
+        draw_flop_presets(scene, theme, labels, chrome);
+        return;
+    }
+    // The `+ effect` button (§8.5): a chip in the accent, because it is the
+    // one thing on a bare Effects page and has to read as the thing to press.
+    if !l.add_effect.is_empty() {
+        let button = l.add_effect;
+        let lit = button.contains(chrome.hover_at.0, chrome.hover_at.1);
+        fill_glow(
+            scene,
+            (
+                button.x + button.width / 2.0,
+                button.y + button.height / 2.0,
+            ),
+            button.width * 0.6,
+            p.accent,
+            if lit { 0x50 } else { 0x28 },
+        );
+        fill_rect_vertical(
+            scene,
+            button,
+            button.height / 2.0,
+            p.panel.with_alpha(0xe8),
+            mix(p.panel, p.window, 0.35).with_alpha(0xe8),
+        );
+        stroke_rect_rounded(
+            scene,
+            button,
+            button.height / 2.0,
+            1.0,
+            if lit {
+                lighten(p.accent, 0.3)
+            } else {
+                p.accent
+            },
+        );
+        if let Some(text) = labels.get(crate::canvas::ADD_EFFECT) {
+            draw_text_clipped(
+                scene,
+                text,
+                button,
+                button.x + (button.width - text.width).max(0.0) / 2.0,
+                button.y + (button.height - text.height) / 2.0,
+                if lit { p.text } else { p.accent },
+            );
+        }
+    }
+
+    for (index, placed) in l.cards.iter().enumerate() {
+        let Some(card) = chrome.view.cards.get(index) else {
+            continue;
+        };
+        if placed.frame.is_empty() {
+            continue;
+        }
+        draw_flop_card(
+            scene,
+            theme,
+            labels,
+            placed.frame,
+            placed.header,
+            &card.group.name,
+        );
+        if !placed.remove.is_empty() {
+            let lit = placed.remove.contains(chrome.hover_at.0, chrome.hover_at.1);
+            draw_icon(
+                scene,
+                crate::icon::Icon::Trash,
+                placed.remove.inset(1.0),
+                if lit { p.meter_peak } else { p.text_muted },
+            );
+        }
+        draw_flopsynth_picture(scene, theme, placed.picture, &card.picture);
+
+        for (param_index, cell) in &placed.cells {
+            let Some(param) = card.group.params.get(*param_index) else {
+                continue;
+            };
+            if cell.is_empty() {
+                continue;
+            }
+            let hot = chrome.active == Some((index, *param_index));
+            let lit = hot || chrome.hover == Some((index, *param_index));
+            if lit {
+                fill_rect_rounded(scene, *cell, m.corner_radius, p.text.with_alpha(0x10));
+            }
+            // The arc **first**, under everything: it reaches a few pixels
+            // past the knob (see `ring_hit`, which is the band it is drawn
+            // in), and drawn last it struck through the caption above the
+            // knob it belongs to.
+            let depth = chrome
+                .modulated
+                .iter()
+                .find(|(which, _)| *which == (index, *param_index))
+                .map(|(_, depth)| *depth);
+            let takes =
+                chrome.assigning.is_some() && chrome.destinations.contains(&(index, *param_index));
+            if depth.is_some() || takes {
+                draw_modulation_ring(scene, theme, *cell, depth.unwrap_or(0.0), takes);
+            }
+
+            // The caption above, the control between, the read-out below —
+            // the same three-band cell the general grid uses, at the small
+            // size. A chooser carries its value inside its chip and has no
+            // read-out under it.
+            let control = crate::canvas::flop_knob_rect(*cell);
+            let caption = Rect::new(cell.x, cell.y, cell.width, control.y - cell.y);
+            let readout = Rect::new(
+                cell.x,
+                control.bottom(),
+                cell.width,
+                (cell.bottom() - control.bottom()).max(0.0),
+            );
+            if let Some(label) = labels.get_small(&param.label) {
+                draw_text_clipped(
+                    scene,
+                    label,
+                    caption,
+                    caption.x + ((caption.width - label.width) / 2.0).max(1.0),
+                    caption.y + (caption.height - label.height) / 2.0,
+                    if lit { p.text } else { p.text_muted },
+                );
+            }
+            match &param.kind {
+                ParamKind::Knob => {
+                    draw_flop_knob(
+                        scene,
+                        theme,
+                        control,
+                        param.value,
+                        hot,
+                        lit,
+                        param.automated,
+                    );
+                    if let Some(label) = labels.get_small(&param.display) {
+                        draw_text_clipped(
+                            scene,
+                            label,
+                            readout,
+                            readout.x + ((readout.width - label.width) / 2.0).max(1.0),
+                            readout.y + (readout.height - label.height) / 2.0,
+                            if hot { p.accent } else { p.text },
+                        );
+                    }
+                }
+                ParamKind::Switch => {
+                    draw_flop_switch(scene, theme, control, cell.width, param.value >= 0.5, lit);
+                    if let Some(label) = labels.get_small(&param.display) {
+                        draw_text_clipped(
+                            scene,
+                            label,
+                            readout,
+                            readout.x + ((readout.width - label.width) / 2.0).max(1.0),
+                            readout.y + (readout.height - label.height) / 2.0,
+                            p.text,
+                        );
+                    }
+                }
+                ParamKind::Choice(_) => {
+                    let chip = Rect::new(cell.x + 2.0, control.y, cell.width - 4.0, control.height);
+                    draw_flop_chip(scene, theme, labels, chip, &param.display, lit);
+                }
+            }
+        }
+    }
+}
+
+/// The ground of Flopsynth's window: the window colour graded towards the
+/// accent at the top, a nebula in the accent at one corner and in the
+/// modulation violet at the other, and a scatter of stars.
+///
+/// Everything is the theme's own colours mixed, so a light theme gets a
+/// pale version of the same sky rather than a dark one pasted over it.
+fn draw_flop_ground(scene: &mut Scene, theme: &Theme, body: Rect) {
+    let p = &theme.palette;
+    // The body's own margin, so the sky reaches the window's edge.
+    let sky = Rect::new(
+        body.x - theme.metrics.panel_margin,
+        body.y - theme.metrics.panel_margin,
+        body.width + theme.metrics.panel_margin * 2.0,
+        body.height + theme.metrics.panel_margin * 2.0,
+    );
+    fill_rect_vertical(scene, sky, 0.0, mix(p.window, p.accent, 0.12), p.window);
+    fill_glow(
+        scene,
+        (sky.x + sky.width * 0.18, sky.y + sky.height * 0.1),
+        sky.width * 0.55,
+        p.accent,
+        0x30,
+    );
+    fill_glow(
+        scene,
+        (
+            sky.right() - sky.width * 0.15,
+            sky.bottom() - sky.height * 0.1,
+        ),
+        sky.width * 0.5,
+        p.modulation,
+        0x26,
+    );
+    // Stars: a fixed scatter, so the sky is the same sky every frame. A
+    // linear congruential walk is enough for sixty points nobody counts.
+    let mut seed: u32 = 0x9e37_79b9;
+    for _ in 0..STARS {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let x = sky.x + sky.width * ((seed >> 8) & 0xffff) as f32 / 65_536.0;
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let y = sky.y + sky.height * ((seed >> 8) & 0xffff) as f32 / 65_536.0;
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let bright = 0x28 + ((seed >> 8) & 0x3f) as u8;
+        let size = if (seed >> 20) & 0x7 == 0 { 2.0 } else { 1.0 };
+        fill_rect(
+            scene,
+            Rect::new(x, y, size, size),
+            p.text.with_alpha(bright),
+        );
+    }
+}
+
+/// How many stars the sky has.
+const STARS: usize = 90;
+
+/// The ink a card's family is drawn in — the rule under its name, and the
+/// glow on its knobs' arcs. The three oscillators take the theme's three
+/// ramps (§8.1 rule 2), so a route's source badge and its oscillator share a
+/// colour without a new token; the filters the accent; everything that
+/// *moves* something the modulation violet.
+fn card_ink(name: &str, p: &crate::theme::Palette) -> Color {
+    match name {
+        "OSC A" => p.accent,
+        "OSC B" => p.playhead,
+        "OSC C" => p.note,
+        n if n.starts_with("Filter") => p.accent,
+        n if n.starts_with("ENV") || n.starts_with("LFO") || n.starts_with("Modulation") => {
+            p.modulation
+        }
+        n if n.starts_with("FX") => p.meter,
+        _ => p.text_muted,
+    }
+}
+
+/// One card: a pane of glass on the sky, with its name and its family's rule
+/// across the top.
+fn draw_flop_card(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    frame: Rect,
+    header: Rect,
+    name: &str,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let ink = card_ink(name, p);
+    let radius = m.corner_radius + 2.0;
+    fill_rect_vertical(
+        scene,
+        frame,
+        radius,
+        p.panel.with_alpha(0xe8),
+        mix(p.panel, p.window, 0.35).with_alpha(0xe8),
+    );
+    stroke_rect_rounded(scene, frame, radius, 1.0, p.border);
+    // A highlight along the top edge, which is what makes glass read as glass.
+    fill_rect(
+        scene,
+        Rect::new(
+            frame.x + radius,
+            frame.y + 1.0,
+            (frame.width - radius * 2.0).max(0.0),
+            1.0,
+        ),
+        p.text.with_alpha(0x18),
+    );
+    // The family's rule, under the name.
+    fill_rect(
+        scene,
+        Rect::new(
+            header.x + 6.0,
+            header.bottom() - 1.0,
+            (header.width - 12.0).max(0.0),
+            1.0,
+        ),
+        ink.with_alpha(0x90),
+    );
+    fill_rect(
+        scene,
+        Rect::new(
+            header.x + 6.0,
+            header.bottom() - 1.0,
+            28.0_f32.min(header.width),
+            2.0,
+        ),
+        ink,
+    );
+    if let Some(text) = labels.get(name) {
+        draw_text_clipped(
+            scene,
+            text,
+            header,
+            header.x + 6.0,
+            header.y + (header.height - text.height) / 2.0,
+            p.text,
+        );
+    }
+}
+
+/// A knob on Flopsynth's window.
+///
+/// `draw_knob`'s geometry — the same 270-degree sweep, the same needle — with
+/// a domed body and a glow under the value arc, so the arc reads as lit.
+fn draw_flop_knob(
+    scene: &mut Scene,
+    theme: &Theme,
+    area: Rect,
+    value: f32,
+    hot: bool,
+    lit: bool,
+    automated: bool,
+) {
+    use vello::peniko::{Brush, Gradient};
+    let p = &theme.palette;
+    if area.is_empty() {
+        return;
+    }
+    let radius = (area.width.min(area.height) / 2.0 - 1.0).max(2.0);
+    let cx = area.x + area.width / 2.0;
+    let cy = area.y + area.height / 2.0;
+    let value = value.clamp(0.0, 1.0);
+
+    let angle_of = |t: f32| (-0.75 + 1.5 * t) * std::f32::consts::PI;
+    let point = |t: f32, r: f32| {
+        let a = angle_of(t);
+        ((cx + r * a.sin()) as f64, (cy - r * a.cos()) as f64)
+    };
+    let path_of = |from: f32, to: f32, r: f32| {
+        let mut path = BezPath::new();
+        const STEPS: usize = 24;
+        for step in 0..=STEPS {
+            let t = from + (to - from) * step as f32 / STEPS as f32;
+            let at = point(t, r);
+            if step == 0 {
+                path.move_to(at);
+            } else {
+                path.line_to(at);
+            }
+        }
+        path
+    };
+
+    if lit {
+        fill_glow(scene, (cx, cy), radius * 2.2, p.accent, 0x48);
+    }
+    // The body: a dome, lit from above.
+    let body = vello::kurbo::Circle::new((cx as f64, cy as f64), (radius - 2.0).max(1.0) as f64);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        p.window.with_alpha(0xa0).to_peniko(),
+        None,
+        &vello::kurbo::Circle::new((cx as f64, cy as f64), (radius + 0.5) as f64),
+    );
+    let dome = Gradient::new_radial(
+        Point::new(cx as f64, (cy - radius * 0.35) as f64),
+        radius * 1.3,
+    )
+    .with_stops([
+        (0.0, lighten(p.panel_header, 0.22).to_peniko()),
+        (1.0, mix(p.panel_header, p.window, 0.5).to_peniko()),
+    ]);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        &Brush::Gradient(dome),
+        None,
+        &body,
+    );
+
+    // The groove — the automation ring when a lane owns it, §12.2.
+    let width = (radius * 0.24).clamp(1.5, 3.0);
+    scene.stroke(
+        &Stroke::new(width as f64),
+        Affine::IDENTITY,
+        if automated {
+            p.param_automated
+        } else {
+            p.grid_line_strong
+        }
+        .to_peniko(),
+        None,
+        &path_of(0.0, 1.0, radius),
+    );
+    // The value arc, with its glow under it.
+    if value > 0.0 {
+        let ink = if hot {
+            lighten(p.accent, 0.2)
+        } else {
+            p.accent
+        };
+        scene.stroke(
+            &Stroke::new((width * 2.6) as f64),
+            Affine::IDENTITY,
+            ink.with_alpha(0x40).to_peniko(),
+            None,
+            &path_of(0.0, value, radius),
+        );
+        scene.stroke(
+            &Stroke::new(width as f64),
+            Affine::IDENTITY,
+            ink.to_peniko(),
+            None,
+            &path_of(0.0, value, radius),
+        );
+    }
+    // The pointer, so the value is readable at a glance rather than by
+    // measuring an arc.
+    let mut needle = BezPath::new();
+    needle.move_to(point(value, radius * 0.3));
+    needle.line_to(point(value, (radius - width - 1.0).max(radius * 0.5)));
+    scene.stroke(
+        &Stroke::new((width * 0.7).max(1.5) as f64),
+        Affine::IDENTITY,
+        if hot { lighten(p.accent, 0.4) } else { p.text }.to_peniko(),
+        None,
+        &needle,
+    );
+}
+
+/// A chooser: a chip carrying its value, with a wedge that says it opens.
+fn draw_flop_chip(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chip: Rect,
+    value: &str,
+    lit: bool,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    if chip.is_empty() {
+        return;
+    }
+    fill_rect_vertical(
+        scene,
+        chip,
+        m.corner_radius,
+        lighten(p.panel_header, 0.06),
+        mix(p.panel_header, p.window, 0.4),
+    );
+    stroke_rect_rounded(
+        scene,
+        chip,
+        m.corner_radius,
+        1.0,
+        if lit { p.accent } else { p.border },
+    );
+    if let Some(text) = labels.get_small(value) {
+        draw_text_clipped(
+            scene,
+            text,
+            Rect::new(
+                chip.x,
+                chip.y,
+                (chip.width - CHEVRON_PX - 6.0).max(0.0),
+                chip.height,
+            ),
+            chip.x + 4.0,
+            chip.y + (chip.height - text.height) / 2.0,
+            p.text,
+        );
+    }
+    draw_chevron(scene, chip, if lit { p.accent } else { p.text_muted });
+}
+
+/// A switch: a pill with its dot at one end or the other.
+fn draw_flop_switch(
+    scene: &mut Scene,
+    theme: &Theme,
+    band: Rect,
+    cell_width: f32,
+    on: bool,
+    lit: bool,
+) {
+    let p = &theme.palette;
+    if band.is_empty() {
+        return;
+    }
+    let width = (cell_width - 12.0).clamp(18.0, 34.0);
+    let height = (band.height * 0.55).clamp(10.0, 16.0);
+    let cx = band.x + band.width / 2.0;
+    let pill = Rect::new(
+        cx - width / 2.0,
+        band.y + (band.height - height) / 2.0,
+        width,
+        height,
+    );
+    if on {
+        fill_glow(
+            scene,
+            (cx, pill.y + height / 2.0),
+            width * 0.9,
+            p.accent,
+            0x40,
+        );
+    }
+    fill_rect_rounded(
+        scene,
+        pill,
+        height / 2.0,
+        if on {
+            p.accent
+        } else {
+            mix(p.panel_header, p.window, 0.4)
+        },
+    );
+    stroke_rect_rounded(
+        scene,
+        pill,
+        height / 2.0,
+        1.0,
+        if lit {
+            lighten(p.accent, 0.3)
+        } else {
+            p.border
+        },
+    );
+    let dot = height - 4.0;
+    let x = if on {
+        pill.right() - 2.0 - dot
+    } else {
+        pill.x + 2.0
+    };
+    fill_rect_rounded(
+        scene,
+        Rect::new(x, pill.y + 2.0, dot, dot),
+        dot / 2.0,
+        if on { p.window } else { p.text_muted },
+    );
+}
+
+/// The Presets page (§8.6): shelves, the list, and the loaded preset described.
+fn draw_flop_presets(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &FlopsynthChrome<'_>,
+) {
+    use crate::canvas::PresetsHit;
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let page = &chrome.layout.presets;
+    let view = chrome.view;
+    let hover = crate::canvas::presets_hit(&chrome.layout, chrome.hover_at.0, chrome.hover_at.1);
+
+    let pane = |scene: &mut Scene, rect: Rect| {
+        if rect.is_empty() {
+            return;
+        }
+        fill_rect_vertical(
+            scene,
+            rect,
+            m.corner_radius + 2.0,
+            p.panel.with_alpha(0xe8),
+            mix(p.panel, p.window, 0.35).with_alpha(0xe8),
+        );
+        stroke_rect_rounded(scene, rect, m.corner_radius + 2.0, 1.0, p.border);
+    };
+
+    // The shelves.
+    pane(scene, page.column);
+    for (index, (shelf, rect)) in page.shelves.iter().enumerate() {
+        if rect.is_empty() {
+            continue;
+        }
+        let here = *shelf == view.browse.shelf;
+        if here {
+            fill_rect_rounded(scene, *rect, m.corner_radius, p.accent.with_alpha(0x40));
+            fill_rect(
+                scene,
+                Rect::new(rect.x, rect.y + 3.0, 2.0, rect.height - 6.0),
+                p.accent,
+            );
+        } else if hover == Some(PresetsHit::Shelf(index)) {
+            fill_rect_rounded(scene, *rect, m.corner_radius, p.text.with_alpha(0x10));
+        }
+        if let Some(text) = labels.get(&shelf.label()) {
+            draw_text_clipped(
+                scene,
+                text,
+                *rect,
+                rect.x + 8.0,
+                rect.y + (rect.height - text.height) / 2.0,
+                if here { p.text } else { p.text_muted },
+            );
+        }
+    }
+
+    // The list, with its search across the top.
+    pane(
+        scene,
+        Rect::new(
+            page.list.x,
+            page.search.y - 4.0,
+            page.list.width,
+            page.list.bottom() - page.search.y + 4.0,
+        ),
+    );
+    if !page.search.is_empty() {
+        let typing = !view.browse.query.is_empty();
+        fill_rect_rounded(
+            scene,
+            page.search,
+            m.corner_radius,
+            p.window.with_alpha(0xd8),
+        );
+        stroke_rect_rounded(
+            scene,
+            page.search,
+            m.corner_radius,
+            1.0,
+            if typing { p.accent } else { p.border },
+        );
+        if let Some(text) = labels.get(&search_caption(&view.browse.query)) {
+            draw_text_clipped(
+                scene,
+                text,
+                page.search,
+                page.search.x + 8.0,
+                page.search.y + (page.search.height - text.height) / 2.0,
+                if typing { p.text } else { p.text_muted },
+            );
+        }
+    }
+    let current = view.bank.iter().position(|preset| {
+        chrome
+            .about
+            .first()
+            .is_some_and(|name| name.trim_end_matches('*') == preset.name)
+    });
+    for (which, rect) in &page.rows {
+        if rect.is_empty() {
+            continue;
+        }
+        let Some(preset) = view.bank.get(*which) else {
+            continue;
+        };
+        let loaded = current == Some(*which);
+        if preset.favourite {
+            fill_rect_rounded(
+                scene,
+                *rect,
+                m.corner_radius,
+                p.accent.with_alpha(FAVORITE_WASH),
+            );
+        }
+        if loaded {
+            stroke_rect_rounded(scene, *rect, m.corner_radius, 1.0, p.accent);
+        } else if matches!(hover, Some(PresetsHit::Row(w) | PresetsHit::Star(w)) if w == *which) {
+            fill_rect_rounded(scene, *rect, m.corner_radius, p.text.with_alpha(0x10));
+        }
+        let star = Rect::new(
+            rect.right() - crate::canvas::STAR_WIDTH,
+            rect.y,
+            crate::canvas::STAR_WIDTH,
+            rect.height,
+        );
+        let (icon, ink) = if preset.favourite {
+            (crate::icon::Icon::StarFilled, p.accent)
+        } else {
+            (crate::icon::Icon::Star, p.text_muted)
+        };
+        draw_icon(scene, icon, star.inset(STAR_INSET), ink);
+        let mut right = star.x;
+        // On a shelf that mixes categories, the row says which it is from —
+        // quietly, at the right, where the eye goes after the name.
+        if matches!(
+            view.browse.shelf,
+            crate::canvas::PresetShelf::All
+                | crate::canvas::PresetShelf::Favourites
+                | crate::canvas::PresetShelf::Mine
+        ) && let Some(tag) = labels.get_small(&preset.category)
+        {
+            right -= tag.width + 10.0;
+            draw_text_clipped(
+                scene,
+                tag,
+                *rect,
+                right,
+                rect.y + (rect.height - tag.height) / 2.0,
+                p.text_muted,
+            );
+        }
+        if preset.origin == fontelle_types::PresetOrigin::User
+            && let Some(tag) = labels.get_small(MINE_TAG)
+        {
+            right -= tag.width + 6.0;
+            draw_text_clipped(
+                scene,
+                tag,
+                *rect,
+                right,
+                rect.y + (rect.height - tag.height) / 2.0,
+                p.text_muted,
+            );
+        }
+        if let Some(text) = labels.get(&preset.name) {
+            draw_text_clipped(
+                scene,
+                text,
+                Rect::new(rect.x, rect.y, (right - rect.x - 4.0).max(0.0), rect.height),
+                rect.x + 8.0,
+                rect.y + (rect.height - text.height) / 2.0,
+                if loaded { p.accent } else { p.text },
+            );
+        }
+    }
+    if page.rows.is_empty()
+        && let Some(text) = labels.get_small(NO_PRESETS_MATCH)
+    {
+        draw_text_clipped(
+            scene,
+            text,
+            page.list,
+            page.list.x + 12.0,
+            page.list.y + 8.0,
+            p.text_muted,
+        );
+    }
+    // The thumb, when there is more list than panel.
+    let max = page.max_scroll();
+    if max > 0.0 && page.content_height > 0.0 {
+        let track = Rect::new(
+            page.list.right() - 6.0,
+            page.list.y + 4.0,
+            4.0,
+            page.list.height - 8.0,
+        );
+        let height =
+            (track.height * (track.height / page.content_height).clamp(0.0, 1.0)).max(18.0);
+        let y =
+            track.y + (track.height - height).max(0.0) * (view.browse.scroll.clamp(0.0, max) / max);
+        fill_rect_rounded(
+            scene,
+            Rect::new(track.x, y, track.width, height),
+            2.0,
+            p.text_muted.with_alpha(0xa0),
+        );
+    }
+
+    // The loaded preset, described.
+    pane(scene, page.about);
+    if !page.about.is_empty() {
+        let mut y = page.about.y + 10.0;
+        for (index, line) in chrome.about.iter().enumerate() {
+            if let Some(text) = labels.get(line) {
+                draw_text_clipped(
+                    scene,
+                    text,
+                    page.about,
+                    page.about.x + 12.0,
+                    y,
+                    if index == 0 { p.text } else { p.text_muted },
+                );
+            }
+            y += m.row_height;
+            if index == 0 {
+                fill_rect(
+                    scene,
+                    Rect::new(page.about.x + 12.0, y - 4.0, 28.0, 2.0),
+                    p.accent,
+                );
+                y += 4.0;
+            }
         }
     }
 }

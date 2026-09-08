@@ -366,15 +366,19 @@ pub fn eq_layout_for(
     // and eight buttons stretched across a 700-pixel window read as a segmented
     // control rather than as the eight bands they are.
     const CHIP_MAX: f32 = 40.0;
-    let chip_width = ((chips_row.width - chip_pad) / BANDS as f32 - chip_pad)
-        .clamp(0.0, CHIP_MAX);
+    let chip_width = ((chips_row.width - chip_pad) / BANDS as f32 - chip_pad).clamp(0.0, CHIP_MAX);
     let bands = (0..BANDS)
         .map(|index| {
             let x = chips_row.x + chip_pad + index as f32 * (chip_width + chip_pad);
             (
                 index,
-                Rect::new(x, chips_row.y + 1.0, chip_width, (chips_row.height - 2.0).max(0.0))
-                    .intersection(&chips_row),
+                Rect::new(
+                    x,
+                    chips_row.y + 1.0,
+                    chip_width,
+                    (chips_row.height - 2.0).max(0.0),
+                )
+                .intersection(&chips_row),
             )
         })
         .collect();
@@ -386,8 +390,13 @@ pub fn eq_layout_for(
         let width = (fields_row.width * weight / total).max(0.0);
         fields.push((
             field,
-            Rect::new(x + 1.0, fields_row.y + 1.0, (width - 2.0).max(0.0), (fields_row.height - 2.0).max(0.0))
-                .intersection(&fields_row),
+            Rect::new(
+                x + 1.0,
+                fields_row.y + 1.0,
+                (width - 2.0).max(0.0),
+                (fields_row.height - 2.0).max(0.0),
+            )
+            .intersection(&fields_row),
         ));
         x += width;
     }
@@ -445,18 +454,10 @@ pub fn eq_hit(layout: &EqLayout, x: f32, y: f32) -> EqHit {
     if layout.curve.contains(x, y) {
         return EqHit::Curve;
     }
-    if let Some((index, _)) = layout
-        .bands
-        .iter()
-        .find(|(_, chip)| chip.contains(x, y))
-    {
+    if let Some((index, _)) = layout.bands.iter().find(|(_, chip)| chip.contains(x, y)) {
         return EqHit::Band(*index);
     }
-    if let Some((field, _)) = layout
-        .fields
-        .iter()
-        .find(|(_, rect)| rect.contains(x, y))
-    {
+    if let Some((field, _)) = layout.fields.iter().find(|(_, rect)| rect.contains(x, y)) {
         return EqHit::Field(*field);
     }
     EqHit::Nothing
@@ -485,11 +486,7 @@ pub fn eq_curve_points(layout: &EqLayout, config: &EqConfig) -> Vec<(f32, f32)> 
 /// What every parametric EQ shows behind the sum: the band you are holding,
 /// picked out of the shape everything adds up to, so a cut you are making is
 /// visible against the curve it is being made in.
-pub fn eq_band_curve_points(
-    layout: &EqLayout,
-    config: &EqConfig,
-    band: usize,
-) -> Vec<(f32, f32)> {
+pub fn eq_band_curve_points(layout: &EqLayout, config: &EqConfig, band: usize) -> Vec<(f32, f32)> {
     let area = layout.curve;
     let Some(band) = config.bands.get(band).copied() else {
         return Vec::new();
@@ -607,67 +604,6 @@ pub struct InsertInfo {
     pub mix_automated: bool,
 }
 
-/// The menu the rack's `+ fx` row drops.
-#[derive(Debug, Clone, PartialEq)]
-pub struct EffectMenu {
-    pub frame: Rect,
-    pub items: Vec<(fontelle_types::EffectKind, Rect)>,
-}
-
-/// A row per kind, from `EffectKind::ALL`.
-///
-/// One list rather than two: a new effect appears in this menu by *existing*,
-/// not by somebody remembering to add it in a second place. That is the same
-/// rule the roll's lane properties follow and the reason they have a `const`
-/// list too.
-pub fn effect_menu_layout(anchor: Rect, bounds: Rect, metrics: &Metrics) -> EffectMenu {
-    const PAD: f32 = 3.0;
-    const WIDTH: f32 = 108.0;
-
-    let kinds = fontelle_types::EffectKind::ALL;
-    let row = metrics.row_height.max(1.0);
-    let height = row * kinds.len() as f32 + PAD * 2.0;
-    let width = WIDTH.max(anchor.width);
-
-    // Dropped downward from the row that opened it, and flipped upward when
-    // there is no room — a menu that opens off the bottom of the window is a
-    // menu you cannot use on the strip you most want it on.
-    let x = anchor.x.min((bounds.right() - width).max(bounds.x));
-    let below = anchor.bottom();
-    let y = if below + height <= bounds.bottom() {
-        below
-    } else {
-        (anchor.y - height).max(bounds.y)
-    };
-    let frame = Rect::new(x, y, width, height).intersection(&bounds);
-
-    let items = kinds
-        .iter()
-        .enumerate()
-        .map(|(index, kind)| {
-            (
-                *kind,
-                Rect::new(
-                    frame.x + PAD,
-                    frame.y + PAD + index as f32 * row,
-                    (frame.width - PAD * 2.0).max(0.0),
-                    row,
-                )
-                .intersection(&frame),
-            )
-        })
-        .collect();
-
-    EffectMenu { frame, items }
-}
-
-pub fn effect_menu_hit(menu: &EffectMenu, x: f32, y: f32) -> Option<fontelle_types::EffectKind> {
-    menu.items
-        .iter()
-        .find(|(_, rect)| rect.contains(x, y))
-        .map(|(kind, _)| *kind)
-}
-
 /// One insert's controls, as the generic parameter panel draws them.
 ///
 /// **Built from the effect's own parameter list**, which is the payoff of
@@ -688,51 +624,16 @@ pub fn effect_view(
     strips: &[String],
     key: Option<usize>,
 ) -> super::InstrumentView {
-    use fontelle_types::{ParamTarget, Taper, Unit};
+    use fontelle_types::ParamTarget;
 
-    let params: Vec<super::InstrumentParam> = config
-        .specs()
-        .iter()
-        .map(|spec| {
-            let value = config.get(spec.id).unwrap_or(spec.default);
-            let kind = match (spec.unit, spec.taper) {
-                (Unit::Switch, _) => super::ParamKind::Switch,
-                // A chooser says what its positions are **called** when the
-                // parameter names them, and counts otherwise: "Peak"/"RMS"
-                // rather than "0"/"1", which is a control nobody can set on
-                // purpose. See `ParamSpec::positions`.
-                (_, Taper::Stepped(_)) if !spec.positions.is_empty() => {
-                    super::ParamKind::Choice(
-                        spec.positions.iter().map(|name| name.to_string()).collect(),
-                    )
-                }
-                (_, Taper::Stepped(steps)) => super::ParamKind::Choice(
-                    (0..steps)
-                        .map(|step| {
-                            let at = spec.denormalise(step as f32 / (steps.max(2) - 1) as f32);
-                            format!("{at:.0}")
-                        })
-                        .collect(),
-                ),
-                _ => super::ParamKind::Knob,
-            };
-            super::InstrumentParam {
-                address: ParamTarget::Insert {
-                    track,
-                    slot,
-                    param: spec.id.to_string(),
-                }
-                .address(),
-                label: spec.name.to_string(),
-                value: spec.normalise(value),
-                display: display_of(spec, value),
-                kind,
-                // Whoever built this knows which lanes exist; see
-                // `InstrumentView::mark_automated`.
-                automated: false,
-            }
-        })
-        .collect();
+    let params = effect_params(config, |id| {
+        ParamTarget::Insert {
+            track,
+            slot,
+            param: id.to_string(),
+        }
+        .address()
+    });
 
     // One heading per section the config declares, each taking the next run
     // of the table. The split is the document's, not the window's: fourteen
@@ -750,10 +651,6 @@ pub fn effect_view(
 
     super::InstrumentView {
         title: format!("{track_name} \u{2014} {}", config.kind().label()),
-        // The named starting points, straight from the config. Nothing here
-        // knows what any of them mean — clicking one hands the index back and
-        // `EffectConfig::apply_preset` is what writes the knobs.
-        presets: config.presets().iter().map(|name| (*name).to_string()).collect(),
         // What the detector can be pointed at, when there is one: "no key"
         // and then every strip. The list is the window's rather than the
         // config's, because which tracks exist is not something an effect
@@ -771,6 +668,55 @@ pub fn effect_view(
             .then(|| key.map_or(0, |strip| strip + 1)),
         groups,
     }
+}
+
+/// One control per parameter an effect declares, addressed by `address_of`.
+///
+/// The half of [`effect_view`] that does not care *where* the effect sits:
+/// the mixer's insert and Flopsynth's own chain are the same table of
+/// specs, and a chorus's mode is a chooser that says its names in both
+/// windows — because it is built once, here, rather than twice.
+pub fn effect_params(
+    config: &fontelle_types::EffectConfig,
+    address_of: impl Fn(&str) -> fontelle_types::ParamAddress,
+) -> Vec<super::InstrumentParam> {
+    use fontelle_types::{Taper, Unit};
+    config
+        .specs()
+        .iter()
+        .map(|spec| {
+            let value = config.get(spec.id).unwrap_or(spec.default);
+            let kind = match (spec.unit, spec.taper) {
+                (Unit::Switch, _) => super::ParamKind::Switch,
+                // A chooser says what its positions are **called** when the
+                // parameter names them, and counts otherwise: "Peak"/"RMS"
+                // rather than "0"/"1", which is a control nobody can set on
+                // purpose. See `ParamSpec::positions`.
+                (_, Taper::Stepped(_)) if !spec.positions.is_empty() => super::ParamKind::Choice(
+                    spec.positions.iter().map(|name| name.to_string()).collect(),
+                ),
+                (_, Taper::Stepped(steps)) => super::ParamKind::Choice(
+                    (0..steps)
+                        .map(|step| {
+                            let at = spec.denormalise(step as f32 / (steps.max(2) - 1) as f32);
+                            format!("{at:.0}")
+                        })
+                        .collect(),
+                ),
+                _ => super::ParamKind::Knob,
+            };
+            super::InstrumentParam {
+                address: address_of(spec.id),
+                label: spec.name.to_string(),
+                value: spec.normalise(value),
+                display: display_of(spec, value),
+                kind,
+                // Whoever built this knows which lanes exist; see
+                // `InstrumentView::mark_automated`.
+                automated: false,
+            }
+        })
+        .collect()
 }
 
 /// The first chip in the key row: listening to the signal passing through the

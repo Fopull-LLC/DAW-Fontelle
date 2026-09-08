@@ -11,12 +11,37 @@
 //!
 //! # The shape, and why it is this one
 //!
-//! **Rows of a name and a value, where a click steps the value forward and a
-//! Ctrl+click steps it back**, under headings that say what each group is for.
-//! That is the settings tab's shape and the tool dialogs' shape, already in
-//! this window and already understood; no text field is involved, because there
-//! is not one in this window and a value you can reach in a handful of clicks
-//! is quicker than one you have to type.
+//! **Rows of a name and a control**, under headings that say what each group is
+//! for. Which control a row gets is decided by what the row *is* (see
+//! [`AudioControl`]) rather than by what was easiest to draw:
+//!
+//! - a **slider** for anything continuous — the boost, the pitch, a fade;
+//! - a **switch** for anything that is on or off;
+//! - a **drop-down** for anything that is one of a list.
+//!
+//! This is the second shape. The first was a click that stepped every row
+//! forward and a Ctrl+click that stepped it back, which is the settings tab's
+//! shape and was reported as the wrong one here:
+//!
+//! > *"right now a lot of options that could be knobs or sliders or dropdowns
+//! > for some reason are instead shown as buttons you click to toggle through a
+//! > list of options in order iteratively. this is really annoying please
+//! > ensure we have cleaner and more polshed ux. for example, this is happening
+//! > in the audio clip editing panel right now the pitch changing should be a
+//! > knob but instead its a button i click to iteratively go through a list of
+//! > pre made values."*
+//!
+//! Stepping survives as the **wheel**, which is what a wheel over a control
+//! should do anyway and is how a value is nudged by exactly one of whatever it
+//! is measured in — see [`nudge_audio_row`]. What went is stepping being the
+//! *only* way in: a pitch you have to click twelve times to move an octave is
+//! not a pitch control.
+//!
+//! A slider rather than a knob because the panel is a **list of rows**: a knob
+//! in a 22-pixel row is a smudge with no readable travel, and a horizontal
+//! track has the row's whole width to spend on precision. The number stays on
+//! the row, over the track, because a control whose value you cannot read is a
+//! control you cannot set.
 //!
 //! Across the top is the clip's **own waveform**, because a fade you cannot see
 //! is a fade you are aiming blind, and a list of numbers with nothing to look at
@@ -35,8 +60,8 @@
 //! window (§2.5 of `docs/first-usable-plan.md`).
 
 use fontelle_types::{
-    AudioClipData, ClipLoopMode, FadeCurve, FilterShape, MAX_CLIP_GAIN_DB, MAX_CLIP_SPEED,
-    MAX_FILTER_HZ, MIN_CLIP_GAIN_DB, MIN_CLIP_SPEED, MIN_FILTER_HZ, Sample,
+    AudioClipData, ClipLoopMode, ClipStretch, FadeCurve, FilterShape, MAX_CLIP_GAIN_DB,
+    MAX_CLIP_SPEED, MAX_FILTER_HZ, MIN_CLIP_GAIN_DB, MIN_CLIP_SPEED, MIN_FILTER_HZ, Sample,
 };
 
 use crate::layout::Rect;
@@ -49,10 +74,20 @@ pub enum AudioField {
     /// makes "Cutoff" read as the *filter's* rather than as something the fade
     /// does.
     Heading(&'static str),
+    /// Which mixer track the clip plays through — `AudioClipData::mixer_track`.
+    ///
+    /// *"soundclips dont have options right now for selecting their mixer
+    /// track."* The field has always been there; a take is given one so that
+    /// recording through a strip means something. What was missing was a row.
+    Route,
     /// *"the boost"*, in decibels.
     Gain,
     Pan,
     Normalize,
+    /// Whether the clip follows the song's tempo — see
+    /// [`fontelle_types::ClipStretch`]. First in the Time group, because it
+    /// decides what the two below it are *relative to*.
+    Stretch,
     Pitch,
     Speed,
     Reverse,
@@ -73,12 +108,15 @@ pub enum AudioField {
 ///
 /// Grouped by what you are doing rather than by what kind of control it is:
 /// how loud, how fast, how it starts and ends, and what colour it is.
-pub const AUDIO_ROWS: [AudioField; 19] = [
+pub const AUDIO_ROWS: [AudioField; 22] = [
+    AudioField::Heading("Track"),
+    AudioField::Route,
     AudioField::Heading("Level"),
     AudioField::Gain,
     AudioField::Pan,
     AudioField::Normalize,
     AudioField::Heading("Time"),
+    AudioField::Stretch,
     AudioField::Pitch,
     AudioField::Speed,
     AudioField::Reverse,
@@ -95,15 +133,309 @@ pub const AUDIO_ROWS: [AudioField; 19] = [
     AudioField::Drive,
 ];
 
+/// What kind of control a row gets, and so what a press on it means.
+///
+/// Asked of the field rather than listed at each call site, so the hit-test,
+/// the drawing and the gesture cannot disagree about what a row is — the way
+/// they did when everything was a step and the panel had one gesture for
+/// eighteen different kinds of value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioControl {
+    /// A heading. Nothing to set.
+    None,
+    /// A continuous value along a track, set by where you press and dragged
+    /// from there — see [`audio_row_fraction`] and [`set_audio_row_fraction`].
+    Slider,
+    /// Off or on, clicked.
+    Switch,
+    /// One of a list, chosen from a drop-down — see [`audio_row_choices`].
+    Choice,
+}
+
+/// Which control `field` gets.
+pub fn audio_row_control(field: AudioField) -> AudioControl {
+    match field {
+        AudioField::Heading(_) => AudioControl::None,
+        AudioField::Normalize | AudioField::Reverse => AudioControl::Switch,
+        AudioField::Route
+        | AudioField::Stretch
+        | AudioField::Loop
+        | AudioField::FadeInCurve
+        | AudioField::FadeOutCurve
+        | AudioField::FilterShape => AudioControl::Choice,
+        AudioField::Gain
+        | AudioField::Pan
+        | AudioField::Pitch
+        | AudioField::Speed
+        | AudioField::FadeIn
+        | AudioField::FadeOut
+        | AudioField::Cutoff
+        | AudioField::Resonance
+        | AudioField::Drive => AudioControl::Slider,
+    }
+}
+
+/// What a [`AudioControl::Choice`] row's drop-down lists, in order.
+///
+/// Empty for every other row, and empty for [`AudioField::Route`] — the one
+/// choice whose entries are not the clip's to know. Which mixer tracks exist
+/// is the document's, and this crate may not see one (INVARIANT 2), so the
+/// window supplies that list and [`nudge_route`] and
+/// [`choose_audio_route`] take it.
+pub fn audio_row_choices(field: AudioField) -> Vec<&'static str> {
+    match field {
+        AudioField::Stretch => ClipStretch::ALL.iter().map(|c| c.label()).collect(),
+        AudioField::Loop => ClipLoopMode::ALL.iter().map(|c| c.label()).collect(),
+        AudioField::FadeInCurve | AudioField::FadeOutCurve => {
+            FadeCurve::ALL.iter().map(|c| c.label()).collect()
+        }
+        AudioField::FilterShape => FilterShape::ALL.iter().map(|c| c.label()).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Which entry of [`audio_row_choices`] the clip is on, for the tick beside
+/// the open drop-down's rows.
+pub fn audio_row_chosen(clip: &AudioClipData, field: AudioField) -> Option<usize> {
+    let at = |all: &[&str], label: &str| all.iter().position(|c| *c == label);
+    let choices = audio_row_choices(field);
+    match field {
+        AudioField::Stretch => at(&choices, clip.stretch.label()),
+        AudioField::Loop => at(&choices, clip.loop_mode.label()),
+        AudioField::FadeInCurve => at(&choices, clip.fade_in.curve.label()),
+        AudioField::FadeOutCurve => at(&choices, clip.fade_out.curve.label()),
+        AudioField::FilterShape => at(&choices, clip.filter.shape.label()),
+        _ => None,
+    }
+}
+
+/// Picks the `index`th entry of [`audio_row_choices`].
+///
+/// Out of range does nothing rather than wrapping: a drop-down hands back a
+/// row it drew, so an index it did not draw is a bug somewhere else and not a
+/// reason to change the clip.
+pub fn choose_audio_row(clip: &mut AudioClipData, field: AudioField, index: usize) {
+    match field {
+        AudioField::Stretch => {
+            if let Some(v) = ClipStretch::ALL.get(index) {
+                clip.stretch = *v;
+            }
+        }
+        AudioField::Loop => {
+            if let Some(v) = ClipLoopMode::ALL.get(index) {
+                clip.loop_mode = *v;
+            }
+        }
+        AudioField::FadeInCurve => {
+            if let Some(v) = FadeCurve::ALL.get(index) {
+                clip.fade_in.curve = *v;
+            }
+        }
+        AudioField::FadeOutCurve => {
+            if let Some(v) = FadeCurve::ALL.get(index) {
+                clip.fade_out.curve = *v;
+            }
+        }
+        AudioField::FilterShape => {
+            if let Some(v) = FilterShape::ALL.get(index) {
+                clip.filter.shape = *v;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Points `clip` at the `index`th entry of `tracks` — [`nudge_route`]'s
+/// drop-down half. Master is `tracks[0]`, as `None`.
+pub fn choose_audio_route(
+    clip: &mut AudioClipData,
+    index: usize,
+    tracks: &[Option<fontelle_types::MixerTrackId>],
+) {
+    if let Some(track) = tracks.get(index) {
+        clip.mixer_track = *track;
+    }
+}
+
+/// Flips a [`AudioControl::Switch`] row.
+pub fn toggle_audio_row(clip: &mut AudioClipData, field: AudioField) {
+    match field {
+        AudioField::Normalize => clip.normalize = !clip.normalize,
+        AudioField::Reverse => clip.reverse = !clip.reverse,
+        _ => {}
+    }
+}
+
+/// Whether a [`AudioControl::Switch`] row is on.
+pub fn audio_row_is_on(clip: &AudioClipData, field: AudioField) -> bool {
+    match field {
+        AudioField::Normalize => clip.normalize,
+        AudioField::Reverse => clip.reverse,
+        _ => false,
+    }
+}
+
+/// Where a [`AudioControl::Slider`] row's value sits along its track, 0..=1.
+///
+/// `None` for every row that is not a slider, which is what makes "is this a
+/// slider" one question rather than two lists to keep in step.
+///
+/// **Not always linear.** A speed and a cutoff are *ratios* — ten per cent of
+/// half speed and ten per cent of double speed are the same musical distance
+/// and different numbers — so those two run logarithmically, exactly as their
+/// stepping already did. A fade runs on a square, because the useful lengths
+/// span three orders of magnitude and a linear track would spend nine tenths
+/// of itself on lengths nobody asks for.
+pub fn audio_row_fraction(clip: &AudioClipData, field: AudioField) -> Option<f32> {
+    let linear = |value: f32, min: f32, max: f32| ((value - min) / (max - min)).clamp(0.0, 1.0);
+    let log = |value: f64, min: f64, max: f64| {
+        ((value.max(f64::MIN_POSITIVE) / min).ln() / (max / min).ln()).clamp(0.0, 1.0) as f32
+    };
+    Some(match field {
+        AudioField::Gain => linear(clip.gain_db, MIN_CLIP_GAIN_DB, MAX_CLIP_GAIN_DB),
+        AudioField::Pan => linear(clip.pan, -1.0, 1.0),
+        AudioField::Pitch => linear(clip.pitch_semitones, MIN_CLIP_PITCH, MAX_CLIP_PITCH),
+        AudioField::Speed => log(clip.speed, MIN_CLIP_SPEED, MAX_CLIP_SPEED),
+        AudioField::FadeIn | AudioField::FadeOut => {
+            let longest = clip.source_frames();
+            if longest <= 0 {
+                return Some(0.0);
+            }
+            let fade = if field == AudioField::FadeIn {
+                &clip.fade_in
+            } else {
+                &clip.fade_out
+            };
+            (fade.frames as f32 / longest as f32).clamp(0.0, 1.0).sqrt()
+        }
+        AudioField::Cutoff => log(
+            f64::from(clip.filter.cutoff_hz),
+            f64::from(MIN_FILTER_HZ),
+            f64::from(MAX_FILTER_HZ),
+        ),
+        AudioField::Resonance => clip.filter.resonance.clamp(0.0, 1.0),
+        AudioField::Drive => clip.filter.drive.clamp(0.0, 1.0),
+        _ => return None,
+    })
+}
+
+/// The other direction: writes the value `t` along the track stands for.
+///
+/// **Detented**, which is the difference between a slider you can use and one
+/// you can only get near: unity gain, dead centre and normal speed are the
+/// values a mix is actually built out of, and a track a few hundred points
+/// long cannot land on them by hand. Pitch goes further and quantises to whole
+/// semitones — see below.
+///
+/// Does nothing to a row that is not a slider.
+pub fn set_audio_row_fraction(clip: &mut AudioClipData, field: AudioField, t: f32) {
+    let t = t.clamp(0.0, 1.0);
+    let linear = |min: f32, max: f32| min + t * (max - min);
+    let log = |min: f64, max: f64| min * (max / min).powf(f64::from(t));
+    match field {
+        AudioField::Gain => {
+            clip.gain_db = detent(linear(MIN_CLIP_GAIN_DB, MAX_CLIP_GAIN_DB), 0.0, 0.75);
+        }
+        AudioField::Pan => clip.pan = detent(linear(-1.0, 1.0), 0.0, 0.04),
+        // **Whole semitones.** Four octaves each way over a track a couple of
+        // hundred points long is about two points a semitone, so the cents
+        // between them are not something a hand can aim at — a track that
+        // offered them would be a track that could not reliably land on a
+        // note. Nothing is lost: stepping never offered cents either.
+        AudioField::Pitch => {
+            clip.pitch_semitones = linear(MIN_CLIP_PITCH, MAX_CLIP_PITCH).round();
+        }
+        AudioField::Speed => {
+            let wanted = log(MIN_CLIP_SPEED, MAX_CLIP_SPEED);
+            clip.speed = f64::from(detent(wanted as f32, 1.0, 0.03));
+        }
+        AudioField::FadeIn | AudioField::FadeOut => {
+            // Squared back out of the square above, and never longer than the
+            // clip — a fade over more than it fades is a clip that never
+            // reaches full level.
+            let longest = clip.source_frames();
+            let frames = ((t * t) as f64 * longest as f64).round() as Sample;
+            let fade = if field == AudioField::FadeIn {
+                &mut clip.fade_in
+            } else {
+                &mut clip.fade_out
+            };
+            fade.frames = frames.clamp(0, longest);
+        }
+        AudioField::Cutoff => {
+            clip.filter.cutoff_hz = log(f64::from(MIN_FILTER_HZ), f64::from(MAX_FILTER_HZ)) as f32;
+        }
+        AudioField::Resonance => clip.filter.resonance = detent(t, 0.0, 0.02),
+        AudioField::Drive => clip.filter.drive = detent(t, 0.0, 0.02),
+        _ => {}
+    }
+}
+
+/// Where a slider's fill grows **from**: the value that means "nothing done
+/// to this clip".
+///
+/// Unity gain, dead centre, unison, normal speed, a filter wide open. A bar
+/// that always grew from the left would say a clip cut two decibels and one
+/// boosted twenty look like the same kind of thing done by different amounts,
+/// which is the one fact a level control has to get across.
+pub fn audio_row_neutral(field: AudioField) -> Option<f32> {
+    let mut clip = identity();
+    Some(match field {
+        AudioField::Gain | AudioField::Pan | AudioField::Pitch | AudioField::Speed => {
+            audio_row_fraction(&clip, field)?
+        }
+        // Wide open does nothing, and that is the top of the track.
+        AudioField::Cutoff => {
+            clip.filter.cutoff_hz = MAX_FILTER_HZ;
+            audio_row_fraction(&clip, field)?
+        }
+        AudioField::FadeIn | AudioField::FadeOut | AudioField::Resonance | AudioField::Drive => 0.0,
+        _ => return None,
+    })
+}
+
+/// A clip with every knob where it does nothing — `AudioClipData::whole` over
+/// a file that is not there, which is all [`audio_row_neutral`] needs.
+fn identity() -> AudioClipData {
+    AudioClipData::whole(
+        fontelle_types::AssetRef {
+            id: fontelle_types::AssetId::default(),
+            path: std::path::PathBuf::new(),
+            content_hash: 0,
+            size: 0,
+            kind: fontelle_types::AssetKind::Sample,
+        },
+        0,
+        0,
+    )
+}
+
+/// `value`, snapped to `to` when it is within `window` of it.
+fn detent(value: f32, to: f32, window: f32) -> f32 {
+    if (value - to).abs() <= window {
+        to
+    } else {
+        value
+    }
+}
+
+/// The furthest a clip may be repitched, in semitones — the clamp
+/// `AudioClipData::rate` already applies, named so the slider and the step
+/// share it rather than each writing 48 down.
+pub const MIN_CLIP_PITCH: f32 = -48.0;
+pub const MAX_CLIP_PITCH: f32 = 48.0;
+
 /// The name in the row's left-hand column.
 pub fn audio_row_label(field: AudioField) -> &'static str {
     match field {
         AudioField::Heading(title) => title,
         // "Boost" rather than "Gain", because that is the word that was used
         // and because a clip's own level is not the mixer's.
+        AudioField::Route => "Mixer track",
         AudioField::Gain => "Boost",
         AudioField::Pan => "Pan",
         AudioField::Normalize => "Normalize",
+        AudioField::Stretch => "Stretch",
         AudioField::Pitch => "Pitch",
         AudioField::Speed => "Speed",
         AudioField::Reverse => "Reverse",
@@ -123,6 +455,10 @@ pub fn audio_row_label(field: AudioField) -> &'static str {
 pub fn audio_row_tip(field: AudioField) -> Option<&'static str> {
     Some(match field {
         AudioField::Heading(_) => return None,
+        AudioField::Route => "Which mixer track this clip plays through",
+        AudioField::Stretch => {
+            "Whether it follows the song's tempo. Resample moves its pitch with it"
+        }
         AudioField::Gain => "How loud this clip is \u{2014} the file is not changed",
         AudioField::Pan => "Where it sits, left to right",
         AudioField::Normalize => "Bring its loudest moment up to full scale",
@@ -146,7 +482,12 @@ pub fn audio_row_tip(field: AudioField) -> Option<&'static str> {
 /// `sample_rate` is the file's, so a fade reads in **milliseconds** — the unit
 /// a fade is thought about in — rather than in frames, which is the unit it is
 /// stored in and means nothing to anybody.
-pub fn audio_row_value_at(clip: &AudioClipData, field: AudioField, sample_rate: u32) -> String {
+pub fn audio_row_value_at(
+    clip: &AudioClipData,
+    field: AudioField,
+    sample_rate: u32,
+    route: &str,
+) -> String {
     let ms = |frames: Sample| {
         if sample_rate == 0 {
             return "0 ms".to_string();
@@ -173,6 +514,13 @@ pub fn audio_row_value_at(clip: &AudioClipData, field: AudioField, sample_rate: 
         AudioField::Speed => format!("{:.0}%", clip.speed * 100.0),
         AudioField::Reverse => on_off(clip.reverse),
         AudioField::Loop => clip.loop_mode.label().to_string(),
+        AudioField::Stretch => clip.stretch.label().to_string(),
+        // The **name** is the caller's: this crate may not see a `Project`
+        // (INVARIANT 2), so what a `MixerTrackId` is called is something only
+        // the window knows. It is passed in rather than left blank, because a
+        // row that says nothing about what it is at reads as a broken row —
+        // the rule every other panel of rows in this window keeps.
+        AudioField::Route => route.to_string(),
         AudioField::FadeIn => ms(clip.fade_in.frames),
         AudioField::FadeInCurve => clip.fade_in.curve.label().to_string(),
         AudioField::FadeOut => ms(clip.fade_out.frames),
@@ -196,8 +544,17 @@ pub fn audio_row_value_at(clip: &AudioClipData, field: AudioField, sample_rate: 
 /// a clip whose asset has gone missing, where a fade reading in 48 kHz
 /// milliseconds is better than one reading in frames.
 pub fn audio_row_value(clip: &AudioClipData, field: AudioField) -> String {
-    audio_row_value_at(clip, field, 48_000)
+    // A clip on the master, at the commonest rate: the convenience form, for
+    // callers that are asking about a value rather than about a project.
+    audio_row_value_at(clip, field, 48_000, MASTER_ROUTE)
 }
+
+/// What the route row says for a clip that goes straight out.
+///
+/// `AudioClipData::mixer_track` spells the master `None`, the same convention
+/// `Channel::mixer_track` follows, so there is no name to look up for it — and
+/// one place to write the word rather than three.
+pub const MASTER_ROUTE: &str = "Master";
 
 fn on_off(value: bool) -> String {
     if value { "on" } else { "off" }.to_string()
@@ -209,8 +566,7 @@ fn on_off(value: bool) -> String {
 /// magnitude: a click-remover is five milliseconds and a long swell is four
 /// seconds, and stepping by one from one to the other is not a control.
 const FADE_LADDER_MS: [f64; 14] = [
-    0.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 1500.0, 2000.0, 3000.0, 4000.0,
-    8000.0,
+    0.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 1500.0, 2000.0, 3000.0, 4000.0, 8000.0,
 ];
 
 /// Steps `field` one place in the direction `direction` says.
@@ -236,15 +592,15 @@ pub fn nudge_audio_row(
     match field {
         AudioField::Heading(_) => {}
         AudioField::Gain => {
-            clip.gain_db =
-                (clip.gain_db + step as f32).clamp(MIN_CLIP_GAIN_DB, MAX_CLIP_GAIN_DB);
+            clip.gain_db = (clip.gain_db + step as f32).clamp(MIN_CLIP_GAIN_DB, MAX_CLIP_GAIN_DB);
         }
         AudioField::Pan => {
             clip.pan = (clip.pan + step as f32 * 0.1).clamp(-1.0, 1.0);
         }
         AudioField::Normalize => clip.normalize = !clip.normalize,
         AudioField::Pitch => {
-            clip.pitch_semitones = (clip.pitch_semitones + step as f32).clamp(-48.0, 48.0);
+            clip.pitch_semitones =
+                (clip.pitch_semitones + step as f32).clamp(MIN_CLIP_PITCH, MAX_CLIP_PITCH);
         }
         AudioField::Speed => {
             // By a ratio, like the cutoff and for the same reason: ten per cent
@@ -254,6 +610,12 @@ pub fn nudge_audio_row(
             clip.speed = (clip.speed * ratio).clamp(MIN_CLIP_SPEED, MAX_CLIP_SPEED);
         }
         AudioField::Reverse => clip.reverse = !clip.reverse,
+        AudioField::Stretch => {
+            clip.stretch = cycle(&ClipStretch::ALL, clip.stretch, forward);
+        }
+        // Stepped by `nudge_route`, which needs the list of tracks and
+        // therefore cannot be answered from the clip alone.
+        AudioField::Route => {}
         AudioField::Loop => {
             clip.loop_mode = match clip.loop_mode {
                 ClipLoopMode::Once => ClipLoopMode::Loop,
@@ -372,7 +734,12 @@ pub fn audio_editor_layout(body: Rect, metrics: &Metrics, rows: usize) -> AudioE
         .copied()
         .enumerate()
         .map(|(index, field)| {
-            let rect = Rect::new(inner.x, top + row_height * index as f32, inner.width, row_height);
+            let rect = Rect::new(
+                inner.x,
+                top + row_height * index as f32,
+                inner.width,
+                row_height,
+            );
             // Clipped to the panel rather than dropped, so a row that ran off
             // the end of a short window is an empty rectangle: it draws as
             // nothing and hit-tests as absent, and the list keeps its length.
@@ -384,6 +751,55 @@ pub fn audio_editor_layout(body: Rect, metrics: &Metrics, rows: usize) -> AudioE
         waveform,
         rows: laid,
     }
+}
+
+/// How much of a row its control takes, as a fraction of the row's width.
+///
+/// Half: the names are short and the numbers are short, and a track with less
+/// than this has too little travel to set a cutoff on.
+const CONTROL_FRACTION: f32 = 0.5;
+
+/// The control's own rectangle inside `row` — the track a slider is dragged
+/// along, the box a switch is drawn in, the field a drop-down hangs under.
+///
+/// Right-aligned, so a column of controls reads down the panel rather than
+/// wandering with the names, and inset vertically so a row still reads as a
+/// row rather than as a solid bar.
+pub fn audio_row_control_rect(row: Rect, metrics: &Metrics) -> Rect {
+    if row.is_empty() {
+        return Rect::ZERO;
+    }
+    let pad = metrics.panel_padding.min(row.width / 4.0);
+    let width = (row.width * CONTROL_FRACTION - pad).max(0.0);
+    let inset = (row.height * 0.18).min(4.0);
+    Rect::new(
+        row.right() - pad - width,
+        row.y + inset,
+        width,
+        (row.height - inset * 2.0).max(0.0),
+    )
+    .intersection(&row)
+    .clamped()
+}
+
+/// The fraction a press at `x` along `row`'s track is asking for.
+///
+/// **Absolute**, the way the mixer's fader and pan are: a press jumps the
+/// value to where it landed and the drag follows from there, because that is
+/// how a track works everywhere and because the alternative makes "take it all
+/// the way down" a long haul rather than one click.
+pub fn audio_slider_at(row: Rect, metrics: &Metrics, x: f32) -> f32 {
+    let track = audio_row_control_rect(row, metrics);
+    if track.width <= 0.0 {
+        return 0.0;
+    }
+    ((x - track.x) / track.width).clamp(0.0, 1.0)
+}
+
+/// The other direction: where along the track a fraction sits.
+pub fn audio_slider_x_of(row: Rect, metrics: &Metrics, t: f32) -> f32 {
+    let track = audio_row_control_rect(row, metrics);
+    track.x + track.width * t.clamp(0.0, 1.0)
 }
 
 /// Which row `(x, y)` is on, if it is on one.
@@ -398,4 +814,45 @@ pub fn audio_editor_hit(layout: &AudioEditorLayout, x: f32, y: f32) -> Option<Au
         .iter()
         .find(|(_, rect)| !rect.is_empty() && rect.contains(x, y))
         .map(|(field, _)| *field)
+}
+
+/// Points `clip` at the next mixer track in `tracks`, or the previous one.
+///
+/// > *"soundclips dont have options right now for selecting their mixer
+/// > track."*
+///
+/// Its own function rather than an arm of [`nudge_audio_row`] because it is
+/// the one row whose answer is not in the clip: which tracks exist is the
+/// document's, and this crate may not see one (INVARIANT 2). `tracks` is the
+/// list the window already keeps for every other route control — **master
+/// first, as `None`**, then each track somebody made, in the order the mixer
+/// lays them out.
+///
+/// A choice, so it **wraps**: the same rule the loop mode and the filter shape
+/// follow, and for the same reason — a list of destinations has no ends, and
+/// stopping at one would mean going back through the others to reach it.
+///
+/// A clip pointed at a track that has since been deleted is not in the list at
+/// all, so a step from there lands on the master rather than on nothing: a row
+/// that cannot be stepped is a clip that can never be re-routed.
+pub fn nudge_route(
+    clip: &mut AudioClipData,
+    direction: i32,
+    tracks: &[Option<fontelle_types::MixerTrackId>],
+) {
+    if direction == 0 || tracks.is_empty() {
+        return;
+    }
+    let at = tracks.iter().position(|t| *t == clip.mixer_track);
+    let next = match at {
+        Some(at) => {
+            let len = tracks.len() as i32;
+            let step = direction.signum();
+            (((at as i32 + step) % len) + len) % len
+        }
+        // Somewhere that no longer exists: the master, which is where a clip
+        // whose track was deleted is already being heard.
+        None => 0,
+    };
+    clip.mixer_track = tracks[next as usize];
 }

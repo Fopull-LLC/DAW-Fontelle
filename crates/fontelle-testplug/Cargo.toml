@@ -1,0 +1,16 @@
+[package]
+name = "fontelle-testplug"
+description = "Two tiny CLAP plugins, built only so the host in fontelle-host has something real to load in its tests."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+clack-plugin = "0.1.1"
+clack-extensions = { version = "0.1.1", features = ["params", "state", "audio-ports", "note-ports", "gui", "latency", "clack-plugin"] }

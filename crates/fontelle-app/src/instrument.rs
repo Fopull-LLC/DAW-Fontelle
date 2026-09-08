@@ -15,6 +15,34 @@ use fontelle_core::Patch;
 use fontelle_types::ParamAddress;
 use fontelle_ui::canvas::{InstrumentGroup, InstrumentParam, InstrumentView, ParamKind};
 
+/// The channel's own level and placement, as a group.
+///
+/// Its own function because a channel playing a plugin has these two controls
+/// as much as one playing a patch does — they belong to the channel, not to
+/// what is on it (see `fontelle_model::Channel::gain_db`) — and two copies of
+/// the same two addresses is one to forget.
+pub fn channel_group(gain_db: f32, pan: f32) -> InstrumentGroup {
+    InstrumentGroup {
+        name: "Channel".to_string(),
+        params: vec![
+            param(
+                MIXER_GAIN,
+                "volume",
+                unlerp(gain_db, GAIN_MIN_DB, GAIN_MAX_DB),
+                format!("{gain_db:+.1} dB"),
+                ParamKind::Knob,
+            ),
+            param(
+                MIXER_PAN,
+                "pan",
+                (pan + 1.0) / 2.0,
+                pan_display(pan),
+                ParamKind::Knob,
+            ),
+        ],
+    }
+}
+
 /// The two parameters that live on the **channel** rather than in its patch —
 /// its level and its placement.
 ///
@@ -38,9 +66,9 @@ pub use fontelle_ui::canvas::{MIXER_GAIN, MIXER_PAN};
 /// than by two lists agreeing.
 pub use fontelle_core::patch_params::{
     CUTOFF_MAX_HZ, CUTOFF_MIN_HZ, DETUNE_CENTS, FILTER_MODES, GAIN_MAX_DB, GAIN_MIN_DB,
-    GLIDE_MAX_S, MAX_POLYPHONY, OCTAVES, QUALITIES, SHAPES, bool_value, choice_index,
-    choice_value, lerp, lerp_log, lerp_stage, octave_of, root_key_for, set, unlerp, unlerp_log,
-    unlerp_stage, value,
+    GLIDE_MAX_S, MAX_POLYPHONY, OCTAVES, QUALITIES, SHAPES, bool_value, choice_index, choice_value,
+    lerp, lerp_log, lerp_stage, octave_of, root_key_for, set, unlerp, unlerp_log, unlerp_stage,
+    value,
 };
 
 /// Every address on this patch's panel that belongs to the **patch** rather
@@ -68,27 +96,16 @@ pub fn patch_addresses(patch: &Patch) -> Vec<String> {
 /// mixer panel yet, and a sampler you cannot balance against another one is
 /// half an instrument.
 pub fn describe(title: &str, patch: &Patch, gain_db: f32, pan: f32) -> InstrumentView {
+    // Flopsynth has five oscillators, four envelopes, four LFOs, four macros,
+    // a mod matrix and an effects chain — a hundred and fifty controls where
+    // the general panel draws twenty. Drawing it here would mean this function
+    // spending most of its length on one instrument, so it has its own.
+    if fontelle_core::flopsynth::is_flopsynth(patch) {
+        return describe_flopsynth(title, patch, gain_db, pan);
+    }
     let mut groups = Vec::new();
 
-    groups.push(InstrumentGroup {
-        name: "Channel".to_string(),
-        params: vec![
-            param(
-                MIXER_GAIN,
-                "volume",
-                unlerp(gain_db, GAIN_MIN_DB, GAIN_MAX_DB),
-                format!("{gain_db:+.1} dB"),
-                ParamKind::Knob,
-            ),
-            param(
-                MIXER_PAN,
-                "pan",
-                (pan + 1.0) / 2.0,
-                pan_display(pan),
-                ParamKind::Knob,
-            ),
-        ],
-    });
+    groups.push(channel_group(gain_db, pan));
 
     let voice = &patch.voice_config;
     groups.push(InstrumentGroup {
@@ -310,7 +327,6 @@ pub fn describe(title: &str, patch: &Patch, gain_db: f32, pan: f32) -> Instrumen
     }
 
     InstrumentView {
-        presets: Vec::new(),
         keys: Vec::new(),
         key: None,
         title: title.to_string(),
@@ -349,18 +365,9 @@ fn stage(address: &str, label: &str, seconds_value: f32) -> InstrumentParam {
     )
 }
 
-
-
-
-
-
-
-
 fn on_off(on: bool) -> String {
     if on { "on" } else { "off" }.to_string()
 }
-
-
 
 fn seconds(value: f32) -> String {
     if value < 0.001 {
@@ -386,5 +393,784 @@ fn pan_display(pan: f32) -> String {
         0 => "centre".to_string(),
         n if n < 0 => format!("{}L", -n),
         n => format!("{n}R"),
+    }
+}
+
+// ---------------------------------------------------------- hosted plugins
+
+/// The most of a plugin's parameters this draws.
+///
+/// A plugin is entitled to expose thousands — a modular synth exposes one per
+/// patch point — and a panel of thousands of knobs is not a panel. What it
+/// draws is the first hundred and twenty-eight, in the order the plugin
+/// declared them, which is the order its own editor would show them in.
+///
+/// The rest are not lost: they are still automatable and still saved, because
+/// both of those go by the plugin's own parameter id and neither goes through
+/// this list. Only the drawing stops.
+pub const MAX_PLUGIN_PARAMS: usize = 128;
+
+/// A panel for a plugin somebody else wrote (TDD §8.4).
+///
+/// The counterpart of [`describe`], and deliberately the same shape: an
+/// [`InstrumentView`] of groups of normalised values with stable addresses.
+/// That the panel needed no changes at all to draw a plugin is the strongest
+/// evidence §8.2's parameter contract was the right one — a hosted plugin's
+/// parameters differ from a built-in effect's in exactly one way, which is
+/// that their names arrive at run time rather than living in the binary.
+///
+/// Grouped by the plugin's own `module` string, in the order the groups first
+/// appear. A plugin that offers none gets one group called "Parameters",
+/// which is what its parameters are.
+///
+/// `address_of` says how a parameter of *this* plugin is named — an insert's
+/// and an instrument's differ, and neither is invented here (see
+/// `fontelle_types::ParamTarget`). `display` is the plugin's own read-out for
+/// a value: units are its business, and a host that guessed would put decibels
+/// after a ratio.
+pub fn describe_plugin(
+    title: &str,
+    params: &[fontelle_host::HostedParam],
+    value_of: impl Fn(u32) -> Option<f64>,
+    address_of: impl Fn(u32) -> ParamAddress,
+    display: impl Fn(u32, f64) -> Option<String>,
+) -> InstrumentView {
+    let mut groups: Vec<InstrumentGroup> = Vec::new();
+    for spec in params
+        .iter()
+        // A parameter the plugin says cannot be set is not a control. It is
+        // still automatable and still saved — both go by its own id and
+        // neither goes through this list — so only the drawing stops, which
+        // is the same trade `MAX_PLUGIN_PARAMS` makes.
+        .filter(|param| !param.hidden && !param.readonly)
+        .take(MAX_PLUGIN_PARAMS)
+    {
+        let plain = value_of(spec.id).unwrap_or(spec.default);
+        let drawn = InstrumentParam {
+            address: address_of(spec.id),
+            label: elide_label(&spec.name),
+            value: spec.normalise(plain) as f32,
+            display: display(spec.id, plain).unwrap_or_else(|| format_plain(plain, spec.stepped)),
+            // A stepped parameter with two positions is a switch; anything
+            // else is a knob, and a stepped one lands on its positions because
+            // `HostedParam::plain` rounds. A `Choice` would need names for the
+            // positions, and CLAP offers none without asking the plugin to
+            // format each one — which is a main-thread call per position per
+            // repaint.
+            kind: if spec.steps() == Some(2) {
+                ParamKind::Switch
+            } else {
+                ParamKind::Knob
+            },
+            automated: false,
+        };
+        let module = module_heading(&spec.module);
+        match groups.iter_mut().find(|group| group.name == module) {
+            Some(group) => group.params.push(drawn),
+            None => groups.push(InstrumentGroup {
+                name: module,
+                params: vec![drawn],
+            }),
+        }
+    }
+    InstrumentView {
+        title: title.to_string(),
+        keys: Vec::new(),
+        key: None,
+        groups,
+    }
+}
+
+/// The fallback read-out for a plugin that will not format its own values.
+fn format_plain(value: f64, stepped: bool) -> String {
+    if stepped {
+        format!("{}", value.round() as i64)
+    } else {
+        format!("{value:.2}")
+    }
+}
+
+/// What a group of a plugin's parameters is called on the panel.
+///
+/// CLAP's `module` is a **path** — "the plugin's grouping, `/`-separated" —
+/// and plugins write it with separators: Surge XT's are `/Macros/` and
+/// `/Global & FX/`, and drawing the string as it arrives put "/Macros/" over
+/// the first row of knobs. The path is turned back into words, with the
+/// segments spaced around a separator so a nested one still reads as nested
+/// ("A / Osc 1"), and a plugin that offers no module at all gets "Parameters",
+/// which is what its parameters are.
+pub fn module_heading(module: &str) -> String {
+    let words: Vec<&str> = module
+        .split('/')
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if words.is_empty() {
+        return "Parameters".to_string();
+    }
+    words.join(" \u{2044} ")
+}
+
+/// The most characters a control's caption may have before it is shortened.
+///
+/// The panel's cells are [`fontelle_ui::canvas::CELL_WIDTH`] wide, which is
+/// about this many characters at the panel's own font. A plugin names its
+/// parameters for its own editor, where there is room: "Polyphony Limit",
+/// "Send FX 1 Return", "FX A1 Param 12".
+const LABEL_CHARS: usize = 15;
+
+/// `name`, shortened to fit a cell, with an ellipsis if it did not.
+///
+/// Cut with a mark rather than clipped by the renderer, because those are two
+/// different sentences: "Polyphony Limi" reads as a name somebody misspelled,
+/// and "Polyphony Limi\u{2026}" reads as a name that did not fit. The whole
+/// name is still what the plugin knows it by — only the caption is shortened.
+pub fn elide_label(name: &str) -> String {
+    if name.chars().count() <= LABEL_CHARS {
+        return name.to_string();
+    }
+    let kept: String = name.chars().take(LABEL_CHARS - 1).collect();
+    format!("{}\u{2026}", kept.trim_end())
+}
+
+// ------------------------------------------------------------- Flopsynth ---
+
+/// The panel for the built-in wavetable synthesiser
+/// (`docs/flopsynth-plan.md` §8).
+///
+/// # Why it is the general grid and not (yet) the picture of a signal path
+///
+/// §8 asks for a bespoke canvas — cards laid out as the signal flows, a wave
+/// picture per oscillator, a response curve per filter, draggable envelope
+/// nodes, a modulation ring on every knob. That is Phase 4's work and it is a
+/// lot of it.
+///
+/// What this is, is **every control reachable now**: one group per card the
+/// bespoke window will draw, in the order it will draw them, using the same
+/// addresses. So the synth is fully editable, fully automatable and fully on
+/// the live wire from the day it ships, and the canvas replaces the *drawing*
+/// rather than the plumbing.
+///
+/// Every address here is one [`fontelle_core::flopsynth::addresses`] lists,
+/// which is what `realise`'s `param_nodes` map reads — so a knob on this panel
+/// and a lane that can reach it are one list by construction (handoff §4).
+pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) -> InstrumentView {
+    use fontelle_core::flopsynth::layer_role;
+    use fontelle_core::patch_params::{
+        BEND_MAX_SEMITONES, LFO_MAX_HZ, LFO_MIN_HZ, LFO_TIME_MAX_S, MODULATOR_CHOICES,
+        OUTPUT_MAX_DB, OUTPUT_MIN_DB, SEMITONE_RANGE, UNISON_DETUNE_MAX_CENTS, VOICE_MODES,
+    };
+    use fontelle_dsp::{
+        FilterModel, FilterRoute, FilterSlope, MAX_UNISON, SynthSource, WarpMode, WavetableId,
+    };
+    use fontelle_types::{LfoWave, NoteDivision};
+
+    let mut groups = vec![channel_group(gain_db, pan)];
+
+    // --- Voice ---------------------------------------------------------
+    let voice = &patch.voice_config;
+    let mode = VOICE_MODES
+        .iter()
+        .position(|(m, _)| *m == voice.retrigger)
+        .unwrap_or(0);
+    groups.push(InstrumentGroup {
+        name: "Voice".to_string(),
+        params: vec![
+            param(
+                "patch/voice/mode",
+                "mode",
+                choice_value(mode, VOICE_MODES.len()),
+                VOICE_MODES[mode].1.to_string(),
+                ParamKind::Choice(VOICE_MODES.iter().map(|(_, n)| n.to_string()).collect()),
+            ),
+            param(
+                "patch/voice/polyphony",
+                "voices",
+                unlerp(f32::from(voice.polyphony), 1.0, MAX_POLYPHONY),
+                format!("{}", voice.polyphony),
+                ParamKind::Knob,
+            ),
+            param(
+                "patch/voice/glide",
+                "glide",
+                unlerp(voice.glide_time_s, 0.0, GLIDE_MAX_S),
+                seconds(voice.glide_time_s),
+                ParamKind::Knob,
+            ),
+            param(
+                "patch/voice/bend_range",
+                "bend",
+                unlerp(voice.bend_range_semitones, 0.0, BEND_MAX_SEMITONES),
+                format!("{:.0} st", voice.bend_range_semitones),
+                ParamKind::Knob,
+            ),
+            param(
+                "patch/output",
+                "output",
+                unlerp(patch.output_db, OUTPUT_MIN_DB, OUTPUT_MAX_DB),
+                format!("{:+.1} dB", patch.output_db),
+                ParamKind::Knob,
+            ),
+        ],
+    });
+
+    // --- The five oscillators, one card each ---------------------------
+    for (index, layer) in patch.layers.iter().enumerate() {
+        let fontelle_core::Source::Synth(osc) = &layer.source else {
+            continue;
+        };
+        let role = layer_role(index);
+        let mut params = Vec::new();
+        let noise = matches!(osc.source, SynthSource::Noise);
+
+        if let SynthSource::Table(table) = osc.source {
+            let at = WavetableId::ALL
+                .iter()
+                .position(|t| *t == table)
+                .unwrap_or(0);
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/table"),
+                "table",
+                choice_value(at, WavetableId::ALL.len()),
+                table.label().to_string(),
+                // Grouped by family in the bespoke window; a flat list here,
+                // in the same order, so the two never disagree about which
+                // position is which table (INVARIANT 7).
+                ParamKind::Choice(
+                    WavetableId::ALL
+                        .iter()
+                        .map(|t| t.label().to_string())
+                        .collect(),
+                ),
+            ));
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/position"),
+                "pos",
+                osc.position.clamp(0.0, 1.0),
+                format!("{:.0}%", osc.position.clamp(0.0, 1.0) * 100.0),
+                ParamKind::Knob,
+            ));
+        } else {
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/noise_colour"),
+                "colour",
+                osc.noise_colour.clamp(0.0, 1.0),
+                match osc.noise_colour {
+                    c if c < 0.2 => "white".to_string(),
+                    c if c < 0.7 => "pink".to_string(),
+                    _ => "brown".to_string(),
+                },
+                ParamKind::Knob,
+            ));
+        }
+
+        params.push(param(
+            &format!("patch/layer[{index}]/gain"),
+            "level",
+            unlerp(layer.gain_db, GAIN_MIN_DB, GAIN_MAX_DB),
+            if layer.gain_db <= GAIN_MIN_DB {
+                // The bottom of the travel is *off*, and saying "-60.0 dB"
+                // instead makes somebody wonder whether they can hear it.
+                "off".to_string()
+            } else {
+                format!("{:+.1} dB", layer.gain_db)
+            },
+            ParamKind::Knob,
+        ));
+        params.push(param(
+            &format!("patch/layer[{index}]/pan"),
+            "pan",
+            (layer.pan.clamp(-1.0, 1.0) + 1.0) / 2.0,
+            pan_display(layer.pan),
+            ParamKind::Knob,
+        ));
+
+        if !noise {
+            let warp = WarpMode::ALL
+                .iter()
+                .position(|m| *m == osc.warp)
+                .unwrap_or(0);
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/warp_mode"),
+                "warp",
+                choice_value(warp, WarpMode::ALL.len()),
+                osc.warp.label().to_string(),
+                ParamKind::Choice(
+                    WarpMode::ALL
+                        .iter()
+                        .map(|m| m.label().to_string())
+                        .collect(),
+                ),
+            ));
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/warp"),
+                "amount",
+                osc.warp_amount.clamp(0.0, 1.0),
+                format!("{:.0}%", osc.warp_amount.clamp(0.0, 1.0) * 100.0),
+                ParamKind::Knob,
+            ));
+            // Only the layers *after* this one can be its modulator, which is
+            // what makes the voice's backwards walk correct — see
+            // `Voice::render_performing`.
+            let choices: Vec<String> = std::iter::once("none".to_string())
+                .chain((1..MODULATOR_CHOICES).map(|i| layer_role(i).label().to_string()))
+                .collect();
+            let at = osc
+                .modulator
+                .map_or(0, |m| usize::from(m).min(choices.len() - 1));
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/modulator"),
+                "mod from",
+                choice_value(at, MODULATOR_CHOICES),
+                choices[at].clone(),
+                ParamKind::Choice(choices),
+            ));
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/unison/voices"),
+                "unison",
+                unlerp(f32::from(osc.unison.voices), 1.0, MAX_UNISON as f32),
+                format!("{}", osc.unison.voices),
+                ParamKind::Knob,
+            ));
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/unison/detune"),
+                "detune",
+                unlerp(osc.unison.detune_cents, 0.0, UNISON_DETUNE_MAX_CENTS),
+                format!("{:.0} c", osc.unison.detune_cents),
+                ParamKind::Knob,
+            ));
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/unison/blend"),
+                "blend",
+                osc.unison.blend.clamp(0.0, 1.0),
+                format!("{:.0}%", osc.unison.blend.clamp(0.0, 1.0) * 100.0),
+                ParamKind::Knob,
+            ));
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/unison/width"),
+                "width",
+                osc.unison.width.clamp(0.0, 1.0),
+                format!("{:.0}%", osc.unison.width.clamp(0.0, 1.0) * 100.0),
+                ParamKind::Knob,
+            ));
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/phase"),
+                "phase",
+                osc.phase.clamp(0.0, 1.0),
+                format!("{:.0}\u{b0}", osc.phase.clamp(0.0, 1.0) * 360.0),
+                ParamKind::Knob,
+            ));
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/random_phase"),
+                "random",
+                bool_value(osc.random_phase),
+                on_off(osc.random_phase),
+                ParamKind::Switch,
+            ));
+        }
+
+        params.push(param(
+            &format!("patch/layer[{index}]/synth/semitones"),
+            "semis",
+            unlerp(f32::from(osc.semitones), -SEMITONE_RANGE, SEMITONE_RANGE),
+            format!("{:+} st", osc.semitones),
+            ParamKind::Knob,
+        ));
+        params.push(param(
+            &format!("patch/layer[{index}]/tune"),
+            "fine",
+            unlerp(
+                layer.fine_tune_cents.clamp(-DETUNE_CENTS, DETUNE_CENTS),
+                -DETUNE_CENTS,
+                DETUNE_CENTS,
+            ),
+            format!("{:+.0} c", layer.fine_tune_cents),
+            ParamKind::Knob,
+        ));
+        params.push(param(
+            &format!("patch/layer[{index}]/synth/key_track"),
+            "key",
+            bool_value(osc.key_track),
+            on_off(osc.key_track),
+            ParamKind::Switch,
+        ));
+        let route = FilterRoute::ALL
+            .iter()
+            .position(|r| *r == osc.filter_route)
+            .unwrap_or(0);
+        params.push(param(
+            &format!("patch/layer[{index}]/synth/route"),
+            "route",
+            choice_value(route, FilterRoute::ALL.len()),
+            osc.filter_route.label().to_string(),
+            ParamKind::Choice(
+                FilterRoute::ALL
+                    .iter()
+                    .map(|r| r.label().to_string())
+                    .collect(),
+            ),
+        ));
+
+        groups.push(InstrumentGroup {
+            name: role.label().to_string(),
+            params,
+        });
+    }
+
+    // --- The two filters -----------------------------------------------
+    for (index, filter) in patch.filters.iter().enumerate() {
+        let model = FilterModel::ALL
+            .iter()
+            .position(|m| *m == filter.model)
+            .unwrap_or(0);
+        let mode = FILTER_MODES
+            .iter()
+            .position(|(m, _)| *m == filter.mode)
+            .unwrap_or(0);
+        let slope = FilterSlope::ALL
+            .iter()
+            .position(|s| *s == filter.slope)
+            .unwrap_or(0);
+        let mut params = vec![
+            param(
+                &format!("patch/filter[{index}]/enabled"),
+                "on",
+                bool_value(filter.enabled),
+                on_off(filter.enabled),
+                ParamKind::Switch,
+            ),
+            param(
+                &format!("patch/filter[{index}]/model"),
+                "model",
+                choice_value(model, FilterModel::ALL.len()),
+                filter.model.label().to_string(),
+                ParamKind::Choice(
+                    FilterModel::ALL
+                        .iter()
+                        .map(|m| m.label().to_string())
+                        .collect(),
+                ),
+            ),
+            param(
+                &format!("patch/filter[{index}]/mode"),
+                "shape",
+                choice_value(mode, FILTER_MODES.len()),
+                FILTER_MODES[mode].1.to_string(),
+                ParamKind::Choice(FILTER_MODES.iter().map(|(_, n)| n.to_string()).collect()),
+            ),
+            param(
+                &format!("patch/filter[{index}]/slope"),
+                "slope",
+                choice_value(slope, FilterSlope::ALL.len()),
+                filter.slope.label().to_string(),
+                ParamKind::Choice(
+                    FilterSlope::ALL
+                        .iter()
+                        .map(|s| s.label().to_string())
+                        .collect(),
+                ),
+            ),
+            param(
+                &format!("patch/filter[{index}]/cutoff"),
+                "cutoff",
+                unlerp_log(filter.cutoff_hz, CUTOFF_MIN_HZ, CUTOFF_MAX_HZ),
+                hertz(filter.cutoff_hz),
+                ParamKind::Knob,
+            ),
+            param(
+                &format!("patch/filter[{index}]/resonance"),
+                "res",
+                filter.resonance.clamp(0.0, 1.0),
+                format!("{:.2}", filter.resonance),
+                ParamKind::Knob,
+            ),
+            param(
+                &format!("patch/filter[{index}]/drive"),
+                "drive",
+                filter.drive.clamp(0.0, 1.0),
+                format!("{:.0}%", filter.drive.clamp(0.0, 1.0) * 100.0),
+                ParamKind::Knob,
+            ),
+            param(
+                &format!("patch/filter[{index}]/key_track"),
+                "key trk",
+                filter.key_track.clamp(0.0, 1.0),
+                format!("{:.0}%", filter.key_track.clamp(0.0, 1.0) * 100.0),
+                ParamKind::Knob,
+            ),
+        ];
+        // The character knob's caption is the *model's* — and a model that has
+        // no use for it does not get a knob that does nothing.
+        if let Some(caption) = filter.model.character_label() {
+            params.push(param(
+                &format!("patch/filter[{index}]/character"),
+                caption,
+                filter.character.clamp(0.0, 1.0),
+                format!("{:.0}%", filter.character.clamp(0.0, 1.0) * 100.0),
+                ParamKind::Knob,
+            ));
+        }
+        groups.push(InstrumentGroup {
+            name: format!("Filter {}", index + 1),
+            params,
+        });
+    }
+
+    // --- Four envelopes ------------------------------------------------
+    for (index, env) in patch.envelopes.iter().enumerate().take(4) {
+        let shape = |field: &str, label: &str, value: f32| {
+            param(
+                &format!("patch/env[{index}]/{field}"),
+                label,
+                (value.clamp(-1.0, 1.0) + 1.0) / 2.0,
+                format!("{value:+.2}"),
+                ParamKind::Knob,
+            )
+        };
+        groups.push(InstrumentGroup {
+            // Envelope 1 is the amp envelope everywhere in this program; 2 is
+            // the one the Init patch routes to the filter.
+            name: match index {
+                0 => "ENV 1 \u{b7} amp".to_string(),
+                1 => "ENV 2 \u{b7} filter".to_string(),
+                n => format!("ENV {}", n + 1),
+            },
+            params: vec![
+                stage(&format!("patch/env[{index}]/delay"), "delay", env.delay_s),
+                stage(
+                    &format!("patch/env[{index}]/attack"),
+                    "attack",
+                    env.attack_s,
+                ),
+                stage(&format!("patch/env[{index}]/hold"), "hold", env.hold_s),
+                stage(&format!("patch/env[{index}]/decay"), "decay", env.decay_s),
+                param(
+                    &format!("patch/env[{index}]/sustain"),
+                    "sustain",
+                    env.sustain_level.clamp(0.0, 1.0),
+                    format!("{:.0}%", env.sustain_level.clamp(0.0, 1.0) * 100.0),
+                    ParamKind::Knob,
+                ),
+                stage(
+                    &format!("patch/env[{index}]/release"),
+                    "release",
+                    env.release_s,
+                ),
+                shape("attack_shape", "a shape", env.attack_shape),
+                shape("decay_shape", "d shape", env.decay_shape),
+                shape("release_shape", "r shape", env.release_shape),
+            ],
+        });
+    }
+
+    // --- Four LFOs -----------------------------------------------------
+    for (index, lfo) in patch.lfos.iter().enumerate().take(4) {
+        let wave = LfoWave::ALL
+            .iter()
+            .position(|w| *w == lfo.wave)
+            .unwrap_or(0);
+        let division = NoteDivision::ALL
+            .iter()
+            .position(|d| *d == lfo.division)
+            .unwrap_or(0);
+        let mode = fontelle_core::LfoMode::ALL
+            .iter()
+            .position(|m| *m == lfo.mode)
+            .unwrap_or(0);
+        let cubic = |value: f32| (value.max(0.0) / LFO_TIME_MAX_S).clamp(0.0, 1.0).cbrt();
+        groups.push(InstrumentGroup {
+            name: format!("LFO {}", index + 1),
+            params: vec![
+                param(
+                    &format!("patch/lfo[{index}]/wave"),
+                    "wave",
+                    choice_value(wave, LfoWave::ALL.len()),
+                    lfo.wave.label().to_string(),
+                    ParamKind::Choice(LfoWave::ALL.iter().map(|w| w.label().to_string()).collect()),
+                ),
+                param(
+                    &format!("patch/lfo[{index}]/sync"),
+                    "sync",
+                    bool_value(lfo.sync),
+                    on_off(lfo.sync),
+                    ParamKind::Switch,
+                ),
+                // Both are always drawn, and the read-out says which one is in
+                // force: a control that vanished when a switch moved is a
+                // control somebody has to hunt for.
+                param(
+                    &format!("patch/lfo[{index}]/rate"),
+                    "rate",
+                    unlerp_log(lfo.rate_hz, LFO_MIN_HZ, LFO_MAX_HZ),
+                    if lfo.sync {
+                        "(synced)".to_string()
+                    } else {
+                        format!("{:.2} Hz", lfo.rate_hz)
+                    },
+                    ParamKind::Knob,
+                ),
+                param(
+                    &format!("patch/lfo[{index}]/division"),
+                    "division",
+                    choice_value(division, NoteDivision::ALL.len()),
+                    lfo.division.label().to_string(),
+                    ParamKind::Choice(
+                        NoteDivision::ALL
+                            .iter()
+                            .map(|d| d.label().to_string())
+                            .collect(),
+                    ),
+                ),
+                param(
+                    &format!("patch/lfo[{index}]/mode"),
+                    "mode",
+                    choice_value(mode, fontelle_core::LfoMode::ALL.len()),
+                    lfo.mode.label().to_string(),
+                    ParamKind::Choice(
+                        fontelle_core::LfoMode::ALL
+                            .iter()
+                            .map(|m| m.label().to_string())
+                            .collect(),
+                    ),
+                ),
+                param(
+                    &format!("patch/lfo[{index}]/depth"),
+                    "depth",
+                    lfo.depth.clamp(0.0, 1.0),
+                    format!("{:.0}%", lfo.depth.clamp(0.0, 1.0) * 100.0),
+                    ParamKind::Knob,
+                ),
+                param(
+                    &format!("patch/lfo[{index}]/delay"),
+                    "delay",
+                    cubic(lfo.delay_s),
+                    seconds(lfo.delay_s),
+                    ParamKind::Knob,
+                ),
+                param(
+                    &format!("patch/lfo[{index}]/fade"),
+                    "fade",
+                    cubic(lfo.fade_s),
+                    seconds(lfo.fade_s),
+                    ParamKind::Knob,
+                ),
+                param(
+                    &format!("patch/lfo[{index}]/phase"),
+                    "phase",
+                    lfo.phase.clamp(0.0, 1.0),
+                    format!("{:.0}\u{b0}", lfo.phase.clamp(0.0, 1.0) * 360.0),
+                    ParamKind::Knob,
+                ),
+                param(
+                    &format!("patch/lfo[{index}]/smooth"),
+                    "smooth",
+                    lfo.smooth.clamp(0.0, 1.0),
+                    format!("{:.0}%", lfo.smooth.clamp(0.0, 1.0) * 100.0),
+                    ParamKind::Knob,
+                ),
+            ],
+        });
+    }
+
+    // --- The macros, captioned with their own names --------------------
+    groups.push(InstrumentGroup {
+        name: "Macros".to_string(),
+        params: (0..fontelle_core::MACRO_COUNT)
+            .map(|index| {
+                let knob = &patch.macros[index];
+                // A macro's caption **is** its name, which is the whole of
+                // what makes a preset playable from one knob. A macro nobody
+                // has named is still a knob, so it gets its number.
+                let caption = if knob.name.is_empty() {
+                    format!("macro {}", index + 1)
+                } else {
+                    knob.name.clone()
+                };
+                param(
+                    &format!("patch/macro[{index}]"),
+                    &caption,
+                    knob.value.clamp(0.0, 1.0),
+                    format!("{:.0}%", knob.value.clamp(0.0, 1.0) * 100.0),
+                    ParamKind::Knob,
+                )
+            })
+            .collect(),
+    });
+
+    // --- The matrix's depths -------------------------------------------
+    //
+    // A route's **depth** is a parameter and everything else about it is
+    // structure (§2.3), so a depth is a knob here and adding a route is not.
+    // The caption is the route itself, so a panel of eight of these is
+    // readable rather than eight knobs called "depth".
+    if !patch.mod_matrix.routes.is_empty() {
+        let destinations = fontelle_core::flopsynth::destinations(patch);
+        let sources = fontelle_core::flopsynth::sources(patch);
+        groups.push(InstrumentGroup {
+            name: format!("Modulation ({})", patch.mod_matrix.routes.len()),
+            params: patch
+                .mod_matrix
+                .routes
+                .iter()
+                .enumerate()
+                .map(|(index, route)| {
+                    let name_of = |want: &dyn Fn() -> Option<String>| {
+                        want().unwrap_or_else(|| "?".to_string())
+                    };
+                    let source = name_of(&|| {
+                        sources
+                            .iter()
+                            .find(|(s, _)| *s == route.source)
+                            .map(|(_, l)| l.clone())
+                    });
+                    let destination = name_of(&|| {
+                        destinations
+                            .iter()
+                            .find(|(d, _)| *d == route.destination)
+                            .map(|(_, l)| l.clone())
+                    });
+                    param(
+                        &format!("patch/mod[{index}]/depth"),
+                        &format!("{source} \u{2192} {destination}"),
+                        (route.depth.clamp(-1.0, 1.0) + 1.0) / 2.0,
+                        format!("{:+.2}", route.depth),
+                        ParamKind::Knob,
+                    )
+                })
+                .collect(),
+        });
+    }
+
+    // --- The instrument's own effects ----------------------------------
+    for (index, slot) in patch.fx.iter().enumerate() {
+        let mut params = vec![param(
+            &format!("patch/fx[{index}]/enabled"),
+            "on",
+            bool_value(slot.enabled),
+            on_off(slot.enabled),
+            ParamKind::Switch,
+        )];
+        // The effect's own `ParamSpec` list, which is already the list
+        // automation works from — built by the same function the effect
+        // window uses, so a chorus's mode is a chooser that says its names
+        // here too, and a new effect's knobs are automatable the day they
+        // exist with nothing said twice.
+        params.extend(fontelle_ui::canvas::effect_params(&slot.config, |id| {
+            fontelle_types::ParamAddress::new(format!("patch/fx[{index}]/{id}"))
+        }));
+        groups.push(InstrumentGroup {
+            name: format!("FX {} \u{b7} {}", index + 1, slot.config.kind().label()),
+            params,
+        });
+    }
+
+    InstrumentView {
+        // The preset bar is the *system's* (§P.7) and not this panel's: the
+        // chip row here is the effects' one, and a Flopsynth's hundred and
+        // twenty-eight presets are not a row of chips.
+        keys: Vec::new(),
+        key: None,
+        title: title.to_string(),
+        groups,
     }
 }

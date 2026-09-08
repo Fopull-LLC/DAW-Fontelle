@@ -135,10 +135,13 @@ fn adding_to_a_clip_that_is_not_automation_is_refused() {
         order: 0,
     });
     let channel = project.channels.insert(fontelle_model::Channel {
+        preset: None,
+        instrument: None,
         name: "ch".into(),
         color: [0; 4],
         mixer_track: None,
         patch_data: None,
+        plugin: None,
         pan: 0.0,
         muted: false,
         soloed: false,

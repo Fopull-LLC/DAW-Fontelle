@@ -25,6 +25,7 @@ fn off() -> FilterSlot {
         cutoff_hz: 20_000.0,
         resonance: 0.0,
         enabled: false,
+        ..Default::default()
     }
 }
 
@@ -37,6 +38,7 @@ fn flat() -> EnvelopeConfig {
         sustain_level: 1.0,
         release_s: 0.01,
         curve: EnvelopeCurve::Linear,
+        ..Default::default()
     }
 }
 
@@ -62,6 +64,7 @@ fn osc_patch(kind: OscKind) -> Patch {
         lfos: Vec::new(),
         mod_matrix: Default::default(),
         voice_config: VoiceConfig::default(),
+        ..Default::default()
     }
 }
 

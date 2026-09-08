@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Bitcrush"
+  },
+  "name": "telephone",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Bitcrush": {
+        "input_db": 0.0,
+        "bits": 8.0,
+        "quantiser": "MuLaw",
+        "dither": "Off",
+        "rate_hz": 8000.0,
+        "decimation": "Hold",
+        "jitter": 0.0,
+        "anti_alias": true,
+        "post_lp_hz": 3400.0,
+        "output_db": 0.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

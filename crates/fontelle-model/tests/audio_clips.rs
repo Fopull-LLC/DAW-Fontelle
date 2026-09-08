@@ -112,7 +112,7 @@ fn an_import_says_what_it_is_in_the_history() {
 // ------------------------------------------------------- editing one ---
 
 use fontelle_model::SetAudioClip;
-use fontelle_types::{FadeCurve, Fade};
+use fontelle_types::{Fade, FadeCurve};
 
 fn a_project_with_a_clip() -> (Project, fontelle_types::ClipId) {
     let mut project = Project::new("audio");
@@ -138,7 +138,11 @@ fn setting_a_clips_properties_changes_only_that_clip() {
     let mut wanted = data_of(&project, id);
     wanted.gain_db = -6.0;
     wanted.filter.cutoff_hz = 900.0;
-    wanted.fade_in = Fade { frames: 4096, curve: FadeCurve::SCurve };
+    wanted.fade_in = Fade {
+        frames: 4096,
+        curve: FadeCurve::SCurve,
+        tension: 0.0,
+    };
 
     let mut command = SetAudioClip::new(id, wanted.clone());
     command.apply(&mut project).expect("applies");
@@ -182,10 +186,13 @@ fn editing_a_clip_that_is_not_audio_is_refused_rather_than_replacing_it() {
         length: PPQN,
         source: ClipSource::Notes(fontelle_model::NoteData {
             channel: project.channels.insert(fontelle_model::Channel {
+                preset: None,
+                instrument: None,
                 name: "ch".into(),
                 color: [0; 4],
                 mixer_track: None,
                 patch_data: None,
+                plugin: None,
                 pan: 0.0,
                 muted: false,
                 soloed: false,
@@ -276,7 +283,11 @@ fn cutting_a_take_in_half_gives_two_halves_of_the_take() {
     let mut cut = SplitClip::new(id, TAKE_LENGTH / 2);
     cut.apply(&mut project).expect("cuts");
 
-    let mut clips: Vec<_> = project.clips.iter().map(|(id, c)| (id, c.clone())).collect();
+    let mut clips: Vec<_> = project
+        .clips
+        .iter()
+        .map(|(id, c)| (id, c.clone()))
+        .collect();
     clips.sort_by_key(|(_, c)| c.start);
     assert_eq!(clips.len(), 2);
 
@@ -293,7 +304,10 @@ fn cutting_a_take_in_half_gives_two_halves_of_the_take() {
         left.source_frames() + right.source_frames(),
         whole.source_frames()
     );
-    assert!(left.source_frames() > 0 && right.source_frames() > 0, "a half is empty");
+    assert!(
+        left.source_frames() > 0 && right.source_frames() > 0,
+        "a half is empty"
+    );
 }
 
 #[test]
@@ -309,7 +323,11 @@ fn a_cut_lands_where_the_blade_did_rather_than_halfway() {
 
     let mut cut = SplitClip::new(id, TAKE_LENGTH / 4);
     cut.apply(&mut project).expect("cuts");
-    let mut clips: Vec<_> = project.clips.iter().map(|(id, c)| (id, c.clone())).collect();
+    let mut clips: Vec<_> = project
+        .clips
+        .iter()
+        .map(|(id, c)| (id, c.clone()))
+        .collect();
     clips.sort_by_key(|(_, c)| c.start);
     let left = data_of(&project, clips[0].0);
     let quarter = whole.source_frames() / 4;
@@ -357,4 +375,141 @@ fn cutting_a_take_undoes_back_to_one_take() {
 
     assert_eq!(project.clips.len(), 1);
     assert_eq!(data_of(&project, id), whole);
+}
+
+// ---------------------------- cutting a take that follows something else ---
+//
+// *"resolve the issue of it trying to stretch while looping and whatnot so it
+// all works together cleanly."* The seam is *where the player is* at the tick
+// the blade fell, and the player is not always reading the file at the file's
+// own rate: a clip in `ClipStretch::Resample` fits the file to its block, and
+// a clip the arrangement repeats comes round again at every period. A seam
+// found at the file's rate, counted from the block's start, is right only for
+// a clip that does neither — and lands past the end of the file for both,
+// where it clamps and hands one half the whole take and the other half
+// nothing.
+
+#[test]
+fn cutting_a_stretched_take_cuts_where_the_player_is_and_not_where_its_own_rate_would_be() {
+    // One second of audio spread over two seconds of block. Halfway along the
+    // block the player is halfway through the file, so that is the seam —
+    // whereas the file's own rate would have run out at the block's middle.
+    let mut project = Project::new("audio");
+    let mut data = a_clip("Take.wav");
+    data.stretch = fontelle_types::ClipStretch::Resample;
+    let mut import = AddAudioClip::new("Take.wav", data, 0, TAKE_LENGTH * 2);
+    import.apply(&mut project).expect("applies");
+    let id = import.clip().expect("a clip");
+    let whole = data_of(&project, id);
+
+    let mut cut = SplitClip::new(id, TAKE_LENGTH);
+    cut.apply(&mut project).expect("cuts");
+    let mut clips: Vec<_> = project
+        .clips
+        .iter()
+        .map(|(id, c)| (id, c.clone()))
+        .collect();
+    clips.sort_by_key(|(_, c)| c.start);
+    assert_eq!(clips.len(), 2);
+    let (left, right) = (data_of(&project, clips[0].0), data_of(&project, clips[1].0));
+
+    let middle = whole.source_start + whole.source_frames() / 2;
+    assert!(
+        (left.source_end - middle).abs() <= 2,
+        "the seam is the file's middle ({middle}), not {}",
+        left.source_end
+    );
+    assert_eq!(left.source_end, right.source_start, "the halves must meet");
+    assert!(
+        right.source_frames() > 0,
+        "the second half got none of the take"
+    );
+    // Both halves still follow their blocks, or the cut has changed the sound.
+    assert_eq!(left.stretch, fontelle_types::ClipStretch::Resample);
+    assert_eq!(right.stretch, fontelle_types::ClipStretch::Resample);
+}
+
+#[test]
+fn cutting_a_looped_take_divides_the_arrangement_and_not_the_file() {
+    // A loop is cut in the **arrangement**: both halves keep the whole take
+    // and go on repeating it. Trimming them to the blade looks tempting —
+    // the cut would be seamless — but a half whose range is trimmed still
+    // repeats every period, so every pass after the first would play the
+    // shortened range and then sit silent for the rest of the period. That
+    // trades one wrong frame at the blade for a hole in every bar.
+    //
+    // Exact when the cut lands on a seam, which is what the snapped grid
+    // gives you. A cut mid-pass restarts the loop at the blade, because a
+    // clip stores where in the file it begins and not where in the *pass* —
+    // the phase a mid-pass half would need has nowhere to live.
+    let mut project = Project::new("audio");
+    let mut import = AddAudioClip::new("Take.wav", a_clip("Take.wav"), 0, TAKE_LENGTH * 4);
+    import.apply(&mut project).expect("applies");
+    let id = import.clip().expect("a clip");
+    project.clips[id].loop_length = Some(TAKE_LENGTH);
+    let whole = data_of(&project, id);
+
+    let mut cut = SplitClip::new(id, TAKE_LENGTH * 2 + TAKE_LENGTH / 2);
+    cut.apply(&mut project).expect("cuts");
+    let mut clips: Vec<_> = project
+        .clips
+        .iter()
+        .map(|(id, c)| (id, c.clone()))
+        .collect();
+    clips.sort_by_key(|(_, c)| c.start);
+    assert_eq!(clips.len(), 2);
+
+    for (id, clip) in &clips {
+        let data = data_of(&project, *id);
+        assert_eq!(
+            data.source_frames(),
+            whole.source_frames(),
+            "a half of a loop lost part of the take, so its passes go quiet"
+        );
+        assert_eq!(
+            clip.loop_length,
+            Some(TAKE_LENGTH),
+            "a half stopped repeating"
+        );
+    }
+    // The blocks, though, are divided where the blade fell.
+    assert_eq!(clips[0].1.length, TAKE_LENGTH * 2 + TAKE_LENGTH / 2);
+    assert_eq!(
+        clips[1].1.length,
+        TAKE_LENGTH * 4 - (TAKE_LENGTH * 2 + TAKE_LENGTH / 2)
+    );
+}
+
+#[test]
+fn the_half_you_cut_off_a_loop_is_still_a_loop_so_it_still_sounds_like_it_did() {
+    // A note clip's front half stops looping because `split_notes` writes its
+    // repeats out and it plays them anyway. There is nothing to write out for
+    // audio: a front half that stopped looping would play the take once and
+    // then sit silent for the passes it used to play, which is the cut
+    // changing the sound.
+    let mut project = Project::new("audio");
+    let mut import = AddAudioClip::new("Take.wav", a_clip("Take.wav"), 0, TAKE_LENGTH * 4);
+    import.apply(&mut project).expect("applies");
+    let id = import.clip().expect("a clip");
+    project.clips[id].loop_length = Some(TAKE_LENGTH);
+
+    let mut cut = SplitClip::new(id, TAKE_LENGTH * 2);
+    cut.apply(&mut project).expect("cuts");
+    let mut clips: Vec<_> = project
+        .clips
+        .iter()
+        .map(|(id, c)| (id, c.clone()))
+        .collect();
+    clips.sort_by_key(|(_, c)| c.start);
+    assert_eq!(
+        clips[0].1.loop_length,
+        Some(TAKE_LENGTH),
+        "the front half stopped repeating and now plays silence"
+    );
+    assert_eq!(clips[1].1.loop_length, Some(TAKE_LENGTH));
+    // Cut on a seam, so neither half starts mid-pass: both play the take from
+    // its front, which is what a loop cut on its own period should give.
+    let (left, right) = (data_of(&project, clips[0].0), data_of(&project, clips[1].0));
+    assert_eq!(left.source_start, right.source_start);
+    assert_eq!(left.source_end, right.source_end);
 }

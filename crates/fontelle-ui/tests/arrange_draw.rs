@@ -58,6 +58,7 @@ fn a_clip(id: ClipId, lane: usize, start: Tick, length: Tick) -> ClipInfo {
         curve: Vec::new(),
         notes: Vec::new(),
         audio: Default::default(),
+        prefab: None,
     }
 }
 

@@ -381,9 +381,36 @@ pub fn key_to_y(view: &RollView, grid: Rect, key: u8) -> f32 {
 ///
 /// Reported as *"inconsistant sizing on the notes in the piano roll"*, which
 /// is what a row height of 23.04 looks like once it has been rasterised.
+/// The part of the grid that is **past the clip's end**, or `None` when the
+/// end is off the right edge and there is nothing to show.
+///
+/// A clip's length is the window on its content: a note beyond it does not
+/// sound, and the clip does not grow to swallow it (TDD §11.4). So the end
+/// has to be visible, or a note drawn out there is silent for no reason
+/// anybody can see.
+///
+/// Clamped to the grid at both ends: scrolled past the end, the whole grid
+/// is outside the clip, and a rectangle that started off the left edge would
+/// paint over the keyboard.
+pub fn roll_past_end(view: &RollView, grid: Rect, clip_length: Tick) -> Option<Rect> {
+    if grid.width <= 0.0 || grid.height <= 0.0 {
+        return None;
+    }
+    let x = tick_to_x(view, grid, clip_length.max(0)).max(grid.x);
+    if x >= grid.right() {
+        return None;
+    }
+    Some(Rect::new(x, grid.y, grid.right() - x, grid.height))
+}
+
 pub fn key_row(view: &RollView, grid: Rect, key: u8) -> Rect {
     let height = view.key_height.round().max(1.0);
-    Rect::new(grid.x, key_to_y(view, grid, key).round(), grid.width, height)
+    Rect::new(
+        grid.x,
+        key_to_y(view, grid, key).round(),
+        grid.width,
+        height,
+    )
 }
 
 pub fn y_to_key(view: &RollView, grid: Rect, y: f32) -> u8 {
@@ -443,42 +470,119 @@ pub fn clamp_to_grid(grid: Rect, x: f32, y: f32) -> (f32, f32) {
     )
 }
 
-/// The most one event may scroll the view, in pixels.
-const EDGE_SCROLL_MAX_PX: f32 = 48.0;
+/// The fastest a drag held off the edge may carry the view, in **pixels per
+/// second**.
+///
+/// Per second, and that is the whole point. This used to be per *event*, and
+/// the window applied it once per `CursorMoved` — so the speed of the scroll
+/// was the mouse's report rate, which nobody chose and which differs by an
+/// order of magnitude between one mouse and the next. A 1000 Hz mouse scrolled
+/// ten times faster than a 100 Hz one for the same gesture, which is
+/// *"when i drag things they often go wayyyy off into infinity for me like
+/// with the slightest mouse movement"*.
+const EDGE_SCROLL_MAX_PX_PER_SEC: f32 = 2200.0;
 
-/// How far the view should move because a drag is being held outside the grid,
-/// as `(ticks, key rows)`.
+/// The slowest, so that a pointer a hair outside the grid still creeps rather
+/// than sitting there doing nothing.
+const EDGE_SCROLL_MIN_PX_PER_SEC: f32 = 60.0;
+
+/// How much speed each pixel of overshoot buys. A nudge is a nudge and a shove
+/// is a shove, between the two bounds above.
+const EDGE_SCROLL_GAIN: f32 = 12.0;
+
+/// The longest step [`EdgeScroll::step`] will believe, in seconds.
+///
+/// `dt` is wall-clock, and wall-clock has holes in it: a frame the compositor
+/// sat on, a laptop resumed from sleep, a breakpoint. Edge scrolling is a
+/// gesture rather than a physics simulation, so a gap is worth one step and
+/// not the travel it "should" have accumulated — catching up thirty seconds of
+/// scroll at once is the runaway this whole change is about, arriving by
+/// another door.
+const EDGE_SCROLL_MAX_STEP: f32 = 0.1;
+
+/// How fast the view should move because a drag is being held outside the
+/// grid, as `(ticks per second, key rows per second)`.
 ///
 /// The other half of [`clamp_to_grid`]: clamping alone means a drag towards
-/// bar 1 stops at the left edge and stays there. Every roll worth using scrolls
-/// instead, and the speed rises with how far out the pointer is so a nudge is a
-/// nudge and a shove is a shove — bounded, because an unbounded one turns a
-/// flick of the mouse into a thousand bars of travel.
+/// bar 1 stops at the left edge and stays there. Every roll worth using
+/// scrolls instead, and the speed rises with how far out the pointer is —
+/// bounded at both ends, and expressed in **time** so that the mouse is not
+/// the thing deciding how far a drag goes. [`EdgeScroll`] integrates it.
 ///
 /// Positive ticks are forwards in time; positive rows are *up* the keyboard,
 /// matching [`RollView::top_key`].
-pub fn edge_scroll(view: &RollView, grid: Rect, x: f32, y: f32) -> (Tick, i32) {
+pub fn edge_scroll_rate(view: &RollView, grid: Rect, x: f32, y: f32) -> (f32, f32) {
     if grid.is_empty() {
-        return (0, 0);
+        return (0.0, 0.0);
     }
-    let speed = |over: f32| (over / 3.0).clamp(1.0, EDGE_SCROLL_MAX_PX);
+    let speed = |over: f32| {
+        (over * EDGE_SCROLL_GAIN).clamp(EDGE_SCROLL_MIN_PX_PER_SEC, EDGE_SCROLL_MAX_PX_PER_SEC)
+    };
     let per_tick = view.pixels_per_tick.max(f32::EPSILON);
     let ticks = if x < grid.x {
-        -((speed(grid.x - x) / per_tick) as Tick)
+        -speed(grid.x - x) / per_tick
     } else if x >= grid.right() {
-        (speed(x - grid.right()) / per_tick) as Tick
+        speed(x - grid.right()) / per_tick
     } else {
-        0
+        0.0
     };
     let per_row = view.key_height.max(f32::EPSILON);
     let rows = if y < grid.y {
-        ((speed(grid.y - y) / per_row).ceil() as i32).max(1)
+        speed(grid.y - y) / per_row
     } else if y >= grid.bottom() {
-        -((speed(y - grid.bottom()) / per_row).ceil() as i32).max(1)
+        -speed(y - grid.bottom()) / per_row
     } else {
-        0
+        0.0
     };
     (ticks, rows)
+}
+
+/// Turns an [`edge_scroll_rate`] into whole ticks and rows as time passes,
+/// keeping what has not yet added up to one of either.
+///
+/// The remainder is the point. A view scrolls in whole ticks and whole rows,
+/// and a step of a millisecond at a fine zoom is a fraction of a tick — so
+/// truncating each step on its own would scroll **nothing at all** on a fast
+/// mouse, which is the same bug as the one being fixed wearing the opposite
+/// coat. What is left over is carried to the next step instead.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct EdgeScroll {
+    ticks: f32,
+    rows: f32,
+}
+
+impl EdgeScroll {
+    /// Advances by `dt` seconds at `rate`, and hands back whatever whole ticks
+    /// and rows that came to.
+    pub fn step(&mut self, rate: (f32, f32), dt: f32) -> (Tick, i32) {
+        if !dt.is_finite() {
+            return (0, 0);
+        }
+        let dt = dt.clamp(0.0, EDGE_SCROLL_MAX_STEP);
+        let take = |carried: &mut f32, rate: f32| -> f32 {
+            if !rate.is_finite() {
+                return 0.0;
+            }
+            *carried += rate * dt;
+            // Towards zero, so a backwards scroll keeps its remainder the same
+            // way a forwards one does.
+            let whole = carried.trunc();
+            *carried -= whole;
+            whole
+        };
+        let ticks = take(&mut self.ticks, rate.0);
+        let rows = take(&mut self.rows, rate.1);
+        (ticks as Tick, rows as i32)
+    }
+
+    /// Forgets the fraction that has not added up yet.
+    ///
+    /// Called when a gesture ends: a part of a tick left over from one drag
+    /// turning up at the front of the next is a clip that jumps as you take
+    /// hold of it.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 // ----------------------------------------------------------------- zoom ---
@@ -548,6 +652,26 @@ pub enum SnapDivision {
     Triplet,
     None,
 }
+
+/// Every division the chip offers, in the order the menu lists them and the
+/// order [`SnapDivision::next`] walks them.
+///
+/// One list rather than two. The chip used to *only* cycle, which is what
+/// *"options that could be ... dropdowns for some reason are instead shown as
+/// buttons you click to toggle through a list of options in order
+/// iteratively"* is about: reaching `none` from `bar` was six presses through
+/// five grids you did not want. Pressing the chip now drops this list;
+/// `S` still steps it, because a key that opened a menu would be a key that
+/// needed the mouse afterwards.
+pub const SNAP_DIVISIONS: [SnapDivision; 7] = [
+    SnapDivision::Bar,
+    SnapDivision::Beat,
+    SnapDivision::Division(2),
+    SnapDivision::Step,
+    SnapDivision::Division(8),
+    SnapDivision::Triplet,
+    SnapDivision::None,
+];
 
 impl SnapDivision {
     /// What the snap chip on the toolbar says.
@@ -719,6 +843,59 @@ pub fn note_at_tick(
     found
 }
 
+/// How far either side of the pointer a bar in the property lane is caught,
+/// in screen points.
+///
+/// A bar is drawn three points wide (see `render::draw_property_lane`), so
+/// this is a little wider than what is on screen: the lane is a thing you
+/// **draw on**, and a stroke that only took the bars it hit dead centre would
+/// leave holes wherever the hand was a pixel out.
+pub const LANE_BRUSH_PX: f32 = 5.0;
+
+/// Every note whose bar in the property lane stands between `from` and `to`.
+///
+/// > *"its hard to actually edit multiple notes velocities at once or in a
+/// > long string or if notes are overlapping eachother or start at the same
+/// > time."*
+///
+/// The lane draws **one bar per note, at the note's own start** — so a column
+/// of it is a question about note *starts*, not about which note covers that
+/// tick. Answering it the other way is what made a chord unreachable (three of
+/// its four bars are behind the topmost) and what made a held pad answer for
+/// every column it lay under.
+///
+/// Two x-coordinates rather than one, because a mouse reports about a hundred
+/// times a second and a hand crosses several bars in less than that: a stroke
+/// takes the bars it *passed over*, not only the column it happened to land
+/// in. Pass the same value twice for a press.
+///
+/// **The fallback is deliberate.** With no bar anywhere near the brush, the
+/// note covering that tick is taken instead ([`note_at_tick`]) — with nothing
+/// else in the column there is no ambiguity to protect, and a lone held note
+/// whose bar you could only hit at its exact start is a bar nobody can hit.
+pub fn notes_in_lane_span(
+    view: &RollView,
+    grid: Rect,
+    notes: &Arena<NoteId, Note>,
+    from: f32,
+    to: f32,
+) -> Vec<NoteId> {
+    let (low, high) = if from <= to { (from, to) } else { (to, from) };
+    let (low, high) = (low - LANE_BRUSH_PX, high + LANE_BRUSH_PX);
+    let mut found: Vec<NoteId> = notes
+        .iter()
+        .filter(|(_, note)| {
+            let x = tick_to_x(view, grid, note.start);
+            x >= low && x <= high
+        })
+        .map(|(id, _)| id)
+        .collect();
+    if found.is_empty() {
+        found.extend(note_at_tick(view, grid, notes, to));
+    }
+    found
+}
+
 /// Which of a note's properties the lane under the grid is showing (§16.5's
 /// note property lanes).
 ///
@@ -883,6 +1060,22 @@ pub fn lane_baseline_y(property: LaneProperty, lane: Rect) -> f32 {
     }
 }
 
+/// The height of the line from `from` to `to` at the x-coordinate `at`,
+/// clamped to the segment's own ends.
+///
+/// What makes a stroke across the property lane a *line* rather than a row of
+/// bars all set to wherever the pointer finished. A vertical step — the
+/// commonest one, since a hand setting a single note's velocity does not move
+/// sideways — has no run to divide by and is simply the pointer's own height.
+fn height_along(from: (f32, f32), to: (f32, f32), at: f32) -> f32 {
+    let run = to.0 - from.0;
+    if run.abs() < f32::EPSILON {
+        return to.1;
+    }
+    let t = ((at - from.0) / run).clamp(0.0, 1.0);
+    from.1 + (to.1 - from.1) * t
+}
+
 /// [`lane_value_of_y`] for velocity, which is the lane's default and the one
 /// every other part of the roll already spoke in.
 pub fn velocity_of_y(lane: Rect, y: f32) -> u8 {
@@ -940,6 +1133,17 @@ pub enum RollEdit {
         ids: Vec<NoteId>,
         tick_delta: Tick,
     },
+    /// One **length** per named note, in `ids` order.
+    ///
+    /// Not [`RollEdit::Resize`], which is one delta over all of them: the
+    /// legato tool works out a length per note from where the note after it
+    /// starts, and a delta cannot say "these three become a beat and that one
+    /// a sixteenth" in a single edit. One edit is the point — a tool that left
+    /// an entry per note would need as many presses of Ctrl+Z to take back.
+    SetLengths {
+        ids: Vec<NoteId>,
+        lengths: Vec<Tick>,
+    },
     /// One value for every named note — the property lane's whole vocabulary.
     ///
     /// The property comes with the edit because the lane can be showing any of
@@ -975,6 +1179,37 @@ pub enum RollEdit {
         property: fontelle_model::NoteProperty,
         values: Vec<i32>,
     },
+}
+
+/// [`PianoRoll::legato`] over any list of notes — the shape the Tools menu's
+/// own entry needs, since it is handed a selection rather than the roll.
+///
+/// One implementation with two ways in, so the keyboard and the menu can never
+/// come to mean different things.
+pub fn legato_edits(ids: &[NoteId], notes: &Arena<NoteId, Note>) -> Vec<RollEdit> {
+    let named: Vec<NoteId> = ids
+        .iter()
+        .copied()
+        .filter(|id| notes.get(*id).is_some())
+        .collect();
+    let spans: Vec<(Tick, Tick)> = named
+        .iter()
+        .filter_map(|id| notes.get(*id).map(|note| (note.start, note.length)))
+        .collect();
+    let lengths = fontelle_model::legato_lengths(&spans);
+    // A phrase already joined up is not an edit. The rule every tool here
+    // keeps, and the reason a second press of Ctrl+L costs nothing.
+    if lengths
+        .iter()
+        .zip(&spans)
+        .all(|(length, (_, was))| length == was)
+    {
+        return Vec::new();
+    }
+    vec![RollEdit::SetLengths {
+        ids: named,
+        lengths,
+    }]
 }
 
 /// A key the roll wants sounded, and how long the thing it came from is.
@@ -1169,7 +1404,7 @@ impl RollControl {
     pub fn tip(self) -> Option<&'static str> {
         Some(match self {
             Self::Tool(tool) => tool.tip(),
-            Self::Snap => "What notes snap to \u{2014} click to cycle",
+            Self::Snap => "What notes snap to \u{2014} click to choose, S to step",
             Self::ZoomOutX => "Zoom out in time",
             Self::ZoomInX => "Zoom in in time",
             Self::ZoomOutY => "Shorter keys \u{2014} more of the keyboard",
@@ -1219,7 +1454,7 @@ const TOOLBAR: [(RollControl, f32); 16] = [
     (RollControl::Tool(Tool::Select), 26.0),
     (RollControl::Tool(Tool::Delete), 26.0),
     (RollControl::Tool(Tool::Slice), 26.0),
-    (RollControl::Snap, 52.0),
+    (RollControl::Snap, 62.0),
     (RollControl::ZoomOutX, 26.0),
     (RollControl::ZoomInX, 26.0),
     (RollControl::ZoomOutY, 26.0),
@@ -1238,6 +1473,16 @@ const TOOLBAR: [(RollControl, f32); 16] = [
 /// the shaped-label set, which would draw the chip empty.
 pub fn lane_caption(property: LaneProperty) -> String {
     format!("{} \u{25be}", property.label())
+}
+
+/// What the snap chip says: the division, and a caret because it drops a list.
+///
+/// Built rather than matched, for the reason [`lane_caption`] is — and it
+/// carries a caret for the reason the lane chip does: a control that opens
+/// something has to look like one, or the list is a thing you find by
+/// accident. See [`SNAP_DIVISIONS`].
+pub fn snap_caption(snap: SnapDivision) -> String {
+    format!("{} \u{25be}", snap.label())
 }
 
 /// What the tools chip says: the word, and a caret because it opens a panel.
@@ -1396,9 +1641,20 @@ enum Gesture {
     Painting {
         last: (Tick, u8),
     },
-    /// Dragging in the property lane.
+    /// Drawing in the property lane.
     Lane {
-        ids: Vec<NoteId>,
+        /// The notes the press caught, when it caught one that was already
+        /// **selected**: the flatten gesture, which stays on them however far
+        /// the pointer travels. `None` is the stroke, which takes whatever it
+        /// crosses — see [`notes_in_lane_span`].
+        locked: Option<Vec<NoteId>>,
+        /// Where the last step was, so a stroke paints the bars it jumped
+        /// over — at the height the pointer was **over each of them**, which
+        /// is what makes a ramp drawn quickly come out as a ramp.
+        last: (f32, f32),
+        /// What was last written, so a pointer standing still asks for
+        /// nothing new — the same rule the arrangement's fade drag keeps.
+        applied: Vec<(NoteId, i32)>,
     },
     /// Dragging the seam between the grid and the lane. The lane's height is
     /// the window's to apply — the roll only says a drag is in progress, so a
@@ -2136,8 +2392,25 @@ impl PianoRoll {
 
     // ------------------------------------------------------ property lane ---
 
-    /// Pressing in the property lane. Sets the note under the column, or the
-    /// whole selection when the column is part of it.
+    /// Pressing in the property lane — the first point of a **stroke**.
+    ///
+    /// > *"make the piano rolls velocity controls less like a slider you drag
+    /// > up and down and more like fls where youre kind of drawing it and the
+    /// > notes at the same part your mouse is at horizontally just match where
+    /// > youre clicking while youre clicking."*
+    ///
+    /// So the lane is a canvas rather than a column of little faders, and
+    /// there are exactly two things a press can mean:
+    ///
+    /// - On a bar that is **already selected**, it is the old gesture: the
+    ///   whole selection takes the value and keeps taking it, which is what
+    ///   flattens a chord in one movement and is the only way to aim a stroke
+    ///   at chosen notes rather than at everything the brush passes.
+    /// - Anywhere else it is a **stroke**: this column now, and whatever the
+    ///   drag crosses after it.
+    ///
+    /// A press on empty lane starts a stroke too rather than nothing — a rest
+    /// in the middle of a phrase is a gap in the stroke, not the end of one.
     pub fn press_lane(
         &mut self,
         x: f32,
@@ -2146,53 +2419,123 @@ impl PianoRoll {
         grid: Rect,
         notes: &Arena<NoteId, Note>,
     ) -> Vec<RollEdit> {
-        let Some(id) = note_at_tick(&self.view, grid, notes, x) else {
-            self.gesture = Gesture::None;
-            return Vec::new();
+        let under = notes_in_lane_span(&self.view, grid, notes, x, x);
+        let selected = under.iter().any(|id| self.selection.contains(id));
+        let locked = selected.then(|| self.selection.clone());
+        let ids = match &locked {
+            Some(selection) => selection.clone(),
+            // What the stroke starts on becomes the selection, the way a press
+            // on the grid does: the bars you just drew are the ones the next
+            // Ctrl+C or nudge is about. **Only when it started on something** —
+            // a stroke that begins in a rest is still a stroke, and dropping
+            // the selection because the hand started in a gap is not what
+            // anybody asked for.
+            None if under.is_empty() => Vec::new(),
+            None => {
+                self.selection = under.clone();
+                under
+            }
         };
-        // Grabbing one of a selection sets the lot — that is what makes
-        // flattening a chord one gesture rather than four.
-        let ids = if self.selection.contains(&id) {
-            self.selection.clone()
-        } else {
-            self.selection = vec![id];
-            vec![id]
+        let value = lane_value_of_y(self.lane_property, lane, y);
+        let wanted: Vec<(NoteId, i32)> = ids.into_iter().map(|id| (id, value)).collect();
+        self.gesture = Gesture::Lane {
+            locked,
+            last: (x, y),
+            // What the press wrote, so the first mouse-move — which lands on
+            // the same pixel more often than not — asks for nothing again.
+            applied: wanted.clone(),
         };
-        self.gesture = Gesture::Lane { ids: ids.clone() };
-        self.lane_edit(ids, lane, y)
+        self.lane_edits(wanted)
     }
 
+    /// One step of the stroke.
+    ///
+    /// Every bar between the last report and this one, each set to the height
+    /// the pointer was **over it** rather than to where the pointer ended up:
+    /// a mouse reports about a hundred times a second and a hand crosses
+    /// several bars in less than that, so writing one value over the whole
+    /// segment would flatten exactly the ramp somebody was drawing.
+    ///
+    /// Locked to the selection when the press caught one — see
+    /// [`press_lane`](Self::press_lane).
     pub fn drag_lane(
         &mut self,
-        _x: f32,
+        x: f32,
         y: f32,
         lane: Rect,
-        _grid: Rect,
-        _notes: &Arena<NoteId, Note>,
+        grid: Rect,
+        notes: &Arena<NoteId, Note>,
     ) -> Vec<RollEdit> {
-        // The notes are the ones the press caught, not whatever is under the
-        // pointer now: dragging sideways across the lane while setting a value
-        // would otherwise rewrite the whole bar.
-        let Gesture::Lane { ids } = &self.gesture else {
+        let Gesture::Lane {
+            locked,
+            last,
+            applied,
+        } = &self.gesture
+        else {
             return Vec::new();
         };
-        let ids = ids.clone();
-        self.lane_edit(ids, lane, y)
+        let (locked, last, applied) = (locked.clone(), *last, applied.clone());
+        let property = self.lane_property;
+        let wanted: Vec<(NoteId, i32)> = match &locked {
+            Some(selection) => {
+                let value = lane_value_of_y(property, lane, y);
+                selection.iter().map(|id| (*id, value)).collect()
+            }
+            None => notes_in_lane_span(&self.view, grid, notes, last.0, x)
+                .into_iter()
+                .map(|id| {
+                    let at = notes
+                        .get(id)
+                        .map_or(x, |note| tick_to_x(&self.view, grid, note.start));
+                    let along = height_along(last, (x, y), at);
+                    (id, lane_value_of_y(property, lane, along))
+                })
+                .collect(),
+        };
+        let repeat = wanted == applied;
+        self.gesture = Gesture::Lane {
+            locked,
+            last: (x, y),
+            applied: if wanted.is_empty() {
+                applied
+            } else {
+                wanted.clone()
+            },
+        };
+        if repeat {
+            return Vec::new();
+        }
+        self.lane_edits(wanted)
     }
 
-    /// One value, for whichever property the lane is showing.
+    /// The edits a set of wanted values comes to, grouped so that notes taking
+    /// the same value travel together.
     ///
-    /// The template takes the value too, so a phrase written after flattening
-    /// a chord to pan-left comes out panned left rather than back at centre.
-    fn lane_edit(&mut self, ids: Vec<NoteId>, lane: Rect, y: f32) -> Vec<RollEdit> {
+    /// One [`RollEdit::SetProperty`] per distinct value rather than one per
+    /// note: a flat stroke — which is most of them — stays the single edit it
+    /// always was, and a ramp is as few as it can be.
+    ///
+    /// The template takes the value the pointer is at, so a phrase written
+    /// after flattening a chord to pan-left comes out panned left rather than
+    /// back at centre.
+    fn lane_edits(&mut self, wanted: Vec<(NoteId, i32)>) -> Vec<RollEdit> {
         let property = self.lane_property;
-        let value = lane_value_of_y(property, lane, y);
-        property.set(&mut self.template, value);
-        vec![RollEdit::SetProperty {
-            ids,
-            property,
-            value,
-        }]
+        let mut grouped: Vec<(i32, Vec<NoteId>)> = Vec::new();
+        for (id, value) in wanted {
+            property.set(&mut self.template, value);
+            match grouped.iter_mut().find(|(v, _)| *v == value) {
+                Some((_, ids)) => ids.push(id),
+                None => grouped.push((value, vec![id])),
+            }
+        }
+        grouped
+            .into_iter()
+            .map(|(value, ids)| RollEdit::SetProperty {
+                ids,
+                property,
+                value,
+            })
+            .collect()
     }
 
     /// Whether a drag in progress belongs to the property lane.
@@ -2268,6 +2611,30 @@ impl PianoRoll {
             ids: self.selection.clone(),
             tick_delta,
         }]
+    }
+
+    /// Every selected note stretched — or pulled back — until it touches the
+    /// one after it. FL Studio's Quick Legato, on `Ctrl+L`.
+    ///
+    /// > *"it makes all the notes lengths not have gaps like how it does in fl
+    /// > studio with that same keybind. just makes all the notes cleanly
+    /// > connect to eachother basically in length."*
+    ///
+    /// **The selection and nothing else.** A note left out is neither resized
+    /// nor treated as the thing the note before it should reach: a selection
+    /// is a statement about which notes this is about, and one that quietly
+    /// measured against notes it was not going to touch would give a length
+    /// nobody could see the reason for. With nothing selected there is no
+    /// phrase to close up, so there is nothing to do — the roll's other
+    /// keyboard tools all say the same.
+    ///
+    /// The arithmetic is `fontelle_model::legato_lengths`, which is where
+    /// "what does a chord do" and "what does the last note do" are decided.
+    /// Empty when nothing would change, so pressing it twice is one undo.
+    /// Silent, like every other edit: *"i should only be played a preview if i
+    /// bare clicked on the note not if im just editing at all."*
+    pub fn legato(&mut self, notes: &Arena<NoteId, Note>) -> Vec<RollEdit> {
+        legato_edits(&self.selection, notes)
     }
 
     /// Bumps whichever property the lane is showing, on every selected note.
@@ -2454,6 +2821,7 @@ const BLANK_TEMPLATE: Note = Note {
     mod_x: 0,
     mod_y: 0,
     slide: false,
+    channel: None,
 };
 
 /// The rectangle two corners describe, whichever way round they came.

@@ -184,10 +184,11 @@ fn the_browser_is_a_search_box_over_a_file_list_over_a_preset_list() {
     // is under it: the search filters whichever list is showing, so it belongs
     // *below* the thing that decides which list that is. See `tests/projects.rs`.
     assert_eq!(
-        l.sounds_tab.y, body.y,
+        l.tab(fontelle_ui::canvas::BrowserMode::Sounds).y,
+        body.y,
         "the mode switch is the first thing in it"
     );
-    assert!(l.search.y >= l.sounds_tab.bottom());
+    assert!(l.search.y >= l.tab(fontelle_ui::canvas::BrowserMode::Sounds).bottom());
     assert!(l.files.y >= l.search.bottom());
     assert!(l.presets.y >= l.files.bottom());
     assert!(!l.search.intersects(&l.files));

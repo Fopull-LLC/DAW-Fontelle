@@ -17,9 +17,7 @@
 
 use fontelle_model::{Note, NoteProperty, RandomMode};
 use fontelle_types::{NoteId, PPQN};
-use fontelle_ui::canvas::{
-    LaneProperty, RollEdit, TOOL_ROWS, ToolAction, ToolRow, Tools,
-};
+use fontelle_ui::canvas::{LaneProperty, RollEdit, TOOL_ROWS, ToolAction, ToolRow, Tools};
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
 
@@ -48,6 +46,7 @@ fn a_note(key: u8, velocity: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -103,6 +102,7 @@ fn the_tools_that_were_asked_for_are_all_reachable_from_the_chip() {
         ToolAction::Add,
         ToolAction::Subtract,
         ToolAction::Randomize,
+        ToolAction::Legato,
         ToolAction::ImportMidi,
         ToolAction::ImportScore,
     ] {
@@ -280,8 +280,16 @@ fn adding_and_subtracting_are_the_same_amount_the_two_ways() {
     let down = tools.run(ToolAction::Subtract, &ids, &notes);
     match (&up[0], &down[0]) {
         (
-            RollEdit::NudgeProperty { delta: plus, property: a, ids: up_ids },
-            RollEdit::NudgeProperty { delta: minus, property: b, .. },
+            RollEdit::NudgeProperty {
+                delta: plus,
+                property: a,
+                ids: up_ids,
+            },
+            RollEdit::NudgeProperty {
+                delta: minus,
+                property: b,
+                ..
+            },
         ) => {
             assert_eq!(*plus, 10);
             assert_eq!(*minus, -10);
@@ -405,7 +413,10 @@ fn the_two_import_rows_produce_no_edit_because_they_are_the_windows_to_make() {
 fn the_panel_hangs_off_its_chip_and_stays_inside_the_window() {
     let panel = tools_dialog_layout(ToolKind::Adjust, chip(), bounds(), &metrics());
     assert!(!panel.frame.is_empty());
-    assert!(panel.frame.y >= chip().bottom() - 0.01, "it opens downwards");
+    assert!(
+        panel.frame.y >= chip().bottom() - 0.01,
+        "it opens downwards"
+    );
     assert!(panel.frame.right() <= bounds().right() + 0.01);
     assert!(panel.frame.bottom() <= bounds().bottom() + 0.01);
     assert_eq!(panel.rows.len(), ToolKind::Adjust.rows().len());
@@ -436,7 +447,11 @@ fn a_click_on_a_row_finds_that_row() {
         if rect.is_empty() {
             continue;
         }
-        let hit = tools_dialog_hit(&panel, rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        let hit = tools_dialog_hit(
+            &panel,
+            rect.x + rect.width / 2.0,
+            rect.y + rect.height / 2.0,
+        );
         assert_eq!(hit, Some(*row), "clicking {row:?} found {hit:?}");
     }
 }
@@ -453,7 +468,12 @@ fn a_window_too_short_for_the_whole_panel_still_shows_what_it_can() {
     // which is to draw nothing: a short window must still be one you can
     // transpose in.
     let short = Rect::new(0.0, 0.0, 800.0, 90.0);
-    let panel = tools_dialog_layout(ToolKind::Adjust, Rect::new(10.0, 2.0, 40.0, 16.0), short, &metrics());
+    let panel = tools_dialog_layout(
+        ToolKind::Adjust,
+        Rect::new(10.0, 2.0, 40.0, 16.0),
+        short,
+        &metrics(),
+    );
     assert!(!panel.frame.is_empty());
     assert!(panel.frame.bottom() <= short.bottom() + 0.01);
     let reachable = panel.rows.iter().filter(|(_, r)| !r.is_empty()).count();
@@ -508,15 +528,17 @@ fn nothing_on_the_panel_is_drawn_outside_it() {
 // settings on it at once, where the amount you were about to apply sat three
 // rows above a button belonging to a different tool.
 
-use fontelle_ui::canvas::{TOOL_MENU, ToolKind, ToolMenuItem, tools_dialog_hit, tools_dialog_layout};
+use fontelle_ui::canvas::{
+    TOOL_MENU, ToolKind, ToolMenuItem, tools_dialog_hit, tools_dialog_layout,
+};
 
 #[test]
 fn the_chip_opens_a_menu_of_tools_rather_than_every_tools_settings_at_once() {
     let labels: Vec<String> = TOOL_MENU.iter().map(|item| item.label()).collect();
     assert_eq!(
         labels.len(),
-        5,
-        "three tools and the two importers: {labels:?}"
+        6,
+        "three tools that ask something, legato, and the two importers: {labels:?}"
     );
     for item in TOOL_MENU {
         assert!(!item.label().is_empty(), "{item:?} has no name");
@@ -613,7 +635,10 @@ fn a_click_on_a_dialog_row_finds_that_row() {
         let (x, y) = (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
         assert_eq!(tools_dialog_hit(&l, x, y), Some(*row));
     }
-    assert_eq!(tools_dialog_hit(&l, l.frame.right() + 20.0, l.frame.y), None);
+    assert_eq!(
+        tools_dialog_hit(&l, l.frame.right() + 20.0, l.frame.y),
+        None
+    );
     assert_eq!(
         tools_dialog_hit(&l, l.title.x + 2.0, l.title.y + 2.0),
         None,
@@ -639,4 +664,58 @@ fn a_tool_dialog_hangs_off_its_chip_and_stays_inside_the_window() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------- legato ---
+
+#[test]
+fn legato_is_on_the_menu_with_its_shortcut_on_it() {
+    // *"if i press ctrl l ..."* — the key is the point, and a key nobody is
+    // told about is a key nobody presses. It sits with the tools rather than
+    // with the importers because it is an edit to the selection like they
+    // are; it simply has nothing to ask first, so no ellipsis.
+    let entry = TOOL_MENU
+        .iter()
+        .find(|item| matches!(item, ToolMenuItem::Run(ToolAction::Legato)))
+        .expect("legato is on the menu");
+    assert!(entry.label().contains("Legato"));
+    assert!(entry.label().contains("Ctrl+L"), "{}", entry.label());
+    assert!(
+        !entry.label().ends_with('\u{2026}'),
+        "it asks nothing, so it must not promise a dialog"
+    );
+}
+
+#[test]
+fn the_menus_legato_and_the_keyboards_are_the_same_edit() {
+    // Two ways in, one implementation — `canvas::legato_edits`. A menu row
+    // and a shortcut that drifted apart would be the worst kind of bug: both
+    // work, and they disagree.
+    use fontelle_model::{Arena, Note};
+    use fontelle_types::{NoteId, PPQN};
+
+    let mut arena: Arena<NoteId, Note> = Arena::default();
+    let ids: Vec<NoteId> = [(0, PPQN / 4, 60u8), (PPQN, PPQN / 4, 62)]
+        .iter()
+        .map(|(start, length, key)| {
+            arena.insert(Note {
+                start: *start,
+                length: *length,
+                key: *key,
+                velocity: 100,
+                pan: 0,
+                fine_pitch: 0,
+                release: 0,
+                mod_x: 0,
+                mod_y: 0,
+                slide: false,
+                channel: None,
+            })
+        })
+        .collect();
+
+    let through_the_menu = Tools::default().run(ToolAction::Legato, &ids, &arena);
+    let through_the_key = fontelle_ui::canvas::legato_edits(&ids, &arena);
+    assert_eq!(through_the_menu, through_the_key);
+    assert!(!through_the_key.is_empty(), "there was a gap to close");
 }

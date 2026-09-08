@@ -35,6 +35,7 @@ fn a_note(start: Tick, length: Tick, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -42,10 +43,13 @@ fn a_project() -> (Project, ChannelId, LaneId) {
     let mut project = Project::new("arranging");
     project.tempo_map = TempoMap::new(120.0, 48_000.0);
     let channel = project.channels.insert(fontelle_model::Channel {
+        preset: None,
+        instrument: None,
         name: "Keys".into(),
         color: [1, 2, 3, 4],
         mixer_track: None,
         patch_data: None,
+        plugin: None,
         pan: 0.25,
         muted: false,
         soloed: false,
@@ -96,7 +100,8 @@ fn a_clip(
 
 /// Every note of a clip as `(start, length, key)`, in time order.
 fn notes_of(project: &Project, clip: ClipId) -> Vec<(Tick, Tick, u8)> {
-    let ClipSource::Notes(data) = &project.clips.get(clip).expect("the clip is there").source else {
+    let ClipSource::Notes(data) = &project.clips.get(clip).expect("the clip is there").source
+    else {
         panic!("not a note clip");
     };
     let mut out: Vec<(Tick, Tick, u8)> = data
@@ -194,8 +199,24 @@ fn the_last_lane_cannot_be_removed() {
 
 // -------------------------------------------------- duplicating a channel ---
 
+/// Duplicating an instrument makes **an instrument**.
+///
+/// > *"whenever i duplicate an instrument right now it duplicates the track i
+/// > have clips of that instrument on which is weird since were kind of trying
+/// > to separate the idea that instruments are tied to tracks. make it so
+/// > duplicating an instrument literally just makes a new instrument that has
+/// > the exact same params so it sounds the same but it shouldnt have the same
+/// > notes and everything written in it and shouldnt affect the arrangement at
+/// > all that all needs to be authored by the user."*
+///
+/// It used to copy the clips too, and put them on a row of its own. That was
+/// coherent while a clip *was* an instrument's track; it stopped being
+/// coherent the moment a clip could hold several instruments at once
+/// (`Note::channel`), and what it costs is a duplicate you have to clean up
+/// before you can use it. The parameters are the thing being copied. Where it
+/// plays is authored.
 #[test]
-fn duplicating_a_channel_copies_its_instrument_and_its_clips() {
+fn duplicating_a_channel_copies_the_instrument_and_nothing_else() {
     let (mut project, channel, lane) = a_project();
     a_clip(
         &mut project,
@@ -207,52 +228,111 @@ fn duplicating_a_channel_copies_its_instrument_and_its_clips() {
         vec![a_note(0, PPQN, 64), a_note(PPQN, PPQN, 67)],
     );
 
-    let mut history = History::new();
+    let clips_before = project.clips.len();
+    let lanes_before = project.lanes.len();
+
     let mut command = DuplicateChannel::new(channel);
     command.apply(&mut project).unwrap();
     let copy = command.channel().expect("a copy was made");
 
+    // Everything about the sound.
     let original = project.channels.get(channel).unwrap().clone();
     let made = project.channels.get(copy).unwrap();
     assert_eq!(made.pan, original.pan, "the same placement");
     assert_eq!(made.gain_db, original.gain_db, "the same level");
     assert_eq!(made.color, original.color);
     assert_eq!(made.named_keys, original.named_keys);
+    assert_eq!(made.patch_data, original.patch_data, "the same instrument");
+    assert_eq!(made.instrument, original.instrument, "and the same kind");
+    assert_eq!(
+        made.mixer_track, original.mixer_track,
+        "and it plays out through the same place"
+    );
     assert_ne!(made.name, original.name, "a copy says it is one");
 
-    // Its clips came with it, on a lane of their own — two parts stacked on
-    // one row would hide each other.
-    let copied: Vec<&Clip> = project
-        .clips
-        .values()
-        .filter(|clip| match &clip.source {
-            ClipSource::Notes(data) => data.channel == copy,
-            _ => false,
-        })
-        .collect();
-    assert_eq!(copied.len(), 1, "one clip copied");
-    assert_eq!(copied[0].start, PPQN * 4, "where the original one was");
-    assert_ne!(copied[0].lane, lane, "and on a row of its own");
-
-    // And the whole thing is one history entry.
-    let mut project2 = {
-        let (p, c, l) = a_project();
-        let mut p = p;
-        a_clip(&mut p, l, c, 0, PPQN * 4, None, vec![]);
-        p
-    };
-    let channels_before = project2.channels.len();
-    let first = project2.channels.keys().next().unwrap();
-    history
-        .apply(Box::new(DuplicateChannel::new(first)), &mut project2)
-        .unwrap();
-    assert_eq!(project2.channels.len(), channels_before + 1);
-    history.undo(&mut project2).unwrap().unwrap();
+    // And **nothing** about the arrangement.
     assert_eq!(
-        project2.channels.len(),
+        project.clips.len(),
+        clips_before,
+        "a duplicate writes no clips: what is played is authored"
+    );
+    assert_eq!(
+        project.lanes.len(),
+        lanes_before,
+        "and takes no row: an instrument is not a track"
+    );
+    assert!(
+        !project.clips.values().any(|clip| match &clip.source {
+            ClipSource::Notes(data) => data.channels().contains(&copy),
+            _ => false,
+        }),
+        "and no clip anywhere plays it yet"
+    );
+}
+
+/// The whole of it is one history entry — a duplicate that took four presses
+/// to take back is one nobody tries twice.
+#[test]
+fn duplicating_a_channel_is_one_undo() {
+    let (mut project, channel, lane) = a_project();
+    a_clip(&mut project, lane, channel, 0, PPQN * 4, None, vec![]);
+
+    let mut history = History::new();
+    let channels_before = project.channels.len();
+    let clips_before = project.clips.len();
+    let lanes_before = project.lanes.len();
+
+    history
+        .apply(Box::new(DuplicateChannel::new(channel)), &mut project)
+        .unwrap();
+    assert_eq!(project.channels.len(), channels_before + 1);
+
+    history.undo(&mut project).unwrap().unwrap();
+    assert_eq!(
+        project.channels.len(),
         channels_before,
         "one Ctrl+Z takes the whole copy back"
     );
+    assert_eq!(project.clips.len(), clips_before, "and touched no clip");
+    assert_eq!(project.lanes.len(), lanes_before, "and no row");
+}
+
+/// Undoing it must not take the **original's** clips with it.
+///
+/// The failure this guards is the one the old command's inverse could produce
+/// if it were left alone: `RemoveChannel` takes a channel's clips with it, and
+/// a copy that never had any must not reach for anybody else's on the way out.
+#[test]
+fn undoing_a_duplicate_leaves_the_original_and_its_clips_alone() {
+    let (mut project, channel, lane) = a_project();
+    let clip = a_clip(
+        &mut project,
+        lane,
+        channel,
+        0,
+        PPQN * 4,
+        None,
+        vec![a_note(0, PPQN, 60)],
+    );
+
+    let mut history = History::new();
+    history
+        .apply(Box::new(DuplicateChannel::new(channel)), &mut project)
+        .unwrap();
+    history.undo(&mut project).unwrap().unwrap();
+
+    assert!(
+        project.channels.contains_key(channel),
+        "the original is still there"
+    );
+    let kept = project.clips.get(clip).expect("and so is its clip");
+    match &kept.source {
+        ClipSource::Notes(data) => {
+            assert_eq!(data.channel, channel);
+            assert_eq!(data.notes.len(), 1, "with its note still in it");
+        }
+        _ => panic!("that clip holds notes"),
+    }
 }
 
 // ------------------------------------------------------ cutting a clip ---
@@ -310,7 +390,15 @@ fn a_note_across_the_cut_is_cut_with_it() {
 #[test]
 fn a_cut_at_an_edge_or_outside_does_nothing() {
     let (mut project, channel, lane) = a_project();
-    let clip = a_clip(&mut project, lane, channel, PPQN * 4, PPQN * 4, None, vec![]);
+    let clip = a_clip(
+        &mut project,
+        lane,
+        channel,
+        PPQN * 4,
+        PPQN * 4,
+        None,
+        vec![],
+    );
     for at in [0, PPQN * 4, PPQN * 8, PPQN * 12] {
         let mut command = SplitClip::new(clip, at);
         assert!(
@@ -361,7 +449,11 @@ fn cutting_a_loop_leaves_a_plain_clip_and_a_loop_that_carries_on() {
         left.loop_length, None,
         "the piece you cut off is a clip of what you made, not a loop"
     );
-    assert_eq!(right.loop_length, Some(PPQN * 4), "and the rest is still a loop");
+    assert_eq!(
+        right.loop_length,
+        Some(PPQN * 4),
+        "and the rest is still a loop"
+    );
     assert_eq!((left.start, left.length), (0, PPQN * 8));
     assert_eq!((right.start, right.length), (PPQN * 8, PPQN * 8));
 

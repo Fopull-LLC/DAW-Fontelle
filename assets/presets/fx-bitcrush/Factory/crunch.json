@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Bitcrush"
+  },
+  "name": "crunch",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Bitcrush": {
+        "input_db": 12.0,
+        "bits": 4.0,
+        "quantiser": "Truncate",
+        "dither": "Off",
+        "rate_hz": 48000.0,
+        "decimation": "Hold",
+        "jitter": 0.0,
+        "anti_alias": false,
+        "post_lp_hz": 20000.0,
+        "output_db": -3.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

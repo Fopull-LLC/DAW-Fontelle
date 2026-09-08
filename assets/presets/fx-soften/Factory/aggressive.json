@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Soften"
+  },
+  "name": "aggressive",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Soften": {
+        "shelf_amount": 0.85,
+        "suppressor_amount": 0.8,
+        "transient_amount": 0.6,
+        "air_restore_amount": 0.55,
+        "mix": 1.0
+      }
+    }
+  }
+}

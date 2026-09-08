@@ -1,0 +1,472 @@
+{
+  "format_version": 1,
+  "device": {
+    "instrument": "Flopsynth"
+  },
+  "name": "Whisper",
+  "category": "Choir & Vocal",
+  "payload": {
+    "patch": {
+      "format_version": 1,
+      "body": {
+        "envelopes": [
+          {
+            "attack_s": 0.20000000298023224,
+            "attack_shape": 0.0,
+            "curve": "Linear",
+            "decay_s": 0.0,
+            "decay_shape": -0.6000000238418579,
+            "delay_s": 0.0,
+            "hold_s": 0.0,
+            "release_s": 0.4000000059604645,
+            "release_shape": -0.6000000238418579,
+            "sustain_level": 1.0
+          },
+          {
+            "attack_s": 0.0020000000949949026,
+            "attack_shape": 0.0,
+            "curve": "Linear",
+            "decay_s": 0.30000001192092896,
+            "decay_shape": -0.6000000238418579,
+            "delay_s": 0.0,
+            "hold_s": 0.0,
+            "release_s": 0.20000000298023224,
+            "release_shape": -0.6000000238418579,
+            "sustain_level": 0.0
+          },
+          {
+            "attack_s": 0.0020000000949949026,
+            "attack_shape": 0.0,
+            "curve": "Linear",
+            "decay_s": 0.30000001192092896,
+            "decay_shape": -0.6000000238418579,
+            "delay_s": 0.0,
+            "hold_s": 0.0,
+            "release_s": 0.20000000298023224,
+            "release_shape": -0.6000000238418579,
+            "sustain_level": 0.0
+          },
+          {
+            "attack_s": 0.0020000000949949026,
+            "attack_shape": 0.0,
+            "curve": "Linear",
+            "decay_s": 0.30000001192092896,
+            "decay_shape": -0.6000000238418579,
+            "delay_s": 0.0,
+            "hold_s": 0.0,
+            "release_s": 0.20000000298023224,
+            "release_shape": -0.6000000238418579,
+            "sustain_level": 0.0
+          }
+        ],
+        "filters": [
+          {
+            "character": 0.30000001192092896,
+            "cutoff_hz": 1000.0,
+            "drive": 0.0,
+            "enabled": true,
+            "key_track": 0.0,
+            "mode": "Bandpass",
+            "model": "Formant",
+            "resonance": 0.699999988079071,
+            "slope": "Db24"
+          },
+          {
+            "character": 0.0,
+            "cutoff_hz": 20.0,
+            "drive": 0.0,
+            "enabled": false,
+            "key_track": 0.0,
+            "mode": "Highpass",
+            "model": "Clean",
+            "resonance": 0.699999988079071,
+            "slope": "Db12"
+          }
+        ],
+        "fx": [
+          {
+            "config": {
+              "Reverb": {
+                "damping_hz": 6000.0,
+                "decay_s": 4.5,
+                "mix": 0.3499999940395355,
+                "pre_delay_ms": 0.0,
+                "size": 0.699999988079071,
+                "width": 1.0
+              }
+            },
+            "enabled": true
+          }
+        ],
+        "layers": [
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -60.0,
+            "key_range": [
+              0,
+              127
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 60,
+            "source": {
+              "Synth": {
+                "filter_route": "Serial",
+                "key_track": true,
+                "modulator": null,
+                "noise_colour": 0.0,
+                "phase": 0.0,
+                "position": 0.0,
+                "random_phase": false,
+                "semitones": 0,
+                "source": {
+                  "Table": "Saw"
+                },
+                "unison": {
+                  "blend": 1.0,
+                  "detune_cents": 15.0,
+                  "voices": 1,
+                  "width": 0.5
+                },
+                "warp": "Off",
+                "warp_amount": 0.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -60.0,
+            "key_range": [
+              0,
+              127
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 60,
+            "source": {
+              "Synth": {
+                "filter_route": "Serial",
+                "key_track": true,
+                "modulator": null,
+                "noise_colour": 0.0,
+                "phase": 0.0,
+                "position": 0.5,
+                "random_phase": false,
+                "semitones": 0,
+                "source": {
+                  "Table": "AnalogMorph"
+                },
+                "unison": {
+                  "blend": 1.0,
+                  "detune_cents": 15.0,
+                  "voices": 1,
+                  "width": 0.5
+                },
+                "warp": "Off",
+                "warp_amount": 0.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -60.0,
+            "key_range": [
+              0,
+              127
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 60,
+            "source": {
+              "Synth": {
+                "filter_route": "Serial",
+                "key_track": true,
+                "modulator": null,
+                "noise_colour": 0.0,
+                "phase": 0.0,
+                "position": 0.0,
+                "random_phase": false,
+                "semitones": 0,
+                "source": {
+                  "Table": "Sawstack"
+                },
+                "unison": {
+                  "blend": 1.0,
+                  "detune_cents": 15.0,
+                  "voices": 1,
+                  "width": 0.5
+                },
+                "warp": "Off",
+                "warp_amount": 0.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -60.0,
+            "key_range": [
+              0,
+              127
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 60,
+            "source": {
+              "Synth": {
+                "filter_route": "Bypass",
+                "key_track": true,
+                "modulator": null,
+                "noise_colour": 0.0,
+                "phase": 0.0,
+                "position": 0.0,
+                "random_phase": false,
+                "semitones": -12,
+                "source": {
+                  "Table": "SubSine"
+                },
+                "unison": {
+                  "blend": 1.0,
+                  "detune_cents": 15.0,
+                  "voices": 1,
+                  "width": 0.5
+                },
+                "warp": "Off",
+                "warp_amount": 0.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          },
+          {
+            "fine_tune_cents": 0.0,
+            "gain_db": -6.0,
+            "key_range": [
+              0,
+              127
+            ],
+            "pan": 0.0,
+            "playback": {
+              "end_offset": 0.0,
+              "interpolation": null,
+              "loop_crossfade_ms": 5.0,
+              "loop_end": 0.0,
+              "loop_mode": "Off",
+              "loop_start": 0.0,
+              "reverse": false,
+              "start_offset": 0.0
+            },
+            "root_key": 60,
+            "source": {
+              "Synth": {
+                "filter_route": "F1",
+                "key_track": false,
+                "modulator": null,
+                "noise_colour": 0.30000001192092896,
+                "phase": 0.0,
+                "position": 0.0,
+                "random_phase": false,
+                "semitones": 0,
+                "source": "Noise",
+                "unison": {
+                  "blend": 1.0,
+                  "detune_cents": 15.0,
+                  "voices": 1,
+                  "width": 0.5
+                },
+                "warp": "Off",
+                "warp_amount": 0.0
+              }
+            },
+            "vel_range": [
+              0,
+              127
+            ]
+          }
+        ],
+        "lfos": [
+          {
+            "delay_s": 0.0,
+            "depth": 1.0,
+            "division": "Quarter",
+            "fade_s": 0.0,
+            "mode": "Retrigger",
+            "phase": 0.0,
+            "rate_hz": 5.0,
+            "smooth": 0.0,
+            "sync": false,
+            "wave": "Sine"
+          },
+          {
+            "delay_s": 0.0,
+            "depth": 1.0,
+            "division": "Quarter",
+            "fade_s": 0.0,
+            "mode": "Free",
+            "phase": 0.0,
+            "rate_hz": 5.0,
+            "smooth": 0.0,
+            "sync": true,
+            "wave": "Sine"
+          },
+          {
+            "delay_s": 0.0,
+            "depth": 1.0,
+            "division": "Quarter",
+            "fade_s": 0.0,
+            "mode": "Retrigger",
+            "phase": 0.0,
+            "rate_hz": 1.0,
+            "smooth": 0.0,
+            "sync": false,
+            "wave": "Sine"
+          },
+          {
+            "delay_s": 0.0,
+            "depth": 1.0,
+            "division": "Quarter",
+            "fade_s": 0.0,
+            "mode": "Retrigger",
+            "phase": 0.0,
+            "rate_hz": 1.0,
+            "smooth": 0.0,
+            "sync": false,
+            "wave": "Sine"
+          }
+        ],
+        "macros": [
+          {
+            "name": "Vowel",
+            "value": 0.0
+          },
+          {
+            "name": "Focus",
+            "value": 0.0
+          },
+          {
+            "name": "",
+            "value": 0.0
+          },
+          {
+            "name": "",
+            "value": 0.0
+          }
+        ],
+        "mod_matrix": {
+          "routes": [
+            {
+              "curve": "Linear",
+              "depth": 0.0,
+              "destination": {
+                "FilterCutoff": 0
+              },
+              "invert": false,
+              "source": {
+                "Envelope": 1
+              },
+              "via": null
+            },
+            {
+              "curve": "Linear",
+              "depth": 0.15000000596046448,
+              "destination": {
+                "LayerGain": 4
+              },
+              "invert": false,
+              "source": "Velocity",
+              "via": null
+            },
+            {
+              "curve": "Linear",
+              "depth": 0.8999999761581421,
+              "destination": {
+                "FilterCharacter": 0
+              },
+              "invert": false,
+              "source": {
+                "Macro": 0
+              },
+              "via": null
+            },
+            {
+              "curve": "Linear",
+              "depth": 0.4000000059604645,
+              "destination": {
+                "FilterResonance": 0
+              },
+              "invert": false,
+              "source": {
+                "Macro": 1
+              },
+              "via": null
+            }
+          ]
+        },
+        "output_db": -7.800000190734863,
+        "voice_config": {
+          "bend_range_semitones": 2.0,
+          "glide_legato_only": false,
+          "glide_time_s": 0.0,
+          "polyphony": 32,
+          "retrigger": "Poly",
+          "steal_policy": "Oldest",
+          "unison": {
+            "detune_cents": 0.0,
+            "randomise_phase": false,
+            "spread": 0.0,
+            "voices": 1
+          }
+        }
+      }
+    }
+  }
+}

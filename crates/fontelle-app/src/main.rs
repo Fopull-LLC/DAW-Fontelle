@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use fontelle_app::{RealiseOptions, SampleLibrary, demo_project, project_from_midi, realise};
+use fontelle_app::{RealiseOptions, SampleLibrary, demo_project, project_from_midi};
 use fontelle_engine::{AudioDevice, BLOCK_SIZE};
 use fontelle_types::PPQN;
 
@@ -266,23 +266,6 @@ fn play_or_render(
         .map_err(|e| format!("{e}"))?;
     }
 
-    let mut realised = realise(
-        &project,
-        &library,
-        RealiseOptions {
-            sample_rate: SAMPLE_RATE,
-            block_size: BLOCK_SIZE,
-            quality,
-        },
-    )
-    .map_err(|e| format!("{e}"))?;
-    for (_, missing) in &realised.unresolved {
-        println!("  ! layer {} has no audio", missing.layer);
-    }
-
-    let timeline =
-        fontelle_sequencer::compile(&project, &realised.channel_nodes, &Default::default());
-
     // Written before anything is played: a bounce that takes two minutes
     // should not be standing between the user and their project being on
     // disk.
@@ -335,17 +318,42 @@ fn play_or_render(
     // path, so the WAV is what you'd have heard — inspectable without a
     // sound card.
     if let Some(out) = render_wav {
+        // **With the project's plugins.** The bounce used to build its graph
+        // with no rack, so a channel playing a plugin rendered as silence;
+        // the rack looks where the settings say, the way the studio's does.
+        let (settings, settings_error) = fontelle_app::settings::Settings::load();
+        // A settings file that would not read is a rack looking in the wrong
+        // places, and "Sine is not installed" is the wrong diagnosis for it.
+        if let Some(e) = settings_error {
+            println!("  ! settings: {e}");
+        }
+        let mut plugins = fontelle_app::PluginRack::new();
+        plugins.set_folders(settings.plugin_dirs.clone());
         // The same transport the device would be driven by, so a bounce of a
         // looped section is the section as it plays rather than a second code
         // path that has to be kept in step with the first.
-        transport.set_state(fontelle_engine::TransportState::Rendering);
-        let pcm = fontelle_app::render_offline_with_transport(
-            &timeline,
-            &mut realised.graph,
-            duration_samples,
+        let bounced = fontelle_app::bounce(
+            &project,
+            &library,
+            &mut plugins,
             &transport,
-        );
-        let reduction_db = realised.master.take_max_reduction_db();
+            fontelle_app::BounceOptions {
+                quality,
+                total_samples: duration_samples,
+            },
+        )
+        .map_err(|e| format!("{e}"))?;
+        // The graph is gone, so every plugin can be closed rather than left
+        // for the exit to leak.
+        plugins.close_all();
+        for (_, missing) in &bounced.unresolved {
+            println!("  ! layer {} has no audio", missing.layer);
+        }
+        if let Some(message) = &bounced.message {
+            println!("  ! {message}");
+        }
+        let pcm = bounced.pcm;
+        let reduction_db = bounced.reduction_db;
         let clipped = fontelle_app::write_wav16(out, &pcm, 2, SAMPLE_RATE)
             .map_err(|e| format!("failed to write {}: {e}", out.display()))?;
         let peak = pcm.iter().fold(0.0f32, |m, s| m.max(s.abs()));
@@ -369,6 +377,50 @@ fn play_or_render(
         return Ok(());
     }
 
+    // The plugins the project names, for a **headless** run: the same rack
+    // the bounce above uses, kept until the device has stopped. The window
+    // has a rack of its own inside its session, which hosts the project's
+    // plugins on its first pump — so its first graph is built without one
+    // here, and rebuilt there.
+    let mut plugins = (!window).then(|| {
+        let (settings, settings_error) = fontelle_app::settings::Settings::load();
+        if let Some(e) = settings_error {
+            println!("  ! settings: {e}");
+        }
+        let mut plugins = fontelle_app::PluginRack::new();
+        plugins.set_folders(settings.plugin_dirs.clone());
+        plugins
+    });
+    let wiring = plugins
+        .as_mut()
+        .map(|plugins| plugins.realise(&project, f64::from(SAMPLE_RATE), BLOCK_SIZE as u32))
+        .unwrap_or_default();
+    if let Some(message) = plugins.as_mut().and_then(|plugins| plugins.take_message()) {
+        println!("  ! {message}");
+    }
+    let realised = fontelle_app::realise_hosting(
+        &project,
+        &library,
+        RealiseOptions {
+            sample_rate: SAMPLE_RATE,
+            block_size: BLOCK_SIZE,
+            quality,
+        },
+        &std::collections::HashMap::new(),
+        None,
+        &std::collections::HashMap::new(),
+        None,
+        None,
+        &wiring,
+    )
+    .map_err(|e| format!("{e}"))?;
+    for (_, missing) in &realised.unresolved {
+        println!("  ! layer {} has no audio", missing.layer);
+    }
+
+    let timeline =
+        fontelle_sequencer::compile(&project, &realised.channel_nodes, &Default::default());
+
     // Taken before the graph goes to the audio callback, because after that
     // nothing on this side owns it.
     let master = realised.master.clone();
@@ -381,7 +433,14 @@ fn play_or_render(
     // The instruments reach the running stream the same way the notes do, so a
     // channel added from inside the window does not need the device restarted.
     let (graph_publisher, graph_source) = fontelle_engine::graph_channel(realised.graph);
-    let mut device = AudioDevice::default_host();
+    // The ring a live input is heard through (TDD §15.4), made **here**
+    // because both ends need it and they are opened at different moments: the
+    // output stream below asks it whether the graph has to keep running while
+    // the transport is stopped, and the session opens the *input* stream that
+    // fills it whenever a mixer track names a microphone. A second of stereo
+    // at 48 kHz, which is far more than the gap between two callbacks.
+    let monitor = std::sync::Arc::new(fontelle_engine::InputMonitor::new(96_000 * 2));
+    let mut device = AudioDevice::default_host().with_monitor(std::sync::Arc::clone(&monitor));
     println!(
         "Fontelle: {} note events, {} on {:?}",
         event_count,
@@ -522,10 +581,17 @@ fn play_or_render(
         // The same switch the graph is playing through, so the button on the
         // bar and the node in the schedule are one thing.
         .with_metronome(realised.metronome.clone());
-        // The studio the window drives. Without a note clip there is nothing
-        // for a roll to show, so the panel simply stays empty rather than
-        // opening onto a clip that does not exist.
-        let document = fontelle_app::Session::first_clip(&project).map(|clip| {
+        // The studio the window drives. It used to be built only when the
+        // project had a note clip for the roll to open, and that gate is what
+        // made the window open **empty** — no rack, no browser, no arrangement
+        // — the day a new project stopped arriving with a clip in it
+        // (`tests/starting_project.rs`). A roll with nothing open is an
+        // ordinary state: every read of the open clip goes through
+        // `project.clips.get`, which answers `None` for an id that names
+        // nothing, and `Session::adopt` has always opened a clip-less
+        // project this way.
+        let clip = fontelle_app::Session::first_clip(&project).unwrap_or_default();
+        let document = Some({
             let mut session = fontelle_app::Session::new(
                 project.clone(),
                 library,
@@ -543,6 +609,10 @@ fn play_or_render(
             // channel, so choosing a soundfont from inside the window does not
             // restart the audio device.
             .with_graphs(graph_publisher, realised.track_controls.clone())
+            // The meters the first graph was built with, so a project opened
+            // on a synth says how many voices it is playing from the first
+            // frame rather than after the next rebuild.
+            .with_voice_meters(realised.voice_meters.clone())
             .with_param_nodes(realised.param_nodes.clone())
             // The same transport the bar drives, so a time selection dragged
             // out on a ruler — and clip mode — reach the thing that loops
@@ -563,7 +633,10 @@ fn play_or_render(
             .with_input_settings(std::sync::Arc::clone(&live_input))
             // And the cell those devices light their keys in, so the roll's
             // keyboard shows what is being played on them.
-            .with_live_keys(std::sync::Arc::clone(&live_keys));
+            .with_live_keys(std::sync::Arc::clone(&live_keys))
+            // And the ring the output stream is already reading, so choosing
+            // an input on a mixer strip is heard through that strip.
+            .with_monitor(std::sync::Arc::clone(&monitor));
             // The recording end of the live channel, so pressing record in the
             // window keeps a take the same way `--record` does.
             if let Some(reader) = capture.take() {
@@ -577,6 +650,16 @@ fn play_or_render(
             }
             if let Some(created) = session.open_bank() {
                 println!("  soundfont folder: {}", created.display());
+            }
+            // The machine searched for plugins **now**, while the studio is
+            // opening, rather than the first time a menu wants the list. See
+            // `Session::scan_plugins`: the wait exists either way, and this is
+            // where a person expects one.
+            let (found, failed) = session.scan_plugins();
+            match (found, failed) {
+                (0, 0) => {}
+                (n, 0) => println!("  plugins: {n}"),
+                (n, f) => println!("  plugins: {n} ({f} would not load)"),
             }
             // And the projects folder, if the settings name one. Nothing is
             // created and nothing is guessed at (INVARIANT 10): with no folder
@@ -1094,10 +1177,78 @@ fn start_empty(playback: Playback<'_>) -> Result<(), String> {
     play_or_render(project, SampleLibrary::new(), playback)
 }
 
+/// What `--help` prints.
+///
+/// Written out by hand rather than generated, and kept beside `main` where the
+/// flags are read: a usage message that drifts from the code is worse than
+/// none, and the only thing that keeps this one honest is that it is the next
+/// thing you see when you add a flag.
+///
+/// The window is the default. Everything here is for the cases where it is
+/// not: bouncing, playing something through once, and the two flags that make
+/// this program testable from a terminal.
+const HELP: &str = "\
+Fontelle — a digital audio workstation.
+
+    fontelle [options] [project]
+
+With no options at all it opens the window on your last project, which is what
+it is for. Everything below is for the times it is not.
+
+Opening things
+  --open <bundle>         Open a project bundle and play it through.
+  --blank                 Start with an empty clip to draw in (needs --window).
+  --window                Show the window even when a flag would have played
+                          through and exited.
+
+Playing something once
+  --play-sf2 <file>       Play a soundfont's preset and exit.
+  --preset <n>            Which preset of it, by index.
+  --play-midi <file>      Play a .mid file through whatever is loaded.
+  --play-flopsynth [name] Play the built-in synthesiser: the Init patch with
+                          no name, that preset with one, and the whole bank
+                          listed with `list`.
+  --key <n>               Which note to play, as a MIDI number (60 is C4).
+  --repeat <n>            How many notes.
+  --start-beat <n>        Where in the project to start.
+  --run-for <seconds>     How long to play before stopping.
+  --loop                  Loop the project rather than playing it once.
+  --gain-db <n>           Master trim, in decibels.
+
+Bouncing
+  --render-wav <file>     Render the project to a WAV file and exit.
+  --save <bundle>         Write the project out after whatever else happened.
+
+Live input
+  --midi-in               Open a MIDI keyboard.
+  --midi-all              Listen on every channel rather than the one set.
+  --midi-channel <n>      Which channel, 1-16.
+  --record                Arm recording.
+  --record-seconds <n>    How long to record for.
+
+Where things live
+  --soundfonts <dir>      Use this soundfont folder for this run.
+  --theme <file>          Load a theme file.
+  --light                 Use the light theme.
+  --help                  Print this.
+";
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // Before anything else opens a device or reads a file: somebody asking
+    // what the flags are should not have a stream opened at them.
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{HELP}");
+        return;
+    }
     let opening = args.iter().any(|a| a == "--open");
     let playing_sf2 = args.iter().any(|a| a == "--play-sf2");
+    // `--play-flopsynth` on its own is the Init patch; with a name it is that
+    // preset; with `list` it prints the bank and exits.
+    let flopsynth = args
+        .iter()
+        .position(|a| a == "--play-flopsynth")
+        .map(|i| args.get(i + 1).cloned().unwrap_or_default());
 
     // A bad path is ordinary user error, not a bug — report it and exit
     // non-zero rather than dumping a panic and a backtrace hint.
@@ -1206,7 +1357,11 @@ fn main() {
     let blank = args.iter().any(|a| a == "--blank");
     // With no project named at all, the window is the whole point: there is
     // nothing to render offline and nothing to play through.
-    let headless_project = playing_sf2 || opening;
+    // `--play-flopsynth` is a project named on the command line, like the
+    // other two: it plays straight through and exits unless `--window` is
+    // asked for, which is what makes it usable for a bounce and for the walk
+    // through the bank that §7.4's listening half needs.
+    let headless_project = playing_sf2 || opening || flopsynth.is_some();
     let window = args.iter().any(|a| a == "--window") || !headless_project;
 
     if blank && !window {
@@ -1281,6 +1436,7 @@ fn main() {
 
     let result = match (&open, playing_sf2) {
         (Some(bundle), _) => open_and_play(bundle, playback),
+        _ if flopsynth.is_some() => play_flopsynth(flopsynth.as_deref(), playback),
         (None, true) => play_sf2(
             &path,
             PlayOptions {
@@ -1300,6 +1456,46 @@ fn main() {
     }
 }
 
+/// One Flopsynth preset, on one channel, ready to play
+/// (`docs/flopsynth-plan.md` §11).
+///
+/// **The listening half of the bank's gate.** `flopsynth_presets.rs` measures
+/// that every preset sounds, fits inside full scale, sits within three
+/// decibels of its neighbours and is measurably apart from every other preset
+/// in its category — and §7.4 says in as many words that three numbers are
+/// *necessary and not sufficient*. This is how somebody hears them.
+fn play_flopsynth(name: Option<&str>, playback: Playback<'_>) -> Result<(), String> {
+    use fontelle_core::flopsynth::presets::{FACTORY, FlopsynthCategory};
+
+    let name = match name {
+        None | Some("") => None,
+        Some("list") => {
+            println!("{} Flopsynth presets:\n", FACTORY.len());
+            for category in FlopsynthCategory::ALL {
+                let rows: Vec<&str> = FACTORY
+                    .iter()
+                    .filter(|row| row.category == category)
+                    .map(|row| row.name)
+                    .collect();
+                println!("  {} ({})", category.label(), rows.len());
+                for chunk in rows.chunks(4) {
+                    println!("      {}", chunk.join(", "));
+                }
+            }
+            println!("\n  --play-flopsynth \"<name>\" plays one; with no name you get Init.");
+            return Ok(());
+        }
+        Some(name) => Some(name),
+    };
+
+    let project = fontelle_app::flopsynth_project(name, 8, BPM, SAMPLE_RATE)?;
+    match name {
+        Some(name) => println!("Flopsynth: {name}"),
+        None => println!("Flopsynth: the Init patch"),
+    }
+    play_or_render(project, SampleLibrary::new(), playback)
+}
+
 /// What the window says it can do, once, on stdout.
 ///
 /// Printed rather than shown because there is no help panel yet; the toolbar
@@ -1311,10 +1507,16 @@ const WELCOME: &str = "\
   Pick a soundfont in the browser, then a preset:
     click a preset  -> puts it on the selected channel
     Ctrl+click      -> puts it on a new one
-  \"+ Add instrument\" makes a blank channel playing the built-in three-oscillator
-  synth, so there is something to hear before you have chosen anything.
+  A new project opens on Flopsynth playing the bank's Grand Piano, with an
+  empty arrangement: draw the first clip where you want it.
+  \"+ Add instrument\" makes a channel of whichever kind you pick; duplicating
+  one copies the instrument and its settings and nothing on the arrangement.
   Right-click a channel to open, rename, duplicate, clear or delete it, and a
   lane's name to add, rename, mute or delete a row of the arrangement.
+  The Prefabs tab beside Instruments lists content you can draw in more than
+  one place: \"+ Make prefab\" makes one, click it to edit it in the roll, and
+  with it selected the draw tool puts a place for it on the arrangement.
+  Editing any place, or the prefab itself, changes every place at once.
   Draw with the left mouse button, delete with the right; the drag that
   follows carries the note you just drew, and a note's right edge lengthens it.
   C is the cut tool, in the roll and on the arrangement alike: drag a line

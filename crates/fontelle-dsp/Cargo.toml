@@ -10,3 +10,12 @@ repository.workspace = true
 
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+# The wavetable ids are serde-by-name and the test says so in JSON.
+# `float_roundtrip`: without it serde_json's fast float parser can land a
+# ULP away from the number in the file, so a patch written and read back
+# is not the patch that was written — which makes a preset read as edited
+# the moment it is loaded (§P.6) and perturbs every float in every project
+# on every open.
+serde_json = { version = "1.0.151", features = ["float_roundtrip"] }

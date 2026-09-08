@@ -11,9 +11,7 @@
 //! id that the `AddChannel` beside it is going to mint, and a `Compound` holds
 //! commands that were made before any of them ran.
 
-use fontelle_model::{
-    Command, History, ImportPart, ImportParts, Note, Project, TempoMap,
-};
+use fontelle_model::{Command, History, ImportPart, ImportParts, Note, Project, TempoMap};
 use fontelle_types::PPQN;
 
 fn a_note(start: i64, key: u8) -> Note {
@@ -28,6 +26,7 @@ fn a_note(start: i64, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -84,8 +83,7 @@ fn each_one_is_called_what_the_file_called_it() {
     );
     command.apply(&mut doc).expect("applies");
 
-    let mut channel_names: Vec<String> =
-        doc.channels.values().map(|c| c.name.clone()).collect();
+    let mut channel_names: Vec<String> = doc.channels.values().map(|c| c.name.clone()).collect();
     channel_names.sort();
     assert_eq!(channel_names, vec!["Fretless Bass", "Strings"]);
 
@@ -134,10 +132,7 @@ fn a_clip_holds_its_own_parts_notes_and_is_as_long_as_they_are() {
 #[test]
 fn a_part_with_no_notes_is_left_out_rather_than_arriving_as_an_empty_row() {
     let mut doc = project();
-    let mut command = ImportParts::new(
-        "Import",
-        vec![a_part("Real", &[60]), a_part("Empty", &[])],
-    );
+    let mut command = ImportParts::new("Import", vec![a_part("Real", &[60]), a_part("Empty", &[])]);
     command.apply(&mut doc).expect("applies");
     assert_eq!(doc.clips.len(), 1);
     assert_eq!(doc.channels.len(), 1);
@@ -170,7 +165,10 @@ fn undoing_an_import_takes_the_whole_file_back_out() {
     command.apply(&mut doc).expect("applies");
     assert_ne!(before, snapshot(&doc));
 
-    command.invert().apply(&mut doc).expect("the inverse applies");
+    command
+        .invert()
+        .apply(&mut doc)
+        .expect("the inverse applies");
     assert_eq!(before, snapshot(&doc), "back exactly where it started");
 }
 

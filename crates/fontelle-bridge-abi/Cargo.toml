@@ -1,0 +1,11 @@
+[package]
+name = "fontelle-bridge-abi"
+description = "The C ABI a plugin-format bridge implements so Fontelle can host formats whose SDKs cannot live in this tree (FONTELLE_TDD.md §3.4, §8.4)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]

@@ -449,6 +449,7 @@ pub fn import_sf2_preset(
                 // durations. `EnvelopeCurve::Decibel` is what makes the numbers
                 // mean what the file's author intended.
                 curve: EnvelopeCurve::Decibel,
+                ..Default::default()
             });
         }
 
@@ -467,6 +468,7 @@ pub fn import_sf2_preset(
                     gen_i16(zone, GeneratorType::InitialFilterQ).unwrap_or(0),
                 ),
                 enabled: cutoff_cents < FILTER_BYPASS_CENTS,
+                ..Default::default()
             });
         }
 
@@ -510,6 +512,7 @@ pub fn import_sf2_preset(
         cutoff_hz: 20_000.0,
         resonance: std::f32::consts::FRAC_1_SQRT_2,
         enabled: false,
+        ..Default::default()
     };
     let filter = filter.unwrap_or(disabled_filter);
 
@@ -546,6 +549,7 @@ pub fn import_sf2_preset(
             lfos: modulation.lfos.to_vec(),
             mod_matrix,
             voice_config: VoiceConfig::default(),
+            ..Default::default()
         },
         samples,
         names,
@@ -600,6 +604,11 @@ struct ZoneModulation {
 }
 
 /// SF2's modulation LFO, then its vibrato LFO.
+/// How far the mod wheel and channel pressure push the vibrato LFO, in
+/// cents, when a file says nothing — SF2 2.04 §8.4.2's default modulators 2
+/// and 6, both 50 cents.
+const DEFAULT_WHEEL_VIBRATO_CENTS: f32 = 50.0;
+
 const MOD_LFO: u8 = 0;
 const VIB_LFO: u8 = 1;
 
@@ -608,8 +617,9 @@ impl Default for ZoneModulation {
         let idle_lfo = fontelle_core::Lfo {
             rate_hz: 8.176,
             depth: 1.0,
-            shape: fontelle_dsp::OscKind::Sine,
+            wave: fontelle_types::LfoWave::Sine,
             delay_s: 0.0,
+            ..Default::default()
         };
         Self {
             envelope: EnvelopeConfig {
@@ -620,6 +630,7 @@ impl Default for ZoneModulation {
                 sustain_level: 1.0,
                 release_s: 0.0,
                 curve: EnvelopeCurve::Linear,
+                ..Default::default()
             },
             lfos: [idle_lfo; 2],
             mod_lfo_to_pitch_cents: 0.0,
@@ -638,8 +649,9 @@ impl ZoneModulation {
         let lfo = |delay: GeneratorType, freq: GeneratorType| fontelle_core::Lfo {
             rate_hz: lfo_rate_hz(zone, freq),
             depth: 1.0,
-            shape: fontelle_dsp::OscKind::Sine,
+            wave: fontelle_types::LfoWave::Sine,
             delay_s: timecents_to_seconds(gen_i16(zone, delay)),
+            ..Default::default()
         };
         let cents = |ty| gen_i16(zone, ty).unwrap_or(0) as f32;
 
@@ -667,6 +679,7 @@ impl ZoneModulation {
                 // SF2's modulation envelope is linear in its own units, unlike
                 // the volume envelope, which is a straight line in decibels.
                 curve: EnvelopeCurve::Linear,
+                ..Default::default()
             },
             lfos: [
                 lfo(GeneratorType::DelayModLFO, GeneratorType::FreqModLFO),
@@ -692,6 +705,31 @@ impl ZoneModulation {
     /// voice scans the matrix once per destination per block, and dead weight
     /// there is paid for on every one.
     fn seed_routes(&self, matrix: &mut ModMatrix, layers: usize, filter_enabled: bool) {
+        // **The wheels**, SF2 2.04 §8.4.2's default modulators 2 and 6: the
+        // mod wheel and channel pressure each scale the vibrato LFO's pitch
+        // depth by 50 cents, on every zone, unless the file overrides them.
+        // This is why a mod wheel adds vibrato on any soundfont in any
+        // player, and it is the *only* thing either controller does by
+        // default — a soundfont says nothing about where else a wheel might
+        // go.
+        //
+        // Through `via`, which is what §7.5 says `via` is for: the vibrato
+        // LFO aimed at pitch, *scaled by* the hand. Not through
+        // `ModDest::LfoDepth`, which would move the LFO itself and take the
+        // file's own vibrato route with it.
+        for layer in 0..layers.min(u8::MAX as usize) as u8 {
+            for hand in [ModSource::ModWheel, ModSource::Aftertouch] {
+                matrix.routes.push(ModRoute {
+                    source: ModSource::Lfo(VIB_LFO),
+                    destination: ModDest::LayerPitch(layer),
+                    depth: DEFAULT_WHEEL_VIBRATO_CENTS / ModDest::LayerPitch(layer).full_scale(),
+                    curve: Curve::Linear,
+                    via: Some(hand),
+                    invert: false,
+                });
+            }
+        }
+
         let mut push = |source: ModSource, destination: ModDest, amount: f32| {
             if amount == 0.0 {
                 return;

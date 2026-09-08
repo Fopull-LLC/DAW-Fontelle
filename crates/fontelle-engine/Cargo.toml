@@ -12,8 +12,17 @@ repository.workspace = true
 fontelle-types = { path = "../fontelle-types" }
 fontelle-core = { path = "../fontelle-core" }
 fontelle-fx = { path = "../fontelle-fx" }
+fontelle-host = { path = "../fontelle-host" }
 fontelle-dsp = { path = "../fontelle-dsp" }
 cpal = "0.18.2"
+# The PipeWire ALSA plugin is opened directly for capture — see `pipewire.rs`.
+alsa = "0.11.0"
+# `float_roundtrip`: without it serde_json's fast float parser can land a
+# ULP away from the number in the file, so a patch written and read back
+# is not the patch that was written — which makes a preset read as edited
+# the moment it is loaded (§P.6) and perturbs every float in every project
+# on every open.
+serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 rtrb = "0.4.0"
 triple_buffer = "9.0.0"
 audio_thread_priority = "0.37.0"
@@ -21,4 +30,7 @@ rubato = "5.0.0"
 
 [dev-dependencies]
 fontelle-assets = { path = "../fontelle-assets" }
+# Built for its side effect: the test bundle `tests/plugin_nodes.rs` loads.
+fontelle-testplug = { path = "../fontelle-testplug" }
+fontelle-testlv2 = { path = "../fontelle-testlv2" }
 slotmap = "1.1.1"

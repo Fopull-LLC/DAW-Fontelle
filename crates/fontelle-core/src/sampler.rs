@@ -20,19 +20,37 @@ pub struct Sampler {
     /// The channel's own level as a linear amplitude, applied to the whole
     /// mix on the way out. See [`Sampler::set_gain_db`].
     gain: f32,
+    /// The wheels: what the hand playing this instrument is doing right now.
+    /// See [`crate::Performance`], and the three setters below.
+    performance: crate::Performance,
+    /// The wavetables this patch's layers name, resolved in
+    /// [`prepare`](Sampler::prepare).
+    ///
+    /// Resolved there and **nowhere else**: building a table allocates half a
+    /// megabyte and asking the bank for one takes a lock, both of which are
+    /// fine off the audio thread and forbidden on it (INVARIANT 1). See
+    /// [`crate::WavetableSet`].
+    tables: crate::WavetableSet,
 }
 
 impl Sampler {
     pub fn new(patch: Patch) -> Self {
         let capacity = patch.voice_config.polyphony;
-        Self {
+        let mut sampler = Self {
             patch,
             voices: VoicePool::with_capacity(capacity),
             sample_rate: 48_000.0,
             quality: fontelle_dsp::Interpolation::Normal,
             pan: 0.0,
             gain: 1.0,
-        }
+            performance: crate::Performance::default(),
+            tables: crate::WavetableSet::new(),
+        };
+        // The tables the patch names, before it is ever rendered: a channel
+        // whose first block was silent while a table built would be a synth
+        // that stutters when you play the first note.
+        sampler.tables.resolve(&sampler.patch);
+        sampler
     }
 
     /// Off-RT: allocation permitted (matches `AudioNode::prepare` in `fontelle-engine`).
@@ -41,6 +59,9 @@ impl Sampler {
     /// since pitch/loop math is computed per-render from it.
     pub fn prepare(&mut self, ctx: &PrepareContext) {
         self.sample_rate = ctx.sample_rate;
+        // Off-RT, so this may lock and allocate — and this is the one place
+        // that is allowed to.
+        self.tables.resolve(&self.patch);
     }
 
     /// Sets the session's interpolation quality — the kernel used by every
@@ -85,6 +106,35 @@ impl Sampler {
     /// Read per block, so moving it moves the notes already sounding.
     ///
     /// RT-safe: a plain field write, no allocation.
+    /// The mod wheel, `0.0..=1.0`. A matrix source and nothing else: where
+    /// a wheel goes is the patch's decision (`ModSource::ModWheel`).
+    ///
+    /// RT-safe, and **live** — it moves what is already sounding, which is
+    /// what makes it a wheel rather than a note property.
+    pub fn set_mod_wheel(&mut self, value: f32) {
+        self.performance.mod_wheel = value.clamp(0.0, 1.0);
+    }
+
+    /// The pitch wheel, `-1.0..=1.0`, centred at zero.
+    ///
+    /// Bends every sounding note over `VoiceConfig::bend_range_semitones`,
+    /// and reads as `ModSource::PitchBend` besides. RT-safe and live.
+    pub fn set_pitch_bend(&mut self, value: f32) {
+        self.performance.pitch_bend = value.clamp(-1.0, 1.0);
+    }
+
+    /// Channel pressure, `0.0..=1.0` — `ModSource::Aftertouch`. As the mod
+    /// wheel: a source, and no destination of its own.
+    pub fn set_aftertouch(&mut self, value: f32) {
+        self.performance.aftertouch = value.clamp(0.0, 1.0);
+    }
+
+    /// What the hand is doing, for anything that has to put it back — the
+    /// engine node keeps no copy of its own.
+    pub fn performance(&self) -> crate::Performance {
+        self.performance
+    }
+
     pub fn set_gain_db(&mut self, gain_db: f32) {
         // Decibels in, amplitude kept: the conversion is a `powf` and doing it
         // here means it happens when the knob moves rather than every block.
@@ -109,6 +159,31 @@ impl Sampler {
     /// means it cannot panic on a project from a later version.
     pub fn set_patch_param(&mut self, address: &str, value: f32) -> bool {
         crate::patch_params::set(&mut self.patch, address, value)
+    }
+
+    /// Where the transport is, for the LFOs that read it.
+    ///
+    /// Set every block by whatever is driving this sampler, because both
+    /// numbers are live: a synced LFO's *rate* follows a tempo change, and a
+    /// free-running one's *phase* is a fact about the position — which is what
+    /// makes the same bar sound the same every time it plays.
+    pub fn set_clock(&mut self, clock: crate::RenderClock) {
+        self.performance.clock = clock;
+    }
+
+    /// Whether `address` is one the live wire may carry, or one that has to go
+    /// through a rebuild.
+    ///
+    /// The line §2.3 draws: almost every patch parameter can be applied to a
+    /// running sampler between one block and the next, which is what makes a
+    /// knob drag audible under a held chord. **A layer's table is the
+    /// exception.** Choosing one means resolving it, and resolving one locks
+    /// the wavetable bank and may build half a megabyte — so it goes through
+    /// `prepare`, like every other structural change, and the caller has to
+    /// know that before it sends the edit rather than after the layer has
+    /// gone silent.
+    pub fn is_live_param(address: &str) -> bool {
+        !address.ends_with("/synth/table")
     }
 
     /// What [`set_gain_db`](Self::set_gain_db) was last given, back in
@@ -226,6 +301,23 @@ impl Sampler {
         self.voices.active_count()
     }
 
+    /// Where the **newest** voice's LFOs are in their cycles, 0..1 each.
+    ///
+    /// The newest, because the LFOs are per voice and retriggered per note
+    /// (§3.5), so a chord has four of each turning at four offsets and there
+    /// is no one answer. The newest is the one somebody just played, which is
+    /// the one they are looking at the picture to understand.
+    ///
+    /// All zero when nothing is sounding: a dot parked at the start is honest
+    /// about a synthesiser that is not playing.
+    pub fn newest_lfo_phases(&self) -> [f32; crate::MAX_LFOS] {
+        self.voices
+            .iter_active()
+            .min_by_key(|voice| voice.age_samples())
+            .map(|voice| voice.lfo_phases())
+            .unwrap_or([0.0; crate::MAX_LFOS])
+    }
+
     /// RT. No allocation (INVARIANT 1). Zeroes `out` first, then mixes every
     /// active voice into it.
     ///
@@ -241,9 +333,24 @@ impl Sampler {
         let patch = &self.patch;
         let sample_rate = self.sample_rate;
         let quality = self.quality;
-        let pan = self.pan;
+        let performance = crate::Performance {
+            pan: self.pan,
+            ..self.performance
+        };
+        let tables = &self.tables;
         for voice in self.voices.iter_active_mut() {
-            voice.render_with_pan(patch, store, sample_rate, quality, pan, out);
+            voice.render_performing(patch, store, tables, sample_rate, quality, performance, out);
+        }
+        // The patch's own trim, before the channel's level and after the voice
+        // sum: it exists so a bank of presets can be **loudness-matched**
+        // without anybody rebalancing their layers to do it (§3.8).
+        let trim = 10f32.powf(self.patch.output_db / 20.0);
+        if (trim - 1.0).abs() > f32::EPSILON {
+            for channel in out.iter_mut() {
+                for sample in channel.iter_mut() {
+                    *sample *= trim;
+                }
+            }
         }
         // The channel's own level, over the summed voices. After the mix
         // rather than folded into each voice's gain so that a level moved
@@ -262,8 +369,16 @@ impl Sampler {
     /// counterpart.
     ///
     /// RT-safe: touches only preallocated state.
+    ///
+    /// **The wheels are let go of too.** A transport stop that left a bend
+    /// on would start the next note bent, and nobody is holding the wheel:
+    /// what a reset means is that nothing is being played.
     pub fn reset(&mut self) {
         self.voices.reset();
+        self.performance = crate::Performance {
+            pan: self.performance.pan,
+            ..crate::Performance::default()
+        };
     }
 
     /// Silences only what the timeline started — transport stop and seek.
@@ -312,6 +427,7 @@ mod tests {
             cutoff_hz: 20_000.0,
             resonance: 0.0,
             enabled: false,
+            ..Default::default()
         }
     }
 
@@ -324,6 +440,7 @@ mod tests {
             sustain_level: 1.0,
             release_s: 0.01,
             curve: EnvelopeCurve::Linear,
+            ..Default::default()
         }
     }
 
@@ -369,6 +486,7 @@ mod tests {
                 steal_policy: StealPolicy::Oldest,
                 ..VoiceConfig::default()
             },
+            ..Default::default()
         }
     }
 
@@ -513,6 +631,62 @@ mod tests {
             0.0,
             "released voice must eventually fall silent"
         );
+    }
+
+    /// **The stuck note.** Reported from playing the studio: *"after playing
+    /// notes it seems to want to often just hold a note forever if i spam
+    /// lower notes"* — and once it had happened, every note after it hung
+    /// too.
+    ///
+    /// A key pressed again while the last press is still ringing out has
+    /// **two** voices on it: the old one in its release, the new one held.
+    /// The note-off that follows must reach the one that is still held. When
+    /// it went to the first voice in pool order it went to the one already
+    /// released — a no-op — and the new voice was left holding a note nobody
+    /// could address again. On a patch that sustains (every synth lead in the
+    /// bank) that is a drone until the channel is rebuilt, and low notes
+    /// reached it first because their tails are the longest.
+    #[test]
+    fn a_key_pressed_again_while_it_rings_out_still_gets_its_note_off() {
+        let mut store = SampleStore::new();
+        // A release long enough that the first voice is unmistakably still
+        // sounding when the second note arrives.
+        let lingering = EnvelopeConfig {
+            release_s: 0.5,
+            ..instant_envelope()
+        };
+        let patch = patch_with_envelope(&mut store, 8, lingering);
+        let mut sampler = Sampler::new(patch);
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 512,
+        });
+        let mut scratch = vec![0.0; 256];
+
+        sampler.note_on_from(60, 127, 0, fontelle_types::VoiceOrigin::Live);
+        sampler.render(&store, &mut [&mut scratch[..]]);
+        sampler.note_off(60, 0);
+        sampler.render(&store, &mut [&mut scratch[..]]);
+        assert!(
+            sampler.active_voices() > 0,
+            "the rig is wrong if the first voice has already finished"
+        );
+
+        // The same key again, while that release is still audible.
+        sampler.note_on_from(60, 127, 0, fontelle_types::VoiceOrigin::Live);
+        sampler.render(&store, &mut [&mut scratch[..]]);
+        sampler.note_off(60, 0);
+
+        // Well past the longest release either voice could have.
+        for _ in 0..300 {
+            sampler.render(&store, &mut [&mut scratch[..]]);
+        }
+        assert_eq!(
+            sampler.active_voices(),
+            0,
+            "both presses were let go of, so nothing may still be sounding"
+        );
+        assert_eq!(rms(&scratch), 0.0, "and it is silent");
     }
 
     #[test]
@@ -677,6 +851,7 @@ mod tests {
                 steal_policy: StealPolicy::Oldest,
                 ..VoiceConfig::default()
             },
+            ..Default::default()
         }
     }
 
@@ -877,6 +1052,7 @@ mod tests {
             cutoff_hz: 200.0,
             resonance: 4.0,
             enabled: true,
+            ..Default::default()
         };
         let mut sampler = Sampler::new(patch);
         sampler.prepare(&PrepareContext {
@@ -901,6 +1077,7 @@ mod tests {
             cutoff_hz: 200.0,
             resonance: 4.0,
             enabled: true,
+            ..Default::default()
         };
         let mut fresh = Sampler::new(fresh_patch);
         fresh.prepare(&PrepareContext {
@@ -1059,6 +1236,7 @@ mod tests {
                 steal_policy: StealPolicy::Oldest,
                 ..VoiceConfig::default()
             },
+            ..Default::default()
         }
     }
 

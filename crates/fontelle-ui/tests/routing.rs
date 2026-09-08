@@ -14,7 +14,8 @@
 //! Geometry and hit-testing only, and both pure, per §2.5 of the plan.
 
 use fontelle_ui::canvas::{
-    RackHit, RouteChoice, rack_hit, rack_layout, route_menu_hit, route_menu_layout,
+    RackHit, RouteChoice, output_menu_layout, rack_hit, rack_layout, route_menu_hit,
+    route_menu_layout,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::{Metrics, Theme};
@@ -196,4 +197,61 @@ fn the_chip_says_where_the_channel_goes_in_the_space_it_has() {
     // The master's own strip is the last one, and naming it by index is the
     // same answer as `None`.
     assert_eq!(route_label(Some(2), 3), "0");
+}
+
+// ------------------------------------------------- the output row's menu ---
+//
+// > *"if i chose to not route it to master, i wont be hearing my own input but
+// > it will still be recording the audio clip."*
+//
+// The rack's chip says where a *channel* goes and every channel goes
+// somewhere, so its menu is the list of destinations. A mixer track's output
+// row has one more answer — **nowhere** — and it is the answer that report
+// asks for. Which is why the two menus are two functions over one layout
+// rather than one function with a flag: a send offered "nowhere" would be a
+// row that means "delete this send" and does not.
+
+#[test]
+fn a_tracks_output_menu_offers_nowhere_and_the_rest_do_not() {
+    let m = metrics();
+    let names: Vec<String> = ["Kick", "Bass", "Master"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let chip = Rect::new(20.0, 60.0, 90.0, 18.0);
+
+    let output = output_menu_layout(chip, body(), &m, &names, Some(0));
+    let choices: Vec<RouteChoice> = output.items.iter().map(|(c, _)| *c).collect();
+    assert!(
+        choices.contains(&RouteChoice::Off),
+        "a track's output cannot be switched off: {choices:?}"
+    );
+    assert!(choices.contains(&RouteChoice::Master));
+    assert!(
+        !choices.contains(&RouteChoice::Track(0)),
+        "a track was offered itself"
+    );
+
+    let sends = route_menu_layout(chip, body(), &m, &names);
+    assert!(
+        !sends.items.iter().any(|(c, _)| *c == RouteChoice::Off),
+        "a send was offered nowhere to go"
+    );
+}
+
+#[test]
+fn the_off_row_says_so_and_every_row_is_reachable() {
+    let m = metrics();
+    let names: Vec<String> = ["Kick", "Master"].iter().map(|s| s.to_string()).collect();
+    let menu = output_menu_layout(Rect::new(20.0, 60.0, 90.0, 18.0), body(), &m, &names, None);
+    for (choice, rect) in &menu.items {
+        assert!(
+            !menu.label(*choice, &names).is_empty(),
+            "{choice:?} draws no words"
+        );
+        assert_eq!(
+            route_menu_hit(&menu, rect.x + rect.width / 2.0, rect.y + rect.height / 2.0),
+            Some(*choice),
+        );
+    }
 }

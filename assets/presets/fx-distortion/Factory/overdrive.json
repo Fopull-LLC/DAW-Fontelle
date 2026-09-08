@@ -1,0 +1,28 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Distortion"
+  },
+  "name": "overdrive",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Distortion": {
+        "curve": "SoftClip",
+        "shape": 0.2,
+        "drive_db": 18.0,
+        "bias": 0.0,
+        "sag": 0.1,
+        "pre_hp_hz": 80.0,
+        "pre_mid_hz": 800.0,
+        "pre_mid_db": 6.0,
+        "clean_low_hz": 20.0,
+        "tone_hz": 6000.0,
+        "output_db": 0.0,
+        "auto_gain": true,
+        "oversample": "Two",
+        "mix": 1.0
+      }
+    }
+  }
+}

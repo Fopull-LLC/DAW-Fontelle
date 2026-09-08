@@ -17,9 +17,11 @@
 //! A `save_project` writes one JSON file — assets are referenced, not copied
 //! (§17.4) — so a backup costs a few kilobytes and can be taken often.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 
-use fontelle_app::{RealiseOptions, SampleLibrary, Session, blank_project};
+use fontelle_app::{RealiseOptions, SampleLibrary, Session};
 use fontelle_engine::timeline_channel;
 use fontelle_types::{CompiledTimeline, PPQN};
 use fontelle_ui::canvas::RollEdit;
@@ -37,7 +39,7 @@ fn scratch(name: &str) -> PathBuf {
 /// A session over a project saved at `<dir>/Song.fontelle`.
 fn saved_session(dir: &Path) -> Session {
     let bundle = dir.join("Song.fontelle");
-    let project = blank_project(2, 120.0, SR);
+    let project = common::a_project_with_a_clip(2, 120.0, SR);
     fontelle_app::save_project(&project, &bundle).expect("a blank project must save");
 
     let clip = Session::first_clip(&project).expect("a blank project has one clip");
@@ -61,7 +63,7 @@ fn saved_session(dir: &Path) -> Session {
 
 /// The same, never written to disk — `--blank` with no `--save`.
 fn scratch_session(dir: &Path) -> Session {
-    let project = blank_project(2, 120.0, SR);
+    let project = common::a_project_with_a_clip(2, 120.0, SR);
     let clip = Session::first_clip(&project).expect("a blank project has one clip");
     let channel_nodes = fontelle_app::channel_nodes(&project);
     let (publisher, _timeline) = timeline_channel(CompiledTimeline::empty());
@@ -94,6 +96,7 @@ fn a_note(session: &mut Session) {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     });
 }

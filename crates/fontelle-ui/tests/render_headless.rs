@@ -125,7 +125,12 @@ fn shoot_sized(
     width: u32,
 ) -> Option<Shot> {
     let shared = headless()?;
-    let layout = window_layout(width as f32, H as f32, &theme.metrics, DEFAULT_TIMELINE_HEIGHT);
+    let layout = window_layout(
+        width as f32,
+        H as f32,
+        &theme.metrics,
+        DEFAULT_TIMELINE_HEIGHT,
+    );
     let mut text = TextContext::new();
     let title = text.layout("Fontelle", &theme.font, None);
 
@@ -155,6 +160,7 @@ fn shoot_sized(
             },
             roll: None,
             rack: None,
+            prefabs: None,
             browser: None,
             timeline: None,
             mixer: None,
@@ -174,7 +180,11 @@ fn shoot_sized(
         .render(&scene, width, H, theme.palette.window)
         .expect("rendering a scene that fits in memory");
 
-    dump(&pixels, &theme.name);
+    // `dump_sized`, because this one is not the standard frame: a shot at
+    // any other width written as a standard-sized PNG is a panic in the
+    // encoder, and it fires only when `FONTELLE_UI_DUMP` is set — which is
+    // exactly when somebody is trying to look at the window.
+    dump_sized(&pixels, &theme.name, width, H);
 
     Some(Shot {
         pixels,
@@ -459,6 +469,7 @@ fn note(start: Tick, length: Tick, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -507,7 +518,15 @@ fn shoot_roll_snapped(snap: SnapDivision) -> Option<RollShot> {
 /// The widened strip is rendered nowhere else, so without this the only thing
 /// checking `NAMED_KEYBOARD_WIDTH` is arithmetic in `tests/keyboard.rs`.
 fn shoot_roll_mapped(map: &fontelle_ui::document::KeyMap) -> Option<RollShot> {
-    shoot_roll_with(&Arena::default(), &[], &[], None, map, SnapDivision::Step, 0)
+    shoot_roll_with(
+        &Arena::default(),
+        &[],
+        &[],
+        None,
+        map,
+        SnapDivision::Step,
+        0,
+    )
 }
 
 /// [`shoot_roll`] with the lane chip's menu open over it.
@@ -566,6 +585,23 @@ fn shoot_roll_lit(live_keys: u128) -> Option<RollShot> {
     )
 }
 
+/// The roll with a clip **end**, so the grid past it can be looked at.
+fn shoot_roll_ending(clip_length: Tick) -> Option<RollShot> {
+    let notes = Arena::default();
+    let key_map = fontelle_ui::document::KeyMap::unknown();
+    shoot_roll_full_ending(
+        &notes,
+        &[],
+        &[],
+        None,
+        &key_map,
+        SnapDivision::Step,
+        0,
+        false,
+        Some(clip_length),
+    )
+}
+
 fn shoot_roll_with(
     notes: &Arena<NoteId, Note>,
     selection: &[NoteId],
@@ -591,6 +627,23 @@ fn shoot_roll_full(
     snap: SnapDivision,
     live_keys: u128,
     tools_open: bool,
+) -> Option<RollShot> {
+    shoot_roll_full_ending(
+        notes, selection, ghosts, lane_menu, key_map, snap, live_keys, tools_open, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn shoot_roll_full_ending(
+    notes: &Arena<NoteId, Note>,
+    selection: &[NoteId],
+    ghosts: &[fontelle_ui::document::GhostNote],
+    lane_menu: Option<fontelle_ui::canvas::LaneMenu>,
+    key_map: &fontelle_ui::document::KeyMap,
+    snap: SnapDivision,
+    live_keys: u128,
+    tools_open: bool,
+    clip_length: Option<Tick>,
 ) -> Option<RollShot> {
     let theme = Theme::dark_default();
     let shared = headless()?;
@@ -702,6 +755,7 @@ fn shoot_roll_full(
                     fontelle_ui::document::GhostFilter::All
                 },
                 marker_tick: None,
+                clip_length,
                 loop_range: None,
                 marquee: None,
                 hover: None,
@@ -713,6 +767,7 @@ fn shoot_roll_full(
                 live_keys,
             }),
             rack: None,
+            prefabs: None,
             browser: None,
             timeline: None,
             mixer: None,
@@ -941,6 +996,16 @@ fn shoot_timeline_selected(
     clips: &[fontelle_ui::document::ClipInfo],
     selection: &[fontelle_types::ClipId],
 ) -> Option<TimelineShot> {
+    shoot_timeline_switch(clips, selection, false)
+}
+
+/// The same again, with the Stretch switch in a known state and the toolbar's
+/// own words shaped, so a shot can show which way it is set.
+fn shoot_timeline_switch(
+    clips: &[fontelle_ui::document::ClipInfo],
+    selection: &[fontelle_types::ClipId],
+    stretch: bool,
+) -> Option<TimelineShot> {
     use fontelle_ui::canvas::{TimelineView, timeline_layout};
     use fontelle_ui::document::LaneInfo;
     use fontelle_ui::render::TimelineChrome;
@@ -960,6 +1025,18 @@ fn shoot_timeline_selected(
     let tempo = text.layout("120.00", &theme.font, None);
     let signature = text.layout("4/4", &theme.font, None);
     let l = timeline_layout(layout.timeline.body, &theme.metrics);
+    // The toolbar's own words, so the shot shows what each chip says — the
+    // snap division and the stretch switch are read-outs, not glyphs.
+    let mut labels = Labels::new();
+    for (control, _) in
+        &fontelle_ui::canvas::timeline_toolbar_layout(l.toolbar, &theme.metrics).items
+    {
+        let caption = match control {
+            fontelle_ui::canvas::TimelineControl::Snap => TimelineView::default().snap.label(),
+            other => other.label(),
+        };
+        labels.ensure(caption, &theme.font, &mut text);
+    }
     let tview = TimelineView::default();
     let lanes: Vec<LaneInfo> = (0..4)
         .map(|n| LaneInfo {
@@ -989,9 +1066,11 @@ fn shoot_timeline_selected(
             },
             roll: None,
             rack: None,
+            prefabs: None,
             browser: None,
             timeline: Some(TimelineChrome {
                 tool: fontelle_ui::canvas::TimelineTool::default(),
+                stretch,
                 toolbar: fontelle_ui::canvas::timeline_toolbar_layout(l.toolbar, &theme.metrics),
                 hover: None,
                 can_paste: false,
@@ -1011,13 +1090,14 @@ fn shoot_timeline_selected(
                 point_clip: None,
                 point_selection: &[],
                 loop_range: None,
+                recording: None,
             }),
             mixer: None,
             tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
             tab: fontelle_ui::layout::EditorTab::Roll,
             hover_tab: None,
             browser_title: "Soundfonts",
-            labels: &Labels::new(),
+            labels: &labels,
             status: "",
             tooltip: None,
             menu: None,
@@ -1057,6 +1137,7 @@ fn a_clip(
         curve: Vec::new(),
         notes: Vec::new(),
         audio: Default::default(),
+        prefab: None,
     }
 }
 
@@ -1134,7 +1215,6 @@ fn shoot_instrument() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::Instrument
         automated: false,
     };
     let instrument = InstrumentView {
-        presets: Vec::new(),
         keys: Vec::new(),
         key: None,
         title: "tri baja".to_string(),
@@ -1221,6 +1301,7 @@ fn shoot_instrument() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::Instrument
             hover: None,
             active: Some((1, 2)),
         })),
+        None,
         None,
     );
     let pixels = shared
@@ -1664,6 +1745,7 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
             },
             roll: None,
             rack: None,
+            prefabs: None,
             browser: None,
             timeline: None,
             mixer: Some(MixerChrome {
@@ -1673,12 +1755,12 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
                 hover: None,
                 active: None,
                 selected: 0,
+                renaming: None,
                 output_label: output_label.clone(),
                 input_label: "In: none".to_string(),
                 insert_drag: None,
                 output_menu: None,
                 send_menu: None,
-                effect_menu: None,
                 route_names: &route_names,
                 output: None,
             }),
@@ -1866,7 +1948,6 @@ fn the_active_tool_chip_is_lit_on_both_toolbars() {
     );
 }
 
-
 /// A knob a lane has taken over is drawn with a **different ring**, which is
 /// TDD §12.2's own words for it.
 ///
@@ -1924,7 +2005,9 @@ fn a_knob_under_automation_wears_a_ring_an_ordinary_knob_does_not() {
 // ------------------------------------------------- the caret on a name
 
 /// Shoots the channel rack, optionally with one row being renamed.
-fn shoot_rack(renaming: Option<usize>) -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::RackLayout, u32, u32)> {
+fn shoot_rack(
+    renaming: Option<usize>,
+) -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::RackLayout, u32, u32)> {
     use fontelle_ui::canvas::rack_layout;
     use fontelle_ui::document::ChannelInfo;
     use fontelle_ui::render::RackChrome;
@@ -1945,7 +2028,17 @@ fn shoot_rack(renaming: Option<usize>) -> Option<(Vec<u8>, Theme, fontelle_ui::c
         })
         .collect();
 
-    let layout = window_layout(W as f32, H as f32, &theme.metrics, DEFAULT_TIMELINE_HEIGHT);
+    // Taller than the file's usual frame: the rack's body in a 360-pixel
+    // window has room for one row once the panel's tab strip
+    // (`canvas::tab_strip`) has taken its own, and this test needs two rows to
+    // compare against each other.
+    const RACK_H: u32 = 480;
+    let layout = window_layout(
+        W as f32,
+        RACK_H as f32,
+        &theme.metrics,
+        DEFAULT_TIMELINE_HEIGHT,
+    );
     let rack = rack_layout(layout.rack.body, &theme.metrics, channels.len(), 0);
 
     let mut labels = Labels::new();
@@ -1953,6 +2046,9 @@ fn shoot_rack(renaming: Option<usize>) -> Option<(Vec<u8>, Theme, fontelle_ui::c
         labels.ensure(&channel.name, &theme.font, &mut text);
     }
     labels.ensure("Master", &theme.font, &mut text);
+    for tab in fontelle_ui::document::RackTab::ALL {
+        labels.ensure(tab.label(), &theme.font, &mut text);
+    }
 
     let mut scene = vello::Scene::new();
     fontelle_ui::render::draw_window(
@@ -1986,6 +2082,7 @@ fn shoot_rack(renaming: Option<usize>) -> Option<(Vec<u8>, Theme, fontelle_ui::c
                 route_menu_open: None,
                 renaming,
             }),
+            prefabs: None,
             browser: None,
             timeline: None,
             mixer: None,
@@ -2002,10 +2099,10 @@ fn shoot_rack(renaming: Option<usize>) -> Option<(Vec<u8>, Theme, fontelle_ui::c
     let pixels = shared
         .lock()
         .expect("the shared renderer")
-        .render(&scene, W, H, theme.palette.window)
+        .render(&scene, W, RACK_H, theme.palette.window)
         .expect("the scene must render");
     dump(&pixels, &format!("rack-renaming-{}", renaming.is_some()));
-    Some((pixels, theme, rack, W, H))
+    Some((pixels, theme, rack, W, RACK_H))
 }
 
 /// **A name being typed has a visible text cursor.**
@@ -2094,6 +2191,7 @@ fn an_automation_clip(values: &[f64]) -> fontelle_ui::document::ClipInfo {
             .collect(),
         notes: Vec::new(),
         audio: Default::default(),
+        prefab: None,
     }
 }
 
@@ -2267,6 +2365,7 @@ fn a_note_clip(loop_length: Option<Tick>) -> fontelle_ui::document::ClipInfo {
             n(PPQN * 3, PPQN, 72),
         ],
         audio: Default::default(),
+        prefab: None,
     }
 }
 
@@ -2287,7 +2386,11 @@ fn a_note_clip_draws_its_notes_and_they_can_be_told_from_the_block() {
     // that no note covers. They have to be different colours, or the preview
     // is a block with an invisible pattern on it.
     let inside = {
-        let r = rects[0];
+        // The second note, not the first: the first starts on the block's
+        // left edge, and every block has a dark edge line now — *"make it so
+        // that the edges of clips are always visible"* — which is the one
+        // place a note's ink is not what is on screen.
+        let r = rects[1];
         shot.at((r.x + r.width / 2.0) as u32, (r.y + r.height / 2.0) as u32)
     };
     let empty = {
@@ -2364,7 +2467,10 @@ fn the_mode_chip_is_drawn_and_says_which_mode_it_is_in() {
     };
 
     let chip = song.bar.mode;
-    assert!(!chip.is_empty(), "there is no chip to draw at {WIDE} across");
+    assert!(
+        !chip.is_empty(),
+        "there is no chip to draw at {WIDE} across"
+    );
 
     // In clip mode the chip is filled with the accent, because a transport
     // playing one part of a song rather than the song is a state worth
@@ -2381,7 +2487,10 @@ fn the_mode_chip_is_drawn_and_says_which_mode_it_is_in() {
             }
         }
     }
-    assert!(accent > 20, "clip mode does not light the chip: {accent} accent pixels");
+    assert!(
+        accent > 20,
+        "clip mode does not light the chip: {accent} accent pixels"
+    );
     assert!(differ > 20, "the two modes draw the chip identically");
 
     // And nothing outside the chip moved: the mode is not allowed to repaint
@@ -2521,4 +2630,529 @@ fn the_tools_panels_rows_have_words_on_them() {
         rows_with_ink, drawn,
         "only {rows_with_ink} of {drawn} rows have anything on them"
     );
+}
+
+// ------------------------------------------ edges, overlaps and fades ---
+
+/// An audio clip on `lane` from `start` for `length`, with a flat waveform
+/// and the fades given as fractions of the block.
+fn an_audio_clip(
+    lane: usize,
+    start: Tick,
+    length: Tick,
+    fade_in: f32,
+    fade_out: f32,
+) -> fontelle_ui::document::ClipInfo {
+    let mut clip = a_clip(lane, start, length, [0x4f, 0x8f, 0xd0, 0xff]);
+    clip.kind = fontelle_ui::document::ClipKind::Audio;
+    clip.audio = fontelle_ui::document::AudioPreview {
+        peaks: vec![(-0.6, 0.6); 128],
+        fade_in,
+        fade_out,
+        fade_in_tension: 0.5,
+        fade_out_tension: 0.0,
+        // The file exactly fills its block, which is what a drop makes and
+        // so what these shots should be of.
+        natural_length: length,
+        stretched: false,
+    };
+    clip
+}
+
+#[test]
+fn two_blocks_end_to_end_are_parted_by_an_edge_and_an_overlap_is_striped() {
+    use fontelle_ui::canvas::{clip_bands, clip_overlaps, clip_rect};
+
+    // *"make it so that the edges of clips are always visible and dont blend
+    // into eachother when they get close or even overlapped, and when theyre
+    // overlapped, there should be a kind of diagonal stripe pattern on the
+    // overlapping part."* Two blocks of one colour end to end on the first
+    // row, two overlapping on the second, and a fade on the third.
+    let mut clips = vec![
+        an_audio_clip(0, 0, PPQN * 8, 0.0, 0.0),
+        an_audio_clip(0, PPQN * 8, PPQN * 8, 0.0, 0.0),
+        an_audio_clip(1, 0, PPQN * 10, 0.0, 0.0),
+        an_audio_clip(1, PPQN * 6, PPQN * 10, 0.0, 0.0),
+        an_audio_clip(2, 0, PPQN * 12, 0.4, 0.3),
+    ];
+    // Distinct ids, out of one arena: `a_clip` mints each from a fresh one,
+    // and five clips sharing an id are five clips the selection matches.
+    let mut ids: Arena<fontelle_types::ClipId, ()> = Arena::default();
+    for clip in &mut clips {
+        clip.id = ids.insert(());
+    }
+    let Some(shot) = shoot_timeline_selected(&clips, &[clips[4].id]) else {
+        return;
+    };
+    dump_sized(&shot.pixels, "arrangement overlaps and fades", RW, RH);
+    let brightness = |c: Color| u32::from(c.0[0]) + u32::from(c.0[1]) + u32::from(c.0[2]);
+
+    // The seam: the pixel on the boundary is darker than the bodies either
+    // side of it, so two blocks of one colour read as two blocks.
+    let first = clip_rect(&shot.view, shot.layout.grid, &clips[0]);
+    let (_, content) = clip_bands(first);
+    let y = (content.y + content.height * 0.9) as u32; // under the waveform's reach
+    let seam = shot.at(first.right() as u32, y);
+    let body_left = shot.at((first.right() - 6.0) as u32, y);
+    let body_right = shot.at((first.right() + 6.0) as u32, y);
+    assert!(
+        brightness(seam) < brightness(body_left) && brightness(seam) < brightness(body_right),
+        "no edge at the seam: {seam:?} between {body_left:?} and {body_right:?}"
+    );
+
+    // The overlap: striped, so a row of pixels across it is not one colour.
+    let shared = clip_overlaps(&shot.view, shot.layout.grid, &clips);
+    assert_eq!(shared.len(), 1);
+    let band = shared[0].area;
+    let (_, content) = clip_bands(band);
+    let y = (content.y + content.height * 0.9) as u32;
+    let mut seen: Vec<Color> = Vec::new();
+    for x in (band.x as u32 + 2)..(band.right() as u32 - 2) {
+        let c = shot.at(x, y);
+        if !seen.iter().any(|s| near(*s, c)) {
+            seen.push(c);
+        }
+    }
+    assert!(seen.len() >= 2, "the overlap is one flat colour: {seen:?}");
+
+    // The fade: the shaded region above the curve is darker than the same
+    // height of the block where there is no fade.
+    let third = clip_rect(&shot.view, shot.layout.grid, &clips[4]);
+    let (_, content) = clip_bands(third);
+    let y = (content.y + 2.0) as u32;
+    let faded = shot.at((third.x + third.width * 0.05) as u32, y);
+    let plain = shot.at((third.x + third.width * 0.55) as u32, y);
+    assert!(
+        brightness(faded) < brightness(plain),
+        "the fade is not shaded: {faded:?} against {plain:?}"
+    );
+}
+
+#[test]
+fn the_crossfade_is_drawn_across_the_striped_overlap() {
+    use fontelle_ui::canvas::{clip_bands, clip_overlaps, clip_rect};
+
+    // *"i do want it to also show the graph line drawn to show the fade on
+    // the overlap as well ... except we will render ours on top of the
+    // diagonal striped background on the overlayed section."* The two curves
+    // are stroked in the text ink, at full strength, over stripes that are
+    // the same ink at a third of it — so the line is the brightest thing in
+    // the overlap and there is nothing that bright anywhere else on a block.
+    //
+    // No waveform on these two, deliberately: a peak drawn seven tenths of
+    // the way to white is within a few steps of the curve's own ink, and a
+    // test that could not tell them apart would pass on the waveform alone.
+    let mut clips = vec![
+        an_audio_clip(0, 0, PPQN * 8, 0.0, 0.0),
+        an_audio_clip(0, PPQN * 6, PPQN * 8, 0.0, 0.0),
+    ];
+    let mut ids: Arena<fontelle_types::ClipId, ()> = Arena::default();
+    for clip in &mut clips {
+        clip.id = ids.insert(());
+        clip.audio.peaks.clear();
+    }
+    let Some(shot) = shoot_timeline(&clips) else {
+        return;
+    };
+    dump_sized(&shot.pixels, "arrangement crossfade", RW, RH);
+
+    let ink = shot.theme.palette.text;
+    let close = |c: Color| {
+        c.0.iter()
+            .zip(ink.0.iter())
+            .take(3)
+            .all(|(x, y)| x.abs_diff(*y) <= 20)
+    };
+    let (_, content) = clip_bands(clip_rect(&shot.view, shot.layout.grid, &clips[0]));
+    let band = clip_overlaps(&shot.view, shot.layout.grid, &clips)[0].area;
+    let lit =
+        |x: u32| ((content.y as u32 + 1)..content.bottom() as u32).any(|y| close(shot.at(x, y)));
+
+    let middle = ((band.x + band.right()) / 2.0) as u32;
+    assert!(lit(middle), "no curve where the two cross");
+    // At each end of the overlap too, where one curve is at the top of the
+    // band and the other at its foot.
+    assert!(
+        lit(band.x as u32 + 3),
+        "no curve at the start of the overlap"
+    );
+    assert!(
+        lit(band.right() as u32 - 3),
+        "no curve at the end of the overlap"
+    );
+    // And nowhere else on the block: the stripes are a third of this ink,
+    // and a plain body is nothing like it.
+    assert!(
+        !lit(band.x as u32 - 20),
+        "something as bright as the curve is drawn outside the overlap"
+    );
+}
+
+// -------------------------------------------- the stretch switch, drawn ---
+
+/// An audio clip whose file takes `natural` ticks, on a block of `length`.
+fn a_take(
+    lane: usize,
+    length: Tick,
+    natural: Tick,
+    stretched: bool,
+    loop_length: Option<Tick>,
+) -> fontelle_ui::document::ClipInfo {
+    let mut clip = a_clip(lane, 0, length, [0x4f, 0x8f, 0xd0, 0xff]);
+    clip.kind = fontelle_ui::document::ClipKind::Audio;
+    clip.loop_length = loop_length;
+    // A ramp, so *which* part of the file a column came from is readable off
+    // the picture rather than inferred.
+    clip.audio = fontelle_ui::document::AudioPreview {
+        peaks: (0..128)
+            .map(|i| {
+                let v = 0.08 + 0.9 * (i as f32 / 128.0);
+                (-v, v)
+            })
+            .collect(),
+        natural_length: natural,
+        stretched,
+        ..Default::default()
+    };
+    clip
+}
+
+#[test]
+fn a_take_is_drawn_where_it_sounds_and_the_switch_says_which_way_it_is_set() {
+    // The report: *"i cannot loop clips, whenever i drag them it is ALWAYS
+    // stretching them."* The picture was the half of it that lied — the
+    // waveform filled whatever block it was given, so a clip dragged longer
+    // *looked* stretched whatever it did. Four rows, each a different answer
+    // to "what is this block playing":
+    //
+    //   1. not stretched, block twice the file  -> the ramp ends halfway
+    //   2. stretched, same block                -> the ramp fills it
+    //   3. not stretched, looping every bar     -> the ramp again per pass
+    //   4. stretched, looping every bar         -> a full ramp per pass
+    let clips = vec![
+        a_take(0, PPQN * 8, PPQN * 4, false, None),
+        a_take(1, PPQN * 8, PPQN * 4, true, None),
+        a_take(2, PPQN * 8, PPQN * 2, false, Some(PPQN * 2)),
+        a_take(3, PPQN * 8, PPQN, true, Some(PPQN * 2)),
+    ];
+    let Some(shot) = shoot_timeline_switch(&clips, &[], true) else {
+        return;
+    };
+    dump_sized(&shot.pixels, "timeline-stretch-on", RW, RH);
+
+    let Some(off) = shoot_timeline_switch(&clips, &[], false) else {
+        return;
+    };
+    dump_sized(&off.pixels, "timeline-stretch-off", RW, RH);
+
+    // The switch is lit one way and not the other, which is the whole of what
+    // a switch has to do. Read off the pixels of its own chip rather than
+    // eyeballed: a control nobody can tell the state of is the bug this is for.
+    let bar =
+        fontelle_ui::canvas::timeline_toolbar_layout(shot.layout.toolbar, &shot.theme.metrics);
+    let chip = bar
+        .items
+        .iter()
+        .find(|(c, _)| *c == fontelle_ui::canvas::TimelineControl::Stretch)
+        .map(|(_, r)| *r)
+        .expect("the switch is on the toolbar");
+    let at = |pixels: &[u8], x: f32, y: f32| {
+        let i = ((y as usize) * RW as usize + x as usize) * 4;
+        [pixels[i], pixels[i + 1], pixels[i + 2]]
+    };
+    let (x, y) = (chip.x + chip.width / 2.0, chip.y + chip.height / 2.0);
+    assert_ne!(
+        at(&shot.pixels, x, y),
+        at(&off.pixels, x, y),
+        "the stretch chip looks the same on as off"
+    );
+}
+
+/// A clip does **not** grow to hold a note drawn past its end — asked for in
+/// those words — so the roll has to say where the end is, or the note is
+/// silent with nothing to show for it. The grid past the end carries the
+/// same "nothing here sounds" ink the dead rows of a drum kit use.
+#[test]
+fn the_grid_past_the_clips_end_is_shaded() {
+    let end = PPQN * 2;
+    let Some(shot) = shoot_roll_ending(end) else {
+        return;
+    };
+    dump_sized(&shot.pixels, "roll-clip-end", RW, RH);
+
+    let grid = shot.layout.grid;
+    // A row that plays and is not an accidental, so what is under test is the
+    // shade and not the striping: C, and a whole key height inside the grid.
+    let y =
+        (fontelle_ui::canvas::key_to_y(&shot.view, grid, 60) + shot.view.key_height / 2.0) as u32;
+
+    // **Off the grid lines**, five pixels along from a snap boundary: the
+    // lines are drawn over the shade and land exactly on these ticks, so a
+    // sample taken on one reads `grid_line_sub` whatever the shade did — as
+    // the first draft of this test did, on both sides.
+    let inside = tick_to_x(&shot.view, grid, end - PPQN / 2) as u32 + 5;
+    let outside = tick_to_x(&shot.view, grid, end + PPQN / 2) as u32 + 5;
+    assert!(
+        (outside as f32) < grid.right(),
+        "the test needs both sides on screen: {outside} vs {}",
+        grid.right()
+    );
+    assert!(
+        near(shot.at(outside, y), shot.theme.palette.row_dead),
+        "past the end should be shaded, found {:?}",
+        shot.at(outside, y)
+    );
+    assert!(
+        !near(shot.at(inside, y), shot.theme.palette.row_dead),
+        "inside the clip should not be"
+    );
+}
+
+/// And a roll with no clip end shades nothing — every test fake, and any
+/// host that has no clip open.
+#[test]
+fn a_roll_with_no_clip_end_shades_nothing() {
+    let notes = Arena::default();
+    let Some(shot) = shoot_roll(&notes, &[]) else {
+        return;
+    };
+    let grid = shot.layout.grid;
+    let y =
+        (fontelle_ui::canvas::key_to_y(&shot.view, grid, 60) + shot.view.key_height / 2.0) as u32;
+    let x = (grid.right() - 4.0) as u32;
+    assert!(!near(shot.at(x, y), shot.theme.palette.row_dead));
+}
+
+// ------------------------------------------------ Flopsynth's own window ---
+
+/// Renders Flopsynth's window: the cards, a picture, the tab strip, the
+/// modulation ring and the preset bar (`docs/flopsynth-plan.md` §8.9).
+///
+/// The one test that runs `draw_flopsynth` at all. Everything it draws comes
+/// from `canvas/flopsynth.rs`, which is pure and tested, so what is left here
+/// is **colour** — and colour is the one thing a geometry test cannot see.
+fn shoot_flopsynth() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLayout, u32)> {
+    use fontelle_types::ParamAddress;
+    use fontelle_ui::canvas::{
+        FlopsynthCard, FlopsynthPicture, FlopsynthView, InstrumentGroup, InstrumentParam,
+        ParamKind, flopsynth_layout,
+    };
+    use fontelle_ui::render::FlopsynthChrome;
+
+    let theme = Theme::dark_default();
+    let shared = headless()?;
+    let mut text = TextContext::new();
+    let title = text.layout("Flopsynth \u{2014} Choir Ahh", &theme.font, None);
+
+    let knob = |name: &str, value: f32| InstrumentParam {
+        address: ParamAddress::new(format!("patch/{name}")),
+        label: name.to_string(),
+        value,
+        display: format!("{value:.2}"),
+        kind: ParamKind::Knob,
+        automated: false,
+    };
+    let view = FlopsynthView {
+        title: "Choir Ahh".to_string(),
+        cards: vec![
+            FlopsynthCard {
+                row: 0,
+                aside: false,
+                columns: 0,
+                removable: false,
+                group: InstrumentGroup {
+                    name: "OSC A".to_string(),
+                    params: vec![knob("pos", 0.3), knob("level", 0.7)],
+                },
+                picture: FlopsynthPicture::Wave {
+                    points: (0..128)
+                        .map(|i| (i as f32 / 128.0 * std::f32::consts::TAU).sin())
+                        .collect(),
+                    position: 0.3,
+                },
+            },
+            FlopsynthCard {
+                row: 1,
+                aside: false,
+                columns: 0,
+                removable: false,
+                group: InstrumentGroup {
+                    name: "Filter 1".to_string(),
+                    params: vec![knob("cutoff", 0.6), knob("res", 0.2)],
+                },
+                picture: FlopsynthPicture::Response {
+                    points: (0..96).map(|i| 6.0 - i as f32 * 0.4).collect(),
+                    cutoff: 0.5,
+                    resonance: 0.3,
+                },
+            },
+        ],
+        page: fontelle_ui::canvas::FlopsynthPage::Synth,
+        sources: Vec::new(),
+        routes: Vec::new(),
+        voices: 3,
+        ..FlopsynthView::default()
+    };
+
+    let (ew, eh) = fontelle_ui::layout::FLOPSYNTH_SIZE;
+    let panel = fontelle_ui::layout::editor_window_layout(ew as f32, eh as f32, &theme.metrics);
+    let l = flopsynth_layout(panel.body, &theme.metrics, &view);
+
+    let mut labels = Labels::new();
+    for caption in [
+        fontelle_ui::render::MATRIX_HEADING,
+        fontelle_ui::render::NO_ROUTES,
+        fontelle_ui::render::SAVE,
+        fontelle_ui::render::SAVE_AS,
+        fontelle_ui::canvas::NO_PRESET,
+    ] {
+        labels.ensure(caption, &theme.font, &mut text);
+    }
+    for page in fontelle_ui::canvas::FlopsynthPage::ALL {
+        labels.ensure(page.label(), &theme.font, &mut text);
+    }
+    labels.ensure(
+        &fontelle_ui::render::voice_count_label(view.voices),
+        &theme.font,
+        &mut text,
+    );
+    for card in &view.cards {
+        labels.ensure(&card.group.name, &theme.font, &mut text);
+        for param in &card.group.params {
+            // Captions and read-outs are drawn at the small size on this
+            // window — see `text::SMALL_LABEL`.
+            labels.ensure_small(&param.label, &theme.font, &mut text);
+            labels.ensure_small(&param.display, &theme.font, &mut text);
+        }
+    }
+
+    // A route on the filter's cutoff, so the violet arc is in the shot.
+    let bar = fontelle_ui::canvas::PresetBarView {
+        name: Some("Choir Ahh".to_string()),
+        category: "Choir & Vocal".to_string(),
+        origin: Some(fontelle_types::PresetOrigin::Factory),
+        dirty: true,
+        favourite: true,
+        can_save: false,
+    };
+    labels.ensure(
+        &fontelle_ui::canvas::preset_bar_name(&bar),
+        &theme.font,
+        &mut text,
+    );
+    labels.ensure(&bar.category, &theme.font, &mut text);
+    let preset = fontelle_ui::render::PresetBarChrome {
+        layout: fontelle_ui::canvas::preset_bar_layout(
+            panel.header,
+            title.width + 24.0,
+            &bar,
+            &theme.metrics,
+        ),
+        view: &bar,
+        hover: None,
+    };
+
+    let mut scene = vello::Scene::new();
+    fontelle_ui::render::draw_editor_window(
+        &mut scene,
+        &theme,
+        &panel,
+        &labels,
+        &title,
+        &fontelle_ui::render::EditorWindowChrome::Flopsynth(FlopsynthChrome {
+            layout: l.clone(),
+            view: &view,
+            hover: None,
+            active: None,
+            modulated: vec![((1, 0), 0.6)],
+            assigning: None,
+            destinations: vec![(1, 0), (1, 1)],
+            about: Vec::new(),
+            hover_at: (f32::MIN, f32::MIN),
+        }),
+        Some(&preset),
+        None,
+    );
+    let pixels = shared
+        .lock()
+        .expect("the shared renderer")
+        .render(&scene, ew, eh, theme.palette.window)
+        .expect("the scene must render");
+    dump_sized(&pixels, "flopsynth", ew, eh);
+    Some((pixels, theme, l, ew))
+}
+
+#[test]
+fn flopsynths_window_draws_its_cards_and_its_ring() {
+    let Some((pixels, theme, l, width)) = shoot_flopsynth() else {
+        return;
+    };
+    let at = |x: u32, y: u32| {
+        let i = ((y * width + x) * 4) as usize;
+        Color::rgb(pixels[i], pixels[i + 1], pixels[i + 2])
+    };
+
+    // A card's header carries its family's rule — the first oscillator's is
+    // the accent (§8.1 rule 2) — sampled on the short solid stroke at the
+    // rule's left end, off any text. The card itself is glass over a graded
+    // sky, so its ground is not one ink to sample; the rule is.
+    let header = l.cards[0].header;
+    assert!(
+        near(
+            at(header.x as u32 + 12, header.bottom() as u32 - 1),
+            theme.palette.accent
+        ),
+        "OSC A's header rule is not the accent"
+    );
+    // And the sky behind the cards is not the flat window colour: the ground
+    // is graded, which is the one place this program draws a gradient.
+    let sky = at(l.body.x as u32 + 2, l.body.bottom() as u32 - 2);
+    assert!(
+        !near(sky, theme.palette.panel),
+        "the ground under the cards is a panel, not a sky"
+    );
+
+    // The modulation arc round the filter's cutoff, sampled **on the band
+    // `canvas::ring_hit` answers to** — which is the whole point of the two
+    // agreeing — partway along the sweep a depth of 0.6 draws.
+    //
+    // The arc follows the knob's own 270° sweep from straight up, so `t` here
+    // is the drawing's own parameter: 0.5 is twelve o'clock and 0.8 is where a
+    // route at +0.6 ends.
+    let cell = l.cards[1]
+        .cells
+        .iter()
+        .find(|(param, _)| *param == 0)
+        .map(|(_, cell)| *cell)
+        .expect("the cutoff has a cell");
+    let knob = fontelle_ui::canvas::flop_knob_rect(cell);
+    let radius =
+        knob.width / 2.0 + fontelle_ui::canvas::RING_GAP + fontelle_ui::canvas::RING_BAND / 2.0;
+    let (cx, cy) = (knob.x + knob.width / 2.0, knob.y + knob.height / 2.0);
+    let angle = (-0.75f32 + 1.5 * 0.65) * std::f32::consts::PI;
+    let (rx, ry) = (cx + radius * angle.sin(), cy - radius * angle.cos());
+    let mut found = false;
+    for dy in -2i32..=2 {
+        for dx in -2i32..=2 {
+            let (x, y) = ((rx as i32 + dx) as u32, (ry as i32 + dy) as u32);
+            if near(at(x, y), theme.palette.modulation) {
+                found = true;
+            }
+        }
+    }
+    assert!(
+        found,
+        "no modulation ink on the ring band at ({rx:.0}, {ry:.0})"
+    );
+
+    // And **not** in the caption band above it: the arc reached over the top
+    // of the cell once, and struck through the word naming the knob it
+    // belonged to.
+    let caption_y = cell.y as u32 + 4;
+    for x in cell.x as u32..(cell.right() as u32) {
+        assert!(
+            !near(at(x, caption_y), theme.palette.modulation),
+            "the ring is drawn through the caption at ({x}, {caption_y})"
+        );
+    }
 }

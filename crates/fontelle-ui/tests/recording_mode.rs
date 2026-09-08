@@ -24,13 +24,19 @@
 //! makes the first beat of the take land on the first beat of the bar rather
 //! than a hand's reaction time after it.
 
-use fontelle_ui::transport::{COUNT_IN_BEATS, RecordMode, count_in_samples, record_menu_entries};
+use fontelle_ui::transport::{
+    COUNT_IN_BEATS, RECORD_MODE_MARK, RecordMode, count_in_samples, record_menu_entries,
+    record_menu_entries_for,
+};
 
 #[test]
 fn the_button_asks_about_all_three_kinds() {
     // *"notes, audio from mic, automation, etc."*
     for wanted in [RecordMode::Notes, RecordMode::Audio, RecordMode::Automation] {
-        assert!(RecordMode::ALL.contains(&wanted), "{wanted:?} cannot be chosen");
+        assert!(
+            RecordMode::ALL.contains(&wanted),
+            "{wanted:?} cannot be chosen"
+        );
     }
     assert_eq!(record_menu_entries().len(), RecordMode::ALL.len());
     for entry in record_menu_entries() {
@@ -93,4 +99,43 @@ fn the_count_is_never_so_long_that_it_looks_like_a_hang() {
         count,
         count as f64 / 48_000.0
     );
+}
+
+// ------------------------------------------------- asking a second time ---
+
+#[test]
+fn the_mode_already_chosen_can_be_chosen_again() {
+    // Reported from using the window: *"i pressed the record button again but
+    // i was locked out of the audio option and i couldnt record again."*
+    //
+    // The menu used to grey out whichever mode was current, which read as
+    // "which one is on" to the person who wrote it and as "you cannot have
+    // this" to the person recording a second take. The current mode is
+    // **marked**, and every mode stays choosable — choosing it is how you arm
+    // again.
+    for current in RecordMode::ALL {
+        let entries = record_menu_entries_for(current);
+        assert_eq!(entries.len(), RecordMode::ALL.len());
+        for (entry, mode) in entries.iter().zip(RecordMode::ALL) {
+            assert!(entry.enabled, "{current:?} on: {mode:?} was greyed out");
+            assert!(
+                entry.label.ends_with(mode.label()),
+                "{current:?} on: {mode:?} reads {:?}",
+                entry.label
+            );
+            assert_eq!(
+                entry.label.starts_with(RECORD_MODE_MARK),
+                mode == current,
+                "{current:?} on: {mode:?} reads {:?}",
+                entry.label
+            );
+        }
+    }
+    // And the unmarked list is the marked list with nothing on.
+    for (plain, marked) in record_menu_entries()
+        .iter()
+        .zip(record_menu_entries_for(RecordMode::Notes))
+    {
+        assert!(marked.label.ends_with(&plain.label));
+    }
 }

@@ -37,6 +37,7 @@ fn a_note(start: Tick, length: Tick, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -46,10 +47,13 @@ fn compile_notes(notes: Vec<Note>) -> fontelle_types::CompiledTimeline {
     let mut project = Project::new("order");
     project.tempo_map = TempoMap::new(BPM, SR);
     let channel = project.channels.insert(fontelle_model::Channel {
+        preset: None,
+        instrument: None,
         name: "ch".into(),
         color: [0; 4],
         mixer_track: None,
         patch_data: None,
+        plugin: None,
         pan: 0.0,
         muted: false,
         soloed: false,
@@ -143,8 +147,14 @@ fn a_note_ending_where_the_next_begins_lets_go_before_the_next_starts() {
 /// intermittent.
 #[test]
 fn the_order_does_not_depend_on_the_order_the_notes_were_written_in() {
-    let one = compile_notes(vec![a_note(0, PPQN * 4, 60), a_note(PPQN * 4, PPQN * 4, 60)]);
-    let other = compile_notes(vec![a_note(PPQN * 4, PPQN * 4, 60), a_note(0, PPQN * 4, 60)]);
+    let one = compile_notes(vec![
+        a_note(0, PPQN * 4, 60),
+        a_note(PPQN * 4, PPQN * 4, 60),
+    ]);
+    let other = compile_notes(vec![
+        a_note(PPQN * 4, PPQN * 4, 60),
+        a_note(0, PPQN * 4, 60),
+    ]);
     let kinds = |t: &fontelle_types::CompiledTimeline| -> Vec<String> {
         t.events
             .iter()

@@ -289,3 +289,116 @@ fn an_effect_adds_no_latency() {
     let node = EffectNode::new(EffectConfig::Eq(EqConfig::new()));
     assert_eq!(node.latency_samples(), 0);
 }
+
+// --- look-ahead against the dry path (2026-09-06) --------------------------
+
+/// A gate wide open, so its gain is exactly unity and the only thing it does
+/// to the signal is **delay** it by the look-ahead.
+fn open_gate(lookahead_ms: f32, mix: f32) -> EffectConfig {
+    let mut gate = fontelle_types::GateConfig::new();
+    gate.threshold_db = -120.0; // never closes
+    gate.ratio = 1.0; // a wire at any level
+    gate.range_db = 0.0;
+    gate.lookahead_ms = lookahead_ms;
+    gate.mix = mix;
+    EffectConfig::Gate(gate)
+}
+
+fn gate_node(config: EffectConfig) -> EffectNode {
+    let mut node = EffectNode::new(config);
+    node.prepare(&PrepareContext {
+        sample_rate: SR,
+        max_block_size: BLOCK as u32,
+    });
+    node
+}
+
+/// An insert that looks ahead says so, or nothing above it can line the track
+/// back up (TDD §5.5). Until this, `EffectNode` reported zero however far the
+/// gate's look-ahead was wound.
+#[test]
+fn an_insert_that_looks_ahead_reports_its_latency() {
+    let node = gate_node(open_gate(5.0, 1.0));
+    let expected = (5.0 / 1000.0 * SR).round() as u32;
+    assert_eq!(node.latency_samples(), expected);
+
+    // And nothing without one, which is every other effect.
+    assert_eq!(gate_node(open_gate(0.0, 1.0)).latency_samples(), 0);
+    assert_eq!(
+        EffectNode::new(EffectConfig::Eq(EqConfig::new())).latency_samples(),
+        0
+    );
+}
+
+/// > *"any lookahead insert under a mix below 100 % combs against an
+/// > undelayed dry"*
+///
+/// The dry the mix control blends back in is the block as it arrived; the
+/// wet, from a gate with look-ahead, is that same signal delayed. Summing
+/// them is a comb filter with a notch at every odd multiple of half the
+/// delay's period — which is not "half the effect", it is a different
+/// effect, and on a gate doing nothing at all it should be *inaudible*.
+///
+/// With the dry delayed to match, an open gate at any mix is the wire it
+/// claims to be, delayed by the look-ahead and nothing else.
+#[test]
+fn a_look_ahead_insert_does_not_comb_against_its_own_dry() {
+    let lookahead_ms = 2.0;
+    let delay = (lookahead_ms / 1000.0 * SR).round() as usize;
+    let input = sine(1_000.0, BLOCK);
+
+    // Fully wet: the reference, which is the input delayed by the look-ahead.
+    let mut wet_node = gate_node(open_gate(lookahead_ms, 1.0));
+    let mut wet = input.clone();
+    let mut wet_right = input.clone();
+    process(&mut wet_node, &mut [&mut wet, &mut wet_right]);
+
+    for mix in [0.5, 0.25, 0.75] {
+        let mut node = gate_node(open_gate(lookahead_ms, mix));
+        let mut left = input.clone();
+        let mut right = input.clone();
+        process(&mut node, &mut [&mut left, &mut right]);
+        let error = left
+            .iter()
+            .zip(&wet)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            error < 1e-5,
+            "at mix {mix} an open gate is still a wire: worst sample off by {error}"
+        );
+    }
+
+    // And the reference really is the delayed input, so the assertion above
+    // is not two wrong things agreeing.
+    let error = wet[delay..]
+        .iter()
+        .zip(&input[..BLOCK - delay])
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(error < 1e-6, "the wet path is the input delayed: {error}");
+}
+
+/// The delayed dry has to carry across block boundaries, or the first samples
+/// of every block blend against silence — a click a block long.
+#[test]
+fn the_delayed_dry_carries_from_one_block_to_the_next() {
+    let lookahead_ms = 2.0;
+    let mut node = gate_node(open_gate(lookahead_ms, 0.5));
+    let mut reference = gate_node(open_gate(lookahead_ms, 1.0));
+
+    for block in 0..4 {
+        let input = sine(1_000.0, BLOCK * (block + 1));
+        let input = input[BLOCK * block..].to_vec();
+        let (mut left, mut right) = (input.clone(), input.clone());
+        process(&mut node, &mut [&mut left, &mut right]);
+        let (mut wet, mut wet_right) = (input.clone(), input.clone());
+        process(&mut reference, &mut [&mut wet, &mut wet_right]);
+        let error = left
+            .iter()
+            .zip(&wet)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(error < 1e-5, "block {block} is off by {error}");
+    }
+}

@@ -76,8 +76,8 @@ pub fn import_audio(path: &Path) -> Result<AudioAsset, ImportError> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
-    let bytes = std::fs::read(path)
-        .map_err(|e| ImportError(format!("could not read {name}: {e}")))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| ImportError(format!("could not read {name}: {e}")))?;
     read_audio(&bytes, &name)
 }
 
@@ -94,14 +94,24 @@ pub fn read_audio(bytes: &[u8], name: &str) -> Result<AudioAsset, ImportError> {
         // arrangement looking like a bug in the arrangement.
         return Err(ImportError(format!("{name} is empty")));
     }
+    // **A `.wav` that is really an Ogg is unwrapped first.** Every sample in
+    // the packs Fontelle is pointed at is one of these; see `ogg_in_wav`.
+    let (bytes, wrapped) = match ogg_in_wav(bytes) {
+        Some(ogg) => (ogg, true),
+        None => (bytes, false),
+    };
     let source = std::io::Cursor::new(bytes.to_vec());
     let stream = MediaSourceStream::new(Box::new(source), Default::default());
 
     // The extension as a hint, which is what lets a `.wav` be probed as one
     // rather than sniffed for. A wrong extension still works: the probe reads
-    // the bytes, the hint only orders the candidates.
+    // the bytes, the hint only orders the candidates. An unwrapped stream is
+    // hinted by what it *is* rather than by what the file was called, since
+    // the name still ends in `.wav` and that is now the wrong answer.
     let mut hint = Hint::new();
-    if let Some(extension) = Path::new(name).extension().and_then(|e| e.to_str()) {
+    if wrapped {
+        hint.with_extension("ogg");
+    } else if let Some(extension) = Path::new(name).extension().and_then(|e| e.to_str()) {
         hint.with_extension(extension);
     }
 
@@ -179,4 +189,70 @@ pub fn read_audio(bytes: &[u8], name: &str) -> Result<AudioAsset, ImportError> {
         frames,
         samples,
     })
+}
+
+/// The Ogg stream inside a RIFF/WAVE file that is really Vorbis, if it is one.
+///
+/// > *"i currently cannot drag audio files from the import audio tab."*
+///
+/// FL Studio ships its sample packs as RIFF/WAVE containers whose `fmt ` chunk
+/// carries a **Vorbis ACM format tag** and whose `data` chunk is a whole Ogg
+/// stream, headers and all. Every `.wav` in the folder that report was made
+/// against is one, so "cannot drag audio files" was, underneath, "cannot read
+/// any of these files": symphonia's RIFF reader knows PCM and ADPCM and quite
+/// rightly refuses a tag it has never heard of.
+///
+/// Unwrapping is the whole fix. The Ogg reader is already in this build, and
+/// what comes out of it is a normal Vorbis stream that says its own rate and
+/// channel count — which is just as well, because the `fmt ` chunk around it
+/// describes nothing: a block align of one, sixteen bits per sample, and a
+/// channel count that is whatever the encoder felt like writing.
+///
+/// `None` for anything else, **including a PCM `.wav`**, which must go on being
+/// read by the reader that has always read it.
+pub fn ogg_in_wav(bytes: &[u8]) -> Option<&[u8]> {
+    // The six tags the Vorbis ACM ever used: modes 1, 2 and 3, and the same
+    // three again with the "+" bitstream layout. Listed rather than
+    // range-checked, because the numbers either side of them mean other codecs.
+    const VORBIS_TAGS: [u16; 6] = [0x674F, 0x6750, 0x6751, 0x676F, 0x6770, 0x6771];
+
+    if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+    let (mut vorbis, mut data) = (false, None);
+    // **Bounded by the buffer, not by the header.** A RIFF size field is a
+    // claim, and a file that was cut short claims a length that is not there.
+    let mut at = 12usize;
+    while at + 8 <= bytes.len() {
+        let id = &bytes[at..at + 4];
+        let size = u32::from_le_bytes([bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]])
+            as usize;
+        let from = at + 8;
+        let to = from.checked_add(size)?;
+        if to > bytes.len() {
+            // A chunk that runs off the end: whatever this file is, it is not
+            // one to hand a decoder half of.
+            return None;
+        }
+        match id {
+            b"fmt " if size >= 2 => {
+                let tag = u16::from_le_bytes([bytes[from], bytes[from + 1]]);
+                vorbis = VORBIS_TAGS.contains(&tag);
+                // Nothing to gain by reading on once it is not Vorbis: this is
+                // the ordinary path, and it is every other file in the world.
+                if !vorbis {
+                    return None;
+                }
+            }
+            b"data" => data = Some(&bytes[from..to]),
+            _ => {}
+        }
+        // Chunks are word-aligned: an odd length is followed by a pad byte
+        // that is not part of it.
+        at = to + (size & 1);
+    }
+    match (vorbis, data) {
+        (true, Some(ogg)) if !ogg.is_empty() => Some(ogg),
+        _ => None,
+    }
 }

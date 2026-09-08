@@ -72,6 +72,25 @@ pub trait DocumentHost {
     /// may see. An imported file's ramps survive somebody nudging this.
     fn tempo(&self) -> f64;
 
+    /// The tempo **actually in force** at `position_sample`, in beats per
+    /// minute — the box value bent by the tempo lane (§12.3).
+    ///
+    /// > *"the tempo indicator at the top is not reacting to tempo automation
+    /// > changes."*
+    ///
+    /// Two numbers rather than one because they answer different questions and
+    /// only one of them is editable: [`tempo`](Self::tempo) is what the
+    /// document *says*, which is what a drag on the box writes, and this is
+    /// what the song is *doing*, which is what the box should read. On a
+    /// project with no tempo lane they are the same number and nothing looks
+    /// any different.
+    ///
+    /// Defaults to the box value, so a host that has no tempo map still shows
+    /// something true.
+    fn tempo_at(&self, _position_sample: fontelle_types::Sample) -> f64 {
+        self.tempo()
+    }
+
     /// Moves it. One `Command` through the history, like every other edit —
     /// which is what makes a dragged tempo undoable and saved.
     ///
@@ -114,14 +133,68 @@ pub trait DocumentHost {
         tick
     }
 
+    /// How long the clip being edited is, in its own ticks.
+    ///
+    /// The roll shades the grid past it, because a note written beyond a
+    /// clip's end does not sound (TDD §11.4) and a clip does not grow to
+    /// swallow one. `None` for a host with no clip — every test fake — which
+    /// shades nothing.
+    fn clip_length(&self) -> Option<Tick> {
+        None
+    }
+
     /// Whether there are changes not yet on disk.
     fn is_dirty(&self) -> bool;
+
+    /// Whether the document has a file yet.
+    ///
+    /// A studio started with no arguments has a project and nowhere to put it.
+    /// The window asks this before saving, because the answer to Ctrl+S there
+    /// is *"what shall I call it"* rather than an error — see
+    /// [`save_as`](Self::save_as).
+    ///
+    /// `true` by default, so a host that has no concept of a file (a test, a
+    /// plugin build) is never asked to name one.
+    fn has_file(&self) -> bool {
+        true
+    }
 
     /// Writes the project out. `Err` carries something worth showing a person.
     fn save(&mut self) -> Result<(), String>;
 
+    /// Saves what is open into a **new** project of that name.
+    ///
+    /// > *"if i try to save and theirs no project directory it can just make a
+    /// > new one ... giving you the option to name it and stuff."*
+    ///
+    /// A name, not a path: where it lands is the host's business, and with no
+    /// projects folder configured the answer is an `Err` a person can act on
+    /// rather than a guess (INVARIANT 10).
+    fn save_as(&mut self, name: &str) -> Result<(), String> {
+        let _ = name;
+        Err("this build cannot save".to_string())
+    }
+
     /// Where it would be saved, for the title bar.
     fn name(&self) -> &str;
+}
+
+/// One plugin the machine has, as a menu row (TDD §8.4).
+///
+/// Names only. Which plugin a row *is* stays behind
+/// [`StudioHost::plugin_instruments`]'s ordering, for the reason INVARIANT 2
+/// gives: the window points at a row, and the half that owns the document
+/// resolves what that means.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginListing {
+    pub name: String,
+    /// Who wrote it, for the row's second line. Empty when it did not say.
+    pub vendor: String,
+    /// Which plugin, permanently — what a star on its row is kept by (see
+    /// [`fontelle_types::Favorite`]). The window still *chooses* by position;
+    /// this is so it can say which rows are starred, which a name cannot
+    /// (two vendors can ship a "Reverb").
+    pub key: fontelle_types::PluginKey,
 }
 
 /// One channel, as the rack draws it.
@@ -185,6 +258,25 @@ pub struct AudioPreview {
     /// the envelope.
     pub fade_in: f32,
     pub fade_out: f32,
+    /// How each fade's curve is bent, −1..1 — `fontelle_types::Fade::tension`,
+    /// carried so the block draws the bend the node asked for.
+    pub fade_in_tension: f32,
+    pub fade_out_tension: f32,
+    /// How many ticks of the song the file takes **at its own rate**, from
+    /// the start of each pass — the length a drop gives the block, and the
+    /// length the block keeps drawing the file at after it has been dragged
+    /// longer or shorter with the Stretch switch off.
+    ///
+    /// In ticks, through the tempo map, because that is what the block is
+    /// measured in; a tempo change moves it, the way it moves the sound. Zero
+    /// is *not known* (a clip whose rate is not on it yet), and the canvas
+    /// then fills the block — §15.3's "draw what exists", never a blank.
+    pub natural_length: Tick,
+    /// Whether the clip follows its block (`ClipStretch::Resample`) rather
+    /// than its file. Carried so the canvas can draw the file filling each
+    /// pass, and so an edge drag knows whether the switch it is under would
+    /// change anything.
+    pub stretched: bool,
 }
 
 /// One clip, as the arrangement canvas draws it.
@@ -250,6 +342,15 @@ pub struct ClipInfo {
     /// every other kind — and for an audio clip whose file has not been decoded
     /// yet, which §15.3 says to draw as what exists rather than as a slab.
     pub audio: AudioPreview,
+    /// The **prefab** this block is a place for, by name — `None` for an
+    /// ordinary clip (TDD §10.5).
+    ///
+    /// A place has to be drawn as one, because the difference between a copy
+    /// and a place is invisible until you edit one and four other blocks
+    /// change. The name rather than the id, for the reason the rest of
+    /// `ClipInfo` carries names: the canvas may not see a `Project`
+    /// (INVARIANT 2), and what it draws is a caption.
+    pub prefab: Option<String>,
 }
 
 /// One note, as the arrangement draws it inside its clip.
@@ -601,6 +702,63 @@ impl KeyMap {
     }
 }
 
+/// One route reaching a control, as the window needs to know it
+/// (`docs/flopsynth-plan.md` §8.4).
+///
+/// The **depth's own address** is carried rather than a route index, so a ring
+/// drag is an ordinary parameter write down the ordinary live wire: a
+/// modulation depth is a knob like any other, and the one that is drawn round
+/// the destination is the same control the matrix row shows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RouteInfo {
+    /// What the source is called — "ENV 2", "LFO 1", a macro's name.
+    pub source: String,
+    /// Bipolar, -1..=1.
+    pub depth: f32,
+    pub depth_address: fontelle_types::ParamAddress,
+}
+
+/// Which list the left-hand panel is showing.
+///
+/// > *"the prefab tab should be where the channel rack is can be tabbed
+/// > between instruments and prefabs."*
+///
+/// Two lists in one panel rather than two panels, because they are answers to
+/// the same question — *what have I got to work with* — and because the
+/// sidebar has room for one list at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RackTab {
+    /// The channel rack: what is in the project and what it plays.
+    #[default]
+    Instruments,
+    /// The prefabs: content you can draw in more than one place.
+    Prefabs,
+}
+
+impl RackTab {
+    pub const ALL: [Self; 2] = [Self::Instruments, Self::Prefabs];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Instruments => "Instruments",
+            Self::Prefabs => "Prefabs",
+        }
+    }
+}
+
+/// One prefab, as its list draws it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrefabInfo {
+    pub name: String,
+    /// How many places on the arrangement follow it.
+    ///
+    /// What makes "delete this" a decision somebody can make: a prefab used
+    /// nowhere is a scratch idea, and one used eleven times is the song.
+    pub uses: usize,
+    /// Whether this is the one the roll is editing.
+    pub open: bool,
+}
+
 /// Everything the window shows that is not the clip.
 pub trait StudioHost: DocumentHost {
     /// Bumped whenever anything a panel draws has changed.
@@ -617,6 +775,51 @@ pub trait StudioHost: DocumentHost {
     fn select_channel(&mut self, index: usize);
     fn toggle_mute(&mut self, index: usize);
     fn toggle_solo(&mut self, index: usize);
+
+    // --- prefabs (TDD §10.5) ---
+
+    /// Which of the panel's two lists is showing.
+    fn rack_tab(&self) -> RackTab {
+        RackTab::Instruments
+    }
+    fn set_rack_tab(&mut self, _tab: RackTab) {}
+
+    /// The prefabs, in the order the list draws them.
+    fn prefabs(&self) -> Vec<PrefabInfo> {
+        Vec::new()
+    }
+    /// Makes an empty one and selects it — the plus icon.
+    fn add_prefab(&mut self) {}
+    fn rename_prefab(&mut self, _index: usize, _name: &str) {}
+    /// Deletes it, **baking what it held into every place that followed it**,
+    /// so the arrangement goes on sounding the same.
+    fn remove_prefab(&mut self, _index: usize) {}
+
+    /// Which prefab the piano roll is editing, if it is editing one rather
+    /// than a clip on the arrangement.
+    ///
+    /// > *"you could also edit it just by selecting the prefab in the prefab
+    /// > menu and then selecting the instrument you want to edit in the prefab
+    /// > clip and then just editing the piano roll of it."*
+    fn selected_prefab(&self) -> Option<usize> {
+        None
+    }
+    fn select_prefab(&mut self, _index: Option<usize>) {}
+
+    /// Puts a **place** for prefab `index` on row `lane` at `start`, and hands
+    /// back the clip it made.
+    ///
+    /// *"clips that you can basically draw into your arrangement."*
+    fn draw_prefab(&mut self, _index: usize, _lane: usize, _start: Tick) -> Option<ClipId> {
+        None
+    }
+    /// Takes `clip` off its prefab, keeping what it was playing.
+    fn detach_prefab(&mut self, _clip: ClipId) {}
+    /// Turns a clip that has been written into a prefab, in place: the clip
+    /// becomes the first place for it, and its content becomes the prefab's.
+    fn make_prefab_from(&mut self, _clip: ClipId) -> Result<(), String> {
+        Err("this studio has no prefabs".to_string())
+    }
 
     // --- routing (TDD §13.1) ---
     /// What every mixer strip is called, in the order
@@ -675,10 +878,57 @@ pub trait StudioHost: DocumentHost {
     fn add_channel(&mut self) -> Result<(), String> {
         Err("this studio cannot add channels".to_string())
     }
+    /// A new channel that **is** one of the three instruments — see
+    /// [`fontelle_types::InstrumentKind`].
+    ///
+    /// *"when you select new instrument it lets you select one of those and
+    /// then you actually edit it from there."* Defaults to
+    /// [`add_channel`](Self::add_channel) so a host that has not grown the
+    /// choice yet still makes one.
+    fn add_channel_of(&mut self, _kind: fontelle_types::InstrumentKind) -> Result<(), String> {
+        self.add_channel()
+    }
+    /// Turns channel `index` into an instrument of `kind`, replacing whatever
+    /// it was playing with that kind's starter instrument.
+    ///
+    /// *"cant replace an instrument with a different instrument."* Setting the
+    /// kind it already is does nothing at all, since choosing "3OSC" on a 3OSC
+    /// you have spent ten minutes editing must not throw the edit away.
+    fn set_channel_kind(&mut self, _index: usize, _kind: fontelle_types::InstrumentKind) {}
+    /// Which of the three channel `index` is, for the rack and the menus.
+    fn channel_kind(&self, _index: usize) -> Option<fontelle_types::InstrumentKind> {
+        None
+    }
     /// Puts preset `index` of the open file onto a **new** channel.
     fn add_channel_with(&mut self, preset: usize) -> Result<(), String>;
+    /// Makes a **sampler** on a new channel out of row `index` of the Import
+    /// tab's list.
+    ///
+    /// *"i cannot drag an audio clip from the audio import tab into the
+    /// channel rack to turn it into a sampler, please add this feature."*
+    fn add_sampler_from_import(&mut self, _index: usize) -> Result<(), String> {
+        Err("this studio cannot make samplers".to_string())
+    }
+    /// The same file, onto the channel at rack position `channel`, replacing
+    /// whatever it was playing.
+    ///
+    /// *"i want to be able to click and drag them into the sampler or into the
+    /// channel rack to make it have a sampler with that clip sampled."* The
+    /// rack's own rule: empty space makes a new channel, a row changes that
+    /// one.
+    fn set_sampler_from_import(&mut self, _channel: usize, _index: usize) -> Result<(), String> {
+        Err("this studio cannot make samplers".to_string())
+    }
     /// Puts it on the channel the rack has selected instead.
     fn set_channel_instrument(&mut self, preset: usize) -> Result<(), String>;
+    /// Puts it on the channel at rack position `channel` — which is not always
+    /// the selected one, because a preset dropped on a row means *that* row.
+    ///
+    /// Defaults to [`set_channel_instrument`](Self::set_channel_instrument), so
+    /// a host that has not grown the distinction still assigns something.
+    fn set_channel_instrument_on(&mut self, _channel: usize, preset: usize) -> Result<(), String> {
+        self.set_channel_instrument(preset)
+    }
     /// Copies channel `index` — its instrument, its settings and its clips —
     /// onto a new channel and a row of its own.
     ///
@@ -696,8 +946,34 @@ pub trait StudioHost: DocumentHost {
 
     // --- the arrangement's rows (TDD §10.3) ---
 
-    /// Adds a lane.
+    /// Adds a lane at the bottom of the stack.
     fn add_lane(&mut self) {}
+    /// Adds one **at** `index`, pushing that row and everything under it down.
+    ///
+    /// *"when i right click a lane in the arrangement i want the option to add
+    /// a lane above or a lane below the lane i right clicked on right now
+    /// theyre all going to the end."* Above and below are this with the index
+    /// differing by one; past the end is the end.
+    ///
+    /// Defaults to [`add_lane`](Self::add_lane) so a host that has not grown
+    /// one yet still puts a row somewhere rather than nowhere.
+    fn add_lane_at(&mut self, _index: usize) {
+        self.add_lane();
+    }
+    /// Bounces row `index` to audio and puts the take on a new row under it,
+    /// named `<name> (rendered)`.
+    ///
+    /// `span` is the stretch to render; `None` is the whole row. The window
+    /// asks which when there is a time selection to ask about — guessing is
+    /// the one thing it must not do, since a render of the wrong range costs
+    /// minutes.
+    fn render_lane(
+        &mut self,
+        _index: usize,
+        _span: Option<(Tick, Tick)>,
+    ) -> Result<String, String> {
+        Err("this studio cannot render".to_string())
+    }
     /// Deletes lane `index` **and the clips on it** — a clip on no lane is one
     /// nothing can draw and nothing can reach.
     ///
@@ -741,6 +1017,14 @@ pub trait StudioHost: DocumentHost {
     /// Makes a project in that folder and opens it. `Err` carries something
     /// worth showing a person — chiefly "there is no folder yet".
     fn new_project(&mut self) -> Result<(), String> {
+        self.new_project_named("Untitled")
+    }
+
+    /// The same, under a name somebody typed.
+    ///
+    /// > *"when i make a new project i need to be prompted to name it"*
+    fn new_project_named(&mut self, name: &str) -> Result<(), String> {
+        let _ = name;
         Err("this build cannot make projects".to_string())
     }
 
@@ -880,6 +1164,27 @@ pub trait StudioHost: DocumentHost {
         Err("this build cannot open dropped files".to_string())
     }
 
+    /// The same, landing at `at` on the song rather than at the top of it.
+    ///
+    /// > *"please make sure its possible to import files into the arrangement
+    /// > as clips."*
+    ///
+    /// For the kinds of file that *have* a position — an audio clip is a
+    /// stretch of song and a drop names where it goes. The kinds that do not
+    /// (a soundfont is an instrument, a score is a phrase for the open clip)
+    /// ignore it, which is why this is one method and not a second import
+    /// path: what a file is decides what a position means to it.
+    ///
+    /// Defaults to [`drop_file`](Self::drop_file), so a host that has not
+    /// implemented it still opens what it is handed.
+    fn drop_file_at(
+        &mut self,
+        path: &std::path::Path,
+        _at: fontelle_types::Sample,
+    ) -> Result<String, String> {
+        self.drop_file(path)
+    }
+
     /// Shows the projects folder in the desktop's file manager.
     fn reveal_projects_dir(&mut self) {}
 
@@ -926,6 +1231,20 @@ pub trait StudioHost: DocumentHost {
     /// so a note written hard left is auditioned hard left rather than being
     /// centred until the transport reaches it.
     fn audition_on(&mut self, key: u8, velocity: u8, pan: i8);
+    /// Loads preset `index` into the **preview voice** and aims the live path
+    /// at it, so the next [`audition_on`](Self::audition_on) is that
+    /// instrument rather than the selected channel's.
+    ///
+    /// *"if i click a soundfont in the soundfont menu it plays that instrument
+    /// at a c tone ... so i can easily click on instruments and hear how they
+    /// sound."* Nothing is written to the document: hearing an instrument is
+    /// not choosing one, and the old answer to "what does this sound like" was
+    /// to put it on a channel, which is what was reported as weird.
+    fn preview_preset(&mut self, _preset: usize) -> Result<(), String> {
+        Err("this studio cannot preview".to_string())
+    }
+    /// Aims the live path back at the selected channel.
+    fn end_preview(&mut self) {}
     fn audition_off(&mut self, key: u8);
 
     // --- the instrument editor (TDD §7.2) ---
@@ -935,6 +1254,157 @@ pub trait StudioHost: DocumentHost {
     /// to nothing is worse than no knob. Rebuilt when
     /// [`revision`](StudioHost::revision) moves, like every other list here.
     fn instrument(&self) -> Option<InstrumentView>;
+
+    /// The selected channel's instrument as **Flopsynth's own window**, when
+    /// that is what it is (`docs/flopsynth-plan.md` §8).
+    ///
+    /// `None` for every other instrument, and then
+    /// [`instrument`](StudioHost::instrument)'s knob grid is drawn instead —
+    /// which is what makes this a window a host grows into rather than one
+    /// every host has to have. A synthesiser's window is a *picture of a
+    /// signal path*, and the grid draws a list; both are right for what they
+    /// are for.
+    ///
+    /// Rebuilt when [`revision`](StudioHost::revision) moves, like every other
+    /// list here.
+    fn flopsynth(
+        &self,
+        _page: crate::canvas::FlopsynthPage,
+    ) -> Option<crate::canvas::FlopsynthView> {
+        None
+    }
+
+    // --- the preset system (`docs/flopsynth-plan.md` §P) ---
+    /// What the preset bar shows for one device.
+    ///
+    /// Eight methods, and the same eight for a channel playing Flopsynth, an
+    /// insert holding a reverb and a slot hosting somebody's CLAP — which is
+    /// the whole argument of §P. A device contributes **what kind it is** and
+    /// **what its state is**; everything else (the file, the name, the star,
+    /// the undo) is one implementation.
+    ///
+    /// The default is a bar with nothing on it, so a host that has no bank
+    /// draws no preset controls rather than empty ones.
+    /// Which insert has a window open, as the window knows it.
+    ///
+    /// Told rather than asked, because it is a fact about the *window*: the
+    /// browser needs it so that an effect preset clicked in the Presets tab
+    /// lands in the insert you are looking at, and is refused when you are not
+    /// looking at one (§P.8).
+    fn note_open_insert(&mut self, _insert: Option<(usize, usize)>) {}
+
+    /// Opens the user's preset folder in the file manager.
+    fn reveal_preset_dir(&mut self) {}
+
+    /// Asks for a different one.
+    fn choose_preset_dir(&mut self) {}
+
+    /// What the browser's Presets tab says along its bottom: where the user's
+    /// own bank is, and how many presets each origin holds (§P.8).
+    fn preset_status(&self) -> String {
+        String::new()
+    }
+
+    fn preset_bar(&self, _device: crate::canvas::PresetDevice) -> crate::canvas::PresetBarView {
+        crate::canvas::PresetBarView::default()
+    }
+
+    /// Every preset this device could be loaded with, in the bank's order —
+    /// factory then user, category then name.
+    fn preset_choices(
+        &self,
+        _device: crate::canvas::PresetDevice,
+    ) -> Vec<crate::canvas::PresetChoice> {
+        Vec::new()
+    }
+
+    /// The categories this device has presets in. What "Save as…" offers, and
+    /// what the Presets page's left column lists.
+    fn preset_categories(&self, _device: crate::canvas::PresetDevice) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Loads the preset at `index` of [`preset_choices`](Self::preset_choices).
+    /// One undo entry.
+    fn apply_preset(&mut self, _device: crate::canvas::PresetDevice, _index: usize) {}
+
+    /// The previous or next preset in this device's bank, wrapping.
+    fn step_preset(&mut self, _device: crate::canvas::PresetDevice, _delta: i32) {}
+
+    /// Writes this device's state over the file it came from.
+    fn save_preset(&mut self, _device: crate::canvas::PresetDevice) {}
+
+    /// Writes this device's state as a preset of the user's own.
+    fn save_preset_as(
+        &mut self,
+        _device: crate::canvas::PresetDevice,
+        _name: &str,
+        _category: &str,
+    ) {
+    }
+
+    /// Stars this device's preset, or takes the star off.
+    fn toggle_preset_favorite(&mut self, _device: crate::canvas::PresetDevice) {}
+
+    /// Stars one preset of this device's bank, by its place in
+    /// [`preset_choices`](Self::preset_choices), or takes the star off. The
+    /// Presets page's star on a row, which need not be the loaded preset.
+    fn toggle_preset_star(&mut self, _device: crate::canvas::PresetDevice, _index: usize) {}
+
+    // --- the modulation matrix (`docs/flopsynth-plan.md` §8.4) ---
+    /// Every modulation source this instrument has, in the order the badge row
+    /// shows them.
+    ///
+    /// Names rather than a type of their own, and an **index** is how one is
+    /// named back: `fontelle-core`'s `ModSource` may not cross into this crate
+    /// (INVARIANT 4), and a list plus a position is the shape every other menu
+    /// here uses for the same reason.
+    fn mod_sources(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The routes reaching the control at `address`, oldest first.
+    ///
+    /// Empty for a control nothing modulates, which is also what draws no
+    /// ring round it.
+    fn routes_to(&self, _address: &fontelle_types::ParamAddress) -> Vec<RouteInfo> {
+        Vec::new()
+    }
+
+    /// Whether anything **could** be routed to this control — what lights a
+    /// knob up while a source badge is being dragged.
+    ///
+    /// Not the same question as [`routes_to`](Self::routes_to): the output
+    /// trim has no routes *and* can have none, and a drag has to be able to
+    /// tell those apart before it lights one up and then does nothing.
+    fn is_mod_destination(&self, _address: &fontelle_types::ParamAddress) -> bool {
+        false
+    }
+
+    /// Adds a route from source `source` to the control at `address`.
+    ///
+    /// At a depth §8.4 states: +0.5, so the route is audible the moment it is
+    /// made. A route that arrived at zero would look like a gesture that did
+    /// nothing.
+    fn add_route(&mut self, _source: usize, _address: &fontelle_types::ParamAddress) {}
+
+    /// Removes the route at `index` of [`routes_to`](Self::routes_to).
+    fn remove_route(&mut self, _address: &fontelle_types::ParamAddress, _index: usize) {}
+
+    // --- the instrument's own effects (`docs/flopsynth-plan.md` §8.5) ---
+    /// The kinds the `+ effect` list offers, in its order: the ones that cost
+    /// no latency, because an instrument's latency is the one case the graph
+    /// does not compensate (§2.2).
+    fn patch_effect_kinds(&self) -> Vec<fontelle_types::EffectKind> {
+        Vec::new()
+    }
+
+    /// Puts an effect of `kind` on the end of the selected instrument's own
+    /// chain. Refused, quietly, when the chain is full.
+    fn add_patch_effect(&mut self, _kind: fontelle_types::EffectKind) {}
+
+    /// Takes slot `index` off the selected instrument's own chain.
+    fn remove_patch_effect(&mut self, _index: usize) {}
 
     /// Moves one control. `value` is normalised, 0..=1, exactly as the panel
     /// draws it; what it means is the implementation's business.
@@ -1004,6 +1474,96 @@ pub trait StudioHost: DocumentHost {
     /// (INVARIANT 2).
     fn add_insert(&mut self, _strip: usize, _kind: fontelle_types::EffectKind) {}
 
+    /// Every plugin on this machine that can go on an instrument channel
+    /// (TDD §8.4).
+    ///
+    /// The window picks by **position**: INVARIANT 2 says the window never
+    /// mutates the document, and a window that resolved plugin identities
+    /// would be a window holding half of one. Each listing does carry its
+    /// [`fontelle_types::PluginKey`], but only so the window can say which
+    /// rows are starred. Empty until something has scanned — see
+    /// [`rescan_plugins`](Self::rescan_plugins).
+    fn plugin_instruments(&self) -> Vec<PluginListing> {
+        Vec::new()
+    }
+
+    /// The same, for plugins that can go in an insert slot.
+    fn plugin_effects(&self) -> Vec<PluginListing> {
+        Vec::new()
+    }
+
+    /// Everything that has been starred — see [`fontelle_types::Favorite`].
+    ///
+    /// Read whenever a menu that lists effects, instruments or plugins is
+    /// built: the favourites go at the top and are drawn lit wherever they
+    /// appear. Empty on a fresh install, and for a host that keeps none.
+    fn favorites(&self) -> Vec<fontelle_types::Favorite> {
+        Vec::new()
+    }
+
+    /// A press on a row's star: stars the thing if it is not, and un-stars it
+    /// if it is. The host keeps the list (it is a fact about the person, so
+    /// it goes with the settings rather than the project) and says which way
+    /// it went through [`take_message`](Self::take_message).
+    fn toggle_favorite(&mut self, _favorite: fontelle_types::Favorite) {}
+
+    /// Makes a new channel playing the instrument at `which` in
+    /// [`plugin_instruments`](Self::plugin_instruments).
+    fn add_plugin_channel(&mut self, _which: usize) {}
+
+    /// Puts that plugin on an existing channel, by rack position.
+    fn set_channel_plugin(&mut self, _channel: usize, _which: usize) {}
+
+    /// Puts the effect at `which` in [`plugin_effects`](Self::plugin_effects)
+    /// on the end of `strip`'s insert chain.
+    fn add_plugin_insert(&mut self, _strip: usize, _which: usize) {}
+
+    /// Opens the plugin's **own** editor for the channel at `index`, if it has
+    /// one. Whether it did.
+    ///
+    /// > *"shouldnt these also be showing the custom plugins own display in
+    /// > their windows not a auto made one from the parameters."*
+    ///
+    /// `false` means the fallback: Fontelle's own panel of the plugin's
+    /// parameters, which is what a plugin with no editor — and every LV2 one
+    /// in this build — gets. The window asks this before opening its own
+    /// instrument window, so the two are never both up for one plugin.
+    fn open_plugin_editor_for_channel(&mut self, index: usize) -> bool {
+        let _ = index;
+        false
+    }
+
+    /// The same for one insert of one mixer strip.
+    fn open_plugin_editor_for_insert(&mut self, strip: usize, slot: usize) -> bool {
+        let (_, _) = (strip, slot);
+        false
+    }
+
+    /// Gives every open plugin editor its frame, and says whether any is still
+    /// open.
+    ///
+    /// **Called once per pass of the event loop**, and the answer is what
+    /// keeps the loop awake: a CLAP editor repaints on a timer the host fires,
+    /// so a window that went back to sleep would be a plugin editor that
+    /// froze. See `fontelle_host::gui`.
+    fn tick_plugin_editors(&mut self) -> bool {
+        false
+    }
+
+    /// Walks the plugin folders again.
+    ///
+    /// A thing somebody asks for rather than something a menu does when it
+    /// opens: a scan `dlopen`s every bundle it finds, which is seconds on a
+    /// machine with a real collection installed.
+    fn rescan_plugins(&mut self) {}
+
+    /// Walks them if nothing has yet.
+    ///
+    /// What the browser calls before it lists anything, so the first time it
+    /// is opened it has something to show — and every time after that it costs
+    /// nothing.
+    fn scan_plugins_once(&mut self) {}
+
     /// Takes one off.
     fn remove_insert(&mut self, _strip: usize, _slot: usize) {}
 
@@ -1049,6 +1609,23 @@ pub trait StudioHost: DocumentHost {
     /// §13.2 requires the graph be validated acyclic on every mutation, and a
     /// menu row that silently does nothing is worse than one not offered.
     fn set_track_output(&mut self, _strip: usize, _target: Option<usize>) {}
+
+    /// Whether `strip`'s output is connected at all — see
+    /// `fontelle_model::MixerTrack::output_on`.
+    ///
+    /// `true` for every strip until somebody switches one off, which is why
+    /// the default is what it is: a host that has not implemented this is a
+    /// host whose tracks are all routed.
+    fn track_output_on(&self, _strip: usize) -> bool {
+        true
+    }
+
+    /// Switches that output on or off.
+    ///
+    /// *"if i chose to not route it to master, i wont be hearing my own input
+    /// but it will still be recording the audio clip."* Not a mute: the
+    /// track's sends still carry, and the strip still records.
+    fn set_track_output_on(&mut self, _strip: usize, _on: bool) {}
 
     /// Sends a copy of `strip`'s signal to another track (TDD §13.2).
     ///
@@ -1173,15 +1750,6 @@ pub trait StudioHost: DocumentHost {
 
     /// Moves one of them, normalised, through the history.
     fn set_insert_param(&mut self, _strip: usize, _slot: usize, _param: &str, _value: f32) {}
-
-    /// Writes the knobs the `preset`th named starting point stands for, on one
-    /// insert — see
-    /// [`EffectConfig::presets`](fontelle_types::EffectConfig::presets).
-    ///
-    /// Its own call rather than a run of
-    /// [`set_insert_param`](Self::set_insert_param)s, because it is **one**
-    /// thing a person did and has to be one thing to undo.
-    fn set_insert_preset(&mut self, _strip: usize, _slot: usize, _preset: usize) {}
 
     /// Points one insert's detector at another mixer strip — the external
     /// sidechain (`docs/effects-catalogue.md` §2.1). `None` puts it back to
@@ -1373,13 +1941,18 @@ pub trait StudioHost: DocumentHost {
     }
 
     /// Turns whatever the input captured into an audio clip at song sample
-    /// `at`, and says how many frames it kept.
+    /// `at`, and says how many frames it kept — or **why it could not**.
+    ///
+    /// `Ok(0)` is nothing arrived, which is an ordinary thing to happen to a
+    /// record button. `Err` is a take that existed and was lost: nowhere to
+    /// write it, a file that would not write, a decode that failed. The two
+    /// used to be one number, and the window read every refusal as silence.
     fn keep_audio_take(
         &mut self,
         _at: fontelle_types::Sample,
         _end_sample: fontelle_types::Sample,
-    ) -> usize {
-        0
+    ) -> Result<usize, String> {
+        Ok(0)
     }
 
     // --- recording (TDD §14.7, item 9 of the plan) ---

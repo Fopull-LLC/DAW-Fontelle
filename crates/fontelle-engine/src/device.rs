@@ -40,6 +40,18 @@ pub struct AudioDevice {
     /// `stream` because they are opened and closed at different moments: the
     /// output lives for the session and the input only while a track is armed.
     input: Option<cpal::Stream>,
+    /// Where the input callback's samples go so the graph can play them
+    /// (TDD §15.4). See [`crate::InputMonitor`].
+    ///
+    /// On the *device* rather than passed to each call because both streams
+    /// touch it and they are opened at different moments: the output callback
+    /// asks it whether anything is being monitored, the input callback fills
+    /// it. A device with none simply does not monitor.
+    monitor: Option<Arc<crate::InputMonitor>>,
+    /// The capture stream when it is a PipeWire node rather than a `cpal`
+    /// device — see [`crate::PipeWireInput`]. At most one of this and
+    /// `input` is open.
+    pipewire_input: Option<crate::PipeWireInput>,
 }
 
 impl AudioDevice {
@@ -48,7 +60,19 @@ impl AudioDevice {
             host: cpal::default_host(),
             stream: None,
             input: None,
+            monitor: None,
+            pipewire_input: None,
         }
+    }
+
+    /// Hands this device the ring that carries a live input into the graph.
+    ///
+    /// Given **before** either stream is opened, because it is what the input
+    /// callback writes into and what the output callback reads to know whether
+    /// the graph has to keep running while the transport is stopped.
+    pub fn with_monitor(mut self, monitor: Arc<crate::InputMonitor>) -> Self {
+        self.monitor = Some(monitor);
+        self
     }
 
     pub fn default_output_name(&self) -> Option<String> {
@@ -82,7 +106,23 @@ impl AudioDevice {
     /// The probe costs an open per device, which is fine for something that
     /// happens when a menu is clicked and would not be if it happened per
     /// frame.
+    ///
+    /// # On a PipeWire desktop, PipeWire is asked instead
+    ///
+    /// *"its not recognizing my logitech camera mic input / ... naming it
+    /// something different sometimes than others."* The probe above has a
+    /// blind spot a sound server makes permanent: PipeWire holds the
+    /// hardware, so a device another program is listening to through it
+    /// refuses a direct open and drops out of the list, and the alias that
+    /// happens to open decides the name. So when PipeWire is running its
+    /// sources are listed by their own descriptions — one name per device,
+    /// every day — and opened through its ALSA plugin, which shares. See
+    /// `crate::pipewire`. A machine without PipeWire gets the list below.
     pub fn input_names(&self) -> Vec<String> {
+        let sources = crate::pipewire_sources();
+        if !sources.is_empty() {
+            return crate::source_menu(&sources);
+        }
         let Ok(devices) = self.host.input_devices() else {
             return Vec::new();
         };
@@ -118,6 +158,18 @@ impl AudioDevice {
     /// front of somebody that cannot record, which is the one thing this
     /// question must not do — so the two answers agree by construction.
     pub fn default_input_name(&self) -> Option<String> {
+        let sources = crate::pipewire_sources();
+        if !sources.is_empty() {
+            // PipeWire's own default, spelled the way the menu spells it —
+            // and the first source when it has no default, which is still a
+            // microphone somebody can record from.
+            let menu = crate::source_menu(&sources);
+            let wanted = crate::pipewire_default_source();
+            let index = wanted
+                .and_then(|node| sources.iter().position(|s| s.node == node))
+                .unwrap_or(0);
+            return menu.get(index).cloned();
+        }
         let name = self
             .host
             .default_input_device()
@@ -149,6 +201,39 @@ impl AudioDevice {
         name: Option<&str>,
         writer: crate::InputWriter,
     ) -> Result<(u32, u16), DeviceError> {
+        // A PipeWire source is opened through PipeWire — see `input_names`
+        // for why, and `crate::pipewire` for how. The rate asked for is the
+        // output's, because PipeWire will resample to it and a take at the
+        // rate the song plays at is one less ratio to get right.
+        let sources = crate::pipewire_sources();
+        if !sources.is_empty() {
+            let source = match name {
+                Some(wanted) => crate::find_pipewire_source(&sources, wanted).ok_or_else(|| {
+                    DeviceError(format!("no input called \u{201c}{wanted}\u{201d}"))
+                })?,
+                None => {
+                    let default = crate::pipewire_default_source();
+                    default
+                        .and_then(|node| sources.iter().find(|s| s.node == node))
+                        .or(sources.first())
+                        .ok_or_else(|| DeviceError("no default input device".into()))?
+                }
+            };
+            let wanted_rate = self
+                .host
+                .default_output_device()
+                .and_then(|d| d.default_output_config().ok())
+                .map_or(48_000, |c| c.sample_rate());
+            let (input, rate, channels) = crate::PipeWireInput::open(
+                &source.node,
+                source.channels,
+                wanted_rate,
+                writer,
+                self.monitor.clone(),
+            )?;
+            self.pipewire_input = Some(input);
+            return Ok((rate, channels));
+        }
         let device = match name {
             Some(wanted) => self
                 .host
@@ -167,14 +252,37 @@ impl AudioDevice {
                 .ok_or_else(|| DeviceError("no default input device".into()))?,
         };
 
-        let config = device
+        let supported = device
             .default_input_config()
-            .map_err(|e| DeviceError(e.to_string()))?
-            .config();
+            .map_err(|e| DeviceError(e.to_string()))?;
+        let mut config = supported.config();
         let sample_rate = config.sample_rate;
         let channels = config.channels;
+        // Ask for the same block the output runs at, because **monitoring
+        // latency is one input period**: the reader holds enough slack to ride
+        // out the gap between deliveries, and a device handing over a thousand
+        // frames at a time costs twenty-one milliseconds of it.
+        //
+        // The device is *asked* rather than told — its own supported range,
+        // not a guess — because a config it will not take is a stream that
+        // fails to open, and no capture at all is far worse than a monitor
+        // with more latency. Whatever it actually delivers is measured on the
+        // way past; see `InputMonitor::device_block`.
+        if let cpal::SupportedBufferSize::Range { min, max } = supported.buffer_size()
+            && (*min..=*max).contains(&(BLOCK_SIZE as u32))
+        {
+            config.buffer_size = cpal::BufferSize::Fixed(BLOCK_SIZE as u32);
+        }
 
         let mut writer = ManuallyDrop::new(writer);
+        // Opened before the stream starts, so the first block the callback
+        // delivers already finds a ring that knows what rate it is at.
+        if let Some(monitor) = &self.monitor {
+            monitor.open(sample_rate, channels);
+        }
+        // `ManuallyDrop` for the reason the output callback's clone is: this
+        // closure is torn down on an audio thread too.
+        let monitor = ManuallyDrop::new(self.monitor.clone());
         let mut poisoned = false;
         let stream = device
             .build_input_stream(
@@ -185,6 +293,12 @@ impl AudioDevice {
                     }
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         writer.write(data);
+                        // The same block into the second ring, so what is kept
+                        // and what is heard are the same samples rather than
+                        // two readings of the device.
+                        if let Some(monitor) = &*monitor {
+                            monitor.write(data);
+                        }
                     }));
                     if result.is_err() {
                         eprintln!("fontelle: the input callback panicked; capture stopped");
@@ -203,6 +317,12 @@ impl AudioDevice {
     /// Closes the input stream, if one is open.
     pub fn stop_input(&mut self) {
         self.input = None;
+        self.pipewire_input = None;
+        // Before the stream is really gone, so nothing that was still in
+        // flight is played through whatever is opened next.
+        if let Some(monitor) = &self.monitor {
+            monitor.close();
+        }
     }
 
     /// Builds and starts the output stream, driving `graph` from the real
@@ -301,6 +421,16 @@ impl AudioDevice {
         let mut live = ManuallyDrop::new(live);
         let mut reader = TransportReader::new();
         let mut gate = IdleGate::new();
+        // The graph has to keep running while a microphone is open, whatever
+        // the transport is doing — see `IdleGate::set_monitoring`.
+        //
+        // `ManuallyDrop` for the reason `transport` above is: cpal tears the
+        // callback closure down **on the audio thread**, still tagged RT, and
+        // a refcount that happened to reach zero there would be a free on the
+        // RT thread (INVARIANT 1). The caller keeps its own clone for the
+        // program's life, so this can only ever be a decrement — wrapped so
+        // that stays true whatever the caller does with theirs.
+        let monitor = ManuallyDrop::new(self.monitor.clone());
         let mut poisoned = false;
 
         let stream = device
@@ -366,6 +496,15 @@ impl AudioDevice {
                             // through the silent start of an attack. See
                             // `IdleGate::held`.
                             gate.take_live(live_events);
+                            // Asked once a callback rather than assumed: the
+                            // window opens and closes the input while this
+                            // stream runs, and a gate holding a stale answer
+                            // is either an idle window burning a core or a
+                            // microphone nobody can hear.
+                            gate.set_monitoring(monitor.as_ref().is_some_and(|m| m.is_live()));
+                            // And whether somebody is at a plugin's own
+                            // controls — see `IdleGate::set_attended`.
+                            gate.set_attended(transport.is_attended());
                             let mut live_pending = !live_events.is_empty();
 
                             // Once per callback, not once per step: taking a

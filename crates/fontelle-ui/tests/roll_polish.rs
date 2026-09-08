@@ -23,7 +23,7 @@ use fontelle_model::{Arena, Note};
 use fontelle_types::{NoteId, PPQN, Tick};
 use fontelle_ui::canvas::{
     LaneProperty, MouseButton, PianoRoll, RollControl, RollEdit, RollView, SnapDivision,
-    clamp_to_grid, edge_scroll, key_to_y, lane_height_at, lane_value_of_y, lane_y_of_value,
+    clamp_to_grid, edge_scroll_rate, key_to_y, lane_height_at, lane_value_of_y, lane_y_of_value,
     roll_layout, tick_to_x, toolbar_hit, toolbar_layout, velocity_of_y,
 };
 use fontelle_ui::layout::Rect;
@@ -59,6 +59,7 @@ fn note(start: Tick, length: Tick, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -146,31 +147,35 @@ fn a_drag_held_off_the_edge_scrolls_the_view_towards_it() {
     let g = grid();
 
     assert_eq!(
-        edge_scroll(&v, g, g.x + 10.0, g.y + 10.0),
-        (0, 0),
+        edge_scroll_rate(&v, g, g.x + 10.0, g.y + 10.0),
+        (0.0, 0.0),
         "a pointer inside the grid scrolls nothing"
     );
 
-    let (ticks, keys) = edge_scroll(&v, g, g.x - 40.0, g.y + 10.0);
-    assert!(ticks < 0, "off the left scrolls back towards bar 1");
-    assert_eq!(keys, 0);
+    let (ticks, keys) = edge_scroll_rate(&v, g, g.x - 40.0, g.y + 10.0);
+    assert!(ticks < 0.0, "off the left scrolls back towards bar 1");
+    assert_eq!(keys, 0.0);
 
-    let (ticks, _) = edge_scroll(&v, g, g.right() + 40.0, g.y + 10.0);
-    assert!(ticks > 0, "off the right scrolls forwards");
+    let (ticks, _) = edge_scroll_rate(&v, g, g.right() + 40.0, g.y + 10.0);
+    assert!(ticks > 0.0, "off the right scrolls forwards");
 
-    let (_, keys) = edge_scroll(&v, g, g.x + 10.0, g.y - 40.0);
-    assert!(keys > 0, "off the top scrolls up the keyboard");
-    let (_, keys) = edge_scroll(&v, g, g.x + 10.0, g.bottom() + 40.0);
-    assert!(keys < 0, "off the bottom scrolls down it");
+    let (_, keys) = edge_scroll_rate(&v, g, g.x + 10.0, g.y - 40.0);
+    assert!(keys > 0.0, "off the top scrolls up the keyboard");
+    let (_, keys) = edge_scroll_rate(&v, g, g.x + 10.0, g.bottom() + 40.0);
+    assert!(keys < 0.0, "off the bottom scrolls down it");
 
-    // Further out is faster, but bounded — a flick of the mouse must not throw
-    // the view a thousand bars.
-    let (near, _) = edge_scroll(&v, g, g.x - 10.0, g.y + 10.0);
-    let (far, _) = edge_scroll(&v, g, g.x - 2000.0, g.y + 10.0);
+    // Further out is faster, but bounded — and bounded **per second** now,
+    // not per event, which is the invariant that actually holds a drag still.
+    // The per-event version of this bound passed while a 1000 Hz mouse threw
+    // the view a thousand bars, because a thousand bounded events a second is
+    // still a thousand of them. See `tests/edge_scroll.rs`.
+    let (near, _) = edge_scroll_rate(&v, g, g.x - 10.0, g.y + 10.0);
+    let (far, _) = edge_scroll_rate(&v, g, g.x - 2000.0, g.y + 10.0);
     assert!(far < near, "further out scrolls faster");
+    let screens_per_second = far.abs() * v.pixels_per_tick / g.width;
     assert!(
-        far.abs() < (g.width / v.pixels_per_tick) as Tick,
-        "and never more than a screenful in one event, got {far}"
+        screens_per_second <= 6.0,
+        "a second at the fastest is {screens_per_second} screenfuls"
     );
 }
 
@@ -192,6 +197,7 @@ fn a_new_note_is_a_copy_of_the_template() {
         mod_x: 3,
         mod_y: 4,
         slide: false,
+        channel: None,
     });
 
     let (x, y) = at(&roll.view, PPQN, 64);

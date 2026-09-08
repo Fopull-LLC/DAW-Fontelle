@@ -34,20 +34,21 @@ use winit::window::{Window, WindowId};
 
 use crate::audition::{AuditionAction, Auditions};
 use crate::canvas::{
-    BrowserHit, BrowserLayout, BrowserMode, DEFAULT_LANE_HEIGHT, InstrumentLayout, InstrumentView,
-    MixerHit, MixerLayout, Modifiers, MouseButton, ParamKind, PianoRoll, RackHit, RackLayout,
-    RollControl, RollLayout, RouteChoice, RouteMenu, SnapDivision, Timeline, TimelineHit,
-    TimelineLayout, Tool, ToolbarLayout, browser_hit, browser_layout, browser_layout_for,
-    clamp_to_grid, edge_scroll, fader_db_at, format_gain_db, format_pan, instrument_hit,
-    instrument_layout, knob_value, lane_height_at, mixer_hit,
-    next_value, pan_at, rack_hit, rack_layout, roll_layout_with_keys, route_label, route_menu_hit,
-    route_menu_layout, scrolled, snap_tick, timeline_hit, timeline_layout, timeline_snap,
-    timeline_toolbar_hit, timeline_toolbar_layout, timeline_x_to_tick, timeline_zoom_x,
-    timeline_zoom_y, toolbar_hit, toolbar_layout, x_to_tick, y_to_key, zoom_x, zoom_y,
+    BrowserHit, BrowserLayout, BrowserMode, DEFAULT_LANE_HEIGHT, EdgeScroll, InstrumentLayout,
+    InstrumentView, MixerHit, MixerLayout, Modifiers, MouseButton, ParamKind, PianoRoll, RackHit,
+    RackLayout, RollControl, RollLayout, RouteChoice, RouteMenu, SnapDivision, Timeline,
+    TimelineHit, TimelineLayout, Tool, ToolbarLayout, browser_file_share_at, browser_hit,
+    browser_layout, browser_layout_split, clamp_to_grid, edge_scroll_rate, fader_db_at,
+    format_gain_db, format_pan, instrument_hit, instrument_layout, knob_value, lane_height_at,
+    mixer_hit, next_value, pan_at, rack_hit, rack_layout, roll_layout_with_keys, route_label,
+    route_menu_hit, route_menu_layout, scrolled, snap_tick, timeline_hit, timeline_layout,
+    timeline_snap, timeline_toolbar_hit, timeline_toolbar_layout, timeline_x_to_tick,
+    timeline_zoom_x, timeline_zoom_y, toolbar_hit, toolbar_layout, x_to_tick, y_to_key, zoom_x,
+    zoom_y,
 };
 use crate::canvas::{
-    ToolAction, ToolKind, Tools, ToolsDialog, lane_menu_hit, lane_menu_layout,
-    tools_dialog_hit, tools_dialog_layout,
+    ToolAction, ToolKind, Tools, ToolsDialog, lane_menu_hit, lane_menu_layout, tools_dialog_hit,
+    tools_dialog_layout,
 };
 use crate::document::{ChannelInfo, ClipInfo, LaneInfo, LibraryEntry, MixerStrip, StudioHost};
 use crate::layout::{
@@ -58,9 +59,9 @@ use crate::layout::{
 use crate::pointer::{Pointer, PointerScene, pointer_at};
 use crate::render::{
     ADD_CHANNEL, ARRANGEMENT, BrowserChrome, CHOOSE_FOLDER, Chrome, EMPTY_LANE, EXPORT,
-    InstrumentChrome, MixerChrome, NEW_PROJECT, NO_INSTRUMENT, OPEN_FOLDER, RackChrome,
-    EditorWindowChrome, RenderError, RollChrome, TAB_MIXER, TAB_ROLL, TimelineChrome,
-    TransportChrome, draw_editor_window, draw_window, key_name, label_stride, labelled_bar,
+    EditorWindowChrome, InstrumentChrome, MixerChrome, NEW_PROJECT, NO_INSTRUMENT, OPEN_FOLDER,
+    RackChrome, RenderError, RollChrome, TAB_MIXER, TAB_ROLL, TimelineChrome, TransportChrome,
+    draw_editor_window, draw_window, key_name, label_stride, labelled_bar,
 };
 use crate::text::{Labels, TextContext, TextLayout};
 use crate::theme::Theme;
@@ -81,10 +82,37 @@ use crate::widget::{Sleep, WidgetId, WidgetTree, autosave_due, sleep_budget};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Drag {
     None,
+    /// The open menu's scrollbar. How far down the thumb it was taken hold of
+    /// is in `menu_grab` — a `Drag` is compared and a float is not a thing to
+    /// compare, the same arrangement `flop_knob` has.
+    MenuScroll,
     /// Notes: drawing, moving, resizing, or a selection box.
     Roll,
     /// Values in the property lane.
     Lane,
+    /// A knob on Flopsynth's window. Its own variant rather than `Knob`,
+    /// because the two windows index their controls differently — a card and
+    /// a group are not the same thing.
+    FlopKnob,
+    /// A picture on Flopsynth's window being dragged (§8.7): the oscillator's
+    /// wave sideways, the filter's response in both directions.
+    ///
+    /// Its own variant per picture rather than one with a mode, because the
+    /// two answer different numbers of controls — a wave moves the position
+    /// and a response moves the corner *and* the resonance.
+    FlopWave(usize),
+    FlopResponse(usize),
+    /// One corner of an envelope. Which one, and where the drag started, are
+    /// in `flop_node` — the same arrangement `flop_knob` has, and for the same
+    /// reason: a `Drag` is compared and a float is not a thing to compare.
+    FlopEnvNode,
+    /// A modulation ring: the depth of the newest route to that control.
+    FlopRing,
+    /// A source badge being carried to a knob (§8.4). Which source is in
+    /// `flop_assign`, with where the pointer is, so the badge follows it.
+    FlopAssign,
+    /// A matrix row's depth slider.
+    FlopMatrix(usize),
     /// The seam between the grid and the lane, which resizes the lane.
     LaneGrip,
     /// The roll's bar ruler — moves the time marker, in the clip's own ticks.
@@ -103,8 +131,22 @@ enum Drag {
     SidebarSeam,
     /// The seam across the sidebar, between the rack and the browser.
     SidebarSplit,
+    /// The seam inside the soundfont panel, between the bank and its presets.
+    BrowserSplit,
+    /// A row carried **out** of the soundfont panel — a preset, or an audio
+    /// file in the Import tab.
+    ///
+    /// *"i cannot drag an audio clip from the audio import tab into the
+    /// channel rack to turn it into a sampler"*, and *"i should be able to
+    /// drag soundfonts into it from the soundfonts window"*. Where it lands
+    /// decides what it means, so the row is only carried here and acted on
+    /// when the button comes up.
+    BrowserRow(BrowserRow),
     /// A knob on the instrument editor.
     Knob,
+    /// A track on the audio clip editor. Absolute, like the mixer's fader and
+    /// for the same reason: the value goes where the press landed.
+    AudioRow(crate::canvas::AudioField),
     /// One on an effect's own panel — a compressor's threshold, say. Its own
     /// variant because it writes to a different place, not because it behaves
     /// differently.
@@ -175,17 +217,91 @@ enum Focus {
     Timeline,
 }
 
+/// A row being dragged out of the soundfont panel — see [`Drag::BrowserRow`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserRow {
+    /// A preset of the open soundfont, by row.
+    Preset(usize),
+    /// A file in the Import tab, by row. Only audio can be carried: a MIDI
+    /// file dropped on the rack is not an instrument.
+    File(usize),
+}
+
 /// What a right-click menu — or a rename — is about.
 ///
 /// The menu canvas lists **strings** and knows nothing about what they do (see
 /// [`crate::canvas::context_menu_layout`]); this is the other half, and it is
 /// what turns "the third row was chosen" into an edit.
+/// How long the window sleeps between frames while a plugin editor is open.
+///
+/// Sixty a second: a plugin's editor is repainted from this loop, so this is
+/// its frame rate. Slower and a knob drags in steps; faster and an idle studio
+/// is spinning for a window somebody else is drawing.
+const PLUGIN_EDITOR_FRAME: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// How many rows one notch of the wheel moves a menu that scrolls.
+///
+/// Three is what every list in every desktop does, and a menu of 357 plugins
+/// is the first list in this window long enough for anybody to notice.
+const MENU_WHEEL_ROWS: f32 = 3.0;
+
+/// What a name being typed is for.
+///
+/// > *"when i make a new project i need to be prompted to name it and also
+/// > when im not in a project yet, i currently cant save that blank no project
+/// > into a new project."*
+///
+/// The two are one gesture with two endings — somebody types a name and
+/// presses Enter — and they differ only in what happens to what is already
+/// open: *New* leaves it behind, *Save* takes it with them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NameFor {
+    /// A fresh, empty project, made and opened. What is open now is left.
+    NewProject,
+    /// What is open now, saved into a project of that name.
+    SaveAs,
+}
+
+impl NameFor {
+    /// What the prompt says it is for.
+    fn title(self) -> &'static str {
+        match self {
+            Self::NewProject => "Name the new project",
+            Self::SaveAs => "Save this project as",
+        }
+    }
+}
+
+/// What a plugin chosen from the browser is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PluginPurpose {
+    /// A new channel playing it.
+    NewChannel,
+    /// The channel at this rack position, playing it instead.
+    ChangeChannel(usize),
+    /// The end of this strip's insert chain.
+    Insert(usize),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum MenuTarget {
     /// A channel in the rack, by row.
     Channel(usize),
+    /// The mixer's *+ fx* row on this strip: which effect to put on the end
+    /// of its chain. See [`crate::canvas::effect_menu_rows`].
+    AddEffect(usize),
+    /// Which plugin, of the ones installed on the machine (TDD §8.4).
+    ///
+    /// A second menu rather than rows on the first, because the two lists are
+    /// different kinds of thing — see [`crate::canvas::EffectChoice::Plugin`].
+    /// It carries what the choice is *for*, so that one browser serves the
+    /// rack's add button, a channel's change-instrument menu and a strip's
+    /// insert chain.
+    PluginPicker(PluginPurpose),
     /// A row of the arrangement, by lane index.
     Lane(usize),
+    /// A prefab in the prefab list, by row (TDD §10.5).
+    Prefab(usize),
     /// One control on the instrument panel: the address the panel gave it, and
     /// what it is called.
     ///
@@ -211,9 +327,29 @@ enum MenuTarget {
     /// The roll's Tools chip. Three tools that open a dialog and two importers
     /// that do not — see `canvas::TOOL_MENU`.
     RollTools,
+    /// Asking for a project's name — see [`NameFor`].
+    ///
+    /// The typed name lives in `menu_filter`, which is the same field the
+    /// plugin picker types into and for the same reason: a menu that is open
+    /// already owns the keyboard.
+    NameProject(NameFor),
+    /// Which of the three instruments to **make**, from the rack's add button.
+    /// *"when you select new instrument it lets you select one of those."*
+    NewInstrument,
+    /// And which to **turn channel `usize` into**, from its right-click menu.
+    /// *"cant replace an instrument with a different instrument."*
+    ChangeInstrument(usize),
+    /// Whether to bounce a row's time selection or the whole of it.
+    ///
+    /// Only opened when there **is** a selection to ask about; with none there
+    /// is nothing to choose between and the render goes straight ahead.
+    RenderChoice(usize),
     /// The record button: *"when i click record it prompts me what i would
     /// like to record: notes, audio from mic, automation, etc."*
     RecordMode,
+    /// A mixer strip, by position — what its name row renames. See
+    /// [`crate::canvas::name_press`].
+    MixerTrack(usize),
     /// A mixer strip's input button (TDD §15.4): which microphone feeds it.
     /// The strip, by position.
     TrackInput(usize),
@@ -222,6 +358,44 @@ enum MenuTarget {
         clip: fontelle_types::ClipId,
         id: fontelle_types::PointId,
     },
+    /// A drop-down row on the audio clip editor — which mixer track, which
+    /// filter shape, which fade curve. *"options that could be ... dropdowns
+    /// for some reason are instead shown as buttons you click to toggle
+    /// through a list of options in order."*
+    AudioRow(crate::canvas::AudioField),
+    /// The snap chip, on the roll's toolbar or the arrangement's — which grid
+    /// things land on. `true` is the arrangement's; they are two views with
+    /// two snaps, which is deliberate (a phrase is written on a finer grid
+    /// than the blocks it is arranged into).
+    Snap { timeline: bool },
+    /// A [`ParamKind::Choice`] on the instrument panel or on an effect's own
+    /// — a filter's slope, an LFO's shape. The same complaint as
+    /// [`MenuTarget::AudioRow`] and the same answer: the list drops down.
+    ///
+    /// By **position** in the view rather than by address, because that is
+    /// what `instrument_hit` hands back and what `InstrumentView::param`
+    /// takes; the address is read off the parameter when the entry is chosen.
+    ParamChoice {
+        /// Which of the two panels — they are two windows and two views.
+        editor: EditorKind,
+        group: usize,
+        param: usize,
+    },
+    /// The preset bar's drop-down, in the editor window of this kind
+    /// (`docs/flopsynth-plan.md` §P.7): favourites first, then the bank
+    /// grouped by category.
+    PresetMenu(EditorKind),
+    /// "Save as…" asking what to call it.
+    PresetSaveName(EditorKind),
+    /// And then which category to put it in — the device's own, plus a row
+    /// that makes a new one. Two prompts because a preset needs a name *and*
+    /// a folder, and one box cannot ask two questions.
+    PresetCategory(EditorKind),
+    /// The new category's name.
+    PresetNewCategory(EditorKind),
+    /// Flopsynth's `+ effect` list (`docs/flopsynth-plan.md` §8.5): which
+    /// kind to put on the end of the instrument's own chain.
+    AddPatchEffect,
 }
 
 impl MenuTarget {
@@ -242,13 +416,31 @@ impl MenuTarget {
         match self {
             Self::InstrumentParam { .. } => Some(EditorKind::Instrument),
             Self::InsertParam { .. } => Some(EditorKind::Effect),
+            Self::AudioRow(_) => Some(EditorKind::AudioClip),
+            Self::ParamChoice { editor, .. } => Some(*editor),
+            // Every one of these is opened from a bar in an editor window's
+            // header, so it is that window that draws it.
+            Self::PresetMenu(editor)
+            | Self::PresetSaveName(editor)
+            | Self::PresetCategory(editor)
+            | Self::PresetNewCategory(editor) => Some(*editor),
+            Self::AddPatchEffect => Some(EditorKind::Instrument),
+            Self::Snap { .. } => None,
             Self::Channel(_)
+            | Self::AddEffect(_)
+            | Self::NewInstrument
+            | Self::ChangeInstrument(_)
+            | Self::RenderChoice(_)
             | Self::Lane(_)
+            | Self::Prefab(_)
             | Self::Tempo
             | Self::RollTools
             | Self::RecordMode
+            | Self::MixerTrack(_)
             | Self::TrackInput(_)
             | Self::Point { .. }
+            | Self::PluginPicker(_)
+            | Self::NameProject(_)
             | Self::ImportChoice => None,
         }
     }
@@ -416,6 +608,12 @@ pub struct WindowApp {
     /// One per device `RenderContext` has opened, indexed by its `dev_id`.
     renderers: Vec<Option<Renderer>>,
     live: Option<Live>,
+    /// The compositor's activation protocol, where there is one — how an
+    /// editor window is brought to the front under Wayland. See
+    /// [`crate::activation`]. Opened on first use from the studio window,
+    /// and `None` for good on X11.
+    activation: Option<crate::activation::Activation>,
+    activation_tried: bool,
     /// The floating editor windows that are open (TDD §7.2, §12, §13.4).
     /// At most one of each kind — see [`EditorKind`].
     editors: Vec<Editor>,
@@ -474,6 +672,15 @@ pub struct WindowApp {
     /// *"I'm still not seeing panning options"* about a lane that could
     /// already draw all six. A menu lists what it can do without being asked.
     lane_menu: Option<crate::canvas::LaneMenu>,
+    /// The menu a press has just **dismissed**, until the button comes up.
+    ///
+    /// A press that misses an open menu closes it and then carries on to
+    /// whatever it hit, which is what every desktop does — and what makes a
+    /// second press on a chip that *drops* a menu close it and open it again
+    /// in one event. So the chip is told which menu it just shut, and declines
+    /// to put the same one straight back. Cleared on release, so the press
+    /// after it opens normally.
+    dismissed: Option<MenuTarget>,
     /// What the Tools panel is set to — the transpose distance, the property
     /// the offset acts on, the randomizer's strength. Window state, not the
     /// document's: which property you last adjusted is no more part of a song
@@ -509,6 +716,36 @@ pub struct WindowApp {
     /// lists rather than once a frame.
     instrument: Option<InstrumentView>,
     instrument_layout: InstrumentLayout,
+    /// The same channel as **Flopsynth's own window**, when that is what it is
+    /// (`docs/flopsynth-plan.md` §8).
+    ///
+    /// Beside `instrument` rather than instead of it: exactly one of the two
+    /// is drawn, and which is decided by whether the host offered this one.
+    flopsynth: Option<crate::canvas::FlopsynthView>,
+    flopsynth_layout: crate::canvas::FlopsynthLayout,
+    /// Which of Flopsynth's four pages is showing (§8.3–§8.6).
+    ///
+    /// Window state rather than document state: which page you were last
+    /// looking at is not a property of the song, and a project that reopened
+    /// on the Effects page because that is where somebody left it would be
+    /// saving a fact about a session.
+    flop_page: crate::canvas::FlopsynthPage,
+    /// A source badge being carried to a knob (§8.4): which source, and where
+    /// the pointer is now, so the badge can be drawn under it.
+    flop_assign: Option<(usize, (f32, f32))>,
+    /// Which of Flopsynth's controls something modulates, and how deeply.
+    ///
+    /// Worked out with the rest of the studio's lists rather than per knob per
+    /// frame: answering it walks the matrix, and there are a hundred and fifty
+    /// knobs on that window.
+    flop_modulated: Vec<((usize, usize), f32)>,
+    /// And which of them *could* take a route — what lights up while a badge
+    /// is in flight.
+    flop_destinations: Vec<(usize, usize)>,
+    /// How the Presets page is being looked at (§8.6): which shelf, what has
+    /// been typed into its search, how far it is scrolled. Window state, like
+    /// the page itself, and copied onto the view whenever the view is built.
+    flop_browse: crate::canvas::PresetBrowse,
     /// Which insert the effect tab is showing: the strip, and the slot in its
     /// chain. `None` closes the tab — a tab for a thing that is not there is a
     /// tab that does nothing when clicked.
@@ -557,6 +794,13 @@ pub struct WindowApp {
     /// The mode chip's word, shaped.
     mode_text: TextLayout,
     hover_param: Option<(usize, usize)>,
+    /// Which of Flopsynth's controls the pointer is over, as `(card, param)`.
+    ///
+    /// Its own field rather than `hover_param`: the two windows index their
+    /// controls differently — a card and a group are not the same thing — and
+    /// one field meaning both would light the wrong knob the moment a channel
+    /// changed kind.
+    hover_card: Option<(usize, usize)>,
     /// The audio editor row the pointer is over, for its hover tip.
     hover_audio: Option<crate::canvas::AudioField>,
     /// Two presses in one place, which is how an audio clip's editor is opened
@@ -575,6 +819,28 @@ pub struct WindowApp {
     /// field rather than a `hover_param`, because a chip has no address —
     /// see `instrument_preset_hit`.
     hover_preset: Option<usize>,
+    /// The preset bar in each editor window's header (`docs/flopsynth-plan.md`
+    /// §P.7): what it says, where it is, and what the pointer is over.
+    ///
+    /// One per window rather than one shared, because the two windows are open
+    /// at once and show two devices — a synth and the reverb on its bus have
+    /// different presets and different `*`s.
+    preset_view: [crate::canvas::PresetBarView; 2],
+    /// What the pointer is over on one of them: which window, and which
+    /// control. The geometry itself is recomputed from the window's header
+    /// (`preset_bar_geometry`) rather than kept, because it depends on the
+    /// measured width of the window's title and that changes with the name.
+    hover_preset_bar: Option<(usize, crate::canvas::PresetBarHit)>,
+    /// An envelope node being dragged: which card, which corner, where the
+    /// drag started and the value it started from.
+    flop_node: Option<(usize, crate::canvas::EnvNode, (f32, f32), f32)>,
+    /// A modulation ring being dragged: which control, where it started, and
+    /// the depth it started from.
+    flop_ring: Option<((usize, usize), f32, f32)>,
+    /// A "Save as…" half-finished: which window, and the name typed, waiting
+    /// for the category to be chosen. Two prompts because a preset needs both
+    /// and one box cannot ask two questions.
+    pending_save_as: Option<(usize, String)>,
     /// And which key chip, in the same panel.
     hover_key: Option<usize>,
     hover_tab: Option<EditorTab>,
@@ -582,6 +848,9 @@ pub struct WindowApp {
     /// started from — a knob measures from where it was grabbed, not from
     /// wherever the pointer happens to be.
     knob: Option<((usize, usize), f32, f32)>,
+    /// The same, for Flopsynth's window: which control, where the drag
+    /// started, and the value it started from.
+    flop_knob: Option<((usize, usize), f32, f32)>,
 
     // --- the mixer (TDD §13) ---
     mixer: MixerLayout,
@@ -600,8 +869,23 @@ pub struct WindowApp {
     /// `None` is the master. Read with the lists rather than per frame,
     /// because the column's one caption is shaped from it.
     track_output: Option<usize>,
-    /// The effect menu, while it is open, and the strip it will put one on.
-    effect_menu: Option<(usize, crate::canvas::EffectMenu)>,
+    /// Every mixer track a clip can be routed to, master first as `None`,
+    /// paired with what it is called.
+    ///
+    /// One list, read with the studio's others, because three things want it:
+    /// the audio editor's route row draws the name, its click steps through
+    /// the ids, and both have to agree with the order the mixer lays its
+    /// strips out in.
+    clip_routes: Vec<(Option<fontelle_types::MixerTrackId>, String)>,
+    /// What the open audio clip's route row says, kept rather than formatted
+    /// per frame — the chrome takes a `&str` and a temporary would not outlive
+    /// the borrow it goes into.
+    audio_route: String,
+    /// And whether it is connected at all — see
+    /// `fontelle_model::MixerTrack::output_on`. Read with the rest of the
+    /// studio's lists, because the row that draws it is drawn every frame and
+    /// the answer changes only when a command runs.
+    track_output_on: bool,
     /// The send menu, while it is open, and which send opened it — `None` for
     /// the row that makes a new one.
     send_menu: Option<(Option<usize>, crate::canvas::RouteMenu)>,
@@ -668,8 +952,18 @@ pub struct WindowApp {
     /// The live search (TDD §17.5), and whether it has the keyboard.
     query: String,
     searching: bool,
+    /// Which preset row the keyboard is on, so the arrow keys can walk the
+    /// list and Enter can choose from it — *"go through the selected
+    /// instruments with arrow keys after it being clicked on to focus it"*.
+    /// `None` when the browser does not hold the keyboard, which is when the
+    /// arrows go back to nudging notes and clips.
+    preset_focus: Option<usize>,
     status: String,
     rack_scroll: usize,
+    /// The prefab list's own scroll offset — its own, because the two lists in
+    /// the panel scroll independently and a shared one would jump when you
+    /// switched tabs.
+    prefab_scroll: usize,
     file_scroll: usize,
     preset_scroll: usize,
     hover_control: Option<RollControl>,
@@ -683,9 +977,30 @@ pub struct WindowApp {
     hover_browser: Option<BrowserHit>,
     /// The same for the channel rack.
     hover_rack: Option<RackHit>,
+    /// And for the prefab list under the panel's other tab.
+    hover_prefab: Option<crate::canvas::PrefabHit>,
+    /// Which list the left-hand panel is showing, and the list itself. Cached
+    /// on the studio's revision like `channels`, for the reason
+    /// `StudioHost::revision` gives.
+    rack_tab: crate::document::RackTab,
+    prefabs: Vec<crate::document::PrefabInfo>,
+    /// The prefab list's geometry, when that is the tab showing.
+    prefab_panel: crate::canvas::PrefabLayout,
     /// The right-click menu, while it is open: what it is about, and where it
     /// was dropped. See [`MenuTarget`].
     menu: Option<(MenuTarget, crate::canvas::ContextMenu)>,
+    /// Where the open menu was dropped from, and in what room.
+    ///
+    /// Kept because the plugin picker is **re-laid-out as you type** — see
+    /// [`Self::menu_filter`] — and a menu that jumped to the pointer on every
+    /// keystroke would be a menu you cannot read.
+    menu_at: ((f32, f32), crate::layout::Rect),
+    /// What has been typed into the plugin picker since it opened.
+    ///
+    /// > *"its still not seeing my plugins"* — with 357 effects installed,
+    /// > a list you can only scroll is sixteen screens deep. Empty for every
+    /// > other menu, which do not filter: six entries need no search box.
+    menu_filter: String,
     /// What is being renamed, while somebody is typing a name.
     ///
     /// There is no text buffer beside it, and deliberately: every keystroke
@@ -750,6 +1065,20 @@ pub struct WindowApp {
     /// What the held mouse button is doing, so a `CursorMoved` reaches the one
     /// thing that asked for it.
     drag: Drag,
+    /// How far down the scrollbar's thumb a menu-scroll drag took hold of
+    /// it — see [`Drag::MenuScroll`]. Meaningless while that drag is not
+    /// running.
+    menu_grab: f32,
+    /// How much of the soundfont panel the bank gets, against its presets.
+    /// `None` until the seam between them is dragged.
+    browser_file_share: Option<f32>,
+    /// What an edge-held drag has scrolled but not yet spent — see
+    /// [`EdgeScroll`]. Beside `drag` because it belongs to the gesture and is
+    /// cleared with it.
+    edge_scroll: EdgeScroll,
+    /// When the edge scroll last advanced, so the next step knows how much
+    /// time to charge for. `None` between gestures.
+    edge_scroll_at: Option<std::time::Instant>,
     /// The **time marker**: the last place the user clicked on either ruler.
     /// Play starts here and a stop comes back here — see
     /// [`crate::transport::TransportAction`].
@@ -775,6 +1104,12 @@ pub struct WindowApp {
     tip_rect: crate::layout::Rect,
     /// When a backup was last considered. See `maybe_autosave`.
     last_autosave: std::time::Instant,
+    /// Whether a plugin is showing an editor of its own.
+    ///
+    /// Kept so `arm_deadline` can hold the loop awake for it: a plugin's
+    /// editor is drawn by the plugin, on this thread, out of the timer this
+    /// loop fires — see `tick_plugin_editors`.
+    plugin_editor_open: bool,
     /// Whether this window currently holds an animator on the tree's
     /// [`crate::widget::Redraw`]. Kept so `begin`/`end` stay paired — the
     /// counter is there so several moving things can coexist, and a caller
@@ -829,6 +1164,10 @@ struct Editor {
     /// Its own scene. One per window, because a `Scene` is the picture of a
     /// surface and two surfaces are two pictures.
     scene: Scene,
+    /// This window was just asked to come to the front and is being held above
+    /// the others until it has been drawn once — see [`WindowApp::raise_editor`].
+    /// Cleared on its next frame, which puts it back to an ordinary window.
+    pinned: bool,
 }
 
 impl WindowApp {
@@ -851,6 +1190,8 @@ impl WindowApp {
             renderers: Vec::new(),
             live: None,
             editors: Vec::new(),
+            activation: None,
+            activation_tried: false,
             pending_editors: Vec::new(),
             pointer_window: None,
             frames: 0,
@@ -882,6 +1223,8 @@ impl WindowApp {
             timeline_height: DEFAULT_TIMELINE_HEIGHT,
             timeline_height_shown: DEFAULT_TIMELINE_HEIGHT,
             lane_menu: None,
+            dismissed: None,
+            plugin_editor_open: false,
             tools: Tools::default(),
             imports: Vec::new(),
             import_kind: fontelle_types::FolderKind::Midi,
@@ -901,12 +1244,22 @@ impl WindowApp {
             tabs: editor_tabs(layout.panel.header, &options.theme.metrics),
             instrument: None,
             instrument_layout: InstrumentLayout {
+                name: crate::layout::Rect::ZERO,
                 body: layout.panel.body,
-                presets: Vec::new(),
                 keys: Vec::new(),
                 headings: Vec::new(),
                 cells: Vec::new(),
                 content_height: 0.0,
+            },
+            flopsynth: None,
+            flop_page: crate::canvas::FlopsynthPage::Synth,
+            flop_assign: None,
+            flop_modulated: Vec::new(),
+            flop_destinations: Vec::new(),
+            flop_browse: Default::default(),
+            flopsynth_layout: crate::canvas::FlopsynthLayout {
+                body: layout.panel.body,
+                ..Default::default()
             },
             open_insert: None,
             eq: None,
@@ -917,8 +1270,8 @@ impl WindowApp {
             ),
             insert_view: None,
             insert_layout: InstrumentLayout {
+                name: crate::layout::Rect::ZERO,
                 body: layout.panel.body,
-                presets: Vec::new(),
                 keys: Vec::new(),
                 headings: Vec::new(),
                 cells: Vec::new(),
@@ -936,14 +1289,24 @@ impl WindowApp {
             play_mode: crate::document::PlayMode::Song,
             mode_text: TextLayout::default(),
             hover_param: None,
+            hover_card: None,
             hover_audio: None,
             double_click: crate::pointer::DoubleClick::default(),
             count_in_until: None,
             take_from: None,
             hover_preset: None,
+            preset_view: [
+                crate::canvas::PresetBarView::default(),
+                crate::canvas::PresetBarView::default(),
+            ],
+            hover_preset_bar: None,
+            flop_node: None,
+            flop_ring: None,
+            pending_save_as: None,
             hover_key: None,
             hover_tab: None,
             knob: None,
+            flop_knob: None,
             mixer: MixerLayout {
                 body: layout.panel.body,
                 list: layout.panel.body,
@@ -960,9 +1323,11 @@ impl WindowApp {
             hover_mixer: None,
             selected_track: 0,
             track_output: None,
+            clip_routes: Vec::new(),
+            audio_route: String::new(),
+            track_output_on: true,
             output_menu: None,
             send_menu: None,
-            effect_menu: None,
             insert_drag: None,
             tempo: 120.0,
             tempo_text: TextLayout::default(),
@@ -988,6 +1353,7 @@ impl WindowApp {
             library_count: 0,
             query: String::new(),
             searching: false,
+            preset_focus: None,
             status: String::new(),
             key_map: crate::document::KeyMap::unknown(),
             key_style: crate::canvas::KeyStyle::default(),
@@ -999,12 +1365,24 @@ impl WindowApp {
             timeline_bar: crate::canvas::TimelineToolbar { items: Vec::new() },
             hover_timeline: None,
             rack_scroll: 0,
+            prefab_scroll: 0,
+            hover_prefab: None,
+            rack_tab: crate::document::RackTab::default(),
+            prefabs: Vec::new(),
+            prefab_panel: crate::canvas::prefab_layout(
+                layout.rack.body,
+                &options.theme.metrics,
+                0,
+                0,
+            ),
             file_scroll: 0,
             preset_scroll: 0,
             hover_control: None,
             hover_browser: None,
             hover_rack: None,
             menu: None,
+            menu_at: ((0.0, 0.0), crate::layout::Rect::ZERO),
+            menu_filter: String::new(),
             renaming: None,
             route_menu: None,
             route_names: Vec::new(),
@@ -1013,6 +1391,10 @@ impl WindowApp {
             tool_cursors: std::collections::HashMap::new(),
             browser_title: "Soundfonts".to_string(),
             drag: Drag::None,
+            menu_grab: 0.0,
+            browser_file_share: None,
+            edge_scroll: EdgeScroll::default(),
+            edge_scroll_at: None,
             audition: Auditions::default(),
             hover_tip: None,
             hover_since: std::time::Instant::now(),
@@ -1101,7 +1483,9 @@ impl WindowApp {
         });
         // Remembered so the region it covered can be painted over when it goes
         // away — it floats outside every widget's own bounds.
-        self.tip_rect = tooltip.as_ref().map_or(crate::layout::Rect::ZERO, |(_, r)| *r);
+        self.tip_rect = tooltip
+            .as_ref()
+            .map_or(crate::layout::Rect::ZERO, |(_, r)| *r);
 
         // §16.3, the whole of it: no dirty region, no frame.
         let Some(_region) = self.tree.take_dirty() else {
@@ -1110,6 +1494,9 @@ impl WindowApp {
         let Some(live) = &self.live else { return };
 
         let device = &self.context.devices[live.surface.dev_id];
+        // Worked out before the renderer is borrowed mutably: it reads the
+        // document and the transport view, which the chrome below borrows too.
+        let recording = self.recording_span();
         let Some(Some(renderer)) = self.renderers.get_mut(live.surface.dev_id) else {
             return;
         };
@@ -1147,10 +1534,14 @@ impl WindowApp {
                     ghosts: &self.ghosts,
                     ghost_filter: self.roll.ghosts,
                     key_style: self.key_style,
+                    clip_length: doc.clip_length(),
                     marker_tick: doc.playhead_tick(self.marker),
-                    loop_range: self
-                        .loop_range
-                        .map(|(from, to)| (doc.clip_tick_of_song_tick(from), doc.clip_tick_of_song_tick(to))),
+                    loop_range: self.loop_range.map(|(from, to)| {
+                        (
+                            doc.clip_tick_of_song_tick(from),
+                            doc.clip_tick_of_song_tick(to),
+                        )
+                    }),
                     marquee: self.roll.marquee(),
                     hover: self.hover_control,
                     lane_menu: self.lane_menu.as_ref(),
@@ -1159,21 +1550,44 @@ impl WindowApp {
                     slice: self.roll.slice_stroke(),
                     live_keys: self.live_keys,
                 }),
-                rack: self.options.document.as_ref().map(|_| RackChrome {
-                    panel: self.layout.rack,
-                    layout: self.rack.clone(),
-                    channels: &self.channels,
-                    selected: self.selected_channel,
-                    hover: self.hover_rack,
-                    route_names: &self.route_names,
-                    strips: self.route_names.len(),
-                    route_menu: self.route_menu.as_ref().map(|(_, menu)| menu),
-                    route_menu_open: self.route_menu.as_ref().map(|(index, _)| *index),
-                    renaming: match &self.renaming {
-                        Some(MenuTarget::Channel(index)) => Some(*index),
-                        _ => None,
-                    },
-                }),
+                // Exactly one of the two: they are one panel with two tabs
+                // (`canvas::tab_strip`), and drawing both would put two lists
+                // in the same rectangle.
+                rack: self
+                    .options
+                    .document
+                    .as_ref()
+                    .filter(|_| self.rack_tab == crate::document::RackTab::Instruments)
+                    .map(|_| RackChrome {
+                        panel: self.layout.rack,
+                        layout: self.rack.clone(),
+                        channels: &self.channels,
+                        selected: self.selected_channel,
+                        hover: self.hover_rack,
+                        route_names: &self.route_names,
+                        strips: self.route_names.len(),
+                        route_menu: self.route_menu.as_ref().map(|(_, menu)| menu),
+                        route_menu_open: self.route_menu.as_ref().map(|(index, _)| *index),
+                        renaming: match &self.renaming {
+                            Some(MenuTarget::Channel(index)) => Some(*index),
+                            _ => None,
+                        },
+                    }),
+                prefabs: self
+                    .options
+                    .document
+                    .as_ref()
+                    .filter(|_| self.rack_tab == crate::document::RackTab::Prefabs)
+                    .map(|_| crate::render::PrefabChrome {
+                        panel: self.layout.rack,
+                        layout: self.prefab_panel.clone(),
+                        prefabs: &self.prefabs,
+                        hover: self.hover_prefab,
+                        renaming: match &self.renaming {
+                            Some(MenuTarget::Prefab(index)) => Some(*index),
+                            _ => None,
+                        },
+                    }),
                 browser: self.options.document.as_ref().map(|_| BrowserChrome {
                     panel: self.layout.browser,
                     layout: self.browser.clone(),
@@ -1181,7 +1595,12 @@ impl WindowApp {
                     import_kind: self.import_kind,
                     query: &self.query,
                     files: match self.browser_mode {
-                        BrowserMode::Sounds => &self.files,
+                        // The Presets tab is the Sounds tab's shape with a
+                        // different list in it (§P.8): devices on the left,
+                        // their presets on the right. Reusing the shape is
+                        // most of why a fifth mode is a variant and not a
+                        // panel.
+                        BrowserMode::Sounds | BrowserMode::Presets => &self.files,
                         BrowserMode::Projects => &self.projects,
                         BrowserMode::Import => &self.imports,
                         BrowserMode::Settings => &self.settings,
@@ -1190,6 +1609,7 @@ impl WindowApp {
                     selected_file: self.selected_file,
                     selected_preset: self.selected_preset,
                     searching: self.searching,
+                    focus_preset: self.preset_focus,
                     hover: self.hover_browser,
                 }),
                 timeline: (!self.layout.timeline.frame.is_empty()
@@ -1208,6 +1628,7 @@ impl WindowApp {
                     focused: self.focus == Focus::Timeline,
                     toolbar: self.timeline_bar.clone(),
                     tool: self.timeline.tool(),
+                    stretch: self.timeline.stretch(),
                     hover: self.hover_timeline,
                     slice: self.timeline.slice_line(),
                     renaming: match &self.renaming {
@@ -1217,7 +1638,8 @@ impl WindowApp {
                     point_clip: self.timeline.point_clip(),
                     point_selection: self.timeline.point_selection(),
                     loop_range: self.loop_range,
-                can_paste: self
+                    recording,
+                    can_paste: self
                         .options
                         .document
                         .as_ref()
@@ -1234,12 +1656,15 @@ impl WindowApp {
                         _ => None,
                     },
                     selected: self.selected_track,
+                    renaming: match &self.renaming {
+                        Some(MenuTarget::MixerTrack(index)) => Some(*index),
+                        _ => None,
+                    },
                     output_label: output_label.clone(),
                     input_label: input_label.clone(),
                     insert_drag: self.insert_drag,
                     output_menu: self.output_menu.as_ref(),
                     send_menu: self.send_menu.as_ref().map(|(_, menu)| menu),
-                    effect_menu: self.effect_menu.as_ref().map(|(_, menu)| menu),
                     route_names: &self.route_names,
                     output: self.track_output,
                 }),
@@ -1482,18 +1907,29 @@ impl WindowApp {
             Drag::None => None,
             Drag::Roll | Drag::Timeline => Some(Pointer::Grabbing),
             Drag::RollRuler | Drag::BarRuler | Drag::TimelineRuler => Some(Pointer::Grabbing),
-            Drag::LaneGrip
+            Drag::MenuScroll
+            | Drag::LaneGrip
             | Drag::Divider
             | Drag::Knob
+            | Drag::FlopKnob
+            | Drag::FlopEnvNode
+            | Drag::FlopRing
             | Drag::InsertKnob
             | Drag::Lane
-            | Drag::SidebarSplit => Some(Pointer::ResizeY),
+            | Drag::SidebarSplit
+            | Drag::BrowserSplit => Some(Pointer::ResizeY),
+            Drag::BrowserRow(_) => Some(Pointer::Grabbing),
             Drag::SidebarSeam => Some(Pointer::ResizeX),
             Drag::Keys => Some(Pointer::Hand),
             // A fader and the tempo box are both vertical throws; a pan is a
             // horizontal one.
             Drag::Fader(_) | Drag::Tempo => Some(Pointer::ResizeY),
-            Drag::Pan(_) => Some(Pointer::ResizeX),
+            Drag::Pan(_) | Drag::AudioRow(_) | Drag::FlopWave(_) | Drag::FlopMatrix(_) => {
+                Some(Pointer::ResizeX)
+            }
+            Drag::FlopAssign => Some(Pointer::Grabbing),
+            // A response is dragged in both axes at once, like a band handle.
+            Drag::FlopResponse(_) => Some(Pointer::Grabbing),
             // A band handle goes wherever the pointer does, in both axes.
             Drag::EqHandle(_) => Some(Pointer::Grabbing),
             Drag::TimelineSelect | Drag::RollSelect => Some(Pointer::ResizeX),
@@ -1633,12 +2069,19 @@ impl WindowApp {
             self.hover_mixer = strip;
             self.tree.invalidate(PANEL);
         }
+        // One panel, two lists: only the one that is showing is hit-tested,
+        // so a row under the pointer in the hidden list cannot light up.
         let over_rack = self.layout.rack.frame.contains(x, y);
-        let rack = over_rack
+        let showing_rack = self.rack_tab == crate::document::RackTab::Instruments;
+        let rack = (over_rack && showing_rack)
             .then(|| rack_hit(&self.rack, x, y))
             .filter(|hit| *hit != RackHit::Nothing);
-        if rack != self.hover_rack {
+        let prefab = (over_rack && !showing_rack)
+            .then(|| crate::canvas::prefab_hit(&self.prefab_panel, x, y))
+            .filter(|hit| *hit != crate::canvas::PrefabHit::Nothing);
+        if rack != self.hover_rack || prefab != self.hover_prefab {
             self.hover_rack = rack;
+            self.hover_prefab = prefab;
             self.tree.invalidate(RACK);
         }
         self.refresh_tip();
@@ -1723,6 +2166,11 @@ impl WindowApp {
         {
             return Some(tip.to_string());
         }
+        if let Some(what) = self.hover_prefab
+            && let Some(tip) = what.tip()
+        {
+            return Some(tip.to_string());
+        }
         None
     }
 
@@ -1763,6 +2211,13 @@ impl WindowApp {
             BrowserMode::Sounds => match self.library_count {
                 0 => "Soundfonts".to_string(),
                 n => format!("Soundfonts \u{2014} {n}"),
+            },
+            // How many *devices* have presets, which is what the left-hand
+            // list holds — the same rule the soundfont heading follows: count
+            // the collection, not the rows in front of you.
+            BrowserMode::Presets => match self.files.len() {
+                0 => "Presets".to_string(),
+                n => format!("Presets \u{2014} {n} devices"),
             },
             BrowserMode::Projects => match self.projects.len() {
                 0 => "Projects".to_string(),
@@ -1913,7 +2368,9 @@ impl ApplicationHandler for WindowApp {
             // is a note that follows the mouse around on its own.
             WindowEvent::Focused(false) => {
                 self.drag = Drag::None;
+                self.end_edge_scroll();
                 self.knob = None;
+                self.flop_knob = None;
                 self.roll.release();
                 self.timeline.release();
                 self.silence_audition();
@@ -1977,6 +2434,12 @@ impl ApplicationHandler for WindowApp {
                 let was_control = matches!(
                     self.drag,
                     Drag::Knob
+                        | Drag::FlopKnob
+                        | Drag::FlopWave(_)
+                        | Drag::FlopResponse(_)
+                        | Drag::FlopEnvNode
+                        | Drag::FlopRing
+                        | Drag::FlopMatrix(_)
                         | Drag::Fader(_)
                         | Drag::Pan(_)
                         | Drag::Tempo
@@ -2003,8 +2466,19 @@ impl ApplicationHandler for WindowApp {
                 if matches!(self.drag, Drag::TimelineSelect | Drag::RollSelect) {
                     self.commit_selection();
                 }
+                // And a row carried out of the soundfont panel is acted on by
+                // **where it was let go** — see `Drag::BrowserRow`.
+                if let Drag::BrowserRow(row) = self.drag {
+                    let (x, y) = self.cursor;
+                    self.drop_browser_row(row, x, y);
+                }
                 self.drag = Drag::None;
+                self.end_edge_scroll();
+                // The press that shut a menu is spent; the next one opens it
+                // again. See `dismissed`.
+                self.dismissed = None;
                 self.knob = None;
+                self.flop_knob = None;
                 self.value_drag = None;
                 self.pointer_anchor = None;
                 if was_control {
@@ -2127,11 +2601,20 @@ impl ApplicationHandler for WindowApp {
         // create it with. First, so an editor opened by the press that just
         // ran is on screen this pass rather than next.
         self.create_pending_editors(event_loop);
+        // The activation helper's own pointer and keyboard hear every input
+        // event; handled once a pass so the serial a token carries is the
+        // click that just happened, and the queue never grows unread.
+        if let Some(activation) = &mut self.activation {
+            activation.poll();
+        }
         // The graph the audio thread handed back is freed here, on this
         // thread — see `fontelle_engine::GraphPublisher`. Cheap, and it has to
         // happen somewhere that runs whether or not a frame does.
         if let Some(doc) = &mut self.options.document {
             doc.pump();
+            // A plugin's own editor has no thread: it repaints on a timer this
+            // call fires. See `fontelle_host::gui`.
+            self.plugin_editor_open = doc.tick_plugin_editors();
         }
         self.refresh_studio();
         self.settle_audition();
@@ -2169,8 +2652,8 @@ impl WindowApp {
             // Nothing arriving: fall to the floor rather than holding the last
             // thing that played.
             for band in &mut self.spectrum {
-                *band = (*band - SPECTRUM_FALL_DB_PER_S * dt)
-                    .max(crate::canvas::SPECTRUM_BOTTOM_DB);
+                *band =
+                    (*band - SPECTRUM_FALL_DB_PER_S * dt).max(crate::canvas::SPECTRUM_BOTTOM_DB);
             }
             if self
                 .spectrum
@@ -2194,15 +2677,13 @@ impl WindowApp {
                 };
             }
         }
-        self.spectrum_points =
-            crate::canvas::spectrum_points(self.eq_layout.curve, &self.spectrum);
+        self.spectrum_points = crate::canvas::spectrum_points(self.eq_layout.curve, &self.spectrum);
         self.redraw_editor(EditorKind::Effect);
     }
 
     /// Whether an editor of this kind is open.
     fn is_editor_open(&self, kind: EditorKind) -> bool {
-        self.editors.iter().any(|e| e.kind == kind)
-            || self.pending_editors.contains(&kind)
+        self.editors.iter().any(|e| e.kind == kind) || self.pending_editors.contains(&kind)
     }
 
     /// Opens an editor window, or brings the one already open to the front.
@@ -2212,12 +2693,83 @@ impl WindowApp {
     /// handler that has it; the queue is drained at the edge of the loop where
     /// it is in hand again. See `pending_editors`.
     fn open_editor(&mut self, kind: EditorKind) {
+        // **The plugin's own editor, when it has one.**
+        //
+        // > *"shouldnt these also be showing the custom plugins own display in
+        // > their windows not a auto made one from the parameters."*
+        //
+        // Asked before the studio's own window is raised or made, so the two
+        // are never both up for one plugin. A plugin with no editor of its own
+        // — and every LV2 one in this build — answers `false` and gets the
+        // panel, which is what the panel is for.
+        if self.open_plugins_own_editor(kind) {
+            return;
+        }
         if self.raise_editor(kind) {
             return;
         }
         if !self.pending_editors.contains(&kind) {
             self.pending_editors.push(kind);
         }
+    }
+
+    /// Shows the plugin's **own** editor for whatever `kind` would have been
+    /// about, if there is a plugin there and it has one. Whether it went up.
+    fn open_plugins_own_editor(&mut self, kind: EditorKind) -> bool {
+        let insert = self.open_insert;
+        let Some(doc) = &mut self.options.document else {
+            return false;
+        };
+        // **The document's selection, not this window's copy of it.** The
+        // press that opens an instrument selects the channel first
+        // (`MenuTarget::Channel(_), 0`), and `self.selected_channel` is only
+        // refreshed by the next `refresh_studio` — so reading the cache here
+        // would open the *previously* selected channel's plugin.
+        let selected = doc.selected_channel();
+        let opened = match kind {
+            EditorKind::Instrument => doc.open_plugin_editor_for_channel(selected),
+            EditorKind::Effect => match insert {
+                Some((strip, slot)) => doc.open_plugin_editor_for_insert(strip, slot),
+                None => false,
+            },
+            EditorKind::AudioClip => false,
+        };
+        if opened {
+            // Its own window, on the desktop, drawn by the plugin — so there
+            // is nothing here to draw and nothing to say beyond where it went.
+            self.status = "the plugin's own editor is open".to_string();
+            self.tree.invalidate(BROWSER);
+        }
+        opened
+    }
+
+    /// The activation protocol, opened from the studio window the first time
+    /// it is asked for. `None` on X11, and `None` for good after one failure:
+    /// a display that did not have it a moment ago does not have it now.
+    fn activation(&mut self) -> Option<&mut crate::activation::Activation> {
+        if !self.activation_tried {
+            self.activation_tried = true;
+            if let Some(live) = &self.live {
+                self.activation = crate::activation::Activation::open(&live.window);
+            }
+        }
+        self.activation.as_mut()
+    }
+
+    /// A token the compositor will honour for bringing a window to the front,
+    /// asked for on the studio window's behalf — the window the click was in,
+    /// which is what makes the request one the compositor grants. `None`
+    /// where there is no such protocol.
+    fn activation_token(&mut self) -> Option<String> {
+        let studio = self.live.as_ref()?.window.clone();
+        let token = self.activation()?.token_from(&studio);
+        if token.is_none() {
+            // Wayland is there and the request went unanswered: worth a line
+            // on the terminal, because from the window it is indistinguishable
+            // from the compositor refusing, and the two are fixed differently.
+            eprintln!("activation: the compositor gave no token for the studio window");
+        }
+        token
     }
 
     /// Brings an already-open editor window to the front. Whether there was
@@ -2230,19 +2782,58 @@ impl WindowApp {
     /// nothing so i have to find where the window is and drag it to the front
     /// manually."*
     ///
-    /// **Two calls, because one desktop in three ignores each.**
-    /// `focus_window` is the plain answer and is what X11, Windows and macOS
-    /// take; under Wayland it is a no-op by design, because a client may not
-    /// take the focus by asking — it has to be *given* it, through an
-    /// xdg-activation token, which is what `request_user_attention` asks for.
-    /// Calling both is not belt and braces: it is the same intention spelt in
-    /// the two ways the two protocols accept, and on the desktop that does not
-    /// need one of them, that one does nothing.
+    /// **One intention, spelt every way a desktop accepts it.** Under
+    /// Wayland the only call the compositor acts on is an xdg-activation
+    /// token asked for by the active window and spent on this one — see
+    /// [`crate::activation`], and the second report: *"its still not bringing
+    /// the windows to the front for me"*, made after the calls below had been
+    /// tried alone. `focus_window` is what X11, Windows and macOS take, and
+    /// the window level is for a compositor that honours it. On the desktop
+    /// that does not need one of them, that one does nothing.
     fn raise_editor(&mut self, kind: EditorKind) -> bool {
-        let Some(editor) = self.editors.iter().find(|e| e.kind == kind) else {
+        if !self.editors.iter().any(|e| e.kind == kind) {
+            return false;
+        }
+        // **The Wayland answer, and the only one KDE takes.** A token asked
+        // for by the studio — the active window — and spent on the editor is
+        // a restack and a focus change the compositor performs itself. See
+        // `crate::activation` for why every call below this is a no-op there.
+        if let Some(token) = self.activation_token()
+            && let Some(window) = self
+                .editors
+                .iter()
+                .find(|e| e.kind == kind)
+                .map(|e| e.window.clone())
+            && let Some(activation) = self.activation()
+        {
+            activation.activate(token, &window);
+        }
+        let Some(editor) = self.editors.iter_mut().find(|e| e.kind == kind) else {
             return false;
         };
+        // **Un-minimise and un-hide first.** A window in the taskbar is not
+        // behind the studio, it is *nowhere*, and every call below is a no-op
+        // on one that is not mapped. This is the case that reads most like
+        // "clicking it does nothing".
+        editor.window.set_minimized(false);
+        editor.window.set_visible(true);
+
+        // The plain answer, and what X11, Windows and macOS take.
         editor.window.focus_window();
+
+        // Raised above the others for a moment, for a compositor that
+        // honours a window level — winit's Wayland backend does not send
+        // this at all, which is why the activation above exists. Dropped back
+        // to an ordinary window on its next frame (`draw_editor`), so nothing
+        // is left permanently on top.
+        editor
+            .window
+            .set_window_level(winit::window::WindowLevel::AlwaysOnTop);
+        editor.pinned = true;
+
+        // Last, and deliberately: on a desktop that granted one of the above
+        // this does nothing, and on one that granted none of them it flashes
+        // the task bar entry, which at least says where the window went.
         editor
             .window
             .request_user_attention(Some(winit::window::UserAttentionType::Informational));
@@ -2258,6 +2849,7 @@ impl WindowApp {
             self.pointer_window = None;
             // A gesture cannot be continued in a window that has gone.
             self.drag = Drag::None;
+            self.end_edge_scroll();
             self.knob = None;
         }
     }
@@ -2283,12 +2875,36 @@ impl WindowApp {
         event_loop: &ActiveEventLoop,
         kind: EditorKind,
     ) -> Result<(), String> {
-        let (w, h) = kind.default_size();
-        let (min_w, min_h) = kind.minimum_size();
-        let attributes = Window::default_attributes()
+        // Flopsynth's window is a different shape from the knob grid's, and
+        // which one opens is decided by what is on the channel rather than by
+        // the editor's kind — see `layout::FLOPSYNTH_SIZE`.
+        let flopsynth = kind == EditorKind::Instrument && self.flopsynth.is_some();
+        let (w, h) = if flopsynth {
+            crate::layout::FLOPSYNTH_SIZE
+        } else {
+            kind.default_size()
+        };
+        let (min_w, min_h) = if flopsynth {
+            crate::layout::FLOPSYNTH_MINIMUM
+        } else {
+            kind.minimum_size()
+        };
+        let mut attributes = Window::default_attributes()
             .with_title(self.editor_title(kind))
             .with_inner_size(winit::dpi::LogicalSize::new(w, h))
             .with_min_inner_size(winit::dpi::LogicalSize::new(min_w, min_h));
+        // **A token, taken now, while the studio is still the window the
+        // user is looking at**, in the form winit and the protocol both
+        // understand for a window being made. One is enough: a compositor
+        // keeps a token spent on a window that has not painted yet and uses
+        // it when it does (KWin's `Window::setActivationToken`), and asking
+        // for a second would only replace this one as the current token and
+        // leave it to fail. See `crate::activation`.
+        if let Some(token) = self.activation_token() {
+            use winit::platform::startup_notify::WindowAttributesExtStartupNotify;
+            attributes =
+                attributes.with_activation_token(winit::window::ActivationToken::from_raw(token));
+        }
         let window = Arc::new(
             event_loop
                 .create_window(attributes)
@@ -2341,6 +2957,7 @@ impl WindowApp {
             panel,
             title,
             scene: Scene::new(),
+            pinned: false,
         });
         self.relayout_editors();
         if let Some(editor) = self.editors.last() {
@@ -2356,6 +2973,15 @@ impl WindowApp {
     /// apart — which is exactly the complaint a tab strip had.
     fn editor_title(&self, kind: EditorKind) -> String {
         match kind {
+            // Flopsynth's window is named for what it is: "Flopsynth — Flute"
+            // rather than "Instrument — Flute", because the window is the
+            // synthesiser's and the channel's name is already the preset's.
+            EditorKind::Instrument if self.flopsynth.is_some() => {
+                match self.channels.get(self.selected_channel) {
+                    Some(channel) => format!("Flopsynth \u{2014} {}", channel.name),
+                    None => "Flopsynth".to_string(),
+                }
+            }
             EditorKind::Instrument => match self.channels.get(self.selected_channel) {
                 Some(channel) => format!("{} \u{2014} {}", kind.title(), channel.name),
                 None => kind.title().to_string(),
@@ -2385,11 +3011,21 @@ impl WindowApp {
         for (kind, body) in bodies {
             match kind {
                 EditorKind::Instrument => {
+                    // Flopsynth's window and the knob grid are laid out from
+                    // the same body; only one of them is drawn, and the host
+                    // decides which by whether it offered a Flopsynth view.
+                    self.flopsynth_layout = match &self.flopsynth {
+                        Some(view) => crate::canvas::flopsynth_layout(body, &m, view),
+                        None => crate::canvas::FlopsynthLayout {
+                            body,
+                            ..Default::default()
+                        },
+                    };
                     self.instrument_layout = match &self.instrument {
                         Some(view) => instrument_layout(body, &m, view),
                         None => InstrumentLayout {
+                            name: crate::layout::Rect::ZERO,
                             body,
-                            presets: Vec::new(),
                             keys: Vec::new(),
                             headings: Vec::new(),
                             cells: Vec::new(),
@@ -2403,8 +3039,8 @@ impl WindowApp {
                     self.insert_layout = match &self.insert_view {
                         Some(view) => instrument_layout(body, &m, view),
                         None => InstrumentLayout {
+                            name: crate::layout::Rect::ZERO,
                             body,
-                            presets: Vec::new(),
                             keys: Vec::new(),
                             headings: Vec::new(),
                             cells: Vec::new(),
@@ -2412,8 +3048,7 @@ impl WindowApp {
                         },
                     };
                     let config = self.eq.unwrap_or_default();
-                    self.eq_layout =
-                        crate::canvas::eq_layout_for(body, &m, &config, self.eq_band);
+                    self.eq_layout = crate::canvas::eq_layout_for(body, &m, &config, self.eq_band);
                     self.eq_curve = crate::canvas::eq_curve_points(&self.eq_layout, &config);
                     // And the band in hand, drawn behind the sum so a cut can
                     // be seen against the shape it is being made in.
@@ -2548,7 +3183,9 @@ impl WindowApp {
             // answer the main window gives, for the same reason.
             WindowEvent::Focused(false) => {
                 self.drag = Drag::None;
+                self.end_edge_scroll();
                 self.knob = None;
+                self.flop_knob = None;
                 if let Some(doc) = &mut self.options.document {
                     doc.end_gesture();
                 }
@@ -2593,9 +3230,26 @@ impl WindowApp {
                         position.y as f32 / 40.0
                     }
                 };
-                if kind == EditorKind::Effect && steps != 0.0 {
+                if steps != 0.0 {
                     let (x, y) = self.cursor;
-                    self.wheel_effect(x, y, steps);
+                    // A menu opened from *this* window is drawn in front of
+                    // its panel, so the wheel is the menu's before it is a
+                    // knob's — the same rule `scroll_roll` follows for the
+                    // studio's own menus, and the reason the preset list was
+                    // a hundred and twenty-eight presets you could only ever
+                    // see the top section of.
+                    if self.wheel_menu(x, y, steps) {
+                        self.redraw_editor(kind);
+                        return;
+                    }
+                    match kind {
+                        EditorKind::Effect => self.wheel_effect(x, y, steps),
+                        // *"the pitch changing should be a knob"* — a track
+                        // now, and the wheel over it is the fine way: one
+                        // semitone, one decibel, one rung of the fade ladder.
+                        EditorKind::AudioClip => self.wheel_audio_editor(x, y, steps),
+                        EditorKind::Instrument => self.wheel_flopsynth(x, y, steps),
+                    }
                 }
                 self.redraw_editor(kind);
             }
@@ -2633,12 +3287,33 @@ impl WindowApp {
     fn editor_key(&mut self, kind: EditorKind, event: &winit::event::KeyEvent) {
         use winit::keyboard::{Key, NamedKey};
 
-        if event.logical_key == Key::Named(NamedKey::Escape) {
-            self.close_editor(kind);
+        // A menu open over this window has the keyboard first — the preset
+        // drop-down filters as you type, and Escape shuts the menu rather
+        // than the window it is over. Without this, Escape on an open
+        // drop-down took the whole editor with it.
+        if self.menu.is_some() && self.menu_filter_key(event) {
+            self.redraw_editor(kind);
             return;
         }
+        if event.logical_key == Key::Named(NamedKey::Escape)
+            && let Some((target, menu)) = self.menu.as_ref()
+            && target.editor_window() == Some(kind)
+        {
+            let frame = menu.frame;
+            self.menu = None;
+            self.tree.invalidate_rect(frame);
+            self.redraw_editor(kind);
+            return;
+        }
+        // The editor's own keys next, because one of them can be Escape:
+        // the Presets page's search clears on it before the window closes on
+        // it, the way the browser's search box does.
         if self.editor_own_key(kind, event) {
             self.redraw_editor(kind);
+            return;
+        }
+        if event.logical_key == Key::Named(NamedKey::Escape) {
+            self.close_editor(kind);
             return;
         }
         if self.global_key(event) {
@@ -2665,6 +3340,14 @@ impl WindowApp {
                 }
                 _ => false,
             },
+            // Flopsynth's Presets page has a search box, and while it is
+            // showing the keyboard is its.
+            EditorKind::Instrument
+                if self.flopsynth.is_some()
+                    && self.flop_page == crate::canvas::FlopsynthPage::Presets =>
+            {
+                self.flop_search_key(event)
+            }
             EditorKind::Instrument | EditorKind::AudioClip => false,
         }
     }
@@ -2707,12 +3390,17 @@ impl WindowApp {
                         EqHit::Nothing => Pointer::Default,
                     }
                 }
-                // A row is pressed to step it, like every other row in this
-                // window.
+                // The cursor says which of the three a row is before the
+                // press does: a track is dragged sideways, a switch and a
+                // drop-down are pressed.
                 EditorKind::AudioClip => {
-                    match crate::canvas::audio_editor_hit(&self.audio_layout, x, y) {
-                        Some(crate::canvas::AudioField::Heading(_)) | None => Pointer::Default,
-                        Some(_) => Pointer::Hand,
+                    use crate::canvas::AudioControl;
+                    match crate::canvas::audio_editor_hit(&self.audio_layout, x, y)
+                        .map(crate::canvas::audio_row_control)
+                    {
+                        None | Some(AudioControl::None) => Pointer::Default,
+                        Some(AudioControl::Slider) => Pointer::ResizeX,
+                        Some(AudioControl::Switch | AudioControl::Choice) => Pointer::Hand,
                     }
                 }
             },
@@ -2734,7 +3422,20 @@ impl WindowApp {
 
     /// A press inside an editor window, routed by which editor it is.
     fn press_editor(&mut self, kind: EditorKind, button: MouseButton, x: f32, y: f32) {
+        // The bar first, whatever the window is: it is in the *header*, above
+        // the panel, so nothing else can be under the pointer there — and a
+        // press that reached the panel's hit test instead would land on
+        // whichever control happens to be nearest the top.
+        if button == MouseButton::Left && self.press_preset_bar(kind, x, y) {
+            return;
+        }
         match kind {
+            EditorKind::Instrument if self.flopsynth.is_some() => match button {
+                MouseButton::Left => self.press_flopsynth(x, y),
+                // The same rule §12.4 gives every other knob in the program:
+                // right-click makes an automation lane for it.
+                MouseButton::Right => self.press_flopsynth_menu(x, y),
+            },
             EditorKind::Instrument => match button {
                 MouseButton::Left => self.press_instrument(x, y),
                 // *"i want to be able to right click on a knob and select
@@ -2753,14 +3454,26 @@ impl WindowApp {
     /// What the pointer is over inside an editor window.
     fn update_editor_hover(&mut self, kind: EditorKind) {
         let (x, y) = self.cursor;
+        self.hover_preset_bar = Self::preset_slot(kind)
+            .zip(self.preset_bar_geometry(kind))
+            .and_then(|(slot, layout)| {
+                crate::canvas::preset_bar_hit(&layout, &self.preset_view[slot], x, y)
+                    .map(|hit| (slot, hit))
+            });
         match kind {
+            EditorKind::Instrument if self.flopsynth.is_some() => {
+                self.hover_card = match crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y) {
+                    Some(crate::canvas::FlopsynthHit::Control { card, param }) => {
+                        Some((card, param))
+                    }
+                    _ => None,
+                };
+            }
             EditorKind::Instrument => {
                 self.hover_param = instrument_hit(&self.instrument_layout, x, y);
             }
             EditorKind::Effect if self.eq.is_none() => {
                 self.hover_param = instrument_hit(&self.insert_layout, x, y);
-                self.hover_preset =
-                    crate::canvas::instrument_preset_hit(&self.insert_layout, x, y);
                 self.hover_key = crate::canvas::instrument_key_hit(&self.insert_layout, x, y);
             }
             EditorKind::Effect => {
@@ -2782,28 +3495,130 @@ impl WindowApp {
         }
     }
 
-    /// A press on the audio clip editor: a row stepped forward, or back with
-    /// Ctrl — the same pair of gestures the settings tab and the tool dialogs
-    /// use, and for the same reason.
+    /// A press on the audio clip editor, by what the row **is**.
+    ///
+    /// > *"a lot of options that could be knobs or sliders or dropdowns for
+    /// > some reason are instead shown as buttons you click to toggle through
+    /// > a list of options in order iteratively. this is really annoying."*
+    ///
+    /// Three gestures rather than one, because there are three kinds of value
+    /// on this panel and they do not behave alike (see
+    /// [`crate::canvas::AudioControl`]): a track is pressed and dragged, a
+    /// switch is clicked, and a list drops down. The wheel still steps
+    /// whatever the pointer is over, which is what a wheel over a control
+    /// should do and is how a value is moved by exactly one of its own units.
     fn press_audio_editor(&mut self, button: MouseButton, x: f32, y: f32) {
+        use crate::canvas::AudioControl;
         if button != MouseButton::Left {
             return;
         }
         let Some(field) = crate::canvas::audio_editor_hit(&self.audio_layout, x, y) else {
             return;
         };
+        match crate::canvas::audio_row_control(field) {
+            AudioControl::None => {}
+            AudioControl::Slider => {
+                // The press sets the value and the drag carries on from
+                // there, the way the mixer's fader does.
+                self.drag = Drag::AudioRow(field);
+                self.drag_audio_row(field, x);
+            }
+            AudioControl::Switch => {
+                let Some(open) = &mut self.audio_clip else {
+                    return;
+                };
+                crate::canvas::toggle_audio_row(&mut open.data, field);
+                self.write_audio_clip();
+            }
+            AudioControl::Choice => self.open_audio_menu(field),
+        }
+    }
+
+    /// One step of a track on the audio clip editor.
+    fn drag_audio_row(&mut self, field: crate::canvas::AudioField, x: f32) {
+        let Some(row) = self
+            .audio_layout
+            .rows
+            .iter()
+            .find(|(row, _)| *row == field)
+            .map(|(_, rect)| *rect)
+        else {
+            return;
+        };
+        let t = crate::canvas::audio_slider_at(row, &self.options.theme.metrics, x);
         let Some(open) = &mut self.audio_clip else {
             return;
         };
-        let direction = if self.modifiers.control_key() { -1 } else { 1 };
-        crate::canvas::nudge_audio_row(&mut open.data, field, direction, open.sample_rate);
+        crate::canvas::set_audio_row_fraction(&mut open.data, field, t);
+        self.write_audio_clip();
+    }
+
+    /// The wheel over a row: one step of whatever that row is measured in.
+    fn wheel_audio_editor(&mut self, x: f32, y: f32, steps: f32) {
+        let Some(field) = crate::canvas::audio_editor_hit(&self.audio_layout, x, y) else {
+            return;
+        };
+        let direction = if steps > 0.0 { 1 } else { -1 };
+        let Some(open) = &mut self.audio_clip else {
+            return;
+        };
+        if field == crate::canvas::AudioField::Route {
+            let tracks: Vec<Option<fontelle_types::MixerTrackId>> =
+                self.clip_routes.iter().map(|(id, _)| *id).collect();
+            crate::canvas::nudge_route(&mut open.data, direction, &tracks);
+        } else {
+            crate::canvas::nudge_audio_row(&mut open.data, field, direction, open.sample_rate);
+        }
+        self.write_audio_clip();
+    }
+
+    /// Drops `field`'s list under its row.
+    ///
+    /// Anchored to the row rather than to the pointer, because that is what a
+    /// drop-down is: the list appears where the value was, not where the hand
+    /// happened to be.
+    fn open_audio_menu(&mut self, field: crate::canvas::AudioField) {
+        let anchor = self
+            .audio_layout
+            .rows
+            .iter()
+            .find(|(row, _)| *row == field)
+            .map(|(_, rect)| {
+                crate::canvas::audio_row_control_rect(*rect, &self.options.theme.metrics)
+            })
+            .unwrap_or(crate::layout::Rect::ZERO);
+        // The window's own body, so a list too long for it is scrolled to fit
+        // rather than drawn off the bottom. No window, no menu — there is
+        // nothing for it to hang under.
+        let Some(bounds) = self
+            .editors
+            .iter()
+            .find(|e| e.kind == EditorKind::AudioClip)
+            .map(|editor| editor.panel.body)
+        else {
+            return;
+        };
+        self.open_menu(
+            MenuTarget::AudioRow(field),
+            anchor.x,
+            anchor.bottom(),
+            bounds,
+        );
+        self.redraw_editor(EditorKind::AudioClip);
+    }
+
+    /// Puts the open clip's properties back on the document, and repaints the
+    /// two places that draw them.
+    ///
+    /// The arrangement's block draws the fades and the trim, so it has to be
+    /// re-read: the picture in the window and the picture on the timeline are
+    /// the same picture.
+    fn write_audio_clip(&mut self) {
+        let Some(open) = &self.audio_clip else { return };
         let (id, data) = (open.id, open.data.clone());
         if let Some(doc) = &mut self.options.document {
             doc.set_audio_clip(id, data);
         }
-        // The arrangement's block draws the fades and the trim, so it has to
-        // be re-read: the picture in the window and the picture on the
-        // timeline are the same picture.
         self.refresh_studio();
         self.redraw_editor(EditorKind::AudioClip);
         self.tree.invalidate(TIMELINE);
@@ -2849,22 +3664,61 @@ impl WindowApp {
     /// editor that nobody is touching receives no events and draws no frames.
     fn draw_editor(&mut self, index: usize) {
         self.shape_labels();
+        // A window held above the others by `raise_editor` has now been drawn
+        // there, so it goes back to being an ordinary window. Held for a frame
+        // rather than dropped in the same breath because a compositor that
+        // batches the two calls would see no change at all, and then the raise
+        // would be the no-op it is meant to replace.
+        if let Some(editor) = self.editors.get_mut(index)
+            && editor.pinned
+        {
+            editor.pinned = false;
+            editor
+                .window
+                .set_window_level(winit::window::WindowLevel::Normal);
+        }
         let Some(editor) = self.editors.get(index) else {
             return;
         };
         let kind = editor.kind;
         let chrome = match kind {
-            EditorKind::Instrument => EditorWindowChrome::Instrument(
-                self.instrument.as_ref().map(|view| InstrumentChrome {
-                    layout: self.instrument_layout.clone(),
+            // Flopsynth draws its own window, and it is checked first: a
+            // channel that is one has both views, and the picture of the
+            // signal path is the one worth showing.
+            EditorKind::Instrument if self.flopsynth.is_some() => {
+                let Some(view) = self.flopsynth.as_ref() else {
+                    return;
+                };
+                EditorWindowChrome::Flopsynth(crate::render::FlopsynthChrome {
+                    layout: self.flopsynth_layout.clone(),
                     view,
-                    hover: self.hover_param,
-                    active: self.knob.map(|(which, _, _)| which),
-                    // The instrument panel has no presets to hover.
-                    hover_preset: None,
-                    hover_key: None,
-                }),
-            ),
+                    hover: self.hover_card,
+                    active: self.flop_knob.map(|(which, _, _)| which),
+                    modulated: self.flop_modulated.clone(),
+                    assigning: self.flop_assign,
+                    destinations: self.flop_destinations.clone(),
+                    about: self.flop_about(),
+                    hover_at: self.cursor,
+                })
+            }
+            EditorKind::Instrument => {
+                EditorWindowChrome::Instrument(self.instrument.as_ref().map(|view| {
+                    InstrumentChrome {
+                        layout: self.instrument_layout.clone(),
+                        view,
+                        hover: self.hover_param,
+                        active: self.knob.map(|(which, _, _)| which),
+                        // It does now: the drum machine's kits are chips on this
+                        // row, and a chip that does not light up under the pointer
+                        // is a chip nobody is sure is a button.
+                        hover_preset: self.hover_preset,
+                        // Still none. A detector key belongs to an *effect* — see
+                        // `InstrumentView::keys`, which is empty on every
+                        // instrument panel.
+                        hover_key: None,
+                    }
+                }))
+            }
             EditorKind::Effect if self.eq.is_none() => {
                 let Some(view) = self.insert_view.as_ref() else {
                     return;
@@ -2916,11 +3770,24 @@ impl WindowApp {
                     clip: &open.data,
                     preview,
                     sample_rate: open.sample_rate,
+                    route_label: &self.audio_route,
                     hover: self.hover_audio,
                 })
             }
         };
 
+        // Worked out before the window is borrowed mutably, because it reads
+        // the window's own header and title.
+        let preset = Self::preset_slot(kind)
+            .zip(self.preset_bar_geometry(kind))
+            .map(|(slot, layout)| crate::render::PresetBarChrome {
+                layout,
+                view: &self.preset_view[slot],
+                hover: self
+                    .hover_preset_bar
+                    .filter(|(which, _)| *which == slot)
+                    .map(|(_, hit)| hit),
+            });
         let Some(editor) = self.editors.get_mut(index) else {
             return;
         };
@@ -2932,6 +3799,7 @@ impl WindowApp {
             &self.labels,
             &editor.title,
             &chrome,
+            preset.as_ref(),
             self.menu
                 .as_ref()
                 .filter(|(target, _)| target.editor_window() == Some(kind))
@@ -3024,12 +3892,18 @@ impl WindowApp {
             self.channels.len(),
             self.rack_scroll,
         );
-        self.browser = browser_layout_for(
+        self.prefab_panel = crate::canvas::prefab_layout(
+            self.layout.rack.body,
+            m,
+            self.prefabs.len(),
+            self.prefab_scroll,
+        );
+        self.browser = browser_layout_split(
             self.layout.browser.body,
             m,
             self.browser_mode,
             match self.browser_mode {
-                BrowserMode::Sounds => self.files.len(),
+                BrowserMode::Sounds | BrowserMode::Presets => self.files.len(),
                 BrowserMode::Projects => self.projects.len(),
                 BrowserMode::Import => self.imports.len(),
                 BrowserMode::Settings => self.settings.len(),
@@ -3037,6 +3911,7 @@ impl WindowApp {
             self.presets.len(),
             self.file_scroll,
             self.preset_scroll,
+            self.browser_file_share,
         );
     }
 
@@ -3054,6 +3929,8 @@ impl WindowApp {
         }
         self.studio_revision = revision;
         self.channels = doc.channels();
+        self.rack_tab = doc.rack_tab();
+        self.prefabs = doc.prefabs();
         self.files = doc.library_files();
         self.presets = doc.library_presets();
         self.projects = doc.projects();
@@ -3065,6 +3942,31 @@ impl WindowApp {
         self.lanes = doc.lanes();
         self.clips = doc.clips();
         self.instrument = doc.instrument();
+        self.flopsynth = doc.flopsynth(self.flop_page);
+        if let Some(view) = &mut self.flopsynth {
+            view.browse = self.flop_browse.clone();
+        }
+        // Which knobs wear an arc, and which could take one. Both are asked
+        // once here, where the view has just been built, rather than per knob
+        // while the window is being drawn.
+        (self.flop_modulated, self.flop_destinations) = match &self.flopsynth {
+            Some(view) => {
+                let mut modulated = Vec::new();
+                let mut destinations = Vec::new();
+                for (card, placed) in view.cards.iter().enumerate() {
+                    for (param, control) in placed.group.params.iter().enumerate() {
+                        if let Some(route) = doc.routes_to(&control.address).last() {
+                            modulated.push(((card, param), route.depth));
+                        }
+                        if doc.is_mod_destination(&control.address) {
+                            destinations.push((card, param));
+                        }
+                    }
+                }
+                (modulated, destinations)
+            }
+            None => (Vec::new(), Vec::new()),
+        };
         // The audio editor's working copy, back from the document. It steps
         // its own numbers and writes them through, so it is normally ahead of
         // this — but an **undo** changes the clip underneath it, and an editor
@@ -3080,8 +3982,21 @@ impl WindowApp {
         self.mixer_strips = doc.mixer_strips();
         self.selected_track = doc.selected_mixer_track();
         self.track_output = doc.track_output(self.selected_track);
+        self.track_output_on = doc.track_output_on(self.selected_track);
         self.track_input = doc.track_input(self.selected_track);
         self.route_names = doc.route_names();
+        // Master first and spelled `None`, then every strip somebody made in
+        // the order the mixer draws them — the convention every route control
+        // in this window reads.
+        self.clip_routes = std::iter::once((None, crate::canvas::MASTER_ROUTE.to_string()))
+            .chain(
+                self.route_names
+                    .iter()
+                    .enumerate()
+                    .take(self.route_names.len().saturating_sub(1))
+                    .map(|(strip, name)| (doc.mixer_track_id(strip), name.clone())),
+            )
+            .collect();
         // The time selection and the play mode, from the document: a loop
         // reopens with the song, and the chip says what play will do.
         self.loop_range = doc.loop_range();
@@ -3102,6 +4017,29 @@ impl WindowApp {
         };
         self.eq = eq;
         self.insert_view = insert_view;
+        // Which insert is open is the window's own fact, and the host needs
+        // it: an effect preset clicked in the browser lands in the insert you
+        // are looking at.
+        doc.note_open_insert(self.open_insert);
+        // The bar, per window. Read here with the other lists rather than once
+        // a frame, because working out whether a device is dirty means
+        // comparing its state against a file (§P.6) and that is not a thing to
+        // do sixty times a second.
+        // The devices are worked out first, so the borrow of `doc` below does
+        // not overlap the read of `self.open_insert` that names them.
+        let devices = [
+            self.preset_device(EditorKind::Instrument),
+            self.preset_device(EditorKind::Effect),
+        ];
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        for (slot, device) in devices.into_iter().enumerate() {
+            self.preset_view[slot] = match device {
+                Some(device) => doc.preset_bar(device),
+                None => crate::canvas::PresetBarView::default(),
+            };
+        }
         if self.eq.is_none() && self.insert_view.is_none() {
             self.open_insert = None;
         }
@@ -3116,6 +4054,7 @@ impl WindowApp {
         self.import_kind = doc.import_kind();
         let fallback = match self.browser_mode {
             BrowserMode::Sounds => doc.library_status(),
+            BrowserMode::Presets => doc.preset_status(),
             BrowserMode::Projects => doc.project_status(),
             BrowserMode::Import => doc.import_status(),
             BrowserMode::Settings => doc.settings_status(),
@@ -3140,9 +4079,16 @@ impl WindowApp {
         // to `len - 1` leaves a full panel showing one channel. It is also
         // what makes `usize::MAX` mean "scroll to the end", which is how a
         // newly added channel is brought into view.
-        self.rack_scroll = self
-            .rack_scroll
-            .min(self.channels.len().saturating_sub(self.rack.capacity.max(1)));
+        self.rack_scroll = self.rack_scroll.min(
+            self.channels
+                .len()
+                .saturating_sub(self.rack.capacity.max(1)),
+        );
+        self.prefab_scroll = self.prefab_scroll.min(
+            self.prefabs
+                .len()
+                .saturating_sub(self.prefab_panel.capacity.max(1)),
+        );
         // The master is pinned outside the scrolling half, so the offset is
         // clamped against the tracks that actually scroll.
         self.mixer_scroll = self
@@ -3163,6 +4109,9 @@ impl WindowApp {
     /// string it will look up has to be in [`Labels`] first. Cached, so this is
     /// a few dozen hash lookups on a frame where nothing new appeared.
     fn shape_labels(&mut self) {
+        // This pass is the frame, as far as the cache is concerned: what it
+        // shapes from here on is kept whatever else has to go.
+        self.labels.begin_frame();
         let font = self.options.theme.font.clone();
         let want = |labels: &mut Labels, text: &mut TextContext, s: &str| {
             labels.ensure(s, &font, text);
@@ -3179,12 +4128,76 @@ impl WindowApp {
             "S",
             "M",
             ARRANGEMENT,
+            crate::render::RECORDING,
             EMPTY_LANE,
             TAB_ROLL,
             TAB_MIXER,
             NO_INSTRUMENT,
+            crate::render::SAVE,
+            crate::render::SAVE_AS,
+            crate::canvas::NO_PRESET,
+            crate::render::MATRIX_HEADING,
+            crate::render::NO_ROUTES,
         ] {
             want(&mut self.labels, &mut self.text, fixed);
+        }
+        for page in crate::canvas::FlopsynthPage::ALL {
+            want(&mut self.labels, &mut self.text, page.label());
+        }
+        if let Some(view) = &self.flopsynth {
+            let voices = crate::render::voice_count_label(view.voices);
+            want(&mut self.labels, &mut self.text, &voices);
+        }
+        // The Modulation page's badges and matrix rows, which are the source
+        // and destination names the host worked out.
+        if let Some(view) = self.flopsynth.clone() {
+            for name in &view.sources {
+                want(&mut self.labels, &mut self.text, name);
+            }
+            for route in &view.routes {
+                want(&mut self.labels, &mut self.text, &route.source);
+                want(&mut self.labels, &mut self.text, &route.destination);
+            }
+            // The cards' captions and read-outs, at the small size Flopsynth
+            // draws them; the card names at the chrome's.
+            for card in &view.cards {
+                want(&mut self.labels, &mut self.text, &card.group.name);
+                for param in &card.group.params {
+                    self.labels
+                        .ensure_small(&param.label, &font, &mut self.text);
+                    self.labels
+                        .ensure_small(&param.display, &font, &mut self.text);
+                }
+            }
+            // The Presets page: every row, every shelf, the search box's
+            // caption and the About column.
+            for preset in &view.bank {
+                want(&mut self.labels, &mut self.text, &preset.name);
+                // The category tag a row wears on the shelves that mix
+                // categories.
+                self.labels
+                    .ensure_small(&preset.category, &font, &mut self.text);
+            }
+            for shelf in crate::canvas::preset_shelves(&view.bank) {
+                want(&mut self.labels, &mut self.text, &shelf.label());
+            }
+            let search = crate::render::search_caption(&view.browse.query);
+            want(&mut self.labels, &mut self.text, &search);
+            for line in self.flop_about() {
+                want(&mut self.labels, &mut self.text, &line);
+            }
+            for fixed in [crate::render::NO_PRESETS_MATCH, crate::render::MINE_TAG] {
+                self.labels.ensure_small(fixed, &font, &mut self.text);
+            }
+            want(&mut self.labels, &mut self.text, crate::canvas::ADD_EFFECT);
+        }
+        // Each window's preset name and category, `*` and all — two short
+        // strings per window, shaped where every other caption is.
+        for slot in 0..self.preset_view.len() {
+            let name = crate::canvas::preset_bar_name(&self.preset_view[slot]);
+            let category = self.preset_view[slot].category.clone();
+            want(&mut self.labels, &mut self.text, &name);
+            want(&mut self.labels, &mut self.text, &category);
         }
         // Every tab's caption and every mode's search hint, from the one list
         // of modes — see `BrowserMode::ALL`. Written out by hand, this is
@@ -3202,15 +4215,28 @@ impl WindowApp {
                 want(&mut self.labels, &mut self.text, property.label());
             }
         }
+        // Worked out here, where both the clip and the route list are in
+        // hand, and kept: the chrome takes a `&str`, and the name is also one
+        // of the strings that has to be shaped below.
+        self.audio_route = match &self.audio_clip {
+            Some(open) => self.clip_route_label(open.data.mixer_track),
+            None => String::new(),
+        };
         if let Some(open) = &self.audio_clip {
             // Cloned out first: `want` borrows `self.labels` and `self.text`
             // mutably, and the captions are read through `self.audio_clip`.
+            let route = self.audio_route.clone();
             let captions: Vec<String> = crate::canvas::AUDIO_ROWS
                 .iter()
                 .flat_map(|field| {
                     [
                         crate::canvas::audio_row_label(*field).to_string(),
-                        crate::canvas::audio_row_value_at(&open.data, *field, open.sample_rate),
+                        crate::canvas::audio_row_value_at(
+                            &open.data,
+                            *field,
+                            open.sample_rate,
+                            &route,
+                        ),
                     ]
                 })
                 .filter(|caption| !caption.is_empty())
@@ -3236,8 +4262,11 @@ impl WindowApp {
         if let Some((_, menu)) = &self.menu {
             // Cloned out first: `want` borrows `self.labels` and `self.text`
             // mutably, and the entries live behind `self.menu`.
-            let captions: Vec<String> =
-                menu.entries.iter().map(|entry| entry.label.clone()).collect();
+            let captions: Vec<String> = menu
+                .entries
+                .iter()
+                .map(|entry| entry.label.clone())
+                .collect();
             for caption in captions {
                 want(&mut self.labels, &mut self.text, &caption);
             }
@@ -3246,10 +4275,14 @@ impl WindowApp {
         // `Labels`, like the position read-out beside them: a tempo that is
         // being dragged never repeats a string, and caching one that never
         // repeats is a leak.
-        if self.shaped_tempo != self.tempo {
-            let tempo = format_tempo(self.tempo);
+        // What the box *shows* is the tempo in force at the playhead — a
+        // tempo lane bends it — while what a drag edits stays the document's
+        // own. See `tempo_showing`.
+        let showing = self.tempo_showing();
+        if self.shaped_tempo != showing {
+            let tempo = format_tempo(showing);
             self.tempo_text = self.text.layout(&tempo, &font, None);
-            self.shaped_tempo = self.tempo;
+            self.shaped_tempo = showing;
         }
         let beats = self.beats_per_bar();
         if self.shaped_beats != beats {
@@ -3296,12 +4329,6 @@ impl WindowApp {
             want(&mut self.labels, &mut self.text, crate::render::ADD_SEND);
             want(&mut self.labels, &mut self.text, crate::render::SEND_PRE);
             want(&mut self.labels, &mut self.text, crate::render::SEND_POST);
-            // The effect menu's rows. Shaped whether or not it is open: the
-            // names are two short words and the menu has to be readable on the
-            // first frame it appears.
-            for kind in fontelle_types::EffectKind::ALL {
-                want(&mut self.labels, &mut self.text, kind.label());
-            }
             want(&mut self.labels, &mut self.text, crate::render::GRIP);
             want(&mut self.labels, &mut self.text, crate::render::REMOVE);
             let output = self.output_caption();
@@ -3344,6 +4371,8 @@ impl WindowApp {
         want(&mut self.labels, &mut self.text, &ghost_caption);
         let lane_caption = crate::canvas::lane_caption(self.roll.lane_property);
         want(&mut self.labels, &mut self.text, &lane_caption);
+        let snap_caption = crate::canvas::snap_caption(self.roll.view.snap);
+        want(&mut self.labels, &mut self.text, &snap_caption);
         let tools_caption = crate::canvas::tools_caption();
         want(&mut self.labels, &mut self.text, &tools_caption);
         // Both, not only the one that is on, for the reason the two key
@@ -3359,12 +4388,15 @@ impl WindowApp {
         // Both, not only the one that is on: the chip is pressed and the other
         // caption is what it draws next, and shaping it on the frame after
         // would draw an empty chip for one frame.
-        for style in [crate::canvas::KeyStyle::Piano, crate::canvas::KeyStyle::Names] {
+        for style in [
+            crate::canvas::KeyStyle::Piano,
+            crate::canvas::KeyStyle::Names,
+        ] {
             want(&mut self.labels, &mut self.text, style.label());
         }
         for (control, _) in &self.roll_bar.items {
             let caption = match control {
-                RollControl::Snap => self.roll.view.snap.label(),
+                RollControl::Snap => &snap_caption,
                 RollControl::Lane => &lane_caption,
                 RollControl::Ghost => &ghost_caption,
                 RollControl::Tools => &tools_caption,
@@ -3388,6 +4420,19 @@ impl WindowApp {
             want(&mut self.labels, &mut self.text, &tip);
         }
 
+        // The panel's tab captions and the prefab list's, whichever tab is
+        // showing: the strip is drawn either way.
+        for tab in crate::document::RackTab::ALL {
+            want(&mut self.labels, &mut self.text, tab.label());
+        }
+        want(&mut self.labels, &mut self.text, crate::render::ADD_PREFAB);
+        for row in &self.prefab_panel.rows {
+            if let Some(prefab) = self.prefabs.get(row.index) {
+                self.labels.ensure(&prefab.name, &font, &mut self.text);
+                let caption = crate::render::prefab_uses_label(prefab.uses);
+                self.labels.ensure(&caption, &font, &mut self.text);
+            }
+        }
         for row in &self.rack.rows {
             if let Some(channel) = self.channels.get(row.index) {
                 self.labels.ensure(&channel.name, &font, &mut self.text);
@@ -3450,7 +4495,7 @@ impl WindowApp {
         let rows: Vec<usize> = self.browser.file_rows.iter().map(|(i, _)| *i).collect();
         for index in rows {
             let entry = match self.browser_mode {
-                BrowserMode::Sounds => self.files.get(index).cloned(),
+                BrowserMode::Sounds | BrowserMode::Presets => self.files.get(index).cloned(),
                 BrowserMode::Projects => self.projects.get(index).cloned(),
                 BrowserMode::Import => self.imports.get(index).cloned(),
                 BrowserMode::Settings => self.settings.get(index).cloned(),
@@ -3518,7 +4563,7 @@ impl WindowApp {
             // caption nobody shaped draws as nothing, which is a row of empty
             // chips — a defect this file has already recorded once, on the
             // editor titles.
-            for name in view.presets.iter().chain(view.keys.iter()) {
+            for name in view.keys.iter() {
                 self.labels.ensure(name, &font, &mut self.text);
             }
             for group in &view.groups {
@@ -3531,10 +4576,12 @@ impl WindowApp {
         }
 
         // The arrangement's toolbar. Its snap chip says its division, which
-        // changes, so it is shaped from the live value rather than once.
+        // changes, so it is shaped from the live value rather than once — and
+        // with a caret on it, because it drops a list.
+        let timeline_snap = crate::canvas::snap_caption(self.timeline.view.snap);
         for (control, _) in &self.timeline_bar.items {
             let caption = match control {
-                crate::canvas::TimelineControl::Snap => self.timeline.view.snap.label(),
+                crate::canvas::TimelineControl::Snap => &timeline_snap,
                 other => other.label(),
             };
             self.labels.ensure(caption, &font, &mut self.text);
@@ -3551,9 +4598,7 @@ impl WindowApp {
                 if let Some(name) = self.key_map.name(key.clamp(0, 127) as u8) {
                     let name = name.to_string();
                     self.labels.ensure(&name, &font, &mut self.text);
-                } else if key % 12 == 0
-                    || self.key_style == crate::canvas::KeyStyle::Names
-                {
+                } else if key % 12 == 0 || self.key_style == crate::canvas::KeyStyle::Names {
                     // Every row is named in the list view, falling back to the
                     // note where the instrument has nothing of its own to say —
                     // that is what makes it a list rather than a keyboard with
@@ -3587,6 +4632,13 @@ impl WindowApp {
     /// One press, routed to whichever panel it landed in.
     fn press(&mut self, button: winit::event::MouseButton, x: f32, y: f32) {
         self.drag = Drag::None;
+        self.end_edge_scroll();
+        // A press outside the soundfont panel hands the arrow keys back to the
+        // notes and clips. `press_browser` puts the focus back on straight
+        // after, so clicking a preset row keeps it.
+        if !self.layout.browser.frame.contains(x, y) && self.preset_focus.take().is_some() {
+            self.tree.invalidate(BROWSER);
+        }
 
         // Whatever the pointer was explaining, it is explaining it about a
         // window that is about to change: a menu opened by a press would be
@@ -3627,10 +4679,6 @@ impl WindowApp {
             self.press_send_menu(x, y);
             return;
         }
-        if self.effect_menu.is_some() {
-            self.press_effect_menu(x, y);
-            return;
-        }
 
         // A press anywhere ends a rename, for the reason the search box gives
         // its keyboard back further down: a window whose keyboard is stuck in
@@ -3643,9 +4691,10 @@ impl WindowApp {
             if let Some(doc) = &mut self.options.document {
                 doc.end_gesture();
             }
-            self.tree.invalidate(RACK);
-            self.tree.invalidate(TIMELINE);
-            self.tree.invalidate(BROWSER);
+            // Every panel a name is typed in, the mixer included — a press in
+            // the rack that ends a rename in the mixer has to take the caret
+            // off the strip it was on.
+            self.invalidate_names();
         }
 
         // The transport bar first: it is the only thing above the panels.
@@ -3749,22 +4798,7 @@ impl WindowApp {
         if let Some(tab) = editor_tab_at(&self.tabs, x, y)
             && button == MouseButton::Left
         {
-            if self.tab != tab {
-                self.tab = tab;
-                // Nothing reads a track's meter while the mixer is hidden, and
-                // a peak is the highest **since the last read** — so the first
-                // frame of the tab would otherwise show the loudest moment
-                // since it was last open, and then fall. Drain once and throw
-                // it away.
-                if tab == EditorTab::Mixer
-                    && let Some(doc) = &mut self.options.document
-                {
-                    doc.mixer_peaks();
-                    self.mixer_peaks.clear();
-                }
-                self.relayout_panels();
-                self.tree.invalidate(PANEL);
-            }
+            self.show_tab(tab);
             return;
         }
         // Everything below is the editor, so the keyboard is now its.
@@ -3861,11 +4895,45 @@ impl WindowApp {
         self.press_roll(button, x, y);
     }
 
+    /// How far the view should travel this step because the pointer is being
+    /// held off the edge of `grid`.
+    ///
+    /// **Against the clock, not against the event.** The rate says pixels per
+    /// second (`edge_scroll_rate`) and this charges it for the time since the
+    /// last step, so a gaming mouse reporting a thousand times a second and a
+    /// cheap one reporting a hundred carry the drag the same distance —
+    /// *"when i drag things they often go wayyyy off into infinity ... with
+    /// the slightest mouse movement"* was the mouse's report rate being the
+    /// speed control.
+    fn edge_scroll_step(
+        &mut self,
+        view: &crate::canvas::RollView,
+        grid: crate::layout::Rect,
+    ) -> (fontelle_types::Tick, i32) {
+        let now = std::time::Instant::now();
+        let dt = match self.edge_scroll_at.replace(now) {
+            Some(then) => now.duration_since(then).as_secs_f32(),
+            // The first move of a gesture has no time behind it, so it is
+            // worth nothing — the scroll begins on the second.
+            None => return (0, 0),
+        };
+        let (x, y) = self.cursor;
+        let rate = edge_scroll_rate(view, grid, x, y);
+        self.edge_scroll.step(rate, dt)
+    }
+
+    /// Ends an edge scroll: the clock and the part-tick both go.
+    fn end_edge_scroll(&mut self) {
+        self.edge_scroll.reset();
+        self.edge_scroll_at = None;
+    }
+
     /// One pointer move, sent to whatever the press decided this drag is.
     fn drag_pointer(&mut self) {
         let (x, y) = self.cursor;
         match self.drag {
             Drag::None => {}
+            Drag::MenuScroll => self.drag_menu_scroll(y),
             Drag::Roll => self.drag_roll(),
             Drag::Lane => self.drag_lane(),
             Drag::LaneGrip => self.drag_lane_grip(y),
@@ -3877,7 +4945,26 @@ impl WindowApp {
             Drag::Divider => self.drag_divider(y),
             Drag::SidebarSeam => self.drag_sidebar_seam(x),
             Drag::SidebarSplit => self.drag_sidebar_split(y),
+            Drag::BrowserSplit => self.drag_browser_split(y),
+            // Carried, not acted on: what it means is decided by where it is
+            // let go.
+            Drag::BrowserRow(_) => {}
             Drag::Knob => self.drag_knob(y),
+            Drag::FlopKnob => self.drag_flop_knob(y),
+            Drag::FlopWave(card) => self.drag_flop_wave(card, x),
+            Drag::FlopResponse(card) => self.drag_flop_response(card, x, y),
+            Drag::FlopEnvNode => self.drag_flop_env_node(x, y),
+            Drag::FlopRing => self.drag_flop_ring(y),
+            Drag::FlopMatrix(index) => self.drag_flop_matrix(index, x),
+            // The badge follows the pointer, and the knobs light up behind it.
+            Drag::FlopAssign => {
+                if let Some((_, at)) = &mut self.flop_assign {
+                    *at = (x, y);
+                }
+                self.tree.invalidate(PANEL);
+                self.redraw_editors();
+            }
+            Drag::AudioRow(field) => self.drag_audio_row(field, x),
             Drag::InsertKnob => self.drag_insert_knob(y),
             Drag::Fader(strip) => self.drag_fader(strip, y),
             Drag::EqHandle(band) => self.drag_eq(band, x, y),
@@ -3947,7 +5034,17 @@ impl WindowApp {
             // reached. The name row and the strip's own body both do it: a
             // strip you have to aim at a 22-pixel caption to choose is one
             // nobody realises they can choose at all.
-            MixerHit::Name(strip) | MixerHit::Strip(strip) => self.select_track(strip),
+            // *"i want to be able to click on their name to type in that
+            // field."* The first click chooses the strip and a click on the
+            // name of the one already chosen starts typing — see
+            // `canvas::name_press`, which is where that rule lives.
+            MixerHit::Name(strip) => match crate::canvas::name_press(strip, self.selected_track) {
+                crate::canvas::NamePress::Rename => {
+                    self.start_rename(MenuTarget::MixerTrack(strip))
+                }
+                crate::canvas::NamePress::Select => self.select_track(strip),
+            },
+            MixerHit::Strip(strip) => self.select_track(strip),
             // *"a plus where you can add a new track there"* — and the new
             // track is selected, because it is the one you are about to put
             // something on.
@@ -3969,6 +5066,12 @@ impl WindowApp {
     /// The master has no name of its own in `route_names` beyond being last in
     /// it, which is the same convention the rack's route chip reads.
     fn output_caption(&self) -> String {
+        // A track that goes nowhere says so rather than naming where it would
+        // go if it were connected — which would be a row that reads exactly
+        // like an audible track and a mix you cannot explain.
+        if !self.track_output_on {
+            return crate::render::output_label(crate::canvas::NO_OUTPUT);
+        }
         let name = match self.track_output {
             Some(index) => self.route_names.get(index).cloned(),
             None => self.route_names.last().cloned(),
@@ -3986,6 +5089,23 @@ impl WindowApp {
             Some(name) => format!("In: {name}"),
             None => "In: none".to_string(),
         }
+    }
+
+    /// The selected strip's mute or solo, from the keyboard.
+    ///
+    /// The same two document calls the switches on the strip make, so a
+    /// keypress and a click are one edit rather than two paths that can drift
+    /// — see `press_mixer`.
+    fn toggle_selected_track(&mut self, key: crate::canvas::MixerKey) {
+        let strip = self.selected_track;
+        if let Some(doc) = &mut self.options.document {
+            match key {
+                crate::canvas::MixerKey::Mute => doc.toggle_track_mute(strip),
+                crate::canvas::MixerKey::Solo => doc.toggle_track_solo(strip),
+            }
+        }
+        self.refresh_title();
+        self.tree.invalidate(PANEL);
     }
 
     /// Points the mixer — and the track-options column with it — at `strip`.
@@ -4059,10 +5179,10 @@ impl WindowApp {
                 self.drag = Drag::InsertRow;
                 self.insert_drag = Some((slot, slot));
             }
-            // A rename needs a text field, and the panel has none yet. Naming
-            // it here rather than leaving the row inert: the row selects the
-            // track, which is what a press on a title should do anyway.
-            OptionsHit::Rename => self.select_track(strip),
+            // The column is already about this track, so there is nothing
+            // for a press on its title to choose: it types. The one place in
+            // the mixer where renaming is a single click from anywhere.
+            OptionsHit::Rename => self.start_rename(MenuTarget::MixerTrack(strip)),
 
             // --- the sends (§13.2) ---
             OptionsHit::AddSend => self.open_send_menu(None),
@@ -4102,39 +5222,44 @@ impl WindowApp {
         }
     }
 
-    /// Drops the menu of effects that can go on a track.
+    /// Drops the menu of effects that can go on a track, from the row that
+    /// asked for one.
     ///
-    /// One list, from `EffectKind::ALL` — a new effect appears here by
-    /// existing rather than by somebody remembering a second place.
+    /// A right-click menu like every other now, rather than a menu of its own:
+    /// its rows come from [`crate::canvas::effect_menu_rows`], so the
+    /// favourites go first and a starred plugin effect is one press away.
     fn open_effect_menu(&mut self, strip: usize, anchor: crate::layout::Rect) {
         if anchor.is_empty() {
             return;
         }
-        self.effect_menu = Some((
-            strip,
-            crate::canvas::effect_menu_layout(
-                anchor,
-                self.layout.panel.body,
-                &self.options.theme.metrics,
-            ),
-        ));
-        self.tree.invalidate(PANEL);
+        self.scan_for_starred_plugins();
+        let bounds = self.layout.window;
+        self.open_menu(
+            MenuTarget::AddEffect(strip),
+            anchor.x,
+            anchor.bottom(),
+            bounds,
+        );
     }
 
-    /// A press while the effect menu is open. Anywhere but a row shuts it.
-    fn press_effect_menu(&mut self, x: f32, y: f32) {
-        let Some((strip, menu)) = self.effect_menu.take() else {
+    /// Looks for plugins once, if any of the favourites is one.
+    ///
+    /// A starred plugin is offered straight from the *+ fx* and *New
+    /// instrument* menus, and it can only be offered if the machine has been
+    /// searched. The picker searches when it opens; these menus search when
+    /// they have a reason to, so a person who never starred a plugin never
+    /// waits for a scan they did not ask for.
+    fn scan_for_starred_plugins(&mut self) {
+        let Some(doc) = &mut self.options.document else {
             return;
         };
-        self.tree.invalidate(PANEL);
-        let Some(kind) = crate::canvas::effect_menu_hit(&menu, x, y) else {
-            return;
-        };
-        if let Some(doc) = &mut self.options.document {
-            doc.add_insert(strip, kind);
+        if doc
+            .favorites()
+            .iter()
+            .any(|favorite| matches!(favorite, fontelle_types::Favorite::Plugin(_)))
+        {
+            doc.scan_plugins_once();
         }
-        self.refresh_studio();
-        self.refresh_title();
     }
 
     /// Drops the menu of everywhere a send could go.
@@ -4197,6 +5322,9 @@ impl WindowApp {
                 doc.select_mixer_track(strip);
                 made
             }
+            // `route_menu_layout_excluding` never offers it — a send with
+            // nowhere to go is a send to delete.
+            RouteChoice::Off => return,
         };
         // Re-pointing an existing send is a delete and a make: `Send::target`
         // has no command of its own, and one that only changed the target
@@ -4274,7 +5402,7 @@ impl WindowApp {
         let Some(options) = self.mixer.options.clone() else {
             return;
         };
-        self.output_menu = Some(crate::canvas::route_menu_layout_excluding(
+        self.output_menu = Some(crate::canvas::output_menu_layout(
             options.output,
             self.layout.panel.body,
             &self.options.theme.metrics,
@@ -4298,8 +5426,20 @@ impl WindowApp {
             return;
         };
         match choice {
-            RouteChoice::Master => doc.set_track_output(strip, None),
-            RouteChoice::Track(index) => doc.set_track_output(strip, Some(index)),
+            // Choosing a destination **connects** it as well as naming it, or
+            // picking "Master" on a track that was switched off would look
+            // like a menu that did nothing. See `MixerTrack::output_on`.
+            RouteChoice::Master => {
+                doc.set_track_output(strip, None);
+                doc.set_track_output_on(strip, true);
+            }
+            RouteChoice::Track(index) => {
+                doc.set_track_output(strip, Some(index));
+                doc.set_track_output_on(strip, true);
+            }
+            // *"if i chose to not route it to master."* The destination is
+            // kept, so switching it back on puts the track where it was.
+            RouteChoice::Off => doc.set_track_output_on(strip, false),
             RouteChoice::New => {
                 // "I need a drum bus and this goes into it", in one gesture.
                 // The new track lands before the master, so its index is the
@@ -4310,6 +5450,7 @@ impl WindowApp {
                 // the strip that was selected when the menu was opened.
                 doc.select_mixer_track(strip);
                 doc.set_track_output(strip, Some(index));
+                doc.set_track_output_on(strip, true);
             }
         }
         self.refresh_studio();
@@ -4520,15 +5661,32 @@ impl WindowApp {
     /// coordinates would catch whatever notes happened to be under the same
     /// numbers.
     fn release_controls(&mut self) {
+        // A badge let go over a knob is where a route is made (§8.4) — the
+        // *release* and not the press, because a drag that has not been let go
+        // is a drag somebody can still call off by moving away.
+        if matches!(self.drag, Drag::FlopAssign) {
+            let (x, y) = self.cursor;
+            self.drop_flop_assign(x, y);
+        }
+        self.flop_assign = None;
+        self.flop_node = None;
+        self.flop_ring = None;
         // A band or point drag coalesces into one history entry while it
         // runs; this is what tells the document it has stopped, the same
         // handshake a note drag has.
-        if matches!(self.drag, Drag::EqHandle(_))
+        // A band, a point or an audio clip's track: each coalesces into one
+        // history entry while it runs, and this is what tells the document it
+        // has stopped — the same handshake a note drag has. Without it the
+        // next unrelated change to the clip would merge into the drag and
+        // one Ctrl+Z would take both back.
+        if matches!(self.drag, Drag::EqHandle(_) | Drag::AudioRow(_))
             && let Some(doc) = &mut self.options.document
         {
             doc.end_gesture();
         }
         self.drag = Drag::None;
+        self.end_edge_scroll();
+        self.dismissed = None;
         self.knob = None;
         self.insert_knob = None;
         self.value_drag = None;
@@ -4880,8 +6038,12 @@ impl WindowApp {
                     return;
                 };
                 match field {
-                    EqField::Freq => value.freq_hz = crate::canvas::eq_nudge_freq(value.freq_hz, steps),
-                    EqField::Gain => value.gain_db = crate::canvas::eq_nudge_gain(value.gain_db, steps),
+                    EqField::Freq => {
+                        value.freq_hz = crate::canvas::eq_nudge_freq(value.freq_hz, steps)
+                    }
+                    EqField::Gain => {
+                        value.gain_db = crate::canvas::eq_nudge_gain(value.gain_db, steps)
+                    }
                     EqField::Q => value.q = crate::canvas::eq_nudge_q(value.q, steps),
                     EqField::Type => {
                         value.band_type =
@@ -5028,6 +6190,191 @@ impl WindowApp {
 
     // ------------------------------------------------- the instrument editor ---
 
+    // ---------------------------------------------------- the preset bar ---
+
+    /// Which device the editor window of `kind` is showing, when it is showing
+    /// one a preset can be loaded onto.
+    ///
+    /// The audio clip editor is `None` and always will be: its subject is a
+    /// *clip*, and a clip is not a device — it has no state a preset could be.
+    fn preset_device(&self, kind: EditorKind) -> Option<crate::canvas::PresetDevice> {
+        match kind {
+            EditorKind::Instrument => Some(crate::canvas::PresetDevice::Instrument),
+            EditorKind::Effect => self
+                .open_insert
+                .map(|(strip, slot)| crate::canvas::PresetDevice::Insert { strip, slot }),
+            EditorKind::AudioClip => None,
+        }
+    }
+
+    /// Where this window keeps its bar's view: the instrument window's is 0,
+    /// the effect window's is 1.
+    fn preset_slot(kind: EditorKind) -> Option<usize> {
+        match kind {
+            EditorKind::Instrument => Some(0),
+            EditorKind::Effect => Some(1),
+            EditorKind::AudioClip => None,
+        }
+    }
+
+    /// Where the bar's controls are in this window's header.
+    ///
+    /// Recomputed rather than kept, because it depends on how wide the
+    /// window's *title* came out — and that changes whenever the channel is
+    /// renamed, which is exactly what loading a preset does.
+    fn preset_bar_geometry(&self, kind: EditorKind) -> Option<crate::canvas::PresetBarLayout> {
+        let slot = Self::preset_slot(kind)?;
+        let editor = self.editors.iter().find(|e| e.kind == kind)?;
+        Some(crate::canvas::preset_bar_layout(
+            editor.panel.header,
+            // The title, plus the padding either side of it, plus a gap: the
+            // bar starts where the name has finished rather than on top of it.
+            self.options.theme.metrics.panel_padding * 2.0 + editor.title.width + 12.0,
+            &self.preset_view[slot],
+            &self.options.theme.metrics,
+        ))
+    }
+
+    /// The preset drop-down's rows for one window, and what each one means.
+    ///
+    /// A pair, like every other menu here (`favorites.rs`): the window builds
+    /// the menu from one half and answers a press from the other, so the two
+    /// cannot come to disagree about which row was the pad.
+    fn preset_menu_rows(
+        &self,
+        kind: EditorKind,
+    ) -> (
+        Vec<crate::canvas::MenuEntry>,
+        Vec<crate::canvas::PresetMenuRow>,
+    ) {
+        let choices = match (self.preset_device(kind), self.options.document.as_ref()) {
+            (Some(device), Some(doc)) => doc.preset_choices(device),
+            _ => Vec::new(),
+        };
+        crate::canvas::preset_menu(&choices, &self.menu_filter)
+    }
+
+    fn preset_categories_for(&self, kind: EditorKind) -> Vec<String> {
+        match (self.preset_device(kind), self.options.document.as_ref()) {
+            (Some(device), Some(doc)) => doc.preset_categories(device),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Finishes a "Save as…": the name and the category are both in hand.
+    fn finish_save_as(&mut self, kind: EditorKind, category: &str) {
+        let Some((_, name)) = self.pending_save_as.take() else {
+            return;
+        };
+        if let (Some(device), Some(doc)) =
+            (self.preset_device(kind), self.options.document.as_mut())
+        {
+            doc.save_preset_as(device, &name, category);
+        }
+        self.after_preset_change();
+    }
+
+    /// A press on the bar. `true` when it was one.
+    fn press_preset_bar(&mut self, kind: EditorKind, x: f32, y: f32) -> bool {
+        use crate::canvas::PresetBarHit;
+        let (Some(slot), Some(layout), Some(device)) = (
+            Self::preset_slot(kind),
+            self.preset_bar_geometry(kind),
+            self.preset_device(kind),
+        ) else {
+            return false;
+        };
+        let Some(hit) = crate::canvas::preset_bar_hit(&layout, &self.preset_view[slot], x, y)
+        else {
+            return false;
+        };
+        match hit {
+            PresetBarHit::Previous | PresetBarHit::Next => {
+                let delta = match hit {
+                    PresetBarHit::Previous => -1,
+                    _ => 1,
+                };
+                if let Some(doc) = &mut self.options.document {
+                    doc.step_preset(device, delta);
+                }
+                self.after_preset_change();
+            }
+            // Both open the same list: "show me the others like this" and
+            // "show me the list" are the same list.
+            PresetBarHit::Name | PresetBarHit::Category => {
+                let bounds = self
+                    .editors
+                    .iter()
+                    .find(|e| e.kind == kind)
+                    .map(|e| e.panel.frame)
+                    .unwrap_or(self.layout.window);
+                self.open_menu(MenuTarget::PresetMenu(kind), x, y, bounds);
+            }
+            PresetBarHit::Star => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.toggle_preset_favorite(device);
+                }
+                self.after_preset_change();
+            }
+            PresetBarHit::Save => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.save_preset(device);
+                }
+                self.after_preset_change();
+            }
+            PresetBarHit::SaveAs => {
+                let seed = self.preset_view[slot].name.clone().unwrap_or_default();
+                self.ask_in_editor(MenuTarget::PresetSaveName(kind), kind, seed);
+            }
+        }
+        true
+    }
+
+    /// Opens a prompt or a list **in an editor window**, in the middle of it.
+    ///
+    /// `ask_for_a_name`'s reasoning, one window along: the two gestures that
+    /// reach this are a button in a header and a key, and a prompt that
+    /// appeared under the pointer for one and in the middle for the other
+    /// would be two different features.
+    fn ask_in_editor(&mut self, target: MenuTarget, kind: EditorKind, seed: String) {
+        self.dismissed = None;
+        let bounds = self
+            .editors
+            .iter()
+            .find(|e| e.kind == kind)
+            .map(|e| e.panel.frame)
+            .unwrap_or(self.layout.window);
+        let (x, y) = (
+            bounds.x + bounds.width / 2.0,
+            bounds.y + bounds.height / 3.0,
+        );
+        self.open_menu(target, x, y, bounds);
+        if self.menu.is_some() && !seed.is_empty() {
+            self.menu_filter = seed;
+            self.relayout_menu();
+        }
+    }
+
+    /// After anything that loads, saves or stars a preset: the document moved,
+    /// the bar has to be read again, and both windows redraw.
+    fn after_preset_change(&mut self) {
+        self.studio_revision = u64::MAX;
+        self.refresh_studio();
+        self.refresh_title();
+        self.tree.invalidate(RACK);
+        self.tree.invalidate(PANEL);
+        self.redraw_editors();
+    }
+
+    /// Every editor window redraws. Used where a change is one window's
+    /// gesture and another window's subject — a preset loaded on a channel
+    /// moves the rack, the panel and the synth's own window at once.
+    fn redraw_editors(&mut self) {
+        for editor in &self.editors {
+            editor.window.request_redraw();
+        }
+    }
+
     /// A press on the instrument panel.
     ///
     /// A knob starts a drag from where it was grabbed; a switch or a choice
@@ -5050,6 +6397,10 @@ impl WindowApp {
                 self.drag = Drag::Knob;
                 self.tree.invalidate(PANEL);
             }
+            // One of a list is a **drop-down**, not a step: with six options
+            // in it, reaching the one you want was five presses through five
+            // sounds you did not ask for.
+            ParamKind::Choice(_) => self.open_param_choice(EditorKind::Instrument, which),
             ref kind => {
                 let value = next_value(kind, param.value);
                 self.set_param(&param.address, value);
@@ -5060,23 +6411,578 @@ impl WindowApp {
         }
     }
 
+    /// The control at `which` on Flopsynth's window, if it is still there.
+    ///
+    /// Looked up each time rather than held: the view is rebuilt whenever the
+    /// document moves, and a control cached across that is a control that has
+    /// been replaced.
+    fn flop_param(&self, which: (usize, usize)) -> Option<&crate::canvas::InstrumentParam> {
+        self.flopsynth
+            .as_ref()?
+            .cards
+            .get(which.0)?
+            .group
+            .params
+            .get(which.1)
+    }
+
+    /// A press on Flopsynth's window.
+    ///
+    /// The instrument panel's rules exactly — a knob is dragged from where it
+    /// was grabbed, a switch flips, a chooser opens a list — because a knob
+    /// has to mean the same thing in both windows. What is different is only
+    /// which layout answers "what is under the pointer".
+    fn press_flopsynth(&mut self, x: f32, y: f32) {
+        // The page tabs, the badges and the matrix are chrome around the cards
+        // and are checked first — each is somewhere no card is, so the order
+        // is about reading the code rather than about resolving a conflict.
+        if let Some(page) = crate::canvas::flopsynth_tab_at(&self.flopsynth_layout, x, y) {
+            self.show_flop_page(page);
+            return;
+        }
+        if let Some(hit) = crate::canvas::presets_hit(&self.flopsynth_layout, x, y) {
+            self.press_flop_presets(hit);
+            return;
+        }
+        if let Some(source) = crate::canvas::badge_at(&self.flopsynth_layout, x, y) {
+            self.flop_assign = Some((source, (x, y)));
+            self.drag = Drag::FlopAssign;
+            self.tree.invalidate(PANEL);
+            return;
+        }
+        if let Some(hit) = crate::canvas::matrix_hit(&self.flopsynth_layout, x, y) {
+            self.press_flop_matrix(hit, x);
+            return;
+        }
+        let hit = crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y);
+        // A picture is dragged, not turned (§8.7). Checked before the control
+        // branch below because a picture is never *also* a control — the hit
+        // test has already decided which of the two is under the pointer.
+        if let Some(crate::canvas::FlopsynthHit::Picture { card }) = hit {
+            self.press_flop_picture(card, x, y);
+            return;
+        }
+        // The chain is edited from its page (§8.5): the list drops under the
+        // button, and a card's ✕ takes its slot off.
+        if let Some(crate::canvas::FlopsynthHit::AddEffect) = hit {
+            let button = self.flopsynth_layout.add_effect;
+            let bounds = self
+                .editors
+                .iter()
+                .find(|e| e.kind == EditorKind::Instrument)
+                .map(|e| e.panel.frame)
+                .unwrap_or(self.layout.window);
+            self.open_menu(
+                MenuTarget::AddPatchEffect,
+                button.x,
+                button.bottom(),
+                bounds,
+            );
+            return;
+        }
+        if let Some(crate::canvas::FlopsynthHit::Remove { card }) = hit {
+            if let (Some(slot), Some(doc)) =
+                (self.flop_fx_slot(card), self.options.document.as_mut())
+            {
+                doc.remove_patch_effect(slot);
+            }
+            self.after_flop_structure();
+            return;
+        }
+        let Some(crate::canvas::FlopsynthHit::Control { card, param }) = hit else {
+            return;
+        };
+        let which = (card, param);
+        // The modulation ring sits **outside** the knob's groove, so a press
+        // that lands on it is a depth and not a value — see `ring_hit`, which
+        // is where that band is defined.
+        if let Some(cell) = self.flop_cell(which)
+            && crate::canvas::ring_hit(cell, x, y)
+            && let Some((depth, _)) = self.route_depth(which)
+        {
+            self.flop_ring = Some((which, y, depth));
+            self.drag = Drag::FlopRing;
+            self.tree.invalidate(PANEL);
+            return;
+        }
+        let Some(control) = self.flop_param(which).cloned() else {
+            return;
+        };
+        match control.kind {
+            ParamKind::Knob => {
+                self.flop_knob = Some((which, y, control.value));
+                self.drag = Drag::FlopKnob;
+                self.tree.invalidate(PANEL);
+            }
+            ParamKind::Choice(_) => self.open_param_choice(EditorKind::Instrument, which),
+            ref kind => {
+                let value = next_value(kind, control.value);
+                self.set_param(&control.address, value);
+                if let Some(doc) = &mut self.options.document {
+                    doc.end_gesture();
+                }
+            }
+        }
+    }
+
+    /// A press on the Presets page (§8.6).
+    ///
+    /// A row is `ApplyPreset` — the same command the bar's drop-down sends —
+    /// and a star is the favourite the bar's star is: the page invents no
+    /// mechanism, it is a second view over the bank.
+    fn press_flop_presets(&mut self, hit: crate::canvas::PresetsHit) {
+        use crate::canvas::{PresetDevice, PresetsHit};
+        match hit {
+            PresetsHit::Shelf(index) => {
+                let shelf = self
+                    .flopsynth
+                    .as_ref()
+                    .map(|view| crate::canvas::preset_shelves(&view.bank))
+                    .and_then(|shelves| shelves.get(index).cloned());
+                if let Some(shelf) = shelf {
+                    let mut browse = self.flop_browse.clone();
+                    browse.shelf = shelf;
+                    browse.scroll = 0.0;
+                    self.set_flop_browse(browse);
+                }
+            }
+            // Typing goes to the search whenever the page is showing; the box
+            // is there to say so, and a press on it has nothing to add.
+            PresetsHit::Search => {}
+            PresetsHit::Row(which) => {
+                if let Some(doc) = self.options.document.as_mut() {
+                    doc.apply_preset(PresetDevice::Instrument, which);
+                }
+                self.after_preset_change();
+            }
+            PresetsHit::Star(which) => {
+                if let Some(doc) = self.options.document.as_mut() {
+                    doc.toggle_preset_star(PresetDevice::Instrument, which);
+                }
+                self.after_preset_change();
+            }
+        }
+    }
+
+    /// Changes how the Presets page is looked at, and lays it out again.
+    ///
+    /// The scroll is read back after the layout, which is the only thing that
+    /// knows how long the list came out — so a shelf with three rows in it
+    /// cannot be left scrolled to where a shelf of a hundred was.
+    fn set_flop_browse(&mut self, browse: crate::canvas::PresetBrowse) {
+        self.flop_browse = browse.clone();
+        if let Some(view) = &mut self.flopsynth {
+            view.browse = browse;
+        }
+        self.relayout_editors();
+        let max = self.flopsynth_layout.presets.max_scroll();
+        if self.flop_browse.scroll > max {
+            self.flop_browse.scroll = max;
+            if let Some(view) = &mut self.flopsynth {
+                view.browse.scroll = max;
+            }
+            self.relayout_editors();
+        }
+        self.redraw_editors();
+    }
+
+    /// The About column's lines: the loaded preset, described.
+    fn flop_about(&self) -> Vec<String> {
+        let Some(view) = &self.flopsynth else {
+            return Vec::new();
+        };
+        crate::canvas::preset_about(
+            &self.preset_view[0],
+            self.flopsynth_layout.presets.rows.len(),
+            view.bank.len(),
+        )
+    }
+
+    /// A key while the Presets page is showing: it types into the search.
+    ///
+    /// The search box's own rule, and the plugin picker's: while a box that
+    /// takes text is showing, a typed "d" is a letter and not a shortcut.
+    /// Escape clears what was typed before it closes anything.
+    fn flop_search_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        let mut browse = self.flop_browse.clone();
+        match &event.logical_key {
+            Key::Named(NamedKey::Escape) if !browse.query.is_empty() => browse.query.clear(),
+            Key::Named(NamedKey::Backspace) => {
+                browse.query.pop();
+            }
+            Key::Named(NamedKey::Space) => browse.query.push(' '),
+            Key::Character(text) if !self.modifiers.control_key() => {
+                let typed: String = text.chars().filter(|c| !c.is_control()).collect();
+                if typed.is_empty() {
+                    return false;
+                }
+                browse.query.push_str(&typed);
+            }
+            _ => return false,
+        }
+        browse.scroll = 0.0;
+        self.set_flop_browse(browse);
+        true
+    }
+
+    /// The wheel over Flopsynth's window: the Presets list scrolls, and a
+    /// knob nudges by a fiftieth of its travel — a three-hundredth with Shift
+    /// (§8.7).
+    fn wheel_flopsynth(&mut self, x: f32, y: f32, steps: f32) {
+        if self.flopsynth.is_none() {
+            return;
+        }
+        let list = self.flopsynth_layout.presets.list;
+        if !list.is_empty() && list.contains(x, y) {
+            let mut browse = self.flop_browse.clone();
+            browse.scroll =
+                (browse.scroll - steps * crate::canvas::PRESET_ROW * MENU_WHEEL_ROWS).max(0.0);
+            self.set_flop_browse(browse);
+            return;
+        }
+        if let Some(crate::canvas::FlopsynthHit::Control { card, param }) =
+            crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y)
+            && let Some(control) = self.flop_param((card, param)).cloned()
+            && control.kind == ParamKind::Knob
+        {
+            let step = if self.modifiers.shift_key() {
+                1.0 / 300.0
+            } else {
+                0.02
+            };
+            let value = (control.value + steps * step).clamp(0.0, 1.0);
+            self.set_param(&control.address, value);
+            if let Some(doc) = &mut self.options.document {
+                doc.end_gesture();
+            }
+        }
+    }
+
+    /// Which slot of the chain the card at `card` is, read off its first
+    /// control's address (`patch/fx[n]/…`) rather than off its heading, because
+    /// the address is the stable name (INVARIANT 7) and the heading is prose.
+    fn flop_fx_slot(&self, card: usize) -> Option<usize> {
+        let address = self
+            .flopsynth
+            .as_ref()?
+            .cards
+            .get(card)?
+            .group
+            .params
+            .first()?
+            .address
+            .as_str()
+            .to_string();
+        address
+            .strip_prefix("patch/fx[")?
+            .split(']')
+            .next()?
+            .parse()
+            .ok()
+    }
+
+    /// The kinds the `+ effect` list offers.
+    fn patch_effect_kinds(&self) -> Vec<fontelle_types::EffectKind> {
+        self.options
+            .document
+            .as_ref()
+            .map(|doc| doc.patch_effect_kinds())
+            .unwrap_or_default()
+    }
+
+    /// Where one of Flopsynth's controls is drawn.
+    fn flop_cell(&self, which: (usize, usize)) -> Option<crate::layout::Rect> {
+        self.flopsynth_layout
+            .cards
+            .get(which.0)?
+            .cells
+            .iter()
+            .find(|(param, _)| *param == which.1)
+            .map(|(_, cell)| *cell)
+    }
+
+    /// The depth of the newest route to this control, if anything modulates
+    /// it.
+    ///
+    /// **The newest**, which is §8.4's rule for the ring: with two or more
+    /// routes the ring edits the last one added and the tooltip says to use
+    /// the matrix. A control with none has no ring to press.
+    fn route_depth(&self, which: (usize, usize)) -> Option<(f32, fontelle_types::ParamAddress)> {
+        let address = self.flop_param(which)?.address.clone();
+        let doc = self.options.document.as_ref()?;
+        doc.routes_to(&address)
+            .last()
+            .map(|route| (route.depth, route.depth_address.clone()))
+    }
+
+    /// A press on one of the pictures.
+    fn press_flop_picture(&mut self, card: usize, x: f32, y: f32) {
+        use crate::canvas::FlopsynthPicture;
+        let Some(picture) = self
+            .flopsynth_layout
+            .cards
+            .get(card)
+            .map(|placed| placed.picture)
+        else {
+            return;
+        };
+        let Some(kind) = self
+            .flopsynth
+            .as_ref()
+            .and_then(|view| view.cards.get(card))
+            .map(|card| card.picture.clone())
+        else {
+            return;
+        };
+        match kind {
+            FlopsynthPicture::Wave { .. } => {
+                self.drag = Drag::FlopWave(card);
+                self.drag_flop_wave(card, x);
+            }
+            FlopsynthPicture::Response { .. } => {
+                self.drag = Drag::FlopResponse(card);
+                self.drag_flop_response(card, x, y);
+            }
+            FlopsynthPicture::Envelope {
+                attack,
+                decay,
+                sustain,
+                release,
+            } => {
+                let Some(node) =
+                    crate::canvas::env_node_at(picture, attack, decay, sustain, release, x, y)
+                else {
+                    return;
+                };
+                let from = match node {
+                    crate::canvas::EnvNode::Attack => attack,
+                    crate::canvas::EnvNode::Decay => decay,
+                    crate::canvas::EnvNode::Sustain => sustain,
+                    crate::canvas::EnvNode::Release => release,
+                };
+                self.flop_node = Some((card, node, (x, y), from));
+                self.drag = Drag::FlopEnvNode;
+            }
+            // An LFO's picture is a read-out: its shape is a chooser and its
+            // rate is a knob, and there is nothing in the drawing to aim at.
+            FlopsynthPicture::Lfo { .. } | FlopsynthPicture::None => {}
+        }
+        self.tree.invalidate(PANEL);
+    }
+
+    /// Writes the control a picture gesture moves, by the tail of its address.
+    fn set_flop_picture_param(&mut self, card: usize, tail: &str, value: f32) {
+        let Some(param) = self
+            .flopsynth
+            .as_ref()
+            .and_then(|view| view.cards.get(card))
+            .and_then(|card| crate::canvas::picture_control(card, tail))
+        else {
+            return;
+        };
+        let Some(address) = self.flop_param((card, param)).map(|p| p.address.clone()) else {
+            return;
+        };
+        self.set_param(&address, value);
+    }
+
+    fn drag_flop_wave(&mut self, card: usize, x: f32) {
+        let Some(picture) = self.flopsynth_layout.cards.get(card).map(|c| c.picture) else {
+            return;
+        };
+        let position = crate::canvas::wave_position_at(picture, x);
+        self.set_flop_picture_param(card, "position", position);
+    }
+
+    fn drag_flop_response(&mut self, card: usize, x: f32, y: f32) {
+        let Some(picture) = self.flopsynth_layout.cards.get(card).map(|c| c.picture) else {
+            return;
+        };
+        let (cutoff, resonance) = crate::canvas::filter_xy_at(picture, x, y);
+        self.set_flop_picture_param(card, "cutoff", cutoff);
+        self.set_flop_picture_param(card, "resonance", resonance);
+    }
+
+    fn drag_flop_env_node(&mut self, x: f32, y: f32) {
+        let Some((card, node, from, value)) = self.flop_node else {
+            return;
+        };
+        let Some(picture) = self.flopsynth_layout.cards.get(card).map(|c| c.picture) else {
+            return;
+        };
+        let moved = crate::canvas::env_node_drag(picture, node, value, x - from.0, y - from.1);
+        self.set_flop_picture_param(card, node.stage(), moved);
+    }
+
+    fn drag_flop_ring(&mut self, y: f32) {
+        let Some((which, from_y, from)) = self.flop_ring else {
+            return;
+        };
+        let Some((_, address)) = self.route_depth(which) else {
+            return;
+        };
+        let depth = crate::canvas::ring_depth(from, y - from_y);
+        // A depth is bipolar and every parameter on the wire is 0..=1, so the
+        // ring hands over the same number the matrix row's own slider would —
+        // and the write goes down the ordinary live wire, because a modulation
+        // depth is a knob like any other.
+        self.set_param(&address, (depth + 1.0) * 0.5);
+    }
+
+    /// Shows one of Flopsynth's pages.
+    fn show_flop_page(&mut self, page: crate::canvas::FlopsynthPage) {
+        if self.flop_page == page {
+            return;
+        }
+        self.flop_page = page;
+        // The view is per page — the cards are filtered to it by the host — so
+        // the studio's lists have to be read again rather than redrawn.
+        self.studio_revision = u64::MAX;
+        self.refresh_studio();
+        self.redraw_editors();
+    }
+
+    /// A press on one of the matrix's rows.
+    fn press_flop_matrix(&mut self, hit: crate::canvas::MatrixHit, x: f32) {
+        use crate::canvas::MatrixHit;
+        match hit {
+            MatrixHit::Remove(index) => {
+                let address = self.route_address(index);
+                if let (Some(address), Some(doc)) = (address, self.options.document.as_mut()) {
+                    doc.remove_route(&address, 0);
+                }
+                self.after_flop_structure();
+            }
+            MatrixHit::Depth(index) => {
+                self.drag = Drag::FlopMatrix(index);
+                self.drag_flop_matrix(index, x);
+            }
+        }
+    }
+
+    /// The destination address of the matrix row at `index`.
+    ///
+    /// The rows are the *whole* matrix in order, and `remove_route` counts the
+    /// routes to one destination — so this hands over the destination and the
+    /// position of this route among the routes to it.
+    fn route_address(&self, index: usize) -> Option<fontelle_types::ParamAddress> {
+        let route = self.flopsynth.as_ref()?.routes.get(index)?;
+        // The row carries the destination's *label*, and the depth knob the
+        // panel already draws carries its address — matched here rather than
+        // stored twice.
+        let doc = self.options.document.as_ref()?;
+        let _ = route;
+        let _ = doc;
+        self.flop_route_depth_address(index)
+    }
+
+    /// The address of the depth control of the matrix row at `index`.
+    fn flop_route_depth_address(&self, index: usize) -> Option<fontelle_types::ParamAddress> {
+        Some(fontelle_types::ParamAddress::new(format!(
+            "patch/mod[{index}]/depth"
+        )))
+    }
+
+    fn drag_flop_matrix(&mut self, index: usize, x: f32) {
+        let Some(row) = self.flopsynth_layout.routes.get(index).copied() else {
+            return;
+        };
+        let Some(address) = self.flop_route_depth_address(index) else {
+            return;
+        };
+        let depth = crate::canvas::matrix_depth_at(row.depth, x);
+        self.set_param(&address, (depth + 1.0) * 0.5);
+    }
+
+    /// Finishes a drag-to-assign: the badge was let go over `(x, y)`.
+    fn drop_flop_assign(&mut self, x: f32, y: f32) {
+        let Some((source, _)) = self.flop_assign.take() else {
+            return;
+        };
+        let landed = match crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y) {
+            Some(crate::canvas::FlopsynthHit::Control { card, param }) => Some((card, param)),
+            _ => None,
+        };
+        let address = landed.and_then(|which| self.flop_param(which).map(|p| p.address.clone()));
+        // Released anywhere that is not a destination adds nothing — which is
+        // how a drag is called off, and why the knobs light up during one.
+        if let (Some(address), Some(doc)) = (address, self.options.document.as_mut())
+            && doc.is_mod_destination(&address)
+        {
+            doc.add_route(source, &address);
+            self.after_flop_structure();
+            return;
+        }
+        self.tree.invalidate(PANEL);
+        self.redraw_editors();
+    }
+
+    /// After a route is added or removed: the matrix changed shape, so the
+    /// view has to be built again rather than redrawn.
+    fn after_flop_structure(&mut self) {
+        self.studio_revision = u64::MAX;
+        self.refresh_studio();
+        self.tree.invalidate(PANEL);
+        self.redraw_editors();
+    }
+
+    /// A right-click on one of Flopsynth's knobs.
+    ///
+    /// *"i want to be able to right click on a knob and select create
+    /// automation clip."* §12.4's rule, on this window too — and through the
+    /// **same** menu target, because it is the same request about the same
+    /// kind of thing and a second one would be a second thing to keep in step.
+    fn press_flopsynth_menu(&mut self, x: f32, y: f32) {
+        let Some(crate::canvas::FlopsynthHit::Control { card, param }) =
+            crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y)
+        else {
+            return;
+        };
+        let Some(control) = self.flop_param((card, param)).cloned() else {
+            return;
+        };
+        let target = MenuTarget::InstrumentParam {
+            address: control.address.clone(),
+            name: control.label.clone(),
+        };
+        let bounds = self
+            .editors
+            .iter()
+            .find(|e| e.kind == EditorKind::Instrument)
+            .map(|editor| editor.panel.body)
+            .unwrap_or(self.flopsynth_layout.body);
+        self.open_menu(target, x, y, bounds);
+        self.redraw_editor(EditorKind::Instrument);
+    }
+
+    fn drag_flop_knob(&mut self, y: f32) {
+        let Some((which, from_y, from_value)) = self.flop_knob else {
+            return;
+        };
+        // Shift is a fine drag, the same modifier every other knob here has.
+        let value = knob_value(from_value, y - from_y, self.modifiers.shift_key());
+        let Some(control) = self.flop_param(which) else {
+            return;
+        };
+        // Nothing to say when the value has not moved a step: a stationary
+        // mouse must not write to the document once a pixel.
+        if (value - control.value).abs() < 0.001 {
+            return;
+        }
+        let address = control.address.clone();
+        self.set_param(&address, value);
+    }
+
     /// A press on the grid of knobs an effect that is not an EQ opens.
     ///
     /// The instrument panel's rules exactly — a knob is dragged, a switch and a
     /// chooser are clicked, and the right button offers an automation lane —
     /// because it is the same panel with a different list in it.
     fn press_insert_panel(&mut self, button: MouseButton, x: f32, y: f32) {
-        // The preset row first: it sits above the controls and is not one of
-        // them, so a click that lands on a chip is a choice rather than a
-        // knob. The right button has nothing to offer here — a preset is not
-        // a parameter and cannot become a lane (rule 10).
-        if let Some(preset) = crate::canvas::instrument_preset_hit(&self.insert_layout, x, y) {
-            if button == MouseButton::Left {
-                self.choose_insert_preset(preset);
-            }
-            return;
-        }
-        // And the key row under it. The first chip is "no key", which is why
+        // The key row, above the controls and not among them: a click that
+        // lands on a chip is a choice rather than a knob. The first chip is
+        // "no key", which is why
         // the index is shifted by one on the way out.
         if let Some(chip) = crate::canvas::instrument_key_hit(&self.insert_layout, x, y) {
             if button == MouseButton::Left {
@@ -5122,6 +7028,7 @@ impl WindowApp {
                 self.insert_knob = Some((which, y, param.value));
                 self.drag = Drag::InsertKnob;
             }
+            ParamKind::Choice(_) => self.open_param_choice(EditorKind::Effect, which),
             ref kind => {
                 let value = next_value(kind, param.value);
                 self.write_insert_param(param.address.as_str(), value);
@@ -5155,26 +7062,10 @@ impl WindowApp {
         self.write_insert_param(param.address.as_str(), value);
     }
 
-    /// Writes every knob a named preset stands for, as **one** thing to undo.
-    ///
-    /// Not a run of `write_insert_param`s: fourteen entries on the history for
-    /// one click is a history nobody can walk, which is why the document has a
-    /// command of its own for this (`fontelle_model::SetInsertPreset`).
-    fn choose_insert_preset(&mut self, preset: usize) {
-        let Some((strip, slot)) = self.open_insert else {
-            return;
-        };
-        if let Some(doc) = &mut self.options.document {
-            doc.set_insert_preset(strip, slot, preset);
-            doc.end_gesture();
-        }
-        // The same reason every other write refreshes here: the studio bumps
-        // its revision, and without re-reading it the sound would change and
-        // the panel would not.
-        self.refresh_studio();
-        self.refresh_title();
-        self.redraw_editor(EditorKind::Effect);
-    }
+    // `choose_instrument_preset` and `choose_insert_preset` were here: the
+    // two chip rows' presses. A preset is a file now and the bar in the
+    // window's header chooses one for every device (§P.9), so both are one
+    // function — `press_preset_bar`.
 
     /// Points this insert's detector at a strip, or at nothing.
     ///
@@ -5272,6 +7163,87 @@ impl WindowApp {
         self.set_param(&address, value);
     }
 
+    /// Which of the two panels of knobs `editor` is looking at.
+    ///
+    /// One question in one place, because the instrument panel and an effect's
+    /// own are the same shape over two different views and everything that
+    /// works on one has to work on the other — that is what
+    /// `press_insert_panel`'s doc means by *"the same panel with a different
+    /// list in it"*.
+    /// One control of whichever panel `editor` is currently showing.
+    ///
+    /// The instrument window draws **two** different panels — the knob grid
+    /// and Flopsynth's cards — and `group` means a group in one and a card in
+    /// the other. Every place that resolves a `MenuTarget::ParamChoice` asks
+    /// here rather than choosing for itself, because a chooser that opened one
+    /// panel's list and wrote the other panel's control is a bug that only
+    /// shows up on one instrument.
+    fn choice_param(
+        &self,
+        editor: EditorKind,
+        group: usize,
+        param: usize,
+    ) -> Option<&crate::canvas::InstrumentParam> {
+        if editor == EditorKind::Instrument && self.flopsynth.is_some() {
+            return self.flop_param((group, param));
+        }
+        self.param_view(editor)?.param(group, param)
+    }
+
+    fn param_view(&self, editor: EditorKind) -> Option<&crate::canvas::InstrumentView> {
+        match editor {
+            EditorKind::Instrument => self.instrument.as_ref(),
+            EditorKind::Effect => self.insert_view.as_ref(),
+            EditorKind::AudioClip => None,
+        }
+    }
+
+    /// Drops a [`ParamKind::Choice`]'s list under the control it belongs to.
+    ///
+    /// > *"a lot of options that could be knobs or sliders or dropdowns for
+    /// > some reason are instead shown as buttons you click to toggle through
+    /// > a list of options in order iteratively."*
+    ///
+    /// A row of pips that stepped, before: it said where in the list you were
+    /// and gave no way to get anywhere else in one press. The pips stay —
+    /// they are how the control reads at a glance — and the list is what a
+    /// press now opens.
+    fn open_param_choice(&mut self, editor: EditorKind, which: (usize, usize)) {
+        let bounds = self
+            .editors
+            .iter()
+            .find(|e| e.kind == editor)
+            .map(|e| e.panel.body);
+        let (Some(bounds), Some(control)) = (
+            bounds,
+            match editor {
+                EditorKind::Instrument if self.flopsynth.is_some() => {
+                    self.flopsynth_layout.cards.get(which.0).and_then(|card| {
+                        card.cells
+                            .iter()
+                            .find(|(index, _)| *index == which.1)
+                            .map(|(_, cell)| *cell)
+                    })
+                }
+                EditorKind::Instrument => self.instrument_layout.control(which.0, which.1),
+                _ => self.insert_layout.control(which.0, which.1),
+            },
+        ) else {
+            return;
+        };
+        self.open_menu(
+            MenuTarget::ParamChoice {
+                editor,
+                group: which.0,
+                param: which.1,
+            },
+            control.x,
+            control.bottom(),
+            bounds,
+        );
+        self.redraw_editor(editor);
+    }
+
     fn set_param(&mut self, address: &fontelle_types::ParamAddress, value: f32) {
         if let Some(doc) = &mut self.options.document {
             doc.set_instrument_param(address, value);
@@ -5345,14 +7317,32 @@ impl WindowApp {
             self.tree.invalidate(TIMELINE);
             return;
         }
-        let edits = self.timeline.press(
-            button,
-            x,
-            y,
-            &self.timeline_layout,
-            &self.clips,
-            self.beats_per_bar(),
-        );
+        // The second press of a double-click is a different gesture from a
+        // press: on empty grid it asks for a **blank** clip where the first
+        // press stamped a copy — see `Timeline::double_press` — and on an
+        // audio clip it opens the editor, below. Decided once, here, so
+        // the two readings cannot both happen.
+        let doubled =
+            button == MouseButton::Left && self.double_click.press(x, y, std::time::Instant::now());
+        let edits = if doubled {
+            self.timeline.double_press(
+                button,
+                x,
+                y,
+                &self.timeline_layout,
+                &self.clips,
+                self.beats_per_bar(),
+            )
+        } else {
+            self.timeline.press(
+                button,
+                x,
+                y,
+                &self.timeline_layout,
+                &self.clips,
+                self.beats_per_bar(),
+            )
+        };
         self.drag = Drag::Timeline;
         self.apply_arrange_edits(edits);
         // A right-click on a point of an automation block asks for the
@@ -5370,8 +7360,7 @@ impl WindowApp {
         // rather than the first, because clicking one is how you move it and a
         // window that appeared every time you nudged a take along the bar
         // would be in the way of the thing you were doing.
-        if button == MouseButton::Left
-            && self.double_click.press(x, y, std::time::Instant::now())
+        if doubled
             && let Some(clip) = self
                 .clips
                 .iter()
@@ -5422,7 +7411,7 @@ impl WindowApp {
         let grid = self.timeline_layout.grid;
         // The same edge-scroll the roll has, for the same reason: a clip has to
         // be draggable to bar 1 from a screen away.
-        let (ticks, rows) = edge_scroll(
+        let (ticks, rows) = self.edge_scroll_step(
             &crate::canvas::RollView {
                 scroll_tick: self.timeline.view.scroll_tick,
                 top_key: 0,
@@ -5431,8 +7420,6 @@ impl WindowApp {
                 snap: self.timeline.view.snap,
             },
             grid,
-            x,
-            y,
         );
         if ticks != 0 || rows != 0 {
             let v = &mut self.timeline.view;
@@ -5502,6 +7489,21 @@ impl WindowApp {
     }
 
     /// And the one across it, between the rack and the browser.
+    /// Divides the soundfont panel's two lists — *"give it a knob i can drag
+    /// in the middle to make whichever one i want bigger whenever i want."*
+    fn drag_browser_split(&mut self, y: f32) {
+        let wanted = browser_file_share_at(&self.browser, y);
+        if self
+            .browser_file_share
+            .is_some_and(|s| (s - wanted).abs() < 0.001)
+        {
+            return;
+        }
+        self.browser_file_share = Some(wanted);
+        self.relayout_panels();
+        self.tree.invalidate(BROWSER);
+    }
+
     fn drag_sidebar_split(&mut self, y: f32) {
         let wanted = rack_share_at(&self.layout, y);
         if self.rack_share.is_some_and(|s| (s - wanted).abs() < 0.001) {
@@ -5555,10 +7557,35 @@ impl WindowApp {
         if edits.is_empty() {
             return;
         }
+        // **Drawing with a prefab selected draws a place for it.**
+        //
+        // > *"clips that you can basically draw into your arrangement."*
+        //
+        // The draw tool's `Add` is the only edit this changes, and only while
+        // the panel is on the prefab tab with one picked. Everything else —
+        // moving, resizing, splitting, muting — is the same edit whichever
+        // kind of block it lands on, because a place *is* a clip.
+        let prefab = (self.rack_tab == crate::document::RackTab::Prefabs)
+            .then(|| {
+                self.options
+                    .document
+                    .as_ref()
+                    .and_then(|doc| doc.selected_prefab())
+            })
+            .flatten();
+
         let mut created = crate::document::Created::default();
         if let Some(doc) = &mut self.options.document {
             for edit in edits {
-                let made = doc.arrange(edit);
+                let made = match (prefab, &edit) {
+                    (Some(index), crate::canvas::ArrangeEdit::Add { lane, start }) => {
+                        let (lane, start) = (*lane, *start);
+                        let mut made = crate::document::Created::default();
+                        made.clips.extend(doc.draw_prefab(index, lane, start));
+                        made
+                    }
+                    _ => doc.arrange(edit),
+                };
                 created.clips.extend(made.clips);
                 created.points.extend(made.points);
             }
@@ -5651,12 +7678,28 @@ impl WindowApp {
                         self.take_from = None;
                         // The click, for the bar it is counting: a count-in
                         // nobody can hear is a bar of silence.
-                        apply(host.as_mut(), TransportAction::SetMetronome(true), self.marker);
-                        self.marker =
-                            apply(host.as_mut(), TransportAction::Mark((target - count).max(0)), self.marker);
+                        apply(
+                            host.as_mut(),
+                            TransportAction::SetMetronome(true),
+                            self.marker,
+                        );
+                        self.marker = apply(
+                            host.as_mut(),
+                            TransportAction::Mark((target - count).max(0)),
+                            self.marker,
+                        );
                     } else {
                         self.count_in_until = None;
                         self.take_from = Some(target);
+                        // The tape starts *here*, so whatever monitoring had
+                        // left in the ring is not part of it. The count-in
+                        // branch above discards at the moment it hands over
+                        // for the same reason; a project with no tempo takes
+                        // this one and must not be the one that records the
+                        // minute you spent setting up.
+                        if let Some(doc) = &mut self.options.document {
+                            doc.discard_audio_take();
+                        }
                     }
                 }
                 self.marker = apply(host.as_mut(), decision, self.marker);
@@ -5680,11 +7723,7 @@ impl WindowApp {
     /// in the middle of a take.
     fn arm_recording(&mut self, armed: bool) {
         if let Some(host) = &mut self.options.host {
-            self.marker = apply(
-                host.as_mut(),
-                TransportAction::SetArmed(armed),
-                self.marker,
-            );
+            self.marker = apply(host.as_mut(), TransportAction::SetArmed(armed), self.marker);
         }
         // Arming throws the last take away, so a new one does not begin with
         // the end of the one before it still in the ring.
@@ -5782,9 +7821,14 @@ impl WindowApp {
             } else {
                 48_000.0
             };
+            // The reason, when there is one: a take refused because there
+            // was nowhere to write it used to be reported as *"nothing
+            // arrived on the input"*, which was untrue and sent the person
+            // checking cables.
             self.status = match doc.keep_audio_take(at, end_sample) {
-                0 => "nothing arrived on the input, so nothing was recorded".to_string(),
-                frames => format!("recorded {:.1} seconds", frames as f64 / rate),
+                Ok(0) => "nothing arrived on the input, so nothing was recorded".to_string(),
+                Ok(frames) => format!("recorded {:.1} seconds", frames as f64 / rate),
+                Err(said) => said,
             };
             self.studio_revision = u64::MAX;
             self.tree.invalidate(PANEL);
@@ -5842,7 +7886,98 @@ impl WindowApp {
         self.tree.invalidate(PANEL);
     }
 
+    /// Acts on a row carried out of the soundfont panel, by where it landed.
+    ///
+    /// > *"i want to be able to click and drag them into the sampler or into
+    /// > the channel rack to make it have a sampler with that clip sampled."*
+    ///
+    /// Three landings, three meanings, and they are the ones a rack already
+    /// implies:
+    ///
+    /// - **A channel on the rack** takes the sound: that row becomes a sampler
+    ///   playing the file, or a player of that preset. Dropping onto the row
+    ///   you are working on is how a kit gets built without eight channels
+    ///   appearing beside it.
+    /// - **The empty space under the rows** makes a *new* channel of it.
+    /// - **Anywhere else** is not a drop at all, and the press falls back to
+    ///   what a click on that row has always meant — for an audio file, an
+    ///   import onto the arrangement. The click waits for the release
+    ///   precisely so that one gesture does one thing; see `press_browser`.
+    fn drop_browser_row(&mut self, row: BrowserRow, x: f32, y: f32) {
+        let on_rack = self.layout.rack.frame.contains(x, y);
+        // Which channel it landed on, if it landed on one. Any part of the row
+        // counts, the way the right-click menu already does: aiming at a
+        // caption is not a thing anybody should have to do.
+        let onto = match (on_rack, rack_hit(&self.rack, x, y)) {
+            (
+                true,
+                RackHit::Row(index)
+                | RackHit::Mute(index)
+                | RackHit::Solo(index)
+                | RackHit::Edit(index)
+                | RackHit::Route(index),
+            ) => Some(index),
+            // The "+ Add instrument" button and the empty space below the rows
+            // both mean the rack rather than a channel on it.
+            _ => None,
+        };
+        // The instrument window's name field, when the release reached it —
+        // *"i should be able to drag soundfonts into it from the soundfonts
+        // window to also assign a soundfont."* It stands for the channel that
+        // window has open, which is the selected one.
+        let on_name = self.pointer_window == Some(EditorKind::Instrument)
+            && self.instrument_layout.name.contains(x, y);
+        // **The channel it landed on**, from either target. `None` and on the
+        // rack means the rack itself; `None` and off it means it landed
+        // nowhere.
+        let onto = onto.or(on_name.then_some(self.selected_channel));
+        let made = onto.is_none() && on_rack;
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        let result = match (row, onto, made) {
+            // Onto a channel: it plays this instead of what it was playing.
+            (BrowserRow::Preset(index), Some(channel), _) => {
+                doc.set_channel_instrument_on(channel, index)
+            }
+            (BrowserRow::File(index), Some(channel), _) => {
+                doc.set_sampler_from_import(channel, index)
+            }
+            // Onto the rack itself: a channel of its own.
+            (BrowserRow::Preset(index), None, true) => doc.add_channel_with(index),
+            (BrowserRow::File(index), None, true) => doc.add_sampler_from_import(index),
+            // Let go over nothing. A file falls back to the click the press
+            // did not do; a preset's click is a listen, and the press already
+            // did that one.
+            (BrowserRow::File(index), None, false) => doc.open_import(index),
+            (BrowserRow::Preset(_), None, false) => return,
+        };
+        match result {
+            Ok(()) => {
+                // A new row is at the bottom of a list that may be scrolled
+                // away from it.
+                if made {
+                    self.rack_scroll = usize::MAX;
+                }
+            }
+            Err(e) => self.status = e,
+        }
+        self.refresh_studio();
+        self.refresh_title();
+        self.tree.invalidate(RACK);
+        self.tree.invalidate(PANEL);
+        self.tree.invalidate(BROWSER);
+        self.tree.invalidate(TIMELINE);
+    }
+
     fn press_rack(&mut self, button: MouseButton, x: f32, y: f32) {
+        // One panel, two lists — see `canvas::tab_strip`. The strip is laid
+        // out identically for both, so it is answered before either list gets
+        // a look at the press.
+        if self.rack_tab == crate::document::RackTab::Prefabs {
+            self.press_prefabs(button, x, y);
+            return;
+        }
         let hit = rack_hit(&self.rack, x, y);
         // The right button opens a menu about whichever row it landed on —
         // *"stuff like being able to right click and duplicate too, for
@@ -5919,10 +8054,68 @@ impl WindowApp {
                         }),
                 };
             }
-            RackHit::Add => self.add_channel(),
+            // *"when you select new instrument it lets you select one of
+            // those"* — the button asks which rather than always making a synth.
+            RackHit::Add => {
+                let bounds = self.layout.window;
+                self.scan_for_starred_plugins();
+                self.open_menu(MenuTarget::NewInstrument, x, y, bounds);
+            }
+            RackHit::Tab(tab) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.set_rack_tab(tab);
+                }
+            }
             RackHit::Nothing => {}
         }
         self.tree.invalidate(RACK);
+    }
+
+    /// A press in the prefab list (TDD §10.5).
+    ///
+    /// > *"a plus icon to make a new one and name it and stuff"*, and
+    /// > *"selecting the prefab in the prefab menu and then selecting the
+    /// > instrument you want to edit."*
+    fn press_prefabs(&mut self, button: MouseButton, x: f32, y: f32) {
+        use crate::canvas::{PrefabHit, prefab_hit};
+        let hit = prefab_hit(&self.prefab_panel, x, y);
+        // The right button opens a menu about the row it landed on — rename,
+        // delete — the same gesture the channel rack's rows answer.
+        if button == MouseButton::Right {
+            if let PrefabHit::Row(index) = hit {
+                let bounds = self.layout.window;
+                self.open_menu(MenuTarget::Prefab(index), x, y, bounds);
+            }
+            return;
+        }
+        match hit {
+            PrefabHit::Row(index) => {
+                // A press on the open one shuts it, which puts the roll back
+                // on the arrangement — the same "press it again" every toggle
+                // in this window has.
+                let open = self.prefabs.get(index).is_some_and(|row| row.open);
+                if let Some(doc) = &mut self.options.document {
+                    doc.select_prefab((!open).then_some(index));
+                }
+                self.roll.clear_selection();
+            }
+            PrefabHit::Add => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.add_prefab();
+                }
+                // The new one is at the end, and it is the one you are about
+                // to name.
+                self.prefab_scroll = usize::MAX;
+            }
+            PrefabHit::Tab(tab) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.set_rack_tab(tab);
+                }
+            }
+            PrefabHit::Nothing => {}
+        }
+        self.tree.invalidate(RACK);
+        self.tree.invalidate(PANEL);
     }
 
     /// A press while the route menu is open. Anywhere but a row shuts it.
@@ -5948,12 +8141,62 @@ impl WindowApp {
                 doc.add_mixer_track();
                 doc.set_channel_route(channel, Some(index));
             }
+            // The rack's chip does not offer it: a channel plays somewhere or
+            // it is muted, and "nowhere" is what the mute switch beside it
+            // already means.
+            RouteChoice::Off => {}
         }
         self.refresh_title();
     }
 
+    /// Walks the preset list by `delta` rows, keeping the focused row on
+    /// screen.
+    fn step_preset_focus(&mut self, delta: i32) {
+        let next = crate::canvas::browser_focus_step(&self.presets, self.preset_focus, delta);
+        if next == self.preset_focus {
+            return;
+        }
+        self.preset_focus = next;
+        // Scrolled to, not just moved: a focus that walks off the bottom of
+        // the list and keeps going is a focus nobody can follow.
+        if let Some(index) = next {
+            let rows = self.browser.preset_rows.len().max(1);
+            if index < self.preset_scroll {
+                self.preset_scroll = index;
+            } else if index >= self.preset_scroll + rows {
+                self.preset_scroll = index + 1 - rows;
+            }
+        }
+        self.relayout_panels();
+        self.tree.invalidate(BROWSER);
+    }
+
+    /// Puts the focused preset on the selected channel — what Enter and a
+    /// double-click both mean.
+    fn choose_focused_preset(&mut self) {
+        let Some(index) = self.preset_focus else {
+            return;
+        };
+        if self.presets.get(index).map(|entry| entry.kind)
+            == Some(crate::document::LibraryKind::Group)
+        {
+            return;
+        }
+        if let Some(doc) = &mut self.options.document
+            && let Err(e) = doc.set_channel_instrument(index)
+        {
+            self.status = e;
+        }
+        self.refresh_title();
+        self.tree.invalidate(BROWSER);
+        self.tree.invalidate(RACK);
+    }
+
     fn press_browser(&mut self, x: f32, y: f32) {
         match browser_hit(&self.browser, x, y) {
+            BrowserHit::Seam => {
+                self.drag = Drag::BrowserSplit;
+            }
             BrowserHit::Search(_) => {
                 self.searching = true;
             }
@@ -5962,16 +8205,38 @@ impl WindowApp {
                 // something: the list under the pointer is about to be a
                 // different list, so the scroll offset it was read at means
                 // nothing in it.
+                //
+                // **From the list the rows were drawn from.** This used to ask
+                // `self.files` — the soundfont list — about a row that came out
+                // of `self.imports`, so the answer was whatever the other panel
+                // held at that index. See `canvas::browser_row_carries`.
+                let rows = self.browser_list();
                 let moving = matches!(
-                    self.files.get(index).map(|entry| entry.kind),
+                    rows.get(index).map(|entry| entry.kind),
                     Some(crate::document::LibraryKind::Folder | crate::document::LibraryKind::Up)
                 );
+                // A **file** row in the Import tab can be carried out of the
+                // panel and dropped on the rack to become a sampler. A folder
+                // cannot: it is a place, not a sound.
+                let carried = crate::canvas::browser_row_carries(rows, self.browser_mode, index);
+                if carried {
+                    self.drag = Drag::BrowserRow(BrowserRow::File(index));
+                    // **And the click waits.** What this row means is decided
+                    // by where the button comes up: on the rack it is a
+                    // sampler, and anywhere else it is the click it always was
+                    // — an import onto the arrangement. Doing the import here
+                    // as well would leave a clip at bar one behind every drag.
+                    // See `drop_browser_row`.
+                    return;
+                }
                 // The same rows in both modes, and the same click: a soundfont
                 // opens to show its presets, a folder opens to show what is
                 // in it, and a project opens as a project.
                 let modifiers = self.modifiers;
                 let result = match (&mut self.options.document, self.browser_mode) {
-                    (Some(doc), BrowserMode::Sounds) => doc.open_file(index),
+                    // A device row opens to show its presets, exactly as a
+                    // soundfont row does — the same list in the same place.
+                    (Some(doc), BrowserMode::Sounds | BrowserMode::Presets) => doc.open_file(index),
                     (Some(doc), BrowserMode::Projects) => doc.open_project(index),
                     // A folder row walks in, a file row imports. Which of
                     // those it was is the host's to know — it holds the list.
@@ -6007,6 +8272,25 @@ impl WindowApp {
                 {
                     return;
                 }
+                // Clicking a row is what gives the list the keyboard, so the
+                // arrows walk it from here — *"after it being clicked on to
+                // focus it"*.
+                self.preset_focus = Some(index);
+                // And arms carrying it out of the panel; a press that never
+                // moves is a click and does the click's thing instead.
+                self.drag = Drag::BrowserRow(BrowserRow::Preset(index));
+                // **A click is a listen; a double-click is a choice.**
+                // *"if i click a soundfont in the soundfont menu it plays that
+                // instrument at a c tone ... this is just so i can easily
+                // click on instruments and hear how they sound"*, and *"the
+                // way to change the sound ... should be to double click it or
+                // press enter while its selected"*.
+                let doubled = self.double_click.press(x, y, std::time::Instant::now());
+                if !doubled {
+                    self.preview_preset(index);
+                    self.tree.invalidate(BROWSER);
+                    return;
+                }
                 // A preset click puts it on the **selected** channel, which is
                 // what "try this sound on this part" means. The add button —
                 // and Ctrl+click — make a new one instead.
@@ -6026,6 +8310,10 @@ impl WindowApp {
                 if let Some(doc) = &mut self.options.document {
                     match mode {
                         BrowserMode::Sounds => doc.reveal_library_dir(),
+                        // The user's own bank, which is the half of the
+                        // Presets tab there is anything to reveal *of*: the
+                        // factory presets are in the binary.
+                        BrowserMode::Presets => doc.reveal_preset_dir(),
                         BrowserMode::Projects => doc.reveal_projects_dir(),
                         BrowserMode::Import => doc.reveal_import_dir(),
                         BrowserMode::Settings => doc.reveal_config_dir(),
@@ -6050,6 +8338,7 @@ impl WindowApp {
                 if let Some(doc) = &mut self.options.document {
                     match mode {
                         BrowserMode::Sounds => doc.choose_library_dir(add),
+                        BrowserMode::Presets => doc.choose_preset_dir(),
                         BrowserMode::Projects => doc.choose_projects_dir(),
                         // The kind the tab is showing, which the host holds:
                         // the mode alone does not say whether this is the
@@ -6094,14 +8383,10 @@ impl WindowApp {
                 self.studio_revision = u64::MAX;
                 self.refresh_studio();
             }
-            BrowserHit::NewProject => {
-                if let Some(doc) = &mut self.options.document
-                    && let Err(e) = doc.new_project()
-                {
-                    self.status = e;
-                }
-                self.refresh_title();
-            }
+            // **It asks first.** *"when i make a new project i need to be
+            // prompted to name it"* — and a project whose name you chose is
+            // one you can find again in a folder of them.
+            BrowserHit::NewProject => self.ask_for_a_name(NameFor::NewProject, String::new()),
             BrowserHit::Export => self.export(),
             BrowserHit::Nothing => {}
         }
@@ -6118,11 +8403,22 @@ impl WindowApp {
     /// every scroll clamp — which is how the projects list came to be bounded
     /// by the number of soundfonts.
     fn browser_rows(&self) -> usize {
+        self.browser_list().len()
+    }
+
+    /// The rows themselves — which list the panel is drawing.
+    ///
+    /// The same four-armed match, in the one place it belongs. Written out by
+    /// hand at each site, it went wrong the way it always does: the press that
+    /// arms a drag asked the *soundfont* list about a row the *import* list had
+    /// drawn, and no audio file could be dragged anywhere at all
+    /// (`canvas::browser_row_carries`).
+    fn browser_list(&self) -> &[crate::document::LibraryEntry] {
         match self.browser_mode {
-            BrowserMode::Sounds => self.files.len(),
-            BrowserMode::Import => self.imports.len(),
-            BrowserMode::Projects => self.projects.len(),
-            BrowserMode::Settings => self.settings.len(),
+            BrowserMode::Sounds | BrowserMode::Presets => &self.files,
+            BrowserMode::Import => &self.imports,
+            BrowserMode::Projects => &self.projects,
+            BrowserMode::Settings => &self.settings,
         }
     }
 
@@ -6135,9 +8431,143 @@ impl WindowApp {
     /// Entries that cannot be chosen are **greyed rather than left out**: a
     /// menu that hides "Delete lane" on the last lane teaches nothing about why
     /// it is not there.
+    /// Everything starred, or nothing when there is no document.
+    fn favorites(&self) -> Vec<fontelle_types::Favorite> {
+        self.options
+            .document
+            .as_ref()
+            .map(|doc| doc.favorites())
+            .unwrap_or_default()
+    }
+
+    /// The plugins a picker for `purpose` chooses from: effects for an insert
+    /// slot, instruments for a channel.
+    fn plugin_listings(&self, purpose: PluginPurpose) -> Vec<crate::document::PluginListing> {
+        let Some(doc) = self.options.document.as_ref() else {
+            return Vec::new();
+        };
+        match purpose {
+            PluginPurpose::Insert(_) => doc.plugin_effects(),
+            _ => doc.plugin_instruments(),
+        }
+    }
+
+    /// The *+ fx* menu's rows, and what each means.
+    fn effect_rows(&self) -> Vec<(crate::canvas::MenuEntry, crate::canvas::EffectRow)> {
+        let plugins = self.plugin_listings(PluginPurpose::Insert(0));
+        crate::canvas::effect_menu_rows(&self.favorites(), &plugins)
+    }
+
+    /// The *New instrument* / *Change instrument* menu's rows.
+    fn instrument_rows(
+        &self,
+        current: Option<fontelle_types::InstrumentKind>,
+    ) -> Vec<(crate::canvas::MenuEntry, crate::canvas::InstrumentRow)> {
+        let plugins = self.plugin_listings(PluginPurpose::NewChannel);
+        crate::canvas::instrument_menu_rows(current, &self.favorites(), &plugins)
+    }
+
+    /// The plugin picker's rows, narrowed by what has been typed.
+    fn picker_rows(
+        &self,
+        purpose: PluginPurpose,
+    ) -> Vec<(crate::canvas::MenuEntry, crate::canvas::PickerRow)> {
+        let heading = match purpose {
+            PluginPurpose::Insert(_) => "Plugin effects",
+            _ => "Plugin instruments",
+        };
+        crate::canvas::plugin_picker_rows(
+            heading,
+            &self.menu_filter,
+            &self.favorites(),
+            &self.plugin_listings(purpose),
+        )
+    }
+
+    /// What the star on row `index` of a menu about `target` stands for, if
+    /// that row has one.
+    fn favorite_at(&self, target: &MenuTarget, index: usize) -> Option<fontelle_types::Favorite> {
+        use crate::canvas::{EffectRow, InstrumentRow, PickerRow};
+        use fontelle_types::Favorite;
+        let plugin_key = |purpose: PluginPurpose, which: usize| {
+            self.plugin_listings(purpose)
+                .get(which)
+                .map(|listing| Favorite::Plugin(listing.key.clone()))
+        };
+        match target {
+            MenuTarget::AddEffect(_) => match self.effect_rows().get(index)?.1 {
+                EffectRow::Builtin(kind) => Some(Favorite::Effect(kind)),
+                EffectRow::Plugin(which) => plugin_key(PluginPurpose::Insert(0), which),
+                EffectRow::Heading | EffectRow::PluginPicker => None,
+            },
+            MenuTarget::NewInstrument | MenuTarget::ChangeInstrument(_) => {
+                let current = match target {
+                    MenuTarget::ChangeInstrument(channel) => self
+                        .options
+                        .document
+                        .as_ref()
+                        .and_then(|doc| doc.channel_kind(*channel)),
+                    _ => None,
+                };
+                match self.instrument_rows(current).get(index)?.1 {
+                    InstrumentRow::Kind(kind) if kind != fontelle_types::InstrumentKind::Plugin => {
+                        Some(Favorite::Instrument(kind))
+                    }
+                    InstrumentRow::Plugin(which) => plugin_key(PluginPurpose::NewChannel, which),
+                    _ => None,
+                }
+            }
+            MenuTarget::PluginPicker(purpose) => match self.picker_rows(*purpose).get(index)?.1 {
+                PickerRow::Plugin(which) => plugin_key(*purpose, which),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// A press on a row's star. The thing is starred or un-starred, and the
+    /// menu **stays open**, rebuilt around the new list where it was and
+    /// scrolled where it was — a star that closed the menu would make
+    /// starring three effects three trips.
+    fn toggle_star(&mut self, target: &MenuTarget, index: usize) {
+        let Some(favorite) = self.favorite_at(target, index) else {
+            return;
+        };
+        if let Some(doc) = &mut self.options.document {
+            doc.toggle_favorite(favorite);
+        }
+        let scroll = self.menu.as_ref().map_or(0.0, |(_, menu)| menu.scroll());
+        self.relayout_menu();
+        if let Some((_, menu)) = &mut self.menu {
+            menu.scroll_by(scroll);
+        }
+        self.refresh_studio();
+    }
+
     fn menu_entries(&self, target: &MenuTarget) -> Vec<crate::canvas::MenuEntry> {
         use crate::canvas::MenuEntry;
         match target {
+            MenuTarget::AddEffect(_) => self
+                .effect_rows()
+                .into_iter()
+                .map(|(entry, _)| entry)
+                .collect(),
+            MenuTarget::Prefab(index) => {
+                // The count is on the row already; what the menu adds is the
+                // two things you cannot do by clicking. "Delete" is safe here
+                // in a way it usually is not — see `RemovePrefab`: it bakes
+                // the content into every place rather than emptying them — so
+                // it is not guarded behind a count.
+                let uses = self.prefabs.get(*index).map_or(0, |row| row.uses);
+                vec![
+                    MenuEntry::new("Rename"),
+                    MenuEntry::new(if uses == 1 {
+                        "Delete (used in 1 place)".to_string()
+                    } else {
+                        format!("Delete (used in {uses} places)")
+                    }),
+                ]
+            }
             MenuTarget::Channel(index) => {
                 let plays = self
                     .channels
@@ -6145,6 +8575,7 @@ impl WindowApp {
                     .is_some_and(|channel| channel.has_instrument);
                 vec![
                     MenuEntry::new("Open instrument"),
+                    MenuEntry::new("Change instrument..."),
                     MenuEntry::new("Rename"),
                     MenuEntry::new("Duplicate"),
                     if plays {
@@ -6167,7 +8598,11 @@ impl WindowApp {
                     .as_ref()
                     .is_some_and(|doc| doc.can_remove_lane(*index));
                 vec![
-                    MenuEntry::new("Add lane"),
+                    // Where you are looking, not the end of the list —
+                    // *"right now theyre all going to the end."*
+                    MenuEntry::new("Add lane above"),
+                    MenuEntry::new("Add lane below"),
+                    MenuEntry::new("Render to audio"),
                     MenuEntry::new("Rename lane"),
                     MenuEntry::new(if muted { "Unmute lane" } else { "Mute lane" }),
                     // Greyed at the ends rather than left out, for the reason
@@ -6192,15 +8627,83 @@ impl WindowApp {
             // The control's own name first, greyed: a menu of one entry with
             // no heading is a menu you have to remember what you right-clicked
             // to read.
-            MenuTarget::InstrumentParam { name, .. }
-            | MenuTarget::InsertParam { name, .. } => vec![
-                MenuEntry::disabled(name.clone()),
-                MenuEntry::new("Create automation clip").after_rule(),
-            ],
+            MenuTarget::InstrumentParam { name, .. } | MenuTarget::InsertParam { name, .. } => {
+                vec![
+                    MenuEntry::disabled(name.clone()),
+                    MenuEntry::new("Create automation clip").after_rule(),
+                ]
+            }
             MenuTarget::Tempo => vec![
                 MenuEntry::disabled("Tempo".to_string()),
                 MenuEntry::new("Create automation clip").after_rule(),
             ],
+            // The three instruments, in one order, from one list — so the two
+            // menus that offer them cannot come to disagree about what there
+            // is. A heading, greyed, because a bare list of three words is a
+            // menu you have to guess the subject of.
+            MenuTarget::RenderChoice(_) => vec![
+                MenuEntry::disabled("Render"),
+                MenuEntry::new("Time selection"),
+                MenuEntry::new("Whole track"),
+            ],
+            // Both instrument menus are one list — see
+            // `canvas::instrument_menu_rows`. This one is not changing
+            // anything, so nothing in it is the kind you already have.
+            MenuTarget::NewInstrument => {
+                let mut entries: Vec<MenuEntry> = self
+                    .instrument_rows(None)
+                    .into_iter()
+                    .map(|(entry, _)| entry)
+                    .collect();
+                entries[0] = MenuEntry::disabled("New instrument");
+                entries
+            }
+            MenuTarget::PluginPicker(purpose) => self
+                .picker_rows(*purpose)
+                .into_iter()
+                .map(|(entry, _)| entry)
+                .collect(),
+            MenuTarget::NameProject(purpose) => {
+                crate::canvas::name_prompt_entries(purpose.title(), &self.menu_filter)
+            }
+            MenuTarget::PresetMenu(kind) => self.preset_menu_rows(*kind).0,
+            MenuTarget::AddPatchEffect => {
+                let mut entries = vec![MenuEntry::disabled("Add effect")];
+                for kind in self.patch_effect_kinds() {
+                    entries.push(MenuEntry::new(kind.label()));
+                }
+                entries
+            }
+            MenuTarget::PresetSaveName(_) => {
+                crate::canvas::name_prompt_entries("Preset name", &self.menu_filter)
+            }
+            MenuTarget::PresetNewCategory(_) => {
+                crate::canvas::name_prompt_entries("New category", &self.menu_filter)
+            }
+            MenuTarget::PresetCategory(kind) => {
+                let mut entries = vec![MenuEntry::disabled("Category")];
+                for category in self.preset_categories_for(*kind) {
+                    entries.push(MenuEntry::new(category));
+                }
+                entries.push(MenuEntry::new(crate::render::NEW_CATEGORY).after_rule());
+                entries
+            }
+            MenuTarget::ChangeInstrument(index) => {
+                let current = self
+                    .options
+                    .document
+                    .as_ref()
+                    .and_then(|doc| doc.channel_kind(*index));
+                self.instrument_rows(current)
+                    .into_iter()
+                    .map(|(entry, _)| entry)
+                    .collect()
+            }
+            // A rename target and nothing else — a mixer strip's name is typed
+            // over in place rather than through a menu, which is what *"just
+            // be able to rename super quickly"* asks for. An empty list opens
+            // no menu, so this can never be a menu nobody can see.
+            MenuTarget::MixerTrack(_) => Vec::new(),
             // Built by the host, which read the file. The window draws the
             // lines and says which one was pressed.
             MenuTarget::ImportChoice => match self
@@ -6213,15 +8716,20 @@ impl WindowApp {
                     let mut entries = vec![MenuEntry::disabled(prompt.title)];
                     for (index, choice) in prompt.choices.into_iter().enumerate() {
                         let entry = MenuEntry::new(choice);
-                        entries.push(if index == 0 { entry.after_rule() } else { entry });
+                        entries.push(if index == 0 {
+                            entry.after_rule()
+                        } else {
+                            entry
+                        });
                     }
                     entries
                 }
                 None => Vec::new(),
             },
             // *"when i click record it prompts me what i would like to
-            // record."* The one that is on is greyed, which is how the menu
-            // says which it is.
+            // record."* The one that is on is marked — and still offered,
+            // because choosing is how the button arms and a second take is
+            // the same choice again. See `record_menu_entries_for`.
             MenuTarget::RecordMode => {
                 let current = self
                     .options
@@ -6229,16 +8737,7 @@ impl WindowApp {
                     .as_ref()
                     .map(|doc| doc.record_mode())
                     .unwrap_or_default();
-                crate::transport::RecordMode::ALL
-                    .iter()
-                    .map(|mode| {
-                        if *mode == current {
-                            MenuEntry::disabled(mode.label())
-                        } else {
-                            MenuEntry::new(mode.label())
-                        }
-                    })
-                    .collect()
+                crate::transport::record_menu_entries_for(current)
             }
             // Every input the machine has, and "none" above them — a track
             // that records nothing is the state every track starts in and the
@@ -6305,11 +8804,116 @@ impl WindowApp {
                 entries.push(MenuEntry::new("Delete point").after_rule());
                 entries
             }
+            // The grid, as a list rather than as six presses round a ring.
+            MenuTarget::Snap { timeline } => {
+                let current = if *timeline {
+                    self.timeline.view.snap
+                } else {
+                    self.roll.view.snap
+                };
+                crate::canvas::SNAP_DIVISIONS
+                    .iter()
+                    .map(|snap| {
+                        if *snap == current {
+                            MenuEntry::disabled(snap.label())
+                        } else {
+                            MenuEntry::new(snap.label())
+                        }
+                    })
+                    .collect()
+            }
+            // A parameter that is one of a list: its options, with the one it
+            // is already on greyed. The same shape the audio editor's rows
+            // get, because it is the same kind of value.
+            MenuTarget::ParamChoice {
+                editor,
+                group,
+                param,
+            } => {
+                let Some(param) = self.choice_param(*editor, *group, *param) else {
+                    return Vec::new();
+                };
+                let ParamKind::Choice(options) = &param.kind else {
+                    return Vec::new();
+                };
+                let at = crate::canvas::choice_index(&param.kind, param.value);
+                options
+                    .iter()
+                    .enumerate()
+                    .map(|(index, label)| {
+                        if index == at {
+                            MenuEntry::disabled(label)
+                        } else {
+                            MenuEntry::new(label)
+                        }
+                    })
+                    .collect()
+            }
+            // A drop-down: the row's own list, with the one it is already on
+            // greyed. Greyed rather than left out, so the list is the same
+            // length and in the same order every time it opens — a menu whose
+            // rows move about is a menu you have to read.
+            MenuTarget::AudioRow(field) => {
+                let (choices, at) = self.audio_row_menu(*field);
+                choices
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, label)| {
+                        if Some(index) == at {
+                            MenuEntry::disabled(&label)
+                        } else {
+                            MenuEntry::new(&label)
+                        }
+                    })
+                    .collect()
+            }
         }
+    }
+
+    /// What a drop-down row on the audio clip editor lists, and which entry it
+    /// is on.
+    ///
+    /// The route is the one row whose entries are not the clip's to know —
+    /// which mixer tracks exist is the document's — so it is answered from
+    /// `clip_routes`, the same list every other route control in this window
+    /// reads. Everything else comes off the field.
+    fn audio_row_menu(&self, field: crate::canvas::AudioField) -> (Vec<String>, Option<usize>) {
+        let Some(open) = &self.audio_clip else {
+            return (Vec::new(), None);
+        };
+        if field == crate::canvas::AudioField::Route {
+            let at = self
+                .clip_routes
+                .iter()
+                .position(|(id, _)| *id == open.data.mixer_track);
+            let names = self
+                .clip_routes
+                .iter()
+                .map(|(_, name)| name.clone())
+                .collect();
+            return (names, at);
+        }
+        (
+            crate::canvas::audio_row_choices(field)
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            crate::canvas::audio_row_chosen(&open.data, field),
+        )
     }
 
     /// Opens a menu about `target` at `(x, y)`, inside `bounds`.
     fn open_menu(&mut self, target: MenuTarget, x: f32, y: f32, bounds: crate::layout::Rect) {
+        // The press that shut this very menu is not the press that reopens
+        // it: a chip whose list drops down has to be a toggle, or it can
+        // never be shut by clicking it again. See `dismissed`.
+        if self.dismissed.as_ref() == Some(&target) {
+            return;
+        }
+        // A fresh menu is unfiltered, and remembers where it was dropped so
+        // that typing into it can re-lay it out in the same place.
+        self.menu_filter.clear();
+        self.menu_at = ((x, y), bounds);
         let entries = self.menu_entries(&target);
         let menu = crate::canvas::context_menu_layout(
             (x, y),
@@ -6325,6 +8929,100 @@ impl WindowApp {
         self.tree.invalidate_rect(bounds);
     }
 
+    /// Builds the open menu again, in the place it already occupies.
+    ///
+    /// What a keystroke in the plugin picker does. Deliberately **not**
+    /// `open_menu`: that one guards against the press that just dismissed a
+    /// menu reopening it, which is a rule about clicking and nothing to do
+    /// with typing.
+    fn relayout_menu(&mut self) {
+        let Some((target, _)) = self.menu.take() else {
+            return;
+        };
+        let (at, bounds) = self.menu_at;
+        let entries = self.menu_entries(&target);
+        let menu = crate::canvas::context_menu_layout(
+            at,
+            bounds,
+            &self.options.theme.metrics,
+            self.options.theme.font.size,
+            entries,
+        );
+        if !menu.is_empty() {
+            self.menu = Some((target, menu));
+        }
+        self.tree.invalidate_rect(bounds);
+    }
+
+    /// A keystroke while a menu that types is open — the plugin picker, which
+    /// filters, and the name prompt, which is a name box.
+    ///
+    /// `true` when it was theirs, which is every printable character,
+    /// backspace and escape — so a "d" typed at a list of plugins is a letter
+    /// in a name and not the delete tool. The same rule the search box
+    /// follows, for the same reason.
+    fn menu_filter_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        let target = self.menu.as_ref().map(|(target, _)| target);
+        let naming = matches!(
+            target,
+            Some(
+                MenuTarget::NameProject(_)
+                    | MenuTarget::PresetSaveName(_)
+                    | MenuTarget::PresetNewCategory(_)
+            )
+        );
+        if !naming
+            && !matches!(
+                target,
+                Some(MenuTarget::PluginPicker(_) | MenuTarget::PresetMenu(_))
+            )
+        {
+            return false;
+        }
+        match &event.logical_key {
+            // **Enter is the press.** A name box you can only finish with the
+            // mouse is a name box, and then a reach for the mouse.
+            Key::Named(NamedKey::Enter) if naming => {
+                let Some((target, _)) = self.menu.take() else {
+                    return true;
+                };
+                let bounds = self.menu_at.1;
+                self.tree.invalidate_rect(bounds);
+                // Row 1: the heading is row 0 and cannot be chosen.
+                self.choose_menu(&target, 1);
+                true
+            }
+            Key::Named(NamedKey::Escape) => {
+                let bounds = self.menu_at.1;
+                self.menu = None;
+                self.menu_filter.clear();
+                self.tree.invalidate_rect(bounds);
+                true
+            }
+            Key::Named(NamedKey::Backspace) => {
+                self.menu_filter.pop();
+                self.relayout_menu();
+                true
+            }
+            Key::Character(text) => {
+                let typed: String = text.chars().filter(|c| !c.is_control()).collect();
+                if typed.is_empty() {
+                    return false;
+                }
+                self.menu_filter.push_str(&typed);
+                self.relayout_menu();
+                true
+            }
+            Key::Named(NamedKey::Space) => {
+                self.menu_filter.push(' ');
+                self.relayout_menu();
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// A press while a menu is open. Every press closes it; one that landed on
     /// a row does what the row says first.
     ///
@@ -6332,11 +9030,34 @@ impl WindowApp {
     /// that landed on the menu's own frame without choosing, must not also
     /// reach whatever is drawn underneath it.
     fn press_menu(&mut self, x: f32, y: f32) -> bool {
+        // The scrollbar takes the press before the rows do, and the menu
+        // stays open under it: this press is the start of a drag, not a
+        // choice. Reported from using it — *"i cant drag the scroll knob"* —
+        // and it comes first because the bar is drawn over the right-hand end
+        // of the rows it is scrolling.
+        if let Some((_, menu)) = &self.menu
+            && let Some(grab) = menu.thumb_grab(x, y)
+        {
+            self.menu_grab = grab;
+            self.drag = Drag::MenuScroll;
+            return true;
+        }
+        // A star is pressed without the menu closing — see `toggle_star`.
+        if let Some((target, menu)) = &self.menu
+            && let Some(index) = crate::canvas::context_menu_star_hit(menu, x, y)
+        {
+            let target = target.clone();
+            self.toggle_star(&target, index);
+            return true;
+        }
         let Some((target, menu)) = self.menu.take() else {
             return false;
         };
         let inside = menu.frame.contains(x, y);
         let chosen = crate::canvas::context_menu_hit(&menu, x, y);
+        // See `dismissed`: a press that shut this menu without choosing from
+        // it must not be the press that opens it again.
+        self.dismissed = (!inside).then(|| target.clone());
         self.tree.invalidate_rect(menu.frame);
         self.tree.invalidate(RACK);
         self.tree.invalidate(TIMELINE);
@@ -6357,6 +9078,66 @@ impl WindowApp {
         inside
     }
 
+    /// Puts the plugin at `which` where `purpose` says — a new channel, an
+    /// existing one, or the end of a strip's chain. One place, because the
+    /// picker, the *+ fx* menu and the instrument menus all end here.
+    fn choose_plugin(&mut self, purpose: PluginPurpose, which: usize, name: String) {
+        if let Some(doc) = &mut self.options.document {
+            match purpose {
+                PluginPurpose::NewChannel => doc.add_plugin_channel(which),
+                PluginPurpose::ChangeChannel(channel) => {
+                    doc.set_channel_plugin(channel, which);
+                    // The channel this was chosen for is the one whose window
+                    // opens below, and the instrument window is always the
+                    // selected channel's.
+                    doc.select_channel(channel);
+                }
+                PluginPurpose::Insert(strip) => doc.add_plugin_insert(strip, which),
+            }
+        }
+        self.status = name;
+        if matches!(purpose, PluginPurpose::NewChannel) {
+            self.rack_scroll = usize::MAX;
+        }
+        match purpose {
+            PluginPurpose::NewChannel | PluginPurpose::ChangeChannel(_) => {
+                self.open_chosen_instrument();
+            }
+            PluginPurpose::Insert(strip) => self.open_newest_insert(strip),
+        }
+    }
+
+    /// Opens the selected channel's instrument window, straight after the
+    /// instrument was chosen.
+    ///
+    /// *"make it so when an instrument is added or changed etc. it opens the
+    /// window for that instrument."* The studio is refreshed first, because
+    /// the window's shape is decided by what is on the channel
+    /// (`create_editor` asks `self.flopsynth`), and that is read from the
+    /// document by `refresh_studio`.
+    fn open_chosen_instrument(&mut self) {
+        self.refresh_studio();
+        self.refresh_title();
+        self.open_editor(EditorKind::Instrument);
+    }
+
+    /// Opens the window of the effect just added to the end of `strip`'s
+    /// chain — the same request, for an effect.
+    fn open_newest_insert(&mut self, strip: usize) {
+        self.refresh_studio();
+        self.refresh_title();
+        let Some(slot) = self
+            .mixer_strips
+            .get(strip)
+            .map(|s| s.inserts.len())
+            .filter(|n| *n > 0)
+            .map(|n| n - 1)
+        else {
+            return;
+        };
+        self.open_insert(strip, slot);
+    }
+
     /// What entry `index` of a menu about `target` does. The other half of
     /// [`menu_entries`](Self::menu_entries), and the two are read together.
     fn choose_menu(&mut self, target: &MenuTarget, index: usize) {
@@ -6367,15 +9148,25 @@ impl WindowApp {
                 }
                 self.open_editor(EditorKind::Instrument);
             }
-            (MenuTarget::Channel(channel), 1) => self.start_rename(MenuTarget::Channel(*channel)),
-            (MenuTarget::Channel(channel), 2) => {
+            // A menu of its own rather than three more rows here: the kinds
+            // are one list (`MenuTarget::ChangeInstrument`) and both places
+            // that offer them read it, so they cannot come to disagree.
+            (MenuTarget::Channel(channel), 1) => {
+                let target = MenuTarget::ChangeInstrument(*channel);
+                let (x, y) = self.cursor;
+                let bounds = self.layout.window;
+                self.scan_for_starred_plugins();
+                self.open_menu(target, x, y, bounds);
+            }
+            (MenuTarget::Channel(channel), 2) => self.start_rename(MenuTarget::Channel(*channel)),
+            (MenuTarget::Channel(channel), 3) => {
                 if let Some(doc) = &mut self.options.document {
                     doc.duplicate_channel(*channel);
                 }
                 self.status = "Instrument duplicated".to_string();
                 self.rack_scroll = usize::MAX;
             }
-            (MenuTarget::Channel(channel), 3) => {
+            (MenuTarget::Channel(channel), 4) => {
                 if let Some(doc) = &mut self.options.document {
                     doc.clear_channel_instrument(*channel);
                 }
@@ -6386,24 +9177,63 @@ impl WindowApp {
                 }
             }
 
-            (MenuTarget::Lane(_), 0) => {
+            (MenuTarget::Prefab(index), 0) => self.start_rename(MenuTarget::Prefab(*index)),
+            (MenuTarget::Prefab(index), _) => {
+                let at = *index;
                 if let Some(doc) = &mut self.options.document {
-                    doc.add_lane();
+                    doc.remove_prefab(at);
+                }
+                self.status =
+                    "Prefab deleted — the places it was drawn in keep what it held".to_string();
+            }
+
+            (MenuTarget::Lane(lane), 0) => {
+                let at = *lane;
+                if let Some(doc) = &mut self.options.document {
+                    doc.add_lane_at(at);
+                }
+                self.lane_made();
+            }
+            (MenuTarget::Lane(lane), 1) => {
+                let at = lane.saturating_add(1);
+                if let Some(doc) = &mut self.options.document {
+                    doc.add_lane_at(at);
+                }
+                self.lane_made();
+            }
+            // *"it will either do my time selection (if i have one) but it
+            // will prompt first ... or if there was no time selection just
+            // render the whole track."* The prompt only exists when there is
+            // something to choose between.
+            (MenuTarget::Lane(lane), 2) => {
+                let lane = *lane;
+                let selection = self
+                    .options
+                    .document
+                    .as_ref()
+                    .and_then(|doc| doc.loop_range());
+                match selection {
+                    Some(_) => {
+                        let (x, y) = self.cursor;
+                        let bounds = self.layout.window;
+                        self.open_menu(MenuTarget::RenderChoice(lane), x, y, bounds);
+                    }
+                    None => self.render_lane(lane, None),
                 }
             }
-            (MenuTarget::Lane(lane), 1) => self.start_rename(MenuTarget::Lane(*lane)),
-            (MenuTarget::Lane(lane), 2) => {
+            (MenuTarget::Lane(lane), 3) => self.start_rename(MenuTarget::Lane(*lane)),
+            (MenuTarget::Lane(lane), 4) => {
                 if let Some(doc) = &mut self.options.document {
                     doc.toggle_lane_mute(*lane);
                 }
             }
-            (MenuTarget::Lane(lane), 3) => {
+            (MenuTarget::Lane(lane), 5) => {
                 if let Some(doc) = &mut self.options.document {
                     doc.move_lane(*lane, -1);
                 }
                 self.status = "Row moved up".to_string();
             }
-            (MenuTarget::Lane(lane), 4) => {
+            (MenuTarget::Lane(lane), 6) => {
                 if let Some(doc) = &mut self.options.document {
                     doc.move_lane(*lane, 1);
                 }
@@ -6413,6 +9243,294 @@ impl WindowApp {
                 if let Some(doc) = &mut self.options.document {
                     doc.remove_lane(*lane);
                 }
+            }
+
+            // Entry 1 is the selection, entry 2 the whole row.
+            (MenuTarget::RenderChoice(lane), index) => {
+                let lane = *lane;
+                let span = match index {
+                    1 => self
+                        .options
+                        .document
+                        .as_ref()
+                        .and_then(|doc| doc.loop_range()),
+                    _ => None,
+                };
+                self.render_lane(lane, span);
+            }
+
+            // Entry 0 is the greyed heading, so the kinds start at 1 and line
+            // up with `InstrumentKind::ALL`.
+            //
+            // **The button asks now.** It used to make a synth outright, which
+            // was itself a fix: before *that* it put the browser's first
+            // preset on a new channel and did nothing at all when no soundfont
+            // had been opened, which is how a button ends up looking broken
+            // and then looking haunted. Asking is the version that survives
+            // there being three instruments to choose between.
+            (MenuTarget::PluginPicker(purpose), index) => {
+                use crate::canvas::PickerRow;
+                let purpose = *purpose;
+                match self.picker_rows(purpose).get(index).map(|(_, row)| *row) {
+                    Some(PickerRow::Plugin(which)) => {
+                        let name = self
+                            .plugin_listings(purpose)
+                            .get(which)
+                            .map(|listing| listing.name.clone())
+                            .unwrap_or_default();
+                        self.choose_plugin(purpose, which, name);
+                    }
+                    Some(PickerRow::Rescan) => {
+                        if let Some(doc) = &mut self.options.document {
+                            doc.rescan_plugins();
+                        }
+                        self.status = "Scanning plugin folders".to_string();
+                    }
+                    _ => return,
+                }
+                self.refresh_studio();
+                self.refresh_title();
+            }
+            // The mixer's *+ fx* row. A built-in goes straight on; a starred
+            // plugin goes straight on too, which is what starring it bought;
+            // and *Plugin…* opens the picker, dropped from where this was.
+            (MenuTarget::AddEffect(strip), index) => {
+                use crate::canvas::EffectRow;
+                let strip = *strip;
+                match self.effect_rows().get(index).map(|(_, row)| *row) {
+                    Some(EffectRow::Builtin(kind)) => {
+                        if let Some(doc) = &mut self.options.document {
+                            doc.add_insert(strip, kind);
+                        }
+                        self.open_newest_insert(strip);
+                    }
+                    Some(EffectRow::Plugin(which)) => {
+                        let name = self
+                            .plugin_listings(PluginPurpose::Insert(strip))
+                            .get(which)
+                            .map(|listing| listing.name.clone())
+                            .unwrap_or_default();
+                        self.choose_plugin(PluginPurpose::Insert(strip), which, name);
+                    }
+                    Some(EffectRow::PluginPicker) => {
+                        if let Some(doc) = &mut self.options.document {
+                            doc.scan_plugins_once();
+                        }
+                        let (x, y) = self.cursor;
+                        let bounds = self.layout.window;
+                        self.open_menu(
+                            MenuTarget::PluginPicker(PluginPurpose::Insert(strip)),
+                            x,
+                            y,
+                            bounds,
+                        );
+                        return;
+                    }
+                    _ => return,
+                }
+                self.refresh_studio();
+                self.refresh_title();
+            }
+            // One live row, and Enter presses it — see `menu_filter_key`.
+            (MenuTarget::NameProject(purpose), _) => {
+                let purpose = *purpose;
+                let name = self.menu_filter.clone();
+                self.menu_filter.clear();
+                let done = self.options.document.as_mut().map(|doc| match purpose {
+                    NameFor::NewProject => doc.new_project_named(&name),
+                    NameFor::SaveAs => doc.save_as(&name),
+                });
+                self.status = match done {
+                    Some(Ok(())) => match purpose {
+                        NameFor::NewProject => "new project".to_string(),
+                        NameFor::SaveAs => "saved".to_string(),
+                    },
+                    Some(Err(e)) => e,
+                    None => String::new(),
+                };
+                self.studio_revision = u64::MAX;
+                self.refresh_studio();
+                self.refresh_title();
+                self.tree.invalidate(BROWSER);
+                self.tree.invalidate(RACK);
+                self.tree.invalidate(TIMELINE);
+                self.tree.invalidate(PANEL);
+            }
+            (MenuTarget::AddPatchEffect, index) => {
+                // Row 0 is the heading, so the kinds start at 1.
+                let kind = index
+                    .checked_sub(1)
+                    .and_then(|which| self.patch_effect_kinds().get(which).copied());
+                if let (Some(kind), Some(doc)) = (kind, self.options.document.as_mut()) {
+                    doc.add_patch_effect(kind);
+                }
+                self.after_flop_structure();
+            }
+            (MenuTarget::PresetMenu(kind), index) => {
+                let kind = *kind;
+                let row = self.preset_menu_rows(kind).1.get(index).copied();
+                let Some(crate::canvas::PresetMenuRow::Preset(which)) = row else {
+                    // A heading. Nothing happens, and the menu has already
+                    // closed — the same as pressing any other greyed row.
+                    return;
+                };
+                if let (Some(device), Some(doc)) =
+                    (self.preset_device(kind), self.options.document.as_mut())
+                {
+                    doc.apply_preset(device, which);
+                }
+                self.after_preset_change();
+            }
+            // One live row, and Enter presses it — see `menu_filter_key`.
+            (MenuTarget::PresetSaveName(kind), _) => {
+                let kind = *kind;
+                let name = self.menu_filter.trim().to_string();
+                self.menu_filter.clear();
+                if name.is_empty() {
+                    return;
+                }
+                let Some(slot) = Self::preset_slot(kind) else {
+                    return;
+                };
+                self.pending_save_as = Some((slot, name));
+                // Straight on to the second question, in the same place, so
+                // the two prompts read as one gesture.
+                self.ask_in_editor(MenuTarget::PresetCategory(kind), kind, String::new());
+            }
+            (MenuTarget::PresetCategory(kind), index) => {
+                let kind = *kind;
+                let categories = self.preset_categories_for(kind);
+                // Row 0 is the heading; the rows after the categories is the
+                // one that makes a new one.
+                match index.checked_sub(1).and_then(|at| categories.get(at)) {
+                    Some(category) => {
+                        let category = category.clone();
+                        self.finish_save_as(kind, &category);
+                    }
+                    None => {
+                        self.ask_in_editor(
+                            MenuTarget::PresetNewCategory(kind),
+                            kind,
+                            String::new(),
+                        );
+                    }
+                }
+            }
+            (MenuTarget::PresetNewCategory(kind), _) => {
+                let kind = *kind;
+                let category = self.menu_filter.trim().to_string();
+                self.menu_filter.clear();
+                if category.is_empty() {
+                    return;
+                }
+                self.finish_save_as(kind, &category);
+            }
+            (MenuTarget::NewInstrument, index) => {
+                use crate::canvas::InstrumentRow;
+                let kind = match self.instrument_rows(None).get(index).map(|(_, row)| *row) {
+                    Some(InstrumentRow::Kind(kind)) => kind,
+                    // A starred plugin: what starring it was for.
+                    Some(InstrumentRow::Plugin(which)) => {
+                        let name = self
+                            .plugin_listings(PluginPurpose::NewChannel)
+                            .get(which)
+                            .map(|listing| listing.name.clone())
+                            .unwrap_or_default();
+                        self.choose_plugin(PluginPurpose::NewChannel, which, name);
+                        self.refresh_studio();
+                        self.refresh_title();
+                        return;
+                    }
+                    _ => return,
+                };
+                // "Plugin" is not an instrument yet — it is a promise to name
+                // one, and the list of which is on the machine rather than in
+                // this binary. So the row opens the browser instead of making
+                // a channel that plays nothing.
+                if kind == fontelle_types::InstrumentKind::Plugin {
+                    if let Some(doc) = &mut self.options.document {
+                        doc.scan_plugins_once();
+                    }
+                    let (x, y) = self.cursor;
+                    let bounds = self.layout.window;
+                    self.open_menu(
+                        MenuTarget::PluginPicker(PluginPurpose::NewChannel),
+                        x,
+                        y,
+                        bounds,
+                    );
+                    return;
+                }
+                let mut added = false;
+                if let Some(doc) = &mut self.options.document {
+                    match doc.add_channel_of(kind) {
+                        Ok(()) => {
+                            self.status = format!("New instrument: {}", kind.label());
+                            self.rack_scroll = usize::MAX;
+                            added = true;
+                        }
+                        Err(e) => self.status = e,
+                    }
+                }
+                self.tree.invalidate(RACK);
+                self.tree.invalidate(PANEL);
+                // The new channel is the selected one (`Session::new_channel_of`),
+                // so this opens *its* window.
+                if added {
+                    self.open_chosen_instrument();
+                }
+            }
+            (MenuTarget::ChangeInstrument(channel), index) => {
+                use crate::canvas::InstrumentRow;
+                let channel = *channel;
+                let current = self
+                    .options
+                    .document
+                    .as_ref()
+                    .and_then(|doc| doc.channel_kind(channel));
+                let kind = match self
+                    .instrument_rows(current)
+                    .get(index)
+                    .map(|(_, row)| *row)
+                {
+                    Some(InstrumentRow::Kind(kind)) => kind,
+                    Some(InstrumentRow::Plugin(which)) => {
+                        let name = self
+                            .plugin_listings(PluginPurpose::ChangeChannel(channel))
+                            .get(which)
+                            .map(|listing| listing.name.clone())
+                            .unwrap_or_default();
+                        self.choose_plugin(PluginPurpose::ChangeChannel(channel), which, name);
+                        self.refresh_studio();
+                        self.refresh_title();
+                        return;
+                    }
+                    _ => return,
+                };
+                // As above: which plugin is a second question, and this menu
+                // cannot ask it.
+                if kind == fontelle_types::InstrumentKind::Plugin {
+                    if let Some(doc) = &mut self.options.document {
+                        doc.scan_plugins_once();
+                    }
+                    let (x, y) = self.cursor;
+                    let bounds = self.layout.window;
+                    self.open_menu(
+                        MenuTarget::PluginPicker(PluginPurpose::ChangeChannel(channel)),
+                        x,
+                        y,
+                        bounds,
+                    );
+                    return;
+                }
+                if let Some(doc) = &mut self.options.document {
+                    doc.select_channel(channel);
+                    doc.set_channel_kind(channel, kind);
+                }
+                self.status = format!("Instrument is now {}", kind.label());
+                self.tree.invalidate(RACK);
+                self.tree.invalidate(PANEL);
+                self.open_chosen_instrument();
             }
 
             (MenuTarget::InsertParam { param, name }, 1) => {
@@ -6434,7 +9552,11 @@ impl WindowApp {
                 let at = self.view.position_sample;
                 if let Some(doc) = &mut self.options.document {
                     let at = doc.playhead_song_tick(at);
-                    doc.create_automation(&fontelle_types::ParamTarget::Tempo.address(), "Tempo", at);
+                    doc.create_automation(
+                        &fontelle_types::ParamTarget::Tempo.address(),
+                        "Tempo",
+                        at,
+                    );
                 }
                 self.lane_made();
             }
@@ -6456,19 +9578,17 @@ impl WindowApp {
             // A tool: the three that take settings open their dialog, and the
             // two importers open a file browser. `TOOL_MENU` is the order in
             // both places, so nothing here has to know which is which.
-            (MenuTarget::RollTools, index) => {
-                match crate::canvas::TOOL_MENU.get(index) {
-                    Some(crate::canvas::ToolMenuItem::Open(kind)) => {
-                        let kind = *kind;
-                        self.open_tool_dialog(kind);
-                    }
-                    Some(crate::canvas::ToolMenuItem::Run(action)) => {
-                        let action = *action;
-                        self.run_tool(action);
-                    }
-                    None => {}
+            (MenuTarget::RollTools, index) => match crate::canvas::TOOL_MENU.get(index) {
+                Some(crate::canvas::ToolMenuItem::Open(kind)) => {
+                    let kind = *kind;
+                    self.open_tool_dialog(kind);
                 }
-            }
+                Some(crate::canvas::ToolMenuItem::Run(action)) => {
+                    let action = *action;
+                    self.run_tool(action);
+                }
+                None => {}
+            },
             (MenuTarget::RecordMode, index) => {
                 if let Some(mode) = crate::transport::RecordMode::ALL.get(index).copied() {
                     if let Some(doc) = &mut self.options.document {
@@ -6518,6 +9638,70 @@ impl WindowApp {
                     doc.end_gesture();
                 }
             }
+            (MenuTarget::Snap { timeline }, index) => {
+                let Some(snap) = crate::canvas::SNAP_DIVISIONS.get(index).copied() else {
+                    return;
+                };
+                if *timeline {
+                    self.timeline.view.snap = snap;
+                    self.tree.invalidate(TIMELINE);
+                } else {
+                    self.roll.view.snap = snap;
+                    self.tree.invalidate(PANEL);
+                }
+            }
+            // The same, for a parameter on either panel of knobs. The value
+            // is a normalised position in the list (see
+            // `canvas::choice_index`), so a choice and a knob stay one kind
+            // of number and automation can address either.
+            (
+                MenuTarget::ParamChoice {
+                    editor,
+                    group,
+                    param,
+                },
+                index,
+            ) => {
+                let (editor, group, param) = (*editor, *group, *param);
+                let Some(control) = self.choice_param(editor, group, param).cloned() else {
+                    return;
+                };
+                let ParamKind::Choice(options) = &control.kind else {
+                    return;
+                };
+                if index >= options.len() {
+                    return;
+                }
+                let value = if options.len() < 2 {
+                    control.value
+                } else {
+                    index as f32 / (options.len() - 1) as f32
+                };
+                match editor {
+                    EditorKind::Instrument => self.set_param(&control.address, value),
+                    _ => self.write_insert_param(control.address.as_str(), value),
+                }
+                if let Some(doc) = &mut self.options.document {
+                    doc.end_gesture();
+                }
+                self.redraw_editor(editor);
+            }
+            // A drop-down on the audio clip editor: the entry chosen, in one
+            // press, whichever end of the list it is at.
+            (MenuTarget::AudioRow(field), index) => {
+                let field = *field;
+                let tracks: Vec<Option<fontelle_types::MixerTrackId>> =
+                    self.clip_routes.iter().map(|(id, _)| *id).collect();
+                let Some(open) = &mut self.audio_clip else {
+                    return;
+                };
+                if field == crate::canvas::AudioField::Route {
+                    crate::canvas::choose_audio_route(&mut open.data, index, &tracks);
+                } else {
+                    crate::canvas::choose_audio_row(&mut open.data, field, index);
+                }
+                self.write_audio_clip();
+            }
             _ => {}
         }
         self.refresh_studio();
@@ -6526,14 +9710,50 @@ impl WindowApp {
 
     // ------------------------------------------------------ typing a name ---
 
+    /// Puts the name prompt up, seeded with `seed`.
+    ///
+    /// In the middle of the window rather than at the pointer: the two things
+    /// that ask — the Projects tab's *New* and Ctrl+S — are a button in one
+    /// corner and a key that has no position at all, and a prompt that
+    /// appeared under the mouse for one of them and in the corner for the
+    /// other would be two different features.
+    fn ask_for_a_name(&mut self, purpose: NameFor, seed: String) {
+        // Neither of the two things that ask is a chip you press twice, so
+        // the toggle guard `open_menu` keeps has nothing to say here — and
+        // leaving it set would swallow the Ctrl+S after a prompt somebody
+        // dismissed by clicking away from it.
+        self.dismissed = None;
+        let bounds = self.layout.window;
+        let (x, y) = (
+            bounds.x + bounds.width / 2.0,
+            bounds.y + bounds.height / 3.0,
+        );
+        self.open_menu(MenuTarget::NameProject(purpose), x, y, bounds);
+        // After opening, because a fresh menu is unfiltered and this one is
+        // seeded — with the name the project already goes by, so Ctrl+S on an
+        // unsaved studio is Enter away from done.
+        if self.menu.is_some() && !seed.is_empty() {
+            self.menu_filter = seed;
+            self.relayout_menu();
+        }
+    }
+
     /// Starts a rename. Every keystroke after this goes into the name until
     /// Enter or Escape ends it.
     fn start_rename(&mut self, target: MenuTarget) {
         self.renaming = Some(target);
         self.status = "Type a name \u{2014} Enter when you are done".to_string();
+        self.invalidate_names();
+    }
+
+    /// Everywhere a name being typed is drawn. One list, because a rename that
+    /// redraws three panels out of four is a caret you cannot see in the
+    /// fourth — the mixer is in `PANEL`, and it was the one left out.
+    fn invalidate_names(&mut self) {
         self.tree.invalidate(RACK);
         self.tree.invalidate(TIMELINE);
         self.tree.invalidate(BROWSER);
+        self.tree.invalidate(PANEL);
     }
 
     /// The name being typed, as it stands — read from the document, because
@@ -6548,6 +9768,14 @@ impl WindowApp {
                 .lanes
                 .get(*index)
                 .map_or_else(String::new, |lane| lane.name.clone()),
+            Some(MenuTarget::MixerTrack(index)) => self
+                .mixer_strips
+                .get(*index)
+                .map_or_else(String::new, |strip| strip.name.clone()),
+            Some(MenuTarget::Prefab(index)) => self
+                .prefabs
+                .get(*index)
+                .map_or_else(String::new, |prefab| prefab.name.clone()),
             _ => String::new(),
         }
     }
@@ -6558,6 +9786,8 @@ impl WindowApp {
             match target {
                 Some(MenuTarget::Channel(index)) => doc.rename_channel(index, &name),
                 Some(MenuTarget::Lane(index)) => doc.rename_lane(index, &name),
+                Some(MenuTarget::MixerTrack(index)) => doc.rename_mixer_track(index, &name),
+                Some(MenuTarget::Prefab(index)) => doc.rename_prefab(index, &name),
                 _ => {}
             }
         }
@@ -6599,35 +9829,28 @@ impl WindowApp {
             }
             _ => {}
         }
-        self.tree.invalidate(RACK);
-        self.tree.invalidate(TIMELINE);
-        self.tree.invalidate(BROWSER);
+        self.invalidate_names();
         true
     }
 
-    /// The rack's add button: a blank channel, playing the built-in synth.
-    ///
-    /// It used to put the browser's first preset on a new channel, and do
-    /// **nothing at all** when no soundfont had been opened — which is how a
-    /// button ends up looking broken and then looking haunted, because the
-    /// click that finally seemed to work was somebody choosing a preset for a
-    /// channel they already had. Something to play, immediately, and a
-    /// soundfont chosen after if you want one. See
-    /// [`StudioHost::add_channel`](crate::document::StudioHost::add_channel).
-    fn add_channel(&mut self) {
-        let Some(doc) = &mut self.options.document else {
+    /// Brings one of the editor column's tabs to the front — a click on the
+    /// tab, or its number key (see `layout::editor_tab_for_key`).
+    fn show_tab(&mut self, tab: EditorTab) {
+        if self.tab == tab {
             return;
-        };
-        match doc.add_channel() {
-            Ok(()) => {
-                self.status = "New instrument \u{2014} the built-in synth".to_string();
-                // The rack scrolls to the end, where the new channel is: one
-                // added below the fold is a button that did nothing, again.
-                self.rack_scroll = usize::MAX;
-            }
-            Err(e) => self.status = e,
         }
-        self.tree.invalidate(RACK);
+        self.tab = tab;
+        // Nothing reads a track's meter while the mixer is hidden, and a
+        // peak is the highest **since the last read** — so the first frame
+        // of the tab would otherwise show the loudest moment since it was
+        // last open, and then fall. Drain once and throw it away.
+        if tab == EditorTab::Mixer
+            && let Some(doc) = &mut self.options.document
+        {
+            doc.mixer_peaks();
+            self.mixer_peaks.clear();
+        }
+        self.relayout_panels();
         self.tree.invalidate(PANEL);
     }
 
@@ -6651,7 +9874,9 @@ impl WindowApp {
     fn activate(&mut self, control: RollControl) {
         match control {
             RollControl::Tool(tool) => self.set_tool(tool),
-            RollControl::Snap => self.cycle_snap(),
+            // The chip **drops its list**; `S` still steps. See
+            // `canvas::SNAP_DIVISIONS`.
+            RollControl::Snap => self.open_snap_menu(false),
             RollControl::ZoomInX => self.zoom(1.25, 1.0),
             RollControl::ZoomOutX => self.zoom(0.8, 1.0),
             RollControl::ZoomInY => self.zoom(1.0, 1.25),
@@ -6721,8 +9946,14 @@ impl WindowApp {
     /// What it *is* is the host's to work out from its name — a `.mid`, an FL
     /// score, or a soundfont — because this crate may not read one.
     fn drop_file(&mut self, path: &std::path::Path) {
+        // Where the pointer is, which for a file that has a position on the
+        // song is where it goes. winit's drop carries no coordinates of its
+        // own, so this is the last place the pointer was known to be — which
+        // is the drop point on every backend that tracks a drag, and the point
+        // you were last at on the ones that do not.
+        let at = self.drop_sample();
         let result = match &mut self.options.document {
-            Some(doc) => doc.drop_file(path),
+            Some(doc) => doc.drop_file_at(path, at),
             None => return,
         };
         match result {
@@ -6743,6 +9974,30 @@ impl WindowApp {
         self.tree.invalidate(TIMELINE);
         self.tree.invalidate(BROWSER);
         self.show_import_prompt();
+    }
+
+    /// Which sample of the song a dropped file should land on.
+    ///
+    /// The bar under the pointer when it is over the arrangement, and the top
+    /// of the song otherwise: dropping a file on the browser or the rack is
+    /// not a statement about *where*, and guessing a position from a pointer
+    /// that was never over the timeline would scatter imports along the song.
+    ///
+    /// Snapped, because a clip dropped a few pixels off the bar is a clip you
+    /// then have to nudge — the same rule every other gesture on this
+    /// timeline follows.
+    fn drop_sample(&self) -> fontelle_types::Sample {
+        let (x, y) = self.cursor;
+        let grid = self.timeline_layout.grid;
+        if !grid.contains(x, y) {
+            return 0;
+        }
+        let Some(doc) = &self.options.document else {
+            return 0;
+        };
+        let tick = crate::canvas::timeline_x_to_tick(&self.timeline.view, grid, x);
+        let snapped = crate::canvas::timeline_snap(&self.timeline.view, tick, doc.beats_per_bar());
+        doc.sample_of_song_tick(snapped.max(0))
     }
 
     /// Puts up the question a file has raised, if one is waiting and no menu
@@ -6953,6 +10208,7 @@ impl WindowApp {
                 self.tools.property.label(),
                 selection.len()
             ),
+            ToolAction::Legato => format!("Joined up {} note(s)", selection.len()),
             ToolAction::ImportMidi | ToolAction::ImportScore => String::new(),
         };
     }
@@ -7030,19 +10286,114 @@ impl WindowApp {
         let (_, y) = clamp_to_grid(grid, grid.x, y);
         let key = y_to_key(&self.roll.view, grid, y);
         if self.audition.key() != Some(key) {
+            // The keyboard plays **your** instrument, so a preset you were
+            // listening to lets go of the live path here.
+            self.end_preview();
             self.start_audition(key, 0);
         }
     }
 
-    /// Zoom about the middle of the grid — what a button press means, as
-    /// against the wheel, which zooms about the pointer.
+    /// The take being recorded, in song ticks — see
+    /// [`TimelineChrome::recording`](crate::render::TimelineChrome::recording).
+    ///
+    /// Entirely the window's own arithmetic: `take_from` is where the tape
+    /// started (after the count-in, which is why it is not the marker) and the
+    /// playhead is where it has got to. The document knows nothing about it
+    /// yet and should not — the clip does not exist until the transport stops.
+    fn recording_span(&self) -> Option<(fontelle_types::Tick, fontelle_types::Tick)> {
+        let doc = self.options.document.as_ref()?;
+        if !self.view.recording || doc.record_mode() != crate::transport::RecordMode::Audio {
+            return None;
+        }
+        // `None` while the count-in is still running: nothing is being kept
+        // yet, and a block that appeared a bar early would be a lie about
+        // where the take starts.
+        let from = self.take_from?;
+        let start = doc.playhead_song_tick(from);
+        let now = doc.playhead_song_tick(self.view.position_sample);
+        (now > start).then_some((start, now))
+    }
+
+    /// What a clip's mixer track is called.
+    ///
+    /// A track that has been deleted since the clip was routed to it says so
+    /// rather than reading as the master, which is a different statement and
+    /// the one that would hide the mistake.
+    fn clip_route_label(&self, track: Option<fontelle_types::MixerTrackId>) -> String {
+        self.clip_routes
+            .iter()
+            .find(|(id, _)| *id == track)
+            .map(|(_, name)| name.clone())
+            .unwrap_or_else(|| "\u{2014} gone".to_string())
+    }
+
+    /// What the transport bar's tempo box reads.
+    ///
+    /// The tempo **in force at the playhead** — see
+    /// [`StudioHost::tempo_at`](crate::document::StudioHost::tempo_at). With
+    /// no tempo lane in the project this is the box value and nothing looks
+    /// different; with one, the box finally moves with the song.
+    ///
+    /// Editing is unaffected and deliberately so: `self.tempo` is still what a
+    /// drag starts from and what `set_tempo` writes, because the thing you can
+    /// change is the document's tempo and the thing you are watching is the
+    /// curve over it.
+    fn tempo_showing(&self) -> f64 {
+        match &self.options.document {
+            Some(doc) if self.view.available => doc.tempo_at(self.view.position_sample),
+            _ => self.tempo,
+        }
+    }
+
+    /// A zoom from a button or a key, about **the pointer** — see
+    /// [`crate::canvas::zoom_anchor`], which is where that rule lives.
+    ///
+    /// It lands on whichever canvas the pointer is over, so `+` in the
+    /// arrangement zooms the arrangement. Before this it was always the roll,
+    /// always about the middle: two ways of being somewhere you did not ask
+    /// to be.
     fn zoom(&mut self, x: f32, y: f32) {
+        if self
+            .layout
+            .timeline
+            .frame
+            .contains(self.cursor.0, self.cursor.1)
+        {
+            let grid = self.timeline_layout.grid;
+            if x != 1.0 {
+                timeline_zoom_x(
+                    &mut self.timeline.view,
+                    grid,
+                    crate::canvas::zoom_anchor(grid, self.cursor),
+                    x,
+                );
+            }
+            // The arrangement's vertical zoom is row height, which has no
+            // anchor to speak of: every lane keeps its order and its place in
+            // the list.
+            if y != 1.0 {
+                timeline_zoom_y(&mut self.timeline.view, y);
+            }
+            self.tree.invalidate(TIMELINE);
+            return;
+        }
         let grid = self.roll_layout.grid;
         if x != 1.0 {
-            zoom_x(&mut self.roll.view, grid, grid.x + grid.width / 2.0, x);
+            zoom_x(
+                &mut self.roll.view,
+                grid,
+                crate::canvas::zoom_anchor(grid, self.cursor),
+                x,
+            );
         }
         if y != 1.0 {
-            zoom_y(&mut self.roll.view, grid, grid.y + grid.height / 2.0, y);
+            let (_, cy) = self.cursor;
+            let anchor = if grid.contains(self.cursor.0, cy) {
+                cy
+            } else {
+                grid.y + grid.height / 2.0
+            };
+            zoom_y(&mut self.roll.view, grid, anchor, y);
         }
         self.tree.invalidate(PANEL);
     }
@@ -7128,7 +10479,10 @@ impl WindowApp {
         // off the end of what is showing. The roll itself clamps the pointer
         // (see `clamp_to_grid`); this is the half that makes the clamp not
         // simply a wall.
-        let (ticks, rows) = edge_scroll(&self.roll.view, grid, x, y);
+        // Copied out first: `edge_scroll_step` takes `&mut self`, and the view
+        // it reads is a `Copy` snapshot rather than a borrow of it.
+        let view = self.roll.view;
+        let (ticks, rows) = self.edge_scroll_step(&view, grid);
         if ticks != 0 || rows != 0 {
             let v = &mut self.roll.view;
             v.scroll_tick = (v.scroll_tick + ticks).max(0);
@@ -7215,6 +10569,38 @@ impl WindowApp {
         }
     }
 
+    /// Middle C, which is what a preview plays.
+    ///
+    /// *"make it so if im holding ctrl while i do it, it plays it an octave
+    /// lower, and if im holding shift, it does it an octave higher."* Both at
+    /// once cancel out, which is the only sensible reading of "down and up".
+    fn preview_key(&self) -> u8 {
+        let mut key = 60i32;
+        if self.modifiers.control_key() {
+            key -= 12;
+        }
+        if self.modifiers.shift_key() {
+            key += 12;
+        }
+        key.clamp(0, 127) as u8
+    }
+
+    /// Lets you hear preset `index` without putting it on anything.
+    fn preview_preset(&mut self, index: usize) {
+        let key = self.preview_key();
+        let loaded = match &mut self.options.document {
+            Some(doc) => doc.preview_preset(index),
+            None => return,
+        };
+        if let Err(e) = loaded {
+            self.status = e;
+            return;
+        }
+        // Through the same state machine every other audition uses, so this
+        // note-on has a note-off coming like all the rest.
+        self.start_audition(key, 0);
+    }
+
     /// Sounds a key on the live path for at least `ticks` of song time.
     ///
     /// Zero ticks means "no note behind it" — the on-screen keyboard — and
@@ -7239,6 +10625,17 @@ impl WindowApp {
             .audition
             .start(key, velocity, pan, hold, std::time::Instant::now());
         self.send_audition(actions);
+    }
+
+    /// Aims the live path back at the selected channel, ending any preview.
+    ///
+    /// Called from every audition that is *about the song* — a key, a note, a
+    /// drawn note — so that clicking a preset and then playing the keyboard
+    /// plays your instrument rather than the one you were listening to.
+    fn end_preview(&mut self) {
+        if let Some(doc) = &mut self.options.document {
+            doc.end_preview();
+        }
     }
 
     /// The mouse came up. The note is *scheduled* to stop rather than stopped:
@@ -7267,6 +10664,8 @@ impl WindowApp {
     /// [`crate::canvas::PianoRoll::take_audition`].
     fn sound_roll_request(&mut self) {
         if let Some(asked) = self.roll.take_audition() {
+            // A note in the roll is the song, not the browser.
+            self.end_preview();
             self.start_audition(asked.key, asked.ticks);
         }
     }
@@ -7277,8 +10676,53 @@ impl WindowApp {
     /// the song, `Ctrl` zooms time about the pointer and `Ctrl+Shift` (or
     /// `Alt`) zooms pitch. Over a list: it scrolls that list. The FL habits,
     /// and the ones a mouse can express.
+    /// The wheel over an open menu, wherever that menu was opened from.
+    ///
+    /// `true` when the menu took it, which means the caller's own window has
+    /// nothing more to do with the event. Shared by the studio and by the
+    /// editor windows because a menu belongs to the app rather than to a
+    /// window: `self.menu` is one menu, drawn wherever it was opened, and a
+    /// long one is unusable in any window that does not hand it the wheel.
+    ///
+    /// The caller invalidates: the studio redraws a rectangle, an editor
+    /// window redraws itself.
+    fn wheel_menu(&mut self, x: f32, y: f32, steps: f32) -> bool {
+        let step = self.options.theme.metrics.row_height * MENU_WHEEL_ROWS;
+        let Some((_, menu)) = &mut self.menu else {
+            return false;
+        };
+        if !menu.frame.contains(x, y) {
+            return false;
+        }
+        menu.scroll_by(-steps * step);
+        true
+    }
+
+    /// One pointer move of a scrollbar drag — see [`Drag::MenuScroll`].
+    ///
+    /// Invalidates the whole window rather than the menu's frame: the rows
+    /// change underneath the thumb, and the frame is where they are drawn.
+    /// An editor window redraws itself after every move anyway, so this is
+    /// only doing work for the studio.
+    fn drag_menu_scroll(&mut self, y: f32) {
+        let grab = self.menu_grab;
+        let Some((_, menu)) = &mut self.menu else {
+            return;
+        };
+        menu.drag_thumb(y, grab);
+        self.tree.invalidate_rect(self.layout.window);
+    }
+
     fn scroll_roll(&mut self, dx: f32, dy: f32) {
         let (x, y) = self.cursor;
+
+        // A menu is drawn in front of everything, so the wheel is its before
+        // it is anything else's. Without this a plugin list is 357 entries
+        // with no way past the first twenty-seven.
+        if self.wheel_menu(x, y, dy) {
+            self.tree.invalidate_rect(self.layout.window);
+            return;
+        }
 
         // The transport's document boxes take the wheel, which is how you set
         // a tempo you already know the number of rather than hunting for it
@@ -7309,8 +10753,14 @@ impl WindowApp {
         }
 
         if self.layout.rack.frame.contains(x, y) {
-            self.rack_scroll =
-                scrolled(self.rack_scroll, -(dy.round() as i32), self.channels.len());
+            // Whichever list is showing scrolls; the other keeps its place, so
+            // switching tabs comes back to where you were.
+            let step = -(dy.round() as i32);
+            if self.rack_tab == crate::document::RackTab::Prefabs {
+                self.prefab_scroll = scrolled(self.prefab_scroll, step, self.prefabs.len());
+            } else {
+                self.rack_scroll = scrolled(self.rack_scroll, step, self.channels.len());
+            }
             self.relayout_panels();
             self.tree.invalidate(RACK);
             return;
@@ -7440,6 +10890,15 @@ impl WindowApp {
                 // a whole project. The button is on the Projects tab; this is
                 // so you do not have to go there.
                 "e" if ctrl => self.export(),
+                // *"make ctrl + m toggle the metronome."* A transport switch,
+                // so it is here with Space rather than with the canvas keys:
+                // wanting the click on while you play a part in is not a
+                // statement about which panel you were last looking at, and
+                // the editor windows answer this function too.
+                //
+                // It took Ctrl+M off muting the selected clips, which has
+                // moved to Ctrl+Shift+M — see `TimelineControl::Mute`.
+                "m" if ctrl && !shift => self.transport(TransportHit::ToggleMetronome),
                 _ => return false,
             },
             _ => return false,
@@ -7451,6 +10910,13 @@ impl WindowApp {
         use winit::keyboard::{Key, NamedKey};
 
         let ctrl = self.modifiers.control_key();
+
+        // A menu is in front of everything it was dropped over, so it has the
+        // keyboard while it is open — which is what lets the plugin picker be
+        // typed at rather than only scrolled.
+        if self.menu_filter_key(event) {
+            return;
+        }
 
         // While a name is being typed, that has the keyboard: the same rule
         // the search box follows, and for the same reason.
@@ -7484,6 +10950,35 @@ impl WindowApp {
             }
             self.tree.invalidate(BROWSER);
             return;
+        }
+
+        // **The soundfont list holds the arrows while one of its rows is
+        // focused.** Clicking a preset is what focuses it, so this can only be
+        // on when somebody is looking at that list — and Escape, or a click
+        // anywhere else, hands the arrows back to the notes and clips.
+        if self.preset_focus.is_some() {
+            match &event.logical_key {
+                Key::Named(NamedKey::ArrowDown) => {
+                    self.step_preset_focus(1);
+                    return;
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    self.step_preset_focus(-1);
+                    return;
+                }
+                // *"press enter while its selected"* — the keyboard half of a
+                // double-click.
+                Key::Named(NamedKey::Enter) => {
+                    self.choose_focused_preset();
+                    return;
+                }
+                Key::Named(NamedKey::Escape) => {
+                    self.preset_focus = None;
+                    self.tree.invalidate(BROWSER);
+                    return;
+                }
+                _ => {}
+            }
         }
 
         // Transport, undo and save mean the same thing wherever they are
@@ -7559,22 +11054,43 @@ impl WindowApp {
                     "v" if ctrl => self.paste(),
                     "b" if ctrl => self.duplicate(),
                     "d" if ctrl => self.duplicate(),
-                    // Mute what is selected on the arrangement.
-                    "m" if ctrl => {
+                    // Mute what is selected on the arrangement. **Shifted**,
+                    // since Ctrl+M became the metronome — see `global_key`.
+                    "m" if ctrl && self.modifiers.shift_key() => {
                         let edits = self.timeline.toggle_mute(&self.clips);
                         self.apply_arrange_edits(edits);
                         if let Some(doc) = &mut self.options.document {
                             doc.end_gesture();
                         }
                     }
+                    // *"pressing M while having a mixer track selected toggles
+                    // its mute and pressing N solos."* Only while the mixer is
+                    // the open tab: bare letters belong to whichever canvas is
+                    // showing, the same rule the tool keys follow, and `M` over
+                    // the roll is not about a mixer strip. See
+                    // `canvas::mixer_key`.
+                    "m" | "n" if !ctrl && self.tab == EditorTab::Mixer => {
+                        if let Some(key) = crate::canvas::mixer_key(&c) {
+                            self.toggle_selected_track(key);
+                        }
+                    }
                     // Show and hide the arrangement strip.
                     "t" if ctrl => self.toggle_timeline(),
-                    // Song or clip. The chip on the transport bar is the
-                    // other way, and on a narrow window there is no room for
-                    // it (see `MIN_RULER_WIDTH`) — so the mode is reachable
-                    // whatever the bar had room for. FL's own binding is `L`,
-                    // which here already cycles the roll's property lane.
-                    "l" if ctrl => self.toggle_play_mode(),
+                    // **Two things, and the selection decides which.** FL
+                    // binds Ctrl+L to Quick Legato in the piano roll, which is
+                    // what was asked for: *"if i press ctrl l with a note
+                    // selection in the piano roll it makes all the notes
+                    // lengths not have gaps."* With no notes in hand there is
+                    // no phrase to close up, and the key keeps the job it had
+                    // — song or clip, which the chip on the transport bar also
+                    // does but which a narrow window has no room to show (see
+                    // `MIN_RULER_WIDTH`), so the mode stays reachable whatever
+                    // the bar had room for.
+                    //
+                    // The split is safe because the two can never both apply:
+                    // legato needs a note selection in the roll, and the play
+                    // mode is not about notes at all.
+                    "l" if ctrl => self.legato_or_play_mode(),
                     "f" if ctrl => {
                         self.searching = true;
                         self.tree.invalidate(BROWSER);
@@ -7602,16 +11118,15 @@ impl WindowApp {
                     "c" => self.pick_tool(Tool::Slice, crate::canvas::TimelineTool::Slice),
                     "+" | "=" => self.zoom(1.25, 1.0),
                     "-" | "_" => self.zoom(0.8, 1.0),
-                    // Every tool by number as well as by letter: the letters
-                    // are FL's and are worth keeping, and a number row is what
-                    // somebody who has not learnt them will try.
-                    "1" => self.pick_tool(Tool::Draw, crate::canvas::TimelineTool::Draw),
-                    "2" => self.set_tool(Tool::Paint),
-                    "3" => self.pick_tool(Tool::Select, crate::canvas::TimelineTool::Select),
-                    "4" => self.set_tool(Tool::Delete),
-                    "5" => self.pick_tool(Tool::Slice, crate::canvas::TimelineTool::Slice),
-                    "6" => self.set_tool(Tool::Mute),
-                    "7" => self.set_tool(Tool::Slip),
+                    // *"swap between piano roll and mixer by pressing 1 and
+                    // 2."* The number row used to pick tools, a second
+                    // binding for keys that already had FL's letters, and
+                    // went unused for exactly that reason.
+                    "1" | "2" => {
+                        if let Some(tab) = crate::layout::editor_tab_for_key(&c) {
+                            self.show_tab(tab);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -7728,8 +11243,11 @@ impl WindowApp {
                 });
                 self.tree.invalidate(TIMELINE);
             }
-            C::Snap => {
-                self.timeline.cycle_snap();
+            C::Snap => self.open_snap_menu(true),
+            // A setting, not an action: nothing happens to the selection,
+            // the next edge drag is what changes.
+            C::Stretch => {
+                self.timeline.toggle_stretch();
                 self.tree.invalidate(TIMELINE);
             }
             C::Repeat => self.repeat_timeline(),
@@ -7750,12 +11268,32 @@ impl WindowApp {
                 timeline_zoom_x(
                     &mut self.timeline.view,
                     grid,
-                    grid.x + grid.width / 2.0,
+                    crate::canvas::zoom_anchor(grid, self.cursor),
                     factor,
                 );
                 self.tree.invalidate(TIMELINE);
             }
         }
+    }
+
+    /// Bounces a row to audio, saying what happened either way.
+    ///
+    /// A render is slow and silent while it runs, so the one thing it must not
+    /// do is finish without saying so.
+    fn render_lane(
+        &mut self,
+        lane: usize,
+        span: Option<(fontelle_types::Tick, fontelle_types::Tick)>,
+    ) {
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        match doc.render_lane(lane, span) {
+            Ok(message) => self.status = message,
+            Err(e) => self.status = e,
+        }
+        self.lane_made();
+        self.tree.invalidate(TIMELINE);
     }
 
     /// Makes the selected clips repeat their own content, or stops them.
@@ -7952,9 +11490,50 @@ impl WindowApp {
         self.tree.invalidate(PANEL);
     }
 
+    /// `Ctrl+L`: the legato tool when the roll has a selection, and the play
+    /// mode when it has not. See the binding for why one key does both.
+    fn legato_or_play_mode(&mut self) {
+        if self.focus == Focus::Roll && !self.roll.selection().is_empty() {
+            // Through `run_tool`, which is the Tools menu's own path: the key
+            // and the menu row are one gesture with two ways in, down to the
+            // undo entry and the line in the status bar.
+            self.run_tool(ToolAction::Legato);
+            self.tree.invalidate(PANEL);
+            return;
+        }
+        self.toggle_play_mode();
+    }
+
     fn cycle_snap(&mut self) {
         self.roll.view.snap = self.roll.view.snap.next();
         self.tree.invalidate(PANEL);
+    }
+
+    /// Drops the snap chip's list under it — the roll's, or the arrangement's.
+    ///
+    /// Under the chip rather than at the pointer, because that is what a
+    /// drop-down is: the list appears where the value was.
+    fn open_snap_menu(&mut self, timeline: bool) {
+        let chip = if timeline {
+            self.timeline_bar
+                .items
+                .iter()
+                .find(|(control, _)| *control == crate::canvas::TimelineControl::Snap)
+                .map(|(_, rect)| *rect)
+        } else {
+            self.roll_bar
+                .items
+                .iter()
+                .find(|(control, _)| *control == RollControl::Snap)
+                .map(|(_, rect)| *rect)
+        };
+        let Some(chip) = chip.filter(|rect| !rect.is_empty()) else {
+            // A toolbar too narrow to draw the chip has no chip to hang a
+            // list under; `S` and the arrangement's own key still work.
+            return;
+        };
+        let bounds = self.layout.window;
+        self.open_menu(MenuTarget::Snap { timeline }, chip.x, chip.bottom(), bounds);
     }
 
     fn undo(&mut self) {
@@ -7976,6 +11555,29 @@ impl WindowApp {
     }
 
     fn save(&mut self) {
+        // **A studio with no file asks for a name rather than refusing.**
+        //
+        // > *"when im not in a project yet, i currently cant save that blank
+        // > no project into a new project ... if i try to save and theirs no
+        // > project directory it can just make a new one."*
+        //
+        // The same move a first recording already made (`Session::take_path`),
+        // with the name asked for instead of assumed.
+        if self
+            .options
+            .document
+            .as_ref()
+            .is_some_and(|doc| !doc.has_file())
+        {
+            let seed = self
+                .options
+                .document
+                .as_ref()
+                .map(|doc| doc.name().to_string())
+                .unwrap_or_default();
+            self.ask_for_a_name(NameFor::SaveAs, seed);
+            return;
+        }
         let Some(doc) = &mut self.options.document else {
             return;
         };
@@ -8041,6 +11643,16 @@ impl WindowApp {
             Sleep::Forever => None,
             Sleep::AtMost(budget) => Some(now + budget),
         };
+
+        // **A plugin editor holds the loop awake.** It is drawn by somebody
+        // else's code on this thread, and the only thing that runs that code
+        // is the next pass of this loop — so a studio that slept until the
+        // next click would be a plugin window that froze between them.
+        if self.plugin_editor_open {
+            wake = Some(wake.map_or(now + PLUGIN_EDITOR_FRAME, |w| {
+                w.min(now + PLUGIN_EDITOR_FRAME)
+            }));
+        }
 
         // A note waiting out its minimum length has to be woken for, or a
         // window that goes back to sleep the instant the mouse comes up leaves

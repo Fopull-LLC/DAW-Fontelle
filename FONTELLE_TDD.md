@@ -55,8 +55,11 @@ fighting a plugin host, a licence manager, or a 4GB install.
 
 ### 1.3 Non-goals for v1
 
-- Hosting third-party plugins (CLAP/VST3/LV2). The boundary is scaffolded (§8.4); no host is
-  implemented.
+- ~~Hosting third-party plugins (CLAP/VST3/LV2).~~ **CLAP hosting is implemented** (§8.4,
+  `fontelle-host`). VST3 and LV2 remain non-goals: §3.4's licence rule puts VST3 behind an
+  out-of-process bridge if it is ever justified, and LV2 is the second format if there is demand.
+  Hosting a plugin's own *editor window* is still a non-goal — a plugin is edited on Fontelle's
+  generic parameter panel.
 - Video, notation, surround/ambisonics, network collaboration, cloud anything.
 - Windows/macOS parity testing. Both must build and run; neither blocks a release.
 - Comprehensive audio-clip editing. Audio is supported and useful (§15) but the sampler is the
@@ -202,11 +205,16 @@ Two trademark notes for Fopull LLC:
 - "SoundFont" is a Creative/E-mu trademark. It must not appear in the product name, the plugin
   name, or the binary name. Descriptive use in documentation ("loads SoundFont-format files") is
   fine. Prefer "SF2" in UI strings.
-- CLAP is MIT with no additional agreement. The VST3 SDK's licensing has historically required a
-  signed Steinberg agreement to develop or host VST3, and recent tooling suggests this may have
-  changed. **ACTION REQUIRED: verify VST3 SDK licensing terms before shipping a VST3 build.**
-  CLAP is the canonical export format regardless; VST3 is a convenience build and is allowed to
-  be blocked on this question.
+- CLAP is MIT with no additional agreement, and lilv (LV2 hosting) is ISC. The VST3 SDK's
+  licensing has historically required a signed Steinberg agreement to develop or host VST3, and
+  recent tooling suggests this may have changed. **ACTION REQUIRED: verify VST3 SDK licensing
+  terms before shipping a VST3 build.** CLAP is the canonical export format regardless; VST3 is
+  a convenience build and is allowed to be blocked on this question.
+- **Hosting a format whose SDK cannot live here goes through a bridge** (§8.4, 2026-09-04): a
+  separately built shared library implementing `fontelle-bridge-abi`, found in Fontelle's own
+  data folder at run time. This tree holds the contract and the loader and nothing SDK-derived;
+  the bridge is its own repository under its own licence, and is never distributed with Fontelle.
+  The policy above is unchanged by it — it is what keeps the policy true.
 
 ---
 
@@ -229,6 +237,8 @@ fontelle/
 │   ├── fontelle-assets/        # SF2/sample loading, streaming, peak generation, library index.
 │   ├── fontelle-ui/            # widget layer. Runs on winit AND baseview.
 │   ├── fontelle-app/           # the DAW binary.
+│   ├── fontelle-host/          # loads and runs plugins somebody else wrote. CLAP.
+│   ├── fontelle-testplug/      # two tiny CLAP plugins, so the host's tests have one to load.
 │   └── fontelle-plugin/        # nice-plug wrapper. Exports CLAP + VST3.
 ├── assets/                     # icons, default theme, factory presets
 ├── benches/                    # criterion benchmarks (§20.5)
@@ -250,12 +260,17 @@ Permitted dependency direction:
 ```
 core ──> dsp
 fx ──> dsp
-engine ──> core, fx, dsp
+host ──> types
+engine ──> core, fx, dsp, host
 sequencer ──> model
 model ──> (nothing in this workspace except shared id types)
 app ──> everything
 plugin ──> core, dsp, ui
 ```
+
+`fontelle-host` depends on `fontelle-types` and nothing else in this workspace, which is what
+keeps a foreign plugin ABI out of the document, the sampler and the window. The app is the only
+layer that sees a plugin and a `Project` at once (§8.4).
 
 ---
 
@@ -319,6 +334,28 @@ far easier with it off.
 Each node reports `latency_samples()`. The graph compiler computes per-path latency and inserts
 fixed delay lines to align branches. Reported total latency is surfaced in the audio settings UI
 so the user can see what their configuration actually costs.
+
+**Built 2026-09-06.** `fontelle_engine::DelayNode` is the aligner — a fixed number of samples of
+nothing, no feedback and no mix, which is what separates it from `fontelle_fx::Delay`. `realise`
+works out from the **document**, before a node is built, what arrives at each track's bus and what
+leaves it: a track's chain costs the sum of its inserts' latencies (`insert_latency_samples` for a
+built-in, the plugin's own declared number for a hosted one), and a bus arrives as late as its
+latest contributor. Every track that is quicker than its siblings gets the difference before it is
+summed into its parent, and the **sources** — channels, clip players, the live input, which cost
+nothing — are held back once at the point where a bus holds them and nothing else.
+`Realised::latency_samples` is then measured off the built graph rather than added up from the
+document, so a node whose latency the builder did not know about still reaches the number the user
+is told.
+
+Two things are deliberately not compensated, and both are written down where they happen. A
+**plugin instrument** that reports latency is late against the other channels on its track: every
+channel adds into one shared bus, so holding one back would hold back everything already in it, and
+fixing it means giving sources buffers of their own. And the **live bypass switch** on an insert
+moves that track by the insert's latency until the next rebuild, because a bypass that still
+delayed would not be a bypass.
+
+An insert that looks ahead also has to delay **its own dry path**, or a mix below 100% combs
+against it; `EffectNode` does that, and a fully open gate at any mix is the wire it claims to be.
 
 ---
 
@@ -631,14 +668,225 @@ The stored form is `PatchData { format_version, body }` with an untyped `body`, 
 migration has to read shapes this build's structs no longer describe. The version is read before
 the body, so a file from a newer build is refused as "upgrade Fontelle" rather than as damage.
 
-### 8.4 Third-party hosting scaffold (not implemented in v1)
+### 8.4 Third-party hosting (CLAP and LV2 — implemented in `fontelle-host`; other formats through a bridge)
 
-The `AudioNode` trait (§5.1) and the parameter contract (§8.2) are the entire boundary a future
-CLAP host would plug into. No hosting code is written in v1. When it is written, the intended
-path is `clack-host` for CLAP first, `livi` for LV2 second, and an out-of-process bridge for
-VST3 if it is ever justified.
+The original text of this section said: *"the `AudioNode` trait (§5.1) and the parameter contract
+(§8.2) are the entire boundary a future CLAP host would plug into … do not add speculative
+hosting abstractions now."* That prediction held. When the host was written, the engine needed
+one new node type and no new abstraction; the parameter contract needed no new addressing
+scheme; and the panel that draws a soundfont's knobs drew a plugin's without being changed.
 
-Do not add speculative hosting abstractions now. The trait boundary is sufficient.
+**What is implemented.** CLAP, through `clack-host`, in a crate of its own:
+
+```
+fontelle-host ──> types           (loads bundles, runs plugins)
+engine ──────────> host           (PluginNode: one plugin as a graph node)
+app ─────────────> host, engine   (PluginRack: which plugins the document wants)
+```
+
+- **Scanning** walks the folders CLAP nominates plus any the user has configured
+  (`Settings::plugin_dirs`), opens every bundle and asks what it holds. It is lazy: a session that
+  never touches a plugin never `dlopen`s anything.
+- **A plugin is named by its own id**, never by a path — `PluginKey`, written `clap:com.u-he.diva`.
+  This is INVARIANT 8's rule for audio applied to plugins: a project names what a thing *is*, and
+  the machine resolves where it is. A plugin that is not installed leaves a silent slot and a
+  message, and the project still opens (§17.4).
+- **Parameters use §8.2's addresses unchanged.** An insert's plugin parameter is
+  `mixer:<track>/insert[0]/param/<clap id>`; an instrument's is
+  `channel:<id>/patch/plugin/param/<clap id>`. Both end in `/param/<id>`, which is the one rule
+  the node reads. Automation, undo, right-click-to-automate and preset storage all work through
+  the machinery that already existed.
+- **Values are stored plain**, in the plugin's own units, not normalised — CLAP's own advice to
+  hosts, and for the same reason: a plugin that widens a range in an update should keep sounding
+  the same, and only the plain number can promise that.
+- **State** is the plugin's own opaque blob (base64 in `project.json`) *plus* every parameter.
+  Both, because the blob carries what no parameter can and the parameters are what this program
+  can automate — and a plugin with no state extension is restored from the parameters alone.
+
+**The one hard part, and where it is solved.** A CLAP plugin may be activated once, and its
+main-thread handle and its audio processor are separate objects on separate threads. The graph,
+meanwhile, is rebuilt whole on every structural edit and the new graph is built *while the old
+one is still playing* — so a plugin cannot belong to a graph. It belongs to
+`fontelle_app::PluginRack`, for as long as the document has a slot for it; the graph gets a share
+of a `ProcessorBay` (where the processor waits between graphs) and the `ParamValues` a knob writes
+on. A retired node parks its processor on the way out, in `GraphPublisher::reclaim`, which is
+already the one place a live graph dies.
+
+**What INVARIANT 1 can and cannot say here.** Our half allocates nothing per block: every buffer,
+event list and port array is taken in `HostedPlugin::activate`. The plugin's half is foreign code
+bound by CLAP's contract rather than by ours, and no host can promise otherwise.
+
+**Testing.** `fontelle-testplug` is a real CLAP bundle built in this repository — a gain effect
+and a sine instrument — so the host's tests load a real plugin through the real entry point across
+the real ABI. Mocking that would have tested the mock; testing against whatever is installed would
+have tested the machine.
+
+**LV2 (2026-09-04).** The second format, through lilv (via `livi`), and it is an arm in the same
+`match`: `HostedPlugin` and `HostedProcessor` carry a format enum inside and nothing above the
+host changed. A bundle is a folder read by lilv (a scan `dlopen`s nothing); a parameter is a
+control port whose id is the port index; notes are MIDI in an atom sequence; the whole instance
+rides in the processor because LV2 has one handle rather than two. One lilv world is made per
+bundle — loading only that bundle — because the folders searched are the user's, not
+`LV2_PATH`, and an environment variable cannot be set safely by a threaded process. An LV2
+plugin is saved as its control ports; the state extension is not yet read. `fontelle-testlv2` is
+the fixture, a real bundle written against the raw C structs.
+
+**Bridges (2026-09-04).** For a format whose SDK cannot be linked here (§3.4), a bridge: a
+shared library implementing `fontelle-bridge-abi` — a `#[repr(C)]` table of scan/open/params/
+activate/process/notes/state, versioned, with the usual thread contract — found in
+`$XDG_DATA_HOME/fontelle/bridges` (or `FONTELLE_BRIDGES`) by `fontelle_host::Bridges`. A bridged
+plugin is the third arm of the same two enums. `PluginFormat::hosted` keeps meaning "what this
+build loads"; `PluginHost::can_host` adds what is installed. Fontelle never links a bridge and a
+bridge never links Fontelle. `fontelle-testbridge` is a bridge with no SDK in it, and is what
+the tests load; the VST3 bridge itself is a separate repository and is not yet written.
+
+**Plugin editors (2026-09-05).** A CLAP plugin's **own** editor now opens, in a window of its
+own, from the same *Open instrument* the built-in panel opens from: `fontelle_host::gui` makes an
+X11 window with `x11rb`, `HostedPlugin::open_editor` runs CLAP's create/scale/size/parent/show
+sequence into it, and `PluginRack` owns the window for exactly as long as it owns the plugin — so
+a retired plugin cannot outlive its editor. Fontelle registers three host extensions for it
+(`gui`, `timer`, `posix-fd`), because a CLAP editor has no thread: it repaints when the host
+fires the timer it asked for and sees a click when the host says its connection is readable, and
+`HostedPlugin::tick_editor` pays both once per frame out of the window's own loop.
+
+The window is X11 rather than one of `winit`'s deliberately. Surge XT's CLAP build answers
+`is_api_supported` with *x11, embedded* and refuses floating, Wayland and floating-Wayland, which
+is the ordinary answer from anything built on JUCE — and one process has one `winit` backend, so
+matching it there would mean moving the whole studio to XWayland. Making just this window with
+`x11rb` leaves the studio's own windows alone and works on an X11 session and a Wayland one with
+XWayland alike. A plugin with no editor, and every LV2 and bridged plugin in this build, still
+gets the generated panel; that is what it is for, and it is the thing that is automatable.
+
+**What a plugin's parameters start at (2026-09-05).** A plugin's own `get_value` beats its
+`param_info`'s `default_value`, which is read only as a fallback. Surge XT reports
+`default_value` as zero for all 775 of its parameters while `get_value` returns the real setting,
+so seeding the wire from the description and then sending the lot — which is what `activate` does
+— turned its global volume down to -48 dB before the first block and the synth was silent.
+`fontelle-testplug`'s sine tells the same lie on purpose, so the rule has a fixture.
+
+**LV2 editors (2026-09-05).** The same feature for the other format, and it matters more there: a
+CLAP plugin's parameters describe it completely, while an LV2 sampler's whole state is *a file it
+loaded*, and there is no parameter for that. `fontelle_host::lv2_ui` finds the plugin's
+`ui:X11UI` through lilv, `dlopen`s its binary, matches the descriptor **by URI** (LSP ships one
+`lsp-plugins-lv2ui.so` answering for three hundred plugins), and instantiates it with `ui:parent`
+pointing at the same [`PluginWindow`] a CLAP plugin gets. `idle` is driven from the same
+per-frame tick, and `ui:resize` is how the editor asks for its window.
+
+**Not `suil`.** The usual answer is suil, which wraps a UI of one toolkit inside a window of
+another. Of the seventeen bundles installed on the reporter's machine that ship a UI, seventeen
+ship X11 — so what suil would add is Gtk and Qt UIs, and a wrapper for toolkits nothing here uses
+is a dependency for nobody. Calf ships **no** UI at all in its Turtle, so it keeps the generated
+panel whatever is hosted; that is a fact about Calf rather than a gap.
+
+**Atoms, both ways (§8.4).** A control port is a float, and a float cannot say *"load this
+file"*. `fontelle_host::atom` is the wire: two fixed-capacity rings, allocated once, `try_lock`ed
+rather than waited on, carrying whole atoms between the editor (main thread) and the plugin
+(audio thread). The editor's messages are written into the atom sequence **as the block that just
+ran is emptied**, so they sit at frame zero ahead of the next block's notes rather than after them
+— an out-of-order sequence is one a plugin may stop reading. The cost is one block of latency on
+a command, which is 2.7 ms at 128/48k. `AtomPipe::carried` counts what has gone each way, which is
+the one number separating *"the editor is open and talking"* from *"the editor is open and its
+words are going nowhere"*.
+
+**LV2 state (2026-09-05).** `state:interface` is `extension_data` on the **instance**, the instance
+rides in the `HostedProcessor` (LV2 has one object, not two), and the specification forbids calling
+`save` or `restore` while `run` executes. So an LV2 plugin's own state is read *with its processor
+in hand*: `HostedPlugin::snapshot_with(&mut processor)` on the main thread, and when a graph is
+playing the plugin, `ProcessorBay::recall` — a request the node answers at the top of its next
+block by parking the processor, which the main thread takes, reads, and parks back. The silence is
+one block each way plus the read, bounded by a timeout after which the snapshot carries the last
+state the plugin was *given*. A state handed to a plugin before it runs is kept and applied the
+moment the instance exists (`Lv2Plugin::activate`, before its first block), and read off the
+instance again on `deactivate`. `fontelle_host::lv2_state` implements the two callbacks by hand —
+not lilv's state API, which serialises Turtle and owns the path mapping — and `Lv2State` is the
+property list, URIs not URIDs, encoded as the blob `project.json` already keeps. **Paths are mapped
+identity**: `state:mapPath` is offered (a sampler that finds it missing may store nothing) and the
+abstract path is the absolute one, which is §17.4's headless rule for audio — reference, never
+copy — applied to a file a plugin loaded. Relativising under the project, or copying in, is the
+import prompt's decision and not yet built for plugin-loaded files. The fixture gain stores a run
+counter and its own bundle path and refuses a restore whose path did not map back.
+
+**Sidechains (2026-09-05).** CLAP has no sidechain flag: a sidechain is an input port that is not
+the main one, and `PortLayout::key` names it. `HostedProcessor::process_insert_keyed` puts a mono
+key on that port; the machinery above it is the compressor's — `EffectSlot::key`, the `KeyTap`
+the source track's node fills, the scheduling edge — with two rules moved: a key on a plugin slot
+is always an edge (whether the plugin has a port for it is the host's knowledge, and an edge that
+feeds nothing only orders the graph), and a plugin's panel offers the key chips when the rack says
+it takes one. Extra output ports are rendered and dropped, never summed into the main pair. LV2's
+`lv2:isSideChain` is not read yet; a key on an LV2 insert is ignored by the processor.
+
+**Controllers (2026-09-05).** `EventPayload::Controller`, `PitchBend` and `ChannelPressure` are
+*performance* events, distinct from `ParamValue` (which has a §8.2 address and comes from a lane or
+the learn table): the router forwards them whole on its current target, keeping only the sustain
+pedal for itself. A plugin receives them in the dialect its note port speaks (`NoteDialect`, MIDI
+when supported): three bytes in the LV2 atom sequence or a CLAP `MidiEvent`, and for a port that
+takes only CLAP's own events the nearest note expression on every note — vibrato, pressure, two
+semitones of tuning, and volume/pan/expression/brightness for 7/10/11/74 — with anything else
+dropped rather than invented onto a parameter.
+
+**The wheels reach a built-in voice too (2026-09-06).** `fontelle_core::Performance` is the
+channel-wide, *live* half of playing — mod wheel, pitch bend, channel pressure — read at render
+rather than captured at note-on, beside the channel's own pan and for the same reason: a wheel has
+to move what is already sounding. The three are `ModSource::ModWheel`, `PitchBend` and
+`Aftertouch`, which had been in the matrix since it was written and read as a flat zero. The bend
+is additionally applied to the note's own pitch over `VoiceConfig::bend_range_semitones` (two by
+default), because every keyboard bends pitch and a patch should not have to wire a route for it;
+the other two go only where the patch sends them. `SamplerNode` translates the payloads, mapping
+CC 1 and dropping every other controller — the same rule the host follows for a CLAP-only plugin.
+Imported soundfonts get SF2 2.04 §8.4.2's default modulators 2 and 6 (mod wheel and channel
+pressure each scaling the vibrato LFO's pitch by 50 cents, through `ModRoute::via`), which is why
+a wheel adds vibrato on any soundfont in any player.
+
+**Slides into a hosted instrument (2026-09-06).** `PluginNode` keeps a fixed table of what it has
+started and not yet ended (key, voice context, where its pitch is), because a slide names only the
+key it goes *to* and a plugin will not say what it is playing. A slide bends every sounding note in
+its context, gliding at block rate the way `Voice::advance_glide` does; the pitch reaches a CLAP
+plugin as a `Tuning` note expression on the key, and an LV2 or bridged one as a channel bend
+clamped to two semitones — MIDI has no per-note pitch, and MPE is not spoken here. A note that ends
+puts its own bend back, so a channel-wide plugin does not start the next note bent.
+
+**LV2 sidechains (2026-09-06).** LV2 declares a sidechain with `lv2:isSideChain` on an audio
+input. `crate::lv2::open` reads it off the Turtle and folds those inputs into the same second port
+a CLAP sidechain presents, so `takes_key` is one question with one answer whatever the format; the
+processor keeps its input buffers main-first and connects them in port order. The key is written
+every block, silence included, so one handed over once does not go on ducking.
+
+**Bridge ABI 3 (2026-09-06).** The table grew the rest of a performance — `controller`,
+`pitch_bend`, `channel_pressure` — so a bridged instrument is no longer the one kind that cannot be
+played with a wheel. Channel-wide, in time order with the notes, and performance rather than
+automation: a knob the document moves still arrives through `set_param`. A slide converts to the
+bend that reaches it, as for LV2. Per-note pitch is what an ABI 4 would add, once there is a bridge
+that wants it.
+
+**Bridge ABI 2 (2026-09-05).** The bridge table grew the editor half — `has_editor`,
+`open_editor(instance, x11 window id, &width, &height)`, `close_editor`, a per-frame
+`tick_editor`, and `resize_editor` — against the same `PluginWindow`. The host rereads every
+parameter off the bridge after each tick, since the ABI has no parameter events. A version-1
+bridge is refused. `fontelle-testbridge` implements both answers (a gain with no face, a sine whose
+face writes a level on its first tick). The VST3 bridge itself remains a separate repository, not
+yet written.
+
+**A rule learnt from a core dump (2026-09-05).** Any C function pointer a plugin may leave NULL —
+LV2's `port_event`, `extension_data`, an idle interface's `idle` — must be read through an
+`Option<extern "C" fn>` field, never through a plain fn type. A NULL read into a non-nullable
+pointer is undefined behaviour and the optimiser folds the later check away; the release studio
+crashed three times in a minute on JuceOPL's NULL `port_event` before `lv2_ui` grew its own
+`#[repr(C)]` descriptor.
+
+**The idle gate and a plugin's editor (2026-09-05).** §6.3's "a stopped transport does not process
+the graph" is `IdleGate`, and an LV2 editor reaches its plugin only through `run` — so an open
+editor is a fifth reason for the gate to be awake (`Transport::set_attended`, written by the window
+from `tick_plugin_editors`, read by the callback every block). Without it a sampler could not be
+handed a file while the song was stopped. And a project that names plugins is hosted on the
+session's first `pump`: the window's first graph is realised in `main.rs` before the session
+exists, without a rack.
+
+**Still not done.** Editors and a performance for **bridged** plugins have their ABI now (v3) and
+no bridge to use it — the VST3 bridge is a separate repository and is not written, and it is the
+one item on this list that cannot be done in this tree. Also: latency compensation for a plugin
+that reports it (`AudioNode::latency_samples` exists and nothing reads it — a §5.5 engine pass, not
+a hosting one); per-note pitch over the bridge ABI, for a bridge that can carry it; and copying or
+relativising a sample an LV2 plugin loaded (§17.4's import prompt, for plugin-loaded files).
 
 ---
 
@@ -755,7 +1003,7 @@ pub enum ClipSource {
 }
 
 pub struct NoteData {
-    pub channel: ChannelId,                // THE CLIP CARRIES THE INSTRUMENT
+    pub channel: ChannelId,                // THE CLIP'S HOME INSTRUMENT (see below)
     pub notes: SlotMap<NoteId, Note>,
 }
 
@@ -769,8 +1017,20 @@ pub struct Note {
     pub release: u8,
     pub mod_x: u8,            // free per-note modulation, routable in the mod matrix
     pub mod_y: u8,
+    pub channel: Option<ChannelId>, // the instrument this note plays, when not the clip's
 }
 ```
+
+**A clip holds several instruments (2026-09-03).** `NoteData::channel` is the clip's
+*home* channel — its caption, its colour, and what a note with no channel of its own
+plays — and a note may name another. This is FL's pattern: one block on the
+arrangement, a drum part and a bass part inside it. The rule that makes it usable is
+one rule: **the channel rack's selection is the instrument every interaction means.**
+A drawn clip is on the selected channel; a note drawn, pasted or recorded goes on the
+selected channel whatever clip it lands in; the piano roll shows the open clip's notes
+on the selected channel and ghosts the rest; opening a clip does not move the rack and
+selecting a channel does not move the roll off the clip in hand. `None` rather than
+always naming a channel so every note ever saved reads back as it was written.
 
 Per-note pan, fine pitch, release, and two free modulation values are included because they are
 cheap to store, cheap to route through the mod matrix (§7.5), and are exactly the kind of
@@ -968,7 +1228,34 @@ A graph swap silences whatever the old graph was sounding, because the new one's
 exist. That is acceptable for a structural change and is not acceptable for an automation move —
 which is why parameter changes are events through the graph, not new graphs.
 
-### 11.4 Note collision policy
+### 11.4 A clip's end is the end
+
+**A clip's `length` is the window on its content.** A note that starts at or after it does not
+sound, and a note that runs past it is **cut** there — a note-off at the clip's end, so the
+instrument's own release rings out rather than the sound stopping dead on the boundary.
+
+This was true of looped clips from the day they existed (a loop whose last pass runs longer than
+the others is obviously wrong) and not of plain ones, which is a report:
+
+> *"clip endings don't actually cut the clip short audibly right now it keeps playing"*
+
+Dragging a clip's right edge in made the block shorter and changed nothing about what was heard.
+An audio clip's placement has always run `clip.start .. clip.start + clip.length`; this is the note
+half of the same rule, and there is now one rule.
+
+**And it loops cleanly from there.** Inside a looped clip the same cut happens at the end of every
+*pass*, not only at the clip's end, so a note written longer than the period stops where the period
+does instead of ringing on through the passes after it. A loop that got thicker as it went was not a
+loop.
+
+**A clip does not grow to contain what is put in it.** A note drawn, dragged or stretched past the
+end simply does not sound; the clip stays where it was put. Asked for in those words — *"the clip
+should not grow to contain what you put in it it should just cut off wherever you put the ending to
+be and then cleanly loop from that point"* — after a first attempt at the opposite. The roll
+therefore **shades the grid past the end** (`canvas::roll_past_end`), because a note that is silent
+for no visible reason is the next bug report.
+
+### 11.5 Note collision policy
 
 Two clips on different lanes referencing the same channel, overlapping, on the same key: one
 instrument instance receives two note-ons and then a note-off that would kill both.
@@ -1755,7 +2042,7 @@ Browser search, theming, settings, first-run wizard, packaging, documentation, k
 customisation UI, performance pass against §19.
 
 ### Post-v1
-Prefab variants and structural overrides · third-party plugin hosting (CLAP → LV2 → VST3) ·
+Prefab variants and structural overrides · plugin editor windows · LV2 and VST3 hosting ·
 time-stretch behind the feature flag · take lanes and comping · convolution reverb · detachable
 panels · MPE.
 

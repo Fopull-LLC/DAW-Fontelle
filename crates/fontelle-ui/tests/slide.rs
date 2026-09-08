@@ -26,6 +26,7 @@ fn note(start: Tick, key: u8, slide: bool) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide,
+        channel: None,
     }
 }
 

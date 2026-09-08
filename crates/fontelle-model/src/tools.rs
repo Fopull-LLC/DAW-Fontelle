@@ -16,6 +16,51 @@
 //! crate free of a random-number dependency for eight lines of arithmetic.
 
 use crate::note::NoteProperty;
+use fontelle_types::Tick;
+
+/// Every note stretched — or pulled back — until it touches the one after it.
+///
+/// > *"if i press ctrl l with a note selection in the piano roll it makes all
+/// > the notes lengths not have gaps like how it does in fl studio with that
+/// > same keybind. just makes all the notes cleanly connect to eachother
+/// > basically in length."*
+///
+/// FL Studio's Quick Legato. `spans` is `(start, length)` per note in whatever
+/// order the caller has them — the selection's, which is the order they were
+/// clicked — and the answer is the new length for each, in the same order.
+///
+/// Three rules, and each of them is a test:
+///
+/// - **A start, not a note, is what a note reaches.** Notes sharing a tick are
+///   one musical event: a chord's notes all reach the *next* event, and none
+///   of them is "the next note" for the other two. Grouping by note instead
+///   would collapse every voice of a chord but the top one to nothing.
+/// - **It shortens as well as lengthens.** A note running under the one after
+///   it is pulled back to it. "At least touch" would mean a phrase run through
+///   the tool twice kept growing, and there would be no way back.
+/// - **The last event keeps the length it had.** There is nothing after it to
+///   touch, and picking a length for it — the previous gap, a beat, the end of
+///   the clip — would be the tool inventing something nobody asked for.
+///
+/// Never zero: distinct starts are at least one tick apart, so the length this
+/// hands back is at least one, which is what `SetNoteLengths` will accept.
+pub fn legato_lengths(spans: &[(Tick, Tick)]) -> Vec<Tick> {
+    // The distinct starts, in order. Small and already nearly sorted in
+    // practice, and this is a keypress rather than a per-frame path.
+    let mut starts: Vec<Tick> = spans.iter().map(|(start, _)| *start).collect();
+    starts.sort_unstable();
+    starts.dedup();
+
+    spans
+        .iter()
+        .map(
+            |(start, length)| match starts.iter().find(|next| *next > start) {
+                Some(next) => next - start,
+                None => *length,
+            },
+        )
+        .collect()
+}
 
 /// How far a randomizer moves things, and in what sense.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,12 +113,7 @@ pub const MAX_RANDOM_AMOUNT: i32 = 100;
 /// down the list would still give every note its own number, but seeding it
 /// from the value's *position* is what makes two identical notes come out
 /// different and makes the answer independent of how many notes were selected.
-pub fn randomised(
-    values: &[i32],
-    property: NoteProperty,
-    spec: RandomSpec,
-    seed: u64,
-) -> Vec<i32> {
+pub fn randomised(values: &[i32], property: NoteProperty, spec: RandomSpec, seed: u64) -> Vec<i32> {
     let (min, max) = property.range();
     let amount = spec.amount.clamp(0, MAX_RANDOM_AMOUNT);
     if amount == 0 {

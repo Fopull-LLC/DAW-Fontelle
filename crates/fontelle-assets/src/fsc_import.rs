@@ -341,7 +341,11 @@ pub fn read_fsc(bytes: &[u8], name: &str) -> Result<FscScore, ImportError> {
 /// See this module's own note on why this cannot be worked out from the block
 /// length instead.
 fn record_bytes(version: &str) -> usize {
-    if major_minor(version).0 >= WIDE_RECORD_FROM { 24 } else { 20 }
+    if major_minor(version).0 >= WIDE_RECORD_FROM {
+        24
+    } else {
+        20
+    }
 }
 
 /// Whether a file written by `version` has a fine-pitch byte worth reading.
@@ -370,9 +374,18 @@ fn read_note(record: &[u8], width: usize, ppq: u32, fine_written: bool) -> FscNo
     let key = record[12];
 
     let (fine, release, pan, velocity, mod_x, mod_y) = if width == 24 {
-        (record[16], record[18], record[20], record[21], record[22], record[23])
+        (
+            record[16], record[18], record[20], record[21], record[22], record[23],
+        )
     } else {
-        (record[13], FL_RELEASE_CENTRE as u8, record[16], record[17], record[18], record[19])
+        (
+            record[13],
+            FL_RELEASE_CENTRE as u8,
+            record[16],
+            record[17],
+            record[18],
+            record[19],
+        )
     };
 
     FscNote {
@@ -398,6 +411,7 @@ fn read_note(record: &[u8], width: usize, ppq: u32, fine_written: bool) -> FscNo
             mod_x: ((mod_x as i32) * 127 / FL_MOD_MAX) as u8,
             mod_y: ((mod_y as i32) * 127 / FL_MOD_MAX) as u8,
             slide: flags & FL_SLIDE != 0,
+            channel: None,
         },
     }
 }

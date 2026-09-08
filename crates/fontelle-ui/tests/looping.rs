@@ -56,6 +56,7 @@ fn clip(id: ClipId, start: Tick, length: Tick, loop_length: Option<Tick>) -> Cli
         curve: Vec::new(),
         notes: Vec::new(),
         audio: Default::default(),
+        prefab: None,
     }
 }
 
@@ -310,4 +311,135 @@ fn a_loop_zoomed_out_past_legibility_is_marked_sparsely_rather_than_solid() {
         marks.len(),
         clip_rect(&v, grid, &clip).width
     );
+}
+
+// ------------------------------------------- and back to an ordinary clip ---
+//
+// Reported from using the window:
+//
+// > *"right now when a note clip is turned into a loop i cant figure out (if
+// > there even is a way) how to turn it back into just a normal clip i can
+// > extend the length of. please make it if i drag it back to the original
+// > length it is no longer a looping clip and becomes draggable again like
+// > normal to extend the length of, and if you wanna loop it you need to hold
+// > shift like normal."*
+//
+// The gesture is the one that made it: the same grip, without Shift. Dragging
+// the edge back to the period is the loop being undone, because a loop of one
+// pass is not a loop — and that is the length the clip had when it became one.
+
+/// Drags `clip`'s right grip so the clip ends `bars` bars from its start.
+fn drag_edge_to_bars(
+    timeline: &mut Timeline,
+    clips: &[ClipInfo],
+    clip: &ClipInfo,
+    bars: f32,
+    shift: bool,
+) -> Vec<ArrangeEdit> {
+    let m = Theme::dark_default().metrics;
+    let l = timeline_layout(body(), &m);
+    timeline.set_modifiers(Modifiers {
+        shift,
+        ..Modifiers::default()
+    });
+    let block = clip_rect(&timeline.view, l.grid, clip);
+    let y = block.y + 5.0;
+    timeline.press(MouseButton::Left, block.right() - 2.0, y, &l, clips, 4);
+    let want_x = block.x + PPQN as f32 * 4.0 * bars * timeline.view.pixels_per_tick;
+    timeline.drag(want_x, y, &l, clips, 4)
+}
+
+fn loop_edits(edits: &[ArrangeEdit]) -> Vec<Option<Tick>> {
+    edits
+        .iter()
+        .filter_map(|e| match e {
+            ArrangeEdit::SetLoop { loop_length, .. } => Some(*loop_length),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn dragging_a_loop_back_to_its_period_makes_it_an_ordinary_clip_again() {
+    // Four bars of content looped out to twelve, dragged back to four: it
+    // stops being a loop, and the drag that did it is the ordinary one.
+    let m = Theme::dark_default().metrics;
+    let l = timeline_layout(body(), &m);
+    let id = ids(1)[0];
+    let clips = vec![clip(id, 0, PPQN * 4 * 3, Some(PPQN * 4))];
+    let mut timeline = Timeline::new(view());
+    let _ = l;
+
+    let edits = drag_edge_to_bars(&mut timeline, &clips, &clips[0], 1.0, false);
+    assert_eq!(
+        loop_edits(&edits),
+        vec![None],
+        "back at its period it is not a loop any more: {edits:?}"
+    );
+    assert!(
+        edits
+            .iter()
+            .any(|e| matches!(e, ArrangeEdit::Resize { .. })),
+        "and it still resizes: {edits:?}"
+    );
+}
+
+#[test]
+fn dragging_it_back_past_its_period_also_unloops_it() {
+    let id = ids(1)[0];
+    let clips = vec![clip(id, 0, PPQN * 4 * 3, Some(PPQN * 4))];
+    let mut timeline = Timeline::new(view());
+    let edits = drag_edge_to_bars(&mut timeline, &clips, &clips[0], 0.5, false);
+    assert_eq!(loop_edits(&edits), vec![None], "{edits:?}");
+}
+
+#[test]
+fn a_loop_dragged_out_further_stays_a_loop() {
+    // The un-loop is a drag *back*, not any drag: pulling a loop longer is the
+    // thing loops are for.
+    let id = ids(1)[0];
+    let clips = vec![clip(id, 0, PPQN * 4 * 3, Some(PPQN * 4))];
+    let mut timeline = Timeline::new(view());
+    let edits = drag_edge_to_bars(&mut timeline, &clips, &clips[0], 6.0, false);
+    assert!(loop_edits(&edits).is_empty(), "nothing to say: {edits:?}");
+}
+
+#[test]
+fn a_clip_that_never_looped_is_not_told_to_stop() {
+    let id = ids(1)[0];
+    let clips = vec![clip(id, 0, PPQN * 4 * 3, None)];
+    let mut timeline = Timeline::new(view());
+    let edits = drag_edge_to_bars(&mut timeline, &clips, &clips[0], 1.0, false);
+    assert!(loop_edits(&edits).is_empty(), "{edits:?}");
+}
+
+#[test]
+fn shift_still_loops_a_clip_that_was_just_unlooped() {
+    // *"if you wanna loop it you need to hold shift like normal."* The clip is
+    // back to four bars and not looping; Shift-dragging it out loops it again
+    // at the length it now has.
+    let id = ids(1)[0];
+    let clips = vec![clip(id, 0, PPQN * 4, None)];
+    let mut timeline = Timeline::new(view());
+    let edits = drag_edge_to_bars(&mut timeline, &clips, &clips[0], 3.0, true);
+    assert_eq!(loop_edits(&edits), vec![Some(PPQN * 4)], "{edits:?}");
+}
+
+#[test]
+fn the_unloop_is_sent_once_rather_than_on_every_step_of_the_drag() {
+    let m = Theme::dark_default().metrics;
+    let l = timeline_layout(body(), &m);
+    let id = ids(1)[0];
+    let clips = vec![clip(id, 0, PPQN * 4 * 3, Some(PPQN * 4))];
+    let mut timeline = Timeline::new(view());
+    let block = clip_rect(&timeline.view, l.grid, &clips[0]);
+    let y = block.y + 5.0;
+    timeline.press(MouseButton::Left, block.right() - 2.0, y, &l, &clips, 4);
+    let bar_px = PPQN as f32 * 4.0 * timeline.view.pixels_per_tick;
+    let first = timeline.drag(block.x + bar_px, y, &l, &clips, 4);
+    assert_eq!(loop_edits(&first), vec![None]);
+    // The document would now report it unlooped; the canvas is given that.
+    let settled = vec![clip(id, 0, PPQN * 4, None)];
+    let second = timeline.drag(block.x + bar_px * 0.75, y, &l, &settled, 4);
+    assert!(loop_edits(&second).is_empty(), "said twice: {second:?}");
 }

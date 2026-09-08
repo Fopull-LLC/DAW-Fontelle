@@ -35,6 +35,7 @@ fn synthetic_patch(library: &mut SampleLibrary) -> Patch {
         cutoff_hz: 20_000.0,
         resonance: 0.0,
         enabled: false,
+        ..Default::default()
     };
     let env = EnvelopeConfig {
         delay_s: 0.0,
@@ -44,6 +45,7 @@ fn synthetic_patch(library: &mut SampleLibrary) -> Patch {
         sustain_level: 1.0,
         release_s: 0.01,
         curve: EnvelopeCurve::Linear,
+        ..Default::default()
     };
     Patch {
         layers: vec![Layer {
@@ -68,6 +70,7 @@ fn synthetic_patch(library: &mut SampleLibrary) -> Patch {
         lfos: Vec::new(),
         mod_matrix: ModMatrix::default(),
         voice_config: VoiceConfig::default(),
+        ..Default::default()
     }
 }
 

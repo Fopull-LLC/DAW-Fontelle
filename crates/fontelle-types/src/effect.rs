@@ -180,58 +180,22 @@ impl EffectConfig {
         }
     }
 
-    /// The named starting points this effect ships, in the order a picker
-    /// shows them, and empty for an effect that has none.
-    ///
-    /// Rule 10: **a preset is a constructor, not a parameter.** It writes the
-    /// knobs and then has nothing further to say, so it is not in
-    /// [`specs`](Self::specs) — an automation lane sweeping "preset" would be
-    /// a lane fighting the fourteen it had just written. That is also why this
-    /// is a list of *names* rather than of configs: the panel needs a row of
-    /// words, and what each one means is [`apply_preset`](Self::apply_preset)'s
-    /// business.
-    ///
-    /// Every effect with more than about eight controls has some. The utility,
-    /// the gate and the filter have none on purpose: their controls are ten
-    /// separate jobs rather than fourteen that interact, and a preset that set
-    /// all of them at once would be a preset for nobody. Recorded here rather
-    /// than left as an omission, because "no presets" and "presets not written
-    /// yet" look the same from outside.
-    pub fn presets(&self) -> &'static [&'static str] {
-        match self {
-            Self::Distortion(_) => DISTORTION_PRESET_NAMES.as_slice(),
-            Self::Bitcrush(_) => BITCRUSH_PRESET_NAMES.as_slice(),
-            Self::Soften(_) => SOFTEN_PRESET_NAMES.as_slice(),
-            _ => &[],
-        }
-    }
-
-    /// Writes the knobs the `index`th preset stands for, and nothing at all
-    /// for an index this effect does not have.
-    ///
-    /// **It writes every knob, the mix included**, because that is what a
-    /// constructor does and a preset that left some of the panel behind would
-    /// be a preset whose sound depends on what was there before it.
-    pub fn apply_preset(&mut self, index: usize) {
-        match self {
-            Self::Distortion(config) => {
-                if let Some(preset) = DistortionPreset::ALL.get(index) {
-                    *config = DistortionConfig::from_preset(*preset);
-                }
-            }
-            Self::Bitcrush(config) => {
-                if let Some(preset) = BitcrushPreset::ALL.get(index) {
-                    *config = BitcrushConfig::from_preset(*preset);
-                }
-            }
-            Self::Soften(config) => {
-                if let Some(preset) = SoftenPreset::ALL.get(index) {
-                    *config = SoftenConfig::from_preset(*preset);
-                }
-            }
-            _ => {}
-        }
-    }
+    // `presets`, `apply_preset` and `matching_preset` were here.
+    //
+    // They wrote a named starting point into the knobs, and a chip row above
+    // the panel drew them. `docs/flopsynth-plan.md` §P.9 took that job away
+    // from every device at once: a preset is a **file** now, the bank reads
+    // one for whatever device asks, and the preset bar in the window is the
+    // same bar over a distortion, a drum kit and a synthesiser. The seven
+    // distortions, six crushes and four softens that used to live in this
+    // file were exported once by `cargo xtask export-factory-presets` and are
+    // committed under `assets/presets/fx-*/`.
+    //
+    // What is kept from rule 10 is its first half: a preset is a constructor,
+    // not a parameter. There is still no "preset" knob and no lane can sweep
+    // one. What is replaced is its second half — see §P.6, which is Ty's
+    // decision that a device *remembers the name* and *recognises* whether it
+    // is still clean.
 
     fn spec(&self, id: &str) -> Option<&'static crate::ParamSpec> {
         self.specs().iter().find(|spec| spec.id == id)
@@ -365,7 +329,6 @@ fn all_wet() -> f32 {
 }
 
 impl EffectConfig {
-
     /// A fresh instance of `kind`, at whatever settings make it audible-but-
     /// harmless: an effect somebody just added should change nothing until
     /// they touch it.
@@ -1154,7 +1117,9 @@ impl EqConfig {
 /// because half the combinations do not exist: a notch has one slope and a
 /// peak is a boost rather than a cut, and a chooser with a greyed-out
 /// neighbour is a chooser that lies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum FilterShape {
     /// Twelve decibels an octave: one two-pole section. The gentle one, and
     /// the one that leaves a bass note under a sweep.
@@ -1228,7 +1193,9 @@ static FILTER_SHAPES: [&str; 8] = [
 /// Its own type rather than the filter's, because the tremolo, the phaser and
 /// the flanger all want the same six and rule 3 says a chooser names its
 /// positions once (`docs/effects-catalogue.md` §2.4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum LfoWave {
     #[default]
     Sine,
@@ -1853,8 +1820,8 @@ pub struct GateConfig {
     /// difference between a gated snare with its crack and one that starts a
     /// millisecond into its own decay.
     ///
-    /// It is latency, and until the graph compensates for it (item 16 in
-    /// `PROGRESS.md`) it is latency a person pays for on that track alone.
+    /// It is latency, and it is compensated: the graph holds the other
+    /// tracks back to meet this one (TDD §5.5).
     pub lookahead_ms: f32,
     /// How fast it opens.
     pub attack_ms: f32,
@@ -1872,8 +1839,8 @@ pub struct GateConfig {
     /// Dry/wet, 0..=1 — see [`EffectConfig::mix`]. A gate at half mix is
     /// spill turned down rather than removed, which is what a drum kit
     /// usually wants; it is also the only thing on this effect that
-    /// interacts badly with look-ahead, since the dry it blends is not
-    /// delayed.
+    /// interacted badly with look-ahead — the dry it blends is delayed by
+    /// the same look-ahead now, so an open gate at half mix is still a wire.
     pub mix: f32,
 }
 
@@ -2540,24 +2507,6 @@ impl Default for DistortionConfig {
     }
 }
 
-/// What the preset row says, position by position — the same words
-/// [`DistortionPreset::label`] gives, in the order `DistortionPreset::ALL`
-/// lists them.
-///
-/// Written out rather than built from those, for the reason `BAND_TYPES` is:
-/// a `static` read by the panel cannot call a method on an enum to build
-/// itself. `every_presets_name_matches_the_one_its_own_enum_gives` in
-/// `tests/effect_families.rs` keeps the two in step.
-static DISTORTION_PRESET_NAMES: [&str; 7] = [
-    "overdrive",
-    "fuzz",
-    "amp",
-    "fold",
-    "bass grit",
-    "octave",
-    "digital",
-];
-
 static DISTORTION_PARAMS: [crate::ParamSpec; 14] = with_mix(&DISTORTION_OWN_PARAMS, ALL_WET);
 
 /// How the panel reads: what goes into the curve, what shapes the signal
@@ -2721,7 +2670,9 @@ pub const MAX_BITS: f32 = 16.0;
 /// *which* level a value between two of them lands on, and — for the last —
 /// where the levels are. That is most of the difference between one lo-fi
 /// machine and another.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum Quantiser {
     /// To the nearest level. The least error, and the one every other
     /// bitcrusher does.
@@ -2758,7 +2709,9 @@ static QUANTISERS: [&str; 3] = ["round", "truncate", "mu-law"];
 /// — the output still lands on the grid — it changes which level gets
 /// chosen, and the three kinds differ in what the leftover noise sounds
 /// like.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum Dither {
     #[default]
     Off,
@@ -2810,7 +2763,9 @@ fn dither_compat<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Di
 ///
 /// The rate says how often a new value is taken; this says what the output
 /// does in the meantime, and the three answers are three different machines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum Decimation {
     /// Sample-and-hold: the value stays until the next one. The stair, and
     /// the aliasing every other bitcrusher has.
@@ -3014,9 +2969,7 @@ impl BitcrushConfig {
             "quantiser" => Quantiser::ALL.iter().position(|q| *q == self.quantiser)? as f32,
             "dither" => Dither::ALL.iter().position(|d| *d == self.dither)? as f32,
             "rate" => self.rate_hz,
-            "decimation" => Decimation::ALL
-                .iter()
-                .position(|d| *d == self.decimation)? as f32,
+            "decimation" => Decimation::ALL.iter().position(|d| *d == self.decimation)? as f32,
             "jitter" => self.jitter * 100.0,
             "antialias" => f32::from(u8::from(self.anti_alias)),
             "post_lp" => self.post_lp_hz,
@@ -3064,16 +3017,6 @@ impl Default for BitcrushConfig {
 /// The top of the rate knob. Above any device rate this build runs at, so the
 /// knob at its maximum holds nothing whatever the sound card is doing.
 pub const MAX_CRUSH_RATE_HZ: f32 = 48_000.0;
-
-/// See [`DISTORTION_PRESET_NAMES`].
-static BITCRUSH_PRESET_NAMES: [&str; 6] = [
-    "12-bit sampler",
-    "8-bit console",
-    "telephone",
-    "broken clock",
-    "sparse",
-    "crunch",
-];
 
 static BITCRUSH_PARAMS: [crate::ParamSpec; 11] = with_mix(&BITCRUSH_OWN_PARAMS, ALL_WET);
 
@@ -3300,9 +3243,6 @@ impl Default for SoftenConfig {
     }
 }
 
-/// See [`DISTORTION_PRESET_NAMES`].
-static SOFTEN_PRESET_NAMES: [&str; 4] = ["gentle", "standard", "aggressive", "vintage rompler"];
-
 static SOFTEN_PARAMS: [crate::ParamSpec; 5] = with_mix(&SOFTEN_OWN_PARAMS, ALL_WET);
 
 macro_rules! soften_param {
@@ -3339,7 +3279,9 @@ static SOFTEN_OWN_PARAMS: [crate::ParamSpec; 4] = [
 /// shared between voices at different points of its cycle, or one LFO each at
 /// rates that never line up. The first is a chorus and the second is a string
 /// machine, and no setting of the first is the second.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum ChorusMode {
     /// Every voice on the same LFO, spread evenly around its cycle. Coherent:
     /// the voices sweep together and the comb they make with the dry signal
@@ -3496,9 +3438,7 @@ impl ChorusConfig {
             "spread" => self.spread * 100.0,
             "rate" => self.rate_hz,
             "sync" => f32::from(u8::from(self.sync)),
-            "division" => NoteDivision::ALL
-                .iter()
-                .position(|d| *d == self.division)? as f32,
+            "division" => NoteDivision::ALL.iter().position(|d| *d == self.division)? as f32,
             "depth" => self.depth * 100.0,
             "delay" => self.delay_ms,
             "feedback" => self.feedback * 100.0,
@@ -3847,9 +3787,7 @@ impl DelayConfig {
             MIX => self.mix * 100.0,
             "time" => self.time_ms,
             "sync" => f32::from(u8::from(self.sync)),
-            "division" => NoteDivision::ALL
-                .iter()
-                .position(|d| *d == self.division)? as f32,
+            "division" => NoteDivision::ALL.iter().position(|d| *d == self.division)? as f32,
             "feedback" => self.feedback * 100.0,
             "damping" => self.damping_hz,
             "drive" => self.drive * 100.0,

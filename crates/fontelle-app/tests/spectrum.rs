@@ -13,7 +13,7 @@
 
 mod common;
 
-use fontelle_app::{RealiseOptions, SampleLibrary, Session, blank_project};
+use fontelle_app::{RealiseOptions, SampleLibrary, Session};
 use fontelle_engine::{BLOCK_SIZE, Transport, TransportReader, graph_channel, timeline_channel};
 use fontelle_model::{AddNotes, Command, Note};
 use fontelle_types::{CompiledTimeline, EffectKind, PPQN};
@@ -34,6 +34,7 @@ fn a_note(start: i64, length: i64, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -47,7 +48,7 @@ fn playing_studio() -> (
     usize,
     usize,
 ) {
-    let mut project = blank_project(8, 120.0, SR);
+    let mut project = common::a_project_with_a_clip(8, 120.0, SR);
     let clip = Session::first_clip(&project).expect("a blank project has one clip");
     // Four bars of one note: long enough to fill the analyser's window several
     // times over.

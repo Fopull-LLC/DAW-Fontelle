@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use fontelle_types::{EffectConfig, EffectKind, MixerTrackId};
+use fontelle_types::{EffectConfig, EffectKind, MixerTrackId, PluginState};
 
 // `PanLaw` lives in `fontelle-types` so `fontelle-engine`'s `MixerTrackNode`
 // can share this exact type — the engine can't depend on this crate (TDD §4.1).
@@ -20,7 +20,27 @@ pub use fontelle_types::PanLaw;
 /// unbuilt — a name for an effect with nowhere to put a single parameter.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EffectSlot {
+    /// The settings of whichever **built-in** effect this holds.
+    ///
+    /// Meaningless, and left at what it was, when [`plugin`](Self::plugin) is
+    /// set. Read it through [`config`](Self::config) rather than directly, and
+    /// the answer for a hosted plugin is `None` — an insert holding somebody
+    /// else's plugin has no `EffectConfig` and never will, because an
+    /// `EffectConfig` is a sum type over the effects that ship in this binary.
     pub config: EffectConfig,
+    /// The plugin this insert holds instead, if it holds one (TDD §8.4).
+    ///
+    /// **A second field rather than a variant of [`EffectConfig`]**, and that
+    /// is forced rather than chosen. `EffectConfig` is `Copy`, fixed-size and
+    /// read on the audio thread; a plugin's state is a name, a list of
+    /// parameters and an opaque blob, none of which is any of those things.
+    /// Putting one inside the other would have made every built-in effect pay
+    /// for a heap allocation it does not use.
+    ///
+    /// Defaulted and omitted when empty, so every project written before
+    /// plugins could be hosted opens unchanged and is written back unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<PluginState>,
     /// Switched out of the chain, keeping its settings. A bypass is not a
     /// delete: the reason to reach for one is to hear the difference and then
     /// put it back.
@@ -45,6 +65,19 @@ pub struct EffectSlot {
     /// written before this field existed.
     #[serde(default)]
     pub key: Option<MixerTrackId>,
+    /// The preset this device was loaded from, if it was loaded from one
+    /// (`docs/flopsynth-plan.md` §P.5).
+    ///
+    /// **The name is remembered; the cleanliness is recognised.** This field
+    /// survives every edit and never says whether the device still matches the
+    /// file — that is computed by comparing the current state against the
+    /// bank's (`Session::preset_state`), so an undo makes the bar's `*` go out
+    /// with nothing to remember and no way for the two to disagree.
+    ///
+    /// Defaulted and omitted when empty, so every project written before the
+    /// preset system opens and is written back unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<fontelle_types::PresetRef>,
 }
 
 impl EffectSlot {
@@ -53,13 +86,56 @@ impl EffectSlot {
     pub fn new(kind: EffectKind) -> Self {
         Self {
             config: EffectConfig::new(kind),
+            plugin: None,
             bypassed: false,
+            key: None,
+            preset: None,
+        }
+    }
+
+    /// An insert holding a plugin somebody else wrote.
+    ///
+    /// The `config` it carries is never read — see the field's own note — and
+    /// is a `Utility` because that is the built-in that does nothing.
+    pub fn hosting(state: PluginState) -> Self {
+        Self {
+            config: EffectConfig::new(EffectKind::Utility),
+            plugin: Some(state),
+            bypassed: false,
+            preset: None,
             key: None,
         }
     }
 
-    pub fn kind(&self) -> EffectKind {
-        self.config.kind()
+    /// Which built-in effect this is, or `None` for a hosted plugin.
+    ///
+    /// Everything that draws, schedules or automates an insert asks this
+    /// first: `None` means the slot is somebody else's plugin and every
+    /// question about `EffectConfig` is the wrong question.
+    pub fn kind(&self) -> Option<EffectKind> {
+        self.plugin.is_none().then(|| self.config.kind())
+    }
+
+    /// The built-in effect's settings, or `None` for a hosted plugin.
+    pub fn config(&self) -> Option<&EffectConfig> {
+        self.plugin.is_none().then_some(&self.config)
+    }
+
+    pub fn is_plugin(&self) -> bool {
+        self.plugin.is_some()
+    }
+
+    /// What the strip says on this slot.
+    ///
+    /// A plugin's own name, and a **stored** one at that: it is read back out
+    /// of the document rather than off the plugin, so a strip still says
+    /// "Diva" on a machine where Diva is not installed. That is the one moment
+    /// the name matters most and the plugin is not there to be asked.
+    pub fn label(&self) -> &str {
+        match &self.plugin {
+            Some(plugin) => &plugin.name,
+            None => self.config.kind().label(),
+        }
     }
 
     /// The track this insert listens to, if it has a detector *and* has been
@@ -71,7 +147,18 @@ impl EffectSlot {
     /// hear. Read through this rather than the field wherever the answer is
     /// "does this edge exist".
     pub fn effective_key(&self) -> Option<MixerTrackId> {
-        self.config.kind().takes_key().then_some(self.key).flatten()
+        // A hosted plugin's sidechain is a second audio *port*, and whether
+        // it has one is the host's knowledge rather than the document's — so
+        // a key on a plugin slot is always an edge, and the host feeds it
+        // or not. An edge that feeds nothing orders the graph and refuses a
+        // cycle for a path nobody hears, which costs nothing anybody can.
+        if self.is_plugin() {
+            return self.key;
+        }
+        self.kind()
+            .is_some_and(|kind| kind.takes_key())
+            .then_some(self.key)
+            .flatten()
     }
 }
 
@@ -101,6 +188,23 @@ pub struct MixerTrack {
     pub sends: Vec<Send>,
     /// `None` = master.
     pub output: Option<MixerTrackId>,
+    /// Whether that output is connected at all.
+    ///
+    /// *"if i chose to not route it to master, i wont be hearing my own input
+    /// but it will still be recording the audio clip."*
+    ///
+    /// [`output`](Self::output) says **where**, this says **whether**, and the
+    /// two are separate so that switching a track off and back on puts it back
+    /// where it was rather than at the master. `false` is a track whose signal
+    /// arrives nowhere by the main path — which is not a mute: its sends still
+    /// carry, which is how a track feeding only a reverb is built, and what a
+    /// mute would take away as well.
+    ///
+    /// A project written before this field carries none, and absent reads as
+    /// `true`: every track ever saved was routed, and one that reopened silent
+    /// would be a song that had lost its mix.
+    #[serde(default = "routed")]
+    pub output_on: bool,
     /// Which audio input this track records from (TDD §15.4), by **name**.
     ///
     /// *"i click a input button that lets my select my mic input to feed to
@@ -135,9 +239,16 @@ impl MixerTrack {
             inserts: Vec::new(),
             sends: Vec::new(),
             output: None,
+            output_on: true,
             input: None,
         }
     }
+}
+
+/// What [`MixerTrack::output_on`] is when a project does not say — see the
+/// field. A function because `serde`'s `default` takes one.
+fn routed() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -245,6 +356,44 @@ impl Mixer {
                     }
                 }
             }
+        }
+        false
+    }
+
+    /// Whether `track`'s signal arrives at the master by the main path.
+    ///
+    /// Two things read this and they are the two halves of one report:
+    /// whether monitoring an input is audible, and — when it is not — where a
+    /// take has to be put so that *"your recording will actually be audible
+    /// after playing it"*. One walk in one place, because two answers to
+    /// "can this be heard" is a take that lands somewhere nobody can hear it.
+    ///
+    /// **Outputs only, not sends.** A send is a copy at a level, usually of a
+    /// reverb, and a track heard only through one is not a track you have
+    /// recorded onto — asking about it here would call a mic feeding a reverb
+    /// "audible" and leave the take somewhere it cannot be heard dry.
+    ///
+    /// The master reaches itself. A track that is not there does not.
+    pub fn reaches_master(&self, track: MixerTrackId) -> bool {
+        let Some(master) = self.master else {
+            return false;
+        };
+        let mut at = track;
+        // Bounded by the number of tracks: `has_cycle` refuses a loop on every
+        // mutation, but this must terminate on a damaged document too rather
+        // than trusting that it did.
+        for _ in 0..=self.tracks.len() {
+            if at == master {
+                return true;
+            }
+            let Some(node) = self.tracks.get(at) else {
+                return false;
+            };
+            if !node.output_on {
+                return false;
+            }
+            // `None` is the master — see `MixerTrack::output`.
+            at = node.output.unwrap_or(master);
         }
         false
     }

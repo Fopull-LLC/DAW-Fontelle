@@ -1,0 +1,28 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Distortion"
+  },
+  "name": "fuzz",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Distortion": {
+        "curve": "Diode",
+        "shape": 0.7,
+        "drive_db": 36.0,
+        "bias": 0.2,
+        "sag": 0.4,
+        "pre_hp_hz": 120.0,
+        "pre_mid_hz": 1000.0,
+        "pre_mid_db": 3.0,
+        "clean_low_hz": 20.0,
+        "tone_hz": 5000.0,
+        "output_db": 0.0,
+        "auto_gain": true,
+        "oversample": "Four",
+        "mix": 1.0
+      }
+    }
+  }
+}

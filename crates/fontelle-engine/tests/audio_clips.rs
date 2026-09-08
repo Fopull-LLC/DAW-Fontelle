@@ -26,8 +26,8 @@ use fontelle_engine::{
     AudioClipNode, AudioNode, PrepareContext, ProcessContext, TransportSnapshot, TransportState,
 };
 use fontelle_types::{
-    AssetId, AssetKind, AssetRef, AudioClipData, AudioPlacement, ClipId, ClipLoopMode, Fade,
-    FadeCurve, NodeId,
+    AssetId, AssetKind, AssetRef, AudioClipData, AudioPlacement, ClipId, ClipLoopMode, ClipStretch,
+    Fade, FadeCurve, NodeId,
 };
 
 const RATE: f32 = 48_000.0;
@@ -104,12 +104,20 @@ impl Rig {
             clip: self.clips.insert(()),
             range: start..start + length,
             repeat: 0,
+            crossfade_in: 0,
+            crossfade_out: 0,
             data,
         }
     }
 
     /// Renders `frames` of song time from `from`, in blocks of `block`.
-    fn render(&mut self, placements: &[AudioPlacement], from: i64, frames: usize, block: usize) -> Vec<f32> {
+    fn render(
+        &mut self,
+        placements: &[AudioPlacement],
+        from: i64,
+        frames: usize,
+        block: usize,
+    ) -> Vec<f32> {
         let mut out = Vec::with_capacity(frames);
         let mut at = from;
         while out.len() < frames {
@@ -191,10 +199,7 @@ fn where_a_clip_lands_does_not_depend_on_the_block_size() {
 fn two_clips_on_one_track_are_summed_rather_than_one_winning() {
     let mut r = rig(counting(100, 48_000));
     let clip = r.clip(100);
-    let placements = vec![
-        r.placement(clip.clone(), 0, 100),
-        r.placement(clip, 0, 100),
-    ];
+    let placements = vec![r.placement(clip.clone(), 0, 100), r.placement(clip, 0, 100)];
     let out = r.render(&placements, 0, 10, 10);
     assert_eq!(out[5], 10.0, "two copies of frame 5 is twice frame 5");
 }
@@ -207,7 +212,10 @@ fn a_clip_addressed_to_another_node_is_not_this_nodes_business() {
     elsewhere.target = ids::<NodeId>(2)[1];
     assert_ne!(elsewhere.target, r.node_id);
     let out = r.render(&[elsewhere], 0, 50, 50);
-    assert!(out.iter().all(|v| *v == 0.0), "it played somebody else's clip");
+    assert!(
+        out.iter().all(|v| *v == 0.0),
+        "it played somebody else's clip"
+    );
 }
 
 #[test]
@@ -310,7 +318,11 @@ fn the_boost_multiplies_what_comes_out() {
     clip.gain_db = 6.0206;
     let placements = vec![r.placement(clip, 0, 100)];
     let out = r.render(&placements, 0, 10, 10);
-    assert!((out[4] - 8.0).abs() < 0.01, "frame 4 at +6 dB is {}", out[4]);
+    assert!(
+        (out[4] - 8.0).abs() < 0.01,
+        "frame 4 at +6 dB is {}",
+        out[4]
+    );
 }
 
 #[test]
@@ -320,6 +332,7 @@ fn a_fade_in_arrives_from_silence() {
     clip.fade_in = Fade {
         frames: 50,
         curve: FadeCurve::Linear,
+        tension: 0.0,
     };
     let placements = vec![r.placement(clip, 0, 100)];
     let out = r.render(&placements, 0, 100, 100);
@@ -393,5 +406,133 @@ fn panning_a_clip_hard_left_takes_it_out_of_the_right() {
     };
     r.node.process(&mut ctx);
     assert!(left[5] > 0.0);
-    assert!(right[5].abs() < 1e-6, "hard left still came out of the right");
+    assert!(
+        right[5].abs() < 1e-6,
+        "hard left still came out of the right"
+    );
+}
+
+// ---------------------------------------------- stretching to the tempo ---
+//
+// > *"audio clips arent stretching to match tempo changes in realtime right
+// > now [and] soundclips dont have options right now for selecting their mixer
+// > track and stretch mode."*
+//
+// The block a clip occupies is already the tempo map's answer: the sequencer
+// turns the clip's **ticks** into a sample range, so a tempo change moves that
+// range without anything here being told. All a stretching clip has to do is
+// fill whatever range it is given rather than read its file at the file's own
+// rate and stop when it runs out.
+//
+// Which is why this needs no clock and no new plumbing: change the range, and
+// a stretched clip changes with it.
+
+#[test]
+fn a_clip_that_does_not_stretch_reads_its_file_at_the_files_own_rate() {
+    // The default, and the identity this whole feature rests on: a file
+    // dropped on the arrangement sounds exactly like the file.
+    let clip = AudioClipData::whole(an_asset(an_id()), 1000, 48_000);
+    assert_eq!(clip.stretch, ClipStretch::Off);
+    assert!((clip.read_ratio(48_000, 48_000.0, 4000) - 1.0).abs() < 1e-9);
+    // And a 44.1 kHz file on a 48 kHz device still advances slower than one
+    // frame per frame, whatever the block is.
+    let slow = clip.read_ratio(44_100, 48_000.0, 4000);
+    assert!((slow - 44_100.0 / 48_000.0).abs() < 1e-9);
+}
+
+#[test]
+fn a_stretching_clip_spreads_its_file_across_the_block_it_is_given() {
+    let mut clip = AudioClipData::whole(an_asset(an_id()), 1000, 48_000);
+    clip.stretch = ClipStretch::Resample;
+    // A thousand frames of file over four thousand frames of song is a quarter
+    // of a frame each — and over five hundred, two.
+    assert!((clip.read_ratio(48_000, 48_000.0, 4000) - 0.25).abs() < 1e-9);
+    assert!((clip.read_ratio(48_000, 48_000.0, 500) - 2.0).abs() < 1e-9);
+    // The file's own rate stops mattering, which is the point: what decides
+    // the read is how long the bar is.
+    assert!((clip.read_ratio(44_100, 48_000.0, 4000) - 0.25).abs() < 1e-9);
+}
+
+#[test]
+fn halving_the_tempo_doubles_the_block_and_the_clip_follows_it() {
+    // *"stretching to match tempo changes"*, stated as the arithmetic it is:
+    // the sequencer hands over twice the range and the same file fills it.
+    let mut clip = AudioClipData::whole(an_asset(an_id()), 96_000, 48_000);
+    clip.stretch = ClipStretch::Resample;
+    let at_120 = clip.read_ratio(48_000, 48_000.0, 96_000);
+    let at_60 = clip.read_ratio(48_000, 48_000.0, 192_000);
+    assert!((at_120 - 1.0).abs() < 1e-9, "it should sit at its own rate");
+    assert!(
+        (at_60 - 0.5).abs() < 1e-9,
+        "half the tempo, half the read rate"
+    );
+}
+
+#[test]
+fn a_block_of_nothing_asks_for_nothing_rather_than_dividing_by_it() {
+    let mut clip = AudioClipData::whole(an_asset(an_id()), 1000, 48_000);
+    clip.stretch = ClipStretch::Resample;
+    assert!(clip.read_ratio(48_000, 48_000.0, 0).is_finite());
+    let empty = AudioClipData::whole(an_asset(an_id()), 0, 48_000);
+    assert!(empty.read_ratio(48_000, 48_000.0, 4000).is_finite());
+}
+
+#[test]
+fn a_stretched_clip_is_heard_across_the_whole_block_it_was_given() {
+    // The end of it, through the real node: a clip whose file is a quarter as
+    // long as its block used to go silent three-quarters of the way through.
+    let mut rig = rig(counting(1000, 48_000));
+    let mut data = rig.clip(1000);
+    data.stretch = ClipStretch::Resample;
+    let placement = rig.placement(data, 0, 4000);
+    let out = rig.render(&[placement], 0, 4000, 128);
+
+    let tail = &out[3800..];
+    assert!(
+        tail.iter().any(|s| *s != 0.0),
+        "the clip stopped before its block did"
+    );
+    // And it walked the file once, in order: the last frames are the end of
+    // the file rather than the middle of it.
+    assert!(out[3990] > 900.0, "it ended at frame {}", out[3990]);
+}
+
+// ------------------------------------------ the arrangement's own repeat ---
+//
+// *"resolve the issue of it trying to stretch while looping"*: what a loop
+// on the arrangement (`AudioPlacement::repeat`) does to the read rate is
+// decided by the clip's mode and nothing else. These two are the guarantee
+// the Stretch switch on the toolbar rests on.
+
+#[test]
+fn an_arrangement_loop_that_does_not_stretch_plays_the_file_at_its_own_rate_every_pass() {
+    // Fifty frames of file, a period of a hundred: each pass is the file, then
+    // silence until the seam, then the file again from its first frame.
+    let mut r = rig(counting(50, 48_000));
+    let clip = r.clip(50);
+    let mut placement = r.placement(clip, 0, 400);
+    placement.repeat = 100;
+    let out = r.render(&[placement], 0, 400, 64);
+    assert_eq!(out[49], 49.0);
+    assert_eq!(out[75], 0.0, "the file is over until the seam");
+    assert_eq!(out[100], 0.0, "and starts again at it");
+    assert_eq!(out[125], 25.0);
+    assert_eq!(out[349], 49.0);
+    assert_eq!(out[399], 0.0);
+}
+
+#[test]
+fn an_arrangement_loop_that_stretches_fills_each_pass_with_the_whole_file() {
+    let mut r = rig(counting(50, 48_000));
+    let mut clip = r.clip(50);
+    clip.stretch = ClipStretch::Resample;
+    let mut placement = r.placement(clip, 0, 400);
+    placement.repeat = 100;
+    let out = r.render(&[placement], 0, 400, 64);
+    // Half a frame of file per frame of song: the file's end lands at the
+    // seam, not in the middle of the pass.
+    assert!((out[98] - 49.0).abs() < 1.5, "{}", out[98]);
+    assert!((out[150] - 25.0).abs() < 1.0, "{}", out[150]);
+    assert!(out[100] < 2.0, "the pass starts over: {}", out[100]);
+    assert!((out[398] - 49.0).abs() < 1.5, "{}", out[398]);
 }

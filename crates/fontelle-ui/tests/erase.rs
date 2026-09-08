@@ -62,6 +62,7 @@ fn note(start: Tick, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -244,6 +245,7 @@ fn clips(items: &[(Tick, Tick, usize)]) -> Vec<ClipInfo> {
             curve: Vec::new(),
             notes: Vec::new(),
             audio: Default::default(),
+            prefab: None,
         })
         .collect()
 }

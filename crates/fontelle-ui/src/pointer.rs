@@ -273,6 +273,12 @@ pub fn instrument_pointer(
     x: f32,
     y: f32,
 ) -> Pointer {
+    // The key row first, the way the press does: it sits above the controls
+    // and is not among them, so a pointer over a chip has to say "this is a
+    // button" rather than "this is a knob you cannot see".
+    if crate::canvas::instrument_key_hit(layout, x, y).is_some() {
+        return Pointer::Hand;
+    }
     match (view, instrument_hit(layout, x, y)) {
         (Some(view), Some((group, param))) => match view.param(group, param) {
             // A knob is dragged up and down; a switch and a choice are

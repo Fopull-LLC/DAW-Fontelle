@@ -33,6 +33,7 @@ fn a_note(start: i64, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -55,10 +56,13 @@ fn fixture() -> Fixture {
     let track = project.mixer.tracks.insert(MixerTrack::new("Part"));
     project.mixer.tracks[track].output = Some(master);
     let channel = project.channels.insert(fontelle_model::Channel {
+        preset: None,
+        instrument: None,
         name: "Part".into(),
         color: [0; 4],
         mixer_track: Some(track),
         patch_data: None,
+        plugin: None,
         pan: 0.0,
         muted: false,
         soloed: false,

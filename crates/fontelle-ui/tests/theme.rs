@@ -431,3 +431,59 @@ fn the_grids_three_levels_are_three_different_inks() {
         );
     }
 }
+
+/// v7 added the modulation arc (`docs/flopsynth-plan.md` §8.1 rule 6).
+///
+/// A v6 theme was written before there was a matrix to draw one from, so it
+/// cannot have an opinion about the colour — and the rule this file holds is
+/// that a missing token is filled in by a migration that says which version it
+/// is filling in for, never by `serde(default)`.
+#[test]
+fn a_v6_theme_gains_the_modulation_ink_and_keeps_its_own() {
+    let mut json: serde_json::Value =
+        serde_json::from_str(&Theme::dark_default().to_json()).expect("valid JSON");
+    json["format_version"] = serde_json::json!(6);
+    json["palette"]["param_automated"] = serde_json::json!("#123456");
+    json["palette"]
+        .as_object_mut()
+        .expect("palette is an object")
+        .remove("modulation")
+        .expect("v7 added this");
+
+    let migrated = Theme::from_json(&json.to_string()).expect("a v6 theme must still open");
+    assert_eq!(migrated.format_version, THEME_FORMAT_VERSION);
+    assert_eq!(
+        migrated.palette.modulation,
+        Theme::dark_default().palette.modulation
+    );
+    assert_eq!(
+        migrated.palette.param_automated,
+        Color::rgb(0x12, 0x34, 0x56),
+        "the amber ring the old file chose is still its own"
+    );
+}
+
+/// The arc has to be tellable from every other three-pixel mark on a control.
+///
+/// §8.8's reason for a fifth ink rather than reusing one: at three pixels an
+/// arc in the accent, the playhead, a note's colour or the automation amber is
+/// a control whose owner you have to guess at.
+#[test]
+fn the_modulation_ink_is_nobody_elses() {
+    for theme in [Theme::dark_default(), Theme::light_default()] {
+        let p = &theme.palette;
+        for (name, other) in [
+            ("accent", p.accent),
+            ("playhead", p.playhead),
+            ("note", p.note),
+            ("param_automated", p.param_automated),
+            ("meter_peak", p.meter_peak),
+        ] {
+            assert_ne!(
+                p.modulation, other,
+                "{}: the modulation arc is the same ink as {name}",
+                theme.name
+            );
+        }
+    }
+}

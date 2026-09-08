@@ -4,7 +4,7 @@ use crate::arena::Arena;
 
 use crate::asset_table::AssetTable;
 use crate::channel::Channel;
-use crate::clip::Clip;
+use crate::clip::{Clip, ClipSource};
 use crate::lane::Lane;
 use crate::mixer::Mixer;
 use crate::prefab::Prefab;
@@ -282,6 +282,107 @@ impl Project {
         let mut ids: Vec<LaneId> = self.lanes.keys().collect();
         ids.sort_by_key(|id| self.lanes.get(*id).map_or(0, |lane| lane.order));
         ids
+    }
+
+    /// **What `clip` actually holds.**
+    ///
+    /// An ordinary clip holds its own notes and this hands them back. A clip
+    /// that follows a prefab holds *nothing* — its notes are the prefab's, and
+    /// there is exactly one copy of them — so this is the only correct way to
+    /// ask a clip what it plays.
+    ///
+    /// # Read this before reaching for `clip.source`
+    ///
+    /// `Clip::source` is still there, still holds notes for every ordinary
+    /// clip, and reads correctly for all of them. It is wrong **only** for the
+    /// clips the prefab feature makes, which is exactly the shape of bug that
+    /// ships: the code looks right, the tests that predate prefabs pass, and
+    /// the failure is "my prefab instances are silent". The compiler
+    /// (`fontelle-sequencer`), the piano roll and the arrangement's captions
+    /// all come through here.
+    ///
+    /// `Cow`, and not a plain reference, because that is the shape the answer
+    /// really has: mirroring borrows the prefab's own content and costs
+    /// nothing, and an instance with overrides on it has to be *materialised*
+    /// before it can be read (see [`prefab::resolve`](crate::resolve)).
+    /// Borrowing today and cloning when there is something to apply keeps the
+    /// hot path free without the signature having to change later.
+    ///
+    /// `None` only when `clip` is not in this project. A link naming a prefab
+    /// that has gone reads as the clip's own (empty) source — a half-migrated
+    /// or hand-edited file is a project that still opens.
+    pub fn clip_source(&self, clip: ClipId) -> Option<std::borrow::Cow<'_, ClipSource>> {
+        use std::borrow::Cow;
+        let clip = self.clips.get(clip)?;
+        let Some(link) = &clip.prefab_link else {
+            return Some(Cow::Borrowed(&clip.source));
+        };
+        let Some(prefab) = self.prefabs.get(link.prefab) else {
+            return Some(Cow::Borrowed(&clip.source));
+        };
+        // The common case by far, and the one worth not cloning for: a mirror
+        // instance of a prefab that is not itself a variant *is* the prefab's
+        // content, with nothing to apply over it.
+        if prefab.base.is_none() && link.overrides.props.is_empty() {
+            return Some(Cow::Borrowed(&prefab.source));
+        }
+        match crate::prefab::resolve(&self.prefabs, link.prefab, Some(link)) {
+            Some(source) => Some(Cow::Owned(source)),
+            None => Some(Cow::Borrowed(&clip.source)),
+        }
+    }
+
+    /// **Where an edit to `clip` belongs.**
+    ///
+    /// > *"editing a prefab clip basically works like just editing a normal
+    /// > clip except you dont have to only be selecting it in the
+    /// > arrangement."*
+    ///
+    /// An ordinary clip answers itself. A clip that follows a prefab answers
+    /// the *prefab*, which is what makes an edit made through one instance
+    /// show up in every other one — the thing the whole feature is for.
+    ///
+    /// One function rather than a rule each caller applies, because "which of
+    /// the two did you mean" is a question the piano roll, the arrangement and
+    /// the keyboard shortcuts would each get to answer differently otherwise.
+    ///
+    /// `None` when `clip` is not in this project.
+    pub fn note_home(&self, clip: ClipId) -> Option<crate::note::NoteHome> {
+        use crate::note::NoteHome;
+        let found = self.clips.get(clip)?;
+        Some(match &found.prefab_link {
+            // A link naming a prefab that has gone edits the clip itself:
+            // there is nothing else it could edit, and refusing the edit would
+            // make a corrupt file into a clip nobody can fix.
+            Some(link) if self.prefabs.contains_key(link.prefab) => NoteHome::Prefab(link.prefab),
+            _ => NoteHome::Clip(clip),
+        })
+    }
+
+    /// The prefabs, in a stable order for a list to draw.
+    ///
+    /// Arena order, which is insertion order — the order somebody made them
+    /// in, which is the order the panel that lists them should show. Its own
+    /// function for the same reason [`lane_ids`](Self::lane_ids) is: "prefab
+    /// 3" has to mean the same thing to the list and to the click on it.
+    pub fn prefab_ids(&self) -> Vec<PrefabId> {
+        self.prefabs.keys().collect()
+    }
+
+    /// Every clip that follows `prefab`.
+    ///
+    /// What says whether deleting one is going to change the arrangement, and
+    /// what a panel counts to say "used in 4 places".
+    pub fn prefab_instances(&self, prefab: PrefabId) -> Vec<ClipId> {
+        self.clips
+            .iter()
+            .filter(|(_, clip)| {
+                clip.prefab_link
+                    .as_ref()
+                    .is_some_and(|link| link.prefab == prefab)
+            })
+            .map(|(id, _)| id)
+            .collect()
     }
 
     /// A new, empty document — with a master mixer track, because every

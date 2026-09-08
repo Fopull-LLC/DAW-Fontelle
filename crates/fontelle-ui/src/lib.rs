@@ -16,6 +16,7 @@
 //!
 //! What is left in [`app`] is only the part that genuinely needs a window.
 
+pub mod activation;
 pub mod app;
 pub mod audition;
 pub mod backend;
@@ -38,7 +39,7 @@ pub use audition::{AuditionAction, Auditions, MAX_AUDITION, MIN_AUDITION};
 pub use backend::WindowBackend;
 pub use document::{
     AudioPreview, ChannelInfo, ClipInfo, ClipKind, DocumentHost, GhostFilter, GhostNote, LaneInfo,
-    LibraryEntry, SendInfo, StudioHost,
+    LibraryEntry, PluginListing, PrefabInfo, RackTab, SendInfo, StudioHost,
 };
 pub use layout::{
     DEFAULT_TIMELINE_HEIGHT, EditorKind, EditorTab, EditorTabs, MIN_EDITOR_HEIGHT,

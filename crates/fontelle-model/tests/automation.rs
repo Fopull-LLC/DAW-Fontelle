@@ -324,10 +324,13 @@ fn a_note_clip_on_the_same_lane_is_ignored() {
     let mut project = project_with(&[(0, PPQN * 8, 0.6)]);
     let lane = project.lanes.keys().next().unwrap();
     let channel = project.channels.insert(fontelle_model::Channel {
+        preset: None,
+        instrument: None,
         name: "ch".into(),
         color: [0; 4],
         mixer_track: None,
         patch_data: None,
+        plugin: None,
         pan: 0.0,
         muted: false,
         soloed: false,

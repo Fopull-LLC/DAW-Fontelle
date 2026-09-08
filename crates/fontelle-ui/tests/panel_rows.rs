@@ -92,17 +92,13 @@ fn a_click_in_the_preset_list_is_a_preset_even_at_its_very_top() {
         "the bottom of the file list is not a file: {hit:?}"
     );
 
-    // The gap between the two lists belongs to neither, and must not report a
-    // row from the wrong one.
+    // The gap between the two lists belongs to neither — and now has a job:
+    // it is the seam that divides them (`browser_file_share_at`). So it
+    // reports the seam rather than a row, which is a stronger statement than
+    // the "at least not a row from the wrong list" this used to make.
     for y in [l.files.bottom() + 0.5, l.presets.y - 0.5] {
         let hit = browser_hit(&l, l.files.x + 10.0, y);
-        assert!(
-            matches!(
-                hit,
-                BrowserHit::Nothing | BrowserHit::File(_) | BrowserHit::Preset(_)
-            ),
-            "{hit:?}"
-        );
+        assert_eq!(hit, BrowserHit::Seam, "at y={y}");
     }
 }
 
@@ -213,10 +209,7 @@ fn the_editor_column_has_a_tab_for_the_roll_and_one_for_the_mixer() {
     let header = Rect::new(264.0, 256.0, 728.0, 26.0);
     let tabs = editor_tabs(header, &m);
 
-    let all = [
-        (EditorTab::Roll, tabs.roll),
-        (EditorTab::Mixer, tabs.mixer),
-    ];
+    let all = [(EditorTab::Roll, tabs.roll), (EditorTab::Mixer, tabs.mixer)];
     for (i, (which, tab)) in all.iter().enumerate() {
         assert!(!tab.is_empty(), "{which:?} has no room");
         assert!(header.intersects(tab), "{tab:?} is outside the header");

@@ -13,3 +13,6 @@ name = "xtask"
 path = "src/main.rs"
 
 [dependencies]
+fontelle-types = { path = "../crates/fontelle-types" }
+fontelle-core = { path = "../crates/fontelle-core" }
+serde_json = { version = "1.0.151", features = ["float_roundtrip"] }

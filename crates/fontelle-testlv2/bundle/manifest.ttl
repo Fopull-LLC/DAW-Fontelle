@@ -1,0 +1,38 @@
+@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ui:   <http://lv2plug.in/ns/extensions/ui#> .
+
+<http://fopull.com/fontelle/testlv2/gain>
+    a lv2:Plugin ;
+    lv2:binary <fontelle_testlv2.so> ;
+    rdfs:seeAlso <testlv2.ttl> .
+
+<http://fopull.com/fontelle/testlv2/gain#ui>
+    a ui:X11UI ;
+    ui:binary <fontelle_testlv2.so> ;
+    rdfs:seeAlso <testlv2.ttl> .
+
+<http://fopull.com/fontelle/testlv2/plain>
+    a lv2:Plugin ;
+    lv2:binary <fontelle_testlv2.so> ;
+    rdfs:seeAlso <testlv2.ttl> .
+
+<http://fopull.com/fontelle/testlv2/sine>
+    a lv2:Plugin ;
+    lv2:binary <fontelle_testlv2.so> ;
+    rdfs:seeAlso <testlv2.ttl> .
+
+<http://fopull.com/fontelle/testlv2/sine#ui>
+    a ui:X11UI ;
+    ui:binary <fontelle_testlv2.so> ;
+    rdfs:seeAlso <testlv2.ttl> .
+
+<http://fopull.com/fontelle/testlv2/deaf>
+    a lv2:Plugin ;
+    lv2:binary <fontelle_testlv2.so> ;
+    rdfs:seeAlso <testlv2.ttl> .
+
+<http://fopull.com/fontelle/testlv2/deaf#ui>
+    a ui:X11UI ;
+    ui:binary <fontelle_testlv2.so> ;
+    rdfs:seeAlso <testlv2.ttl> .

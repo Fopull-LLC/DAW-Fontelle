@@ -1,0 +1,39 @@
+[package]
+name = "fontelle-host"
+description = "Loading and running plugins somebody else wrote (FONTELLE_TDD.md §8.4). CLAP today; the seam is format-shaped."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+fontelle-types = { path = "../fontelle-types" }
+fontelle-bridge-abi = { path = "../fontelle-bridge-abi" }
+# dlopen for bridges. clack does its own for CLAP and lilv for LV2.
+libloading = "0.8"
+clack-host = "0.1.1"
+# The window a plugin's own editor is embedded into — see `gui`. Pure Rust
+# XCB, so nothing new is linked; `winit` already pulls the same crate in.
+x11rb = "0.13.2"
+clack-extensions = { version = "0.1.1", features = ["params", "state", "audio-ports", "note-ports", "gui", "timer", "posix-fd", "latency", "clack-host", "raw-window-handle_06"] }
+# LV2, through lilv (ISC) — see the crate docs for why the second format is an
+# arm and not a rewrite.
+livi = "0.7.5"
+# The C structs an LV2 UI is loaded through — see `lv2_ui`. Pinned to the
+# version `livi` itself uses, deliberately: the `urid:map` feature handed to a
+# UI is the *plugin's own*, taken straight out of `livi::Features`, and two
+# copies of `LV2Feature` from two versions of this crate would be two types
+# the compiler will not let meet — which is the compiler being right, since
+# nothing would then guarantee they agree.
+lv2_raw = "=0.2.0"
+
+[dev-dependencies]
+# Built for its side effect: cargo has produced the test bundle by the time a
+# test goes looking for it. See `fontelle-testplug`.
+fontelle-testplug = { path = "../fontelle-testplug" }
+# Only so the editor probe can write out what a plugin actually drew.
+png = "0.18.1"
+fontelle-testlv2 = { path = "../fontelle-testlv2" }
+fontelle-testbridge = { path = "../fontelle-testbridge" }

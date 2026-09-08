@@ -22,7 +22,7 @@
 
 mod common;
 
-use fontelle_app::{RealiseOptions, SampleLibrary, Session, blank_project};
+use fontelle_app::{RealiseOptions, SampleLibrary, Session};
 use fontelle_engine::{graph_channel, timeline_channel};
 use fontelle_model::{AddMixerTrack, Command};
 use fontelle_types::{BandChannel, BandType, CompiledTimeline, EffectKind, EqBand};
@@ -33,7 +33,7 @@ use common::SR;
 /// A studio with one mixer track besides the master, and a live graph behind
 /// it — so a knob can be shown to reach the sound without a rebuild.
 fn studio() -> Session {
-    let mut project = blank_project(8, 120.0, SR);
+    let mut project = common::a_project_with_a_clip(8, 120.0, SR);
     AddMixerTrack::new("Keys".to_string())
         .apply(&mut project)
         .expect("a mixer track must be addable");

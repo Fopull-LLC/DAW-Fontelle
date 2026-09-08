@@ -1,6 +1,7 @@
 //! Window geometry, which is arithmetic and therefore tested here rather than
 //! looked at (`docs/first-usable-plan.md` §2.5).
 
+use fontelle_ui::canvas::zoom_anchor;
 use fontelle_ui::layout::DEFAULT_TIMELINE_HEIGHT;
 use fontelle_ui::layout::{Rect, window_layout};
 use fontelle_ui::theme::Theme;
@@ -151,4 +152,53 @@ fn a_physical_size_scales_by_the_dpi_factor() {
         logical.panel.frame.scale(2.0).x,
         logical.panel.frame.x * 2.0
     );
+}
+
+// ------------------------------------------------------ where zoom lands ---
+//
+// > *"i currently cant [...] i dont like when i zoom in and out its based
+// > around where my playhead is and i dont like that i want it to be based on
+// > my cursor for maximum user control."*
+//
+// The wheel already zoomed about the pointer. The **buttons** and the `+`/`-`
+// keys did not: they took the middle of the grid, which on a view scrolled to
+// follow the playhead is the playhead, near enough. One rule for all three now,
+// and it lives here rather than at each of the three call sites.
+
+#[test]
+fn zoom_lands_on_the_pointer_when_the_pointer_is_over_the_grid() {
+    let grid = Rect::new(100.0, 50.0, 400.0, 300.0);
+    for x in [100.0f32, 180.0, 300.0, 499.0] {
+        assert_eq!(
+            zoom_anchor(grid, (x, 120.0)),
+            x,
+            "a pointer at {x} did not anchor the zoom"
+        );
+    }
+}
+
+#[test]
+fn zoom_falls_back_to_the_middle_when_the_pointer_is_elsewhere() {
+    // A button pressed with the pointer on the *toolbar* is still a zoom, and
+    // it has to land somewhere sensible: the middle of what you are looking at.
+    let grid = Rect::new(100.0, 50.0, 400.0, 300.0);
+    let middle = grid.x + grid.width / 2.0;
+    for at in [
+        (50.0f32, 120.0f32),
+        (900.0, 120.0),
+        (180.0, 10.0),
+        (180.0, 900.0),
+    ] {
+        assert_eq!(
+            zoom_anchor(grid, at),
+            middle,
+            "a pointer at {at:?} anchored somewhere else"
+        );
+    }
+}
+
+#[test]
+fn an_empty_grid_still_answers_rather_than_producing_a_nan() {
+    let anchor = zoom_anchor(Rect::ZERO, (10.0, 10.0));
+    assert!(anchor.is_finite());
 }

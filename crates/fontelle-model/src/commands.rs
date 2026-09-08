@@ -18,15 +18,16 @@
 //!   the same id on a redo. Anything else breaks the command above it in the
 //!   history.
 
-use fontelle_types::{ChannelId, ClipId, LaneId, MixerTrackId, NoteId, Tick};
+use fontelle_types::{ChannelId, ClipId, LaneId, MixerTrackId, NoteId, PrefabId, Tick};
 
+use crate::arena::Arena;
 use crate::channel::Channel;
 use crate::clip::{Clip, ClipSource};
 use crate::command::{Command, CommandError};
-use crate::arena::Arena;
 use crate::lane::Lane;
 use crate::mixer::{MixerTrack, Send};
-use crate::note::{Note, NoteData, NoteProperty};
+use crate::note::{Note, NoteData, NoteHome, NoteProperty};
+use crate::prefab::{Prefab, PrefabLink};
 use crate::project::Project;
 
 /// The inverse of a command that has not been applied yet.
@@ -66,11 +67,34 @@ fn no_clip(clip: ClipId) -> CommandError {
     CommandError(format!("no clip {clip:?} in this project"))
 }
 
-fn notes_of(doc: &mut Project, clip: ClipId) -> Result<&mut crate::note::NoteData, CommandError> {
-    match doc.clips.get_mut(clip).map(|c| &mut c.source) {
-        Some(ClipSource::Notes(data)) => Ok(data),
-        Some(_) => Err(CommandError(format!("clip {clip:?} does not hold notes"))),
-        None => Err(no_clip(clip)),
+/// The notes a command addressed at `home` edits.
+///
+/// **The one place** the difference between a clip and a prefab is resolved
+/// for writing, which is why every note command goes through it: a second
+/// reading of `NoteHome` is a second chance to get "editing an instance edits
+/// the prefab" wrong.
+fn notes_of(
+    doc: &mut Project,
+    home: crate::note::NoteHome,
+) -> Result<&mut crate::note::NoteData, CommandError> {
+    use crate::note::NoteHome;
+    let source = match home {
+        NoteHome::Clip(clip) => match doc.clips.get_mut(clip) {
+            Some(clip) => &mut clip.source,
+            None => return Err(no_clip(clip)),
+        },
+        NoteHome::Prefab(prefab) => match doc.prefabs.get_mut(prefab) {
+            Some(prefab) => &mut prefab.source,
+            None => {
+                return Err(CommandError(format!(
+                    "no prefab {prefab:?} in this project"
+                )));
+            }
+        },
+    };
+    match source {
+        ClipSource::Notes(data) => Ok(data),
+        _ => Err(CommandError(format!("{home:?} does not hold notes"))),
     }
 }
 
@@ -83,6 +107,10 @@ fn notes_of(doc: &mut Project, clip: ClipId) -> Result<&mut crate::note::NoteDat
 pub struct AddChannel {
     name: String,
     patch_data: Option<fontelle_types::PatchData>,
+    /// Which of the three instruments it is — see
+    /// [`fontelle_types::InstrumentKind`]. `None` leaves it unsaid, which is
+    /// what every caller that predates the choice wants.
+    instrument: Option<fontelle_types::InstrumentKind>,
     pan: f32,
     /// Which track the channel plays through. `None` — the master — is what a
     /// new channel gets; the MIDI importer is the one caller that asks for a
@@ -100,10 +128,18 @@ impl AddChannel {
             label: format!("Add channel \"{name}\""),
             name,
             patch_data,
+            instrument: None,
             pan: 0.0,
             route: None,
             created: None,
         }
+    }
+
+    /// Says which of the three instruments the channel is — see
+    /// [`fontelle_types::InstrumentKind`].
+    pub fn of_kind(mut self, kind: fontelle_types::InstrumentKind) -> Self {
+        self.instrument = Some(kind);
+        self
     }
 
     pub fn with_pan(mut self, pan: f32) -> Self {
@@ -136,10 +172,13 @@ impl Command for AddChannel {
         // somebody builds (see `AddMixerTrack`), and a new channel plays
         // through the master until it is pointed somewhere else.
         let channel = Channel {
+            preset: None,
             name: self.name.clone(),
             color: [0x4f, 0x8f, 0xd0, 0xff],
             mixer_track: self.route,
             patch_data: self.patch_data.clone(),
+            plugin: None,
+            instrument: self.instrument,
             pan: self.pan,
             muted: false,
             soloed: false,
@@ -312,20 +351,39 @@ impl Command for RestoreChannel {
     }
 }
 
-/// Copies a channel, its instrument, and the clips that play it.
+/// Copies a channel's **instrument**, and nothing else.
 ///
 /// *"stuff like being able to right click and duplicate too, for instruments in
 /// the channel rack for example."* The whole of it is one command and therefore
 /// one Ctrl+Z: a duplicate that took four presses to take back is one nobody
 /// tries twice.
 ///
-/// **Onto a lane of its own.** The copy's clips keep the times they had, so
-/// leaving them on the original's row would hide one part behind the other; a
-/// new row is the only reading that lets you see what you just made.
+/// # What a duplicate is not
 ///
-/// It does **not** copy the mixer track — it points at the same one. A track is
-/// a destination somebody built (see [`AddMixerTrack`]), and a second strip
-/// appearing per duplicate is exactly the mistake `AddChannel` used to make.
+/// > *"whenever i duplicate an instrument right now it duplicates the track i
+/// > have clips of that instrument on which is weird since were kind of trying
+/// > to separate the idea that instruments are tied to tracks. make it so
+/// > duplicating an instrument literally just makes a new instrument that has
+/// > the exact same params so it sounds the same but it shouldnt have the same
+/// > notes and everything written in it and shouldnt affect the arrangement at
+/// > all that all needs to be authored by the user."*
+///
+/// It used to copy the clips that played the channel, onto a row of its own.
+/// That was coherent while a clip *was* one instrument's track. It stopped
+/// being coherent the moment a clip could hold several instruments at once
+/// (see [`Note::channel`](crate::Note::channel)) — and what it cost was a
+/// duplicate you had to clean up before you could use it: a row you did not
+/// ask for, and a copy of every part you had written, playing at the same time
+/// as the original.
+///
+/// So: the **parameters** are what is copied, because "sounds the same" is
+/// what somebody duplicating an instrument is asking for. Where it plays is
+/// authored, like every other clip in the arrangement.
+///
+/// It does **not** copy the mixer track either — it points at the same one. A
+/// track is a destination somebody built (see [`AddMixerTrack`]), and a second
+/// strip appearing per duplicate is exactly the mistake `AddChannel` used to
+/// make.
 pub struct DuplicateChannel {
     source: ChannelId,
     /// Everything this minted, kept so a redo re-uses the same ids.
@@ -334,16 +392,11 @@ pub struct DuplicateChannel {
 
 struct Made {
     channel: ChannelId,
-    lane: LaneId,
-    clips: Vec<ClipId>,
 }
 
 impl DuplicateChannel {
     pub fn new(source: ChannelId) -> Self {
-        Self {
-            source,
-            made: None,
-        }
+        Self { source, made: None }
     }
 
     /// The copy, once this has been applied.
@@ -360,84 +413,32 @@ impl Command for DuplicateChannel {
         let mut copy = original.clone();
         copy.name = copy_name(&original.name);
 
-        // Everything the copy will carry, worked out before anything is
-        // written: a command that cannot do its whole job does nothing.
-        let sources: Vec<(ClipId, Clip)> = doc
-            .clips
-            .iter()
-            .filter(|(_, clip)| match &clip.source {
-                ClipSource::Notes(data) => data.channel == self.source,
-                _ => false,
-            })
-            .map(|(id, clip)| (id, clip.clone()))
-            .collect();
-
-        let (channel, lane) = match &self.made {
+        // The patch comes across by `Clone`, which is the whole of "the exact
+        // same params": a `Channel` owns its `patch_data`, so the copy's
+        // instrument is its own to edit and editing it leaves the original
+        // alone. Nothing is read out of `doc.clips` at all — see this
+        // command's own docs for why that is the point rather than an
+        // omission.
+        let channel = match &self.made {
             Some(made) => {
                 if !doc.channels.insert_at(made.channel, copy) {
                     return Err(CommandError("that channel id is taken".into()));
                 }
-                if !doc.lanes.insert_at(made.lane, a_lane(String::new())) {
-                    return Err(CommandError("that lane id is taken".into()));
-                }
-                (made.channel, made.lane)
+                made.channel
             }
-            None => (
-                doc.channels.insert(copy),
-                doc.lanes.insert(a_lane(String::new())),
-            ),
+            None => doc.channels.insert(copy),
         };
-        // Named after the copy rather than numbered, so the row says what is
-        // on it.
-        if let Some(row) = doc.lanes.get_mut(lane)
-            && let Some(name) = doc.channels.get(channel).map(|c| c.name.clone())
-        {
-            row.name = name;
-        }
 
-        let mut clips = Vec::with_capacity(sources.len());
-        for (index, (_, source)) in sources.iter().enumerate() {
-            let mut clip = source.clone();
-            clip.lane = lane;
-            if let ClipSource::Notes(data) = &mut clip.source {
-                data.channel = channel;
-            }
-            // A duplicate's clips are **its own notes**, not a second view of
-            // the original's — see `Clip::loop_length` for the difference
-            // between copying and looping. `Clip: Clone` clones the arena, so
-            // this is already true; it is written down because the whole
-            // command is a lie if it ever stops being.
-            match self.made.as_ref().and_then(|made| made.clips.get(index)) {
-                Some(id) => {
-                    if !doc.clips.insert_at(*id, clip) {
-                        return Err(CommandError("that clip id is taken".into()));
-                    }
-                    clips.push(*id);
-                }
-                None => clips.push(doc.clips.insert(clip)),
-            }
-        }
-
-        self.made = Some(Made {
-            channel,
-            lane,
-            clips,
-        });
+        self.made = Some(Made { channel });
         Ok(())
     }
 
     fn invert(&self) -> Box<dyn Command> {
         match &self.made {
-            // The channel takes its clips with it (see `RemoveChannel`), and
-            // the lane it was given goes too — it was made by this command and
-            // nothing else is on it.
-            Some(made) => Box::new(Compound::new(
-                "Undo duplicate",
-                vec![
-                    Box::new(RemoveChannel::new(made.channel)),
-                    Box::new(RemoveLane::new(made.lane)),
-                ],
-            )),
+            // `RemoveChannel` takes a channel's clips with it — the copy has
+            // none, so this takes back exactly what was added. No lane to
+            // remove either, because none was made.
+            Some(made) => Box::new(RemoveChannel::new(made.channel)),
             None => Box::new(NotApplied("duplicating a channel")),
         }
     }
@@ -485,6 +486,15 @@ fn copy_name(name: &str) -> String {
 /// because a row added by mistake has to come off again.
 pub struct AddLane {
     name: String,
+    /// Where in the stack it goes, counted the way the arrangement counts
+    /// rows. `None` is the bottom.
+    ///
+    /// *"when i right click a lane in the arrangement i want the option to add
+    /// a lane above or a lane below the lane i right clicked on right now
+    /// theyre all going to the end."* Above and below are the same command
+    /// with the index differing by one, which is why this is a position rather
+    /// than a direction and a neighbour.
+    at: Option<usize>,
     created: Option<LaneId>,
 }
 
@@ -492,6 +502,20 @@ impl AddLane {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            at: None,
+            created: None,
+        }
+    }
+
+    /// A row put at `index` in the stack, pushing whatever is there and
+    /// everything under it down one.
+    ///
+    /// Past the end is the end — a menu built against a list that has since
+    /// changed must not fail, it must do the obvious thing.
+    pub fn at(name: impl Into<String>, index: usize) -> Self {
+        Self {
+            name: name.into(),
+            at: Some(index),
             created: None,
         }
     }
@@ -570,7 +594,11 @@ impl Command for MoveLane {
     }
 
     fn label(&self) -> &str {
-        if self.delta < 0 { "move lane up" } else { "move lane down" }
+        if self.delta < 0 {
+            "move lane up"
+        } else {
+            "move lane down"
+        }
     }
 
     /// Repeated presses of "move up" **do not** coalesce into one history
@@ -608,15 +636,47 @@ fn a_lane(name: String) -> Lane {
 impl Command for AddLane {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let mut lane = a_lane(self.name.clone());
-        // Past the bottom of the stack, which is where somebody adding a row
-        // is looking for it — and not wherever a default of zero would sort it
-        // once the rows have been reordered.
-        lane.order = doc
-            .lanes
-            .values()
-            .map(|lane| lane.order)
-            .max()
-            .map_or(0, |highest| highest.saturating_add(1));
+        match self.at {
+            // **At a position in the stack**, which means everything from
+            // there down moves one row towards the bottom. The rows are moved
+            // by their `order` and never by their ids: a clip names a lane id,
+            // so renumbering the arena would move somebody's music to another
+            // row. `MoveLane` keeps ids still for the same reason.
+            Some(index) => {
+                let mut order: Vec<(LaneId, u32)> = doc
+                    .lanes
+                    .iter()
+                    .map(|(id, lane)| (id, lane.order))
+                    .collect();
+                order.sort_by_key(|(_, order)| *order);
+                let index = index.min(order.len());
+                // Renumbered from zero rather than nudged, so a stack whose
+                // orders have gaps or duplicates in it comes out of this with
+                // neither.
+                for (position, (id, _)) in order.iter().enumerate() {
+                    let moved = if position < index {
+                        position
+                    } else {
+                        position + 1
+                    };
+                    if let Some(lane) = doc.lanes.get_mut(*id) {
+                        lane.order = moved as u32;
+                    }
+                }
+                lane.order = index as u32;
+            }
+            // Past the bottom of the stack, which is where somebody adding a
+            // row is looking for it — and not wherever a default of zero would
+            // sort it once the rows have been reordered.
+            None => {
+                lane.order = doc
+                    .lanes
+                    .values()
+                    .map(|lane| lane.order)
+                    .max()
+                    .map_or(0, |highest| highest.saturating_add(1));
+            }
+        }
         match self.created {
             // The same id on a redo, or the clips a later command moved onto
             // this lane would be pointing at nothing.
@@ -680,7 +740,10 @@ impl RemoveLane {
 impl Command for RemoveLane {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         if !doc.lanes.contains_key(self.lane) {
-            return Err(CommandError(format!("no lane {:?} in this project", self.lane)));
+            return Err(CommandError(format!(
+                "no lane {:?} in this project",
+                self.lane
+            )));
         }
         if doc.lanes.len() <= 1 {
             return Err(CommandError(
@@ -1291,7 +1354,10 @@ impl Command for AddSend {
             .tracks
             .get_mut(self.track)
             .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        let index = self.index.unwrap_or(track.sends.len()).min(track.sends.len());
+        let index = self
+            .index
+            .unwrap_or(track.sends.len())
+            .min(track.sends.len());
         track.sends.insert(
             index,
             Send {
@@ -1632,6 +1698,109 @@ impl Command for SetChannelRoute {
 /// that already has notes on it is an ordinary edit — and one worth being able
 /// to take back, since the patch it replaces is the user's own edited copy of
 /// a soundfont's defaults, not something re-derivable from the file.
+/// Says which of the three instruments a channel is (TDD §7,
+/// [`fontelle_types::InstrumentKind`]).
+///
+/// **Only the label**, not the patch. Changing a channel from a synth to a
+/// sampler is two things — what it *is*, and what it plays — and they are two
+/// commands so that putting a soundfont on a channel can set the first without
+/// disturbing the second's undo entry. `Session::set_channel_kind` runs them
+/// together in a `Compound` when both should move, which is what makes
+/// choosing a kind one press of Ctrl+Z.
+pub struct SetChannelKind {
+    channel: ChannelId,
+    kind: fontelle_types::InstrumentKind,
+    previous: Option<Option<fontelle_types::InstrumentKind>>,
+}
+
+impl SetChannelKind {
+    pub fn new(channel: ChannelId, kind: fontelle_types::InstrumentKind) -> Self {
+        Self {
+            channel,
+            kind,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetChannelKind {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let Some(channel) = doc.channels.get_mut(self.channel) else {
+            return Err(CommandError("that channel is not there".into()));
+        };
+        let previous = channel.instrument.replace(self.kind);
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match self.previous {
+            // Back to whatever it said, **including nothing at all**: a project
+            // written before the field existed must undo to that rather than to
+            // a guess, or an undo would be a migration nobody asked for.
+            Some(previous) => Box::new(RestoreChannelKind {
+                channel: self.channel,
+                kind: previous,
+            }),
+            None => Box::new(NotApplied("choosing an instrument")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Choose instrument"
+    }
+
+    /// **Never merges.** Choosing an instrument is a press, not a drag, and
+    /// two of them in a row are two things somebody did.
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// [`SetChannelKind`]'s inverse, which can also put back "not said".
+struct RestoreChannelKind {
+    channel: ChannelId,
+    kind: Option<fontelle_types::InstrumentKind>,
+}
+
+impl Command for RestoreChannelKind {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let Some(channel) = doc.channels.get_mut(self.channel) else {
+            return Err(CommandError("that channel is not there".into()));
+        };
+        channel.instrument = self.kind;
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        Box::new(NotApplied("choosing an instrument"))
+    }
+
+    fn label(&self) -> &str {
+        "Choose instrument"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
 pub struct SetChannelPatch {
     channel: ChannelId,
     patch_data: Option<fontelle_types::PatchData>,
@@ -1859,17 +2028,17 @@ fn note_count_label(verb: &str, count: usize) -> String {
 }
 
 pub struct AddNotes {
-    clip: ClipId,
+    home: NoteHome,
     notes: Vec<Note>,
     ids: Vec<NoteId>,
     label: String,
 }
 
 impl AddNotes {
-    pub fn new(clip: ClipId, notes: Vec<Note>) -> Self {
+    pub fn new(home: impl Into<NoteHome>, notes: Vec<Note>) -> Self {
         Self {
             label: note_count_label("Draw", notes.len()),
-            clip,
+            home: home.into(),
             notes,
             ids: Vec::new(),
         }
@@ -1883,7 +2052,7 @@ impl AddNotes {
 
 impl Command for AddNotes {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let data = notes_of(doc, self.clip)?;
+        let data = notes_of(doc, self.home)?;
         if self.ids.is_empty() {
             self.ids = self
                 .notes
@@ -1904,7 +2073,7 @@ impl Command for AddNotes {
         if self.ids.is_empty() {
             return Box::new(NotApplied("drawing notes"));
         }
-        Box::new(RemoveNotes::new(self.clip, self.ids.clone()))
+        Box::new(RemoveNotes::new(self.home, self.ids.clone()))
     }
 
     fn label(&self) -> &str {
@@ -1928,17 +2097,17 @@ impl Command for AddNotes {
 }
 
 pub struct RemoveNotes {
-    clip: ClipId,
+    home: NoteHome,
     ids: Vec<NoteId>,
     removed: Vec<(NoteId, Note)>,
     label: String,
 }
 
 impl RemoveNotes {
-    pub fn new(clip: ClipId, ids: Vec<NoteId>) -> Self {
+    pub fn new(home: impl Into<NoteHome>, ids: Vec<NoteId>) -> Self {
         Self {
             label: note_count_label("Delete", ids.len()),
-            clip,
+            home: home.into(),
             ids,
             removed: Vec::new(),
         }
@@ -1947,7 +2116,7 @@ impl RemoveNotes {
 
 impl Command for RemoveNotes {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let data = notes_of(doc, self.clip)?;
+        let data = notes_of(doc, self.home)?;
         // Checked before anything is taken out, so a selection with one stale
         // id does not leave the rest half-deleted.
         if let Some(missing) = self.ids.iter().find(|id| !data.notes.contains_key(**id)) {
@@ -1966,7 +2135,7 @@ impl Command for RemoveNotes {
             return Box::new(NotApplied("deleting notes"));
         }
         Box::new(RestoreNotes {
-            clip: self.clip,
+            home: self.home,
             notes: self.removed.clone(),
         })
     }
@@ -1993,13 +2162,13 @@ impl Command for RemoveNotes {
 
 /// The inverse half of [`RemoveNotes`].
 struct RestoreNotes {
-    clip: ClipId,
+    home: NoteHome,
     notes: Vec<(NoteId, Note)>,
 }
 
 impl Command for RestoreNotes {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let data = notes_of(doc, self.clip)?;
+        let data = notes_of(doc, self.home)?;
         for (id, note) in &self.notes {
             if !data.notes.insert_at(*id, *note) {
                 return Err(CommandError("that note id is taken".into()));
@@ -2010,7 +2179,7 @@ impl Command for RestoreNotes {
 
     fn invert(&self) -> Box<dyn Command> {
         Box::new(RemoveNotes::new(
-            self.clip,
+            self.home,
             self.notes.iter().map(|(id, _)| *id).collect(),
         ))
     }
@@ -2035,7 +2204,7 @@ impl Command for RestoreNotes {
 /// Moves notes by a **delta**, which is what makes a drag both mergeable and
 /// exactly invertible: coalescing is adding, and undoing is negating.
 pub struct MoveNotes {
-    clip: ClipId,
+    home: NoteHome,
     ids: Vec<NoteId>,
     tick_delta: Tick,
     key_delta: i16,
@@ -2043,10 +2212,15 @@ pub struct MoveNotes {
 }
 
 impl MoveNotes {
-    pub fn new(clip: ClipId, ids: Vec<NoteId>, tick_delta: Tick, key_delta: i16) -> Self {
+    pub fn new(
+        home: impl Into<NoteHome>,
+        ids: Vec<NoteId>,
+        tick_delta: Tick,
+        key_delta: i16,
+    ) -> Self {
         Self {
             label: note_count_label("Move", ids.len()),
-            clip,
+            home: home.into(),
             ids,
             tick_delta,
             key_delta,
@@ -2057,7 +2231,7 @@ impl MoveNotes {
 impl Command for MoveNotes {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let (tick_delta, key_delta) = (self.tick_delta, self.key_delta);
-        let data = notes_of(doc, self.clip)?;
+        let data = notes_of(doc, self.home)?;
         // Every note checked before any note moves.
         for id in &self.ids {
             let Some(note) = data.notes.get(*id) else {
@@ -2087,7 +2261,7 @@ impl Command for MoveNotes {
 
     fn invert(&self) -> Box<dyn Command> {
         Box::new(MoveNotes::new(
-            self.clip,
+            self.home,
             self.ids.clone(),
             -self.tick_delta,
             -self.key_delta,
@@ -2102,7 +2276,7 @@ impl Command for MoveNotes {
         let Some(next) = next.as_any().downcast_ref::<MoveNotes>() else {
             return false;
         };
-        if next.clip != self.clip || next.ids != self.ids {
+        if next.home != self.home || next.ids != self.ids {
             return false;
         }
         self.tick_delta += next.tick_delta;
@@ -2123,17 +2297,17 @@ impl Command for MoveNotes {
 
 /// Lengthens or shortens notes by a delta, on the same terms as [`MoveNotes`].
 pub struct ResizeNotes {
-    clip: ClipId,
+    home: NoteHome,
     ids: Vec<NoteId>,
     length_delta: Tick,
     label: String,
 }
 
 impl ResizeNotes {
-    pub fn new(clip: ClipId, ids: Vec<NoteId>, length_delta: Tick) -> Self {
+    pub fn new(home: impl Into<NoteHome>, ids: Vec<NoteId>, length_delta: Tick) -> Self {
         Self {
             label: note_count_label("Resize", ids.len()),
-            clip,
+            home: home.into(),
             ids,
             length_delta,
         }
@@ -2143,7 +2317,7 @@ impl ResizeNotes {
 impl Command for ResizeNotes {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let delta = self.length_delta;
-        let data = notes_of(doc, self.clip)?;
+        let data = notes_of(doc, self.home)?;
         for id in &self.ids {
             let Some(note) = data.notes.get(*id) else {
                 return Err(CommandError(format!("no note {id:?} in this clip")));
@@ -2164,7 +2338,7 @@ impl Command for ResizeNotes {
 
     fn invert(&self) -> Box<dyn Command> {
         Box::new(ResizeNotes::new(
-            self.clip,
+            self.home,
             self.ids.clone(),
             -self.length_delta,
         ))
@@ -2178,7 +2352,7 @@ impl Command for ResizeNotes {
         let Some(next) = next.as_any().downcast_ref::<ResizeNotes>() else {
             return false;
         };
-        if next.clip != self.clip || next.ids != self.ids {
+        if next.home != self.home || next.ids != self.ids {
             return false;
         }
         self.length_delta += next.length_delta;
@@ -2210,7 +2384,7 @@ impl Command for ResizeNotes {
 ///   a pixel at a time. Merging keeps the *original* `previous`, which is what
 ///   makes one undo go back to where the drag started.
 pub struct SetNoteVelocity {
-    clip: ClipId,
+    home: NoteHome,
     ids: Vec<NoteId>,
     velocity: u8,
     /// Each note's velocity before this ran, in `ids` order. Empty until
@@ -2220,10 +2394,10 @@ pub struct SetNoteVelocity {
 }
 
 impl SetNoteVelocity {
-    pub fn new(clip: ClipId, ids: Vec<NoteId>, velocity: u8) -> Self {
+    pub fn new(home: impl Into<NoteHome>, ids: Vec<NoteId>, velocity: u8) -> Self {
         Self {
             label: note_count_label("Set velocity of", ids.len()),
-            clip,
+            home: home.into(),
             ids,
             velocity,
             previous: Vec::new(),
@@ -2233,7 +2407,7 @@ impl SetNoteVelocity {
 
 impl Command for SetNoteVelocity {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let data = notes_of(doc, self.clip)?;
+        let data = notes_of(doc, self.home)?;
         // Checked before anything is written: a command that half-applies is
         // one whose inverse cannot put the document back.
         for id in &self.ids {
@@ -2263,7 +2437,7 @@ impl Command for SetNoteVelocity {
             return Box::new(NotApplied("setting velocity"));
         }
         Box::new(RestoreNoteVelocities {
-            clip: self.clip,
+            home: self.home,
             ids: self.ids.clone(),
             velocities: self.previous.clone(),
             label: self.label.clone(),
@@ -2278,7 +2452,7 @@ impl Command for SetNoteVelocity {
         let Some(next) = next.as_any().downcast_ref::<SetNoteVelocity>() else {
             return false;
         };
-        if next.clip != self.clip || next.ids != self.ids {
+        if next.home != self.home || next.ids != self.ids {
             return false;
         }
         // The new value, the old `previous`: one drag, one entry, one undo back
@@ -2301,7 +2475,7 @@ impl Command for SetNoteVelocity {
 
 /// [`SetNoteVelocity`]'s inverse: each note back to its own value.
 struct RestoreNoteVelocities {
-    clip: ClipId,
+    home: NoteHome,
     ids: Vec<NoteId>,
     velocities: Vec<u8>,
     label: String,
@@ -2309,7 +2483,7 @@ struct RestoreNoteVelocities {
 
 impl Command for RestoreNoteVelocities {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let data = notes_of(doc, self.clip)?;
+        let data = notes_of(doc, self.home)?;
         for (id, velocity) in self.ids.iter().zip(&self.velocities) {
             let Some(note) = data.notes.get_mut(*id) else {
                 return Err(CommandError(format!("no note {id:?} in this clip")));
@@ -2324,7 +2498,7 @@ impl Command for RestoreNoteVelocities {
         // only expressible as one-value-for-all when they agreed. They did,
         // because that is what `SetNoteVelocity` had just done.
         Box::new(SetNoteVelocity::new(
-            self.clip,
+            self.home,
             self.ids.clone(),
             self.velocities.first().copied().unwrap_or(0),
         ))
@@ -2368,7 +2542,7 @@ impl Command for RestoreNoteVelocities {
 /// slide as a bend rather than as a note at all, which no amount of a value
 /// could express. See `Note::slide`.
 pub struct SetNoteSlide {
-    clip: ClipId,
+    home: NoteHome,
     ids: Vec<NoteId>,
     slide: bool,
     /// Each note's flag before this ran, in `ids` order. Empty until applied.
@@ -2377,10 +2551,10 @@ pub struct SetNoteSlide {
 }
 
 impl SetNoteSlide {
-    pub fn new(clip: ClipId, ids: Vec<NoteId>, slide: bool) -> Self {
+    pub fn new(home: impl Into<NoteHome>, ids: Vec<NoteId>, slide: bool) -> Self {
         Self {
             label: note_count_label(if slide { "Slide" } else { "Unslide" }, ids.len()),
-            clip,
+            home: home.into(),
             ids,
             slide,
             previous: Vec::new(),
@@ -2393,7 +2567,7 @@ impl Command for SetNoteSlide {
         let slide = self.slide;
         let first = self.previous.is_empty();
         let mut previous = Vec::new();
-        let data = notes_of(doc, self.clip)?;
+        let data = notes_of(doc, self.home)?;
         for id in &self.ids {
             let Some(note) = data.notes.get_mut(*id) else {
                 continue;
@@ -2414,7 +2588,7 @@ impl Command for SetNoteSlide {
             return Box::new(NotApplied("marking a slide"));
         }
         Box::new(RestoreNoteSlides {
-            clip: self.clip,
+            home: self.home,
             ids: self.ids.clone(),
             previous: self.previous.clone(),
         })
@@ -2442,14 +2616,14 @@ impl Command for SetNoteSlide {
 /// Its own command rather than a second `SetNoteSlide`, because a selection
 /// that was half slides has no single value to set back to.
 struct RestoreNoteSlides {
-    clip: ClipId,
+    home: NoteHome,
     ids: Vec<NoteId>,
     previous: Vec<bool>,
 }
 
 impl Command for RestoreNoteSlides {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let data = notes_of(doc, self.clip)?;
+        let data = notes_of(doc, self.home)?;
         for (id, was) in self.ids.iter().zip(self.previous.iter()) {
             if let Some(note) = data.notes.get_mut(*id) {
                 note.slide = *was;
@@ -2492,7 +2666,7 @@ impl Command for RestoreNoteSlides {
 /// note is a note-on and a note-off at the same sample — silence you can
 /// neither see nor select.
 pub struct SliceNotes {
-    clip: ClipId,
+    home: NoteHome,
     cuts: Vec<(NoteId, Tick)>,
     /// What each sliced note's length was, in the order the cuts ran, so the
     /// inverse can put the front halves back.
@@ -2505,10 +2679,10 @@ pub struct SliceNotes {
 }
 
 impl SliceNotes {
-    pub fn new(clip: ClipId, cuts: Vec<(NoteId, Tick)>) -> Self {
+    pub fn new(home: impl Into<NoteHome>, cuts: Vec<(NoteId, Tick)>) -> Self {
         Self {
             label: note_count_label("Cut", cuts.len()),
-            clip,
+            home: home.into(),
             cuts,
             previous: Vec::new(),
             created: Vec::new(),
@@ -2524,7 +2698,7 @@ impl SliceNotes {
 impl Command for SliceNotes {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let redo = !self.created.is_empty();
-        let data = notes_of(doc, self.clip)?;
+        let data = notes_of(doc, self.home)?;
         let mut previous = Vec::new();
         let mut created = Vec::new();
 
@@ -2580,7 +2754,7 @@ impl Command for SliceNotes {
             return Box::new(NotApplied("cutting notes"));
         }
         Box::new(MergeSlices {
-            clip: self.clip,
+            home: self.home,
             restore: self.previous.clone(),
             remove: self.created.clone(),
         })
@@ -2608,14 +2782,14 @@ impl Command for SliceNotes {
 /// The inverse half of [`SliceNotes`]: takes the second halves away and puts
 /// the first halves back to the length they were.
 struct MergeSlices {
-    clip: ClipId,
+    home: NoteHome,
     restore: Vec<(NoteId, Tick)>,
     remove: Vec<NoteId>,
 }
 
 impl Command for MergeSlices {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let data = notes_of(doc, self.clip)?;
+        let data = notes_of(doc, self.home)?;
         for id in &self.remove {
             data.notes.remove(*id);
         }
@@ -2649,7 +2823,7 @@ impl Command for MergeSlices {
 }
 
 pub struct SetNoteProperty {
-    clip: ClipId,
+    home: NoteHome,
     ids: Vec<NoteId>,
     property: NoteProperty,
     value: i32,
@@ -2660,10 +2834,15 @@ pub struct SetNoteProperty {
 }
 
 impl SetNoteProperty {
-    pub fn new(clip: ClipId, ids: Vec<NoteId>, property: NoteProperty, value: i32) -> Self {
+    pub fn new(
+        home: impl Into<NoteHome>,
+        ids: Vec<NoteId>,
+        property: NoteProperty,
+        value: i32,
+    ) -> Self {
         Self {
             label: note_count_label(&format!("Set {} of", property.label()), ids.len()),
-            clip,
+            home: home.into(),
             ids,
             property,
             value,
@@ -2679,7 +2858,7 @@ impl SetNoteProperty {
 impl Command for SetNoteProperty {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let property = self.property;
-        let data = notes_of(doc, self.clip)?;
+        let data = notes_of(doc, self.home)?;
         // Checked before anything is written: a command that half-applies is
         // one whose inverse cannot put the document back.
         for id in &self.ids {
@@ -2709,7 +2888,7 @@ impl Command for SetNoteProperty {
             return Box::new(NotApplied("setting a note property"));
         }
         Box::new(RestoreNoteProperties {
-            clip: self.clip,
+            home: self.home,
             ids: self.ids.clone(),
             property: self.property,
             values: self.previous.clone(),
@@ -2725,7 +2904,7 @@ impl Command for SetNoteProperty {
         let Some(next) = next.as_any().downcast_ref::<SetNoteProperty>() else {
             return false;
         };
-        if next.clip != self.clip || next.ids != self.ids || next.property != self.property {
+        if next.home != self.home || next.ids != self.ids || next.property != self.property {
             return false;
         }
         // The new value, the old `previous`: one drag, one entry, one undo back
@@ -2748,7 +2927,7 @@ impl Command for SetNoteProperty {
 
 /// [`SetNoteProperty`]'s inverse: each note back to its own value.
 struct RestoreNoteProperties {
-    clip: ClipId,
+    home: NoteHome,
     ids: Vec<NoteId>,
     property: NoteProperty,
     values: Vec<i32>,
@@ -2758,7 +2937,7 @@ struct RestoreNoteProperties {
 impl Command for RestoreNoteProperties {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let property = self.property;
-        let data = notes_of(doc, self.clip)?;
+        let data = notes_of(doc, self.home)?;
         for (id, value) in self.ids.iter().zip(&self.values) {
             let Some(note) = data.notes.get_mut(*id) else {
                 return Err(CommandError(format!("no note {id:?} in this clip")));
@@ -2773,7 +2952,7 @@ impl Command for RestoreNoteProperties {
         // only expressible as one-value-for-all when they agreed. They did,
         // because that is what `SetNoteProperty` had just done.
         Box::new(SetNoteProperty::new(
-            self.clip,
+            self.home,
             self.ids.clone(),
             self.property,
             self.values.first().copied().unwrap_or(0),
@@ -2814,7 +2993,7 @@ impl Command for RestoreNoteProperties {
 /// to 127 their differences are gone from the document. It restores the value
 /// each note actually had, like [`SetNoteProperty`]'s does.
 pub struct NudgeNoteProperty {
-    clip: ClipId,
+    home: NoteHome,
     ids: Vec<NoteId>,
     property: NoteProperty,
     delta: i32,
@@ -2824,10 +3003,15 @@ pub struct NudgeNoteProperty {
 }
 
 impl NudgeNoteProperty {
-    pub fn new(clip: ClipId, ids: Vec<NoteId>, property: NoteProperty, delta: i32) -> Self {
+    pub fn new(
+        home: impl Into<NoteHome>,
+        ids: Vec<NoteId>,
+        property: NoteProperty,
+        delta: i32,
+    ) -> Self {
         Self {
             label: note_count_label(&format!("Nudge {} of", property.label()), ids.len()),
-            clip,
+            home: home.into(),
             ids,
             property,
             delta,
@@ -2843,7 +3027,7 @@ impl NudgeNoteProperty {
 impl Command for NudgeNoteProperty {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let property = self.property;
-        let data = notes_of(doc, self.clip)?;
+        let data = notes_of(doc, self.home)?;
         // Checked before anything is written: a command that half-applies is
         // one whose inverse cannot put the document back.
         for id in &self.ids {
@@ -2875,7 +3059,7 @@ impl Command for NudgeNoteProperty {
             return Box::new(NotApplied("nudging a note property"));
         }
         Box::new(RestoreNoteProperties {
-            clip: self.clip,
+            home: self.home,
             ids: self.ids.clone(),
             property: self.property,
             values: self.previous.clone(),
@@ -2891,7 +3075,7 @@ impl Command for NudgeNoteProperty {
         let Some(next) = next.as_any().downcast_ref::<NudgeNoteProperty>() else {
             return false;
         };
-        if next.clip != self.clip || next.ids != self.ids || next.property != self.property {
+        if next.home != self.home || next.ids != self.ids || next.property != self.property {
             return false;
         }
         // The deltas add and the captured `previous` stays: a held stepper is
@@ -2922,7 +3106,7 @@ impl Command for NudgeNoteProperty {
 /// the same question rather than the continuation of a gesture, and undo
 /// should walk back through the rolls one at a time.
 pub struct SetNotePropertyEach {
-    clip: ClipId,
+    home: NoteHome,
     ids: Vec<NoteId>,
     property: NoteProperty,
     values: Vec<i32>,
@@ -2932,14 +3116,14 @@ pub struct SetNotePropertyEach {
 
 impl SetNotePropertyEach {
     pub fn new(
-        clip: ClipId,
+        home: impl Into<NoteHome>,
         ids: Vec<NoteId>,
         property: NoteProperty,
         values: Vec<i32>,
     ) -> Self {
         Self {
             label: note_count_label(&format!("Set {} of", property.label()), ids.len()),
-            clip,
+            home: home.into(),
             ids,
             property,
             values,
@@ -2965,7 +3149,7 @@ impl Command for SetNotePropertyEach {
             )));
         }
         let property = self.property;
-        let data = notes_of(doc, self.clip)?;
+        let data = notes_of(doc, self.home)?;
         for id in &self.ids {
             if data.notes.get(*id).is_none() {
                 return Err(CommandError(format!("no note {id:?} in this clip")));
@@ -2993,7 +3177,7 @@ impl Command for SetNotePropertyEach {
             return Box::new(NotApplied("setting a value on each note"));
         }
         Box::new(RestoreNoteProperties {
-            clip: self.clip,
+            home: self.home,
             ids: self.ids.clone(),
             property: self.property,
             values: self.previous.clone(),
@@ -3017,6 +3201,111 @@ impl Command for SetNotePropertyEach {
         std::mem::size_of::<Self>()
             + self.ids.len() * std::mem::size_of::<NoteId>()
             + (self.values.len() + self.previous.len()) * std::mem::size_of::<i32>()
+            + self.label.len()
+    }
+}
+
+/// Writes a length onto each named note — one per note, in `ids` order.
+///
+/// **Absolute, not a delta**, which is what separates it from [`ResizeNotes`]:
+/// the legato tool works out a length per note from where the note *after* it
+/// starts (`tools::legato_lengths`), and a delta cannot say "these three
+/// become a beat and that one becomes a sixteenth" in one edit. One edit
+/// matters — a tool that left one history entry per note would need as many
+/// presses of Ctrl+Z to take back.
+///
+/// Self-inverting: it holds the lengths it found, and undoing writes those.
+pub struct SetNoteLengths {
+    home: NoteHome,
+    ids: Vec<NoteId>,
+    lengths: Vec<Tick>,
+    /// Each note's length before this ran, in `ids` order. Empty until
+    /// applied, which is also how `invert` knows it has nothing to say yet.
+    previous: Vec<Tick>,
+    label: String,
+}
+
+impl SetNoteLengths {
+    pub fn new(home: impl Into<NoteHome>, ids: Vec<NoteId>, lengths: Vec<Tick>) -> Self {
+        Self {
+            label: note_count_label("Resize", ids.len()),
+            home: home.into(),
+            ids,
+            lengths,
+            previous: Vec::new(),
+        }
+    }
+}
+
+impl Command for SetNoteLengths {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        // A list that does not line up with its notes would write the second
+        // note's length onto the third, the same scramble
+        // `SetNotePropertyEach` refuses and for the same reason.
+        if self.lengths.len() != self.ids.len() {
+            return Err(CommandError(format!(
+                "{} lengths for {} notes",
+                self.lengths.len(),
+                self.ids.len()
+            )));
+        }
+        let data = notes_of(doc, self.home)?;
+        // Every check before every write, so a list with one bad length in it
+        // leaves the clip exactly as it was rather than half-written.
+        for (id, length) in self.ids.iter().zip(&self.lengths) {
+            if data.notes.get(*id).is_none() {
+                return Err(CommandError(format!("no note {id:?} in this clip")));
+            }
+            // A note of zero length is a note-on and note-off on the same
+            // sample, which the sequencer emits and the sampler cannot sound.
+            if *length < 1 {
+                return Err(CommandError("that would resize a note to nothing".into()));
+            }
+        }
+        if self.previous.is_empty() {
+            self.previous = self
+                .ids
+                .iter()
+                .filter_map(|id| data.notes.get(*id).map(|note| note.length))
+                .collect();
+        }
+        for (id, length) in self.ids.iter().zip(&self.lengths) {
+            if let Some(note) = data.notes.get_mut(*id) {
+                note.length = *length;
+            }
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        if self.previous.is_empty() {
+            return Box::new(NotApplied("setting a length on each note"));
+        }
+        Box::new(SetNoteLengths::new(
+            self.home,
+            self.ids.clone(),
+            self.previous.clone(),
+        ))
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// Never. One press of the tool is one edit; the next press is another
+    /// thing somebody did and has its own place in the history.
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.ids.len() * std::mem::size_of::<NoteId>()
+            + (self.lengths.len() + self.previous.len()) * std::mem::size_of::<Tick>()
             + self.label.len()
     }
 }
@@ -3387,7 +3676,10 @@ impl ImportParts {
             // A part with no notes is a row that would arrive empty, which is
             // a thing to tidy up rather than a thing you asked for. MIDI
             // files are full of channels that carry only a program change.
-            parts: parts.into_iter().filter(|part| !part.notes.is_empty()).collect(),
+            parts: parts
+                .into_iter()
+                .filter(|part| !part.notes.is_empty())
+                .collect(),
             made: Vec::new(),
         }
     }
@@ -3435,12 +3727,17 @@ impl Command for ImportParts {
             };
 
             let channel = Channel {
+                preset: None,
                 name: part.name.clone(),
                 color: part.color,
+                // A `.mid` part is notes and a program number: what plays it
+                // is a soundfont, which is what the importer loads onto it.
+                instrument: Some(fontelle_types::InstrumentKind::SoundFont),
                 // A file's parts really do each want a strip: it carries a
                 // level per part, and that is a fader.
                 mixer_track: Some(track_id),
                 patch_data: None,
+                plugin: None,
                 pan: part.pan,
                 muted: false,
                 soloed: false,
@@ -4145,32 +4442,73 @@ impl Command for SplitClip {
             // halves pointing at the front would give you the same audio
             // twice, quietly, with the picture agreeing with it.
             //
-            // The seam is found the way the *player* finds it — song samples
-            // into the block, at the file's rate, times the clip's own speed —
-            // and not by dividing the source range in proportion to the block.
-            // Proportion is right exactly when the clip is the same length as
-            // its audio; a one-shot on a long block would have its seam put
-            // somewhere it never plays.
+            // The seam is found the way the *player* finds it, and not by
+            // dividing the source range in proportion to the block. Proportion
+            // is right exactly when the clip is the same length as its audio;
+            // a one-shot on a long block would have its seam put somewhere it
+            // never plays.
+            //
+            // Two things used to be missed here, and either one puts the seam
+            // past the end of the file, where it clamps and hands one half the
+            // whole take and the other half nothing:
+            //
+            // - **A clip the arrangement repeats** has no single seam in the
+            //   file at all: a blade in the third pass is two and a half takes
+            //   into a take that is one long. Such a clip is not cut in the
+            //   file — see the first branch.
+            // - **How fast it reads.** A clip in `ClipStretch::Resample` fits
+            //   its file to its block, so its seam is a proportion of that
+            //   block; one in `ClipStretch::Off` reads at the file's own rate.
+            //   That is exactly `AudioClipData::read_ratio`, which is what the
+            //   player asks, so this asks it too rather than repeating the
+            //   arithmetic and drifting from it.
             (ClipSource::Audio(source), ClipSource::Audio(head), ClipSource::Audio(tail)) => {
-                let device_rate = doc.tempo_map.sample_rate_hz().max(1.0);
-                let into_block = doc.tempo_map.tick_to_sample(self.at)
-                    - doc.tempo_map.tick_to_sample(original.start);
-                let clip_frames =
-                    into_block.max(0) as f64 * f64::from(source.sample_rate) / device_rate;
-                let seam = (clip_frames * source.rate()) as Tick;
-                let seam = seam.clamp(0, source.source_frames());
-                if source.reverse {
-                    // A reversed clip plays from its far end back, so the
-                    // **first** half is the last `seam` frames of the range.
-                    head.source_start = source.source_end - seam;
-                    tail.source_end = source.source_end - seam;
+                if original.loop_length.is_some_and(|p| p > 0) {
+                    // **A loop is cut in the arrangement, not in the file.**
+                    // Both halves keep the whole take and go on repeating it,
+                    // and each half's own block truncates its last pass.
+                    //
+                    // Trimming them to the blade is the tempting answer and
+                    // the wrong one: a trimmed half still repeats every
+                    // period, so every pass after the first would play the
+                    // shortened range and then sit silent for the rest of the
+                    // period — one right frame at the blade bought with a hole
+                    // in every bar. Exact when the cut lands on a seam, which
+                    // is what the snapped grid gives you; a cut mid-pass
+                    // restarts the loop at the blade, since a clip stores
+                    // where in the *file* it begins and not where in the pass,
+                    // and that phase has nowhere to live.
                 } else {
-                    head.source_end = source.source_start + seam;
-                    tail.source_start = source.source_start + seam;
+                    let device_rate = doc.tempo_map.sample_rate_hz().max(1.0);
+                    let block_start = doc.tempo_map.tick_to_sample(original.start);
+                    let into_block = (doc.tempo_map.tick_to_sample(self.at) - block_start).max(0);
+                    // The block, in song frames — the span the player fits a
+                    // following clip's file to, and the one it hands
+                    // `read_ratio`.
+                    let pass = doc
+                        .tempo_map
+                        .tick_to_sample(original.start + original.length)
+                        - block_start;
+                    let ratio = source.read_ratio(source.sample_rate, device_rate, pass);
+                    let seam = (into_block as f64 * ratio * source.rate()) as Tick;
+                    let seam = seam.clamp(0, source.source_frames());
+                    if source.reverse {
+                        // A reversed clip plays from its far end back, so the
+                        // **first** half is the last `seam` frames of the range.
+                        head.source_start = source.source_end - seam;
+                        tail.source_end = source.source_end - seam;
+                    } else {
+                        head.source_end = source.source_start + seam;
+                        tail.source_start = source.source_start + seam;
+                    }
                 }
-                // The piece you cut off stops being a loop, for the reason a
-                // note clip's does.
-                left.loop_length = None;
+                // **Both halves go on repeating**, which is where audio parts
+                // company with notes. A note clip's front half stops looping
+                // because `split_notes` writes its repeats out and it plays
+                // them anyway; there is nothing to write out for a take, so a
+                // front half that stopped looping would play the file once and
+                // then sit silent for the passes it used to play — the cut
+                // changing the sound, which is the thing a cut may not do.
             }
             (
                 ClipSource::Automation(source),
@@ -4442,7 +4780,6 @@ fn split_notes(
     (front, back)
 }
 
-
 /// A continuous value one command can set.
 ///
 /// One command over a typed address rather than four near-identical structs:
@@ -4596,6 +4933,14 @@ impl Command for SetNumber {
 pub enum FlagTarget {
     TrackMute(MixerTrackId),
     TrackSolo(MixerTrackId),
+    /// Whether the track's output is connected at all (see
+    /// `MixerTrack::output_on`).
+    ///
+    /// A **routing** switch and not a third mute: the track's sends still
+    /// carry, which is how a track feeding only a reverb is built — and it is
+    /// what *"if i chose to not route it to master, i wont be hearing my own
+    /// input but it will still be recording"* asks for.
+    TrackOutputOn(MixerTrackId),
     ClipMuted(ClipId),
     /// A sequencer mute, not a mixer operation (TDD §10.3).
     LaneMuted(LaneId),
@@ -4646,6 +4991,20 @@ impl Command for SetFlag {
                     .ok_or_else(|| CommandError(format!("no mixer track {id:?}")))?;
                 std::mem::replace(&mut track.solo, self.value)
             }
+            FlagTarget::TrackOutputOn(id) => {
+                // The master's output is the speakers. Switching it off is
+                // silence with no control anywhere that explains it — the same
+                // reason `SetTrackOutput` refuses to give it a destination.
+                if doc.mixer.master == Some(id) {
+                    return Err(CommandError("the master's output is the speakers".into()));
+                }
+                let track = doc
+                    .mixer
+                    .tracks
+                    .get_mut(id)
+                    .ok_or_else(|| CommandError(format!("no mixer track {id:?}")))?;
+                std::mem::replace(&mut track.output_on, self.value)
+            }
             FlagTarget::ClipMuted(id) => {
                 let clip = doc.clips.get_mut(id).ok_or_else(|| no_clip(id))?;
                 std::mem::replace(&mut clip.muted, self.value)
@@ -4694,6 +5053,8 @@ impl Command for SetFlag {
         match (self.target, self.value) {
             (FlagTarget::TrackSolo(_), true) => "Solo",
             (FlagTarget::TrackSolo(_), false) => "Unsolo",
+            (FlagTarget::TrackOutputOn(_), true) => "Route mixer track",
+            (FlagTarget::TrackOutputOn(_), false) => "Unroute mixer track",
             (_, true) => "Mute",
             (_, false) => "Unmute",
         }
@@ -5207,7 +5568,10 @@ impl Command for SetInsertKey {
             .inserts
             .get_mut(self.index)
             .ok_or_else(|| CommandError(format!("no insert {}", self.index)))?;
-        if !slot.config.kind().takes_key() {
+        // A plugin slot may always be keyed: whether the plugin has a
+        // sidechain port is the host's to know — see
+        // `EffectSlot::effective_key`.
+        if !slot.is_plugin() && !slot.config.kind().takes_key() {
             return Err(CommandError(format!(
                 "{:?} has no detector to key",
                 slot.config.kind()
@@ -5253,93 +5617,16 @@ impl Command for SetInsertKey {
     }
 }
 
-/// Writes the knobs a named preset stands for, on one insert.
-///
-/// Its own command rather than a run of [`SetInsertParam`]s, and the reason is
-/// the undo stack: a preset is **one thing a person did**, so it has to be one
-/// entry to take back. Fourteen entries for one click is an undo stack nobody
-/// can walk, and merging them would be worse — `SetInsertParam::merge_with` is
-/// deliberately per-control, because two knobs dragged one after the other are
-/// two things.
-///
-/// It keeps the whole previous config rather than the previous preset, because
-/// there may not have been one: what a preset replaces is usually a panel
-/// somebody has been turning by hand.
-pub struct SetInsertPreset {
-    track: MixerTrackId,
-    index: usize,
-    preset: usize,
-    previous: Option<fontelle_types::EffectConfig>,
-}
-
-impl SetInsertPreset {
-    pub fn new(track: MixerTrackId, index: usize, preset: usize) -> Self {
-        Self {
-            track,
-            index,
-            preset,
-            previous: None,
-        }
-    }
-}
-
-impl Command for SetInsertPreset {
-    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let track = doc
-            .mixer
-            .tracks
-            .get_mut(self.track)
-            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        let slot = track
-            .inserts
-            .get_mut(self.index)
-            .ok_or_else(|| CommandError(format!("no insert {}", self.index)))?;
-        // A preset this effect does not have is refused rather than silently
-        // ignored, for `SetInsertParam`'s reason: the row that was clicked was
-        // built from `presets()` a moment ago.
-        if self.preset >= slot.config.presets().len() {
-            return Err(CommandError(format!(
-                "no preset {} on {:?}",
-                self.preset,
-                slot.config.kind()
-            )));
-        }
-        let previous = slot.config;
-        slot.config.apply_preset(self.preset);
-        self.previous.get_or_insert(previous);
-        Ok(())
-    }
-
-    fn invert(&self) -> Box<dyn Command> {
-        match self.previous {
-            Some(previous) => Box::new(RestoreInsertConfig {
-                track: self.track,
-                index: self.index,
-                config: previous,
-            }),
-            None => Box::new(NotApplied("choosing a preset")),
-        }
-    }
-
-    fn label(&self) -> &str {
-        "Effect preset"
-    }
-
-    /// Never. Two presets chosen one after the other are two things a person
-    /// did, and the first is somewhere they may want to go back to — unlike
-    /// the middle of a knob drag, which is not.
-    fn merge_with(&mut self, _next: &dyn Command) -> bool {
-        false
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn memory_cost(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-}
+// `SetInsertPreset` was here.
+//
+// It wrote the knobs a named constructor-preset stood for, and a chip row
+// above the panel drew the names. `docs/flopsynth-plan.md` §P.9 replaced it
+// with [`ApplyPreset`], which does the same thing for **every** device from a
+// file rather than for three effects from a `match` — same one undo entry,
+// same reasoning, and now the drum machine and the synthesiser get it too.
+//
+// [`RestoreInsertConfig`] stays: it is what an undo of one needs, and
+// `ApplyPreset` is not the only thing that writes a whole config.
 
 /// Puts one insert's whole parameter set back where it was.
 ///
@@ -6012,5 +6299,1363 @@ impl Command for RestorePointCurves {
 
     fn memory_cost(&self) -> usize {
         std::mem::size_of::<Self>()
+    }
+}
+
+// ============================================================== hosted plugins
+
+/// Puts a plugin somebody else wrote on the end of a track's insert chain
+/// (TDD §8.4).
+///
+/// Its own command rather than an argument to [`AddInsert`], because the two
+/// name different things: `AddInsert` names one of the effects that ship in
+/// this binary, by a `Copy` enum the compiler checks, and this names a plugin
+/// on the machine, by a string that may not resolve. Folding them together
+/// would have meant one of the two lying about what it needs.
+pub struct AddPluginInsert {
+    track: MixerTrackId,
+    state: fontelle_types::PluginState,
+    added: Option<usize>,
+}
+
+impl AddPluginInsert {
+    pub fn new(track: MixerTrackId, state: fontelle_types::PluginState) -> Self {
+        Self {
+            track,
+            state,
+            added: None,
+        }
+    }
+}
+
+impl Command for AddPluginInsert {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let track = doc
+            .mixer
+            .tracks
+            .get_mut(self.track)
+            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
+        track
+            .inserts
+            .push(crate::EffectSlot::hosting(self.state.clone()));
+        self.added = Some(track.inserts.len() - 1);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match self.added {
+            Some(index) => Box::new(RemoveInsert::new(self.track, index)),
+            None => Box::new(NotApplied("adding a plugin")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Add plugin"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() + self.state.name.len()
+    }
+}
+
+/// Gives a channel a plugin to play, or takes it away.
+///
+/// Sets [`Channel::instrument`](crate::Channel::instrument) as well, for the
+/// same reason [`SetChannelKind`] exists: what a channel *is* is stored rather
+/// than derived, because an empty instrument cannot say what it was going to
+/// be.
+pub struct SetChannelPlugin {
+    channel: ChannelId,
+    state: Option<fontelle_types::PluginState>,
+    previous: Option<(
+        Option<fontelle_types::PluginState>,
+        Option<fontelle_types::InstrumentKind>,
+    )>,
+}
+
+impl SetChannelPlugin {
+    pub fn new(channel: ChannelId, state: Option<fontelle_types::PluginState>) -> Self {
+        Self {
+            channel,
+            state,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetChannelPlugin {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let channel = doc
+            .channels
+            .get_mut(self.channel)
+            .ok_or_else(|| CommandError(format!("no channel {:?}", self.channel)))?;
+        let was = (channel.plugin.clone(), channel.instrument);
+        channel.plugin = self.state.clone();
+        // The patch is left where it is — see `Channel::plugin`. Changing your
+        // mind about a plugin should give back the soundfont that was there.
+        channel.instrument = self
+            .state
+            .is_some()
+            .then_some(fontelle_types::InstrumentKind::Plugin)
+            .or(if was.1 == Some(fontelle_types::InstrumentKind::Plugin) {
+                None
+            } else {
+                was.1
+            });
+        self.previous.get_or_insert(was);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some((state, kind)) => Box::new(RestoreChannelPlugin {
+                channel: self.channel,
+                state: state.clone(),
+                kind: *kind,
+            }),
+            None => Box::new(NotApplied("choosing a plugin")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Choose plugin"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// The undo of a [`SetChannelPlugin`]: exactly what was there, kind included.
+pub struct RestoreChannelPlugin {
+    channel: ChannelId,
+    state: Option<fontelle_types::PluginState>,
+    kind: Option<fontelle_types::InstrumentKind>,
+}
+
+impl Command for RestoreChannelPlugin {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let channel = doc
+            .channels
+            .get_mut(self.channel)
+            .ok_or_else(|| CommandError(format!("no channel {:?}", self.channel)))?;
+        channel.plugin = self.state.clone();
+        channel.instrument = self.kind;
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        Box::new(SetChannelPlugin::new(self.channel, self.state.clone()))
+    }
+
+    fn label(&self) -> &str {
+        "Choose plugin"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// Which plugin a [`SetPluginParam`] is about.
+///
+/// One command over two places rather than two commands, because the two
+/// differ only in where the [`PluginState`](fontelle_types::PluginState) is
+/// kept: an insert's parameters and an instrument's are the same kind of thing
+/// set the same way, and a drag over either has to merge the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginTarget {
+    Insert { track: MixerTrackId, slot: usize },
+    Channel(ChannelId),
+}
+
+/// Moves one parameter of one hosted plugin, by the plugin's own id.
+///
+/// **Plain, not normalised**, which is the one place this differs from
+/// [`SetInsertParam`]. A built-in effect's taper lives in `EffectConfig` and
+/// the document can convert either way; a plugin's range is the plugin's, and
+/// storing a fraction of a range that the plugin is entitled to widen in an
+/// update is how a project comes back sounding different. CLAP's own advice to
+/// hosts is to store plain values, and it is the same argument.
+pub struct SetPluginParam {
+    target: PluginTarget,
+    id: u32,
+    value: f64,
+    previous: Option<Option<f64>>,
+}
+
+impl SetPluginParam {
+    pub fn insert(track: MixerTrackId, slot: usize, id: u32, value: f64) -> Self {
+        Self {
+            target: PluginTarget::Insert { track, slot },
+            id,
+            value,
+            previous: None,
+        }
+    }
+
+    pub fn channel(channel: ChannelId, id: u32, value: f64) -> Self {
+        Self {
+            target: PluginTarget::Channel(channel),
+            id,
+            value,
+            previous: None,
+        }
+    }
+}
+
+/// The `PluginState` a target names, if it is a plugin at all.
+fn plugin_state_mut(
+    doc: &mut Project,
+    target: PluginTarget,
+) -> Result<&mut fontelle_types::PluginState, CommandError> {
+    match target {
+        PluginTarget::Insert { track, slot } => doc
+            .mixer
+            .tracks
+            .get_mut(track)
+            .and_then(|track| track.inserts.get_mut(slot))
+            .and_then(|insert| insert.plugin.as_mut())
+            .ok_or_else(|| CommandError(format!("insert {slot} holds no plugin"))),
+        PluginTarget::Channel(channel) => doc
+            .channels
+            .get_mut(channel)
+            .and_then(|channel| channel.plugin.as_mut())
+            .ok_or_else(|| CommandError(format!("channel {channel:?} plays no plugin"))),
+    }
+}
+
+impl Command for SetPluginParam {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let state = plugin_state_mut(doc, self.target)?;
+        let previous = state.param(self.id);
+        state.set_param(self.id, self.value);
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match self.previous {
+            // A parameter the document had never seen goes back to *not being
+            // there* rather than to a number nobody chose — which is what
+            // makes an undo of a first touch leave the plugin at its own
+            // default.
+            Some(previous) => Box::new(RestorePluginParam {
+                target: self.target,
+                id: self.id,
+                value: previous,
+            }),
+            None => Box::new(NotApplied("turning a plugin's knob")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Plugin parameter"
+    }
+
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<SetPluginParam>() else {
+            return false;
+        };
+        if next.target != self.target || next.id != self.id {
+            return false;
+        }
+        self.value = next.value;
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// The undo of a [`SetPluginParam`], including "it was not set at all".
+pub struct RestorePluginParam {
+    target: PluginTarget,
+    id: u32,
+    value: Option<f64>,
+}
+
+impl Command for RestorePluginParam {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let state = plugin_state_mut(doc, self.target)?;
+        match self.value {
+            Some(value) => state.set_param(self.id, value),
+            None => state.params.retain(|param| param.id != self.id),
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        Box::new(NotApplied("turning a plugin's knob"))
+    }
+
+    fn label(&self) -> &str {
+        "Plugin parameter"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+// ---------------------------------------------------------------- presets
+
+/// Which device a preset is being put on (`docs/flopsynth-plan.md` §P.5).
+///
+/// Two shapes rather than one address, because the two are addressed
+/// differently everywhere else in this file too: a channel is a `ChannelId`,
+/// an insert is a track and a position in its chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresetTarget {
+    Channel(ChannelId),
+    Insert { track: MixerTrackId, index: usize },
+}
+
+/// What a device was before a preset landed on it, so an undo can put all of
+/// it back at once.
+#[derive(Debug, Clone)]
+enum DeviceState {
+    Channel {
+        instrument: Option<fontelle_types::InstrumentKind>,
+        patch_data: Option<fontelle_types::PatchData>,
+        plugin: Option<fontelle_types::PluginState>,
+        preset: Option<fontelle_types::PresetRef>,
+    },
+    Insert {
+        config: fontelle_types::EffectConfig,
+        plugin: Option<fontelle_types::PluginState>,
+        preset: Option<fontelle_types::PresetRef>,
+    },
+}
+
+/// Loads a preset onto a device, whatever kind of device it is.
+///
+/// **One entry for the whole load**, which is the same argument
+/// [`SetInsertPreset`] made for the constructor presets this replaces and the
+/// reason the state and the name are written together: choosing a preset is
+/// one thing a person did, and forty knobs plus a rename is not an undo stack
+/// anybody can walk.
+///
+/// The two device kinds differ in exactly one way, deliberately. A **channel**
+/// whose preset is for another instrument is *switched* to that instrument —
+/// FL Studio's behaviour, and the only one that is not a lie, since a
+/// Flopsynth patch under a kind that says soundfont plays nothing and explains
+/// nothing. An **insert** is refused, because a slot's kind was chosen from
+/// the "+ effect" menu and a reverb preset dropped on a gate is a mistake
+/// rather than an instruction.
+pub struct ApplyPreset {
+    target: PresetTarget,
+    preset: fontelle_types::Preset,
+    /// Which bank this preset came out of.
+    ///
+    /// A field rather than something read off the preset, because the file
+    /// does not say and cannot: the same bytes are a factory preset in the
+    /// program's tree and a user preset in the user's bank. The bank stamps it
+    /// on the entry it hands out, and whoever has an entry passes it here.
+    origin: fontelle_types::PresetOrigin,
+    previous: Option<DeviceState>,
+}
+
+impl ApplyPreset {
+    /// A factory preset, which is the safe default: `Save` is disabled on one,
+    /// so a wrong guess here can only ever make the bar *ask* rather than
+    /// silently overwrite a file.
+    pub fn new(target: PresetTarget, preset: fontelle_types::Preset) -> Self {
+        Self::from_bank(target, preset, fontelle_types::PresetOrigin::Factory)
+    }
+
+    /// A preset out of a named bank — what the browser and the bar use, since
+    /// they are holding the entry that says which.
+    pub fn from_bank(
+        target: PresetTarget,
+        preset: fontelle_types::Preset,
+        origin: fontelle_types::PresetOrigin,
+    ) -> Self {
+        Self {
+            target,
+            preset,
+            origin,
+            previous: None,
+        }
+    }
+}
+
+impl Command for ApplyPreset {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        use fontelle_types::{DeviceKind, InstrumentKind, PresetPayload};
+        // Checked before anything is written, and in this order: a file from a
+        // newer build may *look* consistent under this build's rules while
+        // meaning something else.
+        if self.preset.is_from_the_future() {
+            return Err(CommandError(format!(
+                "\"{}\" was written by a newer version of Fontelle",
+                self.preset.name
+            )));
+        }
+        if !self.preset.is_consistent() {
+            return Err(CommandError(format!(
+                "\"{}\" is not a preset for a {}",
+                self.preset.name,
+                self.preset.device.label()
+            )));
+        }
+        let reference = fontelle_types::PresetRef::new(
+            self.preset.name.clone(),
+            self.preset.category.clone(),
+            self.origin,
+        );
+        match self.target {
+            PresetTarget::Channel(id) => {
+                let channel = doc
+                    .channels
+                    .get_mut(id)
+                    .ok_or_else(|| CommandError("that channel is not there".to_string()))?;
+                let previous = DeviceState::Channel {
+                    instrument: channel.instrument,
+                    patch_data: channel.patch_data.clone(),
+                    plugin: channel.plugin.clone(),
+                    preset: channel.preset.clone(),
+                };
+                match (&self.preset.device, &self.preset.payload) {
+                    (DeviceKind::Instrument(kind), PresetPayload::Patch(patch)) => {
+                        channel.instrument = Some(*kind);
+                        channel.patch_data = Some(patch.clone());
+                    }
+                    // Both spellings of "this channel plays somebody else's
+                    // plugin": the payload says which plugin, and the kind
+                    // field says only that it is one.
+                    (
+                        DeviceKind::Instrument(InstrumentKind::Plugin),
+                        PresetPayload::Plugin(state),
+                    )
+                    | (DeviceKind::Plugin(_), PresetPayload::Plugin(state)) => {
+                        channel.instrument = Some(InstrumentKind::Plugin);
+                        channel.plugin = Some(state.clone());
+                    }
+                    _ => {
+                        return Err(CommandError(format!(
+                            "\"{}\" is a preset for a {}, not for a channel",
+                            self.preset.name,
+                            self.preset.device.label()
+                        )));
+                    }
+                }
+                channel.preset = Some(reference);
+                self.previous.get_or_insert(previous);
+            }
+            PresetTarget::Insert { track, index } => {
+                let slot = doc
+                    .mixer
+                    .tracks
+                    .get_mut(track)
+                    .ok_or_else(|| CommandError(format!("no mixer track {track:?}")))?
+                    .inserts
+                    .get_mut(index)
+                    .ok_or_else(|| CommandError(format!("no insert {index}")))?;
+                let previous = DeviceState::Insert {
+                    config: slot.config,
+                    plugin: slot.plugin.clone(),
+                    preset: slot.preset.clone(),
+                };
+                match (&self.preset.device, &self.preset.payload) {
+                    (DeviceKind::Effect(kind), PresetPayload::Effect(config)) => {
+                        if slot.config.kind() != *kind {
+                            return Err(CommandError(format!(
+                                "insert {} is a {:?}, not a {:?}",
+                                index,
+                                slot.config.kind(),
+                                kind
+                            )));
+                        }
+                        slot.config = *config;
+                    }
+                    (DeviceKind::Plugin(key), PresetPayload::Plugin(state)) => {
+                        match &slot.plugin {
+                            Some(held) if held.key == *key => {}
+                            _ => {
+                                return Err(CommandError(format!(
+                                    "insert {index} is not holding {}",
+                                    key.id
+                                )));
+                            }
+                        }
+                        slot.plugin = Some(state.clone());
+                    }
+                    _ => {
+                        return Err(CommandError(format!(
+                            "\"{}\" is a preset for a {}, not for an insert",
+                            self.preset.name,
+                            self.preset.device.label()
+                        )));
+                    }
+                }
+                slot.preset = Some(reference);
+                self.previous.get_or_insert(previous);
+            }
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => Box::new(RestoreDeviceState {
+                target: self.target,
+                state: previous.clone(),
+            }),
+            None => Box::new(NotApplied("loading a preset")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Load preset"
+    }
+
+    /// **Never.** Two presets tried one after the other are two things
+    /// somebody did, and the first is somewhere they may want to go back to —
+    /// [`SetInsertPreset`]'s reasoning, kept.
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        // A patch body is a JSON tree of unknown size; `SetChannelPatch`
+        // charges a flat kilobyte for the same reason and this carries two of
+        // them (the preset and what it replaced).
+        std::mem::size_of::<Self>() + 2048
+    }
+}
+
+/// Puts a device back exactly as it was before a preset landed on it.
+///
+/// [`ApplyPreset`]'s inverse, and not a gesture of its own: there is no way to
+/// ask for "the instrument, the patch, the plugin and the name, all at once"
+/// except by loading a preset, and undoing that is what this is.
+struct RestoreDeviceState {
+    target: PresetTarget,
+    state: DeviceState,
+}
+
+impl Command for RestoreDeviceState {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        match (self.target, &mut self.state) {
+            (
+                PresetTarget::Channel(id),
+                DeviceState::Channel {
+                    instrument,
+                    patch_data,
+                    plugin,
+                    preset,
+                },
+            ) => {
+                let channel = doc
+                    .channels
+                    .get_mut(id)
+                    .ok_or_else(|| CommandError("that channel is not there".to_string()))?;
+                // Swapped rather than written, so this command carries what it
+                // replaced and its own inverse is the same command again —
+                // `RestoreInsertConfig`'s shape.
+                std::mem::swap(&mut channel.instrument, instrument);
+                std::mem::swap(&mut channel.patch_data, patch_data);
+                std::mem::swap(&mut channel.plugin, plugin);
+                std::mem::swap(&mut channel.preset, preset);
+                Ok(())
+            }
+            (
+                PresetTarget::Insert { track, index },
+                DeviceState::Insert {
+                    config,
+                    plugin,
+                    preset,
+                },
+            ) => {
+                let slot = doc
+                    .mixer
+                    .tracks
+                    .get_mut(track)
+                    .ok_or_else(|| CommandError(format!("no mixer track {track:?}")))?
+                    .inserts
+                    .get_mut(index)
+                    .ok_or_else(|| CommandError(format!("no insert {index}")))?;
+                std::mem::swap(&mut slot.config, config);
+                std::mem::swap(&mut slot.plugin, plugin);
+                std::mem::swap(&mut slot.preset, preset);
+                Ok(())
+            }
+            // A target and a state of different shapes cannot be built by
+            // `ApplyPreset::invert`, which is the only thing that builds one.
+            _ => Err(CommandError(
+                "that is not the device this undoes".to_string(),
+            )),
+        }
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        Box::new(RestoreDeviceState {
+            target: self.target,
+            // `apply` swapped them, so this is what was there before the undo.
+            state: self.state.clone(),
+        })
+    }
+
+    fn label(&self) -> &str {
+        "Load preset"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() + 2048
+    }
+}
+
+/// Writes what preset a device is now called, without touching its sound.
+///
+/// What a **save** runs once the file is on disk: the payload is already what
+/// the file holds — that is what was written — so this must not write it
+/// again. Undoing a save puts the old name back and leaves the file alone,
+/// because undo is not a delete (§P.5).
+///
+/// Also what clears a name: `None` is a device that is no longer any preset.
+pub struct SetPresetRef {
+    target: PresetTarget,
+    preset: Option<fontelle_types::PresetRef>,
+    previous: Option<Option<fontelle_types::PresetRef>>,
+}
+
+impl SetPresetRef {
+    pub fn new(target: PresetTarget, preset: Option<fontelle_types::PresetRef>) -> Self {
+        Self {
+            target,
+            preset,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetPresetRef {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let held = match self.target {
+            PresetTarget::Channel(id) => {
+                &mut doc
+                    .channels
+                    .get_mut(id)
+                    .ok_or_else(|| CommandError("that channel is not there".to_string()))?
+                    .preset
+            }
+            PresetTarget::Insert { track, index } => {
+                &mut doc
+                    .mixer
+                    .tracks
+                    .get_mut(track)
+                    .ok_or_else(|| CommandError(format!("no mixer track {track:?}")))?
+                    .inserts
+                    .get_mut(index)
+                    .ok_or_else(|| CommandError(format!("no insert {index}")))?
+                    .preset
+            }
+        };
+        let previous = std::mem::replace(held, self.preset.clone());
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => Box::new(SetPresetRef::new(self.target, previous.clone())),
+            None => Box::new(NotApplied("naming a preset")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Save preset"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+// --- Prefabs ---------------------------------------------------------------
+//
+// > *"the prefab system for having clips that you can basically draw into your
+// > arrangement that making a change in that prefab clip affects all the clips
+// > in the arrangement that are referencing that prefab."*
+//
+// Four commands, and the shape of the feature is in which four they are:
+// making a prefab, putting a *place* down for one, taking one place off it,
+// and deleting it. There is deliberately **no** "edit a prefab" command —
+// editing one is the ordinary note commands with a `NoteHome::Prefab`, which
+// is the whole reason `NoteHome` exists. A prefab that needed its own parallel
+// edit set would be a prefab whose piano roll drifted from the arrangement's.
+
+/// Makes a prefab: named content that is not on the arrangement.
+pub struct AddPrefab {
+    name: String,
+    source: ClipSource,
+    made: Option<PrefabId>,
+}
+
+impl AddPrefab {
+    pub fn new(name: impl Into<String>, source: ClipSource) -> Self {
+        Self {
+            name: name.into(),
+            source,
+            made: None,
+        }
+    }
+
+    /// The prefab, once this has been applied.
+    pub fn prefab(&self) -> Option<PrefabId> {
+        self.made
+    }
+}
+
+impl Command for AddPrefab {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let prefab = Prefab {
+            name: self.name.clone(),
+            base: None,
+            source: self.source.clone(),
+            overrides: Default::default(),
+        };
+        let id = match self.made {
+            Some(id) => {
+                if !doc.prefabs.insert_at(id, prefab) {
+                    return Err(CommandError("that prefab id is taken".into()));
+                }
+                id
+            }
+            None => doc.prefabs.insert(prefab),
+        };
+        self.made = Some(id);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match self.made {
+            Some(id) => Box::new(RemovePrefab::new(id)),
+            None => Box::new(NotApplied("making a prefab")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Add prefab"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() + self.name.len()
+    }
+}
+
+/// Puts one **place** for `prefab` on the arrangement.
+///
+/// The clip it makes holds no notes of its own — see [`Project::clip_source`].
+/// It carries an empty `ClipSource` of the right kind anyway, so that a clip
+/// whose prefab is later deleted or detached has somewhere for its content to
+/// be baked into rather than needing a different kind of clip made for it.
+pub struct AddPrefabInstance {
+    prefab: PrefabId,
+    lane: LaneId,
+    start: Tick,
+    length: Tick,
+    made: Option<ClipId>,
+}
+
+impl AddPrefabInstance {
+    pub fn new(prefab: PrefabId, lane: LaneId, start: Tick, length: Tick) -> Self {
+        Self {
+            prefab,
+            lane,
+            start,
+            length,
+            made: None,
+        }
+    }
+
+    /// The clip, once this has been applied.
+    pub fn clip(&self) -> Option<ClipId> {
+        self.made
+    }
+}
+
+impl Command for AddPrefabInstance {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let Some(prefab) = doc.prefabs.get(self.prefab) else {
+            return Err(CommandError(format!(
+                "no prefab {:?} in this project",
+                self.prefab
+            )));
+        };
+        if !doc.lanes.contains_key(self.lane) {
+            return Err(CommandError(format!("no lane {:?}", self.lane)));
+        }
+        // Empty, and of the same kind as what it shows: a note prefab's places
+        // are note clips, so every path that asks "is this a note clip" — the
+        // roll, the compiler, the arrangement's caption — answers the same for
+        // an instance as for what it stands in for.
+        let source = match &prefab.source {
+            ClipSource::Notes(data) => ClipSource::Notes(NoteData {
+                channel: data.channel,
+                notes: Arena::default(),
+            }),
+            ClipSource::Automation(data) => ClipSource::Automation(crate::AutomationData {
+                target: data.target.clone(),
+                points: Arena::default(),
+            }),
+            ClipSource::Audio(_) => {
+                return Err(CommandError(
+                    "an audio clip cannot be a prefab: what it plays is a file".into(),
+                ));
+            }
+        };
+        let clip = Clip {
+            lane: self.lane,
+            start: self.start,
+            length: self.length.max(MIN_CLIP_LENGTH),
+            source,
+            prefab_link: Some(PrefabLink {
+                prefab: self.prefab,
+                overrides: Default::default(),
+            }),
+            color: None,
+            muted: false,
+            loop_length: None,
+        };
+        let id = match self.made {
+            Some(id) => {
+                if !doc.clips.insert_at(id, clip) {
+                    return Err(CommandError("that clip id is taken".into()));
+                }
+                id
+            }
+            None => doc.clips.insert(clip),
+        };
+        self.made = Some(id);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match self.made {
+            Some(id) => Box::new(RemoveClip::new(id)),
+            None => Box::new(NotApplied("placing a prefab")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Place prefab"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+pub struct RenamePrefab {
+    prefab: PrefabId,
+    name: String,
+    was: Option<String>,
+}
+
+impl RenamePrefab {
+    pub fn new(prefab: PrefabId, name: impl Into<String>) -> Self {
+        Self {
+            prefab,
+            name: name.into(),
+            was: None,
+        }
+    }
+}
+
+impl Command for RenamePrefab {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let Some(prefab) = doc.prefabs.get_mut(self.prefab) else {
+            return Err(CommandError(format!("no prefab {:?}", self.prefab)));
+        };
+        if self.was.is_none() {
+            self.was = Some(prefab.name.clone());
+        }
+        prefab.name = self.name.clone();
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.was {
+            Some(was) => Box::new(RenamePrefab::new(self.prefab, was.clone())),
+            None => Box::new(NotApplied("renaming a prefab")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Rename prefab"
+    }
+
+    /// Coalesced per keystroke, like every other rename: a name somebody typed
+    /// is one thing they did.
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<RenamePrefab>() else {
+            return false;
+        };
+        if next.prefab != self.prefab {
+            return false;
+        }
+        self.name = next.name.clone();
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() + self.name.len() + self.was.as_ref().map_or(0, |s| s.len())
+    }
+}
+
+/// Takes one clip off its prefab, **keeping what it was playing**.
+///
+/// *"I want to change just this one."* The content is baked into the clip's own
+/// source on the way out, so the arrangement sounds identical either side of
+/// the press — a detach that emptied a clip would make "let me tweak this one"
+/// a destructive operation, which is the opposite of what a prefab is for.
+pub struct DetachPrefab {
+    clip: ClipId,
+    /// What the clip was before, kept whole so the inverse is exact: the link
+    /// *and* the empty source it had, because putting the link back without
+    /// clearing the baked notes would leave a clip that is an instance and
+    /// carries a full copy of what it mirrors.
+    was: Option<(PrefabLink, ClipSource)>,
+}
+
+impl DetachPrefab {
+    pub fn new(clip: ClipId) -> Self {
+        Self { clip, was: None }
+    }
+}
+
+impl Command for DetachPrefab {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let Some(resolved) = doc.clip_source(self.clip).map(|s| s.into_owned()) else {
+            return Err(no_clip(self.clip));
+        };
+        let Some(clip) = doc.clips.get_mut(self.clip) else {
+            return Err(no_clip(self.clip));
+        };
+        let Some(link) = clip.prefab_link.take() else {
+            return Err(CommandError(format!(
+                "clip {:?} does not follow a prefab",
+                self.clip
+            )));
+        };
+        if self.was.is_none() {
+            self.was = Some((link, clip.source.clone()));
+        }
+        clip.source = resolved;
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.was {
+            Some((link, source)) => Box::new(RestorePrefabLink {
+                clip: self.clip,
+                link: link.clone(),
+                source: source.clone(),
+            }),
+            None => Box::new(NotApplied("detaching a prefab")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Detach prefab"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// [`DetachPrefab`]'s inverse: the link back on, and the baked content off.
+pub struct RestorePrefabLink {
+    clip: ClipId,
+    link: PrefabLink,
+    source: ClipSource,
+}
+
+impl Command for RestorePrefabLink {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let Some(clip) = doc.clips.get_mut(self.clip) else {
+            return Err(no_clip(self.clip));
+        };
+        clip.prefab_link = Some(self.link.clone());
+        clip.source = self.source.clone();
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        Box::new(DetachPrefab::new(self.clip))
+    }
+
+    fn label(&self) -> &str {
+        "Follow prefab"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// Deletes a prefab, **baking it into every place it was showing**.
+///
+/// The arrangement sounds the same afterwards, and every clip that followed it
+/// becomes an ordinary clip holding its own copy. The alternative — clips that
+/// silently empty — is one press away from blanking eight bars of somebody's
+/// song, and is the single worst thing this feature could do.
+pub struct RemovePrefab {
+    prefab: PrefabId,
+    /// The prefab itself, so a redo puts back the same one under the same id.
+    was: Option<Prefab>,
+    /// Every clip that was following it, so the inverse can hand each its link
+    /// back and empty the copy it was given.
+    detached: Vec<ClipId>,
+}
+
+impl RemovePrefab {
+    pub fn new(prefab: PrefabId) -> Self {
+        Self {
+            prefab,
+            was: None,
+            detached: Vec::new(),
+        }
+    }
+}
+
+impl Command for RemovePrefab {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        if !doc.prefabs.contains_key(self.prefab) {
+            return Err(CommandError(format!("no prefab {:?}", self.prefab)));
+        }
+        // Baked before the prefab goes, because after it goes there is nothing
+        // left to bake from. A command that cannot do its whole job does
+        // nothing: the resolution happens first and into a buffer.
+        let following: Vec<ClipId> = doc
+            .clips
+            .iter()
+            .filter(|(_, clip)| {
+                clip.prefab_link
+                    .as_ref()
+                    .is_some_and(|link| link.prefab == self.prefab)
+            })
+            .map(|(id, _)| id)
+            .collect();
+        let baked: Vec<(ClipId, ClipSource)> = following
+            .iter()
+            .filter_map(|id| doc.clip_source(*id).map(|s| (*id, s.into_owned())))
+            .collect();
+
+        for (id, source) in baked {
+            if let Some(clip) = doc.clips.get_mut(id) {
+                clip.prefab_link = None;
+                clip.source = source;
+            }
+        }
+        self.detached = following;
+        let removed = doc.prefabs.remove(self.prefab);
+        if self.was.is_none() {
+            self.was = removed;
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.was {
+            Some(was) => Box::new(RestorePrefab {
+                prefab: self.prefab,
+                was: was.clone(),
+                detached: self.detached.clone(),
+            }),
+            None => Box::new(NotApplied("deleting a prefab")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Delete prefab"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() + self.detached.len() * std::mem::size_of::<ClipId>()
+    }
+}
+
+/// [`RemovePrefab`]'s inverse.
+pub struct RestorePrefab {
+    prefab: PrefabId,
+    was: Prefab,
+    detached: Vec<ClipId>,
+}
+
+impl Command for RestorePrefab {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        if !doc.prefabs.insert_at(self.prefab, self.was.clone()) {
+            return Err(CommandError("that prefab id is taken".into()));
+        }
+        for id in &self.detached {
+            let Some(clip) = doc.clips.get_mut(*id) else {
+                continue;
+            };
+            // The link back, and the baked copy emptied again — an instance
+            // that kept its copy would be a clip that is a mirror and also a
+            // duplicate, which is the state this whole design exists to
+            // prevent.
+            clip.prefab_link = Some(PrefabLink {
+                prefab: self.prefab,
+                overrides: Default::default(),
+            });
+            clip.source = match &clip.source {
+                ClipSource::Notes(data) => ClipSource::Notes(NoteData {
+                    channel: data.channel,
+                    notes: Arena::default(),
+                }),
+                ClipSource::Automation(data) => ClipSource::Automation(crate::AutomationData {
+                    target: data.target.clone(),
+                    points: Arena::default(),
+                }),
+                other => other.clone(),
+            };
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        Box::new(RemovePrefab::new(self.prefab))
+    }
+
+    fn label(&self) -> &str {
+        "Restore prefab"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// Turns a clip that has been written into a prefab, **in place**.
+///
+/// The clip keeps its id, its row, its start and its length; what changes is
+/// that its notes stop being its own and become the prefab's, and it becomes
+/// the first place that prefab is drawn.
+///
+/// Keeping the id is not a detail. It is what makes this a change to the block
+/// you are looking at rather than a block that vanishes and a different one
+/// appearing where it was — which matters to the roll (the clip it has open),
+/// to the selection, and to every command above this one in the history.
+///
+/// One command rather than a `Compound`, because the second half needs the
+/// first half's answer: the prefab's id does not exist until the prefab does.
+pub struct MakePrefabFromClip {
+    clip: ClipId,
+    name: String,
+    made: Option<PrefabId>,
+}
+
+impl MakePrefabFromClip {
+    pub fn new(clip: ClipId, name: impl Into<String>) -> Self {
+        Self {
+            clip,
+            name: name.into(),
+            made: None,
+        }
+    }
+
+    /// The prefab, once this has been applied.
+    pub fn prefab(&self) -> Option<PrefabId> {
+        self.made
+    }
+}
+
+impl Command for MakePrefabFromClip {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        // Everything checked before anything is written: a command that cannot
+        // do its whole job does nothing.
+        let Some(clip) = doc.clips.get(self.clip) else {
+            return Err(no_clip(self.clip));
+        };
+        if clip.prefab_link.is_some() {
+            return Err(CommandError(format!(
+                "clip {:?} already follows a prefab",
+                self.clip
+            )));
+        }
+        let ClipSource::Notes(data) = &clip.source else {
+            return Err(CommandError(
+                "only a note clip can become a prefab: an audio clip is a file, and what \
+                 would be shared is the file"
+                    .into(),
+            ));
+        };
+        let source = ClipSource::Notes(data.clone());
+        let emptied = ClipSource::Notes(NoteData {
+            channel: data.channel,
+            notes: Arena::default(),
+        });
+
+        let prefab = Prefab {
+            name: self.name.clone(),
+            base: None,
+            source,
+            overrides: Default::default(),
+        };
+        let id = match self.made {
+            Some(id) => {
+                if !doc.prefabs.insert_at(id, prefab) {
+                    return Err(CommandError("that prefab id is taken".into()));
+                }
+                id
+            }
+            None => doc.prefabs.insert(prefab),
+        };
+        if let Some(clip) = doc.clips.get_mut(self.clip) {
+            clip.source = emptied;
+            clip.prefab_link = Some(PrefabLink {
+                prefab: id,
+                overrides: Default::default(),
+            });
+        }
+        self.made = Some(id);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match self.made {
+            // Detach first — which bakes the content back into the clip it
+            // came from — and only then delete the prefab. The other order
+            // would work too (`RemovePrefab` bakes into every place), and this
+            // one says what it means.
+            Some(id) => Box::new(Compound::new(
+                "Undo make prefab",
+                vec![
+                    Box::new(DetachPrefab::new(self.clip)),
+                    Box::new(RemovePrefab::new(id)),
+                ],
+            )),
+            None => Box::new(NotApplied("making a prefab from a clip")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Make prefab"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() + self.name.len()
     }
 }

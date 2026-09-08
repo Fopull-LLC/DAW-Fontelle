@@ -472,12 +472,17 @@ fn an_empty_editor_draws_a_flat_line() {
 
 use fontelle_ui::canvas::{
     EqField, eq_band_curve_points, eq_field_caption, eq_layout_for, eq_nudge_freq, eq_nudge_gain,
-    eq_nudge_mix, next_band_type, next_band_channel,
+    eq_nudge_mix, next_band_channel, next_band_type,
 };
 
 /// The editor over a config, with `selected` the band its controls describe.
 fn editor(config: &EqConfig, selected: usize) -> fontelle_ui::canvas::EqLayout {
-    eq_layout_for(Rect::new(0.0, 0.0, 620.0, 340.0), &metrics(), config, selected)
+    eq_layout_for(
+        Rect::new(0.0, 0.0, 620.0, 340.0),
+        &metrics(),
+        config,
+        selected,
+    )
 }
 
 #[test]
@@ -524,7 +529,9 @@ fn the_selected_band_gets_a_row_of_its_own_controls() {
         EqField::Delete,
         EqField::Mix,
     ] {
-        let rect = layout.field(field).unwrap_or_else(|| panic!("no {field:?}"));
+        let rect = layout
+            .field(field)
+            .unwrap_or_else(|| panic!("no {field:?}"));
         assert!(!rect.is_empty(), "{field:?} has no room");
         assert!(
             layout.body.contains(rect.x + 1.0, rect.y + 1.0),
@@ -639,7 +646,11 @@ fn dragging_a_number_moves_it_by_a_step_that_suits_it() {
     assert_eq!(eq_nudge_freq(20_000.0, 50.0), 20_000.0);
 
     assert!((eq_nudge_gain(0.0, 4.0) - 2.0).abs() < 1e-6);
-    assert_eq!(eq_nudge_gain(0.0, 200.0), 24.0, "clamped to what a band has");
+    assert_eq!(
+        eq_nudge_gain(0.0, 200.0),
+        24.0,
+        "clamped to what a band has"
+    );
     assert_eq!(eq_nudge_gain(0.0, -200.0), -24.0);
 
     assert!((eq_nudge_mix(1.0, -10.0) - 0.9).abs() < 1e-6);
@@ -665,7 +676,10 @@ fn each_band_can_be_drawn_on_its_own_as_well_as_in_the_sum() {
         .iter()
         .min_by(|a, b| {
             let target = eq_x_of_freq(layout.curve, 5_000.0);
-            (a.0 - target).abs().partial_cmp(&(b.0 - target).abs()).unwrap()
+            (a.0 - target)
+                .abs()
+                .partial_cmp(&(b.0 - target).abs())
+                .unwrap()
         })
         .unwrap();
     assert!(
@@ -685,7 +699,12 @@ fn the_editor_still_works_when_there_is_no_room_for_it() {
     // Every layout in this crate answers this one: a window dragged small
     // yields empty rectangles, never negative ones, and hit-testing them finds
     // nothing rather than everything.
-    let layout = eq_layout_for(Rect::new(0.0, 0.0, 30.0, 12.0), &metrics(), &EqConfig::default(), 0);
+    let layout = eq_layout_for(
+        Rect::new(0.0, 0.0, 30.0, 12.0),
+        &metrics(),
+        &EqConfig::default(),
+        0,
+    );
     for (_, rect) in &layout.fields {
         assert!(rect.width >= 0.0 && rect.height >= 0.0);
     }
@@ -698,48 +717,34 @@ fn the_editor_still_works_when_there_is_no_room_for_it() {
 // ------------------------------------------------------------ the fx menu
 
 use fontelle_types::{EffectConfig, EffectKind};
-use fontelle_ui::canvas::{effect_menu_hit, effect_menu_layout, effect_view, eq_nudge_q};
+use fontelle_ui::canvas::{EffectRow, effect_menu_rows, effect_view, eq_nudge_q};
 
 #[test]
 fn the_add_row_offers_every_effect_that_ships() {
     // One row per kind, from `EffectKind::ALL` — the same list the document
     // builds from, so a new effect appears here by existing rather than by
     // somebody remembering to add it twice.
-    let anchor = Rect::new(100.0, 100.0, 60.0, 12.0);
-    let menu = effect_menu_layout(anchor, body(), &metrics());
-    assert_eq!(menu.items.len(), EffectKind::ALL.len());
+    let rows = effect_menu_rows(&[], &[]);
+    // A heading, every built-in, plus the row that opens the list of what is
+    // installed on the machine — see `EffectRow::PluginPicker` for why that
+    // is a second menu and not more rows here.
+    assert_eq!(rows.len(), EffectKind::ALL.len() + 2);
     for kind in EffectKind::ALL {
-        assert!(menu.items.iter().any(|(k, _)| *k == kind));
+        assert!(rows.iter().any(|(_, row)| *row == EffectRow::Builtin(kind)));
     }
-}
-
-#[test]
-fn clicking_a_menu_row_names_the_effect_it_would_add() {
-    let anchor = Rect::new(100.0, 100.0, 60.0, 12.0);
-    let menu = effect_menu_layout(anchor, body(), &metrics());
-    let (kind, rect) = menu.items[1];
     assert_eq!(
-        effect_menu_hit(&menu, rect.x + 2.0, rect.y + rect.height / 2.0),
-        Some(kind)
+        rows.last().map(|(_, row)| *row),
+        Some(EffectRow::PluginPicker)
     );
 }
 
 #[test]
-fn a_menu_stays_inside_the_window_it_drops_into() {
-    // Dropped from a strip near the bottom edge, it opens upward rather than
-    // off-screen — the same rule the route menu follows.
-    let anchor = Rect::new(100.0, 300.0, 60.0, 12.0);
-    let bounds = body();
-    let menu = effect_menu_layout(anchor, bounds, &metrics());
-    assert!(menu.frame.y >= bounds.y - 0.01);
-    assert!(menu.frame.bottom() <= bounds.bottom() + 0.01);
-}
-
-#[test]
-fn clicking_off_the_menu_is_a_miss() {
-    let anchor = Rect::new(100.0, 100.0, 60.0, 12.0);
-    let menu = effect_menu_layout(anchor, body(), &metrics());
-    assert_eq!(effect_menu_hit(&menu, 5.0, 5.0), None);
+fn a_menu_row_names_the_effect_it_would_add() {
+    let rows = effect_menu_rows(&[], &[]);
+    let (entry, row) = &rows[1];
+    assert_eq!(*row, EffectRow::Builtin(EffectKind::ALL[0]));
+    assert_eq!(entry.label, EffectKind::ALL[0].label());
+    assert!(entry.enabled);
 }
 
 // ------------------------------------------------- the generic editor
@@ -865,7 +870,10 @@ fn the_spectrum_runs_left_to_right_across_the_curve() {
         bands.len() + 1,
         "one per band, and the last carried to the edge"
     );
-    assert!((points[0].0 - area.x).abs() < 0.01, "starts at the left edge");
+    assert!(
+        (points[0].0 - area.x).abs() < 0.01,
+        "starts at the left edge"
+    );
     assert!(
         (points[points.len() - 1].0 - area.right()).abs() < 0.01,
         "and ends at the right"
@@ -929,9 +937,7 @@ fn the_bands_share_the_curves_frequency_axis() {
 #[test]
 fn the_bands_span_the_whole_axis() {
     let (low, _) = fontelle_ui::canvas::spectrum_band_hz(0);
-    let (_, high) = fontelle_ui::canvas::spectrum_band_hz(
-        fontelle_ui::canvas::SPECTRUM_BANDS - 1,
-    );
+    let (_, high) = fontelle_ui::canvas::spectrum_band_hz(fontelle_ui::canvas::SPECTRUM_BANDS - 1);
     assert!((low - fontelle_ui::canvas::EQ_MIN_HZ).abs() < 0.01);
     assert!((high - fontelle_ui::canvas::EQ_MAX_HZ).abs() < 1.0);
 }
@@ -965,3 +971,10 @@ fn an_effect_without_its_own_sections_is_still_one_group() {
     assert_eq!(view.groups.len(), 1);
     assert_eq!(view.groups[0].params.len(), config.specs().len());
 }
+
+// The two tests that lived here — "the panel marks the preset the knobs are
+// sitting on" and "an effect with no presets has no chosen one" — went with
+// the chip row (`docs/flopsynth-plan.md` §P.9). What replaced them is the
+// preset bar's own `*` rule, which is the same question asked of every device
+// rather than of three effects: `fontelle-ui/tests/preset_bar.rs` for the
+// drawing and `fontelle-app/tests/preset_bar.rs` for the recognising.

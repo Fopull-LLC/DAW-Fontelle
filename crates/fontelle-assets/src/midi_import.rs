@@ -348,7 +348,12 @@ fn to_project_ticks(midi_tick: u64, ticks_per_quarter: u32) -> Tick {
 /// `collect_notes` is what tells a survey from an import: a survey wants the
 /// counts and the names and nothing else, and building sixteen arenas of notes
 /// to throw them away is work nobody asked for.
-fn scan(smf: &Smf<'_>, ticks_per_quarter: u32, channels: MidiChannels, collect_notes: bool) -> Scan {
+fn scan(
+    smf: &Smf<'_>,
+    ticks_per_quarter: u32,
+    channels: MidiChannels,
+    collect_notes: bool,
+) -> Scan {
     let mut scan = Scan {
         ticks_per_quarter,
         tempo_events: Vec::new(),
@@ -572,14 +577,19 @@ pub fn read_midi(
         project.mixer.tracks[mixer_track].output = project.mixer.master;
 
         let channel = project.channels.insert(Channel {
+            preset: None,
             name: label.clone(),
             color: CHANNEL_COLOURS[midi_channel as usize % CHANNEL_COLOURS.len()],
+            // A `.mid` part is notes and a program number; what plays it is a
+            // soundfont, so that is what the row says it is.
+            instrument: Some(fontelle_types::InstrumentKind::SoundFont),
             // A MIDI file's parts really do each want a strip: the file
             // carries a CC7 per channel and that is a fader, so the importer
             // is the one caller that asks `AddChannel` for a track rather than
             // taking the master.
             mixer_track: Some(mixer_track),
             patch_data: None,
+            plugin: None,
             pan,
             muted: false,
             soloed: false,
@@ -676,5 +686,6 @@ fn push_note(notes: &mut Arena<NoteId, Note>, key: u8, start: &Pending, end: Tic
         mod_y: 0,
         // An imported note is an ordinary one: MIDI has no slide.
         slide: false,
+        channel: None,
     });
 }

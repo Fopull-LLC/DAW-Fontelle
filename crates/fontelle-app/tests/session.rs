@@ -15,6 +15,16 @@ use fontelle_ui::document::DocumentHost;
 
 const RATE: u32 = 48_000;
 
+/// Where these tests draw, in the demo clip's own ticks.
+///
+/// **Inside the clip**, which is not a detail: a clip's `length` is the
+/// window on its content (TDD §11.4), so a note written past the end does
+/// not sound. These two tests drew at beat eight of a three-and-a-half beat
+/// clip and passed for years by playing something the arrangement does not
+/// show — which is the behaviour the report *"clip endings don't actually
+/// cut the clip short audibly"* was about.
+const INSIDE_THE_CLIP: fontelle_types::Tick = PPQN;
+
 /// A session over the demo phrase, plus the RT thread's end of the channel.
 fn session() -> (Session, fontelle_engine::TimelineSource) {
     let project = demo_project(60, 120.0, RATE);
@@ -61,8 +71,8 @@ fn drawing_a_note_puts_it_in_the_document_and_on_the_timeline() {
         // Prime the channel with what the project already sounds like.
         session.edit(RollEdit::Add {
             note: Note {
-                start: PPQN * 8,
-                length: PPQN,
+                start: INSIDE_THE_CLIP,
+                length: PPQN / 2,
                 key: 72,
                 velocity: 100,
                 pan: 0,
@@ -71,6 +81,7 @@ fn drawing_a_note_puts_it_in_the_document_and_on_the_timeline() {
                 mod_x: 0,
                 mod_y: 0,
                 slide: false,
+                channel: None,
             },
         });
         source.current().events.len()
@@ -97,8 +108,8 @@ fn undo_takes_the_note_back_off_the_timeline_too() {
     let before = note_count(&session);
     session.edit(RollEdit::Add {
         note: Note {
-            start: PPQN * 8,
-            length: PPQN,
+            start: INSIDE_THE_CLIP,
+            length: PPQN / 2,
             key: 72,
             velocity: 100,
             pan: 0,
@@ -107,6 +118,7 @@ fn undo_takes_the_note_back_off_the_timeline_too() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     });
     let with_note = source.current().events.len();
@@ -143,6 +155,7 @@ fn redo_puts_it_back() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     });
     let with_note = source.current().events.len();
@@ -241,6 +254,7 @@ fn a_fresh_session_is_clean_and_an_edit_makes_it_dirty() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     });
     assert!(session.is_dirty(), "an edited project did not go dirty");
@@ -271,6 +285,7 @@ fn removing_a_note_takes_its_events_with_it() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     });
     let before = source.current().events.len();
@@ -280,5 +295,20 @@ fn removing_a_note_takes_its_events_with_it() {
     assert!(
         after < before,
         "deleting notes left their events on the timeline"
+    );
+}
+
+/// The roll shades the grid past the clip's end, so a note written out there
+/// is visibly outside rather than silently ignored — see TDD §11.4 and
+/// `canvas::roll_past_end`. The session is what knows how long the open clip
+/// is.
+#[test]
+fn the_session_says_how_long_the_open_clip_is() {
+    use fontelle_ui::document::DocumentHost;
+    let (session, _source) = session();
+    let clip = Session::first_clip(session.project()).expect("the demo has a clip");
+    assert_eq!(
+        session.clip_length(),
+        Some(session.project().clips[clip].length)
     );
 }

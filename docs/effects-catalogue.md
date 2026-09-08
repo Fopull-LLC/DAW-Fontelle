@@ -63,6 +63,11 @@ defect this project recorded.
     all of them would be a preset for nobody. The picker landed 2026-09-02 —
     a row of chips over the generic panel, one undo entry per click. Which
     effects ship them is a decision taken per effect and held by a test.
+    **Amended 2026-09-06** (`docs/flopsynth-plan.md` §P): presets become
+    *files* in a DAW-wide bank rather than constructors per effect, the
+    chip row becomes one preset bar on every window, and a preset's name
+    now persists on the device with a `*` for unsaved edits — "a preset is
+    not a parameter" stands; "nothing remembers which one" does not.
 11. **Sections.** An effect with more than about eight controls declares
     `sections()`, and the generic panel draws a heading per section rather
     than one grid. Drive / Voicing / Output is a layout a person can read;
@@ -102,7 +107,7 @@ thing that makes somebody choose the software.
 
 | Effect | Status | Priority | The family it has to be |
 |---|---|---|---|
-| **Parametric EQ** | built | P0 | Eight bands, eleven types, mid/side per band, analyser, mix. **To add:** per-band *dynamic* mode (threshold and range, so a band cuts only when its region is loud — the surgical version of Soften's shelf), band solo/listen, a spectrum *output* tap beside the input one, and a *linear-phase* switch for mastering (v2 — needs an FFT convolver and latency compensation, item 16 in `PROGRESS.md`). |
+| **Parametric EQ** | built | P0 | Eight bands, eleven types, mid/side per band, analyser, mix. **To add:** per-band *dynamic* mode (threshold and range, so a band cuts only when its region is loud — the surgical version of Soften's shelf), band solo/listen, a spectrum *output* tap beside the input one, and a *linear-phase* switch for mastering (v2 — needs an FFT convolver; the latency compensation it also needs is built, TDD §5.5). |
 | **Filter** | **new** | P0 | See §3.6. Eight shapes (LP/HP/BP at 12 and 24 dB, notch, peak), cutoff, resonance, drive before the filter, a signed envelope amount with its own attack and release, an LFO with six waves and a sync, output trim, mix. No key tracking: a filter that follows the note needs a note, and an insert on a bus does not have one. |
 | **Tilt EQ** | planned | P2 | One knob: pivot frequency and tilt in dB. A shelving pair that lifts one end as it lowers the other. Cheap, and the fastest "brighter/darker" there is. |
 | **Graphic EQ** | planned | P2 | Ten bands at ISO centres, ±12 dB. Not better than the parametric; different. Some people think in sliders. Built as ten bells with fixed Q. |
@@ -168,7 +173,11 @@ thing that makes somebody choose the software.
 - **An LFO / modulator effect that drives other effects' parameters.** That
   is the automation system's job (§12), or a mod matrix's, not an insert's.
   An insert that reaches across the graph to move another insert's knob is
-  the second addressing scheme §8.2 forbids.
+  the second addressing scheme §8.2 forbids. **The mod matrix is where that
+  job now lives**: Flopsynth's four LFOs and four envelopes reach every
+  per-voice destination in its own patch (`docs/flopsynth-plan.md` §3.6), and
+  its own effects chain is part of the patch — so "an LFO on a chorus" is a
+  route inside one instrument rather than one insert reaching for another.
 
 ---
 
@@ -307,8 +316,9 @@ menu.
   gate. 20 Hz is off.
 - `lookahead` — 0–10 ms. The audio is delayed and the decision is not, so the
   gate is already open when the transient that opened it arrives. It is
-  latency, and until the graph compensates for it (item 16 in `PROGRESS.md`)
-  it is latency paid on that track alone.
+  latency, and it is **compensated** since 2026-09-06: the graph holds every
+  other track back to meet it, and the insert delays its own dry path so a mix
+  below 100 % does not comb against it (TDD §5.5).
 
 *Envelope*
 - `attack`, `hold`, `release` — 0.05–100 ms, 0–500 ms, 5–5000 ms. Hold is what
@@ -558,5 +568,7 @@ the gate.
 
 **What is still open.** The ducker (§2.1) — a compressor with its knobs
 relabelled and its key exposed — and the vocoder's carrier are now unblocked
-and unwritten. A key on a track whose insert chain has latency is uncompensated
-like everything else (item 16 in `PROGRESS.md`).
+and unwritten. A key on a track whose insert chain has latency now
+arrives compensated like everything else (TDD §5.5); what a *key tap* reads is
+still the source track's bus at the point the tap sits, which is what a
+sidechain should hear.

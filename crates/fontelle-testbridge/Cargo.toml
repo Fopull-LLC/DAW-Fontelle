@@ -1,0 +1,15 @@
+[package]
+name = "fontelle-testbridge"
+description = "A bridge that hosts nothing but its own sine and gain, built only so fontelle-host's bridge loader has something real to load."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fontelle-bridge-abi = { path = "../fontelle-bridge-abi" }

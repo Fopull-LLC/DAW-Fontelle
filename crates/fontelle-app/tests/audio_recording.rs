@@ -19,7 +19,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use fontelle_app::{RealiseOptions, SampleLibrary, Session, blank_project};
+use fontelle_app::{RealiseOptions, SampleLibrary, Session};
 use fontelle_engine::{graph_channel, input_capture_channel, timeline_channel};
 use fontelle_model::ClipSource;
 use fontelle_types::CompiledTimeline;
@@ -40,7 +40,7 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 fn a_session(dir: &Path) -> Session {
-    let project = blank_project(8, 120.0, SR);
+    let project = common::a_project_with_a_clip(8, 120.0, SR);
     let clip = Session::first_clip(&project).expect("a blank project has one clip");
     let channel_nodes = fontelle_app::channel_nodes(&project);
     let (publisher, _timeline) = timeline_channel(CompiledTimeline::empty());
@@ -69,6 +69,36 @@ fn a_session(dir: &Path) -> Session {
     .with_settings_path(dir.join("settings.json"))
 }
 
+/// The same, **unsaved**: what `cargo run` with no arguments opens onto, and
+/// what somebody who has just started the studio is recording into.
+fn a_session_without_a_bundle(dir: &Path) -> Session {
+    let project = common::a_project_with_a_clip(8, 120.0, SR);
+    let clip = Session::first_clip(&project).expect("a blank project has one clip");
+    let channel_nodes = fontelle_app::channel_nodes(&project);
+    let (publisher, _timeline) = timeline_channel(CompiledTimeline::empty());
+    let library = SampleLibrary::new();
+    let options = RealiseOptions {
+        sample_rate: SR,
+        block_size: fontelle_engine::BLOCK_SIZE,
+        quality: fontelle_app::PLAYBACK_QUALITY,
+    };
+    let realised =
+        fontelle_app::realise(&project, &library, options).expect("an empty project must realise");
+    let (graphs, _source) = graph_channel(realised.graph);
+    Session::new(
+        project,
+        library,
+        channel_nodes,
+        publisher,
+        options,
+        clip,
+        None,
+    )
+    .with_graphs(graphs, realised.track_controls)
+    .with_param_nodes(realised.param_nodes)
+    .with_settings_path(dir.join("settings.json"))
+}
+
 /// A session with a take already in the ring, as a real input would have left
 /// one: half a second of a tone at 48 kHz, mono.
 fn with_a_take(session: &mut Session, frames: usize) {
@@ -88,7 +118,11 @@ fn the_record_button_remembers_what_it_was_told_to_record() {
     // somebody recording eight vocal takes should answer once.
     let dir = scratch("mode");
     let mut session = a_session(&dir);
-    assert_eq!(session.record_mode(), RecordMode::Notes, "it used to mean notes");
+    assert_eq!(
+        session.record_mode(),
+        RecordMode::Notes,
+        "it used to mean notes"
+    );
     session.set_record_mode(RecordMode::Audio);
     assert_eq!(session.record_mode(), RecordMode::Audio);
     std::fs::remove_dir_all(&dir).ok();
@@ -102,10 +136,17 @@ fn a_mixer_track_remembers_the_input_it_records_from() {
     let mut session = a_session(&dir);
     session.add_mixer_track();
     let strip = session.selected_mixer_track();
-    assert_eq!(session.track_input(strip), None, "a fresh track records nothing");
+    assert_eq!(
+        session.track_input(strip),
+        None,
+        "a fresh track records nothing"
+    );
 
     session.set_track_input(strip, Some("Scarlett Solo".to_string()));
-    assert_eq!(session.track_input(strip), Some("Scarlett Solo".to_string()));
+    assert_eq!(
+        session.track_input(strip),
+        Some("Scarlett Solo".to_string())
+    );
     // And it survives a save and an open, because it is a name and not a
     // handle: the same microphone is there tomorrow.
     let json = serde_json::to_string(session.project()).expect("serialisable");
@@ -136,7 +177,9 @@ fn a_take_becomes_an_audio_clip_on_the_arrangement() {
     with_a_take(&mut session, 24_000);
 
     let before = session.clips().len();
-    let frames = session.keep_audio_take(0, 24_000);
+    let frames = session
+        .keep_audio_take(0, 24_000)
+        .expect("the take was not kept");
     assert_eq!(frames, 24_000, "the take came back the wrong length");
 
     let clips = session.clips();
@@ -163,7 +206,9 @@ fn a_take_is_written_into_the_projects_own_recordings_folder() {
     let dir = scratch("folder");
     let mut session = a_session(&dir);
     with_a_take(&mut session, 4800);
-    session.keep_audio_take(0, 4800);
+    session
+        .keep_audio_take(0, 4800)
+        .expect("the take was not kept");
 
     let recordings = dir.join("Song.fontelle").join("recordings");
     let files: Vec<PathBuf> = std::fs::read_dir(&recordings)
@@ -171,10 +216,7 @@ fn a_take_is_written_into_the_projects_own_recordings_folder() {
         .filter_map(|e| e.ok().map(|e| e.path()))
         .collect();
     assert_eq!(files.len(), 1, "found {files:?}");
-    assert_eq!(
-        files[0].extension().and_then(|e| e.to_str()),
-        Some("wav")
-    );
+    assert_eq!(files[0].extension().and_then(|e| e.to_str()), Some("wav"));
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -185,15 +227,23 @@ fn a_second_take_does_not_overwrite_the_first() {
     let dir = scratch("second");
     let mut session = a_session(&dir);
     with_a_take(&mut session, 2400);
-    session.keep_audio_take(0, 2400);
+    session
+        .keep_audio_take(0, 2400)
+        .expect("the take was not kept");
     with_a_take(&mut session, 2400);
-    session.keep_audio_take(4800, 2400);
+    session
+        .keep_audio_take(4800, 2400)
+        .expect("the take was not kept");
 
     let recordings = dir.join("Song.fontelle").join("recordings");
     let count = std::fs::read_dir(&recordings).expect("exists").count();
     assert_eq!(count, 2);
     assert_eq!(
-        session.clips().iter().filter(|c| c.kind == ClipKind::Audio).count(),
+        session
+            .clips()
+            .iter()
+            .filter(|c| c.kind == ClipKind::Audio)
+            .count(),
         2
     );
     std::fs::remove_dir_all(&dir).ok();
@@ -205,10 +255,15 @@ fn a_take_lands_where_recording_started_rather_than_at_the_top_of_the_song() {
     let mut session = a_session(&dir);
     with_a_take(&mut session, 4800);
     let at = fontelle_types::PPQN * 8;
-    session.keep_audio_take(session.sample_of_song_tick(at), 4800);
+    session
+        .keep_audio_take(session.sample_of_song_tick(at), 4800)
+        .expect("the take was not kept");
 
     let clips = session.clips();
-    let clip = clips.iter().find(|c| c.kind == ClipKind::Audio).expect("a clip");
+    let clip = clips
+        .iter()
+        .find(|c| c.kind == ClipKind::Audio)
+        .expect("a clip");
     assert!((clip.start - at).abs() <= 2, "it landed at {}", clip.start);
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -225,13 +280,19 @@ fn a_take_is_routed_to_the_track_it_was_recorded_through() {
     session.set_record_mode(RecordMode::Audio);
     session.select_mixer_track(strip);
     with_a_take(&mut session, 2400);
-    session.keep_audio_take(0, 2400);
+    session
+        .keep_audio_take(0, 2400)
+        .expect("the take was not kept");
 
     let track = session.mixer_track_id(strip).expect("a real track");
-    let routed = session.project().clips.values().find_map(|clip| match &clip.source {
-        ClipSource::Audio(data) => Some(data.mixer_track),
-        _ => None,
-    });
+    let routed = session
+        .project()
+        .clips
+        .values()
+        .find_map(|clip| match &clip.source {
+            ClipSource::Audio(data) => Some(data.mixer_track),
+            _ => None,
+        });
     assert_eq!(routed, Some(Some(track)));
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -243,7 +304,7 @@ fn recording_nothing_at_all_makes_no_clip_and_no_file() {
     let dir = scratch("silence");
     let mut session = a_session(&dir);
     let before = session.clips().len();
-    assert_eq!(session.keep_audio_take(0, 0), 0);
+    assert_eq!(session.keep_audio_take(0, 0), Ok(0));
     assert_eq!(session.clips().len(), before);
     let recordings = dir.join("Song.fontelle").join("recordings");
     assert!(
@@ -260,7 +321,9 @@ fn a_take_is_one_undo_away_from_never_having_happened() {
     with_a_take(&mut session, 2400);
     let before = session.clips().len();
     let lanes = session.lanes().len();
-    session.keep_audio_take(0, 2400);
+    session
+        .keep_audio_take(0, 2400)
+        .expect("the take was not kept");
     assert_eq!(session.clips().len(), before + 1);
 
     session.undo();
@@ -280,10 +343,210 @@ fn a_take_plays_back_through_the_timeline_it_landed_on() {
     let dir = scratch("plays");
     let mut session = a_session(&dir);
     with_a_take(&mut session, 4800);
-    session.keep_audio_take(0, 4800);
+    session
+        .keep_audio_take(0, 4800)
+        .expect("the take was not kept");
 
     let timeline = session.compiled();
     assert_eq!(timeline.audio.len(), 1);
     assert!(timeline.audio[0].frames() > 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ------------------------------------------------- which track is armed ---
+
+#[test]
+fn the_track_that_names_an_input_is_the_one_that_records() {
+    // *"i go in the mixer make a new track ... then i click a input button."*
+    // Naming an input is the arming gesture; which strip happens to be
+    // selected afterwards is not, or moving a fader on another track would
+    // quietly redirect the next take.
+    let dir = scratch("armed");
+    let mut session = a_session(&dir);
+    session.add_mixer_track();
+    session.add_mixer_track();
+    let mic = session.selected_mixer_track();
+    session.set_track_input(mic, Some("whatever".to_string()));
+    // Somewhere else entirely by the time record is pressed.
+    session.select_mixer_track(0);
+    session.set_record_mode(RecordMode::Audio);
+    with_a_take(&mut session, 2400);
+    session
+        .keep_audio_take(0, 2400)
+        .expect("the take was not kept");
+
+    let track = session.mixer_track_id(mic).expect("a real track");
+    let routed = session
+        .project()
+        .clips
+        .values()
+        .find_map(|clip| match &clip.source {
+            ClipSource::Audio(data) => Some(data.mixer_track),
+            _ => None,
+        });
+    assert_eq!(routed, Some(Some(track)));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_input_the_session_wants_open_is_the_armed_tracks_own() {
+    // The device is opened because a track names one, not because record was
+    // pressed: *"i should be able to hear routed input playing even when song
+    // isnt playing or im not recording."*
+    let dir = scratch("wanted");
+    let mut session = a_session(&dir);
+    assert_eq!(
+        session.audio_input_wanted(),
+        None,
+        "a project where no track names an input must not open a microphone"
+    );
+
+    session.add_mixer_track();
+    let mic = session.selected_mixer_track();
+    session.set_track_input(mic, Some("Scarlett Solo".to_string()));
+    assert_eq!(
+        session.audio_input_wanted(),
+        Some("Scarlett Solo".to_string())
+    );
+
+    session.set_track_input(mic, None);
+    assert_eq!(
+        session.audio_input_wanted(),
+        None,
+        "clearing the input has to close the device"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------- a take you can actually hear ---
+
+#[test]
+fn a_take_from_a_track_that_goes_nowhere_lands_where_it_can_be_heard() {
+    // > *"for ease of use make it so that if the input track has no output
+    // > send it automatically will just route it to master for the clip you
+    // > record putting it on that mixer track instead of the one you recorded
+    // > on that way your recording will actually be audible after playing it
+    // > even if you werent using monitoring."*
+    let dir = scratch("audible");
+    let mut session = a_session(&dir);
+    session.add_mixer_track();
+    let mic = session.selected_mixer_track();
+    session.set_track_input(mic, Some("whatever".to_string()));
+    session.set_track_output_on(mic, false);
+    session.set_record_mode(RecordMode::Audio);
+    with_a_take(&mut session, 2400);
+    session
+        .keep_audio_take(0, 2400)
+        .expect("the take was not kept");
+
+    let routed = session
+        .project()
+        .clips
+        .values()
+        .find_map(|clip| match &clip.source {
+            ClipSource::Audio(data) => Some(data.mixer_track),
+            _ => None,
+        });
+    assert_eq!(
+        routed,
+        Some(None),
+        "a take on a track nobody can hear should have gone to the master"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_take_from_a_track_behind_a_bus_that_goes_nowhere_lands_on_the_master_too() {
+    // The switch is one hop; audibility is a walk. A mic feeding a group whose
+    // own output is off is exactly as inaudible as one switched off itself.
+    let dir = scratch("behind");
+    let mut session = a_session(&dir);
+    session.add_mixer_track();
+    let bus = session.selected_mixer_track();
+    session.add_mixer_track();
+    let mic = session.selected_mixer_track();
+    session.set_track_output(mic, Some(bus));
+    session.set_track_output_on(bus, false);
+    session.set_track_input(mic, Some("whatever".to_string()));
+    session.set_record_mode(RecordMode::Audio);
+    with_a_take(&mut session, 2400);
+    session
+        .keep_audio_take(0, 2400)
+        .expect("the take was not kept");
+
+    let routed = session
+        .project()
+        .clips
+        .values()
+        .find_map(|clip| match &clip.source {
+            ClipSource::Audio(data) => Some(data.mixer_track),
+            _ => None,
+        });
+    assert_eq!(routed, Some(None));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ------------------------------------------------ a take with no project ---
+
+#[test]
+fn a_take_with_nowhere_to_live_says_so_rather_than_saying_nothing_arrived() {
+    // Reported from using the window: *"when i record it was working at first
+    // until i pressed stop to finish the recording and the clip didint get
+    // made."* The studio had been started with no arguments, so there was no
+    // bundle to write the take into — and the window reported the refusal as
+    // *"nothing arrived on the input"*, which was untrue and unhelpful in
+    // equal measure. The reason is the return value now.
+    let dir = scratch("nowhere");
+    let mut session = a_session_without_a_bundle(&dir);
+    session.set_projects_dir(None);
+    with_a_take(&mut session, 4800);
+    let said = session
+        .keep_audio_take(0, 4800)
+        .expect_err("a take with nowhere to go must say so");
+    assert!(said.contains("projects"), "{said}");
+    assert!(
+        session.clips().iter().all(|c| c.kind != ClipKind::Audio),
+        "a take that could not be written must not become a clip"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_take_in_an_unsaved_studio_makes_the_project_real_and_keeps_the_take() {
+    // The other half of the same report. A projects folder is configured, so
+    // there *is* somewhere the user has named (INVARIANT 10): the take makes
+    // the project real — saved into that folder under its own name, the way
+    // the Projects tab's "New" does — and lands in it. Losing a take because
+    // nobody had pressed Ctrl+S yet is the wrong answer to a first recording.
+    let dir = scratch("unsaved");
+    let projects = dir.join("projects");
+    std::fs::create_dir_all(&projects).expect("creatable");
+    let mut session = a_session_without_a_bundle(&dir);
+    session.set_projects_dir(Some(projects.clone()));
+    assert!(
+        session.bundle_path().is_none(),
+        "the studio started unsaved"
+    );
+    with_a_take(&mut session, 4800);
+
+    let frames = session
+        .keep_audio_take(0, 4800)
+        .expect("the take was not kept");
+    assert_eq!(frames, 4800);
+    assert_eq!(
+        session
+            .clips()
+            .iter()
+            .filter(|c| c.kind == ClipKind::Audio)
+            .count(),
+        1
+    );
+    let bundle = session
+        .bundle_path()
+        .expect("the take made the project real");
+    assert_eq!(bundle.parent(), Some(projects.as_path()));
+    assert!(bundle.join("recordings").join("Take 1.wav").is_file());
+    // And it is a project the Projects tab lists, not a folder of one file.
+    assert!(bundle.join("project.json").is_file());
     std::fs::remove_dir_all(&dir).ok();
 }

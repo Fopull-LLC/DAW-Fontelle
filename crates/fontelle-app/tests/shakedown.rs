@@ -24,7 +24,7 @@ mod common;
 
 use std::path::PathBuf;
 
-use fontelle_app::{RealiseOptions, SampleLibrary, Session, blank_project};
+use fontelle_app::{RealiseOptions, SampleLibrary, Session};
 use fontelle_assets::fixtures::{
     GEN_KEY_RANGE, GEN_OVERRIDING_ROOT_KEY, GEN_SAMPLE_MODES, Sf2Fixture, ZoneSpec, build_sf2,
     gen_range, gen_val,
@@ -83,7 +83,7 @@ fn options() -> RealiseOptions {
 /// A session over a blank project, with a bank and a projects folder — the
 /// window's state on a first run, minus the window.
 fn studio(bank: &std::path::Path, projects: &std::path::Path) -> Session {
-    let project = blank_project(8, 120.0, SR);
+    let project = common::a_project_with_a_clip(8, 120.0, SR);
     let clip = Session::first_clip(&project).expect("a blank project has one clip");
     let channel_nodes = fontelle_app::channel_nodes(&project);
     let (publisher, _timeline) = timeline_channel(CompiledTimeline::empty());
@@ -229,17 +229,41 @@ fn a_whole_piece_made_the_way_a_person_makes_one() {
     assert_eq!(routes[1].route, Some(0), "the piano goes to Keys");
     assert_eq!(routes[2].route, Some(1), "the bass goes to Low");
 
-    // --- 5. Clips on the arrangement, drawn rather than inherited.
+    // --- 5. Clips on the arrangement, drawn rather than inherited. A
+    // channel is an instrument, not a row: the row is added by hand, and so
+    // is **every clip on it** — a new project arrives with an empty
+    // arrangement now (`tests/starting_project.rs`), so the first block in
+    // this piece is drawn here rather than found lying there.
+    let keys_clip = s.arrange(ArrangeEdit::Add { lane: 0, start: 0 });
+    assert_eq!(
+        keys_clip.clips.len(),
+        1,
+        "the draw tool makes exactly one clip"
+    );
+    let first = *keys_clip.clips.first().expect("just drawn");
+    // Four bars long, so there is room for the one-bar loop that step 7 sets
+    // on it. The draw tool puts down a bar; stretching it is the other half
+    // of the gesture and the half a person does with the mouse.
+    s.arrange(ArrangeEdit::Resize {
+        ids: vec![first],
+        tick_delta: PPQN * 12,
+    });
+    s.end_gesture();
+
+    s.add_lane();
     let lanes = s.lanes().len();
-    assert!(lanes >= 2, "a lane per channel to draw on");
+    assert!(lanes >= 2, "a row to draw the bass on");
     let bass_clip = s.arrange(ArrangeEdit::Add {
         lane: 1,
         start: PPQN * 12,
     });
-    assert_eq!(bass_clip.clips.len(), 1, "the draw tool makes exactly one clip");
+    assert_eq!(
+        bass_clip.clips.len(),
+        1,
+        "the draw tool makes exactly one clip"
+    );
 
     // --- 6. Notes in each, with the properties that took until today to hear.
-    let first = s.clips()[0].id;
     s.open_clip(first);
     let mut written = Vec::new();
     for (index, key) in [60u8, 64, 67, 72].into_iter().enumerate() {
@@ -255,6 +279,7 @@ fn a_whole_piece_made_the_way_a_person_makes_one() {
                 mod_x: 0,
                 mod_y: 0,
                 slide: false,
+                channel: None,
             },
         });
         s.end_gesture();
@@ -385,7 +410,10 @@ fn undoing_the_whole_session_gets_back_to_where_it_started() {
     let mut s = studio(&bank, &projects);
     s.new_project().unwrap();
 
-    let clip = s.clips()[0].id;
+    // Drawn, because a new project's arrangement is empty: what this test
+    // undoes has to include putting the clip there in the first place.
+    let drawn = s.arrange(ArrangeEdit::Add { lane: 0, start: 0 });
+    let clip = *drawn.clips.first().expect("the draw tool makes one clip");
     s.open_clip(clip);
 
     /// Everything a person would notice had changed. The tempo as bits so the
@@ -428,6 +456,7 @@ fn undoing_the_whole_session_gets_back_to_where_it_started() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     });
     s.end_gesture();
@@ -507,13 +536,11 @@ fn the_piece_you_made_is_audible_in_the_file_you_rendered() {
     s.open_file(piano).unwrap();
     s.add_channel_with(0).unwrap();
 
-    // Onto the channel that has the instrument, not the blank one that came
-    // with the project.
-    let clip = s
-        .clips()
-        .last()
-        .map(|c| c.id)
-        .expect("the new channel brought a clip");
+    // A clip drawn onto the arrangement by hand, then opened. Adding a
+    // channel makes an *instrument* and nothing else — no row, no block —
+    // so the block this piece is written into is one this test puts there.
+    let drawn = s.arrange(ArrangeEdit::Add { lane: 0, start: 0 });
+    let clip = *drawn.clips.first().expect("the draw tool makes one clip");
     s.open_clip(clip);
     for (index, key) in [60u8, 64, 67].into_iter().enumerate() {
         s.edit(RollEdit::Add {
@@ -528,6 +555,7 @@ fn the_piece_you_made_is_audible_in_the_file_you_rendered() {
                 mod_x: 0,
                 mod_y: 0,
                 slide: false,
+                channel: None,
             },
         });
         s.end_gesture();

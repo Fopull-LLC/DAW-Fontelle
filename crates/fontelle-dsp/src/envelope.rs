@@ -66,6 +66,60 @@ pub struct EnvelopeConfig {
     pub sustain_level: f32,
     pub release_s: f32,
     pub curve: EnvelopeCurve,
+    /// How the rising stage is bent, −1..=1. `0` is the straight line every
+    /// envelope had before shapes existed, which is why it is the default and
+    /// why a patch written without these reads exactly as it did.
+    ///
+    /// A **power curve on the stage's progress**, `t^(2^(2·shape))`: negative
+    /// is fast then flattening, positive is slow then accelerating. Crucially
+    /// it bends the *path* and not the *duration* — a 300 ms decay takes
+    /// 300 ms at every shape, which is what makes the shape knob and the time
+    /// knob two different knobs.
+    ///
+    /// This is a different mechanism from [`EnvelopeCurve`], which is about
+    /// the *unit* a stage travels in. `Decibel`'s reading of a stage time as
+    /// "the time to travel 100 dB" is right for SF2 and confusing under a
+    /// shape knob, so Flopsynth's envelopes use `Linear` with shapes and the
+    /// imported ones keep `Decibel` — see `Patch::flopsynth_init`.
+    #[serde(default)]
+    pub attack_shape: f32,
+    #[serde(default)]
+    pub decay_shape: f32,
+    #[serde(default)]
+    pub release_shape: f32,
+}
+
+impl Default for EnvelopeConfig {
+    /// An envelope that is open the instant a note starts and shuts the
+    /// instant it ends: the identity, so that a caller filling in one field
+    /// gets nothing else it did not ask for.
+    fn default() -> Self {
+        Self {
+            delay_s: 0.0,
+            attack_s: 0.0,
+            hold_s: 0.0,
+            decay_s: 0.0,
+            sustain_level: 1.0,
+            release_s: 0.0,
+            curve: EnvelopeCurve::Linear,
+            attack_shape: 0.0,
+            decay_shape: 0.0,
+            release_shape: 0.0,
+        }
+    }
+}
+
+/// Bends `t` (a stage's progress, 0..1) by `shape` (−1..=1).
+///
+/// An identity at shape 0, and at `t` of 0 and 1 whatever the shape — a stage
+/// still starts where it started and ends where it ends, or the shape knob
+/// would be a level knob as well.
+pub fn shape_progress(t: f32, shape: f32) -> f32 {
+    let shape = shape.clamp(-1.0, 1.0);
+    if shape == 0.0 {
+        return t;
+    }
+    t.clamp(0.0, 1.0).powf(2f32.powf(2.0 * shape))
 }
 
 /// A single multi-stage envelope generator. Every field of `EnvelopeConfig` is a
@@ -207,23 +261,33 @@ impl EnvelopeGenerator {
 
         self.level = match stage {
             EnvelopeStage::Delay => 0.0,
-            EnvelopeStage::Attack => t,
+            EnvelopeStage::Attack => shape_progress(t, config.attack_shape),
             EnvelopeStage::Hold => 1.0,
-            EnvelopeStage::Decay => match config.curve {
-                EnvelopeCurve::Linear => 1.0 + (config.sustain_level - 1.0) * t,
-                // Linear in dB from 0 dB to the sustain level is exactly
-                // `sustain^t` — the floor keeps a sustain of zero from
-                // collapsing the whole stage to silence on its first sample.
-                EnvelopeCurve::Decibel => config.sustain_level.clamp(MIN_LEVEL, 1.0).powf(t),
-            },
-            EnvelopeStage::Release => match config.curve {
-                EnvelopeCurve::Linear => self.release_start_level * (1.0 - t),
-                EnvelopeCurve::Decibel => {
-                    let span_db = (level_to_db(self.release_start_level) + DECIBEL_SPAN_DB)
-                        .clamp(0.0, DECIBEL_SPAN_DB);
-                    self.release_start_level * db_to_level(-span_db * t)
+            EnvelopeStage::Decay => {
+                // The shape bends the *progress*, so it composes with the
+                // curve rather than replacing it: a decibel decay with a shape
+                // on it is still a decibel decay, taken at a different rate
+                // through the same span.
+                let t = shape_progress(t, config.decay_shape);
+                match config.curve {
+                    EnvelopeCurve::Linear => 1.0 + (config.sustain_level - 1.0) * t,
+                    // Linear in dB from 0 dB to the sustain level is exactly
+                    // `sustain^t` — the floor keeps a sustain of zero from
+                    // collapsing the whole stage to silence on its first sample.
+                    EnvelopeCurve::Decibel => config.sustain_level.clamp(MIN_LEVEL, 1.0).powf(t),
                 }
-            },
+            }
+            EnvelopeStage::Release => {
+                let t = shape_progress(t, config.release_shape);
+                match config.curve {
+                    EnvelopeCurve::Linear => self.release_start_level * (1.0 - t),
+                    EnvelopeCurve::Decibel => {
+                        let span_db = (level_to_db(self.release_start_level) + DECIBEL_SPAN_DB)
+                            .clamp(0.0, DECIBEL_SPAN_DB);
+                        self.release_start_level * db_to_level(-span_db * t)
+                    }
+                }
+            }
             EnvelopeStage::Sustain | EnvelopeStage::Idle => unreachable!("handled above"),
         };
 
@@ -250,6 +314,7 @@ mod tests {
             sustain_level: 0.5,
             release_s: 0.05,
             curve: EnvelopeCurve::Linear,
+            ..Default::default()
         }
     }
     const SR: f32 = 1000.0;
@@ -376,6 +441,7 @@ mod tests {
             sustain_level: 1.0,
             release_s: 0.0,
             curve: EnvelopeCurve::Linear,
+            ..Default::default()
         };
         let mut env = EnvelopeGenerator::new();
         env.note_on();

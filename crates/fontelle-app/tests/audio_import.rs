@@ -13,7 +13,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use fontelle_app::{RealiseOptions, SampleLibrary, Session, blank_project};
+use fontelle_app::{RealiseOptions, SampleLibrary, Session};
 use fontelle_assets::fixtures::build_wav;
 use fontelle_engine::{graph_channel, timeline_channel};
 use fontelle_model::ClipSource;
@@ -34,7 +34,7 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 fn a_session(dir: &Path) -> Session {
-    let project = blank_project(8, 120.0, SR);
+    let project = common::a_project_with_a_clip(8, 120.0, SR);
     let clip = Session::first_clip(&project).expect("a blank project has one clip");
     let channel_nodes = fontelle_app::channel_nodes(&project);
     let (publisher, _timeline) = timeline_channel(CompiledTimeline::empty());
@@ -47,10 +47,18 @@ fn a_session(dir: &Path) -> Session {
     let realised =
         fontelle_app::realise(&project, &library, options).expect("an empty project must realise");
     let (graphs, _source) = graph_channel(realised.graph);
-    Session::new(project, library, channel_nodes, publisher, options, clip, None)
-        .with_graphs(graphs, realised.track_controls)
-        .with_param_nodes(realised.param_nodes)
-        .with_settings_path(dir.join("settings.json"))
+    Session::new(
+        project,
+        library,
+        channel_nodes,
+        publisher,
+        options,
+        clip,
+        None,
+    )
+    .with_graphs(graphs, realised.track_controls)
+    .with_param_nodes(realised.param_nodes)
+    .with_settings_path(dir.join("settings.json"))
 }
 
 /// Half a second of a 220 Hz tone, written where a drop can find it.
@@ -72,7 +80,9 @@ fn dropping_a_sound_on_the_window_puts_it_on_the_arrangement() {
     let mut session = a_session(&dir);
     let before = session.clips().len();
 
-    let said = session.drop_file(&path).expect("a wav is something Fontelle opens");
+    let said = session
+        .drop_file(&path)
+        .expect("a wav is something Fontelle opens");
     assert!(said.contains("Vocal"), "it said {said:?}");
 
     let clips = session.clips();
@@ -81,7 +91,10 @@ fn dropping_a_sound_on_the_window_puts_it_on_the_arrangement() {
         .iter()
         .find(|c| c.kind == ClipKind::Audio)
         .expect("no audio clip arrived");
-    assert_eq!(clip.name, "Vocal", "a take is captioned with the file it came from");
+    assert_eq!(
+        clip.name, "Vocal",
+        "a take is captioned with the file it came from"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -97,8 +110,14 @@ fn a_dropped_sound_arrives_with_its_waveform_already_drawn() {
     session.drop_file(&path).expect("imports");
 
     let clips = session.clips();
-    let clip = clips.iter().find(|c| c.kind == ClipKind::Audio).expect("a clip");
-    assert!(!clip.audio.peaks.is_empty(), "the block has no waveform in it");
+    let clip = clips
+        .iter()
+        .find(|c| c.kind == ClipKind::Audio)
+        .expect("a clip");
+    assert!(
+        !clip.audio.peaks.is_empty(),
+        "the block has no waveform in it"
+    );
     let loudest = clip
         .audio
         .peaks
@@ -120,7 +139,10 @@ fn a_dropped_sound_is_as_long_on_the_arrangement_as_it_is_in_seconds() {
     session.drop_file(&path).expect("imports");
 
     let clips = session.clips();
-    let clip = clips.iter().find(|c| c.kind == ClipKind::Audio).expect("a clip");
+    let clip = clips
+        .iter()
+        .find(|c| c.kind == ClipKind::Audio)
+        .expect("a clip");
     assert!(
         (clip.length - fontelle_types::PPQN).abs() <= 2,
         "half a second at 120 bpm is one beat, got {} ticks",
@@ -134,8 +156,12 @@ fn a_dropped_sound_lands_on_a_row_of_its_own_rather_than_over_what_is_there() {
     let dir = scratch("row");
     let mut session = a_session(&dir);
     let lanes_before = session.lanes().len();
-    session.drop_file(&a_take(&dir, "One.wav")).expect("imports");
-    session.drop_file(&a_take(&dir, "Two.wav")).expect("imports");
+    session
+        .drop_file(&a_take(&dir, "One.wav"))
+        .expect("imports");
+    session
+        .drop_file(&a_take(&dir, "Two.wav"))
+        .expect("imports");
 
     assert_eq!(session.lanes().len(), lanes_before + 2, "they shared a row");
     let clips = session.clips();
@@ -155,12 +181,18 @@ fn a_dropped_sound_is_one_undo_away_from_never_having_happened() {
     let mut session = a_session(&dir);
     let before = session.clips().len();
     let lanes = session.lanes().len();
-    session.drop_file(&a_take(&dir, "Oops.wav")).expect("imports");
+    session
+        .drop_file(&a_take(&dir, "Oops.wav"))
+        .expect("imports");
     assert_eq!(session.clips().len(), before + 1);
 
     session.undo();
     assert_eq!(session.clips().len(), before, "the clip is still there");
-    assert_eq!(session.lanes().len(), lanes, "the row it made is still there");
+    assert_eq!(
+        session.lanes().len(),
+        lanes,
+        "the row it made is still there"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -170,8 +202,13 @@ fn a_file_that_is_not_a_sound_still_says_what_fontelle_reads() {
     let path = dir.join("notes.txt");
     std::fs::write(&path, b"nope").expect("writable");
     let mut session = a_session(&dir);
-    let err = session.drop_file(&path).expect_err("a text file is not a sound");
-    assert!(err.contains(".wav"), "the message does not mention audio: {err}");
+    let err = session
+        .drop_file(&path)
+        .expect_err("a text file is not a sound");
+    assert!(
+        err.contains(".wav"),
+        "the message does not mention audio: {err}"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -200,7 +237,9 @@ fn a_dropped_sound_reaches_the_compiled_timeline() {
     // perfectly, is routed nowhere, and makes no sound with no error anywhere.
     let dir = scratch("timeline");
     let mut session = a_session(&dir);
-    session.drop_file(&a_take(&dir, "Take.wav")).expect("imports");
+    session
+        .drop_file(&a_take(&dir, "Take.wav"))
+        .expect("imports");
 
     let timeline = session.compiled();
     assert_eq!(
@@ -216,7 +255,9 @@ fn a_dropped_sound_reaches_the_compiled_timeline() {
 fn the_clip_names_a_source_the_graph_can_actually_play() {
     let dir = scratch("store");
     let mut session = a_session(&dir);
-    session.drop_file(&a_take(&dir, "Take.wav")).expect("imports");
+    session
+        .drop_file(&a_take(&dir, "Take.wav"))
+        .expect("imports");
 
     let asset = session
         .project()
@@ -243,7 +284,9 @@ fn the_editor_reads_a_clips_properties_and_writes_them_back() {
     // reads but does not write is an editor whose knobs do nothing.
     let dir = scratch("edit");
     let mut session = a_session(&dir);
-    session.drop_file(&a_take(&dir, "Take.wav")).expect("imports");
+    session
+        .drop_file(&a_take(&dir, "Take.wav"))
+        .expect("imports");
     let id = session
         .clips()
         .iter()
@@ -257,6 +300,7 @@ fn the_editor_reads_a_clips_properties_and_writes_them_back() {
     data.fade_in = fontelle_types::Fade {
         frames: 4800,
         curve: fontelle_types::FadeCurve::SCurve,
+        tension: 0.0,
     };
     session.set_audio_clip(id, data);
 
@@ -274,7 +318,9 @@ fn the_editor_knows_the_rate_the_file_was_recorded_at() {
     // What lets a fade read in milliseconds rather than in frames.
     let dir = scratch("rate");
     let mut session = a_session(&dir);
-    session.drop_file(&a_take(&dir, "Take.wav")).expect("imports");
+    session
+        .drop_file(&a_take(&dir, "Take.wav"))
+        .expect("imports");
     let id = session
         .clips()
         .iter()

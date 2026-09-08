@@ -31,11 +31,13 @@ pub struct BrowserLayout {
     /// tab's "Change..." replaced the soundfont bank for exactly that reason.
     /// See [`BrowserHit::ChooseFolder`].
     pub mode: BrowserMode,
-    /// The four mode tabs, across the top. See [`BrowserMode`].
-    pub sounds_tab: Rect,
-    pub projects_tab: Rect,
-    pub import_tab: Rect,
-    pub settings_tab: Rect,
+    /// The mode tabs, across the top, in [`BrowserMode::ALL`]'s order.
+    ///
+    /// **One list rather than a field per mode**, which is the same lesson
+    /// `BrowserMode::ALL` records one level up: a mode missing from a field
+    /// list is a tab with no words on it, and adding the fifth (Presets, §P.8)
+    /// is now a variant and nothing else.
+    pub tabs: Vec<(BrowserMode, Rect)>,
     /// A button per kind inside the Import tab, saying which one is being
     /// browsed, in `FolderKind::ALL`'s order. **Empty in every other mode** —
     /// a control that does nothing in the mode you are in is worse than one
@@ -52,6 +54,12 @@ pub struct BrowserLayout {
     pub files: Rect,
     pub file_rows: Vec<(usize, Rect)>,
     /// The presets inside the selected file.
+    /// The grab strip between the two lists — see [`browser_file_share_at`].
+    ///
+    /// Empty in every mode but [`BrowserMode::Sounds`], which is the only one
+    /// with two lists to divide. *"give it a knob i can drag in the middle to
+    /// make whichever one i want bigger whenever i want."*
+    pub seam: Rect,
     pub presets: Rect,
     pub preset_rows: Vec<(usize, Rect)>,
     /// One line saying where the bank is, or what just went wrong.
@@ -81,6 +89,16 @@ pub struct BrowserLayout {
 /// Slightly in the files' favour: you scan a collection to find a file, and
 /// then read a shortish list of presets inside it.
 const FILE_SHARE: f32 = 0.55;
+
+/// How few rows either list may be squeezed to by the seam.
+///
+/// Not zero: a list dragged away to nothing takes the seam with it, and then
+/// there is nothing left to grab to bring it back. Two rows is enough to see
+/// that something is there and enough to aim at.
+const MIN_LIST_ROWS: f32 = 2.0;
+
+/// How tall the grab strip between the lists is.
+const SEAM_PX: f32 = 6.0;
 
 /// What the browser panel is showing.
 ///
@@ -114,6 +132,14 @@ pub enum BrowserMode {
     /// second one was added: it is reached for occasionally and never at the
     /// same time as the other two.
     Settings,
+    /// Every preset on this machine, for every device
+    /// (`docs/flopsynth-plan.md` §P.8).
+    ///
+    /// A fifth mode rather than a list inside one of the others, because a
+    /// preset is something you go looking for the way you go looking for a
+    /// soundfont — and everything a browser of those needs is already here:
+    /// two lists, a search across the whole collection, a star on every row.
+    Presets,
 }
 
 impl BrowserMode {
@@ -123,7 +149,13 @@ impl BrowserMode {
     /// the window shapes a caption per tab and the renderer draws one per tab,
     /// and a mode missing from either is a tab with **no words on it** — which
     /// is exactly what the Import tab was on the first frame it ever drew.
-    pub const ALL: [Self; 4] = [Self::Sounds, Self::Projects, Self::Import, Self::Settings];
+    pub const ALL: [Self; 5] = [
+        Self::Sounds,
+        Self::Presets,
+        Self::Projects,
+        Self::Import,
+        Self::Settings,
+    ];
 
     /// What the tab says.
     pub fn label(self) -> &'static str {
@@ -132,6 +164,7 @@ impl BrowserMode {
             Self::Projects => "Projects",
             Self::Import => "Import",
             Self::Settings => "Settings",
+            Self::Presets => "Presets",
         }
     }
 }
@@ -166,6 +199,33 @@ pub fn browser_layout_for(
     file_scroll: usize,
     preset_scroll: usize,
 ) -> BrowserLayout {
+    browser_layout_split(
+        body,
+        metrics,
+        mode,
+        file_count,
+        preset_count,
+        file_scroll,
+        preset_scroll,
+        None,
+    )
+}
+
+/// [`browser_layout_for`], with the seam between the two lists dragged to
+/// `file_share` of the room they share.
+///
+/// `None` is [`FILE_SHARE`], which is where it sits until somebody moves it.
+#[allow(clippy::too_many_arguments)]
+pub fn browser_layout_split(
+    body: Rect,
+    metrics: &Metrics,
+    mode: BrowserMode,
+    file_count: usize,
+    preset_count: usize,
+    file_scroll: usize,
+    preset_scroll: usize,
+    file_share: Option<f32>,
+) -> BrowserLayout {
     // The mode switch first, above the search box: the search filters
     // whichever list is showing, so it belongs *under* the thing that decides
     // which list that is.
@@ -174,24 +234,33 @@ pub fn browser_layout_for(
     let panel = body;
     let tabs_height = metrics.row_height.min(body.height.max(0.0));
     let (tabs, body_below) = body.split_top(tabs_height);
-    // Four across, each the same width. Laid out from a running left edge
-    // rather than each from its own multiple, so the rounding that a width of
-    // 248 divided four ways produces lands in one place instead of opening a
+    // One across per mode, each the same width. Laid out from a running left
+    // edge rather than each from its own multiple, so the rounding a sidebar
+    // width divided five ways produces lands in one place instead of opening a
     // gap between every pair.
-    let quarter = (tabs.width - GAP * 3.0).max(0.0) / 4.0;
-    let tab_at = |index: usize| {
-        Rect::new(
-            tabs.x + (quarter + GAP) * index as f32,
-            tabs.y,
-            quarter,
-            tabs.height,
-        )
-        .clamped()
-    };
-    let sounds_tab = tab_at(0);
-    let projects_tab = tab_at(1);
-    let import_tab = tab_at(2);
-    let settings_tab = tab_at(3);
+    let count = BrowserMode::ALL.len();
+    let share = (tabs.width - GAP * (count.saturating_sub(1)) as f32).max(0.0) / count as f32;
+    let tabs: Vec<(BrowserMode, Rect)> = BrowserMode::ALL
+        .into_iter()
+        .enumerate()
+        .map(|(index, mode)| {
+            (
+                mode,
+                // Clipped to the strip, not merely clamped: five shares of a
+                // sidebar's width do not add back up to it exactly, and a tab
+                // a hundred-thousandth of a pixel past the edge is still a tab
+                // outside the panel.
+                Rect::new(
+                    tabs.x + (share + GAP) * index as f32,
+                    tabs.y,
+                    share,
+                    tabs.height,
+                )
+                .intersection(&tabs)
+                .clamped(),
+            )
+        })
+        .collect();
     let (_gap, body) = body_below.split_top(GAP.min(body_below.height.max(0.0)));
 
     // **No search box over the settings.** It filters whichever list is
@@ -307,17 +376,32 @@ pub fn browser_layout_for(
     };
     // A project has no presets inside it, so in that mode the one list takes
     // the whole area rather than half of it being left empty.
-    let (files, presets) = match mode {
+    let (files, seam, presets) = match mode {
         BrowserMode::Projects | BrowserMode::Settings | BrowserMode::Import => (
             Rect::new(lists.x, lists.y, lists.width, whole(lists.height)).clamped(),
             Rect::ZERO,
+            Rect::ZERO,
         ),
-        BrowserMode::Sounds => {
-            let files_height = whole(lists.height * FILE_SHARE);
+        // Two lists, and the same two: devices above, their presets below
+        // (§P.8). Reusing the shape rather than inventing one is most of why
+        // the Presets tab is a variant and not a panel.
+        BrowserMode::Sounds | BrowserMode::Presets => {
+            // What is left for the two lists once the seam has taken its
+            // strip: the seam is *between* them rather than over either, so a
+            // press on it can never also be a press on a row.
+            let seam_height = SEAM_PX.min(lists.height.max(0.0));
+            let shared = (lists.height - seam_height).max(0.0);
+            // Both floors measured against what there is, so a panel too short
+            // for four rows gives what it can instead of going negative.
+            let floor = (metrics.row_height * MIN_LIST_ROWS).min(shared / 2.0);
+            let wanted = shared * file_share.unwrap_or(FILE_SHARE).clamp(0.0, 1.0);
+            let files_height = whole(wanted.clamp(floor, (shared - floor).max(floor)));
             let (files, under_files) = lists.split_top(files_height);
-            let (_gap, rest_of_lists) = under_files.split_top(GAP.min(under_files.height.max(0.0)));
+            let (seam, rest_of_lists) =
+                under_files.split_top(seam_height.min(under_files.height.max(0.0)));
             (
                 files,
+                seam,
                 Rect::new(
                     rest_of_lists.x,
                     rest_of_lists.y,
@@ -330,21 +414,19 @@ pub fn browser_layout_for(
     };
     let preset_count = match mode {
         BrowserMode::Projects | BrowserMode::Settings | BrowserMode::Import => 0,
-        BrowserMode::Sounds => preset_count,
+        BrowserMode::Sounds | BrowserMode::Presets => preset_count,
     };
 
     BrowserLayout {
         body: panel,
         mode,
-        sounds_tab,
-        projects_tab,
-        import_tab,
-        settings_tab,
+        tabs,
         kinds,
         search,
         file_rows: rows(files, metrics, file_count, file_scroll),
         files,
         preset_rows: rows(presets, metrics, preset_count, preset_scroll),
+        seam,
         presets,
         status,
         open_folder,
@@ -406,6 +488,8 @@ pub(crate) fn rows(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowserHit {
+    /// The strip between the bank and its presets, which drags to divide them.
+    Seam,
     /// Switch the panel to this mode.
     Mode(BrowserMode),
     /// Give the search box the keyboard. It filters whichever list is
@@ -447,6 +531,12 @@ impl BrowserHit {
             Self::Mode(BrowserMode::Projects) => "Your projects folder",
             Self::Mode(BrowserMode::Import) => "Sounds, MIDI files and FL scores to bring in",
             Self::Mode(BrowserMode::Settings) => "How Fontelle is set up",
+            Self::Mode(BrowserMode::Presets) => "Every preset, for every device",
+            Self::Search(BrowserMode::Presets) => "Search every preset by name",
+            Self::OpenFolder(BrowserMode::Presets) => {
+                "Show your own preset folder in your file manager"
+            }
+            Self::ChooseFolder(BrowserMode::Presets) => "Use a different preset folder",
             Self::Search(BrowserMode::Import) => "Search every file in the folder by name",
             Self::OpenFolder(BrowserMode::Import) => "Show the import folder in your file manager",
             Self::ChooseFolder(BrowserMode::Import) => "Choose the folder to import from",
@@ -472,23 +562,31 @@ impl BrowserHit {
             Self::ChooseFolder(BrowserMode::Settings) => "Use a different folder",
             Self::NewProject => "Start a new project",
             Self::Export => "Bounce this project to a WAV",
+            Self::Seam => "Drag to divide the bank and its presets",
             Self::File(_) | Self::Preset(_) | Self::Nothing => return None,
         })
     }
 }
 
+impl BrowserLayout {
+    /// Where one mode's tab is, or [`Rect::ZERO`] if it did not fit.
+    ///
+    /// Named rather than indexed, so a caller says which tab it means and
+    /// cannot be off by one when a mode is added between two others.
+    pub fn tab(&self, mode: BrowserMode) -> Rect {
+        self.tabs
+            .iter()
+            .find(|(which, _)| *which == mode)
+            .map(|(_, rect)| *rect)
+            .unwrap_or(Rect::ZERO)
+    }
+}
+
 pub fn browser_hit(layout: &BrowserLayout, x: f32, y: f32) -> BrowserHit {
-    if layout.sounds_tab.contains(x, y) {
-        return BrowserHit::Mode(BrowserMode::Sounds);
-    }
-    if layout.projects_tab.contains(x, y) {
-        return BrowserHit::Mode(BrowserMode::Projects);
-    }
-    if layout.import_tab.contains(x, y) {
-        return BrowserHit::Mode(BrowserMode::Import);
-    }
-    if layout.settings_tab.contains(x, y) {
-        return BrowserHit::Mode(BrowserMode::Settings);
+    for (mode, rect) in &layout.tabs {
+        if rect.contains(x, y) {
+            return BrowserHit::Mode(*mode);
+        }
     }
     for (kind, rect) in &layout.kinds {
         if rect.contains(x, y) {
@@ -503,6 +601,11 @@ pub fn browser_hit(layout: &BrowserLayout, x: f32, y: f32) -> BrowserHit {
     }
     if layout.search.contains(x, y) {
         return BrowserHit::Search(layout.mode);
+    }
+    // Before the lists, because it sits in the gap between them and a strip
+    // that lost to a row would be a strip nobody can grab.
+    if !layout.seam.is_empty() && layout.seam.contains(x, y) {
+        return BrowserHit::Seam;
     }
     // The footer before the lists: it is drawn over the bottom of them when the
     // panel is short, and what is on top is what was clicked.
@@ -557,4 +660,108 @@ pub fn scrolled(scroll: usize, by: i32, count: usize) -> usize {
     } else {
         (scroll + by as usize).min(last)
     }
+}
+
+/// What share of the two lists the bank should get for a seam dragged to `y`.
+///
+/// The browser's own [`crate::layout::rack_share_at`]: pure, so "it cannot be
+/// dragged until one list has no rows left" is a test rather than something to
+/// find out by doing it. Clamped to 0..=1; the layout applies the row floors,
+/// since only it knows how tall a row is.
+pub fn browser_file_share_at(layout: &BrowserLayout, y: f32) -> f32 {
+    let top = layout.files.y;
+    let bottom = layout.presets.bottom().max(layout.files.bottom());
+    let span = bottom - top;
+    if span <= 0.0 {
+        return FILE_SHARE;
+    }
+    ((y - top) / span).clamp(0.0, 1.0)
+}
+
+/// Where the keyboard focus in one of the browser's lists should go from
+/// `from`, stepping by `delta` rows.
+///
+/// *"make it easy to also go through the selected instruments with arrow keys
+/// after it being clicked on to focus it."* Pure, because the two rules that
+/// make it usable are both easy to get wrong in an event handler and easy to
+/// state here:
+///
+/// - **A heading is stepped over.** A search across the collection puts one
+///   over every run of hits ([`crate::document::LibraryKind::Group`]), and a
+///   focus that lands on them makes the down arrow appear to do nothing every
+///   few presses.
+/// - **The ends hold.** Wrapping from the bottom back to the top loses your
+///   place without saying so.
+///
+/// `None` when the list has nothing that can be chosen in it at all.
+pub fn browser_focus_step(
+    rows: &[crate::document::LibraryEntry],
+    from: Option<usize>,
+    delta: i32,
+) -> Option<usize> {
+    use crate::document::LibraryKind;
+    let choosable = |index: usize| {
+        rows.get(index)
+            .is_some_and(|row| row.kind != LibraryKind::Group)
+    };
+    if rows.is_empty() {
+        return None;
+    }
+    // A list rebuilt by a search keystroke can be shorter than the focus that
+    // was in it, so the starting point is brought inside before anything else.
+    let start = match from {
+        Some(index) => index.min(rows.len() - 1) as i32,
+        // Nothing focused: the first row that can be chosen, whichever way the
+        // arrow was pointing.
+        None => {
+            return (0..rows.len()).find(|index| choosable(*index));
+        }
+    };
+    let step = if delta == 0 { 1 } else { delta.signum() };
+    // A step of nothing keeps a row that can be chosen and moves off one that
+    // cannot, which is what a rebuilt list needs to settle.
+    if delta == 0 && choosable(start as usize) {
+        return Some(start as usize);
+    }
+    let mut at = start + if delta == 0 { 0 } else { step };
+    while at >= 0 && (at as usize) < rows.len() {
+        if choosable(at as usize) {
+            return Some(at as usize);
+        }
+        at += step;
+    }
+    // Off the end: hold where we were, if that is somewhere we may be.
+    if choosable(start as usize) {
+        return Some(start as usize);
+    }
+    // The row we started on cannot be chosen either — a list of headings, or
+    // one rebuilt under us. Anything choosable will do; nothing means nothing.
+    (0..rows.len()).find(|index| choosable(*index))
+}
+
+/// Whether row `index` can be **carried out** of the panel — dragged onto the
+/// rack, or onto a channel already on it, to become a sampler.
+///
+/// > *"i currently cannot drag audio files from the import audio tab. i want to
+/// > be able to click and drag them into the sampler or into the channel rack
+/// > to make it have a sampler with that clip sampled."*
+///
+/// The press that arms that drag used to ask **the soundfont list** whether
+/// the row under the pointer was a folder, while the rows on screen came from
+/// the import list. Two different lists, of two different lengths, so the
+/// answer was whatever the other panel happened to hold at that index: usually
+/// a folder, which armed nothing at all, and past its end `None`, which armed
+/// a drag on the `..` row. One function, handed the list the rows were drawn
+/// from, so there is nowhere left for the two to disagree.
+///
+/// Only in the Import tab, and only a file: a folder is a place, the `..` row
+/// is a move, a heading is a label, and a soundfont preset is carried by a
+/// different gesture that means something else (see [`BrowserHit::Preset`]).
+pub fn browser_row_carries(
+    rows: &[crate::document::LibraryEntry],
+    mode: BrowserMode,
+    index: usize,
+) -> bool {
+    mode == BrowserMode::Import
+        && rows.get(index).map(|row| row.kind) == Some(crate::document::LibraryKind::File)
 }

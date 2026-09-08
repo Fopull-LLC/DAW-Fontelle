@@ -42,6 +42,7 @@ fn a_note(start: Tick, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -73,10 +74,13 @@ impl Rig {
     /// A channel with one clip of one note on it, at `start`.
     fn channel_with_clip(&mut self, start: Tick, key: u8, node_number: u64) -> ClipId {
         let channel = self.project.channels.insert(fontelle_model::Channel {
+            preset: None,
+            instrument: None,
             name: format!("ch{key}"),
             color: [0; 4],
             mixer_track: None,
             patch_data: None,
+            plugin: None,
             pan: 0.0,
             muted: false,
             soloed: false,
@@ -201,9 +205,17 @@ fn a_clip_scope_leaves_other_lanes_automation_out() {
         &Default::default(),
         fontelle_sequencer::CompileScope::Clip(clip),
     );
-    assert_eq!(scoped.tempo.len(), 1, "one tempo, the box's: {:?}", scoped.tempo);
+    assert_eq!(
+        scoped.tempo.len(),
+        1,
+        "one tempo, the box's: {:?}",
+        scoped.tempo
+    );
     assert!((scoped.tempo[0].1 - 120.0).abs() < 1e-3);
-    assert_eq!(scoped.events[0].sample, TempoMap::new(120.0, SR).tick_to_sample(BAR * 4));
+    assert_eq!(
+        scoped.events[0].sample,
+        TempoMap::new(120.0, SR).tick_to_sample(BAR * 4)
+    );
 }
 
 #[test]

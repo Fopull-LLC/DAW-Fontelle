@@ -157,9 +157,11 @@ impl Gate {
         self.reduction_db
     }
 
-    /// The look-ahead's cost, in samples, at the setting it was last run at —
-    /// what the graph has to compensate elsewhere once delay compensation
-    /// exists (item 16 in `PROGRESS.md`).
+    /// The look-ahead's cost, in samples, at the setting it was last run at.
+    ///
+    /// The graph compensates for it: `fontelle_app::realise` holds every
+    /// other track back to meet this one, and `EffectNode` delays the dry
+    /// path the mix control blends back in (TDD §5.5).
     pub fn latency_samples(&self, config: &GateConfig) -> u32 {
         self.lookahead_frames(config) as u32
     }

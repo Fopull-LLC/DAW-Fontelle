@@ -48,6 +48,7 @@ fn flat_patch(library: &mut SampleLibrary, name: &str, level: f32) -> Patch {
         cutoff_hz: 20_000.0,
         resonance: 0.0,
         enabled: false,
+        ..Default::default()
     };
     let instant = EnvelopeConfig {
         delay_s: 0.0,
@@ -57,6 +58,7 @@ fn flat_patch(library: &mut SampleLibrary, name: &str, level: f32) -> Patch {
         sustain_level: 1.0,
         release_s: 0.001,
         curve: EnvelopeCurve::Linear,
+        ..Default::default()
     };
     Patch {
         layers: vec![Layer {
@@ -79,6 +81,7 @@ fn flat_patch(library: &mut SampleLibrary, name: &str, level: f32) -> Patch {
         lfos: Vec::new(),
         mod_matrix: ModMatrix::default(),
         voice_config: VoiceConfig::default(),
+        ..Default::default()
     }
 }
 
@@ -123,10 +126,13 @@ impl Rig {
     fn add_channel(&mut self, name: &str, level: f32, track: MixerTrackId) -> ChannelId {
         let patch = flat_patch(&mut self.library, name, level);
         let channel = self.project.channels.insert(Channel {
+            preset: None,
+            instrument: None,
             name: name.into(),
             color: [0; 4],
             mixer_track: Some(track),
             patch_data: None,
+            plugin: None,
             pan: 0.0,
             muted: false,
             soloed: false,
@@ -152,6 +158,7 @@ impl Rig {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         });
         self.project.clips.insert(Clip {
             lane: self.lane,
@@ -350,10 +357,13 @@ fn a_channel_with_no_instrument_keeps_its_place_but_nothing_answers_for_it() {
     let mut rig = Rig::new();
     let track = rig.add_track("A", None);
     let silent = rig.project.channels.insert(Channel {
+        preset: None,
+        instrument: None,
         name: "empty".into(),
         color: [0; 4],
         mixer_track: Some(track),
         patch_data: None,
+        plugin: None,
         pan: 0.0,
         muted: false,
         soloed: false,
@@ -439,4 +449,165 @@ fn a_channel_on_a_mixer_track_that_no_longer_exists_still_reaches_the_master() {
     rig.project.mixer.tracks.remove(track);
 
     assert!(peak_mono(&rig.render(4_000)) > 0.1);
+}
+
+// --------------------------------------------- a track that goes nowhere ---
+
+#[test]
+fn a_track_whose_output_is_switched_off_is_not_heard() {
+    // > *"if i chose to not route it to master, i wont be hearing my own
+    // > input."* The bus sum is the edge, so switching the output off is
+    // simply not scheduling it — the track still runs, its inserts still run,
+    // and nothing carries the result anywhere.
+    let mut rig = Rig::new();
+    let a_track = rig.add_track("A", None);
+    let b_track = rig.add_track("B", None);
+    rig.add_channel("A", 0.4, a_track);
+    rig.add_channel("B", 0.4, b_track);
+    let both = peak_mono(&rig.render(4_000));
+    assert!(both > 0.1);
+
+    set_flag(&mut rig.project, FlagTarget::TrackOutputOn(a_track), false);
+    let one = peak_mono(&rig.render(4_000));
+    assert!(one > 0.1, "B must still be heard, got {one}");
+    assert!(one < both, "A is still arriving: {one} against {both}");
+
+    set_flag(&mut rig.project, FlagTarget::TrackOutputOn(b_track), false);
+    assert_eq!(
+        peak_mono(&rig.render(4_000)),
+        0.0,
+        "with neither routed there is nothing left"
+    );
+}
+
+#[test]
+fn a_track_with_its_output_off_still_feeds_its_sends() {
+    // Which is what makes it a *routing* switch rather than a mute: a track
+    // going only to a reverb is an ordinary console arrangement.
+    let mut rig = Rig::new();
+    let reverb = rig.add_track("Reverb", None);
+    let vox = rig.add_track("Vox", None);
+    rig.add_channel("Vox", 0.4, vox);
+    fontelle_model::AddSend::new(vox, reverb)
+        .apply(&mut rig.project)
+        .expect("a send must be addable");
+    fontelle_model::SetSendLevel::new(vox, 0, 0.0)
+        .apply(&mut rig.project)
+        .expect("a send level must be settable");
+
+    set_flag(&mut rig.project, FlagTarget::TrackOutputOn(vox), false);
+    assert!(
+        peak_mono(&rig.render(4_000)) > 0.1,
+        "the send went silent with the output"
+    );
+}
+
+// -------------------------------------------------------- monitoring in ---
+
+/// Renders `frames` of a project that is **rolling** rather than bouncing —
+/// which is the only state a live input exists in.
+fn render_live(rig: &Rig, monitor: Option<&fontelle_app::MonitorPlan>, frames: usize) -> Vec<f32> {
+    let mut realised = fontelle_app::realise_monitoring(
+        &rig.project,
+        &rig.library,
+        options(),
+        &Default::default(),
+        None,
+        &Default::default(),
+        monitor,
+    )
+    .expect("this project must realise");
+    let timeline =
+        fontelle_sequencer::compile(&rig.project, &realised.channel_nodes, &Default::default());
+    let transport = fontelle_engine::Transport::new();
+    transport.play();
+    fontelle_app::render_offline_with_transport(
+        &timeline,
+        &mut realised.graph,
+        frames as i64,
+        &transport,
+    )
+}
+
+/// A monitor already carrying a second of a steady tone at `level`, open at
+/// the graph's own rate.
+fn a_live_input(level: f32) -> Arc<fontelle_engine::InputMonitor> {
+    let monitor = Arc::new(fontelle_engine::InputMonitor::new(200_000));
+    monitor.open(SR, 1);
+    // In device-sized blocks, as a real input callback delivers: the node
+    // sizes its slack from the largest block it has seen, and one write of
+    // two seconds would be a "device" it waits for ever to catch up with.
+    for _ in 0..(96_000 / fontelle_engine::BLOCK_SIZE) {
+        monitor.write(&vec![level; fontelle_engine::BLOCK_SIZE]);
+    }
+    monitor
+}
+
+#[test]
+fn a_live_input_is_heard_through_the_track_it_is_monitored_on() {
+    // *"i should be able to hear routed input playing even when song isnt
+    // playing or im not recording."* Through the track, not beside it: the
+    // fader is what makes that claim checkable.
+    let mut rig = Rig::new();
+    let mic = rig.add_track("Mic", None);
+    let monitor = a_live_input(0.5);
+    let plan = fontelle_app::MonitorPlan {
+        monitor: Arc::clone(&monitor),
+        track: Some(mic),
+    };
+
+    let heard = peak_mono(&render_live(&rig, Some(&plan), 8_000));
+    assert!(heard > 0.4, "the microphone was not audible, peak {heard}");
+
+    // And the strip it arrives on is the strip that controls it.
+    let monitor = a_live_input(0.5);
+    let plan = fontelle_app::MonitorPlan {
+        monitor,
+        track: Some(mic),
+    };
+    set_number(&mut rig.project, NumberTarget::TrackGainDb(mic), -20.0);
+    let pulled_down = peak_mono(&render_live(&rig, Some(&plan), 8_000));
+    let ratio = pulled_down / heard;
+    assert!(
+        (ratio - 0.1).abs() < 0.02,
+        "-20 dB on the mic track should scale the input by 0.1, got {ratio}"
+    );
+}
+
+#[test]
+fn a_live_input_on_a_track_that_goes_nowhere_is_recorded_but_not_heard() {
+    // The other half of the report, and the reason the switch exists at all.
+    let mut rig = Rig::new();
+    let mic = rig.add_track("Mic", None);
+    set_flag(&mut rig.project, FlagTarget::TrackOutputOn(mic), false);
+    let monitor = a_live_input(0.5);
+    let plan = fontelle_app::MonitorPlan {
+        monitor: Arc::clone(&monitor),
+        track: Some(mic),
+    };
+
+    assert_eq!(
+        peak_mono(&render_live(&rig, Some(&plan), 8_000)),
+        0.0,
+        "an unrouted track was still audible"
+    );
+    // Drained all the same: the node is what empties the ring, and a ring
+    // nobody empties fills and then drops what a take needed.
+    assert!(monitor.available() < 96_000, "the ring was never read");
+}
+
+#[test]
+fn a_project_with_no_monitor_schedules_no_node_for_one() {
+    // A bounce, and every offline path. The microphone is not in the song.
+    let mut rig = Rig::new();
+    rig.add_track("Mic", None);
+    let realised = realise(&rig.project, &rig.library, options()).unwrap();
+    assert!(
+        !realised
+            .graph
+            .schedule
+            .iter()
+            .any(|node| node.node.debug_name() == "MonitorNode"),
+        "a graph built with no monitor carried one anyway"
+    );
 }

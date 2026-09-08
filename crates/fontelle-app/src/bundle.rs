@@ -106,6 +106,10 @@ pub fn open_project(path: &Path) -> Result<OpenedProject, OpenError> {
     for (file, (samples, channels)) in wanted {
         let result = match file.kind {
             AssetKind::Sf2 | AssetKind::Sf3 => library.reload_sf2_samples(&file, &samples),
+            // A plain audio file put on a channel as a sampler — see
+            // `SampleLibrary::import_sample`. Without this arm a sampler built
+            // by dropping a wav on the rack opens silent.
+            AssetKind::Sample => library.reload_sample(&file),
             other => Err(fontelle_assets::ImportError(format!(
                 "{other:?} assets cannot be loaded yet"
             ))),

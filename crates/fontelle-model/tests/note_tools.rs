@@ -30,6 +30,7 @@ fn a_note(start: i64, key: u8, velocity: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -45,10 +46,13 @@ fn fixture() -> Fixture {
     let mut project = Project::new("tools");
     project.tempo_map = TempoMap::new(120.0, 48_000.0);
     let channel: ChannelId = project.channels.insert(fontelle_model::Channel {
+        preset: None,
+        instrument: None,
         name: "Part".into(),
         color: [0; 4],
         mixer_track: None,
         patch_data: None,
+        plugin: None,
         pan: 0.0,
         muted: false,
         soloed: false,
@@ -127,7 +131,10 @@ fn a_nudge_past_the_end_stops_at_the_end_rather_than_being_refused() {
     let mut f = fixture();
     let mut command = NudgeNoteProperty::new(f.clip, f.notes.clone(), NoteProperty::Velocity, 100);
     command.apply(&mut f.project).expect("applies");
-    assert_eq!(velocities(&f.project, f.clip, &f.notes), vec![127, 127, 127]);
+    assert_eq!(
+        velocities(&f.project, f.clip, &f.notes),
+        vec![127, 127, 127]
+    );
 }
 
 #[test]
@@ -278,8 +285,12 @@ fn a_value_each_with_the_wrong_number_of_values_is_refused() {
     // note's value onto the third, which is a scramble rather than an error.
     let mut f = fixture();
     let before = snapshot(&f.project);
-    let mut command =
-        SetNotePropertyEach::new(f.clip, f.notes.clone(), NoteProperty::Velocity, vec![10, 20]);
+    let mut command = SetNotePropertyEach::new(
+        f.clip,
+        f.notes.clone(),
+        NoteProperty::Velocity,
+        vec![10, 20],
+    );
     assert!(command.apply(&mut f.project).is_err());
     assert_eq!(before, snapshot(&f.project));
 }
@@ -507,4 +518,161 @@ fn two_notes_that_started_the_same_do_not_stay_the_same() {
         out.iter().any(|value| *value != out[0]),
         "identical notes must not all get the same answer: {out:?}"
     );
+}
+
+// ------------------------------------------------------------- legato ---
+//
+// > *"if i press ctrl l with a note selection in the piano roll it makes all
+// > the notes lengths not have gaps like how it does in fl studio with that
+// > same keybind. just makes all the notes cleanly connect to eachother
+// > basically in length."*
+//
+// FL's Quick Legato. The arithmetic is here and pure, so "what does a chord
+// do" and "what does the last note do" are answered once rather than in a
+// window nobody can test.
+
+use fontelle_model::{SetNoteLengths, legato_lengths};
+use fontelle_types::Tick;
+
+/// `(start, length)` pairs, the shape the tool takes.
+fn spans(pairs: &[(Tick, Tick)]) -> Vec<(Tick, Tick)> {
+    pairs.to_vec()
+}
+
+#[test]
+fn a_run_of_notes_is_stretched_until_each_one_touches_the_next() {
+    // Three sixteenths a beat apart: each becomes a beat long, and the gaps
+    // between them close.
+    let out = legato_lengths(&spans(&[
+        (0, PPQN / 4),
+        (PPQN, PPQN / 4),
+        (PPQN * 2, PPQN / 4),
+    ]));
+    assert_eq!(out, vec![PPQN, PPQN, PPQN / 4]);
+}
+
+#[test]
+fn a_note_that_overlaps_the_next_is_pulled_back_to_it() {
+    // Legato is "touch", not "at least touch": a note running under the one
+    // after it is shortened, or the tool could only ever add and a phrase you
+    // ran through it twice would keep growing.
+    let out = legato_lengths(&spans(&[(0, PPQN * 4), (PPQN, PPQN / 4)]));
+    assert_eq!(out, vec![PPQN, PPQN / 4]);
+}
+
+#[test]
+fn the_last_note_keeps_the_length_it_had() {
+    // There is nothing after it to touch, and guessing a length for it — the
+    // previous gap, a beat, the clip's end — would be the tool inventing
+    // something nobody asked for.
+    let out = legato_lengths(&spans(&[(0, PPQN / 8), (PPQN * 2, PPQN * 3)]));
+    assert_eq!(out, vec![PPQN * 2, PPQN * 3]);
+}
+
+#[test]
+fn a_chord_moves_as_one_because_its_notes_share_a_start() {
+    // Three notes at the same tick are one musical event: they all reach the
+    // next event, and none of them is "the next note" for the other two.
+    let out = legato_lengths(&spans(&[
+        (0, PPQN / 4),
+        (0, PPQN / 2),
+        (0, PPQN / 8),
+        (PPQN * 2, PPQN / 4),
+    ]));
+    assert_eq!(out, vec![PPQN * 2, PPQN * 2, PPQN * 2, PPQN / 4]);
+}
+
+#[test]
+fn the_order_the_notes_arrive_in_does_not_change_the_answer() {
+    // The window hands over whatever order the selection is in, which is the
+    // order they were clicked. Sorting is the tool's job.
+    let forwards = legato_lengths(&spans(&[(0, 10), (PPQN, 10), (PPQN * 2, 10)]));
+    let backwards = legato_lengths(&spans(&[(PPQN * 2, 10), (PPQN, 10), (0, 10)]));
+    assert_eq!(backwards, vec![10, PPQN, PPQN]);
+    assert_eq!(forwards, vec![PPQN, PPQN, 10]);
+}
+
+#[test]
+fn one_note_and_no_notes_are_both_left_alone() {
+    assert_eq!(legato_lengths(&spans(&[(PPQN, PPQN / 4)])), vec![PPQN / 4]);
+    assert!(legato_lengths(&[]).is_empty());
+}
+
+#[test]
+fn no_note_is_ever_shortened_to_nothing() {
+    // A note of zero length is a note-on and a note-off on the same sample,
+    // which `SetNoteLengths` refuses and the sampler cannot sound. Distinct
+    // starts are at least a tick apart, so this holds by arithmetic — the
+    // test is here so it stays that way.
+    let out = legato_lengths(&spans(&[(0, PPQN), (1, PPQN), (2, PPQN)]));
+    assert!(out.iter().all(|length| *length >= 1), "{out:?}");
+    assert_eq!(out, vec![1, 1, PPQN]);
+}
+
+#[test]
+fn setting_lengths_writes_each_one_and_undo_puts_them_all_back() {
+    let mut f = fixture();
+    let before: Vec<Tick> = f
+        .notes
+        .iter()
+        .map(|id| notes_of(&f.project, f.clip).get(*id).unwrap().length)
+        .collect();
+    let mut history = History::new();
+    history
+        .apply(
+            Box::new(SetNoteLengths::new(
+                f.clip,
+                f.notes.clone(),
+                vec![PPQN * 2, PPQN / 2, PPQN * 3],
+            )),
+            &mut f.project,
+        )
+        .expect("lengths are writable");
+    let after: Vec<Tick> = f
+        .notes
+        .iter()
+        .map(|id| notes_of(&f.project, f.clip).get(*id).unwrap().length)
+        .collect();
+    assert_eq!(after, vec![PPQN * 2, PPQN / 2, PPQN * 3]);
+
+    history
+        .undo(&mut f.project)
+        .expect("one entry to undo")
+        .expect("and it inverts");
+    let back: Vec<Tick> = f
+        .notes
+        .iter()
+        .map(|id| notes_of(&f.project, f.clip).get(*id).unwrap().length)
+        .collect();
+    assert_eq!(back, before, "one gesture, one undo");
+}
+
+#[test]
+fn a_length_of_nothing_is_refused_rather_than_written() {
+    let mut f = fixture();
+    let mut command = SetNoteLengths::new(f.clip, f.notes.clone(), vec![PPQN, 0, PPQN]);
+    assert!(
+        command.apply(&mut f.project).is_err(),
+        "a note of zero length is a note-on and note-off on the same sample"
+    );
+    assert_eq!(
+        notes_of(&f.project, f.clip).get(f.notes[0]).unwrap().length,
+        PPQN,
+        "and nothing was written before it refused"
+    );
+}
+
+#[test]
+fn a_list_that_does_not_line_up_with_its_notes_is_refused() {
+    let mut f = fixture();
+    let mut command = SetNoteLengths::new(f.clip, f.notes.clone(), vec![PPQN, PPQN]);
+    assert!(command.apply(&mut f.project).is_err());
+}
+
+/// The clip's notes, for reading a length back out.
+fn notes_of(project: &Project, clip: ClipId) -> &Arena<NoteId, Note> {
+    let ClipSource::Notes(data) = &project.clips.get(clip).unwrap().source else {
+        panic!("a note clip")
+    };
+    &data.notes
 }

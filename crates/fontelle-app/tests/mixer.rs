@@ -15,7 +15,7 @@
 
 mod common;
 
-use fontelle_app::{RealiseOptions, SampleLibrary, Session, blank_project};
+use fontelle_app::{RealiseOptions, SampleLibrary, Session};
 use fontelle_engine::{graph_channel, timeline_channel};
 use fontelle_model::{AddMixerTrack, Command};
 use fontelle_types::CompiledTimeline;
@@ -32,7 +32,7 @@ fn session() -> Session {
 /// The same, with `tracks` mixer tracks built deliberately on top of the
 /// master — which is the only way a strip comes into existence now.
 fn session_with(tracks: usize) -> Session {
-    let mut project = blank_project(8, 120.0, SR);
+    let mut project = common::a_project_with_a_clip(8, 120.0, SR);
     for n in 1..=tracks {
         AddMixerTrack::new(format!("Track {n}"))
             .apply(&mut project)
@@ -270,6 +270,7 @@ fn a_muted_channel_is_dropped_by_the_compiler_rather_than_by_a_fader() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            channel: None,
         },
     });
     assert!(
@@ -558,7 +559,11 @@ fn an_effect_can_be_dragged_up_and_down_its_chain() {
     );
 
     session.undo();
-    assert_eq!(labels(&session), before, "reordering is an edit like any other");
+    assert_eq!(
+        labels(&session),
+        before,
+        "reordering is an edit like any other"
+    );
 }
 
 #[test]

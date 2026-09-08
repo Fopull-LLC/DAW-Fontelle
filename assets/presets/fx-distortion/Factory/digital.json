@@ -1,0 +1,28 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Distortion"
+  },
+  "name": "digital",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Distortion": {
+        "curve": "Wrap",
+        "shape": 0.5,
+        "drive_db": 9.0,
+        "bias": 0.0,
+        "sag": 0.0,
+        "pre_hp_hz": 20.0,
+        "pre_mid_hz": 800.0,
+        "pre_mid_db": 0.0,
+        "clean_low_hz": 20.0,
+        "tone_hz": 20000.0,
+        "output_db": 0.0,
+        "auto_gain": true,
+        "oversample": "Off",
+        "mix": 1.0
+      }
+    }
+  }
+}

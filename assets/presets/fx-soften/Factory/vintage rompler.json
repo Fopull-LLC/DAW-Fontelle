@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Soften"
+  },
+  "name": "vintage rompler",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Soften": {
+        "shelf_amount": 0.3,
+        "suppressor_amount": 0.85,
+        "transient_amount": 0.4,
+        "air_restore_amount": 0.5,
+        "mix": 1.0
+      }
+    }
+  }
+}

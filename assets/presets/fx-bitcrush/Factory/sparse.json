@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Bitcrush"
+  },
+  "name": "sparse",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Bitcrush": {
+        "input_db": 0.0,
+        "bits": 16.0,
+        "quantiser": "Round",
+        "dither": "Off",
+        "rate_hz": 6000.0,
+        "decimation": "Drop",
+        "jitter": 0.0,
+        "anti_alias": false,
+        "post_lp_hz": 8000.0,
+        "output_db": 6.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

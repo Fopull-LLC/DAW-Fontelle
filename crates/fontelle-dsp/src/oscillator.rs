@@ -68,6 +68,22 @@ impl Oscillator {
         self.phase = 0.0;
     }
 
+    /// An oscillator part way through its cycle.
+    ///
+    /// For a bank of them: six squares that all start at zero all step to
+    /// +1 on the same sample, which is a click six times the size of any one
+    /// of them. Wrapped rather than clamped, so `1.25` is a quarter cycle.
+    pub fn at_phase(phase: f32) -> Self {
+        Self {
+            phase: if phase.is_finite() {
+                phase.rem_euclid(1.0)
+            } else {
+                0.0
+            },
+            ..Self::default()
+        }
+    }
+
     /// One sample, then advance. Band-limited where it matters (`Saw` and
     /// `Square`, whose discontinuities alias); `Sine` has no harmonics to
     /// alias, `Triangle`'s fall off as 1/n² and are already near the noise

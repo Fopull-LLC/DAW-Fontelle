@@ -152,6 +152,7 @@ pub fn automation_polyline(block: Rect, length: Tick, curve: &[CurvePoint]) -> V
             curve: Vec::new(),
             notes: Vec::new(),
             audio: Default::default(),
+            prefab: None,
         },
     )
     .area;

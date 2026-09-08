@@ -185,7 +185,10 @@ impl ProjectLibrary {
     pub fn new_project_path(&self, name: &str) -> Option<PathBuf> {
         let dir = self.dir.as_ref()?;
         let taken: Vec<&str> = self.entries.iter().map(|e| e.name.as_str()).collect();
-        Some(dir.join(format!("{}.{BUNDLE_SUFFIX}", unique_name(name, &taken))))
+        // Sanitised **before** it is made unique, so "Song/" and "Song" are
+        // known to collide rather than becoming two folders called "Song".
+        let name = safe_name(name);
+        Some(dir.join(format!("{}.{BUNDLE_SUFFIX}", unique_name(&name, &taken))))
     }
 }
 
@@ -204,6 +207,32 @@ fn bundle_name(path: &Path) -> String {
     path.file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
+}
+
+/// A typed name as a **file name**, not as a path.
+///
+/// INVARIANT 10 says Fontelle writes nothing outside the folders the user
+/// named, and a name box is the one place a person can type something that
+/// argues with that: `../../etc/passwd` is a perfectly good thing to type and
+/// must not be a perfectly good place to put a project. Separators become
+/// spaces rather than being stripped, so two different names cannot silently
+/// become one, and a name made only of dots is not a name — `.` and `..` both
+/// mean somewhere else.
+///
+/// The empty result is left to [`unique_name`], which already calls it
+/// "Untitled".
+pub fn safe_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' => ' ',
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').trim();
+    // Collapsed, so "a//b" does not become "a  b".
+    trimmed.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// `name`, or `name 2`, or `name 3` — the first one `taken` does not hold.

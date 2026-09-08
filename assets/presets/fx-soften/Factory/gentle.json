@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Soften"
+  },
+  "name": "gentle",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Soften": {
+        "shelf_amount": 0.25,
+        "suppressor_amount": 0.25,
+        "transient_amount": 0.15,
+        "air_restore_amount": 0.25,
+        "mix": 1.0
+      }
+    }
+  }
+}

@@ -48,7 +48,6 @@ pub enum ParamKind {
 pub const MIXER_GAIN: &str = "mixer/gain";
 pub const MIXER_PAN: &str = "mixer/pan";
 
-
 /// One control on the panel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InstrumentParam {
@@ -86,16 +85,6 @@ pub struct InstrumentGroup {
 pub struct InstrumentView {
     /// What the channel is playing, for the panel's heading.
     pub title: String,
-    /// Named starting points, drawn as a row of chips above the first group.
-    ///
-    /// Empty for a panel that has none, which is every instrument panel and
-    /// most effects — see
-    /// [`EffectConfig::presets`](fontelle_types::EffectConfig::presets). A
-    /// preset is not a parameter (rule 10), so it is not in a group: it writes
-    /// the knobs below it and then has nothing further to say, which is a
-    /// different gesture from turning one of them and deserves a different
-    /// shape on the panel.
-    pub presets: Vec<String>,
     /// What this insert's **detector** can be pointed at: "no key" first, then
     /// one entry per mixer strip (`docs/effects-catalogue.md` §2.1).
     ///
@@ -139,9 +128,15 @@ impl InstrumentView {
 #[derive(Debug, Clone, PartialEq)]
 pub struct InstrumentLayout {
     pub body: Rect,
-    /// One chip per preset, in order, along the top of the panel. Empty when
-    /// the view has none, and then nothing about the layout below changes.
-    pub presets: Vec<(usize, Rect)>,
+    /// The instrument's name, drawn as a **field** across the top rather than
+    /// as a bar.
+    ///
+    /// *"the name section in the instrument window for the soundfont player
+    /// should be kind of like field instead of a bar and i should be able to
+    /// drag soundfonts into it from the soundfonts window to also assign a
+    /// soundfont."* A field is a thing you can put something *in*, and that is
+    /// exactly what this one is for: it is the drop target.
+    pub name: Rect,
     /// One chip per choosable key, under the presets. Same shape and the same
     /// rules — see [`InstrumentView::keys`].
     pub keys: Vec<(usize, Rect)>,
@@ -154,6 +149,19 @@ pub struct InstrumentLayout {
     pub content_height: f32,
 }
 
+impl InstrumentLayout {
+    /// Where one control's cell is, by its place in the view.
+    ///
+    /// What a drop-down hangs under: the list appears where the control is,
+    /// not where the pointer happened to be, which is what a drop-down is.
+    pub fn control(&self, group: usize, param: usize) -> Option<Rect> {
+        self.cells
+            .iter()
+            .find(|(g, p, _)| *g == group && *p == param)
+            .map(|(_, _, cell)| *cell)
+    }
+}
+
 /// How wide one control's cell is: a dial, its name, and its read-out.
 pub const CELL_WIDTH: f32 = 92.0;
 
@@ -163,22 +171,22 @@ pub const CELL_HEIGHT: f32 = 76.0;
 /// Between cells, and around them.
 const GAP: f32 = 6.0;
 
-/// How wide a preset chip is, and how tall.
+/// How wide a chip on the key row is, and how tall.
 ///
 /// Wide enough for "12-bit sampler" at the panel's own font, which is the
 /// longest name any effect ships; a chip whose name is clipped is a chip
 /// nobody can choose on purpose.
-pub const PRESET_WIDTH: f32 = 104.0;
-pub const PRESET_HEIGHT: f32 = 22.0;
+pub const CHIP_WIDTH: f32 = 104.0;
+pub const CHIP_HEIGHT: f32 = 22.0;
 
 pub fn instrument_layout(body: Rect, metrics: &Metrics, view: &InstrumentView) -> InstrumentLayout {
     let mut headings = Vec::new();
     let mut cells = Vec::new();
-    let (mut presets, mut keys) = (Vec::new(), Vec::new());
+    let mut keys = Vec::new();
     if body.is_empty() {
         return InstrumentLayout {
             body,
-            presets,
+            name: Rect::ZERO,
             keys,
             headings,
             cells,
@@ -191,9 +199,14 @@ pub fn instrument_layout(body: Rect, metrics: &Metrics, view: &InstrumentView) -
     let per_row = (((body.width + GAP) / (CELL_WIDTH + GAP)).floor() as usize).max(1);
     let mut y = body.y;
 
+    // The name field, across the top and above everything: it says what this
+    // instrument *is*, and it is where a soundfont dragged out of the browser
+    // lands.
+    let name = Rect::new(body.x, y, body.width, metrics.row_height).clamped();
+    y += metrics.row_height + GAP;
+
     // The chip rows, above everything, and only when there is one of each: a
     // panel with neither has to lay out exactly as it did before they existed.
-    presets = chip_row(body, view.presets.len(), &mut y);
     keys = chip_row(body, view.keys.len(), &mut y);
 
     for (index, group) in view.groups.iter().enumerate() {
@@ -230,7 +243,7 @@ pub fn instrument_layout(body: Rect, metrics: &Metrics, view: &InstrumentView) -
 
     InstrumentLayout {
         body,
-        presets,
+        name,
         keys,
         headings,
         cells,
@@ -249,14 +262,14 @@ fn chip_row(body: Rect, count: usize, y: &mut f32) -> Vec<(usize, Rect)> {
     if count == 0 {
         return Vec::new();
     }
-    let across = (((body.width + GAP) / (PRESET_WIDTH + GAP)).floor() as usize).max(1);
+    let across = (((body.width + GAP) / (CHIP_WIDTH + GAP)).floor() as usize).max(1);
     let chips = (0..count)
         .map(|index| {
             let chip = Rect::new(
-                body.x + (index % across) as f32 * (PRESET_WIDTH + GAP),
-                *y + (index / across) as f32 * (PRESET_HEIGHT + GAP),
-                PRESET_WIDTH,
-                PRESET_HEIGHT,
+                body.x + (index % across) as f32 * (CHIP_WIDTH + GAP),
+                *y + (index / across) as f32 * (CHIP_HEIGHT + GAP),
+                CHIP_WIDTH,
+                CHIP_HEIGHT,
             );
             (
                 index,
@@ -272,18 +285,8 @@ fn chip_row(body: Rect, count: usize, y: &mut f32) -> Vec<(usize, Rect)> {
             )
         })
         .collect();
-    *y += count.div_ceil(across) as f32 * (PRESET_HEIGHT + GAP) + GAP;
+    *y += count.div_ceil(across) as f32 * (CHIP_HEIGHT + GAP) + GAP;
     chips
-}
-
-/// Which preset chip is under the pointer, if any.
-///
-/// Its own hit test rather than a variant of [`instrument_hit`]'s pair,
-/// because a chip is not a control: it has no address, no value and no
-/// automation lane, and giving it a `(group, param)` would make every caller
-/// that reads one have to know which pairs are lies.
-pub fn instrument_preset_hit(layout: &InstrumentLayout, x: f32, y: f32) -> Option<usize> {
-    chip_hit(&layout.presets, x, y)
 }
 
 /// Which key chip is under the pointer, if any — see

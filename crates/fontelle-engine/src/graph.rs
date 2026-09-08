@@ -509,6 +509,7 @@ mod tests {
             cutoff_hz: 20_000.0,
             resonance: 0.0,
             enabled: false,
+            ..Default::default()
         };
         let instant = EnvelopeConfig {
             delay_s: 0.0,
@@ -518,6 +519,7 @@ mod tests {
             sustain_level: 1.0,
             release_s: 0.01,
             curve: EnvelopeCurve::Linear,
+            ..Default::default()
         };
         let patch = Patch {
             layers: vec![Layer {
@@ -540,6 +542,7 @@ mod tests {
             lfos: Vec::new(),
             mod_matrix: ModMatrix::default(),
             voice_config: VoiceConfig::default(),
+            ..Default::default()
         };
 
         let mut sampler = Sampler::new(patch);
@@ -582,6 +585,7 @@ mod tests {
             cutoff_hz: 20_000.0,
             resonance: std::f32::consts::FRAC_1_SQRT_2,
             enabled: false,
+            ..Default::default()
         };
         let instant = EnvelopeConfig {
             delay_s: 0.0,
@@ -591,6 +595,7 @@ mod tests {
             sustain_level: 1.0,
             release_s: 0.0,
             curve: EnvelopeCurve::Linear,
+            ..Default::default()
         };
         Patch {
             layers: vec![Layer {
@@ -613,6 +618,7 @@ mod tests {
             lfos: Vec::new(),
             mod_matrix: ModMatrix::default(),
             voice_config: VoiceConfig::default(),
+            ..Default::default()
         }
     }
 
@@ -781,6 +787,7 @@ mod tests {
             cutoff_hz: 20_000.0,
             resonance: 0.0,
             enabled: false,
+            ..Default::default()
         };
         let instant = EnvelopeConfig {
             delay_s: 0.0,
@@ -790,6 +797,7 @@ mod tests {
             sustain_level: 1.0,
             release_s: 10.0,
             curve: EnvelopeCurve::Linear,
+            ..Default::default()
         };
         let patch = Patch {
             layers: vec![Layer {
@@ -812,6 +820,7 @@ mod tests {
             lfos: Vec::new(),
             mod_matrix: ModMatrix::default(),
             voice_config: VoiceConfig::default(),
+            ..Default::default()
         };
         let mut sampler = Sampler::new(patch);
         sampler.prepare(&fontelle_core::PrepareContext {

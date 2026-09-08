@@ -11,7 +11,7 @@ use fontelle_types::{AssetId, PatchData, SampleRef};
 use slotmap::Key;
 
 use crate::mod_matrix::ModMatrix;
-use crate::patch::{FilterSlot, Layer, Lfo, Patch, Source, ZoneId};
+use crate::patch::{FilterSlot, Layer, Lfo, MACRO_COUNT, Macro, Patch, PatchFx, Source, ZoneId};
 use crate::playback::PlaybackConfig;
 use crate::voice::VoiceConfig;
 use fontelle_dsp::{EnvelopeConfig, OscKind};
@@ -22,7 +22,7 @@ use fontelle_dsp::{EnvelopeConfig, OscKind};
 /// a renamed field, a changed unit, a restructured enum. Adding a field with a
 /// `#[serde(default)]` does not need a bump; changing what an existing field
 /// *means* always does, because the old value will parse and be wrong.
-pub const PATCH_FORMAT_VERSION: u32 = 0;
+pub const PATCH_FORMAT_VERSION: u32 = 1;
 
 /// Why a stored patch could not be read, or written.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,9 +85,26 @@ pub struct LoadedPatch {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 enum StoredSource {
-    Sf2Zone { file: Option<SampleRef>, zone: u32 },
-    Sample { file: Option<SampleRef> },
+    Sf2Zone {
+        file: Option<SampleRef>,
+        zone: u32,
+    },
+    Sample {
+        file: Option<SampleRef>,
+    },
     Oscillator(OscKind),
+    /// The built-in drum machine's hits. The one source that stores **whole**
+    /// rather than by reference: it names no file, so there is nothing to
+    /// relink and nothing that can go missing.
+    Drum(fontelle_dsp::DrumVoice),
+    /// A Flopsynth oscillator. Stored **whole**, like `Drum` and for exactly
+    /// the same reason: it names no file, so there is nothing to relink.
+    ///
+    /// This variant is why the format version moved rather than the field
+    /// defaults absorbing it: an older build reading a patch with one in it
+    /// would report `Malformed` — "your project is damaged" — where the true
+    /// answer is "upgrade Fontelle".
+    Synth(fontelle_dsp::SynthOsc),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -110,6 +127,15 @@ struct StoredPatch {
     lfos: Vec<Lfo>,
     mod_matrix: ModMatrix,
     voice_config: VoiceConfig,
+    /// The three below are `#[serde(default)]`, so a v1 body written without
+    /// them — which is every patch this build writes that has no effects, no
+    /// named macros and no trim — reads back identically.
+    #[serde(default)]
+    fx: Vec<PatchFx>,
+    #[serde(default)]
+    macros: [Macro; MACRO_COUNT],
+    #[serde(default)]
+    output_db: f32,
 }
 
 impl Patch {
@@ -136,6 +162,8 @@ impl Patch {
                             file: provenance.get(file).cloned(),
                         },
                         Source::Oscillator(kind) => StoredSource::Oscillator(*kind),
+                        Source::Drum(voice) => StoredSource::Drum(*voice),
+                        Source::Synth(osc) => StoredSource::Synth(*osc),
                     },
                     key_range: layer.key_range,
                     vel_range: layer.vel_range,
@@ -151,6 +179,9 @@ impl Patch {
             lfos: self.lfos.clone(),
             mod_matrix: self.mod_matrix.clone(),
             voice_config: self.voice_config,
+            fx: self.fx.clone(),
+            macros: self.macros.clone(),
+            output_db: self.output_db,
         };
 
         Ok(PatchData {
@@ -218,6 +249,8 @@ impl Patch {
                         file: asset_for(file),
                     },
                     StoredSource::Oscillator(kind) => Source::Oscillator(kind),
+                    StoredSource::Drum(voice) => Source::Drum(voice),
+                    StoredSource::Synth(osc) => Source::Synth(osc),
                 },
                 key_range: layer.key_range,
                 vel_range: layer.vel_range,
@@ -237,6 +270,9 @@ impl Patch {
                 lfos: stored.lfos,
                 mod_matrix: stored.mod_matrix,
                 voice_config: stored.voice_config,
+                fx: stored.fx,
+                macros: stored.macros,
+                output_db: stored.output_db,
             },
             unresolved,
         })
@@ -265,7 +301,7 @@ pub fn referenced_samples(data: &PatchData) -> Result<Vec<SampleRef>, PatchForma
         .into_iter()
         .filter_map(|layer| match layer.source {
             StoredSource::Sf2Zone { file, .. } | StoredSource::Sample { file } => file,
-            StoredSource::Oscillator(_) => None,
+            StoredSource::Oscillator(_) | StoredSource::Drum(_) | StoredSource::Synth(_) => None,
         })
         .collect())
 }
@@ -289,11 +325,59 @@ pub fn referenced_samples(data: &PatchData) -> Result<Vec<SampleRef>, PatchForma
 /// Only ever called with `from <= PATCH_FORMAT_VERSION`; a newer version is
 /// refused by [`Patch::from_data`] before it gets here, so that a file this
 /// build is too old for reads as "upgrade Fontelle" rather than as damage.
-fn migrate(body: serde_json::Value, from: u32) -> Result<serde_json::Value, PatchFormatError> {
-    if from != PATCH_FORMAT_VERSION {
+fn migrate(mut body: serde_json::Value, from: u32) -> Result<serde_json::Value, PatchFormatError> {
+    let mut version = from;
+    if version == 0 {
+        body = v0_to_v1(body)?;
+        version = 1;
+    }
+    if version != PATCH_FORMAT_VERSION {
         return Err(PatchFormatError::Malformed(format!(
             "no migration from patch format version {from} to {PATCH_FORMAT_VERSION}"
         )));
+    }
+    Ok(body)
+}
+
+/// v0 → v1: `Lfo::shape: OscKind` became `Lfo::wave: LfoWave`.
+///
+/// The only change that needs one. Everything else this version added is
+/// `#[serde(default)]`, and the v1 reader with its defaults **is** the v0
+/// reader — which is the property `tests/patch_format.rs` measures by reading
+/// a hand-written v0 body and a v1 body and asserting they come back equal.
+///
+/// The five shapes map to the five waves that mean the same thing, except
+/// `Noise`, which has no counterpart: an LFO running a noise oscillator was
+/// producing a new random value every block, and the wave that does that is
+/// `SampleHold`. Naming it anything else would silently change what an
+/// existing patch sounds like.
+fn v0_to_v1(mut body: serde_json::Value) -> Result<serde_json::Value, PatchFormatError> {
+    let Some(lfos) = body.get_mut("lfos").and_then(|v| v.as_array_mut()) else {
+        // A body with no LFO array at all is either an empty patch or one this
+        // reader will refuse below for its own reasons; either way there is
+        // nothing here to rename.
+        return Ok(body);
+    };
+    for lfo in lfos {
+        let Some(object) = lfo.as_object_mut() else {
+            continue;
+        };
+        let Some(shape) = object.remove("shape") else {
+            continue;
+        };
+        let wave = match shape.as_str() {
+            Some("Sine") => "Sine",
+            Some("Triangle") => "Triangle",
+            Some("Saw") => "SawUp",
+            Some("Square") => "Square",
+            Some("Noise") => "SampleHold",
+            _ => {
+                return Err(PatchFormatError::Malformed(format!(
+                    "an LFO in a version 0 patch has an unreadable shape: {shape}"
+                )));
+            }
+        };
+        object.insert("wave".to_string(), serde_json::Value::from(wave));
     }
     Ok(body)
 }
@@ -378,12 +462,14 @@ mod tests {
                     cutoff_hz: 812.5,
                     resonance: 2.75,
                     enabled: true,
+                    ..Default::default()
                 },
                 FilterSlot {
                     mode: SvfMode::HighShelf,
                     cutoff_hz: 6_400.0,
                     resonance: 0.9,
                     enabled: false,
+                    ..Default::default()
                 },
             ],
             envelopes: vec![EnvelopeConfig {
@@ -394,12 +480,14 @@ mod tests {
                 sustain_level: 0.4,
                 release_s: 0.6,
                 curve: EnvelopeCurve::Decibel,
+                ..Default::default()
             }],
             lfos: vec![Lfo {
                 rate_hz: 5.5,
                 depth: 0.3,
-                shape: OscKind::Triangle,
+                wave: fontelle_types::LfoWave::Triangle,
                 delay_s: 0.25,
+                ..Default::default()
             }],
             mod_matrix: ModMatrix {
                 routes: vec![ModRoute {
@@ -423,7 +511,11 @@ mod tests {
                     randomise_phase: true,
                 },
                 retrigger: RetriggerMode::Legato,
+                // Not the default, so the round trip proves the field
+                // travels rather than that both ends guessed the same.
+                bend_range_semitones: 7.0,
             },
+            ..Default::default()
         }
     }
 
@@ -596,18 +688,21 @@ mod tests {
                     cutoff_hz: 20_000.0,
                     resonance: 0.7,
                     enabled: false,
+                    ..Default::default()
                 },
                 FilterSlot {
                     mode: SvfMode::Lowpass,
                     cutoff_hz: 20_000.0,
                     resonance: 0.7,
                     enabled: false,
+                    ..Default::default()
                 },
             ],
             envelopes: Vec::new(),
             lfos: Vec::new(),
             mod_matrix: ModMatrix::default(),
             voice_config: VoiceConfig::default(),
+            ..Default::default()
         };
         let data = patch.to_data(&HashMap::new()).unwrap();
         assert_eq!(data.format_version, PATCH_FORMAT_VERSION);

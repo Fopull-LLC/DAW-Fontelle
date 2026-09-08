@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Bitcrush"
+  },
+  "name": "8-bit console",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Bitcrush": {
+        "input_db": 6.0,
+        "bits": 8.0,
+        "quantiser": "Truncate",
+        "dither": "Off",
+        "rate_hz": 16000.0,
+        "decimation": "Hold",
+        "jitter": 0.0,
+        "anti_alias": false,
+        "post_lp_hz": 20000.0,
+        "output_db": 0.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

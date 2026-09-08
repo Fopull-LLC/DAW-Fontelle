@@ -9,6 +9,7 @@
 //! **Virtualised like the roll** (§16.4): a project with two hundred channels
 //! builds a screenful of rectangles, not two hundred.
 
+use crate::document::RackTab;
 use crate::layout::Rect;
 use crate::theme::Metrics;
 
@@ -40,6 +41,9 @@ pub struct RackRow {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RackLayout {
     pub body: Rect,
+    /// The strip that switches between this list and the prefabs. Shared with
+    /// [`crate::canvas::prefab_layout`] — see [`tab_strip`].
+    pub tabs: Vec<(RackTab, Rect)>,
     /// Where the rows go — the panel above the add button. Its own rectangle
     /// because hit-testing asks "is the pointer in the list" before it asks
     /// "which row", and because the renderer clips to it.
@@ -65,11 +69,54 @@ pub struct RackLayout {
 /// How wide the mute and solo squares are.
 const SWITCH: f32 = 18.0;
 
+/// The strip of tabs across the top of the panel, and what is left under it.
+///
+/// > *"the prefab tab should be where the channel rack is can be tabbed
+/// > between instruments and prefabs."*
+///
+/// Here rather than in either list, because both lists have to agree about it
+/// exactly: a tab strip that moved by a pixel when you pressed it would be a
+/// strip you could not press twice.
+pub fn tab_strip(body: Rect, metrics: &Metrics) -> (Vec<(RackTab, Rect)>, Rect) {
+    let height = metrics.row_height.min(body.height.max(0.0));
+    if body.is_empty() || height <= 0.0 {
+        return (Vec::new(), body);
+    }
+    let count = RackTab::ALL.len() as f32;
+    let width = body.width / count;
+    let tabs = RackTab::ALL
+        .into_iter()
+        .enumerate()
+        .map(|(index, tab)| {
+            (
+                tab,
+                Rect::new(body.x + width * index as f32, body.y, width, height).clamped(),
+            )
+        })
+        .collect();
+    let rest = Rect::new(
+        body.x,
+        body.y + height,
+        body.width,
+        (body.height - height).max(0.0),
+    )
+    .clamped();
+    (tabs, rest)
+}
+
+/// Which tab is under the pointer, if any.
+pub fn tab_at(tabs: &[(RackTab, Rect)], x: f32, y: f32) -> Option<RackTab> {
+    tabs.iter()
+        .find(|(_, rect)| rect.contains(x, y))
+        .map(|(tab, _)| *tab)
+}
+
 /// And the route chip, which holds two digits.
 const ROUTE: f32 = 22.0;
 
 /// Lays out `count` channels in `body`, starting from `scroll`.
 pub fn rack_layout(body: Rect, metrics: &Metrics, count: usize, scroll: usize) -> RackLayout {
+    let (tabs, body) = tab_strip(body, metrics);
     let add_height = metrics.row_height.min(body.height.max(0.0));
     let add = Rect::new(
         body.x,
@@ -141,6 +188,7 @@ pub fn rack_layout(body: Rect, metrics: &Metrics, count: usize, scroll: usize) -
 
     RackLayout {
         body,
+        tabs,
         list,
         rows,
         add,
@@ -162,6 +210,8 @@ pub enum RackHit {
     /// Open the menu of everywhere this channel could play through.
     Route(usize),
     Add,
+    /// Show the panel's other list.
+    Tab(RackTab),
     Nothing,
 }
 
@@ -177,12 +227,21 @@ impl RackHit {
             Self::Edit(_) => "Open this channel's sound",
             Self::Route(_) => "Which mixer track this channel plays through",
             Self::Add => "Add a channel",
+            Self::Tab(tab) => match tab {
+                RackTab::Instruments => "The instruments in this project",
+                RackTab::Prefabs => "Content you can draw in more than one place",
+            },
             Self::Row(_) | Self::Nothing => return None,
         })
     }
 }
 
 pub fn rack_hit(layout: &RackLayout, x: f32, y: f32) -> RackHit {
+    // The strip first: it is inside the panel, and a list that claimed the
+    // whole of it would swallow the only way out.
+    if let Some(tab) = tab_at(&layout.tabs, x, y) {
+        return RackHit::Tab(tab);
+    }
     if layout.add.contains(x, y) {
         return RackHit::Add;
     }
@@ -252,6 +311,13 @@ pub enum RouteChoice {
     /// Make one, and send this channel to it. The row that turns "I need a
     /// drum bus" into one gesture instead of three.
     New,
+    /// **Nowhere.** A mixer track whose output is disconnected — see
+    /// `fontelle_model::MixerTrack::output_on`.
+    ///
+    /// Only ever offered by [`output_menu_layout`]: a channel plays somewhere
+    /// or it is not playing, and a *send* to nowhere is a send that should be
+    /// deleted rather than pointed at nothing.
+    Off,
 }
 
 /// The menu the route chip drops.
@@ -275,9 +341,18 @@ impl RouteMenu {
                 .cloned()
                 .unwrap_or_else(|| format!("Track {}", index + 1)),
             RouteChoice::New => NEW_TRACK.to_string(),
+            RouteChoice::Off => NO_OUTPUT.to_string(),
         }
     }
 }
+
+/// The caption on the output menu's "nowhere" row, in one place so the window
+/// can shape exactly the string the renderer will look for.
+///
+/// It names the *state* rather than the action — the row beside it says
+/// "Master", not "route to master" — and the em dash is what the output chip
+/// itself shows when it is off, so the menu and the chip read as one thing.
+pub const NO_OUTPUT: &str = "\u{2014} none";
 
 /// The caption on the menu's last row, in one place so the window can shape
 /// exactly the string the renderer will look for.
@@ -319,7 +394,35 @@ pub fn route_menu_layout_excluding(
     names: &[String],
     exclude: Option<usize>,
 ) -> RouteMenu {
-    // Master, every track somebody made, and the row that makes one.
+    menu_of(destinations(names, exclude), chip, bounds, metrics)
+}
+
+/// The **mixer track's** output menu: the same destinations, plus nowhere.
+///
+/// > *"if i chose to not route it to master, i wont be hearing my own input
+/// > but it will still be recording the audio clip."*
+///
+/// Its own function rather than a flag on the one above, because the extra row
+/// is not a variation on a destination — it is the absence of one, and the two
+/// other menus over this same list (a channel's route, a send's target) would
+/// each mean something wrong by it.
+pub fn output_menu_layout(
+    chip: Rect,
+    bounds: Rect,
+    metrics: &Metrics,
+    names: &[String],
+    exclude: Option<usize>,
+) -> RouteMenu {
+    let mut choices = destinations(names, exclude);
+    // Last, under the rule: it is the one answer you do not reach for by
+    // accident, and a first row meaning "off" in a menu of places is a click
+    // away from silence.
+    choices.push(RouteChoice::Off);
+    menu_of(choices, chip, bounds, metrics)
+}
+
+/// Master, every track somebody made, and the row that makes one.
+fn destinations(names: &[String], exclude: Option<usize>) -> Vec<RouteChoice> {
     let mut choices = vec![RouteChoice::Master];
     choices.extend(
         (0..names.len().saturating_sub(1))
@@ -327,7 +430,11 @@ pub fn route_menu_layout_excluding(
             .map(RouteChoice::Track),
     );
     choices.push(RouteChoice::New);
+    choices
+}
 
+/// Lays `choices` out under `chip`, kept inside `bounds`.
+fn menu_of(choices: Vec<RouteChoice>, chip: Rect, bounds: Rect, metrics: &Metrics) -> RouteMenu {
     let row = metrics.row_height.max(1.0);
     let width = MENU_WIDTH.max(chip.width).min(bounds.width);
     let height = row * choices.len() as f32 + MENU_PAD * 2.0;

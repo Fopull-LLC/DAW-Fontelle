@@ -1,0 +1,197 @@
+@prefix atom: <http://lv2plug.in/ns/ext/atom#> .
+@prefix doap: <http://usefulinc.com/ns/doap#> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .
+@prefix midi: <http://lv2plug.in/ns/ext/midi#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix state: <http://lv2plug.in/ns/ext/state#> .
+@prefix ui:   <http://lv2plug.in/ns/extensions/ui#> .
+@prefix urid: <http://lv2plug.in/ns/ext/urid#> .
+
+# The gain's own editor. An `ui:X11UI` because that is the one shape a host
+# can embed on this platform without a toolkit wrapper — see
+# `fontelle_host::lv2_ui`.
+<http://fopull.com/fontelle/testlv2/gain#ui>
+    a ui:X11UI ;
+    ui:binary <fontelle_testlv2.so> ;
+    lv2:optionalFeature ui:parent, ui:resize, <http://lv2plug.in/ns/ext/instance-access> ;
+    lv2:extensionData ui:idleInterface .
+
+# The gain keeps state no port exposes — see `fontelle_testlv2::STATE_RUNS_KEY`
+# — which is what `state:interface` declares, and its path goes through the
+# host's `state:mapPath` when the host offers one.
+<http://fopull.com/fontelle/testlv2/gain>
+    a lv2:Plugin, lv2:AmplifierPlugin ;
+    ui:ui <http://fopull.com/fontelle/testlv2/gain#ui> ;
+    doap:name "Fontelle Test Gain LV2" ;
+    doap:maintainer [ foaf:name "Fopull LLC" ] ;
+    lv2:minorVersion 1 ;
+    lv2:microVersion 0 ;
+    lv2:optionalFeature lv2:hardRTCapable, urid:map, state:mapPath ;
+    lv2:extensionData state:interface ;
+    lv2:port [
+        a lv2:AudioPort, lv2:InputPort ;
+        lv2:index 0 ;
+        lv2:symbol "in" ;
+        lv2:name "In" ;
+    ] , [
+        a lv2:AudioPort, lv2:OutputPort ;
+        lv2:index 1 ;
+        lv2:symbol "out" ;
+        lv2:name "Out" ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 2 ;
+        lv2:symbol "gain" ;
+        lv2:name "Gain" ;
+        lv2:default 1.0 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 2.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 3 ;
+        lv2:symbol "invert" ;
+        lv2:name "Invert" ;
+        lv2:default 0.0 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+        lv2:portProperty lv2:toggled ;
+    ] , [
+        # The sidechain, declared the way LV2 declares one: an audio input
+        # with `lv2:isSideChain`. Last, so no control port's index moves.
+        # The gain *ducks* by whatever arrives here, sample for sample — a
+        # key that is heard rather than detected, so a test can say exactly
+        # what it expects (the same trick the CLAP fixture's gain plays).
+        a lv2:AudioPort, lv2:InputPort ;
+        lv2:index 4 ;
+        lv2:symbol "key" ;
+        lv2:name "Key" ;
+        lv2:portProperty lv2:isSideChain ;
+    ] .
+
+# The same plugin with no editor at all — see `fontelle_testlv2::PLAIN_URI`.
+<http://fopull.com/fontelle/testlv2/plain>
+    a lv2:Plugin, lv2:AmplifierPlugin ;
+    doap:name "Fontelle Test Plain LV2" ;
+    doap:maintainer [ foaf:name "Fopull LLC" ] ;
+    lv2:minorVersion 1 ;
+    lv2:microVersion 0 ;
+    lv2:optionalFeature lv2:hardRTCapable ;
+    lv2:port [
+        a lv2:AudioPort, lv2:InputPort ;
+        lv2:index 0 ;
+        lv2:symbol "in" ;
+        lv2:name "In" ;
+    ] , [
+        a lv2:AudioPort, lv2:OutputPort ;
+        lv2:index 1 ;
+        lv2:symbol "out" ;
+        lv2:name "Out" ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 2 ;
+        lv2:symbol "gain" ;
+        lv2:name "Gain" ;
+        lv2:default 1.0 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 2.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 3 ;
+        lv2:symbol "invert" ;
+        lv2:name "Invert" ;
+        lv2:default 0.0 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+        lv2:portProperty lv2:toggled ;
+    ] .
+
+# The sine's editor. It speaks in **atoms** rather than control values, which
+# is the half of an editor a float cannot do — see `fontelle_host::lv2_ui`.
+<http://fopull.com/fontelle/testlv2/sine#ui>
+    a ui:X11UI ;
+    ui:binary <fontelle_testlv2.so> ;
+    lv2:requiredFeature urid:map ;
+    lv2:optionalFeature ui:parent ;
+    lv2:extensionData ui:idleInterface .
+
+<http://fopull.com/fontelle/testlv2/sine>
+    a lv2:Plugin, lv2:InstrumentPlugin ;
+    ui:ui <http://fopull.com/fontelle/testlv2/sine#ui> ;
+    doap:name "Fontelle Test Sine LV2" ;
+    doap:maintainer [ foaf:name "Fopull LLC" ] ;
+    lv2:minorVersion 1 ;
+    lv2:microVersion 0 ;
+    lv2:requiredFeature urid:map ;
+    lv2:port [
+        a lv2:InputPort, atom:AtomPort ;
+        atom:bufferType atom:Sequence ;
+        atom:supports midi:MidiEvent ;
+        lv2:index 0 ;
+        lv2:symbol "midi_in" ;
+        lv2:name "MIDI In" ;
+    ] , [
+        a lv2:AudioPort, lv2:OutputPort ;
+        lv2:index 1 ;
+        lv2:symbol "out" ;
+        lv2:name "Out" ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 2 ;
+        lv2:symbol "level" ;
+        lv2:name "Level" ;
+        lv2:default 0.5 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+    ] , [
+        a lv2:OutputPort, atom:AtomPort ;
+        atom:bufferType atom:Sequence ;
+        atom:supports midi:MidiEvent ;
+        lv2:index 3 ;
+        lv2:symbol "midi_out" ;
+        lv2:name "MIDI Out" ;
+    ] .
+
+# The gain once more, with an editor that has no `port_event` and no
+# `extension_data` — see `fontelle_testlv2::DEAF_URI`.
+<http://fopull.com/fontelle/testlv2/deaf#ui>
+    a ui:X11UI ;
+    ui:binary <fontelle_testlv2.so> ;
+    lv2:optionalFeature ui:parent .
+
+<http://fopull.com/fontelle/testlv2/deaf>
+    a lv2:Plugin, lv2:AmplifierPlugin ;
+    ui:ui <http://fopull.com/fontelle/testlv2/deaf#ui> ;
+    doap:name "Fontelle Test Deaf LV2" ;
+    doap:maintainer [ foaf:name "Fopull LLC" ] ;
+    lv2:minorVersion 1 ;
+    lv2:microVersion 0 ;
+    lv2:optionalFeature lv2:hardRTCapable ;
+    lv2:port [
+        a lv2:AudioPort, lv2:InputPort ;
+        lv2:index 0 ;
+        lv2:symbol "in" ;
+        lv2:name "In" ;
+    ] , [
+        a lv2:AudioPort, lv2:OutputPort ;
+        lv2:index 1 ;
+        lv2:symbol "out" ;
+        lv2:name "Out" ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 2 ;
+        lv2:symbol "gain" ;
+        lv2:name "Gain" ;
+        lv2:default 1.0 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 2.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 3 ;
+        lv2:symbol "invert" ;
+        lv2:name "Invert" ;
+        lv2:default 0.0 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+        lv2:portProperty lv2:toggled ;
+    ] .

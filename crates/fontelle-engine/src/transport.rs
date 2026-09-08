@@ -1,5 +1,5 @@
 use std::ops::Range;
-use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering};
 
 use fontelle_types::{AudioPlacement, CompiledTimeline, Sample, Tick, TimedEvent};
 
@@ -59,6 +59,12 @@ pub struct Transport {
     loop_start_sample: AtomicI64,
     loop_end_sample: AtomicI64,
     looping: AtomicU8,
+    /// Whether a plugin's own editor is open — somebody is at its controls,
+    /// and the audio thread has to keep running the graph for their words
+    /// to reach it. Written by the window, read by the callback every block
+    /// for [`crate::IdleGate::set_attended`]. On the transport because the
+    /// transport is already the shared state the callback is driven by.
+    attended: AtomicBool,
 }
 
 impl Transport {
@@ -73,7 +79,18 @@ impl Transport {
             loop_start_sample: AtomicI64::new(0),
             loop_end_sample: AtomicI64::new(0),
             looping: AtomicU8::new(0),
+            attended: AtomicBool::new(false),
         }
+    }
+
+    /// Whether a plugin's own editor is open. See the field.
+    pub fn is_attended(&self) -> bool {
+        self.attended.load(Ordering::Relaxed)
+    }
+
+    /// Says whether a plugin's own editor is open. See the field.
+    pub fn set_attended(&self, on: bool) {
+        self.attended.store(on, Ordering::Relaxed);
     }
 
     pub fn state(&self) -> TransportState {

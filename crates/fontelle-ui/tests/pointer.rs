@@ -35,6 +35,7 @@ fn note(start: Tick, length: Tick, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -86,10 +87,10 @@ fn rig() -> Rig {
         curve: Vec::new(),
         notes: Vec::new(),
         audio: Default::default(),
+        prefab: None,
     }];
 
     let instrument_view = InstrumentView {
-        presets: Vec::new(),
         keys: Vec::new(),
         key: None,
         title: "tri baja".to_string(),
@@ -101,7 +102,7 @@ fn rig() -> Rig {
                 value: 0.2,
                 display: "0 ms".to_string(),
                 kind: ParamKind::Knob,
-             automated: false,
+                automated: false,
             }],
         }],
     };

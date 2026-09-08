@@ -42,10 +42,21 @@ fn mid(rect: Rect) -> (f32, f32) {
 #[test]
 fn there_is_an_import_tab_and_it_does_not_sit_on_top_of_the_others() {
     let l = imports(4);
-    let tabs = [l.sounds_tab, l.projects_tab, l.import_tab, l.settings_tab];
+    let tabs = [
+        l.tab(BrowserMode::Sounds),
+        l.tab(BrowserMode::Projects),
+        l.tab(BrowserMode::Import),
+        l.tab(BrowserMode::Settings),
+    ];
     for tab in tabs {
-        assert!(!tab.is_empty(), "a tab with no room is a tab nobody can press");
-        assert!(tab.right() <= body().right() + 0.01, "{tab:?} runs off the panel");
+        assert!(
+            !tab.is_empty(),
+            "a tab with no room is a tab nobody can press"
+        );
+        assert!(
+            tab.right() <= body().right() + 0.01,
+            "{tab:?} runs off the panel"
+        );
     }
     for (i, a) in tabs.iter().enumerate() {
         for b in &tabs[i + 1..] {
@@ -57,7 +68,7 @@ fn there_is_an_import_tab_and_it_does_not_sit_on_top_of_the_others() {
 #[test]
 fn clicking_the_import_tab_asks_for_the_import_mode() {
     let l = imports(4);
-    let (x, y) = mid(l.import_tab);
+    let (x, y) = mid(l.tab(BrowserMode::Import));
     assert_eq!(browser_hit(&l, x, y), BrowserHit::Mode(BrowserMode::Import));
 }
 
@@ -68,10 +79,10 @@ fn the_four_tabs_still_each_lead_to_their_own_mode() {
     // the hit, so pressing one tab did another one's job.
     let l = imports(4);
     for (rect, mode) in [
-        (l.sounds_tab, BrowserMode::Sounds),
-        (l.projects_tab, BrowserMode::Projects),
-        (l.import_tab, BrowserMode::Import),
-        (l.settings_tab, BrowserMode::Settings),
+        (l.tab(BrowserMode::Sounds), BrowserMode::Sounds),
+        (l.tab(BrowserMode::Projects), BrowserMode::Projects),
+        (l.tab(BrowserMode::Import), BrowserMode::Import),
+        (l.tab(BrowserMode::Settings), BrowserMode::Settings),
     ] {
         let (x, y) = mid(rect);
         assert_eq!(browser_hit(&l, x, y), BrowserHit::Mode(mode));
@@ -95,7 +106,10 @@ fn the_import_tab_carries_a_button_for_each_kind_of_file() {
     assert_eq!(l.kinds.len(), FolderKind::ALL.len());
     for (kind, rect) in &l.kinds {
         assert!(!rect.is_empty(), "{kind:?} has no button");
-        assert!(rect.right() <= body().right() + 0.01, "{kind:?} escapes the panel");
+        assert!(
+            rect.right() <= body().right() + 0.01,
+            "{kind:?} escapes the panel"
+        );
     }
     for (i, (a_kind, a)) in l.kinds.iter().enumerate() {
         for (b_kind, b) in l.kinds.iter().skip(i + 1) {
@@ -124,7 +138,10 @@ fn the_kind_buttons_are_only_in_the_tab_they_mean_anything_in() {
         BrowserMode::Settings,
     ] {
         let l = browser_layout_for(body(), &metrics(), mode, 4, 4, 0, 0);
-        assert!(l.kinds.is_empty(), "{mode:?} draws the import tab's buttons");
+        assert!(
+            l.kinds.is_empty(),
+            "{mode:?} draws the import tab's buttons"
+        );
     }
 }
 
@@ -160,7 +177,7 @@ fn nothing_in_the_import_tab_is_drawn_on_top_of_anything_else() {
         ("status", l.status),
         ("open folder", l.open_folder),
         ("choose folder", l.choose_folder),
-        ("import tab", l.import_tab),
+        ("import tab", l.tab(BrowserMode::Import)),
     ];
     parts.extend(l.kinds.iter().map(|(_, rect)| ("kind", *rect)));
     for (i, (name_a, a)) in parts.iter().enumerate() {
@@ -185,7 +202,10 @@ fn the_import_tab_has_a_search_box_because_a_collection_of_midi_is_a_collection(
     let l = imports(4);
     assert!(!l.search.is_empty());
     let (x, y) = mid(l.search);
-    assert_eq!(browser_hit(&l, x, y), BrowserHit::Search(BrowserMode::Import));
+    assert_eq!(
+        browser_hit(&l, x, y),
+        BrowserHit::Search(BrowserMode::Import)
+    );
 }
 
 #[test]
@@ -233,7 +253,12 @@ fn a_narrow_panel_still_gives_every_tab_somewhere_to_be() {
     // tight; none of them may be nothing, and none may leave the panel.
     let narrow = Rect::new(0.0, 0.0, 120.0, 400.0);
     let l = browser_layout_for(narrow, &metrics(), BrowserMode::Import, 4, 0, 0, 0);
-    for tab in [l.sounds_tab, l.projects_tab, l.import_tab, l.settings_tab] {
+    for tab in [
+        l.tab(BrowserMode::Sounds),
+        l.tab(BrowserMode::Projects),
+        l.tab(BrowserMode::Import),
+        l.tab(BrowserMode::Settings),
+    ] {
         assert!(!tab.is_empty());
         assert!(tab.x >= narrow.x - 0.01 && tab.right() <= narrow.right() + 0.01);
     }
@@ -244,5 +269,88 @@ fn each_kind_knows_what_it_is_called_on_its_button() {
     assert_ne!(FolderKind::Midi.tab_label(), FolderKind::Scores.tab_label());
     for kind in FolderKind::ALL {
         assert!(!kind.tab_label().is_empty());
+    }
+}
+
+// ------------------------------------------------- carrying a row out of it ---
+//
+// > *"i currently cannot drag audio files from the import audio tab. i want to
+// > be able to click and drag them into the sampler or into the channel rack
+// > to make it have a sampler with that clip sampled."*
+//
+// The reason it could not be done: the press asked **the soundfont list**
+// whether the row under the pointer was a folder, while the rows on screen
+// came from the import list. Two lists of different lengths, so the answer was
+// whatever the *other* panel happened to have at that index — usually "a
+// folder", which armed no drag at all, and sometimes nothing at all, which
+// armed a drag on the `..` row. `browser_row_carries` is the one place that
+// decision now lives, and it is handed the list the rows were drawn from.
+
+use fontelle_ui::canvas::browser_row_carries;
+use fontelle_ui::document::{LibraryEntry, LibraryKind};
+
+fn entry(name: &str, kind: LibraryKind) -> LibraryEntry {
+    LibraryEntry {
+        name: name.to_string(),
+        detail: String::new(),
+        kind,
+    }
+}
+
+/// What the Import tab looks like inside a folder: the row back out, two
+/// folders, then the files.
+fn import_rows() -> Vec<LibraryEntry> {
+    vec![
+        entry("..", LibraryKind::Up),
+        entry("Breaks", LibraryKind::Folder),
+        entry("Kicks", LibraryKind::Folder),
+        entry("CoolBreak.wav", LibraryKind::File),
+        entry("Doll_Break_120_PL.wav", LibraryKind::File),
+    ]
+}
+
+#[test]
+fn a_file_row_in_the_import_tab_can_be_carried_out_of_the_panel() {
+    let rows = import_rows();
+    assert!(browser_row_carries(&rows, BrowserMode::Import, 3));
+    assert!(browser_row_carries(&rows, BrowserMode::Import, 4));
+}
+
+#[test]
+fn a_folder_is_a_place_rather_than_a_sound_and_carries_nothing() {
+    let rows = import_rows();
+    assert!(
+        !browser_row_carries(&rows, BrowserMode::Import, 0),
+        "the .. row"
+    );
+    assert!(!browser_row_carries(&rows, BrowserMode::Import, 1));
+    assert!(!browser_row_carries(&rows, BrowserMode::Import, 2));
+}
+
+#[test]
+fn a_row_that_is_not_in_the_list_carries_nothing() {
+    // The exact shape of the bug: asked about row 8 of a five-row list, the
+    // old test was `!matches!(list.get(8), Some(Folder | Up))` — which is true
+    // for `None`, so a row nobody clicked armed a drag on nothing.
+    let rows = import_rows();
+    assert!(!browser_row_carries(&rows, BrowserMode::Import, 8));
+    assert!(!browser_row_carries(&[], BrowserMode::Import, 0));
+}
+
+#[test]
+fn only_the_import_tab_hands_out_sounds_to_carry() {
+    // A soundfont row is carried by a different gesture with a different
+    // meaning (a preset onto a channel), and a project or a setting is not a
+    // sound at all.
+    let rows = import_rows();
+    for mode in [
+        BrowserMode::Sounds,
+        BrowserMode::Projects,
+        BrowserMode::Settings,
+    ] {
+        assert!(
+            !browser_row_carries(&rows, mode, 3),
+            "{mode:?} let a file row be dragged out"
+        );
     }
 }

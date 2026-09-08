@@ -1,0 +1,18 @@
+[package]
+name = "fontelle-testlv2"
+description = "Two tiny LV2 plugins, built only so the host in fontelle-host has a real LV2 bundle to load in its tests."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The C structs and nothing else (ISC OR MIT OR Apache-2.0).
+# `sys` for the state extension's structs (`LV2_State_Interface`,
+# `LV2_State_Map_Path`), which are the C ABI verbatim.
+lv2_raw = { version = "0.3.2", features = ["sys"] }

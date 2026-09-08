@@ -13,10 +13,8 @@
 
 mod common;
 
-use fontelle_app::{RealiseOptions, SampleLibrary, Session, blank_project};
-use fontelle_engine::{
-    BLOCK_SIZE, Transport, TransportReader, graph_channel, timeline_channel,
-};
+use fontelle_app::{RealiseOptions, SampleLibrary, Session};
+use fontelle_engine::{BLOCK_SIZE, Transport, TransportReader, graph_channel, timeline_channel};
 use fontelle_model::{AddNotes, Command, Note};
 use fontelle_types::{CompiledTimeline, PPQN, ParamAddress};
 use fontelle_ui::canvas::ArrangeEdit;
@@ -36,7 +34,6 @@ fn open_lane(session: &fontelle_app::Session) -> fontelle_ui::document::ClipInfo
         .expect("the clip that was just made is the block in hand")
 }
 
-
 use common::SR;
 
 fn a_note(start: i64, length: i64, key: u8) -> Note {
@@ -51,6 +48,7 @@ fn a_note(start: i64, length: i64, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        channel: None,
     }
 }
 
@@ -61,7 +59,28 @@ fn studio() -> (
     fontelle_engine::GraphSource,
     fontelle_engine::TimelineSource,
 ) {
-    let mut project = blank_project(8, 120.0, SR);
+    let mut project = common::a_project_with_a_clip(8, 120.0, SR);
+    // The three-oscillator synth, explicitly, rather than whatever a new
+    // project happens to open on. `patch/filter[0]/cutoff` has to be the only
+    // thing deciding how open the filter is for a lane on it to be *heard*,
+    // and the bank's presets route velocity, an envelope and key tracking into
+    // that same cutoff — with those adding to it, a lane drawn to the bottom
+    // moves the sound by a fifth of a decibel.
+    {
+        let channel = project
+            .channels
+            .keys()
+            .next()
+            .expect("a blank project has a channel");
+        let library = SampleLibrary::new();
+        fontelle_app::set_channel_patch(
+            &mut project,
+            channel,
+            &fontelle_core::Patch::basic_synth(),
+            &library,
+        )
+        .expect("the basic synth must serialise");
+    }
     let clip = Session::first_clip(&project).expect("a blank project has one clip");
     AddNotes::new(clip, vec![a_note(0, PPQN * 16, 60)])
         .apply(&mut project)
@@ -78,10 +97,18 @@ fn studio() -> (
     let realised =
         fontelle_app::realise(&project, &library, options).expect("a blank project must realise");
     let (graphs, source) = graph_channel(realised.graph);
-    let session = Session::new(project, library, channel_nodes, publisher, options, clip, None)
-        .with_graphs(graphs, realised.track_controls)
-        .with_param_nodes(realised.param_nodes)
-        .with_spectrum_taps(realised.spectrum_taps);
+    let session = Session::new(
+        project,
+        library,
+        channel_nodes,
+        publisher,
+        options,
+        clip,
+        None,
+    )
+    .with_graphs(graphs, realised.track_controls)
+    .with_param_nodes(realised.param_nodes)
+    .with_spectrum_taps(realised.spectrum_taps);
     (session, source, timelines)
 }
 

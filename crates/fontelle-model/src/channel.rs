@@ -1,4 +1,4 @@
-use fontelle_types::{MixerTrackId, PatchData};
+use fontelle_types::{MixerTrackId, PatchData, PluginState};
 
 /// An instrument channel: the document-level handle a clip's `NoteData::channel`
 /// points at. Its `fontelle-core::Patch` lives behind this — the model crate never
@@ -41,6 +41,36 @@ pub struct Channel {
     /// a newer build can be refused by version rather than by a confusing
     /// field-level error.
     pub patch_data: Option<PatchData>,
+    /// **Which of the three instruments this channel is** — see
+    /// [`fontelle_types::InstrumentKind`].
+    ///
+    /// The choice, kept, rather than something read back off `patch_data`. A
+    /// patch with layers in it says what it is; an *empty* one does not, and
+    /// empty is a real state — a sampler with no sample and a soundfont player
+    /// with no soundfont are the same patch, and both are where you sit while
+    /// deciding what to load.
+    ///
+    /// `None` is a project written before this existed. The app resolves it
+    /// from the patch that is actually loaded (`Session::channel_kind`), which
+    /// is exactly the derivation this field replaces — so an old project opens
+    /// saying what it always was, and says it in this field the moment
+    /// anything is chosen.
+    #[serde(default)]
+    pub instrument: Option<fontelle_types::InstrumentKind>,
+    /// The plugin this channel plays instead of a patch (TDD §8.4).
+    ///
+    /// Beside `patch_data` rather than inside it, for the reason
+    /// [`crate::EffectSlot::plugin`] is beside its `config`: a `PatchData` is
+    /// what `fontelle-core` writes, and `fontelle-core` knows nothing about
+    /// plugins and must not (INVARIANT 4). A channel has one or the other, and
+    /// [`instrument`](Self::instrument) is what says which.
+    ///
+    /// The two are not cleared when the other is set, and that is deliberate:
+    /// somebody trying a plugin on a channel that had a soundfont on it, and
+    /// then changing their mind, gets the soundfont back rather than an empty
+    /// channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<PluginState>,
     /// Where this channel sits in the stereo field: -1.0 hard left, 0.0
     /// centre, +1.0 hard right.
     ///
@@ -73,6 +103,20 @@ pub struct Channel {
     /// Defaulted, so a project written before it existed opens at unity.
     #[serde(default)]
     pub gain_db: f32,
+    /// The preset this device was loaded from, if it was loaded from one
+    /// (`docs/flopsynth-plan.md` §P.5).
+    ///
+    /// **The name is remembered; the cleanliness is recognised.** This field
+    /// survives every edit and never says whether the device still matches the
+    /// file — that is computed by comparing the current state against the
+    /// bank's (`Session::preset_state`), so an undo makes the bar's `*` go out
+    /// with nothing to remember and no way for the two to disagree.
+    ///
+    /// Defaulted and omitted when empty, so every project written before the
+    /// preset system opens and is written back unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<fontelle_types::PresetRef>,
+
     /// This channel plays nothing.
     ///
     /// A **sequencer** mute, the same reading TDD §10.3 gives a lane's: the

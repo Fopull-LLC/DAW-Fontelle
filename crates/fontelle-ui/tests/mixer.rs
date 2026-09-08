@@ -10,8 +10,9 @@
 //! There is no window in this file and no audio device.
 
 use fontelle_ui::canvas::{
-    FADER_DETENT_PX, MAX_FADER_DB, MIN_FADER_DB, MixerHit, PAN_DETENT_PX, STRIP_WIDTH, fader_db_at,
-    fader_y_of_db, mixer_hit, mixer_layout, pan_at, pan_x_of, unity_fraction,
+    FADER_DETENT_PX, MAX_FADER_DB, MIN_FADER_DB, MixerHit, MixerKey, NamePress, PAN_DETENT_PX,
+    STRIP_WIDTH, fader_db_at, fader_y_of_db, mixer_hit, mixer_key, mixer_layout, name_press,
+    pan_at, pan_x_of, unity_fraction,
 };
 use fontelle_ui::document::MixerStrip;
 use fontelle_ui::layout::Rect;
@@ -360,7 +361,10 @@ fn a_press_anywhere_on_a_strip_that_is_not_a_control_selects_it() {
     let l = mixer_layout(body(), &theme().metrics, &strips, 0);
     let s = l.strips[1].clone();
 
-    let (x, y) = (s.name.x + s.name.width / 2.0, s.name.y + s.name.height / 2.0);
+    let (x, y) = (
+        s.name.x + s.name.width / 2.0,
+        s.name.y + s.name.height / 2.0,
+    );
     assert_eq!(mixer_hit(&l, x, y), MixerHit::Name(1));
 
     // The read-out along the bottom is a label, not a control — so it is part
@@ -393,7 +397,11 @@ fn selecting_a_strip_never_shadows_a_control_on_it() {
         ("name", s.name, MixerHit::Name(2)),
     ] {
         let (x, y) = centre(rect);
-        assert_eq!(mixer_hit(&l, x, y), expected, "the {name} stopped answering");
+        assert_eq!(
+            mixer_hit(&l, x, y),
+            expected,
+            "the {name} stopped answering"
+        );
     }
 }
 
@@ -404,7 +412,10 @@ fn the_master_is_selectable_too() {
     let strips = strips(3);
     let l = mixer_layout(body(), &theme().metrics, &strips, 0);
     let m = l.master.clone().expect("master");
-    let (x, y) = (m.name.x + m.name.width / 2.0, m.name.y + m.name.height / 2.0);
+    let (x, y) = (
+        m.name.x + m.name.width / 2.0,
+        m.name.y + m.name.height / 2.0,
+    );
     assert_eq!(mixer_hit(&l, x, y), MixerHit::Name(strips.len() - 1));
 }
 
@@ -481,10 +492,82 @@ fn nothing_in_the_mixer_is_drawn_on_top_of_anything_else() {
             if a.is_empty() || b.is_empty() {
                 continue;
             }
-            assert!(
-                !a.intersects(b),
-                "{a_name} {a:?} overlaps {b_name} {b:?}"
-            );
+            assert!(!a.intersects(b), "{a_name} {a:?} overlaps {b_name} {b:?}");
         }
+    }
+}
+
+// ------------------------------------------------------ renaming a strip ---
+//
+// > *"currently i cannot rename mixer tracks i want to be able to click on
+// > their name to type in that field and just be able to rename super quickly
+// > and easily like that for my mixer tracks."*
+//
+// A press on a name has two jobs and only one gesture, so the question is
+// asked once, here, rather than decided inside an event handler where nothing
+// could check it: the first click **selects** the strip, and a click on the
+// name of the strip that is already selected **renames** it. That is what
+// "click on their name to type in that field" is, and it is why a rename can
+// never happen by accident on the way to choosing a track.
+
+#[test]
+fn clicking_the_name_of_another_strip_selects_it_rather_than_renaming_it() {
+    for strip in [0usize, 2, 5] {
+        assert_eq!(
+            name_press(strip, 1),
+            NamePress::Select,
+            "clicking strip {strip}'s name while 1 is selected renamed it"
+        );
+    }
+}
+
+#[test]
+fn clicking_the_name_of_the_strip_already_selected_starts_a_rename() {
+    for strip in [0usize, 2, 5] {
+        assert_eq!(name_press(strip, strip), NamePress::Rename);
+    }
+}
+
+#[test]
+fn the_name_row_is_a_target_worth_aiming_at() {
+    // A rename you have to hit a two-pixel caption to start is one nobody
+    // uses. It is the full width of the strip and a row tall.
+    let l = mixer_layout(body(), &theme().metrics, &strips(3), 0);
+    for s in &l.strips {
+        assert!(
+            s.name.height >= 12.0,
+            "the name row is {} tall",
+            s.name.height
+        );
+        assert!(s.name.width > STRIP_WIDTH * 0.8);
+        assert_eq!(
+            mixer_hit(
+                &l,
+                s.name.x + s.name.width / 2.0,
+                s.name.y + s.name.height / 2.0
+            ),
+            MixerHit::Name(s.index),
+        );
+    }
+}
+
+// ------------------------------------------------------- from the keyboard ---
+
+#[test]
+fn m_mutes_the_selected_strip_and_n_solos_it() {
+    // *"pressing M while having a mixer track selected toggles its mute and
+    // pressing N solos."* Which strip is the one the options column is
+    // already pointed at, so the answer is on screen before the key is
+    // pressed; the window supplies it (`App::toggle_selected_track`).
+    assert_eq!(mixer_key("m"), Some(MixerKey::Mute));
+    assert_eq!(mixer_key("n"), Some(MixerKey::Solo));
+}
+
+#[test]
+fn no_other_letter_reaches_a_strip() {
+    // Bare letters are the canvas's, and the mixer only claims two of them.
+    // `s` in particular stays the snap chip's and `d` the delete tool's.
+    for key in ["s", "d", "p", "b", "e", "1", " ", "", "mn"] {
+        assert_eq!(mixer_key(key), None, "{key:?} reached a mixer strip");
     }
 }
