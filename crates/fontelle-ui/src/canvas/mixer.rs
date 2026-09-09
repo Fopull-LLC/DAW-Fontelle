@@ -36,8 +36,9 @@ const GAP: f32 = 4.0;
 /// expander" is the question the column exists to answer.
 pub const OPTIONS_WIDTH: f32 = 168.0;
 
-/// How tall one row in the options column is. A row you can read and aim at,
-/// unlike `INSERT_ROW_HEIGHT`, which is what a strip can spare.
+/// How tall one row in the options column is. A row you can read and aim at —
+/// which is why the *strip* stopped trying to draw the same list in nine
+/// pixels: see [`MixerStripLayout::chain`].
 const OPTION_ROW_HEIGHT: f32 = 20.0;
 
 /// How much of a send row goes to naming its destination, the rest to the
@@ -64,19 +65,24 @@ const OPTION_BYPASS_WIDTH: f32 = 16.0;
 const OPTION_GRIP_WIDTH: f32 = 12.0;
 const OPTION_REMOVE_WIDTH: f32 = 16.0;
 
-/// How tall one insert row is. Small on purpose: it carries three or four
-/// letters and a switch, and every pixel it takes is a pixel off the fader.
-const INSERT_ROW_HEIGHT: f32 = 12.0;
-
-/// The bypass switch at the left-hand end of an insert row.
-const BYPASS_WIDTH: f32 = 10.0;
-
 /// How much fader a strip keeps whatever else it is asked to show.
 ///
 /// A fader with no travel is not a control, and a rack that grew into one
 /// would take away the mixer's one essential gesture the moment somebody used
-/// its newest feature.
+/// its newest feature. The rack is gone and the read-out that replaced it
+/// cannot grow — but the floor stays, because it is what decides that a short
+/// panel spends its last pixels on the fader rather than on the read-out.
 const MIN_FADER_HEIGHT: f32 = 44.0;
+
+/// How tall a strip's chain read-out is — see [`MixerStripLayout::chain`].
+///
+/// One row, and the same row whatever the track carries: that is the whole
+/// difference between this and the rack it replaced.
+const CHAIN_HEIGHT: f32 = 9.0;
+
+/// How wide one dot in that row is, and the gap after it.
+pub const CHAIN_DOT: f32 = 5.0;
+pub const CHAIN_DOT_GAP: f32 = 3.0;
 
 /// How tall the pan control is.
 const PAN_HEIGHT: f32 = 12.0;
@@ -142,16 +148,28 @@ pub struct MixerStripLayout {
     pub solo: Rect,
     /// The gain read-out, in decibels. A label, not a control.
     pub value: Rect,
-    /// A row per insert, top to bottom in chain order — which is the order the
-    /// sound goes through them, and the only order a rack may draw them in
-    /// without lying about the signal path.
+    /// **How much processing is on this track**, as one fixed row: a dot per
+    /// insert, dimmed where one is switched out.
     ///
-    /// Fewer rows than the track has inserts when the panel is too short for
-    /// them: the fader is what a mixer is *for*, so it is the rack that gives
-    /// way. See `MIN_FADER_HEIGHT`.
-    pub inserts: Vec<Rect>,
-    /// The row that adds one. Empty when there is no room for it.
-    pub add: Rect,
+    /// > *"the effects trail is showing both on each track and in the section
+    /// > where you have it selected ... this makes showing it on the track
+    /// > redundant and is making it so that the volume bar is squished the
+    /// > more effects you add."*
+    ///
+    /// It used to be a row *per* insert, and both halves of that were wrong.
+    /// The names were already drawn, in full and legibly, by the track-options
+    /// column — and the rack took the height for them off the **fader**, so
+    /// the one control a mixer exists for shrank every time somebody used the
+    /// newest feature.
+    ///
+    /// What is left is the part the options column genuinely cannot show:
+    /// that column only ever points at *one* track, and "which of these
+    /// sixteen strips has anything on it" is a question about all of them.
+    /// Reserved whether or not there are any, for the reason [`STRIP_WIDTH`]
+    /// gives about width — a fader that moves when the first effect lands is a
+    /// fader somewhere new every time you look — and given up entirely before
+    /// the fader is, when the panel is too short for both.
+    pub chain: Rect,
 }
 
 /// One insert, as the options column draws it: a switch, a name you can press
@@ -699,37 +717,21 @@ fn strip_layout(
         (switches_y - GAP - middle_y).max(0.0),
     )
     .clamped();
-    // The rack comes off the top of the fader's space, and only as much of it
-    // as leaves a fader worth dragging.
-    let wanted = strip.inserts.len() + 1;
-    let room = ((middle.height - MIN_FADER_HEIGHT) / INSERT_ROW_HEIGHT)
-        .floor()
-        .max(0.0) as usize;
-    let rows = wanted.min(room);
-    let mut inserts = Vec::new();
-    let mut add = Rect::new(middle.x, middle.y, 0.0, 0.0);
-    for row in 0..rows {
-        let rect = Rect::new(
-            middle.x,
-            middle.y + row as f32 * INSERT_ROW_HEIGHT,
-            middle.width,
-            INSERT_ROW_HEIGHT,
-        )
-        .clamped();
-        // The add row is last, after every insert that fitted — so a rack that
-        // cannot show everything shows the effects rather than the button.
-        if row < strip.inserts.len() {
-            inserts.push(rect);
-        } else {
-            add = rect;
-        }
-    }
-    let rack_height = rows as f32 * INSERT_ROW_HEIGHT;
+    // The chain read-out comes off the top of the fader's space — one row,
+    // always the same row, and only when what is left is still a fader worth
+    // dragging. Unlike the rack it replaced, it cannot grow: a track with
+    // sixteen effects costs the fader exactly what a track with one does.
+    let chain_height = if middle.height - CHAIN_HEIGHT >= MIN_FADER_HEIGHT {
+        CHAIN_HEIGHT
+    } else {
+        0.0
+    };
+    let chain = Rect::new(middle.x, middle.y, middle.width, chain_height).clamped();
     let middle = Rect::new(
         middle.x,
-        middle.y + rack_height,
+        middle.y + chain_height,
         middle.width,
-        (middle.height - rack_height).max(0.0),
+        (middle.height - chain_height).max(0.0),
     )
     .clamped();
 
@@ -771,8 +773,7 @@ fn strip_layout(
         mute,
         solo,
         value,
-        inserts,
-        add,
+        chain,
     }
 }
 
@@ -825,13 +826,6 @@ pub enum MixerHit {
     Pan(usize),
     Mute(usize),
     Solo(usize),
-    /// Open the effect in slot `.1` of strip `.0`.
-    Insert(usize, usize),
-    /// Switch that insert out of the chain, or back in — reachable without
-    /// opening it, because comparing with and without is the reason to have
-    /// the switch at all.
-    BypassInsert(usize, usize),
-    AddInsert(usize),
     /// The `+` column past the last strip.
     AddTrack,
     /// Something in the track-options column.
@@ -876,9 +870,6 @@ impl MixerHit {
             Self::Pan(_) => "Balance \u{2014} drag; the centre has a detent",
             Self::Mute(_) => "Silence this track",
             Self::Solo(_) => "Hear only this track and what feeds it",
-            Self::Insert(_, _) => "Open this effect's controls",
-            Self::BypassInsert(_, _) => "Switch this effect out, keeping its settings",
-            Self::AddInsert(_) => "Put an effect on this track",
             Self::AddTrack => "Add a mixer track",
             Self::Options(what) => what.tip(),
             Self::Nothing => return None,
@@ -969,22 +960,10 @@ pub fn mixer_hit(layout: &MixerLayout, x: f32, y: f32) -> MixerHit {
         if !strip.frame.contains(x, y) {
             continue;
         }
-        // The fader before the name, because the groove is the tallest thing
-        // in the strip and the name is a single row at the top of it.
-        // The rack before anything else in the strip's middle: its rows are
-        // small, and a fader that claimed them would make them unclickable.
-        for (slot, row) in strip.inserts.iter().enumerate() {
-            if row.contains(x, y) {
-                return if x < row.x + BYPASS_WIDTH {
-                    MixerHit::BypassInsert(strip.index, slot)
-                } else {
-                    MixerHit::Insert(strip.index, slot)
-                };
-            }
-        }
-        if strip.add.contains(x, y) {
-            return MixerHit::AddInsert(strip.index);
-        }
+        // The chain read-out is deliberately *not* a target of its own: it
+        // falls through to the strip, which selects the track and points the
+        // options column — where the chain can actually be worked on — at it.
+        // Splitting a nine-pixel row into six is six targets nobody can hit.
         if strip.mute.contains(x, y) {
             return MixerHit::Mute(strip.index);
         }

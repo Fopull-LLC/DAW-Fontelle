@@ -164,9 +164,12 @@ fn stretch_is_off_until_it_is_turned_on_and_a_second_press_turns_it_back_off() {
     // take dropped on the arrangement has to sound like the take.
     let mut timeline = Timeline::new(view());
     assert!(!timeline.stretch());
-    timeline.toggle_stretch();
+    // Nothing selected, so nothing to freeze either way — the switch is just
+    // a switch here. What it does to a *stretched selection* on the way off is
+    // `turning_the_switch_off_freezes_the_selection`.
+    assert!(timeline.toggle_stretch(&[]).is_empty());
     assert!(timeline.stretch());
-    timeline.toggle_stretch();
+    assert!(timeline.toggle_stretch(&[]).is_empty());
     assert!(!timeline.stretch());
     timeline.set_stretch(true);
     assert!(timeline.stretch());
@@ -241,16 +244,56 @@ fn a_clip_already_in_the_mode_the_switch_names_is_not_told_again() {
     assert!(has_resize(&edits));
 }
 
+/// **A drag never turns a clip's stretch off.** Superseding the rule that used
+/// to be here, and the reason is worth keeping rather than replacing.
+///
+/// The old rule read the switch as *"what the drag does, not a filter on which
+/// clips it does it to"*, so a drag with the switch off turned a stretched
+/// clip off first and then cut it. That is coherent, and it made trims
+/// **lossy**: turning a stretched clip off freezes the rate it was being
+/// played at into its own `speed` (`fontelle_model::with_stretch`, which does
+/// that so the sound does not jump). A clip stretched down to a quarter and
+/// then dragged became a clip genuinely playing four times too fast, whose
+/// take really was a quarter as long — and no drag could bring the rest back.
+///
+/// Two reports came out of that: *"its stretching the clip back to how it was
+/// before before letting you extend the length of the ending"* and *"making
+/// the audio show completely blank after that even though it actually does
+/// have content"*. Both are the same fault seen from two sides.
+///
+/// So the switch's off position means *"drags trim"*, and turning it off is
+/// the deliberate act that freezes — see
+/// `turning_the_switch_off_freezes_the_stretched_clips_in_the_selection`.
 #[test]
-fn with_stretch_off_a_drag_on_a_stretched_clip_turns_its_stretch_off_so_the_drag_cuts() {
-    // *"that defines whether it cuts the clip or stretches it"*: the switch
-    // is what the drag does, not a filter on which clips it does it to.
+fn with_stretch_off_a_drag_on_a_stretched_clip_leaves_its_stretch_alone() {
     let id = new_id();
     let clips = vec![audio(id, BAR, BAR, true)];
     let mut timeline = Timeline::new(view());
     let edits = drag_edge(&mut timeline, &clips, &clips[0], 1.0);
-    assert_eq!(stretch_edits(&edits), vec![(vec![id], ClipStretch::Off)]);
+    assert!(
+        stretch_edits(&edits).is_empty(),
+        "the drag froze the clip's stretch without being asked: {edits:?}"
+    );
     assert!(has_resize(&edits));
+}
+
+/// And this is where a stretched clip comes back down: the switch, pressed on
+/// purpose, with the clip selected.
+#[test]
+fn turning_the_switch_off_freezes_the_stretched_clips_in_the_selection() {
+    let id = new_id();
+    let clips = vec![audio(id, BAR, BAR, true)];
+    let mut timeline = Timeline::new(view());
+    timeline.select(vec![id]);
+    timeline.set_stretch(true);
+    // Off: the one gesture that freezes.
+    let edits = timeline.toggle_stretch(&clips);
+    assert_eq!(stretch_edits(&edits), vec![(vec![id], ClipStretch::Off)]);
+    assert!(!timeline.stretch());
+    // And on again asks for nothing: what a longer block means is settled when
+    // the block is dragged, not when the switch is flipped.
+    assert!(timeline.toggle_stretch(&clips).is_empty());
+    assert!(timeline.stretch());
 }
 
 #[test]
@@ -317,9 +360,10 @@ fn the_switch_is_read_at_the_press_and_not_again_during_the_drag() {
 #[test]
 fn a_shift_drag_with_stretch_off_loops_the_clip_at_its_own_rate_and_stretches_nothing() {
     // The report's second half: looping and stretching had become one
-    // gesture. With the switch off, Shift-dragging a stretched clip turns its
-    // stretch off, loops it, and grows it — in that order — so every pass is
-    // the file at its own speed, however far the block is pulled.
+    // gesture. With the switch off, Shift-dragging loops the clip and grows
+    // it, and leaves its stretch exactly as it found it — a drag does not
+    // freeze a stretch (see
+    // `with_stretch_off_a_drag_on_a_stretched_clip_leaves_its_stretch_alone`).
     let id = new_id();
     let clips = vec![audio(id, BAR, BAR, true)];
     let mut timeline = Timeline::new(view());
@@ -328,7 +372,7 @@ fn a_shift_drag_with_stretch_off_loops_the_clip_at_its_own_rate_and_stretches_no
         ..Modifiers::default()
     });
     let edits = drag_edge(&mut timeline, &clips, &clips[0], 3.0);
-    assert_eq!(stretch_edits(&edits), vec![(vec![id], ClipStretch::Off)]);
+    assert!(stretch_edits(&edits).is_empty(), "{edits:?}");
     let kinds: Vec<&str> = edits
         .iter()
         .map(|e| match e {
@@ -338,7 +382,7 @@ fn a_shift_drag_with_stretch_off_loops_the_clip_at_its_own_rate_and_stretches_no
             _ => "other",
         })
         .collect();
-    assert_eq!(kinds, vec!["stretch", "loop", "resize"]);
+    assert_eq!(kinds, vec!["loop", "resize"]);
     let period = edits.iter().find_map(|e| match e {
         ArrangeEdit::SetLoop { loop_length, .. } => Some(*loop_length),
         _ => None,

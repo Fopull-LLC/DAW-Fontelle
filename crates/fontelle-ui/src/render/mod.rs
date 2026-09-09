@@ -88,6 +88,9 @@ pub struct Chrome<'a> {
     /// The right-click menu, while one is open. Drawn **last**, over
     /// everything, because that is what a menu is.
     pub menu: Option<&'a crate::canvas::ContextMenu>,
+    /// The field of whatever is being typed into right now — a name prompt,
+    /// the browser's search, an inline rename. `None` when nothing is.
+    pub field: Option<TextFieldChrome>,
 }
 
 /// The channel rack's contents.
@@ -210,11 +213,23 @@ pub struct TimelineChrome<'a> {
     /// Drawing it as an ordinary clip would be a picture of a document that
     /// does not exist yet.
     pub recording: Option<(Tick, Tick)>,
+    /// The notes of a take being recorded into the **open** clip, in that
+    /// clip's ticks, drawn into its block as it is played. The note-take
+    /// counterpart of [`recording`](Self::recording): not in the document
+    /// until the transport stops, and drawn in the record colour so they
+    /// cannot be mistaken for notes that are.
+    pub take_notes: &'a [crate::document::NotePreview],
 }
 
 /// Everything the piano roll draws from. All of it is read-only: the roll is a
 /// view and never a mutator (INVARIANT 2).
 pub struct RollChrome<'a> {
+    /// Whether the roll is the canvas the keyboard is talking to.
+    ///
+    /// The arrangement has said so since it was written; the roll had no way
+    /// to, so half the answer was missing and *"you don't accidentally do
+    /// something in the wrong window"* only worked in one direction.
+    pub focused: bool,
     pub layout: RollLayout,
     pub toolbar: ToolbarLayout,
     pub view: RollView,
@@ -237,6 +252,10 @@ pub struct RollChrome<'a> {
     pub ghosts: &'a [GhostNote],
     /// Which filter the chip is on, so it can say so and light up.
     pub ghost_filter: GhostFilter,
+    /// The notes of the take being recorded, so far, drawn over the clip's
+    /// own in the record colour — see [`TimelineChrome::take_notes`] and
+    /// `DocumentHost::recording_notes`.
+    pub recording: &'a [crate::document::NotePreview],
     /// The time selection, in **this clip's** ticks, or `None`. Drawn on the
     /// ruler and as a band down the grid, like the arrangement's.
     pub loop_range: Option<(Tick, Tick)>,
@@ -547,7 +566,13 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     // obvious and its explanation most wanted.
     // Over everything else in the window, including the transport bar: a menu
     // drawn under the thing it was opened from is a menu you cannot read.
-    draw_context_menu(scene, theme, chrome.labels, chrome.menu);
+    draw_context_menu(
+        scene,
+        theme,
+        chrome.labels,
+        chrome.menu,
+        chrome.field.as_ref(),
+    );
     draw_tooltip(scene, theme, chrome);
 }
 
@@ -579,6 +604,8 @@ pub fn draw_editor_window(
     // The right-click menu, when the one that is open belongs to *this*
     // window — a knob's, opened on the instrument editor.
     menu: Option<&crate::canvas::ContextMenu>,
+    // And its name prompt's field, when that menu is one.
+    field: Option<&TextFieldChrome>,
 ) {
     let m = &theme.metrics;
     let p = &theme.palette;
@@ -614,12 +641,13 @@ pub fn draw_editor_window(
             draw_label(scene, labels, NO_INSTRUMENT, layout.body, m, p.text_muted)
         }
         EditorWindowChrome::Flopsynth(flopsynth) => draw_flopsynth(scene, theme, labels, flopsynth),
+        EditorWindowChrome::Tune(tune) => draw_tune(scene, theme, labels, tune),
         EditorWindowChrome::Effect(effect) => draw_effect(scene, theme, labels, effect),
         EditorWindowChrome::Insert(insert) => draw_instrument(scene, theme, labels, insert),
         EditorWindowChrome::AudioClip(clip) => draw_audio_editor(scene, theme, labels, clip),
     }
 
-    draw_context_menu(scene, theme, labels, menu);
+    draw_context_menu(scene, theme, labels, menu, field);
 }
 
 /// The audio clip editor (TDD §15.1).
@@ -1054,6 +1082,13 @@ pub enum EditorWindowChrome<'a> {
     /// EQ's window and the knob grid are told apart here, and a third kind of
     /// instrument window is the same decision one more time.
     Flopsynth(FlopsynthChrome<'a>),
+    /// **The pitch corrector**, which draws a picture of the note because
+    /// that is what a corrector is (`docs/tune-plan.md` §7). Its own variant
+    /// for the reason Flopsynth's is one: a window with a display across the
+    /// top of it and a keyboard under that is not a grid of knobs, and a flag
+    /// on `Insert` would be a branch inside every drawing routine rather than
+    /// one here.
+    Tune(TuneChrome<'a>),
     /// An EQ, which draws a curve because a curve is what an EQ is.
     Effect(EffectChrome),
     /// Every other effect: a grid of knobs read off its own parameter list —
@@ -1091,6 +1126,10 @@ pub fn draw_context_menu(
     theme: &Theme,
     labels: &Labels,
     menu: Option<&crate::canvas::ContextMenu>,
+    // The name prompt's field, when this menu is one. Drawn **over the first
+    // row**, which is the row that used to be the prompt's caption with a
+    // block character stuck on the end.
+    field: Option<&TextFieldChrome>,
 ) {
     let Some(menu) = menu else { return };
     if menu.frame.is_empty() {
@@ -1157,6 +1196,14 @@ pub fn draw_context_menu(
             };
             draw_icon(scene, icon, star.inset(STAR_INSET), ink);
         }
+        // **The first row of a name prompt is the field.** It was already the
+        // row that held what you had typed; it is now a box you can see it in.
+        if index == 0
+            && let Some(field) = field
+        {
+            draw_text_field(scene, theme, labels, row.inset(2.0), field);
+            continue;
+        }
         let Some(text) = labels_get(labels, &entry.label) else {
             continue;
         };
@@ -1173,6 +1220,127 @@ pub fn draw_context_menu(
             // which is this theme's "there, and not for you".
             if entry.enabled { p.text } else { p.border },
         );
+    }
+}
+
+/// What a text field needs drawn, beyond the string itself.
+///
+/// The **pixel** offsets are here rather than worked out below, because
+/// placing a caret means measuring the text in front of it and only the layer
+/// that shapes text can do that (INVARIANT 2). The window measures; this
+/// paints.
+pub struct TextFieldChrome {
+    /// **Owned**, not borrowed: the window builds this while it still holds
+    /// itself immutably and then hands it to a draw that needs the scene
+    /// mutably. A short string cloned once a frame, only while something is
+    /// being typed into, is not a cost worth a lifetime for.
+    pub entry: crate::canvas::TextEntry,
+    /// How far along the text the caret sits, in points from the text's left.
+    pub caret_x: f32,
+    /// And the two ends of the selection, when there is one.
+    pub selection: Option<(f32, f32)>,
+    /// What the field says when it is empty — the prompt, greyed.
+    pub placeholder: &'static str,
+    /// Whether the caret is in its **on** half. A caret that does not blink
+    /// is easy to mistake for a character; one that blinks is unmistakably a
+    /// cursor, and it is the cheapest way to say "type here".
+    pub caret_on: bool,
+}
+
+/// How far the text sits in from the field's own edge.
+const FIELD_INSET: f32 = 6.0;
+/// How wide the caret is drawn. Two, not one: a single point disappears
+/// against text at this size on a high-density screen.
+const CARET_WIDTH: f32 = 2.0;
+
+/// **A box you can obviously type in.**
+///
+/// > *"it doesn't look like a input field it's just text on a background
+/// > making it look like it's a label and not somewhere you can type."*
+///
+/// Exactly so, and the fix is the three things a field has that a label does
+/// not: a **recess** it is sunk into, so the eye reads a hole rather than a
+/// caption; a **lit border** while it has the keyboard, so it is obvious which
+/// box the typing is going into; and a **caret**, which is the only thing that
+/// says where the next character will land.
+pub fn draw_text_field(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    rect: Rect,
+    field: &TextFieldChrome,
+) {
+    if rect.is_empty() {
+        return;
+    }
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    // The recess: darker than the panel it sits on, which is what makes it
+    // read as somewhere text goes in rather than somewhere text comes out.
+    fill_rect_rounded(scene, rect, m.corner_radius, p.window.with_alpha(0xd0));
+    stroke_rect_rounded(
+        scene,
+        rect,
+        m.corner_radius,
+        1.0,
+        // Lit while it has the keyboard. This is the same signal the focused
+        // pane's edge gives, in the same ink, so the two read as one idea.
+        if field.caret_on || field.selection.is_some() {
+            p.accent.with_alpha(0xd0)
+        } else {
+            p.accent.with_alpha(0x70)
+        },
+    );
+
+    let text_x = rect.x + FIELD_INSET;
+    let entry = &field.entry;
+
+    // The selection, under the text: a wash rather than an inversion, so the
+    // characters keep the colour they had and stay legible.
+    if let Some((from, to)) = field.selection {
+        let band = Rect::new(
+            text_x + from.min(to),
+            rect.y + 3.0,
+            (to - from).abs().max(1.0),
+            (rect.height - 6.0).max(1.0),
+        )
+        .intersection(&rect);
+        if !band.is_empty() {
+            fill_rect_rounded(scene, band, 2.0, p.accent.with_alpha(0x55));
+        }
+    }
+
+    // The text, or the prompt when there is none.
+    let (caption, ink) = if entry.is_empty() {
+        (field.placeholder, p.text_muted)
+    } else {
+        (entry.text(), p.text)
+    };
+    if let Some(shaped) = labels_get(labels, caption) {
+        draw_text_clipped(
+            scene,
+            shaped,
+            rect.inset(2.0),
+            text_x,
+            rect.y + (rect.height - shaped.height) / 2.0,
+            ink,
+        );
+    }
+
+    // The caret, last and over everything. Only on its **on** half, and never
+    // while there is a selection — a caret inside a highlighted range is two
+    // answers to "where does the next character go".
+    if field.caret_on && field.selection.is_none() {
+        let caret = Rect::new(
+            text_x + field.caret_x,
+            rect.y + 3.0,
+            CARET_WIDTH,
+            (rect.height - 6.0).max(1.0),
+        )
+        .intersection(&rect);
+        if !caret.is_empty() {
+            fill_rect(scene, caret, p.accent);
+        }
     }
 }
 
@@ -2168,74 +2336,45 @@ fn draw_mixer_strip(
         },
     );
 
-    // The rack: a row per insert, in chain order, each with its bypass switch
-    // at the left-hand end.
-    for (slot, row) in layout.inserts.iter().enumerate() {
-        let Some(insert) = strip.inserts.get(slot) else {
-            continue;
-        };
-        let lit = hovering(MixerHit::Insert(layout.index, slot))
-            || hovering(MixerHit::BypassInsert(layout.index, slot));
-        fill_rect_rounded(
-            scene,
-            row.inset(1.0),
-            m.corner_radius * 0.5,
-            if lit { p.border } else { p.panel_header },
-        );
-        // A filled dot is in, a hollow one is out — readable without a legend
-        // because it is the same shape a bypass switch has everywhere.
-        let dot_size = (row.height * 0.4).min(5.0);
-        let dot = Rect::new(
-            row.x + 3.0,
-            row.y + (row.height - dot_size) / 2.0,
-            dot_size,
-            dot_size,
-        );
-        fill_rect_rounded(
-            scene,
-            dot,
-            dot_size / 2.0,
-            if insert.bypassed {
-                p.text_muted
-            } else {
-                p.accent
-            },
-        );
-        if let Some(text) = labels_get(labels, &insert.label) {
-            draw_text_clipped(
+    // **The chain read-out**: one dot per insert, in chain order, dimmed where
+    // one is switched out. No names — the track-options column draws those in
+    // full for whichever track is selected, and drawing them twice is what
+    // took the height off the fader.
+    //
+    // What a dot says that the column cannot: this is every strip at once, so
+    // "which of these has anything on it, and is anything switched out" is
+    // answerable without clicking through sixteen tracks.
+    if !layout.chain.is_empty() && !strip.inserts.is_empty() {
+        use crate::canvas::{CHAIN_DOT, CHAIN_DOT_GAP};
+        let row = layout.chain;
+        let pitch = CHAIN_DOT + CHAIN_DOT_GAP;
+        // As many as fit, and then one half-height mark to say there are more
+        // — a count that ran off the end of the strip would say nothing at all.
+        let room = ((row.width + CHAIN_DOT_GAP) / pitch).floor().max(0.0) as usize;
+        let shown = strip.inserts.len().min(room);
+        let overflowing = strip.inserts.len() > shown;
+        let size = CHAIN_DOT.min(row.height);
+        let y = row.y + (row.height - size) / 2.0;
+        for (slot, insert) in strip.inserts.iter().take(shown).enumerate() {
+            let dot = Rect::new(row.x + slot as f32 * pitch, y, size, size);
+            // The last one becomes the "and more" mark rather than being drawn
+            // as an effect it might not be.
+            let more = overflowing && slot + 1 == shown;
+            fill_rect_rounded(
                 scene,
-                text,
-                *row,
-                row.x + 3.0 + dot_size + 3.0,
-                row.y + (row.height - text.height) / 2.0,
-                if insert.bypassed {
+                if more {
+                    Rect::new(dot.x, dot.y + size / 3.0, size, (size / 3.0).max(1.0))
+                } else {
+                    dot
+                },
+                size / 2.0,
+                if more || insert.bypassed {
                     p.text_muted
                 } else {
-                    p.text
+                    Color(strip.color)
                 },
             );
         }
-    }
-    if !layout.add.is_empty()
-        && let Some(text) = labels_get(labels, ADD_INSERT)
-    {
-        let lit = hovering(MixerHit::AddInsert(layout.index));
-        if lit {
-            fill_rect_rounded(
-                scene,
-                layout.add.inset(1.0),
-                m.corner_radius * 0.5,
-                p.border,
-            );
-        }
-        draw_text_clipped(
-            scene,
-            text,
-            layout.add,
-            layout.add.x + 3.0,
-            layout.add.y + (layout.add.height - text.height) / 2.0,
-            p.text_muted,
-        );
     }
 
     let renaming = chrome.renaming == Some(layout.index);
@@ -2715,6 +2854,44 @@ pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome
         );
     }
 
+    // The take being recorded, over the notes that are already there and in
+    // the record colour, so that what is landing can be told from what has
+    // landed — *"so you can be sure it is indeed recording it."* A held key
+    // arrives here drawn out to the playhead, and grows with it.
+    for take in chrome.recording {
+        let key = i32::from(take.key);
+        if !keys.contains(&key) {
+            continue;
+        }
+        if take.start + take.length < ticks.start || take.start > ticks.end {
+            continue;
+        }
+        let x0 = tick_to_x(v, grid, take.start);
+        let x1 = tick_to_x(v, grid, take.start + take.length);
+        let row = crate::canvas::key_row(v, grid, take.key);
+        // Never nothing: the instant a key goes down its note is a sliver
+        // rather than absent, the rule the arrangement's take band follows.
+        let block = Rect::new(x0, row.y, (x1 - x0).max(2.0), row.height).intersection(&grid);
+        if block.is_empty() {
+            continue;
+        }
+        let shape = rounded(block.inset(1.0), 2.0);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            p.meter_peak.to_peniko(),
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            Affine::IDENTITY,
+            p.accent.to_peniko(),
+            None,
+            &shape,
+        );
+    }
+
     // The time marker first, so the playhead sitting on it is what you see.
     if let Some(tick) = chrome.marker_tick {
         let x = tick_to_x(v, grid, tick);
@@ -2798,6 +2975,9 @@ pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome
     draw_roll_toolbar(scene, theme, labels, chrome);
     draw_lane_menu(scene, theme, labels, chrome);
     draw_tools_panel(scene, theme, labels, chrome);
+    // Last, over the roll's own chrome, so the mark is not drawn under the
+    // keyboard or the ruler — the same place the arrangement's is drawn.
+    draw_focus_edge(scene, theme, chrome.layout.frame, chrome.focused);
 }
 
 /// One tool's dialog. **Last, over everything**, for the reason the lane menu
@@ -4347,6 +4527,12 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
             // reason: what is *in* a clip is the thing you are looking for
             // when you scan an arrangement.
             draw_clip_notes(scene, theme, l.grid, whole, clip, selected);
+            // And the ones landing in it right now, while a take is being
+            // recorded: the open clip is where the take goes, so the block
+            // fills with the notes as they are played, in the record colour.
+            if clip.open && !chrome.take_notes.is_empty() {
+                draw_take_notes(scene, theme, l.grid, whole, clip, chrome.take_notes);
+            }
         }
         // The open clip gets a bright edge: the roll below is showing this one,
         // and nothing else on screen said so.
@@ -4476,8 +4662,21 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
         }
     }
 
-    // The cut tool's stroke, over the clips it is about to divide and clipped
-    // to the grid — the same mark the roll's makes, for the same reason.
+    // The cut tool. **Two marks, and they say two different things.**
+    //
+    // The stroke is the gesture — where the hand went — and it is drawn faint,
+    // because it is feedback that the drag is happening and nothing more. The
+    // bright marks are the *cuts*: one per clip the stroke crosses, at the
+    // tick `clip_cuts` will actually divide it on, which is the pointer
+    // snapped to the arrangement's grid.
+    //
+    // > *"instead of actually displaying it rounded to the grid that it's
+    // > going to cut the actual clip at."*
+    //
+    // Drawing only the stroke was showing the question rather than the answer:
+    // a line aimed a third of a beat late looked like a cut a third of a beat
+    // late, and landed on the beat. See `canvas::slice_marks`, which asks the
+    // same function the release will ask.
     if let Some((from, to)) = chrome.slice {
         let mut line = BezPath::new();
         line.move_to(Point::new(from.0 as f64, from.1 as f64));
@@ -4495,12 +4694,32 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
             ),
         );
         scene.stroke(
-            &Stroke::new(1.5),
+            &Stroke::new(1.0),
             Affine::IDENTITY,
-            p.meter_peak.to_peniko(),
+            p.meter_peak.with_alpha(0x55).to_peniko(),
             None,
             &line,
         );
+        for mark in crate::canvas::slice_marks(
+            v,
+            l.grid,
+            chrome.clips,
+            from,
+            to,
+            v.snap,
+            chrome.beats_per_bar,
+        ) {
+            fill_rect(scene, mark, p.meter_peak);
+            // A cap at each end, so a mark on a clip whose colour is close to
+            // the ink still reads as a cut rather than as a stripe.
+            for y in [mark.y, mark.bottom() - 3.0] {
+                fill_rect(
+                    scene,
+                    Rect::new(mark.x - 2.0, y, mark.width + 4.0, 3.0),
+                    p.meter_peak,
+                );
+            }
+        }
         scene.pop_layer();
     }
 
@@ -4513,16 +4732,45 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
         Rect::new(l.grid.x - 1.0, l.grid.y, 1.0, l.grid.height),
         p.border,
     );
-    // And the focus edge, so Delete visibly belongs to one canvas.
-    if chrome.focused && theme.metrics.border_width > 0.0 {
-        scene.stroke(
-            &Stroke::new(theme.metrics.border_width as f64),
-            Affine::IDENTITY,
-            p.accent.to_peniko(),
-            None,
-            &rounded(chrome.panel.frame, theme.metrics.corner_radius),
-        );
+    draw_focus_edge(scene, theme, chrome.panel.frame, chrome.focused);
+}
+
+/// How wide the focused pane's spine is.
+const FOCUS_EDGE_PX: f32 = 2.0;
+
+/// **Which canvas the keyboard is talking to**, said quietly.
+///
+/// > *"we need to make it possible to tell which window is currently focused
+/// > that way you don't accidentally do something in the wrong window ... this
+/// > needs to be subtle but easy to tell at a glance."*
+///
+/// A two-point bar down the inside of the focused pane's left edge, in the
+/// accent. Chosen over the two louder readings for a reason each: **dimming
+/// the unfocused pane's contents** would change the colour of the clips and
+/// notes you are judging edits by, and a picture that shifts with focus is a
+/// picture you cannot trust; **tinting a header** is quieter still but sits
+/// outside the working area, where the eye is not.
+///
+/// A spine rather than the full outline this used to draw: an outline reads as
+/// a selected object, and a pane is not an object you selected — it is where
+/// you are. It is on the left because that is where both panes begin, so the
+/// mark is always in the same place relative to what it marks.
+fn draw_focus_edge(scene: &mut Scene, theme: &Theme, frame: Rect, focused: bool) {
+    if !focused || frame.is_empty() {
+        return;
     }
+    let radius = theme.metrics.corner_radius.min(frame.height / 2.0);
+    fill_rect_rounded(
+        scene,
+        Rect::new(
+            frame.x,
+            frame.y + radius,
+            FOCUS_EDGE_PX,
+            (frame.height - radius * 2.0).max(1.0),
+        ),
+        FOCUS_EDGE_PX / 2.0,
+        theme.palette.accent,
+    );
 }
 
 /// The notes inside a note clip's block (TDD §16.4).
@@ -4577,6 +4825,51 @@ fn draw_clip_notes(
             fill_rect_rounded(scene, rect, 1.0, ink);
         } else {
             fill_rect(scene, rect, ink);
+        }
+    }
+    scene.pop_layer();
+}
+
+/// The notes of a take being recorded into `clip`, drawn into its block.
+///
+/// The same geometry as [`draw_clip_notes`] — `canvas::clip_notes` over the
+/// take's notes as if they were the clip's, so a note lands exactly where it
+/// will be drawn once it is kept — in the record colour, which is the one ink
+/// on this panel that says "not in the document yet".
+fn draw_take_notes(
+    scene: &mut Scene,
+    theme: &Theme,
+    grid: Rect,
+    block: Rect,
+    clip: &ClipInfo,
+    takes: &[crate::document::NotePreview],
+) {
+    let mut as_if = clip.clone();
+    as_if.notes = takes.to_vec();
+    let rects = crate::canvas::clip_notes(block, grid, &as_if);
+    if rects.is_empty() {
+        return;
+    }
+    let p = &theme.palette;
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(
+            grid.x as f64,
+            grid.y as f64,
+            grid.right() as f64,
+            grid.bottom() as f64,
+        ),
+    );
+    for rect in rects {
+        // A key that has only just gone down is a sliver, never nothing.
+        let rect = Rect::new(rect.x, rect.y, rect.width.max(2.0), rect.height);
+        if rect.height >= 3.0 && rect.width >= 3.0 {
+            fill_rect_rounded(scene, rect, 1.0, p.meter_peak);
+        } else {
+            fill_rect(scene, rect, p.meter_peak);
         }
     }
     scene.pop_layer();
@@ -4638,6 +4931,34 @@ fn draw_clip_waveform(
             continue;
         }
         fill_rect(scene, column, ink);
+    }
+
+    // **Where the take runs out**, when the block is longer than the sound in
+    // it. A rule at the end and a dimmed band past it, so the empty part of a
+    // block says *"the file stops here"* rather than saying nothing at all —
+    // which is what it said before, and what somebody trimming against it read
+    // as a broken picture. See `canvas::content_end`.
+    if let Some(at) = crate::canvas::content_end(block, clip) {
+        let (_, content) = crate::canvas::clip_bands(block);
+        let past = Rect::new(at, content.y, (block.right() - at).max(0.0), content.height)
+            .intersection(&grid);
+        if !past.is_empty() {
+            // The dim wash first, then the rule over its left edge.
+            fill_rect(scene, past, p.window.with_alpha(0x40));
+            // A centre line through the empty part: this is silence the block
+            // is holding, and a line through the middle is how this program
+            // draws silence everywhere else.
+            fill_rect(
+                scene,
+                Rect::new(past.x, content.y + content.height / 2.0, past.width, 1.0)
+                    .intersection(&grid),
+                ink.with_alpha(0x40),
+            );
+        }
+        let rule = Rect::new(at - 0.5, content.y, 1.0, content.height).intersection(&grid);
+        if !rule.is_empty() {
+            fill_rect(scene, rule, ink.with_alpha(0xb0));
+        }
     }
 }
 
@@ -7486,6 +7807,571 @@ fn draw_flop_presets(
                     p.accent,
                 );
                 y += 4.0;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- the tuner
+//
+// `docs/tune-plan.md` §7.1: "robotic and futuristic like the interior of a
+// sci-fi spaceship". A builder cannot draw that from the adjective, so what
+// follows is that adjective in primitives this file already has — a lattice
+// instead of a sky, chamfered consoles instead of glass panes, scanlines over
+// every display, and one big instrument in the middle.
+//
+// **No new palette tokens.** Flopsynth added one and paid a theme-format bump
+// for it; this window is drawn from the inks the palette already has, so a
+// person's own theme recolours it.
+
+/// What the corrector's window draws.
+pub struct TuneChrome<'a> {
+    pub layout: crate::canvas::TuneLayout,
+    pub view: &'a crate::canvas::TuneView,
+    /// Which control the pointer is over, as `(card, param)`.
+    pub hover: Option<(usize, usize)>,
+    /// Which control is being dragged.
+    pub active: Option<(usize, usize)>,
+    /// Where the pointer is, for the key it is over and the frame under it.
+    pub hover_at: (f32, f32),
+}
+
+/// How wide one cell of the lattice is.
+const LATTICE: f32 = 28.0;
+/// Where the horizon sits, as a share of the ground's height.
+const HORIZON: f32 = 0.60;
+/// The chamfer on a console's two cut corners.
+const CHAMFER: f32 = 6.0;
+
+/// The ink a card's family is drawn in — [`card_ink`]'s sibling, and the same
+/// rule: the ones that *move* something take the modulation violet, the scale
+/// and the correction take the accent, and the plumbing takes the muted text.
+fn tune_ink(name: &str, p: &crate::theme::Palette) -> Color {
+    match name {
+        "Scale" | "Correction" => p.accent,
+        "Vibrato" | "Voice" => p.modulation,
+        "MIDI" => p.playhead,
+        // The one card that is not about pitch at all: it colours what has
+        // already been corrected, so it takes the ink this program uses for
+        // level and drive rather than either of the pitch inks.
+        "Character" => p.meter_peak,
+        _ => p.text_muted,
+    }
+}
+
+/// The ground: a near-black grade with a lattice over it and one horizon.
+///
+/// No stars — that is Flopsynth's sky, and the two windows should be tellable
+/// apart at a glance.
+fn draw_tune_ground(scene: &mut Scene, theme: &Theme, body: Rect) {
+    let p = &theme.palette;
+    let ground = Rect::new(
+        body.x - theme.metrics.panel_margin,
+        body.y - theme.metrics.panel_margin,
+        body.width + theme.metrics.panel_margin * 2.0,
+        body.height + theme.metrics.panel_margin * 2.0,
+    );
+    fill_rect_vertical(scene, ground, 0.0, mix(p.window, p.accent, 0.06), p.window);
+    // The lattice: a grid of cells stroked faintly, with every other row
+    // offset by half a cell so it reads as a honeycomb rather than as graph
+    // paper.
+    let ink = p.text.with_alpha(0x10);
+    let mut y = ground.y;
+    let mut row = 0usize;
+    while y < ground.bottom() {
+        fill_rect(scene, Rect::new(ground.x, y, ground.width, 1.0), ink);
+        let offset = if row.is_multiple_of(2) {
+            0.0
+        } else {
+            LATTICE / 2.0
+        };
+        let mut x = ground.x + offset;
+        while x < ground.right() {
+            fill_rect(scene, Rect::new(x, y, 1.0, LATTICE), ink);
+            x += LATTICE;
+        }
+        y += LATTICE;
+        row += 1;
+    }
+    // One horizon, lit from under.
+    let horizon = ground.y + ground.height * HORIZON;
+    fill_glow(
+        scene,
+        (ground.x + ground.width / 2.0, horizon + 24.0),
+        ground.width * 0.7,
+        p.accent,
+        0x22,
+    );
+    fill_rect(
+        scene,
+        Rect::new(ground.x, horizon, ground.width, 1.0),
+        p.accent.with_alpha(0x50),
+    );
+}
+
+/// Scanlines over a display area: every third row, one pixel, in the window's
+/// own colour. What makes a rectangle read as a screen.
+fn draw_scanlines(scene: &mut Scene, theme: &Theme, area: Rect) {
+    if area.is_empty() {
+        return;
+    }
+    let ink = theme.palette.window.with_alpha(0x30);
+    let mut y = area.y;
+    while y < area.bottom() {
+        fill_rect(scene, Rect::new(area.x, y, area.width, 1.0), ink);
+        y += 3.0;
+    }
+}
+
+/// One console: a chamfered pane with an edge light along its top and down
+/// its left.
+///
+/// **Chamfered rather than rounded**, and cut at two corners rather than four:
+/// a bevel that goes all the way round is a rounded rectangle with corners,
+/// and the asymmetry is what makes a panel read as machined.
+fn draw_tune_card(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    frame: Rect,
+    header: Rect,
+    name: &str,
+) {
+    let p = &theme.palette;
+    let ink = tune_ink(name, p);
+    let mut path = BezPath::new();
+    let (x, y, r, b) = (
+        frame.x as f64,
+        frame.y as f64,
+        frame.right() as f64,
+        frame.bottom() as f64,
+    );
+    let c = CHAMFER as f64;
+    path.move_to(Point::new(x + c, y));
+    path.line_to(Point::new(r, y));
+    path.line_to(Point::new(r, b - c));
+    path.line_to(Point::new(r - c, b));
+    path.line_to(Point::new(x, b));
+    path.line_to(Point::new(x, y + c));
+    path.close_path();
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        p.panel.with_alpha(0xd8).to_peniko(),
+        None,
+        &path,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        Affine::IDENTITY,
+        p.border.to_peniko(),
+        None,
+        &path,
+    );
+    // The edge light: the top and the left, with a glow behind them.
+    fill_glow(
+        scene,
+        (frame.x + 6.0, frame.y + 6.0),
+        frame.width.min(frame.height) * 0.5,
+        ink,
+        0x1c,
+    );
+    fill_rect(
+        scene,
+        Rect::new(
+            frame.x + CHAMFER,
+            frame.y,
+            (frame.width - CHAMFER).max(0.0),
+            1.0,
+        ),
+        ink.with_alpha(0xb0),
+    );
+    fill_rect(
+        scene,
+        Rect::new(
+            frame.x,
+            frame.y + CHAMFER,
+            1.0,
+            (frame.height - CHAMFER * 2.0).max(0.0),
+        ),
+        ink.with_alpha(0x70),
+    );
+    if let Some(text) = labels.get_small(&name.to_uppercase()) {
+        draw_text_clipped(
+            scene,
+            text,
+            header,
+            header.x + CHAMFER + 4.0,
+            header.y + (header.height - text.height) / 2.0,
+            ink,
+        );
+    }
+}
+
+/// The keyboard: two octaves, the enabled keys lit, the root ringed, the held
+/// keys pulsing and the target brightest.
+fn draw_tune_keyboard(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &TuneChrome<'_>) {
+    let p = &theme.palette;
+    let view = chrome.view;
+    let band = chrome.layout.keyboard;
+    if band.is_empty() {
+        return;
+    }
+    // Read once for the whole keyboard rather than per key: both are answers
+    // about the newest frame, and asking twenty-four times would be twenty-four
+    // chances to read a different one.
+    let target = crate::canvas::target_class(view);
+    let sung = crate::canvas::sung_class(view);
+    fill_rect(scene, band, p.window.with_alpha(0x80));
+    // The naturals first and the accidentals over them, which is the order a
+    // keyboard is built in and the reverse of the order it is hit-tested in.
+    for pass in [false, true] {
+        for (index, key) in chrome.layout.keys.iter().enumerate() {
+            let class = (index % 12) as u8;
+            let accidental = key.height < band.height - 0.5;
+            if accidental != pass || key.is_empty() {
+                continue;
+            }
+            let enabled = view.mask & (1 << class) != 0;
+            let held = view.held & (1 << class) != 0;
+            let fill = if held {
+                p.playhead.with_alpha(0xc0)
+            } else if enabled {
+                p.accent.with_alpha(if accidental { 0x40 } else { 0x60 })
+            } else {
+                p.panel.with_alpha(0x80)
+            };
+            fill_rect(scene, *key, fill);
+            stroke_rect_rounded(scene, *key, 1.0, 1.0, p.border);
+            if enabled {
+                fill_rect(
+                    scene,
+                    Rect::new(key.x, key.y, key.width, 1.0),
+                    p.accent.with_alpha(0xa0),
+                );
+            }
+            // The root gets a ring inside it: the one key on the picture that
+            // says what the song is in.
+            if class == view.root % 12 {
+                stroke_rect_rounded(scene, key.inset(3.0), 1.0, 1.0, p.accent);
+            }
+            // The note being **forced**, brightest of all (§7.4). Drawn as an
+            // edge rather than a fill so it reads over whatever the key
+            // already is — a target that is also held would otherwise be
+            // indistinguishable from one that is merely held.
+            if target == Some(class) {
+                stroke_rect_rounded(scene, key.inset(1.0), 1.0, 2.0, p.meter_peak);
+            }
+            // And a dot where the singer actually is, which is the whole
+            // point of putting a keyboard under a pitch trace: the distance
+            // between the dot and the bright key *is* the correction.
+            if sung == Some(class) {
+                let r = (key.width * 0.16).clamp(2.0, 4.0);
+                fill_rect_rounded(
+                    scene,
+                    Rect::new(
+                        key.x + key.width / 2.0 - r,
+                        key.bottom() - r * 3.0,
+                        r * 2.0,
+                        r * 2.0,
+                    ),
+                    r,
+                    p.text_muted,
+                );
+            }
+            // The note's name on the naturals, which is what turns a row of
+            // boxes into something a person can pick a scale off without
+            // counting from the left.
+            if !accidental
+                && let Some(text) = labels.get_small(fontelle_types::TUNE_ROOTS[class as usize])
+                && text.width + 2.0 < key.width
+            {
+                draw_text_clipped(
+                    scene,
+                    text,
+                    *key,
+                    key.x + (key.width - text.width) / 2.0,
+                    key.bottom() - text.height - 2.0,
+                    if enabled {
+                        p.text.with_alpha(0xc0)
+                    } else {
+                        p.text_muted.with_alpha(0x70)
+                    },
+                );
+            }
+            if key.contains(chrome.hover_at.0, chrome.hover_at.1) {
+                fill_rect(scene, *key, p.text.with_alpha(0x18));
+            }
+        }
+    }
+    draw_scanlines(scene, theme, band);
+}
+
+/// The pitch trace: the rails, the sung line, the corrected line over it, and
+/// the reticle at the right-hand edge.
+/// One unbroken run of the trace: the sung line and the corrected line over
+/// the same hops, which are drawn as a pair and must break as a pair.
+type TraceRun = (Vec<(f32, f32)>, Vec<(f32, f32)>);
+
+fn draw_tune_viewport(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &TuneChrome<'_>) {
+    let p = &theme.palette;
+    let view = chrome.view;
+    let area = chrome.layout.viewport;
+    if area.is_empty() {
+        return;
+    }
+    fill_rect(scene, area, p.window.with_alpha(0xa0));
+
+    // The rails, one per enabled pitch class, the root's brighter.
+    for (y, root) in crate::canvas::viewport_rails(area, view) {
+        fill_rect(
+            scene,
+            Rect::new(area.x, y, area.width, 1.0),
+            if root {
+                p.accent.with_alpha(0x90)
+            } else {
+                p.accent.with_alpha(0x40)
+            },
+        );
+    }
+
+    let points = crate::canvas::viewport_points(area, view);
+
+    // **MIDI**, under everything: the hops whose target came from a held key,
+    // as a band in the playhead ink for as long as the key was down (§7.3).
+    // Drawn first so the two pitch lines stay legible over it — the bars are
+    // context for the trace, not a thing to read on their own.
+    {
+        let mut run: Option<(f32, f32)> = None;
+        for point in points
+            .iter()
+            .chain(std::iter::once(&crate::canvas::TracePoint {
+                x: area.right(),
+                sung: None,
+                corrected: None,
+                locked: false,
+                from_midi: false,
+            }))
+        {
+            match (point.from_midi, run) {
+                (true, None) => run = Some((point.x, point.x)),
+                (true, Some((from, _))) => run = Some((from, point.x)),
+                (false, Some((from, to))) => {
+                    if to > from {
+                        fill_rect(
+                            scene,
+                            Rect::new(from, area.y, to - from, area.height),
+                            p.playhead.with_alpha(0x1e),
+                        );
+                    }
+                    run = None;
+                }
+                (false, None) => {}
+            }
+        }
+    }
+
+    // The two lines. A gap in the trace is a gap in the line: a run of voiced
+    // hops is one polyline and the next run is another, because joining them
+    // would draw a note through the silence between two words.
+    let mut sung: Vec<(f32, f32)> = Vec::new();
+    let mut corrected: Vec<(f32, f32)> = Vec::new();
+    let mut runs: Vec<TraceRun> = Vec::new();
+    for point in &points {
+        match (point.sung, point.corrected) {
+            (Some(a), Some(b)) => {
+                sung.push((point.x, a));
+                corrected.push((point.x, b));
+            }
+            _ => {
+                if sung.len() > 1 {
+                    runs.push((std::mem::take(&mut sung), std::mem::take(&mut corrected)));
+                } else {
+                    sung.clear();
+                    corrected.clear();
+                }
+            }
+        }
+    }
+    if sung.len() > 1 {
+        runs.push((sung, corrected));
+    }
+    for (sung, corrected) in &runs {
+        stroke_polyline(scene, sung, area, 1.0, p.text_muted.with_alpha(0xa0));
+        glow_polyline(scene, corrected, area, p.accent);
+    }
+
+    // The reticle: a bracket pair at the right-hand edge on the corrected
+    // pitch, closed when the note is locked.
+    if let Some(last) = points.last()
+        && let Some(y) = last.corrected
+    {
+        let gap = if last.locked { 3.0 } else { 9.0 };
+        let ink = p.meter_peak;
+        for side in [-1.0f32, 1.0] {
+            let x = area.right() - 14.0 + side * gap;
+            fill_rect(scene, Rect::new(x, y - 6.0, 1.0, 12.0), ink);
+            fill_rect(
+                scene,
+                Rect::new(x.min(x + side * 4.0), y - 6.0, 4.0, 1.0),
+                ink,
+            );
+            fill_rect(
+                scene,
+                Rect::new(x.min(x + side * 4.0), y + 5.0, 4.0, 1.0),
+                ink,
+            );
+        }
+        // **How far off, and onto what** — "−23 ¢ → A3" (§7.3). Beside the
+        // brackets, and to their left, because the brackets sit at the right
+        // edge and there is nothing to the right of them. It is the one number
+        // on the console somebody reads while singing.
+        if let Some(caption) = crate::canvas::tune_readout(view)
+            && let Some(text) = labels.get_small(&caption)
+        {
+            let x = (area.right() - 34.0 - text.width).max(area.x + 4.0);
+            let y = (y - text.height / 2.0).clamp(area.y + 2.0, area.bottom() - text.height - 2.0);
+            fill_rect_rounded(
+                scene,
+                Rect::new(x - 4.0, y - 2.0, text.width + 8.0, text.height + 4.0),
+                3.0,
+                p.window.with_alpha(0xb0),
+            );
+            draw_text_clipped(
+                scene,
+                text,
+                area,
+                x,
+                y,
+                if last.locked { p.meter_peak } else { p.text },
+            );
+        }
+    }
+
+    draw_scanlines(scene, theme, area);
+    // The frame: a two-pixel inset rule in the accent, with a glow at each
+    // corner — the console treatment, hardest, on the one thing that is an
+    // instrument rather than a control.
+    for corner in [
+        (area.x, area.y),
+        (area.right(), area.y),
+        (area.x, area.bottom()),
+        (area.right(), area.bottom()),
+    ] {
+        fill_glow(scene, corner, 40.0, p.accent, 0x2a);
+    }
+    stroke_rect_rounded(scene, area, 2.0, 2.0, p.accent.with_alpha(0x80));
+
+    // What it costs and what is laying the grains, in the frame's top-right.
+    let caption = crate::canvas::tune_caption(view);
+    if let Some(text) = labels.get_small(&caption) {
+        draw_text_clipped(
+            scene,
+            text,
+            area,
+            area.right() - text.width - 12.0,
+            area.y + 8.0,
+            p.text_muted,
+        );
+    }
+}
+
+/// The whole console.
+fn draw_tune(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &TuneChrome<'_>) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let l = &chrome.layout;
+    if l.body.is_empty() {
+        return;
+    }
+    draw_tune_ground(scene, theme, l.body);
+    draw_tune_viewport(scene, theme, labels, chrome);
+    draw_tune_keyboard(scene, theme, labels, chrome);
+
+    for (index, placed) in l.cards.iter().enumerate() {
+        let Some(card) = chrome.view.cards.get(index) else {
+            continue;
+        };
+        if placed.frame.is_empty() {
+            continue;
+        }
+        draw_tune_card(
+            scene,
+            theme,
+            labels,
+            placed.frame,
+            placed.header,
+            &card.group.name,
+        );
+        for (param_index, cell) in &placed.cells {
+            let Some(param) = card.group.params.get(*param_index) else {
+                continue;
+            };
+            if cell.is_empty() {
+                continue;
+            }
+            let hot = chrome.active == Some((index, *param_index));
+            let lit = hot || chrome.hover == Some((index, *param_index));
+            if lit {
+                fill_rect_rounded(scene, *cell, m.corner_radius, p.text.with_alpha(0x10));
+            }
+            let control = crate::canvas::flop_knob_rect(*cell);
+            let caption = Rect::new(cell.x, cell.y, cell.width, control.y - cell.y);
+            let readout = Rect::new(
+                cell.x,
+                control.bottom(),
+                cell.width,
+                (cell.bottom() - control.bottom()).max(0.0),
+            );
+            if let Some(label) = labels.get_small(&param.label) {
+                draw_text_clipped(
+                    scene,
+                    label,
+                    caption,
+                    caption.x + ((caption.width - label.width) / 2.0).max(1.0),
+                    caption.y + (caption.height - label.height) / 2.0,
+                    if lit { p.text } else { p.text_muted },
+                );
+            }
+            match &param.kind {
+                ParamKind::Knob => {
+                    draw_flop_knob(
+                        scene,
+                        theme,
+                        control,
+                        param.value,
+                        hot,
+                        lit,
+                        param.automated,
+                    );
+                    if let Some(label) = labels.get_small(&param.display) {
+                        draw_text_clipped(
+                            scene,
+                            label,
+                            readout,
+                            readout.x + ((readout.width - label.width) / 2.0).max(1.0),
+                            readout.y + (readout.height - label.height) / 2.0,
+                            if hot { p.accent } else { p.text },
+                        );
+                    }
+                }
+                ParamKind::Switch => {
+                    draw_flop_switch(scene, theme, control, cell.width, param.value >= 0.5, lit);
+                    if let Some(label) = labels.get_small(&param.display) {
+                        draw_text_clipped(
+                            scene,
+                            label,
+                            readout,
+                            readout.x + ((readout.width - label.width) / 2.0).max(1.0),
+                            readout.y + (readout.height - label.height) / 2.0,
+                            p.text,
+                        );
+                    }
+                }
+                ParamKind::Choice(_) => {
+                    let chip = Rect::new(cell.x + 2.0, control.y, cell.width - 4.0, control.height);
+                    draw_flop_chip(scene, theme, labels, chip, &param.display, lit);
+                }
             }
         }
     }

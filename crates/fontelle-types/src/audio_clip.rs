@@ -269,12 +269,15 @@ pub struct AudioClipData {
     pub gain_db: f32,
     /// −1 (left) to 1 (right).
     pub pan: f32,
-    /// Coupled to [`speed`](Self::speed): §15.1 says varispeed *"couples pitch
-    /// unless time_lock"*, and time lock is a v2 feature behind the stretch
-    /// engine (§3.3). So this is a second way of writing the same number, kept
-    /// separate because a musician thinks in semitones and a sample-mangler
-    /// thinks in percent.
+    /// What is heard, in semitones, without moving through the file any
+    /// faster — the player reads a shifted clip in grains
+    /// ([`grain_offset`](Self::grain_offset)). Coupled to
+    /// [`speed`](Self::speed) only under [`ClipStretch::Resample`], which is
+    /// varispeed and couples them by definition.
     pub pitch_semitones: f32,
+    /// How fast the clip moves through the file, as a multiple. With stretch
+    /// off it moves the time and not the pitch; under `Resample` it is a
+    /// varispeed offset on top of the block fill.
     pub speed: f64,
     pub reverse: bool,
     pub fade_in: Fade,
@@ -362,16 +365,95 @@ impl AudioClipData {
         (self.source_end - self.source_start).max(0)
     }
 
-    /// How fast the file is read, pitch and speed together.
+    /// How fast the clip moves **through the file**: file frames per clip
+    /// frame, before the device-rate or block-fill ratio of
+    /// [`read_ratio`](Self::read_ratio) is applied.
     ///
-    /// One number rather than two, because they *are* one number until the
-    /// stretch engine lands: an octave up and double speed have to give one
-    /// answer or a clip pitched in semitones and one pitched in percent play
-    /// at different lengths.
-    pub fn rate(&self) -> f64 {
+    /// Two answers, and the difference between them is the whole of what the
+    /// stretch switch means for the pitch and speed knobs:
+    ///
+    /// - **Off**: the speed alone. Pitch moves what is heard and nothing
+    ///   about time — *"changing pitch is stretching the audio even when
+    ///   stretch is off"* was the report, and it was, because pitch used to
+    ///   be folded in here.
+    /// - **Resample**: speed and pitch together, because varispeed is what
+    ///   `Resample` *is* — the file is read faster to fill its block, and
+    ///   the pitch goes with it. An octave up and double speed are one
+    ///   number here, and saying it twice gives one answer.
+    pub fn time_rate(&self) -> f64 {
+        let speed = self.speed.clamp(MIN_CLIP_SPEED, MAX_CLIP_SPEED);
+        match self.stretch {
+            ClipStretch::Off => speed,
+            ClipStretch::Resample => {
+                (speed * self.pitch_ratio()).clamp(MIN_CLIP_SPEED, MAX_CLIP_SPEED)
+            }
+        }
+    }
+
+    /// How fast the file is **heard**: the rate a grain reads at, in file
+    /// frames per clip frame, which is what sets the pitch.
+    ///
+    /// Equal to [`time_rate`](Self::time_rate) whenever the sound is a plain
+    /// read of the file — every `Resample` clip, and an `Off` clip whose
+    /// pitch and speed agree. Different for an `Off` clip with its pitch
+    /// moved (heard faster than time moves) or its speed moved (time moves,
+    /// the pitch does not), and the player then reads in grains: see
+    /// [`grain_offset`](Self::grain_offset).
+    pub fn read_rate(&self) -> f64 {
+        match self.stretch {
+            ClipStretch::Off => self.pitch_ratio().clamp(MIN_CLIP_SPEED, MAX_CLIP_SPEED),
+            ClipStretch::Resample => self.time_rate(),
+        }
+    }
+
+    /// Whether the player has to read this clip in grains, because what is
+    /// heard moves at a different rate from time.
+    ///
+    /// A tolerance rather than an equality, because a stretch frozen onto a
+    /// clip as a speed and a pitch is two numbers that agree to within the
+    /// rounding of the one that was written in semitones.
+    pub fn shifts_pitch(&self) -> bool {
+        let time = self.time_rate();
+        (self.read_rate() - time).abs() > time * 1e-6
+    }
+
+    /// The semitones, as a frequency ratio.
+    fn pitch_ratio(&self) -> f64 {
         let semitones = f64::from(self.pitch_semitones.clamp(-48.0, 48.0));
-        (self.speed.clamp(MIN_CLIP_SPEED, MAX_CLIP_SPEED) * 2f64.powf(semitones / 12.0))
-            .clamp(MIN_CLIP_SPEED, MAX_CLIP_SPEED)
+        2f64.powf(semitones / 12.0)
+    }
+
+    /// Where in the file (as an offset from the clip's start, before trim,
+    /// loop and reverse are applied) the grain anchored at clip frame
+    /// `anchor` reads clip frame `position` from.
+    ///
+    /// **The whole of the pitch shifter's arithmetic.** A grain starts where
+    /// the time map puts its anchor — `anchor × time_rate` — and from there
+    /// reads at the heard rate. Grains are anchored every
+    /// [`grain_hop`](Self::grain_hop) frames and last two hops, so any frame
+    /// is inside two of them; the player sums the two under a raised-cosine
+    /// window each, which adds to one exactly. When the two rates agree every
+    /// grain reads the same frame and the sum is the plain read, which is why
+    /// that case needs no grains at all ([`shifts_pitch`](Self::shifts_pitch)).
+    ///
+    /// Plain overlap-add rather than anything that looks for a period: it is
+    /// pure arithmetic on the position, so it needs no state per clip and
+    /// gives the same sample whatever the block size — the property every
+    /// other reading here has. The cost is the usual granular colouring on a
+    /// large shift, which is an honest sound for a v1 shifter and a *pure
+    /// Rust* one (TDD §3.3 defers the formant-preserving engine to v2).
+    pub fn grain_offset(&self, position: f64, anchor: f64) -> f64 {
+        anchor * self.time_rate() + (position - anchor) * self.read_rate()
+    }
+
+    /// How far apart grains are anchored, in clip frames — about twenty
+    /// milliseconds at the file's own rate.
+    ///
+    /// Long enough to hold a cycle of anything a bass plays, short enough not
+    /// to smear a hit. A clip whose rate is unknown gets a hop anyway rather
+    /// than a zero to divide by.
+    pub fn grain_hop(&self) -> f64 {
+        (f64::from(self.sample_rate) * 0.022).max(64.0)
     }
 
     /// How many frames of the **file** one frame of the song consumes, before
@@ -392,10 +474,10 @@ impl AudioClipData {
     ///   rate comes into it, which is why a tempo change re-stretches the clip
     ///   with no other part of the program being told.
     ///
-    /// Pitch and speed still multiply on top in either mode, deliberately: at
-    /// their defaults a following clip locks to the bar, and moving them is
-    /// then a deliberate offset from it rather than a control that has
-    /// silently stopped working.
+    /// [`time_rate`](Self::time_rate) still multiplies on top in either
+    /// mode, deliberately: at their defaults a following clip locks to the
+    /// bar, and moving speed or pitch is then a deliberate offset from it
+    /// rather than a control that has silently stopped working.
     ///
     /// Zero for a clip with no audio or no block — the caller reads that as
     /// silence, which is the only honest answer and is never a division by it.
@@ -422,8 +504,18 @@ impl AudioClipData {
     /// clip that wrapped instead would repeat its own front, which is the
     /// wrong sound and a confusing one to diagnose.
     pub fn source_position(&self, position: f64) -> f64 {
+        self.source_at_offset(position.max(0.0) * self.time_rate())
+    }
+
+    /// Which frame of the **file** an offset of `offset` frames into the
+    /// clip's range comes from — the trim, the loop and the reverse applied.
+    ///
+    /// One function for the plain read ([`source_position`]
+    /// (Self::source_position)) and for every grain of a shifted one, so the
+    /// two cannot disagree about where a loop comes round.
+    pub fn source_at_offset(&self, offset: f64) -> f64 {
         let length = self.source_frames();
-        let mut offset = position.max(0.0) * self.rate();
+        let mut offset = offset;
         if self.loop_mode == ClipLoopMode::Loop && length > 0 {
             offset = offset.rem_euclid(length as f64);
         }

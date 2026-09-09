@@ -11,11 +11,7 @@ pub fn process<'a>(node: &mut dyn AudioNode, channels: &'a mut [&'a mut [f32]]) 
 
 /// The same, at a stated tempo — for the nodes that read one. A synced delay
 /// is the first; anything with an LFO will be the next.
-pub fn process_at_tempo<'a>(
-    node: &mut dyn AudioNode,
-    channels: &'a mut [&'a mut [f32]],
-    bpm: f32,
-) {
+pub fn process_at_tempo<'a>(node: &mut dyn AudioNode, channels: &'a mut [&'a mut [f32]], bpm: f32) {
     let frames = channels.iter().map(|c| c.len()).min().unwrap_or(0);
     let mut ctx = ProcessContext {
         inputs: &[],

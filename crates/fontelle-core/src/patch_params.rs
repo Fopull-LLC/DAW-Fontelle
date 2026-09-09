@@ -601,7 +601,11 @@ fn synth_value(osc: &fontelle_dsp::SynthOsc, field: &str) -> Option<f32> {
                 let at = WavetableId::ALL.iter().position(|t| *t == id)?;
                 Some(choice_value(at, WavetableId::ALL.len()))
             }
-            SynthSource::Noise => None,
+            // A dropped sound is not a position in the bank's list, so the
+            // chooser reads as nothing rather than as whichever table happens
+            // to sit at index zero. The window names it from
+            // `Patch::wavetables` instead.
+            SynthSource::User(_) | SynthSource::Noise => None,
         },
         "position" => Some(osc.position.clamp(0.0, 1.0)),
         "warp_mode" => {

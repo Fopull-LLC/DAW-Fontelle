@@ -53,92 +53,83 @@ fn a_track() -> fontelle_types::MixerTrackId {
     fontelle_types::MixerTrackId::from(slotmap::KeyData::from_ffi((1 << 32) | 3))
 }
 
-// ------------------------------------------------------------- the rack
+// ------------------------------------------------------------ the chain
+
+// > *"the effects trail is showing both on each track and in the section where
+// > you have it selected, however this makes showing it on the track redundant
+// > and is making it so that the volume bar is squished the more effects you
+// > add."*
+//
+// Both halves of that are true, and the second is the serious one. A row per
+// effect meant the strip spent its height on a list the track-options column
+// was already drawing in full, and it took that height from **the fader** —
+// so the one control a mixer exists for shrank every time somebody used the
+// newest feature. The strip now carries a single fixed row that says *how
+// many* and *whether any are switched out*, which is the part the options
+// column cannot show, because that column only ever shows one track.
 
 #[test]
-fn a_strip_with_no_effects_still_offers_somewhere_to_put_one() {
-    // The empty state is the one every track starts in, and a rack with no
-    // visible way to add to it is a rack nobody finds.
-    let strips = vec![strip("Keys", Vec::new())];
-    let layout = mixer_layout(body(), &metrics(), &strips, 0);
-    let first = &layout.strips[0];
-    assert!(first.inserts.is_empty());
-    assert!(!first.add.is_empty(), "the add row is there from the start");
-}
-
-#[test]
-fn every_insert_gets_a_row_of_its_own() {
-    let strips = vec![strip("Keys", vec![an_insert("EQ"), an_insert("EQ")])];
-    let layout = mixer_layout(body(), &metrics(), &strips, 0);
-    assert_eq!(layout.strips[0].inserts.len(), 2);
-}
-
-#[test]
-fn the_rows_are_stacked_in_chain_order_and_do_not_overlap() {
-    // Top to bottom is first to last, because that is the order the sound goes
-    // through them and a rack that drew them in some other order would be
-    // lying about the signal path.
-    let strips = vec![strip(
-        "Keys",
-        vec![an_insert("EQ"), an_insert("EQ"), an_insert("EQ")],
-    )];
-    let layout = mixer_layout(body(), &metrics(), &strips, 0);
-    let rows = &layout.strips[0].inserts;
-    for pair in rows.windows(2) {
+fn the_fader_is_the_same_height_however_many_effects_a_strip_carries() {
+    // The whole point. Nothing a track accumulates may cost it its fader.
+    let height_with = |n: usize| {
+        let strips = vec![strip("Keys", (0..n).map(|_| an_insert("EQ")).collect())];
+        mixer_layout(body(), &metrics(), &strips, 0).strips[0]
+            .fader
+            .height
+    };
+    let bare = height_with(0);
+    for n in [1, 2, 4, 8, 16] {
         assert!(
-            pair[0].bottom() <= pair[1].y + 0.01,
-            "row at {} runs into the one at {}",
-            pair[0].y,
-            pair[1].y
+            (height_with(n) - bare).abs() < 0.01,
+            "a strip with {n} effects has a {} px fader against {bare} px with none",
+            height_with(n)
         );
     }
-    assert!(
-        rows.last().unwrap().bottom() <= layout.strips[0].add.y + 0.01,
-        "and the add row comes after all of them"
-    );
 }
 
 #[test]
-fn the_rack_sits_above_the_fader_and_does_not_eat_it() {
-    // A rack that grew into the fader would take the mixer's one essential
-    // control away as soon as somebody used its newest one.
+fn the_chain_row_is_there_whether_or_not_there_are_effects() {
+    // Reserved rather than grown into, for the reason `STRIP_WIDTH` gives
+    // about width: a mixer is a thing you learn the shape of, and a fader that
+    // moves when the first effect lands is a fader somewhere new every time
+    // you look.
+    for n in [0usize, 1, 5] {
+        let strips = vec![strip("Keys", (0..n).map(|_| an_insert("EQ")).collect())];
+        let layout = mixer_layout(body(), &metrics(), &strips, 0);
+        assert!(
+            !layout.strips[0].chain.is_empty(),
+            "no chain row with {n} effects"
+        );
+    }
+}
+
+#[test]
+fn the_chain_row_sits_above_the_fader_and_never_overlaps_it() {
     let strips = vec![strip(
         "Keys",
-        vec![
-            an_insert("EQ"),
-            an_insert("EQ"),
-            an_insert("EQ"),
-            an_insert("EQ"),
-        ],
+        vec![an_insert("EQ"), an_insert("Comp"), an_insert("Reverb")],
     )];
     let layout = mixer_layout(body(), &metrics(), &strips, 0);
     let s = &layout.strips[0];
-    assert!(s.add.bottom() <= s.fader.y + 0.01, "the rack is above it");
+    assert!(
+        s.chain.bottom() <= s.fader.y + 0.01,
+        "the chain is above it"
+    );
     assert!(s.fader.height > 0.0, "and the fader still has room to drag");
 }
 
 #[test]
-fn a_rack_never_takes_the_fader_below_what_it_needs_to_be_a_control() {
-    // Panels get dragged small. What has to survive is the thing the panel is
-    // *for*, and the claim is comparative rather than absolute: at a height
-    // where a strip has a fader at all, adding four effects must not take it
-    // away. (A panel too short for a fader in the first place is a different
-    // problem and not this feature's.)
+fn the_chain_row_gives_way_before_the_fader_does() {
+    // Panels get dragged small, and what has to survive is the thing the panel
+    // is *for*. The claim is comparative: at a height where a strip has a
+    // fader at all, six effects must not take it away.
     for height in [90.0, 120.0, 160.0, 200.0, 260.0, 400.0] {
         let area = Rect::new(0.0, 0.0, 400.0, height);
         let bare = mixer_layout(area, &metrics(), &[strip("Keys", Vec::new())], 0);
         let full = mixer_layout(
             area,
             &metrics(),
-            &[strip(
-                "Keys",
-                vec![
-                    an_insert("EQ"),
-                    an_insert("EQ"),
-                    an_insert("EQ"),
-                    an_insert("EQ"),
-                ],
-            )],
+            &[strip("Keys", (0..6).map(|_| an_insert("EQ")).collect())],
             0,
         );
         let (bare, full) = (&bare.strips[0], &full.strips[0]);
@@ -147,62 +138,44 @@ fn a_rack_never_takes_the_fader_below_what_it_needs_to_be_a_control() {
         }
         assert!(
             full.fader.height > 0.0,
-            "at {height} px a strip has a fader with nothing on it and none with four"
+            "at {height} px a strip has a fader with nothing on it and none with six"
         );
-        for row in full.inserts.iter().chain(std::iter::once(&full.add)) {
-            assert!(
-                row.height <= 0.01 || row.bottom() <= full.fader.y + 0.01,
-                "at {height} px a rack row runs into the fader"
-            );
-        }
+        assert!(
+            full.chain.height <= 0.01 || full.chain.bottom() <= full.fader.y + 0.01,
+            "at {height} px the chain row runs into the fader"
+        );
     }
 }
 
 // -------------------------------------------------------------- clicking
 
 #[test]
-fn clicking_an_insert_row_names_the_strip_and_the_slot() {
-    let strips = vec![strip("Keys", vec![an_insert("EQ"), an_insert("EQ")])];
+fn pressing_the_chain_row_selects_the_strip() {
+    // It is a read-out, not a rack: what it does is point the options column
+    // at this track, which is where the chain can actually be worked on. A
+    // twelve-pixel row split into six targets is six targets nobody can hit.
+    let strips = vec![strip("Keys", vec![an_insert("EQ"), an_insert("Comp")])];
     let layout = mixer_layout(body(), &metrics(), &strips, 0);
-    let row = layout.strips[0].inserts[1];
-    let (x, y) = (row.right() - 2.0, row.y + row.height / 2.0);
-    assert_eq!(mixer_hit(&layout, x, y), MixerHit::Insert(0, 1));
-}
-
-#[test]
-fn the_left_end_of_a_row_is_its_bypass_switch() {
-    // A switch you can reach without opening the effect, because comparing
-    // with and without is the reason to have one.
-    let strips = vec![strip("Keys", vec![an_insert("EQ")])];
-    let layout = mixer_layout(body(), &metrics(), &strips, 0);
-    let row = layout.strips[0].inserts[0];
-    let (x, y) = (row.x + 2.0, row.y + row.height / 2.0);
-    assert_eq!(mixer_hit(&layout, x, y), MixerHit::BypassInsert(0, 0));
-}
-
-#[test]
-fn clicking_the_add_row_asks_for_a_new_effect() {
-    let strips = vec![strip("Keys", Vec::new())];
-    let layout = mixer_layout(body(), &metrics(), &strips, 0);
-    let add = layout.strips[0].add;
+    let row = layout.strips[0].chain;
     assert_eq!(
-        mixer_hit(&layout, add.x + add.width / 2.0, add.y + add.height / 2.0),
-        MixerHit::AddInsert(0)
+        mixer_hit(&layout, row.x + row.width / 2.0, row.y + row.height / 2.0),
+        MixerHit::Strip(0)
     );
 }
 
 #[test]
-fn the_master_strips_rack_is_clickable_too() {
+fn the_master_strip_has_a_chain_row_too() {
     // Master is where a mix bus compressor goes, so its chain is the one most
     // people reach for first.
-    let mut master = strip("Master", vec![an_insert("EQ")]);
+    let mut master = strip("Master", vec![an_insert("Comp")]);
     master.is_master = true;
     let strips = vec![strip("Keys", Vec::new()), master];
     let layout = mixer_layout(body(), &metrics(), &strips, 0);
-    let row = layout.master.as_ref().unwrap().inserts[0];
+    let row = layout.master.as_ref().unwrap().chain;
+    assert!(!row.is_empty());
     assert_eq!(
-        mixer_hit(&layout, row.right() - 2.0, row.y + row.height / 2.0),
-        MixerHit::Insert(1, 0)
+        mixer_hit(&layout, row.x + row.width / 2.0, row.y + row.height / 2.0),
+        MixerHit::Strip(1)
     );
 }
 

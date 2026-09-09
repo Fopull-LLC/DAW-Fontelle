@@ -163,7 +163,8 @@ impl Bitcrush {
                 let mut sample = channels[channel][frame] * input;
                 if config.anti_alias {
                     for section in 0..2 {
-                        sample = self.band_limit[channel][section].process(sample, &coeffs[section]);
+                        sample =
+                            self.band_limit[channel][section].process(sample, &coeffs[section]);
                     }
                 }
                 // Into the rails before the grid: a signal driven past full

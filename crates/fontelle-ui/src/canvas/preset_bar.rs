@@ -48,6 +48,19 @@ pub enum PresetDevice {
         strip: usize,
         slot: usize,
     },
+    /// A mixer track's **whole chain** — the level, the placement and every
+    /// insert on it, as one preset.
+    ///
+    /// A device in this enum's sense (something with a bank, a name and a
+    /// category) without being one in the rack's sense. It has no preset bar:
+    /// a track has no window with a header to put one in, and it is reached
+    /// from the strip's right-click menu instead. What it uses this enum for
+    /// is everything behind the bar — the bank, the choices, save-as, and the
+    /// stars — which is the whole reason not to have written a second
+    /// mechanism beside it.
+    Track {
+        strip: usize,
+    },
 }
 
 /// What the bar shows, for one device.

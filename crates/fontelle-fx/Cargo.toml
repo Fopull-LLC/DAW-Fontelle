@@ -15,3 +15,11 @@ realfft = "3.5.0"
 
 [dev-dependencies]
 fontelle-types = { path = "../fontelle-types" }
+# `docs/tune-plan.md` §10: the corrector is the first effect here with a cost
+# worth measuring rather than reasoning about — a YIN search per hop is not a
+# filter's four multiplies. A dev-dependency, like `fontelle-core`'s.
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "tune"
+harness = false

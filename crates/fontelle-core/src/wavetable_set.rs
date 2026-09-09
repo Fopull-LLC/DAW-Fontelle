@@ -32,6 +32,18 @@ pub struct WavetableSet {
     /// five tables, and a linear scan over five is faster than hashing one —
     /// and it is the whole of what `get` has to be RT-safe about.
     entries: Vec<(WavetableId, Arc<Wavetable>)>,
+    /// The patch's **own** tables, built from sounds somebody dropped in —
+    /// `Patch::wavetables`, in the same order, so an index is the name.
+    ///
+    /// Built here rather than in the process-wide bank because they belong to
+    /// one patch: two projects that both dropped a file called `pad.wav` are
+    /// two different sounds, and a shared cache keyed by name would hand one
+    /// of them the other's.
+    ///
+    /// `None` for a table this patch does not name, so building one costs
+    /// nothing on a patch that only reads the bank — which is every factory
+    /// preset.
+    user: Vec<Option<Arc<Wavetable>>>,
 }
 
 impl WavetableSet {
@@ -39,6 +51,7 @@ impl WavetableSet {
     /// `Voice::render` convenience wrappers pass.
     pub const EMPTY: Self = Self {
         entries: Vec::new(),
+        user: Vec::new(),
     };
 
     pub fn new() -> Self {
@@ -49,17 +62,39 @@ impl WavetableSet {
     /// the process-wide bank and may build a table.
     pub fn resolve(&mut self, patch: &Patch) {
         self.entries.clear();
+        self.user.clear();
+        self.user.resize(patch.wavetables.len(), None);
         for layer in &patch.layers {
             let Source::Synth(osc) = &layer.source else {
                 continue;
             };
-            let fontelle_dsp::SynthSource::Table(id) = osc.source else {
-                continue;
-            };
-            if self.entries.iter().any(|(known, _)| *known == id) {
-                continue;
+            match osc.source {
+                fontelle_dsp::SynthSource::Table(id) => {
+                    if self.entries.iter().any(|(known, _)| *known == id) {
+                        continue;
+                    }
+                    self.entries.push((id, wavetables().get(id)));
+                }
+                // One of the patch's own. Built here, off the RT thread, from
+                // the samples the patch carries — see `UserWavetable`. A
+                // layer naming one the patch does not have is left unbuilt
+                // and renders silence.
+                fontelle_dsp::SynthSource::User(at) => {
+                    let at = at as usize;
+                    let Some(slot) = self.user.get_mut(at) else {
+                        continue;
+                    };
+                    if slot.is_some() {
+                        continue;
+                    }
+                    let table = &patch.wavetables[at];
+                    *slot = Some(Arc::new(Wavetable::from_samples(
+                        &table.samples,
+                        table.frames,
+                    )));
+                }
+                fontelle_dsp::SynthSource::Noise => {}
             }
-            self.entries.push((id, wavetables().get(id)));
         }
     }
 
@@ -71,6 +106,14 @@ impl WavetableSet {
             .iter()
             .find(|(known, _)| *known == id)
             .map(|(_, table)| table.as_ref())
+    }
+
+    /// One of the **patch's own** tables, or `None` if this set was not built
+    /// for a patch naming it.
+    ///
+    /// RT-safe: an index and a pointer.
+    pub fn get_user(&self, index: usize) -> Option<&Wavetable> {
+        self.user.get(index)?.as_deref()
     }
 
     pub fn len(&self) -> usize {

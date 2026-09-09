@@ -1,0 +1,106 @@
+{
+  "format_version": 1,
+  "device": "track",
+  "name": "Dream Wash",
+  "category": "Vocals — effects",
+  "payload": {
+    "track": {
+      "gain_db": 0.0,
+      "pan": 0.0,
+      "phase_invert": false,
+      "inserts": [
+        {
+          "config": {
+            "Tune": {
+              "range": "AltoTenor",
+              "mode": "Studio",
+              "tracking": 0.5,
+              "gate_db": -50.0,
+              "root": 0,
+              "scale": "Chromatic",
+              "notes": 4095,
+              "control": "Scale",
+              "midi_bend": true,
+              "retune_ms": 45.0,
+              "amount": 1.0,
+              "humanize": 0.0,
+              "flex": 0.0,
+              "natural_vibrato": 1.0,
+              "vibrato_depth": 0.0,
+              "vibrato_rate_hz": 5.5,
+              "vibrato_sync": false,
+              "vibrato_division": "Eighth",
+              "vibrato_onset_ms": 200.0,
+              "vibrato_shape": "Sine",
+              "engine": "Smooth",
+              "texture": 0.0,
+              "grain_ms": 25.0,
+              "formant": 2.0,
+              "formant_follow": 1.0,
+              "transpose": 12,
+              "detune_cents": 0.0,
+              "drive": 0.0,
+              "crush": 0.0,
+              "air": 0.55,
+              "width": 1.7,
+              "output_db": 0.0,
+              "mix": 0.35
+            }
+          },
+          "bypassed": false,
+          "preset": {
+            "name": "Whisper Twin",
+            "category": "Factory",
+            "origin": "factory"
+          }
+        },
+        {
+          "config": {
+            "Chorus": {
+              "voices": 4,
+              "mode": "Chorus",
+              "spread": 1.0,
+              "rate_hz": 0.25,
+              "sync": false,
+              "division": "Whole",
+              "depth": 0.55,
+              "delay_ms": 15.0,
+              "feedback": 0.0,
+              "tone_hz": 20000.0,
+              "mix": 0.4
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Delay": {
+              "time_ms": 300.0,
+              "sync": true,
+              "division": "EighthTriplet",
+              "feedback": 0.45,
+              "damping_hz": 6500.0,
+              "drive": 0.0,
+              "ping_pong": false,
+              "mix": 0.28
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Reverb": {
+              "size": 0.95,
+              "decay_s": 6.5,
+              "damping_hz": 7000.0,
+              "pre_delay_ms": 45.0,
+              "width": 1.0,
+              "mix": 0.42
+            }
+          },
+          "bypassed": false
+        }
+      ]
+    }
+  }
+}

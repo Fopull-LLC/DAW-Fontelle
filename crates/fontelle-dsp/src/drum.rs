@@ -40,6 +40,7 @@
 //! on note-on rather than per sample.
 
 use crate::filter::{SvfFilter, SvfMode};
+use crate::modal::{ModalBank, ModalMode};
 use crate::oscillator::{OscKind, Oscillator};
 
 /// Which drum a voice is.
@@ -129,6 +130,189 @@ impl DrumModel {
             Self::Snare | Self::Rim => 1.4,
             Self::Clap => 2.0,
             _ => 0.7,
+        }
+    }
+
+    /// **The shape of the thing being struck**, as the modes it rings at.
+    ///
+    /// This is the difference between the drums, and it is a fact about the
+    /// object rather than about the kit: every kick is a head over a deep
+    /// shell whatever an 808 or a 909 did to it, so the ratios live on the
+    /// model and the tuning lives on the voice.
+    ///
+    /// The numbers are the physics where the physics is known and the
+    /// instrument where it is not. An ideal circular membrane rings at 1.000,
+    /// 1.593, 2.135, 2.295, 2.917 — those are Bessel zeros and they are not
+    /// negotiable. A real drum is a membrane *loaded by the air inside a
+    /// shell*, which pulls the low modes together and is why a tuned tom
+    /// sounds like a note and an untuned one does not; that is the second set.
+    /// A cowbell and a rim are bars rather than membranes and ring at a bar's
+    /// ratios, which are much further apart. A cymbal has so many modes that
+    /// naming five would be a lie, so it has none and stays noise.
+    fn modes(self) -> &'static [ModalMode] {
+        match self {
+            // A kick is a head over a long column of air: the fundamental
+            // carries nearly everything and the modes above it are what makes
+            // the front of the hit read as a skin rather than as a tone.
+            Self::Kick => &[
+                ModalMode {
+                    ratio: 1.0,
+                    decay: 1.0,
+                    gain: 1.0,
+                },
+                ModalMode {
+                    ratio: 1.59,
+                    decay: 0.28,
+                    gain: 0.22,
+                },
+                ModalMode {
+                    ratio: 2.14,
+                    decay: 0.18,
+                    gain: 0.12,
+                },
+                ModalMode {
+                    ratio: 2.30,
+                    decay: 0.14,
+                    gain: 0.08,
+                },
+            ],
+            // A tom is the membrane everybody pictures, air-loaded: the first
+            // few modes pulled toward whole ratios, which is what makes a tom
+            // nearly a note and never quite one.
+            Self::Tom => &[
+                ModalMode {
+                    ratio: 1.0,
+                    decay: 1.0,
+                    gain: 1.0,
+                },
+                ModalMode {
+                    ratio: 1.50,
+                    decay: 0.62,
+                    gain: 0.55,
+                },
+                ModalMode {
+                    ratio: 1.75,
+                    decay: 0.48,
+                    gain: 0.38,
+                },
+                ModalMode {
+                    ratio: 2.00,
+                    decay: 0.36,
+                    gain: 0.26,
+                },
+                ModalMode {
+                    ratio: 2.44,
+                    decay: 0.25,
+                    gain: 0.16,
+                },
+                ModalMode {
+                    ratio: 2.89,
+                    decay: 0.18,
+                    gain: 0.10,
+                },
+            ],
+            // A snare is a tom with the modes damped hard by the wires and by
+            // the second head: short, and the shell's own ring over it.
+            Self::Snare => &[
+                ModalMode {
+                    ratio: 1.0,
+                    decay: 0.55,
+                    gain: 1.0,
+                },
+                ModalMode {
+                    ratio: 1.50,
+                    decay: 0.35,
+                    gain: 0.60,
+                },
+                ModalMode {
+                    ratio: 1.87,
+                    decay: 0.26,
+                    gain: 0.45,
+                },
+                ModalMode {
+                    ratio: 2.41,
+                    decay: 0.18,
+                    gain: 0.30,
+                },
+                ModalMode {
+                    ratio: 3.60,
+                    decay: 0.12,
+                    gain: 0.18,
+                },
+            ],
+            // Congas and bongos: a small head at high tension, so the modes
+            // are close to the ideal membrane's and ring longer than a tom's.
+            Self::Perc => &[
+                ModalMode {
+                    ratio: 1.0,
+                    decay: 1.0,
+                    gain: 1.0,
+                },
+                ModalMode {
+                    ratio: 1.593,
+                    decay: 0.70,
+                    gain: 0.45,
+                },
+                ModalMode {
+                    ratio: 2.135,
+                    decay: 0.52,
+                    gain: 0.28,
+                },
+                ModalMode {
+                    ratio: 2.917,
+                    decay: 0.34,
+                    gain: 0.15,
+                },
+            ],
+            // A **bar**, not a membrane: a rim, a block, a stick. Bar modes
+            // are far apart (roughly 1 : 2.76 : 5.40), which is exactly why a
+            // woodblock reads as wood and not as a drum.
+            Self::Rim => &[
+                ModalMode {
+                    ratio: 1.0,
+                    decay: 1.0,
+                    gain: 1.0,
+                },
+                ModalMode {
+                    ratio: 2.76,
+                    decay: 0.45,
+                    gain: 0.40,
+                },
+                ModalMode {
+                    ratio: 5.40,
+                    decay: 0.22,
+                    gain: 0.16,
+                },
+            ],
+            // A cowbell is two bars welded together — the two tones it has
+            // always had, plus the partials that make it clang.
+            Self::Cowbell => &[
+                ModalMode {
+                    ratio: 1.0,
+                    decay: 1.0,
+                    gain: 1.0,
+                },
+                ModalMode {
+                    ratio: 1.48,
+                    decay: 0.90,
+                    gain: 0.85,
+                },
+                ModalMode {
+                    ratio: 2.76,
+                    decay: 0.40,
+                    gain: 0.30,
+                },
+                ModalMode {
+                    ratio: 3.98,
+                    decay: 0.25,
+                    gain: 0.18,
+                },
+            ],
+            // Hats, cymbals and claps have no pitched half to give modes to.
+            // A cymbal *is* modal, with hundreds of them, and five would read
+            // as a chime rather than as a cymbal — so it stays noise, which
+            // is the honest approximation.
+            Self::ClosedHat | Self::OpenHat | Self::Cymbal | Self::Clap => &[],
         }
     }
 }
@@ -222,6 +406,42 @@ pub struct DrumVoice {
     /// bits; at zero it is not there.
     #[serde(default)]
     pub crush: f32,
+    /// How much of the pitched half is a **struck membrane** rather than an
+    /// oscillator, 0..=1.
+    ///
+    /// > *"the sounds ... still sound way too synthesized and not realistic
+    /// > enough ... ultimately still just sounding like tweaked versions of
+    /// > the same synthesized sounding sounds."*
+    ///
+    /// Measured, and the cause was the model rather than the numbers: every
+    /// pitched hit was one oscillator, so a kick, a tom and a conga were the
+    /// same sine with three envelopes on it and no setting of tune, bend or
+    /// decay could make any of them ring like a drum. A real head rings at a
+    /// set of **inharmonic** modes — 1.00, 1.59, 2.14, 2.30, 2.92 of its
+    /// fundamental for an ideal circular membrane — each dying at its own
+    /// rate, the high ones first. At one this is that bank
+    /// ([`ModalBank`](crate::ModalBank)), struck by the hit's own transient,
+    /// with the ratios read off the model. At zero it is the oscillator that
+    /// was always here, so every kit written before this knob existed sounds
+    /// exactly as it did.
+    #[serde(default)]
+    pub modes: f32,
+    /// A second, slower decay under the first, 0..=1.
+    ///
+    /// A real drum does not fade at one rate: the strike dies fast and the
+    /// shell keeps ringing under it. One exponential cannot be both, and a hit
+    /// that is only the first is the thing that reads as "a sample of a drum
+    /// machine" rather than as a drum in a room.
+    #[serde(default)]
+    pub tail: f32,
+    /// How much the noise half rings rather than hisses, 0..=1.
+    ///
+    /// A snare's wires are not a band of white noise: they are a band of white
+    /// noise buzzing against a shell that has a note. This rings the filtered
+    /// noise through a resonance a fifth over the body, which is where a
+    /// snare's rattle sits and what the ear reads as wires rather than as air.
+    #[serde(default)]
+    pub rattle: f32,
 }
 
 impl Default for DrumVoice {
@@ -241,6 +461,9 @@ impl Default for DrumVoice {
             gain_db: 0.0,
             metal: 0.0,
             crush: 0.0,
+            modes: 0.0,
+            tail: 0.0,
+            rattle: 0.0,
         }
     }
 }
@@ -269,6 +492,17 @@ const METAL_LEVEL: f32 = 7.5;
 /// did, and past it there is only a click.
 const CRUSH_MAX_DIVISOR: f32 = 12.0;
 const CRUSH_MAX_BITS_LOST: f32 = 12.0;
+
+/// How much the struck bank is turned up against the oscillator it replaces.
+///
+/// A resonator excited by a burst arrives far under an oscillator running at
+/// full amplitude: the bank's input gain is scaled by `(1 − r)` so its modes
+/// balance against each other, and that leaves the sum an order of magnitude
+/// down. Measured at about eighteen decibels with a tom's six modes, so this
+/// is the make-up that lets `modes` sweep between the two at one level rather
+/// than fading out in the middle — the same argument, and the same fix, as
+/// [`METAL_LEVEL`].
+const MODAL_LEVEL: f32 = 8.0;
 
 /// How far a hit falls over its `decay_s` before it is called finished.
 ///
@@ -336,6 +570,20 @@ pub struct DrumSynth {
     /// scaled by it.
     bend_env: f32,
     bend_decay: f32,
+    /// The struck membrane (`modes`), and the short burst that strikes it.
+    ///
+    /// A resonator has to be *hit* with something. A single impulse rings a
+    /// bank cleanly but reads as a plucked string; a few milliseconds of noise
+    /// under an envelope is a beater or a stick meeting a head, which is what
+    /// this is.
+    membrane: ModalBank,
+    strike_env: f32,
+    strike_decay: f32,
+    /// The second, slower fall under the first (`tail`).
+    tail_env: f32,
+    tail_decay: f32,
+    /// The noise's own resonance (`rattle`) — a snare's wires against a shell.
+    rattle_filter: SvfFilter,
     /// Seconds since the trigger, for the models whose shape depends on where
     /// in the hit they are — a clap's stutter and a cymbal's second stage.
     t: f32,
@@ -374,6 +622,12 @@ impl DrumSynth {
             snap_decay: 0.0,
             bend_env: 0.0,
             bend_decay: 0.0,
+            membrane: ModalBank::new(),
+            strike_env: 0.0,
+            strike_decay: 0.0,
+            tail_env: 0.0,
+            tail_decay: 0.0,
+            rattle_filter: SvfFilter::default(),
             t: 0.0,
             done: true,
         }
@@ -447,6 +701,34 @@ impl DrumSynth {
         } else {
             0.04
         });
+
+        // --- the struck membrane (§`DrumVoice::modes`) ------------------
+        //
+        // Tuned once here, because two transcendentals a mode is exactly the
+        // kind of thing that does not belong per sample. The bank rings for
+        // the hit's own decay, and each mode scales that by its own number,
+        // so a tom's high modes die first the way a real head's do.
+        let modes = DrumVoice::amount(voice.modes);
+        if modes > 0.0 {
+            self.membrane.set(model.modes(), voice.base_hz(), decay, sr);
+        }
+        // The strike: a few milliseconds, and shorter for the hard-struck
+        // models. A beater on a kick head is in contact for longer than a
+        // stick on a rim, and the difference is audible as how much of the
+        // bank's top end gets excited.
+        self.strike_env = 1.0;
+        self.strike_decay = coeff(match model {
+            DrumModel::Rim | DrumModel::Cowbell => 0.0015,
+            DrumModel::Snare | DrumModel::Perc => 0.003,
+            _ => 0.006,
+        });
+
+        // The slow half. Four times the hit's own decay — long enough to be a
+        // ring under it rather than a second hit, short enough that a kit does
+        // not turn into a wash when every voice has some.
+        self.tail_env = 1.0;
+        self.tail_decay = coeff(decay * 4.0);
+
         self.t = 0.0;
     }
 
@@ -488,6 +770,33 @@ impl DrumSynth {
             body = body * 0.65 + self.body2.next_sample(voice.body.osc(), second, sr) * 0.5;
         }
         body *= self.body_env;
+        // **The struck membrane.** At `modes` = 1 the pitched half is the
+        // resonator bank rather than the oscillator: the same note, ringing at
+        // the shape's own inharmonic modes with the high ones dying first,
+        // which is the whole of what a sine cannot do. Crossfaded rather than
+        // switched, so a kit can sit anywhere between the machine and the
+        // instrument — an 808 kick is *meant* to be a sine.
+        let modes = DrumVoice::amount(voice.modes);
+        if modes > 0.0 {
+            // Struck by a burst of the noise source under a very short
+            // envelope: a beater, not an impulse. Using the same `raw` the
+            // rest of the voice uses costs nothing and ties the strike to the
+            // hit's own character.
+            let strike = self.strike_env * self.noise.next_sample(OscKind::Noise, 0.0, sr);
+            // Plus the front of the body itself, so a bank on a kick is
+            // pushed by the beater *and* by the pitch drop that follows it.
+            let rung = self
+                .membrane
+                .next_sample(strike + body * 0.25 * self.strike_env);
+            body = body * (1.0 - modes) + rung * modes * MODAL_LEVEL;
+        }
+        // The slow half. Added under the fast one rather than replacing it, so
+        // `tail` lengthens a hit without changing what the front of it sounds
+        // like — which is what "the shell is still ringing" means.
+        let tail = DrumVoice::amount(voice.tail);
+        if tail > 0.0 {
+            body += body * (self.tail_env / self.body_env.max(1e-6)).min(8.0) * tail * 0.35;
+        }
 
         // --- the noise half ---------------------------------------------
         //
@@ -513,6 +822,16 @@ impl DrumSynth {
             // Six unit squares sum to a little under unit RMS.
             let bank = sum * (1.0 / 6.0);
             noise += self.bank_filter.process(bank, &coeffs) * metal * METAL_LEVEL;
+        }
+        // **The rattle.** The filtered noise rung through a resonance a fifth
+        // over the body, which is where a snare's wires buzz against its
+        // shell. Added rather than replacing, so the knob is "how much of this
+        // is wires" and not "swap the noise for a whistle".
+        let rattle = DrumVoice::amount(voice.rattle);
+        if rattle > 0.0 {
+            let hz = (base * 1.5).clamp(60.0, nyquist * 0.9);
+            let ring = SvfFilter::coeffs(SvfMode::Bandpass, hz, 6.0, 0.0, sr);
+            noise += self.rattle_filter.process(noise, &ring) * rattle * 1.4;
         }
         noise *= self.noise_env;
         // A clap is four bursts and then a tail: the stutter is the whole
@@ -586,8 +905,15 @@ impl DrumSynth {
         self.noise_env *= self.noise_decay;
         self.snap_env *= self.snap_decay;
         self.bend_env *= self.bend_decay;
+        self.strike_env *= self.strike_decay;
+        self.tail_env *= self.tail_decay;
         self.t += 1.0 / sr;
-        if self.body_env < SILENCE && self.noise_env < SILENCE {
+        // A hit with a tail on it is not finished when its fast half is: the
+        // slow one is still ringing, and freeing the voice there would cut the
+        // ring off mid-note. Checked against the tail only when there is one,
+        // so a hit without one frees itself exactly as early as it always did.
+        let ringing = DrumVoice::amount(voice.tail) > 0.0 && self.tail_env >= SILENCE;
+        if self.body_env < SILENCE && self.noise_env < SILENCE && !ringing {
             self.done = true;
         }
 

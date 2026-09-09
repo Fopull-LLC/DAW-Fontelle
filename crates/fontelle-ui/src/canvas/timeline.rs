@@ -376,6 +376,45 @@ pub fn clip_waveform(block: Rect, visible: Rect, clip: &ClipInfo) -> Vec<Rect> {
     columns
 }
 
+/// **Where the take runs out inside its block**, in screen points — or `None`
+/// when the file fills the block, which is the ordinary case.
+///
+/// A block can be longer than the sound in it, and when it is, the rest is
+/// drawn as nothing. That is honest and it is not *legible*: blank reads as
+/// "this picture is broken" rather than as "the take ends here", and the
+/// difference matters because somebody is trimming against it.
+///
+/// > *"is making the audio show completely blank after that even though it
+/// > actually does have content"*
+///
+/// Measured: a clip shortened with Stretch on and then switched off carries
+/// the compression as `speed`, so growing the block back leaves the file
+/// covering a fifth of it and four fifths empty. The arithmetic is right and
+/// the picture said nothing about why. This is what lets the renderer put a
+/// mark at the end of the take and dim what is past it — a *stated* end
+/// rather than an absence.
+pub fn content_end(block: Rect, clip: &ClipInfo) -> Option<f32> {
+    if clip.kind != ClipKind::Audio || clip.audio.peaks.is_empty() {
+        return None;
+    }
+    // A looping clip has no single end: it restarts every pass, and the gap at
+    // the end of one pass is a rhythm rather than a mistake.
+    if clip.loop_length.is_some_and(|p| p > 0) {
+        return None;
+    }
+    let content = content_ticks(clip);
+    if content <= 0 || content >= clip.length {
+        return None;
+    }
+    let per_tick = if clip.length > 0 {
+        block.width / clip.length as f32
+    } else {
+        return None;
+    };
+    let at = block.x + content as f32 * per_tick;
+    (at < block.right() - 1.0).then_some(at)
+}
+
 /// The fade envelope at `t` along a clip, 0..1 — the drawn form of
 /// `AudioClipData::fade_gain`.
 ///
@@ -581,7 +620,8 @@ pub fn timeline_layout(frame: Rect, metrics: &Metrics) -> TimelineLayout {
 /// them around"*, *"I don't see snap controls"*).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimelineControl {
-    /// Draw: a press on empty grid makes a clip.
+    /// Draw: a double-click on empty grid makes a clip, and Shift+click puts
+    /// down a copy of the clip in hand.
     Draw,
     /// Select: a press on empty grid marquees, the way it always did.
     Select,
@@ -682,12 +722,14 @@ impl TimelineControl {
     /// drift.
     pub fn tip(self) -> Option<&'static str> {
         Some(match self {
-            Self::Draw => "Draw clips on empty bars",
+            Self::Draw => "Double-click empty bars for a clip, Shift+click for a copy",
             Self::Select => "Select clips; drag on empty bars to marquee",
             Self::Slice => "Cut a clip in two where you click it",
             Self::Snap => "What clips snap to \u{2014} click to choose",
             Self::Stretch => {
-                "Dragging an audio clip's edge fits the file to the block \u{2014} off, it cuts"
+                // The key is on the tip, the way Legato's is on its menu row:
+                // a control nobody can find is a control nobody uses.
+                "S \u{2014} an edge drag fits the take to the block; off, it trims"
             }
             // The two readings of "repeat this" are two buttons on purpose,
             // and the tips are where the difference is said out loud.
@@ -891,6 +933,48 @@ pub fn clip_cuts(
         cuts.push((clip.id, at));
     }
     cuts
+}
+
+/// **Where the blade will actually cut**, as a mark per cut.
+///
+/// > *"it is displaying the actual visuals of the tool from the exact pixel of
+/// > where I'm clicking and dragging my mouse instead of actually displaying
+/// > it rounded to the grid that it's going to cut the actual clip at."*
+///
+/// The stroke and the cut are two different things and always were: a cut
+/// snaps to the arrangement's grid, per clip, in [`clip_cuts`]. Drawing the
+/// stroke was drawing the gesture rather than its consequence, so a line
+/// aimed a third of a beat late looked like a cut a third of a beat late and
+/// landed on the beat.
+///
+/// This is the consequence: it asks [`clip_cuts`] the same question the
+/// release will ask, and turns each answer into a rectangle across that clip's
+/// own row. **The same call**, so the two cannot drift apart — a preview
+/// computed from a second copy of the snapping rule is a preview that is right
+/// until somebody edits one of them.
+pub fn slice_marks(
+    view: &TimelineView,
+    grid: Rect,
+    clips: &[ClipInfo],
+    from: (f32, f32),
+    to: (f32, f32),
+    snap: SnapDivision,
+    beats_per_bar: u32,
+) -> Vec<Rect> {
+    /// How wide the mark is. Two pixels: thick enough to see against a clip's
+    /// own fill, thin enough that it reads as a *place* rather than as a
+    /// region — a cut has no width.
+    const WIDTH: f32 = 2.0;
+    clip_cuts(view, grid, clips, from, to, snap, beats_per_bar)
+        .into_iter()
+        .filter_map(|(id, at)| {
+            let clip = clips.iter().find(|clip| clip.id == id)?;
+            let x = timeline_tick_to_x(view, grid, at);
+            let y = lane_to_y(view, grid, clip.lane);
+            Some(Rect::new(x - WIDTH / 2.0, y, WIDTH, view.lane_height).intersection(&grid))
+        })
+        .filter(|mark| !mark.is_empty())
+        .collect()
 }
 
 /// Two blocks on one row, and the part of the row they both claim.
@@ -1264,9 +1348,9 @@ pub enum ArrangeEdit {
     /// A copy of `source` — whatever kind of clip it is, notes and settings
     /// and all — put down on `lane` at `start`.
     ///
-    /// *"a single click should instead place a exact copy of whatever your
-    /// last selection is."* The host copies; the canvas only says which and
-    /// where, because it cannot see what a clip holds (INVARIANT 2).
+    /// *"to create a copy of your last selected item its shift + click."* The
+    /// host copies; the canvas only says which and where, because it cannot
+    /// see what a clip holds (INVARIANT 2).
     Stamp {
         source: ClipId,
         lane: usize,
@@ -1504,7 +1588,9 @@ enum Gesture {
 /// nothing selects nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TimelineTool {
-    /// A press on empty grid makes a clip.
+    /// A double-click on empty grid makes a clip and a Shift+press puts down
+    /// a copy of the clip in hand; a plain press only lets go of the
+    /// selection. See `Timeline::press`.
     #[default]
     Draw,
     /// A press on empty grid marquees.
@@ -1551,17 +1637,14 @@ pub struct Timeline {
     /// window's.
     point_menu: Option<(ClipId, PointId)>,
     /// **The clip in hand**: the last one chosen, of any kind, which is what
-    /// a press on empty grid puts a copy of down. Outlives the selection —
-    /// Escape drops the selection and keeps this, the way FL keeps the
-    /// pattern you picked after you click away from it. See
+    /// a Shift+press on empty grid puts a copy of down. Outlives the
+    /// selection — Escape drops the selection and keeps this, the way FL
+    /// keeps the pattern you picked after you click away from it. See
     /// [`ArrangeEdit::Stamp`].
     stamp: Option<ClipId>,
     /// The last press asked for a stamp, and the copy it makes is not known
-    /// yet. `clips_inserted` turns it into `stamped`.
-    stamp_pending: Option<(usize, Tick)>,
-    /// The copy the last press put down, and where. What a double-press
-    /// takes back on its way to drawing a blank clip there instead.
-    stamped: Option<(ClipId, usize, Tick)>,
+    /// yet. `clips_inserted` makes the copy the thing in hand.
+    stamp_pending: bool,
 }
 
 impl Timeline {
@@ -1579,12 +1662,11 @@ impl Timeline {
             point_selection: Vec::new(),
             point_menu: None,
             stamp: None,
-            stamp_pending: None,
-            stamped: None,
+            stamp_pending: false,
         }
     }
 
-    /// The clip a press on empty grid would copy, if any.
+    /// The clip a Shift+press on empty grid would copy, if any.
     pub fn stamp_source(&self) -> Option<ClipId> {
         self.stamp
     }
@@ -1902,27 +1984,36 @@ impl Timeline {
                     return Vec::new();
                 }
                 self.gesture = Gesture::None;
+                // **A plain press makes nothing.** *"single clicking in the
+                // arrangement no longer makes anything ... that way single
+                // click is freed up so it can be used freely for deselecting
+                // things without a hassle."* It has already let go of the
+                // selection above, and that is the whole of what it does. A
+                // blank clip is a double-click (`double_press`); a copy is
+                // the Shift+press below.
+                if !self.modifiers.shift {
+                    return Vec::new();
+                }
                 // On the grid, not where the pointer was: a clip half a beat
                 // off the bar is one somebody has to nudge before they can use
                 // it, and the snap is right there in the toolbar saying what
                 // it should have been.
                 let start = timeline_snap(&self.view, tick, beats_per_bar).max(0);
-                // *"a single click should instead place a exact copy of
-                // whatever your last selection is."* A copy of the clip in
-                // hand, when there is one and it is still there; a blank
-                // clip is what a press means when there is nothing to copy.
-                // A double-press is the other way to a blank clip — see
-                // `double_press`.
-                self.stamped = None;
-                if let Some(source) = self.stamp.filter(|id| clips.iter().any(|c| c.id == *id)) {
-                    self.stamp_pending = Some((lane, start));
-                    return vec![ArrangeEdit::Stamp {
-                        source,
-                        lane,
-                        start,
-                    }];
-                }
-                vec![ArrangeEdit::Add { lane, start }]
+                // *"to create a copy of your last selected item its shift +
+                // click."* A copy of the clip in hand, when there is one and
+                // it is still there. Nothing in hand is nothing to copy, and
+                // a press that drew a blank clip instead would be a copy of
+                // something you never picked — the double-click is the way to
+                // a blank one.
+                let Some(source) = self.stamp.filter(|id| clips.iter().any(|c| c.id == *id)) else {
+                    return Vec::new();
+                };
+                self.stamp_pending = true;
+                vec![ArrangeEdit::Stamp {
+                    source,
+                    lane,
+                    start,
+                }]
             }
             _ => {
                 self.gesture = Gesture::None;
@@ -1934,13 +2025,15 @@ impl Timeline {
 
     /// The second press of a double-click.
     ///
-    /// *"i want it to be a double click to create a new empty clip."* A
-    /// double-click is one gesture, and its first press has already gone
-    /// through [`press`](Self::press) — which on empty grid stamped a copy
-    /// of the clip in hand. So this takes that copy back and asks for a
-    /// blank clip in the same place, and a double-click leaves exactly one
-    /// clip behind. With nothing in hand the first press drew a clip
-    /// already, and this asks for nothing more.
+    /// *"we leave creating a new empty clip as double click."* A double-click
+    /// on empty grid asks for a blank clip there. Its first press has already
+    /// gone through [`press`](Self::press), which on empty grid made nothing
+    /// — so there is nothing to take back, and one gesture leaves exactly one
+    /// clip behind.
+    ///
+    /// With Shift held the first press *did* make something — a copy of the
+    /// clip in hand — and the second asks for nothing, or two quick
+    /// Shift+clicks would put a blank clip on top of the copy.
     ///
     /// Anywhere else — on some other block — it asks for nothing: opening a
     /// block on a double-click is the window's business, and a gesture that
@@ -1955,29 +2048,16 @@ impl Timeline {
         beats_per_bar: u32,
     ) -> Vec<ArrangeEdit> {
         self.gesture = Gesture::None;
-        if button != MouseButton::Left {
+        if button != MouseButton::Left || self.modifiers.shift {
             return Vec::new();
         }
-        let hit = timeline_hit(&self.view, layout, clips, x, y);
-        match (hit, self.stamped.take()) {
-            // The copy the first press put down is under the pointer, or the
-            // host has not put it there yet: either way it goes, and a blank
-            // clip takes its place.
-            (TimelineHit::Clip(id, _), Some((stamped, lane, start))) if id == stamped => {
-                self.selection.clear();
-                vec![
-                    ArrangeEdit::Remove(vec![stamped]),
-                    ArrangeEdit::Add { lane, start },
-                ]
-            }
-            (TimelineHit::Empty { .. }, Some((stamped, lane, start))) => {
-                self.selection.clear();
-                vec![
-                    ArrangeEdit::Remove(vec![stamped]),
-                    ArrangeEdit::Add { lane, start },
-                ]
-            }
-            (TimelineHit::Empty { tick, lane }, None) => {
+        // The select tool and Ctrl are the marquee, on the second press as on
+        // the first: a box being drawn is not a request for a clip.
+        if self.tool == TimelineTool::Select || self.modifiers.ctrl {
+            return Vec::new();
+        }
+        match timeline_hit(&self.view, layout, clips, x, y) {
+            TimelineHit::Empty { tick, lane } => {
                 let start = timeline_snap(&self.view, tick, beats_per_bar).max(0);
                 vec![ArrangeEdit::Add { lane, start }]
             }
@@ -2255,27 +2335,35 @@ impl Timeline {
                         });
                     }
                 }
-                // The mode first, once, and only where it would change: what
-                // a longer block *means* has to be settled before the block
-                // gets longer, and a clip already in the mode has nothing to
-                // be told. Note clips are never named — their edge has only
+                // The mode first, once, and **only ever turning stretching
+                // on**: what a longer block means has to be settled before the
+                // block gets longer, and a clip already stretching has nothing
+                // to be told. Note clips are never named — their edge has only
                 // ever cut, and the switch is not about them.
-                if first {
+                //
+                // **A drag does not turn stretching off.** It used to, whenever
+                // the switch was off, and that is the fault behind both reports
+                // of a take "going blank" after being shortened and grown back:
+                // turning a stretched clip off *freezes* the rate it was being
+                // played at into the clip's own speed (`with_stretch`, and for
+                // a good reason — the sound must not jump). So a clip stretched
+                // down to a quarter and then dragged became a clip genuinely
+                // playing four times too fast, whose take really was a quarter
+                // as long, and no drag could bring the rest back.
+                //
+                // A trim must never be lossy. Turning stretching off is a
+                // deliberate act with a switch for it, and doing it
+                // deliberately still freezes; a drag only ever turns it on.
+                if first && stretch {
                     let ids: Vec<ClipId> = self
                         .selected(clips)
-                        .filter(|clip| {
-                            clip.kind == ClipKind::Audio && clip.audio.stretched != stretch
-                        })
+                        .filter(|clip| clip.kind == ClipKind::Audio && !clip.audio.stretched)
                         .map(|clip| clip.id)
                         .collect();
                     if !ids.is_empty() {
                         edits.push(ArrangeEdit::SetStretch {
                             ids,
-                            stretch: if stretch {
-                                ClipStretch::Resample
-                            } else {
-                                ClipStretch::Off
-                            },
+                            stretch: ClipStretch::Resample,
                         });
                     }
                 }
@@ -2391,8 +2479,35 @@ impl Timeline {
         self.stretch = stretch;
     }
 
-    pub fn toggle_stretch(&mut self) {
+    /// Flips the switch, and says what that means for the clips selected now.
+    ///
+    /// **Turning it off is the deliberate act that freezes a stretch.** A drag
+    /// only ever turns stretching *on* (see `press`'s edge arm), because a
+    /// drag that turned it off was silently making trims lossy. So this is the
+    /// one place a stretched clip comes back down, and it does it the way it
+    /// always did — through `with_stretch`, which keeps the sound where it is
+    /// by writing the rate the clip was being played at into its own speed.
+    ///
+    /// Turning it **on** changes nothing by itself: what a longer block means
+    /// is settled when the block is actually dragged, and a clip switched to
+    /// stretching without being dragged would change length for no gesture.
+    pub fn toggle_stretch(&mut self, clips: &[ClipInfo]) -> Vec<ArrangeEdit> {
         self.stretch = !self.stretch;
+        if self.stretch {
+            return Vec::new();
+        }
+        let ids: Vec<ClipId> = self
+            .selected(clips)
+            .filter(|clip| clip.kind == ClipKind::Audio && clip.audio.stretched)
+            .map(|clip| clip.id)
+            .collect();
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        vec![ArrangeEdit::SetStretch {
+            ids,
+            stretch: ClipStretch::Off,
+        }]
     }
 
     // ---------------------------------------------------- from the keyboard ---
@@ -2501,14 +2616,12 @@ impl Timeline {
         if ids.is_empty() {
             return;
         }
-        // The copy a press just stamped is the thing in hand now — which is
-        // what makes a row of presses a row of the same clip — and it is
-        // what a double-press takes back. See `double_press`.
-        if let Some((lane, start)) = self.stamp_pending.take()
+        // The copy a Shift+press just stamped is the thing in hand now —
+        // which is what makes a row of Shift+presses a row of the same clip.
+        if std::mem::take(&mut self.stamp_pending)
             && let Some(copy) = ids.first()
         {
             self.stamp = Some(*copy);
-            self.stamped = Some((*copy, lane, start));
         } else if let Some(last) = ids.last() {
             self.stamp = Some(*last);
         }

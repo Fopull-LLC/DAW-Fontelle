@@ -224,11 +224,10 @@ fn the_mode_and_the_size_come_back_in_the_order_they_went() {
 
 #[test]
 fn a_clip_played_faster_runs_out_sooner_and_the_block_is_told_so() {
-    // Pitch and speed are one number until the stretch engine lands
-    // (`AudioClipData::rate`), and that number is *how fast the file is read*
-    // — so a clip at double speed is over in half the ticks. The block draws
-    // the file ending where it ends, so it has to be told the shorter length
-    // or the waveform outlasts the sound by an octave's worth of block.
+    // Speed is *how fast the file is read* — so a clip at double speed is
+    // over in half the ticks. The block draws the file ending where it ends,
+    // so it has to be told the shorter length or the waveform outlasts the
+    // sound by an octave's worth of block.
     let dir = scratch("speed");
     let (mut session, clip) = with_a_take(&dir);
     assert_eq!(
@@ -257,7 +256,9 @@ fn a_clip_played_faster_runs_out_sooner_and_the_block_is_told_so() {
         "twice the speed, half the time"
     );
 
-    // And the other way: an octave down is half speed and twice the time.
+    // Pitch is the other knob and moves nothing here: *"changing pitch is
+    // stretching the audio even when stretch is off"* was the report, and
+    // an octave down is now an octave down for the same length of time.
     let mut data = session.audio_clip(clip).unwrap();
     data.speed = 1.0;
     data.pitch_semitones = -12.0;
@@ -270,9 +271,158 @@ fn a_clip_played_faster_runs_out_sooner_and_the_block_is_told_so() {
             .unwrap()
             .audio
             .natural_length,
-        PPQN * 2,
-        "an octave down is half speed"
+        PPQN,
+        "an octave down takes the same time"
     );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ------------------------------------------- turning the switch off, and on ---
+
+fn info_of(session: &mut Session, clip: fontelle_types::ClipId) -> fontelle_ui::document::ClipInfo {
+    session.clips().into_iter().find(|c| c.id == clip).unwrap()
+}
+
+#[test]
+fn turning_stretch_off_on_a_stretched_clip_keeps_the_speed_it_was_playing_at() {
+    // Reported from using the window: *"when shortening an audio clip that
+    // was stretched faster and then trying to elongate it again to get the
+    // part back you cut out its stretching the clip back to how it was
+    // before before letting you extend the length of the ending."*
+    //
+    // A stretched clip dragged to half its length plays twice as fast. With
+    // the switch off, the next edge drag is a *cut* — and a cut of the clip
+    // you were hearing, not of the file at its own rate. So the moment the
+    // clip stops following its block, the rate it was following it at is
+    // written onto the clip as its own speed and pitch, and the block is a
+    // window onto the sound exactly as it was.
+    let dir = scratch("freeze");
+    let (mut session, clip) = with_a_take(&dir);
+    session.arrange(ArrangeEdit::SetStretch {
+        ids: vec![clip],
+        stretch: ClipStretch::Resample,
+    });
+    session.arrange(ArrangeEdit::Resize {
+        ids: vec![clip],
+        tick_delta: -(PPQN / 2),
+    });
+    assert_eq!(info_of(&mut session, clip).length, PPQN / 2);
+
+    session.arrange(ArrangeEdit::SetStretch {
+        ids: vec![clip],
+        stretch: ClipStretch::Off,
+    });
+    let data = session.audio_clip(clip).unwrap();
+    assert_eq!(data.stretch, ClipStretch::Off);
+    assert!(
+        (data.speed - 2.0).abs() < 0.01,
+        "the speed it was playing at, {}",
+        data.speed
+    );
+    assert!(
+        (data.pitch_semitones - 12.0).abs() < 0.1,
+        "and the pitch that speed gave it, {}",
+        data.pitch_semitones
+    );
+    assert!(
+        !data.shifts_pitch(),
+        "a frozen stretch is a plain read, not a shifted one"
+    );
+    // The file now takes exactly the block it was filling.
+    let info = info_of(&mut session, clip);
+    assert_eq!(info.audio.natural_length, PPQN / 2);
+    assert!(!info.audio.stretched);
+
+    // Dragging the edge back out is a window opening: the file's length does
+    // not move, the block does, and the part past the file's end is silence
+    // — which is what "get the part back you cut out" asks for once the cut
+    // has been made on the sound as it was.
+    session.arrange(ArrangeEdit::Resize {
+        ids: vec![clip],
+        tick_delta: PPQN / 4,
+    });
+    let info = info_of(&mut session, clip);
+    assert_eq!(info.length, PPQN * 3 / 4);
+    assert_eq!(info.audio.natural_length, PPQN / 2);
+    assert!((session.audio_clip(clip).unwrap().speed - 2.0).abs() < 0.01);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn turning_stretch_on_lets_the_file_fill_its_block_again() {
+    // The other direction has nothing to keep: following the block *is* the
+    // request, so the offsets a frozen stretch left behind are cleared, or a
+    // clip frozen at double speed would fill its block at double speed.
+    let dir = scratch("thaw");
+    let (mut session, clip) = with_a_take(&dir);
+    let mut data = session.audio_clip(clip).unwrap();
+    data.speed = 2.0;
+    data.pitch_semitones = 12.0;
+    session.set_audio_clip(clip, data);
+
+    session.arrange(ArrangeEdit::SetStretch {
+        ids: vec![clip],
+        stretch: ClipStretch::Resample,
+    });
+    let data = session.audio_clip(clip).unwrap();
+    assert_eq!(data.stretch, ClipStretch::Resample);
+    assert!((data.speed - 1.0).abs() < 1e-6, "{}", data.speed);
+    assert!(
+        data.pitch_semitones.abs() < 1e-6,
+        "{}",
+        data.pitch_semitones
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_editors_stretch_field_freezes_the_speed_the_way_the_switch_does() {
+    // The audio clip editor has the same mode chooser, and it goes through
+    // `set_audio_clip` rather than the arrangement's edit. Same rule, or the
+    // two ways of turning stretch off would leave two different sounds.
+    let dir = scratch("freeze-editor");
+    let (mut session, clip) = with_a_take(&dir);
+    session.arrange(ArrangeEdit::SetStretch {
+        ids: vec![clip],
+        stretch: ClipStretch::Resample,
+    });
+    session.arrange(ArrangeEdit::Resize {
+        ids: vec![clip],
+        tick_delta: -(PPQN / 2),
+    });
+    let mut data = session.audio_clip(clip).unwrap();
+    data.stretch = ClipStretch::Off;
+    session.set_audio_clip(clip, data);
+    let data = session.audio_clip(clip).unwrap();
+    assert!((data.speed - 2.0).abs() < 0.01, "{}", data.speed);
+    assert_eq!(info_of(&mut session, clip).audio.natural_length, PPQN / 2);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_stretched_loop_frozen_keeps_the_rate_of_one_pass() {
+    // A looped stretched clip fills each *pass* with the file, so the rate
+    // to keep is the pass's and not the whole block's.
+    let dir = scratch("freeze-loop");
+    let (mut session, clip) = with_a_take(&dir);
+    session.arrange(ArrangeEdit::SetStretch {
+        ids: vec![clip],
+        stretch: ClipStretch::Resample,
+    });
+    session.arrange(ArrangeEdit::SetLoop {
+        ids: vec![clip],
+        loop_length: Some(PPQN / 2),
+    });
+    session.arrange(ArrangeEdit::Resize {
+        ids: vec![clip],
+        tick_delta: PPQN,
+    });
+    session.arrange(ArrangeEdit::SetStretch {
+        ids: vec![clip],
+        stretch: ClipStretch::Off,
+    });
+    let data = session.audio_clip(clip).unwrap();
+    assert!((data.speed - 2.0).abs() < 0.01, "{}", data.speed);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -326,14 +476,14 @@ fn repitching_an_unstretched_clip_repitches_the_picture_rather_than_stretching_i
     // arrangement ... but it shouldnt because it shouldnt stretch just
     // repitch in that scenario."*
     //
-    // The block already gets shorter — `natural_length` divides by the rate,
-    // because varispeed is what pitch *is* until the stretch engine lands
-    // (TDD §3.3). The picture inside it must then still be the **whole
-    // file**, drawn across whatever span that is. It was the file scaled by
-    // the rate a second time: the buckets were addressed in file frames and
-    // handed to `source_position`, which multiplies by the rate — so an
-    // octave up drew the first half of the file over the whole strip and
-    // smeared its last bucket across the rest.
+    // Pitch with stretch off moves what is heard and nothing about time
+    // (see `a_clip_played_faster_runs_out_sooner_and_the_block_is_told_so`),
+    // so the block keeps its length and the picture inside it is still the
+    // **whole file**. It was once the file scaled by the rate a second time:
+    // the buckets were addressed in file frames and handed to
+    // `source_position`, which multiplies by the rate — so an octave up drew
+    // the first half of the file over the whole strip and smeared its last
+    // bucket across the rest.
     let dir = scratch("repitch");
     let (mut session, clip) = with_a_half_loud_take(&dir);
     let at_rest = sound_ends_at(&mut session, clip);
@@ -350,14 +500,14 @@ fn repitching_an_unstretched_clip_repitches_the_picture_rather_than_stretching_i
     let pitched = sound_ends_at(&mut session, clip);
     assert!(
         (pitched - at_rest).abs() < 0.05,
-        "an octave up is the same file, drawn in less room — the sound still \
+        "an octave up is the same file in the same room — the sound still \
          stops half way along the picture, not at {pitched}"
     );
 
-    // And the block itself is half as long, because that is what varispeed
-    // does to a file: the picture is repitched, the block is what moves.
+    // And the file takes the same length of block it did: with stretch off,
+    // pitch moves what is heard and nothing about time.
     let info = session.clips().into_iter().find(|c| c.id == clip).unwrap();
-    assert_eq!(info.audio.natural_length, PPQN / 2);
+    assert_eq!(info.audio.natural_length, PPQN);
     std::fs::remove_dir_all(&dir).ok();
 }
 

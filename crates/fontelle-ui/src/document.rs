@@ -1274,6 +1274,18 @@ pub trait StudioHost: DocumentHost {
         None
     }
 
+    /// Loads a sound file onto one of the instrument's oscillators, as the
+    /// waveform it reads — *"drag audio files into it to use those waveforms
+    /// in the synthesis"*.
+    ///
+    /// `layer` is the oscillator's own index, which the window reads off the
+    /// card the file was dropped on
+    /// ([`FlopsynthCard::oscillator`](crate::canvas::FlopsynthCard::oscillator)).
+    /// Says what arrived, or why nothing did.
+    fn load_wavetable(&mut self, _layer: usize, _path: &std::path::Path) -> Result<String, String> {
+        Err("this instrument does not take sounds".to_string())
+    }
+
     // --- the preset system (`docs/flopsynth-plan.md` §P) ---
     /// What the preset bar shows for one device.
     ///
@@ -1769,6 +1781,42 @@ pub trait StudioHost: DocumentHost {
     /// one value per band of [`SPECTRUM_BANDS`](crate::canvas::SPECTRUM_BANDS)
     /// spaced logarithmically across the EQ's own frequency axis.
     ///
+    /// Points one insert at a **channel's notes** — the melody to force or the
+    /// scale to allow (`docs/tune-plan.md` §5.3). `None` is "no MIDI", which
+    /// is what a corrector does with nothing named.
+    ///
+    /// Refused, and left alone, for an effect that has no use for notes.
+    fn set_insert_notes(&mut self, _strip: usize, _slot: usize, _notes: Option<usize>) {}
+
+    /// Which channel one insert listens to, if any — what a window draws a
+    /// tick beside, indexed the same way [`channels`](StudioHost::channels)
+    /// lists them.
+    fn insert_notes(&self, _strip: usize, _slot: usize) -> Option<usize> {
+        None
+    }
+
+    /// The corrector's own window, when this insert is one
+    /// (`docs/tune-plan.md` §7.6).
+    ///
+    /// `None` for every other insert, exactly as
+    /// [`eq_config`](StudioHost::eq_config) is `None` for everything but an
+    /// EQ: the three effect windows are told apart by which of them offers a
+    /// view, and an insert that is none of the three gets the grid of knobs.
+    fn tune_view(&self, _strip: usize, _slot: usize) -> Option<crate::canvas::TuneView> {
+        None
+    }
+
+    /// The pitch trace one corrector insert has written, oldest hop first
+    /// (`docs/tune-plan.md` §7.3).
+    ///
+    /// Read **once a frame while the corrector's window is open**, like the
+    /// spectrum below it and for the same reason. Empty when there is nothing
+    /// to show — no such insert, no running graph, or an offline session — and
+    /// an empty trace draws nothing rather than a line along the floor.
+    fn tune_trace(&self, _strip: usize, _slot: usize) -> Vec<fontelle_types::TuneFrame> {
+        Vec::new()
+    }
+
     /// *"currently theres no eq monitor graph drawn to view the frequency
     /// spectrum and make edits based off it and see in realtime."*
     ///
@@ -1815,6 +1863,21 @@ pub trait StudioHost: DocumentHost {
     /// The notes of other channels, in the open clip's tick space (see
     /// [`GhostNote`]). Empty for [`GhostFilter::Off`].
     fn ghost_notes(&self, filter: GhostFilter) -> Vec<GhostNote>;
+
+    /// The notes of the take being recorded, so far, in the open clip's own
+    /// ticks — with whatever is still held drawn out to `now`, the
+    /// transport's position.
+    ///
+    /// > *"recording notes also doesnt show you the notes as youre recording
+    /// > them which would be nice and for it like audio to show you it
+    /// > making the clip as youre recording it."*
+    ///
+    /// Read, not taken: the take is kept when the transport stops
+    /// ([`keep_take`](Self::keep_take)), and showing it must not spend it.
+    /// Empty for a host with no capture, and for one that is not recording.
+    fn recording_notes(&self, _now: Sample) -> Vec<NotePreview> {
+        Vec::new()
+    }
 
     // --- the arrangement ---
     /// The lanes, in the order the arrangement stacks them.

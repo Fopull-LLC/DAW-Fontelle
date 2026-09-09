@@ -14,9 +14,11 @@ use fontelle_types::{
     DistortionConfig, DistortionCurve, DistortionPreset, Dither, EffectConfig, EffectKind,
     FILTER_MOD_OCTAVES, FilterConfig, FilterShape, GATE_FLOOR_DB, GATE_KEY_OFF_HZ, GateConfig,
     LfoWave, MAX_CHORUS_DELAY_MS, MAX_CHORUS_VOICES, MAX_FILTER_HZ, MAX_GATE_LOOKAHEAD_MS,
-    MAX_GATE_RATIO, MAX_LFO_RATE_HZ, MIN_CHORUS_DELAY_MS, MIN_FILTER_HZ, MIN_LFO_RATE_HZ,
-    NoteDivision, Oversampling, Quantiser, SoftenConfig, SoftenPreset, Taper, UTILITY_DC_OFF_HZ,
-    UTILITY_MONO_OFF_HZ, Unit, UtilityConfig,
+    MAX_GATE_RATIO, MAX_LFO_RATE_HZ, MAX_TUNE_GRAIN_MS, MAX_TUNE_RETUNE_MS, MIN_CHORUS_DELAY_MS,
+    MIN_FILTER_HZ, MIN_LFO_RATE_HZ, MIN_TUNE_GRAIN_MS, MIN_TUNE_RETUNE_MS, NoteDivision,
+    Oversampling, Quantiser, SoftenConfig, SoftenPreset, TUNE_NOTE_PARAMS, Taper, TuneConfig,
+    TuneControl, TuneEngine, TuneMode, TunePreset, TuneRange, TuneScale, UTILITY_DC_OFF_HZ,
+    UTILITY_MONO_OFF_HZ, Unit, UtilityConfig, VibratoShape,
 };
 
 fn spec_of(config: &EffectConfig, id: &str) -> fontelle_types::ParamSpec {
@@ -1153,4 +1155,380 @@ fn a_preset_is_still_not_a_parameter() {
             "{kind:?} has a preset knob"
         );
     }
+}
+
+// ------------------------------------------------------------------ tune
+//
+// `docs/tune-plan.md` §9.4. The contract side of the pitch corrector: the
+// sections a panel draws, the ids an automation lane names, the scales' notes,
+// the sixteen presets, and the latency the graph compensates. The sound is
+// measured in `fontelle-dsp/tests/pitch.rs`, `psola.rs` and
+// `fontelle-fx/tests/tune.rs`.
+
+#[test]
+fn the_tune_is_input_scale_correction_vibrato_voice_character_then_output() {
+    let config = EffectConfig::new(EffectKind::Tune);
+    let names: Vec<&str> = config.sections().iter().map(|s| s.name).collect();
+    assert_eq!(
+        names,
+        [
+            "Input",
+            "Scale",
+            "Correction",
+            "Vibrato",
+            "Voice",
+            "Character",
+            "Output"
+        ]
+    );
+    let counts: Vec<usize> = config.sections().iter().map(|s| s.count).collect();
+    // §4: four in, sixteen for the scale (two choosers, twelve keys and the
+    // two MIDI controls), five corrections, six vibrato, seven voice, the four
+    // character knobs (§4.8) and the output pair.
+    assert_eq!(counts, [4, 16, 5, 6, 7, 4, 2]);
+    let ids: Vec<&str> = config.specs().iter().map(|spec| spec.id).collect();
+    assert_eq!(
+        ids,
+        [
+            "range",
+            "mode",
+            "tracking",
+            "gate",
+            "root",
+            "scale",
+            "note_c",
+            "note_cs",
+            "note_d",
+            "note_ds",
+            "note_e",
+            "note_f",
+            "note_fs",
+            "note_g",
+            "note_gs",
+            "note_a",
+            "note_as",
+            "note_b",
+            "control",
+            "midi_bend",
+            "retune",
+            "amount",
+            "humanize",
+            "flex",
+            "natural_vibrato",
+            "vibrato_depth",
+            "vibrato_rate",
+            "vibrato_sync",
+            "vibrato_division",
+            "vibrato_onset",
+            "vibrato_shape",
+            "engine",
+            "texture",
+            "grain",
+            "formant",
+            "formant_follow",
+            "transpose",
+            "detune",
+            "drive",
+            "crush",
+            "air",
+            "width",
+            "output",
+            "mix",
+        ]
+    );
+    assert_eq!(config.specs().len(), 44, "forty-three knobs and the mix");
+}
+
+#[test]
+fn the_tunes_choosers_name_every_position() {
+    let config = EffectConfig::new(EffectKind::Tune);
+    for (id, count) in [
+        ("range", 5),
+        ("mode", 2),
+        ("root", 12),
+        ("scale", 15),
+        ("control", 3),
+        ("engine", 3),
+        ("vibrato_shape", 2),
+    ] {
+        let spec = spec_of(&config, id);
+        assert_eq!(
+            spec.taper,
+            Taper::Stepped(count),
+            "{id} is a chooser of {count}"
+        );
+        assert_eq!(
+            spec.positions.len(),
+            count as usize,
+            "{id} leaves a position unnamed"
+        );
+    }
+    // And the enums behind them agree with the tables a panel reads.
+    assert_eq!(TuneRange::ALL.len(), 5);
+    assert_eq!(TuneMode::ALL.len(), 2);
+    assert_eq!(TuneScale::ALL.len(), 15);
+    assert_eq!(TuneControl::ALL.len(), 3);
+    assert_eq!(TuneEngine::ALL.len(), 3);
+    assert_eq!(VibratoShape::ALL.len(), 2);
+    let scales = spec_of(&config, "scale");
+    assert_eq!(scales.positions[0], TuneScale::Chromatic.label());
+    assert_eq!(scales.positions[14], TuneScale::Custom.label());
+    let roots = spec_of(&config, "root");
+    assert_eq!(roots.positions[0], "C");
+    assert_eq!(roots.positions[11], "B");
+}
+
+#[test]
+fn the_tunes_knobs_have_the_units_and_ranges_this_plan_gives() {
+    let config = EffectConfig::new(EffectKind::Tune);
+    for (id, min, max, default, unit, taper) in [
+        ("tracking", 0.0, 100.0, 50.0, Unit::Percent, Taper::Linear),
+        ("gate", -80.0, -20.0, -50.0, Unit::Decibels, Taper::Linear),
+        (
+            "retune",
+            MIN_TUNE_RETUNE_MS,
+            MAX_TUNE_RETUNE_MS,
+            20.0,
+            Unit::Milliseconds,
+            Taper::Logarithmic,
+        ),
+        ("amount", 0.0, 100.0, 100.0, Unit::Percent, Taper::Linear),
+        ("humanize", 0.0, 100.0, 0.0, Unit::Percent, Taper::Linear),
+        ("flex", 0.0, 100.0, 0.0, Unit::Percent, Taper::Linear),
+        (
+            "natural_vibrato",
+            0.0,
+            100.0,
+            100.0,
+            Unit::Percent,
+            Taper::Linear,
+        ),
+        ("vibrato_depth", 0.0, 100.0, 0.0, Unit::None, Taper::Linear),
+        (
+            "vibrato_rate",
+            0.1,
+            12.0,
+            5.5,
+            Unit::Hertz,
+            Taper::Logarithmic,
+        ),
+        (
+            "vibrato_onset",
+            0.0,
+            1_000.0,
+            200.0,
+            Unit::Milliseconds,
+            Taper::Linear,
+        ),
+        ("texture", 0.0, 100.0, 0.0, Unit::Percent, Taper::Linear),
+        (
+            "grain",
+            MIN_TUNE_GRAIN_MS,
+            MAX_TUNE_GRAIN_MS,
+            25.0,
+            Unit::Milliseconds,
+            Taper::Logarithmic,
+        ),
+        ("formant", -12.0, 12.0, 0.0, Unit::None, Taper::Linear),
+        (
+            "formant_follow",
+            0.0,
+            100.0,
+            0.0,
+            Unit::Percent,
+            Taper::Linear,
+        ),
+        (
+            "transpose",
+            -12.0,
+            12.0,
+            0.0,
+            Unit::None,
+            Taper::Stepped(25),
+        ),
+        ("detune", -100.0, 100.0, 0.0, Unit::None, Taper::Linear),
+        ("output", -24.0, 12.0, 0.0, Unit::Decibels, Taper::Linear),
+    ] {
+        let spec = spec_of(&config, id);
+        assert_eq!(spec.min, min, "{id}'s bottom");
+        assert_eq!(spec.max, max, "{id}'s top");
+        assert_eq!(spec.default, default, "{id}'s default");
+        assert_eq!(spec.unit, unit, "{id}'s unit");
+        assert_eq!(spec.taper, taper, "{id}'s taper");
+    }
+    // The mix is fully wet: a corrector replaces the signal, it does not sit
+    // under it.
+    assert_eq!(spec_of(&config, "mix").default, 100.0);
+    assert!(!EffectKind::Tune.is_time_based());
+}
+
+#[test]
+fn the_twelve_note_switches_are_switches_and_are_reachable_by_address() {
+    let mut config = EffectConfig::new(EffectKind::Tune);
+    for id in TUNE_NOTE_PARAMS {
+        let spec = spec_of(&config, id);
+        assert_eq!(spec.unit, Unit::Switch, "{id} is a switch");
+        assert_eq!(spec.taper, Taper::Stepped(2));
+        assert_eq!(
+            spec.default, 1.0,
+            "{id} opens on — a fresh tune is chromatic"
+        );
+    }
+    // What automation writes: a lane can turn the fifth off half way through a
+    // section, which is the whole reason these are parameters (§4.2).
+    config.set("note_fs", 0.0);
+    config.set("note_a", 0.0);
+    let EffectConfig::Tune(tune) = config else {
+        unreachable!()
+    };
+    assert_eq!(tune.notes & (1 << 6), 0, "F# is off");
+    assert_eq!(tune.notes & (1 << 9), 0, "A is off");
+    assert_ne!(tune.notes & 1, 0, "C was not moved by its neighbours");
+    assert_eq!(tune.notes.count_ones(), 10);
+}
+
+#[test]
+fn a_fresh_tune_is_a_tuner_and_not_a_wire() {
+    // §4.7: the knob a person reaches for on a tuner is the retune speed, and
+    // an insert that did nothing until `amount` was found would look broken.
+    let tune = TuneConfig::new();
+    assert_eq!(tune.scale, TuneScale::Chromatic);
+    assert_eq!(tune.notes, 0x0FFF, "every key is in");
+    assert_eq!(tune.root, 0);
+    assert_eq!(tune.control, TuneControl::Scale);
+    assert_eq!(tune.retune_ms, 20.0);
+    assert_eq!(tune.amount, 1.0);
+    assert_eq!(tune.humanize, 0.0);
+    assert_eq!(tune.flex, 0.0);
+    assert_eq!(tune.natural_vibrato, 1.0);
+    assert_eq!(tune.engine, TuneEngine::Smooth);
+    assert_eq!(tune.formant_follow, 0.0, "formants stay where they were");
+    assert_eq!(tune.formant, 0.0);
+    assert_eq!(tune.transpose, 0);
+    assert_eq!(tune.mode, TuneMode::Studio);
+    assert_eq!(tune.range, TuneRange::AltoTenor);
+    assert_eq!(tune.vibrato_depth, 0.0);
+    assert_eq!(tune.mix, 1.0);
+    // The two ways to make it a wire, and they are the only two.
+    assert_eq!(spec_of(&EffectConfig::Tune(tune), "amount").min, 0.0);
+}
+
+/// Written by hand rather than by calling the function it checks (§9.4).
+#[test]
+fn every_scale_mask_has_the_right_notes_at_every_root() {
+    // Bit 0 is C, bit 11 is B — absolute pitch classes, so a mask can be read
+    // against a keyboard without knowing the root.
+    for (scale, at_c) in [
+        (TuneScale::Chromatic, 0b1111_1111_1111u16),
+        (TuneScale::Major, 0b1010_1011_0101),
+        (TuneScale::NaturalMinor, 0b0101_1010_1101),
+        (TuneScale::HarmonicMinor, 0b1001_1010_1101),
+        (TuneScale::MelodicMinor, 0b1010_1010_1101),
+        (TuneScale::Dorian, 0b0110_1010_1101),
+        (TuneScale::Phrygian, 0b0101_1010_1011),
+        (TuneScale::Lydian, 0b1010_1101_0101),
+        (TuneScale::Mixolydian, 0b0110_1011_0101),
+        (TuneScale::Locrian, 0b0101_0110_1011),
+        (TuneScale::MajorPentatonic, 0b0010_1001_0101),
+        (TuneScale::MinorPentatonic, 0b0100_1010_1001),
+        (TuneScale::Blues, 0b0100_1110_1001),
+        (TuneScale::WholeTone, 0b0101_0101_0101),
+        (TuneScale::Custom, 0b1111_1111_1111),
+    ] {
+        assert_eq!(scale.mask(0), at_c, "{:?} at C", scale);
+        // A scale is the same shape wherever it starts: rotate the notes and
+        // you have the mask at that root.
+        for root in 0..12u8 {
+            let rotated = ((at_c as u32) << root) | ((at_c as u32) >> (12 - root as u32));
+            assert_eq!(
+                scale.mask(root),
+                (rotated & 0x0FFF) as u16,
+                "{:?} at root {root}",
+                scale
+            );
+        }
+    }
+    // The two everybody checks by ear: D major has F# and C#, and it does not
+    // have F.
+    let d_major = TuneScale::Major.mask(2);
+    assert_ne!(d_major & (1 << 6), 0, "F# is in D major");
+    assert_ne!(d_major & (1 << 1), 0, "C# is in D major");
+    assert_eq!(d_major & (1 << 5), 0, "F is not");
+}
+
+#[test]
+fn every_tune_preset_is_somewhere_other_than_the_wire_and_than_each_other() {
+    // §6's sixteen, plus the twenty-four the character section (§4.8) made
+    // reachable: the bank is what somebody browses to find a *style*, and a
+    // family with four new axes and no new points on them is a family whose
+    // range nobody will find.
+    assert_eq!(TunePreset::ALL.len(), 40, "§6's bank");
+    let fresh = TuneConfig::new();
+    let mut seen: Vec<(TunePreset, TuneConfig)> = Vec::new();
+    for preset in TunePreset::ALL {
+        let config = TuneConfig::from_preset(preset);
+        assert_ne!(
+            config,
+            fresh,
+            "{} is the state a fresh insert is already in",
+            preset.label()
+        );
+        for (other, made) in &seen {
+            assert_ne!(
+                config,
+                *made,
+                "{} and {} are the same settings twice",
+                preset.label(),
+                other.label()
+            );
+        }
+        assert!(!preset.label().is_empty());
+        seen.push((preset, config));
+    }
+}
+
+#[test]
+fn a_tune_round_trips_through_json() {
+    let mut config = TuneConfig::from_preset(TunePreset::CheapPlastic);
+    config.notes = 0b0000_1010_0101;
+    config.scale = TuneScale::Custom;
+    config.root = 7;
+    config.detune_cents = -14.0;
+    let text = serde_json::to_string(&config).unwrap();
+    let back: TuneConfig = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, config);
+    // And a project written by a build with fewer knobs opens at this build's
+    // defaults rather than at zero (§11).
+    let sparse: TuneConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(sparse, TuneConfig::new());
+}
+
+/// §3.8's table, in samples at 48 kHz, all ten cells. The graph compensates
+/// this number, so it is the one thing here that must not drift.
+#[test]
+fn the_latency_a_config_reports_matches_the_table_in_the_plan() {
+    for (range, live, studio) in [
+        (TuneRange::Soprano, 332, 664),
+        (TuneRange::AltoTenor, 512, 1_024),
+        (TuneRange::BaritoneBass, 832, 1_664),
+        (TuneRange::Instrument, 1_232, 2_464),
+        (TuneRange::Low, 1_952, 3_904),
+    ] {
+        for (mode, expected) in [(TuneMode::Live, live), (TuneMode::Studio, studio)] {
+            let config = TuneConfig {
+                range,
+                mode,
+                ..TuneConfig::new()
+            };
+            assert_eq!(
+                config.latency_samples(48_000.0),
+                expected,
+                "{range:?} in {mode:?}"
+            );
+        }
+    }
+    // It scales with the rate, because everything in samples is derived from
+    // the hertz the range is written in.
+    let config = TuneConfig::new();
+    assert_eq!(config.latency_samples(96_000.0), 2 * 960 + 64);
 }

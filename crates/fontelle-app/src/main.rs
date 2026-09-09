@@ -408,7 +408,7 @@ fn play_or_render(
         },
         &std::collections::HashMap::new(),
         None,
-        &std::collections::HashMap::new(),
+        &Default::default(),
         None,
         None,
         &wiring,

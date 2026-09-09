@@ -29,7 +29,638 @@ over the budget its plan set. The numbers and where the time goes are at the
 end of the section below; the plan's own instruction is that this is a design
 conversation rather than a target to loosen.
 
-## 2026-09-07 (latest): the text stopped flickering, and the piano stopped being a clavinet
+## 2026-09-09 (latest): two tests that were not doing their jobs
+
+Both found while doing something else, both fixed rather than written down.
+
+**`FONTELLE_UI_DUMP` crashed the one shot that needed it.** `render_headless`
+had a `dump(pixels, name)` that filled in `W`/`H` for you and a `dump_sized`
+that took them. Every shot in the file that is not the standard size called
+`dump_sized` — except the rack's, which is deliberately 640x480 so two rows
+fit, and which called `dump`. So it handed a 640x480 buffer to a 640x360
+encoder and panicked with `ImageBufferSize { expected: 921600, actual:
+1228800 }`. Invisible unless the variable was set, which is exactly when you
+need it: this is the route `docs/handoff.md` names for seeing pixels on a
+machine whose compositor will not give a screenshot up.
+
+`dump` is gone rather than fixed. It had one caller, that caller was the bug,
+and its entire body was a guess about which size the caller wanted. A
+convenience whose whole content is an assumption about its caller is worth less
+than the line it saves.
+
+**`every_pair_of_kits_is_audibly_apart` was not that claim.** Its fold is
+`f32::max` over nine readings, so it passes a pair that differs on one and is
+identical on the other eight — and under that name it stayed green through two
+rounds of "the kits all sound the same" and let both ship. It is renamed to
+`every_pair_of_kits_differs_on_something_measurable`, which is what the body
+supports.
+
+It was **not** strengthened, and the measurement is why: across the 231 pairs
+the number of readings that clear the threshold is distributed
+`[0,0,5,18,36,46,70,40,15,1]`, and the pairs down at two include Boom Bap
+against Lo-Fi — 7.7 dB apart on a real listening measure. The instrument reads
+three numbers off three *raw voices* with no bus in front of them; any fold
+strict enough to be a separation gate would fail kits that are genuinely
+different. Whether two kits sound different is asked where it can be answered,
+in `fontelle-engine/tests/drum_kit_bus.rs`.
+
+What core keeps instead is the cheap threshold-free half, and that had a hole
+of its own: `every_style_is_actually_a_different_kit` walked `ALL` against
+itself offset by one, so it compared each kit with its **neighbour in the menu
+order** and nothing else, on three of the thirty-six hits. A duplicate two rows
+apart passed. It is now `no_two_kits_are_the_same_numbers` — every pair, every
+hit, exact equality — and it was confirmed to fail by making Latin a copy of
+Studio, which is a pair the old one could never have looked at.
+
+## 2026-09-09: a strip says how much, not what
+
+> *"the effects trail is showing both on each track and in the section where
+> you have it selected, however this makes showing it on the track redundant
+> and is making it so that the volume bar is squished the more effects you
+> add."*
+
+Both halves true, and the second is the serious one. A mixer strip drew **a row
+per insert** — name, bypass switch, the lot — and took the height for them off
+the fader. So the one control a mixer exists for shrank every time somebody
+used the newest feature, and it shrank in aid of a list the track-options
+column was already drawing beside it, in full and legibly, at twenty pixels a
+row instead of twelve.
+
+`MixerStripLayout::inserts`/`add` are now one `chain: Rect`: a **fixed** row of
+dots, one per insert, in the track's colour and dimmed where an insert is
+switched out. Fixed is the whole point — a track with sixteen effects costs its
+fader exactly what a track with one does — and it is *reserved* whether or not
+there are any effects, for the reason `STRIP_WIDTH` gives about width: a mixer
+is a thing you learn the shape of, and a fader that moves when the first effect
+lands is a fader somewhere new every time you look. It still gives way entirely
+before the fader does, which is what `MIN_FADER_HEIGHT` is now for.
+
+What survives is the part the options column genuinely cannot show: that column
+points at **one** track, and "which of these sixteen strips has anything on it,
+and is anything switched out" is a question about all of them.
+
+The row is deliberately not a target of its own — it falls through to the strip,
+which selects the track and points the options column at it. Opening an effect,
+bypassing one and adding one all already existed on `OptionsHit`, so
+`MixerHit::Insert`, `BypassInsert` and `AddInsert` went with the rack rather
+than being left as three unreachable variants with handlers behind them.
+Splitting a nine-pixel row into six targets is six targets nobody can hit.
+
+`shoot_mixer` in `render_headless` now carries six effects with one bypassed,
+because a shot that cannot show the complaint cannot show the fix either.
+
+## 2026-09-09: a kit is a bus, and the gate that had been lying
+
+> *"we did some work on improving the drum machine built in plugin however all
+> of the presets still sound nearly the same"*
+
+The third report of this, after `metal`/`crush` fixed the noise
+and the modal bank fixed the body. Both of those worked. Both of them worked on
+**the hit**, and the thing that was wrong this time was not a hit.
+
+### The gate had been lying, which is why it shipped twice
+
+`every_pair_of_kits_is_audibly_apart` reads three numbers off three raw voices
+and folds the nine differences with **`f32::max`**. Two kits pass it by
+differing on *one* reading out of nine and being identical on the other eight.
+It is a floor on the best case, and it was green the entire time the complaint
+was true.
+
+So the first thing built was an honest reading, and it lives in
+`fontelle-engine` (`tests/drum_kit_bus.rs`) because INVARIANT 4 forbids core
+from seeing `fontelle-fx` — and core therefore cannot render the thing that
+makes a kit a kit. A kit becomes a **fingerprint**: six audition hits, each as
+twenty log bands over twenty overlapping 43 ms frames, in dB, floored 60 dB
+under its own peak and with its loudness removed. Two kits are as far apart as
+the RMS decibel difference between their fingerprints.
+
+Measured on the kits as they stood: the closest pair was 4.4 dB, the median
+10.4, and **only Chiptune stood clear of the huddle** — the one kit whose
+*source* is different. Studio/Rock 6.4, Studio/Techno 6.9, 909/Techno 7.3.
+
+Two traps in building that reading, both of which would have sent the whole
+round tuning the wrong knobs:
+
+- **A Hann window is zero at its start.** With frames laid end to end the first
+  one begins exactly at the onset, so the attack — the most recognisable 5 ms
+  of any drum — was windowed away to nothing. The reading said a hit with its
+  click at full and the same hit with no click were *identical*. Frames overlap
+  by half now, with the signal padded by half a frame, so the onset lands where
+  the window is one.
+- **Flooring at -120 dB measures silence.** Most of a drum's last frames are
+  noise floor, and a band at -118 against one at -104 is fourteen decibels of
+  "difference" nobody can hear. Sixty down from the hit's own peak is the range
+  it actually occupies.
+
+### The cause: every kit was thirty-six dry one-shots
+
+All twenty-two shipped with `fx: []` and the same two filters left wide open.
+Nothing had ever touched the **bus** — and a rock kit is a room, a gated snare
+is a room cut off, an 808 is dry on purpose, and a hall is what makes a
+cinematic kit cinematic. None of that lives in an oscillator.
+
+`KitSpace` is that bus: tone, glue, character, room, in the order a drum bus is
+actually built, emitted as an ordinary `Patch::fx` chain — the same four slots
+Flopsynth presets already carry, run by the same code in `SamplerNode`,
+editable and automatable afterwards. A stage set to a wire is not written at
+all, so Chiptune has one slot and Trap has two.
+
+### The bus was necessary and not sufficient, and the measurement said so
+
+With the buses in, the huddle barely moved — Studio/Funk went 4.42 → 4.89.
+Broken down: the bus moves a kit a great deal *on its own* (Ambient 11.2, Rock
+8.4), but for a pair whose **voices** are 4-5 apart it adds nothing, and Techno
+and Metal got *closer* because both were given hard-clip drive and a scoop.
+
+So the voices had to move too, and a per-knob authority measurement said which
+ones could move them. `drive`, `tune`, `decay` and — on metalwork — `crush`
+carry real weight; `tail`, `bend`, `rattle` and `snap` are worth under a
+decibel each. Three axes were missing outright:
+
+- **`cymbal_decay`.** `Family::Cymbal` took a family decay of one, so every kit
+  in the program had the same 1.2-second ride. Two of the six audition hits
+  were contributing almost nothing.
+- **`cymbal_metal`.** `metal` at one is the 808's six squares and reads as
+  *that machine*, so every acoustic kit left it at zero — which left every
+  acoustic ride as a band of white noise, and that is the same band of white
+  noise in every kit. A ride is a struck plate whether or not the hats are a
+  circuit.
+- **`hat_crush`.** The highest-authority knob the metalwork has: 0.15 of it
+  moves a hat further than doubling its length. A machine did not sample
+  everything at the same depth — memory was expensive and the cymbals are the
+  longest sounds in the box — and it has to stay at zero on anything acoustic,
+  which is exactly why it could not be the global `crush`.
+
+`perc_decay` came along with them for the same reason.
+
+### The floor is read off a pair, not chosen
+
+`APART_DB` is **7.5**, and it is Boom Bap against Lo-Fi. Those two are the
+catalogue's deliberate cousins — both a sampler with the top eaten off — and
+they measure 7.6. What the gate forbids is *duplicates*, not neighbours: a
+catalogue of twenty-two kits legitimately has families in it. Nine was tried
+first (the 808/909 gap) and it is the wrong number — it sits near the far edge
+of the space, and requiring every pair to be as unlike as those two is
+requiring a catalogue with no families at all. Fitting the threshold to
+whatever the kits managed would have been the same mistake as the `max` fold.
+
+Where it landed, against where it started:
+
+| | closest pair | p25 | median |
+|---|---|---|---|
+| before | 4.35 | 8.30 | 10.38 |
+| after | **7.60** | **10.07** | **11.82** |
+
+Every kit's nearest neighbour is now between 7.6 and 10.8, where before it was
+one kit at 10.2 and twenty-one in a huddle.
+
+### Two defects the bus exposed on its way in
+
+- **Ten kits clipped through their own chain.** A bus is a gain stage;
+  `no_kit_leaves_full_scale_through_its_own_bus` is the same promise core makes
+  about the voices, made again through everything.
+- **The kits were 29 dB apart in level** — Drum & Bass at 5.43 of full scale,
+  Ambient at 0.19 — which the fingerprint could not see because it removes
+  loudness on purpose. `KitSpace::trim_db` is each kit's own headroom on the
+  layer, converged against a real pattern.
+
+And one thing the trim taught: **auto make-up turns a compressor into a level
+regulator, and a regulator downstream of a fader ignores the fader.** Drum &
+Bass sat at 1.31 and no amount of layer trim moved it, because every decibel
+taken off its input came straight back as make-up. The make-up is explicit per
+kit now (`KitSpace::makeup_db`), inside the chain where the level was lost —
+restoring it on the layer instead makes the *dry* voices loud, which is a kit
+that clips the moment somebody switches its bus off. Pattern loudness spans
+13.5 dB now rather than 20.3; the remainder is the anti-clip ceiling binding on
+the transient-heavy kits, which is a real constraint rather than a setting.
+
+`cargo run --release -p fontelle-engine --example kit_wavs -- /tmp/kits`
+renders every kit **through its bus** — two bars and then the six audition hits
+— which is what `drum_probe` cannot do from core. `cargo run --release -p
+fontelle-core --example kit_diff -- Studio House` prints what two kits still
+share, hit by hit, which is how the remaining collisions were found (808 and
+Techno had the same 37.44 Hz kick).
+
+## 2026-09-09: fields you can type in, and knowing where you are
+
+> *"the input entering field has really bad ux and visuals right now it doesn't
+> look like a input field it's just text on a background making it look like
+> it's a label and not somewhere you can type you can't even see your cursor
+> where you're typing and i can't ctrl a to select all my text."*
+
+**Three complaints, one cause: there was no model of being edited.** Every
+place you could type held a bare `String` and drew it with a block character
+stuck on the end — so there was no caret to move, no selection to make, and
+nothing for Ctrl+A to select. A field that cannot say where its caret is
+cannot draw one, and a field that cannot draw one looks like a label.
+
+**`canvas::TextEntry`** is the missing half: a string, a caret, an anchor, and
+the keyboard a field has — Ctrl+A, shift-arrows, Ctrl+arrows by word,
+Home/End, Ctrl+C/X/V. Byte indices always on a character boundary, so a caret
+cannot land inside an accent and `String::insert` cannot panic.
+
+**Where the split is**, and it is forced rather than chosen: the model is in
+the canvas where it can be tested without a window; the *geometry* is the
+renderer's, because placing a caret means measuring the text in front of it
+and shaping is not something that crate may do (INVARIANT 2). So the window
+measures and hands over points.
+
+**One implementation, three surfaces.** `canvas::text_key` is shared by the
+name prompts, the browser's search and inline renames. They were three
+handlers with backspace-and-typing each and nothing else, and the one that went
+stale was always the one you were not looking at.
+
+**And it looks like a field**: a recess darker than the panel it sits on, an
+accent border lit while it has the keyboard, a selection drawn as a wash
+(rather than an inversion, so the characters keep their colour), and a caret
+that **blinks** at half a second — a caret that does not blink is easy to read
+as a character. `render_headless` draws both states and the PNGs are the proof.
+
+Renames now open with **the whole name selected**, which is what every program
+does and why: the commonest thing to do to a name you just opened is replace
+it.
+
+> *"we need to make it possible to tell which window is currently focused ...
+> subtle but easy to tell at a glance."*
+
+A **two-point accent spine** down the inside of the focused pane's left edge.
+The roll had no way to report focus at all, so half the answer was missing and
+the guarantee only held in one direction. Two louder readings were rejected for
+a reason each: dimming the unfocused pane's *contents* would change the colour
+of the clips and notes you judge edits by, and a picture that shifts with focus
+is one you cannot trust; tinting a header sits outside the working area, where
+the eye is not. It is a spine rather than the full outline the arrangement used
+to draw, because an outline reads as a *selected object* and a pane is not
+something you selected — it is where you are.
+
+**`S` toggles Stretch** on the arrangement, and still cycles the snap in the
+roll — the same "which canvas has the keyboard" rule `copy`, `cut` and `paste`
+follow. Nothing was lost: `cycle_snap` only ever stepped the *roll's* grid, so
+`S` on the arrangement had been changing a setting on a panel you were not
+looking at.
+
+**Still in-row rather than boxed:** inline renames got the whole keyboard but
+draw where they always did. A recessed box on a fourteen-point row would fight
+the row, and that is a decision worth making on purpose rather than by
+extending a pattern into a place it does not fit.
+
+## 2026-09-09: the blade shows the cut, and the roll got an arpeggiator
+
+**The cut tool was drawing the question, not the answer.**
+
+> *"it is displaying the actual visuals of the tool from the exact pixel of
+> where I'm clicking and dragging my mouse instead of actually displaying it
+> rounded to the grid that it's going to cut the actual clip at."*
+
+Exactly right, and the two were never the same thing: `clip_cuts` snaps every
+crossing to the arrangement's grid, per clip, and the preview was a line
+between the two pointer positions. A stroke aimed a third of a beat late
+*looked* like a cut a third of a beat late and landed on the beat.
+
+`canvas::slice_marks` is the answer instead: it asks **the same function the
+release will ask** and turns each cut into a mark across that clip's own row,
+so the two cannot drift — a preview computed from a second copy of the
+snapping rule is a preview that is right until somebody edits one of them. The
+stroke is still drawn, faint, because it is feedback that the drag is
+happening; the bright marks are what will actually be cut. A diagonal across
+three lanes marks three different places, which is what it will do.
+
+**An arpeggiator in the Tools menu**, as its own dialog like the other three.
+FL's five controls — step (1/4 to 1/32, straight and triplet), direction (up,
+down, up-down, down-up, as played, random), range in octaves, gate, repeat —
+and two FL does not have:
+
+- **Swing**, because an arp on a perfectly straight grid is the most obviously
+  machine-made thing anybody puts in a project. The off-beats land late and
+  the down-beats never move, so the bar stays where it is while the feel
+  changes.
+- **Ramp**, a velocity slope across the run, because a run in which every note
+  is struck identically reads as a preset rather than as playing.
+
+It works on **chords** — overlapping notes — so two chords in sequence become
+two runs rather than one across the gap between them, and each run fills its
+own chord's span and never overshoots it. Up-down does not repeat the end
+notes (C E G E, not C E G G E C), which is the difference between a turn and a
+stutter; random never plays the same pitch twice running. The maths is
+`fontelle_model::arpeggiated`, pure and tested on its own.
+
+**And the waveform fault, found and fixed.** The reproductions did not catch
+it because they drove the *edits*; the fault was in the **gesture**.
+
+A diagnostic through the reported sequence says it in one line:
+
+```
+stretch off   length 1920  speed 4.000  natural 1920  columns 900
+grown back    length 9600  speed 4.000  natural 1920  columns 180
+```
+
+An edge drag sent `SetStretch { Off }` as its first step whenever the toolbar
+switch was off. Turning a stretched clip off **freezes** the rate it was being
+played at into the clip's own `speed` — `with_stretch` does that on purpose, so
+the sound does not jump, and that was itself the fix for an earlier report. But
+it means a clip stretched down to a quarter and then dragged became a clip
+genuinely playing four times too fast, whose take really *was* a quarter as
+long. Blank, unrecoverable, and the picture was arithmetically right the whole
+time.
+
+Both reports about this corner are the same fault seen from two sides:
+
+> *"its stretching the clip back to how it was before before letting you extend
+> the length of the ending"* — and — *"making the audio show completely blank
+> after that even though it actually does have content"*.
+
+**The rule now: a trim is never lossy.** That is what FL gives you and it is
+the invariant that makes editing against a waveform trustworthy. A drag only
+ever turns stretching *on*; it never turns it off. Turning it off is the
+deliberate act it reads as — the switch does it, to the selection, and doing it
+deliberately still freezes the sound where it is. So the switch's two
+directions are now two different kinds of thing, which is written down where it
+is read: **on** is a setting for the next drag, **off** is an action on what is
+selected.
+
+**And a block that is longer than its take says so** (`canvas::content_end`): a
+rule where the file stops and a dimmed band with a centre line past it. Blank
+used to be indistinguishable from broken, which is most of why this was
+reported as a drawing fault. `None` for a block its file fills, and `None` for
+a looping block — whose gaps are a rhythm rather than an ending.
+
+**Still not reproduced:** the waveform appearing *offset* after a cut. Both
+halves keep their own peaks and their own `natural_length`, and two suspected
+mechanisms were checked and cleared — `clip_rect` is not clamped to the visible
+grid, so scrolling cannot shift the picture, and the peak buckets already go
+through `AudioClipData::source_position`, which accounts for trim, speed and
+reverse. `fontelle-app/tests/audio_waveform.rs` keeps the reproductions.
+
+**Superseded, for the record:
+
+** `with_stretch_off_a_drag_on_a_stretched_clip_turns_its_stretch_off_so_the_
+drag_cuts` read the switch as *"what the drag does, not a filter on which clips
+it does it to"*. Coherent, and it is what made trims lossy. The test is now
+`..._leaves_its_stretch_alone`, and it carries the reasoning so the rule is not
+quietly reverted by somebody reading only the old comment.
+
+## 2026-09-09: the drums are struck things now, not oscillators
+
+> *"the sounds in it still sound way too synthesized and not realistic enough
+> and not diverse enough ... ultimately still just sounding like tweaked
+> versions of the same synthesized sounding sounds."*
+
+The second report of this, and the first fix was only half of it. On
+2026-09-04 the answer was that the **noise** source was the same everywhere,
+and `metal` and `crush` gave the kits an axis apart. That was true and it was
+not enough, because the other half of every pitched hit — the **body** — was
+still one oscillator. A kick, a tom and a conga were the same sine with three
+envelopes on it, and no value of tune, bend or decay could make any of them
+ring like a drum, because what a drum does was not in the model.
+
+**What a drum does.** Strike a membrane and it rings at a set of *inharmonic*
+modes decided by its shape — 1.000, 1.593, 2.135, 2.295, 2.917 of its
+fundamental for an ideal circular head — each with its own decay, the high
+ones dying first. Those ratios are not multiples of the lowest, so the ear
+never fuses them into a pitch, and that is exactly the difference between "a
+drum" and "a beep at 120 Hz".
+
+**`fontelle-dsp::ModalBank`** is that: six two-pole resonators, struck by the
+hit's own transient, two multiplies and two adds a sample each, `Copy` so a
+voice can still be handed back to a pool by being overwritten. Every input is
+clamped, because a pole outside the unit circle does not fade — it grows,
+through the layer, the track and the master — and
+`every_mode_is_stable_however_it_is_asked_for` is the test that says it
+cannot.
+
+**Three knobs on `DrumVoice`**, all reading with serde defaults so every
+project made until today opens sounding exactly as it did:
+
+- **`modes`** — how much of the pitched half is a struck membrane rather than
+  an oscillator. The ratios come from `DrumModel`, because the shape is a fact
+  about the *object*: a kick is a head over a deep shell whatever an 808 did
+  to it. Membranes get Bessel ratios; a tom gets the air-loaded ones (1.50,
+  1.75, 2.00 — nearly harmonic, which is *why* a tuned tom sounds like a note
+  and a conga does not); a rim and a cowbell get **bar** ratios (1 : 2.76 :
+  5.40), which is why a woodblock reads as wood.
+- **`tail`** — a slower decay under the fast one. A shell still moving after
+  the head has stopped, which one exponential cannot be.
+- **`rattle`** — the noise rung through a resonance a fifth over the body,
+  where a snare's wires buzz against its shell.
+
+**And the kits got an axis they were missing.** `modes` is the
+acoustic-to-machine control, and it is not a quality knob: the 808 is at 0.06
+and the chiptune kit at 0.0 **on purpose** — an 808 is a sine, and a circuit
+has no membrane. Studio, Rock, Funk, Jazz and Latin are at 0.8 to 1.0. The
+pairwise gate caught Lo-Fi and Industrial at 0.30 apart when the new axes went
+in, which is what it is for; they are now a sampled acoustic kit through a bad
+converter (short, crushed, modal) and struck steel that will not stop ringing
+(long tail, no membrane).
+
+**The kit stopped being a point source.** Every layer had a `pan` and every
+kit was leaving it at zero — which is the single most "drum machine" thing
+about a drum machine. Kick and snare down the middle, hats one side, ride the
+other, and the toms sweeping left to right as they get bigger, because the key
+*is* the position. Modest: ±0.35 at the widest, so a mono fold-down loses
+nothing.
+
+`cargo run --release -p fontelle-core --example drum_probe` renders every kit
+to a WAV and prints what each hit measures, which is the thing to listen to
+before touching a recipe.
+
+## 2026-09-09: a mixer track is a preset now, and sixteen vocal chains ship
+
+> *"i want mixer track presets ... right click a track and there's a presets
+> option ... or i could save a new preset of my current version of that track."*
+
+**A track's whole chain is a preset.** `DeviceKind::Track` and
+`PresetPayload::Track(TrackChain)` — a fourth payload beside the patch, the
+effect and the plugin — and `ApplyTrackChain`, one command so a chain lands as
+**one** undo entry rather than a fader move and six `AddInsert`s.
+
+Everything behind it is the preset machinery that already existed: a folder in
+the bank, categories, stars, Save-as, the same `PresetDevice` the device bars
+use. That was the whole reason to make a track a `PresetDevice` rather than
+build a second mechanism beside it — a second mechanism would have been a
+second set of bugs.
+
+**What a chain carries**: the level, the placement, the polarity and every
+built-in insert with its whole configuration and its bypass. **What it
+deliberately does not**, each with its reason on `TrackChain`:
+
+- the **name** — a preset names the sound, a track names the part;
+- the **sends** — a send points at another track by id, and an id from the
+  project it was saved in means nothing here, or worse means something wrong;
+- the **routing and the input** — this session's wiring, not a vocal sound;
+- **hosted plugins** — a chain naming a plugin this machine has not got can
+  only fail at load, so saving skips them and the message says how many.
+
+**The gesture.** Right-click a strip: the track's name, *Track presets…*,
+*Save track preset…*, *Rename*. The presets row opens the bank grouped by
+shelf; the save row asks a name and then a shelf, in the same place, so the
+two prompts read as one gesture.
+
+It is a **second menu rather than a hover-out submenu**, which is a departure
+from what was asked for and is written down here rather than left to be
+noticed. Nothing in this program has a submenu and the menu code has no notion
+of one; every other two-step choice here — the plugin picker, the preset
+drop-down — opens a second menu on a press, and that path already works with
+the keyboard, with type-to-filter and with Escape. Real submenus are an
+interaction system rather than a feature, and worth doing on purpose if they
+are wanted.
+
+**Sixteen vocal chains**, on three shelves: *tuned* (Rap Lead, Trap Lead, R&B
+Smooth, Pop Lead, Drill Lead, Hyperpop Lead, Clean Correct), *natural* (Ballad
+Lead, Rock Lead, Spoken Word, Backing Stack, Doubler Wide) and *effects*
+(Telephone, Lo-Fi Tape, Robot Vocal, Dream Wash).
+
+They are **named for the sound and not for a singer**. `docs/tune-plan.md` §13
+already refuses a chooser of other products' voicings, on the grounds that
+naming a control after somebody else's plug-in is "a preset pretending to be a
+control"; naming one after a person promises more than six inserts can deliver
+and is not ours to promise. Each chain is built in one order — clean up (gate,
+high pass), control (correction, then compression), colour (drive, crush,
+tone), place (delay, then reverb) — with the settings varying rather than the
+idea. Correction sits before compression on purpose: a corrector tracks pitch
+and a compressor changes level, and the tracker should hear what was sung.
+
+## 2026-09-09: the autotune got a colour, a bank and a keyboard that is a keyboard
+
+A second pass over the corrector, asked for as "expansive feature sets to
+match other professional autotunes, and vast presets".
+
+**§4.8, Character.** Four knobs after the shifter — `drive`, `crush`, `air`,
+`width` — off or unity in a fresh corrector. The family had every axis of the
+*correction* and none of the *colour*, and colour is most of what separates
+an expensive-sounding autotune from a cheap one. The whole design is in the
+plan; the part worth repeating is that **`drive` measures its own make-up
+gain** rather than assuming it. Both obvious normalisations are wrong and the
+bank found each in turn: fixing the curve at full scale made a −20 dBFS vocal
+come out eight to seventeen decibels *louder*, and fixing the slope at the
+origin made it eighteen decibels *quieter*. Block RMS in, block RMS out, the
+ratio applied back, smoothed. Two gates hold it —
+`every_tune_preset_makes_a_sound_within_three_decibels_of_the_wire` and the
+new `no_factory_preset_clips_a_normal_vocal`, which caught seven presets at
+once and is why the bank is now level across all forty.
+
+**Forty presets, up from sixteen**, in four groups: the hard and robotic
+(Classic R&B, Hyperpop, Drill, Robot Choir, Vocoder Lite, Glitch Tune,
+Talkbox, Automaton), the natural (Gentle Correct, Live Vocal, Backing Vocal,
+Rap Tighten, Country Slide, Jazz Loose, Opera, Podcast), the coloured (Warm
+Tape, Bright Pop, Lo-Fi Cassette, Radio Voice, Telephone) and the shifts
+(Monster, Alien, Whisper Twin). `cargo run --release -p fontelle-app --example
+tune_presets` renders a vocal through every one and prints what each does to
+the pitch, the level and the peak; the whole bank now sits inside ±3 dB with
+nothing clipping.
+
+**Three faults the pictures found, which no test had.**
+
+- **The keyboard's black keys were on the wrong notes.** `ACCIDENTALS` was
+  written with its bits in the wrong direction, so C# and D# were laid out as
+  white keys and D and E as black ones. Every assertion still passed —
+  fourteen white keys, ten black, tiling the band with no gaps — because the
+  test counted them and never named them. It names them now.
+- **Nothing shaped the console's labels.** `draw_window` is pure and draws
+  only what is in `Labels`; `shape_labels` had a block for Flopsynth and none
+  for the corrector, so in the running app every caption, read-out and card
+  name on that window was **blank**. The headless shot could not see it
+  either, because a test shapes its own — so the shot now shapes from the same
+  two functions the app does.
+- **The layout stranded a card.** Eight cards on two bands wrapped the last
+  one onto a row of its own with a window's width of empty ground beside it,
+  and the viewport left its spare height unused rather than growing into it.
+  Two bands of three and five, a window at 1120×660, and the trace takes the
+  slack up to half again its design height.
+
+**And the rest of §7 that was still missing**: the MIDI bars under the trace,
+the "−23 ¢ → A3" read-out beside the reticle, the sung dot and the bright
+target key on the keyboard, and note names on the naturals — which is what
+turns a row of boxes into something you can pick a scale off without counting
+from the left.
+
+## 2026-09-09: the autotune is built, and it opens on a console
+
+`docs/tune-plan.md` followed to its end. **`EffectKind::Tune`** is a real
+insert: a YIN tracker and a PSOLA shifter in `fontelle-dsp`, three engines
+(Smooth / Hard / Grain) over a `texture` continuum, formant shift and
+formant-follow, retune speed with humanize and flex, natural and added
+vibrato, fifteen scales, notes from any channel in the rack, sixteen factory
+presets under `assets/presets/fx-tune/Factory/`, and its own window drawn as
+a ship's console — the pitch trace scrolling under a two-octave keyboard that
+*is* the scale control, over seven cards.
+
+**What the last stretch of it actually was.** The DSP, the corrector, the
+engine arm, the presets and the window's own geometry were already standing
+and green. What was missing was the wiring that makes any of it reachable:
+
+- **`Session::tune_view` did not exist.** `fontelle_app::tune::describe` had
+  no caller, so `DocumentHost::tune_view` fell through to the trait's `None`
+  default and the console could never open — the whole window was dead code
+  behind a default method. It is implemented now, and
+  `tests/tune_editor.rs` reaches it the way the window does.
+- **The MIDI source drop-down was never built.** `SetInsertNotes`,
+  `EffectSlot.notes`, `Session::set_insert_notes` and their tests were all
+  there, with nothing in the UI that could call them: §5's second half — the
+  half that makes this a *MIDI* autotune — had no control. The MIDI card is
+  the seventh card now, and its source chooser carries `canvas::TUNE_SOURCE`
+  rather than a parameter address, because a source is a routing edge and not
+  a value in the config. It is drawn, measured, hit-tested and opened by the
+  same code as every other chooser; only the write is different, and that
+  branch sits in `write_insert_param`, which is the one place every gesture
+  arrives.
+- **The window opened at the EQ's 720×420.** The console's layout was
+  measured at 960×600 and there was no `TUNE_SIZE` for `create_editor` to
+  open it at, so every layout test passed and the real window would have
+  wrapped its cards off the bottom — Flopsynth's first build's fault exactly.
+  `layout::TUNE_SIZE`/`TUNE_MINIMUM` exist, and `tests/tune.rs` now reads its
+  two sizes off them rather than spelling them again.
+- **Captions clipped.** "Natural vibrato" read "Natural vi" and "Formant
+  follow" read "Formant f": `cell_span` widened a chooser on its *options*
+  and the plan's §7.2 rule is about its **name**. It counts the caption too
+  now, at `>= WIDE_CHOICE` — a caption has one character less room than an
+  option, and "MIDI bend" at exactly nine is what proves it.
+
+**Looked at, not just tested.** `tests/render_headless.rs` gained the case
+§7.7 asks for, and the PNG is what found the last two faults above; the
+keyboard is shot on A major rather than the chromatic wall a fresh config
+draws, so the picture shows a scale.
+
+**Measured (bench, this machine, stereo block of 128 at 48 kHz).** The
+budget is §10's and two of its three targets are missed, narrowly:
+
+| case | per block | of one core | §10 target |
+|---|---|---|---|
+| Smooth / Studio / Alto | 33.1 µs | 1.24 % | ≤ 1.5 % ✓ |
+| Hard / Studio / Alto | 31.2 µs | 1.17 % | — |
+| Grain / Studio / Alto | 32.8 µs | 1.23 % | ≤ 1 % **✗** |
+| Smooth / Live / Alto | 56.8 µs | 2.13 % | ≤ 2 % **✗** |
+| Smooth / Live / Low | 121.9 µs | 4.57 % | the stated worst case |
+
+Both misses are small and both are the **detector**, which §10 predicted
+would be the cost. The plan's own next step if this happened is written
+down and is not a bigger hop: the FFT autocorrelation, on the
+`fontelle_dsp::fft_in_place` that already exists. Left as it is, deliberately
+and on the record, rather than loosened — the same instruction Flopsynth's
+cost-per-voice carries.
+
+**Not done, and named.** §13's list is untouched and still right. The
+`Tuner` stub in `fontelle-fx/src/meters.rs` is gone as phase 6 asks, with a
+note where it was: the catalogue still wants that read-out insert, and it
+should wrap `PitchTracker` rather than grow a second pitch detector. `held`
+on the keyboard is read off the newest trace frame, so it marks the note
+being *forced* rather than every key somebody is leaning on —
+`TuneFrame` is four aligned words on purpose and a held mask does not go in
+it; the reasoning is on `session::held_classes`.
+
+## 2026-09-08: the autotune is designed, not built
+
+Ty asked for a built-in autotune that can be a professional one or a cheap
+one and everything between, controlled by MIDI or by a scale on a keyboard in
+its own window, with presets, drawn like a ship's console. The design is
+**`docs/tune-plan.md`** — the parameters and their ids, the two DSP
+primitives (a YIN tracker and a PSOLA shifter, both for `fontelle-dsp`), the
+three engines, how notes reach an insert (`EffectSlot.notes`, a routing edge
+like `key`), the sixteen presets with their settings, the window's layout and
+look in the renderer's own primitives, every test to write first, the budget
+and the phase order. No code has been written; phase 0 freezes the name
+(`EffectKind::Tune`, slug `fx-tune`) and Ty's overrides go in before that.
+
+## 2026-09-07: the text stopped flickering, and the piano stopped being a clavinet
 
 Two reports from using it, and both were real faults with a measurable cause.
 

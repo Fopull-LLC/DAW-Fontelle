@@ -67,8 +67,8 @@ fn an_id() -> ClipId {
     arena.insert(())
 }
 
-/// A press on empty grid at `(tick, lane)`, and what it asked for.
-fn press_empty(
+/// A single press on empty grid at `(tick, lane)`, and what it asked for.
+fn press_once(
     timeline: &mut Timeline,
     clips: &[ClipInfo],
     tick: Tick,
@@ -82,6 +82,25 @@ fn press_empty(
     timeline.press(MouseButton::Left, x, y, &l, clips, 4)
 }
 
+/// A double-click on empty grid at `(tick, lane)`, and what it asked for.
+///
+/// The drawing gesture is the double-click; a plain press on empty grid
+/// makes nothing (see `arrange_stamp.rs`).
+fn press_empty(
+    timeline: &mut Timeline,
+    clips: &[ClipInfo],
+    tick: Tick,
+    lane: usize,
+) -> Vec<ArrangeEdit> {
+    let m = Theme::dark_default().metrics;
+    let l = timeline_layout(body(), &m);
+    let x = fontelle_ui::canvas::timeline_tick_to_x(&timeline.view, l.grid, tick);
+    let y = fontelle_ui::canvas::lane_to_y(&timeline.view, l.grid, lane)
+        + timeline.view.lane_height / 2.0;
+    timeline.press(MouseButton::Left, x, y, &l, clips, 4);
+    timeline.double_press(MouseButton::Left, x, y, &l, clips, 4)
+}
+
 // ----------------------------------------------------------- the default ---
 
 #[test]
@@ -91,7 +110,7 @@ fn the_arrangement_starts_in_draw_because_the_first_thing_you_want_is_a_clip() {
 }
 
 #[test]
-fn drawing_on_empty_grid_asks_for_a_clip() {
+fn double_clicking_empty_grid_asks_for_a_clip() {
     let mut timeline = Timeline::new(view());
     let edits = press_empty(&mut timeline, &[], PPQN * 8, 0);
 
@@ -177,7 +196,7 @@ fn drawing_on_a_clip_still_moves_it() {
 fn the_select_tool_marquees_the_way_the_arrangement_always_did() {
     let mut timeline = Timeline::new(view());
     timeline.set_tool(TimelineTool::Select);
-    let edits = press_empty(&mut timeline, &[], PPQN * 8, 0);
+    let edits = press_once(&mut timeline, &[], PPQN * 8, 0);
     assert!(edits.is_empty(), "a marquee asks for nothing: {edits:?}");
     assert!(timeline.marquee().is_some(), "and it is being drawn");
 }
@@ -192,7 +211,7 @@ fn ctrl_marquees_without_leaving_the_draw_tool() {
         ctrl: true,
         ..Modifiers::default()
     });
-    let edits = press_empty(&mut timeline, &[], PPQN * 8, 0);
+    let edits = press_once(&mut timeline, &[], PPQN * 8, 0);
     assert!(edits.is_empty(), "{edits:?}");
     assert!(timeline.marquee().is_some());
     assert_eq!(

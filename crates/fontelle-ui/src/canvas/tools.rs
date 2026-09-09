@@ -40,12 +40,55 @@
 //! something this crate may do (INVARIANT 2), so the two import entries name
 //! the action and produce no edit — the window carries them out.
 
-use fontelle_model::{Arena, Note, RandomMode, RandomSpec, randomised};
-use fontelle_types::NoteId;
+use fontelle_model::{
+    Arena, ArpDirection, ArpSpec, MAX_ARP_OCTAVES, MAX_ARP_REPEATS, Note, RandomMode, RandomSpec,
+    randomised,
+};
+use fontelle_types::{NoteId, Tick};
 
 use super::piano_roll::{LANE_PROPERTIES, LaneProperty, RollEdit};
 use crate::layout::Rect;
 use crate::theme::Metrics;
+
+/// The steps the arpeggiator's rate offers, in ticks — the divisions a run is
+/// actually written on, straight and triplet.
+///
+/// A ladder rather than a free number for the same reason the snap chip is a
+/// list: a step of 91 ticks is not a musical answer, and stepping through the
+/// ones that are is faster than typing one that is not.
+const ARP_STEPS: [i32; 8] = [
+    fontelle_types::PPQN as i32,           // 1/4
+    (fontelle_types::PPQN * 2 / 3) as i32, // 1/4T
+    (fontelle_types::PPQN / 2) as i32,     // 1/8
+    (fontelle_types::PPQN / 3) as i32,     // 1/8T
+    (fontelle_types::PPQN / 4) as i32,     // 1/16
+    (fontelle_types::PPQN / 6) as i32,     // 1/16T
+    (fontelle_types::PPQN / 8) as i32,     // 1/32
+    (fontelle_types::PPQN / 12) as i32,    // 1/32T
+];
+
+/// What the rate row reads: the division, named the way the snap chip names
+/// one, rather than a count of ticks nobody thinks in.
+fn step_label(step: Tick) -> String {
+    let beat = fontelle_types::PPQN as f32;
+    let ratio = beat / (step.max(1) as f32);
+    // Triplets are the ones whose ratio is a third off a whole number.
+    for (divisor, name) in [
+        (1.0, "1/4"),
+        (1.5, "1/4T"),
+        (2.0, "1/8"),
+        (3.0, "1/8T"),
+        (4.0, "1/16"),
+        (6.0, "1/16T"),
+        (8.0, "1/32"),
+        (12.0, "1/32T"),
+    ] {
+        if (ratio - divisor).abs() < 0.05 {
+            return name.to_string();
+        }
+    }
+    format!("{step} t")
+}
 
 /// One row of a tool's dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +109,16 @@ pub enum ToolRow {
     /// Which sense it strays in — see [`RandomMode`].
     RandomMode,
     RandomizeNow,
+    /// The arpeggiator's step, direction, range, gate, repeats — and the two
+    /// FL does not have.
+    ArpRate,
+    ArpDirection,
+    ArpOctaves,
+    ArpGate,
+    ArpRepeats,
+    ArpSwing,
+    ArpRamp,
+    ArpeggiateNow,
 }
 
 /// What an action row does when it is pressed.
@@ -79,6 +132,8 @@ pub enum ToolAction {
     Add,
     Subtract,
     Randomize,
+    /// Turn the selected chords into runs — see [`fontelle_model::arpeggiated`].
+    Arpeggiate,
     /// Quick Legato: stretch every selected note until it touches the one
     /// after it. No dialog, because there is nothing to ask — see
     /// `fontelle_model::legato_lengths`.
@@ -102,11 +157,19 @@ pub enum ToolKind {
     /// or whatever all at once adding or subtracting a value"*.
     Adjust,
     Randomize,
+    /// The arpeggiator: a chord becomes a run.
+    Arpeggiate,
 }
 
 impl ToolKind {
-    /// In the order the menu lists them: move it, change it, mess it up.
-    pub const ALL: [Self; 3] = [Self::Transpose, Self::Adjust, Self::Randomize];
+    /// In the order the menu lists them: move it, change it, mess it up, play
+    /// it.
+    pub const ALL: [Self; 4] = [
+        Self::Transpose,
+        Self::Adjust,
+        Self::Randomize,
+        Self::Arpeggiate,
+    ];
 
     /// The dialog's own title, across the top of it.
     ///
@@ -118,6 +181,7 @@ impl ToolKind {
             Self::Transpose => "Transpose",
             Self::Adjust => "Adjust",
             Self::Randomize => "Randomize",
+            Self::Arpeggiate => "Arpeggiate",
         }
     }
 
@@ -139,6 +203,20 @@ impl ToolKind {
                 ToolRow::RandomAmount,
                 ToolRow::RandomMode,
                 ToolRow::RandomizeNow,
+            ],
+            // The five FL has, then the two it does not, then the button. The
+            // extras last because somebody reaching for "arpeggiate this
+            // chord" wants the first five and should not have to read past
+            // two rows they have never seen to get to Apply.
+            Self::Arpeggiate => &[
+                ToolRow::ArpRate,
+                ToolRow::ArpDirection,
+                ToolRow::ArpOctaves,
+                ToolRow::ArpGate,
+                ToolRow::ArpRepeats,
+                ToolRow::ArpSwing,
+                ToolRow::ArpRamp,
+                ToolRow::ArpeggiateNow,
             ],
         }
     }
@@ -172,10 +250,11 @@ impl ToolMenuItem {
 }
 
 /// The menu the Tools chip opens, in the order it lists it.
-pub const TOOL_MENU: [ToolMenuItem; 6] = [
+pub const TOOL_MENU: [ToolMenuItem; 7] = [
     ToolMenuItem::Open(ToolKind::Transpose),
     ToolMenuItem::Open(ToolKind::Adjust),
     ToolMenuItem::Open(ToolKind::Randomize),
+    ToolMenuItem::Open(ToolKind::Arpeggiate),
     // With the three that ask something first, because it is an edit to the
     // selection like they are — it simply has nothing to ask.
     ToolMenuItem::Run(ToolAction::Legato),
@@ -188,7 +267,7 @@ pub const TOOL_MENU: [ToolMenuItem; 6] = [
 /// Derived from [`ToolKind::rows`] rather than written out beside it: a second
 /// list is a second thing to keep in step, and the one that goes stale is
 /// always the one nothing draws.
-pub const TOOL_ROWS: [ToolRow; 9] = [
+pub const TOOL_ROWS: [ToolRow; 17] = [
     ToolRow::Transpose,
     ToolRow::TransposeNow,
     ToolRow::Property,
@@ -198,6 +277,14 @@ pub const TOOL_ROWS: [ToolRow; 9] = [
     ToolRow::RandomAmount,
     ToolRow::RandomMode,
     ToolRow::RandomizeNow,
+    ToolRow::ArpRate,
+    ToolRow::ArpDirection,
+    ToolRow::ArpOctaves,
+    ToolRow::ArpGate,
+    ToolRow::ArpRepeats,
+    ToolRow::ArpSwing,
+    ToolRow::ArpRamp,
+    ToolRow::ArpeggiateNow,
 ];
 
 /// How far a transpose goes either way. Two octaves is as far as anybody moves
@@ -220,7 +307,7 @@ const RANDOM_LADDER: [i32; 11] = [0, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100];
 ///
 /// Window state, not document state: which property you last adjusted is no
 /// more part of a song than which tool is selected is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tools {
     pub semitones: i32,
     /// Which property [`ToolAction::Add`], [`ToolAction::Subtract`] and
@@ -237,6 +324,11 @@ pub struct Tools {
     /// so the same panel in the same state is reproducible, which is what
     /// makes the whole thing testable.
     pub seed: u64,
+    /// What the arpeggiator is set to. One struct rather than seven fields,
+    /// because it is exactly what `fontelle_model::arpeggiated` takes and a
+    /// second copy of the same seven numbers is a second thing to keep in
+    /// step.
+    pub arp: ArpSpec,
 }
 
 impl Default for Tools {
@@ -251,6 +343,7 @@ impl Default for Tools {
             random_amount: 20,
             random_mode: RandomMode::Around,
             seed: 1,
+            arp: ArpSpec::default(),
         }
     }
 }
@@ -272,6 +365,14 @@ impl Tools {
             ToolRow::RandomAmount => "Strength".to_string(),
             ToolRow::RandomMode => "Sense".to_string(),
             ToolRow::RandomizeNow => "Randomize selection".to_string(),
+            ToolRow::ArpRate => "Step".to_string(),
+            ToolRow::ArpDirection => "Direction".to_string(),
+            ToolRow::ArpOctaves => "Range".to_string(),
+            ToolRow::ArpGate => "Gate".to_string(),
+            ToolRow::ArpRepeats => "Repeat".to_string(),
+            ToolRow::ArpSwing => "Swing".to_string(),
+            ToolRow::ArpRamp => "Ramp".to_string(),
+            ToolRow::ArpeggiateNow => "Arpeggiate selection".to_string(),
         }
     }
 
@@ -286,6 +387,13 @@ impl Tools {
             ToolRow::Amount => self.amount.to_string(),
             ToolRow::RandomAmount => format!("{}%", self.random_amount),
             ToolRow::RandomMode => self.random_mode.label().to_string(),
+            ToolRow::ArpRate => step_label(self.arp.step),
+            ToolRow::ArpDirection => self.arp.direction.label().to_string(),
+            ToolRow::ArpOctaves => format!("{} oct", self.arp.octaves),
+            ToolRow::ArpGate => format!("{}%", (self.arp.gate * 100.0).round() as i32),
+            ToolRow::ArpRepeats => format!("\u{d7}{}", self.arp.repeats),
+            ToolRow::ArpSwing => format!("{}%", (self.arp.swing * 100.0).round() as i32),
+            ToolRow::ArpRamp => format!("{:+}%", (self.arp.velocity_ramp * 100.0).round() as i32),
             _ => String::new(),
         }
     }
@@ -298,6 +406,7 @@ impl Tools {
             ToolRow::AddNow => ToolAction::Add,
             ToolRow::SubtractNow => ToolAction::Subtract,
             ToolRow::RandomizeNow => ToolAction::Randomize,
+            ToolRow::ArpeggiateNow => ToolAction::Arpeggiate,
             _ => return None,
         })
     }
@@ -314,6 +423,16 @@ impl Tools {
             ToolRow::RandomAmount => "How far the randomizer may stray. 0% leaves it alone",
             ToolRow::RandomMode => "Around: wobble each note. Anywhere: forget what was there",
             ToolRow::RandomizeNow => "Roll again \u{2014} press it twice for a different answer",
+            ToolRow::ArpRate => "How long one step of the run is",
+            ToolRow::ArpDirection => "Which way the run walks the chord",
+            ToolRow::ArpOctaves => "How many octaves it climbs before starting again",
+            ToolRow::ArpGate => "How much of each step the note sounds for",
+            ToolRow::ArpRepeats => "How many steps each note holds before the next",
+            ToolRow::ArpSwing => "How late the off-beats land. 0% is a straight grid",
+            ToolRow::ArpRamp => {
+                "How the weight moves across the run \u{2014} falling, flat, climbing"
+            }
+            ToolRow::ArpeggiateNow => "Turn every selected chord into a run",
         })
     }
 
@@ -350,6 +469,35 @@ impl Tools {
                 self.random_amount = ladder_step(&RANDOM_LADDER, self.random_amount, step);
             }
             ToolRow::RandomMode => self.random_mode = self.random_mode.next(),
+            ToolRow::ArpRate => {
+                self.arp.step = ladder_step(&ARP_STEPS, self.arp.step as i32, step) as Tick;
+            }
+            ToolRow::ArpDirection => {
+                let at = ArpDirection::ALL
+                    .iter()
+                    .position(|d| *d == self.arp.direction)
+                    .unwrap_or(0) as i32;
+                let next = (at + step).rem_euclid(ArpDirection::ALL.len() as i32) as usize;
+                self.arp.direction = ArpDirection::ALL[next];
+            }
+            ToolRow::ArpOctaves => {
+                self.arp.octaves =
+                    (self.arp.octaves as i32 + step).clamp(1, MAX_ARP_OCTAVES as i32) as u8;
+            }
+            ToolRow::ArpGate => {
+                self.arp.gate = (self.arp.gate + step as f32 * 0.05).clamp(0.05, 1.0);
+            }
+            ToolRow::ArpRepeats => {
+                self.arp.repeats =
+                    (self.arp.repeats as i32 + step).clamp(1, MAX_ARP_REPEATS as i32) as u8;
+            }
+            ToolRow::ArpSwing => {
+                self.arp.swing = (self.arp.swing + step as f32 * 0.05).clamp(0.0, 1.0);
+            }
+            ToolRow::ArpRamp => {
+                self.arp.velocity_ramp =
+                    (self.arp.velocity_ramp + step as f32 * 0.1).clamp(-1.0, 1.0);
+            }
             // Unreachable: every remaining variant is an action, caught above.
             _ => {}
         }
@@ -388,6 +536,25 @@ impl Tools {
                     property: self.property.property(),
                     delta: self.amount * sign,
                 }]
+            }
+            ToolAction::Arpeggiate => {
+                // The chords, as notes, in the order they were written — which
+                // is what `ArpDirection::AsPlayed` reads. `Arena::values` has
+                // no order to promise, so the selection's own order is what is
+                // handed over.
+                let chord: Vec<fontelle_model::Note> = selection
+                    .iter()
+                    .filter_map(|id| notes.get(*id).copied())
+                    .collect();
+                let made = fontelle_model::arpeggiated(&chord, self.arp);
+                if made.is_empty() {
+                    return Vec::new();
+                }
+                // **Remove then insert, as one gesture.** The window runs the
+                // list in order and closes it with one history entry, so an
+                // undo puts the chord back rather than leaving the run and the
+                // chord on top of each other.
+                vec![RollEdit::Remove(selection.to_vec()), RollEdit::Insert(made)]
             }
             ToolAction::Randomize => {
                 let property = self.property.property();

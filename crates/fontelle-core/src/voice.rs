@@ -1410,6 +1410,8 @@ impl Voice {
                     route = osc.filter_route;
                     let table = match osc.source {
                         fontelle_dsp::SynthSource::Table(id) => tables.get(id),
+                        // One the patch carries itself — see `UserWavetable`.
+                        fontelle_dsp::SynthSource::User(at) => tables.get_user(at as usize),
                         fontelle_dsp::SynthSource::Noise => None,
                     };
                     PreparedSource::Synth {

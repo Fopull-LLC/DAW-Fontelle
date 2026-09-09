@@ -145,6 +145,7 @@ fn shoot_sized(
         &theme,
         &layout,
         &Chrome {
+            field: None,
             panel_title: &title,
             transport: TransportChrome {
                 layout: bar,
@@ -202,12 +203,14 @@ fn shoot_sized(
 /// display — CI, a remote session, a Wayland compositor whose root an X11
 /// screen-grabber cannot see — this is the only way to satisfy it, and it costs
 /// nothing when the variable is unset.
-fn dump(pixels: &[u8], name: &str) {
-    dump_sized(pixels, name, W, H);
-}
-
-/// [`dump`] for a frame that is not the standard one — the roll and the
-/// instrument editor are shot at a size a real panel is.
+///
+/// **The size is always passed in.** There used to be a `dump` beside this that
+/// filled in `W`/`H` for you, and the one shot in the file that is not that
+/// size — the rack's, which is deliberately taller so two rows fit — called it
+/// and handed a 640x480 buffer to a 640x360 encoder. The failure was invisible
+/// until somebody set the variable, because the *only* thing the wrapper did
+/// was guess, and it guessed nowhere else. A convenience whose whole body is an
+/// assumption about its caller is worth less than the line it saves.
 fn dump_sized(pixels: &[u8], name: &str, width: u32, height: u32) {
     let Ok(dir) = std::env::var("FONTELLE_UI_DUMP") else {
         return;
@@ -645,6 +648,53 @@ fn shoot_roll_full_ending(
     tools_open: bool,
     clip_length: Option<Tick>,
 ) -> Option<RollShot> {
+    shoot_roll_everything(
+        notes,
+        selection,
+        ghosts,
+        lane_menu,
+        key_map,
+        snap,
+        live_keys,
+        tools_open,
+        clip_length,
+        &[],
+    )
+}
+
+/// [`shoot_roll`] while a take is being recorded: `takes` are the notes the
+/// capture has caught so far, drawn but not yet in the document.
+fn shoot_roll_recording(
+    notes: &Arena<NoteId, Note>,
+    takes: &[fontelle_ui::document::NotePreview],
+) -> Option<RollShot> {
+    shoot_roll_everything(
+        notes,
+        &[],
+        &[],
+        None,
+        &fontelle_ui::document::KeyMap::unknown(),
+        SnapDivision::Step,
+        0,
+        false,
+        None,
+        takes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn shoot_roll_everything(
+    notes: &Arena<NoteId, Note>,
+    selection: &[NoteId],
+    ghosts: &[fontelle_ui::document::GhostNote],
+    lane_menu: Option<fontelle_ui::canvas::LaneMenu>,
+    key_map: &fontelle_ui::document::KeyMap,
+    snap: SnapDivision,
+    live_keys: u128,
+    tools_open: bool,
+    clip_length: Option<Tick>,
+    takes: &[fontelle_ui::document::NotePreview],
+) -> Option<RollShot> {
     let theme = Theme::dark_default();
     let shared = headless()?;
     let layout = window_layout(RW as f32, RH as f32, &theme.metrics, 0.0);
@@ -723,6 +773,7 @@ fn shoot_roll_full_ending(
         &theme,
         &layout,
         &Chrome {
+            field: None,
             panel_title: &title,
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
@@ -737,6 +788,7 @@ fn shoot_roll_full_ending(
                 clip_mode: false,
             },
             roll: Some(RollChrome {
+                focused: false,
                 layout: roll_l,
                 toolbar: toolbar_layout(roll_l.toolbar, &theme.metrics),
                 view: roll_view,
@@ -765,6 +817,7 @@ fn shoot_roll_full_ending(
                 slice: None,
                 key_style: fontelle_ui::canvas::KeyStyle::Piano,
                 live_keys,
+                recording: takes,
             }),
             rack: None,
             prefabs: None,
@@ -1006,6 +1059,17 @@ fn shoot_timeline_switch(
     selection: &[fontelle_types::ClipId],
     stretch: bool,
 ) -> Option<TimelineShot> {
+    shoot_timeline_recording(clips, selection, stretch, &[])
+}
+
+/// The same again, with the notes of a take being recorded into the open
+/// clip.
+fn shoot_timeline_recording(
+    clips: &[fontelle_ui::document::ClipInfo],
+    selection: &[fontelle_types::ClipId],
+    stretch: bool,
+    takes: &[fontelle_ui::document::NotePreview],
+) -> Option<TimelineShot> {
     use fontelle_ui::canvas::{TimelineView, timeline_layout};
     use fontelle_ui::document::LaneInfo;
     use fontelle_ui::render::TimelineChrome;
@@ -1051,6 +1115,7 @@ fn shoot_timeline_switch(
         &theme,
         &layout,
         &Chrome {
+            field: None,
             panel_title: &title,
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
@@ -1091,6 +1156,7 @@ fn shoot_timeline_switch(
                 point_selection: &[],
                 loop_range: None,
                 recording: None,
+                take_notes: takes,
             }),
             mixer: None,
             tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
@@ -1301,6 +1367,7 @@ fn shoot_instrument() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::Instrument
             hover: None,
             active: Some((1, 2)),
         })),
+        None,
         None,
         None,
     );
@@ -1652,10 +1719,19 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
         mix_automated: false,
     };
     let mut strips = vec![
-        // A chain on the selected strip, so the shot shows what the
-        // track-options column is for.
+        // A **full** chain on the selected strip, so the shot shows both the
+        // track-options column doing the naming and the strip's one-row
+        // read-out standing in for it — and, most of the point, that six
+        // effects cost this fader nothing against the strips beside it.
         MixerStrip {
-            inserts: vec![chain("EQ", false), chain("Comp", true)],
+            inserts: vec![
+                chain("Gate", false),
+                chain("Comp", false),
+                chain("Dist", false),
+                chain("EQ", true),
+                chain("Delay", false),
+                chain("Reverb", false),
+            ],
             ..strip("Drums", 0.0, 0.0, false)
         },
         strip("Bass", -18.0, -0.8, false),
@@ -1730,6 +1806,7 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
         &theme,
         &layout,
         &Chrome {
+            field: None,
             panel_title: &title,
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
@@ -2056,6 +2133,7 @@ fn shoot_rack(
         &theme,
         &layout,
         &Chrome {
+            field: None,
             panel_title: &title,
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
@@ -2101,7 +2179,12 @@ fn shoot_rack(
         .expect("the shared renderer")
         .render(&scene, W, RACK_H, theme.palette.window)
         .expect("the scene must render");
-    dump(&pixels, &format!("rack-renaming-{}", renaming.is_some()));
+    dump_sized(
+        &pixels,
+        &format!("rack-renaming-{}", renaming.is_some()),
+        W,
+        RACK_H,
+    );
     Some((pixels, theme, rack, W, RACK_H))
 }
 
@@ -2956,6 +3039,7 @@ fn shoot_flopsynth() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLa
         title: "Choir Ahh".to_string(),
         cards: vec![
             FlopsynthCard {
+                oscillator: None,
                 row: 0,
                 aside: false,
                 columns: 0,
@@ -2972,6 +3056,7 @@ fn shoot_flopsynth() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLa
                 },
             },
             FlopsynthCard {
+                oscillator: None,
                 row: 1,
                 aside: false,
                 columns: 0,
@@ -3072,6 +3157,7 @@ fn shoot_flopsynth() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLa
         }),
         Some(&preset),
         None,
+        None,
     );
     let pixels = shared
         .lock()
@@ -3155,4 +3241,613 @@ fn flopsynths_window_draws_its_cards_and_its_ring() {
             "the ring is drawn through the caption at ({x}, {caption_y})"
         );
     }
+}
+
+// ------------------------------------------------ the take being recorded ---
+//
+// > *"recording notes also doesnt show you the notes as youre recording them
+// > which would be nice and for it like audio to show you it making the clip
+// > as youre recording it so you can be sure it is indeed recording it."*
+
+#[test]
+fn a_note_being_recorded_is_drawn_in_the_record_colour_before_it_is_kept() {
+    let takes = vec![fontelle_ui::document::NotePreview {
+        start: 0,
+        length: PPQN * 2,
+        key: 60,
+    }];
+    let Some(shot) = shoot_roll_recording(&Arena::default(), &takes) else {
+        return;
+    };
+    let x = tick_to_x(&shot.view, shot.layout.grid, PPQN) as u32;
+    let y = (fontelle_ui::canvas::key_to_y(&shot.view, shot.layout.grid, 60)
+        + shot.view.key_height / 2.0) as u32;
+    let found = shot.at(x, y);
+    // The record colour, so it cannot be mistaken for a note that is already
+    // in the clip — the same ink the arrangement's take band uses.
+    assert!(
+        near(found, shot.theme.palette.meter_peak),
+        "expected the take's note at ({x}, {y}), found {found:?}"
+    );
+    // And not on a row it was not played on.
+    let empty_y = (fontelle_ui::canvas::key_to_y(&shot.view, shot.layout.grid, 67)
+        + shot.view.key_height / 2.0) as u32;
+    assert!(!near(shot.at(x, empty_y), shot.theme.palette.meter_peak));
+}
+
+#[test]
+fn the_notes_being_recorded_appear_in_the_open_clips_block() {
+    use fontelle_ui::canvas::{clip_notes, clip_rect};
+
+    // The clip is open and empty; the take is landing in it.
+    let mut open = a_note_clip(None);
+    open.open = true;
+    let takes = std::mem::take(&mut open.notes);
+    let clips = vec![open.clone()];
+    let Some(shot) = shoot_timeline_recording(&clips, &[], false, &takes) else {
+        return;
+    };
+    // Where the notes would be drawn if they were the clip's own.
+    let mut as_if = open.clone();
+    as_if.notes = takes.clone();
+    let block = clip_rect(&shot.view, shot.layout.grid, &as_if);
+    let rects = clip_notes(block, shot.layout.grid, &as_if);
+    assert_eq!(rects.len(), 4);
+    let r = rects[1];
+    let found = shot.at((r.x + r.width / 2.0) as u32, (r.y + r.height / 2.0) as u32);
+    assert!(
+        near(found, shot.theme.palette.meter_peak),
+        "the take's notes should be in the block, in the record colour: {found:?}"
+    );
+
+    // And a clip that is not the open one gets none of them: the take goes
+    // into the clip that is open and nowhere else.
+    let mut other = a_note_clip(None);
+    other.open = false;
+    other.notes.clear();
+    let clips = vec![other.clone()];
+    let Some(shot) = shoot_timeline_recording(&clips, &[], false, &takes) else {
+        return;
+    };
+    let found = shot.at((r.x + r.width / 2.0) as u32, (r.y + r.height / 2.0) as u32);
+    assert!(!near(found, shot.theme.palette.meter_peak));
+}
+
+// ------------------------------------------- the corrector's own window ---
+
+/// Renders the pitch corrector's console: the trace, the two octaves, the
+/// seven cards (`docs/tune-plan.md` §7.7's last item).
+///
+/// What a shot of the console hands back: the pixels, the theme they were
+/// drawn in, where everything ended up, how wide the frame is, and the card
+/// names — the last so a test can look a card up by name rather than by an
+/// index that moves when the bands are rebalanced.
+type TuneShot = (
+    Vec<u8>,
+    Theme,
+    fontelle_ui::canvas::TuneLayout,
+    u32,
+    Vec<String>,
+);
+
+/// The one test that runs `draw_tune` at all, and the one that can **see**.
+/// Everything its geometry rests on is pure and tested in `tests/tune.rs`;
+/// what is left here is colour and the fact that the picture is drawn at all,
+/// and colour is the one thing a geometry test cannot check. Set
+/// `FONTELLE_UI_DUMP` to a directory and the PNG lands there.
+fn shoot_tune() -> Option<TuneShot> {
+    use fontelle_types::{ParamAddress, TUNE_LOCKED, TUNE_VOICED, TuneFrame};
+    use fontelle_ui::canvas::{
+        FlopsynthCard, FlopsynthPicture, InstrumentGroup, InstrumentParam, ParamKind, TuneView,
+        tune_layout,
+    };
+    use fontelle_ui::render::TuneChrome;
+
+    let theme = Theme::dark_default();
+    let shared = headless()?;
+    let mut text = TextContext::new();
+    let title = text.layout(
+        "Vocal \u{2014} TUNE \u{b7} pitch correction",
+        &theme.font,
+        None,
+    );
+
+    let knob = |name: &str, value: f32| InstrumentParam {
+        address: ParamAddress::new(format!("mixer/track[0]/insert[0]/{name}")),
+        label: name.to_string(),
+        value,
+        display: format!("{value:.2}"),
+        kind: ParamKind::Knob,
+        automated: false,
+    };
+    let card =
+        |name: &str, row: usize, columns: usize, params: Vec<InstrumentParam>| FlopsynthCard {
+            group: InstrumentGroup {
+                name: name.to_string(),
+                params,
+            },
+            picture: FlopsynthPicture::None,
+            oscillator: None,
+            row,
+            aside: false,
+            columns,
+            removable: false,
+        };
+    let choice = |name: &str, at: usize, options: &[&str]| InstrumentParam {
+        address: ParamAddress::new(format!("mixer/track[0]/insert[0]/{name}")),
+        label: name.to_string(),
+        value: at as f32 / (options.len() - 1) as f32,
+        display: options[at].to_string(),
+        kind: ParamKind::Choice(options.iter().map(|s| s.to_string()).collect()),
+        automated: false,
+    };
+
+    // Four seconds of somebody singing up to A3 and being pulled onto it: the
+    // two lines part and then close, which is the whole story of the effect
+    // and the reason the viewport is a picture rather than a number.
+    let target = 5700.0;
+    let trace: Vec<TuneFrame> = (0..1500)
+        .map(|i| {
+            let t = i as f32 / 1500.0;
+            let sung = target - 60.0 * (1.0 - t) + 18.0 * (t * 40.0).sin();
+            let out = sung + (target - sung) * (0.15 + 0.85 * t);
+            let mut flags = TUNE_VOICED;
+            if (out - target).abs() < fontelle_types::TUNE_LOCK_CENTS {
+                flags |= TUNE_LOCKED;
+            }
+            // A held key over the middle of the take, so the MIDI band is in
+            // the shot and can be told from the scale's own correction.
+            if (0.55..0.85).contains(&t) {
+                flags |= fontelle_types::TUNE_FROM_MIDI;
+            }
+            // A breath in the middle: unvoiced, and the trace must break
+            // rather than run along the floor.
+            if (0.44..0.50).contains(&t) {
+                flags = 0;
+            }
+            TuneFrame {
+                sung_cents: sung,
+                out_cents: out,
+                target_cents: target,
+                flags,
+            }
+        })
+        .collect();
+
+    let view = TuneView {
+        title: "Vocal \u{2014} TUNE \u{b7} pitch correction".to_string(),
+        cards: vec![
+            card(
+                "Input",
+                0,
+                5,
+                vec![
+                    choice(
+                        "Range",
+                        1,
+                        &[
+                            "soprano",
+                            "alto/tenor",
+                            "baritone/bass",
+                            "instrument",
+                            "low",
+                        ],
+                    ),
+                    choice("Mode", 1, &["live", "studio"]),
+                    knob("Tracking", 0.5),
+                    knob("Gate", 0.3),
+                ],
+            ),
+            card(
+                "Correction",
+                0,
+                5,
+                vec![
+                    knob("Retune speed", 0.2),
+                    knob("Amount", 1.0),
+                    knob("Humanize", 0.15),
+                    knob("Flex", 0.4),
+                    knob("Natural vibrato", 0.6),
+                ],
+            ),
+            card(
+                "Voice",
+                0,
+                7,
+                vec![
+                    choice("Engine", 0, &["smooth", "hard", "grain"]),
+                    knob("Texture", 0.35),
+                    knob("Grain", 0.5),
+                    knob("Formant", 0.55),
+                    knob("Formant follow", 0.8),
+                    knob("Transpose", 0.5),
+                    knob("Detune", 0.5),
+                ],
+            ),
+            card(
+                "Scale",
+                1,
+                4,
+                vec![
+                    choice(
+                        "Root",
+                        9,
+                        &[
+                            "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+                        ],
+                    ),
+                    choice(
+                        "Scale",
+                        1,
+                        &[
+                            "chromatic",
+                            "major",
+                            "natural minor",
+                            "harmonic minor",
+                            "melodic minor",
+                            "dorian",
+                            "phrygian",
+                            "lydian",
+                            "mixolydian",
+                            "locrian",
+                            "major pentatonic",
+                            "minor pentatonic",
+                            "blues",
+                            "whole tone",
+                            "custom",
+                        ],
+                    ),
+                    choice("Control", 1, &["scale", "MIDI melody", "MIDI scale"]),
+                ],
+            ),
+            card(
+                "MIDI",
+                1,
+                2,
+                vec![
+                    InstrumentParam {
+                        address: ParamAddress::new(fontelle_ui::canvas::TUNE_SOURCE),
+                        label: "Source".to_string(),
+                        value: 1.0,
+                        display: "Melody".to_string(),
+                        kind: ParamKind::Choice(vec![
+                            fontelle_ui::canvas::NO_MIDI.to_string(),
+                            "Melody".to_string(),
+                        ]),
+                        automated: false,
+                    },
+                    choice("MIDI bend", 1, &["off", "on"]),
+                ],
+            ),
+            card(
+                "Vibrato",
+                1,
+                6,
+                vec![
+                    knob("Depth", 0.25),
+                    knob("Rate", 0.5),
+                    choice("Sync", 0, &["off", "on"]),
+                    choice(
+                        "Division",
+                        5,
+                        &[
+                            "1/1", "1/2.", "1/2", "1/4.", "1/2T", "1/4", "1/8.", "1/4T", "1/8",
+                            "1/16.", "1/8T", "1/16", "1/16T", "1/32",
+                        ],
+                    ),
+                    knob("Onset", 0.3),
+                    choice("Shape", 0, &["sine", "triangle"]),
+                ],
+            ),
+            card(
+                "Character",
+                1,
+                4,
+                vec![
+                    knob("Drive", 0.35),
+                    knob("Crush", 0.0),
+                    knob("Air", 0.65),
+                    knob("Width", 0.6),
+                ],
+            ),
+            card("Output", 1, 2, vec![knob("Output", 0.5), knob("Mix", 1.0)]),
+        ],
+        // A major, so the keyboard is a **scale** rather than the chromatic
+        // wall a fresh config draws: seven keys lit, five dark, which is the
+        // thing §7.4 says a person reads a scale off.
+        mask: (1 << 9) | (1 << 11) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 6) | (1 << 8),
+        root: 9,
+        held: 1 << 9,
+        keyboard_from: 48,
+        trace,
+        floor_cents: fontelle_types::cents_of_hz(100.0),
+        ceiling_cents: fontelle_types::cents_of_hz(1_000.0),
+        latency_ms: 21.3,
+        engine: "smooth".to_string(),
+        mode: "studio".to_string(),
+        sources: vec![
+            fontelle_ui::canvas::NO_MIDI.to_string(),
+            "Melody".to_string(),
+        ],
+        source: 1,
+    };
+
+    let (ew, eh) = fontelle_ui::layout::TUNE_SIZE;
+    let panel = fontelle_ui::layout::editor_window_layout(ew as f32, eh as f32, &theme.metrics);
+    let l = tune_layout(panel.body, &view);
+
+    let mut labels = Labels::new();
+    for card in &view.cards {
+        labels.ensure(&card.group.name, &theme.font, &mut text);
+        labels.ensure_small(&card.group.name.to_uppercase(), &theme.font, &mut text);
+        for param in &card.group.params {
+            labels.ensure_small(&param.label, &theme.font, &mut text);
+            labels.ensure_small(&param.display, &theme.font, &mut text);
+        }
+    }
+    // The same two lists `app::shape_labels` uses, so what this shot shows is
+    // what the window shows.
+    for caption in fontelle_ui::canvas::tune_strings(&view) {
+        labels.ensure_small(&caption, &theme.font, &mut text);
+    }
+    for name in fontelle_types::TUNE_ROOTS {
+        labels.ensure_small(name, &theme.font, &mut text);
+    }
+
+    let mut scene = vello::Scene::new();
+    fontelle_ui::render::draw_editor_window(
+        &mut scene,
+        &theme,
+        &panel,
+        &labels,
+        &title,
+        &fontelle_ui::render::EditorWindowChrome::Tune(TuneChrome {
+            layout: l.clone(),
+            view: &view,
+            hover: None,
+            active: None,
+            hover_at: (f32::MIN, f32::MIN),
+        }),
+        None,
+        None,
+        None,
+    );
+    let pixels = shared
+        .lock()
+        .expect("the shared renderer")
+        .render(&scene, ew, eh, theme.palette.window)
+        .expect("the scene must render");
+    dump_sized(&pixels, "tune", ew, eh);
+    let names = view.cards.iter().map(|c| c.group.name.clone()).collect();
+    Some((pixels, theme, l, ew, names))
+}
+
+#[test]
+fn the_correctors_console_draws_its_trace_its_keys_and_its_cards() {
+    let Some((pixels, theme, l, width, view_names)) = shoot_tune() else {
+        return;
+    };
+    let at = |x: u32, y: u32| {
+        let i = ((y * width + x) * 4) as usize;
+        Color::rgb(pixels[i], pixels[i + 1], pixels[i + 2])
+    };
+
+    // **The ground is a ship's console, not a window.** `draw_tune_ground`
+    // lays a near-black grade with a lattice over it, so the ink below the
+    // cards is not the flat window colour it would be if the ground had been
+    // skipped — the one thing the geometry tests cannot tell.
+    assert!(
+        !near(
+            at(l.body.x as u32 + 2, l.body.bottom() as u32 - 2),
+            theme.palette.window
+        ),
+        "the console is drawn on a bare window rather than on its ground"
+    );
+
+    // **The trace is drawn.** Not a colour match — the corrected line is a
+    // glow polyline over a graded ground and the ink under it depends where
+    // you sample — but the viewport must not be one flat colour, which is
+    // what an empty picture would be.
+    let mut inks = std::collections::HashSet::new();
+    let (vx, vy) = (l.viewport.x as u32, l.viewport.y as u32);
+    for y in 0..l.viewport.height as u32 {
+        for x in 0..l.viewport.width as u32 {
+            let c = at(vx + x, vy + y);
+            inks.insert([c.0[0] / 8, c.0[1] / 8, c.0[2] / 8]);
+        }
+    }
+    assert!(
+        inks.len() > 8,
+        "the viewport is drawing {} inks — a trace was not drawn",
+        inks.len()
+    );
+
+    // **The keyboard says what the scale is.** Not a colour match — every key
+    // is a translucent fill over a graded ground, and what a ring or a dot
+    // blends to is not a palette entry — but the three states must be three
+    // different inks, which is the whole of what §7.4 asks the picture to do.
+    //
+    // The mask here is A major, so C is out, B is in, and A is in and held.
+    // Sampled low in each natural, under where an accidental reaches and
+    // clear of the root ring's inset.
+    let ink_of = |class: usize| {
+        let k = &l.keys[class];
+        at((k.x + k.width / 2.0) as u32, (k.y + k.height * 0.85) as u32)
+    };
+    let (out, inside, held) = (ink_of(0), ink_of(11), ink_of(9));
+    assert!(
+        !near(out, inside),
+        "a key in the scale is drawn like one out of it: {out:?} vs {inside:?}"
+    );
+    assert!(
+        !near(held, inside),
+        "a key held on the MIDI source is drawn like an idle one: {held:?}"
+    );
+
+    // **A card is drawn in its family's ink** (`render::tune_ink`): the card
+    // about notes in the colour notes are drawn in everywhere else in this
+    // program, and the plumbing in the muted text. The ink goes on the edge
+    // light along the card's top, at alpha, over a graded ground — so what is
+    // measured is that the families **differ**, not what either blends to.
+    // Fourteen in from the frame is past the chamfer the edge light starts
+    // after and clear of the corner glow.
+    let edge_of = |card: &fontelle_ui::canvas::CardLayout| {
+        at((card.frame.x + 14.0) as u32, card.frame.y as u32)
+    };
+    // By **name**, not by index: the cards were reordered once already when
+    // §4.8 added Character and the bands were rebalanced, and an index here
+    // silently started asserting about a different card.
+    let card_named = |name: &str| {
+        let at = view_names
+            .iter()
+            .position(|other| other == name)
+            .unwrap_or_else(|| panic!("no {name} card"));
+        &l.cards[at]
+    };
+    let midi = card_named("MIDI");
+    let output = card_named("Output");
+    let voice = card_named("Voice");
+    assert!(
+        !near(edge_of(midi), edge_of(output)),
+        "the MIDI card and the Output card are drawn in one ink"
+    );
+    assert!(
+        !near(edge_of(voice), edge_of(output)),
+        "the Voice card and the Output card are drawn in one ink"
+    );
+}
+
+// ------------------------------------------------ a box you can type in ---
+
+/// The name prompt's field, drawn — the one test that runs `draw_text_field`.
+///
+/// > *"it doesn't look like a input field it's just text on a background
+/// > making it look like it's a label."*
+///
+/// What a geometry test cannot see is exactly what was wrong: whether the box
+/// reads as somewhere text goes *in*. So this draws one with a caret and one
+/// with a selection, and the PNG is the answer.
+fn shoot_field(selected: bool) -> Option<(Vec<u8>, Theme, Rect, u32, u32)> {
+    use fontelle_ui::canvas::TextEntry;
+    use fontelle_ui::render::TextFieldChrome;
+
+    let theme = Theme::dark_default();
+    let shared = headless()?;
+    let mut text = TextContext::new();
+    let (w, h) = (360u32, 64u32);
+    let field = Rect::new(16.0, 16.0, 328.0, 30.0);
+
+    let mut entry = TextEntry::new("Verse Two");
+    if selected {
+        entry.select_all();
+    }
+    let mut measure = |at: usize| {
+        if at == 0 {
+            0.0
+        } else {
+            text.layout(&entry.text()[..at], &theme.font, None).width
+        }
+    };
+    let caret_x = measure(entry.caret());
+    let selection = entry.selection().map(|(a, b)| (measure(a), measure(b)));
+
+    let mut labels = Labels::new();
+    labels.ensure(entry.text(), &theme.font, &mut text);
+
+    let mut scene = vello::Scene::new();
+    // The panel it sits on, so the recess has something to be recessed into.
+    // Drawn straight, since `fill_rect` is the renderer's own.
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        vello::kurbo::Affine::IDENTITY,
+        theme.palette.panel_header.to_peniko(),
+        None,
+        &vello::kurbo::Rect::new(0.0, 0.0, w as f64, h as f64),
+    );
+    fontelle_ui::render::draw_text_field(
+        &mut scene,
+        &theme,
+        &labels,
+        field,
+        &TextFieldChrome {
+            entry,
+            caret_x,
+            selection,
+            placeholder: "Name the new project",
+            caret_on: true,
+        },
+    );
+    let pixels = shared
+        .lock()
+        .expect("the shared renderer")
+        .render(&scene, w, h, theme.palette.window)
+        .expect("the scene must render");
+    dump_sized(
+        &pixels,
+        if selected {
+            "field-selected"
+        } else {
+            "field-caret"
+        },
+        w,
+        h,
+    );
+    Some((pixels, theme, field, w, h))
+}
+
+#[test]
+fn a_text_field_is_a_box_with_a_caret_in_it() {
+    let Some((pixels, theme, field, width, _)) = shoot_field(false) else {
+        return;
+    };
+    let at = |x: u32, y: u32| {
+        let i = ((y * width + x) * 4) as usize;
+        Color::rgb(pixels[i], pixels[i + 1], pixels[i + 2])
+    };
+    // **A recess, not a label.** The inside of the field is darker than the
+    // panel it sits on — which is the whole of what makes it read as somewhere
+    // text goes in.
+    let inside = at(
+        (field.x + field.width - 8.0) as u32,
+        (field.y + field.height / 2.0) as u32,
+    );
+    let outside = at(4, 4);
+    assert!(
+        !near(inside, outside),
+        "the field is the same colour as the panel: it is still a label"
+    );
+    // **And a caret**, in the accent, somewhere along the text.
+    let mut found = false;
+    for x in (field.x as u32)..(field.right() as u32) {
+        for dy in 4..(field.height as u32 - 4) {
+            if near(at(x, field.y as u32 + dy), theme.palette.accent) {
+                found = true;
+            }
+        }
+    }
+    assert!(found, "there is no caret drawn in the field");
+}
+
+#[test]
+fn a_selection_is_washed_rather_than_inverted() {
+    let Some((pixels, _theme, field, width, _)) = shoot_field(true) else {
+        return;
+    };
+    let Some((plain, _, _, _, _)) = shoot_field(false) else {
+        return;
+    };
+    let at = |buf: &[u8], x: u32, y: u32| {
+        let i = ((y * width + x) * 4) as usize;
+        Color::rgb(buf[i], buf[i + 1], buf[i + 2])
+    };
+    // Over the first character, the selected shot differs from the plain one:
+    // there is a wash under the text.
+    let (x, y) = (
+        (field.x + 10.0) as u32,
+        (field.y + field.height / 2.0) as u32,
+    );
+    assert!(
+        !near(at(&pixels, x, y), at(&plain, x, y)),
+        "selecting the text changed nothing under it"
+    );
 }

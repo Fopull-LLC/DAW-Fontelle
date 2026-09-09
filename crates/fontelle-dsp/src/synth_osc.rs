@@ -37,6 +37,17 @@ pub enum SynthSource {
     /// unison — there is no cycle to position within, no phase to warp and
     /// nothing for a second copy of the same noise to beat against.
     Noise,
+    /// One of the **patch's own** tables, built from a sound somebody dropped
+    /// in — `Patch::wavetables`, and [`Wavetable::from_samples`].
+    ///
+    /// > *"i want to be able to drag audio files into it to use those
+    /// > waveforms in the synthesis."*
+    ///
+    /// An index rather than a name, because the patch owns the list and a
+    /// name is a thing a person may change. A patch that names a table it
+    /// does not have is silent for that layer, the same answer a missing
+    /// bank table gets: a wrong sound is harder to diagnose than no sound.
+    User(u8),
 }
 
 impl Default for SynthSource {
@@ -361,7 +372,10 @@ impl SynthState {
                 let mono = self.noise(osc);
                 (mono, mono)
             }
-            SynthSource::Table(_) => match table {
+            // The bank's, or one the patch carries itself: both are a table
+            // resolved before the note, and the voice cannot tell them apart
+            // — which is the point of resolving them in one place.
+            SynthSource::Table(_) | SynthSource::User(_) => match table {
                 Some(table) => self.table_voices(osc, table, note_hz, sample_rate, modulator),
                 // A layer whose table has not been resolved renders silence
                 // rather than a substitute: a wrong sound is harder to

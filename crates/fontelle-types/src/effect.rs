@@ -32,6 +32,7 @@ pub enum EffectKind {
     Chorus,
     Delay,
     Reverb,
+    Tune,
 }
 
 impl EffectKind {
@@ -49,6 +50,7 @@ impl EffectKind {
             Self::Chorus => "Chorus",
             Self::Delay => "Delay",
             Self::Reverb => "Reverb",
+            Self::Tune => "Tune",
         }
     }
 
@@ -83,6 +85,18 @@ impl EffectKind {
         matches!(self, Self::Compressor | Self::Gate)
     }
 
+    /// Whether this effect wants **notes** — a channel's part, as the melody
+    /// to force or as the scale to allow (`docs/tune-plan.md` §5).
+    ///
+    /// One predicate here rather than a `matches!` in each place that needs
+    /// it, for the reason [`takes_key`](Self::takes_key) is one: the command
+    /// validates on it, the builder wires on it, the window offers on it, and
+    /// three copies of the list is two to forget. An effect that does not take
+    /// notes and has a channel named on it is a routing edge feeding nothing.
+    pub fn takes_notes(self) -> bool {
+        matches!(self, Self::Tune)
+    }
+
     /// Every effect that can be put in an insert slot, in the order the "add"
     /// menu lists them.
     ///
@@ -94,7 +108,7 @@ impl EffectKind {
     ///
     /// The plumbing tool first, then the processors, then the two that sit
     /// under the track.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Utility,
         Self::Eq,
         Self::Filter,
@@ -103,6 +117,10 @@ impl EffectKind {
         Self::Distortion,
         Self::Bitcrush,
         Self::Soften,
+        // The corrector sits with the processors and after them, because it
+        // is the newest and INVARIANT 7 says a menu's order may move but a
+        // preset folder's name may not.
+        Self::Tune,
         Self::Chorus,
         Self::Delay,
         Self::Reverb,
@@ -128,6 +146,7 @@ pub enum EffectConfig {
     Chorus(ChorusConfig),
     Delay(DelayConfig),
     Reverb(ReverbConfig),
+    Tune(TuneConfig),
 }
 
 impl EffectConfig {
@@ -152,6 +171,7 @@ impl EffectConfig {
             Self::Chorus(_) => CHORUS_PARAMS.as_slice(),
             Self::Delay(_) => DELAY_PARAMS.as_slice(),
             Self::Reverb(_) => REVERB_PARAMS.as_slice(),
+            Self::Tune(_) => TUNE_PARAMS.as_slice(),
         }
     }
 
@@ -177,6 +197,7 @@ impl EffectConfig {
             Self::Chorus(_) => CHORUS_SECTIONS.as_slice(),
             Self::Delay(_) => DELAY_SECTIONS.as_slice(),
             Self::Reverb(_) => REVERB_SECTIONS.as_slice(),
+            Self::Tune(_) => TUNE_SECTIONS.as_slice(),
         }
     }
 
@@ -216,6 +237,7 @@ impl EffectConfig {
             Self::Chorus(chorus) => chorus.get(id),
             Self::Delay(delay) => delay.get(id),
             Self::Reverb(reverb) => reverb.get(id),
+            Self::Tune(tune) => tune.get(id),
         }
     }
 
@@ -237,6 +259,7 @@ impl EffectConfig {
             Self::Chorus(chorus) => chorus.set(id, value),
             Self::Delay(delay) => delay.set(id, value),
             Self::Reverb(reverb) => reverb.set(id, value),
+            Self::Tune(tune) => tune.set(id, value),
         }
     }
 
@@ -264,6 +287,7 @@ impl EffectConfig {
             Self::Chorus(_) => EffectKind::Chorus,
             Self::Delay(_) => EffectKind::Delay,
             Self::Reverb(_) => EffectKind::Reverb,
+            Self::Tune(_) => EffectKind::Tune,
         }
     }
 
@@ -287,6 +311,7 @@ impl EffectConfig {
             Self::Chorus(chorus) => chorus.mix,
             Self::Delay(delay) => delay.mix,
             Self::Reverb(reverb) => reverb.mix,
+            Self::Tune(tune) => tune.mix,
         }
     }
 
@@ -345,6 +370,7 @@ impl EffectConfig {
             EffectKind::Chorus => Self::Chorus(ChorusConfig::new()),
             EffectKind::Delay => Self::Delay(DelayConfig::new()),
             EffectKind::Reverb => Self::Reverb(ReverbConfig::new()),
+            EffectKind::Tune => Self::Tune(TuneConfig::new()),
         }
     }
 }
@@ -4052,6 +4078,1871 @@ static REVERB_OWN_PARAMS: [crate::ParamSpec; 5] = [
         max: 100.0,
         default: 100.0,
         unit: crate::Unit::Percent,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+];
+
+// -------------------------------------------------------------------- tune
+
+/// Which voice the tracker is looking for, as a pair of frequencies
+/// (`docs/tune-plan.md` §3.8).
+///
+/// A chooser rather than two knobs, and that is the design rather than a
+/// simplification: the range decides the **latency** as well as the search,
+/// and a person choosing "Baritone/Bass" is choosing 35 ms of it. Two free
+/// knobs would make that cost a thing you arrive at rather than a thing you
+/// pick.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+pub enum TuneRange {
+    Soprano,
+    #[default]
+    AltoTenor,
+    BaritoneBass,
+    Instrument,
+    Low,
+}
+
+impl TuneRange {
+    /// The bottom of the search, in hertz. It is what sizes every ring, since
+    /// the longest period the tracker can find is one cycle of this.
+    pub fn min_hz(self) -> f32 {
+        match self {
+            Self::Soprano => 160.0,
+            Self::AltoTenor => 100.0,
+            Self::BaritoneBass => 60.0,
+            Self::Instrument => 40.0,
+            Self::Low => 25.0,
+        }
+    }
+
+    /// The top of the search, in hertz.
+    pub fn max_hz(self) -> f32 {
+        match self {
+            Self::Soprano => 1_400.0,
+            Self::AltoTenor => 1_000.0,
+            Self::BaritoneBass => 600.0,
+            Self::Instrument => 2_000.0,
+            Self::Low => 400.0,
+        }
+    }
+
+    /// The longest period the tracker will look for, in samples. Every ring in
+    /// the shifter is a multiple of this, and so is the latency.
+    pub fn max_period(self, sample_rate: f32) -> u32 {
+        (sample_rate.max(1.0) / self.min_hz()).ceil() as u32
+    }
+
+    /// The shortest, in samples.
+    pub fn min_period(self, sample_rate: f32) -> u32 {
+        ((sample_rate.max(1.0) / self.max_hz()).floor() as u32).max(2)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Soprano => "soprano",
+            Self::AltoTenor => "alto/tenor",
+            Self::BaritoneBass => "baritone/bass",
+            Self::Instrument => "instrument",
+            Self::Low => "low",
+        }
+    }
+
+    pub const ALL: [Self; 5] = [
+        Self::Soprano,
+        Self::AltoTenor,
+        Self::BaritoneBass,
+        Self::Instrument,
+        Self::Low,
+    ];
+}
+
+static TUNE_RANGES: [&str; 5] = [
+    "soprano",
+    "alto/tenor",
+    "baritone/bass",
+    "instrument",
+    "low",
+];
+
+/// Whether the corrector is answering a singer in a headphone mix or a clip on
+/// a timeline (`docs/tune-plan.md` §3.8).
+///
+/// **Live** places its grains one period behind the input and hops at 32:
+/// half the latency, and a tracker that is a little more willing to be wrong
+/// about an onset. **Studio** centres the analysis window on the grain, which
+/// costs a second period and buys steadier tracking — and on a recorded track
+/// the graph pays that latency and nobody feels it.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+pub enum TuneMode {
+    Live,
+    #[default]
+    Studio,
+}
+
+impl TuneMode {
+    /// How often the tracker reports, in samples.
+    pub fn hop(self) -> u32 {
+        match self {
+            Self::Live => 32,
+            Self::Studio => 64,
+        }
+    }
+
+    /// How many periods of look-ahead the shifter keeps.
+    pub fn periods(self) -> u32 {
+        match self {
+            Self::Live => 1,
+            Self::Studio => 2,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Studio => "studio",
+        }
+    }
+
+    pub const ALL: [Self; 2] = [Self::Live, Self::Studio];
+}
+
+static TUNE_MODES: [&str; 2] = ["live", "studio"];
+
+/// Where the notes to correct *to* come from (`docs/tune-plan.md` §4.2, §5).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+pub enum TuneControl {
+    /// The scale drawn on the window's keyboard.
+    #[default]
+    Scale,
+    /// The last key held on the channel this insert listens to *is* the note,
+    /// whatever the scale says. Nothing held falls back to the scale.
+    MidiMelody,
+    /// The held keys' pitch classes are the scale, while any is held.
+    MidiScale,
+}
+
+impl TuneControl {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Scale => "scale",
+            Self::MidiMelody => "MIDI melody",
+            Self::MidiScale => "MIDI scale",
+        }
+    }
+
+    /// Whether this reading wants notes from a channel at all — what the
+    /// window greys the MIDI card on.
+    pub fn wants_notes(self) -> bool {
+        matches!(self, Self::MidiMelody | Self::MidiScale)
+    }
+
+    pub const ALL: [Self; 3] = [Self::Scale, Self::MidiMelody, Self::MidiScale];
+}
+
+static TUNE_CONTROLS: [&str; 3] = ["scale", "MIDI melody", "MIDI scale"];
+
+/// Which notes are in (`docs/tune-plan.md` §4.2).
+///
+/// A mask in **absolute pitch classes** — bit 0 is C, bit 11 is B — rather
+/// than in degrees above the root, so the window's keyboard can be drawn from
+/// one against real keys and the DSP can ask "is this class in" without doing
+/// arithmetic on the root twice.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+pub enum TuneScale {
+    #[default]
+    Chromatic,
+    Major,
+    NaturalMinor,
+    HarmonicMinor,
+    MelodicMinor,
+    Dorian,
+    Phrygian,
+    Lydian,
+    Mixolydian,
+    Locrian,
+    MajorPentatonic,
+    MinorPentatonic,
+    Blues,
+    WholeTone,
+    /// Whatever the twelve switches say. Choosing a named scale does not touch
+    /// them; clicking a key on the keyboard sets this and writes them.
+    Custom,
+}
+
+impl TuneScale {
+    /// The scale's intervals above its root, in semitones.
+    fn degrees(self) -> &'static [u8] {
+        match self {
+            Self::Chromatic | Self::Custom => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+            Self::Major => &[0, 2, 4, 5, 7, 9, 11],
+            Self::NaturalMinor => &[0, 2, 3, 5, 7, 8, 10],
+            Self::HarmonicMinor => &[0, 2, 3, 5, 7, 8, 11],
+            Self::MelodicMinor => &[0, 2, 3, 5, 7, 9, 11],
+            Self::Dorian => &[0, 2, 3, 5, 7, 9, 10],
+            Self::Phrygian => &[0, 1, 3, 5, 7, 8, 10],
+            Self::Lydian => &[0, 2, 4, 6, 7, 9, 11],
+            Self::Mixolydian => &[0, 2, 4, 5, 7, 9, 10],
+            Self::Locrian => &[0, 1, 3, 5, 6, 8, 10],
+            Self::MajorPentatonic => &[0, 2, 4, 7, 9],
+            Self::MinorPentatonic => &[0, 3, 5, 7, 10],
+            Self::Blues => &[0, 3, 5, 6, 7, 10],
+            Self::WholeTone => &[0, 2, 4, 6, 8, 10],
+        }
+    }
+
+    /// Which of the twelve pitch classes this scale contains, at `root`.
+    ///
+    /// [`Custom`](Self::Custom) answers chromatic: it has no notes of its own,
+    /// and the switches are read instead — see [`TuneConfig::active_mask`].
+    pub fn mask(self, root: u8) -> u16 {
+        let root = u16::from(root % 12);
+        let mut mask = 0u16;
+        for degree in self.degrees() {
+            mask |= 1 << ((u16::from(*degree) + root) % 12);
+        }
+        mask
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Chromatic => "chromatic",
+            Self::Major => "major",
+            Self::NaturalMinor => "natural minor",
+            Self::HarmonicMinor => "harmonic minor",
+            Self::MelodicMinor => "melodic minor",
+            Self::Dorian => "dorian",
+            Self::Phrygian => "phrygian",
+            Self::Lydian => "lydian",
+            Self::Mixolydian => "mixolydian",
+            Self::Locrian => "locrian",
+            Self::MajorPentatonic => "major pentatonic",
+            Self::MinorPentatonic => "minor pentatonic",
+            Self::Blues => "blues",
+            Self::WholeTone => "whole tone",
+            Self::Custom => "custom",
+        }
+    }
+
+    pub const ALL: [Self; 15] = [
+        Self::Chromatic,
+        Self::Major,
+        Self::NaturalMinor,
+        Self::HarmonicMinor,
+        Self::MelodicMinor,
+        Self::Dorian,
+        Self::Phrygian,
+        Self::Lydian,
+        Self::Mixolydian,
+        Self::Locrian,
+        Self::MajorPentatonic,
+        Self::MinorPentatonic,
+        Self::Blues,
+        Self::WholeTone,
+        Self::Custom,
+    ];
+}
+
+static TUNE_SCALES: [&str; 15] = [
+    "chromatic",
+    "major",
+    "natural minor",
+    "harmonic minor",
+    "melodic minor",
+    "dorian",
+    "phrygian",
+    "lydian",
+    "mixolydian",
+    "locrian",
+    "major pentatonic",
+    "minor pentatonic",
+    "blues",
+    "whole tone",
+    "custom",
+];
+
+/// The twelve pitch classes, as a chooser names them.
+///
+/// Public because the console's keyboard writes the same names on its keys
+/// and its viewport writes them on its rails: three places naming the notes
+/// from three lists is three chances for one of them to disagree.
+pub static TUNE_ROOTS: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
+
+/// How the shifter lays its grains down — the *character* of the correction
+/// (`docs/tune-plan.md` §3.4).
+///
+/// The reason a plugin "locks you in" is that it made this decision for you.
+/// Every one of these reads the same ratio and the same formant factor, so
+/// switching changes only the character, which is the point.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+pub enum TuneEngine {
+    /// Pitch-synchronous overlap-add with a Hann grain two periods wide. The
+    /// transparent one, and the modern hard-tune.
+    #[default]
+    Smooth,
+    /// Pitch-synchronous with a flat-topped grain one and a half periods
+    /// wide. Not quite constant-overlap-add, and the faint buzz that leaves
+    /// on a sustain is the metallic edge people mean by "that sound".
+    Hard,
+    /// Not pitch-synchronous at all: fixed grains at half-grain spacing read
+    /// at the ratio. Phasy, smeared, modulated at the grain rate — the cheap
+    /// plug-in, and a sound in its own right.
+    Grain,
+}
+
+impl TuneEngine {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Smooth => "smooth",
+            Self::Hard => "hard",
+            Self::Grain => "grain",
+        }
+    }
+
+    /// What the `texture` knob does on this engine — what the window's caption
+    /// says, so a knob whose meaning changes says so.
+    pub fn texture_meaning(self) -> &'static str {
+        match self {
+            Self::Smooth => "grain width",
+            Self::Hard => "taper",
+            Self::Grain => "jitter",
+        }
+    }
+
+    pub const ALL: [Self; 3] = [Self::Smooth, Self::Hard, Self::Grain];
+}
+
+static TUNE_ENGINES: [&str; 3] = ["smooth", "hard", "grain"];
+
+/// The shape of the vibrato this effect *adds* (`docs/tune-plan.md` §3.5).
+///
+/// Two rather than [`LfoWave`]'s six, and deliberately: a vibrato is a
+/// wobble, and a square-wave one is a trill somebody would reach for the
+/// melody control to write instead.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+pub enum VibratoShape {
+    #[default]
+    Sine,
+    Triangle,
+}
+
+impl VibratoShape {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Sine => "sine",
+            Self::Triangle => "triangle",
+        }
+    }
+
+    /// The shape's value at `phase` in 0..1, in −1..=1 — here for the reason
+    /// [`LfoWave::value`] is here.
+    pub fn value(self, phase: f32) -> f32 {
+        match self {
+            Self::Sine => LfoWave::Sine.value(phase),
+            Self::Triangle => LfoWave::Triangle.value(phase),
+        }
+    }
+
+    pub const ALL: [Self; 2] = [Self::Sine, Self::Triangle];
+}
+
+static VIBRATO_SHAPES: [&str; 2] = ["sine", "triangle"];
+
+/// The ends of the retune knob, in milliseconds.
+///
+/// Half a millisecond is one hop, and the DSP treats anything under
+/// [`TUNE_INSTANT_MS`] as no glide at all — a logarithmic taper cannot hold a
+/// zero, and the bottom of this knob has to be reachable as "instant".
+pub const MIN_TUNE_RETUNE_MS: f32 = 0.5;
+pub const MAX_TUNE_RETUNE_MS: f32 = 400.0;
+
+/// Under this, the retune knob is a snap rather than a glide.
+pub const TUNE_INSTANT_MS: f32 = 1.0;
+
+/// The ends of the grain knob, in milliseconds. Under five the grain engine
+/// is a ring modulator; over sixty it is an echo.
+pub const MIN_TUNE_GRAIN_MS: f32 = 5.0;
+pub const MAX_TUNE_GRAIN_MS: f32 = 60.0;
+
+/// How far off a note the correction is still full strength at `flex` zero,
+/// in cents. Half a semitone: past it, the nearest note is a different note.
+pub const TUNE_FLEX_EDGE_CENTS: f32 = 50.0;
+
+/// One hop of what the corrector did, for the window's pitch trace
+/// (`docs/tune-plan.md` §7.3).
+///
+/// **Here** rather than in `fontelle-engine`, where §8 put it, and the reason
+/// is the dependency graph: `fontelle-ui` draws this and depends on the
+/// document and the types alone (INVARIANT 2). Four aligned words, so the tap
+/// that carries it can be written from the audio thread with four stores and
+/// never tear within a field.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TuneFrame {
+    /// What was sung, in MIDI cents. Meaningless when not voiced.
+    pub sung_cents: f32,
+    /// What came out, in MIDI cents.
+    pub out_cents: f32,
+    /// What it was being pulled towards, in MIDI cents.
+    pub target_cents: f32,
+    /// [`TUNE_VOICED`] and friends.
+    pub flags: u32,
+}
+
+/// The tracker was sure of a note this hop.
+pub const TUNE_VOICED: u32 = 1 << 0;
+/// The sung note is within five cents of its target — what closes the
+/// reticle's brackets.
+pub const TUNE_LOCKED: u32 = 1 << 1;
+/// The target came from a held key rather than from the scale.
+pub const TUNE_FROM_MIDI: u32 = 1 << 2;
+
+/// How close counts as locked, in cents.
+pub const TUNE_LOCK_CENTS: f32 = 5.0;
+
+/// MIDI cents from hertz: A440 is 6900.
+///
+/// Here as well as in `fontelle_dsp::hz_to_cents`, and the duplication is
+/// forced rather than chosen: the DSP crate depends on nothing above it
+/// (INVARIANT 4) and the window depends on nothing below the document
+/// (INVARIANT 2), so the two ends of this program cannot share a function
+/// however much they would like to. `fontelle-fx` sees both and
+/// `tests/tune.rs` is where they are held to the same answer.
+pub fn cents_of_hz(hz: f32) -> f32 {
+    6900.0 + 1200.0 * (hz.max(1e-6) / 440.0).log2()
+}
+
+/// And back.
+pub fn hz_of_cents(cents: f32) -> f32 {
+    440.0 * ((cents - 6900.0) / 1200.0).exp2()
+}
+
+/// The twelve note switches, by id, C first. One list rather than twelve
+/// literals in each of the four places that walk them (INVARIANT 7).
+pub const TUNE_NOTE_PARAMS: [&str; 12] = [
+    "note_c", "note_cs", "note_d", "note_ds", "note_e", "note_f", "note_fs", "note_g", "note_gs",
+    "note_a", "note_as", "note_b",
+];
+
+/// Everything the pitch corrector's sound depends on, and none of its rings
+/// (`docs/tune-plan.md` §4).
+///
+/// The order the fields read in is the order the sound happens in: what is
+/// being listened to, what notes there are, how hard and how fast it is
+/// pulled to them, what is added on top, how the grains are laid down, and
+/// what leaves.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TuneConfig {
+    // ---- input
+    #[serde(default)]
+    pub range: TuneRange,
+    #[serde(default)]
+    pub mode: TuneMode,
+    /// The tracker's confidence threshold, 0..=1. Relaxed follows a breathy
+    /// or distorted source and mis-tracks noise into notes now and then;
+    /// strict corrects only what it is sure of.
+    #[serde(default = "half")]
+    pub tracking: f32,
+    /// Under this, in dB, the tracker reports unvoiced and the effect is the
+    /// delayed input. Room noise does not get tuned.
+    #[serde(default = "minus_fifty")]
+    pub gate_db: f32,
+
+    // ---- scale
+    /// The scale's root as a pitch class, 0 = C.
+    #[serde(default)]
+    pub root: u8,
+    #[serde(default)]
+    pub scale: TuneScale,
+    /// The twelve switches, bit 0 = C. Read only when
+    /// [`scale`](Self::scale) is [`TuneScale::Custom`] — see
+    /// [`active_mask`](Self::active_mask).
+    #[serde(default = "all_twelve")]
+    pub notes: u16,
+    #[serde(default)]
+    pub control: TuneControl,
+    /// Whether the source channel's pitch bend moves the forced note.
+    #[serde(default = "yes")]
+    pub midi_bend: bool,
+
+    // ---- correction
+    /// How long the correction takes to arrive at a new note, in
+    /// milliseconds. The knob this effect exists for.
+    #[serde(default = "twenty")]
+    pub retune_ms: f32,
+    /// How much of the way to the note it goes at all, 0..=1.
+    #[serde(default = "one")]
+    pub amount: f32,
+    /// How far a *settled* note is allowed to drift back to where it was
+    /// sung, 0..=1. A moving line is corrected in full whatever this says.
+    #[serde(default)]
+    pub humanize: f32,
+    /// How much a note far from the grid is left alone, 0..=1. At zero every
+    /// pitch is corrected; at one a note 45 cents off is nearly untouched and
+    /// the expressive slide survives.
+    #[serde(default)]
+    pub flex: f32,
+    /// How much of the singer's own vibrato passes through, 0..=1. At zero it
+    /// is flattened, which with retune at zero is the robot.
+    #[serde(default = "one")]
+    pub natural_vibrato: f32,
+
+    // ---- vibrato
+    /// The vibrato this effect adds, in cents.
+    #[serde(default)]
+    pub vibrato_depth: f32,
+    #[serde(default = "five_point_five")]
+    pub vibrato_rate_hz: f32,
+    #[serde(default)]
+    pub vibrato_sync: bool,
+    #[serde(default = "eighth")]
+    pub vibrato_division: NoteDivision,
+    /// How long after a note starts before the added vibrato fades in, in
+    /// milliseconds. What makes it sound played rather than switched on.
+    #[serde(default = "two_hundred")]
+    pub vibrato_onset_ms: f32,
+    #[serde(default)]
+    pub vibrato_shape: VibratoShape,
+
+    // ---- voice
+    #[serde(default)]
+    pub engine: TuneEngine,
+    /// Where on its engine's own continuum this sits, 0..=1 — what it means
+    /// is the engine's to say (see [`TuneEngine::texture_meaning`]).
+    #[serde(default)]
+    pub texture: f32,
+    /// The grain engine's grain length, in milliseconds. Read by that engine
+    /// only; the window greys it otherwise.
+    #[serde(default = "twenty_five")]
+    pub grain_ms: f32,
+    /// The throat-length control, in semitones: gender, size, cartoon.
+    #[serde(default)]
+    pub formant: f32,
+    /// How much the formants move *with* the pitch, 0..=1. At zero they stay
+    /// where the singer put them, which is the expensive result; at one they
+    /// follow, which is a resampler's chipmunk on any engine.
+    #[serde(default)]
+    pub formant_follow: f32,
+    /// Semitones added after the correction.
+    #[serde(default)]
+    pub transpose: i8,
+    /// Cents added after the correction.
+    #[serde(default)]
+    pub detune_cents: f32,
+
+    // ---- character (§4.8)
+    //
+    // What the voice is *made of* once it has been corrected, as opposed to
+    // how the grains were laid. `engine` and `texture` are the shifter's
+    // character; these four are the signal's, and they are the difference
+    // between a corrector that sounds expensive and one that sounds like a
+    // toy — which is the whole of what "flexible, not locked into one sound"
+    // asks for. All four are off/unity in a fresh corrector.
+    /// Saturation on the corrected signal, 0..=1. Soft, symmetrical, with the
+    /// gain made up: the harmonics arrive without the level changing.
+    #[serde(default)]
+    pub drive: f32,
+    /// Sample-and-hold decimation, 0..=1 — the lo-fi robot axis. At 0 the
+    /// output is untouched; at 1 it is held for roughly sixteen samples,
+    /// which at 48 kHz is a 3 kHz sampler.
+    #[serde(default)]
+    pub crush: f32,
+    /// A high tilt, −1..=1: dull to bright. One shelf, so it colours rather
+    /// than filters — an EQ belongs in an EQ.
+    #[serde(default)]
+    pub air: f32,
+    /// Stereo width of the corrected signal, 0..=2. Unity is 1; 0 is mono and
+    /// 2 is twice the side. Detection is on the mono sum either way (§3.7),
+    /// so this moves the image without moving the note.
+    #[serde(default = "one")]
+    pub width: f32,
+
+    // ---- output
+    #[serde(default)]
+    pub output_db: f32,
+    /// Dry/wet, 0..=1 — see [`EffectConfig::mix`]. A corrector replaces the
+    /// signal; the doubler and the harmony presets are the two that do not,
+    /// and they say so by turning this down.
+    #[serde(default = "all_wet")]
+    pub mix: f32,
+}
+
+fn half() -> f32 {
+    0.5
+}
+
+fn minus_fifty() -> f32 {
+    -50.0
+}
+
+fn all_twelve() -> u16 {
+    0x0FFF
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn twenty() -> f32 {
+    20.0
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+fn five_point_five() -> f32 {
+    5.5
+}
+
+fn eighth() -> NoteDivision {
+    NoteDivision::Eighth
+}
+
+fn two_hundred() -> f32 {
+    200.0
+}
+
+fn twenty_five() -> f32 {
+    25.0
+}
+
+impl TuneConfig {
+    /// A transparent tuner that corrects the next note it hears
+    /// (`docs/tune-plan.md` §4.7).
+    ///
+    /// A different reading of "a fresh effect is nearly a wire" from the
+    /// distortion's, and the gate's reason: the knob a person reaches for on a
+    /// tuner is the retune speed, and an insert that did nothing until
+    /// `amount` was found would look broken. So it opens chromatic, at
+    /// 20 ms, at full amount, with the singer's vibrato kept and their
+    /// formants where they were. The two ways to make it a wire are `amount`
+    /// at zero and `mix` at zero.
+    pub fn new() -> Self {
+        Self {
+            range: TuneRange::AltoTenor,
+            mode: TuneMode::Studio,
+            tracking: 0.5,
+            gate_db: -50.0,
+            root: 0,
+            scale: TuneScale::Chromatic,
+            notes: 0x0FFF,
+            control: TuneControl::Scale,
+            midi_bend: true,
+            retune_ms: 20.0,
+            amount: 1.0,
+            humanize: 0.0,
+            flex: 0.0,
+            natural_vibrato: 1.0,
+            vibrato_depth: 0.0,
+            vibrato_rate_hz: 5.5,
+            vibrato_sync: false,
+            vibrato_division: NoteDivision::Eighth,
+            vibrato_onset_ms: 200.0,
+            vibrato_shape: VibratoShape::Sine,
+            engine: TuneEngine::Smooth,
+            texture: 0.0,
+            grain_ms: 25.0,
+            formant: 0.0,
+            formant_follow: 0.0,
+            transpose: 0,
+            detune_cents: 0.0,
+            drive: 0.0,
+            crush: 0.0,
+            air: 0.0,
+            width: 1.0,
+            output_db: 0.0,
+            mix: 1.0,
+        }
+    }
+
+    /// Which pitch classes are in, as a mask with bit 0 = C.
+    ///
+    /// The one place the switches and the scale chooser are reconciled, so
+    /// the DSP, the keyboard and the window's rails all read one answer.
+    pub fn active_mask(&self) -> u16 {
+        let mask = match self.scale {
+            TuneScale::Custom => self.notes,
+            scale => scale.mask(self.root),
+        } & 0x0FFF;
+        // A mask with nothing in it is a tuner with nowhere to send a note,
+        // and every reading downstream of it would have to carry the case. An
+        // empty scale is chromatic instead, which is the harmless answer.
+        if mask == 0 { 0x0FFF } else { mask }
+    }
+
+    /// The named scale a mask *is*, at this root, or `None` if it is not one.
+    ///
+    /// Recognised rather than remembered — the rule the preset bar's `*`
+    /// follows (`docs/flopsynth-plan.md` §P.6). Clicking keys until the mask
+    /// happens to be D dorian makes the chooser say so.
+    pub fn recognised_scale(mask: u16, root: u8) -> Option<TuneScale> {
+        let mask = mask & 0x0FFF;
+        TuneScale::ALL
+            .iter()
+            .copied()
+            .find(|scale| *scale != TuneScale::Custom && scale.mask(root) == mask)
+    }
+
+    /// Whether the retune knob is at "instant".
+    pub fn retune_is_instant(&self) -> bool {
+        self.retune_ms < TUNE_INSTANT_MS
+    }
+
+    /// The added vibrato's rate in hertz, after the sync switch has had its
+    /// say — one cycle per division, like the chorus's LFO.
+    pub fn vibrato_hz(&self, bpm: f32) -> f32 {
+        let asked = if self.vibrato_sync {
+            let bpm = if bpm.is_finite() { bpm } else { 0.0 };
+            let seconds = self.vibrato_division.beats() * 60.0 / bpm.clamp(MIN_BPM, MAX_BPM);
+            1.0 / seconds.max(1e-4)
+        } else {
+            self.vibrato_rate_hz
+        };
+        asked.clamp(0.1, 12.0)
+    }
+
+    /// What this insert costs the track it is on, in samples
+    /// (`docs/tune-plan.md` §3.8).
+    ///
+    /// **Here** rather than in the node, so the document, the graph builder,
+    /// the node and the window all ask one function and cannot disagree. It is
+    /// fixed for a range and a mode and does not move with the note, which is
+    /// what makes the graph's compensation stable — and it is why a change of
+    /// either is a graph rebuild.
+    pub fn latency_samples(&self, sample_rate: f32) -> u32 {
+        let period = self.range.max_period(sample_rate);
+        self.mode.periods() * period + self.mode.hop()
+    }
+
+    fn get(&self, id: &str) -> Option<f32> {
+        if let Some(index) = TUNE_NOTE_PARAMS.iter().position(|note| *note == id) {
+            return Some(switch_value(self.notes & (1 << index) != 0));
+        }
+        Some(match id {
+            MIX => self.mix * 100.0,
+            "range" => TuneRange::ALL.iter().position(|r| *r == self.range)? as f32,
+            "mode" => TuneMode::ALL.iter().position(|m| *m == self.mode)? as f32,
+            "tracking" => self.tracking * 100.0,
+            "gate" => self.gate_db,
+            "root" => f32::from(self.root.min(11)),
+            "scale" => TuneScale::ALL.iter().position(|s| *s == self.scale)? as f32,
+            "control" => TuneControl::ALL.iter().position(|c| *c == self.control)? as f32,
+            "midi_bend" => switch_value(self.midi_bend),
+            "retune" => self.retune_ms,
+            "amount" => self.amount * 100.0,
+            "humanize" => self.humanize * 100.0,
+            "flex" => self.flex * 100.0,
+            "natural_vibrato" => self.natural_vibrato * 100.0,
+            "vibrato_depth" => self.vibrato_depth,
+            "vibrato_rate" => self.vibrato_rate_hz,
+            "vibrato_sync" => switch_value(self.vibrato_sync),
+            "vibrato_division" => NoteDivision::ALL
+                .iter()
+                .position(|d| *d == self.vibrato_division)?
+                as f32,
+            "vibrato_onset" => self.vibrato_onset_ms,
+            "vibrato_shape" => VibratoShape::ALL
+                .iter()
+                .position(|s| *s == self.vibrato_shape)? as f32,
+            "engine" => TuneEngine::ALL.iter().position(|e| *e == self.engine)? as f32,
+            "texture" => self.texture * 100.0,
+            "grain" => self.grain_ms,
+            "formant" => self.formant,
+            "formant_follow" => self.formant_follow * 100.0,
+            "transpose" => f32::from(self.transpose),
+            "detune" => self.detune_cents,
+            // Percent on the panel, 0..=1 (or ±1, or 0..=2) in the struct —
+            // the convention `amount` and `humanize` already follow.
+            "drive" => self.drive * 100.0,
+            "crush" => self.crush * 100.0,
+            "air" => self.air * 100.0,
+            "width" => self.width * 100.0,
+            "output" => self.output_db,
+            _ => return None,
+        })
+    }
+
+    fn set(&mut self, id: &str, value: f32) {
+        if let Some(index) = TUNE_NOTE_PARAMS.iter().position(|note| *note == id) {
+            let bit = 1u16 << index;
+            if value >= 0.5 {
+                self.notes |= bit;
+            } else {
+                self.notes &= !bit;
+            }
+            return;
+        }
+        match id {
+            MIX => self.mix = value / 100.0,
+            "range" => {
+                if let Some(range) = TuneRange::ALL.get(value.round().max(0.0) as usize) {
+                    self.range = *range;
+                }
+            }
+            "mode" => {
+                if let Some(mode) = TuneMode::ALL.get(value.round().max(0.0) as usize) {
+                    self.mode = *mode;
+                }
+            }
+            "tracking" => self.tracking = value / 100.0,
+            "gate" => self.gate_db = value,
+            "root" => self.root = (value.round().max(0.0) as u8).min(11),
+            "scale" => {
+                if let Some(scale) = TuneScale::ALL.get(value.round().max(0.0) as usize) {
+                    self.scale = *scale;
+                }
+            }
+            "control" => {
+                if let Some(control) = TuneControl::ALL.get(value.round().max(0.0) as usize) {
+                    self.control = *control;
+                }
+            }
+            "midi_bend" => self.midi_bend = value >= 0.5,
+            "retune" => self.retune_ms = value,
+            "amount" => self.amount = value / 100.0,
+            "humanize" => self.humanize = value / 100.0,
+            "flex" => self.flex = value / 100.0,
+            "natural_vibrato" => self.natural_vibrato = value / 100.0,
+            "vibrato_depth" => self.vibrato_depth = value,
+            "vibrato_rate" => self.vibrato_rate_hz = value,
+            "vibrato_sync" => self.vibrato_sync = value >= 0.5,
+            "vibrato_division" => {
+                if let Some(division) = NoteDivision::ALL.get(value.round().max(0.0) as usize) {
+                    self.vibrato_division = *division;
+                }
+            }
+            "vibrato_onset" => self.vibrato_onset_ms = value,
+            "vibrato_shape" => {
+                if let Some(shape) = VibratoShape::ALL.get(value.round().max(0.0) as usize) {
+                    self.vibrato_shape = *shape;
+                }
+            }
+            "engine" => {
+                if let Some(engine) = TuneEngine::ALL.get(value.round().max(0.0) as usize) {
+                    self.engine = *engine;
+                }
+            }
+            "texture" => self.texture = value / 100.0,
+            "grain" => self.grain_ms = value,
+            "formant" => self.formant = value,
+            "formant_follow" => self.formant_follow = value / 100.0,
+            "transpose" => self.transpose = value.round().clamp(-12.0, 12.0) as i8,
+            "detune" => self.detune_cents = value,
+            "drive" => self.drive = value / 100.0,
+            "crush" => self.crush = value / 100.0,
+            "air" => self.air = value / 100.0,
+            "width" => self.width = value / 100.0,
+            "output" => self.output_db = value,
+            _ => {}
+        }
+    }
+}
+
+impl Default for TuneConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The sixteen sounds people mean when they say "autotune"
+/// (`docs/tune-plan.md` §6).
+///
+/// A preset is a constructor, not a parameter — rule 10's first half. There is
+/// no "preset" knob and no lane can sweep one; these are points on one control
+/// surface and every one of them is reachable by hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum TunePreset {
+    /// Nobody can tell.
+    Transparent,
+    /// The modern radio vocal.
+    PopPolish,
+    /// The snap everybody knows.
+    HardTune,
+    /// Harder, colder.
+    TrapRobot,
+    /// The free plug-in, granular and phasy.
+    CheapPlastic,
+    /// Up an octave, small.
+    Chipmunk,
+    /// Down a fourth, bigger.
+    DeepVoice,
+    /// Same notes, smaller throat.
+    GenderUp,
+    /// Same notes, longer throat.
+    GenderDown,
+    /// Play the vocal from a keyboard.
+    MidiMelody,
+    /// The held chord is the scale.
+    MidiScale,
+    /// Robot with a regular wobble.
+    SynthVibrato,
+    /// No vibrato, no drift, no glide.
+    FlatLine,
+    /// Guitar, sax, whistling.
+    Instrument,
+    /// A doubler beneath the dry.
+    OctaveUnder,
+    /// A harmony beside the dry.
+    FifthAbove,
+
+    // ---- the character bank (§4.8)
+    //
+    // Twenty-four more, added when `drive`, `crush`, `air` and `width` gave
+    // the family an axis the first sixteen could not reach. They are grouped
+    // by what somebody is trying to *do* rather than by which knob is up:
+    // the hard sounds, the natural ones, the coloured ones and the shifts.
+
+    // -- hard and robotic
+    /// The 2007 record: hard, and the formants follow all the way up.
+    ClassicRnb,
+    /// Bright, crushed and wide.
+    Hyperpop,
+    /// Hard and dark, with the grains showing.
+    Drill,
+    /// Hard tune spread across the image.
+    RobotChoir,
+    /// Decimated until it is a sampler.
+    VocoderLite,
+    /// Tiny grains and a broken clock.
+    GlitchTune,
+    /// The formants driven, the throat short.
+    Talkbox,
+    /// Hard, saturated and narrow.
+    Automaton,
+
+    // -- natural and studio
+    /// Slower than Transparent, for a take that is nearly right.
+    GentleCorrect,
+    /// Live mode, medium speed, nothing clever.
+    LiveVocal,
+    /// Tight, narrow and a little dull, so it sits under the lead.
+    BackingVocal,
+    /// Fast enough for a rap, humanised so it is not a robot.
+    RapTighten,
+    /// The scoops kept: high flex, slow retune.
+    CountrySlide,
+    /// Barely there. Flex and humanize almost all the way up.
+    JazzLoose,
+    /// Slow, the singer's own vibrato kept whole, wide.
+    Opera,
+    /// A spoken voice nudged onto pitch, mono and dull.
+    Podcast,
+
+    // -- coloured
+    /// Saturated and rolled off: tape, roughly.
+    WarmTape,
+    /// Polished and lifted.
+    BrightPop,
+    /// Crushed, dull and narrow.
+    LoFiCassette,
+    /// Driven hard and band-limited.
+    RadioVoice,
+    /// Small, distorted and mono.
+    Telephone,
+
+    // -- shifts
+    /// An octave down with a long throat, driven.
+    Monster,
+    /// A fifth up with a short throat, crushed.
+    Alien,
+    /// An octave up, wide, under the dry.
+    WhisperTwin,
+}
+
+impl TunePreset {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Transparent => "Transparent",
+            Self::PopPolish => "Pop Polish",
+            Self::HardTune => "Hard Tune",
+            Self::TrapRobot => "Trap Robot",
+            Self::CheapPlastic => "Cheap Plastic",
+            Self::Chipmunk => "Chipmunk",
+            Self::DeepVoice => "Deep Voice",
+            Self::GenderUp => "Gender Up",
+            Self::GenderDown => "Gender Down",
+            Self::MidiMelody => "MIDI Melody",
+            Self::MidiScale => "MIDI Scale",
+            Self::SynthVibrato => "Synth Vibrato",
+            Self::FlatLine => "Flat Line",
+            Self::Instrument => "Instrument",
+            Self::OctaveUnder => "Octave Under",
+            Self::FifthAbove => "Fifth Above",
+            Self::ClassicRnb => "Classic R&B",
+            Self::Hyperpop => "Hyperpop",
+            Self::Drill => "Drill",
+            Self::RobotChoir => "Robot Choir",
+            Self::VocoderLite => "Vocoder Lite",
+            Self::GlitchTune => "Glitch Tune",
+            Self::Talkbox => "Talkbox",
+            Self::Automaton => "Automaton",
+            Self::GentleCorrect => "Gentle Correct",
+            Self::LiveVocal => "Live Vocal",
+            Self::BackingVocal => "Backing Vocal",
+            Self::RapTighten => "Rap Tighten",
+            Self::CountrySlide => "Country Slide",
+            Self::JazzLoose => "Jazz Loose",
+            Self::Opera => "Opera",
+            Self::Podcast => "Podcast",
+            Self::WarmTape => "Warm Tape",
+            Self::BrightPop => "Bright Pop",
+            Self::LoFiCassette => "Lo-Fi Cassette",
+            Self::RadioVoice => "Radio Voice",
+            Self::Telephone => "Telephone",
+            Self::Monster => "Monster",
+            Self::Alien => "Alien",
+            Self::WhisperTwin => "Whisper Twin",
+        }
+    }
+
+    pub const ALL: [Self; 40] = [
+        Self::Transparent,
+        Self::PopPolish,
+        Self::HardTune,
+        Self::TrapRobot,
+        Self::CheapPlastic,
+        Self::Chipmunk,
+        Self::DeepVoice,
+        Self::GenderUp,
+        Self::GenderDown,
+        Self::MidiMelody,
+        Self::MidiScale,
+        Self::SynthVibrato,
+        Self::FlatLine,
+        Self::Instrument,
+        Self::OctaveUnder,
+        Self::FifthAbove,
+        Self::ClassicRnb,
+        Self::Hyperpop,
+        Self::Drill,
+        Self::RobotChoir,
+        Self::VocoderLite,
+        Self::GlitchTune,
+        Self::Talkbox,
+        Self::Automaton,
+        Self::GentleCorrect,
+        Self::LiveVocal,
+        Self::BackingVocal,
+        Self::RapTighten,
+        Self::CountrySlide,
+        Self::JazzLoose,
+        Self::Opera,
+        Self::Podcast,
+        Self::WarmTape,
+        Self::BrightPop,
+        Self::LoFiCassette,
+        Self::RadioVoice,
+        Self::Telephone,
+        Self::Monster,
+        Self::Alien,
+        Self::WhisperTwin,
+    ];
+}
+
+impl TuneConfig {
+    /// The knobs a named preset stands for. Anything not written here is the
+    /// fresh state (§4.7).
+    pub fn from_preset(preset: TunePreset) -> Self {
+        let fresh = Self::new();
+        match preset {
+            TunePreset::Transparent => Self {
+                retune_ms: 120.0,
+                humanize: 0.6,
+                flex: 0.4,
+                natural_vibrato: 1.0,
+                mode: TuneMode::Studio,
+                ..fresh
+            },
+            TunePreset::PopPolish => Self {
+                retune_ms: 35.0,
+                humanize: 0.3,
+                natural_vibrato: 0.8,
+                flex: 0.15,
+                ..fresh
+            },
+            TunePreset::HardTune => Self {
+                retune_ms: MIN_TUNE_RETUNE_MS,
+                humanize: 0.0,
+                flex: 0.0,
+                natural_vibrato: 0.0,
+                engine: TuneEngine::Smooth,
+                texture: 0.4,
+                ..fresh
+            },
+            TunePreset::TrapRobot => Self {
+                retune_ms: MIN_TUNE_RETUNE_MS,
+                natural_vibrato: 0.0,
+                engine: TuneEngine::Hard,
+                texture: 0.7,
+                gate_db: -40.0,
+                ..fresh
+            },
+            TunePreset::CheapPlastic => Self {
+                engine: TuneEngine::Grain,
+                grain_ms: 25.0,
+                texture: 0.2,
+                formant_follow: 1.0,
+                retune_ms: 5.0,
+                tracking: 0.25,
+                ..fresh
+            },
+            TunePreset::Chipmunk => Self {
+                transpose: 12,
+                formant_follow: 1.0,
+                retune_ms: 10.0,
+                engine: TuneEngine::Smooth,
+                ..fresh
+            },
+            TunePreset::DeepVoice => Self {
+                transpose: -5,
+                formant: -3.0,
+                retune_ms: 60.0,
+                range: TuneRange::BaritoneBass,
+                ..fresh
+            },
+            TunePreset::GenderUp => Self {
+                formant: 4.0,
+                retune_ms: 80.0,
+                humanize: 0.4,
+                ..fresh
+            },
+            TunePreset::GenderDown => Self {
+                formant: -4.0,
+                retune_ms: 80.0,
+                humanize: 0.4,
+                // The one preset with a trim on it. Moving the whole spectral
+                // envelope down a third moves the voice's energy off the
+                // harmonics that were carrying it, and the result is three or
+                // four decibels quieter than what went in — a real
+                // consequence of a longer throat rather than an artefact. The
+                // output knob is exactly the control for that, and a preset
+                // that came back quieter than the wire is one people would
+                // blame the effect for.
+                output_db: 3.0,
+                ..fresh
+            },
+            TunePreset::MidiMelody => Self {
+                control: TuneControl::MidiMelody,
+                retune_ms: 10.0,
+                natural_vibrato: 0.3,
+                ..fresh
+            },
+            TunePreset::MidiScale => Self {
+                control: TuneControl::MidiScale,
+                retune_ms: 40.0,
+                humanize: 0.2,
+                ..fresh
+            },
+            TunePreset::SynthVibrato => Self {
+                retune_ms: MIN_TUNE_RETUNE_MS,
+                natural_vibrato: 0.0,
+                vibrato_depth: 40.0,
+                vibrato_rate_hz: 5.5,
+                vibrato_onset_ms: 250.0,
+                ..fresh
+            },
+            TunePreset::FlatLine => Self {
+                retune_ms: MIN_TUNE_RETUNE_MS,
+                natural_vibrato: 0.0,
+                humanize: 0.0,
+                tracking: 0.7,
+                gate_db: -40.0,
+                ..fresh
+            },
+            TunePreset::Instrument => Self {
+                range: TuneRange::Instrument,
+                mode: TuneMode::Studio,
+                retune_ms: 25.0,
+                flex: 0.3,
+                ..fresh
+            },
+            TunePreset::OctaveUnder => Self {
+                transpose: -12,
+                mix: 0.5,
+                retune_ms: 30.0,
+                ..fresh
+            },
+            TunePreset::FifthAbove => Self {
+                transpose: 7,
+                mix: 0.45,
+                retune_ms: 30.0,
+                formant_follow: 0.2,
+                ..fresh
+            },
+
+            // ---- hard and robotic -------------------------------------
+            //
+            // What these share is `retune_ms` at the floor and
+            // `natural_vibrato` at zero: the note arrives instantly and stays
+            // exactly where it was put. What separates them is entirely §4.8 —
+            // which is the point of that section existing.
+            TunePreset::ClassicRnb => Self {
+                retune_ms: MIN_TUNE_RETUNE_MS,
+                natural_vibrato: 0.0,
+                humanize: 0.0,
+                flex: 0.0,
+                formant_follow: 1.0,
+                texture: 0.35,
+                drive: 0.22,
+                air: 0.25,
+                ..fresh
+            },
+            TunePreset::Hyperpop => Self {
+                retune_ms: MIN_TUNE_RETUNE_MS,
+                natural_vibrato: 0.0,
+                flex: 0.0,
+                engine: TuneEngine::Hard,
+                texture: 0.85,
+                formant: 3.0,
+                drive: 0.45,
+                crush: 0.35,
+                // A shelf and a widening both add peak where an RMS check
+                // cannot see it. This is the brightest, widest preset in the
+                // bank and it sat at 1.57 on a −6 dBFS vocal; the trim is
+                // what `no_factory_preset_clips_a_normal_vocal` asked for.
+                air: 0.3,
+                width: 1.2,
+                // The last half-decibel: a hard engine at texture 0.85 puts
+                // its own peaks on, and this is the brightest preset in the
+                // bank. Both gates pass with room either side.
+                output_db: -0.5,
+                ..fresh
+            },
+            TunePreset::Drill => Self {
+                retune_ms: MIN_TUNE_RETUNE_MS,
+                natural_vibrato: 0.0,
+                engine: TuneEngine::Grain,
+                grain_ms: 14.0,
+                texture: 0.5,
+                formant: -2.0,
+                drive: 0.35,
+                air: -0.35,
+                range: TuneRange::BaritoneBass,
+                ..fresh
+            },
+            TunePreset::RobotChoir => Self {
+                retune_ms: MIN_TUNE_RETUNE_MS,
+                natural_vibrato: 0.0,
+                engine: TuneEngine::Hard,
+                texture: 0.6,
+                air: 0.4,
+                width: 1.9,
+                ..fresh
+            },
+            TunePreset::VocoderLite => Self {
+                retune_ms: MIN_TUNE_RETUNE_MS,
+                natural_vibrato: 0.0,
+                engine: TuneEngine::Hard,
+                texture: 0.9,
+                crush: 0.8,
+                drive: 0.3,
+                air: 0.2,
+                ..fresh
+            },
+            TunePreset::GlitchTune => Self {
+                retune_ms: 2.0,
+                natural_vibrato: 0.0,
+                engine: TuneEngine::Grain,
+                grain_ms: 6.0,
+                texture: 0.75,
+                crush: 0.5,
+                formant_follow: 1.0,
+                tracking: 0.2,
+                ..fresh
+            },
+            TunePreset::Talkbox => Self {
+                retune_ms: 3.0,
+                natural_vibrato: 0.0,
+                formant: 5.0,
+                formant_follow: 0.0,
+                texture: 0.5,
+                drive: 0.6,
+                air: 0.45,
+                ..fresh
+            },
+            TunePreset::Automaton => Self {
+                retune_ms: MIN_TUNE_RETUNE_MS,
+                natural_vibrato: 0.0,
+                humanize: 0.0,
+                flex: 0.0,
+                engine: TuneEngine::Hard,
+                texture: 0.8,
+                drive: 0.55,
+                width: 0.25,
+                air: -0.2,
+                ..fresh
+            },
+
+            // ---- natural and studio -----------------------------------
+            //
+            // The other end: `flex` and `humanize` carry these, and the
+            // character knobs are at or near zero. A preset here that reached
+            // for `drive` would be a mix decision wearing a tuner's clothes.
+            TunePreset::GentleCorrect => Self {
+                retune_ms: 90.0,
+                humanize: 0.5,
+                flex: 0.3,
+                natural_vibrato: 1.0,
+                ..fresh
+            },
+            TunePreset::LiveVocal => Self {
+                mode: TuneMode::Live,
+                retune_ms: 45.0,
+                humanize: 0.35,
+                flex: 0.25,
+                natural_vibrato: 0.9,
+                gate_db: -45.0,
+                ..fresh
+            },
+            TunePreset::BackingVocal => Self {
+                retune_ms: 25.0,
+                humanize: 0.15,
+                flex: 0.1,
+                natural_vibrato: 0.6,
+                air: -0.3,
+                width: 0.6,
+                output_db: -2.0,
+                ..fresh
+            },
+            TunePreset::RapTighten => Self {
+                retune_ms: 18.0,
+                humanize: 0.35,
+                flex: 0.2,
+                natural_vibrato: 0.7,
+                gate_db: -42.0,
+                drive: 0.12,
+                ..fresh
+            },
+            TunePreset::CountrySlide => Self {
+                retune_ms: 110.0,
+                humanize: 0.55,
+                // The scoop into a note is the style, so `flex` is nearly all
+                // the way up: a fast tuner on a country vocal removes the one
+                // thing that made it country.
+                flex: 0.85,
+                natural_vibrato: 1.0,
+                ..fresh
+            },
+            TunePreset::JazzLoose => Self {
+                retune_ms: 200.0,
+                humanize: 0.8,
+                flex: 0.9,
+                natural_vibrato: 1.0,
+                amount: 0.6,
+                ..fresh
+            },
+            TunePreset::Opera => Self {
+                retune_ms: 180.0,
+                humanize: 0.5,
+                flex: 0.6,
+                natural_vibrato: 1.0,
+                amount: 0.75,
+                width: 1.2,
+                range: TuneRange::Soprano,
+                ..fresh
+            },
+            TunePreset::Podcast => Self {
+                retune_ms: 150.0,
+                humanize: 0.6,
+                flex: 0.5,
+                amount: 0.4,
+                width: 0.0,
+                air: -0.2,
+                gate_db: -44.0,
+                range: TuneRange::BaritoneBass,
+                ..fresh
+            },
+
+            // ---- coloured ---------------------------------------------
+            //
+            // The correction is ordinary and the colour is the preset. These
+            // are the ones that answer "make it sound like a *thing*" rather
+            // than "make it in tune".
+            TunePreset::WarmTape => Self {
+                retune_ms: 60.0,
+                humanize: 0.35,
+                flex: 0.3,
+                drive: 0.4,
+                air: -0.4,
+                width: 0.9,
+                ..fresh
+            },
+            TunePreset::BrightPop => Self {
+                retune_ms: 30.0,
+                humanize: 0.25,
+                flex: 0.15,
+                natural_vibrato: 0.8,
+                air: 0.65,
+                drive: 0.15,
+                width: 1.25,
+                ..fresh
+            },
+            TunePreset::LoFiCassette => Self {
+                retune_ms: 55.0,
+                humanize: 0.3,
+                crush: 0.45,
+                drive: 0.25,
+                air: -0.6,
+                width: 0.7,
+                ..fresh
+            },
+            TunePreset::RadioVoice => Self {
+                retune_ms: 40.0,
+                humanize: 0.2,
+                drive: 0.75,
+                air: -0.5,
+                width: 0.0,
+                output_db: -2.0,
+                ..fresh
+            },
+            TunePreset::Telephone => Self {
+                retune_ms: 25.0,
+                humanize: 0.1,
+                formant: 4.0,
+                drive: 0.85,
+                crush: 0.55,
+                air: -0.75,
+                width: 0.0,
+                range: TuneRange::Soprano,
+                ..fresh
+            },
+
+            // ---- shifts -----------------------------------------------
+            TunePreset::Monster => Self {
+                transpose: -12,
+                formant: -6.0,
+                retune_ms: 70.0,
+                drive: 0.4,
+                air: -0.35,
+                range: TuneRange::BaritoneBass,
+                // `GenderDown`'s trim, for the same reason and half as
+                // much: the drive here holds its own level (its make-up is
+                // measured, not assumed), so only the throat's loss is left
+                // to make back.
+                output_db: 1.0,
+                ..fresh
+            },
+            TunePreset::Alien => Self {
+                transpose: 7,
+                formant: 6.0,
+                formant_follow: 1.0,
+                retune_ms: 8.0,
+                natural_vibrato: 0.0,
+                crush: 0.4,
+                air: 0.4,
+                range: TuneRange::Soprano,
+                output_db: -1.0,
+                ..fresh
+            },
+            TunePreset::WhisperTwin => Self {
+                transpose: 12,
+                formant: 2.0,
+                formant_follow: 1.0,
+                retune_ms: 45.0,
+                mix: 0.35,
+                width: 1.7,
+                air: 0.55,
+                ..fresh
+            },
+        }
+    }
+}
+
+static TUNE_PARAMS: [crate::ParamSpec; 44] = with_mix(&TUNE_OWN_PARAMS, ALL_WET);
+
+/// What the panel reads, and what the window's cards are: what is being
+/// listened to, what notes there are, how it is pulled to them, what is added
+/// on top, how the grains are laid down, and what leaves.
+static TUNE_SECTIONS: [crate::ParamSection; 7] = [
+    crate::ParamSection {
+        name: "Input",
+        count: 4,
+    },
+    crate::ParamSection {
+        name: "Scale",
+        count: 16,
+    },
+    crate::ParamSection {
+        name: "Correction",
+        count: 5,
+    },
+    crate::ParamSection {
+        name: "Vibrato",
+        count: 6,
+    },
+    crate::ParamSection {
+        name: "Voice",
+        count: 7,
+    },
+    crate::ParamSection {
+        name: "Character",
+        count: 4,
+    },
+    crate::ParamSection {
+        name: "Output",
+        count: 2,
+    },
+];
+
+/// A note switch, which opens **on**: a fresh tune is chromatic, and twelve
+/// switches that opened off would be a tuner with no notes in it.
+const fn note_param(id: &'static str, name: &'static str) -> crate::ParamSpec {
+    crate::ParamSpec {
+        id,
+        name,
+        min: 0.0,
+        max: 1.0,
+        default: 1.0,
+        unit: crate::Unit::Switch,
+        taper: crate::Taper::Stepped(2),
+        positions: &OFF_ON,
+    }
+}
+
+static TUNE_OWN_PARAMS: [crate::ParamSpec; 43] = [
+    crate::ParamSpec {
+        id: "range",
+        name: "Range",
+        min: 0.0,
+        max: 4.0,
+        default: 1.0,
+        unit: crate::Unit::None,
+        taper: crate::Taper::Stepped(5),
+        positions: &TUNE_RANGES,
+    },
+    crate::ParamSpec {
+        id: "mode",
+        name: "Mode",
+        min: 0.0,
+        max: 1.0,
+        default: 1.0,
+        unit: crate::Unit::None,
+        taper: crate::Taper::Stepped(2),
+        positions: &TUNE_MODES,
+    },
+    crate::ParamSpec {
+        id: "tracking",
+        name: "Tracking",
+        min: 0.0,
+        max: 100.0,
+        default: 50.0,
+        unit: crate::Unit::Percent,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "gate",
+        name: "Gate",
+        min: -80.0,
+        max: -20.0,
+        default: -50.0,
+        unit: crate::Unit::Decibels,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "root",
+        name: "Root",
+        min: 0.0,
+        max: 11.0,
+        default: 0.0,
+        unit: crate::Unit::None,
+        taper: crate::Taper::Stepped(12),
+        positions: &TUNE_ROOTS,
+    },
+    crate::ParamSpec {
+        id: "scale",
+        name: "Scale",
+        min: 0.0,
+        max: 14.0,
+        default: 0.0,
+        unit: crate::Unit::None,
+        taper: crate::Taper::Stepped(15),
+        positions: &TUNE_SCALES,
+    },
+    note_param("note_c", "C"),
+    note_param("note_cs", "C#"),
+    note_param("note_d", "D"),
+    note_param("note_ds", "D#"),
+    note_param("note_e", "E"),
+    note_param("note_f", "F"),
+    note_param("note_fs", "F#"),
+    note_param("note_g", "G"),
+    note_param("note_gs", "G#"),
+    note_param("note_a", "A"),
+    note_param("note_as", "A#"),
+    note_param("note_b", "B"),
+    crate::ParamSpec {
+        id: "control",
+        name: "Control",
+        min: 0.0,
+        max: 2.0,
+        default: 0.0,
+        unit: crate::Unit::None,
+        taper: crate::Taper::Stepped(3),
+        positions: &TUNE_CONTROLS,
+    },
+    crate::ParamSpec {
+        id: "midi_bend",
+        name: "MIDI bend",
+        min: 0.0,
+        max: 1.0,
+        default: 1.0,
+        unit: crate::Unit::Switch,
+        taper: crate::Taper::Stepped(2),
+        positions: &OFF_ON,
+    },
+    crate::ParamSpec {
+        id: "retune",
+        name: "Retune speed",
+        min: MIN_TUNE_RETUNE_MS,
+        max: MAX_TUNE_RETUNE_MS,
+        default: 20.0,
+        unit: crate::Unit::Milliseconds,
+        // Logarithmic, because the difference between 2 ms and 5 ms is the
+        // whole of the hard-tune sound and the difference between 300 and 400
+        // is nothing at all. The bottom reads "instant" — see
+        // `TUNE_INSTANT_MS`, which is why a taper that cannot hold a zero is
+        // the right one here anyway.
+        taper: crate::Taper::Logarithmic,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "amount",
+        name: "Amount",
+        min: 0.0,
+        max: 100.0,
+        default: 100.0,
+        unit: crate::Unit::Percent,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "humanize",
+        name: "Humanize",
+        min: 0.0,
+        max: 100.0,
+        default: 0.0,
+        unit: crate::Unit::Percent,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "flex",
+        name: "Flex",
+        min: 0.0,
+        max: 100.0,
+        default: 0.0,
+        unit: crate::Unit::Percent,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "natural_vibrato",
+        name: "Natural vibrato",
+        min: 0.0,
+        max: 100.0,
+        default: 100.0,
+        unit: crate::Unit::Percent,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "vibrato_depth",
+        name: "Depth",
+        min: 0.0,
+        max: 100.0,
+        default: 0.0,
+        // Cents, and there is no unit for them: a percentage read-out on a
+        // depth in cents would say the wrong thing twice.
+        unit: crate::Unit::None,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "vibrato_rate",
+        name: "Rate",
+        min: 0.1,
+        max: 12.0,
+        default: 5.5,
+        unit: crate::Unit::Hertz,
+        taper: crate::Taper::Logarithmic,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "vibrato_sync",
+        name: "Sync",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: crate::Unit::Switch,
+        taper: crate::Taper::Stepped(2),
+        positions: &OFF_ON,
+    },
+    crate::ParamSpec {
+        id: "vibrato_division",
+        name: "Division",
+        min: 0.0,
+        max: 13.0,
+        default: 8.0,
+        unit: crate::Unit::None,
+        taper: crate::Taper::Stepped(14),
+        positions: &DIVISIONS,
+    },
+    crate::ParamSpec {
+        id: "vibrato_onset",
+        name: "Onset",
+        min: 0.0,
+        max: 1_000.0,
+        default: 200.0,
+        unit: crate::Unit::Milliseconds,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "vibrato_shape",
+        name: "Shape",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: crate::Unit::None,
+        taper: crate::Taper::Stepped(2),
+        positions: &VIBRATO_SHAPES,
+    },
+    crate::ParamSpec {
+        id: "engine",
+        name: "Engine",
+        min: 0.0,
+        max: 2.0,
+        default: 0.0,
+        unit: crate::Unit::None,
+        taper: crate::Taper::Stepped(3),
+        positions: &TUNE_ENGINES,
+    },
+    crate::ParamSpec {
+        id: "texture",
+        name: "Texture",
+        min: 0.0,
+        max: 100.0,
+        default: 0.0,
+        unit: crate::Unit::Percent,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "grain",
+        name: "Grain",
+        min: MIN_TUNE_GRAIN_MS,
+        max: MAX_TUNE_GRAIN_MS,
+        default: 25.0,
+        unit: crate::Unit::Milliseconds,
+        taper: crate::Taper::Logarithmic,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "formant",
+        name: "Formant",
+        min: -12.0,
+        max: 12.0,
+        default: 0.0,
+        unit: crate::Unit::None,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "formant_follow",
+        name: "Formant follow",
+        min: 0.0,
+        max: 100.0,
+        default: 0.0,
+        unit: crate::Unit::Percent,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "transpose",
+        name: "Transpose",
+        min: -12.0,
+        max: 12.0,
+        default: 0.0,
+        unit: crate::Unit::None,
+        // Stepped, because a transpose between two semitones is a detune and
+        // there is a knob for that beside it.
+        taper: crate::Taper::Stepped(25),
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "detune",
+        name: "Detune",
+        min: -100.0,
+        max: 100.0,
+        default: 0.0,
+        unit: crate::Unit::None,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    // ---- character (§4.8), between the voice and what leaves.
+    crate::ParamSpec {
+        id: "drive",
+        name: "Drive",
+        min: 0.0,
+        max: 100.0,
+        default: 0.0,
+        unit: crate::Unit::Percent,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "crush",
+        name: "Crush",
+        min: 0.0,
+        max: 100.0,
+        default: 0.0,
+        unit: crate::Unit::Percent,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "air",
+        name: "Air",
+        min: -100.0,
+        max: 100.0,
+        default: 0.0,
+        unit: crate::Unit::Percent,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "width",
+        name: "Width",
+        min: 0.0,
+        max: 200.0,
+        default: 100.0,
+        unit: crate::Unit::Percent,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "output",
+        name: "Output",
+        min: -24.0,
+        max: 12.0,
+        default: 0.0,
+        unit: crate::Unit::Decibels,
         taper: crate::Taper::Linear,
         positions: &[],
     },

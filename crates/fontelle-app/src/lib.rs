@@ -6,6 +6,7 @@ pub mod bank;
 mod bundle;
 pub mod desktop;
 pub mod flopsynth;
+pub mod tune;
 pub mod instrument;
 mod keymap;
 mod library;
@@ -33,7 +34,8 @@ pub use plugins::{PluginRack, PluginSlot, PluginWiring, plugin_slots};
 pub use projects::{ProjectEntry, ProjectLibrary, ProjectOrder, unique_name};
 pub use realise::{
     MonitorPlan, RealiseError, RealiseOptions, Realised, apply_mixer_controls, apply_send_controls,
-    beat_samples, channel_nodes, realise, realise_hosting, realise_monitoring, realise_previewing,
+    KeptTaps, beat_samples, channel_nodes, realise, realise_hosting, realise_monitoring,
+    realise_previewing,
     realise_reusing, realise_with, set_channel_patch,
 };
 pub use session::Session;
@@ -513,7 +515,7 @@ pub fn bounce(
         realise_options,
         &HashMap::new(),
         None,
-        &HashMap::new(),
+        &Default::default(),
         None,
         None,
         &wiring,

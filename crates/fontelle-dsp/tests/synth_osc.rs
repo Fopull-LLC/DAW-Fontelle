@@ -28,7 +28,9 @@ fn render_seeded(config: &SynthOsc, freq: f32, frames: usize, seed: u32) -> Vec<
     let bank = WavetableBank::new();
     let table = match config.source {
         SynthSource::Table(id) => Some(bank.get(id)),
-        SynthSource::Noise => None,
+        // A patch's own table is resolved by `WavetableSet`, which is
+        // `fontelle-core`'s; nothing here builds one.
+        SynthSource::User(_) | SynthSource::Noise => None,
     };
     let mut state = SynthState::new();
     state.reset(config, seed);

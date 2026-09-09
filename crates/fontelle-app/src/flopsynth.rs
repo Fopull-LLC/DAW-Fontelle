@@ -91,6 +91,25 @@ fn shape_of(name: &str) -> (usize, bool, usize) {
     }
 }
 
+/// Which of the patch's layers a card of this name is, if it is an
+/// oscillator at all.
+///
+/// Read off the heading, like [`shape_of`] and [`page_of`], and against the
+/// **patch** rather than against a fixed list: a card is an oscillator's when
+/// a synth layer's role is named after it, so a patch with a sampled layer
+/// appended does not acquire a sixth oscillator card by accident.
+fn oscillator_of(patch: &Patch, name: &str) -> Option<usize> {
+    use fontelle_core::Source;
+    use fontelle_core::flopsynth::layer_role;
+    (0..patch.layers.len()).find(|index| {
+        layer_role(*index).label() == name
+            && matches!(
+                patch.layers.get(*index).map(|l| &l.source),
+                Some(Source::Synth(_))
+            )
+    })
+}
+
 /// The picture a card of this name gets, if any.
 fn picture_for(name: &str, patch: &Patch, phases: &[f32]) -> FlopsynthPicture {
     use fontelle_core::Source;
@@ -111,6 +130,20 @@ fn picture_for(name: &str, patch: &Patch, phases: &[f32]) -> FlopsynthPicture {
                 points: wave_points(id, osc.position),
                 position: osc.position.clamp(0.0, 1.0),
             },
+            // A sound somebody dropped in, drawn from the patch's own samples
+            // — the same picture, of a table that came from a file rather
+            // than from a recipe.
+            fontelle_dsp::SynthSource::User(at) => {
+                match patch.wavetables.get(at as usize) {
+                    Some(table) => FlopsynthPicture::Wave {
+                        points: user_wave_points(table, osc.position),
+                        position: osc.position.clamp(0.0, 1.0),
+                    },
+                    // Named but not carried: nothing to draw, which is what
+                    // that layer sounds like too.
+                    None => FlopsynthPicture::None,
+                }
+            }
         };
     }
 
@@ -189,6 +222,25 @@ fn wave_points(id: fontelle_dsp::WavetableId, position: f32) -> Vec<f32> {
                 i as f32 / WAVE_POINTS as f32,
                 // Level 0: the picture wants every harmonic the table has,
                 // not the band-limited copy a high note would read.
+                0,
+            )
+        })
+        .collect()
+}
+
+/// One cycle of the frame a **dropped sound's** table is reading.
+///
+/// Built here rather than cached, like `wave_points`: this runs when the
+/// window redraws its cards, off the RT thread, and a table is a few
+/// milliseconds of arithmetic.
+fn user_wave_points(table: &fontelle_core::UserWavetable, position: f32) -> Vec<f32> {
+    let built = fontelle_dsp::Wavetable::from_samples(&table.samples, table.frames);
+    (0..WAVE_POINTS)
+        .map(|i| {
+            built.read(
+                position.clamp(0.0, 1.0),
+                i as f32 / WAVE_POINTS as f32,
+                // Level 0: the picture wants every harmonic the table has.
                 0,
             )
         })
@@ -290,6 +342,7 @@ pub fn describe(
                     row,
                     aside,
                     columns,
+                    oscillator: oscillator_of(patch, &group.name),
                     // An effect slot is the one card that can be taken off
                     // the window — see `Session::remove_patch_effect`.
                     removable: group.name.starts_with("FX "),

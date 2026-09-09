@@ -179,25 +179,34 @@ fn every_style_fills_every_slot() {
 }
 
 #[test]
-fn every_style_is_actually_a_different_kit() {
+fn no_two_kits_are_the_same_numbers() {
     // Twenty rows in a menu that all sound the same is twenty rows of
-    // disappointment. Compared on the kick, the snare and the closed hat,
-    // which is what anybody auditions first.
-    let voice_of = |style: DrumKitStyle, name: &str| {
+    // disappointment, and the cheapest form of that is a recipe copied and not
+    // edited.
+    //
+    // **Every pair, and every hit.** This used to walk `ALL` in step with
+    // itself offset by one, so it compared each kit with its *neighbour in the
+    // menu order* and nothing else — a duplicate two rows apart passed — and
+    // it looked at three of the thirty-six hits, so two kits could differ in
+    // the kick alone and be identical everywhere a part actually goes.
+    //
+    // Exact equality, and no threshold: whether two kits are far enough apart
+    // to *hear* apart is a question about rendered audio and it is answered in
+    // `fontelle-engine`'s `drum_kit_bus.rs`, which can see the bus. This one
+    // only says they are not literally the same kit twice, which is worth
+    // having here because it is free and it catches the mistake that actually
+    // gets made.
+    let voices = |style: DrumKitStyle| -> Vec<_> {
         drum_slots(style)
             .into_iter()
-            .find(|slot| slot.name == name)
-            .unwrap_or_else(|| panic!("no {name}"))
-            .voice
+            .map(|slot| slot.voice)
+            .collect()
     };
-    for (a, b) in DrumKitStyle::ALL
-        .iter()
-        .zip(DrumKitStyle::ALL.iter().skip(1))
-    {
-        let same = ["Kick", "Snare", "Closed Hat"]
-            .iter()
-            .all(|name| voice_of(*a, name) == voice_of(*b, name));
-        assert!(!same, "{a:?} and {b:?} are the same kit");
+    let all: Vec<_> = DrumKitStyle::ALL.iter().map(|s| (*s, voices(*s))).collect();
+    for (i, (a, va)) in all.iter().enumerate() {
+        for (b, vb) in &all[i + 1..] {
+            assert!(va != vb, "{a:?} and {b:?} are the same kit");
+        }
     }
 }
 
@@ -537,14 +546,31 @@ fn ears_of(style: DrumKitStyle) -> Vec<[f32; 3]> {
         .collect()
 }
 
-/// How far apart two kits are: the largest ratio, over the three hits and
-/// the three readings, between them. `0.35` is about forty percent — a kick
-/// that lasts forty percent longer, or a hat whose centre is forty percent
-/// higher, is a difference nobody has to be told about.
+/// How far apart two kits have to be on **some one** reading, out of the three
+/// hits and the three numbers taken off each. About forty percent.
 const APART: f32 = 0.35;
 
+/// **A smoke test, and not the gate it used to claim to be.**
+///
+/// The fold below is `max`: it passes a pair that differs on *one* of nine
+/// readings and is identical on the other eight. Under the name
+/// `every_pair_of_kits_is_audibly_apart` that was a lie, and an expensive one —
+/// it stayed green through two rounds of "the kits all sound the same" and was
+/// the reason both rounds could ship.
+///
+/// It is not strengthened, because the instrument cannot carry the weight: it
+/// reads three numbers off three raw voices with no bus in front of them, and
+/// measured, Boom Bap and Lo-Fi differ on **two** of the nine while being
+/// 7.7 dB apart on a real listening measure. Any fold strict enough to be a
+/// separation gate here would fail kits that are genuinely different.
+///
+/// So the claim is now what the body actually supports — nothing is a
+/// bit-for-bit twin of anything on every reading — and the question of whether
+/// two kits sound different is asked where it can be answered properly, in
+/// `fontelle-engine/tests/drum_kit_bus.rs`, which renders each kit through its
+/// own effects chain. See also [`no_two_kits_are_the_same_numbers`].
 #[test]
-fn every_pair_of_kits_is_audibly_apart() {
+fn every_pair_of_kits_differs_on_something_measurable() {
     let ears: Vec<(DrumKitStyle, Vec<[f32; 3]>)> = DrumKitStyle::ALL
         .iter()
         .map(|s| (*s, ears_of(*s)))
@@ -564,7 +590,7 @@ fn every_pair_of_kits_is_audibly_apart() {
     }
     assert!(
         close.is_empty(),
-        "kits that sound the same:\n{}",
+        "kits that measure the same on every reading:\n{}",
         close.join("\n")
     );
 }

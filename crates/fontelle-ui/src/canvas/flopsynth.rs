@@ -191,6 +191,16 @@ pub const BADGE_H: f32 = 20.0;
 pub struct FlopsynthCard {
     pub group: InstrumentGroup,
     pub picture: FlopsynthPicture,
+    /// Which of the patch's oscillators this card is, if it is one — the
+    /// layer's own index, as `fontelle_core::flopsynth::layer_role` numbers
+    /// them.
+    ///
+    /// It is here so that **a sound dropped on a card lands on the right
+    /// oscillator**: the window can see where the pointer is and nothing
+    /// else, and which layer a card stands for is a fact about the patch
+    /// (INVARIANT 2). `None` for every card that is not an oscillator, which
+    /// is where a dropped sound has nowhere to go.
+    pub oscillator: Option<usize>,
     /// Which band of the window this card belongs to — 0 for the sources, 1
     /// for what they go through, 2 for what moves those.
     ///
@@ -375,9 +385,28 @@ fn columns_for(count: usize) -> usize {
     count.clamp(1, 5)
 }
 
-/// How many cells a control takes across its row: two for a chooser whose
-/// names would not fit in one ([`WIDE_CHOICE`]), one for everything else.
+/// How many cells a control takes across its row: two when something about it
+/// would not fit in one ([`WIDE_CHOICE`]), one for everything else.
+///
+/// Two things can overflow, and both do. A **chooser's options** are the
+/// obvious one — "NES Pulse 12.5" in a fifty-pixel cell is "NES Pu". The
+/// other is the **caption**, which is drawn over every control and not only
+/// over choosers: "Natural vibrato" over a knob reads "Natural vi", and a
+/// knob you cannot name is one you set by counting along the row.
+///
+/// The caption rule is what `docs/tune-plan.md` §7.2 asks for in so many
+/// words — "a chooser with a name over `WIDE_CHOICE` characters spans two
+/// cells" — and the corrector is where it began to matter, because its
+/// parameters are named for a panel with wider rows (§4.3) and its console
+/// draws them at 52 pixels.
 pub fn cell_span(param: &InstrumentParam) -> usize {
+    // One character less room than an option gets: the caption is drawn over
+    // the control with the cell's own padding either side, where an option
+    // sits inside a chooser that fills the cell. "MIDI bend" is the nine that
+    // proves it — it reads "MIDI benc" in one cell.
+    if param.label.chars().count() >= WIDE_CHOICE {
+        return 2;
+    }
     match &param.kind {
         ParamKind::Choice(options)
             if options
@@ -524,25 +553,7 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
     // Place, and if the result is taller than the body give something up and
     // go again — in the order the doc comment states. A further pass would be
     // a scrollbar, and this window does not have one.
-    let mut picture_height = PICTURE_HEIGHT;
-    let mut scale = 1.0f32;
-    let mut cards;
-    loop {
-        cards = place(body, view, picture_height, scale);
-        let bottom = cards.iter().map(|c| c.frame.bottom()).fold(0.0, f32::max);
-        if bottom <= body.bottom() + 0.01 {
-            break;
-        }
-        if picture_height > PICTURE_SOFT_FLOOR {
-            picture_height = (picture_height - 4.0).max(PICTURE_SOFT_FLOOR);
-        } else if scale > CELL_FLOOR + 0.001 {
-            scale = (scale - 0.05).max(CELL_FLOOR);
-        } else if picture_height > PICTURE_FLOOR {
-            picture_height = (picture_height - 4.0).max(PICTURE_FLOOR);
-        } else {
-            break;
-        }
-    }
+    let cards = fit_cards(body, &view.cards);
     // The matrix was given the least it needs before the cards were placed;
     // now that they are, it takes everything under them. Pinned to the
     // bottom with the cards at the top, the page had a dead band across its
@@ -574,6 +585,37 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
         presets: PresetsLayout::default(),
         add_effect,
     }
+}
+
+/// Places `cards` in `body`, giving something up and going again until they
+/// fit — the air first, then the pictures to their soft floor, then every cell
+/// together down to [`CELL_FLOOR`], and last the pictures to [`PICTURE_FLOOR`].
+///
+/// Its own function so a **second** window can be built out of the same
+/// cards: `docs/tune-plan.md` §7.2 says the corrector's console uses this
+/// grid, this shrink order and these floors, and two copies of that would be
+/// two windows that stopped agreeing about what a knob is.
+pub fn fit_cards(body: Rect, cards: &[FlopsynthCard]) -> Vec<CardLayout> {
+    let mut picture_height = PICTURE_HEIGHT;
+    let mut scale = 1.0f32;
+    let mut placed;
+    loop {
+        placed = place(body, cards, picture_height, scale);
+        let bottom = placed.iter().map(|c| c.frame.bottom()).fold(0.0, f32::max);
+        if bottom <= body.bottom() + 0.01 {
+            break;
+        }
+        if picture_height > PICTURE_SOFT_FLOOR {
+            picture_height = (picture_height - 4.0).max(PICTURE_SOFT_FLOOR);
+        } else if scale > CELL_FLOOR + 0.001 {
+            scale = (scale - 0.05).max(CELL_FLOOR);
+        } else if picture_height > PICTURE_FLOOR {
+            picture_height = (picture_height - 4.0).max(PICTURE_FLOOR);
+        } else {
+            break;
+        }
+    }
+    placed
 }
 
 /// Where the `+ effect` button goes: after the last card on the row it ends,
@@ -708,18 +750,22 @@ fn placed(frame_x: f32, frame_y: f32, width: f32, want: &Wanted) -> CardLayout {
     }
 }
 
-fn place(body: Rect, view: &FlopsynthView, picture_height: f32, scale: f32) -> Vec<CardLayout> {
-    let wants: Vec<Wanted> = view
-        .cards
+fn place(
+    body: Rect,
+    cards_in: &[FlopsynthCard],
+    picture_height: f32,
+    scale: f32,
+) -> Vec<CardLayout> {
+    let wants: Vec<Wanted> = cards_in
         .iter()
         .map(|card| wanted(card, picture_height, scale))
         .collect();
-    let mut cards: Vec<Option<CardLayout>> = vec![None; view.cards.len()];
+    let mut cards: Vec<Option<CardLayout>> = vec![None; cards_in.len()];
 
     // The aside column first, so the bands know how much room they have. As
     // wide as the widest card in it, against the right-hand edge, stacked.
-    let aside: Vec<usize> = (0..view.cards.len())
-        .filter(|index| view.cards[*index].aside)
+    let aside: Vec<usize> = (0..cards_in.len())
+        .filter(|index| cards_in[*index].aside)
         .collect();
     let aside_width = aside
         .iter()
@@ -748,16 +794,16 @@ fn place(body: Rect, view: &FlopsynthView, picture_height: f32, scale: f32) -> V
 
     // The bands, in band order — a stable sort, so the listed order holds
     // within a band.
-    let mut order: Vec<usize> = (0..view.cards.len())
-        .filter(|index| !view.cards[*index].aside)
+    let mut order: Vec<usize> = (0..cards_in.len())
+        .filter(|index| !cards_in[*index].aside)
         .collect();
-    order.sort_by_key(|index| view.cards[*index].row);
+    order.sort_by_key(|index| cards_in[*index].row);
 
     let (mut x, mut y) = (body.x, body.y);
     let mut row_height = 0.0f32;
-    let mut band = order.first().map_or(0, |index| view.cards[*index].row);
+    let mut band = order.first().map_or(0, |index| cards_in[*index].row);
     for index in order {
-        let card = &view.cards[index];
+        let card = &cards_in[index];
         let want = &wants[index];
         // A new band always starts a new row: that is what makes the window a
         // signal path rather than a heap.

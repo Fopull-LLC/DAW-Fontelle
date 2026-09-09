@@ -120,6 +120,11 @@ pub struct Realised {
     /// channel would be a window you could not use while you worked. See
     /// [`fontelle_engine::SpectrumTap`].
     pub spectrum_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    /// One pitch-trace tap per corrector insert, keyed the same way and
+    /// carried across a rebuild for the same reason
+    /// (`docs/tune-plan.md` §7.3). Only the inserts that take notes get one:
+    /// a mix pays nothing for a picture nobody is looking at.
+    pub tune_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::TuneTap>>,
     /// Every automatable parameter this graph has, by its stable address
     /// (INVARIANT 7), and the node that owns it.
     ///
@@ -417,7 +422,7 @@ pub fn realise_with(
         options,
         existing,
         metronome,
-        &HashMap::new(),
+        &KeptTaps::default(),
     )
 }
 
@@ -429,7 +434,7 @@ pub fn realise_keeping(
     options: RealiseOptions,
     existing: &HashMap<MixerTrackId, std::sync::Arc<TrackControls>>,
     metronome: Option<std::sync::Arc<Metronome>>,
-    existing_taps: &HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    existing_taps: &KeptTaps,
 ) -> Result<Realised, RealiseError> {
     realise_monitoring(
         project,
@@ -440,6 +445,21 @@ pub fn realise_keeping(
         existing_taps,
         None,
     )
+}
+
+/// The rings a rebuild **keeps** rather than mints.
+///
+/// A tap is a ring behind an `Arc`, so unlike a fader's live channel its two
+/// ends can be re-paired — which is what lets an EQ window stay drawn while
+/// somebody adds a channel. One struct rather than one parameter per kind of
+/// tap: there are two now and the entry points below already carry nine
+/// arguments each.
+#[derive(Default)]
+pub struct KeptTaps {
+    /// One analyser ring per insert — see [`Realised::spectrum_taps`].
+    pub spectrum: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    /// One pitch trace per corrector insert — see [`Realised::tune_taps`].
+    pub tune: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::TuneTap>>,
 }
 
 /// A live input, and the mixer track it is heard through (TDD §15.4).
@@ -468,7 +488,7 @@ pub fn realise_monitoring(
     options: RealiseOptions,
     existing: &HashMap<MixerTrackId, std::sync::Arc<TrackControls>>,
     metronome: Option<std::sync::Arc<Metronome>>,
-    existing_taps: &HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    existing_taps: &KeptTaps,
     monitor: Option<&MonitorPlan>,
 ) -> Result<Realised, RealiseError> {
     realise_previewing(
@@ -495,7 +515,7 @@ pub fn realise_previewing(
     options: RealiseOptions,
     existing: &HashMap<MixerTrackId, std::sync::Arc<TrackControls>>,
     metronome: Option<std::sync::Arc<Metronome>>,
-    existing_taps: &HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    existing_taps: &KeptTaps,
     monitor: Option<&MonitorPlan>,
     preview: Option<&Patch>,
 ) -> Result<Realised, RealiseError> {
@@ -531,7 +551,7 @@ pub fn realise_hosting(
     options: RealiseOptions,
     existing: &HashMap<MixerTrackId, std::sync::Arc<TrackControls>>,
     metronome: Option<std::sync::Arc<Metronome>>,
-    existing_taps: &HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    existing_taps: &KeptTaps,
     monitor: Option<&MonitorPlan>,
     preview: Option<&Patch>,
     plugins: &HashMap<crate::PluginSlot, crate::PluginWiring>,
@@ -908,6 +928,8 @@ pub fn realise_hosting(
         (MixerTrackId, usize),
         std::sync::Arc<fontelle_engine::SpectrumTap>,
     > = HashMap::new();
+    let mut tune_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::TuneTap>> =
+        HashMap::new();
     let mut send_controls: HashMap<(MixerTrackId, usize), std::sync::Arc<SendControls>> =
         HashMap::new();
     for id in tracks {
@@ -920,6 +942,8 @@ pub fn realise_hosting(
             &mut spectrum_taps,
             existing_taps,
             &key_taps,
+            &mut tune_taps,
+            &channel_nodes,
             &mut param_nodes,
             &mut next_id,
             id,
@@ -1030,6 +1054,8 @@ pub fn realise_hosting(
         &mut spectrum_taps,
         existing_taps,
         &key_taps,
+        &mut tune_taps,
+        &channel_nodes,
         &mut param_nodes,
         &mut next_id,
         master,
@@ -1108,6 +1134,7 @@ pub fn realise_hosting(
         effect_controls,
         param_nodes,
         spectrum_taps,
+        tune_taps,
         send_controls,
         metronome,
         unresolved,
@@ -1252,8 +1279,10 @@ fn schedule_inserts(
     schedule: &mut Vec<ScheduledNode>,
     controls: &mut HashMap<(MixerTrackId, usize), fontelle_engine::EffectControls>,
     taps: &mut HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
-    existing_taps: &HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    existing_taps: &KeptTaps,
     key_taps: &HashMap<MixerTrackId, std::sync::Arc<fontelle_engine::KeyTap>>,
+    tune_taps: &mut HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::TuneTap>>,
+    channel_nodes: &HashMap<ChannelId, NodeId>,
     param_nodes: &mut HashMap<fontelle_types::ParamAddress, NodeId>,
     next_id: &mut u64,
     id: MixerTrackId,
@@ -1322,6 +1351,7 @@ fn schedule_inserts(
         // controls above it: an EQ window open while somebody adds a channel
         // must not go blank for a frame, and a fresh ring is a blank graph.
         let tap = existing_taps
+            .spectrum
             .get(&(id, index))
             .map(std::sync::Arc::clone)
             .unwrap_or_else(|| std::sync::Arc::new(fontelle_engine::SpectrumTap::new()));
@@ -1337,6 +1367,25 @@ fn schedule_inserts(
             && let Some(tap) = key_taps.get(&key)
         {
             node = node.with_key(std::sync::Arc::clone(tap));
+        }
+        // The channel whose notes this insert listens to, and the trace it
+        // writes back. A channel that has been deleted is **dropped** rather
+        // than left dangling — the same rule the key follows one line up —
+        // though `RemoveChannel` clears the slot itself, so this is the
+        // belt to that command's braces.
+        if let Some(channel) = slot.effective_notes()
+            && let Some(source) = channel_nodes.get(&channel)
+        {
+            node = node.with_notes_from(*source);
+        }
+        if slot.kind().is_some_and(|kind| kind.takes_notes()) {
+            let tap = existing_taps
+                .tune
+                .get(&(id, index))
+                .map(std::sync::Arc::clone)
+                .unwrap_or_else(|| std::sync::Arc::new(fontelle_engine::TuneTap::new()));
+            node = node.with_tune_tap(std::sync::Arc::clone(&tap));
+            tune_taps.insert((id, index), tap);
         }
 
         // A real id, not the default: an automation event has to be addressed

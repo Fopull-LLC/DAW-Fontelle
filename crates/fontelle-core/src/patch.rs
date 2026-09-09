@@ -252,6 +252,29 @@ impl Default for Macro {
 /// How many macros a patch has. Four, matching the window's row.
 pub const MACRO_COUNT: usize = 4;
 
+/// One table a patch carries itself, built from a sound rather than from a
+/// recipe (`docs/flopsynth-plan.md` §3.2's "no files" is about the *bank*).
+///
+/// > *"i want to like with omnisphere or serum ... drag audio files into it to
+/// > use those waveforms in the synthesis."*
+///
+/// **The samples live in the patch**, which is the whole design: a preset made
+/// from a file opens on a machine that has never seen that file and can never
+/// need relinking (TDD §17.4), exactly as `Source::Drum` does for the drum
+/// machine. The cost is size — a preset with a table in it is tens of
+/// kilobytes rather than two hundred bytes — and that is the right trade for
+/// something a person made by hand out of their own sound.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UserWavetable {
+    /// What to call it in the window. The file's stem, usually.
+    pub name: String,
+    /// How many cycles the samples are cut into — the travel of the position
+    /// knob. Clamped to [`fontelle_dsp::MAX_USER_FRAMES`] when it is built.
+    pub frames: usize,
+    /// Mono, −1..=1. Whatever length the sound was; the table divides it.
+    pub samples: Vec<f32>,
+}
+
 /// The user's fully-owned instrument definition (TDD §7.2). An SF2 file seeds this
 /// once at import; after that it has no live link back to the file's metadata.
 #[derive(Debug, Clone, PartialEq)]
@@ -287,6 +310,10 @@ pub struct Patch {
     /// anybody having to rebalance their layers to do it: the balance inside a
     /// preset is a sound-design decision and how loud the preset is is not.
     pub output_db: f32,
+    /// The tables this patch carries itself, named by
+    /// [`fontelle_dsp::SynthSource::User`] — see [`UserWavetable`]. Empty for
+    /// every patch that reads only the bank, which is every factory preset.
+    pub wavetables: Vec<UserWavetable>,
 }
 
 /// The **blank instrument**: three oscillators, an amplitude envelope with a
@@ -392,6 +419,7 @@ impl Patch {
             fx: Vec::new(),
             macros: Default::default(),
             output_db: 0.0,
+            wavetables: Vec::new(),
         }
     }
 }
@@ -416,6 +444,7 @@ impl Default for Patch {
             fx: Vec::new(),
             macros: Default::default(),
             output_db: 0.0,
+            wavetables: Vec::new(),
         }
     }
 }

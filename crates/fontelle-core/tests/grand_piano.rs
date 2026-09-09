@@ -2,15 +2,23 @@
 //! rather than a synth with a long decay.
 //!
 //! > *"the grand piano sound doesnt sound realistic at all right now"* — Ty,
-//! > 2026-09-07
+//! > 2026-09-07; and after the first pass, *"still doesnt sound much like a
+//! > grand piano its sounding kind of like a mix between a clav and a
+//! > electric piano"* — 2026-09-08.
 //!
 //! A sampled grand is the soundfont player's job and this row does not
 //! pretend otherwise (`presets.rs` says so over the row). What it can be held
-//! to is the *physics* a listener hears: a bass string rings for tens of
-//! seconds and a treble one for one, a harder strike is a brighter one, and a
-//! held key is a note dying rather than a plateau. The first of those was
-//! missing entirely — one decay for the whole keyboard — and is the tell that
-//! made it a synth.
+//! to is what a real one **measures**, and the second report is what made
+//! that the standard rather than an argument from physics: the numbers below
+//! were read off a sampled grand with `examples/piano_probe.rs`
+//! (`fontelle-app`), key by key, and every threshold here is a window around
+//! that reading. The first pass had reasoned its way to a dark, slow sine
+//! with a knock on it, which is exactly an electric piano with a clavinet's
+//! click — the reference is a *rich* string that falls fast: at middle C its
+//! second, third and fourth partials sit 2, 9 and 7 dB under the fundamental
+//! and are still within 13 dB of it a second later; it is 30 dB down in
+//! 1.4 s, not 5.7; its bass has a second partial *over* the fundamental and
+//! its top octave is nearly a sine.
 
 use fontelle_core::flopsynth::presets::FACTORY;
 use fontelle_core::{NoteTrigger, Patch, PrepareContext, SampleStore, Sampler};
@@ -199,6 +207,84 @@ fn the_partials_fall_together_rather_than_one_dropping_out() {
     }
 }
 
+/// A struck string is **rich**: at middle C the sampled grand's partials 2, 3
+/// and 4 read −2, −9 and −7 dB against the fundamental at the strike, and 5
+/// to 7 read −16, −21 and −14. The first pass had them at −8, −13, −17 and
+/// then −21, −27, −35 — a spectrum that is most of the way to a sine, which
+/// is the electric piano half of *"a mix between a clav and a electric
+/// piano"*.
+#[test]
+fn the_middle_is_rich_the_way_a_struck_string_is() {
+    let out = render(grand_piano(), 60, 100, 1.0);
+    let strike = partials(&out, 60, 0.0, 0.12);
+    for (index, level) in strike.iter().enumerate().skip(1).take(3) {
+        assert!(
+            *level > -12.0,
+            "partial {} is {level:.1} dB under the fundamental at the strike — \
+             the reference has it within 10: {strike:.1?}",
+            index + 1
+        );
+    }
+    // Five and six; not seven, which the `Struck` table's comb puts near a
+    // node — a hammer landing an eighth of the way along the string cannot
+    // excite the eighth partial and barely excites its neighbours, and the
+    // reference's hammer lands a little nearer the end.
+    for (index, level) in strike.iter().enumerate().skip(4).take(2) {
+        assert!(
+            *level > -24.0,
+            "partial {} is {level:.1} dB under the fundamental at the strike — \
+             the reference has it within 21: {strike:.1?}",
+            index + 1
+        );
+    }
+}
+
+/// And the ring keeps that colour: a second in, the reference's partials 2
+/// to 4 are still −6, −13 and −10 dB against the fundamental. The first pass
+/// had them at −24, −29 and −31, which is a sine with a memory of having
+/// been something else.
+#[test]
+fn the_ring_keeps_its_colour() {
+    let out = render(grand_piano(), 60, 100, 2.0);
+    let ring = partials(&out, 60, 1.0, 0.4);
+    for (index, level) in ring.iter().enumerate().skip(1).take(3) {
+        assert!(
+            *level > -20.0,
+            "a second in, partial {} is {level:.1} dB under the fundamental — \
+             the ring has gone to a sine: {ring:.1?}",
+            index + 1
+        );
+    }
+}
+
+/// The spectrum follows the key the way a piano's does, which is the
+/// opposite of one table at one brightness. In the **bass** the fundamental
+/// is weak — a short soundboard cannot radiate it — and the reference's C2
+/// has its second partial 8 dB *over* the fundamental and its third level
+/// with it. In the **treble** the string is short and stiff and the
+/// reference's C6 and C7 are close to sines: partial 2 at −27 and −24.
+#[test]
+fn the_bass_is_rich_and_the_treble_is_pure() {
+    let low = partials(&render(grand_piano(), 36, 100, 1.0), 36, 0.0, 0.15);
+    for (index, level) in low.iter().enumerate().skip(1).take(2) {
+        assert!(
+            *level > -6.0,
+            "C2's partial {} is {level:.1} dB under the fundamental — a piano's \
+             bass is not a sine: {low:.1?}",
+            index + 1
+        );
+    }
+    for (key, floor) in [(84u8, -12.0), (96, -15.0)] {
+        let high = partials(&render(grand_piano(), key, 100, 1.0), key, 0.0, 0.12);
+        assert!(
+            high[1] < floor,
+            "key {key}'s second partial is {:.1} dB under the fundamental — the \
+             top of a piano is nearly pure: {high:.1?}",
+            high[1]
+        );
+    }
+}
+
 /// A piano's decay has two slopes: the prompt sound goes fast and the
 /// aftersound goes slowly. A single straight line down is what an electric
 /// piano has, and it is the other half of why this sounded like one.
@@ -219,33 +305,35 @@ fn the_note_has_a_prompt_sound_over_a_long_aftersound() {
 
 #[test]
 fn the_bass_rings_long_and_the_treble_rings_short() {
-    // C2 and C7, both held. A real grand's C2 takes well over ten seconds to
-    // fade and its C7 is gone in a couple; the ratio is what the ear keys
-    // on, and a synth piano with one decay time for the whole keyboard is
-    // wrong at both ends at once.
+    // C2 and C7, both held. The reference falls 30 dB in 2.0 s at C2 and
+    // 0.17 s at C7 — a bass string is still *audible* ten seconds on, but
+    // the first thirty decibels go in the first two, because that is the
+    // prompt sound leaving. The first pass took 6.0 s and 1.4 s, which is the
+    // whole keyboard ringing like a pad; the ratio is what the ear keys on,
+    // and a synth piano with one decay time for the whole keyboard is wrong
+    // at both ends at once.
     let low = t30(&render(grand_piano(), 36, 100, 8.0));
     let high = t30(&render(grand_piano(), 96, 100, 8.0));
     assert!(
-        low > 3.0,
-        "C2 fell 30 dB in {low:.2} s, which is a harpsichord"
+        (1.5..=4.0).contains(&low),
+        "C2 fell 30 dB in {low:.2} s; the reference takes 2.0"
     );
     assert!(
-        high < 1.5,
-        "C7 took {high:.2} s to fall 30 dB, which is an organ"
+        high < 0.5,
+        "C7 took {high:.2} s to fall 30 dB; the reference takes 0.17"
     );
     assert!(
         low > high * 3.0,
         "the decay should follow the key: C2 {low:.2} s, C7 {high:.2} s"
     );
 
-    // And middle C, which is the note anybody tries first. A grand's C4 is
-    // still audible ten seconds after it is struck; at under two it is an
-    // electric piano, which is what this measured when Ty said it sounded
-    // like a clavinet.
-    let middle = t30(&render(grand_piano(), 60, 100, 20.0));
+    // And middle C, which is the note anybody tries first: 1.4 s on the
+    // reference. The first pass held it over five, which was the electric
+    // piano's sustain rather than a grand's.
+    let middle = t30(&render(grand_piano(), 60, 100, 8.0));
     assert!(
-        middle > 5.0,
-        "middle C fell 30 dB in {middle:.2} s, which is not a grand"
+        (1.0..=2.5).contains(&middle),
+        "middle C fell 30 dB in {middle:.2} s; the reference takes 1.4"
     );
 }
 
@@ -268,14 +356,16 @@ fn a_harder_strike_is_a_brighter_one() {
 fn the_shine_goes_before_the_note_does() {
     // Middle C, held. A string's upper modes are damped first, so its
     // spectrum darkens as it rings while the fundamental is still going
-    // strong: the shine is gone a second in and the note is not. The plain
-    // decaying oscillator every synth piano is built from cannot do that at
-    // all — one envelope takes the whole spectrum down together.
+    // strong. The plain decaying oscillator every synth piano is built from
+    // cannot do that at all — one envelope takes the whole spectrum down
+    // together. **A little**, though: the reference darkens by 3.5 dB of
+    // tilt over the first second, not the fifteen the first pass had, which
+    // was the ring collapsing to a sine (`the_ring_keeps_its_colour`).
     let out = render(grand_piano(), 60, 100, 4.0);
     let at_strike = brightness(&out, 60, 0.0, 0.15);
     let later = brightness(&out, 60, 1.0, 0.3);
     assert!(
-        at_strike - later > 8.0,
+        at_strike - later > 2.0,
         "the strike should be brighter than the ring: {at_strike:.1} dB then {later:.1} dB"
     );
     assert!(

@@ -229,6 +229,8 @@ struct RemovedChannel {
     /// The clips that played this channel. Left behind they would be orphans:
     /// silent, and invisible to a user trying to work out why.
     clips: Vec<(ClipId, Clip)>,
+    /// The inserts that were listening to its notes, by track and slot.
+    listeners: Vec<(MixerTrackId, usize)>,
 }
 
 pub struct RemoveChannel {
@@ -268,12 +270,33 @@ impl Command for RemoveChannel {
             .filter_map(|id| doc.clips.remove(id).map(|clip| (id, clip)))
             .collect();
 
+        // Every insert that was listening to this channel's notes lets go of
+        // it (`docs/tune-plan.md` §5.1). An edge to a channel that is gone is
+        // either silent or a panic, and both are worse than the edge going
+        // with what it named — the same rule `RemoveMixerTrack` applies to the
+        // sends that fed it. Recorded so the undo puts them back, which is
+        // what makes this an undo rather than "a channel called the same
+        // thing".
+        let mut listeners = Vec::new();
+        for (track, strip) in doc.mixer.tracks.iter_mut() {
+            for (index, slot) in strip.inserts.iter_mut().enumerate() {
+                if slot.notes == Some(self.channel) {
+                    slot.notes = None;
+                    listeners.push((track, index));
+                }
+            }
+        }
+
         // The channel's mixer track is **left alone**. It is a destination
         // somebody built and other channels may be playing through it; before
         // routing was a thing the user could see, deleting a channel taking
         // "its" strip with it was the only coherent reading, and now it is
         // simply wrong.
-        self.removed = Some(RemovedChannel { channel, clips });
+        self.removed = Some(RemovedChannel {
+            channel,
+            clips,
+            listeners,
+        });
         Ok(())
     }
 
@@ -283,6 +306,7 @@ impl Command for RemoveChannel {
                 id: self.channel,
                 channel: removed.channel.clone(),
                 clips: removed.clips.clone(),
+                listeners: removed.listeners.clone(),
             }),
             None => Box::new(NotApplied("removing a channel")),
         }
@@ -315,6 +339,8 @@ struct RestoreChannel {
     id: ChannelId,
     channel: Channel,
     clips: Vec<(ClipId, Clip)>,
+    /// The inserts that were listening to it — see [`RemoveChannel`].
+    listeners: Vec<(MixerTrackId, usize)>,
 }
 
 impl Command for RestoreChannel {
@@ -325,6 +351,13 @@ impl Command for RestoreChannel {
         for (id, clip) in &self.clips {
             if !doc.clips.insert_at(*id, clip.clone()) {
                 return Err(CommandError("that clip id is taken".into()));
+            }
+        }
+        for (track, index) in &self.listeners {
+            if let Some(strip) = doc.mixer.tracks.get_mut(*track)
+                && let Some(slot) = strip.inserts.get_mut(*index)
+            {
+                slot.notes = Some(self.id);
             }
         }
         Ok(())
@@ -4458,9 +4491,11 @@ impl Command for SplitClip {
             //   file — see the first branch.
             // - **How fast it reads.** A clip in `ClipStretch::Resample` fits
             //   its file to its block, so its seam is a proportion of that
-            //   block; one in `ClipStretch::Off` reads at the file's own rate.
-            //   That is exactly `AudioClipData::read_ratio`, which is what the
-            //   player asks, so this asks it too rather than repeating the
+            //   block; one in `ClipStretch::Off` reads at the file's own rate
+            //   times its speed — and *not* its pitch, which with stretch off
+            //   moves what is heard and nothing about time. That is exactly
+            //   `AudioClipData::read_ratio` and `time_rate`, which is what the
+            //   player asks, so this asks them too rather than repeating the
             //   arithmetic and drifting from it.
             (ClipSource::Audio(source), ClipSource::Audio(head), ClipSource::Audio(tail)) => {
                 if original.loop_length.is_some_and(|p| p > 0) {
@@ -4490,7 +4525,7 @@ impl Command for SplitClip {
                         .tick_to_sample(original.start + original.length)
                         - block_start;
                     let ratio = source.read_ratio(source.sample_rate, device_rate, pass);
-                    let seam = (into_block as f64 * ratio * source.rate()) as Tick;
+                    let seam = (into_block as f64 * ratio * source.time_rate()) as Tick;
                     let seam = seam.clamp(0, source.source_frames());
                     if source.reverse {
                         // A reversed clip plays from its far end back, so the
@@ -5133,6 +5168,123 @@ impl Command for SetLoopRange {
     }
 }
 
+// ============================================================ track presets
+
+/// Recalls a whole mixer track's chain — its level, its placement, its
+/// polarity and every insert on it — as **one** thing.
+///
+/// One command rather than a fader move and six `AddInsert`s, for the reason
+/// every "apply a preset" in this program is one command: loading a vocal
+/// chain is one thing a person did, and an undo that took six presses to get
+/// back to where they were would be an undo nobody uses.
+///
+/// What it does **not** touch is the interesting half, and
+/// [`fontelle_types::TrackChain`] carries the reasoning: not the name, not the
+/// sends, not the routing, not the input. A chain describes a *sound*; those
+/// four describe *this project's wiring*, and a preset that quietly repointed
+/// somebody's reverb send would be a worse failure than one that carried less.
+pub struct ApplyTrackChain {
+    track: MixerTrackId,
+    chain: fontelle_types::TrackChain,
+    /// Everything it replaced, for the undo — taken on the first apply and
+    /// kept, so a redo puts back what the *first* apply found.
+    previous: Option<(f32, f32, bool, Vec<crate::mixer::EffectSlot>)>,
+}
+
+impl ApplyTrackChain {
+    pub fn new(track: MixerTrackId, chain: fontelle_types::TrackChain) -> Self {
+        Self {
+            track,
+            chain,
+            previous: None,
+        }
+    }
+}
+
+impl Command for ApplyTrackChain {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let track = doc
+            .mixer
+            .tracks
+            .get_mut(self.track)
+            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
+        let previous = (
+            track.gain_db,
+            track.pan,
+            track.phase_invert,
+            std::mem::take(&mut track.inserts),
+        );
+        track.gain_db = self.chain.gain_db;
+        track.pan = self.chain.pan;
+        track.phase_invert = self.chain.phase_invert;
+        track.inserts = self
+            .chain
+            .inserts
+            .iter()
+            .map(|insert| crate::mixer::EffectSlot {
+                preset: insert.preset.clone(),
+                config: insert.config,
+                plugin: None,
+                bypassed: insert.bypassed,
+                key: None,
+                // A saved chain carries no routing edges — a key and a note
+                // source both name *this project's* tracks and channels, and
+                // an id from the project it was saved in means nothing here.
+                // The sidechain is re-pointed by hand, which is the same
+                // gesture it took to make in the first place.
+                notes: None,
+            })
+            .collect();
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    /// The inverse is **the chain it replaced**, as a chain: the same command
+    /// pointed at what was there before, which is why `previous` is kept as a
+    /// whole rack rather than as a list of differences.
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some((gain, pan, phase, inserts)) => Box::new(ApplyTrackChain::new(
+                self.track,
+                fontelle_types::TrackChain {
+                    gain_db: *gain,
+                    pan: *pan,
+                    phase_invert: *phase,
+                    inserts: inserts
+                        .iter()
+                        .map(|slot| fontelle_types::TrackInsert {
+                            config: slot.config,
+                            bypassed: slot.bypassed,
+                            preset: slot.preset.clone(),
+                        })
+                        .collect(),
+                },
+            )),
+            None => Box::new(NotApplied("loading a track preset")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Track preset"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.chain.inserts.len() * std::mem::size_of::<crate::mixer::EffectSlot>()
+            + self.previous.as_ref().map_or(0, |(_, _, _, slots)| {
+                slots.len() * std::mem::size_of::<crate::mixer::EffectSlot>()
+            })
+    }
+}
+
 // ============================================================ insert chains
 
 /// Puts an effect on the end of a track's insert chain (TDD §13.4).
@@ -5514,6 +5666,88 @@ impl Command for SetInsertParam {
 
     fn memory_cost(&self) -> usize {
         std::mem::size_of::<Self>() + self.param.len()
+    }
+}
+
+/// Points one insert at a **channel's notes** — the melody to force, or the
+/// scale to allow (`docs/tune-plan.md` §5.1).
+///
+/// [`SetInsertKey`]'s sibling, and the differences are the interesting part.
+/// A key is an edge in the audio graph and can close a loop, so that command
+/// writes the change and takes it back if the graph would feed itself. Notes
+/// carry no sound: the listening node reads the source node's events out of
+/// the block both are handed, so nothing has to be scheduled before anything
+/// else and there is no cycle to refuse.
+pub struct SetInsertNotes {
+    track: MixerTrackId,
+    index: usize,
+    notes: Option<ChannelId>,
+    previous: Option<Option<ChannelId>>,
+}
+
+impl SetInsertNotes {
+    pub fn new(track: MixerTrackId, index: usize, notes: Option<ChannelId>) -> Self {
+        Self {
+            track,
+            index,
+            notes,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetInsertNotes {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        if let Some(channel) = self.notes
+            && !doc.channels.contains_key(channel)
+        {
+            return Err(CommandError(format!("no channel {channel:?}")));
+        }
+        let track = doc
+            .mixer
+            .tracks
+            .get_mut(self.track)
+            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
+        let slot = track
+            .inserts
+            .get_mut(self.index)
+            .ok_or_else(|| CommandError(format!("no insert {}", self.index)))?;
+        // A plugin slot takes none: a plugin's MIDI input is the host's to
+        // route, and this build does not route it — see
+        // `EffectSlot::effective_notes`.
+        if slot.is_plugin() || !slot.config.kind().takes_notes() {
+            return Err(CommandError(format!(
+                "{} has no use for notes",
+                slot.label()
+            )));
+        }
+        let previous = slot.notes;
+        slot.notes = self.notes;
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match self.previous {
+            Some(previous) => Box::new(SetInsertNotes::new(self.track, self.index, previous)),
+            None => Box::new(NotApplied("pointing an effect at a channel")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Effect notes"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
     }
 }
 

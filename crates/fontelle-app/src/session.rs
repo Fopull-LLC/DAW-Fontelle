@@ -139,6 +139,9 @@ pub struct Session {
     /// One analyser tap per insert. **Kept across a rebuild** — see
     /// [`crate::Realised::spectrum_taps`].
     spectrum_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    /// The pitch traces the corrector's windows read, kept across a rebuild
+    /// for the same reason (`docs/tune-plan.md` §7.3).
+    tune_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::TuneTap>>,
     /// Every plugin somebody else wrote that this session has open (TDD §8.4).
     ///
     /// **Kept across a rebuild**, and that is the whole reason it is a field
@@ -392,6 +395,14 @@ pub struct Session {
 /// to avoid. 512 is more columns than a clip is usually wide, so the picture
 /// is smooth at any width a lane has room for.
 const PREVIEW_BUCKETS: usize = 512;
+
+/// How loud an oscillator comes on at when a sound is dropped onto it.
+///
+/// Under the Init patch's own first oscillator (−12 dB) rather than level
+/// with it: a sound arriving at full strength on top of what is already
+/// playing is a jump in level nobody asked for, and the layer's own knob is
+/// right there.
+const DROPPED_OSC_DB: f32 = -18.0;
 
 impl Session {
     /// Hands the session a capture ring **that is being recorded**, and what
@@ -728,11 +739,13 @@ impl Session {
             // (`import_audio_at`), through the same map — so a clip that has
             // never been dragged draws its file exactly filling it.
             //
-            // Divided by `rate()`, which is the clip's pitch and speed as the
-            // one number they are until the stretch engine lands: the player
-            // consumes the file that much faster, so a clip an octave up is
-            // over in half the ticks and its waveform has to stop there.
-            let read = f64::from(data.sample_rate) * data.rate();
+            // Divided by `time_rate()`, which is how fast the clip moves
+            // through the file — its speed, and under `Resample` its pitch
+            // too: the player consumes the file that much faster, so a clip
+            // at double speed is over in half the ticks and its waveform has
+            // to stop there. Pitch with stretch off is deliberately *not* in
+            // it: it moves what is heard and nothing about time.
+            let read = f64::from(data.sample_rate) * data.time_rate();
             let samples = (frames as f64 * f64::from(self.options.sample_rate) / read).round()
                 as fontelle_types::Sample;
             let from = self.effective_tempo.tick_to_sample(start);
@@ -771,15 +784,17 @@ impl Session {
         // `AudioClipData::read_ratio` gives:
         //
         // - **Off**: the block already shrank (`natural_length` divides by the
-        //   rate), so the picture covers `frames / rate` clip frames and
-        //   `source_position` turns that back into the whole file. The file,
-        //   drawn in less room — repitched.
+        //   time rate), so the picture covers `frames / time_rate` clip
+        //   frames and `source_position` turns that back into the whole file.
+        //   The file, drawn in the room its speed gives it.
         // - **Resample**: the block is the constant and the player's own
         //   ratio folds the pass length in, so one pass is `frames` clip
         //   frames whatever the pitch. An octave up really is through the
         //   file in half the block, and the picture says so.
         let covered = match data.stretch {
-            fontelle_types::ClipStretch::Off => frames as f64 / data.rate().max(f64::MIN_POSITIVE),
+            fontelle_types::ClipStretch::Off => {
+                frames as f64 / data.time_rate().max(f64::MIN_POSITIVE)
+            }
             fontelle_types::ClipStretch::Resample => frames as f64,
         };
         let per_bucket = covered / PREVIEW_BUCKETS as f64;
@@ -834,6 +849,7 @@ impl Session {
             voice_meters: HashMap::new(),
             effect_controls: HashMap::new(),
             spectrum_taps: HashMap::new(),
+            tune_taps: HashMap::new(),
             plugins: crate::PluginRack::new(),
             plugins_hosted: false,
             analyser: fontelle_dsp::SpectrumAnalyser::new(),
@@ -1019,6 +1035,17 @@ impl Session {
         taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
     ) -> Self {
         self.spectrum_taps = taps;
+        self
+    }
+
+    /// The pitch traces the realised graph writes, so a corrector's window can
+    /// draw them — [`with_spectrum_taps`](Self::with_spectrum_taps)'s sibling
+    /// and the same reason (`docs/tune-plan.md` §7.3).
+    pub fn with_tune_taps(
+        mut self,
+        taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::TuneTap>>,
+    ) -> Self {
+        self.tune_taps = taps;
         self
     }
 
@@ -2167,7 +2194,10 @@ impl Session {
             self.options,
             &self.track_controls,
             self.metronome.clone(),
-            &self.spectrum_taps,
+            &crate::realise::KeptTaps {
+                spectrum: self.spectrum_taps.clone(),
+                tune: self.tune_taps.clone(),
+            },
             monitor.as_ref(),
             // Put back whatever the browser was letting you hear: the node is
             // minted fresh on every rebuild, so an instrument left in it would
@@ -2187,6 +2217,7 @@ impl Session {
                 self.voice_meters = realised.voice_meters;
                 self.effect_controls = realised.effect_controls;
                 self.spectrum_taps = realised.spectrum_taps;
+                self.tune_taps = realised.tune_taps;
                 self.send_controls = realised.send_controls;
                 self.metronome = Some(realised.metronome);
                 self.publish_metronome();
@@ -3150,6 +3181,113 @@ impl Session {
 
     /// Writes `patch` back onto `channel` through the history, coalescing with
     /// its own predecessor so a knob drag is one undo entry.
+    /// Loads a sound file onto one of Flopsynth's oscillators, as the table
+    /// that oscillator reads.
+    ///
+    /// > *"i want to like with omnisphere or serum ... be able to drag audio
+    /// > files into it to use those waveforms in the synthesis."*
+    ///
+    /// `layer` is the oscillator's index in the patch — 0..4 for A, B, C, the
+    /// sub and the noise, which is the order
+    /// [`fontelle_core::flopsynth::layer_role`] fixes.
+    ///
+    /// The samples are cut into frames of one cycle each and **stored in the
+    /// patch** (see `fontelle_core::UserWavetable`), so the instrument stays
+    /// self-contained: a preset made this way opens on a machine that has
+    /// never seen the file, and nothing here can ever need relinking.
+    ///
+    /// Three things happen besides the load, and each is a report waiting to
+    /// happen if it does not:
+    ///
+    /// - the oscillator is **switched on**, because every one but the first
+    ///   is at the silence floor in the Init patch and a drop that loaded
+    ///   silently reads as a drop that did nothing;
+    /// - a table the same oscillator was already reading is **replaced**
+    ///   rather than added to, since a patch carries its samples and a
+    ///   discarded table is dead weight in every copy of the preset from
+    ///   then on;
+    /// - it goes through `store_patch`, so it is one entry on the history
+    ///   and Ctrl+Z takes it back like anything else.
+    pub fn load_wavetable(&mut self, layer: usize, path: &Path) -> Result<String, String> {
+        let Some(channel) = self.selected_channel_id() else {
+            return Err("no channel is selected".to_string());
+        };
+        let Some(mut patch) = self.selected_patch() else {
+            return Err("this channel has no instrument to drop a sound into".to_string());
+        };
+        if !matches!(
+            patch.layers.get(layer).map(|l| &l.source),
+            Some(fontelle_core::Source::Synth(_))
+        ) {
+            return Err("that is not one of this instrument's oscillators".to_string());
+        }
+        // **Through `import_audio`**, never straight to the decoder: every
+        // `.wav` in the packs Fontelle is pointed at is really an Ogg in a
+        // RIFF wrapper, and a reader that skips this refuses the whole
+        // library. See `fontelle_assets::read_audio`.
+        let decoded = fontelle_assets::import_audio(path).map_err(|e| e.to_string())?;
+        if decoded.frames == 0 {
+            return Err(format!("there is no sound in {}", path.display()));
+        }
+        // Mono by averaging, the same fold `SampleLibrary::import_sample`
+        // uses: a table is one cycle and has no sides.
+        let channels = decoded.channels.max(1) as usize;
+        let samples: Vec<f32> = decoded
+            .samples
+            .chunks(channels)
+            .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+            .collect();
+        // As many whole cycles as the file holds, at the table's own frame
+        // length — Serum's convention, and what makes a file exported from a
+        // wavetable editor come back frame for frame.
+        let frames =
+            (samples.len() / fontelle_dsp::WAVETABLE_LEN).clamp(1, fontelle_dsp::MAX_USER_FRAMES);
+        let name = path
+            .file_stem()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Dropped".to_string());
+        let table = fontelle_core::UserWavetable {
+            name: name.clone(),
+            frames,
+            samples,
+        };
+
+        // Where this oscillator's table goes: over the one it was already
+        // reading, or on the end.
+        let existing = match &patch.layers[layer].source {
+            fontelle_core::Source::Synth(osc) => match osc.source {
+                fontelle_dsp::SynthSource::User(at) => Some(at as usize),
+                _ => None,
+            },
+            _ => None,
+        };
+        let at = match existing.filter(|at| *at < patch.wavetables.len()) {
+            Some(at) => {
+                patch.wavetables[at] = table;
+                at
+            }
+            None => {
+                patch.wavetables.push(table);
+                patch.wavetables.len() - 1
+            }
+        };
+        let Ok(index) = u8::try_from(at) else {
+            return Err("this instrument is already carrying as many sounds as it can".to_string());
+        };
+        if let fontelle_core::Source::Synth(osc) = &mut patch.layers[layer].source {
+            osc.source = fontelle_dsp::SynthSource::User(index);
+        }
+        // On, if it was not: see this function's own note.
+        if patch.layers[layer].gain_db <= fontelle_core::SILENT_DB {
+            patch.layers[layer].gain_db = DROPPED_OSC_DB;
+        }
+        let role = fontelle_core::flopsynth::layer_role(layer).label();
+        self.store_patch(channel, patch);
+        self.history.break_gesture();
+        self.touch();
+        Ok(format!("{name} loaded into {role}"))
+    }
+
     fn store_patch(&mut self, channel: ChannelId, patch: fontelle_core::Patch) {
         let data = match patch.to_data(self.library.provenance()) {
             Ok(data) => data,
@@ -5478,6 +5616,23 @@ impl StudioHost for Session {
         // the block it was given, which is what makes a loop stretchable.
         // `run` republishes and bumps the revision, so the block on the
         // arrangement redraws with its new fades on the same frame.
+        //
+        // The editor's stretch chooser goes through here, and it is the same
+        // switch the arrangement's toolbar is: a change of mode keeps the
+        // sound where it was (`fontelle_model::with_stretch`), or the two
+        // ways of turning stretch off would leave two different sounds.
+        let data = match self.project.clips.get(clip) {
+            Some(held) => match &held.source {
+                ClipSource::Audio(was) if was.stretch != data.stretch => {
+                    let stretch = data.stretch;
+                    let mut frozen = data;
+                    frozen.stretch = was.stretch;
+                    fontelle_model::with_stretch(&frozen, held, &self.project.tempo_map, stretch)
+                }
+                _ => data,
+            },
+            None => data,
+        };
         self.run(Box::new(fontelle_model::SetAudioClip::new(clip, data)));
     }
 
@@ -5863,6 +6018,10 @@ impl StudioHost for Session {
         // export-factory-presets` runs — they simply no longer sit behind a
         // panel of their own.
         Some(view)
+    }
+
+    fn load_wavetable(&mut self, layer: usize, path: &Path) -> Result<String, String> {
+        Session::load_wavetable(self, layer, path)
     }
 
     fn flopsynth(
@@ -6590,6 +6749,94 @@ impl StudioHost for Session {
         ids.iter().position(|other| *other == key)
     }
 
+    fn set_insert_notes(&mut self, strip: usize, slot: usize, notes: Option<usize>) {
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return;
+        };
+        let channels = self.channel_ids();
+        // `None` is "no MIDI", which is what a corrector does with no source;
+        // a channel index nobody has is the same answer rather than a guess at
+        // the nearest one.
+        let notes = match notes {
+            Some(index) => match channels.get(index).copied() {
+                Some(channel) => Some(channel),
+                None => return,
+            },
+            None => None,
+        };
+        // A **rebuild**, like the key one line up and for the same reason:
+        // which node this insert listens to is wiring, and wiring is not a
+        // thing a control surface can carry. Nothing about it is an edge in
+        // the audio graph, though — see `EffectSlot::notes`.
+        self.run(Box::new(fontelle_model::SetInsertNotes::new(
+            id, slot, notes,
+        )));
+        self.rebuild_graph();
+        self.dirty = true;
+        self.touch();
+    }
+
+    fn insert_notes(&self, strip: usize, slot: usize) -> Option<usize> {
+        let id = self.mixer_track_ids().get(strip).copied()?;
+        let notes = self
+            .project
+            .mixer
+            .tracks
+            .get(id)?
+            .inserts
+            .get(slot)?
+            .effective_notes()?;
+        self.channel_ids().iter().position(|other| *other == notes)
+    }
+
+    /// Everything the corrector's console draws (`docs/tune-plan.md` §7.6).
+    ///
+    /// The layer allowed to see both halves: the document for the config and
+    /// the rack, the tap for what the node is doing. `None` when the slot
+    /// holds something that is not a corrector, which is how the window
+    /// decides between the console, the EQ and the generic panel.
+    fn tune_view(&self, strip: usize, slot: usize) -> Option<fontelle_ui::canvas::TuneView> {
+        let id = self.mixer_track_ids().get(strip).copied()?;
+        let track = self.project.mixer.tracks.get(id)?;
+        let fontelle_types::EffectConfig::Tune(config) = track.inserts.get(slot)?.config else {
+            return None; // this slot holds something else
+        };
+        let name = track.name.clone();
+        let trace = self.tune_trace(strip, slot);
+        // The channels in the rack's own order, so row *n* + 1 of the
+        // drop-down is `channel_ids()[n]` — the order `set_insert_notes`
+        // reads an index back in.
+        let channels: Vec<String> = self
+            .channel_ids()
+            .into_iter()
+            .filter_map(|channel| self.project.channels.get(channel))
+            .map(|channel| channel.name.clone())
+            .collect();
+        Some(crate::tune::describe(
+            &name,
+            id,
+            slot,
+            &config,
+            trace.clone(),
+            held_classes(&trace),
+            &channels,
+            self.insert_notes(strip, slot),
+            self.options.sample_rate as f32,
+        ))
+    }
+
+    fn tune_trace(&self, strip: usize, slot: usize) -> Vec<fontelle_types::TuneFrame> {
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return Vec::new();
+        };
+        let Some(tap) = self.tune_taps.get(&(id, slot)) else {
+            return Vec::new();
+        };
+        // Everything the ring holds; the window trims it to the seconds it
+        // draws, which depend on the mode's hop rather than on this number.
+        tap.read(fontelle_engine::TUNE_TRACE_FRAMES)
+    }
+
     fn spectrum(&mut self, strip: usize, slot: usize) -> Vec<f32> {
         use fontelle_ui::canvas::{SPECTRUM_BANDS, SPECTRUM_BOTTOM_DB, spectrum_band_hz};
 
@@ -6723,6 +6970,39 @@ impl StudioHost for Session {
         self.run(Box::new(SetFlag::new(FlagTarget::TrackSolo(id), !now)));
         self.history.break_gesture();
         self.publish_mixer();
+    }
+
+    fn recording_notes(&self, now: Sample) -> Vec<fontelle_ui::document::NotePreview> {
+        // Only what has been drained into the take so far — `pump` empties
+        // the capture ring every pass, so this is at most a frame behind the
+        // keys. Through `notes_from_capture`, the same reading `keep_take`
+        // makes, so a note is drawn exactly where it will land: with `now`
+        // as the take's end, whatever is still held is closed at the
+        // playhead, which is what makes a held key grow.
+        if self.capture.is_none() || self.take.is_empty() {
+            return Vec::new();
+        }
+        let start = self
+            .project
+            .clips
+            .get(self.clip)
+            .map_or(0, |clip| clip.start);
+        let ClipSource::Notes(data) =
+            fontelle_model::notes_from_capture(&self.take, &self.project.tempo_map, start, now)
+        else {
+            return Vec::new();
+        };
+        let mut notes: Vec<fontelle_ui::document::NotePreview> = data
+            .notes
+            .values()
+            .map(|note| fontelle_ui::document::NotePreview {
+                start: note.start,
+                length: note.length,
+                key: note.key,
+            })
+            .collect();
+        notes.sort_by_key(|note| (note.start, note.key));
+        notes
     }
 
     fn ghost_notes(&self, filter: GhostFilter) -> Vec<GhostNote> {
@@ -7185,16 +7465,20 @@ impl StudioHost for Session {
                 // and a stale id is not a reason to stop the audio clip
                 // beside it hearing.
                 for id in ids {
-                    let Some(ClipSource::Audio(data)) =
-                        self.project.clips.get(id).map(|c| &c.source)
-                    else {
+                    let Some(clip) = self.project.clips.get(id) else {
+                        continue;
+                    };
+                    let ClipSource::Audio(data) = &clip.source else {
                         continue;
                     };
                     if data.stretch == stretch {
                         continue;
                     }
-                    let mut data = data.clone();
-                    data.stretch = stretch;
+                    // Through `with_stretch`, which is what keeps the sound
+                    // where it was when the switch goes off — see
+                    // `fontelle_model::with_stretch`.
+                    let data =
+                        fontelle_model::with_stretch(data, clip, &self.project.tempo_map, stretch);
                     self.run(Box::new(fontelle_model::SetAudioClip::new(id, data)));
                 }
             }
@@ -7715,6 +7999,12 @@ impl Session {
                     None => DeviceKind::Effect(insert.config.kind()),
                 })
             }
+            // One kind for every track, not one per track: a chain saved off a
+            // vocal is exactly the thing you want on a different vocal.
+            PresetDevice::Track { strip } => {
+                self.mixer_track_ids().get(strip).copied()?;
+                Some(DeviceKind::Track)
+            }
         }
     }
 
@@ -7738,7 +8028,50 @@ impl Session {
                     None => PresetPayload::Effect(insert.config),
                 })
             }
+            PresetDevice::Track { strip } => Some(PresetPayload::Track(self.track_chain(strip)?)),
         }
+    }
+
+    /// A track's chain, in the shape a preset holds it.
+    ///
+    /// **Hosted plugins are left out**, with the built-in inserts either side
+    /// of them kept: a preset naming a plugin this machine has not got could
+    /// only fail at load, and failing quietly part-way down a chain is the
+    /// worst of the ways to fail. `save_track_chain` says how many it left.
+    fn track_chain(&self, strip: usize) -> Option<fontelle_types::TrackChain> {
+        let id = self.mixer_track_ids().get(strip).copied()?;
+        let track = self.project.mixer.tracks.get(id)?;
+        Some(fontelle_types::TrackChain {
+            gain_db: track.gain_db,
+            pan: track.pan,
+            phase_invert: track.phase_invert,
+            inserts: track
+                .inserts
+                .iter()
+                .filter(|slot| slot.plugin.is_none())
+                .map(|slot| fontelle_types::TrackInsert {
+                    config: slot.config,
+                    bypassed: slot.bypassed,
+                    preset: slot.preset.clone(),
+                })
+                .collect(),
+        })
+    }
+
+    /// How many inserts a saved chain would leave behind, so the message can
+    /// say so rather than the preset quietly being short.
+    fn plugins_in_chain(&self, strip: usize) -> usize {
+        self.mixer_track_ids()
+            .get(strip)
+            .copied()
+            .and_then(|id| self.project.mixer.tracks.get(id))
+            .map_or(0, |track| {
+                track
+                    .inserts
+                    .iter()
+                    .filter(|slot| slot.plugin.is_some())
+                    .count()
+            })
     }
 
     /// The preset this device says it was loaded from, if it says one.
@@ -7759,6 +8092,10 @@ impl Session {
                     .preset
                     .clone()
             }
+            // A track does not remember which chain it came from. There is no
+            // bar to say so in, and a `*` nobody can see is a fact nobody can
+            // use — see `PresetDevice::Track`.
+            PresetDevice::Track { .. } => None,
         }
     }
 
@@ -7773,6 +8110,11 @@ impl Session {
                 .get(strip)
                 .copied()
                 .map(|track| fontelle_model::PresetTarget::Insert { track, index: slot }),
+            // A chain is not written by `ApplyPreset`: it replaces a rack
+            // rather than one device's state, and `ApplyTrackChain` is the
+            // command for that. `apply_preset_entry` branches before it gets
+            // here.
+            PresetDevice::Track { .. } => None,
         }
     }
 
@@ -7791,6 +8133,10 @@ impl Session {
                 fontelle_types::EffectConfig::new(kind),
             )),
             DeviceKind::Plugin(_) => None,
+            // A track with nothing on it, at unity — which is exactly what a
+            // fresh track is, so a bare track reads as "no preset" rather
+            // than as one that has drifted.
+            DeviceKind::Track => Some(PresetPayload::Track(fontelle_types::TrackChain::new())),
         }
     }
 
@@ -7911,6 +8257,26 @@ impl Session {
         entry: &crate::preset_bank::PresetEntry,
     ) -> Result<(), String> {
         let preset = self.preset_bank.load(entry)?;
+        // **A chain is not a device's state**: it replaces the whole rack, so
+        // it takes `ApplyTrackChain` rather than `ApplyPreset`, and it takes
+        // it before `preset_target` is asked — a track has no `PresetTarget`
+        // for the same reason.
+        if let PresetDevice::Track { strip } = device {
+            let fontelle_types::PresetPayload::Track(chain) = preset.payload else {
+                return Err(format!("{} is not a track chain", preset.name));
+            };
+            let id = self
+                .mixer_track_ids()
+                .get(strip)
+                .copied()
+                .ok_or("that track is not there")?;
+            self.run(Box::new(fontelle_model::ApplyTrackChain::new(id, chain)));
+            self.history.break_gesture();
+            self.dirty = true;
+            self.rebuild_graph();
+            self.touch();
+            return Ok(());
+        }
         let target = self
             .preset_target(device)
             .ok_or("that device is not there")?;
@@ -8020,6 +8386,26 @@ impl Session {
         // buttons reach it — "Save" with the name it already has, "Save as…"
         // with a name the prompt has already asked about.
         let reference = self.preset_bank.save(&preset, true)?;
+        // A track keeps no reference to the chain it was saved as: there is no
+        // bar to show one in (`PresetDevice::Track`). What it does get is a
+        // word about anything the save could not carry, because a chain that
+        // came back two inserts short with nothing said would be blamed on the
+        // load rather than on the save.
+        if let PresetDevice::Track { strip } = device {
+            let left = self.plugins_in_chain(strip);
+            self.message = Some(match left {
+                0 => format!("Saved track preset \u{201c}{name}\u{201d}"),
+                1 => format!(
+                    "Saved track preset \u{201c}{name}\u{201d} \u{2014} one hosted plugin left out"
+                ),
+                n => format!(
+                    "Saved track preset \u{201c}{name}\u{201d} \u{2014} {n} hosted plugins left out"
+                ),
+            });
+            self.dirty = true;
+            self.touch();
+            return Ok(());
+        }
         let target = self
             .preset_target(device)
             .ok_or("that device is not there")?;
@@ -8455,4 +8841,32 @@ impl Session {
             .and_then(|id| self.voice_meters.get(&id))
             .map_or([0.0; fontelle_core::MAX_LFOS], |meter| meter.lfo_phases())
     }
+}
+
+/// Which pitch classes MIDI is forcing right now, bit 0 = C.
+///
+/// Read off the newest frame the tap holds rather than from the node's own
+/// `HeldKeys`, which lives on the audio thread behind the graph and has no
+/// wire back. [`fontelle_types::TuneFrame`] is deliberately four aligned
+/// words — that is what lets the node write one with four stores that cannot
+/// tear — so a held mask does not go in it.
+///
+/// What this shows is therefore the note being **forced**, not every key
+/// somebody is leaning on: a chord held on the source channel lights the one
+/// note the corrector chose from it. That is the note the trace is drawn
+/// against, so it is the one the keyboard should agree with; a keyboard
+/// lighting three keys while the trace bent towards one of them would be a
+/// picture disagreeing with itself.
+fn held_classes(trace: &[fontelle_types::TuneFrame]) -> u16 {
+    let Some(frame) = trace.last() else {
+        return 0;
+    };
+    if frame.flags & fontelle_types::TUNE_FROM_MIDI == 0 {
+        return 0;
+    }
+    let semitone = (frame.target_cents / 100.0).round();
+    if !semitone.is_finite() || !(0.0..=127.0).contains(&semitone) {
+        return 0;
+    }
+    1 << (semitone as u16 % 12)
 }

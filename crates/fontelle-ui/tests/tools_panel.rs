@@ -537,8 +537,8 @@ fn the_chip_opens_a_menu_of_tools_rather_than_every_tools_settings_at_once() {
     let labels: Vec<String> = TOOL_MENU.iter().map(|item| item.label()).collect();
     assert_eq!(
         labels.len(),
-        6,
-        "three tools that ask something, legato, and the two importers: {labels:?}"
+        7,
+        "four tools that ask something, legato, and the two importers: {labels:?}"
     );
     for item in TOOL_MENU {
         assert!(!item.label().is_empty(), "{item:?} has no name");
@@ -718,4 +718,36 @@ fn the_menus_legato_and_the_keyboards_are_the_same_edit() {
     let through_the_key = fontelle_ui::canvas::legato_edits(&ids, &arena);
     assert_eq!(through_the_menu, through_the_key);
     assert!(!through_the_key.is_empty(), "there was a gap to close");
+}
+
+/// **The tallest dialog still fits.**
+///
+/// Arpeggiate has eight rows where the other three have two to four, and
+/// `tools_dialog_layout` clips a row that ran off the end to an empty
+/// rectangle — which draws as nothing and hit-tests as absent. That is the
+/// right behaviour for a window somebody has dragged too small, and the wrong
+/// thing to ship: a dialog whose Apply button is the row that vanished is a
+/// tool that cannot be used at all. Measured at the size the window opens at.
+#[test]
+fn the_arpeggiators_dialog_fits_and_every_row_of_it_can_be_reached() {
+    let panel = tools_dialog_layout(ToolKind::Arpeggiate, chip(), bounds(), &metrics());
+    assert_eq!(
+        panel.rows.len(),
+        ToolKind::Arpeggiate.rows().len(),
+        "the dialog dropped a row"
+    );
+    for (row, rect) in &panel.rows {
+        assert!(
+            rect.height > 1.0 && rect.width > 1.0,
+            "{row:?} was clipped away to nothing"
+        );
+        // And a press in the middle of it finds that row rather than its
+        // neighbour, which is what "can be reached" means.
+        let found = tools_dialog_hit(&panel, rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        assert_eq!(found, Some(*row), "{row:?} is not where it was drawn");
+    }
+    assert!(
+        panel.frame.bottom() <= bounds().bottom() + 0.5,
+        "the dialog runs off the bottom of the window"
+    );
 }

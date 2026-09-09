@@ -11,8 +11,10 @@ mod piano_roll;
 mod prefabs;
 mod preset_bar;
 mod rack;
+mod text_entry;
 mod timeline;
 mod tools;
+mod tune;
 
 pub use audio_clip::{
     AUDIO_ROWS, AudioControl, AudioEditorLayout, AudioField, MASTER_ROUTE, MAX_CLIP_PITCH,
@@ -99,12 +101,12 @@ pub fn zoom_anchor(grid: crate::layout::Rect, cursor: (f32, f32)) -> f32 {
 }
 
 pub use mixer::{
-    FADER_DETENT_PX, InsertRowLayout, MAX_FADER_DB, MAX_SEND_DB, MIN_FADER_DB, MIN_SEND_DB,
-    MixerHit, MixerKey, MixerLayout, MixerStripLayout, NamePress, OPTIONS_WIDTH, OptionsHit,
-    PAN_DETENT_PX, STRIP_WIDTH, SendRowLayout, TrackOptionsLayout, fader_db_at, fader_y_of_db,
-    format_gain_db, format_mix, format_pan, format_send_db, insert_mix_dial, mixer_hit, mixer_key,
-    mixer_layout, mixer_layout_for, name_press, pan_at, pan_x_of, send_level_at, send_x_of_level,
-    unity_fraction,
+    CHAIN_DOT, CHAIN_DOT_GAP, FADER_DETENT_PX, InsertRowLayout, MAX_FADER_DB, MAX_SEND_DB,
+    MIN_FADER_DB, MIN_SEND_DB, MixerHit, MixerKey, MixerLayout, MixerStripLayout, NamePress,
+    OPTIONS_WIDTH, OptionsHit, PAN_DETENT_PX, STRIP_WIDTH, SendRowLayout, TrackOptionsLayout,
+    fader_db_at, fader_y_of_db, format_gain_db, format_mix, format_pan, format_send_db,
+    insert_mix_dial, mixer_hit, mixer_key, mixer_layout, mixer_layout_for, name_press, pan_at,
+    pan_x_of, send_level_at, send_x_of_level, unity_fraction,
 };
 pub use piano_roll::{
     Audition, DEFAULT_LANE_HEIGHT, DrawDrag, EdgeScroll, KEYBOARD_WIDTH, KeyStyle, LANE_PROPERTIES,
@@ -127,17 +129,25 @@ pub use rack::{
     rack_hit, rack_layout, route_label, route_menu_hit, route_menu_layout,
     route_menu_layout_excluding, scroll_to_show, tab_at, tab_strip,
 };
+pub use text_entry::{TextEntry, TextKey, text_key};
 pub use timeline::{
     ArrangeEdit, CLIP_HEADER_PX, ClipOverlap, ClipPart, FadeAnatomy, FadeEnd, MAX_LANE_ROW,
     MAX_TIMELINE_PPT, MIN_LANE_ROW, MIN_TIMELINE_PPT, NOTE_PREVIEW_MIN_KEYS, Timeline,
     TimelineControl, TimelineHit, TimelineLayout, TimelineTool, TimelineToolbar, TimelineView,
     clip_bands, clip_cuts, clip_grip, clip_notes, clip_overlaps, clip_rect, clip_waveform,
-    content_fraction, content_ticks, fade_anatomy, fade_curve, lane_to_y, loop_marks,
-    time_selection, timeline_hit, timeline_layout, timeline_snap, timeline_tick_to_x,
+    content_end, content_fraction, content_ticks, fade_anatomy, fade_curve, lane_to_y, loop_marks,
+    slice_marks, time_selection, timeline_hit, timeline_layout, timeline_snap, timeline_tick_to_x,
     timeline_toolbar_hit, timeline_toolbar_layout, timeline_visible_ticks, timeline_x_to_tick,
     timeline_zoom_x, timeline_zoom_y, visible_lanes, y_to_lane,
 };
 pub use tools::{
     TOOL_MENU, TOOL_ROWS, ToolAction, ToolKind, ToolMenuItem, ToolRow, Tools, ToolsDialog,
     tools_dialog_hit, tools_dialog_layout,
+};
+pub use tune::{
+    KEYBOARD_FLOOR, KEYBOARD_HEIGHT, KEYBOARD_KEYS, KEYBOARD_OCTAVES, NO_MIDI, TRACE_SECONDS,
+    TUNE_LOCK_CENTS, TUNE_SOURCE, TracePoint, TuneHit, TuneLayout, TuneView, VIEWPORT_FLOOR,
+    VIEWPORT_HEIGHT, current_frame, key_click_mask, key_solo_mask, sung_class, target_class,
+    trace_at, tune_caption, tune_hit, tune_keyboard_layout, tune_layout, tune_readout,
+    tune_strings, viewport_points, viewport_rails,
 };

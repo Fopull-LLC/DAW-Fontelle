@@ -23,8 +23,9 @@
 
 use std::time::Duration;
 
-use fontelle_ui::canvas::{BrowserHit, BrowserMode, MixerHit, OptionsHit, RackHit, RollControl,
-    TimelineControl, Tool};
+use fontelle_ui::canvas::{
+    BrowserHit, BrowserMode, MixerHit, OptionsHit, RackHit, RollControl, TimelineControl, Tool,
+};
 use fontelle_ui::layout::{EditorTab, Rect};
 use fontelle_ui::tooltip::{TOOLTIP_DELAY, TOOLTIP_PAD, tooltip_layout};
 use fontelle_ui::transport::TransportHit;
@@ -48,7 +49,10 @@ fn a_tip_sits_near_the_pointer_and_below_it() {
     let tip = tooltip_layout(text(), (400.0, 300.0), bounds());
     assert!(!tip.is_empty());
     assert!(tip.y > 300.0, "the tip {tip:?} is drawn over the pointer");
-    assert!(tip.y < 300.0 + 60.0, "and it is not halfway down the window");
+    assert!(
+        tip.y < 300.0 + 60.0,
+        "and it is not halfway down the window"
+    );
     assert!((tip.x - 400.0).abs() < 60.0, "nor is it across the room");
 }
 
@@ -164,9 +168,17 @@ fn every_roll_toolbar_control_explains_itself() {
         RollControl::Slide,
     ];
     controls.extend(
-        [Tool::Draw, Tool::Paint, Tool::Delete, Tool::Select, Tool::Slice, Tool::Mute, Tool::Slip]
-            .into_iter()
-            .map(RollControl::Tool),
+        [
+            Tool::Draw,
+            Tool::Paint,
+            Tool::Delete,
+            Tool::Select,
+            Tool::Slice,
+            Tool::Mute,
+            Tool::Slip,
+        ]
+        .into_iter()
+        .map(RollControl::Tool),
     );
     for control in controls {
         assert!(
@@ -200,11 +212,11 @@ fn every_arrangement_toolbar_control_explains_itself() {
 
 #[test]
 fn every_editor_tab_explains_itself() {
-    for tab in [
-        EditorTab::Roll,
-        EditorTab::Mixer,
-    ] {
-        assert!(tab.tip().is_some_and(|t| !t.is_empty()), "{tab:?} is silent");
+    for tab in [EditorTab::Roll, EditorTab::Mixer] {
+        assert!(
+            tab.tip().is_some_and(|t| !t.is_empty()),
+            "{tab:?} is silent"
+        );
     }
 }
 
@@ -217,9 +229,6 @@ fn every_mixer_control_explains_itself() {
         MixerHit::Pan(0),
         MixerHit::Mute(0),
         MixerHit::Solo(0),
-        MixerHit::Insert(0, 0),
-        MixerHit::BypassInsert(0, 0),
-        MixerHit::AddInsert(0),
         MixerHit::AddTrack,
         MixerHit::Options(OptionsHit::Rename),
         MixerHit::Options(OptionsHit::Output),
@@ -282,7 +291,11 @@ fn a_tip_is_one_short_line_rather_than_a_paragraph() {
     // A tooltip is a label, not documentation. Anything long enough to need
     // wrapping is a box that covers the thing it is explaining.
     let mut all: Vec<&'static str> = Vec::new();
-    all.extend([TransportHit::Play, TransportHit::ToggleMetronome].iter().filter_map(|h| h.tip()));
+    all.extend(
+        [TransportHit::Play, TransportHit::ToggleMetronome]
+            .iter()
+            .filter_map(|h| h.tip()),
+    );
     all.extend(
         [RollControl::Snap, RollControl::Ghost, RollControl::Slide]
             .iter()

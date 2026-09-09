@@ -178,7 +178,9 @@ impl Soften {
             let mut band_level = [0.0f32; 3];
             for channel in 0..used.min(1) {
                 let sample = channels[channel][frame];
-                top = self.shelf_detect[channel].process(sample, &shelf_probe).abs();
+                top = self.shelf_detect[channel]
+                    .process(sample, &shelf_probe)
+                    .abs();
                 for band in 0..3 {
                     band_level[band] = self.honk_detect[channel][band]
                         .process(sample, &honk_probe[band])
@@ -217,8 +219,13 @@ impl Soften {
                 SvfFilter::coeffs(SvfMode::Bell, HONK_HZ[band], 1.4, db, self.sample_rate)
             });
 
-            let air_coeffs =
-                SvfFilter::coeffs(SvfMode::HighShelf, AIR_HZ, 0.707, air_lift, self.sample_rate);
+            let air_coeffs = SvfFilter::coeffs(
+                SvfMode::HighShelf,
+                AIR_HZ,
+                0.707,
+                air_lift,
+                self.sample_rate,
+            );
 
             for channel in 0..used {
                 let mut sample = channels[channel][frame];

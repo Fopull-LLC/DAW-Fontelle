@@ -1,23 +1,27 @@
-//! A click on the arrangement puts down a copy of the last thing you chose.
+//! What a click on empty arrangement means: nothing, a copy, or a blank.
 //!
-//! Reported from using the window:
+//! The first rule, from using the window:
 //!
 //! > *"whenever i click in the arrangement its making a new clip and i dont
 //! > like that i want it to be a double click to create a new empty clip. a
 //! > single click should instead place a exact copy of whatever your last
-//! > selection is, whether its another clip, an audio clip, automation clip,
-//! > etc. it should just work this makes it easier to draw out patterns
-//! > similarly to fl studios controls."*
+//! > selection is."*
 //!
-//! FL's playlist works this way: the pattern in hand is what a click stamps
-//! down. Here the thing in hand is **the last clip selected**, of any kind,
-//! and a press on empty grid asks the host for a copy of it at that place.
-//! A double-click asks for a blank clip instead — and takes back the copy
-//! the first press of the pair put down, because a double-click is one
-//! gesture and must not leave two clips behind.
+//! And the second, a day later, once a single click that always made
+//! something turned out to be a click you could never make idly:
 //!
-//! Nothing ever selected is nothing to stamp, so the very first press in an
-//! empty arrangement still draws a clip: there is nothing else it could mean.
+//! > *"please make it so single clicking in the arrangement no longer makes
+//! > anything, and instead to create a copy of your last selected item its
+//! > shift + click and we leave creating a new empty clip as double click
+//! > that way single click is freed up so it can be used freely for
+//! > deselecting things without a hassle."*
+//!
+//! So: a **plain press** on empty grid chooses nothing and makes nothing —
+//! it is how you let go of a selection. **Shift+press** puts down a copy of
+//! the thing in hand, which is the last clip chosen, of any kind, the way
+//! FL's playlist stamps the pattern in hand. A **double-click** asks for a
+//! blank clip. Nothing in hand is nothing to copy, so a Shift+press with
+//! nothing ever chosen does nothing rather than guessing.
 
 use fontelle_model::Arena;
 use fontelle_types::{ClipId, PPQN, Tick};
@@ -80,6 +84,22 @@ fn press(timeline: &mut Timeline, clips: &[ClipInfo], tick: Tick, lane: usize) -
     edits
 }
 
+/// A press with Shift held: the copy gesture.
+fn shift_press(
+    timeline: &mut Timeline,
+    clips: &[ClipInfo],
+    tick: Tick,
+    lane: usize,
+) -> Vec<ArrangeEdit> {
+    timeline.set_modifiers(Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    });
+    let edits = press(timeline, clips, tick, lane);
+    timeline.set_modifiers(Modifiers::default());
+    edits
+}
+
 fn double_press(
     timeline: &mut Timeline,
     clips: &[ClipInfo],
@@ -92,25 +112,38 @@ fn double_press(
     edits
 }
 
-// ------------------------------------------------------------ the first ---
+// ------------------------------------------------------- a plain press ---
 
 #[test]
-fn with_nothing_ever_selected_a_press_on_empty_grid_draws_a_clip() {
+fn with_nothing_ever_selected_a_press_on_empty_grid_makes_nothing() {
     let mut timeline = Timeline::new(view());
     let edits = press(&mut timeline, &[], BAR * 2, 0);
-    assert_eq!(
-        edits,
-        vec![ArrangeEdit::Add {
-            lane: 0,
-            start: BAR * 2
-        }]
-    );
+    assert!(edits.is_empty(), "a plain press asked for {edits:?}");
+}
+
+#[test]
+fn a_plain_press_on_empty_grid_lets_go_of_the_selection_and_makes_nothing() {
+    // *"single click is freed up so it can be used freely for deselecting
+    // things without a hassle."* The whole point of the change: with a clip
+    // in hand, a plain press somewhere empty is still not a request for
+    // anything.
+    let mut arena = Arena::default();
+    let clips = vec![a_clip(&mut arena, 0, 0, ClipKind::Notes)];
+    let mut timeline = Timeline::new(view());
+    press(&mut timeline, &clips, PPQN, 0);
+    assert_eq!(timeline.selection(), &[clips[0].id]);
+
+    let edits = press(&mut timeline, &clips, BAR * 3, 1);
+    assert!(edits.is_empty(), "a plain press asked for {edits:?}");
+    assert!(timeline.selection().is_empty(), "the press should deselect");
+    // And the thing in hand is still in hand, for the Shift+press to come.
+    assert_eq!(timeline.stamp_source(), Some(clips[0].id));
 }
 
 // ------------------------------------------------------------- stamping ---
 
 #[test]
-fn after_choosing_a_clip_a_press_on_empty_grid_stamps_a_copy_of_it() {
+fn after_choosing_a_clip_a_shift_press_on_empty_grid_stamps_a_copy_of_it() {
     let mut arena = Arena::default();
     let clips = vec![a_clip(&mut arena, 0, 0, ClipKind::Notes)];
     let mut timeline = Timeline::new(view());
@@ -119,8 +152,8 @@ fn after_choosing_a_clip_a_press_on_empty_grid_stamps_a_copy_of_it() {
     press(&mut timeline, &clips, PPQN, 0);
     assert_eq!(timeline.selection(), &[clips[0].id]);
 
-    // Then somewhere empty, on another row.
-    let edits = press(&mut timeline, &clips, BAR * 3, 1);
+    // Then Shift+press somewhere empty, on another row.
+    let edits = shift_press(&mut timeline, &clips, BAR * 3, 1);
     assert_eq!(
         edits,
         vec![ArrangeEdit::Stamp {
@@ -139,7 +172,7 @@ fn a_stamp_lands_on_the_grid_like_a_drawn_clip() {
     press(&mut timeline, &clips, PPQN, 0);
 
     // A hair past bar 3, with the snap on bars.
-    let edits = press(&mut timeline, &clips, BAR * 3 + PPQN / 3, 0);
+    let edits = shift_press(&mut timeline, &clips, BAR * 3 + PPQN / 3, 0);
     assert_eq!(
         edits,
         vec![ArrangeEdit::Stamp {
@@ -169,7 +202,7 @@ fn any_kind_of_clip_can_be_stamped() {
             "{kind:?} was not chosen"
         );
 
-        let edits = press(&mut timeline, &clips, BAR * 2, 1);
+        let edits = shift_press(&mut timeline, &clips, BAR * 2, 1);
         assert_eq!(
             edits,
             vec![ArrangeEdit::Stamp {
@@ -202,7 +235,7 @@ fn a_marquee_selection_is_something_to_stamp_too() {
     timeline.set_modifiers(Modifiers::default());
     assert_eq!(timeline.selection(), &[clips[0].id]);
 
-    let edits = press(&mut timeline, &clips, BAR * 4, 1);
+    let edits = shift_press(&mut timeline, &clips, BAR * 4, 1);
     assert_eq!(
         edits,
         vec![ArrangeEdit::Stamp {
@@ -214,15 +247,15 @@ fn a_marquee_selection_is_something_to_stamp_too() {
 }
 
 #[test]
-fn the_copy_just_stamped_is_what_the_next_press_stamps() {
-    // Which is what makes a row of clicks a row of the same clip: the copy
-    // becomes the selection, as a duplicate's does, and the selection is
-    // what a press stamps.
+fn the_copy_just_stamped_is_what_the_next_shift_press_stamps() {
+    // Which is what makes a row of Shift+clicks a row of the same clip: the
+    // copy becomes the selection, as a duplicate's does, and the selection
+    // is what a press stamps.
     let mut arena = Arena::default();
     let mut clips = vec![a_clip(&mut arena, 0, 0, ClipKind::Notes)];
     let mut timeline = Timeline::new(view());
     press(&mut timeline, &clips, PPQN, 0);
-    press(&mut timeline, &clips, BAR * 2, 0);
+    shift_press(&mut timeline, &clips, BAR * 2, 0);
 
     // The host made the copy and says so.
     let copy = a_clip(&mut arena, 0, BAR * 2, ClipKind::Notes);
@@ -230,7 +263,7 @@ fn the_copy_just_stamped_is_what_the_next_press_stamps() {
     clips.push(copy);
     assert_eq!(timeline.selection(), &[clips[1].id]);
 
-    let edits = press(&mut timeline, &clips, BAR * 4, 0);
+    let edits = shift_press(&mut timeline, &clips, BAR * 4, 0);
     assert_eq!(
         edits,
         vec![ArrangeEdit::Stamp {
@@ -242,22 +275,26 @@ fn the_copy_just_stamped_is_what_the_next_press_stamps() {
 }
 
 #[test]
+fn a_shift_press_with_nothing_in_hand_makes_nothing() {
+    // Nothing chosen is nothing to copy. A blank clip is what a double-click
+    // is for, and a Shift+press that quietly drew one instead would be a
+    // copy of something you never picked.
+    let mut timeline = Timeline::new(view());
+    let edits = shift_press(&mut timeline, &[], BAR * 2, 0);
+    assert!(edits.is_empty(), "asked for {edits:?}");
+}
+
+#[test]
 fn a_clip_that_has_gone_since_it_was_chosen_is_not_stamped() {
-    // Deleted from another window, or undone away: a copy of nothing is a
-    // blank clip, so that is what the press asks for.
+    // Deleted from another window, or undone away: there is nothing to copy,
+    // so the press makes nothing rather than guessing a blank.
     let mut arena = Arena::default();
     let clips = vec![a_clip(&mut arena, 0, 0, ClipKind::Notes)];
     let mut timeline = Timeline::new(view());
     press(&mut timeline, &clips, PPQN, 0);
 
-    let edits = press(&mut timeline, &[], BAR * 2, 0);
-    assert_eq!(
-        edits,
-        vec![ArrangeEdit::Add {
-            lane: 0,
-            start: BAR * 2
-        }]
-    );
+    let edits = shift_press(&mut timeline, &[], BAR * 2, 0);
+    assert!(edits.is_empty(), "asked for {edits:?}");
 }
 
 #[test]
@@ -271,7 +308,7 @@ fn clearing_the_selection_does_not_forget_what_was_last_chosen() {
     timeline.clear_selection();
     assert!(timeline.selection().is_empty());
 
-    let edits = press(&mut timeline, &clips, BAR * 2, 1);
+    let edits = shift_press(&mut timeline, &clips, BAR * 2, 1);
     assert_eq!(
         edits,
         vec![ArrangeEdit::Stamp {
@@ -285,38 +322,29 @@ fn clearing_the_selection_does_not_forget_what_was_last_chosen() {
 // --------------------------------------------------------- double-click ---
 
 #[test]
-fn a_double_press_takes_back_the_copy_and_draws_a_blank_clip_in_its_place() {
+fn a_double_press_on_empty_grid_draws_a_blank_clip() {
+    // The first press of the pair made nothing, so there is nothing to take
+    // back: the second simply asks for the blank clip.
     let mut arena = Arena::default();
-    let mut clips = vec![a_clip(&mut arena, 0, 0, ClipKind::Notes)];
+    let clips = vec![a_clip(&mut arena, 0, 0, ClipKind::Notes)];
     let mut timeline = Timeline::new(view());
     press(&mut timeline, &clips, PPQN, 0);
 
-    // The first press of the pair stamps, as any press does...
     let first = press(&mut timeline, &clips, BAR * 2, 1);
-    assert!(matches!(first[..], [ArrangeEdit::Stamp { .. }]));
-    let copy = a_clip(&mut arena, 1, BAR * 2, ClipKind::Notes);
-    timeline.clips_inserted(vec![copy.id]);
-    let copy_id = copy.id;
-    clips.push(copy);
-
-    // ...and the second, landing on the copy it just made, replaces it.
+    assert!(first.is_empty(), "the first press asked for {first:?}");
     let second = double_press(&mut timeline, &clips, BAR * 2, 1);
     assert_eq!(
         second,
-        vec![
-            ArrangeEdit::Remove(vec![copy_id]),
-            ArrangeEdit::Add {
-                lane: 1,
-                start: BAR * 2
-            },
-        ]
+        vec![ArrangeEdit::Add {
+            lane: 1,
+            start: BAR * 2
+        }]
     );
 }
 
 #[test]
 fn a_double_press_with_nothing_in_hand_draws_a_clip() {
     let mut timeline = Timeline::new(view());
-    // The first press drew one; the host has not reported it yet.
     press(&mut timeline, &[], BAR * 2, 0);
     let edits = double_press(&mut timeline, &[], BAR * 2, 0);
     assert_eq!(
@@ -341,34 +369,23 @@ fn a_double_press_on_some_other_clip_is_not_a_request_for_a_new_one() {
 }
 
 #[test]
-fn a_stamp_is_one_press_and_the_copy_is_not_taken_back_by_a_later_double_press_elsewhere() {
-    // A double-click a bar away is a new blank clip *there*; the copy from a
-    // moment ago stays where it was put.
+fn a_shift_double_press_stamps_once_and_does_not_also_draw_a_blank() {
+    // Two quick Shift+clicks in one place: the first stamped a copy, and the
+    // second press of the pair must not put a blank clip on top of it. One
+    // gesture, one clip.
     let mut arena = Arena::default();
     let mut clips = vec![a_clip(&mut arena, 0, 0, ClipKind::Notes)];
     let mut timeline = Timeline::new(view());
     press(&mut timeline, &clips, PPQN, 0);
-    press(&mut timeline, &clips, BAR * 2, 0);
+    timeline.set_modifiers(Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    });
+    let first = press(&mut timeline, &clips, BAR * 2, 0);
+    assert!(matches!(first[..], [ArrangeEdit::Stamp { .. }]));
     let copy = a_clip(&mut arena, 0, BAR * 2, ClipKind::Notes);
     timeline.clips_inserted(vec![copy.id]);
     clips.push(copy);
-
-    // Somewhere else: the single press of the pair stamps again, then the
-    // double press replaces *that* one only.
-    press(&mut timeline, &clips, BAR * 4, 0);
-    let second_copy = a_clip(&mut arena, 0, BAR * 4, ClipKind::Notes);
-    timeline.clips_inserted(vec![second_copy.id]);
-    let second_id = second_copy.id;
-    clips.push(second_copy);
-    let edits = double_press(&mut timeline, &clips, BAR * 4, 0);
-    assert_eq!(
-        edits,
-        vec![
-            ArrangeEdit::Remove(vec![second_id]),
-            ArrangeEdit::Add {
-                lane: 0,
-                start: BAR * 4
-            },
-        ]
-    );
+    let second = double_press(&mut timeline, &clips, BAR * 2, 0);
+    assert!(second.is_empty(), "the second press asked for {second:?}");
 }

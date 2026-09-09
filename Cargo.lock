@@ -1128,6 +1128,7 @@ dependencies = [
 name = "fontelle-fx"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "fontelle-dsp",
  "fontelle-types",
  "realfft",

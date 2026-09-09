@@ -210,7 +210,8 @@ impl Chorus {
                 // The feedback is the voices *before* the tone control, so
                 // that turning the tone down does not also change how long
                 // the loop rings.
-                self.lines[channel][self.write] = channels[channel][frame] + feedback * wet[channel];
+                self.lines[channel][self.write] =
+                    channels[channel][frame] + feedback * wet[channel];
                 let out = if toning {
                     self.tone[channel] += (wet[channel] - self.tone[channel]) * tone;
                     self.tone[channel]

@@ -64,6 +64,7 @@ fn a_view() -> FlopsynthView {
         title: "Choir Ahh".to_string(),
         cards: vec![
             FlopsynthCard {
+                oscillator: None,
                 group: osc("OSC A", "Saw"),
                 row: 0,
                 aside: false,
@@ -75,6 +76,7 @@ fn a_view() -> FlopsynthView {
                 },
             },
             FlopsynthCard {
+                oscillator: None,
                 group: osc("OSC B", "Analog Morph"),
                 row: 0,
                 aside: false,
@@ -86,6 +88,7 @@ fn a_view() -> FlopsynthView {
                 },
             },
             FlopsynthCard {
+                oscillator: None,
                 group: osc("OSC C", "Sawstack"),
                 row: 0,
                 aside: false,
@@ -94,6 +97,7 @@ fn a_view() -> FlopsynthView {
                 picture: FlopsynthPicture::None,
             },
             FlopsynthCard {
+                oscillator: None,
                 group: InstrumentGroup {
                     name: "FILTER 1".to_string(),
                     params: vec![
@@ -112,6 +116,7 @@ fn a_view() -> FlopsynthView {
                 },
             },
             FlopsynthCard {
+                oscillator: None,
                 group: InstrumentGroup {
                     name: "ENV 1 \u{b7} amp".to_string(),
                     params: vec![
@@ -133,6 +138,7 @@ fn a_view() -> FlopsynthView {
                 },
             },
             FlopsynthCard {
+                oscillator: None,
                 group: InstrumentGroup {
                     name: "LFO 1".to_string(),
                     params: vec![knob("patch/lfo[0]/rate", "rate", 0.5)],
@@ -793,6 +799,7 @@ fn card(
     params: Vec<InstrumentParam>,
 ) -> FlopsynthCard {
     FlopsynthCard {
+        oscillator: None,
         group: InstrumentGroup {
             name: name.to_string(),
             params,

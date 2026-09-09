@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use fontelle_types::{EffectConfig, EffectKind, MixerTrackId, PluginState};
+use fontelle_types::{ChannelId, EffectConfig, EffectKind, MixerTrackId, PluginState};
 
 // `PanLaw` lives in `fontelle-types` so `fontelle-engine`'s `MixerTrackNode`
 // can share this exact type — the engine can't depend on this crate (TDD §4.1).
@@ -65,6 +65,31 @@ pub struct EffectSlot {
     /// written before this field existed.
     #[serde(default)]
     pub key: Option<MixerTrackId>,
+    /// Which channel's **notes** this insert listens to — the melody to force
+    /// or the scale to allow (`docs/tune-plan.md` §5.1).
+    ///
+    /// A field on the slot rather than a parameter in the config, for exactly
+    /// the reason [`key`](Self::key) is one: a `ParamSpec` is a float with a
+    /// fixed range and a permanent id (INVARIANT 7), and a channel is neither.
+    /// A "source" knob stepping through whatever channels happen to exist
+    /// would mean an automation lane that pointed somewhere else after a
+    /// rename.
+    ///
+    /// Unlike the key it is **not** an edge in the audio graph: no sound
+    /// travels along it, so it cannot make a cycle and nothing has to be
+    /// scheduled before anything else. The node reads the source's own events
+    /// out of the block both of them are given, which is why the order they
+    /// run in does not matter (§5.2).
+    ///
+    /// A channel with **no instrument** is a perfectly good source: its notes
+    /// still compile and it makes no sound. "Add a channel, leave it empty,
+    /// write the melody in its roll, point the tuner at it" is the workflow,
+    /// and it needs nothing new.
+    ///
+    /// Defaulted and omitted when empty, so every project written before this
+    /// field existed opens and is written back unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<ChannelId>,
     /// The preset this device was loaded from, if it was loaded from one
     /// (`docs/flopsynth-plan.md` §P.5).
     ///
@@ -89,6 +114,7 @@ impl EffectSlot {
             plugin: None,
             bypassed: false,
             key: None,
+            notes: None,
             preset: None,
         }
     }
@@ -104,6 +130,7 @@ impl EffectSlot {
             bypassed: false,
             preset: None,
             key: None,
+            notes: None,
         }
     }
 
@@ -158,6 +185,21 @@ impl EffectSlot {
         self.kind()
             .is_some_and(|kind| kind.takes_key())
             .then_some(self.key)
+            .flatten()
+    }
+
+    /// The channel whose notes really reach this insert, or `None`.
+    ///
+    /// Reads through [`EffectKind::takes_notes`], so a channel left on an
+    /// effect that has nothing to do with notes is not a source — the same
+    /// rule [`effective_key`](Self::effective_key) applies to a detector.
+    ///
+    /// A hosted plugin takes none: a plugin's MIDI input is the host's to
+    /// route and this build does not route it.
+    pub fn effective_notes(&self) -> Option<ChannelId> {
+        self.kind()
+            .is_some_and(|kind| kind.takes_notes())
+            .then_some(self.notes)
             .flatten()
     }
 }

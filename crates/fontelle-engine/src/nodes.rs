@@ -168,7 +168,7 @@ impl AudioNode for SamplerNode {
             .iter()
             .map(|slot| {
                 let mut state = EffectState::for_config(&slot.config);
-                state.prepare(ctx.sample_rate);
+                state.prepare(ctx.sample_rate, &slot.config);
                 Some(state)
             })
             .collect::<Vec<_>>();
@@ -355,7 +355,13 @@ impl AudioNode for SamplerNode {
                     }
                 }
                 if let Some(Some(state)) = self.fx.get_mut(index) {
-                    state.process(&mut rendered[..channels], None, &config, bpm);
+                    state.process(
+                        &mut rendered[..channels],
+                        None,
+                        fontelle_fx::NoteInput::default(),
+                        &config,
+                        bpm,
+                    );
                 }
                 if blending {
                     for (wet, dry) in rendered.iter_mut().zip(self.fx_dry.iter()).take(channels) {
@@ -410,8 +416,13 @@ impl AudioNode for SamplerNode {
 /// The **document's** answer, so the graph builder can line tracks up before
 /// it has built a single node — and the same rule
 /// [`EffectNode::latency_samples`] gives once it has, because both come
-/// through here. The gate's look-ahead is the only insert latency this build
-/// has; a bypassed slot costs nothing, which is what the node does too.
+/// through here. A bypassed slot costs nothing, which is what the node does
+/// too.
+///
+/// Two effects have a latency: the gate's is its look-ahead knob, and the
+/// corrector's is a **function of its range and its mode** — see
+/// [`max_insert_latency_samples`], which is where the difference between the
+/// two matters.
 pub fn insert_latency_samples(config: &fontelle_types::EffectConfig, sample_rate: f32) -> u32 {
     match config {
         fontelle_types::EffectConfig::Gate(gate) => {
@@ -419,6 +430,40 @@ pub fn insert_latency_samples(config: &fontelle_types::EffectConfig, sample_rate
                 .lookahead_ms
                 .clamp(0.0, fontelle_types::MAX_GATE_LOOKAHEAD_MS);
             (ms / 1000.0 * sample_rate.max(0.0)).round() as u32
+        }
+        fontelle_types::EffectConfig::Tune(tune) => tune.latency_samples(sample_rate),
+        _ => 0,
+    }
+}
+
+/// The **most** an insert of this kind could ever ask for, in samples.
+///
+/// What [`EffectNode::prepare`] sizes its dry line from, and it has to be the
+/// worst case rather than the current setting for the reason the gate sizes
+/// its own line that way: moving the knob mid-song must be a change of read
+/// offset and not a reallocation on the audio thread (INVARIANT 1).
+///
+/// Its own function beside [`insert_latency_samples`] rather than a `match`
+/// inside `prepare`, because there are now two effects with a latency and
+/// their worst cases are different shapes — a knob's top for one, the widest
+/// range in the deeper mode for the other. Two copies of that would be one to
+/// forget the next time a third effect looks ahead.
+pub fn max_insert_latency_samples(config: &fontelle_types::EffectConfig, sample_rate: f32) -> u32 {
+    match config {
+        fontelle_types::EffectConfig::Gate(_) => {
+            (fontelle_types::MAX_GATE_LOOKAHEAD_MS / 1000.0 * sample_rate.max(0.0)).ceil() as u32
+        }
+        fontelle_types::EffectConfig::Tune(tune) => {
+            // The range and the mode are what set it, and a change of either
+            // is a graph rebuild (`docs/tune-plan.md` §3.8) — but the live
+            // wire can still carry one through before the rebuild lands, so
+            // the line is sized for the widest.
+            let widest = fontelle_types::TuneConfig {
+                range: fontelle_types::TuneRange::Low,
+                mode: fontelle_types::TuneMode::Studio,
+                ..*tune
+            };
+            widest.latency_samples(sample_rate)
         }
         _ => 0,
     }
@@ -593,6 +638,84 @@ pub struct EffectNode {
     /// and never resized: reading it into a fresh `Vec` per block would be an
     /// allocation on the audio thread (INVARIANT 1).
     key_buffer: Vec<f32>,
+    /// The **notes**: the node whose part this insert listens to
+    /// (`docs/tune-plan.md` §5.2). `None` on every insert that does not take
+    /// notes or has not been given a channel, which is nearly all of them, and
+    /// then this costs one branch a block.
+    ///
+    /// The source node's *own* events are read, rather than a copy being
+    /// routed here. `ProcessContext::all_events` warns that a node reading it
+    /// will play other instruments' parts — and this node is **configured** to
+    /// listen to one other node's part, which is the intent. The alternative,
+    /// teaching the compiler to emit a second copy of every note for every
+    /// listener and teaching the live source to fan out, touches the
+    /// sequencer, the live path and the router for the same result. Both nodes
+    /// see the same block's slices whatever order they run in, so there is no
+    /// ordering hazard — which is the hazard the key tap has and this does not.
+    notes_from: Option<fontelle_types::NodeId>,
+    /// What is held down on that node right now.
+    held: HeldKeys,
+    /// And its pitch bend, in cents.
+    bend_cents: f32,
+    /// Where the window reads the pitch trace, when one is open — the
+    /// analyser tap's sibling, and `None` costs nothing.
+    tune_tap: Option<std::sync::Arc<crate::TuneTap>>,
+}
+
+/// The keys held on the channel an insert listens to, last-note first out.
+///
+/// A fixed array rather than a `Vec`: this is written on the audio thread
+/// (INVARIANT 1). Sixteen is more than a hand, and the seventeenth pushes the
+/// **oldest** out rather than being refused — the newest is the one somebody
+/// just played, and a tuner that ignored it would look broken.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HeldKeys {
+    keys: [u8; MAX_HELD_KEYS],
+    len: usize,
+}
+
+/// How many keys one insert remembers being held.
+pub const MAX_HELD_KEYS: usize = 16;
+
+impl HeldKeys {
+    pub fn press(&mut self, key: u8) {
+        self.release(key);
+        if self.len == MAX_HELD_KEYS {
+            self.keys.copy_within(1.., 0);
+            self.len -= 1;
+        }
+        self.keys[self.len] = key;
+        self.len += 1;
+    }
+
+    pub fn release(&mut self, key: u8) {
+        let Some(at) = self.keys[..self.len].iter().position(|held| *held == key) else {
+            return;
+        };
+        self.keys.copy_within(at + 1..self.len, at);
+        self.len -= 1;
+    }
+
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    /// Oldest first — the order they went down in.
+    pub fn as_slice(&self) -> &[u8] {
+        &self.keys[..self.len]
+    }
+
+    /// The last one pressed and not let go of.
+    pub fn last(&self) -> Option<u8> {
+        (self.len > 0).then(|| self.keys[self.len - 1])
+    }
+
+    /// Every held key's pitch class, bit 0 = C.
+    pub fn mask(&self) -> u16 {
+        self.keys[..self.len]
+            .iter()
+            .fold(0u16, |mask, key| mask | 1 << (key % 12))
+    }
 }
 
 /// How many channels the dry copy has room for. A mixer bus is stereo.
@@ -622,6 +745,7 @@ enum EffectState {
     Chorus(fontelle_fx::Chorus),
     Delay(fontelle_fx::Delay),
     Reverb(fontelle_fx::FdnReverb),
+    Tune(fontelle_fx::Tune),
 }
 
 impl EffectState {
@@ -664,11 +788,22 @@ impl EffectState {
             fontelle_types::EffectConfig::Reverb(_) => {
                 EffectState::Reverb(fontelle_fx::FdnReverb::new())
             }
+            fontelle_types::EffectConfig::Tune(_) => EffectState::Tune(fontelle_fx::Tune::new()),
         }
     }
 
-    fn prepare(&mut self, sample_rate: f32) {
+    /// The config is a parameter because one effect needs it here: the
+    /// corrector's rings are sized from its range and its hop from its mode
+    /// (`docs/tune-plan.md` §3.8), and neither can be resized on the audio
+    /// thread. That is why a change of either is a graph rebuild — the
+    /// rebuild is what calls this again.
+    fn prepare(&mut self, sample_rate: f32, config: &fontelle_types::EffectConfig) {
         match self {
+            Self::Tune(tune) => {
+                if let fontelle_types::EffectConfig::Tune(config) = config {
+                    tune.prepare(sample_rate, config);
+                }
+            }
             Self::Utility(utility) => utility.prepare(sample_rate),
             Self::Eq(eq) => eq.prepare(sample_rate),
             Self::Filter(filter) => filter.prepare(sample_rate),
@@ -692,10 +827,14 @@ impl EffectState {
         &mut self,
         outputs: &mut [&mut [f32]],
         key: Option<&[f32]>,
+        notes: fontelle_fx::NoteInput,
         config: &fontelle_types::EffectConfig,
         bpm: f32,
     ) {
         match (self, config) {
+            (Self::Tune(tune), fontelle_types::EffectConfig::Tune(config)) => {
+                tune.process(outputs, notes, config, bpm);
+            }
             (Self::Utility(utility), fontelle_types::EffectConfig::Utility(config)) => {
                 utility.process(outputs, config);
             }
@@ -759,6 +898,7 @@ impl EffectState {
             Self::Chorus(chorus) => chorus.reset(),
             Self::Delay(delay) => delay.reset(),
             Self::Reverb(reverb) => reverb.reset(),
+            Self::Tune(tune) => tune.reset(),
         }
     }
 }
@@ -780,6 +920,10 @@ impl EffectNode {
             tap: None,
             key: None,
             key_buffer: Vec::new(),
+            notes_from: None,
+            held: HeldKeys::default(),
+            bend_cents: 0.0,
+            tune_tap: None,
         }
     }
 
@@ -819,6 +963,77 @@ impl EffectNode {
     pub fn with_key(mut self, key: std::sync::Arc<crate::KeyTap>) -> Self {
         self.key = Some(key);
         self
+    }
+
+    /// Gives this insert a **channel's notes**: the melody to force, or the
+    /// scale to allow (`docs/tune-plan.md` §5).
+    ///
+    /// A routing edge like the key, and set the same way — the document names
+    /// a channel, `realise` turns that into the channel's node, and a rebuild
+    /// rewires it along with everything else. Carried and never read on an
+    /// effect that does not take notes, which is why the document answers "is
+    /// there an edge" through `EffectSlot::effective_notes`.
+    pub fn with_notes_from(mut self, source: fontelle_types::NodeId) -> Self {
+        self.notes_from = Some(source);
+        self
+    }
+
+    /// Gives this insert a pitch-trace tap, so a window can draw what it is
+    /// doing to the note (`docs/tune-plan.md` §7.3).
+    pub fn with_tune_tap(mut self, tap: std::sync::Arc<crate::TuneTap>) -> Self {
+        self.tune_tap = Some(tap);
+        self
+    }
+
+    /// What is held on the channel this insert listens to, oldest first.
+    pub fn held_keys(&self) -> &[u8] {
+        self.held.as_slice()
+    }
+
+    /// The last key pressed there and not let go of.
+    pub fn last_key(&self) -> Option<u8> {
+        self.held.last()
+    }
+
+    /// Reads this block's notes off the node this insert listens to.
+    ///
+    /// Before the DSP and before the bypass: a bypassed tuner that came back
+    /// having forgotten which key was down would force the wrong note for as
+    /// long as it was held.
+    fn take_notes(&mut self, ctx: &ProcessContext) {
+        let Some(source) = self.notes_from else {
+            return;
+        };
+        for event in ctx.all_events.iter().chain(ctx.live_events.iter()) {
+            if event.target != source {
+                continue;
+            }
+            match &event.payload {
+                fontelle_types::EventPayload::NoteOn { key, velocity, .. } => {
+                    // A note-on at zero velocity is a note-off, which is what
+                    // half the MIDI hardware in the world sends.
+                    if *velocity == 0 {
+                        self.held.release(*key);
+                    } else {
+                        self.held.press(*key);
+                    }
+                }
+                fontelle_types::EventPayload::NoteOff { key, .. } => self.held.release(*key),
+                fontelle_types::EventPayload::PitchBend { value } => {
+                    // MIDI's own asymmetry, undone, exactly as `SamplerNode`
+                    // does it — and over the same two semitones every
+                    // keyboard leaves the factory set to. There is no
+                    // per-patch range to read here: a tuner listening to a
+                    // channel is listening to the wheel, not to whatever
+                    // instrument happens to be on it.
+                    let span = if *value < 0 { 8_192.0 } else { 8_191.0 };
+                    self.bend_cents = f32::from(*value) / span
+                        * fontelle_core::DEFAULT_BEND_RANGE_SEMITONES
+                        * 100.0;
+                }
+                _ => {}
+            }
+        }
     }
 
     pub fn set_bypassed(&mut self, bypassed: bool) {
@@ -929,7 +1144,7 @@ impl AudioNode for EffectNode {
         // The delay and the reverb allocate their lines here, which is the
         // whole reason `prepare` exists: two seconds of memory cannot be
         // reached for on the audio thread (INVARIANT 1).
-        self.state.prepare(ctx.sample_rate);
+        self.state.prepare(ctx.sample_rate, &self.config);
         // And room for the key, when there is one. Sized here for the same
         // reason the dry copy is: the audio thread cannot reach for memory.
         if self.key.is_some() {
@@ -947,14 +1162,8 @@ impl AudioNode for EffectNode {
         // reaches for nothing (INVARIANT 1) — the same reason the gate sizes
         // its own line that way.
         self.sample_rate = ctx.sample_rate;
-        self.dry_capacity = match &self.state {
-            EffectState::Gate(_) => {
-                ((fontelle_types::MAX_GATE_LOOKAHEAD_MS / 1000.0 * ctx.sample_rate).ceil() as usize)
-                    .max(1)
-                    + 1
-            }
-            _ => 0,
-        };
+        let most = max_insert_latency_samples(&self.config, ctx.sample_rate) as usize;
+        self.dry_capacity = if most > 0 { most + 1 } else { 0 };
         self.dry_line = vec![0.0; self.dry_capacity * DRY_CHANNELS];
         self.dry_write = 0;
     }
@@ -963,6 +1172,7 @@ impl AudioNode for EffectNode {
         self.settle();
         self.take_automation(ctx);
         self.apply_automation();
+        self.take_notes(ctx);
         // Before the bypass, and before the effect: what the analyser draws is
         // what is arriving here, which is true of a bypassed insert too — an
         // EQ you have switched off while you look for the frequency is exactly
@@ -1026,8 +1236,20 @@ impl AudioNode for EffectNode {
 
         // In place on the bus it was given: a chain is a run of inserts
         // scheduled on the same pair of buffers, in the order they run.
+        let notes = fontelle_fx::NoteInput {
+            last: self.held.last(),
+            mask: self.held.mask(),
+            bend_cents: self.bend_cents,
+        };
         self.state
-            .process(ctx.outputs, key, &self.config, ctx.transport.bpm);
+            .process(ctx.outputs, key, notes, &self.config, ctx.transport.bpm);
+
+        // What the corrector did to the note, for whatever window is open on
+        // it. After the effect, because the trace is what it *did*; skipped
+        // entirely when nobody is looking, like the analyser's.
+        if let (Some(tap), EffectState::Tune(tune)) = (&self.tune_tap, &self.state) {
+            tap.write(tune.trace());
+        }
 
         // And the two signals, blended. A gain each rather than a crossfade
         // law: an EQ blended half and half with the signal that went into it
@@ -1051,6 +1273,11 @@ impl AudioNode for EffectNode {
         // signal from before the stop under the one after it.
         self.dry_line.fill(0.0);
         self.dry_write = 0;
+        // And every key the source channel had down. A transport stop that
+        // left one held would leave a tuner forcing that note forever, which
+        // is the note-hang defect one level up.
+        self.held.clear();
+        self.bend_cents = 0.0;
         // A full stop lets go of what automation was holding: the next thing
         // played starts from the document, and a `ParamValue` will arrive to
         // say otherwise if the playhead is inside a clip.
@@ -1517,6 +1744,9 @@ pub struct AudioClipNode {
     store: std::sync::Arc<fontelle_core::AudioStore>,
     /// One per pool slot, each remembering which clip last used it.
     filters: Vec<(Option<fontelle_types::ClipId>, fontelle_fx::Filter)>,
+    /// Where a shifted clip's grains were last lined up — one per pool slot,
+    /// claimed like the filters. See [`GrainMemo`].
+    grains: Vec<(Option<fontelle_types::ClipId>, GrainMemo)>,
     /// Scratch for one clip's block, so the filter can be run over a
     /// contiguous buffer without allocating. Sized at `prepare`.
     scratch: [Vec<f32>; MAX_CHANNELS],
@@ -1535,10 +1765,140 @@ impl AudioClipNode {
         Self {
             store,
             filters: Vec::new(),
+            grains: Vec::new(),
             scratch: Default::default(),
             sample_rate: 48_000.0,
         }
     }
+}
+
+/// How a shifted clip's last two grains were lined up.
+///
+/// A grain read on its own is right; two grains *overlapping* are right only
+/// if they agree about the phase of what they are both playing, and plain
+/// overlap-add gives them no reason to — the second grain starts a fixed
+/// number of frames after the first (`AudioClipData::grain_offset`), which for
+/// a 220 Hz tone at half speed was a hundred and fifty degrees out and
+/// cancelled most of it. So each new grain is slid a little, by up to
+/// [`GRAIN_ALIGN_REACH`] frames, to where it best agrees with the one before
+/// it over their overlap — the WSOLA idea, done once per grain.
+///
+/// The search is a pure function of the grain before it, so this holds the
+/// last answer and the one before that: the two grains any frame reads. A
+/// grain asked for out of sequence (the transport moved) starts a fresh chain
+/// from zero, which is what a jump *is*.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GrainMemo {
+    /// Which grain `delta` belongs to; `-1` for none yet.
+    index: i64,
+    delta: f64,
+    /// The grain before it, which the newest was aligned to.
+    previous: f64,
+}
+
+impl GrainMemo {
+    const NONE: Self = Self {
+        index: -1,
+        delta: 0.0,
+        previous: 0.0,
+    };
+
+    /// The slide of grain `index` and of the grain before it, searching for
+    /// them if this memo does not hold them yet.
+    fn deltas(
+        &mut self,
+        buffer: &fontelle_core::AudioBuffer,
+        clip: &fontelle_types::AudioClipData,
+        index: i64,
+        hop: f64,
+    ) -> (f64, f64) {
+        if index == self.index {
+            return (self.delta, self.previous);
+        }
+        if index < 0 {
+            return (0.0, 0.0);
+        }
+        let previous = if index == self.index + 1 {
+            self.delta
+        } else {
+            // A jump: the grain before this one was never played with any
+            // slide, so it gets none, and this one lines up with that.
+            0.0
+        };
+        let delta = if index <= 0 {
+            0.0
+        } else {
+            align_grain(buffer, clip, index, hop, previous)
+        };
+        *self = Self {
+            index,
+            delta,
+            previous,
+        };
+        (delta, previous)
+    }
+}
+
+/// How far a grain may be slid to line up with the one before it, in file
+/// frames either way. A period of 100 Hz: a tone below that lines up less
+/// well, which is audible as a little chorus on a sub bass and nowhere else.
+const GRAIN_ALIGN_REACH: i64 = 480;
+/// How many points of the overlap the two grains are compared over, and how
+/// far apart they are — so `128 × 4` covers half a hop at 48 kHz.
+const GRAIN_ALIGN_POINTS: usize = 128;
+const GRAIN_ALIGN_STRIDE: f64 = 4.0;
+
+/// Where grain `index` best agrees with the grain before it over their
+/// overlap: the slide, in file frames, to add to its nominal offset.
+///
+/// A bounded search — a few hundred candidates over a hundred and
+/// twenty-eight points — done once per grain and remembered, which is what
+/// keeps it off the per-sample path. Integer slides, because the overlap is
+/// compared at integer file frames; the read itself stays fractional.
+/// Zero wins a tie, so a constant or a silence slides nothing.
+fn align_grain(
+    buffer: &fontelle_core::AudioBuffer,
+    clip: &fontelle_types::AudioClipData,
+    index: i64,
+    hop: f64,
+    previous: f64,
+) -> f64 {
+    let anchor = index as f64 * hop;
+    let before = anchor - hop;
+    let channel = 0;
+    // The frames the previous grain plays across the overlap, and where the
+    // new grain's nominal read of the same frames is.
+    let mut want = [0.0f32; GRAIN_ALIGN_POINTS];
+    let mut at = [0.0f64; GRAIN_ALIGN_POINTS];
+    for (i, (w, a)) in want.iter_mut().zip(at.iter_mut()).enumerate() {
+        let position = anchor + i as f64 * GRAIN_ALIGN_STRIDE;
+        let older = clip.source_at_offset(clip.grain_offset(position, before) + previous);
+        *w = buffer.at(older, channel);
+        *a = clip.grain_offset(position, anchor);
+    }
+    let score = |delta: f64| -> f32 {
+        let (mut dot, mut energy) = (0.0f32, 0.0f32);
+        for (w, a) in want.iter().zip(&at) {
+            let sample = buffer.at(clip.source_at_offset(a + delta), channel);
+            dot += w * sample;
+            energy += sample * sample;
+        }
+        if energy <= 1e-12 {
+            0.0
+        } else {
+            dot / energy.sqrt()
+        }
+    };
+    let mut best = (0.0f64, score(0.0));
+    for step in 1..=GRAIN_ALIGN_REACH {
+        for delta in [step as f64, -(step as f64)] {
+            let value = score(delta);
+            if value > best.1 {
+                best = (delta, value);
+            }
+        }
+    }
+    best.0
 }
 
 /// The slot in `filters` holding `clip`'s filter, claiming a free one if it has
@@ -1569,14 +1929,35 @@ fn filter_slot(
     Some(claimed)
 }
 
+/// The slot in `grains` holding `clip`'s grain memo — the same pool rule as
+/// [`filter_slot`]. A clip refused a slot reads its grains unaligned, which
+/// is a poorer sound for a block and never an allocation.
+fn grain_slot(
+    grains: &mut [(Option<fontelle_types::ClipId>, GrainMemo)],
+    clip: fontelle_types::ClipId,
+    claimed: usize,
+) -> Option<usize> {
+    if let Some(index) = grains.iter().position(|(owner, _)| *owner == Some(clip)) {
+        return Some(index);
+    }
+    if claimed >= grains.len() {
+        return None;
+    }
+    grains[claimed].0 = Some(clip);
+    grains[claimed].1 = GrainMemo::NONE;
+    Some(claimed)
+}
+
 impl AudioNode for AudioClipNode {
     fn prepare(&mut self, ctx: &PrepareContext) {
         self.sample_rate = ctx.sample_rate.max(1.0);
         self.filters.clear();
+        self.grains.clear();
         for _ in 0..CLIP_FILTER_SLOTS {
             let mut filter = fontelle_fx::Filter::new();
             filter.prepare(self.sample_rate);
             self.filters.push((None, filter));
+            self.grains.push((None, GrainMemo::NONE));
         }
         for channel in &mut self.scratch {
             channel.clear();
@@ -1603,6 +1984,7 @@ impl AudioNode for AudioClipNode {
         let Self {
             store,
             filters,
+            grains,
             scratch,
             ..
         } = self;
@@ -1626,6 +2008,7 @@ impl AudioNode for AudioClipNode {
         }
 
         let mut claimed = 0;
+        let mut grains_claimed = 0;
         for placement in sounding.iter().take(count).flatten() {
             let clip = &placement.data;
             let Some(buffer) = store.get(clip.asset.id) else {
@@ -1650,6 +2033,23 @@ impl AudioNode for AudioClipNode {
             let ratio = clip.read_ratio(buffer.sample_rate, device_rate, span);
             let gain = clip.gain();
             let (left_gain, right_gain) = clip_pan(clip.pan);
+            // Whether what is heard moves at a different rate from time —
+            // a pitch moved with stretch off, or a speed moved without the
+            // pitch following. Then the file is read in grains; otherwise it
+            // is a plain read, sample for sample. See
+            // `AudioClipData::grain_offset` for the arithmetic.
+            let shifted = clip.shifts_pitch();
+            let hop = clip.grain_hop();
+            let memo = if shifted {
+                let index = grain_slot(grains, placement.clip, grains_claimed);
+                if index == Some(grains_claimed) {
+                    grains_claimed += 1;
+                }
+                index
+            } else {
+                None
+            };
+            let mut unaligned = GrainMemo::NONE;
 
             let filtered = clip.filter_engaged();
             let slot = if filtered {
@@ -1675,18 +2075,56 @@ impl AudioNode for AudioClipNode {
                     continue;
                 };
                 let clip_frame = position as f64 * ratio;
-                let source = clip.source_position(clip_frame);
-                if source < 0.0 {
-                    continue;
-                }
                 // The clip's own fades, in its frames, and the placement's
                 // crossfade, in the song's — both, because they are two
                 // different facts: one goes with the clip wherever it is
                 // put, the other is about the clip beside it.
                 let envelope =
                     gain * clip.fade_gain(clip_frame) * placement.auto_gain(start + frame as i64);
-                for (channel, buf) in scratch.iter_mut().take(channels).enumerate() {
-                    buf[frame] = buffer.at(source, channel as u16) * envelope;
+                if !shifted {
+                    let source = clip.source_position(clip_frame);
+                    if source < 0.0 {
+                        continue;
+                    }
+                    for (channel, buf) in scratch.iter_mut().take(channels).enumerate() {
+                        buf[frame] = buffer.at(source, channel as u16) * envelope;
+                    }
+                    continue;
+                }
+                // **In grains.** Two overlap at any frame: the newest,
+                // anchored at the last hop boundary, and the one before it.
+                // Each is read under half a raised cosine — the newest rising,
+                // the older falling — and the two add to exactly one, so a
+                // shift of nothing is the file itself. Before the second hop
+                // there is only the first grain, and it carries the whole
+                // weight rather than fading the clip's front in.
+                let newest = (clip_frame / hop).floor();
+                // Slid to agree with each other — see `GrainMemo`. A clip
+                // without a slot plays unaligned rather than not at all.
+                let (delta, previous) = match memo {
+                    Some(slot) => grains[slot].1.deltas(buffer, clip, newest as i64, hop),
+                    None => unaligned.deltas(buffer, clip, -1, hop),
+                };
+                for (older, slide) in [(0.0, delta), (1.0, previous)] {
+                    let index = newest - older;
+                    if index < 0.0 {
+                        continue;
+                    }
+                    let anchor = index * hop;
+                    let weight = if newest < 1.0 {
+                        1.0
+                    } else {
+                        let along = (clip_frame - anchor) / hop; // 0..2
+                        0.5 - 0.5 * (std::f64::consts::PI * along).cos()
+                    } as f32;
+                    let source =
+                        clip.source_at_offset(clip.grain_offset(clip_frame, anchor) + slide);
+                    if source < 0.0 {
+                        continue;
+                    }
+                    for (channel, buf) in scratch.iter_mut().take(channels).enumerate() {
+                        buf[frame] += buffer.at(source, channel as u16) * weight * envelope;
+                    }
                 }
             }
 
@@ -1712,6 +2150,10 @@ impl AudioNode for AudioClipNode {
         for (owner, filter) in &mut self.filters {
             *owner = None;
             filter.reset();
+        }
+        for (owner, memo) in &mut self.grains {
+            *owner = None;
+            *memo = GrainMemo::NONE;
         }
     }
 

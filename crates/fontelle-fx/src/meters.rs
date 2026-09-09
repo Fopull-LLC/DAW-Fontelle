@@ -15,8 +15,10 @@ pub struct SpectrumAnalyser {
 
 pub struct Oscilloscope;
 
-// Fields are wired up once the real DSP lands; the shape is the boundary for now.
-#[allow(dead_code)]
-pub struct Tuner {
-    detected_hz: f32,
-}
+// The `Tuner` stub was here. `docs/tune-plan.md` §8 took its job: the pitch
+// it was going to detect is `fontelle_dsp::PitchTracker`'s, built for the
+// corrector and tested on sines, saws and vowels, and the needle it was going
+// to draw is the corrector's viewport. What the catalogue's Tuner row still
+// wants is a *read-out* insert around that tracker — a window with a needle
+// and no processing — and it will wrap `PitchTracker` rather than grow a
+// second pitch detector beside it.

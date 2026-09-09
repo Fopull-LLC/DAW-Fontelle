@@ -10,7 +10,7 @@
 //! and the whole bank fits in the memory §3.2 budgets for it.
 
 use fontelle_dsp::{
-    WAVETABLE_LEN, WAVETABLE_LEVELS, WavetableBank, WavetableId, wavetable_level_for,
+    WAVETABLE_LEN, WAVETABLE_LEVELS, Wavetable, WavetableBank, WavetableId, wavetable_level_for,
 };
 
 const SR: f32 = 48_000.0;
@@ -425,4 +425,111 @@ fn the_struck_table_is_a_string_hit_an_eighth_of_the_way_along() {
         hard_ratio > soft_ratio * 10.0,
         "a hard hammer should ring the twentieth: hard {hard_ratio:.4}, soft {soft_ratio:.4}"
     );
+}
+
+// ------------------------------------------------- a table from a sound ---
+//
+// > *"i want to be able to drag audio files into it to use those waveforms in
+// > the synthesis as im pretty sure thats somethign you could do in [Serum or
+// > Omnisphere]."*
+//
+// A file becomes a table the same way a recipe does: frames of one cycle
+// each, every frame carrying its own band-limited pyramid. What is special
+// about a file is only where the numbers come from.
+
+#[test]
+fn a_file_of_whole_cycles_becomes_those_cycles_frame_for_frame() {
+    // Three cycles of a sine, written out at exactly one frame each: the
+    // table has three frames and each is that sine. A file that is already
+    // a multiple of the frame length is taken verbatim, because resampling
+    // it would be a filter nobody asked for.
+    let mut samples = Vec::new();
+    for _ in 0..3 {
+        for i in 0..WAVETABLE_LEN {
+            samples.push((std::f32::consts::TAU * i as f32 / WAVETABLE_LEN as f32).sin());
+        }
+    }
+    let table = Wavetable::from_samples(&samples, 3);
+    assert_eq!(table.frame_count(), 3);
+    for frame in 0..3 {
+        // The fundamental is everything and the second partial is nothing.
+        let one = harmonic(table.level(frame, 0), 1);
+        let two = harmonic(table.level(frame, 0), 2);
+        // Half the table's own peak, which is what a full-scale sine reads
+        // through this transform once the table has been normalised.
+        assert!(one > 0.4, "frame {frame} is not a sine: {one}");
+        assert!(
+            two < one * 0.01,
+            "frame {frame} has a second partial: {two}"
+        );
+    }
+}
+
+#[test]
+fn a_file_of_any_length_is_divided_into_the_frames_asked_for() {
+    // Not a multiple of anything: the file is cut into equal parts and each
+    // is read across a frame. A dropped sound is whatever length it is, and
+    // refusing the ones that do not divide evenly would refuse nearly all
+    // of them.
+    let samples: Vec<f32> = (0..5_000)
+        .map(|i| (std::f32::consts::TAU * i as f32 / 5_000.0).sin())
+        .collect();
+    let table = Wavetable::from_samples(&samples, 4);
+    assert_eq!(table.frame_count(), 4);
+    // Every frame has something in it — a silent frame would be a gap in the
+    // position knob.
+    for frame in 0..4 {
+        let peak = table
+            .level(frame, 0)
+            .iter()
+            .fold(0.0f32, |a, s| a.max(s.abs()));
+        assert!(peak > 0.1, "frame {frame} is silent");
+    }
+}
+
+#[test]
+fn a_table_from_a_sound_is_normalised_and_band_limited_like_any_other() {
+    // A square wave, which is all the harmonics: level 0 keeps them and the
+    // coarse levels cannot hold them, which is the whole point of the
+    // pyramid and is what keeps a dropped sound from aliasing at the top of
+    // the keyboard.
+    let samples: Vec<f32> = (0..WAVETABLE_LEN)
+        .map(|i| if i < WAVETABLE_LEN / 2 { 0.4 } else { -0.4 })
+        .collect();
+    let table = Wavetable::from_samples(&samples, 1);
+    let peak = table.level(0, 0).iter().fold(0.0f32, |a, s| a.max(s.abs()));
+    assert!(
+        (0.5..=1.0).contains(&peak),
+        "a quiet file should come up to the table's own level, not stay at {peak}"
+    );
+    // And the pyramid is a band-limit rather than a decimation, the same
+    // claim `a_coarser_level_keeps_the_harmonics_it_can_still_hold` makes of
+    // the generated tables: each level is shorter than the last, and the
+    // harmonics it still has room for come through at the level they had.
+    let fine = table.level(0, 0);
+    for level in 1..WAVETABLE_LEVELS {
+        let coarse = table.level(0, level);
+        assert!(coarse.len() < table.level(0, level - 1).len());
+        let limit = (coarse.len() / 2) as f32;
+        for harmonic in [1.0f32, 3.0] {
+            if harmonic > limit / 4.0 {
+                continue;
+            }
+            let got = energy_at(coarse, harmonic);
+            let want = energy_at(fine, harmonic);
+            assert!(
+                (got - want).abs() <= want * 0.15 + 1e-4,
+                "level {level} has {got} at harmonic {harmonic} where level 0 has {want}"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_empty_file_is_one_silent_frame_rather_than_a_panic() {
+    // It reaches this from a file that decoded to nothing, and a table with
+    // no frames divides by zero everywhere downstream.
+    let table = Wavetable::from_samples(&[], 4);
+    assert_eq!(table.frame_count(), 1);
+    assert!(table.level(0, 0).iter().all(|s| *s == 0.0));
 }

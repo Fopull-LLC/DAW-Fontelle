@@ -59,11 +59,123 @@
             "slope": "Db12"
           }
         ],
-        "fx": [],
+        "fx": [
+          {
+            "config": {
+              "Eq": {
+                "bands": [
+                  {
+                    "band_type": "LowShelf",
+                    "channel": "Stereo",
+                    "enabled": true,
+                    "freq_hz": 90.0,
+                    "gain_db": 3.0,
+                    "q": 0.699999988079071,
+                    "solo": false
+                  },
+                  {
+                    "band_type": "Bell",
+                    "channel": "Stereo",
+                    "enabled": true,
+                    "freq_hz": 3200.0,
+                    "gain_db": 3.0,
+                    "q": 1.0,
+                    "solo": false
+                  },
+                  {
+                    "band_type": "HighShelf",
+                    "channel": "Stereo",
+                    "enabled": true,
+                    "freq_hz": 8000.0,
+                    "gain_db": 2.0,
+                    "q": 0.699999988079071,
+                    "solo": false
+                  },
+                  {
+                    "band_type": "Bell",
+                    "channel": "Stereo",
+                    "enabled": false,
+                    "freq_hz": 1000.0,
+                    "gain_db": 0.0,
+                    "q": 0.7071067690849304,
+                    "solo": false
+                  },
+                  {
+                    "band_type": "Bell",
+                    "channel": "Stereo",
+                    "enabled": false,
+                    "freq_hz": 1000.0,
+                    "gain_db": 0.0,
+                    "q": 0.7071067690849304,
+                    "solo": false
+                  },
+                  {
+                    "band_type": "Bell",
+                    "channel": "Stereo",
+                    "enabled": false,
+                    "freq_hz": 1000.0,
+                    "gain_db": 0.0,
+                    "q": 0.7071067690849304,
+                    "solo": false
+                  },
+                  {
+                    "band_type": "Bell",
+                    "channel": "Stereo",
+                    "enabled": false,
+                    "freq_hz": 1000.0,
+                    "gain_db": 0.0,
+                    "q": 0.7071067690849304,
+                    "solo": false
+                  },
+                  {
+                    "band_type": "Bell",
+                    "channel": "Stereo",
+                    "enabled": false,
+                    "freq_hz": 1000.0,
+                    "gain_db": 0.0,
+                    "q": 0.7071067690849304,
+                    "solo": false
+                  }
+                ],
+                "mix": 1.0
+              }
+            },
+            "enabled": true
+          },
+          {
+            "config": {
+              "Compressor": {
+                "attack_ms": 24.0,
+                "auto_makeup": false,
+                "detection": "Peak",
+                "knee_db": 6.0,
+                "makeup_db": 7.650000095367432,
+                "mix": 0.800000011920929,
+                "ratio": 3.0,
+                "release_ms": 230.0,
+                "threshold_db": -15.0
+              }
+            },
+            "enabled": true
+          },
+          {
+            "config": {
+              "Reverb": {
+                "damping_hz": 6200.0,
+                "decay_s": 2.4000000953674316,
+                "mix": 0.41999998688697815,
+                "pre_delay_ms": 26.0,
+                "size": 0.7599999904632568,
+                "width": 1.0
+              }
+            },
+            "enabled": true
+          }
+        ],
         "layers": [
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               35,
               35
@@ -86,15 +198,18 @@
                 "bend_semitones": 31.200000762939453,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.4829999804496765,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.8819999694824219,
+                "drive": 0.14000000059604645,
                 "gain_db": 0.0,
                 "metal": 0.0,
                 "model": "Kick",
+                "modes": 1.0,
                 "noise": 0.05000000074505806,
+                "rattle": 0.0,
                 "snap": 0.3449999988079071,
-                "tone_hz": 336.0,
-                "tune_hz": 39.599998474121094
+                "tail": 0.800000011920929,
+                "tone_hz": 288.0,
+                "tune_hz": 36.39680099487305
               }
             },
             "vel_range": [
@@ -104,7 +219,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               36,
               36
@@ -127,15 +242,18 @@
                 "bend_semitones": 28.80000114440918,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.39100000262260437,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.7139999866485596,
+                "drive": 0.14000000059604645,
                 "gain_db": 0.0,
                 "metal": 0.0,
                 "model": "Kick",
+                "modes": 1.0,
                 "noise": 0.05999999865889549,
+                "rattle": 0.0,
                 "snap": 0.46000000834465027,
-                "tone_hz": 440.9999694824219,
-                "tune_hz": 46.79999923706055
+                "tail": 0.800000011920929,
+                "tone_hz": 378.0,
+                "tune_hz": 43.014400482177734
               }
             },
             "vel_range": [
@@ -145,12 +263,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               37,
               37
             ],
-            "pan": 0.0,
+            "pan": -0.3499999940395355,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -168,15 +286,18 @@
                 "bend_semitones": 12.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.06300000101327896,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.09450000524520874,
+                "drive": 0.14000000059604645,
                 "gain_db": -3.0,
                 "metal": 0.0,
                 "model": "Rim",
+                "modes": 1.0,
                 "noise": 0.550000011920929,
+                "rattle": 0.30000001192092896,
                 "snap": 0.6324999928474426,
-                "tone_hz": 1994.9998779296875,
-                "tune_hz": 420.0
+                "tail": 0.800000011920929,
+                "tone_hz": 1710.0,
+                "tune_hz": 394.79998779296875
               }
             },
             "vel_range": [
@@ -186,7 +307,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               38,
               38
@@ -209,15 +330,18 @@
                 "bend_semitones": 6.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.26600000262260437,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.39899998903274536,
+                "drive": 0.14000000059604645,
                 "gain_db": -1.0,
                 "metal": 0.0,
                 "model": "Snare",
-                "noise": 0.6000000238418579,
+                "modes": 1.0,
+                "noise": 0.5799999833106995,
+                "rattle": 0.75,
                 "snap": 0.4024999737739563,
-                "tone_hz": 1574.9998779296875,
-                "tune_hz": 180.5
+                "tail": 0.800000011920929,
+                "tone_hz": 1350.0,
+                "tune_hz": 169.6699981689453
               }
             },
             "vel_range": [
@@ -227,12 +351,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               39,
               39
             ],
-            "pan": 0.0,
+            "pan": -0.3499999940395355,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -250,15 +374,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.30799999833106995,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.4619999825954437,
+                "drive": 0.14000000059604645,
                 "gain_db": -2.0,
                 "metal": 0.0,
                 "model": "Clap",
+                "modes": 1.0,
                 "noise": 1.0,
+                "rattle": 0.0,
                 "snap": 0.23000000417232513,
-                "tone_hz": 1364.9998779296875,
-                "tune_hz": 300.0
+                "tail": 0.800000011920929,
+                "tone_hz": 1170.0,
+                "tune_hz": 282.0
               }
             },
             "vel_range": [
@@ -268,7 +395,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               40,
               40
@@ -291,15 +418,18 @@
                 "bend_semitones": 5.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.18199999630451202,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.27299997210502625,
+                "drive": 0.14000000059604645,
                 "gain_db": -2.0,
                 "metal": 0.0,
                 "model": "Snare",
-                "noise": 0.6000000238418579,
+                "modes": 1.0,
+                "noise": 0.5799999833106995,
+                "rattle": 0.75,
                 "snap": 0.5174999833106995,
-                "tone_hz": 2205.0,
-                "tune_hz": 228.0
+                "tail": 0.800000011920929,
+                "tone_hz": 1890.0,
+                "tune_hz": 214.32000732421875
               }
             },
             "vel_range": [
@@ -309,12 +439,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               41,
               41
             ],
-            "pan": 0.0,
+            "pan": 0.30000001192092896,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -332,15 +462,18 @@
                 "bend_semitones": 9.600000381469727,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.75,
-                "drive": 0.2800000011920929,
+                "decay_s": 1.3499999046325684,
+                "drive": 0.14000000059604645,
                 "gain_db": -3.0,
                 "metal": 0.0,
                 "model": "Tom",
+                "modes": 1.0,
                 "noise": 0.10000000149011612,
+                "rattle": 0.0,
                 "snap": 0.23000000417232513,
-                "tone_hz": 734.9999389648438,
-                "tune_hz": 92.0
+                "tail": 0.800000011920929,
+                "tone_hz": 630.0,
+                "tune_hz": 86.4800033569336
               }
             },
             "vel_range": [
@@ -350,12 +483,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               42,
               42
             ],
-            "pan": 0.0,
+            "pan": -0.2199999988079071,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -373,15 +506,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.054999999701976776,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.11137499660253525,
+                "drive": 0.14000000059604645,
                 "gain_db": -7.0,
                 "metal": 0.0,
                 "model": "ClosedHat",
+                "modes": 0.0,
                 "noise": 1.0,
+                "rattle": 0.0,
                 "snap": 0.17249999940395355,
-                "tone_hz": 8610.0,
-                "tune_hz": 320.0
+                "tail": 0.0,
+                "tone_hz": 7380.0,
+                "tune_hz": 255.67999267578125
               }
             },
             "vel_range": [
@@ -391,12 +527,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               43,
               43
             ],
-            "pan": 0.0,
+            "pan": 0.1666666716337204,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -414,15 +550,18 @@
                 "bend_semitones": 9.600000381469727,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.6749999523162842,
-                "drive": 0.2800000011920929,
+                "decay_s": 1.2149999141693115,
+                "drive": 0.14000000059604645,
                 "gain_db": -3.0,
                 "metal": 0.0,
                 "model": "Tom",
+                "modes": 1.0,
                 "noise": 0.10000000149011612,
+                "rattle": 0.0,
                 "snap": 0.23000000417232513,
-                "tone_hz": 818.9999389648438,
-                "tune_hz": 110.0
+                "tail": 0.800000011920929,
+                "tone_hz": 702.0,
+                "tune_hz": 103.4000015258789
               }
             },
             "vel_range": [
@@ -432,12 +571,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               44,
               44
             ],
-            "pan": 0.0,
+            "pan": -0.2199999988079071,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -455,15 +594,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.07500000298023224,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.15187500417232513,
+                "drive": 0.14000000059604645,
                 "gain_db": -8.0,
                 "metal": 0.0,
                 "model": "ClosedHat",
+                "modes": 0.0,
                 "noise": 1.0,
+                "rattle": 0.0,
                 "snap": 0.11500000208616257,
-                "tone_hz": 7139.99951171875,
-                "tune_hz": 300.0
+                "tail": 0.0,
+                "tone_hz": 6120.0,
+                "tune_hz": 239.70001220703125
               }
             },
             "vel_range": [
@@ -473,12 +615,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               45,
               45
             ],
-            "pan": 0.0,
+            "pan": 0.03333333134651184,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -496,15 +638,18 @@
                 "bend_semitones": 9.600000381469727,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.6000000238418579,
-                "drive": 0.2800000011920929,
+                "decay_s": 1.0800000429153442,
+                "drive": 0.14000000059604645,
                 "gain_db": -3.0,
                 "metal": 0.0,
                 "model": "Tom",
+                "modes": 1.0,
                 "noise": 0.10000000149011612,
+                "rattle": 0.0,
                 "snap": 0.23000000417232513,
-                "tone_hz": 892.4999389648438,
-                "tune_hz": 132.0
+                "tail": 0.800000011920929,
+                "tone_hz": 765.0,
+                "tune_hz": 124.08000183105469
               }
             },
             "vel_range": [
@@ -514,12 +659,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               46,
               46
             ],
-            "pan": 0.0,
+            "pan": -0.2199999988079071,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -537,15 +682,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.41999998688697815,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.8504999876022339,
+                "drive": 0.14000000059604645,
                 "gain_db": -8.0,
                 "metal": 0.0,
                 "model": "OpenHat",
+                "modes": 0.0,
                 "noise": 1.0,
+                "rattle": 0.0,
                 "snap": 0.1379999965429306,
-                "tone_hz": 8189.99951171875,
-                "tune_hz": 320.0
+                "tail": 0.0,
+                "tone_hz": 7020.0,
+                "tune_hz": 255.67999267578125
               }
             },
             "vel_range": [
@@ -555,12 +703,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               47,
               47
             ],
-            "pan": 0.0,
+            "pan": -0.10000002384185791,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -578,15 +726,18 @@
                 "bend_semitones": 9.600000381469727,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.5400000214576721,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.972000002861023,
+                "drive": 0.14000000059604645,
                 "gain_db": -3.0,
                 "metal": 0.0,
                 "model": "Tom",
+                "modes": 1.0,
                 "noise": 0.10000000149011612,
+                "rattle": 0.0,
                 "snap": 0.23000000417232513,
-                "tone_hz": 944.9999389648438,
-                "tune_hz": 158.0
+                "tail": 0.800000011920929,
+                "tone_hz": 810.0,
+                "tune_hz": 148.52000427246094
               }
             },
             "vel_range": [
@@ -596,12 +747,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               48,
               48
             ],
-            "pan": 0.0,
+            "pan": -0.1666666865348816,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -619,15 +770,18 @@
                 "bend_semitones": 9.600000381469727,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.47999998927116394,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.8639999628067017,
+                "drive": 0.14000000059604645,
                 "gain_db": -3.0,
                 "metal": 0.0,
                 "model": "Tom",
+                "modes": 1.0,
                 "noise": 0.10000000149011612,
+                "rattle": 0.0,
                 "snap": 0.23000000417232513,
-                "tone_hz": 1029.0,
-                "tune_hz": 186.0
+                "tail": 0.800000011920929,
+                "tone_hz": 882.0,
+                "tune_hz": 174.83999633789062
               }
             },
             "vel_range": [
@@ -637,12 +791,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               49,
               49
             ],
-            "pan": 0.0,
+            "pan": 0.2800000011920929,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -660,15 +814,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 1.600000023841858,
-                "drive": 0.2800000011920929,
+                "decay_s": 5.039999961853027,
+                "drive": 0.14000000059604645,
                 "gain_db": -10.0,
-                "metal": 0.0,
+                "metal": 0.44999998807907104,
                 "model": "Cymbal",
+                "modes": 0.0,
                 "noise": 1.0,
+                "rattle": 0.0,
                 "snap": 0.11500000208616257,
-                "tone_hz": 5459.99951171875,
-                "tune_hz": 520.0
+                "tail": 0.0,
+                "tone_hz": 4680.0,
+                "tune_hz": 415.4800109863281
               }
             },
             "vel_range": [
@@ -678,12 +835,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               50,
               50
             ],
-            "pan": 0.0,
+            "pan": -0.30000001192092896,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -701,15 +858,18 @@
                 "bend_semitones": 9.600000381469727,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.42000001668930054,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.7559999823570251,
+                "drive": 0.14000000059604645,
                 "gain_db": -3.0,
                 "metal": 0.0,
                 "model": "Tom",
+                "modes": 1.0,
                 "noise": 0.10000000149011612,
+                "rattle": 0.0,
                 "snap": 0.23000000417232513,
-                "tone_hz": 1102.5,
-                "tune_hz": 220.0
+                "tail": 0.800000011920929,
+                "tone_hz": 945.0,
+                "tune_hz": 206.8000030517578
               }
             },
             "vel_range": [
@@ -719,12 +879,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               51,
               51
             ],
-            "pan": 0.0,
+            "pan": 0.2800000011920929,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -742,15 +902,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 1.2000000476837158,
-                "drive": 0.2800000011920929,
+                "decay_s": 3.7799999713897705,
+                "drive": 0.14000000059604645,
                 "gain_db": -11.0,
-                "metal": 0.0,
+                "metal": 0.44999998807907104,
                 "model": "Cymbal",
+                "modes": 0.0,
                 "noise": 1.0,
+                "rattle": 0.0,
                 "snap": 0.2529999911785126,
-                "tone_hz": 7769.99951171875,
-                "tune_hz": 620.0
+                "tail": 0.0,
+                "tone_hz": 6660.0,
+                "tune_hz": 495.3800048828125
               }
             },
             "vel_range": [
@@ -760,12 +923,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               52,
               52
             ],
-            "pan": 0.0,
+            "pan": 0.2800000011920929,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -783,15 +946,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 1.100000023841858,
-                "drive": 0.2800000011920929,
+                "decay_s": 3.4650001525878906,
+                "drive": 0.14000000059604645,
                 "gain_db": -11.0,
-                "metal": 0.0,
+                "metal": 0.44999998807907104,
                 "model": "Cymbal",
+                "modes": 0.0,
                 "noise": 1.0,
+                "rattle": 0.0,
                 "snap": 0.16099999845027924,
-                "tone_hz": 4410.0,
-                "tune_hz": 470.0
+                "tail": 0.0,
+                "tone_hz": 3780.0,
+                "tune_hz": 375.5299987792969
               }
             },
             "vel_range": [
@@ -801,12 +967,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               53,
               53
             ],
-            "pan": 0.0,
+            "pan": -0.3499999940395355,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -824,15 +990,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.44999998807907104,
-                "drive": 0.2800000011920929,
+                "decay_s": 1.4174997806549072,
+                "drive": 0.14000000059604645,
                 "gain_db": -10.0,
-                "metal": 0.0,
+                "metal": 0.44999998807907104,
                 "model": "Cowbell",
+                "modes": 1.0,
                 "noise": 0.30000001192092896,
+                "rattle": 0.0,
                 "snap": 0.3449999988079071,
-                "tone_hz": 3569.999755859375,
-                "tune_hz": 760.0
+                "tail": 0.800000011920929,
+                "tone_hz": 3060.0,
+                "tune_hz": 714.4000244140625
               }
             },
             "vel_range": [
@@ -842,12 +1011,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               54,
               54
             ],
-            "pan": 0.0,
+            "pan": -0.2199999988079071,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -865,15 +1034,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.1599999964237213,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.2639999985694885,
+                "drive": 0.14000000059604645,
                 "gain_db": -10.0,
                 "metal": 0.0,
                 "model": "ClosedHat",
+                "modes": 0.0,
                 "noise": 1.0,
+                "rattle": 0.0,
                 "snap": 0.3449999988079071,
-                "tone_hz": 9975.0,
-                "tune_hz": 500.0
+                "tail": 0.0,
+                "tone_hz": 8550.0,
+                "tune_hz": 399.5
               }
             },
             "vel_range": [
@@ -883,12 +1055,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               55,
               55
             ],
-            "pan": 0.0,
+            "pan": 0.2800000011920929,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -906,15 +1078,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.699999988079071,
-                "drive": 0.2800000011920929,
+                "decay_s": 2.2049996852874756,
+                "drive": 0.14000000059604645,
                 "gain_db": -11.0,
-                "metal": 0.0,
+                "metal": 0.44999998807907104,
                 "model": "Cymbal",
+                "modes": 0.0,
                 "noise": 1.0,
+                "rattle": 0.0,
                 "snap": 0.1379999965429306,
-                "tone_hz": 8820.0,
-                "tune_hz": 700.0
+                "tail": 0.0,
+                "tone_hz": 7560.0,
+                "tune_hz": 559.2999877929688
               }
             },
             "vel_range": [
@@ -924,12 +1099,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               56,
               56
             ],
-            "pan": 0.0,
+            "pan": 0.3499999940395355,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -947,15 +1122,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.3199999928474426,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.527999997138977,
+                "drive": 0.14000000059604645,
                 "gain_db": -8.0,
                 "metal": 0.0,
                 "model": "Cowbell",
+                "modes": 1.0,
                 "noise": 0.15000000596046448,
+                "rattle": 0.0,
                 "snap": 0.2874999940395355,
-                "tone_hz": 2729.999755859375,
-                "tune_hz": 540.0
+                "tail": 0.800000011920929,
+                "tone_hz": 2340.0,
+                "tune_hz": 507.6000061035156
               }
             },
             "vel_range": [
@@ -965,12 +1143,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               57,
               57
             ],
-            "pan": 0.0,
+            "pan": 0.2800000011920929,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -988,15 +1166,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 1.399999976158142,
-                "drive": 0.2800000011920929,
+                "decay_s": 4.409999370574951,
+                "drive": 0.14000000059604645,
                 "gain_db": -10.0,
-                "metal": 0.0,
+                "metal": 0.44999998807907104,
                 "model": "Cymbal",
+                "modes": 0.0,
                 "noise": 1.0,
+                "rattle": 0.0,
                 "snap": 0.11500000208616257,
-                "tone_hz": 6299.99951171875,
-                "tune_hz": 580.0
+                "tail": 0.0,
+                "tone_hz": 5400.0,
+                "tune_hz": 463.4200134277344
               }
             },
             "vel_range": [
@@ -1006,12 +1187,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               58,
               58
             ],
-            "pan": 0.0,
+            "pan": 0.3499999940395355,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -1029,15 +1210,18 @@
                 "bend_semitones": 4.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.6000000238418579,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.9900000691413879,
+                "drive": 0.14000000059604645,
                 "gain_db": -10.0,
                 "metal": 0.0,
                 "model": "Perc",
+                "modes": 1.0,
                 "noise": 0.699999988079071,
+                "rattle": 0.0,
                 "snap": 0.46000000834465027,
-                "tone_hz": 3149.999755859375,
-                "tune_hz": 340.0
+                "tail": 0.800000011920929,
+                "tone_hz": 2700.0,
+                "tune_hz": 319.6000061035156
               }
             },
             "vel_range": [
@@ -1047,12 +1231,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               59,
               59
             ],
-            "pan": 0.0,
+            "pan": 0.2800000011920929,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -1070,15 +1254,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 1.0,
-                "drive": 0.2800000011920929,
+                "decay_s": 3.1499998569488525,
+                "drive": 0.14000000059604645,
                 "gain_db": -11.0,
-                "metal": 0.0,
+                "metal": 0.44999998807907104,
                 "model": "Cymbal",
+                "modes": 0.0,
                 "noise": 1.0,
+                "rattle": 0.0,
                 "snap": 0.23000000417232513,
-                "tone_hz": 8400.0,
-                "tune_hz": 660.0
+                "tail": 0.0,
+                "tone_hz": 7200.0,
+                "tune_hz": 527.3400268554688
               }
             },
             "vel_range": [
@@ -1088,12 +1275,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               60,
               60
             ],
-            "pan": 0.0,
+            "pan": 0.3499999940395355,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -1111,15 +1298,18 @@
                 "bend_semitones": 5.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.1599999964237213,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.2639999985694885,
+                "drive": 0.14000000059604645,
                 "gain_db": -6.0,
                 "metal": 0.0,
                 "model": "Perc",
+                "modes": 1.0,
                 "noise": 0.1599999964237213,
+                "rattle": 0.0,
                 "snap": 0.3449999988079071,
-                "tone_hz": 1889.9998779296875,
-                "tune_hz": 340.0
+                "tail": 0.800000011920929,
+                "tone_hz": 1620.0,
+                "tune_hz": 319.6000061035156
               }
             },
             "vel_range": [
@@ -1129,12 +1319,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               61,
               61
             ],
-            "pan": 0.0,
+            "pan": -0.3499999940395355,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -1152,15 +1342,18 @@
                 "bend_semitones": 5.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.1899999976158142,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.3135000169277191,
+                "drive": 0.14000000059604645,
                 "gain_db": -6.0,
                 "metal": 0.0,
                 "model": "Perc",
+                "modes": 1.0,
                 "noise": 0.1599999964237213,
+                "rattle": 0.0,
                 "snap": 0.32199999690055847,
-                "tone_hz": 1574.9998779296875,
-                "tune_hz": 260.0
+                "tail": 0.800000011920929,
+                "tone_hz": 1350.0,
+                "tune_hz": 244.39999389648438
               }
             },
             "vel_range": [
@@ -1170,12 +1363,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               62,
               62
             ],
-            "pan": 0.0,
+            "pan": 0.3499999940395355,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -1193,15 +1386,18 @@
                 "bend_semitones": 4.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.10000000149011612,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.16500000655651093,
+                "drive": 0.14000000059604645,
                 "gain_db": -6.0,
                 "metal": 0.0,
                 "model": "Perc",
+                "modes": 1.0,
                 "noise": 0.2199999988079071,
+                "rattle": 0.0,
                 "snap": 0.39100000262260437,
-                "tone_hz": 1679.9998779296875,
-                "tune_hz": 300.0
+                "tail": 0.800000011920929,
+                "tone_hz": 1440.0,
+                "tune_hz": 282.0
               }
             },
             "vel_range": [
@@ -1211,12 +1407,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               63,
               63
             ],
-            "pan": 0.0,
+            "pan": -0.3499999940395355,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -1234,15 +1430,18 @@
                 "bend_semitones": 5.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.23999999463558197,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.3959999978542328,
+                "drive": 0.14000000059604645,
                 "gain_db": -6.0,
                 "metal": 0.0,
                 "model": "Perc",
+                "modes": 1.0,
                 "noise": 0.14000000059604645,
+                "rattle": 0.0,
                 "snap": 0.29899999499320984,
-                "tone_hz": 1364.9998779296875,
-                "tune_hz": 230.0
+                "tail": 0.800000011920929,
+                "tone_hz": 1170.0,
+                "tune_hz": 216.1999969482422
               }
             },
             "vel_range": [
@@ -1252,12 +1451,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               64,
               64
             ],
-            "pan": 0.0,
+            "pan": 0.3499999940395355,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -1275,15 +1474,18 @@
                 "bend_semitones": 5.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.30000001192092896,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.49500003457069397,
+                "drive": 0.14000000059604645,
                 "gain_db": -6.0,
                 "metal": 0.0,
                 "model": "Perc",
+                "modes": 1.0,
                 "noise": 0.11999999731779099,
+                "rattle": 0.0,
                 "snap": 0.2759999930858612,
-                "tone_hz": 1155.0,
-                "tune_hz": 175.0
+                "tail": 0.800000011920929,
+                "tone_hz": 990.0,
+                "tune_hz": 164.5
               }
             },
             "vel_range": [
@@ -1293,12 +1495,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               65,
               65
             ],
-            "pan": 0.0,
+            "pan": -0.3499999940395355,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -1316,15 +1518,18 @@
                 "bend_semitones": 6.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.2199999988079071,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.36299997568130493,
+                "drive": 0.14000000059604645,
                 "gain_db": -7.0,
                 "metal": 0.0,
                 "model": "Perc",
+                "modes": 1.0,
                 "noise": 0.25999999046325684,
+                "rattle": 0.0,
                 "snap": 0.46000000834465027,
-                "tone_hz": 2520.0,
-                "tune_hz": 380.0
+                "tail": 0.800000011920929,
+                "tone_hz": 2160.0,
+                "tune_hz": 357.20001220703125
               }
             },
             "vel_range": [
@@ -1334,12 +1539,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               66,
               66
             ],
-            "pan": 0.0,
+            "pan": 0.3499999940395355,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -1357,15 +1562,18 @@
                 "bend_semitones": 6.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.2800000011920929,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.4620000422000885,
+                "drive": 0.14000000059604645,
                 "gain_db": -7.0,
                 "metal": 0.0,
                 "model": "Perc",
+                "modes": 1.0,
                 "noise": 0.23999999463558197,
+                "rattle": 0.0,
                 "snap": 0.43699997663497925,
-                "tone_hz": 2100.0,
-                "tune_hz": 290.0
+                "tail": 0.800000011920929,
+                "tone_hz": 1800.0,
+                "tune_hz": 272.6000061035156
               }
             },
             "vel_range": [
@@ -1375,12 +1583,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               67,
               67
             ],
-            "pan": 0.0,
+            "pan": -0.3499999940395355,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -1398,15 +1606,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.25999999046325684,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.42899999022483826,
+                "drive": 0.14000000059604645,
                 "gain_db": -9.0,
                 "metal": 0.0,
                 "model": "Cowbell",
+                "modes": 1.0,
                 "noise": 0.11999999731779099,
+                "rattle": 0.0,
                 "snap": 0.2759999930858612,
-                "tone_hz": 3359.999755859375,
-                "tune_hz": 800.0
+                "tail": 0.800000011920929,
+                "tone_hz": 2880.0,
+                "tune_hz": 752.0
               }
             },
             "vel_range": [
@@ -1416,12 +1627,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               68,
               68
             ],
-            "pan": 0.0,
+            "pan": 0.3499999940395355,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -1439,15 +1650,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.30000001192092896,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.49500003457069397,
+                "drive": 0.14000000059604645,
                 "gain_db": -9.0,
                 "metal": 0.0,
                 "model": "Cowbell",
+                "modes": 1.0,
                 "noise": 0.11999999731779099,
+                "rattle": 0.0,
                 "snap": 0.2759999930858612,
-                "tone_hz": 2834.999755859375,
-                "tune_hz": 640.0
+                "tail": 0.800000011920929,
+                "tone_hz": 2430.0,
+                "tune_hz": 601.5999755859375
               }
             },
             "vel_range": [
@@ -1457,12 +1671,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               69,
               69
             ],
-            "pan": 0.0,
+            "pan": -0.2199999988079071,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -1480,15 +1694,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.07999999821186066,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.13199999928474426,
+                "drive": 0.14000000059604645,
                 "gain_db": -11.0,
                 "metal": 0.0,
                 "model": "ClosedHat",
+                "modes": 0.0,
                 "noise": 1.0,
+                "rattle": 0.0,
                 "snap": 0.39100000262260437,
-                "tone_hz": 7349.99951171875,
-                "tune_hz": 400.0
+                "tail": 0.0,
+                "tone_hz": 6300.0,
+                "tune_hz": 319.6000061035156
               }
             },
             "vel_range": [
@@ -1498,12 +1715,12 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -10.0,
+            "gain_db": -14.90999984741211,
             "key_range": [
               70,
               70
             ],
-            "pan": 0.0,
+            "pan": -0.2199999988079071,
             "playback": {
               "end_offset": 0.0,
               "interpolation": null,
@@ -1521,15 +1738,18 @@
                 "bend_semitones": 0.0,
                 "body": "Sine",
                 "crush": 0.0,
-                "decay_s": 0.05000000074505806,
-                "drive": 0.2800000011920929,
+                "decay_s": 0.08250000327825546,
+                "drive": 0.14000000059604645,
                 "gain_db": -11.0,
                 "metal": 0.0,
                 "model": "ClosedHat",
+                "modes": 0.0,
                 "noise": 1.0,
+                "rattle": 0.0,
                 "snap": 0.46000000834465027,
-                "tone_hz": 10290.0,
-                "tune_hz": 400.0
+                "tail": 0.0,
+                "tone_hz": 8820.0,
+                "tune_hz": 319.6000061035156
               }
             },
             "vel_range": [
@@ -1574,7 +1794,8 @@
             "spread": 0.0,
             "voices": 1
           }
-        }
+        },
+        "wavetables": []
       }
     }
   }

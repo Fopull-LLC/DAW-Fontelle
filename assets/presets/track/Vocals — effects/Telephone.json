@@ -1,0 +1,134 @@
+{
+  "format_version": 1,
+  "device": "track",
+  "name": "Telephone",
+  "category": "Vocals — effects",
+  "payload": {
+    "track": {
+      "gain_db": 0.0,
+      "pan": 0.0,
+      "phase_invert": false,
+      "inserts": [
+        {
+          "config": {
+            "Eq": {
+              "bands": [
+                {
+                  "band_type": "HighPass24",
+                  "freq_hz": 600.0,
+                  "gain_db": 0.0,
+                  "q": 0.7,
+                  "enabled": true,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "LowPass24",
+                  "freq_hz": 3000.0,
+                  "gain_db": 0.0,
+                  "q": 0.7,
+                  "enabled": true,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1600.0,
+                  "gain_db": 5.0,
+                  "q": 1.4,
+                  "enabled": true,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                }
+              ],
+              "mix": 1.0
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Distortion": {
+              "curve": "HardClip",
+              "shape": 0.0,
+              "drive_db": 14.0,
+              "bias": 0.0,
+              "sag": 0.0,
+              "pre_hp_hz": 20.0,
+              "pre_mid_hz": 800.0,
+              "pre_mid_db": 0.0,
+              "clean_low_hz": 20.0,
+              "tone_hz": 3500.0,
+              "output_db": 0.0,
+              "auto_gain": true,
+              "oversample": "Two",
+              "mix": 0.6
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Compressor": {
+              "threshold_db": -16.0,
+              "ratio": 8.0,
+              "attack_ms": 2.0,
+              "release_ms": 60.0,
+              "knee_db": 6.0,
+              "makeup_db": 5.0,
+              "auto_makeup": false,
+              "detection": "Peak",
+              "mix": 1.0
+            }
+          },
+          "bypassed": false
+        }
+      ]
+    }
+  }
+}

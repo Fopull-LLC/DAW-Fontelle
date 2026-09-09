@@ -1,0 +1,47 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Tune"
+  },
+  "name": "Lo-Fi Cassette",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Tune": {
+        "range": "AltoTenor",
+        "mode": "Studio",
+        "tracking": 0.5,
+        "gate_db": -50.0,
+        "root": 0,
+        "scale": "Chromatic",
+        "notes": 4095,
+        "control": "Scale",
+        "midi_bend": true,
+        "retune_ms": 55.0,
+        "amount": 1.0,
+        "humanize": 0.3,
+        "flex": 0.0,
+        "natural_vibrato": 1.0,
+        "vibrato_depth": 0.0,
+        "vibrato_rate_hz": 5.5,
+        "vibrato_sync": false,
+        "vibrato_division": "Eighth",
+        "vibrato_onset_ms": 200.0,
+        "vibrato_shape": "Sine",
+        "engine": "Smooth",
+        "texture": 0.0,
+        "grain_ms": 25.0,
+        "formant": 0.0,
+        "formant_follow": 0.0,
+        "transpose": 0,
+        "detune_cents": 0.0,
+        "drive": 0.25,
+        "crush": 0.45,
+        "air": -0.6,
+        "width": 0.7,
+        "output_db": 0.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

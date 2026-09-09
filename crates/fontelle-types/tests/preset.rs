@@ -127,6 +127,7 @@ fn the_table_of_device_slugs_is_frozen() {
         (DeviceKind::Effect(EffectKind::Chorus), "fx-chorus"),
         (DeviceKind::Effect(EffectKind::Delay), "fx-delay"),
         (DeviceKind::Effect(EffectKind::Reverb), "fx-reverb"),
+        (DeviceKind::Effect(EffectKind::Tune), "fx-tune"),
         (
             DeviceKind::Plugin(PluginKey::new(PluginFormat::Clap, "com.u-he.diva")),
             "plugin-clap-com.u-he.diva",

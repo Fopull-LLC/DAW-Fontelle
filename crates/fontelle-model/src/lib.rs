@@ -18,6 +18,7 @@ mod prefab;
 mod project;
 mod recording;
 mod storage;
+mod stretch;
 mod tools;
 
 pub use arena::Arena;
@@ -28,19 +29,17 @@ pub use clip::{AudioClipData, Clip, ClipMap, ClipSource};
 pub use command::{Command, CommandError, History};
 pub use commands::{
     AddAudioClip, AddAutomationPoint, AddChannel, AddClip, AddInsert, AddLane, AddMixerTrack,
-    AddNotes, AddPluginInsert, AddPrefab, AddPrefabInstance, AddSend, ApplyPreset, Compound,
-    DetachPrefab, DuplicateChannel, DuplicateClip,
-    FlagTarget, ImportPart, ImportParts, MIN_CLIP_LENGTH, MadePart, MakePrefabFromClip,
-    MoveAutomationPoints, MoveClip,
-    MoveInsert, MoveLane, MoveNotes, NEW_SEND_DB, NudgeNoteProperty, NumberTarget,
-    PlaceAutomationPoints, PluginTarget, PresetTarget, RemoveAutomationPoints, RemoveChannel,
-    RemoveClip, RemoveInsert, RemoveLane, RemoveMixerTrack, RemoveNotes, RemovePrefab, RemoveSend,
-    RenameChannel, RenameLane, RenameMixerTrack, RenamePrefab, ResizeClip, ResizeNotes,
-    RestoreAutomationPoints,
+    AddNotes, AddPluginInsert, AddPrefab, AddPrefabInstance, AddSend, ApplyPreset, ApplyTrackChain,
+    Compound, DetachPrefab, DuplicateChannel, DuplicateClip, FlagTarget, ImportPart, ImportParts,
+    MIN_CLIP_LENGTH, MadePart, MakePrefabFromClip, MoveAutomationPoints, MoveClip, MoveInsert,
+    MoveLane, MoveNotes, NEW_SEND_DB, NudgeNoteProperty, NumberTarget, PlaceAutomationPoints,
+    PluginTarget, PresetTarget, RemoveAutomationPoints, RemoveChannel, RemoveClip, RemoveInsert,
+    RemoveLane, RemoveMixerTrack, RemoveNotes, RemovePrefab, RemoveSend, RenameChannel, RenameLane,
+    RenameMixerTrack, RenamePrefab, ResizeClip, ResizeNotes, RestoreAutomationPoints,
     RestoreChannelPlugin, RestoreInsert, RestoreInsertConfig, RestorePluginParam,
     RestorePointCurves, SetAudioClip, SetChannelKind, SetChannelPatch, SetChannelPlugin,
     SetChannelRoute, SetClipLoop, SetEqBand, SetFlag, SetInsertBypassed, SetInsertKey,
-    SetInsertMix, SetInsertParam, SetLoopRange, SetNoteLengths, SetNoteProperty,
+    SetInsertMix, SetInsertNotes, SetInsertParam, SetLoopRange, SetNoteLengths, SetNoteProperty,
     SetNotePropertyEach, SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve,
     SetPresetRef, SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes,
     SplitClip,
@@ -56,7 +55,11 @@ pub use recording::notes_from_capture;
 pub use storage::{
     BUNDLE_DIRS, PROJECT_FILE, PROJECT_FORMAT_VERSION, StorageError, load_project, save_project,
 };
-pub use tools::{MAX_RANDOM_AMOUNT, RandomMode, RandomSpec, legato_lengths, randomised};
+pub use stretch::with_stretch;
+pub use tools::{
+    ArpDirection, ArpSpec, MAX_ARP_OCTAVES, MAX_ARP_REPEATS, MAX_RANDOM_AMOUNT, RandomMode,
+    RandomSpec, arpeggiated, legato_lengths, randomised,
+};
 
 /// What `target` is automated to at `tick` in song time, or `None` if nothing
 /// has automated it yet (TDD §12.2).

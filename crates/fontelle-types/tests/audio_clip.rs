@@ -19,7 +19,9 @@
 //! itself is `fontelle-engine`'s, and it reads these same functions, which is
 //! the point of them living here.
 
-use fontelle_types::{AssetKind, AssetRef, AudioClipData, ClipLoopMode, Fade, FadeCurve};
+use fontelle_types::{
+    AssetKind, AssetRef, AudioClipData, ClipLoopMode, ClipStretch, Fade, FadeCurve,
+};
 
 fn an_asset() -> AssetRef {
     AssetRef {
@@ -169,16 +171,128 @@ fn a_clip_that_does_not_loop_runs_off_the_end_rather_than_wrapping() {
     assert!(c.source_position(500.0) >= 200.0);
 }
 
+// ------------------------------------------------- pitch, speed, and time ---
+//
+// Reported from using the window: *"changing pitch is stretching the audio
+// even when stretch is off and not set to resample."* With the stretch
+// switch off, pitch and speed are two different knobs: pitch moves what is
+// heard and not how long it takes, and speed moves how long it takes and not
+// what is heard. Only `Resample` — varispeed by definition — couples them.
+
 #[test]
-fn pitch_and_speed_are_the_same_movement_through_the_file() {
-    // §15.1: varispeed "couples pitch unless time_lock", and time lock is a v2
-    // feature. So an octave up is double speed, and saying it twice — once in
+fn in_resample_mode_pitch_and_speed_are_the_same_movement_through_the_file() {
+    // Varispeed: an octave up is double speed, and saying it twice — once in
     // semitones and once in speed — has to give one answer.
     let mut a = clip(10_000);
+    a.stretch = ClipStretch::Resample;
     a.pitch_semitones = 12.0;
     let mut b = clip(10_000);
+    b.stretch = ClipStretch::Resample;
     b.speed = 2.0;
     assert!((a.source_position(100.0) - b.source_position(100.0)).abs() < 1e-6);
+    assert!((a.time_rate() - 2.0).abs() < 1e-9);
+    assert!((a.read_rate() - 2.0).abs() < 1e-9, "the pitch is the speed");
+    assert!(!a.shifts_pitch(), "varispeed is a plain read");
+}
+
+#[test]
+fn with_stretch_off_pitch_does_not_move_through_the_file() {
+    let mut c = clip(10_000);
+    c.pitch_semitones = 12.0;
+    assert_eq!(c.stretch, ClipStretch::Off);
+    assert_eq!(
+        c.source_position(100.0),
+        100.0,
+        "an octave up is still frame 100 at frame 100"
+    );
+    assert!((c.time_rate() - 1.0).abs() < 1e-9);
+    assert!(
+        (c.read_rate() - 2.0).abs() < 1e-9,
+        "but it is heard an octave up"
+    );
+    assert!(c.shifts_pitch());
+}
+
+#[test]
+fn with_stretch_off_speed_moves_through_the_file_and_keeps_the_pitch() {
+    let mut c = clip(10_000);
+    c.speed = 2.0;
+    assert_eq!(c.source_position(100.0), 200.0);
+    assert!((c.time_rate() - 2.0).abs() < 1e-9);
+    assert!(
+        (c.read_rate() - 1.0).abs() < 1e-9,
+        "twice as fast, not an octave up"
+    );
+    assert!(c.shifts_pitch());
+}
+
+#[test]
+fn a_clip_whose_pitch_and_speed_agree_is_a_plain_read_whatever_the_mode() {
+    // The identity the stretch switch relies on: a clip in `Off` with its
+    // speed doubled *and* its pitch an octave up is exactly the varispeed
+    // read a stretched clip makes, so turning stretch off can keep the sound.
+    let mut c = clip(10_000);
+    c.speed = 2.0;
+    c.pitch_semitones = 12.0;
+    assert!((c.time_rate() - 2.0).abs() < 1e-9);
+    assert!((c.read_rate() - 2.0).abs() < 1e-9);
+    assert!(!c.shifts_pitch());
+}
+
+#[test]
+fn a_grain_reads_at_the_heard_rate_from_where_its_anchor_falls_in_time() {
+    // The shifter's whole arithmetic. A grain anchored at clip frame `a`
+    // starts where the time map puts `a` and then reads at the heard rate,
+    // so with pitch and speed agreeing every grain reads the same frame —
+    // which is why that case needs no grains at all.
+    let mut c = clip(10_000);
+    c.pitch_semitones = 12.0;
+    // Anchor 0: frame 100 of the clip is read from frame 200 of the file.
+    assert!((c.grain_offset(100.0, 0.0) - 200.0).abs() < 1e-9);
+    // Anchor 1000: the grain starts at file frame 1000 (time rate 1) and has
+    // read 200 frames by clip frame 1100.
+    assert!((c.grain_offset(1100.0, 1000.0) - 1200.0).abs() < 1e-9);
+
+    let mut plain = clip(10_000);
+    plain.speed = 2.0;
+    plain.pitch_semitones = 12.0;
+    for anchor in [0.0, 500.0, 1000.0] {
+        assert!(
+            (plain.grain_offset(1100.0, anchor) - 2200.0).abs() < 1e-9,
+            "anchor {anchor} disagrees with the plain read"
+        );
+    }
+}
+
+#[test]
+fn a_grain_offset_is_placed_in_the_file_the_way_a_position_is() {
+    // Trim, reverse and the loop are one function's business, whichever way
+    // the offset was arrived at.
+    let mut c = clip(1000);
+    c.source_start = 100;
+    c.source_end = 300;
+    c.loop_mode = ClipLoopMode::Loop;
+    assert_eq!(c.source_at_offset(250.0), 150.0, "the loop came round");
+    c.loop_mode = ClipLoopMode::Once;
+    c.reverse = true;
+    assert_eq!(c.source_at_offset(0.0), 299.0);
+    // And `source_position` is the same placement of the time map's offset.
+    c.speed = 2.0;
+    assert_eq!(c.source_position(50.0), c.source_at_offset(100.0));
+}
+
+#[test]
+fn the_grain_hop_is_a_fixed_stretch_of_the_files_own_time() {
+    // About twenty milliseconds at the file's rate: long enough to hold a
+    // cycle of anything a bass plays, short enough not to smear a hit. A
+    // clip whose rate is unknown gets a hop anyway rather than a zero that
+    // would divide.
+    let c = clip(10_000);
+    let hop = c.grain_hop();
+    assert!((900.0..=1_300.0).contains(&hop), "{hop} frames at 48 kHz");
+    let mut unknown = clip(10_000);
+    unknown.sample_rate = 0;
+    assert!(unknown.grain_hop() >= 64.0);
 }
 
 // ---------------------------------------------------------------- fades ---

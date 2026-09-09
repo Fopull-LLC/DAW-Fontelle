@@ -1,0 +1,153 @@
+{
+  "format_version": 1,
+  "device": "track",
+  "name": "Ballad Lead",
+  "category": "Vocals — natural",
+  "payload": {
+    "track": {
+      "gain_db": 0.0,
+      "pan": 0.0,
+      "phase_invert": false,
+      "inserts": [
+        {
+          "config": {
+            "Compressor": {
+              "threshold_db": -26.0,
+              "ratio": 3.0,
+              "attack_ms": 15.0,
+              "release_ms": 200.0,
+              "knee_db": 6.0,
+              "makeup_db": 3.5,
+              "auto_makeup": false,
+              "detection": "Peak",
+              "mix": 1.0
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Eq": {
+              "bands": [
+                {
+                  "band_type": "HighPass24",
+                  "freq_hz": 75.0,
+                  "gain_db": 0.0,
+                  "q": 0.7,
+                  "enabled": true,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 350.0,
+                  "gain_db": -1.5,
+                  "q": 1.1,
+                  "enabled": true,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "HighShelf",
+                  "freq_hz": 12000.0,
+                  "gain_db": 2.5,
+                  "q": 0.7,
+                  "enabled": true,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                }
+              ],
+              "mix": 1.0
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Soften": {
+              "shelf_amount": 0.25,
+              "suppressor_amount": 0.4,
+              "transient_amount": 0.15,
+              "air_restore_amount": 0.3,
+              "mix": 1.0
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Delay": {
+              "time_ms": 300.0,
+              "sync": true,
+              "division": "HalfTriplet",
+              "feedback": 0.24,
+              "damping_hz": 5000.0,
+              "drive": 0.0,
+              "ping_pong": false,
+              "mix": 0.09
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Reverb": {
+              "size": 0.85,
+              "decay_s": 4.2,
+              "damping_hz": 5200.0,
+              "pre_delay_ms": 35.0,
+              "width": 1.0,
+              "mix": 0.24
+            }
+          },
+          "bypassed": false
+        }
+      ]
+    }
+  }
+}

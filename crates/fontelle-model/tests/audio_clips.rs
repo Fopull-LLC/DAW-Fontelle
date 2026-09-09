@@ -513,3 +513,36 @@ fn the_half_you_cut_off_a_loop_is_still_a_loop_so_it_still_sounds_like_it_did() 
     assert_eq!(left.source_start, right.source_start);
     assert_eq!(left.source_end, right.source_end);
 }
+
+#[test]
+fn cutting_a_repitched_take_cuts_at_the_files_own_time() {
+    // With stretch off, pitch does not move through the file — it only moves
+    // what is heard — so the blade at the block's middle is the file's
+    // middle whatever the pitch says. Before the shifter this clip would
+    // have been read an octave up, twice as fast, and the seam would have
+    // been the whole file.
+    let mut project = Project::new("audio");
+    let mut data = a_clip("Take.wav");
+    data.pitch_semitones = 12.0;
+    assert_eq!(data.stretch, fontelle_types::ClipStretch::Off);
+    let mut import = AddAudioClip::new("Take.wav", data, 0, TAKE_LENGTH);
+    import.apply(&mut project).expect("applies");
+    let id = import.clip().expect("a clip");
+    let whole = data_of(&project, id);
+
+    let mut cut = SplitClip::new(id, TAKE_LENGTH / 2);
+    cut.apply(&mut project).expect("cuts");
+    let mut clips: Vec<_> = project
+        .clips
+        .iter()
+        .map(|(id, c)| (id, c.clone()))
+        .collect();
+    clips.sort_by_key(|(_, c)| c.start);
+    let left = data_of(&project, clips[0].0);
+    let middle = whole.source_start + whole.source_frames() / 2;
+    assert!(
+        (left.source_end - middle).abs() <= 2,
+        "the seam is the file's middle ({middle}), not {}",
+        left.source_end
+    );
+}

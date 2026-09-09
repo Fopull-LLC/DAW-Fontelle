@@ -197,13 +197,8 @@ impl Distortion {
         // Built once here rather than per sample: none of these move inside
         // a block.
         let pre_hp_on = config.pre_hp_hz > FILTER_OFF_HZ;
-        let pre_hp = SvfFilter::coeffs(
-            SvfMode::Highpass,
-            config.pre_hp_hz,
-            LR_SECTION_Q,
-            0.0,
-            rate,
-        );
+        let pre_hp =
+            SvfFilter::coeffs(SvfMode::Highpass, config.pre_hp_hz, LR_SECTION_Q, 0.0, rate);
         let pre_mid_on = config.pre_mid_db.abs() > 0.01;
         let pre_mid = SvfFilter::coeffs(
             SvfMode::Bell,
@@ -228,13 +223,7 @@ impl Distortion {
             rate,
         );
         let toning = config.tone_hz < TONE_OPEN_HZ;
-        let tone = SvfFilter::coeffs(
-            SvfMode::Lowpass,
-            config.tone_hz,
-            LR_SECTION_Q,
-            0.0,
-            rate,
-        );
+        let tone = SvfFilter::coeffs(SvfMode::Lowpass, config.tone_hz, LR_SECTION_Q, 0.0, rate);
         let factor = config.oversample.factor().clamp(1, MAX_FACTOR);
         let os_coeffs = os_coeffs(rate, factor);
 
@@ -284,7 +273,11 @@ impl Distortion {
             // The supply: a follower on the level going in, pulling the drive
             // down by up to `SAG_MAX_DB` at full scale. Squared, so a quiet
             // passage is left alone and a loud one is what sags it.
-            let coeff = if peak > self.sag { sag_attack } else { sag_release };
+            let coeff = if peak > self.sag {
+                sag_attack
+            } else {
+                sag_release
+            };
             self.sag += (peak - self.sag) * coeff;
             let sagged = self.sag.clamp(0.0, 1.0);
             let sag_db = -SAG_MAX_DB * sag_amount * sagged * sagged;
@@ -345,7 +338,11 @@ impl Distortion {
     ) -> f32 {
         let mut result = 0.0;
         for phase in 0..factor {
-            let stuffed = if phase == 0 { sample * factor as f32 } else { 0.0 };
+            let stuffed = if phase == 0 {
+                sample * factor as f32
+            } else {
+                0.0
+            };
             let mut value = stuffed;
             for section in 0..OS_SECTIONS {
                 value = self.up[channel][section].process(value, &coeffs[section]);
@@ -420,7 +417,9 @@ fn reference_gain(curve: DistortionCurve, shape: f32, bias: f32, drive: f32) -> 
         })
         .sum::<f32>()
         / AUTO_GAIN_POINTS as f32;
-    let after = (after / AUTO_GAIN_POINTS as f32 - mean * mean).max(1e-12).sqrt();
+    let after = (after / AUTO_GAIN_POINTS as f32 - mean * mean)
+        .max(1e-12)
+        .sqrt();
     let before = (before / AUTO_GAIN_POINTS as f32).sqrt();
     (before / after).clamp(1e-3, 1.0e3)
 }
@@ -520,7 +519,11 @@ fn shape_of(sample: f32, curve: DistortionCurve, shape: f32) -> f32 {
             // The negative half flipped up by `shape`: none of it at zero
             // (half-wave), all of it at one (full-wave). Held to the rail
             // rather than rounded, so the fold-up is the whole effect.
-            let flipped = if sample >= 0.0 { sample } else { -sample * shape };
+            let flipped = if sample >= 0.0 {
+                sample
+            } else {
+                -sample * shape
+            };
             flipped.min(1.0)
         }
         DistortionCurve::Crossover => {

@@ -1,0 +1,140 @@
+{
+  "format_version": 1,
+  "device": "track",
+  "name": "Hyperpop Lead",
+  "category": "Vocals — tuned",
+  "payload": {
+    "track": {
+      "gain_db": 0.0,
+      "pan": 0.0,
+      "phase_invert": false,
+      "inserts": [
+        {
+          "config": {
+            "Tune": {
+              "range": "AltoTenor",
+              "mode": "Studio",
+              "tracking": 0.5,
+              "gate_db": -50.0,
+              "root": 0,
+              "scale": "Chromatic",
+              "notes": 4095,
+              "control": "Scale",
+              "midi_bend": true,
+              "retune_ms": 0.5,
+              "amount": 1.0,
+              "humanize": 0.0,
+              "flex": 0.0,
+              "natural_vibrato": 0.0,
+              "vibrato_depth": 0.0,
+              "vibrato_rate_hz": 5.5,
+              "vibrato_sync": false,
+              "vibrato_division": "Eighth",
+              "vibrato_onset_ms": 200.0,
+              "vibrato_shape": "Sine",
+              "engine": "Hard",
+              "texture": 0.85,
+              "grain_ms": 25.0,
+              "formant": 3.0,
+              "formant_follow": 0.0,
+              "transpose": 0,
+              "detune_cents": 0.0,
+              "drive": 0.45,
+              "crush": 0.35,
+              "air": 0.3,
+              "width": 1.2,
+              "output_db": -0.5,
+              "mix": 1.0
+            }
+          },
+          "bypassed": false,
+          "preset": {
+            "name": "Hyperpop",
+            "category": "Factory",
+            "origin": "factory"
+          }
+        },
+        {
+          "config": {
+            "Compressor": {
+              "threshold_db": -24.0,
+              "ratio": 8.0,
+              "attack_ms": 1.0,
+              "release_ms": 60.0,
+              "knee_db": 6.0,
+              "makeup_db": 4.0,
+              "auto_makeup": false,
+              "detection": "Peak",
+              "mix": 1.0
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Bitcrush": {
+              "input_db": 0.0,
+              "bits": 10.0,
+              "quantiser": "Round",
+              "dither": "Off",
+              "rate_hz": 22000.0,
+              "decimation": "Hold",
+              "jitter": 0.0,
+              "anti_alias": false,
+              "post_lp_hz": 14000.0,
+              "output_db": 0.0,
+              "mix": 0.35
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Chorus": {
+              "voices": 2,
+              "mode": "Chorus",
+              "spread": 1.0,
+              "rate_hz": 1.2,
+              "sync": false,
+              "division": "Whole",
+              "depth": 0.45,
+              "delay_ms": 15.0,
+              "feedback": 0.0,
+              "tone_hz": 20000.0,
+              "mix": 0.3
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Delay": {
+              "time_ms": 300.0,
+              "sync": true,
+              "division": "EighthTriplet",
+              "feedback": 0.34,
+              "damping_hz": 7000.0,
+              "drive": 0.0,
+              "ping_pong": false,
+              "mix": 0.2
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Reverb": {
+              "size": 0.8,
+              "decay_s": 3.2,
+              "damping_hz": 8000.0,
+              "pre_delay_ms": 8.0,
+              "width": 1.0,
+              "mix": 0.24
+            }
+          },
+          "bypassed": false
+        }
+      ]
+    }
+  }
+}

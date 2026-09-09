@@ -18,6 +18,7 @@ mod rt_guard;
 mod spectrum_tap;
 mod timeline_channel;
 mod transport;
+mod tune_tap;
 
 pub use audio_input::{InputCapture, InputReader, InputWriter, input_capture_channel};
 pub use device::{AudioDevice, BLOCK_SIZE, DeviceError};
@@ -35,9 +36,9 @@ pub use live::{
 };
 pub use nodes::{
     AudioClipNode, BusSumNode, CHANNEL_GAIN_MAX_DB, CHANNEL_GAIN_MIN_DB, DelayNode, EffectNode,
-    GAIN_MAX_DB, GAIN_MIN_DB, MasterMeter, MasterNode, Metronome, MetronomeNode, MixerTrackNode,
-    SEND_MIN_DB, SamplerNode, SendControls, SendNode, TrackControls, VoiceMeter,
-    insert_latency_samples,
+    GAIN_MAX_DB, GAIN_MIN_DB, HeldKeys, MAX_HELD_KEYS, MasterMeter, MasterNode, Metronome,
+    MetronomeNode, MixerTrackNode, SEND_MIN_DB, SamplerNode, SendControls, SendNode, TrackControls,
+    VoiceMeter, insert_latency_samples, max_insert_latency_samples,
 };
 pub use pipewire::{
     PipeWireInput, PipeWireSource, find_pipewire_source, parse_pipewire_default_source,
@@ -51,3 +52,4 @@ pub use rt_guard::{
 pub use spectrum_tap::SpectrumTap;
 pub use timeline_channel::{TimelinePublisher, TimelineSource, timeline_channel};
 pub use transport::{Step, Transport, TransportReader, TransportSnapshot, TransportState};
+pub use tune_tap::{TUNE_TRACE_FRAMES, TuneTap};

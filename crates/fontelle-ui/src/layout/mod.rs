@@ -609,6 +609,28 @@ pub const FLOPSYNTH_SIZE: (u32, u32) = (1180, 740);
 /// air and their pictures and there is nothing left to give (§8.8).
 pub const FLOPSYNTH_MINIMUM: (u32, u32) = (980, 620);
 
+/// What the pitch corrector's console opens at (`docs/tune-plan.md` §7.2).
+///
+/// [`FLOPSYNTH_SIZE`]'s reason exactly, one floor down: the kind is `Effect`
+/// whether the slot holds an EQ, a distortion or a corrector, and what
+/// decides is *which effect is in the slot* — which the layout module cannot
+/// see and the window can.
+///
+/// **One page, no scrolling.** Above the two full-width bands the console
+/// needs — the trace and the two octaves — sit eight cards that do not wrap,
+/// and the EQ's 720×420 is not enough room for them: it is not a preference
+/// but the size the layout in `canvas::tune` was measured at. It grew from
+/// 960×600 when §4.8 added the Character card: a window that opens too small
+/// for its own contents is the fault `the_whole_tune_window_fits_the_window_
+/// it_opens_at` exists to catch, and it caught this.
+pub const TUNE_SIZE: (u32, u32) = (1120, 660);
+
+/// And the smallest it may be dragged to. Under this the viewport has given
+/// all it has, the keyboard has started to, and the last card would still be
+/// off the bottom — which is the one thing §7.2 does not allow, because there
+/// is no scrollbar to reach it with.
+pub const TUNE_MINIMUM: (u32, u32) = (900, 560);
+
 /// The insides of a floating editor window: a header carrying its name, and
 /// the body the panel is drawn in.
 ///

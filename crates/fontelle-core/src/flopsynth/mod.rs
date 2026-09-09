@@ -226,6 +226,7 @@ pub fn flopsynth_init() -> Patch {
     };
 
     Patch {
+        wavetables: Vec::new(),
         layers: vec![
             synth_layer(osc_a, -12.0),
             synth_layer(osc_b, SILENT_DB),

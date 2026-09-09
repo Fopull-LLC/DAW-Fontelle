@@ -27,9 +27,13 @@ pub use effect::{
     EffectKind, EqBand, EqConfig, FILTER_MOD_OCTAVES, FilterConfig, FilterShape, GATE_FLOOR_DB,
     GATE_KEY_OFF_HZ, GateConfig, LfoWave, MAX_BITS, MAX_CHORUS_DELAY_MS, MAX_CHORUS_VOICES,
     MAX_CRUSH_RATE_HZ, MAX_DELAY_MS, MAX_FILTER_HZ, MAX_GATE_LOOKAHEAD_MS, MAX_GATE_RATIO,
-    MAX_LFO_RATE_HZ, MAX_PRE_DELAY_MS, MIN_CHORUS_DELAY_MS, MIN_FILTER_HZ, MIN_LFO_RATE_HZ, MIX,
-    NoteDivision, Oversampling, Quantiser, ReverbConfig, SoftenConfig, SoftenPreset,
-    UTILITY_DC_OFF_HZ, UTILITY_MONO_OFF_HZ, UtilityConfig,
+    MAX_LFO_RATE_HZ, MAX_PRE_DELAY_MS, MAX_TUNE_GRAIN_MS, MAX_TUNE_RETUNE_MS, MIN_CHORUS_DELAY_MS,
+    MIN_FILTER_HZ, MIN_LFO_RATE_HZ, MIN_TUNE_GRAIN_MS, MIN_TUNE_RETUNE_MS, MIX, NoteDivision,
+    Oversampling, Quantiser, ReverbConfig, SoftenConfig, SoftenPreset, TUNE_FLEX_EDGE_CENTS,
+    TUNE_FROM_MIDI, TUNE_INSTANT_MS, TUNE_LOCK_CENTS, TUNE_LOCKED, TUNE_NOTE_PARAMS, TUNE_ROOTS,
+    TUNE_VOICED, TuneConfig, TuneControl, TuneEngine, TuneFrame, TuneMode, TunePreset, TuneRange,
+    TuneScale, UTILITY_DC_OFF_HZ, UTILITY_MONO_OFF_HZ, UtilityConfig, VibratoShape, cents_of_hz,
+    hz_of_cents,
 };
 pub use event::{CompiledTimeline, DEFAULT_BPM, EventPayload, EventSink, TimedEvent, VoiceOrigin};
 pub use favorite::Favorite;
@@ -47,6 +51,7 @@ pub use param::{
 pub use patch_data::{PatchData, SampleRef};
 pub use plugin::{PluginFormat, PluginKey, PluginParamValue, PluginState};
 pub use preset::{
-    DeviceKind, PRESET_FORMAT_VERSION, Preset, PresetOrigin, PresetPayload, PresetRef,
+    DeviceKind, PRESET_FORMAT_VERSION, Preset, PresetOrigin, PresetPayload, PresetRef, TrackChain,
+    TrackInsert, TrackPreset,
 };
 pub use time::{PPQN, Sample, Tick};

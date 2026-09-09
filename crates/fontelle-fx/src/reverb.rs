@@ -106,8 +106,7 @@ impl FdnReverb {
         // have to share one ring length — sizing each to its own need left the
         // long lines' pointers wrapping somewhere the writer never reached,
         // and read stale silence out of most of the network.
-        let longest =
-            (BASE_LENGTHS[LINES - 1] as f32 * rate * MAX_SCALE).ceil() as usize + 4;
+        let longest = (BASE_LENGTHS[LINES - 1] as f32 * rate * MAX_SCALE).ceil() as usize + 4;
         for line in &mut self.lines {
             line.clear();
             line.resize(longest, 0.0);

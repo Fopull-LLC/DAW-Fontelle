@@ -133,6 +133,64 @@ impl Wavetable {
         a + (b - a) * blend
     }
 
+    /// A table built from **a sound somebody dropped in**, rather than from a
+    /// recipe (`docs/flopsynth-plan.md` §3.2's "no files" is about what the
+    /// *bank* ships, not about what a patch may carry).
+    ///
+    /// > *"i want to be able to drag audio files into it to use those
+    /// > waveforms in the synthesis."*
+    ///
+    /// The file is cut into `frames` equal parts and each part is read across
+    /// one frame of [`WAVETABLE_LEN`] samples, so moving the position knob
+    /// walks through the sound. A file that is already a whole number of
+    /// frames long is taken **verbatim** at the finest level — resampling a
+    /// 2048-sample cycle onto 2048 samples is a filter nobody asked for — and
+    /// anything else is read with linear interpolation, wrapping within its
+    /// own part so a frame is a cycle rather than a fragment with an edge.
+    ///
+    /// Every frame then gets the same pyramid and the same one-gain
+    /// normalisation a generated table gets, which is what keeps a dropped
+    /// sound from aliasing at the top of the keyboard and from being a
+    /// different loudness from the rest of the bank.
+    ///
+    /// Nothing is refused: no samples is one silent frame, because a table
+    /// with no frames divides by zero in every reader downstream.
+    pub fn from_samples(samples: &[f32], frames: usize) -> Self {
+        let frames = frames.clamp(1, MAX_USER_FRAMES);
+        if samples.is_empty() {
+            return Self {
+                frames: 1,
+                levels: pyramid(&vec![0.0f32; WAVETABLE_LEN]),
+            };
+        }
+        let per_frame = samples.len() as f64 / frames as f64;
+        let mut levels: Vec<Vec<f32>> = Vec::with_capacity(frames * WAVETABLE_LEVELS);
+        let mut finest = vec![0.0f32; WAVETABLE_LEN];
+        for frame in 0..frames {
+            let from = (frame as f64 * per_frame).round() as usize;
+            let to = (((frame + 1) as f64 * per_frame).round() as usize).min(samples.len());
+            let part = &samples[from.min(samples.len())..to.max(from.min(samples.len()))];
+            for (i, out) in finest.iter_mut().enumerate() {
+                *out = if part.is_empty() {
+                    0.0
+                } else if part.len() == WAVETABLE_LEN {
+                    part[i]
+                } else {
+                    // Linear, wrapping inside this part: the sample after the
+                    // last is the first, because a frame is one cycle.
+                    let x = i as f64 * part.len() as f64 / WAVETABLE_LEN as f64;
+                    let a = part[(x as usize) % part.len()];
+                    let b = part[(x as usize + 1) % part.len()];
+                    let t = (x - x.floor()) as f32;
+                    a + (b - a) * t
+                };
+            }
+            levels.extend(pyramid(&finest));
+        }
+        normalise(&mut levels);
+        Self { frames, levels }
+    }
+
     /// One named frame, without the blend — what a picture of "frame 3" is,
     /// and what `read` falls back to when the position sits on one.
     pub fn read_frame(&self, frame: usize, phase: f32, level: usize) -> f32 {
@@ -410,16 +468,30 @@ fn build(id: WavetableId) -> Wavetable {
         };
         levels.extend(pyramid(&finest_level(&recipe.shape, t)));
     }
-    // **One gain for the whole table, taken over every level**, so that
-    // sweeping the position knob does not sweep the volume and switching mip
-    // level mid-note does not step it either.
-    //
-    // Over every level rather than over level 0 alone, which is what §3.2
-    // first said: band-limiting a shape with a step in it (`Shape::Exact` —
-    // the sync sweep, the chip pulses) overshoots at the discontinuity, and
-    // the overshoot is by definition invisible at the level that still has
-    // the step. Normalising on level 0 shipped a table whose *coarser* levels
-    // clipped, which is a fizz that only appears at the top of the keyboard.
+    normalise(&mut levels);
+    Wavetable {
+        frames: recipe.frames,
+        levels,
+    }
+}
+
+/// The most frames a table built from a dropped sound may have.
+///
+/// Serum's own number, and the same reason: the position knob has to reach
+/// every frame, and a table of 256 half-megabyte pyramids is 128 MB.
+pub const MAX_USER_FRAMES: usize = 64;
+
+/// **One gain for the whole table, taken over every level**, so that sweeping
+/// the position knob does not sweep the volume and switching mip level
+/// mid-note does not step it either.
+///
+/// Over every level rather than over level 0 alone, which is what §3.2 first
+/// said: band-limiting a shape with a step in it (`Shape::Exact` — the sync
+/// sweep, the chip pulses) overshoots at the discontinuity, and the overshoot
+/// is by definition invisible at the level that still has the step.
+/// Normalising on level 0 shipped a table whose *coarser* levels clipped,
+/// which is a fizz that only appears at the top of the keyboard.
+fn normalise(levels: &mut [Vec<f32>]) {
     let peak = levels
         .iter()
         .flat_map(|level| level.iter())
@@ -427,14 +499,10 @@ fn build(id: WavetableId) -> Wavetable {
     // 0.9 rather than 1.0: the last tenth is the headroom the frame
     // interpolation and the unison sum need before anything downstream sees it.
     let gain = if peak > 1e-9 { 0.9 / peak } else { 0.0 };
-    for level in &mut levels {
+    for level in levels.iter_mut() {
         for sample in level {
             *sample *= gain;
         }
-    }
-    Wavetable {
-        frames: recipe.frames,
-        levels,
     }
 }
 
@@ -829,15 +897,17 @@ fn recipe(id: WavetableId) -> Recipe {
                 // as `sin(πhβ)/h²`; a hard hammer is in contact for less
                 // time, puts more of its energy into the upper modes, and
                 // tilts that exponent down. From `h^2.6` at one end to
-                // `h^1.3` at the other, which is a whole octave of centroid
-                // between a pianissimo and a fortissimo.
+                // `h^1.1` at the other, which is more than an octave of
+                // centroid between a pianissimo and a fortissimo — and the
+                // hard end is where a sampled grand's *bass* sits, its third
+                // partial two decibels under its fundamental.
                 //
                 // It stays **above `h^0.9`** at every position, which is the
                 // exponent at which the comb would put the second partial
                 // level with the first: at `/h` this table was hollow — the
                 // second partial measured three decibels *over* the
                 // fundamental — and that spectrum is a clavinet's.
-                let exponent = 2.6 - 1.3 * t;
+                let exponent = 2.6 - 1.5 * t;
                 let comb = (PI * hf / 8.0).sin() / hf.powf(exponent);
                 // And the felt itself, which cannot excite what it cannot
                 // follow: a soft hammer is done by the sixth partial and a

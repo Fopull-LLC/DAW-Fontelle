@@ -1,0 +1,216 @@
+{
+  "format_version": 1,
+  "device": "track",
+  "name": "R&B Smooth",
+  "category": "Vocals — tuned",
+  "payload": {
+    "track": {
+      "gain_db": 0.0,
+      "pan": 0.0,
+      "phase_invert": false,
+      "inserts": [
+        {
+          "config": {
+            "Eq": {
+              "bands": [
+                {
+                  "band_type": "HighPass24",
+                  "freq_hz": 80.0,
+                  "gain_db": 0.0,
+                  "q": 0.7,
+                  "enabled": true,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 250.0,
+                  "gain_db": -1.5,
+                  "q": 1.2,
+                  "enabled": true,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "HighShelf",
+                  "freq_hz": 10000.0,
+                  "gain_db": 2.0,
+                  "q": 0.7,
+                  "enabled": true,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                }
+              ],
+              "mix": 1.0
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Tune": {
+              "range": "AltoTenor",
+              "mode": "Studio",
+              "tracking": 0.5,
+              "gate_db": -50.0,
+              "root": 0,
+              "scale": "Chromatic",
+              "notes": 4095,
+              "control": "Scale",
+              "midi_bend": true,
+              "retune_ms": 35.0,
+              "amount": 1.0,
+              "humanize": 0.3,
+              "flex": 0.15,
+              "natural_vibrato": 0.8,
+              "vibrato_depth": 0.0,
+              "vibrato_rate_hz": 5.5,
+              "vibrato_sync": false,
+              "vibrato_division": "Eighth",
+              "vibrato_onset_ms": 200.0,
+              "vibrato_shape": "Sine",
+              "engine": "Smooth",
+              "texture": 0.0,
+              "grain_ms": 25.0,
+              "formant": 0.0,
+              "formant_follow": 0.0,
+              "transpose": 0,
+              "detune_cents": 0.0,
+              "drive": 0.0,
+              "crush": 0.0,
+              "air": 0.0,
+              "width": 1.0,
+              "output_db": 0.0,
+              "mix": 1.0
+            }
+          },
+          "bypassed": false,
+          "preset": {
+            "name": "Pop Polish",
+            "category": "Factory",
+            "origin": "factory"
+          }
+        },
+        {
+          "config": {
+            "Compressor": {
+              "threshold_db": -24.0,
+              "ratio": 3.0,
+              "attack_ms": 8.0,
+              "release_ms": 140.0,
+              "knee_db": 6.0,
+              "makeup_db": 3.0,
+              "auto_makeup": false,
+              "detection": "Peak",
+              "mix": 1.0
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Soften": {
+              "shelf_amount": 0.3,
+              "suppressor_amount": 0.45,
+              "transient_amount": 0.15,
+              "air_restore_amount": 0.35,
+              "mix": 1.0
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Chorus": {
+              "voices": 2,
+              "mode": "Chorus",
+              "spread": 0.7,
+              "rate_hz": 0.35,
+              "sync": false,
+              "division": "Whole",
+              "depth": 0.28,
+              "delay_ms": 15.0,
+              "feedback": 0.0,
+              "tone_hz": 20000.0,
+              "mix": 0.2
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Delay": {
+              "time_ms": 300.0,
+              "sync": true,
+              "division": "Eighth",
+              "feedback": 0.26,
+              "damping_hz": 5200.0,
+              "drive": 0.0,
+              "ping_pong": false,
+              "mix": 0.12
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Reverb": {
+              "size": 0.7,
+              "decay_s": 2.4,
+              "damping_hz": 5600.0,
+              "pre_delay_ms": 22.0,
+              "width": 1.0,
+              "mix": 0.2
+            }
+          },
+          "bypassed": false
+        }
+      ]
+    }
+  }
+}

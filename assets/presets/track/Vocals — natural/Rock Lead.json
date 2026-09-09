@@ -1,0 +1,179 @@
+{
+  "format_version": 1,
+  "device": "track",
+  "name": "Rock Lead",
+  "category": "Vocals — natural",
+  "payload": {
+    "track": {
+      "gain_db": 0.0,
+      "pan": 0.0,
+      "phase_invert": false,
+      "inserts": [
+        {
+          "config": {
+            "Gate": {
+              "threshold_db": -44.0,
+              "hysteresis_db": 3.0,
+              "key_hp_hz": 20.0,
+              "lookahead_ms": 0.0,
+              "attack_ms": 1.0,
+              "hold_ms": 30.0,
+              "release_ms": 100.0,
+              "ratio": 100.0,
+              "range_db": -24.0,
+              "mix": 1.0
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Compressor": {
+              "threshold_db": -18.0,
+              "ratio": 4.5,
+              "attack_ms": 4.0,
+              "release_ms": 90.0,
+              "knee_db": 6.0,
+              "makeup_db": 3.0,
+              "auto_makeup": false,
+              "detection": "Peak",
+              "mix": 1.0
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Distortion": {
+              "curve": "Tube",
+              "shape": 0.0,
+              "drive_db": 8.0,
+              "bias": 0.0,
+              "sag": 0.0,
+              "pre_hp_hz": 20.0,
+              "pre_mid_hz": 800.0,
+              "pre_mid_db": 0.0,
+              "clean_low_hz": 20.0,
+              "tone_hz": 9000.0,
+              "output_db": 0.0,
+              "auto_gain": true,
+              "oversample": "Two",
+              "mix": 0.45
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Eq": {
+              "bands": [
+                {
+                  "band_type": "HighPass24",
+                  "freq_hz": 100.0,
+                  "gain_db": 0.0,
+                  "q": 0.7,
+                  "enabled": true,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1800.0,
+                  "gain_db": 3.0,
+                  "q": 1.0,
+                  "enabled": true,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                },
+                {
+                  "band_type": "Bell",
+                  "freq_hz": 1000.0,
+                  "gain_db": 0.0,
+                  "q": 0.70710677,
+                  "enabled": false,
+                  "solo": false,
+                  "channel": "Stereo"
+                }
+              ],
+              "mix": 1.0
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Delay": {
+              "time_ms": 300.0,
+              "sync": true,
+              "division": "Eighth",
+              "feedback": 0.2,
+              "damping_hz": 4000.0,
+              "drive": 0.0,
+              "ping_pong": false,
+              "mix": 0.12
+            }
+          },
+          "bypassed": false
+        },
+        {
+          "config": {
+            "Reverb": {
+              "size": 0.66,
+              "decay_s": 2.0,
+              "damping_hz": 4500.0,
+              "pre_delay_ms": 20.0,
+              "width": 1.0,
+              "mix": 0.18
+            }
+          },
+          "bypassed": false
+        }
+      ]
+    }
+  }
+}

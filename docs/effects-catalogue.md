@@ -150,7 +150,7 @@ thing that makes somebody choose the software.
 | **Spectrum analyser** | built as a tap | P1 | The EQ window draws one. **To add:** a standalone insert that only draws — spectrum, with peak hold, average, slope (3 dB/oct tilt so pink reads flat), and a second input from another track for overlay. |
 | **Oscilloscope** | planned | P2 | Time window, trigger level, stereo overlay. The tap exists; this is a window. |
 | **Loudness meter** | planned | P1 | Integrated / short-term / momentary LUFS, true-peak, range. The mastering necessity that is a *meter*, so it belongs on the master by default like the limiter. ITU-R BS.1770 K-weighting is two filters. |
-| **Tuner** | planned | P2 | Detected pitch, cents, a needle. For checking a soundfont's root against its name, which is a thing this program's users do. |
+| **Tuner** | planned | P2 | Detected pitch, cents, a needle. For checking a soundfont's root against its name, which is a thing this program's users do. The pitch is already found: wrap `fontelle_dsp::PitchTracker` (§2.6's Tune row built it) rather than growing a second detector — what is missing is a read-out insert around it and the needle. |
 | **Correlation / goniometer** | planned | P2 | Part of the imager's window. |
 
 ### 2.6 Pitch (mostly v2)
@@ -160,6 +160,7 @@ thing that makes somebody choose the software.
 | **Repitcher** | `todo!()` | P1 | Varispeed over a *clip*, not a bus (§13.4). It lives in the clip's operations, not in this menu, and the stub in `fontelle-fx` is in the wrong crate. |
 | **Pitch shifter** | v2 | P2 | Formant-preserving shift as an insert, behind the `stretch` feature flag (§3.3). Until then, a granular shifter (two crossfaded windowed reads) would give a usable octave-down and a *shimmer* for the reverb — worth building as *Pitch (granular)* if the flag stays closed. |
 | **Harmoniser** | v2 | P2 | Two shifted voices at intervals with pan. On the pitch shifter. |
+| **Tune** (pitch corrector) | **built** | P1 | The autotune: a YIN tracker and a PSOLA shifter in `fontelle-dsp`, three engines (Smooth / Hard / Grain) with a `texture` continuum, formant shift and formant-follow, retune speed, humanize, flex, natural and added vibrato, fifteen scales on a keyboard in the window, notes from any channel in the rack, a Character section (drive, crush, air, width — §4.8, with a measured auto-gain on the drive), **forty** presets, and a window drawn as a ship's console. **The whole design is `docs/tune-plan.md`**; read it before touching anything pitch-shaped. Its `PitchTracker` is what the Tuner row above becomes. |
 | **Vocoder** | planned | P2 | Sixteen bands, carrier from another track (or an internal saw/noise), formant shift, attack/release per band. Needs the external key; the band filters are the SVF. Fun, and the kind of thing that sells a demo. |
 
 ### 2.7 Deliberately not in the catalogue

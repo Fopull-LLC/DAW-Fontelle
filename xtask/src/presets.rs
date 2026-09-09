@@ -28,7 +28,8 @@
 
 use fontelle_types::{
     BitcrushConfig, BitcrushPreset, DeviceKind, DistortionConfig, DistortionPreset, EffectConfig,
-    InstrumentKind, Preset, PresetPayload, SoftenConfig, SoftenPreset,
+    InstrumentKind, Preset, PresetPayload, SoftenConfig, SoftenPreset, TrackChain, TrackPreset,
+    TuneConfig, TunePreset,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -85,6 +86,28 @@ fn effect_presets() -> Vec<Preset> {
         out.push(effect_preset(
             preset.label(),
             EffectConfig::Soften(SoftenConfig::from_preset(preset)),
+        ));
+    }
+    // The pitch corrector's forty (`docs/tune-plan.md` §6 and §4.8). One category
+    // like the rest: these are points on one control surface, and "hard tune"
+    // and "cheap plastic" are the same three knobs at different settings.
+    for preset in TunePreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Tune(TuneConfig::from_preset(preset)),
+        ));
+    }
+    // The sixteen **track** chains — a whole mixer strip rather than one
+    // device. Three categories rather than one, because unlike the corrector's
+    // forty these are not points on one control surface: "Spoken Word" and
+    // "Hyperpop Lead" have nothing in common to be different settings of, and
+    // a shelf somebody can skip past is worth more than a single long list.
+    for preset in TrackPreset::ALL {
+        out.push(Preset::new(
+            DeviceKind::Track,
+            preset.label(),
+            preset.category(),
+            PresetPayload::Track(TrackChain::from_preset(preset)),
         ));
     }
     out

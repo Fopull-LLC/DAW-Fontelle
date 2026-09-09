@@ -536,3 +536,157 @@ fn an_arrangement_loop_that_stretches_fills_each_pass_with_the_whole_file() {
     assert!(out[100] < 2.0, "the pass starts over: {}", out[100]);
     assert!((out[398] - 49.0).abs() < 1.5, "{}", out[398]);
 }
+
+// ------------------------------------------------ pitch without stretching ---
+//
+// Reported from using the window: *"changing pitch is stretching the audio
+// even when stretch is off and not set to resample."* With the switch off, a
+// clip's pitch is a pitch and its speed is a speed: each moves without the
+// other. `Resample` stays varispeed, because that is what it is.
+
+/// A mono sine at `hz` for `seconds`, at 48 kHz.
+fn sine(hz: f32, seconds: f32) -> AudioBuffer {
+    let frames = (RATE * seconds) as usize;
+    AudioBuffer {
+        data: Arc::from(
+            (0..frames)
+                .map(|i| (i as f32 * hz * std::f32::consts::TAU / RATE).sin() * 0.8)
+                .collect::<Vec<f32>>(),
+        ),
+        sample_rate: 48_000,
+        channels: 1,
+    }
+}
+
+fn rms(samples: &[f32]) -> f32 {
+    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len().max(1) as f32).sqrt()
+}
+
+/// The power at `hz` in `samples`, Hann-windowed.
+fn power_at(samples: &[f32], hz: f32) -> f32 {
+    let n = samples.len() as f32;
+    let (mut re, mut im) = (0.0f32, 0.0f32);
+    for (i, sample) in samples.iter().enumerate() {
+        let window = 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n).cos();
+        let phase = std::f32::consts::TAU * hz * i as f32 / RATE;
+        re += sample * window * phase.cos();
+        im -= sample * window * phase.sin();
+    }
+    (re * re + im * im) / (n * n)
+}
+
+#[test]
+fn an_octave_up_with_stretch_off_is_an_octave_up_for_the_whole_length() {
+    let mut rig = rig(sine(220.0, 1.0));
+    let mut data = rig.clip(48_000);
+    data.pitch_semitones = 12.0;
+    assert_eq!(data.stretch, ClipStretch::Off);
+    let placement = rig.placement(data, 0, 48_000);
+    let out = rig.render(&[placement], 0, 48_000, 512);
+
+    // Still sounding at the end: varispeed would have run out of file half
+    // way along the block.
+    assert!(
+        rms(&out[43_200..48_000]) > 0.3,
+        "the last tenth is quiet ({})",
+        rms(&out[43_200..48_000])
+    );
+    // And it is 440 Hz now, not 220 — at the level it went in at, which is
+    // what lining the grains up buys: unaligned, two grains a hundred
+    // degrees apart cancel most of a tone.
+    let middle = &out[12_000..36_000];
+    assert!(
+        rms(middle) > 0.45,
+        "the tone should keep its level through the shift: {}",
+        rms(middle)
+    );
+    let up = power_at(middle, 440.0);
+    let down = power_at(middle, 220.0);
+    assert!(
+        up > down * 30.0,
+        "440 Hz should dominate 220 Hz: {up:e} against {down:e}"
+    );
+}
+
+#[test]
+fn half_speed_with_stretch_off_takes_twice_as_long_at_the_same_pitch() {
+    let mut rig = rig(sine(220.0, 1.0));
+    let mut data = rig.clip(48_000);
+    data.speed = 0.5;
+    let placement = rig.placement(data, 0, 96_000);
+    let out = rig.render(&[placement], 0, 96_000, 512);
+
+    // Sounding a second and a half in, where the file's own rate would have
+    // been silence for half a second.
+    assert!(rms(&out[72_000..76_800]) > 0.3);
+    let middle = &out[24_000..72_000];
+    assert!(
+        rms(middle) > 0.45,
+        "the tone should keep its level through the stretch: {}",
+        rms(middle)
+    );
+    let same = power_at(middle, 220.0);
+    let low = power_at(middle, 110.0);
+    assert!(
+        same > low * 30.0,
+        "220 Hz should dominate 110 Hz: {same:e} against {low:e}"
+    );
+}
+
+#[test]
+fn pitch_and_speed_that_agree_are_exactly_the_plain_read() {
+    // The identity the stretch switch's "off" relies on: doubled speed *and*
+    // an octave up is a plain read at twice the rate, sample for sample —
+    // no grains, no windows, nothing between the file and the output.
+    let mut rig = rig(counting(4000, 48_000));
+    let mut data = rig.clip(4000);
+    data.speed = 2.0;
+    data.pitch_semitones = 12.0;
+    let placement = rig.placement(data, 0, 1000);
+    let out = rig.render(&[placement], 0, 1000, 256);
+    for (n, sample) in out.iter().enumerate() {
+        assert!(
+            (sample - 2.0 * n as f32).abs() < 1e-3,
+            "frame {n} read {sample}, wanted {}",
+            2 * n
+        );
+    }
+}
+
+#[test]
+fn the_grains_add_up_to_one_everywhere() {
+    // Every grain's window sums to one with its neighbour's, so a constant
+    // in is the same constant out at any shift: no dip at a grain boundary,
+    // no swell where two overlap, and no fade at the clip's front where only
+    // the first grain exists yet.
+    let mut rig = rig(AudioBuffer {
+        data: Arc::from(vec![0.7f32; 8000]),
+        sample_rate: 48_000,
+        channels: 1,
+    });
+    let mut data = rig.clip(8000);
+    data.pitch_semitones = 7.0;
+    let placement = rig.placement(data, 0, 3000);
+    let out = rig.render(&[placement], 0, 3000, 512);
+    for (n, sample) in out.iter().enumerate() {
+        assert!((sample - 0.7).abs() < 1e-4, "frame {n} read {sample}");
+    }
+}
+
+#[test]
+fn a_stretched_clip_still_repitches_by_varispeed() {
+    // `Resample` is varispeed by definition: an octave up over a fixed block
+    // is through the file in half of it, and silent after.
+    let mut rig = rig(sine(220.0, 1.0));
+    let mut data = rig.clip(48_000);
+    data.stretch = ClipStretch::Resample;
+    data.pitch_semitones = 12.0;
+    let placement = rig.placement(data, 0, 48_000);
+    let out = rig.render(&[placement], 0, 48_000, 512);
+    assert!(rms(&out[0..12_000]) > 0.3, "the front sounds");
+    assert!(
+        rms(&out[30_000..48_000]) < 1e-3,
+        "the back is silence ({})",
+        rms(&out[30_000..48_000])
+    );
+}

@@ -239,7 +239,7 @@ fn the_speed_and_the_pitch_stay_inside_what_the_player_will_read() {
     let clip = a_clip();
     let fast = stepped(clip.clone(), AudioField::Speed, 1, 500);
     assert!(fast.speed <= fontelle_types::MAX_CLIP_SPEED);
-    assert!(fast.rate().is_finite());
+    assert!(fast.time_rate().is_finite() && fast.read_rate().is_finite());
     let slow = stepped(clip.clone(), AudioField::Speed, -1, 500);
     assert!(slow.speed >= fontelle_types::MIN_CLIP_SPEED);
 
@@ -262,7 +262,8 @@ fn nothing_a_click_can_do_makes_a_clip_the_player_would_choke_on() {
                 "{row:?} made the gain {}",
                 clip.gain()
             );
-            assert!(clip.rate().is_finite() && clip.rate() > 0.0);
+            assert!(clip.time_rate().is_finite() && clip.time_rate() > 0.0);
+            assert!(clip.read_rate().is_finite() && clip.read_rate() > 0.0);
             assert!(clip.source_frames() >= 0);
             assert!(clip.fade_gain(0.0).is_finite());
             assert!((0.0..=1.0).contains(&clip.fade_gain(10.0)));

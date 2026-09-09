@@ -44,6 +44,41 @@ fn rms(samples: &[f32]) -> f32 {
     (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
 }
 
+/// How much energy sits between two frequencies, by a windowed DFT.
+///
+/// A **windowed** one, and swept at fine steps, because what is being asked
+/// about here is a line spectrum: a mode is a spike a few hertz wide, and a
+/// sparse probe walks straight past one. The same lesson `drum_kit.rs`'s
+/// pairwise test records.
+fn energy_between(samples: &[f32], from: f32, to: f32) -> f32 {
+    let n = samples.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let windowed: Vec<f32> = samples
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let w = 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / (n - 1) as f32).cos();
+            s * w
+        })
+        .collect();
+    let mut total = 0.0f32;
+    let mut hz = from;
+    while hz <= to {
+        let (mut re, mut im) = (0.0f32, 0.0f32);
+        let w = std::f32::consts::TAU * hz / SR;
+        for (i, s) in windowed.iter().enumerate() {
+            let a = w * i as f32;
+            re += s * a.cos();
+            im -= s * a.sin();
+        }
+        total += (re * re + im * im).sqrt();
+        hz += 1.0;
+    }
+    total / n as f32
+}
+
 /// The window from `from` to `to` seconds.
 fn window(samples: &[f32], from: f32, to: f32) -> &[f32] {
     let a = ((from * SR) as usize).min(samples.len());
@@ -66,6 +101,9 @@ fn kick() -> DrumVoice {
         gain_db: 0.0,
         metal: 0.0,
         crush: 0.0,
+        modes: 0.0,
+        tail: 0.0,
+        rattle: 0.0,
     }
 }
 
@@ -739,4 +777,156 @@ fn metal_and_crush_are_clamped_like_everything_else() {
         );
         assert!(peak(&out) <= 1.0, "{voice:?} left full scale");
     }
+}
+
+// ------------------------------------------------ realism: the modes ------
+//
+// > *"the sounds in it still sound way too synthesized and not realistic
+// > enough and not diverse enough ... ultimately still just sounding like
+// > tweaked versions of the same synthesized sounding sounds."*
+//
+// The cause, measured before it was fixed: every pitched hit was **one**
+// oscillator. A kick, a tom and a conga were the same sine with three
+// envelopes on it, and no setting of tune, bend or decay could make one of
+// them ring like a struck head, because what a struck head does — ring at a
+// set of inharmonic modes that die at different rates — was not in the model
+// at all. `modes`, `tail` and `rattle` are the three that put it there, and
+// these are the tests that say they are doing something.
+
+/// A tom with its modes up has energy **off** the fundamental's harmonics.
+///
+/// That is the whole claim. A sine, however enveloped, puts its energy at one
+/// frequency; a membrane puts it at 1.00, 1.59, 2.14 … of it, and the ear
+/// reads the difference as a drum rather than as a tone.
+#[test]
+fn modes_put_energy_where_a_sine_has_none() {
+    let plain = DrumVoice {
+        model: DrumModel::Tom,
+        tune_hz: 120.0,
+        noise: 0.0,
+        snap: 0.0,
+        drive: 0.0,
+        decay_s: 0.6,
+        modes: 0.0,
+        ..DrumVoice::default()
+    };
+    let modal = DrumVoice {
+        modes: 1.0,
+        ..plain
+    };
+    // 1.50 × 120 = 180 Hz — the tom's second mode, and a frequency no
+    // harmonic of 120 lands on (120, 240, 360 …).
+    let band = |voice: &DrumVoice| energy_between(&render(voice, 0.6), 172.0, 188.0);
+    assert!(
+        band(&modal) > band(&plain) * 8.0,
+        "the second mode is not there: {:.6} against {:.6}",
+        band(&modal),
+        band(&plain)
+    );
+}
+
+/// A **membrane's** modes are inharmonic, and a conga is the model that has
+/// them: 1.000, 1.593, 2.135, 2.917 — Bessel zeros, which land on no harmonic
+/// of the fundamental. That is what stops a struck head fusing into a note.
+///
+/// A tom is deliberately **not** tested here, and the reason is worth writing
+/// down rather than discovering twice: a real tom is a membrane loaded by the
+/// air in its shell, and that loading pulls the low modes towards 1.50, 1.75
+/// and 2.00 — nearly harmonic, which is exactly *why* a tuned tom sounds like
+/// a note where a conga does not. Asserting inharmonicity there would be
+/// asserting that the drum is built wrong.
+#[test]
+fn a_membranes_modes_are_not_harmonics_of_its_fundamental() {
+    let voice = DrumVoice {
+        model: DrumModel::Perc,
+        tune_hz: 100.0,
+        noise: 0.0,
+        snap: 0.0,
+        drive: 0.0,
+        decay_s: 0.6,
+        modes: 1.0,
+        ..DrumVoice::default()
+    };
+    let rendered = render(&voice, 0.6);
+    // The second harmonic of 100 Hz is 200; the second *mode* is at 159.3.
+    // If the bank were harmonic the first would be the louder of the two.
+    let harmonic = energy_between(&rendered, 194.0, 206.0);
+    let mode = energy_between(&rendered, 153.0, 165.0);
+    assert!(
+        mode > harmonic * 2.0,
+        "the bank is harmonic: mode {mode:.6}, harmonic {harmonic:.6}"
+    );
+}
+
+/// `tail` puts a slower decay under the fast one — which is what a real drum
+/// does and what one exponential cannot.
+#[test]
+fn a_tail_keeps_ringing_after_the_hit_has_gone() {
+    let dry = DrumVoice {
+        model: DrumModel::Tom,
+        tune_hz: 100.0,
+        decay_s: 0.25,
+        modes: 1.0,
+        tail: 0.0,
+        noise: 0.0,
+        ..DrumVoice::default()
+    };
+    let rung = DrumVoice { tail: 1.0, ..dry };
+    let late = |voice: &DrumVoice| {
+        let out = render(voice, 1.2);
+        rms(&out[out.len() * 2 / 3..])
+    };
+    assert!(
+        late(&rung) > late(&dry) * 3.0,
+        "the tail is not there: {:.6} against {:.6}",
+        late(&rung),
+        late(&dry)
+    );
+}
+
+/// `rattle` rings the noise through a resonance — a snare's wires against its
+/// shell, which flat filtered noise cannot be.
+#[test]
+fn rattle_gives_the_noise_a_resonance_of_its_own() {
+    let flat = DrumVoice {
+        model: DrumModel::Snare,
+        tune_hz: 190.0,
+        noise: 0.9,
+        decay_s: 0.25,
+        rattle: 0.0,
+        ..DrumVoice::default()
+    };
+    let wires = DrumVoice {
+        rattle: 1.0,
+        ..flat
+    };
+    // A resonance is a peak, and a peak is crest factor: the same energy
+    // through a narrower band arrives less flat than it left.
+    let peaky = |voice: &DrumVoice| {
+        let out = render(voice, 0.4);
+        let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        peak / rms(&out).max(1e-9)
+    };
+    assert!(
+        (peaky(&wires) - peaky(&flat)).abs() > 0.15,
+        "rattle changed nothing: {:.3} against {:.3}",
+        peaky(&wires),
+        peaky(&flat)
+    );
+}
+
+/// **Old kits sound exactly as they did.** The three knobs read with serde
+/// defaults, and at their defaults the voice is the one that was there before
+/// — otherwise every project made until today would open sounding different.
+#[test]
+fn a_voice_from_before_the_modes_existed_is_unchanged() {
+    let old: DrumVoice = serde_json::from_str(
+        r#"{"model":"Tom","body":"Sine","tune_hz":120.0,
+        "bend_semitones":6.0,"bend_s":0.05,"decay_s":0.4,"tone_hz":900.0,
+        "noise":0.2,"snap":0.2,"drive":0.1,"gain_db":0.0}"#,
+    )
+    .expect("a kit written before the knobs existed");
+    assert_eq!(old.modes, 0.0);
+    assert_eq!(old.tail, 0.0);
+    assert_eq!(old.rattle, 0.0);
 }

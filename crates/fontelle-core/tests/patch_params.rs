@@ -45,8 +45,15 @@ fn a_filters_cutoff_is_addressable() {
 fn an_envelope_stage_and_a_switch_are_addressable() {
     let mut patch = synth();
     assert!(patch_params::set(&mut patch, "patch/env[0]/attack", 1.0));
-    assert!(patch.envelopes[0].attack_s > 1.0, "the top of the dial is seconds");
-    assert!(patch_params::set(&mut patch, "patch/filter[1]/enabled", 1.0));
+    assert!(
+        patch.envelopes[0].attack_s > 1.0,
+        "the top of the dial is seconds"
+    );
+    assert!(patch_params::set(
+        &mut patch,
+        "patch/filter[1]/enabled",
+        1.0
+    ));
     assert!(patch.filters[1].enabled);
 }
 

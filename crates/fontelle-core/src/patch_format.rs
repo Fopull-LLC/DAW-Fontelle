@@ -119,6 +119,57 @@ struct StoredLayer {
     pan: f32,
 }
 
+/// One [`UserWavetable`] as a patch file holds it.
+///
+/// The samples are **sixteen-bit PCM, base64** — the encoding
+/// `Channel::patch_data` already uses for a plugin's blob, and for the same
+/// reason: `serde_json` writes a `Vec<f32>` as decimal numbers, four to
+/// twelve characters each, which on a table of a hundred thousand samples is
+/// a megabyte of text. Sixteen bits rather than the full float because the
+/// table is normalised into its pyramid on the way in and a preset is not an
+/// archive of the file it came from.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct StoredWavetable {
+    name: String,
+    frames: usize,
+    /// Little-endian `i16`, base64.
+    samples: String,
+}
+
+impl StoredWavetable {
+    fn of(table: &crate::patch::UserWavetable) -> Self {
+        let mut bytes = Vec::with_capacity(table.samples.len() * 2);
+        for sample in &table.samples {
+            let value = (sample.clamp(-1.0, 1.0) * 32_767.0).round() as i16;
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        Self {
+            name: table.name.clone(),
+            frames: table.frames,
+            samples: fontelle_types::encode_base64(&bytes),
+        }
+    }
+
+    /// Back to samples. A blob that is not readable comes back as **no
+    /// samples** rather than as an error: a preset with a damaged table
+    /// should open with that oscillator silent, the way one naming a missing
+    /// table does, rather than refusing to open at all.
+    fn into_table(self) -> crate::patch::UserWavetable {
+        let bytes = fontelle_types::decode_base64(&self.samples).unwrap_or_default();
+        let samples = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| i16::from_le_bytes(*pair) as f32 / 32_767.0)
+            .collect();
+        crate::patch::UserWavetable {
+            name: self.name,
+            frames: self.frames,
+            samples,
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StoredPatch {
     layers: Vec<StoredLayer>,
@@ -136,6 +187,11 @@ struct StoredPatch {
     macros: [Macro; MACRO_COUNT],
     #[serde(default)]
     output_db: f32,
+    /// The patch's own tables. `#[serde(default)]`, so every preset written
+    /// before dropped sounds existed — which is the whole factory bank —
+    /// reads back as carrying none.
+    #[serde(default)]
+    wavetables: Vec<StoredWavetable>,
 }
 
 impl Patch {
@@ -182,6 +238,7 @@ impl Patch {
             fx: self.fx.clone(),
             macros: self.macros.clone(),
             output_db: self.output_db,
+            wavetables: self.wavetables.iter().map(StoredWavetable::of).collect(),
         };
 
         Ok(PatchData {
@@ -273,6 +330,11 @@ impl Patch {
                 fx: stored.fx,
                 macros: stored.macros,
                 output_db: stored.output_db,
+                wavetables: stored
+                    .wavetables
+                    .into_iter()
+                    .map(StoredWavetable::into_table)
+                    .collect(),
             },
             unresolved,
         })
