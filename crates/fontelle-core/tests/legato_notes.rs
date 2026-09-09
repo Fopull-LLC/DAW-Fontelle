@@ -241,3 +241,102 @@ fn every_legato_preset_in_the_bank_plays_its_second_touching_note() {
     }
     assert!(checked >= 15, "only {checked} legato presets were checked");
 }
+
+// ------------------------------------------------- glide_legato_only ---
+//
+// *"`VoiceConfig::glide_legato_only` is written, saved, exposed on the
+// instrument panel as `patch/voice/legato` and automatable — and read by
+// nothing in the audio path."*
+//
+// It is the knob that says **portamento only between notes that overlap**,
+// which is how every mono synth with a legato switch on it behaves and what
+// all twenty-one of Flopsynth's `mono` presets ask for. Unread, a phrase of
+// separate notes slid between every one of them.
+
+/// Renders and returns the dominant period in samples, by counting upward
+/// crossings of the ramp's midpoint — the pitch, which is what a glide moves.
+fn period(out: &[f32]) -> f32 {
+    let mut crossings = Vec::new();
+    for (index, pair) in out.windows(2).enumerate() {
+        if pair[0] < 0.5 && pair[1] >= 0.5 {
+            crossings.push(index as f32);
+        }
+    }
+    assert!(crossings.len() >= 2, "no cycles in {} samples", out.len());
+    (crossings[crossings.len() - 1] - crossings[0]) / (crossings.len() - 1) as f32
+}
+
+/// A ramp, so the pitch can be counted. The DC fixture above cannot show one.
+fn ramp_patch(store: &mut SampleStore, legato_only: bool) -> Patch {
+    const CYCLE: usize = 240;
+    let cycles = 2_000;
+    let data: Vec<f32> = (0..CYCLE * cycles)
+        .map(|i| (i % CYCLE) as f32 / CYCLE as f32)
+        .collect();
+    let asset = store.insert(SampleBuffer {
+        data: std::sync::Arc::from(data),
+        sample_rate: SR as u32,
+    });
+    let mut patch = dc_patch(&mut SampleStore::new());
+    patch.layers[0].source = Source::Sample { file: asset };
+    patch.layers[0].playback.loop_end = (CYCLE * cycles) as f64;
+    patch.layers[0].playback.end_offset = (CYCLE * cycles) as f64;
+    patch.voice_config.glide_time_s = 0.25;
+    patch.voice_config.glide_legato_only = legato_only;
+    patch
+}
+
+#[test]
+fn with_legato_only_set_a_note_over_a_released_key_does_not_glide() {
+    let mut store = SampleStore::new();
+    let mut sampler = ready(ramp_patch(&mut store, true));
+
+    sampler.trigger(NoteTrigger::new(60, 100));
+    let root = period(&render(&mut sampler, &store, 4_096));
+
+    // The seam the Legato tool writes: let go, then the next note.
+    sampler.note_off(60, 0);
+    sampler.trigger(NoteTrigger::new(72, 100));
+    let just_after = period(&render(&mut sampler, &store, 1_024));
+    assert!(
+        (just_after / (root / 2.0) - 1.0).abs() < 0.08,
+        "a separate note must start at its own pitch: wanted {}, got {just_after}",
+        root / 2.0
+    );
+}
+
+#[test]
+fn with_legato_only_set_a_note_over_a_held_key_still_glides() {
+    // The other half: this is the setting's whole purpose, so it must not
+    // simply switch portamento off.
+    let mut store = SampleStore::new();
+    let mut sampler = ready(ramp_patch(&mut store, true));
+
+    sampler.trigger(NoteTrigger::new(60, 100));
+    let root = period(&render(&mut sampler, &store, 4_096));
+
+    // No note-off: the first key is still down, so this one is legato.
+    sampler.trigger(NoteTrigger::new(72, 100));
+    let just_after = period(&render(&mut sampler, &store, 1_024));
+    assert!(
+        just_after > root * 0.8,
+        "an overlapping note must slide from the last one: {root} then {just_after}"
+    );
+}
+
+#[test]
+fn with_legato_only_clear_every_note_glides_as_it_always_did() {
+    let mut store = SampleStore::new();
+    let mut sampler = ready(ramp_patch(&mut store, false));
+
+    sampler.trigger(NoteTrigger::new(60, 100));
+    let root = period(&render(&mut sampler, &store, 4_096));
+
+    sampler.note_off(60, 0);
+    sampler.trigger(NoteTrigger::new(72, 100));
+    let just_after = period(&render(&mut sampler, &store, 1_024));
+    assert!(
+        just_after > root * 0.8,
+        "with the switch off a separate note still slides: {root} then {just_after}"
+    );
+}

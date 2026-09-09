@@ -29,7 +29,102 @@ over the budget its plan set. The numbers and where the time goes are at the
 end of the section below; the plan's own instruction is that this is a design
 conversation rather than a target to loosen.
 
-## 2026-09-09 (latest): the second note of a legato pair
+## 2026-09-09 (latest): breath, a dead knob, and why the piano is not a piano
+
+Three reports. Two are fixed and the third is measured for the first time.
+
+### `glide_legato_only` was read by nothing
+
+Written, saved, on the instrument panel as `patch/voice/legato`, automatable —
+and no part of the audio path looked at it, while all twenty-one of the
+presets that set `RetriggerMode::Legato` set it `true`. It means *portamento
+between notes that overlap and not between notes that merely follow one
+another*, which is how every mono synth with a legato switch behaves. Unread,
+a phrase of separate notes slid between every one of them.
+
+It is read in `Sampler::trigger` now, where the config is, and it reuses the
+distinction the legato fix above had already drawn: `voice.is_held()` before
+the take-over. Held means overlapping means glide; released means separate
+means start at its own pitch. The voice is only told how long to take, and
+zero is "not at all".
+
+### The winds were more breath than note
+
+> *"a lot of the presets sound very noisy especially the wind instruments."*
+
+Measured as harmonic-to-noise over the sustain, with the pitch found by
+autocorrelation rather than assumed — `examples/preset_noise.rs`, and getting
+that instrument right took two false starts worth writing down. A harmonic
+comb built on the key you pressed calls every sub-octave and fixed-pitch preset
+100% noise (an 808 kick does not sound at the key you press). Spectral flatness
+over the whole band does the opposite: the empty bands above a preset's cutoff
+sink the geometric mean, so every low-passed preset reads as pure tone.
+
+The result, against the same shelf's reed and brass presets, which carry no
+noise layer at all:
+
+```text
+Shakuhachi  -3.6 dB      Oboe          50.2 dB
+Pan Pipe    -1.5 dB      Bassoon       50.3 dB
+Piccolo     -0.1 dB      Clarinet      44.7 dB
+Flute        2.1 dB      Solo Trumpet  36.6 dB
+```
+
+Four presets with **more noise in them than tone**. Their breath layers sat 4
+to 14 dB under their own oscillators where a real flute's steady state is 20 to
+30 dB under — breath is an onset, not a bed. The levels came down and the shelf
+now runs 9.7 to 16 dB, with `tests/wind_breath.rs` holding a floor of ten,
+which is read off the shelf's own quietest uncomplained-about preset (Brass
+Section, 13.0) rather than chosen. A second test holds the other end: the fix
+must not take the breath *out*.
+
+Two things fell out of it. The claim is asked only of presets that have a
+breath layer, because the reading also catches unison detune — `brass()` runs
+three voices nine cents apart and no noise whatever, and read as 9.7 dB, noisy
+by a measure of hiss and not remotely hissy. And the bank's own loudness gate
+caught the consequence immediately: Pan Pipe fell 16 dB and Shakuhachi 14.7,
+because the noise had been carrying most of their level. `preset_probe`
+recomputed the column and the shelf is inside 0.1 dB of the bank median again.
+
+### The piano: measured, not fixed
+
+> *"the piano still sounds way too synthesized and less like a real grand
+> piano."*
+
+The third report on this row, and all ten of `tests/grand_piano.rs` pass —
+partial *levels*, decay rates, brightness, the crossfade up the keyboard, the
+prompt sound over the aftersound. Every one of those was tuned against a real
+sampled grand in the two previous rounds, and they are all still met.
+
+What none of them measures is where the partials **sit**, and
+`examples/piano_partials.rs` is that reading. At middle C:
+
+```text
+  n    measured    cents off   a real piano
+  2      523.13         -0.4          +1.4
+  4     1046.39         -0.2          +5.5
+  8     2092.78         -0.2         +21.9
+ 12     3139.27         -0.1         +48.5
+```
+
+The preset is **exactly harmonic**. A real piano string is stiff, so its nth
+partial sits at `n·f0·sqrt(1+Bn²)`: the 12th is nearly a quarter-tone sharp,
+and that stretch is why piano tuners stretch-tune. It is most of the distance
+between "struck string" and "organ with a decay".
+
+**This cannot be tuned away, and that is the finding.** A wavetable is periodic
+and therefore exactly harmonic by construction; no arrangement of levels,
+decays, detune or filtering puts a partial off its harmonic. The row already
+uses all five slots — three strings, a sine, a hammer thud — so there is
+nowhere to hang stretched partials either. Closing it needs a source that can
+be inharmonic: a stiff-string modal bank (`fontelle_dsp::ModalBank` is the
+shape, six modes, built for the drums) or a Karplus-Strong string. That is a
+feature, not a preset edit, and starting one quietly is how a fourth report
+gets earned. The alternative that solves it today is the one `presets.rs`
+already names over the row: a sampled grand through the soundfont player. No
+bank ships, which is why the synthesised row is what a new project opens on.
+
+## 2026-09-09: the second note of a legato pair
 
 > *"notes that are legato and start and end next to another note makes that
 > note not play if there was one before it next to it."*

@@ -289,7 +289,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -16.0,
+            "gain_db": -36.0,
             "key_range": [
               0,
               127
@@ -487,7 +487,7 @@
             }
           ]
         },
-        "output_db": -5.599999904632568,
+        "output_db": 9.100000381469727,
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

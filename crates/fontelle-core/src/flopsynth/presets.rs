@@ -2212,7 +2212,7 @@ bank! {
         .osc(B, WavetableId::Triangle, -28.0)
         .semis(B, 12)
         .off(C).off(SUB)
-        .noise(0.25, -26.0)
+        .noise(0.25, -42.0)
         .filter_route(NOISE, FilterRoute::F2)
         .filter(1, FilterModel::Clean, SvfMode::Bandpass, 2_500.0, 1.2)
         .no_filter()
@@ -2227,7 +2227,7 @@ bank! {
         .route(ModSource::Macro(1), ModDest::LfoDepth(0), 0.6)
         .mac(0, "Breath").mac(1, "Vibrato")
         .fx(reverb(0.5, 0.3))
-        .out(7.4),
+        .out(10.2),
     BrassAndWinds: "Clarinet" => init()
         .osc(A, WavetableId::Square, -13.0)
         .off(B).off(C).off(SUB)
@@ -2266,7 +2266,7 @@ bank! {
     BrassAndWinds: "Pan Pipe" => init()
         .osc(A, WavetableId::Sine, -12.0)
         .off(B).off(C).off(SUB)
-        .noise(0.15, -20.0)
+        .noise(0.15, -37.0)
         .filter_route(NOISE, FilterRoute::F2)
         .filter(1, FilterModel::Clean, SvfMode::Bandpass, 1_800.0, 1.2)
         .amp(0.035, 0.8, 0.6, 0.2)
@@ -2277,7 +2277,7 @@ bank! {
         .route(ModSource::Macro(1), ModDest::FilterCutoff(1), 0.3)
         .mac(0, "Chiff").mac(1, "Air")
         .fx(delay(NoteDivision::Eighth, 0.25, 0.2))
-        .out(-7.4),
+        .out(8.6),
 
     BrassAndWinds: "Trombone" => brass(900.0, 0.06)
         .uni(A, 1, 0.0)
@@ -2331,7 +2331,7 @@ bank! {
         .pos(A, 0.3)
         .semis(A, -12)
         .off(B).off(C).off(SUB)
-        .noise(0.5, -26.0)
+        .noise(0.5, -33.0)
         .filter_route(NOISE, FilterRoute::F1)
         .filter(0, FilterModel::Formant, SvfMode::Bandpass, 780.0, 0.4)
         .character(0, 0.55)
@@ -2347,7 +2347,7 @@ bank! {
         .route(ModSource::Macro(1), ModDest::LfoDepth(0), 0.6)
         .mac(0, "Vowel").mac(1, "Vibrato")
         .fx(drive_fx(DistortionCurve::Tube, 8.0, 0.2))
-        .out(20.8),
+        .out(21.5),
     BrassAndWinds: "Bassoon" => init()
         .osc(A, WavetableId::Pulse, -13.0)
         .pos(A, 0.15)
@@ -2374,7 +2374,7 @@ bank! {
         .osc(B, WavetableId::Triangle, -30.0)
         .semis(B, 36)
         .off(C).off(SUB)
-        .noise(0.3, -22.0)
+        .noise(0.3, -38.0)
         .filter_route(NOISE, FilterRoute::F2)
         .no_filter()
         .filter(1, FilterModel::Clean, SvfMode::Bandpass, 6_000.0, 1.2)
@@ -2386,7 +2386,7 @@ bank! {
         .route(ModSource::Macro(0), ModDest::LayerGain(NOISE as u8), 0.2)
         .route(ModSource::Macro(1), ModDest::LfoDepth(0), 0.6)
         .mac(0, "Breath").mac(1, "Vibrato")
-        .out(3.8),
+        .out(9.0),
     BrassAndWinds: "Muted Trumpet" => brass(20_000.0, 0.03)
         .uni(A, 1, 0.0)
         .off(B)
@@ -2404,7 +2404,7 @@ bank! {
         .osc(B, WavetableId::Triangle, -26.0)
         .semis(B, 12)
         .off(C).off(SUB)
-        .noise(0.2, -16.0)
+        .noise(0.2, -36.0)
         .filter_route(NOISE, FilterRoute::F2)
         .no_filter()
         .filter(1, FilterModel::Clean, SvfMode::Bandpass, 1_600.0, 0.9)
@@ -2420,7 +2420,7 @@ bank! {
         .route(ModSource::Macro(1), ModDest::LfoDepth(0), 0.6)
         .mac(0, "Breath").mac(1, "Vibrato")
         .fx(reverb(0.6, 0.3))
-        .out(-5.6),
+        .out(9.1),
 
     // ------------------------------------------------------ Choir & Vocal ---
     ChoirAndVocal: "Choir Ahh" => choir(0.0, 0.45).out(23.7),

@@ -248,15 +248,30 @@ impl Sampler {
             .iter_active_mut()
             .find(|v| v.voice_context() == note.voice_context)
         {
+            // **`glide_legato_only`**: portamento between notes that overlap
+            // and not between notes that merely follow one another, which is
+            // how every mono synth with a legato switch on it behaves and what
+            // all twenty-one of Flopsynth's `mono` presets ask for. Read here
+            // because this is where the config is; the voice only needs to be
+            // told how long to take, and zero is "not at all".
+            //
+            // Read *before* the take-over, because both branches below make
+            // the voice held again.
+            let was_held = voice.is_held();
+            let glide_s = if config.glide_legato_only && !was_held {
+                0.0
+            } else {
+                config.glide_time_s
+            };
             match config.retrigger {
                 // Legato keeps the envelope and the sample position; mono
                 // starts the note again and only the *pitch* is carried over.
-                crate::RetriggerMode::Legato => voice.legato_to(note, config.glide_time_s),
+                crate::RetriggerMode::Legato => voice.legato_to(note, glide_s),
                 _ => {
                     let from = voice.sounding_key();
                     voice.trigger_note(&self.patch, note);
-                    if config.glide_time_s > 0.0 {
-                        voice.glide_from(from - note.key as f32, config.glide_time_s);
+                    if glide_s > 0.0 {
+                        voice.glide_from(from - note.key as f32, glide_s);
                     }
                 }
             }
