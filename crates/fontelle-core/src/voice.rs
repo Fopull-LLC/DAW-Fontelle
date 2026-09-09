@@ -877,6 +877,10 @@ impl Voice {
         // A legato take-over is still a key going down, and it may take over
         // a voice that was already let go of — so this voice is held again,
         // and the note-off coming for `note.key` is the one that ends it.
+        //
+        // **Whether it had been let go of is the whole question below**, so it
+        // is read before it is overwritten.
+        let was_held = self.held;
         self.held = true;
         self.key = note.key;
         self.voice_context = note.voice_context;
@@ -885,8 +889,34 @@ impl Voice {
         self.velocity_norm = note.velocity as f32 / 127.0;
         self.key_norm = note.key as f32 / 127.0;
         self.note_pan = note.pan.clamp(-1.0, 1.0);
-        // The envelopes are deliberately not touched: that is the difference
-        // between legato and a retrigger.
+        // The envelopes are deliberately not touched **when the voice was
+        // still held**: that is the difference between legato and a retrigger,
+        // and it is what makes a phrase played without lifting a finger one
+        // shape rather than several.
+        //
+        // > *"notes that are legato and start and end next to another note
+        // > makes that note not play if there was one before it next to it."*
+        //
+        // A voice that had already been let go of is a different case, and
+        // leaving its envelopes alone is the bug in that report. Two notes
+        // that touch put a note-off and a note-on on the same sample, and
+        // `fontelle_sequencer::sort_events` orders the off first on purpose —
+        // so this voice is in its *release*, and a take-over that inherits it
+        // produces a note that is held, in tune, and on its way to zero.
+        // Measured, the second note of a touching pair came out 35 dB under
+        // the first: there, and silent.
+        //
+        // `RetriggerMode::Mono` never had this, because it goes through
+        // `trigger_note`, which starts the envelopes again. This is Legato
+        // being given the same answer for the same case, and only for that
+        // case — a note arriving over a key that is still down still carries
+        // the envelope it found.
+        if !was_held {
+            self.amp_env.note_on();
+            for env in &mut self.mod_envs {
+                env.note_on();
+            }
+        }
         self.glide_from(from - note.key as f32, glide_seconds);
     }
 

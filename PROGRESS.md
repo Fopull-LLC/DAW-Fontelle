@@ -29,7 +29,56 @@ over the budget its plan set. The numbers and where the time goes are at the
 end of the section below; the plan's own instruction is that this is a design
 conversation rather than a target to loosen.
 
-## 2026-09-09 (latest): two tests that were not doing their jobs
+## 2026-09-09 (latest): the second note of a legato pair
+
+> *"notes that are legato and start and end next to another note makes that
+> note not play if there was one before it next to it."*
+
+Exact, and reproducible in four lines. In `RetriggerMode::Legato` a new note
+takes over the voice already sounding in its context, and `Voice::legato_to`
+deliberately leaves the envelopes alone — *not* restarting them is the whole
+difference between legato and a retrigger.
+
+But the voice it takes over may already have been **let go of**, and
+`legato_to` said so in its own comment ("it may take over a voice that was
+already let go of — so this voice is held again") while doing nothing about it.
+Two notes that touch put a note-off and a note-on on the same sample, and
+`fontelle_sequencer::sort_events` orders the off first *on purpose* — that
+ordering is itself the fix for an older version of this bug, and its `rank`
+comment describes the failure in the same words. So by the time the second note
+arrives the envelope is in its release stage, and a take-over that inherits it
+gives a voice that is held, in tune, and on its way to zero. **The note is
+there, and silent.**
+
+Measured, on the fixture: 0.011 against the first note's 0.620, 35 dB down. On
+a run of five touching notes the levels alternate —
+`[0.620, 0.011, 0.620, 0.011, 0.620]` — because a dead voice goes inactive and
+the note after it finds nothing to take over and allocates a fresh one, which
+is exactly the *"if there was one before it next to it"* in the report. On the
+real bank, the preset "Acid" produced a second note of **exactly zero**.
+
+`RetriggerMode::Mono` never had this: it goes through `trigger_note`, which
+starts the envelopes again. The fix is Legato being given the same answer for
+the same case and only that case — `legato_to` reads `held` before it
+overwrites it, and re-gates the amp and mod envelopes only when the voice it
+took over had already been released. A note arriving over a key that is still
+down still carries the envelope it found, which
+`a_legato_take_over_of_a_held_note_still_does_not_restart_the_envelope` holds.
+
+Twenty-one of Flopsynth's factory presets go through the builder's `mono`,
+which is this mode, so `crates/fontelle-core/tests/legato_notes.rs` makes the
+claim against the bank itself as well as against a fixture: every legato preset
+has to play the second note of a touching pair. All four tests were confirmed
+failing before the change.
+
+**Still open, found next door and not fixed:** `VoiceConfig::glide_legato_only`
+is written, saved, exposed on the instrument panel as `patch/voice/legato` and
+automatable — and **read by nothing in the audio path**. All twenty-one of
+those presets set it `true`. On the face of it, it should mean a touching note
+does not glide while an overlapping one does, which is a decision about how
+those presets sound rather than a defect to quietly patch.
+
+## 2026-09-09: two tests that were not doing their jobs
 
 Both found while doing something else, both fixed rather than written down.
 
