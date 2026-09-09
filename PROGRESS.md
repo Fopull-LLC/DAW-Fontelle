@@ -29,7 +29,67 @@ over the budget its plan set. The numbers and where the time goes are at the
 end of the section below; the plan's own instruction is that this is a design
 conversation rather than a target to loosen.
 
-## 2026-09-09 (latest): breath, a dead knob, and why the piano is not a piano
+## 2026-09-09 (latest): four shelves the synth had never shown anybody
+
+> *"right now it's very general but i want more presets that utilize its
+> advanced synth capabilities to make some really cool unique electronic
+> sounds ... kind of like how flex has bundles ... so it has much more cool
+> stuff to show off just immediately out of the box."*
+
+The bank was 211 presets and it was an **instrument** bank: it answered "what
+does a trombone sound like". Measured before anything was written, it used
+about three fifths of the engine. Never used *at all*:
+
+- `WarpMode::Quantise` — the one warp that is a reduction, and the whole of
+  the synth's digital grit
+- `ModSource::Random`, `NoteOnCounter`, `Aftertouch`, `PitchBend`, and the
+  roll's own per-note `NoteModX`/`NoteModY`
+- `ModDest::OscUnisonBlend`, `FilterDrive`, `LfoPhase`, `UnisonDetune`,
+  `EnvelopeStageLevel`
+- three of the forty wavetables (`Even`, `Wide`, `SubSquare`)
+
+and a dozen more used exactly once. A capability nobody has heard is a
+capability nobody knows is there, so `tests/flopsynth_shows_off.rs` went in
+first and failed on all five counts.
+
+**Fifty-six presets, on four shelves of their own.** `Sync & FM` (14),
+`Motion & Morph` (18), `Bass Music` (11), `Expressive` (13) — 267 in the bank
+now. They sit on a different axis from the fourteen original categories, and
+that is deliberate twice over. It is what somebody opening a *synthesiser* is
+actually looking for; and `every_pair_in_a_category_is_audibly_apart` is a
+claim **within** a shelf, so folding eight more pads into a shelf of eighteen
+made thirty-five pairs collide at once. Moving the expansion onto its own
+shelves took that to twelve without touching a single sound.
+
+### What the gates caught, which is the part worth writing down
+
+Adding presets to this bank is not typing rows. Five separate gates pushed
+back, and each was right:
+
+- **Nine presets had no macros and ignored velocity.** The bank requires two
+  named macros and a velocity route on every row — a preset nobody can play
+  *into* is a screenshot.
+- **`Phase Weave` could not be made loud enough.** Its trim ran to `.out(201)`
+  and saturated, because a narrow bandpass on a `Glass` table leaves nothing
+  to amplify. The trim is not where that gets fixed; the filter was.
+- **`Even Lead` peaked at 2.23** on a four-note chord — two tables an octave
+  apart summing in phase. Also not a trim problem: lowering it takes the
+  loudness with it. Three voices of unison decorrelate the peaks and leave the
+  RMS alone, which is what crest means.
+- **Ten of eleven `Bass Music` presets read as the same preset.** They were all
+  `bass()` with a different table, and the gate reads decay, brightness, crest
+  and how much the sound moves — none of which a table changes much. They are
+  now spread deliberately across all four: `Crunch Bass` is 9 kHz and 70 ms,
+  `Stairs Bass` 820 Hz and 1.1 s, `Bitcrush Bass` gated at a sixteenth,
+  `Hoover Bass` long and wide with the pitch drop it is named for.
+- **`8-bit Hat` started clipping** — and that one was *my* fault, not the
+  expansion's. The loudness pass was re-tuning all 211 existing presets toward
+  the median, and the bank had deliberately left that row 2.9 dB under it
+  because raising it clips. `preset_probe`'s "add" column is advice; the peak
+  gate is the constraint. The trim pass now touches only the new shelves, and
+  the 44 existing trims it had drifted are restored to what they were.
+
+## 2026-09-09: breath, a dead knob, and why the piano is not a piano
 
 Three reports. Two are fixed and the third is measured for the first time.
 
