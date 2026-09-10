@@ -29,7 +29,53 @@ over the budget its plan set. The numbers and where the time goes are at the
 end of the section below; the plan's own instruction is that this is a design
 conversation rather than a target to loosen.
 
-## 2026-09-09 (latest): four shelves the synth had never shown anybody
+## 2026-09-09 (latest): four more shelves, and what a trim cannot fix
+
+The first expansion was about **technique** — sync, FM, morphs, the sources a
+score plays into a note. This one is about **use**: the four jobs a general
+bank keeps being asked for and cannot do. Fifty-four presets, bank at **321**.
+
+- **World** (14) — Duduk, Erhu, Shamisen, Guzheng, Oud, Kora, Balafon,
+  Gamelan, Steel Pan, Hurdy Gurdy, Didgeridoo, Bagpipe, Ney, Tabla Tone. None
+  is a forgery; what each is after is the *gesture* — which end of the note the
+  energy is at, whether it buzzes, what it does while it is held.
+- **Cinematic** (14) — Braam, Sub Boom, Tension Bed, Trailer Hit, Rise Swell,
+  Doom Bell, Hybrid Stab, Pulse Bed, Signal, Metal Impact, String Ostinato,
+  Whale, Dark Choir, Air Tension. A cue is not a chord: things that arrive,
+  things that hang, things that hit.
+- **Lo-Fi & Tape** (13) — every one is a *defect* on purpose: bit depth, tape
+  speed, a converter that could not keep up, a top end that never made it.
+- **Modular** (13) — patches that play themselves. `Krell` lets every note
+  decide its own length and colour; `Turing Pluck` advances a shift register
+  per note; `Ping Filter` is a whole voice made of one resonant filter struck
+  by noise; `Clock Divide` opens a fast gate with a slow one through `via`.
+  This is the shelf `Random` and `NoteOnCounter` were waiting for.
+
+### The two traps, both of which cost a full trim cycle each
+
+**A bipolar LFO on `LayerGain` silences the layer.** It walks the gain under
+`SILENT_DB`, at which point the voice skips the layer entirely — and no amount
+of output trim brings back something that was never rendered. `Crackle Bed`
+and then `Patch Bay` both died this way, and both showed up as the loudness
+pass sticking at 15.2 dB rather than as anything that looked like a bug. The
+fix in both was to modulate the *filter* or the wavetable position instead.
+
+**`out()` saturates, and then overwrites the gains you raised.** It clamps to
+`OUTPUT_MAX_DB` and pushes the remainder into the layers, clamping those too —
+so a preset that cannot reach the median drives the trim to `.out(133)`,
+`.out(565)`, and every layer sits at maximum. `Whale` and `Air Tension` were
+band-passed so narrowly that most of the noise was thrown away; raising
+`.noise()` did nothing, because the runaway trim was rewriting that gain on
+the way past. Widening the filter fixed both in one iteration. Same shape as
+`Phase Weave` last round: **when a preset is too quiet, the answer is upstream
+of the trim, and the trim is the thing that hides it.**
+
+`every_pair_in_a_category_is_audibly_apart` did its usual work — `Oud` against
+`Balafon`, `Cassette Pad` against `Slow Tape`, `Tape Keys` against first
+`Dusty Rhodes` and then `Bit Piano`, which in the end stopped being an
+electric piano at all and became a crushed `Bitwave` pluck.
+
+## 2026-09-09: four shelves the synth had never shown anybody
 
 > *"right now it's very general but i want more presets that utilize its
 > advanced synth capabilities to make some really cool unique electronic

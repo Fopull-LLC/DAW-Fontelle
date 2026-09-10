@@ -82,10 +82,20 @@ pub enum FlopsynthCategory {
     MotionAndMorph,
     BassMusic,
     Expressive,
+    // ---- the second expansion (2026-09-09) ----
+    //
+    // The first four shelves were about *technique*. These four are about
+    // **use**: the four jobs a general bank keeps being asked for and cannot
+    // do — an instrument from outside the orchestra, a cue, something that
+    // sounds like it came off tape, and a patch that plays itself.
+    World,
+    Cinematic,
+    LoFiAndTape,
+    Modular,
 }
 
 impl FlopsynthCategory {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 22] = [
         Self::Bass,
         Self::Lead,
         Self::Pad,
@@ -104,6 +114,10 @@ impl FlopsynthCategory {
         Self::MotionAndMorph,
         Self::BassMusic,
         Self::Expressive,
+        Self::World,
+        Self::Cinematic,
+        Self::LoFiAndTape,
+        Self::Modular,
     ];
 
     /// The folder name and the heading.
@@ -130,6 +144,10 @@ impl FlopsynthCategory {
             Self::MotionAndMorph => "Motion & Morph",
             Self::BassMusic => "Bass Music",
             Self::Expressive => "Expressive",
+            Self::World => "World",
+            Self::Cinematic => "Cinematic",
+            Self::LoFiAndTape => "Lo-Fi & Tape",
+            Self::Modular => "Modular",
         }
     }
 }
@@ -3925,5 +3943,476 @@ bank! {
         .stepped(ModSource::NoteOnCounter, ModDest::LayerPitch(A as u8), 0.14, 6)
         .route(ModSource::NoteOnCounter, ModDest::OscPosition(A as u8), 0.5)
         .out(2.5),
+
+    // ------------------------------------------------------------ World ---
+    // Instruments the orchestra shelf does not have. Synthesised rather than
+    // sampled, so none of them is a forgery — what each is after is the
+    // *gesture*: which end of the note the energy is at, whether it buzzes,
+    // and what it does while it is held.
+    World: "Duduk" => lead(WavetableId::Vowel, 1_900.0, 0.04)
+        .pos(A, 0.3)
+        .noise(0.4, -38.0)
+        .filter_route(NOISE, FilterRoute::F1)
+        .amp(0.09, 0.0, 1.0, 0.35)
+        .lfo(0, LfoWave::Sine, 5.2)
+        .late(0, 0.35, 0.5)
+        .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.004)
+        .mono(0.05)
+        .fx(reverb(0.7, 0.3))
+        .out(19.0),
+    World: "Erhu" => lead(WavetableId::Saw, 3_400.0, 0.05)
+        .amp(0.06, 0.0, 1.0, 0.25)
+        .lfo(0, LfoWave::Sine, 6.4)
+        .late(0, 0.2, 0.3)
+        .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.007)
+        .route(ModSource::Aftertouch, ModDest::LfoDepth(0), 0.7)
+        .mono(0.07)
+        .fx(reverb(0.6, 0.25))
+        .out(6.0),
+    World: "Shamisen" => pluck(WavetableId::Grit, 5_200.0, 0.22)
+        .pos(A, 0.6)
+        .warp(A, WarpMode::Bend, 0.35)
+        .route(ModSource::Velocity, ModDest::OscWarp(A as u8), 0.4)
+        .out(0.8),
+    World: "Guzheng" => pluck(WavetableId::Struck, 7_500.0, 0.85)
+        .pos(A, 0.25)
+        .uni(A, 2, 3.0)
+        .fx(reverb(0.6, 0.25))
+        .out(13.1),
+    World: "Oud" => pluck(WavetableId::Odd, 2_600.0, 0.5)
+        .pos(A, 0.45)
+        .uni(A, 2, 5.0)
+        .fx(reverb(0.5, 0.2))
+        .out(1.9),
+    World: "Kora" => pluck(WavetableId::Glass, 9_500.0, 1.5)
+        .fine(A, 3.0)
+        .fx(ping_pong(NoteDivision::Eighth, 0.25, 0.2))
+        .fx(reverb(0.7, 0.3))
+        .out(7.3),
+    World: "Balafon" => bell(WavetableId::Tine, 0.26)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 7_500.0, 0.3)
+        .filter_route(A, FilterRoute::F1)
+        .fx(reverb(0.5, 0.22))
+        .out(10.9),
+    World: "Gamelan" => bell(WavetableId::Gong, 2.8)
+        .warp(A, WarpMode::Rm, 0.3)
+        .modulator(A, B)
+        .osc(B, WavetableId::Sine, SILENT_DB)
+        .semis(B, 8)
+        .fx(reverb(0.85, 0.4))
+        .out(15.8),
+    World: "Steel Pan" => bell(WavetableId::FmBell, 1.0)
+        .pos(A, 0.4)
+        .filter(0, FilterModel::Clean, SvfMode::Bandpass, 1_800.0, 0.5)
+        .filter_route(A, FilterRoute::F1)
+        .fx(reverb(0.6, 0.28))
+        .out(25.6),
+    World: "Hurdy Gurdy" => pad(WavetableId::Sawstack, 2_100.0, 0.02, 0.3)
+        .uni(A, 3, 11.0)
+        .osc(B, WavetableId::Odd, -18.0)
+        .semis(B, 7)
+        .lfo(0, LfoWave::Triangle, 7.5)
+        .route(ModSource::Lfo(0), ModDest::Amp, 0.2)
+        .fx(reverb(0.6, 0.25))
+        .out(0.1),
+    World: "Didgeridoo" => bass(WavetableId::Growl, 620.0, 0.4)
+        .pos(A, 0.55)
+        .lfo(0, LfoWave::Triangle, 3.1)
+        .route(ModSource::Lfo(0), ModDest::OscPosition(A as u8), 0.6)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.35)
+        .amp(0.05, 0.0, 1.0, 0.4)
+        .mono(0.06)
+        .out(8.7),
+    World: "Bagpipe" => pad(WavetableId::Odd, 4_200.0, 0.01, 0.15)
+        .uni(A, 2, 7.0)
+        .osc(B, WavetableId::Square, -20.0)
+        .semis(B, -12)
+        .lfo(0, LfoWave::Sine, 4.5)
+        .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.003)
+        .out(-1.0),
+    World: "Ney" => lead(WavetableId::Hollow, 5_500.0, 0.02)
+        .noise(0.35, -34.0)
+        .filter_route(NOISE, FilterRoute::F1)
+        .amp(0.05, 0.0, 1.0, 0.2)
+        .lfo(0, LfoWave::Sine, 5.8)
+        .late(0, 0.3, 0.4)
+        .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.005)
+        .fx(reverb(0.75, 0.32))
+        .out(3.9),
+    World: "Tabla Tone" => pluck(WavetableId::SubTri, 1_300.0, 0.3)
+        .env(2, 0.0, 0.07, 0.0, 0.05)
+        // The bend on the head is the whole sound: a tabla is a drum that
+        // plays a *note* and then leaves it.
+        .route(ModSource::Envelope(2), ModDest::LayerPitch(A as u8), 0.055)
+        .out(4.2),
+
+    // -------------------------------------------------------- Cinematic ---
+    // A cue is not a chord. These are the shapes a picture asks for: things
+    // that arrive, things that hang, and things that hit — spread hard across
+    // decay and brightness so a scene can be built out of one shelf.
+    Cinematic: "Braam" => pad(WavetableId::Sawstack, 750.0, 0.03, 1.4)
+        .uni(A, 5, 16.0)
+        .osc(B, WavetableId::SubSaw, -11.0)
+        .semis(B, -12)
+        .env(2, 0.0, 0.5, 0.0, 0.3)
+        .route(ModSource::Envelope(2), ModDest::LayerPitch(A as u8), 0.02)
+        .route(ModSource::Envelope(2), ModDest::FilterCutoff(0), 0.5)
+        .amp(0.01, 0.0, 1.0, 1.2)
+        .fx(drive_fx(DistortionCurve::Tube, 9.0, 0.35))
+        .fx(reverb(0.9, 0.4))
+        .out(-3.0),
+    Cinematic: "Sub Boom" => bass(WavetableId::SubSine, 260.0, 2.2)
+        .env(2, 0.0, 0.7, 0.0, 0.4)
+        .route(ModSource::Envelope(2), ModDest::LayerPitch(A as u8), 0.11)
+        .amp(0.002, 2.4, 0.0, 1.6)
+        .fx(reverb(0.8, 0.2))
+        .out(0.9),
+    Cinematic: "Tension Bed" => pad(WavetableId::Hollow, 1_500.0, 2.5, 4.0)
+        .uni(A, 3, 9.0)
+        .osc(B, WavetableId::Odd, -22.0)
+        .fine(B, 14.0)
+        .lfo(0, LfoWave::Triangle, 0.05)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.4)
+        .route(ModSource::Random, ModDest::LayerPitch(B as u8), 0.01)
+        .fx(reverb(1.0, 0.55))
+        .out(25.0),
+    Cinematic: "Trailer Hit" => pluck(WavetableId::Grit, 3_200.0, 0.16)
+        .osc(B, WavetableId::SubSine, -8.0)
+        .semis(B, -24)
+        .env(2, 0.0, 0.25, 0.0, 0.1)
+        .route(ModSource::Envelope(2), ModDest::LayerPitch(B as u8), 0.06)
+        .fx(drive_fx(DistortionCurve::Diode, 11.0, 0.3))
+        .fx(reverb(0.95, 0.45))
+        .out(-3.0),
+    Cinematic: "Rise Swell" => pad(WavetableId::BrightStack, 5_000.0, 3.5, 1.0)
+        .uni(A, 4, 13.0)
+        .env(2, 4.5, 0.0, 1.0, 0.5)
+        .route(ModSource::Envelope(2), ModDest::LayerPitch(A as u8), 0.05)
+        .route(ModSource::Envelope(2), ModDest::FilterCutoff(0), 0.8)
+        .route(ModSource::Envelope(2), ModDest::OscUnisonDetune(A as u8), 0.7)
+        .fx(reverb(1.0, 0.5))
+        .out(22.6),
+    Cinematic: "Doom Bell" => bell(WavetableId::Gong, 4.5)
+        .semis(A, -12)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 1_100.0, 0.3)
+        .filter_route(A, FilterRoute::F1)
+        .fx(reverb(1.0, 0.55))
+        .out(23.8),
+    Cinematic: "Hybrid Stab" => pluck(WavetableId::BrightStack, 8_500.0, 0.13)
+        .uni(A, 3, 12.0)
+        .osc(B, WavetableId::Saw, -18.0)
+        .semis(B, 12)
+        .fx(reverb(0.7, 0.3))
+        .out(8.3),
+    Cinematic: "Pulse Bed" => pad(WavetableId::Pulse, 2_400.0, 0.3, 0.8)
+        .lfo_sync(0, LfoWave::Square, NoteDivision::Eighth)
+        .lfo_mode(0, LfoMode::Free)
+        .route(ModSource::Lfo(0), ModDest::Amp, 0.85)
+        .smooth(0, 0.09)
+        .fx(ping_pong(NoteDivision::Eighth, 0.35, 0.3))
+        .fx(reverb(0.85, 0.35))
+        .out(-11.1),
+    Cinematic: "Signal" => bell(WavetableId::Sine, 1.4)
+        .semis(A, 24)
+        .lfo_sync(0, LfoWave::Square, NoteDivision::Half)
+        .lfo_mode(0, LfoMode::Free)
+        .route(ModSource::Lfo(0), ModDest::Amp, 0.9)
+        .fx(ping_pong(NoteDivision::QuarterDotted, 0.5, 0.4))
+        .fx(reverb(1.0, 0.5))
+        .out(0.8),
+    Cinematic: "Metal Impact" => pluck(WavetableId::Crunch, 6_000.0, 0.4)
+        .warp(A, WarpMode::Rm, 0.6)
+        .modulator(A, B)
+        .osc(B, WavetableId::Gong, SILENT_DB)
+        .semis(B, 5)
+        .fx(reverb(0.95, 0.5))
+        .out(11.9),
+    Cinematic: "String Ostinato" => strings(4_000.0, 0.01, 0.12)
+        .lfo_sync(0, LfoWave::Square, NoteDivision::Sixteenth)
+        .lfo_mode(0, LfoMode::Free)
+        .route(ModSource::Lfo(0), ModDest::Amp, 0.8)
+        .smooth(0, 0.05)
+        .fx(reverb(0.8, 0.32))
+        .out(-13.2),
+    Cinematic: "Whale" => atmos(0.6, SvfMode::Lowpass, 900.0)
+        .osc(A, WavetableId::Sine, -8.0)
+        .lfo(0, LfoWave::Triangle, 0.11)
+        .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.04)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.5)
+        .fx(reverb(1.0, 0.6))
+        .out(19.2),
+    Cinematic: "Dark Choir" => choir(0.15, 1.6)
+        .semis(A, -12)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 1_300.0, 0.25)
+        .fx(reverb(1.0, 0.55))
+        .out(32.0),
+    Cinematic: "Air Tension" => atmos(0.15, SvfMode::Highpass, 3_000.0)
+        .lfo(0, LfoWave::Triangle, 0.08)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.6)
+        .route(ModSource::Random, ModDest::LayerPan(NOISE as u8), 0.7)
+        .fx(reverb(1.0, 0.5))
+        .out(-3.3),
+
+    // ----------------------------------------------------- Lo-Fi & Tape ---
+    // Everything here is a *defect* on purpose: bit depth, tape speed, a
+    // converter that could not keep up, and a top end that never made it.
+    LoFiAndTape: "Tape Keys" => electric_piano(0.65, 0.85)
+        .lfo(0, LfoWave::Triangle, 0.7)
+        .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.004)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 6_500.0, 0.2)
+        .filter_route(A, FilterRoute::F1)
+        .fx(crush(11.0, 22_050.0, 0.3))
+        .fx(chorus(2, 0.25))
+        .out(10.5),
+    LoFiAndTape: "Dusty Rhodes" => electric_piano(0.1, 3.8)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 780.0, 0.2)
+        .filter_route(A, FilterRoute::F1)
+        .noise(0.8, -44.0)
+        .filter_route(NOISE, FilterRoute::F1)
+        .lfo(0, LfoWave::Triangle, 0.28)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.25)
+        .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.006)
+        .fx(drive_fx(DistortionCurve::Tube, 7.0, 0.3))
+        .out(20.5),
+    LoFiAndTape: "Cassette Pad" => pad(WavetableId::AnalogMorph, 3_600.0, 0.35, 1.1)
+        .uni(A, 3, 8.0)
+        .lfo(0, LfoWave::Triangle, 1.6)
+        .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.014)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.4)
+        .route(ModSource::Random, ModDest::LayerPitch(A as u8), 0.005)
+        .fx(crush(10.0, 16_000.0, 0.25))
+        .fx(reverb(0.8, 0.35))
+        .out(7.1),
+    LoFiAndTape: "Vinyl Bells" => bell(WavetableId::Glass, 1.2)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 3_400.0, 0.2)
+        .filter_route(A, FilterRoute::F1)
+        .noise(0.9, -40.0)
+        .filter_route(NOISE, FilterRoute::F1)
+        .fx(crush(9.0, 12_000.0, 0.3))
+        .out(23.5),
+    LoFiAndTape: "Warble Bass" => bass(WavetableId::SubTri, 900.0, 0.35)
+        .lfo(0, LfoWave::Triangle, 0.9)
+        .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.008)
+        .fx(crush(10.0, 14_000.0, 0.25))
+        .out(-0.1),
+    LoFiAndTape: "VHS Lead" => lead(WavetableId::Pulse, 2_800.0, 0.03)
+        .pos(A, 0.3)
+        .lfo(0, LfoWave::Triangle, 1.4)
+        .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.007)
+        .fx(crush(8.0, 11_025.0, 0.4))
+        .fx(chorus(2, 0.3))
+        .out(14.3),
+    LoFiAndTape: "Wow Pad" => pad(WavetableId::Choir, 1_200.0, 2.2, 3.4)
+        .uni(A, 4, 10.0)
+        .lfo(0, LfoWave::Sine, 0.35)
+        .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.01)
+        .fx(reverb(0.9, 0.42))
+        .out(21.5),
+    LoFiAndTape: "Crackle Bed" => atmos(0.85, SvfMode::Lowpass, 3_000.0)
+        .lfo(0, LfoWave::SampleHold, 26.0)
+        // The crackle is the *filter* jumping, not the level: a bipolar LFO on
+        // a layer's gain walks it under the floor and the layer is skipped.
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.6)
+        .fx(crush(8.0, 12_000.0, 0.35))
+        .out(-2.5),
+    LoFiAndTape: "Old Radio" => lead(WavetableId::Saw, 1_600.0, 0.02)
+        .filter(0, FilterModel::Clean, SvfMode::Bandpass, 1_400.0, 0.75)
+        .noise(0.5, -40.0)
+        .filter_route(NOISE, FilterRoute::F1)
+        .fx(crush(7.0, 9_000.0, 0.45))
+        .out(21.7),
+    LoFiAndTape: "Bit Piano" => pluck(WavetableId::Bitwave, 2_600.0, 1.3)
+        .warp(A, WarpMode::Quantise, 0.5)
+        .pos(A, 0.35)
+        .fx(crush(4.0, 6_000.0, 0.75))
+        .out(12.7),
+    LoFiAndTape: "Slow Tape" => pad(WavetableId::SubSaw, 560.0, 4.0, 5.5)
+        .uni(A, 3, 9.0)
+        .lfo(0, LfoWave::Triangle, 0.18)
+        .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.012)
+        .fx(reverb(1.0, 0.5))
+        .out(19.9),
+    LoFiAndTape: "Broken Chorus" => pluck(WavetableId::Tine, 4_400.0, 0.7)
+        .uni(A, 3, 26.0)
+        .route(ModSource::Random, ModDest::OscUnisonDetune(A as u8), 0.6)
+        .fx(chorus(3, 0.45))
+        .fx(crush(11.0, 20_000.0, 0.2))
+        .out(5.6),
+    LoFiAndTape: "Muffled Keys" => electric_piano(0.15, 3.4)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 700.0, 0.15)
+        .filter_route(A, FilterRoute::F1)
+        .fx(reverb(0.7, 0.3))
+        .out(10.0),
+
+    // ---------------------------------------------------------- Modular ---
+    // Patches that **play themselves**. Hold one note and something happens;
+    // hold a chord and four somethings happen, because every source here is
+    // per voice. This is the shelf `Random` and `NoteOnCounter` were waiting
+    // for — a synth whose every note is identical is a sampler with extra
+    // steps.
+    Modular: "Random Voltage" => init()
+        .osc(A, WavetableId::Square, -13.0)
+        .off(B).off(C).off(SUB)
+        .lfo_sync(0, LfoWave::SampleHold, NoteDivision::Sixteenth)
+        .lfo_mode(0, LfoMode::Free)
+        .stepped(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.14, 7)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.4)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 2_600.0, 0.5)
+        .amp(0.002, 0.0, 1.0, 0.12)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.35)
+        .route(ModSource::Macro(0), ModDest::LfoRate(0), 0.6)
+        .route(ModSource::Macro(1), ModDest::FilterResonance(0), 0.5)
+        .mac(0, "Clock").mac(1, "Bite")
+        .fx(ping_pong(NoteDivision::Sixteenth, 0.35, 0.28))
+        .out(3.3),
+    Modular: "Krell" => init()
+        .osc(A, WavetableId::Triangle, -12.0)
+        .off(B).off(C).off(SUB)
+        // The Krell patch: every note decides its own length and colour when
+        // it starts. `Random` is per voice, so a chord is four decisions.
+        .route(ModSource::Random, ModDest::EnvelopeStageTime(0, 3), 0.8)
+        .route(ModSource::Random, ModDest::FilterCutoff(0), 0.7)
+        .route(ModSource::Random, ModDest::LayerPan(A as u8), 0.8)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 1_800.0, 0.45)
+        .amp(0.01, 1.6, 0.0, 1.2)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.3)
+        .route(ModSource::Macro(0), ModDest::FilterCutoff(0), 0.5)
+        .route(ModSource::Macro(1), ModDest::EnvelopeStageTime(0, 3), 0.6)
+        .mac(0, "Colour").mac(1, "Length")
+        .fx(reverb(0.95, 0.45))
+        .out(8.4),
+    Modular: "Turing Pluck" => pluck(WavetableId::Pulse, 4_800.0, 0.3)
+        // A shift register: the sequence advances one place per note played
+        // and comes back round, which is what a Turing machine module is.
+        .stepped(ModSource::NoteOnCounter, ModDest::LayerPitch(A as u8), 0.12, 8)
+        .route(ModSource::NoteOnCounter, ModDest::OscPosition(A as u8), 0.6)
+        .fx(ping_pong(NoteDivision::Eighth, 0.35, 0.3))
+        .out(14.3),
+    Modular: "Clock Divide" => init()
+        .osc(A, WavetableId::Saw, -13.0)
+        .off(B).off(C).off(SUB)
+        .lfo_sync(0, LfoWave::Square, NoteDivision::Eighth)
+        .lfo_sync(1, LfoWave::Square, NoteDivision::Half)
+        .lfo_mode(0, LfoMode::Free)
+        .lfo_mode(1, LfoMode::Free)
+        .route(ModSource::Lfo(0), ModDest::Amp, 0.7)
+        // The slow gate opens the fast one — two divisions of one clock, which
+        // is the whole of a divider.
+        .route_via(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.7, ModSource::Lfo(1))
+        .smooth(0, 0.05)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 2_200.0, 0.5)
+        .amp(0.004, 0.0, 1.0, 0.2)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.35)
+        .route(ModSource::Macro(0), ModDest::LfoRate(0), 0.6)
+        .route(ModSource::Macro(1), ModDest::LfoRate(1), 0.6)
+        .mac(0, "Fast").mac(1, "Slow")
+        .out(-9.2),
+    Modular: "Slew Bass" => bass(WavetableId::SubSaw, 1_200.0, 0.3)
+        .lfo(0, LfoWave::SampleHold, 3.4)
+        .smooth(0, 0.85)
+        // Sample and hold through a slew limiter is a *glide* between random
+        // values rather than a jump — the sound of a portamento CV.
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.7)
+        .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.01)
+        .out(-0.8),
+    Modular: "Chaos Lead" => lead(WavetableId::Grit, 5_500.0, 0.0)
+        .route(ModSource::Random, ModDest::OscPosition(A as u8), 0.8)
+        .route(ModSource::Random, ModDest::OscWarp(A as u8), 0.5)
+        .route(ModSource::Random, ModDest::LayerPan(A as u8), 0.9)
+        .warp(A, WarpMode::Bend, 0.3)
+        .amp(0.003, 0.0, 1.0, 0.15)
+        .fx(delay(NoteDivision::SixteenthTriplet, 0.4, 0.25))
+        .out(8.2),
+    Modular: "Ping Filter" => init()
+        .off(A).off(B).off(C).off(SUB)
+        .noise(0.2, -14.0)
+        .filter_route(NOISE, FilterRoute::F1)
+        // A resonant filter struck by a burst of noise rings at its corner —
+        // a whole voice made of one filter, which is how a ping module works.
+        .filter(0, FilterModel::Ladder, SvfMode::Bandpass, 900.0, 0.95)
+        .key_track(0, 1.0)
+        .amp(0.0005, 0.05, 0.0, 0.04)
+        .env(1, 0.0, 0.04, 0.0, 0.03)
+        .env_to_cut(0.3)
+        .route(ModSource::Velocity, ModDest::FilterResonance(0), 0.2)
+        .route(ModSource::Macro(0), ModDest::FilterResonance(0), 0.4)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.5)
+        .mac(0, "Ring").mac(1, "Pitch")
+        .fx(reverb(0.8, 0.35))
+        .out(-7.7),
+    Modular: "Burst" => init()
+        .osc(A, WavetableId::Sine, -12.0)
+        .off(B).off(C).off(SUB)
+        .lfo(0, LfoWave::Square, 22.0)
+        .env(2, 0.0, 0.5, 0.0, 0.2)
+        // A burst generator: a fast gate that only exists while the envelope
+        // that opened it is still up.
+        .route_via(ModSource::Lfo(0), ModDest::Amp, 0.95, ModSource::Envelope(2))
+        .route(ModSource::Envelope(2), ModDest::LfoRate(0), -0.5)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 6_000.0, 0.3)
+        .amp(0.001, 0.0, 1.0, 0.1)
+        .route(ModSource::Velocity, ModDest::LfoRate(0), 0.4)
+        .route(ModSource::Macro(0), ModDest::LfoRate(0), 0.7)
+        .route(ModSource::Macro(1), ModDest::EnvelopeStageTime(2, 2), 0.6)
+        .mac(0, "Rate").mac(1, "Length")
+        .fx(ping_pong(NoteDivision::ThirtySecond, 0.3, 0.25))
+        .out(-15.6),
+    Modular: "Wander Pad" => pad(WavetableId::AnalogMorph, 2_400.0, 1.8, 3.6)
+        .uni(A, 3, 7.0)
+        .lfo(0, LfoWave::SampleHold, 0.22)
+        .smooth(0, 0.95)
+        .route(ModSource::Lfo(0), ModDest::OscPosition(A as u8), 0.8)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.5)
+        .route(ModSource::Random, ModDest::LayerPan(A as u8), 0.7)
+        .fx(reverb(1.0, 0.5))
+        .out(13.6),
+    Modular: "Divider Bass" => bass(WavetableId::Square, 1_500.0, 0.2)
+        .lfo_sync(0, LfoWave::Square, NoteDivision::Quarter)
+        .lfo_mode(0, LfoMode::Free)
+        .stepped(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.1, 2)
+        .osc(B, WavetableId::SubSquare, -14.0)
+        .semis(B, -12)
+        .out(-4.5),
+    Modular: "Sync Ramp" => lead(WavetableId::SyncSweep, 6_500.0, 0.0)
+        .warp(A, WarpMode::Sync, 0.15)
+        .lfo(0, LfoWave::SawUp, 0.6)
+        .route(ModSource::Lfo(0), ModDest::OscWarp(A as u8), 0.85)
+        .amp(0.01, 0.0, 1.0, 0.3)
+        .fx(delay(NoteDivision::Quarter, 0.35, 0.25))
+        .out(3.8),
+    Modular: "Noise Voltage" => init()
+        .off(A).off(B).off(C).off(SUB)
+        .noise(0.45, -13.0)
+        .filter_route(NOISE, FilterRoute::F1)
+        .filter(0, FilterModel::Ladder, SvfMode::Bandpass, 1_600.0, 0.8)
+        .lfo(0, LfoWave::SampleHold, 7.0)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.9)
+        .amp(0.02, 0.0, 1.0, 0.4)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.3)
+        .route(ModSource::Macro(0), ModDest::LfoRate(0), 0.7)
+        .route(ModSource::Macro(1), ModDest::FilterResonance(0), 0.5)
+        .mac(0, "Rate").mac(1, "Ring")
+        .fx(reverb(0.85, 0.4))
+        .out(4.6),
+    Modular: "Patch Bay" => init()
+        .osc(A, WavetableId::AnalogMorph, -13.0)
+        .osc(B, WavetableId::Odd, -20.0)
+        .semis(B, 7)
+        .off(C).off(SUB)
+        .lfo_sync(0, LfoWave::Triangle, NoteDivision::HalfTriplet)
+        .lfo(1, LfoWave::SampleHold, 5.0)
+        .route(ModSource::Lfo(0), ModDest::OscPosition(A as u8), 0.7)
+        .route(ModSource::Lfo(1), ModDest::OscPosition(B as u8), 0.5)
+        .route(ModSource::Lfo(0), ModDest::LfoRate(1), 0.6)
+        .route(ModSource::Random, ModDest::OscPosition(B as u8), 0.4)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 3_000.0, 0.45)
+        .character(0, 0.4)
+        .amp(0.05, 0.0, 1.0, 0.7)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.35)
+        .route(ModSource::Macro(0), ModDest::LfoRate(0), 0.6)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.6)
+        .mac(0, "Clock").mac(1, "Tone")
+        .fx(reverb(0.9, 0.42))
+        .out(5.2),
 
 }
