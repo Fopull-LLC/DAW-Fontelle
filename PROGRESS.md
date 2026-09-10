@@ -29,7 +29,56 @@ over the budget its plan set. The numbers and where the time goes are at the
 end of the section below; the plan's own instruction is that this is a design
 conversation rather than a target to loosen.
 
-## 2026-09-09 (latest): four more shelves, and what a trim cannot fix
+## 2026-09-10 (latest): the rest of the rack
+
+> *"let's expand the modular section more making a vast variety of modular
+> sounding patches."*
+
+Seventeen more, so **Modular is thirty** and the bank is **338**. Each is a
+module somebody would recognise rather than another setting of the last one:
+
+- **Low-Pass Gate** — one envelope on the filter *and* the amp, which is why a
+  vactrol pluck gets quieter and darker at the same rate
+- **Wavefolder** — a triangle gaining corners instead of a filter taking them
+  away, which is the whole West Coast argument
+- **Rungler** — two oscillators modulating each other's rate, never random and
+  never repeating
+- **Complex Osc** — Buchla's 259: one oscillator whose only job is to bend the
+  other's phase, with the *index* as the timbre knob
+- **Bouncing Ball** — one envelope doing two jobs, speeding the gate up as it
+  falls
+- **Undertone** — a sub-harmonicon divides *down*, so its intervals are the
+  undertone series and none of them is tempered
+- **Feedback Patch** — a filter turned up until it sings; the noise is only
+  there to start it
+- **Ratchet** — a fast gate that exists only while a slow one is open
+- and Vactrol Bongo, Serge Resonant, Quantised Melody (five steps, so every
+  accident is still in key), Clock Swing, Drone Cell, Attenuverter, Trigger
+  Echo, Noise Comparator, Stepped Voltage
+
+### Thirty in one shelf, and only four collisions
+
+`every_pair_in_a_category_is_audibly_apart` is 435 pairs at this size. Eleven
+presets designed without thinking about it produced ten collisions last round;
+seventeen designed **against the axes it reads** produced four. The method is
+just to place each preset at its own coordinate in (how long it rings × how
+bright it is) before writing a single knob, and to leave the archetype to
+supply the movement.
+
+The four that did collide are the interesting part, because none was a
+numbers problem:
+
+- **Slow Voltage was a second Wander Pad.** Both were a slow sample-and-hold
+  through a slew limiter. The fix was to notice that a slew limiter is what
+  makes it *glide* — so the other one should jump. It is `Stepped Voltage` now.
+- **A low-pass gate *is* a vactrol**, so `Low-Pass Gate` and `Vactrol Bongo`
+  were the same module written twice. The bongo became an actual drum: nearly
+  all of it is the head falling in pitch over forty milliseconds.
+- `Wavefolder` and `Attenuverter` were both sustained morphing leads; the
+  folder is the bright hard one now and the attenuverter is struck, so the two
+  opposed gestures it exists to demonstrate have something to pull against.
+
+## 2026-09-09: four more shelves, and what a trim cannot fix
 
 The first expansion was about **technique** — sync, FM, morphs, the sources a
 score plays into a note. This one is about **use**: the four jobs a general

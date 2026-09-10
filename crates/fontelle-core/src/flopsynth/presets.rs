@@ -4415,4 +4415,214 @@ bank! {
         .fx(reverb(0.9, 0.42))
         .out(5.2),
 
+    // ---- Modular, second pass: the rest of the rack ---------------------
+    //
+    // Thirteen was the idea; this is the variety. Each of these is a *module*
+    // somebody would recognise rather than another setting — a low-pass gate,
+    // a wavefolder, a rungler, a complex oscillator, an undertone divider — and
+    // they are spread on purpose across how long they ring and how bright they
+    // are, because `every_pair_in_a_category_is_audibly_apart` reads those two
+    // before it reads anything else and a shelf this size runs out of room
+    // fast.
+    Modular: "Low-Pass Gate" => pluck(WavetableId::SubTri, 2_400.0, 0.32)
+        // A vactrol opens the filter and the amp *together*, which is why a
+        // Buchla pluck gets quieter and darker at the same rate. One envelope
+        // on both is the whole module.
+        .env(1, 0.0, 0.3, 0.0, 0.12)
+        .env_to_cut(0.95)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.5)
+        .out(4.0),
+    Modular: "Wavefolder" => lead(WavetableId::Triangle, 16_000.0, 0.0)
+        // Folding a triangle is the West Coast way to get harmonics: no filter
+        // takes anything away, the wave just gains corners.
+        .warp(A, WarpMode::Mirror, 0.2)
+        .env(2, 0.8, 0.0, 1.0, 0.4)
+        .route(ModSource::Envelope(2), ModDest::OscWarp(A as u8), 0.8)
+        .route(ModSource::ModWheel, ModDest::OscWarp(A as u8), 0.6)
+        .amp(0.004, 0.6, 0.35, 0.25)
+        .out(5.0),
+    Modular: "Rungler" => init()
+        .osc(A, WavetableId::Square, -13.0)
+        .osc(B, WavetableId::Square, -19.0)
+        .semis(B, 5)
+        .off(C).off(SUB)
+        // Benjolin's trick: two oscillators that modulate each other through a
+        // shift register, so it is never random and never repeats either.
+        .lfo(0, LfoWave::Square, 6.3)
+        .lfo(1, LfoWave::SampleHold, 11.7)
+        .route(ModSource::Lfo(0), ModDest::LfoRate(1), 0.7)
+        .route(ModSource::Lfo(1), ModDest::LfoRate(0), 0.6)
+        .stepped(ModSource::Lfo(1), ModDest::LayerPitch(A as u8), 0.16, 6)
+        .route(ModSource::Lfo(0), ModDest::OscPosition(B as u8), 0.5)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 3_400.0, 0.55)
+        .amp(0.003, 0.0, 1.0, 0.14)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.4)
+        .route(ModSource::Macro(0), ModDest::LfoRate(0), 0.7)
+        .route(ModSource::Macro(1), ModDest::LfoRate(1), 0.7)
+        .mac(0, "Chaos").mac(1, "Rate")
+        .fx(delay(NoteDivision::SixteenthTriplet, 0.35, 0.22))
+        .out(3.2),
+    Modular: "Complex Osc" => lead(WavetableId::Sine, 7_000.0, 0.0)
+        // Buchla's 259: one oscillator's only job is to bend the other's
+        // phase, and the *index* is the timbre knob.
+        .warp(A, WarpMode::Fm, 0.35)
+        .modulator(A, B)
+        .osc(B, WavetableId::Sine, SILENT_DB)
+        .semis(B, 7)
+        .lfo(0, LfoWave::Triangle, 0.25)
+        .route(ModSource::Lfo(0), ModDest::OscWarp(A as u8), 0.55)
+        .route(ModSource::Lfo(0), ModDest::LayerPitch(B as u8), 0.03)
+        .amp(0.05, 0.0, 1.0, 0.9)
+        .fx(reverb(0.7, 0.3))
+        .out(1.4),
+    Modular: "Bouncing Ball" => init()
+        .osc(A, WavetableId::Triangle, -12.0)
+        .off(B).off(C).off(SUB)
+        .lfo(0, LfoWave::Square, 3.0)
+        .env(2, 0.0, 1.8, 0.0, 0.4)
+        // The gate speeds up as the envelope falls, which is a ball losing
+        // height — one envelope doing two jobs at once.
+        .inverted(ModSource::Envelope(2), ModDest::LfoRate(0), 0.9)
+        .route_via(ModSource::Lfo(0), ModDest::Amp, 0.95, ModSource::Envelope(2))
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 4_500.0, 0.35)
+        .amp(0.002, 2.0, 0.0, 0.3)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.4)
+        .route(ModSource::Macro(0), ModDest::LfoRate(0), 0.6)
+        .route(ModSource::Macro(1), ModDest::EnvelopeStageTime(2, 2), 0.7)
+        .mac(0, "Bounce").mac(1, "Fall")
+        .out(-12.2),
+    Modular: "Undertone" => bass(WavetableId::SubSquare, 520.0, 0.9)
+        // A sub-harmonicon divides *down* rather than multiplying up, so its
+        // intervals are the undertone series and none of them is tempered.
+        .osc(B, WavetableId::SubTri, -14.0)
+        .semis(B, -12)
+        .osc(C, WavetableId::SubSine, -17.0)
+        .semis(C, -19)
+        .lfo_sync(0, LfoWave::Square, NoteDivision::Quarter)
+        .lfo_mode(0, LfoMode::Free)
+        .route(ModSource::Lfo(0), ModDest::LayerGain(C as u8), 0.35)
+        .amp(0.02, 0.0, 1.0, 0.7)
+        .out(-28.1),
+    Modular: "Feedback Patch" => init()
+        .off(A).off(B).off(C).off(SUB)
+        .noise(0.3, -30.0)
+        .filter_route(NOISE, FilterRoute::F1)
+        // A filter turned up until it sings: the noise is only there to start
+        // it, and what you hear is the resonance.
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 700.0, 0.98)
+        .key_track(0, 1.0)
+        .lfo(0, LfoWave::Triangle, 0.09)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.45)
+        .amp(0.4, 0.0, 1.0, 2.2)
+        .route(ModSource::Velocity, ModDest::FilterResonance(0), 0.15)
+        .route(ModSource::Macro(0), ModDest::FilterCutoff(0), 0.6)
+        .route(ModSource::Macro(1), ModDest::FilterResonance(0), 0.25)
+        .mac(0, "Pitch").mac(1, "Sing")
+        .fx(reverb(0.9, 0.45))
+        .out(-22.7),
+    Modular: "Vactrol Bongo" => pluck(WavetableId::Sine, 5_400.0, 0.17)
+        .env(2, 0.0, 0.04, 0.0, 0.03)
+        // A drum, not a gate: nearly all of this is the head falling in pitch
+        // over forty milliseconds.
+        .route(ModSource::Envelope(2), ModDest::LayerPitch(A as u8), 0.11)
+        .route(ModSource::Random, ModDest::LayerPitch(A as u8), 0.02)
+        .out(4.0),
+    Modular: "Serge Resonant" => pad(WavetableId::Odd, 1_900.0, 0.15, 0.8)
+        .osc(B, WavetableId::Vowel, -17.0)
+        .pos(B, 0.55)
+        .filter(0, FilterModel::Formant, SvfMode::Bandpass, 1_100.0, 0.6)
+        .character(0, 0.55)
+        .lfo(0, LfoWave::Triangle, 0.17)
+        .route(ModSource::Lfo(0), ModDest::FilterCharacter(0), 0.6)
+        .out(5.1),
+    Modular: "Quantised Melody" => pluck(WavetableId::Saw, 4_000.0, 0.26)
+        .lfo_sync(0, LfoWave::SampleHold, NoteDivision::Eighth)
+        .lfo_mode(0, LfoMode::Free)
+        // Five steps, so what comes out is a pentatonic and every accident is
+        // still in key — the reason a quantiser is in every rack.
+        .stepped(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.1, 5)
+        .fx(ping_pong(NoteDivision::Eighth, 0.35, 0.28))
+        .out(6.0),
+    Modular: "Ratchet" => init()
+        .osc(A, WavetableId::Pulse, -13.0)
+        .pos(A, 0.25)
+        .off(B).off(C).off(SUB)
+        .lfo_sync(0, LfoWave::Square, NoteDivision::ThirtySecond)
+        .lfo_sync(1, LfoWave::Square, NoteDivision::Quarter)
+        .lfo_mode(0, LfoMode::Free)
+        .lfo_mode(1, LfoMode::Free)
+        // Bursts inside a step: the fast gate only exists while the slow one
+        // is open, which is what a ratchet is.
+        .route_via(ModSource::Lfo(0), ModDest::Amp, 0.95, ModSource::Lfo(1))
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 8_000.0, 0.4)
+        .amp(0.001, 0.0, 1.0, 0.06)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.4)
+        .route(ModSource::Macro(0), ModDest::LfoRate(0), 0.6)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.5)
+        .mac(0, "Rate").mac(1, "Tone")
+        .fx(ping_pong(NoteDivision::Sixteenth, 0.3, 0.25))
+        .out(-7.0),
+    Modular: "Clock Swing" => init()
+        .osc(A, WavetableId::Sawstack, -13.0)
+        .uni(A, 2, 7.0)
+        .off(B).off(C).off(SUB)
+        .lfo_sync(0, LfoWave::Square, NoteDivision::EighthDotted)
+        .lfo_sync(1, LfoWave::Triangle, NoteDivision::Eighth)
+        .lfo_mode(0, LfoMode::Free)
+        .lfo_mode(1, LfoMode::Free)
+        .route(ModSource::Lfo(0), ModDest::Amp, 0.75)
+        .route(ModSource::Lfo(1), ModDest::FilterCutoff(0), 0.55)
+        .smooth(0, 0.07)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 2_600.0, 0.45)
+        .amp(0.006, 0.0, 1.0, 0.35)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.35)
+        .route(ModSource::Macro(0), ModDest::LfoRate(0), 0.6)
+        .route(ModSource::Macro(1), ModDest::LfoRate(1), 0.6)
+        .mac(0, "Swing").mac(1, "Sweep")
+        .out(-5.8),
+    Modular: "Drone Cell" => pad(WavetableId::Drawbar, 1_300.0, 3.5, 6.0)
+        .uni(A, 3, 5.0)
+        .osc(B, WavetableId::Odd, -20.0)
+        .fine(B, 9.0)
+        .lfo(0, LfoWave::Triangle, 0.03)
+        .lfo(1, LfoWave::Sine, 0.047)
+        .route(ModSource::Lfo(0), ModDest::OscPosition(A as u8), 0.6)
+        .route(ModSource::Lfo(1), ModDest::LayerGain(B as u8), 0.3)
+        .route(ModSource::Lfo(1), ModDest::FilterCutoff(0), 0.3)
+        .fx(reverb(1.0, 0.55))
+        .out(18.7),
+    Modular: "Attenuverter" => pluck(WavetableId::AnalogMorph, 3_600.0, 0.65)
+        .lfo(0, LfoWave::Triangle, 1.1)
+        // The same source, one way up and one way down: an attenuverter is
+        // how a rack gets two opposite gestures out of one modulator.
+        .route(ModSource::Lfo(0), ModDest::OscPosition(A as u8), 0.75)
+        .inverted(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.6)
+        .out(6.9),
+    Modular: "Trigger Echo" => pluck(WavetableId::Glass, 13_000.0, 0.07)
+        .route(ModSource::Random, ModDest::LayerPan(A as u8), 0.85)
+        .fx(ping_pong(NoteDivision::SixteenthDotted, 0.55, 0.4))
+        .out(14.2),
+    Modular: "Noise Comparator" => init()
+        .off(A).off(B).off(C).off(SUB)
+        .noise(0.05, -16.0)
+        .filter_route(NOISE, FilterRoute::F1)
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 4_000.0, 0.4)
+        .lfo(0, LfoWave::SampleHold, 15.0)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.7)
+        .amp(0.002, 0.0, 1.0, 0.1)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.4)
+        .route(ModSource::Macro(0), ModDest::LfoRate(0), 0.7)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.5)
+        .mac(0, "Rate").mac(1, "Edge")
+        .fx(delay(NoteDivision::ThirtySecond, 0.3, 0.2))
+        .out(11.0),
+    Modular: "Stepped Voltage" => pad(WavetableId::Hollow, 5_600.0, 0.5, 1.4)
+        .uni(A, 2, 5.0)
+        .lfo_sync(0, LfoWave::SampleHold, NoteDivision::Quarter)
+        .lfo_mode(0, LfoMode::Free)
+        .route(ModSource::Lfo(0), ModDest::OscPosition(A as u8), 0.7)
+        .route(ModSource::Lfo(0), ModDest::LayerPan(A as u8), 0.6)
+        .fx(reverb(0.9, 0.45))
+        .out(2.9),
+
 }
