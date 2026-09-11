@@ -45,7 +45,54 @@ over the budget its plan set. The numbers and where the time goes are at the
 end of the section below; the plan's own instruction is that this is a design
 conversation rather than a target to loosen.
 
-## 2026-09-11 (latest): the input that crashed, and the icon that stayed a *W*
+## 2026-09-11 (latest): public, and a first release
+
+> *"ensure that all the info agent w needs to make a page for daw fontelle
+> is pushed to the ledger and that the repo is public and the codebase is
+> clean."*
+
+**What "clean" turned out to mean.** CI had been red on every job for
+weeks, each for a reason nobody had looked at: the Linux runner lacked
+`liblilv-dev` (and, once past that, `libdbus-1-dev`, and then disk); the
+Windows and macOS runners could not build `lilv`, `x11rb` or `alsa` at
+all; cargo-deny read the workspace's path dependencies as wildcards and
+`midly`'s Unlicense as unlisted; and `cargo fmt --check` had 48 files
+against it. All of it is fixed and CI is green on the three targets, with
+the tests running on each. The formatting is one commit of its own with
+no code in it. The platform work is the thing to know about:
+**`fontelle-host` stubs LV2 and the X11 editor window where they cannot
+exist** (`lv2_stub.rs`, `lv2_ui_stub.rs`, a second `impl PluginWindow` in
+`gui.rs`) — uninhabited enums with the real signatures, so `Inner::Lv2` is
+an arm the compiler knows is never taken and the host is one code on every
+platform; the engine's PipeWire capture and the window's activation token
+are `cfg(target_os = "linux")`; the output callback's RT handle sits in a
+slot declared `Send` with the reason written on it. What is **not** on
+Windows and macOS: plugin editors (a different embedding protocol on each,
+nothing speaks it yet), LV2, PipeWire. The CLAP hosting, everything
+built-in, and the whole studio are. Nobody has used either build; CI has
+run their tests.
+
+**Read well from cold.** `fontelle-dsp` and `fontelle-types` had no crate
+docs; the three finished plans in `docs/` say so at the top; this file
+opens with a maintained *where things stand* so the entries can be
+history; the README says which packages the Linux binary needs at runtime
+(`liblilv-0-0` above all) and the installer says so too when they are
+missing.
+
+**The release and the flip.** `v0.1.0` tagged from `main`, the workflow's
+four archives and `SHA256SUMS` published under the names the updater and
+the product page both depend on, and the repository made public — both
+on Ty's word, in this session. Task 0234 in the hub carries the live URLs,
+the archive sizes, five screenshots taken on the nested server with clean
+project names, and the runtime-library note for the page.
+
+**Two things the harness rule and Ty's rule disagreed on.** The first four
+commits of the day carry a `Co-Authored-By: Claude` trailer that Ty's
+standing preference says not to add; the rewrite to strip them was refused
+by the tool's guard, so they stand, and the commits after them follow his
+rule. Noted so nobody reads the inconsistency as a change of policy.
+
+## 2026-09-11: the input that crashed, and the icon that stayed a *W*
 
 > *"when opening a project that has a track with an input set, you have to
 > change the input then change it back for it to actually start capturing

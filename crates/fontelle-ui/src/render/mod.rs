@@ -6641,6 +6641,11 @@ fn draw_rename_marks(
 }
 
 fn draw_caret(scene: &mut Scene, color: Color, field: Rect, x: f32) {
+    // On the pixel grid: a one-pixel line at a measured, fractional x is
+    // two half-covered columns on every rasteriser, and *which* two differs
+    // between them — Metal's caret failed the headless test Vulkan's passed.
+    // A caret is a pixel column, so it is put on one.
+    let x = x.round();
     fill_rect(
         scene,
         Rect::new(x, field.y + 3.0, 1.0, (field.height - 6.0).max(0.0)).intersection(&field),

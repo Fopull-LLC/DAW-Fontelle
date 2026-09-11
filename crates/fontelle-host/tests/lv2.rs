@@ -10,6 +10,9 @@
 //! knob writes on. Where LV2 differs (a bundle is a folder, a parameter is a
 //! control port, there is no state extension in this build) the test says so.
 
+// LV2 is hosted on Linux only — see `lv2_stub.rs`.
+#![cfg(target_os = "linux")]
+
 mod common;
 
 use fontelle_host::{HostError, PluginHost, PluginScan, scan_bundle, search_paths};

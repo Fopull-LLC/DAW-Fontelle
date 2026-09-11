@@ -19,7 +19,13 @@ fn bundle() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
     path.pop();
     path.pop();
-    let built = path.join("libfontelle_testplug.so");
+    let built = path.join(if cfg!(target_os = "windows") {
+        "fontelle_testplug.dll"
+    } else if cfg!(target_os = "macos") {
+        "libfontelle_testplug.dylib"
+    } else {
+        "libfontelle_testplug.so"
+    });
     assert!(
         built.exists(),
         "{} is missing — run `cargo build -p fontelle-testplug`",
@@ -79,6 +85,8 @@ fn wire_key(
 
 /// The `fontelle-testlv2` bundle, assembled beside the test binary the way
 /// `fontelle-host/tests/common` assembles it, and for the same reasons.
+/// Linux only, as LV2 hosting is.
+#[cfg(target_os = "linux")]
 fn lv2_bundle() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
     path.pop();
@@ -649,6 +657,8 @@ fn crossings(samples: &[f32]) -> usize {
         .count()
 }
 
+// Only the LV2 slide test lets a note go; see it for why that is Linux's.
+#[cfg(target_os = "linux")]
 fn note_off(key: u8) -> TimedEvent {
     TimedEvent {
         sample: 0,
@@ -761,6 +771,7 @@ fn a_slide_glides_over_its_length() {
 /// For a plugin that hears pitch as a **channel** bend — every LV2 one — a
 /// slide is undone when the note it bent ends, so the next note on that
 /// channel starts at its own pitch rather than the last slide's.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_slid_note_that_ends_leaves_the_next_one_unbent() {
     let (_host, _plugin, _bay, mut node) = wire_key(

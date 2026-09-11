@@ -11,6 +11,9 @@
 //! hosts — through the same `HostedPlugin` and `HostedProcessor` the other
 //! two formats go through, so that nothing above the host can tell.
 
+// A bridge is a `.so` this host dlopens, and the fixture is built as one.
+#![cfg(target_os = "linux")]
+
 mod common;
 
 use std::sync::Arc;

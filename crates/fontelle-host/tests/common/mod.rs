@@ -108,6 +108,7 @@ pub const LV2_SINE: &str = fontelle_testlv2::SINE_URI;
 /// if the built library is older than its source, written once per test
 /// binary and put in place by a rename so a parallel test never reads half a
 /// bundle.
+#[cfg(target_os = "linux")]
 pub fn lv2_bundle() -> PathBuf {
     let mut path = std::env::current_exe().expect("a test binary knows where it is");
     path.pop();
@@ -177,6 +178,7 @@ pub const BRIDGED_SINE: &str = fontelle_testbridge::SINE_ID;
 
 /// The folder holding the built `fontelle-testbridge` library — what
 /// Fontelle's own bridges folder looks like with one bridge installed.
+#[cfg(target_os = "linux")]
 pub fn bridge_folder() -> PathBuf {
     let mut path = std::env::current_exe().expect("a test binary knows where it is");
     path.pop();
@@ -205,6 +207,7 @@ pub fn bridge_folder() -> PathBuf {
 
 /// A bundle of the test bridge's format: a folder with the extension the
 /// bridge names, holding the listing the bridge reads.
+#[cfg(target_os = "linux")]
 pub fn bridged_bundle() -> PathBuf {
     static BUNDLE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     BUNDLE

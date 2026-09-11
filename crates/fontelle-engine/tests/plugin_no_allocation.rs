@@ -33,7 +33,13 @@ fn bundle() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
     path.pop();
     path.pop();
-    let built = path.join("libfontelle_testplug.so");
+    let built = path.join(if cfg!(target_os = "windows") {
+        "fontelle_testplug.dll"
+    } else if cfg!(target_os = "macos") {
+        "libfontelle_testplug.dylib"
+    } else {
+        "libfontelle_testplug.so"
+    });
     assert!(
         built.exists(),
         "{} is missing — run `cargo build -p fontelle-testplug`",
