@@ -29,7 +29,47 @@ over the budget its plan set. The numbers and where the time goes are at the
 end of the section below; the plan's own instruction is that this is a design
 conversation rather than a target to loosen.
 
-## 2026-09-10 (latest): the double-click the window was too busy to hear
+## 2026-09-10 (latest): the audio nobody reloaded
+
+> *"audio clips, after closing the project and re opening, often would just be
+> blank after that point."*
+
+Not often — **always**, for every audio clip in every saved project. Five
+tests written against `open_project` before touching it, and all five failed
+the same way: the reopened library held no audio and no peaks under the clip's
+asset id.
+
+`open_project` reloaded the samples each **channel's patch** named and
+stopped. It walked `project.channels` and never `project.clips`, and a take or
+a loop hangs off the clip (`ClipSource::Audio`), not off any instrument. So the
+`AudioStore` came up without it, the block drew nothing because §15.3's peaks
+are keyed by asset, the player found nothing under the id, and nobody said a
+word — only a file somebody *tried* to load can be reported missing.
+
+The fix has one rule in it that the patch path does not need: **a clip's audio
+comes back under the id the project wrote down.** A patch stores its layers'
+provenance and resolves them by file on load, so `reload_sample` is free to
+mint a fresh id; `AudioClipData::asset` *is* an `AssetId` and the waveform and
+the player both index by it, so decoding the file under any other id leaves
+the clip pointing at nothing with a fuller library behind it.
+`SampleLibrary::reload_audio` inserts under the stored id, and
+`open_project` now walks the clips, grouped by reference so one loop on eight
+rows is one read, and lists a file it could not read in `missing` — with a new
+`clips` field beside `channels`, because a take belongs to no instrument.
+
+**The trap inside the fix.** `audio_files` was a `SlotMap`, which mints keys
+from index zero — so a reopened clip holding id 0 and a library that then
+handed id 0 to the next drop would have put the *new* file's audio under the
+*old* clip's id, and the take would have turned into the loop. It is an
+`Arena` now, for `insert_at`: the reload claims the slot as well as filling the
+store. `a_file_imported_after_reopening_does_not_take_a_reopened_clips_id`
+fails with the claim removed and passes with it.
+
+`fontelle-app/tests/reopening_audio.rs`, six tests. Seen in the real window:
+a bundle written with a take on it, opened with `--open`, draws the waveform in
+its block.
+
+## 2026-09-10: the double-click the window was too busy to hear
 
 > *"im having a weird issue where after working in a project for a while
 > double clicking just doesnt make new clips anymore like it just stops

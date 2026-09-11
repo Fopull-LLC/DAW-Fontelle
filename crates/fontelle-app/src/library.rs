@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use fontelle_assets::ImportError;
 use fontelle_core::{Patch, SampleBuffer, SampleStore};
+use fontelle_model::Arena;
 use fontelle_types::{AssetId, AssetKind, AssetRef, SampleRef};
 
 /// A `SampleStore` plus the two-way mapping between the ids it minted and the
@@ -52,7 +53,14 @@ pub struct SampleLibrary {
     /// The primary map the audio store is secondary to, so importing mints a
     /// real id — and, keyed by path, so a loop dropped on eight rows is one
     /// file rather than eight copies of it (TDD §7.7).
-    audio_files: slotmap::SlotMap<AssetId, PathBuf>,
+    ///
+    /// An [`Arena`] rather than a `SlotMap` for one operation: `insert_at`.
+    /// A reopened project's clips name the ids the *previous* session minted
+    /// ([`reload_audio`](Self::reload_audio)), and a fresh slotmap mints from
+    /// index zero — so without claiming those slots the next import would be
+    /// handed an id a clip is already using and would quietly replace its
+    /// audio. Same reason the document's arenas are not slotmaps.
+    audio_files: Arena<AssetId, PathBuf>,
     audio_by_path: HashMap<PathBuf, AssetId>,
     /// The waveform summary per audio asset (TDD §15.3), built once on import.
     ///
@@ -304,6 +312,74 @@ impl SampleLibrary {
         self.by_file.insert(want.clone(), id);
         self.by_id.insert(id, want);
         Ok(())
+    }
+
+    /// Brings a saved clip's audio back **under the id the project wrote
+    /// down** (TDD §15, §17.4).
+    ///
+    /// > *"audio clips, after closing the project and re opening, often would
+    /// > just be blank after that point."*
+    ///
+    /// The audio-clip counterpart of [`reload_sample`](Self::reload_sample),
+    /// and the one way it differs is the whole of this function. A patch may
+    /// be handed a **fresh** id, because it stores its layers' provenance and
+    /// resolves them by file on load; an audio clip has no such indirection —
+    /// `AudioClipData::asset` *is* an `AssetId`, and the waveform and the
+    /// player both index by it. Load the file under any other id and the
+    /// library holds the audio while every clip still points at nothing, which
+    /// looks exactly like not having loaded it at all.
+    ///
+    /// The slot is claimed in `audio_files` as well as filled in the store, so
+    /// a later import cannot be minted an id a clip is already using.
+    ///
+    /// Already-loaded ids and already-decoded paths both return without
+    /// touching the decoder: a loop on eight rows is eight clips, one asset
+    /// and one read.
+    pub fn reload_audio(&mut self, file: &AssetRef) -> Result<(), ImportError> {
+        if self.audio.get(file.id).is_some() {
+            return Ok(());
+        }
+        // The same file under some other id — two sessions' imports of one
+        // loop, or a clip copied between projects. `AudioBuffer` holds its
+        // samples behind an `Arc`, so this shares them rather than copying.
+        if let Some(known) = self.audio_by_path.get(&file.path).copied()
+            && let Some(buffer) = self.audio.get(known).cloned()
+        {
+            let peaks = self.audio_peaks.get(&known).cloned();
+            self.claim(file);
+            Arc::make_mut(&mut self.audio).insert(file.id, buffer);
+            if let Some(peaks) = peaks {
+                self.audio_peaks.insert(file.id, peaks);
+            }
+            return Ok(());
+        }
+        let decoded = fontelle_assets::import_audio(&file.path)?;
+        self.claim(file);
+        self.audio_peaks.insert(
+            file.id,
+            fontelle_assets::generate_peaks(file.id, &decoded.samples, decoded.channels),
+        );
+        Arc::make_mut(&mut self.audio).insert(
+            file.id,
+            fontelle_core::AudioBuffer {
+                data: Arc::from(decoded.samples),
+                sample_rate: decoded.sample_rate,
+                channels: decoded.channels,
+            },
+        );
+        Ok(())
+    }
+
+    /// Books a stored id out of the arena so nothing else is given it.
+    ///
+    /// A refused `insert_at` means the slot is already occupied — the file is
+    /// then reachable under *its own* id and this one stays a dead reference,
+    /// which is the honest outcome and not worth failing an open over.
+    fn claim(&mut self, file: &AssetRef) {
+        self.audio_files.insert_at(file.id, file.path.clone());
+        self.audio_by_path
+            .entry(file.path.clone())
+            .or_insert(file.id);
     }
 
     /// Every audio clip's audio, in the form the graph takes.

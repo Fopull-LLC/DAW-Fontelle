@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use fontelle_model::{Project, StorageError};
-use fontelle_types::{AssetKind, AssetRef, ChannelId};
+use fontelle_types::{AssetKind, AssetRef, ChannelId, ClipId};
 
 use crate::library::SampleLibrary;
 
@@ -31,7 +31,13 @@ pub struct MissingAsset {
     pub file: AssetRef,
     /// Which channels are affected, so a message can name the instrument
     /// rather than the file nobody recognises.
+    ///
+    /// **Empty for an audio clip's file**, which belongs to no channel: a clip
+    /// carries its own audio (`ClipSource::Audio`) and is routed by the clip,
+    /// not by an instrument. `clips` is the list to name in that case.
     pub channels: Vec<ChannelId>,
+    /// And which audio clips are, for the same reason.
+    pub clips: Vec<ClipId>,
     pub why: String,
 }
 
@@ -118,6 +124,40 @@ pub fn open_project(path: &Path) -> Result<OpenedProject, OpenError> {
             missing.push(MissingAsset {
                 file,
                 channels,
+                clips: Vec::new(),
+                why: e.to_string(),
+            });
+        }
+    }
+
+    // **And every audio clip's own file** (TDD §15).
+    //
+    // > *"audio clips, after closing the project and re opening, often would
+    // > just be blank after that point."*
+    //
+    // This walked `project.channels` and stopped, so a take or a loop — whose
+    // audio hangs off the *clip* and not off any instrument — was never read
+    // back at all. The library came up without it, the block drew no waveform
+    // because §15.3's peaks are keyed by asset, and the player found nothing
+    // under the id, so the clip was blank and silent and said nothing about
+    // why: only a file somebody *tried* to load can be reported missing.
+    //
+    // Grouped by reference so one file behind eight rows is one read, and
+    // reloaded **under the id the project wrote down** — see
+    // `SampleLibrary::reload_audio` for why a clip cannot be given a fresh one
+    // the way a patch's samples can.
+    let mut takes: BTreeMap<AssetRef, Vec<ClipId>> = BTreeMap::new();
+    for (id, clip) in project.clips.iter() {
+        if let fontelle_model::ClipSource::Audio(data) = &clip.source {
+            takes.entry(data.asset.clone()).or_default().push(id);
+        }
+    }
+    for (file, clips) in takes {
+        if let Err(e) = library.reload_audio(&file) {
+            missing.push(MissingAsset {
+                file,
+                channels: Vec::new(),
+                clips,
                 why: e.to_string(),
             });
         }
