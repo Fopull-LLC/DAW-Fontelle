@@ -238,13 +238,21 @@ fn what_curl_said_is_turned_into_a_sentence() {
 
 // --- the swap ---
 
+/// What the binary is called inside an archive and on disk — `.exe` on
+/// Windows, as the release workflow packs it.
+const BIN: &str = if cfg!(windows) {
+    "fontelle.exe"
+} else {
+    "fontelle"
+};
+
 /// A tarball shaped like a release: one folder named like the archive, with
 /// `fontelle` inside it alongside the licences the workflow packs beside it.
 fn a_release_archive(dir: &Path, binary_text: &str) -> PathBuf {
     let stem = "fontelle-9.9.9-x86_64-unknown-linux-gnu";
     let stage = dir.join("stage").join(stem);
     std::fs::create_dir_all(&stage).unwrap();
-    std::fs::write(stage.join("fontelle"), binary_text).unwrap();
+    std::fs::write(stage.join(BIN), binary_text).unwrap();
     std::fs::write(stage.join("LICENSE-MIT"), "mit").unwrap();
     std::fs::write(stage.join("install.sh"), "#!/bin/sh").unwrap();
     let archive = dir.join(format!("{stem}.tar.gz"));
@@ -267,7 +275,7 @@ fn a_release_archive(dir: &Path, binary_text: &str) -> PathBuf {
 fn a_flat_archive(dir: &Path, binary_text: &str) -> PathBuf {
     let stage = dir.join("flat");
     std::fs::create_dir_all(&stage).unwrap();
-    std::fs::write(stage.join("fontelle"), binary_text).unwrap();
+    std::fs::write(stage.join(BIN), binary_text).unwrap();
     let archive = dir.join("flat.tar.gz");
     let status = std::process::Command::new("tar")
         .arg("-czf")
@@ -286,7 +294,7 @@ fn a_flat_archive(dir: &Path, binary_text: &str) -> PathBuf {
 fn a_binary_at_the_top_of_the_archive_installs_too() {
     let dir = scratch("flat");
     let archive = a_flat_archive(&dir, "flat build");
-    let exe = dir.join("bin").join("fontelle");
+    let exe = dir.join("bin").join(BIN);
     std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
     std::fs::write(&exe, "old build").unwrap();
     fontelle_app::updates::install(&archive, &exe).expect("a flat archive installs");
@@ -298,7 +306,7 @@ fn a_binary_at_the_top_of_the_archive_installs_too() {
 fn installing_replaces_the_binary_and_leaves_nothing_behind() {
     let dir = scratch("install");
     let archive = a_release_archive(&dir, "new build");
-    let exe = dir.join("bin").join("fontelle");
+    let exe = dir.join("bin").join(BIN);
     std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
     std::fs::write(&exe, "old build").unwrap();
 
@@ -320,7 +328,7 @@ fn installing_replaces_the_binary_and_leaves_nothing_behind() {
     let left: Vec<String> = std::fs::read_dir(exe.parent().unwrap())
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|n| n != "fontelle")
+        .filter(|n| n != BIN)
         .collect();
     assert!(
         left.iter().all(|n| n == "fontelle.old"),
@@ -339,7 +347,7 @@ fn a_folder_that_cannot_be_written_is_an_error_with_the_path_in_it() {
     let archive = a_release_archive(&dir, "new build");
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    let exe = bin.join("fontelle");
+    let exe = bin.join(BIN);
     std::fs::write(&exe, "old build").unwrap();
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o555)).unwrap();
     // Root writes anywhere; there is nothing to prove on a machine running
@@ -359,7 +367,7 @@ fn a_folder_that_cannot_be_written_is_an_error_with_the_path_in_it() {
 #[test]
 fn tidying_removes_the_previous_binary_left_by_the_last_upgrade() {
     let dir = scratch("tidy");
-    let exe = dir.join("fontelle");
+    let exe = dir.join(BIN);
     std::fs::write(&exe, "current").unwrap();
     std::fs::write(dir.join("fontelle.old"), "previous").unwrap();
     tidy(&exe);
@@ -475,7 +483,7 @@ fn upgrading_downloads_verifies_and_swaps_the_binary() {
     let bytes = std::fs::read(&archive).unwrap();
     let name = archive.file_name().unwrap().to_string_lossy().into_owned();
     let sums = format!("{}  {name}\n", sha256_hex(&bytes));
-    let exe = dir.join("bin").join("fontelle");
+    let exe = dir.join("bin").join(BIN);
     std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
     std::fs::write(&exe, "build 1").unwrap();
 
@@ -519,7 +527,7 @@ fn a_checksum_that_does_not_match_leaves_the_binary_alone() {
     let bytes = std::fs::read(&archive).unwrap();
     let name = archive.file_name().unwrap().to_string_lossy().into_owned();
     let sums = format!("{}  {name}\n", sha256_hex(b"something else"));
-    let exe = dir.join("bin").join("fontelle");
+    let exe = dir.join("bin").join(BIN);
     std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
     std::fs::write(&exe, "build 1").unwrap();
 

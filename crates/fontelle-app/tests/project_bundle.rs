@@ -208,7 +208,9 @@ fn a_saved_project_references_its_soundfont_rather_than_copying_it_in() {
         "nothing was copied in"
     );
     let text = std::fs::read_to_string(bundle.join("project.json")).unwrap();
-    assert!(text.contains(soundfont.to_str().unwrap()));
+    // As JSON spells it: a Windows path's backslashes are escaped in the file.
+    let spelled = serde_json::to_string(&soundfont).unwrap();
+    assert!(text.contains(spelled.trim_matches('"')), "{text}");
     std::fs::remove_dir_all(&bundle).ok();
     std::fs::remove_file(&soundfont).ok();
 }

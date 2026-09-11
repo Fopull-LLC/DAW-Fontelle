@@ -349,9 +349,16 @@ pub fn elide_path(path: &Path, keep: usize) -> String {
     if text.is_empty() {
         return String::new();
     }
-    let parts: Vec<&str> = text.split('/').filter(|p| !p.is_empty()).collect();
+    // Either separator: a Windows path split on `/` alone is one part, and
+    // one part is never elided — which put the whole of
+    // `C:\Users\…\AppData\Local\Temp\…` on a 248-pixel status line.
+    let parts: Vec<&str> = text.split(['/', '\\']).filter(|p| !p.is_empty()).collect();
     if parts.len() <= keep {
         return text.into_owned();
     }
-    format!("…/{}", parts[parts.len() - keep..].join("/"))
+    let sep = std::path::MAIN_SEPARATOR;
+    format!(
+        "…{sep}{}",
+        parts[parts.len() - keep..].join(&sep.to_string())
+    )
 }
