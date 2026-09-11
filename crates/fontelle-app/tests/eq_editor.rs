@@ -49,9 +49,17 @@ fn studio() -> Session {
     let realised =
         fontelle_app::realise(&project, &library, options).expect("a blank project must realise");
     let (graphs, _source) = graph_channel(realised.graph);
-    Session::new(project, library, channel_nodes, publisher, options, clip, None)
-        .with_graphs(graphs, realised.track_controls)
-        .with_param_nodes(realised.param_nodes)
+    Session::new(
+        project,
+        library,
+        channel_nodes,
+        publisher,
+        options,
+        clip,
+        None,
+    )
+    .with_graphs(graphs, realised.track_controls)
+    .with_param_nodes(realised.param_nodes)
 }
 
 /// The strip an EQ is put on, with the EQ on it. Index 0 is the first track.
@@ -158,7 +166,8 @@ fn a_whole_mix_drag_is_one_undo_entry() {
     }
     session.undo();
     assert_eq!(
-        session.mixer_strips()[strip].inserts[slot].mix, 1.0,
+        session.mixer_strips()[strip].inserts[slot].mix,
+        1.0,
         "undo goes back to before the drag, not into the middle of it"
     );
 }

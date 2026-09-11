@@ -120,10 +120,7 @@ fn closing_a_device_that_is_holding_a_note_releases_it() {
     };
 
     let observed = Shared::default();
-    let mut hub = MidiHub::new(RouteTo::to(
-        NodeId::from(slotmap::KeyData::from_ffi(3)),
-        7,
-    ));
+    let mut hub = MidiHub::new(RouteTo::to(NodeId::from(slotmap::KeyData::from_ffi(3)), 7));
     hub.poll(|| Some(Box::new(observed.clone()) as Box<dyn EventSink>))
         .expect("enumerating MIDI inputs");
 

@@ -141,7 +141,10 @@ fn an_empty_bus_is_not_a_panic() {
 
 #[test]
 fn a_signal_under_the_threshold_is_taken_down_to_the_range() {
-    let quiet: Vec<f32> = sine(440.0, FRAMES).iter().map(|s| s * from_db(-30.0)).collect();
+    let quiet: Vec<f32> = sine(440.0, FRAMES)
+        .iter()
+        .map(|s| s * from_db(-30.0))
+        .collect();
     let config = GateConfig {
         range_db: -24.0,
         ..gating(-12.0)
@@ -158,18 +161,27 @@ fn a_signal_under_the_threshold_is_taken_down_to_the_range() {
 
 #[test]
 fn a_signal_over_the_threshold_is_left_alone() {
-    let loud: Vec<f32> = sine(440.0, FRAMES).iter().map(|s| s * from_db(-6.0)).collect();
+    let loud: Vec<f32> = sine(440.0, FRAMES)
+        .iter()
+        .map(|s| s * from_db(-6.0))
+        .collect();
     let out = both(&gating(-12.0), &loud);
     let settled = &out[ms(50.0)..];
     let moved = db(rms(settled) / rms(&loud[ms(50.0)..]));
-    assert!(moved.abs() < 0.01, "an open gate moved the signal by {moved} dB");
+    assert!(
+        moved.abs() < 0.01,
+        "an open gate moved the signal by {moved} dB"
+    );
 }
 
 #[test]
 fn the_ratio_is_how_steeply_the_gain_falls_away_below_the_threshold() {
     // An expander rather than a gate: at 2:1, six decibels under the
     // threshold is six more decibels down, and at 4:1 it is eighteen.
-    let source: Vec<f32> = sine(440.0, FRAMES).iter().map(|s| s * from_db(-26.0)).collect();
+    let source: Vec<f32> = sine(440.0, FRAMES)
+        .iter()
+        .map(|s| s * from_db(-26.0))
+        .collect();
     for (ratio, expected) in [(2.0f32, -6.0f32), (4.0, -18.0)] {
         let config = GateConfig {
             ratio,
@@ -190,7 +202,10 @@ fn the_ratio_is_how_steeply_the_gain_falls_away_below_the_threshold() {
 fn the_range_is_a_floor_the_expander_cannot_go_below() {
     // What makes the same effect an expander that only ducks: however steep
     // the ratio, the gate never takes more off than the range says.
-    let source: Vec<f32> = sine(440.0, FRAMES).iter().map(|s| s * from_db(-60.0)).collect();
+    let source: Vec<f32> = sine(440.0, FRAMES)
+        .iter()
+        .map(|s| s * from_db(-60.0))
+        .collect();
     let config = GateConfig {
         range_db: -6.0,
         ratio: MAX_GATE_RATIO,
@@ -319,7 +334,13 @@ fn attack_and_release_are_the_times_they_say() {
     let source: Vec<f32> = sine(2_000.0, FRAMES)
         .iter()
         .enumerate()
-        .map(|(i, s)| if (onset..offset).contains(&i) { *s * 0.5 } else { 0.0 })
+        .map(|(i, s)| {
+            if (onset..offset).contains(&i) {
+                *s * 0.5
+            } else {
+                0.0
+            }
+        })
         .collect();
 
     let config = GateConfig {
@@ -353,7 +374,10 @@ fn the_key_filter_deafens_the_detector_to_the_bass_without_filtering_the_audio()
     // The hi-hat mic that hears the kick. A loud low tone under a quiet high
     // one: with the key open the gate opens on the low tone and both come
     // through; with the key high-passed the gate stays shut.
-    let low: Vec<f32> = sine(60.0, FRAMES).iter().map(|s| s * from_db(-6.0)).collect();
+    let low: Vec<f32> = sine(60.0, FRAMES)
+        .iter()
+        .map(|s| s * from_db(-6.0))
+        .collect();
     let high: Vec<f32> = sine(6_000.0, FRAMES)
         .iter()
         .map(|s| s * from_db(-40.0))
@@ -382,7 +406,11 @@ fn the_key_filter_deafens_the_detector_to_the_bass_without_filtering_the_audio()
     // And the filter is on the decision, not on the audio: with the gate held
     // open by a loud enough signal, the low tone comes through untouched.
     let loud_high: Vec<f32> = sine(6_000.0, FRAMES).iter().map(|s| s * 0.5).collect();
-    let both_tones: Vec<f32> = low.iter().zip(loud_high.iter()).map(|(l, h)| l + h).collect();
+    let both_tones: Vec<f32> = low
+        .iter()
+        .zip(loud_high.iter())
+        .map(|(l, h)| l + h)
+        .collect();
     let out = both(&filtered_key, &both_tones);
     let settled = ms(100.0)..;
     let moved = db(rms(&out[settled.clone()]) / rms(&both_tones[settled]));
@@ -465,7 +493,10 @@ fn a_gate_wide_open_with_lookahead_is_the_signal_delayed_and_nothing_else() {
 fn the_decision_is_stereo_linked() {
     // A gate that closed one side of an overhead pair and not the other would
     // move the kit. One channel loud, the other quiet: both stay open.
-    let loud: Vec<f32> = sine(440.0, FRAMES).iter().map(|s| s * from_db(-6.0)).collect();
+    let loud: Vec<f32> = sine(440.0, FRAMES)
+        .iter()
+        .map(|s| s * from_db(-6.0))
+        .collect();
     let quiet: Vec<f32> = sine(660.0, FRAMES)
         .iter()
         .map(|s| s * from_db(-40.0))

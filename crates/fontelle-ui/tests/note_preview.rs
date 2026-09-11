@@ -81,8 +81,15 @@ fn a_clip_block_is_a_caption_band_over_the_room_its_content_gets() {
     assert!(!header.is_empty() && !content.is_empty());
     assert!(header.bottom() <= content.y + 0.001, "the band is above");
     assert!(!header.intersects(&content));
-    assert_eq!(header.union(&content), block, "and together they are the block");
-    assert!(content.height > header.height, "the content gets most of it");
+    assert_eq!(
+        header.union(&content),
+        block,
+        "and together they are the block"
+    );
+    assert!(
+        content.height > header.height,
+        "the content gets most of it"
+    );
 }
 
 #[test]
@@ -124,11 +131,7 @@ fn a_note_is_drawn_at_the_bar_it_is_written_at() {
 
 #[test]
 fn a_notes_length_is_how_wide_it_is_drawn() {
-    let c = clip(
-        BAR * 4,
-        None,
-        vec![note(0, PPQN, 60), note(BAR, BAR, 60)],
-    );
+    let c = clip(BAR * 4, None, vec![note(0, PPQN, 60), note(BAR, BAR, 60)]);
     let block = clip_rect(&view(), grid(), &c);
     let rects = clip_notes(block, grid(), &c);
     assert_eq!(rects.len(), 2);
@@ -207,7 +210,12 @@ fn a_clip_with_one_note_does_not_draw_it_as_a_slab() {
         rects[0].height,
         content.height
     );
-    const { assert!(NOTE_PREVIEW_MIN_KEYS >= 8, "an octave or so, or it is a slab") }
+    const {
+        assert!(
+            NOTE_PREVIEW_MIN_KEYS >= 8,
+            "an octave or so, or it is a slab"
+        )
+    }
 }
 
 // -------------------------------------------------------------- loops ---
@@ -221,7 +229,11 @@ fn a_looped_clip_draws_every_pass_where_its_seams_say_they_are() {
     let v = view();
     let block = clip_rect(&v, grid(), &c);
     let rects = clip_notes(block, grid(), &c);
-    assert_eq!(rects.len(), 4, "four bars of a one-bar pattern is four passes");
+    assert_eq!(
+        rects.len(),
+        4,
+        "four bars of a one-bar pattern is four passes"
+    );
 
     // Every pass after the first begins on a seam, which is what makes the
     // picture and the tiling one picture rather than two.
@@ -246,7 +258,11 @@ fn a_note_past_the_loops_period_is_left_out_of_the_preview() {
         vec![note(0, PPQN, 60), note(BAR + PPQN, PPQN, 64)],
     );
     let block = clip_rect(&view(), grid(), &c);
-    assert_eq!(clip_notes(block, grid(), &c).len(), 2, "two passes of one note");
+    assert_eq!(
+        clip_notes(block, grid(), &c).len(),
+        2,
+        "two passes of one note"
+    );
 }
 
 #[test]

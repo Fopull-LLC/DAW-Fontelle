@@ -116,7 +116,11 @@ fn the_panel_sits_past_the_last_strip_with_the_master_on_the_far_side() {
         l.list
     );
     for s in &l.strips {
-        assert!(s.frame.right() <= o.frame.x, "strip {} is underneath", s.index);
+        assert!(
+            s.frame.right() <= o.frame.x,
+            "strip {} is underneath",
+            s.index
+        );
     }
 }
 
@@ -177,7 +181,10 @@ fn a_panel_with_no_room_for_the_column_keeps_the_strips_instead() {
     // options column, not its faders.
     let narrow = Rect::new(0.0, 0.0, STRIP_WIDTH * 3.0, 400.0);
     let l = mixer_layout_for(narrow, &metrics(), &strips(), 0, Some(0));
-    assert!(l.options.is_none(), "the options column crowded the strips out");
+    assert!(
+        l.options.is_none(),
+        "the options column crowded the strips out"
+    );
     assert!(!l.strips.is_empty(), "and the strips survived");
 }
 
@@ -257,15 +264,27 @@ fn every_control_in_the_panel_reports_itself() {
     let (x, y) = centre(o.output);
     assert_eq!(mixer_hit(&l, x, y), MixerHit::Options(OptionsHit::Output));
     let (x, y) = centre(o.add_insert);
-    assert_eq!(mixer_hit(&l, x, y), MixerHit::Options(OptionsHit::AddInsert));
+    assert_eq!(
+        mixer_hit(&l, x, y),
+        MixerHit::Options(OptionsHit::AddInsert)
+    );
 
     let row = o.inserts[1].clone();
     let (x, y) = centre(row.name);
-    assert_eq!(mixer_hit(&l, x, y), MixerHit::Options(OptionsHit::Insert(1)));
+    assert_eq!(
+        mixer_hit(&l, x, y),
+        MixerHit::Options(OptionsHit::Insert(1))
+    );
     let (x, y) = centre(row.bypass);
-    assert_eq!(mixer_hit(&l, x, y), MixerHit::Options(OptionsHit::Bypass(1)));
+    assert_eq!(
+        mixer_hit(&l, x, y),
+        MixerHit::Options(OptionsHit::Bypass(1))
+    );
     let (x, y) = centre(row.remove);
-    assert_eq!(mixer_hit(&l, x, y), MixerHit::Options(OptionsHit::Remove(1)));
+    assert_eq!(
+        mixer_hit(&l, x, y),
+        MixerHit::Options(OptionsHit::Remove(1))
+    );
     let (x, y) = centre(row.grip);
     assert_eq!(mixer_hit(&l, x, y), MixerHit::Options(OptionsHit::Grip(1)));
 }
@@ -474,8 +493,16 @@ fn every_send_row_is_inside_the_panel_and_nothing_overlaps() {
 fn a_send_rows_four_controls_do_not_eat_each_other() {
     let o = sending(0);
     let row = o.sends[0].clone();
-    for (a_name, a) in [("tap", row.tap), ("target", row.target), ("level", row.level)] {
-        for (b_name, b) in [("target", row.target), ("level", row.level), ("remove", row.remove)] {
+    for (a_name, a) in [
+        ("tap", row.tap),
+        ("target", row.target),
+        ("level", row.level),
+    ] {
+        for (b_name, b) in [
+            ("target", row.target),
+            ("level", row.level),
+            ("remove", row.remove),
+        ] {
             if a == b || a.is_empty() || b.is_empty() {
                 continue;
             }
@@ -498,7 +525,10 @@ fn every_send_control_reports_itself() {
 
     let row = o.sends[1].clone();
     let (x, y) = centre(row.tap);
-    assert_eq!(mixer_hit(&l, x, y), MixerHit::Options(OptionsHit::SendTap(1)));
+    assert_eq!(
+        mixer_hit(&l, x, y),
+        MixerHit::Options(OptionsHit::SendTap(1))
+    );
     let (x, y) = centre(row.target);
     assert_eq!(mixer_hit(&l, x, y), MixerHit::Options(OptionsHit::Send(1)));
     let (x, y) = centre(row.level);
@@ -579,7 +609,11 @@ fn the_options_column_carries_an_input_row_beside_the_output_one() {
     assert!(!o.input.is_empty(), "there is nowhere to choose an input");
     assert!(!o.input.intersects(&o.output), "the two rows overlap");
     assert!(!o.input.intersects(&o.title));
-    assert_eq!(o.input.intersection(&o.frame), o.input, "it escapes the column");
+    assert_eq!(
+        o.input.intersection(&o.frame),
+        o.input,
+        "it escapes the column"
+    );
     // Beside the output, not somewhere down among the effects: where a signal
     // comes from belongs with where it goes.
     assert!(

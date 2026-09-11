@@ -90,7 +90,10 @@ fn a_file_that_is_not_a_sound_is_refused_and_nothing_is_minted() {
     std::fs::write(&path, b"not a sound").expect("writable");
     let mut library = SampleLibrary::new();
     assert!(library.import_audio(&path).is_err());
-    assert!(library.audio_store().is_empty(), "a refused file left an asset behind");
+    assert!(
+        library.audio_store().is_empty(),
+        "a refused file left an asset behind"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -113,7 +116,10 @@ fn every_mixer_track_gets_a_player_in_front_of_it() {
     let realised = realise(&project, &SampleLibrary::new(), options())
         .expect("a project with a master realises");
 
-    assert!(realised.audio_nodes.contains_key(&None), "the master has no player");
+    assert!(
+        realised.audio_nodes.contains_key(&None),
+        "the master has no player"
+    );
     assert!(
         realised.audio_nodes.contains_key(&Some(track)),
         "a mixer track has no player"
@@ -127,8 +133,7 @@ fn every_mixer_track_gets_a_player_in_front_of_it() {
 #[test]
 fn a_players_output_is_the_bus_of_the_track_it_belongs_to() {
     let (project, track) = a_project();
-    let realised = realise(&project, &SampleLibrary::new(), options())
-        .expect("realises");
+    let realised = realise(&project, &SampleLibrary::new(), options()).expect("realises");
     let node = realised.audio_nodes[&Some(track)];
     let scheduled = realised
         .graph
@@ -151,16 +156,21 @@ fn a_player_runs_before_the_fader_of_the_track_it_feeds() {
     // sound as anything but a one-block error: a clip summed in after the
     // fader has run is a clip the fader does not affect.
     let (project, track) = a_project();
-    let realised = realise(&project, &SampleLibrary::new(), options())
-        .expect("realises");
+    let realised = realise(&project, &SampleLibrary::new(), options()).expect("realises");
     let node = realised.audio_nodes[&Some(track)];
     let schedule = &realised.graph.schedule;
-    let player = schedule.iter().position(|s| s.id == node).expect("the player");
+    let player = schedule
+        .iter()
+        .position(|s| s.id == node)
+        .expect("the player");
     let fader = schedule
         .iter()
         .position(|s| s.node.debug_name() == "mixer-track")
         .expect("a track fader");
-    assert!(player < fader, "the player runs after the fader that carries it");
+    assert!(
+        player < fader,
+        "the player runs after the fader that carries it"
+    );
 }
 
 // ------------------------------------------------------ the whole way down ---
@@ -181,7 +191,11 @@ fn a_clip_dropped_on_a_track_compiles_to_a_placement_on_that_tracks_player() {
         locked: false,
         order: 0,
     });
-    let mut data = AudioClipData::whole(imported.asset.clone(), imported.frames as i64, imported.sample_rate);
+    let mut data = AudioClipData::whole(
+        imported.asset.clone(),
+        imported.frames as i64,
+        imported.sample_rate,
+    );
     data.mixer_track = Some(track);
     project.clips.insert(Clip {
         lane,
@@ -205,7 +219,11 @@ fn a_clip_dropped_on_a_track_compiles_to_a_placement_on_that_tracks_player() {
         fontelle_sequencer::CompileScope::Song,
     );
 
-    assert_eq!(timeline.audio.len(), 1, "the clip did not reach the timeline");
+    assert_eq!(
+        timeline.audio.len(),
+        1,
+        "the clip did not reach the timeline"
+    );
     assert_eq!(timeline.audio[0].target, realised.audio_nodes[&Some(track)]);
     // And the audio it names is in the store the graph was built with, which is
     // the join that would otherwise fail silently.

@@ -64,13 +64,21 @@ fn with_no_tempo_lane_the_map_is_the_documents_own() {
     let project = project_at(97.0);
     let map = effective_tempo_map(&project);
     assert_eq!(map.segments(), project.tempo_map.segments());
-    assert_eq!(map.tick_to_sample(BAR * 3), project.tempo_map.tick_to_sample(BAR * 3));
+    assert_eq!(
+        map.tick_to_sample(BAR * 3),
+        project.tempo_map.tick_to_sample(BAR * 3)
+    );
 }
 
 #[test]
 fn a_flat_lane_sets_the_tempo_across_the_clip_and_holds_it_after() {
     let mut project = project_at(120.0);
-    with_tempo_clip(&mut project, BAR, BAR, vec![point(0, 90.0), point(BAR, 90.0)]);
+    with_tempo_clip(
+        &mut project,
+        BAR,
+        BAR,
+        vec![point(0, 90.0), point(BAR, 90.0)],
+    );
     let map = effective_tempo_map(&project);
 
     // Before the clip the box's tempo stands: a clip cannot reach back in
@@ -87,11 +95,20 @@ fn a_flat_lane_sets_the_tempo_across_the_clip_and_holds_it_after() {
 #[test]
 fn a_ramp_becomes_a_run_of_segments_that_climb() {
     let mut project = project_at(120.0);
-    with_tempo_clip(&mut project, 0, BAR * 4, vec![point(0, 100.0), point(BAR * 4, 160.0)]);
+    with_tempo_clip(
+        &mut project,
+        0,
+        BAR * 4,
+        vec![point(0, 100.0), point(BAR * 4, 160.0)],
+    );
     let map = effective_tempo_map(&project);
 
     let bpms: Vec<f64> = map.segments().iter().map(|s| s.bpm).collect();
-    assert!(bpms.len() >= 16, "a four-bar ramp is many steps, got {}", bpms.len());
+    assert!(
+        bpms.len() >= 16,
+        "a four-bar ramp is many steps, got {}",
+        bpms.len()
+    );
     assert!(
         bpms.windows(2).all(|w| w[1] >= w[0]),
         "a rising lane must not fall anywhere: {bpms:?}"
@@ -107,14 +124,27 @@ fn the_steps_are_fine_enough_to_be_heard_as_a_ramp_and_few_enough_to_be_cheap() 
     // A sixteenth note or finer: coarser and a ritardando is a staircase.
     // And a flat lane costs one segment, not one per step.
     let mut project = project_at(120.0);
-    with_tempo_clip(&mut project, 0, BAR, vec![point(0, 100.0), point(BAR, 140.0)]);
+    with_tempo_clip(
+        &mut project,
+        0,
+        BAR,
+        vec![point(0, 100.0), point(BAR, 140.0)],
+    );
     let ramp = effective_tempo_map(&project);
     let starts: Vec<Tick> = ramp.segments().iter().map(|s| s.start_tick).collect();
     let widest = starts.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
-    assert!(widest <= PPQN / 4, "a step of {widest} ticks is coarser than a sixteenth");
+    assert!(
+        widest <= PPQN / 4,
+        "a step of {widest} ticks is coarser than a sixteenth"
+    );
 
     let mut project = project_at(120.0);
-    with_tempo_clip(&mut project, 0, BAR * 8, vec![point(0, 100.0), point(BAR * 8, 100.0)]);
+    with_tempo_clip(
+        &mut project,
+        0,
+        BAR * 8,
+        vec![point(0, 100.0), point(BAR * 8, 100.0)],
+    );
     let flat = effective_tempo_map(&project);
     assert!(
         flat.segments().len() <= 2,
@@ -138,7 +168,12 @@ fn a_muted_tempo_clip_changes_nothing() {
 fn the_map_keeps_the_documents_sample_rate() {
     let mut project = project_at(120.0);
     project.tempo_map.set_sample_rate(96_000.0);
-    with_tempo_clip(&mut project, 0, BAR, vec![point(0, 120.0), point(BAR, 120.0)]);
+    with_tempo_clip(
+        &mut project,
+        0,
+        BAR,
+        vec![point(0, 120.0), point(BAR, 120.0)],
+    );
     let map = effective_tempo_map(&project);
     assert_eq!(map.sample_rate_hz(), 96_000.0);
     // A quarter note at 120 is half a second, which is 48 000 samples here.

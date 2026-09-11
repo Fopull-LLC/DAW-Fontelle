@@ -130,7 +130,10 @@ fn input_devices_can_be_listed() {
     // could pick out of a menu.
     let device = AudioDevice::default_host();
     for name in device.input_names() {
-        assert!(!name.trim().is_empty(), "an input with no name is unpickable");
+        assert!(
+            !name.trim().is_empty(),
+            "an input with no name is unpickable"
+        );
     }
     // And the default, when there is one, is one of them — which is a real
     // claim rather than a tautology: ALSA's own `default` PCM describes itself

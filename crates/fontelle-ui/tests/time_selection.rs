@@ -33,7 +33,10 @@ fn dragging_backwards_selects_the_same_stretch() {
 
 #[test]
 fn a_drag_that_stays_inside_one_grid_cell_is_a_click_and_selects_nothing() {
-    assert_eq!(time_selection(BAR + 10, BAR + 300, SnapDivision::Bar, 4), None);
+    assert_eq!(
+        time_selection(BAR + 10, BAR + 300, SnapDivision::Bar, 4),
+        None
+    );
     assert_eq!(time_selection(BAR, BAR, SnapDivision::Bar, 4), None);
 }
 
@@ -62,5 +65,8 @@ fn the_selection_never_starts_before_the_song() {
 fn a_short_drag_that_rounds_onto_one_line_is_a_click() {
     // Both ends land on the same grid line, and a loop from a line to itself
     // is nothing — so it clears, the same as a click would.
-    assert_eq!(time_selection(BAR - 10, BAR + 10, SnapDivision::Bar, 4), None);
+    assert_eq!(
+        time_selection(BAR - 10, BAR + 10, SnapDivision::Bar, 4),
+        None
+    );
 }

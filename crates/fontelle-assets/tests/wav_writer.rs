@@ -45,7 +45,10 @@ fn what_is_written_reads_back_as_what_was_written() {
     assert_eq!(back.channels, 1);
     assert_eq!(back.frames, wanted.len());
     for (i, (got, want)) in back.samples.iter().zip(&wanted).enumerate() {
-        assert!((got - want).abs() < 1.0 / 16_384.0, "frame {i}: {got} vs {want}");
+        assert!(
+            (got - want).abs() < 1.0 / 16_384.0,
+            "frame {i}: {got} vs {want}"
+        );
     }
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -147,7 +150,10 @@ fn samples_past_full_scale_are_clamped_rather_than_wrapped() {
             "a sample wrapped to {sample}"
         );
     }
-    assert!(back.samples[0] > 0.9, "the loud one came out quiet or inverted");
+    assert!(
+        back.samples[0] > 0.9,
+        "the loud one came out quiet or inverted"
+    );
     assert!(back.samples[1] < -0.9);
     std::fs::remove_dir_all(&dir).ok();
 }

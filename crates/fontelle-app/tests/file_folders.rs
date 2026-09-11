@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 
 use fontelle_app::settings::{
-    FolderKind, SETTING_ROWS, SETTINGS_FORMAT_VERSION, Settings, SettingRow,
+    FolderKind, SETTING_ROWS, SETTINGS_FORMAT_VERSION, SettingRow, Settings,
 };
 
 fn temp_dir(name: &str) -> PathBuf {
@@ -128,7 +128,10 @@ fn a_folder_row_that_is_set_shows_the_end_of_the_path() {
 
     let value = row.value(&settings);
     assert!(value.contains("MIDI Files"), "got {value:?}");
-    assert!(!value.contains("/home/someone/Documents/Music"), "got {value:?}");
+    assert!(
+        !value.contains("/home/someone/Documents/Music"),
+        "got {value:?}"
+    );
 }
 
 #[test]
@@ -187,7 +190,9 @@ fn the_folders_are_under_a_heading_of_their_own() {
         );
     }
     assert!(
-        headings_before_folders.windows(2).all(|pair| pair[0] == pair[1]),
+        headings_before_folders
+            .windows(2)
+            .all(|pair| pair[0] == pair[1]),
         "every folder belongs under the same heading"
     );
 }

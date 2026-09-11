@@ -56,7 +56,11 @@ fn settled(samples: &[f32]) -> &[f32] {
     &samples[samples.len() / 2..]
 }
 
-fn through(config: &UtilityConfig, mut left: Vec<f32>, mut right: Vec<f32>) -> (Vec<f32>, Vec<f32>) {
+fn through(
+    config: &UtilityConfig,
+    mut left: Vec<f32>,
+    mut right: Vec<f32>,
+) -> (Vec<f32>, Vec<f32>) {
     let mut utility = Utility::new();
     utility.prepare(SR);
     let mut channels: Vec<&mut [f32]> = vec![&mut left, &mut right];
@@ -128,8 +132,14 @@ fn pan_is_a_balance_that_leaves_the_centre_at_unity() {
         ..UtilityConfig::new()
     };
     let (out_l, out_r) = through(&half_left, source.clone(), source.clone());
-    assert!((rms(&out_l) - rms(&source)).abs() < 1e-6, "the near side moved");
-    assert!((rms(&out_r) - rms(&source) * 0.5).abs() < 1e-6, "the far side is not halved");
+    assert!(
+        (rms(&out_l) - rms(&source)).abs() < 1e-6,
+        "the near side moved"
+    );
+    assert!(
+        (rms(&out_r) - rms(&source) * 0.5).abs() < 1e-6,
+        "the far side is not halved"
+    );
 }
 
 // ------------------------------------------------------------------ stereo
@@ -151,7 +161,10 @@ fn width_at_one_hundred_is_the_wire_and_at_zero_is_mono() {
     for (index, (l, r)) in out_l.iter().zip(out_r.iter()).enumerate() {
         assert!((l - r).abs() < 1e-6, "frame {index} is still stereo");
         let sum = (left[index] + right[index]) * 0.5;
-        assert!((l - sum).abs() < 1e-6, "mono is not the sum at frame {index}");
+        assert!(
+            (l - sum).abs() < 1e-6,
+            "mono is not the sum at frame {index}"
+        );
     }
 }
 
@@ -350,7 +363,11 @@ fn the_dc_filter_takes_an_offset_out_and_leaves_the_music() {
     };
     let (out, _) = through(&config, offset.clone(), offset.clone());
     let tail = settled(&out);
-    assert!(mean(tail).abs() < 0.005, "the offset survived: {}", mean(tail));
+    assert!(
+        mean(tail).abs() < 0.005,
+        "the offset survived: {}",
+        mean(tail)
+    );
     assert!(
         (rms(tail) - rms(settled(&tone)) * 0.5).abs() < 0.01,
         "the tone did not survive"

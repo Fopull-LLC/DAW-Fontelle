@@ -460,7 +460,11 @@ fn an_insert_can_be_mixed_back_towards_the_dry_signal() {
     AddInsert::new(track, EffectKind::Eq)
         .apply(&mut project)
         .unwrap();
-    assert_eq!(mix_of(&project, track, 0), 1.0, "a new effect is the effect");
+    assert_eq!(
+        mix_of(&project, track, 0),
+        1.0,
+        "a new effect is the effect"
+    );
 
     SetInsertMix::new(track, 0, 0.35)
         .apply(&mut project)
@@ -478,7 +482,9 @@ fn mixing_one_insert_leaves_the_others_alone() {
         .apply(&mut project)
         .unwrap();
 
-    SetInsertMix::new(track, 1, 0.2).apply(&mut project).unwrap();
+    SetInsertMix::new(track, 1, 0.2)
+        .apply(&mut project)
+        .unwrap();
     assert_eq!(mix_of(&project, track, 0), 1.0);
     assert!((mix_of(&project, track, 1) - 0.2).abs() < 1e-6);
 }
@@ -516,7 +522,11 @@ fn a_whole_mix_drag_is_one_undo_entry() {
             )
             .unwrap();
     }
-    assert_eq!(history.depth(), depth + 1, "a drag is one thing somebody did");
+    assert_eq!(
+        history.depth(),
+        depth + 1,
+        "a drag is one thing somebody did"
+    );
     history.undo(&mut project).unwrap().unwrap();
     assert_eq!(mix_of(&project, track, 0), 1.0);
 }
@@ -544,7 +554,11 @@ fn two_inserts_mixed_one_after_the_other_are_two_entries() {
 #[test]
 fn mixing_an_insert_that_is_not_there_is_refused() {
     let (mut project, track) = fixture();
-    assert!(SetInsertMix::new(track, 0, 0.5).apply(&mut project).is_err());
+    assert!(
+        SetInsertMix::new(track, 0, 0.5)
+            .apply(&mut project)
+            .is_err()
+    );
 }
 
 // ------------------------------------------------------------ round tripping
@@ -566,7 +580,9 @@ fn a_chain_survives_being_written_out_and_read_back() {
     SetInsertBypassed::new(track, 0, true)
         .apply(&mut project)
         .unwrap();
-    SetInsertMix::new(track, 0, 0.25).apply(&mut project).unwrap();
+    SetInsertMix::new(track, 0, 0.25)
+        .apply(&mut project)
+        .unwrap();
 
     let json = serde_json::to_string(&project).expect("a project serialises");
     let back: Project = serde_json::from_str(&json).expect("and comes back");

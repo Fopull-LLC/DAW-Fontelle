@@ -29,7 +29,10 @@ fn a_fresh_processor_is_all_wet() {
     // on a track has to be the EQ, exactly as it was before this control
     // existed. A processor *replaces* the signal — the point of a compressor
     // is the compressed track, not the compressed track under the loud one.
-    for kind in EffectKind::ALL.into_iter().filter(|kind| !kind.is_time_based()) {
+    for kind in EffectKind::ALL
+        .into_iter()
+        .filter(|kind| !kind.is_time_based())
+    {
         let config = EffectConfig::new(kind);
         assert_eq!(config.mix(), 1.0, "{} opened part dry", kind.label());
     }
@@ -51,7 +54,10 @@ fn a_fresh_processor_is_all_wet() {
 /// kind is for.
 #[test]
 fn a_fresh_time_based_effect_opens_with_the_dry_signal_under_it() {
-    for kind in EffectKind::ALL.into_iter().filter(|kind| kind.is_time_based()) {
+    for kind in EffectKind::ALL
+        .into_iter()
+        .filter(|kind| kind.is_time_based())
+    {
         let config = EffectConfig::new(kind);
         assert!(
             config.mix() > 0.0 && config.mix() < 1.0,
@@ -139,7 +145,11 @@ fn the_control_is_addressable_like_every_other_parameter() {
 fn a_lane_sweeping_it_runs_from_dry_to_wet() {
     let mut config = EffectConfig::new(EffectKind::Eq);
     config.set_normalised("mix", 0.0);
-    assert_eq!(config.mix(), 0.0, "the bottom of the lane is the dry signal");
+    assert_eq!(
+        config.mix(),
+        0.0,
+        "the bottom of the lane is the dry signal"
+    );
     config.set_normalised("mix", 1.0);
     assert_eq!(config.mix(), 1.0, "and the top is the effect");
     config.set_normalised("mix", 0.5);
@@ -161,12 +171,13 @@ fn a_project_written_before_the_control_existed_opens_fully_wet() {
     // a mix of zero — that would silently switch every effect in every saved
     // song out of its chain.
     let old = r#"{"bands":[]}"#;
-    let eq: EqConfig = serde_json::from_str(
-        &old.replace(
-            "\"bands\":[]",
-            &format!("\"bands\":{}", serde_json::to_string(&EqConfig::new().bands).unwrap()),
+    let eq: EqConfig = serde_json::from_str(&old.replace(
+        "\"bands\":[]",
+        &format!(
+            "\"bands\":{}",
+            serde_json::to_string(&EqConfig::new().bands).unwrap()
         ),
-    )
+    ))
     .expect("an EQ written without a mix must still load");
     assert_eq!(eq.mix, 1.0);
 

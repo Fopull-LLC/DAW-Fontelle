@@ -100,7 +100,11 @@ fn the_level_is_what_decides_how_much_goes() {
     let mut node = node(&quiet);
     let (_, out) = run(&mut node, [1.0, 1.0], [0.0, 0.0]);
     let (l, _) = PanLaw::Minus3Db.gains(0.0);
-    assert!((out[0][0] - linear(-20.0) * l).abs() < 1e-5, "{}", out[0][0]);
+    assert!(
+        (out[0][0] - linear(-20.0) * l).abs() < 1e-5,
+        "{}",
+        out[0][0]
+    );
 }
 
 #[test]

@@ -16,9 +16,7 @@ use std::collections::HashMap;
 
 use fontelle_model::{Clip, ClipSource, Project, TempoMap};
 use fontelle_sequencer::NodeMaps;
-use fontelle_types::{
-    AssetKind, AssetRef, AudioClipData, MixerTrackId, NodeId, PPQN, Tick,
-};
+use fontelle_types::{AssetKind, AssetRef, AudioClipData, MixerTrackId, NodeId, PPQN, Tick};
 use slotmap::KeyData;
 
 const SR: f64 = 48_000.0;
@@ -49,7 +47,10 @@ struct Rig {
 fn rig() -> Rig {
     let mut project = Project::new("audio");
     project.tempo_map = TempoMap::new(BPM, SR);
-    let track = project.mixer.tracks.insert(fontelle_model::MixerTrack::new("Mic"));
+    let track = project
+        .mixer
+        .tracks
+        .insert(fontelle_model::MixerTrack::new("Mic"));
     Rig {
         project,
         track,
@@ -59,7 +60,12 @@ fn rig() -> Rig {
 
 impl Rig {
     /// Puts an audio clip at `start`, `length` long, on a fresh lane.
-    fn place(&mut self, start: Tick, length: Tick, mut data: AudioClipData) -> fontelle_types::ClipId {
+    fn place(
+        &mut self,
+        start: Tick,
+        length: Tick,
+        mut data: AudioClipData,
+    ) -> fontelle_types::ClipId {
         data.mixer_track = Some(self.track);
         let lane = self.project.lanes.insert(fontelle_model::Lane {
             name: "row".into(),
@@ -98,7 +104,11 @@ impl Rig {
 #[test]
 fn an_audio_clip_becomes_a_placement_at_the_sample_the_tick_maps_to() {
     let mut r = rig();
-    r.place(PPQN * 4, PPQN * 8, AudioClipData::whole(an_asset(), 100_000, 48_000));
+    r.place(
+        PPQN * 4,
+        PPQN * 8,
+        AudioClipData::whole(an_asset(), 100_000, 48_000),
+    );
     let timeline = r.compile();
 
     assert_eq!(timeline.audio.len(), 1);
@@ -113,7 +123,11 @@ fn an_audio_clip_becomes_a_placement_at_the_sample_the_tick_maps_to() {
 fn an_audio_clip_produces_no_events_at_all() {
     // It is not a note and it must not look like one to anything downstream.
     let mut r = rig();
-    r.place(0, PPQN * 4, AudioClipData::whole(an_asset(), 100_000, 48_000));
+    r.place(
+        0,
+        PPQN * 4,
+        AudioClipData::whole(an_asset(), 100_000, 48_000),
+    );
     assert!(r.compile().events.is_empty());
 }
 
@@ -140,7 +154,11 @@ fn a_clip_routed_to_a_track_with_no_player_is_left_out_rather_than_panicking() {
     // it — a clip dropped on a track made the same frame.
     let mut r = rig();
     let id = r.place(0, PPQN * 4, AudioClipData::whole(an_asset(), 1000, 48_000));
-    let elsewhere = r.project.mixer.tracks.insert(fontelle_model::MixerTrack::new("Other"));
+    let elsewhere = r
+        .project
+        .mixer
+        .tracks
+        .insert(fontelle_model::MixerTrack::new("Other"));
     let ClipSource::Audio(data) = &mut r.project.clips[id].source else {
         unreachable!()
     };
@@ -155,7 +173,11 @@ fn a_looped_clip_carries_its_period_in_samples() {
     // one range that comes round. Unrolling it would also make a sixteen-bar
     // one-bar loop sixteen filter states instead of one.
     let mut r = rig();
-    let id = r.place(0, PPQN * 16, AudioClipData::whole(an_asset(), 100_000, 48_000));
+    let id = r.place(
+        0,
+        PPQN * 16,
+        AudioClipData::whole(an_asset(), 100_000, 48_000),
+    );
     r.project.clips[id].loop_length = Some(PPQN * 4);
     let timeline = r.compile();
 
@@ -181,7 +203,11 @@ fn the_placement_carries_the_clips_own_properties() {
 fn clip_mode_leaves_out_every_clip_but_the_one_being_edited() {
     let mut r = rig();
     let first = r.place(0, PPQN * 4, AudioClipData::whole(an_asset(), 1000, 48_000));
-    r.place(PPQN * 8, PPQN * 4, AudioClipData::whole(an_asset(), 1000, 48_000));
+    r.place(
+        PPQN * 8,
+        PPQN * 4,
+        AudioClipData::whole(an_asset(), 1000, 48_000),
+    );
 
     let audio: HashMap<Option<MixerTrackId>, NodeId> =
         [(Some(r.track), r.player)].into_iter().collect();
@@ -209,8 +235,7 @@ fn a_clip_on_the_master_is_placed_on_whatever_plays_the_master() {
     data.mixer_track = None;
 
     let master = node(99);
-    let audio: HashMap<Option<MixerTrackId>, NodeId> =
-        [(None, master)].into_iter().collect();
+    let audio: HashMap<Option<MixerTrackId>, NodeId> = [(None, master)].into_iter().collect();
     let timeline = fontelle_sequencer::compile_with(
         &r.project,
         &NodeMaps {

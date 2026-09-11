@@ -231,7 +231,9 @@ fn a_blank_project_starts_with_one_channel_playing_the_built_in_synth() {
     );
     assert!(!channels[0].muted && !channels[0].soloed);
     assert!(
-        session.instrument().is_some_and(|view| !view.groups.is_empty()),
+        session
+            .instrument()
+            .is_some_and(|view| !view.groups.is_empty()),
         "and it has a panel to edit"
     );
     assert_eq!(

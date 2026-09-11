@@ -15,7 +15,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use fontelle_app::{SampleLibrary};
+use fontelle_app::SampleLibrary;
 use fontelle_assets::fixtures::build_wav;
 use fontelle_types::InstrumentKind;
 use fontelle_ui::DocumentHost;

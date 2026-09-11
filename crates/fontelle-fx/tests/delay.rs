@@ -117,7 +117,10 @@ fn nothing_comes_out_before_the_first_repeat() {
     // in twice and a fully dry insert would still be audible.
     let (left, _) = through(&plain(TIME_MS), impulse(FRAMES), silence(FRAMES));
     let early = peak(&left[..TIME_SAMPLES - 4]);
-    assert!(early < 1e-4, "the input leaked into the wet path; got {early}");
+    assert!(
+        early < 1e-4,
+        "the input leaked into the wet path; got {early}"
+    );
 }
 
 #[test]
@@ -191,7 +194,10 @@ fn ping_pong_puts_each_repeat_on_the_other_side() {
 
     let odd = peak_in(&left, TIME_SAMPLES - 40..TIME_SAMPLES + 40).1;
     let odd_other = peak_in(&right, TIME_SAMPLES - 40..TIME_SAMPLES + 40).1;
-    assert!(odd > 0.9 && odd_other < 0.05, "the first repeat is on the left");
+    assert!(
+        odd > 0.9 && odd_other < 0.05,
+        "the first repeat is on the left"
+    );
 
     let even = peak_in(&right, TIME_SAMPLES * 2 - 40..TIME_SAMPLES * 2 + 40).1;
     let even_other = peak_in(&left, TIME_SAMPLES * 2 - 40..TIME_SAMPLES * 2 + 40).1;
@@ -240,7 +246,10 @@ fn moving_the_time_while_it_runs_does_not_click() {
     }
     // A 200 Hz sine moves 0.026 per sample; a spliced discontinuity would be
     // most of full scale.
-    assert!(worst < 0.1, "the output stepped by {worst} on a time change");
+    assert!(
+        worst < 0.1,
+        "the output stepped by {worst} on a time change"
+    );
 }
 
 #[test]
@@ -390,5 +399,8 @@ fn a_tempo_change_while_it_runs_glides_rather_than_clicking() {
             previous = sample;
         }
     }
-    assert!(worst < 0.1, "the output stepped by {worst} on a tempo change");
+    assert!(
+        worst < 0.1,
+        "the output stepped by {worst} on a tempo change"
+    );
 }

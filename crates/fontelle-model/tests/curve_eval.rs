@@ -67,7 +67,10 @@ fn no_points_is_no_value() {
 
 #[test]
 fn a_straight_segment_is_read_off_exactly() {
-    let sorted = [point(0, 0.0, CurveShape::Linear), point(PPQN * 2, 1.0, CurveShape::Linear)];
+    let sorted = [
+        point(0, 0.0, CurveShape::Linear),
+        point(PPQN * 2, 1.0, CurveShape::Linear),
+    ];
     assert_eq!(curve_value(&sorted, PPQN), Some(0.5));
     assert_eq!(curve_value(&sorted, PPQN / 2), Some(0.25));
 }

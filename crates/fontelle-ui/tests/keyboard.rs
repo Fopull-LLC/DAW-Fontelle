@@ -220,7 +220,10 @@ fn every_row_is_the_same_height_and_they_tile_without_gaps() {
 fn the_strip_is_wide_enough_to_read_names_in_the_list_view() {
     // A list of names on 56 pixels is a list of the first four letters.
     let melodic = KeyMap::unknown();
-    assert_eq!(keyboard_width_for(&melodic, KeyStyle::Piano), KEYBOARD_WIDTH);
+    assert_eq!(
+        keyboard_width_for(&melodic, KeyStyle::Piano),
+        KEYBOARD_WIDTH
+    );
     assert_eq!(
         keyboard_width_for(&melodic, KeyStyle::Names),
         NAMED_KEYBOARD_WIDTH,
@@ -233,8 +236,14 @@ fn a_named_kit_asks_for_the_wide_strip_in_either_view() {
     // The rule that was already here: an instrument whose keys have names of
     // their own gets room for them whichever way the strip is drawn.
     let kit = a_map(true);
-    assert_eq!(keyboard_width_for(&kit, KeyStyle::Piano), NAMED_KEYBOARD_WIDTH);
-    assert_eq!(keyboard_width_for(&kit, KeyStyle::Names), NAMED_KEYBOARD_WIDTH);
+    assert_eq!(
+        keyboard_width_for(&kit, KeyStyle::Piano),
+        NAMED_KEYBOARD_WIDTH
+    );
+    assert_eq!(
+        keyboard_width_for(&kit, KeyStyle::Names),
+        NAMED_KEYBOARD_WIDTH
+    );
 }
 
 #[test]
@@ -242,7 +251,10 @@ fn the_default_is_the_piano_it_always_was() {
     // Down to the pixel, for the reason this file's header gives.
     let melodic = KeyMap::unknown();
     assert_eq!(KeyStyle::default(), KeyStyle::Piano);
-    assert_eq!(keyboard_width(&melodic), keyboard_width_for(&melodic, KeyStyle::default()));
+    assert_eq!(
+        keyboard_width(&melodic),
+        keyboard_width_for(&melodic, KeyStyle::default())
+    );
 }
 
 #[test]

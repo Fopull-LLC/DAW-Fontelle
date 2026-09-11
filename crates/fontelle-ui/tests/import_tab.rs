@@ -326,10 +326,7 @@ fn a_file_row_in_the_import_tab_can_be_carried_out_of_the_panel() {
 #[test]
 fn a_folder_is_a_place_rather_than_a_sound_and_carries_nothing() {
     let rows = import_rows();
-    assert!(
-        !carries(&rows, 0),
-        "the .. row"
-    );
+    assert!(!carries(&rows, 0), "the .. row");
     assert!(!carries(&rows, 1));
     assert!(!carries(&rows, 2));
 }

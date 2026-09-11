@@ -159,7 +159,9 @@ fn the_transient_softener_takes_the_edge_off_an_attack() {
         config.transient_amount = amount;
         let out = through(&config, sine(0.9, 500.0, FRAMES));
         let edge = out[..480].iter().fold(0.0f32, |m, s| m.max(s.abs()));
-        let body = out[12_000..24_000].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        let body = out[12_000..24_000]
+            .iter()
+            .fold(0.0f32, |m, s| m.max(s.abs()));
         (edge, body)
     };
     let (open_edge, open_body) = attack(0.0);
@@ -183,7 +185,10 @@ fn air_restore_gives_the_very_top_back() {
     let mut config = nothing();
     config.air_restore_amount = 1.0;
     let air = gain_at(&config, 0.4, 14_000.0);
-    assert!(air > 1.1, "the air shelf should lift 14 kHz; gain was {air}");
+    assert!(
+        air > 1.1,
+        "the air shelf should lift 14 kHz; gain was {air}"
+    );
     let middle = gain_at(&config, 0.4, 1_000.0);
     assert!(
         (middle - 1.0).abs() < 0.1,
@@ -225,7 +230,10 @@ fn the_presets_are_ordered_by_how_much_they_do() {
 fn the_rompler_preset_leans_on_the_suppressor() {
     let rompler = SoftenConfig::from_preset(SoftenPreset::VintageRompler);
     assert!(rompler.suppressor_amount > rompler.shelf_amount);
-    assert!(rompler.air_restore_amount > 0.0, "and it gives the top back");
+    assert!(
+        rompler.air_restore_amount > 0.0,
+        "and it gives the top back"
+    );
 }
 
 #[test]

@@ -64,7 +64,11 @@ fn the_tap_carries_the_loudest_side_of_the_block_it_was_given() {
     tap.write(&[&mut left, &mut right]);
     let mut out = vec![0.0; BLOCK];
     assert_eq!(tap.read_into(&mut out), BLOCK);
-    assert!(out.iter().all(|s| (*s - 0.75).abs() < 1e-6), "{:?}", &out[..4]);
+    assert!(
+        out.iter().all(|s| (*s - 0.75).abs() < 1e-6),
+        "{:?}",
+        &out[..4]
+    );
 }
 
 #[test]

@@ -39,7 +39,6 @@ fn open_lane(session: &fontelle_app::Session) -> fontelle_ui::document::ClipInfo
         .expect("the clip that was just made is the block in hand")
 }
 
-
 use common::SR;
 
 /// A studio with two channels on the master, which is where every channel goes
@@ -59,9 +58,17 @@ fn two_channels() -> Session {
     let realised =
         fontelle_app::realise(&project, &library, options).expect("a blank project must realise");
     let (graphs, _source) = graph_channel(realised.graph);
-    let mut session = Session::new(project, library, channel_nodes, publisher, options, clip, None)
-        .with_graphs(graphs, realised.track_controls)
-        .with_param_nodes(realised.param_nodes);
+    let mut session = Session::new(
+        project,
+        library,
+        channel_nodes,
+        publisher,
+        options,
+        clip,
+        None,
+    )
+    .with_graphs(graphs, realised.track_controls)
+    .with_param_nodes(realised.param_nodes);
     session
         .add_channel()
         .expect("the rack's button makes a channel out of nothing");
@@ -213,7 +220,10 @@ fn every_knob_on_the_panel_can_be_automated() {
         .flat_map(|group| group.params.iter())
         .map(|param| param.address.clone())
         .collect();
-    assert!(addresses.len() > 10, "the built-in synth has a panel full of them");
+    assert!(
+        addresses.len() > 10,
+        "the built-in synth has a panel full of them"
+    );
 
     for address in &addresses {
         let before = session.clips().len();
@@ -254,10 +264,7 @@ fn a_new_lane_starts_at_the_value_the_knob_is_on() {
 fn the_lane_appears_on_the_arrangement_as_a_curve() {
     use fontelle_ui::document::ClipKind;
     let mut session = two_channels();
-    session.automate_instrument_param(
-        &fontelle_types::ParamAddress::new("patch/env[0]/attack"),
-        0,
-    );
+    session.automate_instrument_param(&fontelle_types::ParamAddress::new("patch/env[0]/attack"), 0);
     let curves: Vec<_> = session
         .clips()
         .into_iter()

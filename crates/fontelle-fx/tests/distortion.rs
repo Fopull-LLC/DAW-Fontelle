@@ -287,8 +287,8 @@ fn oversampling_keeps_the_aliases_out() {
 fn alias_energy(config: &DistortionConfig) -> f32 {
     let out = analysed(config, 0.5, 7_000.0);
     let total = rms(&out);
-    let wanted = amplitude_at(&out, 7_000.0).powi(2) / 2.0
-        + amplitude_at(&out, 21_000.0).powi(2) / 2.0;
+    let wanted =
+        amplitude_at(&out, 7_000.0).powi(2) / 2.0 + amplitude_at(&out, 21_000.0).powi(2) / 2.0;
     (total * total - wanted).max(0.0).sqrt()
 }
 
@@ -312,9 +312,18 @@ fn more_oversampling_is_less_alias() {
         at(Oversampling::Four),
         at(Oversampling::Eight),
     );
-    assert!(two < off * 0.5, "2x should halve the alias at least: {off} then {two}");
-    assert!(four < two * 0.5, "4x should halve it again: {two} then {four}");
-    assert!(eight <= four * 1.05, "8x should not be worse than 4x: {four} then {eight}");
+    assert!(
+        two < off * 0.5,
+        "2x should halve the alias at least: {off} then {two}"
+    );
+    assert!(
+        four < two * 0.5,
+        "4x should halve it again: {two} then {four}"
+    );
+    assert!(
+        eight <= four * 1.05,
+        "8x should not be worse than 4x: {four} then {eight}"
+    );
 }
 
 #[test]
@@ -616,7 +625,10 @@ fn auto_gain_makes_drive_a_tone_control() {
     matched.auto_gain = true;
     let loud = amplitude_at(&analysed(&raw, 0.3, 1_000.0), 1_000.0);
     let level = amplitude_at(&analysed(&matched, 0.3, 1_000.0), 1_000.0);
-    assert!(loud > 0.9, "without compensation the drive is a volume: {loud}");
+    assert!(
+        loud > 0.9,
+        "without compensation the drive is a volume: {loud}"
+    );
     assert!(
         level > 0.15 && level < 0.6,
         "auto-gain should put the level back near where it started: {level}"
@@ -643,7 +655,10 @@ fn rectify_is_an_octave_up() {
     // Half-wave keeps the note and adds the octave under it.
     config.shape = 0.0;
     let out = analysed(&config, 0.8, 220.0);
-    assert!(amplitude_at(&out, 220.0) > 0.2, "half-wave should keep the fundamental");
+    assert!(
+        amplitude_at(&out, 220.0) > 0.2,
+        "half-wave should keep the fundamental"
+    );
     assert!(amplitude_at(&out, 440.0) > 0.05, "and add the octave");
     let dc = out.iter().sum::<f32>() / out.len() as f32;
     assert!(dc.abs() < 0.02, "a rectifier left {dc} of DC on the output");
@@ -684,7 +699,10 @@ fn wrap_is_discontinuous() {
     let jump = out[SETTLE..]
         .windows(2)
         .fold(0.0f32, |m, pair| m.max((pair[1] - pair[0]).abs()));
-    assert!(jump > 1.0, "a wrap should jump; the biggest step was {jump}");
+    assert!(
+        jump > 1.0,
+        "a wrap should jump; the biggest step was {jump}"
+    );
     assert!(peak(&out) <= 1.01, "and stay inside the rails");
 }
 
@@ -718,13 +736,10 @@ fn every_preset_is_audibly_a_distortion() {
             .iter()
             .zip(input[SETTLE..].iter())
             .fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(difference > 0.02, "{preset:?} left a 1 kHz tone as it was");
         assert!(
-            difference > 0.02,
-            "{preset:?} left a 1 kHz tone as it was"
+            out.iter().all(|s| s.is_finite()),
+            "{preset:?} is not finite"
         );
-        assert!(out.iter().all(|s| s.is_finite()), "{preset:?} is not finite");
     }
 }
-
-
-

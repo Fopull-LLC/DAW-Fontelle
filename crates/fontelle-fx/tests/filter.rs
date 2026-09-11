@@ -158,7 +158,10 @@ fn every_shape_passes_what_its_name_says() {
                 assert!(at < -12.0, "{shape:?} left its corner at {at} dB");
             }
             FilterShape::Peak => {
-                assert!(below.abs() < 1.0 && above.abs() < 1.0, "{shape:?} is not a bell");
+                assert!(
+                    below.abs() < 1.0 && above.abs() < 1.0,
+                    "{shape:?} is not a bell"
+                );
                 assert!(at > 6.0, "{shape:?} did not lift its corner: {at} dB");
             }
         }
@@ -248,10 +251,7 @@ fn the_envelope_opens_the_filter_as_the_signal_gets_loud() {
         closed_db < -40.0,
         "the filter was not shut before the note: {closed_db} dB"
     );
-    assert!(
-        open_db > -6.0,
-        "the envelope did not open it: {open_db} dB"
-    );
+    assert!(open_db > -6.0, "the envelope did not open it: {open_db} dB");
 }
 
 #[test]
@@ -272,7 +272,10 @@ fn the_envelope_can_also_close_it() {
     let loud = FRAMES / 2 + ms(100.0)..FRAMES;
     let before = db(rms(&out[quiet.clone()]) / rms(&source[quiet]));
     let after = db(rms(&out[loud.clone()]) / rms(&source[loud]));
-    assert!(before > -1.0, "the quiet part was already filtered: {before} dB");
+    assert!(
+        before > -1.0,
+        "the quiet part was already filtered: {before} dB"
+    );
     assert!(
         after < -30.0,
         "a negative envelope did not close the filter: {after} dB"
@@ -302,7 +305,10 @@ fn the_lfo_sweeps_the_corner() {
     let bottom = ms(365.0)..ms(385.0);
     let open = db(rms(&out[top.clone()]) / rms(&source[top]));
     let shut = db(rms(&out[bottom.clone()]) / rms(&source[bottom]));
-    assert!(open > -3.0, "the top of the sweep was still shut: {open} dB");
+    assert!(
+        open > -3.0,
+        "the top of the sweep was still shut: {open} dB"
+    );
     assert!(shut < -40.0, "the bottom of the sweep was open: {shut} dB");
 }
 
@@ -376,7 +382,10 @@ fn a_synced_lfo_follows_the_tempo() {
     };
     assert!((config.effective_lfo_hz(120.0) - 2.0).abs() < 1e-4);
     assert!((config.effective_lfo_hz(60.0) - 1.0).abs() < 1e-4);
-    let free = FilterConfig { lfo_sync: false, ..config };
+    let free = FilterConfig {
+        lfo_sync: false,
+        ..config
+    };
     assert_eq!(free.effective_lfo_hz(60.0), free.lfo_rate_hz);
 }
 

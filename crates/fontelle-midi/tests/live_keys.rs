@@ -51,8 +51,8 @@ fn node() -> NodeId {
 
 fn rig() -> (MidiRouter, Arc<LiveKeys>, Sink) {
     let lit = Arc::new(LiveKeys::default());
-    let router = MidiRouter::new(node(), 0, DeviceMapping::default())
-        .watching_keys(Arc::clone(&lit));
+    let router =
+        MidiRouter::new(node(), 0, DeviceMapping::default()).watching_keys(Arc::clone(&lit));
     (router, lit, Sink)
 }
 
@@ -122,7 +122,11 @@ fn a_note_the_pedal_is_holding_stays_lit_until_the_pedal_lets_go() {
     );
 
     r.handle(&[CC, SUSTAIN, 0], &mut out);
-    assert_eq!(lit.snapshot(), 0, "the pedal released it, so the light goes");
+    assert_eq!(
+        lit.snapshot(),
+        0,
+        "the pedal released it, so the light goes"
+    );
 }
 
 #[test]
@@ -160,10 +164,10 @@ fn two_keyboards_share_one_set_of_lights() {
     // keyboard on screen, not one per controller. One device letting go of
     // its note must not put out the other's.
     let lit = Arc::new(LiveKeys::default());
-    let mut one = MidiRouter::new(node(), 0, DeviceMapping::default())
-        .watching_keys(Arc::clone(&lit));
-    let mut two = MidiRouter::new(node(), 0, DeviceMapping::default())
-        .watching_keys(Arc::clone(&lit));
+    let mut one =
+        MidiRouter::new(node(), 0, DeviceMapping::default()).watching_keys(Arc::clone(&lit));
+    let mut two =
+        MidiRouter::new(node(), 0, DeviceMapping::default()).watching_keys(Arc::clone(&lit));
     let mut out = Sink;
 
     one.handle(&[NOTE_ON, 60, 100], &mut out);

@@ -21,8 +21,8 @@
 //! other fixture in this crate is: a test that depends on a binary blob nobody
 //! can read is a test nobody can change.
 
-use fontelle_assets::{AudioAsset, import_audio, read_audio};
 use fontelle_assets::fixtures::{build_wav, write_fixture_to_temp_file};
+use fontelle_assets::{AudioAsset, import_audio, read_audio};
 
 /// A ramp from -1 to +1 across `frames`, so every sample is distinguishable
 /// from every other and an off-by-one in the decoder cannot hide.
@@ -88,8 +88,8 @@ fn the_duration_is_the_frames_over_the_rate() {
 
 #[test]
 fn a_file_that_is_not_audio_is_refused_rather_than_guessed_at() {
-    let err = read_audio(b"this is not a sound", "notes.txt")
-        .expect_err("a text file is not a sound");
+    let err =
+        read_audio(b"this is not a sound", "notes.txt").expect_err("a text file is not a sound");
     assert!(
         err.0.to_lowercase().contains("notes.txt"),
         "the message has to name the file: {}",

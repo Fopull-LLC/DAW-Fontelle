@@ -420,15 +420,40 @@ fn play_while_playing_is_a_pause_back_to_the_mark() {
 #[test]
 fn the_bar_has_a_mode_chip_and_it_is_a_control() {
     let l = transport_bar_layout(bar(), &Theme::dark_default().metrics);
-    assert!(!l.mode.is_empty(), "nowhere to switch between song and clip");
+    assert!(
+        !l.mode.is_empty(),
+        "nowhere to switch between song and clip"
+    );
     assert_eq!(l.mode.intersection(&l.bar), l.mode, "inside the bar");
-    for other in [l.play, l.stop, l.loop_toggle, l.record, l.metronome, l.readout, l.tempo, l.signature, l.ruler, l.meter] {
-        assert!(!l.mode.intersects(&other), "the mode chip overlaps {other:?}");
+    for other in [
+        l.play,
+        l.stop,
+        l.loop_toggle,
+        l.record,
+        l.metronome,
+        l.readout,
+        l.tempo,
+        l.signature,
+        l.ruler,
+        l.meter,
+    ] {
+        assert!(
+            !l.mode.intersects(&other),
+            "the mode chip overlaps {other:?}"
+        );
     }
     let v = view();
-    let hit_at = hit(&l, &v, l.mode.x + l.mode.width / 2.0, l.mode.y + l.mode.height / 2.0);
+    let hit_at = hit(
+        &l,
+        &v,
+        l.mode.x + l.mode.width / 2.0,
+        l.mode.y + l.mode.height / 2.0,
+    );
     assert_eq!(hit_at, Some(TransportHit::Mode));
-    assert!(TransportHit::Mode.tip().is_some(), "a chip with no explanation");
+    assert!(
+        TransportHit::Mode.tip().is_some(),
+        "a chip with no explanation"
+    );
 }
 
 #[test]
@@ -445,7 +470,10 @@ fn play_mode_steps_between_its_two_values_and_says_which_it_is() {
     assert_eq!(PlayMode::Song.next(), PlayMode::Clip);
     assert_eq!(PlayMode::Clip.next(), PlayMode::Song);
     assert_ne!(PlayMode::Song.label(), PlayMode::Clip.label());
-    assert!(PlayMode::Song.label().len() <= 5, "a chip's word, not a sentence");
+    assert!(
+        PlayMode::Song.label().len() <= 5,
+        "a chip's word, not a sentence"
+    );
 }
 
 #[test]

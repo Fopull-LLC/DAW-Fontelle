@@ -743,7 +743,11 @@ fn the_arpeggiators_dialog_fits_and_every_row_of_it_can_be_reached() {
         );
         // And a press in the middle of it finds that row rather than its
         // neighbour, which is what "can be reached" means.
-        let found = tools_dialog_hit(&panel, rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        let found = tools_dialog_hit(
+            &panel,
+            rect.x + rect.width / 2.0,
+            rect.y + rect.height / 2.0,
+        );
         assert_eq!(found, Some(*row), "{row:?} is not where it was drawn");
     }
     assert!(

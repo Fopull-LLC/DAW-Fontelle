@@ -83,7 +83,11 @@ fn the_record_width_comes_from_the_version_and_never_from_the_length() {
     // real note is a plausible value of some other field.
     let six: Vec<FscNoteSpec> = (0..6).map(|i| note(i * 48, 60 + i as u8)).collect();
     let bytes = build_fsc(OLD, FL_PPQ, &six);
-    assert_eq!((6 * 20) % 24, 0, "the fixture has to be an ambiguous length");
+    assert_eq!(
+        (6 * 20) % 24,
+        0,
+        "the fixture has to be an ambiguous length"
+    );
 
     let score = read_fsc(&bytes, "Six").expect("an ambiguous-length score reads");
     assert_eq!(score.notes.len(), 6);
@@ -144,10 +148,22 @@ fn a_release_below_fls_centre_is_the_patchs_own_rather_than_a_shorter_one() {
         NEW,
         FL_PPQ,
         &[
-            FscNoteSpec { release: 0, ..note(0, 60) },
-            FscNoteSpec { release: 63, ..note(0, 61) },
-            FscNoteSpec { release: 64, ..note(0, 62) },
-            FscNoteSpec { release: 128, ..note(0, 63) },
+            FscNoteSpec {
+                release: 0,
+                ..note(0, 60)
+            },
+            FscNoteSpec {
+                release: 63,
+                ..note(0, 61)
+            },
+            FscNoteSpec {
+                release: 64,
+                ..note(0, 62)
+            },
+            FscNoteSpec {
+                release: 128,
+                ..note(0, 63)
+            },
         ],
     );
     let score = read_fsc(&bytes, "Rel").expect("reads");
@@ -163,14 +179,24 @@ fn a_score_written_before_fine_pitch_existed_is_read_as_in_tune() {
     let bytes = build_fsc(
         "3.0.0",
         FL_PPQ,
-        &[FscNoteSpec { fine: 0, ..note(0, 60) }],
+        &[FscNoteSpec {
+            fine: 0,
+            ..note(0, 60)
+        }],
     );
     let score = read_fsc(&bytes, "Ancient").expect("reads");
     assert_eq!(score.notes[0].note.fine_pitch, 0);
 
     // And in a file new enough to have the field, the same byte is the value
     // it says it is.
-    let bytes = build_fsc("3.5.0", FL_PPQ, &[FscNoteSpec { fine: 0, ..note(0, 60) }]);
+    let bytes = build_fsc(
+        "3.5.0",
+        FL_PPQ,
+        &[FscNoteSpec {
+            fine: 0,
+            ..note(0, 60)
+        }],
+    );
     let score = read_fsc(&bytes, "Detuned").expect("reads");
     assert_eq!(score.notes[0].note.fine_pitch, -100);
 }
@@ -184,7 +210,11 @@ fn a_note_fl_wrote_at_no_velocity_is_still_a_note() {
     let bytes = build_fsc(
         NEW,
         FL_PPQ,
-        &[FscNoteSpec { velocity: 0, slide: true, ..note(0, 60) }],
+        &[FscNoteSpec {
+            velocity: 0,
+            slide: true,
+            ..note(0, 60)
+        }],
     );
     let score = read_fsc(&bytes, "Slide").expect("reads");
     assert_eq!(score.notes.len(), 1);
@@ -202,9 +232,18 @@ fn fls_top_velocity_is_the_top_this_document_has() {
         NEW,
         FL_PPQ,
         &[
-            FscNoteSpec { velocity: 100, ..note(0, 60) },
-            FscNoteSpec { velocity: 127, ..note(0, 61) },
-            FscNoteSpec { velocity: 128, ..note(0, 62) },
+            FscNoteSpec {
+                velocity: 100,
+                ..note(0, 60)
+            },
+            FscNoteSpec {
+                velocity: 127,
+                ..note(0, 61)
+            },
+            FscNoteSpec {
+                velocity: 128,
+                ..note(0, 62)
+            },
         ],
     );
     let score = read_fsc(&bytes, "Vel").expect("reads");
@@ -238,14 +277,27 @@ fn a_score_holding_several_instruments_says_so_and_keeps_them_apart() {
         NEW,
         FL_PPQ,
         &[
-            FscNoteSpec { rack: 0, ..note(0, 36) },
-            FscNoteSpec { rack: 2, ..note(0, 60) },
-            FscNoteSpec { rack: 0, ..note(96, 38) },
+            FscNoteSpec {
+                rack: 0,
+                ..note(0, 36)
+            },
+            FscNoteSpec {
+                rack: 2,
+                ..note(0, 60)
+            },
+            FscNoteSpec {
+                rack: 0,
+                ..note(96, 38)
+            },
         ],
     );
     let score = read_fsc(&bytes, "Kit").expect("reads");
 
-    assert_eq!(score.rack_channels, vec![0, 2], "in the order FL numbers them");
+    assert_eq!(
+        score.rack_channels,
+        vec![0, 2],
+        "in the order FL numbers them"
+    );
     assert_eq!(score.notes_on(Some(0)).len(), 2);
     assert_eq!(score.notes_on(Some(2)).len(), 1);
     assert_eq!(score.notes_on(None).len(), 3, "None is the whole score");
@@ -290,13 +342,23 @@ fn pulling_one_part_out_of_a_score_does_not_leave_it_the_rest_of_the_leading_res
         NEW,
         FL_PPQ,
         &[
-            FscNoteSpec { rack: 0, ..note(0, 36) },
-            FscNoteSpec { rack: 1, ..note(96, 60) },
+            FscNoteSpec {
+                rack: 0,
+                ..note(0, 36)
+            },
+            FscNoteSpec {
+                rack: 1,
+                ..note(96, 60)
+            },
         ],
     );
     let score = read_fsc(&bytes, "Two parts").expect("reads");
     assert_eq!(score.phrase_on(Some(1))[0].start, 0);
-    assert_eq!(score.notes_on(Some(1))[0].start, PPQN, "unmoved, as written");
+    assert_eq!(
+        score.notes_on(Some(1))[0].start,
+        PPQN,
+        "unmoved, as written"
+    );
 }
 
 // ------------------------------------------------------------ refusals ---
@@ -362,7 +424,10 @@ fn a_score_with_no_version_in_it_is_refused_rather_than_guessed_at() {
 fn a_file_whose_resolution_is_zero_is_refused_rather_than_dividing_by_it() {
     let bytes = build_fsc(NEW, 0, &[note(0, 60)]);
     let error = read_fsc(&bytes, "Zero").expect_err("must refuse");
-    assert!(error.0.contains("resolution") || error.0.contains("tick"), "{error}");
+    assert!(
+        error.0.contains("resolution") || error.0.contains("tick"),
+        "{error}"
+    );
 }
 
 // --------------------------------------------------------- from a path ---

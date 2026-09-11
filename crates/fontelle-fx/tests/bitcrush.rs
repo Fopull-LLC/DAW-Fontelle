@@ -90,7 +90,10 @@ fn at_its_defaults_it_is_very_nearly_a_wire() {
     let input = sine(0.8, 220.0, FRAMES);
     let out = through(&clean(), input.clone());
     let worst = worst_difference(&out, &input);
-    assert!(worst < 1e-3, "a fresh bitcrusher changed the signal by {worst}");
+    assert!(
+        worst < 1e-3,
+        "a fresh bitcrusher changed the signal by {worst}"
+    );
 }
 
 #[test]
@@ -237,10 +240,12 @@ fn every_dither_carries_a_signal_too_quiet_for_the_quantiser_to_see() {
         // And what comes out is *the tone*, not just noise: averaged over each
         // half of a cycle, the dithered output leans the way the input does.
         let period = (SR / 100.0) as usize;
-        let mean = |from: usize, len: usize| {
-            dithered[from..from + len].iter().sum::<f32>() / len as f32
-        };
-        let (up, down) = (mean(SETTLE, period / 2), mean(SETTLE + period / 2, period / 2));
+        let mean =
+            |from: usize, len: usize| dithered[from..from + len].iter().sum::<f32>() / len as f32;
+        let (up, down) = (
+            mean(SETTLE, period / 2),
+            mean(SETTLE + period / 2, period / 2),
+        );
         assert!(
             up > down,
             "{dither:?}: the dithered output should still follow the tone: {up} against {down}"
@@ -306,7 +311,10 @@ fn the_input_gain_reaches_the_quantiser() {
     config.bits = 4.0;
     let quiet = sine(0.013, 100.0, FRAMES);
     let silent = through(&config, quiet.clone());
-    assert!(silent.iter().all(|s| s.abs() < 1e-9), "too quiet to see, at 0 dB");
+    assert!(
+        silent.iter().all(|s| s.abs() < 1e-9),
+        "too quiet to see, at 0 dB"
+    );
     config.input_db = 24.0;
     let heard = through(&config, quiet.clone());
     assert!(
@@ -320,7 +328,10 @@ fn the_input_gain_reaches_the_quantiser() {
     let hot = through(&config, sine(0.5, 220.0, FRAMES));
     assert!(hot.iter().all(|s| s.abs() <= 1.001));
     let top = hot[SETTLE..].iter().fold(0.0f32, |m, s| m.max(s.abs()));
-    let flat = hot[SETTLE..].iter().filter(|s| s.abs() >= top - 1e-6).count();
+    let flat = hot[SETTLE..]
+        .iter()
+        .filter(|s| s.abs() >= top - 1e-6)
+        .count();
     assert!(
         flat > (FRAMES - SETTLE) / 3,
         "a signal driven into the quantiser sits on its top level ({top}); {flat} samples did"
@@ -362,7 +373,11 @@ fn mu_law_keeps_quiet_detail_and_still_lands_on_few_levels() {
     config.bits = 4.0;
     let quiet = sine(0.013, 100.0, FRAMES);
     config.quantiser = Quantiser::Round;
-    assert!(through(&config, quiet.clone()).iter().all(|s| s.abs() < 1e-9));
+    assert!(
+        through(&config, quiet.clone())
+            .iter()
+            .all(|s| s.abs() < 1e-9)
+    );
     config.quantiser = Quantiser::MuLaw;
     let out = through(&config, quiet.clone());
     assert!(
@@ -391,7 +406,10 @@ fn every_quantiser_at_sixteen_bits_is_very_nearly_a_wire() {
         let mut config = clean();
         config.quantiser = quantiser;
         let worst = worst_difference(&through(&config, input.clone()), &input);
-        assert!(worst < 2e-3, "{quantiser:?} at sixteen bits changed the signal by {worst}");
+        assert!(
+            worst < 2e-3,
+            "{quantiser:?} at sixteen bits changed the signal by {worst}"
+        );
     }
 }
 
@@ -467,7 +485,10 @@ fn drop_decimation_leaves_silence_between_samples() {
         (1_300..=1_450).contains(&zeros),
         "three of every four samples should be silence; {zeros} of 1900 were"
     );
-    assert!(out[100..2_000].iter().any(|s| s.abs() > 0.5), "and the fourth is the signal");
+    assert!(
+        out[100..2_000].iter().any(|s| s.abs() > 0.5),
+        "and the fourth is the signal"
+    );
 }
 
 #[test]
@@ -488,7 +509,11 @@ fn jitter_makes_the_hold_uneven() {
         inner
     };
     let lengths = inner(&through(&steady, ramp(FRAMES))[100..4_100]);
-    assert_eq!(lengths, [8], "a steady clock holds for exactly eight every time");
+    assert_eq!(
+        lengths,
+        [8],
+        "a steady clock holds for exactly eight every time"
+    );
 
     let lengths = inner(&through(&shaky, ramp(FRAMES))[100..4_100]);
     assert!(
@@ -534,7 +559,10 @@ fn every_preset_is_audibly_a_bitcrush() {
             worst_difference(&out[SETTLE..], &input[SETTLE..]) > 0.02,
             "{preset:?} left a 1 kHz tone as it was"
         );
-        assert!(out.iter().all(|s| s.is_finite()), "{preset:?} is not finite");
+        assert!(
+            out.iter().all(|s| s.is_finite()),
+            "{preset:?} is not finite"
+        );
     }
 }
 

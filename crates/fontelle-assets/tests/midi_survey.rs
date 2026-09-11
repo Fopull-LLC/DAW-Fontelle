@@ -30,8 +30,17 @@ fn varint(mut value: u32, out: &mut Vec<u8>) {
 
 /// One thing that happens in a track, at an absolute tick.
 enum Ev {
-    Note { at: u32, length: u32, channel: u8, key: u8 },
-    Program { at: u32, channel: u8, program: u8 },
+    Note {
+        at: u32,
+        length: u32,
+        channel: u8,
+        key: u8,
+    },
+    Program {
+        at: u32,
+        channel: u8,
+        program: u8,
+    },
     TrackName(&'static str),
     InstrumentName(&'static str),
 }
@@ -47,11 +56,20 @@ fn track_bytes(events: &[Ev]) -> Vec<u8> {
             order += 1;
         };
         match event {
-            Ev::Note { at, length, channel, key } => {
+            Ev::Note {
+                at,
+                length,
+                channel,
+                key,
+            } => {
                 push(*at, vec![0x90 | channel, *key, 100]);
                 push(at + length, vec![0x80 | channel, *key, 64]);
             }
-            Ev::Program { at, channel, program } => push(*at, vec![0xc0 | channel, *program]),
+            Ev::Program {
+                at,
+                channel,
+                program,
+            } => push(*at, vec![0xc0 | channel, *program]),
             Ev::TrackName(name) => {
                 let mut body = vec![0xff, 0x03];
                 varint(name.len() as u32, &mut body);
@@ -108,7 +126,12 @@ fn write_temp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
 }
 
 fn note(at: u32, channel: u8, key: u8) -> Ev {
-    Ev::Note { at, length: 48, channel, key }
+    Ev::Note {
+        at,
+        length: 48,
+        channel,
+        key,
+    }
 }
 
 // ------------------------------------------------------------ the survey ---
@@ -196,9 +219,17 @@ fn a_tracks_name_is_not_used_when_the_track_holds_more_than_one_part() {
         96,
         &[vec![
             Ev::TrackName("My Song"),
-            Ev::Program { at: 0, channel: 0, program: 33 },
+            Ev::Program {
+                at: 0,
+                channel: 0,
+                program: 33,
+            },
             note(0, 0, 36),
-            Ev::Program { at: 0, channel: 1, program: 48 },
+            Ev::Program {
+                at: 0,
+                channel: 1,
+                program: 48,
+            },
             note(0, 1, 72),
         ]],
     );
@@ -218,7 +249,11 @@ fn a_part_with_no_name_falls_back_to_the_instrument_it_selects() {
         1,
         96,
         &[vec![
-            Ev::Program { at: 0, channel: 2, program: 0 },
+            Ev::Program {
+                at: 0,
+                channel: 2,
+                program: 0,
+            },
             note(0, 2, 60),
         ]],
     );
@@ -230,11 +265,7 @@ fn a_part_with_no_name_falls_back_to_the_instrument_it_selects() {
 
 #[test]
 fn an_instrument_name_event_is_read_when_there_is_no_track_name() {
-    let bytes = build(
-        1,
-        96,
-        &[vec![Ev::InstrumentName("Rhodes"), note(0, 0, 60)]],
-    );
+    let bytes = build(1, 96, &[vec![Ev::InstrumentName("Rhodes"), note(0, 0, 60)]]);
     let path = write_temp("instrument-name", &bytes);
     let survey = survey_midi(&path).expect("reads");
     assert_eq!(survey.parts[0].name, "Rhodes");
@@ -253,7 +284,14 @@ fn the_percussion_channel_is_called_what_it_is() {
     let bytes = build(
         1,
         96,
-        &[vec![Ev::Program { at: 0, channel: 9, program: 0 }, note(0, 9, 36)]],
+        &[vec![
+            Ev::Program {
+                at: 0,
+                channel: 9,
+                program: 0,
+            },
+            note(0, 9, 36),
+        ]],
     );
     let path2 = write_temp("drums-program", &bytes);
     let survey = survey_midi(&path2).expect("reads");

@@ -130,13 +130,22 @@ fn describe(name: &str, out: &[f32], key: u8) {
             format!("{:5.1}", db(rms(&out[a..b])))
         })
         .collect();
-    println!("             rms@ 10ms 50ms 100 200 500 1s 2s 3s 5s: {}", env.join(" "));
+    println!(
+        "             rms@ 10ms 50ms 100 200 500 1s 2s 3s 5s: {}",
+        env.join(" ")
+    );
     for (from, span) in [(0.0f32, 0.12f32), (0.3, 0.3), (1.0, 0.4), (2.5, 0.5)] {
         let table = partials(out, key, from, span, 12);
         let f = table[0].1;
         let rel: Vec<String> = table
             .iter()
-            .map(|(ratio, level)| format!("{:5.1}{}", level - f, if *ratio > 1.008 { "+" } else { " " }))
+            .map(|(ratio, level)| {
+                format!(
+                    "{:5.1}{}",
+                    level - f,
+                    if *ratio > 1.008 { "+" } else { " " }
+                )
+            })
             .collect();
         let low: f32 = table[..3].iter().map(|(_, l)| 10f32.powf(l / 10.0)).sum();
         let high: f32 = table[3..].iter().map(|(_, l)| 10f32.powf(l / 10.0)).sum();

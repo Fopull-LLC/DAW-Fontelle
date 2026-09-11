@@ -107,10 +107,17 @@ fn note_clip() -> ClipInfo {
 fn an_automation_block_is_a_caption_band_over_a_curve_area() {
     let clip = automation_clip(&[0.5, 0.5]);
     let block = Rect::new(100.0, 40.0, 400.0, 40.0);
-    let AutomationBlock { header, area, handles } = automation_block(block, &clip);
+    let AutomationBlock {
+        header,
+        area,
+        handles,
+    } = automation_block(block, &clip);
 
     assert!(!header.is_empty() && !area.is_empty());
-    assert!(header.bottom() <= area.y + 0.001, "the band is above the curve");
+    assert!(
+        header.bottom() <= area.y + 0.001,
+        "the band is above the curve"
+    );
     assert!(!header.intersects(&area));
     assert_eq!(header.intersection(&block), header, "inside the block");
     assert_eq!(area.intersection(&block), area);
@@ -165,11 +172,20 @@ fn the_curve_is_drawn_through_its_points() {
             .iter()
             .map(|(x, y)| ((x - cx).powi(2) + (y - cy).powi(2)).sqrt())
             .fold(f32::MAX, f32::min);
-        assert!(nearest < 1.5, "the line misses the handle at ({cx}, {cy}) by {nearest}");
+        assert!(
+            nearest < 1.5,
+            "the line misses the handle at ({cx}, {cy}) by {nearest}"
+        );
     }
     for (x, y) in &line {
-        assert!(area.x - 0.5 <= *x && *x <= area.right() + 0.5, "x {x} left the area");
-        assert!(area.y - 0.5 <= *y && *y <= area.bottom() + 0.5, "y {y} left the area");
+        assert!(
+            area.x - 0.5 <= *x && *x <= area.right() + 0.5,
+            "x {x} left the area"
+        );
+        assert!(
+            area.y - 0.5 <= *y && *y <= area.bottom() + 0.5,
+            "y {y} left the area"
+        );
     }
 }
 
@@ -222,15 +238,30 @@ fn the_band_is_the_body_and_the_curve_is_the_curve() {
     let block = clip_rect(&t.view, l.grid, &clip);
     let AutomationBlock { header, area, .. } = automation_block(block, &clip);
 
-    let on_band = timeline_hit(&t.view, &l, std::slice::from_ref(&clip), header.x + 40.0, header.y + 2.0);
+    let on_band = timeline_hit(
+        &t.view,
+        &l,
+        std::slice::from_ref(&clip),
+        header.x + 40.0,
+        header.y + 2.0,
+    );
     assert_eq!(on_band, TimelineHit::Clip(clip.id, ClipPart::Body));
 
     // Half way across, somewhere the flat curve is not.
-    let hit = timeline_hit(&t.view, &l, std::slice::from_ref(&clip), area.x + area.width / 2.0, area.y + 2.0);
+    let hit = timeline_hit(
+        &t.view,
+        &l,
+        std::slice::from_ref(&clip),
+        area.x + area.width / 2.0,
+        area.y + 2.0,
+    );
     match hit {
         TimelineHit::Clip(id, ClipPart::Curve { tick, value }) => {
             assert_eq!(id, clip.id);
-            assert!((tick - BAR * 2).abs() < BAR / 8, "half way across is bar 3: {tick}");
+            assert!(
+                (tick - BAR * 2).abs() < BAR / 8,
+                "half way across is bar 3: {tick}"
+            );
             assert!(value > 0.8, "near the top of the area: {value}");
         }
         other => panic!("expected the curve, got {other:?}"),
@@ -244,7 +275,13 @@ fn a_point_is_found_before_the_curve_under_it() {
     let block = clip_rect(&t.view, l.grid, &clip);
     let AutomationBlock { handles, .. } = automation_block(block, &clip);
     let (id, rect) = handles[0];
-    let hit = timeline_hit(&t.view, &l, std::slice::from_ref(&clip), rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+    let hit = timeline_hit(
+        &t.view,
+        &l,
+        std::slice::from_ref(&clip),
+        rect.x + rect.width / 2.0,
+        rect.y + rect.height / 2.0,
+    );
     assert_eq!(hit, TimelineHit::Clip(clip.id, ClipPart::Point(id)));
 }
 
@@ -253,7 +290,13 @@ fn the_right_edge_grip_still_wins_on_an_automation_block() {
     let clip = automation_clip(&[0.5, 0.5]);
     let (t, l) = rig();
     let block = clip_rect(&t.view, l.grid, &clip);
-    let hit = timeline_hit(&t.view, &l, std::slice::from_ref(&clip), block.right() - 2.0, block.y + block.height / 2.0);
+    let hit = timeline_hit(
+        &t.view,
+        &l,
+        std::slice::from_ref(&clip),
+        block.right() - 2.0,
+        block.y + block.height / 2.0,
+    );
     assert_eq!(hit, TimelineHit::Clip(clip.id, ClipPart::RightEdge));
 }
 
@@ -262,7 +305,13 @@ fn a_note_block_has_no_curve_to_hit() {
     let clip = note_clip();
     let (t, l) = rig();
     let block = clip_rect(&t.view, l.grid, &clip);
-    let hit = timeline_hit(&t.view, &l, std::slice::from_ref(&clip), block.x + 100.0, block.bottom() - 3.0);
+    let hit = timeline_hit(
+        &t.view,
+        &l,
+        std::slice::from_ref(&clip),
+        block.x + 100.0,
+        block.bottom() - 3.0,
+    );
     assert_eq!(hit, TimelineHit::Clip(clip.id, ClipPart::Body));
 }
 
@@ -277,10 +326,21 @@ fn clicking_the_curve_makes_a_point_there_on_the_grid() {
 
     // A little past bar 2, near the top.
     let x = area.x + (BAR as f32 + 40.0) * t.view.pixels_per_tick;
-    let edits = t.press(MouseButton::Left, x, area.y + 1.0, &l, std::slice::from_ref(&clip), 4);
+    let edits = t.press(
+        MouseButton::Left,
+        x,
+        area.y + 1.0,
+        &l,
+        std::slice::from_ref(&clip),
+        4,
+    );
     assert_eq!(edits.len(), 1);
     match &edits[0] {
-        ArrangeEdit::AddPoint { clip: id, tick, value } => {
+        ArrangeEdit::AddPoint {
+            clip: id,
+            tick,
+            value,
+        } => {
             assert_eq!(*id, clip.id);
             assert_eq!(*tick, BAR, "snapped to the beat grid: {tick}");
             assert!(*value > 0.9, "near the top: {value}");
@@ -305,14 +365,28 @@ fn a_new_point_is_picked_up_by_the_press_that_made_it() {
     assert_eq!(t.point_selection(), &[made]);
 
     // Down by half the area, one beat right.
-    let edits = t.drag(x + PPQN as f32 * t.view.pixels_per_tick, y + area.height / 2.0, &l, std::slice::from_ref(&clip), 4);
+    let edits = t.drag(
+        x + PPQN as f32 * t.view.pixels_per_tick,
+        y + area.height / 2.0,
+        &l,
+        std::slice::from_ref(&clip),
+        4,
+    );
     assert_eq!(edits.len(), 1);
     match &edits[0] {
-        ArrangeEdit::MovePoints { clip: id, ids, tick_delta, value_delta } => {
+        ArrangeEdit::MovePoints {
+            clip: id,
+            ids,
+            tick_delta,
+            value_delta,
+        } => {
             assert_eq!(*id, clip.id);
             assert_eq!(ids, &[made]);
             assert_eq!(*tick_delta, PPQN);
-            assert!((*value_delta + 0.5).abs() < 0.05, "half way down: {value_delta}");
+            assert!(
+                (*value_delta + 0.5).abs() < 0.05,
+                "half way down: {value_delta}"
+            );
         }
         other => panic!("expected a move, got {other:?}"),
     }
@@ -335,10 +409,13 @@ fn dragging_a_point_emits_deltas_relative_to_the_last_step() {
     let second = t.drag(x + beat * 2.0, y, &l, std::slice::from_ref(&clip), 4);
     let held = t.drag(x + beat * 2.0 + 1.0, y, &l, std::slice::from_ref(&clip), 4);
     for edits in [&first, &second] {
-        assert!(matches!(
-            edits.as_slice(),
-            [ArrangeEdit::MovePoints { tick_delta, .. }] if *tick_delta == PPQN
-        ), "{edits:?}");
+        assert!(
+            matches!(
+                edits.as_slice(),
+                [ArrangeEdit::MovePoints { tick_delta, .. }] if *tick_delta == PPQN
+            ),
+            "{edits:?}"
+        );
     }
     assert!(held.is_empty(), "a sub-grid move is not an edit: {held:?}");
     let _ = area;
@@ -366,19 +443,43 @@ fn a_right_click_on_a_point_asks_for_its_menu_rather_than_erasing_the_clip() {
     let block = clip_rect(&t.view, l.grid, &clip);
     let AutomationBlock { handles, area, .. } = automation_block(block, &clip);
     let (id, rect) = handles[1];
-    let edits = t.press(MouseButton::Right, rect.x + rect.width / 2.0, rect.y + rect.height / 2.0, &l, std::slice::from_ref(&clip), 4);
-    assert!(edits.is_empty(), "a right-click on a point is a question, not a deletion: {edits:?}");
+    let edits = t.press(
+        MouseButton::Right,
+        rect.x + rect.width / 2.0,
+        rect.y + rect.height / 2.0,
+        &l,
+        std::slice::from_ref(&clip),
+        4,
+    );
+    assert!(
+        edits.is_empty(),
+        "a right-click on a point is a question, not a deletion: {edits:?}"
+    );
     assert_eq!(t.take_point_menu(), Some((clip.id, id)));
     assert_eq!(t.take_point_menu(), None, "taken once");
 
     // And on the bare curve, nothing at all: the eraser must not take the
     // whole clip because the pointer was two pixels off a point.
-    let edits = t.press(MouseButton::Right, area.x + area.width / 2.0, area.y + 2.0, &l, std::slice::from_ref(&clip), 4);
+    let edits = t.press(
+        MouseButton::Right,
+        area.x + area.width / 2.0,
+        area.y + 2.0,
+        &l,
+        std::slice::from_ref(&clip),
+        4,
+    );
     assert!(edits.is_empty(), "{edits:?}");
     assert_eq!(t.take_point_menu(), None);
 
     // The band is still the block, and the block still erases.
-    let edits = t.press(MouseButton::Right, block.x + 40.0, block.y + 2.0, &l, std::slice::from_ref(&clip), 4);
+    let edits = t.press(
+        MouseButton::Right,
+        block.x + 40.0,
+        block.y + 2.0,
+        &l,
+        std::slice::from_ref(&clip),
+        4,
+    );
     assert_eq!(edits, vec![ArrangeEdit::Remove(vec![clip.id])]);
 }
 
@@ -389,19 +490,39 @@ fn deleting_and_reshaping_the_selected_points_are_edits_on_their_clip() {
     let block = clip_rect(&t.view, l.grid, &clip);
     let AutomationBlock { handles, .. } = automation_block(block, &clip);
     let (id, rect) = handles[1];
-    t.press(MouseButton::Left, rect.x + rect.width / 2.0, rect.y + rect.height / 2.0, &l, std::slice::from_ref(&clip), 4);
+    t.press(
+        MouseButton::Left,
+        rect.x + rect.width / 2.0,
+        rect.y + rect.height / 2.0,
+        &l,
+        std::slice::from_ref(&clip),
+        4,
+    );
     t.release();
 
     assert_eq!(
         t.set_point_curve(CurveShape::SCurve),
-        vec![ArrangeEdit::SetPointCurve { clip: clip.id, ids: vec![id], curve: CurveShape::SCurve }]
+        vec![ArrangeEdit::SetPointCurve {
+            clip: clip.id,
+            ids: vec![id],
+            curve: CurveShape::SCurve
+        }]
     );
     assert_eq!(
         t.delete_points(),
-        vec![ArrangeEdit::RemovePoints { clip: clip.id, ids: vec![id] }]
+        vec![ArrangeEdit::RemovePoints {
+            clip: clip.id,
+            ids: vec![id]
+        }]
     );
-    assert!(t.point_selection().is_empty(), "deleted points are not selected");
-    assert!(t.delete_points().is_empty(), "nothing selected, nothing to remove");
+    assert!(
+        t.point_selection().is_empty(),
+        "deleted points are not selected"
+    );
+    assert!(
+        t.delete_points().is_empty(),
+        "nothing selected, nothing to remove"
+    );
 }
 
 #[test]
@@ -414,12 +535,26 @@ fn selecting_a_clip_drops_the_point_selection_from_another() {
     let block_a = clip_rect(&t.view, l.grid, &a);
     let AutomationBlock { handles, .. } = automation_block(block_a, &a);
     let (_, rect) = handles[0];
-    t.press(MouseButton::Left, rect.x + rect.width / 2.0, rect.y + rect.height / 2.0, &l, &clips, 4);
+    t.press(
+        MouseButton::Left,
+        rect.x + rect.width / 2.0,
+        rect.y + rect.height / 2.0,
+        &l,
+        &clips,
+        4,
+    );
     t.release();
     assert_eq!(t.point_selection().len(), 1);
 
     let block_b = clip_rect(&t.view, l.grid, &b);
-    t.press(MouseButton::Left, block_b.x + 30.0, block_b.y + 2.0, &l, &clips, 4);
+    t.press(
+        MouseButton::Left,
+        block_b.x + 30.0,
+        block_b.y + 2.0,
+        &l,
+        &clips,
+        4,
+    );
     t.release();
     assert!(t.point_selection().is_empty());
     assert_eq!(t.selection(), &[b.id]);

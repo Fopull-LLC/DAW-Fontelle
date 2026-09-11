@@ -118,9 +118,10 @@ pub fn generate_peaks(asset: AssetId, samples: &[f32], channels: u16) -> PeakDat
         let above: Vec<(f32, f32)> = below
             .chunks(2)
             .map(|pair| {
-                pair.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |acc, b| {
-                    (acc.0.min(b.0), acc.1.max(b.1))
-                })
+                pair.iter()
+                    .fold((f32::INFINITY, f32::NEG_INFINITY), |acc, b| {
+                        (acc.0.min(b.0), acc.1.max(b.1))
+                    })
             })
             .collect();
         levels.push(above);

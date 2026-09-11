@@ -12,7 +12,7 @@
 //! click does is checkable without a window and without a keyboard.
 
 use fontelle_app::settings::{
-    MidiInputSettings, SETTING_ROWS, Settings, SettingRow, VelocityCurveSetting,
+    MidiInputSettings, SETTING_ROWS, SettingRow, Settings, VelocityCurveSetting,
 };
 
 /// A row's value, given only the MIDI half of the settings — which is all
@@ -28,7 +28,12 @@ fn value(row: SettingRow, s: &MidiInputSettings) -> String {
 }
 
 /// `row` stepped `times` times in the direction `delta` says.
-fn stepped(mut s: MidiInputSettings, row: SettingRow, delta: i32, times: usize) -> MidiInputSettings {
+fn stepped(
+    mut s: MidiInputSettings,
+    row: SettingRow,
+    delta: i32,
+    times: usize,
+) -> MidiInputSettings {
     for _ in 0..times {
         row.nudge(&mut s, delta);
     }
@@ -224,7 +229,8 @@ fn a_settings_file_written_before_this_existed_still_reads() {
     // The field is `#[serde(default)]` for exactly this: somebody's list of
     // soundfont folders must not become unreadable because a MIDI option was
     // added underneath it.
-    let older = r#"{"format_version": 1, "soundfont_dirs": [], "projects_dir": null, "theme": null}"#;
+    let older =
+        r#"{"format_version": 1, "soundfont_dirs": [], "projects_dir": null, "theme": null}"#;
     let settings = Settings::from_json(older).expect("a version 1 file still reads");
     assert_eq!(settings.midi_input, MidiInputSettings::default());
 }
@@ -238,10 +244,16 @@ fn a_channel_reaches_the_wire_counted_from_zero() {
         channel_filter: Some(1),
         ..MidiInputSettings::default()
     };
-    assert_eq!(fontelle_midi::InputSettings::from(s).channel_filter, Some(0));
+    assert_eq!(
+        fontelle_midi::InputSettings::from(s).channel_filter,
+        Some(0)
+    );
     let s = MidiInputSettings {
         channel_filter: Some(16),
         ..MidiInputSettings::default()
     };
-    assert_eq!(fontelle_midi::InputSettings::from(s).channel_filter, Some(15));
+    assert_eq!(
+        fontelle_midi::InputSettings::from(s).channel_filter,
+        Some(15)
+    );
 }

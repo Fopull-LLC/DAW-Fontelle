@@ -463,7 +463,10 @@ fn a_curve_fills_the_block_it_belongs_to() {
     // editor. The peak is in the middle and the ends are lower.
     let (first, last) = (points[0], points[points.len() - 1]);
     let top = points.iter().map(|p| p.1).fold(f32::MAX, f32::min);
-    assert!(top < first.1, "value 1.0 must be above value 0.0: {points:?}");
+    assert!(
+        top < first.1,
+        "value 1.0 must be above value 0.0: {points:?}"
+    );
     assert!(last.1 < first.1 && last.1 > top, "0.5 is between");
 }
 
@@ -476,7 +479,10 @@ fn the_ends_of_a_curve_are_inside_the_block_rather_than_on_its_edge() {
     let block = Rect::new(0.0, 0.0, 120.0, 24.0);
     let points = automation_polyline(block, PPQN, &curve_points(&[(0, 0.0), (PPQN, 1.0)]));
     let (first, last) = (points[0], points[points.len() - 1]);
-    assert!(first.1 < block.bottom(), "the bottom point touches the edge");
+    assert!(
+        first.1 < block.bottom(),
+        "the bottom point touches the edge"
+    );
     assert!(last.1 > block.y, "the top point touches the edge");
 }
 
@@ -487,8 +493,11 @@ fn a_value_outside_the_normal_range_is_clamped_into_the_block() {
     use fontelle_ui::canvas::automation_polyline;
 
     let block = Rect::new(10.0, 10.0, 100.0, 20.0);
-    let points =
-        automation_polyline(block, PPQN, &curve_points(&[(-PPQN, -3.0), (PPQN * 9, 4.0)]));
+    let points = automation_polyline(
+        block,
+        PPQN,
+        &curve_points(&[(-PPQN, -3.0), (PPQN * 9, 4.0)]),
+    );
     for (x, y) in &points {
         assert!((block.x..=block.right()).contains(x), "x {x} escaped");
         assert!((block.y..=block.bottom()).contains(y), "y {y} escaped");
@@ -526,7 +535,11 @@ fn a_stroke_across_a_clip_cuts_it_where_it_crossed() {
         4,
     );
     assert_eq!(cuts.len(), 1, "one clip crossed");
-    assert_eq!(cuts[0], (clips[0].id, BAR * 2), "cut where the line crossed");
+    assert_eq!(
+        cuts[0],
+        (clips[0].id, BAR * 2),
+        "cut where the line crossed"
+    );
 }
 
 /// A diagonal stroke cuts each row where it crosses *that* row — which is the
@@ -580,9 +593,7 @@ fn a_press_without_a_drag_cuts_nothing() {
         fontelle_ui::canvas::timeline_tick_to_x(&v, g, BAR),
         row_middle(&v, g, 0),
     );
-    assert!(
-        fontelle_ui::canvas::clip_cuts(&v, g, &clips, at, at, SnapDivision::Bar, 4).is_empty()
-    );
+    assert!(fontelle_ui::canvas::clip_cuts(&v, g, &clips, at, at, SnapDivision::Bar, 4).is_empty());
 }
 
 /// A cut aimed at a bar the clip does not cover is refused rather than
@@ -623,7 +634,11 @@ fn a_cut_lands_on_the_grid() {
         SnapDivision::Bar,
         4,
     );
-    assert_eq!(cuts[0].1, BAR * 2, "snapped back to the bar it was aimed at");
+    assert_eq!(
+        cuts[0].1,
+        BAR * 2,
+        "snapped back to the bar it was aimed at"
+    );
 }
 
 /// The tool takes the press whatever is under it, and the cut lands on
@@ -641,7 +656,10 @@ fn the_cut_tool_emits_its_edit_when_the_button_comes_up() {
     let edits = t.press(MouseButton::Left, x, y - 20.0, &l, &clips, 4);
     assert!(edits.is_empty(), "nothing happens on the way down");
     t.drag(x, y + 20.0, &l, &clips, 4);
-    assert!(t.slice_line().is_some(), "the stroke is visible while drawn");
+    assert!(
+        t.slice_line().is_some(),
+        "the stroke is visible while drawn"
+    );
 
     let edits = t.release_over(x, y + 20.0, &l, &clips, 4);
     match edits.as_slice() {

@@ -234,7 +234,8 @@ fn a_project_with_one_of_every_effect_reads_back_the_way_it_was_saved() {
                 .iter()
                 .find(|spec| spec.id == id)
                 .unwrap();
-            slot.config.set(id, spec.min + (spec.max - spec.min) * 0.375);
+            slot.config
+                .set(id, spec.min + (spec.max - spec.min) * 0.375);
         }
     }
     let saved: Vec<EffectConfig> = project.mixer.tracks[master]

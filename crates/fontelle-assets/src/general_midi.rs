@@ -15,7 +15,10 @@
 /// wire carries seven bits) but can come out of arithmetic, so it is named
 /// rather than left to panic.
 pub fn general_midi_name(program: u8) -> &'static str {
-    GENERAL_MIDI.get(program as usize).copied().unwrap_or("Program")
+    GENERAL_MIDI
+        .get(program as usize)
+        .copied()
+        .unwrap_or("Program")
 }
 
 /// The instrument family a program belongs to — GM groups its programs in

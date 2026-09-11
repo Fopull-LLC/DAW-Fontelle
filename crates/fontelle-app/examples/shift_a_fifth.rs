@@ -20,9 +20,7 @@ const RATE: f32 = 48_000.0;
 
 fn main() -> std::io::Result<()> {
     let mut args = std::env::args().skip(1);
-    let out = args
-        .next()
-        .unwrap_or_else(|| "/tmp/tune".to_string());
+    let out = args.next().unwrap_or_else(|| "/tmp/tune".to_string());
     let out = std::path::PathBuf::from(out);
     std::fs::create_dir_all(&out)?;
 
@@ -33,12 +31,30 @@ fn main() -> std::io::Result<()> {
     fontelle_app::write_wav16(&out.join("source.wav"), &source, 1, RATE as u32)?;
 
     for (name, engine, ratio, formant, texture) in [
-        ("fifth-up", GrainEngine::Smooth, 2.0f32.powf(7.0 / 12.0), 1.0, 0.0),
-        ("fifth-up-chipmunk", GrainEngine::Smooth, 2.0f32.powf(7.0 / 12.0), 2.0f32.powf(7.0 / 12.0), 0.0),
+        (
+            "fifth-up",
+            GrainEngine::Smooth,
+            2.0f32.powf(7.0 / 12.0),
+            1.0,
+            0.0,
+        ),
+        (
+            "fifth-up-chipmunk",
+            GrainEngine::Smooth,
+            2.0f32.powf(7.0 / 12.0),
+            2.0f32.powf(7.0 / 12.0),
+            0.0,
+        ),
         ("octave-down", GrainEngine::Smooth, 0.5, 1.0, 0.0),
         ("formant-only", GrainEngine::Smooth, 1.0, 1.35, 0.0),
         ("hard", GrainEngine::Hard, 2.0f32.powf(7.0 / 12.0), 1.0, 0.8),
-        ("cheap", GrainEngine::Grain, 2.0f32.powf(7.0 / 12.0), 1.0, 0.2),
+        (
+            "cheap",
+            GrainEngine::Grain,
+            2.0f32.powf(7.0 / 12.0),
+            1.0,
+            0.2,
+        ),
         ("wire", GrainEngine::Smooth, 1.0, 1.0, 0.0),
     ] {
         let shifted = run(&source, engine, ratio, formant, texture);

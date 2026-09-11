@@ -67,8 +67,8 @@ fn node() -> NodeId {
 
 fn rig(settings: InputSettings) -> (MidiRouter, Arc<LiveMapping>, Recorder) {
     let live = Arc::new(LiveMapping::new(settings));
-    let router = MidiRouter::new(node(), 0, DeviceMapping::default())
-        .following_input(Arc::clone(&live));
+    let router =
+        MidiRouter::new(node(), 0, DeviceMapping::default()).following_input(Arc::clone(&live));
     (router, live, Recorder::default())
 }
 

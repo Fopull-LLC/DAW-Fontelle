@@ -181,10 +181,7 @@ fn each_voice_is_a_copy_of_its_own() {
     // of them in the same place — which is the claim the per-voice centres
     // exist to make true. See the module doc on `chorus.rs`.
     for voices in 1..=4 {
-        let config = ChorusConfig {
-            voices,
-            ..still()
-        };
+        let config = ChorusConfig { voices, ..still() };
         let out = both(&config, &impulse(FRAMES));
         let found = copies(&out, 0.01);
         assert_eq!(
@@ -227,7 +224,13 @@ fn more_voices_is_never_louder() {
     // quieter — copies at different delays cancel each other in places, and
     // that cancellation *is* the comb.
     let source = sine(440.0, FRAMES);
-    let one = rms(&both(&ChorusConfig { voices: 1, ..still() }, &source)[ms(50.0)..]);
+    let one = rms(&both(
+        &ChorusConfig {
+            voices: 1,
+            ..still()
+        },
+        &source,
+    )[ms(50.0)..]);
     for voices in 2..=4 {
         let many = rms(&both(&ChorusConfig { voices, ..still() }, &source)[ms(50.0)..]);
         assert!(
@@ -263,17 +266,17 @@ fn depth_bends_the_pitch_of_what_comes_out() {
         flat < 970.0,
         "the outward sweep did not flatten the pitch: {flat} Hz"
     );
-    assert!(
-        sharp > 1_030.0,
-        "the return did not sharpen it: {sharp} Hz"
-    );
+    assert!(sharp > 1_030.0, "the return did not sharpen it: {sharp} Hz");
 }
 
 #[test]
 fn no_depth_is_no_bend() {
     let out = both(&still(), &sine(1_000.0, FRAMES));
     let heard = frequency(&out[ms(100.0)..ms(200.0)]);
-    assert!((heard - 1_000.0).abs() < 2.0, "a still chorus bent to {heard} Hz");
+    assert!(
+        (heard - 1_000.0).abs() < 2.0,
+        "a still chorus bent to {heard} Hz"
+    );
 }
 
 #[test]
@@ -343,7 +346,10 @@ fn a_synced_chorus_takes_its_rate_from_the_tempo() {
     assert!((config.effective_rate_hz(120.0) - 2.0).abs() < 1e-4);
     assert!((config.effective_rate_hz(60.0) - 1.0).abs() < 1e-4);
     // And the unsynced rate is untouched by the tempo.
-    let free = ChorusConfig { sync: false, ..config };
+    let free = ChorusConfig {
+        sync: false,
+        ..config
+    };
     assert_eq!(free.effective_rate_hz(60.0), free.rate_hz);
 }
 
@@ -358,9 +364,15 @@ fn spread_is_what_makes_the_two_sides_different() {
         ..ChorusConfig::new()
     };
     let (left, right) = through(&narrow, source.clone(), source.clone());
-    assert_eq!(left, right, "a mono signal came out of a mono chorus stereo");
+    assert_eq!(
+        left, right,
+        "a mono signal came out of a mono chorus stereo"
+    );
 
-    let wide = ChorusConfig { spread: 1.0, ..narrow };
+    let wide = ChorusConfig {
+        spread: 1.0,
+        ..narrow
+    };
     let (left, right) = through(&wide, source.clone(), source.clone());
     let difference = left
         .iter()

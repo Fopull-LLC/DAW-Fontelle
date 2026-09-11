@@ -18,7 +18,7 @@ mod common;
 
 use std::path::PathBuf;
 
-use fontelle_app::{Session};
+use fontelle_app::Session;
 use fontelle_types::PPQN;
 use fontelle_ui::document::{DocumentHost, StudioHost};
 
@@ -38,7 +38,10 @@ fn scratch(name: &str) -> PathBuf {
 /// A session with a bundle — a render goes inside the project folder, so
 /// there has to be one (INVARIANT 10).
 fn a_saved_session(dir: &std::path::Path) -> Session {
-    common::a_session_in(common::a_project_with_a_clip(4, 120.0, SR), Some(dir.join("Song")))
+    common::a_session_in(
+        common::a_project_with_a_clip(4, 120.0, SR),
+        Some(dir.join("Song")),
+    )
 }
 
 #[test]

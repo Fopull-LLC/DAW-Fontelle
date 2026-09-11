@@ -90,7 +90,10 @@ fn the_waveform_fills_the_content_band_and_never_the_caption() {
 
     assert!(!columns.is_empty(), "an audio clip drew no waveform at all");
     for column in &columns {
-        assert!(!column.intersects(&header), "the waveform is over the caption");
+        assert!(
+            !column.intersects(&header),
+            "the waveform is over the caption"
+        );
         assert!(
             column.y >= content.y - 0.01 && column.bottom() <= content.bottom() + 0.01,
             "a column {column:?} escapes the content band {content:?}"
@@ -107,7 +110,11 @@ fn the_waveform_spans_the_whole_block_from_end_to_end() {
     let left = columns.iter().map(|r| r.x).fold(f32::MAX, f32::min);
     let right = columns.iter().map(|r| r.right()).fold(f32::MIN, f32::max);
     let (_, content) = clip_bands(block);
-    assert!((left - content.x).abs() < 2.0, "it starts at {left}, band at {}", content.x);
+    assert!(
+        (left - content.x).abs() < 2.0,
+        "it starts at {left}, band at {}",
+        content.x
+    );
     assert!(
         (right - content.right()).abs() < 2.0,
         "it ends at {right}, band at {}",
@@ -188,7 +195,10 @@ fn a_block_squeezed_to_nothing_draws_nothing_rather_than_negative_rectangles() {
         Rect::new(10.0, 10.0, 1.0, 40.0),
     ] {
         for column in clip_waveform(block, grid(), &c) {
-            assert!(column.width >= 0.0 && column.height >= 0.0, "{block:?} gave {column:?}");
+            assert!(
+                column.width >= 0.0 && column.height >= 0.0,
+                "{block:?} gave {column:?}"
+            );
         }
     }
 }
