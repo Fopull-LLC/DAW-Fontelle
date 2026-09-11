@@ -7,6 +7,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Line tables only: full debug info across a hundred test binaries filled
+  # the runner's disk, and the linker died of it (`ld terminated with
+  # signal 7`). A panic's backtrace still names lines.
+  CARGO_PROFILE_DEV_DEBUG: "1"
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   fmt:
@@ -40,6 +45,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # The Linux runner ships ~25 GB of toolchains this build never touches,
+      # and needs the room for its own target folder.
+      - name: Make room on the runner
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy

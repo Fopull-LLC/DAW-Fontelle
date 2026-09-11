@@ -16,6 +16,21 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-11 (evening).** Everything is committed and pushed; the
+repository is public and `v0.1.0` is tagged. Three things changed about
+how this tree is kept, all in the commits of that day: the whole tree is
+rustfmt-clean and CI checks it (format what you edit, as before — the
+difference is that the check can now pass); CI is green on Linux, Windows
+and macOS, which means **every Linux-only arm is gated** — `fontelle-host`
+stubs LV2 and the X11 editor window on the other two (`lv2_stub.rs`, and
+`gui.rs`'s second `impl`), and the engine's PipeWire capture is
+`cfg(target_os = "linux")` — so a new use of `alsa`, `livi`, `x11rb` or a
+freedesktop-only `winit` extension has to be gated too, and
+`cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc`
+is how to know before CI does; and the Linux runners need `liblilv-dev`
+and `libdbus-1-dev` (the README's apt line is the list). The Windows and
+macOS binaries are built, tested by CI, and used by nobody yet.
+
 **Updated 2026-09-11 (later).** A crash that read as "the DAW vanished" was
 `SIGXCPU`: the real-time capture thread closing its PipeWire stream and
 blowing rtkit's CPU budget in `malloc_trim` (`PROGRESS.md`'s top entry).

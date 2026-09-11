@@ -16,13 +16,26 @@ const SR: u32 = 48_000;
 const GAIN: &str = "com.fopull.fontelle.testgain";
 const SINE: &str = "com.fopull.fontelle.testsine";
 
+/// What cargo names the test plugin's `cdylib` on this platform — the scan
+/// renames it to `.clap`, which is the real rule (see
+/// `fontelle-host/tests/common`).
+fn testplug_library() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "fontelle_testplug.dll"
+    } else if cfg!(target_os = "macos") {
+        "libfontelle_testplug.dylib"
+    } else {
+        "libfontelle_testplug.so"
+    }
+}
+
 /// A folder holding nothing but the test bundle, so a scan of it is a known
 /// list rather than whatever happens to be installed on this machine.
 fn plugin_folder() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
     path.pop();
     path.pop();
-    let built = path.join("libfontelle_testplug.so");
+    let built = path.join(testplug_library());
     assert!(
         built.exists(),
         "{} is missing — run `cargo build -p fontelle-testplug`",
@@ -530,134 +543,6 @@ fn a_plugin_knob_moved_now_is_heard_without_a_rebuild() {
     assert!(loud > quiet * 2.0, "quiet {quiet}, loud {loud}");
 }
 
-// ------------------------------------------------------------------ LV2 ---
-//
-// > *"i agree with implementing LV2 for sure"*
-//
-// The same seam, the second format. An LV2 bundle in a plugin folder is
-// found, chosen in the document by its URI, opened, realised and heard —
-// through exactly the code above, because a format is an arm and not a
-// second host.
-
-const LV2_GAIN: &str = fontelle_testlv2::GAIN_URI;
-const LV2_SINE: &str = fontelle_testlv2::SINE_URI;
-
-/// A folder holding nothing but the LV2 test bundle. Its own folder rather
-/// than the CLAP one's, so the tests above that count what a CLAP-only
-/// folder holds keep counting one of each.
-fn lv2_folder() -> PathBuf {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    path.pop();
-    let built = path.join("libfontelle_testlv2.so");
-    assert!(
-        built.exists(),
-        "{} is missing — run `cargo build -p fontelle-testlv2`",
-        built.display()
-    );
-    static FOLDER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    FOLDER
-        .get_or_init(|| {
-            let folder = std::env::temp_dir().join("fontelle-app-lv2-tests");
-            let _ = std::fs::create_dir_all(&folder);
-            let staging = folder.join(format!("lv2-staging.{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&staging);
-            std::fs::create_dir_all(&staging).unwrap();
-            std::fs::copy(&built, staging.join(fontelle_testlv2::BINARY_NAME)).unwrap();
-            std::fs::write(staging.join("manifest.ttl"), fontelle_testlv2::MANIFEST_TTL).unwrap();
-            std::fs::write(staging.join("testlv2.ttl"), fontelle_testlv2::PLUGIN_TTL).unwrap();
-            let bundle = folder.join("fontelle-testlv2.lv2");
-            let _ = std::fs::remove_dir_all(&bundle);
-            std::fs::rename(&staging, &bundle).unwrap();
-            folder
-        })
-        .clone()
-}
-
-fn rack_with_both_formats() -> PluginRack {
-    let mut rack = PluginRack::new();
-    rack.search_standard_folders(false);
-    rack.set_folders(vec![plugin_folder(), lv2_folder()]);
-    rack.rescan();
-    rack
-}
-
-fn lv2(id: &str) -> PluginKey {
-    PluginKey::new(fontelle_types::PluginFormat::Lv2, id)
-}
-
-#[test]
-fn the_rack_lists_lv2_plugins_beside_clap_ones() {
-    let rack = rack_with_both_formats();
-    let keys: Vec<String> = rack
-        .scan()
-        .plugins
-        .iter()
-        .map(|p| p.key.to_string())
-        .collect();
-    assert!(keys.contains(&format!("lv2:{LV2_GAIN}")), "{keys:?}");
-    assert!(keys.contains(&format!("lv2:{LV2_SINE}")), "{keys:?}");
-    assert!(keys.contains(&format!("clap:{SINE}")), "{keys:?}");
-    // The LV2 sine and the CLAP sine twice, once per note dialect.
-    assert_eq!(rack.scan().instruments().count(), 3);
-    // Four effects: both gains, and the LV2 gain twice more — under the name
-    // that ships no editor (`fontelle_testlv2::PLAIN_URI`) and the one whose
-    // editor listens to nothing (`fontelle_testlv2::DEAF_URI`).
-    assert_eq!(rack.scan().effects().count(), 4);
-}
-
-#[test]
-fn a_channel_playing_an_lv2_plugin_is_heard_in_the_realised_graph() {
-    let (mut project, channel) = project_with_a_held_note();
-    project.channels[channel].instrument = Some(InstrumentKind::Plugin);
-    project.channels[channel].plugin = Some(PluginState::new(lv2(LV2_SINE), "Sine"));
-    let mut rack = rack_with_both_formats();
-    let out = render(&project, &mut rack);
-    assert!(peak(&out) > 0.05, "{}", peak(&out));
-}
-
-#[test]
-fn an_insert_holding_an_lv2_plugin_processes_the_bus() {
-    let (mut project, channel) = project_with_a_held_note();
-    project.channels[channel].instrument = Some(InstrumentKind::Plugin);
-    project.channels[channel].plugin = Some(PluginState::new(lv2(LV2_SINE), "Sine"));
-    let master = project.mixer.master.unwrap();
-
-    let mut rack = rack_with_both_formats();
-    let dry = peak(&render(&project, &mut rack));
-
-    let mut gain = PluginState::new(lv2(LV2_GAIN), "Gain");
-    gain.set_param(2, 0.25);
-    project.mixer.tracks[master]
-        .inserts
-        .push(EffectSlot::hosting(gain));
-    let mut rack = rack_with_both_formats();
-    let quartered = peak(&render(&project, &mut rack));
-    assert!(
-        quartered < dry * 0.5,
-        "dry {dry}, through the plugin {quartered}"
-    );
-}
-
-#[test]
-fn what_an_lv2_plugin_was_set_to_comes_back_after_a_reopen() {
-    // The document keeps the control ports; a new rack puts them back.
-    let (mut project, channel) = project_with_a_held_note();
-    project.channels[channel].instrument = Some(InstrumentKind::Plugin);
-    let mut state = PluginState::new(lv2(LV2_SINE), "Sine");
-    state.set_param(2, 0.1);
-    project.channels[channel].plugin = Some(state);
-
-    let mut rack = rack_with_both_formats();
-    let quiet = peak(&render(&project, &mut rack));
-    assert!(quiet > 0.03 && quiet < 0.12, "{quiet}");
-    let saved = rack
-        .snapshot(PluginSlot::Channel(channel))
-        .expect("a snapshot");
-    assert_eq!(saved.param(2), Some(0.1));
-    assert!(saved.blob.is_none());
-}
-
 // ----------------------------------- a plugin's sidechain, from a track (2026-09-05)
 
 /// A plugin insert keyed to another track **hears** that track.
@@ -741,264 +626,403 @@ fn a_plugin_insert_keyed_to_another_track_hears_that_track() {
     );
 }
 
-// ------------------------------- a sampler's file, saved while it plays (2026-09-05)
+// LV2 is hosted on Linux only (`fontelle-host`'s `lv2_stub.rs` says why), and
+// so is the bridge, which is a `.so` the rack dlopens. Everything that needs
+// either lives in this module.
+#[cfg(target_os = "linux")]
+mod linux_only {
+    use super::*;
 
-/// An LV2 plugin's own state is captured **while the graph is playing it**,
-/// and the silence that costs is a handful of blocks.
-///
-/// `state:interface` is on the instance, the instance is in the processor,
-/// the processor is out in a graph on another thread, and LV2 forbids
-/// calling `save` while `run` executes. So the rack asks for the processor
-/// back, the node parks it at the top of its next block, the state is read
-/// on this thread, and the processor goes back to be picked up. Ctrl+S on a
-/// playing project costs a few milliseconds of one plugin, against a
-/// sampler whose file was gone the next time the project opened.
-#[test]
-fn an_lv2_plugins_own_state_is_saved_while_the_graph_is_playing_it() {
-    let (mut project, channel) = project_with_a_held_note();
-    project.channels[channel].instrument = Some(InstrumentKind::Plugin);
-    project.channels[channel].plugin = Some(PluginState::new(lv2(LV2_SINE), "Sine"));
-    let master = project.mixer.master.unwrap();
-    project.mixer.tracks[master]
-        .inserts
-        .push(EffectSlot::hosting(PluginState::new(lv2(LV2_GAIN), "Gain")));
-    let slot = PluginSlot::Insert {
-        track: master,
-        slot: 0,
-    };
+    // ------------------------------------------------------------------ LV2 ---
+    //
+    // > *"i agree with implementing LV2 for sure"*
+    //
+    // The same seam, the second format. An LV2 bundle in a plugin folder is
+    // found, chosen in the document by its URI, opened, realised and heard —
+    // through exactly the code above, because a format is an arm and not a
+    // second host.
 
-    let mut rack = rack_with_both_formats();
-    let library = SampleLibrary::new();
-    let wiring = rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
-    let realised = realise_hosting(
-        &project,
-        &library,
-        options(),
-        &Default::default(),
-        None,
-        &Default::default(),
-        None,
-        None,
-        &wiring,
-    )
-    .expect("this project must realise");
-    let mut graph = realised.graph;
-    graph.prepare(SR as f32, fontelle_engine::BLOCK_SIZE as u32);
+    const LV2_GAIN: &str = fontelle_testlv2::GAIN_URI;
+    const LV2_SINE: &str = fontelle_testlv2::SINE_URI;
 
-    // The audio thread: one block every so often, for as long as it is told.
-    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let blocks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let audio = {
-        let (stop, blocks) = (std::sync::Arc::clone(&stop), std::sync::Arc::clone(&blocks));
-        std::thread::spawn(move || {
-            let mut at = 0i64;
-            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                let block = fontelle_engine::BLOCK_SIZE as i64;
-                graph.process_block(
-                    &[],
-                    fontelle_engine::TransportSnapshot {
-                        state: fontelle_engine::TransportState::Playing,
-                        position_sample: at,
-                        bpm: 120.0,
-                    },
-                    at..at + block,
-                );
-                at += block;
-                blocks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            graph
-        })
-    };
-    // Long enough that the node has claimed the processor and run it.
-    while blocks.load(std::sync::atomic::Ordering::Relaxed) < 20 {
-        std::thread::sleep(std::time::Duration::from_millis(2));
+    /// A folder holding nothing but the LV2 test bundle. Its own folder rather
+    /// than the CLAP one's, so the tests above that count what a CLAP-only
+    /// folder holds keep counting one of each.
+    fn lv2_folder() -> PathBuf {
+        let mut path = std::env::current_exe().unwrap();
+        path.pop();
+        path.pop();
+        let built = path.join("libfontelle_testlv2.so");
+        assert!(
+            built.exists(),
+            "{} is missing — run `cargo build -p fontelle-testlv2`",
+            built.display()
+        );
+        static FOLDER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        FOLDER
+            .get_or_init(|| {
+                let folder = std::env::temp_dir().join("fontelle-app-lv2-tests");
+                let _ = std::fs::create_dir_all(&folder);
+                let staging = folder.join(format!("lv2-staging.{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&staging);
+                std::fs::create_dir_all(&staging).unwrap();
+                std::fs::copy(&built, staging.join(fontelle_testlv2::BINARY_NAME)).unwrap();
+                std::fs::write(staging.join("manifest.ttl"), fontelle_testlv2::MANIFEST_TTL)
+                    .unwrap();
+                std::fs::write(staging.join("testlv2.ttl"), fontelle_testlv2::PLUGIN_TTL).unwrap();
+                let bundle = folder.join("fontelle-testlv2.lv2");
+                let _ = std::fs::remove_dir_all(&bundle);
+                std::fs::rename(&staging, &bundle).unwrap();
+                folder
+            })
+            .clone()
     }
 
-    let started = std::time::Instant::now();
-    let state = rack.snapshot(slot).expect("a snapshot");
-    let took = started.elapsed();
-    let blob = fontelle_types::decode_base64(state.blob.as_deref().expect("the gain keeps state"))
-        .unwrap();
-    let decoded = fontelle_host::Lv2State::decode(&blob).unwrap();
-    let runs = decoded
-        .properties
-        .iter()
-        .find(|property| property.key == fontelle_testlv2::STATE_RUNS_KEY)
-        .map(|property| i32::from_ne_bytes(property.value[..4].try_into().unwrap()))
-        .expect("the run counter");
-    assert!(
-        runs >= 20,
-        "the state was read off the running instance: {runs} runs"
-    );
-    assert!(
-        took < std::time::Duration::from_millis(500),
-        "bounded: the snapshot took {took:?}"
-    );
-
-    // And it carried on afterwards.
-    let before = blocks.load(std::sync::atomic::Ordering::Relaxed);
-    while blocks.load(std::sync::atomic::Ordering::Relaxed) < before + 20 {
-        std::thread::sleep(std::time::Duration::from_millis(2));
+    fn rack_with_both_formats() -> PluginRack {
+        let mut rack = PluginRack::new();
+        rack.search_standard_folders(false);
+        rack.set_folders(vec![plugin_folder(), lv2_folder()]);
+        rack.rescan();
+        rack
     }
-    let later = rack.snapshot(slot).expect("a second snapshot");
-    let later_blob = fontelle_types::decode_base64(later.blob.as_deref().unwrap()).unwrap();
-    let later_runs = fontelle_host::Lv2State::decode(&later_blob)
-        .unwrap()
-        .properties
-        .into_iter()
-        .find(|property| property.key == fontelle_testlv2::STATE_RUNS_KEY)
-        .map(|property| i32::from_ne_bytes(property.value[..4].try_into().unwrap()))
-        .unwrap();
-    assert!(
-        later_runs > runs,
-        "the processor went back and kept running: {runs} then {later_runs}"
-    );
 
-    stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    let graph = audio.join().unwrap();
-    drop(graph);
-}
+    fn lv2(id: &str) -> PluginKey {
+        PluginKey::new(fontelle_types::PluginFormat::Lv2, id)
+    }
 
-/// What a plugin was given comes back out of the rack even on a machine
-/// where the audio never started — the processor sits in the bay, and a
-/// snapshot simply borrows it.
-#[test]
-fn an_lv2_plugins_own_state_is_saved_when_nothing_is_playing_it() {
-    let (mut project, channel) = project_with_a_held_note();
-    project.channels[channel].instrument = Some(InstrumentKind::Plugin);
-    project.channels[channel].plugin = Some(PluginState::new(lv2(LV2_SINE), "Sine"));
-    let master = project.mixer.master.unwrap();
-    project.mixer.tracks[master]
-        .inserts
-        .push(EffectSlot::hosting(PluginState::new(lv2(LV2_GAIN), "Gain")));
-    let slot = PluginSlot::Insert {
-        track: master,
-        slot: 0,
-    };
-    let mut rack = rack_with_both_formats();
-    let _ = rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
-    let state = rack.snapshot(slot).expect("a snapshot");
-    assert!(
-        state.blob.is_some(),
-        "the blob was read off the parked processor"
-    );
-}
+    #[test]
+    fn the_rack_lists_lv2_plugins_beside_clap_ones() {
+        let rack = rack_with_both_formats();
+        let keys: Vec<String> = rack
+            .scan()
+            .plugins
+            .iter()
+            .map(|p| p.key.to_string())
+            .collect();
+        assert!(keys.contains(&format!("lv2:{LV2_GAIN}")), "{keys:?}");
+        assert!(keys.contains(&format!("lv2:{LV2_SINE}")), "{keys:?}");
+        assert!(keys.contains(&format!("clap:{SINE}")), "{keys:?}");
+        // The LV2 sine and the CLAP sine twice, once per note dialect.
+        assert_eq!(rack.scan().instruments().count(), 3);
+        // Four effects: both gains, and the LV2 gain twice more — under the name
+        // that ships no editor (`fontelle_testlv2::PLAIN_URI`) and the one whose
+        // editor listens to nothing (`fontelle_testlv2::DEAF_URI`).
+        assert_eq!(rack.scan().effects().count(), 4);
+    }
 
-// -------------------------------------------------------------- bridges ---
-//
-// > *"keeps it completely separate to the open source stuff and never gets
-// > included with it"*
-//
-// A bridge in Fontelle's own folder makes a format this build refuses into
-// one the rack hosts. `fontelle-testbridge` is one with no SDK in it; the
-// point here is that the rack finds it, and that what it offers rides the
-// same seam.
+    #[test]
+    fn a_channel_playing_an_lv2_plugin_is_heard_in_the_realised_graph() {
+        let (mut project, channel) = project_with_a_held_note();
+        project.channels[channel].instrument = Some(InstrumentKind::Plugin);
+        project.channels[channel].plugin = Some(PluginState::new(lv2(LV2_SINE), "Sine"));
+        let mut rack = rack_with_both_formats();
+        let out = render(&project, &mut rack);
+        assert!(peak(&out) > 0.05, "{}", peak(&out));
+    }
 
-fn bridge_folder() -> PathBuf {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    path.pop();
-    let built = path.join("libfontelle_testbridge.so");
-    assert!(built.exists(), "run `cargo build -p fontelle-testbridge`");
-    static FOLDER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    FOLDER
-        .get_or_init(|| {
-            let folder = std::env::temp_dir().join("fontelle-app-bridge-tests");
-            let _ = std::fs::create_dir_all(&folder);
-            let staging = folder.join(format!("staging.{}.tmp", std::process::id()));
-            if std::fs::copy(&built, &staging).is_ok() {
-                let _ = std::fs::rename(&staging, folder.join("libfontelle_testbridge.so"));
-            }
-            let _ = std::fs::remove_file(&staging);
-            // And a bundle of the bridge's format beside it, in its own
-            // plugin folder.
-            let bundle = folder
-                .join("plugins")
-                .join(format!("Test.{}", fontelle_testbridge::EXTENSION));
-            let _ = std::fs::create_dir_all(&bundle);
-            std::fs::write(
-                bundle.join(fontelle_testbridge::MANIFEST),
-                format!(
-                    "{}\n{}\n",
-                    fontelle_testbridge::GAIN_ID,
-                    fontelle_testbridge::SINE_ID
-                ),
-            )
+    #[test]
+    fn an_insert_holding_an_lv2_plugin_processes_the_bus() {
+        let (mut project, channel) = project_with_a_held_note();
+        project.channels[channel].instrument = Some(InstrumentKind::Plugin);
+        project.channels[channel].plugin = Some(PluginState::new(lv2(LV2_SINE), "Sine"));
+        let master = project.mixer.master.unwrap();
+
+        let mut rack = rack_with_both_formats();
+        let dry = peak(&render(&project, &mut rack));
+
+        let mut gain = PluginState::new(lv2(LV2_GAIN), "Gain");
+        gain.set_param(2, 0.25);
+        project.mixer.tracks[master]
+            .inserts
+            .push(EffectSlot::hosting(gain));
+        let mut rack = rack_with_both_formats();
+        let quartered = peak(&render(&project, &mut rack));
+        assert!(
+            quartered < dry * 0.5,
+            "dry {dry}, through the plugin {quartered}"
+        );
+    }
+
+    #[test]
+    fn what_an_lv2_plugin_was_set_to_comes_back_after_a_reopen() {
+        // The document keeps the control ports; a new rack puts them back.
+        let (mut project, channel) = project_with_a_held_note();
+        project.channels[channel].instrument = Some(InstrumentKind::Plugin);
+        let mut state = PluginState::new(lv2(LV2_SINE), "Sine");
+        state.set_param(2, 0.1);
+        project.channels[channel].plugin = Some(state);
+
+        let mut rack = rack_with_both_formats();
+        let quiet = peak(&render(&project, &mut rack));
+        assert!(quiet > 0.03 && quiet < 0.12, "{quiet}");
+        let saved = rack
+            .snapshot(PluginSlot::Channel(channel))
+            .expect("a snapshot");
+        assert_eq!(saved.param(2), Some(0.1));
+        assert!(saved.blob.is_none());
+    }
+
+    // ------------------------------- a sampler's file, saved while it plays (2026-09-05)
+
+    /// An LV2 plugin's own state is captured **while the graph is playing it**,
+    /// and the silence that costs is a handful of blocks.
+    ///
+    /// `state:interface` is on the instance, the instance is in the processor,
+    /// the processor is out in a graph on another thread, and LV2 forbids
+    /// calling `save` while `run` executes. So the rack asks for the processor
+    /// back, the node parks it at the top of its next block, the state is read
+    /// on this thread, and the processor goes back to be picked up. Ctrl+S on a
+    /// playing project costs a few milliseconds of one plugin, against a
+    /// sampler whose file was gone the next time the project opened.
+    #[test]
+    fn an_lv2_plugins_own_state_is_saved_while_the_graph_is_playing_it() {
+        let (mut project, channel) = project_with_a_held_note();
+        project.channels[channel].instrument = Some(InstrumentKind::Plugin);
+        project.channels[channel].plugin = Some(PluginState::new(lv2(LV2_SINE), "Sine"));
+        let master = project.mixer.master.unwrap();
+        project.mixer.tracks[master]
+            .inserts
+            .push(EffectSlot::hosting(PluginState::new(lv2(LV2_GAIN), "Gain")));
+        let slot = PluginSlot::Insert {
+            track: master,
+            slot: 0,
+        };
+
+        let mut rack = rack_with_both_formats();
+        let library = SampleLibrary::new();
+        let wiring = rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+        let realised = realise_hosting(
+            &project,
+            &library,
+            options(),
+            &Default::default(),
+            None,
+            &Default::default(),
+            None,
+            None,
+            &wiring,
+        )
+        .expect("this project must realise");
+        let mut graph = realised.graph;
+        graph.prepare(SR as f32, fontelle_engine::BLOCK_SIZE as u32);
+
+        // The audio thread: one block every so often, for as long as it is told.
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let blocks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let audio = {
+            let (stop, blocks) = (std::sync::Arc::clone(&stop), std::sync::Arc::clone(&blocks));
+            std::thread::spawn(move || {
+                let mut at = 0i64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let block = fontelle_engine::BLOCK_SIZE as i64;
+                    graph.process_block(
+                        &[],
+                        fontelle_engine::TransportSnapshot {
+                            state: fontelle_engine::TransportState::Playing,
+                            position_sample: at,
+                            bpm: 120.0,
+                        },
+                        at..at + block,
+                    );
+                    at += block;
+                    blocks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                graph
+            })
+        };
+        // Long enough that the node has claimed the processor and run it.
+        while blocks.load(std::sync::atomic::Ordering::Relaxed) < 20 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        let started = std::time::Instant::now();
+        let state = rack.snapshot(slot).expect("a snapshot");
+        let took = started.elapsed();
+        let blob =
+            fontelle_types::decode_base64(state.blob.as_deref().expect("the gain keeps state"))
+                .unwrap();
+        let decoded = fontelle_host::Lv2State::decode(&blob).unwrap();
+        let runs = decoded
+            .properties
+            .iter()
+            .find(|property| property.key == fontelle_testlv2::STATE_RUNS_KEY)
+            .map(|property| i32::from_ne_bytes(property.value[..4].try_into().unwrap()))
+            .expect("the run counter");
+        assert!(
+            runs >= 20,
+            "the state was read off the running instance: {runs} runs"
+        );
+        assert!(
+            took < std::time::Duration::from_millis(500),
+            "bounded: the snapshot took {took:?}"
+        );
+
+        // And it carried on afterwards.
+        let before = blocks.load(std::sync::atomic::Ordering::Relaxed);
+        while blocks.load(std::sync::atomic::Ordering::Relaxed) < before + 20 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let later = rack.snapshot(slot).expect("a second snapshot");
+        let later_blob = fontelle_types::decode_base64(later.blob.as_deref().unwrap()).unwrap();
+        let later_runs = fontelle_host::Lv2State::decode(&later_blob)
+            .unwrap()
+            .properties
+            .into_iter()
+            .find(|property| property.key == fontelle_testlv2::STATE_RUNS_KEY)
+            .map(|property| i32::from_ne_bytes(property.value[..4].try_into().unwrap()))
             .unwrap();
-            folder
-        })
-        .clone()
-}
+        assert!(
+            later_runs > runs,
+            "the processor went back and kept running: {runs} then {later_runs}"
+        );
 
-fn bridged_rack() -> PluginRack {
-    let mut rack = PluginRack::new();
-    rack.search_standard_folders(false);
-    rack.set_bridge_folders(vec![bridge_folder()]);
-    rack.set_folders(vec![bridge_folder().join("plugins")]);
-    rack.rescan();
-    rack
-}
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let graph = audio.join().unwrap();
+        drop(graph);
+    }
 
-#[test]
-fn a_rack_with_no_bridge_lists_no_bridged_plugins() {
-    let mut rack = PluginRack::new();
-    rack.search_standard_folders(false);
-    rack.set_bridge_folders(Vec::new());
-    rack.set_folders(vec![bridge_folder().join("plugins")]);
-    rack.rescan();
-    assert!(rack.scan().plugins.is_empty(), "{:#?}", rack.scan().plugins);
-    assert!(rack.bridges().is_empty());
-}
+    /// What a plugin was given comes back out of the rack even on a machine
+    /// where the audio never started — the processor sits in the bay, and a
+    /// snapshot simply borrows it.
+    #[test]
+    fn an_lv2_plugins_own_state_is_saved_when_nothing_is_playing_it() {
+        let (mut project, channel) = project_with_a_held_note();
+        project.channels[channel].instrument = Some(InstrumentKind::Plugin);
+        project.channels[channel].plugin = Some(PluginState::new(lv2(LV2_SINE), "Sine"));
+        let master = project.mixer.master.unwrap();
+        project.mixer.tracks[master]
+            .inserts
+            .push(EffectSlot::hosting(PluginState::new(lv2(LV2_GAIN), "Gain")));
+        let slot = PluginSlot::Insert {
+            track: master,
+            slot: 0,
+        };
+        let mut rack = rack_with_both_formats();
+        let _ = rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+        let state = rack.snapshot(slot).expect("a snapshot");
+        assert!(
+            state.blob.is_some(),
+            "the blob was read off the parked processor"
+        );
+    }
 
-#[test]
-fn a_rack_with_a_bridge_hosts_the_bridged_format() {
-    let rack = bridged_rack();
-    assert_eq!(rack.bridges(), vec!["Fontelle Test Bridge".to_string()]);
-    let keys: Vec<String> = rack
-        .scan()
-        .plugins
-        .iter()
-        .map(|p| p.key.to_string())
-        .collect();
-    assert!(
-        keys.contains(&format!("vst3:{}", fontelle_testbridge::SINE_ID)),
-        "{keys:?}"
-    );
-    assert_eq!(rack.scan().instruments().count(), 1);
-    assert_eq!(rack.scan().effects().count(), 1);
-}
+    // -------------------------------------------------------------- bridges ---
+    //
+    // > *"keeps it completely separate to the open source stuff and never gets
+    // > included with it"*
+    //
+    // A bridge in Fontelle's own folder makes a format this build refuses into
+    // one the rack hosts. `fontelle-testbridge` is one with no SDK in it; the
+    // point here is that the rack finds it, and that what it offers rides the
+    // same seam.
 
-#[test]
-fn a_channel_playing_a_bridged_plugin_is_heard_in_the_realised_graph() {
-    let (mut project, channel) = project_with_a_held_note();
-    project.channels[channel].instrument = Some(InstrumentKind::Plugin);
-    project.channels[channel].plugin = Some(PluginState::new(
-        PluginKey::new(
-            fontelle_types::PluginFormat::Vst3,
-            fontelle_testbridge::SINE_ID,
-        ),
-        "Sine",
-    ));
-    let mut rack = bridged_rack();
-    let out = render(&project, &mut rack);
-    assert!(peak(&out) > 0.05, "{}", peak(&out));
-}
+    fn bridge_folder() -> PathBuf {
+        let mut path = std::env::current_exe().unwrap();
+        path.pop();
+        path.pop();
+        let built = path.join("libfontelle_testbridge.so");
+        assert!(built.exists(), "run `cargo build -p fontelle-testbridge`");
+        static FOLDER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        FOLDER
+            .get_or_init(|| {
+                let folder = std::env::temp_dir().join("fontelle-app-bridge-tests");
+                let _ = std::fs::create_dir_all(&folder);
+                let staging = folder.join(format!("staging.{}.tmp", std::process::id()));
+                if std::fs::copy(&built, &staging).is_ok() {
+                    let _ = std::fs::rename(&staging, folder.join("libfontelle_testbridge.so"));
+                }
+                let _ = std::fs::remove_file(&staging);
+                // And a bundle of the bridge's format beside it, in its own
+                // plugin folder.
+                let bundle = folder
+                    .join("plugins")
+                    .join(format!("Test.{}", fontelle_testbridge::EXTENSION));
+                let _ = std::fs::create_dir_all(&bundle);
+                std::fs::write(
+                    bundle.join(fontelle_testbridge::MANIFEST),
+                    format!(
+                        "{}\n{}\n",
+                        fontelle_testbridge::GAIN_ID,
+                        fontelle_testbridge::SINE_ID
+                    ),
+                )
+                .unwrap();
+                folder
+            })
+            .clone()
+    }
 
-#[test]
-fn a_bridge_that_will_not_load_is_reported_rather_than_ignored() {
-    // The bridge somebody just installed is the one they most need told
-    // about — the same argument `PluginScan` makes for keeping failures.
-    let dir = std::env::temp_dir().join(format!("fontelle-broken-bridge-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("libbroken.so"), "not a library").unwrap();
-    let mut rack = PluginRack::new();
-    rack.set_bridge_folders(vec![dir.clone()]);
-    let message = rack.take_message().expect("the broken bridge is mentioned");
-    assert!(message.contains("libbroken.so"), "{message}");
-    assert!(rack.bridges().is_empty());
-    let _ = std::fs::remove_dir_all(&dir);
+    fn bridged_rack() -> PluginRack {
+        let mut rack = PluginRack::new();
+        rack.search_standard_folders(false);
+        rack.set_bridge_folders(vec![bridge_folder()]);
+        rack.set_folders(vec![bridge_folder().join("plugins")]);
+        rack.rescan();
+        rack
+    }
+
+    #[test]
+    fn a_rack_with_no_bridge_lists_no_bridged_plugins() {
+        let mut rack = PluginRack::new();
+        rack.search_standard_folders(false);
+        rack.set_bridge_folders(Vec::new());
+        rack.set_folders(vec![bridge_folder().join("plugins")]);
+        rack.rescan();
+        assert!(rack.scan().plugins.is_empty(), "{:#?}", rack.scan().plugins);
+        assert!(rack.bridges().is_empty());
+    }
+
+    #[test]
+    fn a_rack_with_a_bridge_hosts_the_bridged_format() {
+        let rack = bridged_rack();
+        assert_eq!(rack.bridges(), vec!["Fontelle Test Bridge".to_string()]);
+        let keys: Vec<String> = rack
+            .scan()
+            .plugins
+            .iter()
+            .map(|p| p.key.to_string())
+            .collect();
+        assert!(
+            keys.contains(&format!("vst3:{}", fontelle_testbridge::SINE_ID)),
+            "{keys:?}"
+        );
+        assert_eq!(rack.scan().instruments().count(), 1);
+        assert_eq!(rack.scan().effects().count(), 1);
+    }
+
+    #[test]
+    fn a_channel_playing_a_bridged_plugin_is_heard_in_the_realised_graph() {
+        let (mut project, channel) = project_with_a_held_note();
+        project.channels[channel].instrument = Some(InstrumentKind::Plugin);
+        project.channels[channel].plugin = Some(PluginState::new(
+            PluginKey::new(
+                fontelle_types::PluginFormat::Vst3,
+                fontelle_testbridge::SINE_ID,
+            ),
+            "Sine",
+        ));
+        let mut rack = bridged_rack();
+        let out = render(&project, &mut rack);
+        assert!(peak(&out) > 0.05, "{}", peak(&out));
+    }
+
+    #[test]
+    fn a_bridge_that_will_not_load_is_reported_rather_than_ignored() {
+        // The bridge somebody just installed is the one they most need told
+        // about — the same argument `PluginScan` makes for keeping failures.
+        let dir =
+            std::env::temp_dir().join(format!("fontelle-broken-bridge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("libbroken.so"), "not a library").unwrap();
+        let mut rack = PluginRack::new();
+        rack.set_bridge_folders(vec![dir.clone()]);
+        let message = rack.take_message().expect("the broken bridge is mentioned");
+        assert!(message.contains("libbroken.so"), "{message}");
+        assert!(rack.bridges().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 // -------------------------------- editors and the plugins they belong to ---
