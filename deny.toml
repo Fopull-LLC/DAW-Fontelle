@@ -21,6 +21,8 @@ allow = [
     "MPL-2.0",
     "Unicode-3.0",
     "CC0-1.0",
+    # `midly`, the MIDI file parser: public domain, same terms as CC0.
+    "Unlicense",
 ]
 confidence-threshold = 0.8
 
