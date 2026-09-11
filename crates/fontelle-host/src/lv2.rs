@@ -65,7 +65,10 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 
 use fontelle_types::{PluginFormat, PluginKey};
 use livi::event::LV2AtomSequence;
-use livi::{Features, FeaturesBuilder, PortIndex, PortType};
+use livi::{FeaturesBuilder, PortIndex, PortType};
+// The two the host keeps per bundle, named through this module so the
+// stub can stand in for them — see `lv2_stub.rs`.
+pub(crate) use livi::{Features, World};
 
 use crate::param::{HostedParam, ParamValues};
 use crate::plugin::HostError;

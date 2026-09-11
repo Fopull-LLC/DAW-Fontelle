@@ -10,6 +10,7 @@ use clack_extensions::gui::{GuiApiType, GuiConfiguration, HostGui, HostGuiImpl, 
 use clack_extensions::latency::PluginLatency;
 use clack_extensions::note_ports::{NoteDialects, NotePortInfoBuffer, PluginNotePorts};
 use clack_extensions::params::{ParamInfoBuffer, ParamInfoFlags, PluginParams};
+#[cfg(unix)]
 use clack_extensions::posix_fd::{FdFlags, HostPosixFd, HostPosixFdImpl};
 use clack_extensions::state::PluginState as PluginStateExt;
 use clack_extensions::timer::{HostTimer, HostTimerImpl, PluginTimer, TimerId};
@@ -186,6 +187,7 @@ impl HostTimerImpl for FontelleMain {
     }
 }
 
+#[cfg(unix)]
 impl HostPosixFdImpl for FontelleMain {
     fn register_fd(&mut self, fd: std::os::fd::RawFd, _flags: FdFlags) -> Result<(), HostGuiError> {
         self.pump.register_fd(fd);
@@ -219,10 +221,11 @@ impl HostHandlers for FontelleHost {
     /// The three the editor needs and nothing else — see the note on
     /// [`FontelleShared`] about keeping this set the smallest that is legal.
     fn declare_extensions(builder: &mut HostExtensions<Self>, _shared: &Self::Shared<'_>) {
-        builder
-            .register::<HostGui>()
-            .register::<HostTimer>()
-            .register::<HostPosixFd>();
+        builder.register::<HostGui>().register::<HostTimer>();
+        // A descriptor to watch is a POSIX thing; CLAP offers the extension
+        // nowhere else, and neither does this.
+        #[cfg(unix)]
+        builder.register::<HostPosixFd>();
     }
 }
 
@@ -240,10 +243,10 @@ pub struct PluginHost {
     bridges: Arc<Bridges>,
     bundles: HashMap<PathBuf, PluginEntry>,
     /// One lilv world per LV2 bundle — see `lv2` for why not one for all.
-    worlds: HashMap<PathBuf, livi::World>,
+    worlds: HashMap<PathBuf, crate::lv2::World>,
     /// The feature set every LV2 plugin of this host shares, built on the
     /// first one. It owns a worker thread, which is why there is one.
-    lv2_features: Option<Arc<livi::Features>>,
+    lv2_features: Option<Arc<crate::lv2::Features>>,
 }
 
 impl PluginHost {
@@ -1078,6 +1081,10 @@ impl HostedPlugin {
         // The window this process made and owns. It outlives the editor:
         // `close_editor` destroys the plugin's GUI first, and only then is
         // the window dropped.
+        // `c_ulong` is 64 bits on Linux, where this runs, and 32 on Windows,
+        // where the conversion is the identity and clippy would call it
+        // useless — but the code is one code, so the lint is answered here.
+        #[allow(clippy::useless_conversion)]
         let parent = clack_extensions::gui::Window::from_x11_handle(window.id().into());
         // SAFETY: `parent` names a live X11 window this process made and owns,
         // and it outlives the editor — `close_editor` destroys the plugin's
@@ -1230,12 +1237,13 @@ impl HostedPlugin {
         let Some(instance) = self.clap() else {
             return;
         };
-        let (due, ready) = instance.access_handler_mut(|main: &mut FontelleMain| {
-            (
-                main.pump.due_timers(std::time::Instant::now()),
-                main.pump.ready_fds(),
-            )
+        let due = instance.access_handler_mut(|main: &mut FontelleMain| {
+            main.pump.due_timers(std::time::Instant::now())
         });
+        #[cfg(unix)]
+        let ready = instance.access_handler_mut(|main: &mut FontelleMain| main.pump.ready_fds());
+        #[cfg(not(unix))]
+        let ready: Vec<()> = Vec::new();
         if due.is_empty() && ready.is_empty() {
             return;
         }
@@ -1244,6 +1252,7 @@ impl HostedPlugin {
                 timer.on_timer(&mut instance.plugin_handle(), TimerId(id));
             }
         }
+        #[cfg(unix)]
         if let Some(fds) = instance
             .plugin_handle()
             .get_extension::<clack_extensions::posix_fd::PluginPosixFd>()

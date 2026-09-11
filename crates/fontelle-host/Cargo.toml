@@ -1,6 +1,7 @@
 [package]
 name = "fontelle-host"
 description = "Loading and running plugins somebody else wrote (FONTELLE_TDD.md §8.4). CLAP today; the seam is format-shaped."
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -14,10 +15,16 @@ fontelle-bridge-abi = { path = "../fontelle-bridge-abi" }
 # dlopen for bridges. clack does its own for CLAP and lilv for LV2.
 libloading = "0.8"
 clack-host = "0.1.1"
+clack-extensions = { version = "0.1.1", features = ["params", "state", "audio-ports", "note-ports", "gui", "timer", "posix-fd", "latency", "clack-host", "raw-window-handle_06"] }
+
+# Linux only, all three: LV2 loads through `lilv`, a system library that lives
+# where the format does, and a plugin's editor is embedded through X11. Every
+# other platform builds the same host with those arms stubbed — see
+# `lv2_stub.rs` and `gui.rs`.
+[target.'cfg(target_os = "linux")'.dependencies]
 # The window a plugin's own editor is embedded into — see `gui`. Pure Rust
 # XCB, so nothing new is linked; `winit` already pulls the same crate in.
 x11rb = "0.13.2"
-clack-extensions = { version = "0.1.1", features = ["params", "state", "audio-ports", "note-ports", "gui", "timer", "posix-fd", "latency", "clack-host", "raw-window-handle_06"] }
 # LV2, through lilv (ISC) — see the crate docs for why the second format is an
 # arm and not a rewrite.
 livi = "0.7.5"

@@ -27,6 +27,10 @@ confidence-threshold = 0.8
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# The workspace's own crates name each other by path alone, as a workspace
+# with one version for the whole of it does; that is not the wildcard this
+# check exists to catch, and none of these crates is published.
+allow-wildcard-paths = true
 
 [advisories]
 yanked = "deny"

@@ -51,8 +51,19 @@
 mod atom;
 pub mod bridge;
 pub mod gui;
+// LV2 is loaded through `lilv`, a system library that lives on Linux where
+// the format does. Elsewhere the same module names answer "not here" — see
+// `lv2_stub.rs` for the shape and the reason.
+#[cfg(target_os = "linux")]
+pub mod lv2;
+#[cfg(not(target_os = "linux"))]
+#[path = "lv2_stub.rs"]
 pub mod lv2;
 mod lv2_state;
+#[cfg(target_os = "linux")]
+mod lv2_ui;
+#[cfg(not(target_os = "linux"))]
+#[path = "lv2_ui_stub.rs"]
 mod lv2_ui;
 mod param;
 mod plugin;

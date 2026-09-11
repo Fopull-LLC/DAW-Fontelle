@@ -45,15 +45,21 @@
 //! commonest way a first attempt at this fails. [`HostedPlugin::tick_gui`] is
 //! where both are paid, once per frame, from the loop that already runs.
 
+#[cfg(unix)]
 use std::os::fd::RawFd;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "linux")]
 use x11rb::connection::Connection;
+#[cfg(target_os = "linux")]
 use x11rb::protocol::Event as X11Event;
+#[cfg(target_os = "linux")]
 use x11rb::protocol::xproto::{
     AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, PropMode, WindowClass,
 };
+#[cfg(target_os = "linux")]
 use x11rb::rust_connection::RustConnection;
+#[cfg(target_os = "linux")]
 use x11rb::wrapper::ConnectionExt as _;
 
 /// How big a plugin's editor is.
@@ -130,6 +136,7 @@ pub struct PluginWindow {
 }
 
 /// The half of a [`PluginWindow`] that only exists when there is an X server.
+#[cfg(target_os = "linux")]
 struct OnScreen {
     connection: RustConnection,
     window: u32,
@@ -137,6 +144,15 @@ struct OnScreen {
     delete_window: u32,
 }
 
+/// The same, where there is no X server to have: a build for Windows or
+/// macOS, on which a plugin's editor is not yet shown — the embedding is a
+/// different protocol on each and nothing here speaks it. Uninhabited, so
+/// every branch on `server` below is a branch the compiler knows is not
+/// taken.
+#[cfg(not(target_os = "linux"))]
+enum OnScreen {}
+
+#[cfg(target_os = "linux")]
 impl PluginWindow {
     /// Opens a window of `size`, titled `title`, and maps it.
     pub fn open(title: &str, size: GuiSize) -> Result<Self, GuiError> {
@@ -382,6 +398,7 @@ impl PluginWindow {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for PluginWindow {
     fn drop(&mut self) {
         let Some(server) = &self.server else {
@@ -389,6 +406,54 @@ impl Drop for PluginWindow {
         };
         let _ = server.connection.destroy_window(server.window);
         let _ = server.connection.flush();
+    }
+}
+
+/// The window on a platform that cannot show one yet: it opens nowhere and
+/// says so, and the headless form — every size question, every request the
+/// plugin makes of it — behaves exactly as on Linux, so the code either side
+/// of the drawing is one code. See [`OnScreen`].
+#[cfg(not(target_os = "linux"))]
+impl PluginWindow {
+    pub fn open(_title: &str, _size: GuiSize) -> Result<Self, GuiError> {
+        Err(GuiError::NoDisplay(
+            "plugin editors are shown on Linux only in this build".to_string(),
+        ))
+    }
+
+    pub fn headless(width: u32, height: u32) -> Self {
+        Self {
+            server: None,
+            size: GuiSize { width, height }.sane(),
+        }
+    }
+
+    pub fn is_on_screen(&self) -> bool {
+        self.server.is_some()
+    }
+
+    pub fn id(&self) -> u32 {
+        0
+    }
+
+    pub fn size(&self) -> GuiSize {
+        self.size
+    }
+
+    pub fn set_title(&mut self, _title: &str) {}
+
+    pub fn resize(&mut self, size: GuiSize) {
+        self.size = size.sane();
+    }
+
+    pub fn raise(&mut self) {}
+
+    pub fn poll(&mut self) -> GuiPoll {
+        GuiPoll::default()
+    }
+
+    pub fn grab(&self) -> Option<(u16, u16, Vec<u8>)> {
+        None
     }
 }
 
@@ -409,6 +474,9 @@ pub(crate) struct HostTimer {
 pub(crate) struct GuiPump {
     pub(crate) timers: Vec<HostTimer>,
     next_timer: u32,
+    /// `posix-fd` is what its name says: a plugin on Windows has no
+    /// descriptor to register, and CLAP does not offer the extension there.
+    #[cfg(unix)]
     pub(crate) fds: Vec<RawFd>,
 }
 
@@ -439,12 +507,14 @@ impl GuiPump {
         self.timers.len() != before
     }
 
+    #[cfg(unix)]
     pub(crate) fn register_fd(&mut self, fd: RawFd) {
         if !self.fds.contains(&fd) {
             self.fds.push(fd);
         }
     }
 
+    #[cfg(unix)]
     pub(crate) fn unregister_fd(&mut self, fd: RawFd) {
         self.fds.retain(|held| *held != fd);
     }
@@ -468,6 +538,7 @@ impl GuiPump {
     ///
     /// A zero-length `poll(2)`, so this never waits: the studio's frame loop
     /// is the clock, and a host that blocked here would stop drawing.
+    #[cfg(unix)]
     pub(crate) fn ready_fds(&self) -> Vec<RawFd> {
         if self.fds.is_empty() {
             return Vec::new();
@@ -500,6 +571,7 @@ impl GuiPump {
 // One function and one struct, both fixed by POSIX, against a dependency whose
 // whole job would be to declare them. `nfds_t` is `unsigned long` on every
 // platform this builds for.
+#[cfg(unix)]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct libc_pollfd {
@@ -508,8 +580,10 @@ struct libc_pollfd {
     revents: i16,
 }
 
+#[cfg(unix)]
 const POLLIN: i16 = 0x001;
 
+#[cfg(unix)]
 unsafe extern "C" {
     fn poll(fds: *mut libc_pollfd, nfds: u64, timeout: i32) -> i32;
 }
