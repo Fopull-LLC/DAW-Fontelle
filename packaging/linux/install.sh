@@ -28,6 +28,22 @@ if [ ! -f "$here/fontelle" ]; then
     exit 1
 fi
 
+# What the binary links that a desktop may not have: lilv (LV2 hosting)
+# above all. Said before anything is copied, with the package to install,
+# because "error while loading shared libraries" after a successful install
+# reads as a broken program.
+if command -v ldd >/dev/null 2>&1; then
+    missing=$(ldd "$here/fontelle" 2>/dev/null | awk '/not found/ {print $1}')
+    if [ -n "$missing" ]; then
+        echo "install.sh: fontelle needs libraries this machine does not have:" >&2
+        echo "$missing" | sed 's/^/    /' >&2
+        echo "  Debian/Ubuntu:  sudo apt install liblilv-0-0 libasound2 libdbus-1-3" >&2
+        echo "  Fedora:         sudo dnf install lilv alsa-lib dbus-libs" >&2
+        echo "  Arch:           sudo pacman -S lilv alsa-lib dbus" >&2
+        echo "Installing anyway; it will run once they are there." >&2
+    fi
+fi
+
 mkdir -p "$bin" "$apps" "$icons"
 install -m 755 "$here/fontelle" "$bin/fontelle"
 # The menu entry names the binary by its full path: a desktop session does

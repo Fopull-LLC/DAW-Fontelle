@@ -19,7 +19,10 @@ Grab the archive for your platform from the
 - **Linux** (the platform this is built for): unpack the tarball and run
   `./install.sh`. It puts `fontelle` in `~/.local/bin` with a menu entry and an
   icon — nothing outside your home folder, no root. `./install.sh --uninstall`
-  takes it away again.
+  takes it away again. The binary needs ALSA, D-Bus and lilv (for LV2
+  plugins) from your distribution — on Debian/Ubuntu
+  `sudo apt install liblilv-0-0`, on Fedora and Arch the package is `lilv`;
+  the installer says so if anything is missing.
 - **Windows / macOS**: unpack and run `fontelle`. The binaries are unsigned for
   now, so expect the first-run warning (macOS: right-click → Open).
 

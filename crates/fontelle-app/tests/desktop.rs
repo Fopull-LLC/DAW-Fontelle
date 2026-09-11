@@ -275,12 +275,10 @@ fn a_new_entry_or_icon_is_announced_to_the_desktop_that_is_already_running() {
         .iter()
         .find(|(name, _)| *name == "update-desktop-database")
         .expect("the applications folder is re-indexed");
-    assert!(
-        db.1.iter()
-            .any(|a| a == "/home/someone/.local/share/applications"),
-        "{:?}",
-        db.1
-    );
+    // Spelled the way this platform spells a path, so the test holds on
+    // Windows too.
+    let applications = data.join("applications").to_string_lossy().into_owned();
+    assert!(db.1.iter().any(|a| *a == applications), "{:?}", db.1);
     // The icon: the theme is touched so every toolkit's watcher fires...
     assert!(names.contains(&"xdg-icon-resource"), "{names:?}");
     // ...and KDE's own loader is told outright, because KWin and the panel
