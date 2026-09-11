@@ -896,6 +896,11 @@ pub struct WindowApp {
     /// Two presses in one place, which is how an audio clip's editor is opened
     /// — see [`crate::pointer::DoubleClick`].
     double_click: crate::pointer::DoubleClick,
+    /// And the clock the pair is measured against, which is **not** the wall
+    /// clock: a press is stamped when the window reaches it, so a frame longer
+    /// than the double-click window used to eat the gesture. See
+    /// [`crate::pointer::InputClock`] — it carries the report.
+    input_clock: crate::pointer::InputClock,
     /// While an audio take is counting in: the song sample the tape starts at.
     ///
     /// A count-in is **not** a delay before the transport rolls. The transport
@@ -1413,6 +1418,7 @@ impl WindowApp {
             hover_card: None,
             hover_audio: None,
             double_click: crate::pointer::DoubleClick::default(),
+            input_clock: crate::pointer::InputClock::default(),
             count_in_until: None,
             take_from: None,
             hover_preset: None,
@@ -2520,6 +2526,10 @@ impl ApplicationHandler for WindowApp {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // The window has stopped listening, whatever this event turns out to
+        // be, and stays that way until `about_to_wait` puts it back. Every
+        // window's events, because it is one loop and one queue behind them.
+        self.input_clock.busy(std::time::Instant::now());
         // **Which window.** An editor's events are its own, and its close
         // button closes it rather than the studio — which is the single worst
         // thing this could have got wrong.
@@ -2829,6 +2839,10 @@ impl ApplicationHandler for WindowApp {
         self.tick();
         self.request_redraw_if_dirty();
         self.arm_deadline(event_loop);
+        // Everything is answered and the loop is about to wait: from here the
+        // clock a double-click is measured on runs again. Last, so the frame
+        // this pass asked for is inside the stretch it charges for.
+        self.input_clock.listening(std::time::Instant::now());
     }
 }
 
@@ -8022,8 +8036,10 @@ impl WindowApp {
         // press never does — see `Timeline::double_press` — and on an audio
         // clip it opens the editor, below. Decided once, here, so the two
         // readings cannot both happen.
-        let doubled =
-            button == MouseButton::Left && self.double_click.press(x, y, std::time::Instant::now());
+        let doubled = button == MouseButton::Left
+            && self
+                .double_click
+                .press(x, y, self.input_clock.stamp(std::time::Instant::now()));
         let edits = if doubled {
             self.timeline.double_press(
                 button,
@@ -9131,7 +9147,9 @@ impl WindowApp {
                 // click on instruments and hear how they sound"*, and *"the
                 // way to change the sound ... should be to double click it or
                 // press enter while its selected"*.
-                let doubled = self.double_click.press(x, y, std::time::Instant::now());
+                let doubled = self
+                    .double_click
+                    .press(x, y, self.input_clock.stamp(std::time::Instant::now()));
                 if !doubled {
                     self.preview_preset(index);
                     self.tree.invalidate(BROWSER);

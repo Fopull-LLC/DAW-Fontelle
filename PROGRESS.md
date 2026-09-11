@@ -29,7 +29,63 @@ over the budget its plan set. The numbers and where the time goes are at the
 end of the section below; the plan's own instruction is that this is a design
 conversation rather than a target to loosen.
 
-## 2026-09-10 (latest): why the last run went away
+## 2026-09-10 (latest): the double-click the window was too busy to hear
+
+> *"im having a weird issue where after working in a project for a while
+> double clicking just doesnt make new clips anymore like it just stops
+> letting me do that."*
+
+Everywhere on the grid, and nothing else about the window was wrong — clips
+still selected, dragged, resized and marqueed. That shape is the tell: the
+double-click is the **only** gesture in the arrangement with a *deadline*, and
+it was being measured against the wrong clock.
+
+`DoubleClick::press` was stamped with `Instant::now()` inside the press
+handler. That is not when the press happened — it is when the window **got
+to** it. winit hands the loop one batch of events, the window answers them and
+draws, and only then does it look at the queue again, so the pair was being
+timed against the window's own responsiveness. Any stretch longer than the
+400ms window turns one double-click into two single clicks, and a single click
+on empty grid makes nothing by design (that is *"single clicking in the
+arrangement no longer makes anything"*, from an earlier report). Nothing
+latches, nothing looks broken, and the gesture is simply gone.
+
+**Measured, in the real window, driving it with XTEST** — this could not have
+been found by reading, and it is the fourth time on this project that measuring
+beat eyeballing:
+
+| presses sent | handled | doubled |
+|---|---|---|
+| 80ms apart | 80.5ms apart | yes |
+| 80ms apart | **871.9ms** apart | no |
+| 80ms apart | **961.6ms** apart | no |
+| 80ms apart | 63µs apart (both drained from one batch) | yes |
+
+Two of eight double-clicks were lost in that run. A window that hitches — a
+big project's repaint, an autosave, a plugin scan — loses them all, which is
+what *"after working in a project for a while"* means.
+
+`pointer::InputClock` is the fix: **the clock a gesture with a deadline is
+measured against is the wall clock less the time the window spent not
+listening.** One frame's worth of each busy stretch is charged, because drawing
+is what a window is for and nobody clicks twice inside a frame; anything longer
+is a hitch the hand never saw, and a hand that saw nothing did not wait. The
+loop marks it in two lines — `busy` at the top of `window_event`, `listening`
+at the end of `about_to_wait` — so every event in one wake-up is stamped alike,
+which is exactly right for two presses the window drained together.
+
+What it trades: while the window is hitching badly, two deliberate clicks in
+one spot can read as a double. That is the right way round — an extra empty
+clip is one Ctrl+Z, and the gesture not working at all is what was reported.
+
+`fontelle-ui/tests/double_click.rs` is the arithmetic, six cases, and the same
+eight double-clicks in the nested X server now leave eight clips instead of
+six. **Still open, and worth a look on real hardware:** the *reason* a frame
+after a click can take most of a second. Here it is llvmpipe in a nested
+server; on Ty's machine it is something else, and it is the thing that makes
+this bug show up at all.
+
+## 2026-09-10: why the last run went away
 
 > *"for some reason the daw keeps crashing a lot but it doesnt reproduce
 > cleanly. i basically just use the daw and it crashes at a certain action but

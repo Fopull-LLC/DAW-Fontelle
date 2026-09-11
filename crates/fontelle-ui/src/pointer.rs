@@ -324,6 +324,9 @@ pub const DOUBLE_CLICK_SLOP: f32 = 4.0;
 ///
 /// A pure decision about two presses and where they were, so it is decided
 /// here rather than inside an event loop where nothing could test it.
+///
+/// The `now` it is given is [`InputClock`]'s, **not** the wall clock — read
+/// that type for why, and for the report that made it necessary.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DoubleClick {
     last: Option<(f32, f32, std::time::Instant)>,
@@ -343,5 +346,65 @@ impl DoubleClick {
         });
         self.last = if doubled { None } else { Some((x, y, now)) };
         doubled
+    }
+}
+
+/// The clock a gesture with a deadline is measured against: the wall clock,
+/// less the time the window spent not listening.
+///
+/// > *"after working in a project for a while double clicking just doesnt make
+/// > new clips anymore like it just stops letting me do that."*
+///
+/// A press waits its turn. winit hands the window a batch of events, the
+/// window answers them and draws, and only then does it look at the queue
+/// again — so `Instant::now()` inside a press handler is not when the press
+/// **happened**, it is when the window got to it. Stamping a double-click with
+/// that measures the pair against the window's own responsiveness: any stretch
+/// longer than [`DOUBLE_CLICK_WINDOW`] — a big project's repaint, an autosave,
+/// a plugin scan — turns one double-click into two single clicks, and a single
+/// click on empty grid makes nothing by design (`Timeline::press`). Driving the
+/// real window, two presses sent 80ms apart were handled 871ms apart.
+///
+/// So the time the window was not listening comes off the clock. **One frame's
+/// worth of each busy stretch is charged**, because drawing is what a window is
+/// for and nobody clicks twice inside a frame; what is longer than that is a
+/// hitch the hand never saw, and a hand that saw nothing did not wait.
+///
+/// The one thing this trades away: while the window is hitching badly, two
+/// deliberate clicks in the same spot can read as a double. That is the right
+/// way round — an extra empty clip is one Ctrl+Z, and the gesture not working
+/// at all is what was reported.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct InputClock {
+    /// How much has been taken off the clock so far — the hitches.
+    skipped: std::time::Duration,
+    /// When the window stopped listening, while it is not.
+    busy_since: Option<std::time::Instant>,
+}
+
+impl InputClock {
+    /// An event arrived: the window is busy from here until it waits again.
+    ///
+    /// Every event in a batch comes through here and the batch is **one**
+    /// stretch — the second event of a batch does not start a second one, or a
+    /// long batch would be charged a frame per event it happens to contain.
+    pub fn busy(&mut self, now: std::time::Instant) {
+        self.busy_since.get_or_insert(now);
+    }
+
+    /// Everything has been answered and the window is about to wait for input.
+    pub fn listening(&mut self, now: std::time::Instant) {
+        if let Some(since) = self.busy_since.take() {
+            let busy = now.saturating_duration_since(since);
+            self.skipped += busy.saturating_sub(crate::widget::FRAME_INTERVAL);
+        }
+    }
+
+    /// What to stamp a press with: `now` on this clock.
+    pub fn stamp(&self, now: std::time::Instant) -> std::time::Instant {
+        // `checked_sub` for the one case it can fail: a monotonic clock counts
+        // from boot, so a window opened seconds after one and hitching for
+        // longer than it has been running would run off the bottom.
+        now.checked_sub(self.skipped).unwrap_or(now)
     }
 }

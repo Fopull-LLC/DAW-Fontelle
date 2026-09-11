@@ -130,12 +130,21 @@ Ranked by what I would take first.
    "exclusive capture" blind spot the previous handoff recorded is therefore
    gone here, and `audio_inputs` putting the open device back at the head of
    the list is belt-and-braces now.
-2. **The arrangement's new gestures have not been driven in the real
-   window.** Stamping, the double-click, the fade handles and the node are
-   all canvas-level and tested there, and the window's routing is a few
-   lines (`press_timeline`, `double_press`) — but nobody has clicked them.
-   The same goes for the `1`/`2` tab keys. Cheapest check: a nested X server
+2. **The arrangement's double-click has now been driven; the rest of its
+   gestures have not.** Driving it found the bug at the top of `PROGRESS.md`
+   — the double-click was timed against the moment the window *reached* the
+   press, so a frame longer than 400ms ate the gesture — and none of the
+   canvas-level tests could have: the fault was in the event loop, not in
+   `double_press`. Stamping, the fade handles and the node are still
+   unclicked, as are the `1`/`2` tab keys. Cheapest check: a nested X server
    and the XTEST script in the `seeing-fontelles-gui` memory note.
+
+   Two things that turned up beside it and are **not** fixed. The arrangement
+   scrolls **past its last lane** into a blank grid — the view's `top_lane`
+   is not clamped — and a double-click down there still makes a clip, on the
+   last lane, off screen where nobody sees it. And `Session::draw_prefab`
+   does not clamp the row the way `ArrangeEdit::Add` does, so with a prefab
+   picked, a double-click below the last lane silently draws nothing at all.
 3. **Fade handles show only on the selected block**, and the automatic
    crossfade has no switch. Both are decisions made to ship, recorded in
    `PROGRESS.md`; the second is a departure from §15.2's "offers".
