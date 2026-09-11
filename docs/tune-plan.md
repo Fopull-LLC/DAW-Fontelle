@@ -1,7 +1,11 @@
 # Tune: the built-in pitch corrector
 
-**Status, 2026-09-08: planned, nothing built.** This is the design for the
-autotune insert, written to be followed the way `docs/flopsynth-plan.md` and
+**Status, 2026-09-09: built, to the end of this plan** — `PROGRESS.md`'s
+2026-09-09 entries ("the autotune is built, and it opens on a console" and
+"the autotune got a colour, a bank and a keyboard that is a keyboard") say
+what came of it; the plan below is kept as it was written, because it is why
+the family is shaped the way it is. As written on 2026-09-08 it began:
+*planned, nothing built.* This is the design for the autotune insert, written to be followed the way `docs/flopsynth-plan.md` and
 `docs/effects-catalogue.md` §3 were followed: tests first and confirmed
 failing, one crate at a time, in the order §12 gives. Read
 `docs/effects-catalogue.md` §1 (the twelve rules) and §5 (the recipe) before

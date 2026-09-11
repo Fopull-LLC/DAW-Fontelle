@@ -1,5 +1,10 @@
 # The road to the first usable Fontelle
 
+**Status, 2026-09-11: done.** Every phase below was built, in roughly this
+order, and the window has had a month of use since; `PROGRESS.md` is the
+account. Kept as written because it explains why the studio is shaped the
+way it is.
+
 Written 2026-08-28, after a full audit of `FONTELLE_TDD.md`, `PROGRESS.md`, and
 the code (331 tests passing, clippy/fmt clean, verified before writing this).
 This is the execution plan for the next stretch of work: everything between

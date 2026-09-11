@@ -1,3 +1,17 @@
+//! The vocabulary every crate shares (FONTELLE_TDD.md §4): identity,
+//! addressing, time, events, and the configuration types that cross the
+//! `fontelle-core` / `fontelle-model` / `fontelle-engine` boundary.
+//!
+//! It sits at the bottom of the workspace on purpose. A document holds a
+//! `ChannelId`; the sequencer stamps a `TimedEvent` with a `Sample`; a
+//! parameter is named by a `ParamAddress` that never changes once shipped
+//! (INVARIANT 7); an effect's settings are an `EffectConfig` the window
+//! edits, the model stores and the engine realises — and none of those three
+//! crates may depend on the other two, so the types they agree on live here.
+//! Everything is plain data: `serde` on what a project file carries, no
+//! behaviour beyond validation, ranges and the arithmetic that keeps two
+//! readings of a number the same.
+
 mod asset;
 mod audio_clip;
 mod base64;

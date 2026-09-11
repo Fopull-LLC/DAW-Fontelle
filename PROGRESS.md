@@ -17,16 +17,28 @@ rather than the claim.
 what is still open, and the handful of things about this machine and this
 codebase that cost real time to rediscover.
 
-**Next up: the clean-up pass for going public**, then the first release tag.
-The start menu, the updater and the release workflow are built (top entry
-below); what stands between here and a public repository is a codebase that
-reads well to a developer arriving cold — module docs where they are thin,
-the stale bits of the older `PROGRESS.md` entries that later work reversed,
-a `rustfmt.toml` or one agreed format so CI's `cargo fmt --check` can pass
-(it cannot today; see `docs/handoff.md`), and the screenshots task 0234 in
-the hub is waiting for. After that, item 12 of the M0 plan still stands —
-the real-project shakedown: somebody making an actual multi-part piece in
-the window, on hardware, end to end, and fixing what that finds.
+## Where things stand (maintained; the entries below are history)
+
+**As of 2026-09-11.** The repository is public and `v0.1.0` is the first
+release. The workspace is one version, `cargo fmt --all -- --check` passes,
+`cargo clippy --workspace --all-targets -- -D warnings` is clean on Linux
+and cross-checked for Windows, and `cargo test --workspace` is green at
+3,900-odd tests. What is built is the README's *Project status* section,
+which is kept true; what is designed and not built is the TDD's later
+milestones plus the two the README names (VST hosting through a bridge,
+plugin export). Every entry below this heading is the account of how each
+part came to be, newest first, and later work sometimes reversed an earlier
+entry's decision — where it did, the later entry says so. Read the code and
+its tests for what is true now; read the entries for why.
+
+**Next:** the real-project shakedown — somebody making an actual multi-part
+piece in the window, on hardware, end to end, and fixing what that finds
+(item 12 of the M0 plan). Two things the release surfaced that are still
+open: the Windows and macOS builds come off the release workflow but are
+not exercised by anybody yet (plugin editors are not shown there at all —
+`fontelle-host`'s `gui.rs` says why), and the report that an input set in
+a saved project does not capture until it is re-chosen has a fix that is a
+best guess (top entry below) rather than a reproduction.
 
 The one open engineering question is **Flopsynth's cost per voice**, which is
 over the budget its plan set. The numbers and where the time goes are at the

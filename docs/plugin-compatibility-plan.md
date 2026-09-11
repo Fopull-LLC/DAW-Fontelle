@@ -1,5 +1,10 @@
 # Widening what Fontelle can host
 
+**Status, 2026-09-11: the in-tree items are done** — plugin editors, LV2
+state, the bridge seam and delay compensation are built (`PROGRESS.md`,
+2026-09-05 and 2026-09-06). The VST bridge itself lives out of tree and is
+not shipped; see `PROGRESS.md` for what that means for a release.
+
 Written 2026-09-05, after the pass that made CLAP and LV2 plugins audible and
 gave them their own editors. This is the ordered plan for the four things that
 still limit what a person can actually use, and it is meant to be worked

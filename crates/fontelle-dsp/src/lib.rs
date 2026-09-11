@@ -1,3 +1,16 @@
+//! RT-safe DSP primitives (FONTELLE_TDD.md §4.1): filters, envelopes,
+//! oscillators, interpolators, meters, a pitch tracker, a PSOLA shifter, a
+//! modal resonator bank and the wavetables. No allocation after
+//! construction, no I/O, and no knowledge of the DAW above it — every type
+//! here is a building block that `fontelle-core` (the instruments) and
+//! `fontelle-fx` (the effects) assemble, and neither of those is allowed to
+//! reach past it (INVARIANT 4).
+//!
+//! The one rule that shapes everything here: a `process` call on the audio
+//! thread must be a pure function of its state and its input. Sizing,
+//! tables and coefficients that need memory are made at construction or on
+//! `prepare`, off that thread.
+
 mod drum;
 mod envelope;
 mod filter;

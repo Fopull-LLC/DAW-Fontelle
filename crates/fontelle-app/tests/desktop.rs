@@ -37,6 +37,9 @@ fn the_file_manager_is_opened_with_the_platforms_own_opener() {
 #[test]
 fn there_is_more_than_one_folder_picker_to_try() {
     let candidates = picker_candidates("Soundfont folder", None);
+    // On Linux, where which desktop this is cannot be assumed. macOS and
+    // Windows each have one dialog and it is always there.
+    #[cfg(target_os = "linux")]
     assert!(
         candidates.len() >= 2,
         "a desktop with no zenity is ordinary; there has to be a fallback"
@@ -116,7 +119,8 @@ fn a_picker_that_prints_a_path_gives_a_path_and_one_that_fails_gives_a_cancel() 
 
     // A non-zero exit is how every one of these reports "the user cancelled".
     assert_eq!(
-        run_picker(&[("/bin/false", Vec::new())]).expect("false is on every unix"),
+        // By name, not `/bin/false`: macOS keeps it in `/usr/bin`.
+        run_picker(&[("false", Vec::new())]).expect("false is on every unix"),
         None
     );
 
