@@ -20,6 +20,7 @@ pub mod activation;
 pub mod app;
 pub mod audition;
 pub mod backend;
+pub mod branding;
 pub mod canvas;
 pub mod document;
 pub mod icon;
@@ -39,7 +40,8 @@ pub use audition::{AuditionAction, Auditions, MAX_AUDITION, MIN_AUDITION};
 pub use backend::WindowBackend;
 pub use document::{
     AudioPreview, ChannelInfo, ClipInfo, ClipKind, DocumentHost, GhostFilter, GhostNote, LaneInfo,
-    LibraryEntry, PluginListing, PrefabInfo, RackTab, SendInfo, StudioHost,
+    LibraryEntry, PluginListing, PrefabInfo, RackTab, RecentProject, SendInfo, StudioHost,
+    UpdateStatus,
 };
 pub use layout::{
     DEFAULT_TIMELINE_HEIGHT, EditorKind, EditorTab, EditorTabs, MIN_EDITOR_HEIGHT,

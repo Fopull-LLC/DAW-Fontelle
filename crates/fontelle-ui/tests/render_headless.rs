@@ -174,6 +174,7 @@ fn shoot_sized(
             tooltip: None,
             menu: None,
             carry: None,
+            welcome: None,
         },
     );
     let pixels = shared
@@ -834,6 +835,7 @@ fn shoot_roll_everything(
             tooltip: None,
             menu: None,
             carry: None,
+            welcome: None,
         },
     );
     let pixels = shared
@@ -1154,6 +1156,7 @@ fn shoot_timeline_recording(
                 slice: None,
                 focused: false,
                 renaming: None,
+                rename: None,
                 point_clip: None,
                 point_selection: &[],
                 loop_range: None,
@@ -1170,6 +1173,7 @@ fn shoot_timeline_recording(
             tooltip: None,
             menu: None,
             carry: None,
+            welcome: None,
         },
     );
     let pixels = shared
@@ -1690,6 +1694,14 @@ fn the_offbeat_line_is_drawn_with_the_snap_set_to_bars() {
 /// there is something on screen for each of the three things a strip can say.
 #[allow(clippy::type_complexity)]
 fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
+    shoot_mixer_renaming(None)
+}
+
+/// The same, with strip `index` mid-rename and the field's marks — where
+/// the caret is and what is selected, in points from the name's left.
+fn shoot_mixer_renaming(
+    renaming: Option<(usize, fontelle_ui::render::RenameMarks)>,
+) -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
     use fontelle_ui::canvas::{format_gain_db, mixer_layout};
     use fontelle_ui::document::MixerStrip;
     use fontelle_ui::layout::{EditorTab, editor_tabs};
@@ -1836,7 +1848,8 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
                 hover: None,
                 active: None,
                 selected: 0,
-                renaming: None,
+                renaming: renaming.as_ref().map(|(index, _)| *index),
+                rename: renaming.as_ref().map(|(_, marks)| *marks),
                 output_label: output_label.clone(),
                 input_label: "In: none".to_string(),
                 insert_drag: None,
@@ -1854,6 +1867,7 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
             tooltip: None,
             menu: None,
             carry: None,
+            welcome: None,
         },
     );
     let pixels = shared
@@ -1863,6 +1877,71 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
         .expect("the scene must render");
     dump_sized(&pixels, "mixer", RW, RH);
     Some((pixels, theme, l))
+}
+
+#[test]
+fn a_rename_with_everything_selected_shows_the_selection_and_the_caret_where_it_is() {
+    // > *"in the mixer track when typing its not showing selection
+    // > highlights like when i do ctrl a for example"*
+    //
+    // A rename is a field like the name prompt: the selection is a wash
+    // under the text and the caret sits where the caret *is*, not at the
+    // end of the name whatever was typed.
+    use fontelle_ui::render::RenameMarks;
+    let Some((plain, theme, l)) = shoot_mixer() else {
+        return;
+    };
+    let name_width = {
+        let mut text = TextContext::new();
+        text.layout("Bass", &theme.font, None).width
+    };
+    let at = |pixels: &[u8], x: u32, y: u32| {
+        let i = ((y * RW + x) * 4) as usize;
+        Color(pixels[i..i + 4].try_into().unwrap())
+    };
+    let name = l.strips[1].name;
+    let (px, py) = (name.x as u32 + 4, (name.y + name.height / 2.0) as u32);
+
+    // Everything selected, caret at the end: the wash covers the name.
+    let (selected, ..) = shoot_mixer_renaming(Some((
+        1,
+        RenameMarks {
+            caret_x: name_width,
+            selection: Some((0.0, name_width)),
+            caret_on: true,
+        },
+    )))
+    .unwrap();
+    assert_ne!(
+        at(&selected, px, py),
+        at(&plain, px, py),
+        "the selection wash has to change the pixels under the name"
+    );
+
+    // Nothing selected, caret in its on-half at the *start*: an accent
+    // column at the name's left, and none at its end.
+    let (caret_at_start, ..) = shoot_mixer_renaming(Some((
+        1,
+        RenameMarks {
+            caret_x: 0.0,
+            selection: None,
+            caret_on: true,
+        },
+    )))
+    .unwrap();
+    let text_x = name.x as u32 + 3;
+    let column = |pixels: &[u8], x: u32| {
+        (name.y as u32 + 3..(name.y + name.height) as u32 - 3)
+            .any(|y| near(at(pixels, x, y), theme.palette.accent))
+    };
+    assert!(
+        column(&caret_at_start, text_x),
+        "a caret at the start of the name"
+    );
+    assert!(
+        !column(&caret_at_start, text_x + name_width as u32 + 1),
+        "and not at its end"
+    );
 }
 
 #[test]
@@ -2164,6 +2243,7 @@ fn shoot_rack(
                 route_menu: None,
                 route_menu_open: None,
                 renaming,
+                rename: None,
             }),
             prefabs: None,
             browser: None,
@@ -2178,6 +2258,7 @@ fn shoot_rack(
             tooltip: None,
             menu: None,
             carry: None,
+            welcome: None,
         },
     );
     let pixels = shared
@@ -3968,6 +4049,7 @@ fn shoot_carry(
                 route_menu: None,
                 route_menu_open: None,
                 renaming: None,
+                rename: None,
             }),
             prefabs: None,
             browser: None,
@@ -3988,6 +4070,7 @@ fn shoot_carry(
                 target,
                 bounds: layout.window,
             }),
+            welcome: None,
         },
     );
     let pixels = shared
@@ -4116,4 +4199,198 @@ fn a_carried_sound_over_nowhere_is_refused_where_you_can_see_it() {
         warned > 0,
         "a refused drop is drawn exactly like one that would work"
     );
+}
+
+// --- the start menu ---
+
+/// Renders the start menu over an otherwise empty window, at a size the
+/// real window opens at, so the card has room to be itself.
+fn shoot_welcome(theme: Theme, recent: &[fontelle_ui::RecentProject]) -> Option<Shot> {
+    use fontelle_ui::canvas::welcome_layout;
+    use fontelle_ui::render::WelcomeChrome;
+    let (width, height) = (1000u32, 620u32);
+    let shared = headless()?;
+    let layout = window_layout(
+        width as f32,
+        height as f32,
+        &theme.metrics,
+        DEFAULT_TIMELINE_HEIGHT,
+    );
+    let mut text = TextContext::new();
+    let title = text.layout("Fontelle", &theme.font, None);
+    let big = fontelle_ui::theme::FontTokens {
+        family: theme.font.family.clone(),
+        size: theme.font.size * 2.0,
+        line_height: theme.font.line_height,
+    };
+    let big_title = text.layout("Fontelle", &big, None);
+    let bar = transport_bar_layout(layout.transport, &theme.metrics);
+    let readout = text.layout("0", &theme.font, None);
+
+    let status = fontelle_ui::UpdateStatus::Available {
+        version: "9.9.9".to_string(),
+    };
+    let (line, button) = fontelle_ui::canvas::update_line(&status, "0.1.0");
+    let welcome = welcome_layout(
+        layout.window,
+        &theme.metrics,
+        recent.len(),
+        button.is_some(),
+    );
+    // Everything the menu will look up, shaped — the same contract the
+    // window keeps in `shape_labels`.
+    let mut labels = Labels::new();
+    for s in [
+        fontelle_ui::canvas::NEW_PROJECT_LABEL,
+        fontelle_ui::canvas::OPEN_PROJECT_LABEL,
+        fontelle_ui::canvas::RECENT_HEADING,
+        fontelle_ui::canvas::NOTHING_RECENT,
+        fontelle_ui::canvas::FOOTER_TEXT,
+        fontelle_ui::canvas::WEBSITE_LABEL,
+        fontelle_ui::canvas::REPOSITORY_LABEL,
+        "Version 0.1.0",
+        "\u{00d7}",
+    ] {
+        labels.ensure(s, &theme.font, &mut text);
+    }
+    let line = text.layout(&line, &theme.font, Some(welcome.update.width));
+    let message = text.layout("", &theme.font, None);
+    if let Some(button) = button {
+        labels.ensure(button, &theme.font, &mut text);
+    }
+    for project in recent {
+        labels.ensure(&project.name, &theme.font, &mut text);
+        labels.ensure_small(&project.path.display().to_string(), &theme.font, &mut text);
+    }
+
+    let mut scene = vello::Scene::new();
+    draw_window(
+        &mut scene,
+        &theme,
+        &layout,
+        &Chrome {
+            field: None,
+            panel_title: &title,
+            transport: TransportChrome {
+                layout: bar,
+                view: TransportView::unavailable(),
+                meters: [Meter::new(); 2],
+                readout: &readout,
+                tempo: &readout,
+                signature: &readout,
+                mode: &readout,
+                hover: None,
+                marker_sample: 0,
+                clip_mode: false,
+            },
+            roll: None,
+            rack: None,
+            prefabs: None,
+            browser: None,
+            timeline: None,
+            mixer: None,
+            tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
+            tab: fontelle_ui::layout::EditorTab::Roll,
+            hover_tab: None,
+            browser_title: "Soundfonts",
+            labels: &labels,
+            status: "",
+            tooltip: None,
+            menu: None,
+            carry: None,
+            welcome: Some(WelcomeChrome {
+                layout: welcome.clone(),
+                title: &big_title,
+                version: "Version 0.1.0",
+                update: &line,
+                update_button: button,
+                recent,
+                hover: Some(fontelle_ui::canvas::WelcomeHit::NewProject),
+                message: &message,
+            }),
+        },
+    );
+    let pixels = shared
+        .lock()
+        .expect("the shared renderer")
+        .render(&scene, width, height, theme.palette.window)
+        .expect("rendering a scene that fits in memory");
+    dump_sized(
+        &pixels,
+        &format!("{}-start-menu", theme.name),
+        width,
+        height,
+    );
+    Some(Shot {
+        pixels,
+        theme,
+        layout,
+        bar,
+        width,
+    })
+}
+
+fn recent_projects() -> Vec<fontelle_ui::RecentProject> {
+    vec![
+        fontelle_ui::RecentProject {
+            name: "Night Drive".to_string(),
+            path: "/home/someone/Music/Night Drive.fontelle".into(),
+            exists: true,
+        },
+        fontelle_ui::RecentProject {
+            name: "Moved Away".to_string(),
+            path: "/media/gone/Moved Away.fontelle".into(),
+            exists: false,
+        },
+    ]
+}
+
+#[test]
+fn the_start_menu_covers_the_studio_and_wears_the_logo_in_the_themes_ink() {
+    for theme in [Theme::dark_default(), Theme::light_default()] {
+        let Some(shot) = shoot_welcome(theme, &recent_projects()) else {
+            return;
+        };
+        let layout =
+            fontelle_ui::canvas::welcome_layout(shot.layout.window, &shot.theme.metrics, 2, true);
+        // The card is a panel on the window's ground, not the studio: the
+        // top-left corner, where the transport bar would be, is the ground.
+        assert!(near(shot.at(2, 2), shot.theme.palette.window));
+        // The logo is drawn in the theme's text colour. Somewhere in its
+        // square a pixel is that ink — the mark is a monogram, so no one
+        // point is certain, but a square with none of it is a logo not
+        // drawn.
+        let ink = shot.theme.palette.text;
+        let mut inked = 0;
+        for y in (layout.logo.y as u32)..(layout.logo.bottom() as u32) {
+            for x in (layout.logo.x as u32)..(layout.logo.right() as u32) {
+                if near(shot.at(x, y), ink) {
+                    inked += 1;
+                }
+            }
+        }
+        assert!(
+            inked > 200,
+            "{}: {inked} pixels of ink in the logo",
+            shot.theme.name
+        );
+        // The hovered button is lit in the accent.
+        let (bx, by) = (
+            layout.new_button.x as u32 + 3,
+            layout.new_button.y as u32 + 3,
+        );
+        assert!(
+            near(shot.at(bx, by), shot.theme.palette.accent),
+            "{}: the New project button under the pointer is not lit",
+            shot.theme.name
+        );
+    }
+}
+
+#[test]
+fn the_start_menu_with_nothing_recent_still_renders() {
+    let Some(shot) = shoot_welcome(Theme::dark_default(), &[]) else {
+        return;
+    };
+    assert!(near(shot.at(2, 2), shot.theme.palette.window));
 }

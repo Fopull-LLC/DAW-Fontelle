@@ -16,6 +16,7 @@ mod text_entry;
 mod timeline;
 mod tools;
 mod tune;
+mod welcome;
 
 pub use audio_clip::{
     AUDIO_ROWS, AudioControl, AudioEditorLayout, AudioField, MASTER_ROUTE, MAX_CLIP_PITCH,
@@ -68,8 +69,8 @@ pub use instrument::{
 };
 pub use menu::{
     CHOSEN_MARK, ContextMenu, MENU_TEXT_INSET, MenuEntry, NAME_CARET, STAR_WIDTH, context_menu_hit,
-    context_menu_layout, context_menu_star_hit, instrument_menu_entries, menu_matches,
-    name_prompt_entries,
+    context_menu_layout, context_menu_star_hit, input_menu_choice, input_menu_entries,
+    instrument_menu_entries, menu_matches, name_prompt_entries,
 };
 pub use preset_bar::{
     NO_PRESET, PRESET_MENU_HEADING, PresetBarHit, PresetBarLayout, PresetBarView, PresetChoice,
@@ -156,4 +157,9 @@ pub use tune::{
     VIEWPORT_HEIGHT, current_frame, key_click_mask, key_solo_mask, sung_class, target_class,
     trace_at, tune_caption, tune_hit, tune_keyboard_layout, tune_layout, tune_readout,
     tune_strings, viewport_points, viewport_rails,
+};
+pub use welcome::{
+    FOOTER_TEXT, NEW_PROJECT_LABEL, NOTHING_RECENT, OPEN_PROJECT_LABEL, RECENT_HEADING,
+    REPOSITORY_LABEL, REPOSITORY_URL, RecentRow, TITLE_HEIGHT, WEBSITE_LABEL, WEBSITE_URL,
+    WelcomeHit, WelcomeLayout, update_line, welcome_hit, welcome_layout,
 };

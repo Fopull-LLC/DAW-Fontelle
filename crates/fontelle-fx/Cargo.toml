@@ -1,6 +1,7 @@
 [package]
 name = "fontelle-fx"
 description = "Built-in effects (EQ, compressor, reverb, delay, distortion, bitcrush, repitcher, Soften, utilities). DSP only — adapted to the audio graph by fontelle-engine."
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

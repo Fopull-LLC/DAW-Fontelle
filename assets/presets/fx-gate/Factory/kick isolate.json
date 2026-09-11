@@ -1,0 +1,24 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Gate"
+  },
+  "name": "kick isolate",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Gate": {
+        "threshold_db": -28.0,
+        "hysteresis_db": 3.0,
+        "key_hp_hz": 20.0,
+        "lookahead_ms": 3.0,
+        "attack_ms": 0.1,
+        "hold_ms": 40.0,
+        "release_ms": 80.0,
+        "ratio": 100.0,
+        "range_db": -80.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

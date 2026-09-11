@@ -7,7 +7,6 @@ mod bundle;
 pub mod crashlog;
 pub mod desktop;
 pub mod flopsynth;
-pub mod tune;
 pub mod instrument;
 mod keymap;
 mod library;
@@ -17,6 +16,8 @@ mod projects;
 mod realise;
 mod session;
 pub mod settings;
+pub mod tune;
+pub mod updates;
 mod window;
 
 use std::collections::HashMap;
@@ -34,10 +35,9 @@ pub use library::{ImportedAudio, SampleLibrary};
 pub use plugins::{PluginRack, PluginSlot, PluginWiring, plugin_slots};
 pub use projects::{ProjectEntry, ProjectLibrary, ProjectOrder, unique_name};
 pub use realise::{
-    MonitorPlan, RealiseError, RealiseOptions, Realised, apply_mixer_controls, apply_send_controls,
-    KeptTaps, beat_samples, channel_nodes, realise, realise_hosting, realise_monitoring,
-    realise_previewing,
-    realise_reusing, realise_with, set_channel_patch,
+    KeptTaps, MonitorPlan, RealiseError, RealiseOptions, Realised, apply_mixer_controls,
+    apply_send_controls, beat_samples, channel_nodes, realise, realise_hosting, realise_monitoring,
+    realise_previewing, realise_reusing, realise_with, set_channel_patch,
 };
 pub use session::Session;
 pub use window::EngineHost;

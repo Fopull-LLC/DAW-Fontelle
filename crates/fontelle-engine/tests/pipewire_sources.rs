@@ -253,6 +253,7 @@ fn a_source_is_opened_through_pipewires_own_alsa_plugin_by_node_name() {
 
 /// Needs a running PipeWire with at least one source. Run by hand:
 /// `cargo test -p fontelle-engine --test pipewire_sources -- --ignored`.
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "opens a real microphone through PipeWire"]
 fn a_real_source_delivers_frames_through_pipewire() {

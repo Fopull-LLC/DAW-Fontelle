@@ -25,6 +25,49 @@ use fontelle_types::{ClipId, NoteId, PPQN, PointId, Sample, Tick};
 
 use crate::canvas::{ArrangeEdit, InstrumentView, RollEdit};
 
+/// Where the start menu's update check has got to.
+///
+/// The window draws one line from this and one button; the check itself —
+/// the network, the archive, the swap of the binary — is `fontelle-app`'s
+/// (`updates.rs`), because none of it is a picture. The window only ever
+/// asks, through [`StudioHost::update_status`], and only ever presses,
+/// through [`StudioHost::upgrade`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateStatus {
+    /// Nobody has asked yet.
+    Unchecked,
+    /// The user switched the check off in the settings. Said out loud rather
+    /// than drawn as nothing, so a menu with no update line is not mistaken
+    /// for one that is up to date.
+    Off,
+    /// The request is in flight.
+    Checking,
+    /// This build is the newest release.
+    UpToDate,
+    /// A newer release exists; the button offers it.
+    Available { version: String },
+    /// The archive is on its way down and being verified.
+    Downloading { version: String },
+    /// The new binary is in place. It runs on the next launch.
+    Installed { version: String },
+    /// Why the check or the install did not happen — no network, a checksum
+    /// that did not match, a folder that cannot be written.
+    Failed(String),
+}
+
+/// One row of the start menu's *Recent* list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentProject {
+    /// The project's name — the bundle folder's stem.
+    pub name: String,
+    /// Where it lives, drawn muted under the name.
+    pub path: std::path::PathBuf,
+    /// Whether the bundle is still there. A project that was moved or
+    /// deleted stays in the list, drawn dead, so it can be forgotten from
+    /// the menu rather than silently vanishing from it.
+    pub exists: bool,
+}
+
 pub trait DocumentHost {
     /// The notes of the clip the roll is showing.
     fn notes(&self) -> &Arena<NoteId, Note>;
@@ -1034,6 +1077,44 @@ pub trait StudioHost: DocumentHost {
         let _ = index;
         Err("this build cannot open projects".to_string())
     }
+
+    // --- the start menu ---
+
+    /// The projects this machine was last in, newest first.
+    fn recent_projects(&self) -> Vec<RecentProject> {
+        Vec::new()
+    }
+    /// Opens the bundle at `path` — a *Recent* row, or what *Open…* chose.
+    fn open_project_path(&mut self, _path: &std::path::Path) -> Result<(), String> {
+        Err("no projects here".to_string())
+    }
+    /// Takes the `index`th recent project off the list. A row drawn dead
+    /// because its bundle has gone is forgotten this way, on purpose.
+    fn forget_recent(&mut self, _index: usize) {}
+    /// Whether a projects folder has been chosen — what the start menu asks
+    /// before it asks for a name, so that *New project* on a fresh machine
+    /// picks the folder first rather than failing after the name is typed.
+    fn has_projects_dir(&self) -> bool {
+        false
+    }
+    /// Asks the desktop for a bundle folder and opens it. `Ok(false)` is a
+    /// cancelled dialog, which is not an error and not a message.
+    fn choose_and_open_project(&mut self) -> Result<bool, String> {
+        Ok(false)
+    }
+    /// Where the update check has got to — read once a frame while the menu
+    /// is up, so the line and the button follow the thread doing the work.
+    fn update_status(&self) -> UpdateStatus {
+        UpdateStatus::Unchecked
+    }
+    /// Starts the check. Asked once, when the menu opens.
+    fn check_for_updates(&mut self) {}
+    /// Downloads and installs the release the check found.
+    fn upgrade(&mut self) {}
+    /// The release's own page, for when the install cannot be done here.
+    fn open_release_page(&mut self) {}
+    /// A web address, in the desktop's browser — the footer's links.
+    fn open_url(&mut self, _url: &str) {}
 
     /// Bounces the whole project to a WAV inside its own `renders/` folder.
     /// `Ok` carries a line worth showing; `Err` does too.

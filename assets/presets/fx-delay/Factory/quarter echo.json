@@ -1,0 +1,22 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Delay"
+  },
+  "name": "quarter echo",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Delay": {
+        "time_ms": 500.0,
+        "sync": true,
+        "division": "Quarter",
+        "feedback": 0.5,
+        "damping_hz": 6000.0,
+        "drive": 0.0,
+        "ping_pong": false,
+        "mix": 0.3
+      }
+    }
+  }
+}

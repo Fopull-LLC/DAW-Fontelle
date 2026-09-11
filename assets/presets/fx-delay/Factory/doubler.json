@@ -1,0 +1,22 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Delay"
+  },
+  "name": "doubler",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Delay": {
+        "time_ms": 22.0,
+        "sync": false,
+        "division": "Eighth",
+        "feedback": 0.0,
+        "damping_hz": 12000.0,
+        "drive": 0.0,
+        "ping_pong": false,
+        "mix": 0.5
+      }
+    }
+  }
+}

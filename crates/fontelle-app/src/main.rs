@@ -72,6 +72,10 @@ struct Playback<'a> {
     /// opened, drew, and then sat there drawing nothing" is exactly the claim
     /// TDD §16.3 makes and §19 measures.
     run_for: Option<std::time::Duration>,
+    /// Open on the start menu. A plain launch does; a project named on the
+    /// command line goes straight to it, and `--no-menu` skips it too — for
+    /// the driven runs that photograph the studio.
+    welcome: bool,
 }
 
 fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), String> {
@@ -244,6 +248,7 @@ fn play_or_render(
         theme,
         soundfont_dirs,
         run_for,
+        welcome,
     } = options;
     // An offline bounce is not real-time, so it renders at export quality
     // rather than at whatever the patch asks for during playback (§7.6).
@@ -561,9 +566,9 @@ fn play_or_render(
         // the interactive life of the process begins; a bounce or a `--help`
         // has a terminal to print to and needs no file.
         let crash_dir = fontelle_app::settings::Settings::data_dir();
-        let crash_news = crash_dir.as_ref().and_then(|dir| {
-            fontelle_app::crashlog::begin(dir, Some(&project.meta.name)).message()
-        });
+        let crash_news = crash_dir
+            .as_ref()
+            .and_then(|dir| fontelle_app::crashlog::begin(dir, Some(&project.meta.name)).message());
         if let Some(said) = &crash_news {
             // On the terminal too, for whoever launched it from one.
             eprintln!("Fontelle: {said}");
@@ -678,6 +683,12 @@ fn play_or_render(
             // created and nothing is guessed at (INVARIANT 10): with no folder
             // configured the Projects tab says so and offers to pick one.
             session.open_projects();
+            // The start menu's update check, if the settings allow one. Built
+            // here rather than started: the window starts it when the menu
+            // goes up, so a launch straight into a project asks nothing.
+            if session.checks_for_updates() {
+                session = session.with_updater(fontelle_app::updates::Updater::new());
+            }
             // And what happened to the last run, in the window's own status
             // line: a crash report nobody is told about is a file nobody
             // reads.
@@ -692,6 +703,30 @@ fn play_or_render(
         // which is blocked inside the event loop until the window closes.
         let midi = hub.take().map(|hub| watch_midi_devices(hub, live_ports));
 
+        // So the compositor has a face to put on the window: Wayland finds
+        // an icon by app id and a desktop entry, and a build run from
+        // `cargo` has no entry until this writes one. See
+        // `desktop::register_desktop_entry` for the INVARIANT 10 reading.
+        #[cfg(target_os = "linux")]
+        if let (Some(data), Ok(exe)) = (
+            fontelle_app::settings::Settings::data_dir()
+                .and_then(|d| d.parent().map(std::path::Path::to_path_buf)),
+            std::env::current_exe(),
+        ) {
+            match fontelle_app::desktop::register_desktop_entry(
+                &data,
+                &exe,
+                fontelle_ui::branding::window_icon_png(),
+            ) {
+                // Written, so the desktop that is already running is told —
+                // or it keeps showing the placeholder it decided on before
+                // the files existed. See `desktop::refresh_desktop`.
+                Ok(true) => fontelle_app::desktop::refresh_desktop(&data),
+                Ok(false) => {}
+                Err(e) => println!("  ! desktop entry: {e}"),
+            }
+        }
+
         let result = fontelle_ui::run_window(fontelle_ui::WindowOptions {
             title: format!("{} — Fontelle", project.meta.name),
             panel_title: project.meta.name.clone(),
@@ -700,6 +735,8 @@ fn play_or_render(
             run_for,
             host: Some(Box::new(host)),
             document,
+            welcome,
+            version: fontelle_app::updates::CURRENT.to_string(),
         });
         // The keyboards first: closing a device releases whatever it was
         // holding, and those note-offs have to go through a callback that is
@@ -1217,8 +1254,9 @@ Fontelle — a digital audio workstation.
 
     fontelle [options] [project]
 
-With no options at all it opens the window on your last project, which is what
-it is for. Everything below is for the times it is not.
+With no options at all it opens the start menu — your recent projects, a new
+one, and whether there is a newer Fontelle — which is what it is for.
+Everything below is for the times it is not.
 
 Opening things
   --open <bundle>         Open a project bundle and play it through.
@@ -1255,15 +1293,27 @@ Where things live
   --soundfonts <dir>      Use this soundfont folder for this run.
   --theme <file>          Load a theme file.
   --light                 Use the light theme.
+  --no-menu               Skip the start menu and open straight into the
+                          studio.
+  --version               Print the version and exit.
   --help                  Print this.
 ";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // The previous binary an upgrade could not delete (`updates::install`)
+    // goes now, on the launch after — quietly, because it is housekeeping.
+    if let Ok(exe) = std::env::current_exe() {
+        fontelle_app::updates::tidy(&exe);
+    }
     // Before anything else opens a device or reads a file: somebody asking
     // what the flags are should not have a stream opened at them.
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print!("{HELP}");
+        return;
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("fontelle {}", fontelle_app::updates::CURRENT);
         return;
     }
     let opening = args.iter().any(|a| a == "--open");
@@ -1445,6 +1495,9 @@ fn main() {
         theme,
         soundfont_dirs,
         run_for: float_flag("--run-for").map(std::time::Duration::from_secs_f64),
+        // Only a plain launch: a project or a demo named on the command line
+        // is a person who has already said where they are going.
+        welcome: window && !headless_project && !blank && !args.iter().any(|a| a == "--no-menu"),
         announce: match (playing_sf2, opening) {
             (false, false) => Some(WELCOME.to_string()),
             (true, false) if midi.is_none() => Some(if blank {

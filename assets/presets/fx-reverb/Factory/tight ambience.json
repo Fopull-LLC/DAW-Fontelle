@@ -1,0 +1,20 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Reverb"
+  },
+  "name": "tight ambience",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Reverb": {
+        "size": 0.15,
+        "decay_s": 0.35,
+        "damping_hz": 8000.0,
+        "pre_delay_ms": 0.0,
+        "width": 0.6,
+        "mix": 0.15
+      }
+    }
+  }
+}

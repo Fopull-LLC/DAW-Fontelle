@@ -1,0 +1,22 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Delay"
+  },
+  "name": "triplet bounce",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Delay": {
+        "time_ms": 300.0,
+        "sync": true,
+        "division": "EighthTriplet",
+        "feedback": 0.45,
+        "damping_hz": 8000.0,
+        "drive": 0.0,
+        "ping_pong": true,
+        "mix": 0.3
+      }
+    }
+  }
+}

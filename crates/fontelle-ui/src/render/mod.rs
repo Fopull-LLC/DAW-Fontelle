@@ -95,6 +95,29 @@ pub struct Chrome<'a> {
     /// **after** the menu and the tip, because it is in hand: nothing can be
     /// on top of the thing the pointer is holding.
     pub carry: Option<CarryChrome<'a>>,
+    /// The start menu, while it is up. When it is, it is the whole picture:
+    /// the studio behind it is not drawn at all (see [`draw_welcome`]).
+    pub welcome: Option<WelcomeChrome<'a>>,
+}
+
+/// Everything the start menu draws (`canvas::welcome`).
+pub struct WelcomeChrome<'a> {
+    pub layout: crate::canvas::WelcomeLayout,
+    /// The name, shaped at twice the chrome's size — the one string in the
+    /// window not drawn from [`Labels`], because the cache has one size.
+    pub title: &'a TextLayout,
+    /// "Version 0.1.0".
+    pub version: &'a str,
+    /// What the update check has to say — [`crate::canvas::update_line`],
+    /// shaped to the column's width so a sentence wraps rather than runs.
+    pub update: &'a TextLayout,
+    /// The offer, when there is one.
+    pub update_button: Option<&'a str>,
+    pub recent: &'a [crate::document::RecentProject],
+    pub hover: Option<crate::canvas::WelcomeHit>,
+    /// What went wrong with the last press, if anything did. Shaped to the
+    /// column like the update line.
+    pub message: &'a TextLayout,
 }
 
 /// A row from the browser in mid-air, and what letting go would do with it.
@@ -146,6 +169,26 @@ pub struct RackChrome<'a> {
     /// been captured. The search box has had a caret since it was written and
     /// this is the same claim for a row's name.
     pub renaming: Option<usize>,
+    /// The field's caret and selection, while a row is being renamed.
+    pub rename: Option<RenameMarks>,
+}
+
+/// Where the caret and the selection of an inline rename are, in points
+/// from the name's left — measured by the window, since `draw_window`
+/// cannot shape. One value serves whichever panel is renaming, because only
+/// one thing is ever being renamed.
+///
+/// > *"in the mixer track when typing its not showing selection highlights
+/// > like when i do ctrl a for example"*
+///
+/// A rename used to draw one caret at the end of the name, whatever the
+/// field's caret and selection actually were; this is the field's own truth,
+/// drawn the way the name prompt draws it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RenameMarks {
+    pub caret_x: f32,
+    pub selection: Option<(f32, f32)>,
+    pub caret_on: bool,
 }
 
 /// The prefab list's contents (TDD §10.5).
@@ -157,6 +200,7 @@ pub struct PrefabChrome<'a> {
     pub hover: Option<crate::canvas::PrefabHit>,
     /// Which row is having its name typed into, so a caret is drawn on it.
     pub renaming: Option<usize>,
+    pub rename: Option<RenameMarks>,
 }
 
 /// The soundfont browser's contents (TDD §17.5).
@@ -221,6 +265,7 @@ pub struct TimelineChrome<'a> {
     /// Which lane header is having its name typed into. See
     /// [`RackChrome::renaming`].
     pub renaming: Option<usize>,
+    pub rename: Option<RenameMarks>,
     /// The selected points of an automation block, and whose they are, so
     /// they are drawn lit. See `Timeline::point_selection`.
     pub point_clip: Option<fontelle_types::ClipId>,
@@ -354,6 +399,7 @@ pub struct MixerChrome<'a> {
     /// The strip whose name is being typed over, if one is — drawn with a
     /// caret, the same as the rack's rows and the arrangement's lanes.
     pub renaming: Option<usize>,
+    pub rename: Option<RenameMarks>,
     /// What the options column's output row says — worked out where the route
     /// names are, rather than in the drawing code.
     pub output_label: String,
@@ -436,6 +482,22 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     // here too is what keeps this function the whole picture — a partial
     // redraw clips to a dirty region and never gets a fresh base.
     fill_rect(scene, layout.window, p.window);
+
+    // The start menu is the whole picture while it is up. Not an overlay on
+    // a dimmed studio: a launch shows a menu, and the studio appears when
+    // something on it is chosen.
+    if let Some(welcome) = &chrome.welcome {
+        draw_welcome(scene, theme, chrome.labels, welcome);
+        // The one thing above it: the name prompt *New project* opens.
+        draw_context_menu(
+            scene,
+            theme,
+            chrome.labels,
+            chrome.menu,
+            chrome.field.as_ref(),
+        );
+        return;
+    }
 
     draw_transport_bar(scene, theme, &chrome.transport);
 
@@ -606,6 +668,255 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     if let Some(carry) = &chrome.carry {
         draw_carry(scene, theme, chrome.labels, carry);
     }
+}
+
+/// The start menu (`canvas::welcome`).
+///
+/// One card on the window's ground. The logo is drawn in the theme's text
+/// ink (see [`crate::branding`]) so it is a mark on the light theme too; the
+/// two ways in are the biggest things on the card; the update offer is
+/// smaller, because it is an offer; and the footer says who made it, with
+/// the links in the accent so they read as links.
+pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &WelcomeChrome<'_>) {
+    use crate::canvas::{
+        FOOTER_TEXT, NEW_PROJECT_LABEL, NOTHING_RECENT, OPEN_PROJECT_LABEL, RECENT_HEADING,
+        REPOSITORY_LABEL, WEBSITE_LABEL, WelcomeHit,
+    };
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let l = &chrome.layout;
+    let hot = |hit: WelcomeHit| chrome.hover == Some(hit);
+
+    // The card.
+    fill_rect_rounded(scene, l.frame, m.corner_radius * 2.0, p.panel);
+    stroke_rect_rounded(
+        scene,
+        l.frame,
+        m.corner_radius * 2.0,
+        m.border_width,
+        p.border,
+    );
+
+    // The mark, scaled into its square.
+    let logo = crate::branding::logo(p.text);
+    if logo.width > 0 && !l.logo.is_empty() {
+        let scale = (l.logo.width / logo.width as f32) as f64;
+        scene.draw_image(
+            &logo,
+            Affine::translate((l.logo.x as f64, l.logo.y as f64)) * Affine::scale(scale),
+        );
+    }
+
+    // The name and the version beside it.
+    draw_text_clipped(
+        scene,
+        chrome.title,
+        l.title,
+        l.title.x,
+        l.title.y + (l.title.height - chrome.title.height) / 2.0,
+        p.text,
+    );
+    draw_line(scene, labels, chrome.version, l.version, p.text_muted);
+
+    // What the check found, and the offer if there is one.
+    draw_text_clipped(
+        scene,
+        chrome.update,
+        l.update,
+        l.update.x,
+        l.update.y,
+        p.text_muted,
+    );
+    if let (Some(button), Some(rect)) = (chrome.update_button, l.update_button) {
+        draw_welcome_button(scene, theme, labels, button, rect, hot(WelcomeHit::Update));
+    }
+
+    // What went wrong, in the warning ink, just above the way out of it.
+    draw_text_clipped(
+        scene,
+        chrome.message,
+        l.message,
+        l.message.x,
+        l.message.y,
+        p.meter_peak,
+    );
+
+    // The two ways in.
+    draw_welcome_button(
+        scene,
+        theme,
+        labels,
+        NEW_PROJECT_LABEL,
+        l.new_button,
+        hot(WelcomeHit::NewProject),
+    );
+    draw_welcome_button(
+        scene,
+        theme,
+        labels,
+        OPEN_PROJECT_LABEL,
+        l.open_button,
+        hot(WelcomeHit::OpenProject),
+    );
+
+    // The recent list.
+    draw_line(scene, labels, RECENT_HEADING, l.recent_heading, p.text);
+    if let Some(empty) = l.empty_recent {
+        draw_line(scene, labels, NOTHING_RECENT, empty, p.text_muted);
+    }
+    for (i, row) in l.rows.iter().enumerate() {
+        let Some(project) = chrome.recent.get(i) else {
+            break;
+        };
+        if hot(WelcomeHit::Recent(i)) || hot(WelcomeHit::Forget(i)) {
+            fill_rect_rounded(scene, row.frame, m.corner_radius, p.panel_header);
+        }
+        // A project whose bundle has gone is drawn in the muted ink, name
+        // and all: still a row, so it can be forgotten on purpose, but not
+        // one that promises to open.
+        let name_ink = if project.exists { p.text } else { p.text_muted };
+        let name_area = Rect::new(
+            row.frame.x,
+            row.frame.y,
+            (row.frame.width - row.forget.width - m.panel_padding).max(0.0),
+            row.frame.height / 2.0,
+        );
+        if let Some(text) = labels.get(&project.name) {
+            draw_text_clipped(
+                scene,
+                text,
+                name_area,
+                name_area.x + m.panel_padding,
+                name_area.y + (name_area.height - text.height) / 2.0 + 2.0,
+                name_ink,
+            );
+        }
+        let path_area = Rect::new(
+            name_area.x,
+            row.frame.y + row.frame.height / 2.0,
+            name_area.width,
+            row.frame.height / 2.0,
+        );
+        if let Some(text) = labels.get_small(&project.path.display().to_string()) {
+            draw_text_clipped(
+                scene,
+                text,
+                path_area,
+                path_area.x + m.panel_padding,
+                path_area.y + (path_area.height - text.height) / 2.0 - 2.0,
+                p.text_muted,
+            );
+        }
+        // The ×: quiet until the pointer is on it, warning-coloured then,
+        // because it forgets something.
+        let cross_ink = if hot(WelcomeHit::Forget(i)) {
+            p.meter_peak
+        } else {
+            p.text_muted
+        };
+        if let Some(text) = labels.get("\u{00d7}") {
+            draw_text_clipped(
+                scene,
+                text,
+                row.forget,
+                row.forget.x + (row.forget.width - text.width) / 2.0,
+                row.forget.y + (row.forget.height - text.height) / 2.0,
+                cross_ink,
+            );
+        }
+    }
+
+    // The footer: who made it, and where they are.
+    draw_line(scene, labels, FOOTER_TEXT, l.footer, p.text_muted);
+    draw_welcome_link(
+        scene,
+        theme,
+        labels,
+        WEBSITE_LABEL,
+        l.website,
+        hot(WelcomeHit::Website),
+    );
+    draw_welcome_link(
+        scene,
+        theme,
+        labels,
+        REPOSITORY_LABEL,
+        l.repository,
+        hot(WelcomeHit::Repository),
+    );
+}
+
+/// One shaped string, left-aligned and vertically centred in `area`.
+fn draw_line(scene: &mut Scene, labels: &Labels, caption: &str, area: Rect, ink: Color) {
+    let Some(text) = labels.get(caption) else {
+        return;
+    };
+    draw_text_clipped(
+        scene,
+        text,
+        area,
+        area.x,
+        area.y + (area.height - text.height) / 2.0,
+        ink,
+    );
+}
+
+/// A start-menu button: a plate with its label centred, lit in the accent
+/// under the pointer.
+fn draw_welcome_button(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    caption: &str,
+    area: Rect,
+    hot: bool,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let (plate, ink) = if hot {
+        (p.accent, p.window)
+    } else {
+        (p.panel_header, p.text)
+    };
+    fill_rect_rounded(scene, area, m.corner_radius, plate);
+    stroke_rect_rounded(scene, area, m.corner_radius, m.border_width, p.border);
+    let Some(text) = labels.get(caption) else {
+        return;
+    };
+    draw_text_clipped(
+        scene,
+        text,
+        area,
+        area.x + (area.width - text.width) / 2.0,
+        area.y + (area.height - text.height) / 2.0,
+        ink,
+    );
+}
+
+/// A footer link: accent ink with a rule under it, brighter under the
+/// pointer. Right-aligned in its cell, so the two sit flush with the card's
+/// edge whatever their lengths.
+fn draw_welcome_link(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    caption: &str,
+    area: Rect,
+    hot: bool,
+) {
+    let p = &theme.palette;
+    let Some(text) = labels.get(caption) else {
+        return;
+    };
+    let ink = if hot { p.text } else { p.accent };
+    let x = area.x + (area.width - text.width).max(0.0);
+    let y = area.y + (area.height - text.height) / 2.0;
+    draw_text_clipped(scene, text, area, x, y, ink);
+    fill_rect(
+        scene,
+        Rect::new(x, y + text.height - 1.0, text.width.min(area.width), 1.0),
+        ink,
+    );
 }
 
 /// The hover tip (see [`crate::tooltip`]).
@@ -2125,11 +2436,13 @@ fn draw_track_options(
         // it at all is one you cannot tell from a dead panel, and clearing the
         // name is the first thing anybody does when renaming.
         let width = labels_get(labels, &strip.name).map_or(0.0, |text| text.width);
-        draw_caret(
+        draw_rename_marks(
             scene,
-            p.accent,
+            theme,
             options.title,
-            options.title.x + 3.0 + width,
+            options.title.x + 3.0,
+            width,
+            chrome.rename,
         );
     }
 
@@ -2572,7 +2885,14 @@ fn draw_mixer_strip(
     // the name's own `if let`, so a name backspaced to nothing still has one.
     if renaming {
         let width = labels_get(labels, &strip.name).map_or(0.0, |text| text.width);
-        draw_caret(scene, p.accent, layout.name, layout.name.x + 3.0 + width);
+        draw_rename_marks(
+            scene,
+            theme,
+            layout.name,
+            layout.name.x + 3.0,
+            width,
+            chrome.rename,
+        );
     }
 
     // --- the pan: a groove, and the distance it has been moved off centre.
@@ -3615,7 +3935,14 @@ fn draw_prefabs(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Pref
                 p.text,
             );
             if chrome.renaming == Some(row.index) {
-                draw_caret(scene, p.accent, row.name, row.name.x + 7.0 + text.width);
+                draw_rename_marks(
+                    scene,
+                    theme,
+                    row.name,
+                    row.name.x + 7.0,
+                    text.width,
+                    chrome.rename,
+                );
             }
         }
         // How many places it is drawn in. In the muted ink and with no frame
@@ -3718,7 +4045,14 @@ fn draw_rack(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RackChr
                 if channel.muted { p.text_muted } else { ink },
             );
             if chrome.renaming == Some(row.index) {
-                draw_caret(scene, p.accent, row.name, row.name.x + 7.0 + text.width);
+                draw_rename_marks(
+                    scene,
+                    theme,
+                    row.name,
+                    row.name.x + 7.0,
+                    text.width,
+                    chrome.rename,
+                );
             }
         }
         for (rect, on, caption, colour) in [
@@ -4586,7 +4920,14 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
                 if muted { p.text_muted } else { p.text },
             );
             if chrome.renaming == Some(lane) {
-                draw_caret(scene, p.accent, header, header.x + 9.0 + text.width);
+                draw_rename_marks(
+                    scene,
+                    theme,
+                    header,
+                    header.x + 9.0,
+                    text.width,
+                    chrome.rename,
+                );
             }
         }
         fill_rect(
@@ -6261,6 +6602,44 @@ pub fn draw_text(scene: &mut Scene, text: &TextLayout, x: f32, y: f32, color: Co
 ///
 /// A one-pixel bar, which is what the search box has drawn since it was
 /// written — one shape for "the keyboard is going here", wherever it is.
+/// The caret and the selection of an inline rename, over the name in
+/// `field` whose text starts at `text_x`.
+///
+/// With no marks — a caller that knows a rename is on but not where the
+/// caret is — the caret goes at the end of the text, which is where it was
+/// always drawn before the marks existed. The selection is a wash over the
+/// text rather than an inversion, the same as the name prompt's, and the
+/// caret is not drawn while there is one: a caret inside a highlighted range
+/// is two claims about where typing goes.
+fn draw_rename_marks(
+    scene: &mut Scene,
+    theme: &Theme,
+    field: Rect,
+    text_x: f32,
+    text_width: f32,
+    marks: Option<RenameMarks>,
+) {
+    let p = &theme.palette;
+    let Some(marks) = marks else {
+        draw_caret(scene, p.accent, field, text_x + text_width);
+        return;
+    };
+    if let Some((from, to)) = marks.selection {
+        let wash = Rect::new(
+            text_x + from,
+            field.y + 2.0,
+            (to - from).max(0.0),
+            (field.height - 4.0).max(0.0),
+        )
+        .intersection(&field);
+        fill_rect(scene, wash, p.selection);
+        return;
+    }
+    if marks.caret_on {
+        draw_caret(scene, p.accent, field, text_x + marks.caret_x);
+    }
+}
+
 fn draw_caret(scene: &mut Scene, color: Color, field: Rect, x: f32) {
     fill_rect(
         scene,

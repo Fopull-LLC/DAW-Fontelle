@@ -1,6 +1,7 @@
 [package]
 name = "fontelle-core"
 description = "The Fontelle sampler engine. RT-safe. Constructs from a patch description, receives events, renders audio, reports parameters. Knows nothing about the DAW, files, or the GUI (INVARIANT 4)."
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

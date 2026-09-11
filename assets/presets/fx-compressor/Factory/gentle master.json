@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Compressor"
+  },
+  "name": "gentle master",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Compressor": {
+        "threshold_db": -10.0,
+        "ratio": 1.8,
+        "attack_ms": 40.0,
+        "release_ms": 400.0,
+        "knee_db": 12.0,
+        "makeup_db": 1.0,
+        "auto_makeup": false,
+        "detection": "Rms",
+        "mix": 1.0
+      }
+    }
+  }
+}

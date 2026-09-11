@@ -17,19 +17,256 @@ rather than the claim.
 what is still open, and the handful of things about this machine and this
 codebase that cost real time to rediscover.
 
-**Next up: item 12 of the M0 plan — the real-project shakedown.** Flopsynth is
-finished, bank and window and preset system (see the sections below), so
-the thing that is missing is the same thing that has been missing since §3:
-somebody making an actual multi-part piece in the window, on hardware, end to
-end, and fixing what that finds. Every gate this project has closed was closed
-by using the thing rather than by reading it.
+**Next up: the clean-up pass for going public**, then the first release tag.
+The start menu, the updater and the release workflow are built (top entry
+below); what stands between here and a public repository is a codebase that
+reads well to a developer arriving cold — module docs where they are thin,
+the stale bits of the older `PROGRESS.md` entries that later work reversed,
+a `rustfmt.toml` or one agreed format so CI's `cargo fmt --check` can pass
+(it cannot today; see `docs/handoff.md`), and the screenshots task 0234 in
+the hub is waiting for. After that, item 12 of the M0 plan still stands —
+the real-project shakedown: somebody making an actual multi-part piece in
+the window, on hardware, end to end, and fixing what that finds.
 
 The one open engineering question is **Flopsynth's cost per voice**, which is
 over the budget its plan set. The numbers and where the time goes are at the
 end of the section below; the plan's own instruction is that this is a design
 conversation rather than a target to loosen.
 
-## 2026-09-10 (latest): the audio nobody reloaded
+## 2026-09-11 (latest): the input that crashed, and the icon that stayed a *W*
+
+> *"when opening a project that has a track with an input set, you have to
+> change the input then change it back for it to actually start capturing
+> the sound otherwise it will just look like its not capturing any input at
+> all. also if you try changing the input it often just crashed for me when
+> i set it to no input briefly to try and change it back to fix the issue."*
+> — and, mid-session, *"it looks like the icon for the app is still showing
+> the yellow w"*.
+
+**The crash is found and fixed, and it is worth knowing about.** The core
+dump (`coredumpctl`, three of them from three days) is `SIGXCPU` on the
+thread `fontelle-input`, inside `snd_pcm_close` → `pw_stream_destroy` →
+`malloc_trim`. The PipeWire capture thread runs at real-time priority, and
+the kernel gives a real-time thread a budget of CPU time (`RLIMIT_RTTIME`,
+200 ms as rtkit sets it) it may spend without blocking before it kills the
+**whole process** — no panic, no message. Reading a period at a time never
+comes near it; closing the stream did, because PipeWire's teardown trims the
+whole heap, and on a process that has scanned a thousand plugins that is
+more than the budget. The rule now (`fontelle_engine::PipeWireInput`): **the
+capture thread never closes what it captured from.** It hands the stream
+and the take's ring back through its join, and `drop_off_thread` closes
+them on a thread of their own — not the window's either, so choosing an
+input costs the window nothing while the old one goes. The same close
+happened at exit, which is why the last run of the day was so often "ended
+from outside". Found by driving the real binary on the nested server and
+reading the dump; reproduced on the first try, and three cycles of *No
+input* → back, then another device and back, survive now
+(`tests/input_teardown.rs`).
+
+**Beside it, three things the same path got wrong.** A device dropped
+without `stop_input` (which is how the session let go of one) left the
+monitor ring saying a stream was open, and the idle gate kept the graph
+running for a microphone nobody had — `AudioDevice` now closes the ring
+when it drops, and `clear_audio_input` closes it for a ring handed in by
+hand. An input that would not open was remembered as failed **for the life
+of the session** and never tried again, so a device that was busy or
+suspended for the one moment the project opened stayed silent until
+somebody chose another input and chose back — which is the report's first
+sentence to the letter, and the one thing in it I could not reproduce here
+(every open path, start menu and `--open`, X11 and Wayland, captured on the
+first frame on this machine, watched through a virtual PipeWire source
+carrying a tone). The memo now expires (`INPUT_RETRY`, three seconds) and
+`adopt` clears it, so a reopened project asks again on its first frame
+(`tests/audio_input_stream.rs`). And the strip's input menu resolved the
+clicked row against a **fresh** enumeration of devices rather than the list
+the rows were drawn from — `MenuTarget::TrackInput` now carries the list,
+and `canvas::input_menu_entries`/`input_menu_choice` are the pure pair.
+
+**The icon.** The entry and the PNG were on disk and correct
+(`kiconfinder6` finds it); what nobody had done was tell the compositor and
+the panel, both started days before the files existed and both holding an
+"icon not found" answer. `desktop::refresh_desktop` runs the desktop's own
+notices after anything is written — `update-desktop-database`,
+`xdg-icon-resource forceupdate`, and KDE's `org.kde.KIconLoader.iconChanged`
+over D-Bus, which is the one that clears KWin's and Plasma's caches — and I
+ran the three once by hand on this machine for the session already up.
+Whether that was enough for Ty's desktop is his to say; the alternative is a
+log out.
+
+Two things to know when reading this later. Ty's two projects with inputs
+both have the mic strip **muted**, and the strip meter is post-mute, so a
+muted strip shows nothing whether or not the stream is open. And the
+`fontelle-input` thread's real-time promotion is what makes the RT budget
+apply to it — worth remembering for anything else that thread is ever asked
+to do.
+
+## 2026-09-11: three reports from the start menu's first day
+
+> *"right now when making a new project from the start screen it doesnt
+> prompt me to name it first before making it it just names it untitled
+> automatically. fix this please. also in the mixer track when typing its not
+> showing selection highlights like when i do ctrl a for example. fix that
+> as well please also. please also ensure that every built in effect plugin
+> has a bunch of presets that will be generally useful in a wide variety of
+> situations especially the compressor which im noticing has no presets
+> right now."*
+
+**New project asks for a name.** The start menu's *New project* used to be
+the blank project under the menu, named on first save; now it opens the same
+prompt the Projects tab's *New* does (`ask_for_a_name`), and the prompt's
+Enter is what makes and opens the project — after which the menu comes down.
+Two consequences the window had to learn: the prompt is a menu *over* the
+start menu, so `press` gives an open menu the press before the menu's guard
+and `key` gives `menu_filter_key` the keys first, and `draw_window` draws the
+context menu (with its field) on top of the card. A machine with no projects
+folder yet is asked for the folder *before* the name (`has_projects_dir`, a
+new `StudioHost` question), because a name typed and then refused for want
+of a folder is the worse order; a refusal goes on the card's message line.
+Also, while here: the **app id**. Wayland has no per-window icon, only an
+app id the compositor matches against a `.desktop` entry, so the window
+announces `com.fopull.Fontelle` (`WM_CLASS` on X11) and on Linux `main`
+writes that entry and the icon under `~/.local/share` when they are missing
+or stale (`desktop::register_desktop_entry`, tested against a scratch data
+dir). That is a write outside Fontelle's own directories and is documented
+as a deliberate INVARIANT 10 reading; without it every `cargo run` wears
+KDE's placeholder, which is what was reported.
+
+**A rename shows its selection and its caret.** Every inline rename — a rack
+row, a prefab, a lane header, a mixer strip, the track-options title — drew
+one caret at the *end* of the name whatever the field's caret and selection
+actually were; Ctrl+A changed nothing on screen. The window now measures the
+`rename_entry`'s caret and selection into `RenameMarks` in `shape_labels`
+(the same measurement `field_widths` is for the prompt) and hands it to the
+four panel chromes; `draw_rename_marks` paints the selection as the prompt's
+wash and the caret where it is, blinking, and not at all while there is a
+selection. Test: `render_headless`'s
+`a_rename_with_everything_selected_shows_the_selection_and_the_caret_where_it_is`,
+and the real mixer strip on the nested server.
+
+**Every built-in effect ships a bank.** Eight of twelve had none. The
+recipes are `fontelle-types/src/effect_presets.rs` — compressor 14, gate 10,
+chorus 10, delay 12, reverb 11, filter 12, EQ 14, utility 11 — named by the
+job (*vocal leveler*, *drum bus glue*, *ping pong dotted*, *cathedral*,
+*auto wah*, *mud cut*, *mono below 120*) rather than the setting, with the
+extreme end present in each. `tests/effect_presets.rs` holds every one
+inside its parameters' own ranges, apart from the wire and from each other;
+`fontelle-fx/tests/compressor.rs` proves each compressor preset reduces gain
+on a tone ten decibels over its threshold; `effect_editor.rs` reads them
+back through the bank the window uses, so a recipe the export tool was not
+taught would fail there. The export tool learned the eight, and
+`assets/presets/fx-*/Factory/` holds the 94 files. `preset_bank.rs`'s
+"decision taken for every one" test recorded the old decision (three on
+purpose, five owed); it now records this one.
+
+## 2026-09-11: a start menu, a version, and a way to the next one
+
+> *"i want to start wrapping this into a clean software package that is able
+> to manage versions, so you open it it checks for updates and you have the
+> option to upgrade if theres an update, or open an existing project from
+> your recent projects or make a new project. this will be the start menu of
+> the software which is just the panel that helps you get where you need to
+> go, has the logo, and should also have a section somewhere marking it as a
+> open source product of Fopull LLC."*
+
+Four things, and they are one feature: a program cannot offer an upgrade
+without knowing its own version, cannot install one without a release to
+install, and has nowhere to say any of it without a screen that comes before
+the studio.
+
+**The version is the workspace's.** `[workspace.package] version = "0.1.0"`
+and every crate inherits it (`version.workspace = true`), so the number in
+the window, the tag on a release and the comparison the updater makes are
+one number. `fontelle --version` prints it. A stale `version = "0.0.0"` pin
+in `fontelle-assets`'s path dependencies had to go for the resolver to
+accept the change.
+
+**The start menu** (`fontelle-ui/src/canvas/welcome.rs`, drawn by
+`render::draw_welcome`, driven from `WindowApp`) is one card on the window's
+ground, drawn *instead of* the studio until something on it is chosen — not
+an overlay on a dimmed studio, because a launch shows a menu and the studio
+appears when you pick. Left column: the logo with the name and version
+beside it, what the update check found and its offer, and the two ways in —
+*New project*, which is the blank project under the menu and is named the
+first time it is saved, as it always was; *Open a project…*, the desktop's
+folder picker. Right column: **recent projects**, name over path, one × per
+row. Footer: *Open source software by Fopull LLC*, `fopull.com`, *Source on
+GitHub*. Escape is New project. `--no-menu` skips it, as does any project or
+demo named on the command line — a person who has said where they are going.
+Like every canvas it is a pure view-model: `welcome_layout`, `welcome_hit`,
+`WelcomeHit` back to the window, and the window asks the host through six
+new `StudioHost` methods with default bodies. Two sentences on it — the
+update line and the message line — are shaped **with a width** by the
+window, not through `Labels`, because "could not check for updates — no
+connection" wraps and a label does not.
+
+**Recent projects live in the settings file** (`recent_projects`, newest
+first, one per path, capped at `RECENT_PROJECTS` = 8), because which files
+on *this* disk were last touched is a fact about the machine. Every way a
+bundle path enters a session — `adopt`, `save_as`, so open, new, open-by-
+path — goes through `Session::remember_project`. A project whose bundle has
+gone is listed **dead**, not dropped: the person who moved it is the one to
+say so, and the × is how. The settings format is 6; `check_for_updates`
+came in beside the list, on by default, with a row on the Settings tab
+("Updates › Check at launch"), because a DAW that talks to the network at
+every launch is something some people rightly switch off — and the menu
+then *says* the check is off rather than drawing nothing.
+
+**The updater** (`fontelle-app/src/updates.rs`) asks GitHub's
+`releases/latest` on a thread of its own and reports through
+`UpdateStatus`, which the window polls once a pass. The transfer is
+`curl`'s, for the reason the folder picker is the desktop's: an HTTP client
+with TLS is thirty crates for two requests a launch, and `curl` is on every
+Linux, macOS and Windows 10. What curl says is turned into a sentence
+(`plain_curl_error`): a 404 is *no release has been published yet*, which
+is what every launch will meet until the first tag. **Install update**
+downloads the archive named for this target, fetches `SHA256SUMS`, refuses
+a download whose digest does not match (`sha2`, the one new crate), and
+swaps the binary by rename — old aside, new in, old removed where the
+platform allows and `tidy`'d on the next launch where it does not. A folder
+the user cannot write is an error with the path in it and the button
+becomes *Release page*. The whole path — JSON, naming, checksum, swap — runs
+in `tests/updates.rs` against an injected fetcher and a scratch folder,
+including a tampered archive that must leave the binary alone.
+
+**The release workflow** (`.github/workflows/release.yml`) is the other half
+of that contract: on a `v*` tag it refuses one that does not match the
+workspace version, builds `fontelle-<version>-<target>.tar.gz` (`.zip` on
+Windows) for four targets, and publishes them with `SHA256SUMS`. The Linux
+tarball carries `packaging/linux/` — a `.desktop` entry, the icon, and
+`install.sh`, which installs into `~/.local` with no root and uninstalls
+with `--uninstall`. The updater accepts the binary at the top of an archive
+or inside its one folder, so a tarball can be a proper folder rather than a
+bomb.
+
+**The mark** is `assets/branding/fontelle-logo.png` (Ty's, 2026-09-11),
+with a 512 for the menu and a plated 256 for the window icon, both compiled
+in (`fontelle-ui/src/branding.rs`). The logo is white on nothing and is
+**tinted** to the theme's ink at decode, because on the light theme white on
+off-white is no mark at all; the icon is the mark on the dark panel colour,
+because a taskbar has its own ground. `png` moved from a dev-dependency to a
+real one for the two decodes.
+
+**Looked at**, on the nested X server and in the headless dump for both
+themes: the check runs and reports honestly, hover lights the buttons, a
+dead row is muted, its × forgets it and the settings file agrees, a live row
+opens its project and the menu comes down on the studio with the title bar
+*and* the editor panel's header saying the project's name (the header used
+to keep the launch-time name; `refresh_title` now reshapes it).
+
+**On the way:** two lints a newer clippy raised in files this did not
+otherwise touch (`drum_kit.rs`'s needless struct updates,
+`flopsynth_shows_off.rs`'s type) were fixed so `-D warnings` stays the bar.
+
+**Not done, and deliberate.** No release has been cut and the repository is
+still private — both are Ty's gates (hub PROTOCOL §5). Until the first tag
+the menu reads *no release has been published yet*, which is true. The
+product page on fopull.com is task **0234** in the `floptle-platform` hub,
+addressed to agent W with the fact sheet and the branding; this repo's
+`CLAUDE.md` now wires future sessions to that hub as agent **D**. The
+clean-up pass for going public — the README is refreshed, the rest is not —
+is the next chunk.
+
+## 2026-09-10: the audio nobody reloaded
 
 > *"audio clips, after closing the project and re opening, often would just be
 > blank after that point."*

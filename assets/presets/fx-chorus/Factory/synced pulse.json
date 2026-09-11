@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Chorus"
+  },
+  "name": "synced pulse",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Chorus": {
+        "voices": 2,
+        "mode": "Chorus",
+        "spread": 0.5,
+        "rate_hz": 1.0,
+        "sync": true,
+        "division": "Quarter",
+        "depth": 0.5,
+        "delay_ms": 15.0,
+        "feedback": 0.0,
+        "tone_hz": 20000.0,
+        "mix": 0.5
+      }
+    }
+  }
+}

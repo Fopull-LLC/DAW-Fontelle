@@ -394,38 +394,27 @@ fn a_bank_with_no_user_folder_still_lists_the_factory_and_refuses_to_save() {
 /// effect that shipped none because nobody decided looks exactly like one that
 /// ships none on purpose.
 ///
-/// - **None on purpose.** The utility's ten controls are ten separate jobs;
-///   the gate's and the filter's are one machine each with one obvious knob to
-///   reach for. A preset that wrote all of them would be a preset for nobody.
-/// - **Owed.** The EQ's forty-nine are eight copies of six and would take a
-///   different shape of preset; the other four are effects the catalogue is
-///   still extending (`docs/effects-catalogue.md` §4), and a preset written
-///   before the knobs settle is a preset to rewrite.
+/// The decision, as of 2026-09-11, is **every one ships a bank**. The earlier
+/// lists — three "none on purpose" (the utility's ten separate jobs, the
+/// gate's and the filter's one obvious knob) and five "owed" — were overruled
+/// by the person using it: *"please also ensure that every built in effect
+/// plugin has a bunch of presets that will be generally useful in a wide
+/// variety of situations especially the compressor which im noticing has no
+/// presets right now."* A preset for the utility turned out to be exactly a
+/// preset for one of its ten jobs (*mono*, *swap sides*), which is a better
+/// answer than none. The recipes are `fontelle-types/src/effect_presets.rs`;
+/// their floor per effect is `effect_editor.rs`'s.
 #[test]
 fn whether_an_effect_ships_presets_is_a_decision_taken_for_every_one() {
     use fontelle_types::{DeviceKind, EffectKind};
 
-    let none_on_purpose = [EffectKind::Utility, EffectKind::Gate, EffectKind::Filter];
-    let owed = [
-        EffectKind::Eq,
-        EffectKind::Compressor,
-        EffectKind::Chorus,
-        EffectKind::Delay,
-        EffectKind::Reverb,
-    ];
     let bank = PresetBank::new(None);
     for kind in EffectKind::ALL {
         let ships = !bank.for_device(&DeviceKind::Effect(kind)).is_empty();
-        let expected = !none_on_purpose.contains(&kind) && !owed.contains(&kind);
-        assert_eq!(
-            ships, expected,
-            "{kind:?} ships presets: {ships}, and nobody has said whether it should"
+        assert!(
+            ships,
+            "{kind:?} ships no presets, and every effect is meant to"
         );
-        // No assertion about the *number* of controls: Soften has five and
-        // ships four presets, because its four are voicings of one machine
-        // rather than settings of five separate ones. "More than about eight"
-        // was always a rule of thumb about the second kind, and the lists
-        // above are where the decision actually lives.
     }
 }
 

@@ -327,14 +327,45 @@ fn a_preset_is_one_thing_to_undo() {
 }
 
 #[test]
-fn an_effect_with_no_presets_of_its_own_offers_none() {
-    // The compressor's are *owed* rather than absent by decision — see
-    // `effect_families.rs` — and an empty list is what that looks like from
-    // the panel, rather than somebody else's presets appearing on it.
-    let (session, strip, slot) = with_a_compressor();
-    assert!(
-        session
-            .preset_choices(fontelle_ui::canvas::PresetDevice::Insert { strip, slot })
-            .is_empty()
-    );
+fn every_built_in_effect_ships_a_bank_worth_opening() {
+    // > *"please also ensure that every built in effect plugin has a bunch
+    // > of presets that will be generally useful in a wide variety of
+    // > situations especially the compressor which im noticing has no
+    // > presets right now."*
+    //
+    // Through the bank the window reads — the files the export tool wrote,
+    // not the recipes — so a recipe the tool was never taught about shows
+    // up here as an empty list.
+    let mut session = studio();
+    for kind in fontelle_types::EffectKind::ALL {
+        session.add_insert(0, kind);
+        let slot = session.mixer_strips()[0].inserts.len() - 1;
+        let device = fontelle_ui::canvas::PresetDevice::Insert { strip: 0, slot };
+        let choices = session.preset_choices(device);
+        let floor = match kind {
+            fontelle_types::EffectKind::Compressor => 12,
+            fontelle_types::EffectKind::Soften => 4,
+            _ => 6,
+        };
+        assert!(
+            choices.len() >= floor,
+            "{kind:?} lists {} presets; at least {floor} were promised",
+            choices.len()
+        );
+        // Applying the first one moves the panel: a preset that is the wire
+        // is not a preset. The EQ has no knob panel (its editor is the
+        // curve), so its presets are held flat-or-not in
+        // `fontelle-types/tests/effect_presets.rs` instead.
+        if session.insert_view(0, slot).is_some() {
+            let before = knobs(&session, 0, slot);
+            session.apply_preset(device, 0);
+            assert_ne!(
+                knobs(&session, 0, slot),
+                before,
+                "{kind:?}'s first preset does nothing"
+            );
+        } else {
+            session.apply_preset(device, 0);
+        }
+    }
 }

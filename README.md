@@ -1,12 +1,32 @@
+<p align="center"><img src="assets/branding/fontelle-icon-256.png" width="128" alt="Fontelle"></p>
+
 # Fontelle
 
 A lightweight, Linux-first digital audio workstation built around SoundFont-based
 sample playback. An SF2 file supplies *defaults* — loop points, envelopes, filtering,
-mapping, tuning — and every one of them is yours to override. Built by
-[Fopull LLC](https://fopull.com).
+mapping, tuning — and every one of them is yours to override. Free and open source,
+by [Fopull LLC](https://fopull.com).
 
-**Status: early, and runnable.** There is a window you can write music in; there
-is a great deal that is not built. See [Project status](#project-status).
+**Status: early access, and a working studio.** There is a window you can write
+a whole piece in; there is still a great deal on the design's list. See
+[Project status](#project-status).
+
+## Installing
+
+Grab the archive for your platform from the
+[latest release](https://github.com/Fopull-LLC/DAW-Fontelle/releases/latest).
+
+- **Linux** (the platform this is built for): unpack the tarball and run
+  `./install.sh`. It puts `fontelle` in `~/.local/bin` with a menu entry and an
+  icon — nothing outside your home folder, no root. `./install.sh --uninstall`
+  takes it away again.
+- **Windows / macOS**: unpack and run `fontelle`. The binaries are unsigned for
+  now, so expect the first-run warning (macOS: right-click → Open).
+
+Fontelle checks for a newer release when it starts and offers to install it
+from its start menu — the download is verified against the release's published
+checksums before anything is replaced. The check can be turned off on the
+Settings tab.
 
 ## Why
 
@@ -18,11 +38,15 @@ crate layout, milestones, and the open questions still to resolve.
 ## Running it
 
 ```sh
-cargo run --release -p fontelle-app
+fontelle                          # installed
+cargo run --release -p fontelle-app   # from a checkout
 ```
 
-That opens a window with a channel rack, a soundfont browser and a piano roll,
-over a real audio device.
+That opens the **start menu**: your recent projects, *New project*, *Open a
+project…*, and whether there is a newer Fontelle. Pick one and you are in the
+studio — a channel rack, a soundfont browser, an arrangement, a piano roll and a
+mixer, over a real audio device. `--no-menu` skips the menu; `--help` lists the
+rest.
 
 Your soundfonts live in a folder Fontelle scans, shown at the bottom of the
 browser. **Open folder** shows you that folder in your file manager, creating it
@@ -62,34 +86,67 @@ project in the editor, `--open <project.fontelle>` to reopen a saved one.
 
 ## Project status
 
-**Working, and tested end to end:** the SF2 importer (filters, envelopes, LFOs,
-the modulation matrix), the sampler and its voice architecture, the mixer and
-master bus with a brickwall limiter, a piecewise tempo map, the transport with
-looping and seeking, live MIDI input with hot-plug, MIDI recording, MIDI file
-import, offline rendering to WAV, the project document with commands and undo,
-saving and reopening a project, and the window described above.
+Early access. Everything below is built, tested and used; the design in
+[`FONTELLE_TDD.md`](FONTELLE_TDD.md) goes further, and
+[`PROGRESS.md`](PROGRESS.md) is the blunt, living account of where each part
+stands — read it before trusting this list.
 
-**Not built yet:** the arrangement timeline, the mixer panel, the sampler
-editor, automation, effects beyond the master limiter, sample streaming (a
-soundfont is fully resident), plugin export, and most of what
-[`FONTELLE_TDD.md`](FONTELLE_TDD.md) describes. Read
-[`PROGRESS.md`](PROGRESS.md) for where things actually stand — it is the living
-status document and it is blunt about what is missing.
+**Composing.** An arrangement with lanes and clips (MIDI, audio, automation),
+looping, stretch and cut, fades, a blade, and prefabs; a piano roll with draw,
+paint, select and delete tools, snap down to 1/32 and triplets, a property
+lane, ghosts, an arpeggiator and legato joining; slides and pitch bends;
+full undo, autosave and backups; project bundles that reopen with their audio.
+
+**Sound.** The SoundFont sampler with every parameter user-owned and
+automatable; **Flopsynth**, the built-in synthesiser, with a 338-preset bank;
+a physically-modelled drum machine; sampler channels from imported audio;
+live MIDI with hot-plug, MIDI recording, MIDI and FL Studio score import;
+audio import, recording with monitoring, an audio clip editor, and offline
+rendering to WAV.
+
+**Mixing.** A mixer with sends, routing and a master bus with a brickwall limiter; insert
+chains with wet/dry and delay compensation; track presets; twelve built-in
+effects, each a family rather than one sound — Utility, EQ, Filter,
+Compressor (with sidechain), Gate, Distortion, Bitcrush, Soften, Chorus,
+Delay, Reverb and Tune, an autotune.
+
+**Plugins.** CLAP and LV2 instruments and effects, with their own editor
+windows and their state in the project.
+
+**Not built.** VST2/VST3 hosting (a bridge is designed, out of tree), plugin
+*export*, sample streaming (a soundfont is fully resident), and the later
+milestones of the design. Windows and macOS builds come off the same release
+workflow as Linux and are less exercised.
 
 See [`docs/scaffolding-notes.md`](docs/scaffolding-notes.md) for the one structural
 decision made during scaffolding that isn't explicit in the TDD.
 
 ## Building
 
-Requires Rust 2024 edition (MSRV 1.88.0). On Linux you'll also need ALSA and
-windowing/XKB development headers:
+Requires Rust 2024 edition (MSRV 1.88.0). On Linux you'll also need ALSA, lilv
+(LV2) and windowing/XKB development headers:
 
 ```sh
 sudo apt install libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
-    libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+    libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+    liblilv-dev
 
 cargo check --workspace
 ```
+
+## Releasing
+
+One version number for the whole workspace, in the root `Cargo.toml`. Bump it,
+commit, then tag and push:
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+[`release.yml`](.github/workflows/release.yml) refuses a tag that does not match
+the version in the tree, builds the Linux, Windows and macOS archives, and
+publishes them with a `SHA256SUMS` — which is what the start menu's updater
+reads.
 
 ## License
 

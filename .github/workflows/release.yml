@@ -1,0 +1,133 @@
+# Builds and publishes a release when a version tag is pushed.
+#
+# The contract with the updater (`crates/fontelle-app/src/updates.rs`) is
+# two names: the archive for each target is `fontelle-<version>-<target>`
+# (`.tar.gz`, or `.zip` on Windows), and `SHA256SUMS` sits beside them in
+# `sha256sum` format. `tests/updates.rs` pins both, so a change here is a
+# change there.
+#
+# Cutting a release is Ty's call (a human gate): bump `version` in the
+# workspace `Cargo.toml`, commit, then
+#
+#     git tag v0.2.0 && git push origin v0.2.0
+#
+# The first job refuses a tag that does not match the version in the tree,
+# so the number the window shows, the tag and the archive names cannot
+# drift apart.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    name: The tag matches the workspace version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: |
+          version=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "tag v$tag does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.target }}
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest Ubuntu the runners offer, so the binary's glibc floor
+          # is as low as it can be: Linux is the point of this project.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      NAME: fontelle-${{ needs.version.outputs.version }}-${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install Linux audio/windowing dev libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            liblilv-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked -p fontelle-app --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p "dist/$NAME"
+          cp "target/${{ matrix.target }}/release/fontelle" "dist/$NAME/"
+          cp LICENSE-MIT LICENSE-APACHE README.md "dist/$NAME/"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            cp packaging/linux/com.fopull.Fontelle.desktop packaging/linux/com.fopull.Fontelle.png packaging/linux/install.sh "dist/$NAME/"
+          fi
+          tar -czf "$NAME.tar.gz" -C dist "$NAME"
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist/$env:NAME" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/fontelle.exe" "dist/$env:NAME/"
+          Copy-Item LICENSE-MIT, LICENSE-APACHE, README.md "dist/$env:NAME/"
+          Compress-Archive -Path "dist/$env:NAME" -DestinationPath "$env:NAME.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: |
+            ${{ env.NAME }}.tar.gz
+            ${{ env.NAME }}.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd artifacts
+          sha256sum fontelle-* > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Fontelle ${{ needs.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            artifacts/fontelle-*
+            artifacts/SHA256SUMS

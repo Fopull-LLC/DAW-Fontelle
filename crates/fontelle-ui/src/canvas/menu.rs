@@ -525,6 +525,43 @@ pub fn instrument_menu_entries(current: Option<fontelle_types::InstrumentKind>) 
         .collect()
 }
 
+/// A mixer strip's input menu (TDD §15.4): *No input*, then every input
+/// the machine has, with the one the strip already records from greyed.
+///
+/// `inputs` is the list **as it was when the menu opened**, and
+/// [`input_menu_choice`] reads the chosen row against the same list — the
+/// list used to be asked for again when the row was chosen, and a
+/// microphone plugged in or unplugged between the two made the row mean a
+/// different device than the one written on it.
+pub fn input_menu_entries(current: Option<&str>, inputs: &[String]) -> Vec<MenuEntry> {
+    let mut entries = vec![if current.is_none() {
+        MenuEntry::disabled("No input")
+    } else {
+        MenuEntry::new("No input")
+    }];
+    if inputs.is_empty() {
+        entries.push(MenuEntry::disabled("nothing to record from").after_rule());
+    }
+    for name in inputs {
+        entries.push(if current == Some(name.as_str()) {
+            MenuEntry::disabled(name)
+        } else {
+            MenuEntry::new(name)
+        });
+    }
+    entries
+}
+
+/// What row `index` of [`input_menu_entries`] means: `Some(None)` clears the
+/// input, `Some(Some(name))` chooses one, and `None` is a row that chooses
+/// nothing — the *nothing to record from* line, or a row past the end.
+pub fn input_menu_choice(inputs: &[String], index: usize) -> Option<Option<String>> {
+    match index.checked_sub(1) {
+        None => Some(None),
+        Some(n) => inputs.get(n).cloned().map(Some),
+    }
+}
+
 /// The caret drawn after a name being typed.
 ///
 /// A block rather than a bar, because the menu's text is laid out once per

@@ -14,7 +14,9 @@
 
 use std::path::{Path, PathBuf};
 
-use fontelle_app::desktop::{elide_path, parse_picker_output, picker_candidates, reveal_command};
+use fontelle_app::desktop::{
+    elide_path, open_url_command, parse_picker_output, picker_candidates, reveal_command,
+};
 
 #[test]
 fn the_file_manager_is_opened_with_the_platforms_own_opener() {
@@ -168,4 +170,128 @@ fn no_picker_is_titled_for_a_folder_it_is_not_asking_for() {
             );
         }
     }
+}
+
+#[test]
+fn a_web_page_opens_in_the_desktops_own_browser() {
+    // The start menu's footer links: fopull.com, the repository, a release
+    // page. The same program that reveals a folder, handed a URL, on every
+    // desktop but Windows — where `explorer` shows folders and `start` is
+    // what opens a link.
+    let (program, args) = open_url_command("https://fopull.com");
+    assert!(args.iter().any(|a| a == "https://fopull.com"));
+    if cfg!(target_os = "windows") {
+        assert_eq!(program, "cmd");
+    } else if cfg!(target_os = "macos") {
+        assert_eq!(program, "open");
+    } else {
+        assert_eq!(program, "xdg-open");
+    }
+}
+
+#[test]
+fn only_a_web_address_is_handed_to_the_browser() {
+    // Whatever ends up in a release's `html_url` field, it does not get run:
+    // a string that is not `http(s)://` is refused before any program is
+    // spawned.
+    assert!(fontelle_app::desktop::open_url("file:///etc/passwd").is_err());
+    assert!(fontelle_app::desktop::open_url("javascript:alert(1)").is_err());
+    assert!(fontelle_app::desktop::open_url("-rf").is_err());
+}
+
+// --- the desktop entry, so a Wayland compositor can find the icon ---
+
+#[test]
+fn the_desktop_entry_names_this_binary_and_the_app_id() {
+    use fontelle_app::desktop::{APP_ID, desktop_entry};
+    let text = desktop_entry(Path::new("/opt/fontelle/fontelle"));
+    assert!(text.starts_with("[Desktop Entry]\n"));
+    assert!(text.contains("Exec=/opt/fontelle/fontelle\n"));
+    assert!(text.contains(&format!("Icon={APP_ID}\n")));
+    // What ties an X11 window to this entry; Wayland ties by the app id
+    // the window itself announces.
+    assert!(text.contains(&format!("StartupWMClass={APP_ID}\n")));
+    assert_eq!(APP_ID, "com.fopull.Fontelle");
+}
+
+#[test]
+fn registering_writes_the_entry_and_the_icon_once_and_leaves_them_alone_after() {
+    use fontelle_app::desktop::{APP_ID, register_desktop_entry};
+    let home = std::env::temp_dir().join(format!("fontelle-desktop-{}", std::process::id()));
+    std::fs::remove_dir_all(&home).ok();
+    let data = home.join("share");
+    let exe = home.join("bin").join("fontelle");
+    let icon = b"not really a png";
+
+    let wrote = register_desktop_entry(&data, &exe, icon).expect("a writable data dir");
+    assert!(wrote, "the first run writes");
+    let entry = data.join("applications").join(format!("{APP_ID}.desktop"));
+    let png = data
+        .join("icons/hicolor/256x256/apps")
+        .join(format!("{APP_ID}.png"));
+    assert!(entry.is_file());
+    assert_eq!(std::fs::read(&png).unwrap(), icon);
+    let first = std::fs::metadata(&entry).unwrap().modified().unwrap();
+
+    // The same binary again: nothing to do, and nothing touched.
+    let wrote = register_desktop_entry(&data, &exe, icon).unwrap();
+    assert!(!wrote);
+    assert_eq!(
+        std::fs::metadata(&entry).unwrap().modified().unwrap(),
+        first
+    );
+
+    // A binary somewhere else — a new build, a new install — rewrites it.
+    let other = home.join("elsewhere").join("fontelle");
+    assert!(register_desktop_entry(&data, &other, icon).unwrap());
+    assert!(
+        std::fs::read_to_string(&entry)
+            .unwrap()
+            .contains("elsewhere")
+    );
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn a_new_entry_or_icon_is_announced_to_the_desktop_that_is_already_running() {
+    // > *"it looks like the icon for the app is still showing the yellow w"*
+    //
+    // The entry and the icon were on disk. A compositor and a shell that
+    // were started before they existed had already looked the app id up,
+    // found nothing, and kept that answer — so the placeholder stayed until
+    // the next login. Writing the files is half of it; the other half is
+    // telling the desktop its icon caches are stale.
+    use fontelle_app::desktop::{APP_ID, desktop_refresh_commands};
+    let data = Path::new("/home/someone/.local/share");
+    let commands = desktop_refresh_commands(data);
+    let names: Vec<&str> = commands.iter().map(|(name, _)| *name).collect();
+
+    // The entry: the freedesktop database, which the shells read.
+    let db = commands
+        .iter()
+        .find(|(name, _)| *name == "update-desktop-database")
+        .expect("the applications folder is re-indexed");
+    assert!(
+        db.1.iter()
+            .any(|a| a == "/home/someone/.local/share/applications"),
+        "{:?}",
+        db.1
+    );
+    // The icon: the theme is touched so every toolkit's watcher fires...
+    assert!(names.contains(&"xdg-icon-resource"), "{names:?}");
+    // ...and KDE's own loader is told outright, because KWin and the panel
+    // keep an "icon not found" answer until somebody says otherwise.
+    let kde = commands
+        .iter()
+        .find(|(name, _)| *name == "dbus-send")
+        .expect("KDE's icon loader is told");
+    assert!(
+        kde.1.iter().any(|a| a == "org.kde.KIconLoader.iconChanged"),
+        "{:?}",
+        kde.1
+    );
+    assert!(
+        !names.iter().any(|n| n.contains(APP_ID)),
+        "these are the desktop's own tools, not ours"
+    );
 }

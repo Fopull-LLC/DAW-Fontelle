@@ -1,6 +1,7 @@
 [package]
 name = "fontelle-midi"
 description = "MIDI device abstraction, routing, and mapping. Device-agnostic, RT-safe event pipeline feeding the same sample-accurate event stream as notes and automation."
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

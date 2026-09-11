@@ -1,6 +1,7 @@
 [package]
 name = "fontelle-app"
 description = "The Fontelle DAW binary."
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -32,6 +33,11 @@ serde = { version = "1.0.229", features = ["derive"] }
 # on every open.
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 slotmap = "1.1.1"
+# The updater checks a downloaded release against the `SHA256SUMS` the release
+# workflow publishes beside it (`updates.rs`). Pure Rust, no C, no TLS: the
+# transfer itself is `curl`'s, for the same reason the folder picker is the
+# desktop's own (`desktop.rs`) — one more subprocess and nothing more linked.
+sha2 = "0.10.9"
 
 [dev-dependencies]
 # Built for its side effect: the CLAP bundle `tests/plugin_hosting.rs` loads.

@@ -1,0 +1,28 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Filter"
+  },
+  "name": "telephone band",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Filter": {
+        "shape": "BandPass12",
+        "cutoff_hz": 1500.0,
+        "resonance": 0.5,
+        "drive": 0.0,
+        "env_amount": 0.0,
+        "env_attack_ms": 5.0,
+        "env_release_ms": 200.0,
+        "lfo_amount": 0.0,
+        "lfo_rate_hz": 1.0,
+        "lfo_sync": false,
+        "lfo_division": "Quarter",
+        "lfo_wave": "Sine",
+        "output_db": 0.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

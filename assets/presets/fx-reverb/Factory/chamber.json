@@ -1,0 +1,20 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Reverb"
+  },
+  "name": "chamber",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Reverb": {
+        "size": 0.6,
+        "decay_s": 2.5,
+        "damping_hz": 5500.0,
+        "pre_delay_ms": 15.0,
+        "width": 0.9,
+        "mix": 0.25
+      }
+    }
+  }
+}

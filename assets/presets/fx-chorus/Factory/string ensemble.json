@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Chorus"
+  },
+  "name": "string ensemble",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Chorus": {
+        "voices": 3,
+        "mode": "Ensemble",
+        "spread": 0.7,
+        "rate_hz": 0.8,
+        "sync": false,
+        "division": "Quarter",
+        "depth": 0.6,
+        "delay_ms": 18.0,
+        "feedback": 0.0,
+        "tone_hz": 9000.0,
+        "mix": 0.6
+      }
+    }
+  }
+}

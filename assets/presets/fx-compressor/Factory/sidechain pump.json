@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Compressor"
+  },
+  "name": "sidechain pump",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Compressor": {
+        "threshold_db": -24.0,
+        "ratio": 10.0,
+        "attack_ms": 0.5,
+        "release_ms": 250.0,
+        "knee_db": 1.0,
+        "makeup_db": 0.0,
+        "auto_makeup": false,
+        "detection": "Peak",
+        "mix": 1.0
+      }
+    }
+  }
+}

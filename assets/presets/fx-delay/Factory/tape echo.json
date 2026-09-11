@@ -1,0 +1,22 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Delay"
+  },
+  "name": "tape echo",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Delay": {
+        "time_ms": 380.0,
+        "sync": false,
+        "division": "Eighth",
+        "feedback": 0.6,
+        "damping_hz": 3000.0,
+        "drive": 0.4,
+        "ping_pong": false,
+        "mix": 0.35
+      }
+    }
+  }
+}

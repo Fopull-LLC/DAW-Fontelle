@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Chorus"
+  },
+  "name": "lo-fi wobble",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Chorus": {
+        "voices": 1,
+        "mode": "Chorus",
+        "spread": 0.0,
+        "rate_hz": 2.5,
+        "sync": false,
+        "division": "Quarter",
+        "depth": 0.7,
+        "delay_ms": 25.0,
+        "feedback": 0.0,
+        "tone_hz": 3500.0,
+        "mix": 0.5
+      }
+    }
+  }
+}

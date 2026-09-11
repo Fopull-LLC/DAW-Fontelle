@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Fontelle
+GenericName=Digital Audio Workstation
+Comment=A SoundFont-first digital audio workstation by Fopull LLC
+Exec=fontelle
+Icon=com.fopull.Fontelle
+Terminal=false
+Categories=AudioVideo;Audio;Music;
+Keywords=DAW;music;soundfont;sf2;sequencer;synth;
+StartupWMClass=com.fopull.Fontelle

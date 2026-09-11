@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Compressor"
+  },
+  "name": "bass tightener",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Compressor": {
+        "threshold_db": -22.0,
+        "ratio": 4.0,
+        "attack_ms": 8.0,
+        "release_ms": 150.0,
+        "knee_db": 6.0,
+        "makeup_db": 0.0,
+        "auto_makeup": true,
+        "detection": "Rms",
+        "mix": 1.0
+      }
+    }
+  }
+}

@@ -933,7 +933,6 @@ impl KitSpace {
                     makeup_db: self.makeup_db,
                     detection: DetectionMode::Peak,
                     mix: self.comp_mix,
-                    ..CompressorConfig::new()
                 }),
                 enabled: true,
             });
@@ -1813,7 +1812,6 @@ impl DrumKitStyle {
                 room_mix: 0.17,
                 makeup_db: 11.43,
                 trim_db: -1.73,
-                ..DRY
             },
             // Tape, not a room: soft, swimmy and with the top gone entirely,
             // through a space so damped it is more of a blanket.

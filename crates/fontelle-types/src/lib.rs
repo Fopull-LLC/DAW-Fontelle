@@ -2,6 +2,7 @@ mod asset;
 mod audio_clip;
 mod base64;
 mod effect;
+mod effect_presets;
 mod event;
 mod favorite;
 mod id;
@@ -34,6 +35,10 @@ pub use effect::{
     TUNE_VOICED, TuneConfig, TuneControl, TuneEngine, TuneFrame, TuneMode, TunePreset, TuneRange,
     TuneScale, UTILITY_DC_OFF_HZ, UTILITY_MONO_OFF_HZ, UtilityConfig, VibratoShape, cents_of_hz,
     hz_of_cents,
+};
+pub use effect_presets::{
+    ChorusPreset, CompressorPreset, DelayPreset, EqPreset, FilterPreset, GatePreset, ReverbPreset,
+    UtilityPreset,
 };
 pub use event::{CompiledTimeline, DEFAULT_BPM, EventPayload, EventSink, TimedEvent, VoiceOrigin};
 pub use favorite::Favorite;

@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Chorus"
+  },
+  "name": "dimension",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Chorus": {
+        "voices": 4,
+        "mode": "Chorus",
+        "spread": 1.0,
+        "rate_hz": 0.3,
+        "sync": false,
+        "division": "Quarter",
+        "depth": 0.35,
+        "delay_ms": 20.0,
+        "feedback": 0.0,
+        "tone_hz": 20000.0,
+        "mix": 0.5
+      }
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Delay"
+  },
+  "name": "dub echo",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Delay": {
+        "time_ms": 750.0,
+        "sync": true,
+        "division": "QuarterDotted",
+        "feedback": 0.78,
+        "damping_hz": 2200.0,
+        "drive": 0.55,
+        "ping_pong": true,
+        "mix": 0.45
+      }
+    }
+  }
+}

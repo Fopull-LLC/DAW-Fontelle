@@ -39,7 +39,7 @@ use fontelle_types::{
 use fontelle_ui::canvas::{ArrangeEdit, InstrumentView, PresetDevice, RollEdit};
 use fontelle_ui::document::{
     ChannelInfo, ClipInfo, ClipKind, Created, CurvePoint, DocumentHost, GhostFilter, GhostNote,
-    LaneInfo, LibraryEntry, MixerStrip, PlayMode, StudioHost,
+    LaneInfo, LibraryEntry, MixerStrip, PlayMode, RecentProject, StudioHost, UpdateStatus,
 };
 
 use crate::bank::{BankFilter, BankRow, FileBank, SoundfontBank, matches_names};
@@ -47,6 +47,7 @@ use crate::library::SampleLibrary;
 use crate::projects::ProjectLibrary;
 use crate::realise::{RealiseOptions, apply_mixer_controls, apply_send_controls, realise};
 use crate::settings::Settings;
+use crate::updates::Updater;
 
 /// How long a clip a freshly added channel gets, in bars.
 const NEW_CLIP_BARS: i64 = 8;
@@ -65,6 +66,29 @@ const RELEASE_TAIL: Tick = PPQN * 8;
 /// note-off must never cut a note the *player* is holding, whether the player
 /// is a keyboard or a mouse (TDD §11.4).
 const AUDITION_VOICE_CONTEXT: u32 = u32::MAX;
+
+/// How long an input that would not open waits before it is tried again.
+///
+/// Long enough that a device that is really gone is not probed at frame
+/// rate (`pw-dump` on PipeWire, a walk of every ALSA card without it); short
+/// enough that one that was busy, suspended, or plugged in a moment after
+/// the project opened starts working without anybody touching the menu.
+pub const INPUT_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// An input that would not open, and when it was last tried. See
+/// [`Session::sync_audio_input`].
+#[derive(Debug, Clone)]
+pub struct InputFailure {
+    pub name: String,
+    pub tried: std::time::Instant,
+}
+
+impl InputFailure {
+    /// Whether it is time to try the device again.
+    pub fn due(&self, now: std::time::Instant, after: std::time::Duration) -> bool {
+        now.duration_since(self.tried) >= after
+    }
+}
 
 pub struct Session {
     project: Project,
@@ -102,9 +126,15 @@ pub struct Session {
     /// tell "nothing changed" from "a different microphone" without asking the
     /// operating system once a frame.
     input_open: Option<(MixerTrackId, String)>,
-    /// The last input that would not open, so it is not retried on every
-    /// frame. Cleared the moment the answer to "which input" changes.
-    input_failed: Option<String>,
+    /// The last input that would not open, and when it was tried — so it is
+    /// not retried on every frame, and *is* retried after
+    /// [`INPUT_RETRY`], because a device that is busy, suspended or not
+    /// plugged in yet is not a device that is gone. Cleared the moment the
+    /// answer to "which input" changes, and by [`adopt`](Self::adopt).
+    input_failed: Option<InputFailure>,
+    /// How long a failed input waits before it is tried again. The constant,
+    /// except in a test that cannot wait three seconds.
+    input_retry: std::time::Duration,
     /// Whether what the ring delivers is being **kept**.
     ///
     /// The stream is open whenever a track names an input, because that is
@@ -312,6 +342,10 @@ pub struct Session {
     /// state, like the bank: where projects live is a setting, and the listing
     /// is a read of a folder that may change under us.
     projects: ProjectLibrary,
+    /// The start menu's update check (`updates.rs`). Built switched off, and
+    /// replaced through [`Session::with_updater`] by the one the launch
+    /// decides on, so a session made for a test never touches the network.
+    updater: Updater,
     query: String,
     /// Which soundfont is open, and what is inside it.
     ///
@@ -465,6 +499,13 @@ impl Session {
         self.input_device = None;
         self.input_open = None;
         self.capturing = false;
+        // The device closes the ring when it goes (`AudioDevice::drop`); a
+        // ring handed in by hand (`set_audio_input`) has no device to do it,
+        // and a ring left saying "a stream is open" keeps the graph awake for
+        // a microphone nobody chose.
+        if let Some(monitor) = &self.monitor {
+            monitor.close();
+        }
     }
 
     /// Opens, closes or re-points the input stream so that it matches what the
@@ -482,16 +523,25 @@ impl Session {
     ///
     /// Cheap when nothing has changed, which is nearly always: two comparisons
     /// against `input_open`. A device that refuses to open is remembered in
-    /// `input_failed` rather than retried sixty times a second.
+    /// `input_failed` rather than retried sixty times a second — and tried
+    /// again after [`INPUT_RETRY`], because:
+    ///
+    /// > *"when opening a project that has a track with an input set, you
+    /// > have to change the input then change it back for it to actually
+    /// > start capturing the sound"*
+    ///
+    /// which is what a memo with no expiry does to a device that was busy or
+    /// suspended for the one moment the project opened. Choosing another
+    /// input and choosing back was the only thing that cleared it.
     fn sync_audio_input(&mut self) {
         let wanted = self.armed_track().zip(self.audio_input_wanted());
         // The memo is keyed on the **name that failed**, not on what is open:
         // a failed open leaves nothing open, so comparing against that would
         // clear the memo on the very next frame and retry the same dead device
         // sixty times a second.
-        if self.input_failed.is_some()
-            && self.input_failed.as_deref() != wanted.as_ref().map(|(_, name)| name.as_str())
-        {
+        if self.input_failed.as_ref().is_some_and(|failed| {
+            Some(failed.name.as_str()) != wanted.as_ref().map(|(_, name)| name.as_str())
+        }) {
             self.input_failed = None;
         }
         if wanted == self.input_open {
@@ -519,11 +569,16 @@ impl Session {
             }
             return;
         }
-        if self.input_failed.as_deref() == Some(name.as_str()) {
+        if self.input_failed.as_ref().is_some_and(|failed| {
+            failed.name == name && !failed.due(std::time::Instant::now(), self.input_retry)
+        }) {
             return;
         }
         // The old one first: a machine with one interface cannot open its
         // capture twice, and the failure would look like a broken input menu.
+        // Dropping the device closes its stream and the monitor with it —
+        // and the PipeWire stream is closed off this thread, see
+        // `fontelle_engine::PipeWireInput`.
         self.input = None;
         self.input_device = None;
         self.input_open = None;
@@ -548,7 +603,10 @@ impl Session {
             }
             Err(e) => {
                 self.message = Some(format!("could not open \u{201c}{name}\u{201d}: {e}"));
-                self.input_failed = Some(name);
+                self.input_failed = Some(InputFailure {
+                    name,
+                    tried: std::time::Instant::now(),
+                });
             }
         }
         self.rebuild_graph();
@@ -856,6 +914,7 @@ impl Session {
             input_failed: None,
             capturing: false,
             monitor: None,
+            input_retry: INPUT_RETRY,
             track_controls: HashMap::new(),
             voice_meters: HashMap::new(),
             effect_controls: HashMap::new(),
@@ -900,6 +959,7 @@ impl Session {
             browser_mode: fontelle_ui::canvas::BrowserMode::Sounds,
             bank: SoundfontBank::default(),
             projects: ProjectLibrary::default(),
+            updater: Updater::disabled(),
             query: String::new(),
             open_file: None,
             flopsynth_open: false,
@@ -991,6 +1051,25 @@ impl Session {
         }
         self.settings_path = Some(path);
         self
+    }
+
+    /// Where this session's settings are read from and written to, when it
+    /// was given a path of its own rather than the real config file.
+    pub fn settings_path(&self) -> Option<&Path> {
+        self.settings_path.as_deref()
+    }
+
+    /// Gives the session the update check the launch decided on — the real
+    /// one, or the disabled one when the settings say not to ask.
+    pub fn with_updater(mut self, updater: Updater) -> Self {
+        self.updater = updater;
+        self
+    }
+
+    /// Whether the settings say the start menu may ask GitHub for a newer
+    /// release.
+    pub fn checks_for_updates(&self) -> bool {
+        self.settings.check_for_updates
     }
 
     fn save_settings(&self) -> std::io::Result<()> {
@@ -1116,6 +1195,77 @@ impl Session {
         self.touch();
     }
 
+    /// The projects this machine was last in, newest first — the start
+    /// menu's list. Each is marked with whether its bundle is still there,
+    /// because a project that was moved or deleted is drawn dead rather than
+    /// dropped: the person who moved it is the one to say so.
+    pub fn recent_projects(&self) -> Vec<RecentProject> {
+        self.settings
+            .recent_projects
+            .iter()
+            .map(|path| RecentProject {
+                name: path
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string()),
+                exists: path.join("project.json").is_file(),
+                path: path.clone(),
+            })
+            .collect()
+    }
+
+    /// Opens the bundle at `path`, leaving what is open behind.
+    ///
+    /// The start menu's *Recent* rows and its *Open…* both land here; the
+    /// Projects tab's rows go through [`StudioHost::open_project`] by index.
+    /// One bundle that is not there any more is an error naming it, not an
+    /// empty studio.
+    pub fn open_project_path(&mut self, path: &Path) -> Result<(), String> {
+        if !path.join("project.json").is_file() {
+            // The name and the end of the folder, not the whole path: the
+            // sentence is drawn on the start menu, and a path from `/tmp`
+            // down does not fit two lines there.
+            let name = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            let folder = path
+                .parent()
+                .map(|parent| crate::desktop::elide_path(parent, 2))
+                .unwrap_or_default();
+            return Err(format!(
+                "{name} is not there any more \u{2014} it was in {folder}"
+            ));
+        }
+        let opened = crate::open_project(path).map_err(|e| e.to_string())?;
+        self.adopt(opened, path.to_path_buf());
+        Ok(())
+    }
+
+    /// Takes the `index`th recent project off the list.
+    pub fn forget_recent(&mut self, index: usize) {
+        let Some(path) = self.settings.recent_projects.get(index).cloned() else {
+            return;
+        };
+        self.settings.forget_project(&path);
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+        self.touch();
+    }
+
+    /// Puts `path` at the top of the recent list and writes the settings.
+    ///
+    /// Called from the three places a bundle path enters the session —
+    /// [`adopt`](Self::adopt) and [`save_as`](Self::save_as) — so nothing
+    /// that opens or names a project can forget to.
+    fn remember_project(&mut self, path: &Path) {
+        self.settings.remember_project(path);
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+    }
+
     /// Points the session at a projects folder and remembers it. For tests,
     /// and for a `--projects <dir>` flag when there is one.
     pub fn set_projects_dir(&mut self, dir: Option<PathBuf>) {
@@ -1167,6 +1317,7 @@ impl Session {
         }
         self.capture_plugin_states();
         crate::save_project(&self.project, &path).map_err(|e| e.to_string())?;
+        self.remember_project(&path);
         self.bundle = Some(path);
         self.projects.rescan();
         self.dirty = false;
@@ -1219,6 +1370,7 @@ impl Session {
         self.library = opened.library;
         self.history = History::new();
         self.clip = Session::first_clip(&self.project).unwrap_or_default();
+        self.remember_project(&path);
         self.bundle = Some(path);
         self.dirty = false;
         self.patch_cache = None;
@@ -1232,6 +1384,10 @@ impl Session {
         // loop; both are read off the project that has just arrived.
         self.effective_tempo = self.tempo_for_scope();
         self.publish_loop();
+        // The memo belongs to the session, the question to the project: a
+        // microphone that would not open for the last project is asked for
+        // again by this one, on the first frame, whatever the last answer was.
+        self.input_failed = None;
         for missing in &opened.missing {
             self.message = Some(format!(
                 "{} could not be found",
@@ -1531,6 +1687,12 @@ impl Session {
     pub fn with_monitor(mut self, monitor: std::sync::Arc<fontelle_engine::InputMonitor>) -> Self {
         self.monitor = Some(monitor);
         self
+    }
+
+    /// How long an input that would not open waits before it is tried
+    /// again. For tests; the window keeps [`INPUT_RETRY`].
+    pub fn retry_inputs_every(&mut self, every: std::time::Duration) {
+        self.input_retry = every;
     }
 
     /// Bounces the whole project to a WAV inside its own `renders/` folder,
@@ -5144,6 +5306,67 @@ impl StudioHost for Session {
         Ok(())
     }
 
+    // --- the start menu ---
+
+    fn recent_projects(&self) -> Vec<RecentProject> {
+        Session::recent_projects(self)
+    }
+
+    fn open_project_path(&mut self, path: &Path) -> Result<(), String> {
+        Session::open_project_path(self, path)
+    }
+
+    fn forget_recent(&mut self, index: usize) {
+        Session::forget_recent(self, index)
+    }
+
+    fn has_projects_dir(&self) -> bool {
+        self.projects.dir().is_some()
+    }
+
+    fn choose_and_open_project(&mut self) -> Result<bool, String> {
+        let start = self
+            .bundle
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
+        let start = start.or_else(|| self.projects.dir().map(Path::to_path_buf));
+        match crate::desktop::choose_folder("Open a project", start.as_deref()) {
+            Ok(Some(path)) => Session::open_project_path(self, &path).map(|()| true),
+            Ok(None) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn update_status(&self) -> UpdateStatus {
+        self.updater.status()
+    }
+
+    fn check_for_updates(&mut self) {
+        self.updater.check();
+    }
+
+    fn upgrade(&mut self) {
+        match std::env::current_exe() {
+            Ok(exe) => self.updater.upgrade(exe),
+            Err(e) => self.message = Some(format!("could not find this binary: {e}")),
+        }
+    }
+
+    fn open_release_page(&mut self) {
+        let page = self
+            .updater
+            .release_page()
+            .unwrap_or_else(|| crate::updates::RELEASES_PAGE.to_string());
+        self.open_url(&page);
+    }
+
+    fn open_url(&mut self, url: &str) {
+        if let Err(e) = crate::desktop::open_url(url) {
+            self.message = Some(e);
+        }
+    }
+
     fn settings(&self) -> Vec<LibraryEntry> {
         crate::settings::SETTING_ROWS
             .iter()
@@ -5183,6 +5406,16 @@ impl StudioHost for Session {
             match row {
                 crate::settings::SettingRow::PluginFolder => self.choose_plugin_dir(),
                 _ => <Self as StudioHost>::rescan_plugins(self),
+            }
+            self.touch();
+            return;
+        }
+        // A switch, by the same rule: not a value to step, so it is flipped
+        // here rather than in `nudge`, which only sees the MIDI half.
+        if *row == crate::settings::SettingRow::CheckForUpdates {
+            self.settings.check_for_updates = !self.settings.check_for_updates;
+            if let Err(e) = self.save_settings() {
+                self.message = Some(format!("could not write settings: {e}"));
             }
             self.touch();
             return;
@@ -5571,7 +5804,7 @@ impl StudioHost for Session {
             // Read rather than taken: the memo is what stops a dead device
             // being retried on every frame, and clearing it here would make
             // pressing record the thing that started that.
-            return Err(match self.input_failed.as_deref() {
+            return Err(match &self.input_failed {
                 Some(_) => format!("could not open \u{201c}{name}\u{201d}"),
                 None => format!("\u{201c}{name}\u{201d} is not open"),
             });

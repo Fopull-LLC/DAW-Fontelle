@@ -51,6 +51,7 @@ pub struct AudioDevice {
     /// The capture stream when it is a PipeWire node rather than a `cpal`
     /// device — see [`crate::PipeWireInput`]. At most one of this and
     /// `input` is open.
+    #[cfg(target_os = "linux")]
     pipewire_input: Option<crate::PipeWireInput>,
 }
 
@@ -61,6 +62,7 @@ impl AudioDevice {
             stream: None,
             input: None,
             monitor: None,
+            #[cfg(target_os = "linux")]
             pipewire_input: None,
         }
     }
@@ -205,7 +207,12 @@ impl AudioDevice {
         // for why, and `crate::pipewire` for how. The rate asked for is the
         // output's, because PipeWire will resample to it and a take at the
         // rate the song plays at is one less ratio to get right.
+        // The PipeWire path is Linux's: the plugin it opens through is ALSA's,
+        // and `pw-dump` answers nothing anywhere else, so every other platform
+        // falls through to `cpal` below.
+        #[cfg(target_os = "linux")]
         let sources = crate::pipewire_sources();
+        #[cfg(target_os = "linux")]
         if !sources.is_empty() {
             let source = match name {
                 Some(wanted) => crate::find_pipewire_source(&sources, wanted).ok_or_else(|| {
@@ -317,7 +324,10 @@ impl AudioDevice {
     /// Closes the input stream, if one is open.
     pub fn stop_input(&mut self) {
         self.input = None;
-        self.pipewire_input = None;
+        #[cfg(target_os = "linux")]
+        {
+            self.pipewire_input = None;
+        }
         // Before the stream is really gone, so nothing that was still in
         // flight is played through whatever is opened next.
         if let Some(monitor) = &self.monitor {
@@ -411,8 +421,7 @@ impl AudioDevice {
         let channels = config.channels as usize;
 
         let mut first_callback = true;
-        let mut rt_handle: ManuallyDrop<Option<audio_thread_priority::RtPriorityHandle>> =
-            ManuallyDrop::new(None);
+        let mut rt_handle = RtHandleSlot(ManuallyDrop::new(None));
         // The caller keeps its own clone for the stream's life, so dropping
         // this one on the audio thread at teardown is a refcount decrement and
         // never a free — but it is wrapped like everything else the closure
@@ -456,7 +465,7 @@ impl AudioDevice {
                             // tagging/enforcing RT from the second callback
                             // on — ~2.7ms of silence at 128 samples/48kHz,
                             // not audible.
-                            *rt_handle =
+                            *rt_handle.0 =
                                 audio_thread_priority::promote_current_thread_to_real_time(
                                     BLOCK_SIZE as u32,
                                     sample_rate,
@@ -642,5 +651,31 @@ impl AudioDevice {
 
     pub fn stop(&mut self) {
         self.stream = None;
+    }
+}
+
+/// The real-time promotion handle, in the slot the output callback keeps it in.
+///
+/// Made **inside** the callback, on the audio thread, and never touched by
+/// any other: the slot is moved into the closure empty and filled on the
+/// first call. That is what makes it sound to declare it `Send` where the
+/// platform's handle is not — on Windows it holds the raw AvRt task handle,
+/// which the crate rightly refuses to mark. Never dropped either, for the
+/// reason the field comment at the callback gives.
+struct RtHandleSlot(ManuallyDrop<Option<audio_thread_priority::RtPriorityHandle>>);
+
+// SAFETY: see the type's own note — the handle is created and used on one
+// thread, the audio thread, and the slot crosses to it while still `None`.
+unsafe impl Send for RtHandleSlot {}
+
+impl Drop for AudioDevice {
+    /// A device that goes takes its input stream with it, and **says so**
+    /// to the monitor. Dropping the streams alone did the first half: the
+    /// session used to let go of the device to close an input, and the ring
+    /// went on answering "a stream is open" — to a `MonitorNode` that then
+    /// waited forever to prime, and to the idle gate, which kept the graph
+    /// running for a microphone nobody had any more.
+    fn drop(&mut self) {
+        self.stop_input();
     }
 }

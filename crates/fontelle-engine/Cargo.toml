@@ -1,6 +1,7 @@
 [package]
 name = "fontelle-engine"
 description = "Audio graph, transport, voice management, mixer topology, device I/O. Owns the RT thread (INVARIANT 1: never allocates, locks, blocks, or syscalls)."
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -15,8 +16,6 @@ fontelle-fx = { path = "../fontelle-fx" }
 fontelle-host = { path = "../fontelle-host" }
 fontelle-dsp = { path = "../fontelle-dsp" }
 cpal = "0.18.2"
-# The PipeWire ALSA plugin is opened directly for capture — see `pipewire.rs`.
-alsa = "0.11.0"
 # `float_roundtrip`: without it serde_json's fast float parser can land a
 # ULP away from the number in the file, so a patch written and read back
 # is not the patch that was written — which makes a preset read as edited
@@ -27,6 +26,11 @@ rtrb = "0.4.0"
 triple_buffer = "9.0.0"
 audio_thread_priority = "0.37.0"
 rubato = "5.0.0"
+
+# Linux only: the PipeWire ALSA plugin is opened directly for capture — see
+# `pipewire.rs`. Every other platform captures through `cpal` alone.
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = "0.11.0"
 
 [dev-dependencies]
 fontelle-assets = { path = "../fontelle-assets" }

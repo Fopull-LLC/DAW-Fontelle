@@ -1,0 +1,24 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Gate"
+  },
+  "name": "bass clean",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Gate": {
+        "threshold_db": -40.0,
+        "hysteresis_db": 4.0,
+        "key_hp_hz": 20.0,
+        "lookahead_ms": 2.0,
+        "attack_ms": 1.0,
+        "hold_ms": 60.0,
+        "release_ms": 200.0,
+        "ratio": 100.0,
+        "range_db": -50.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

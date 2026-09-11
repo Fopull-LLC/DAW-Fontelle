@@ -45,6 +45,181 @@ pub fn reveal(dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("could not open {}: {program} {e}", dir.display()))
 }
 
+/// The program and arguments that open `url` in the default browser.
+///
+/// `xdg-open` and `open` take a URL as readily as a folder. Windows does not:
+/// `explorer` shows folders, and a link goes through `cmd /c start` — with an
+/// empty title first, because `start` reads its first quoted argument as a
+/// window title and a URL is quoted.
+pub fn open_url_command(url: &str) -> (&'static str, Vec<String>) {
+    if cfg!(target_os = "macos") {
+        ("open", vec![url.to_string()])
+    } else if cfg!(target_os = "windows") {
+        (
+            "cmd",
+            vec![
+                "/c".to_string(),
+                "start".to_string(),
+                String::new(),
+                url.to_string(),
+            ],
+        )
+    } else {
+        ("xdg-open", vec![url.to_string()])
+    }
+}
+
+/// Opens `url` in the default browser.
+///
+/// Only a web address: the strings that reach here include a release's
+/// `html_url` as GitHub returned it, and a program that hands whatever it
+/// was given to `xdg-open` is a program that opens `file://` paths and runs
+/// whatever `cmd` makes of a stray `&`. Anything that is not `http(s)://`
+/// is refused before a process is spawned.
+pub fn open_url(url: &str) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(format!("{url:?} is not a web address"));
+    }
+    let (program, args) = open_url_command(url);
+    Command::new(program)
+        .args(&args)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not open {url}: {program} {e}"))
+}
+
+/// The application id the window announces and the desktop entry is named
+/// by. **One string, used in three places** — the Wayland app id and the X11
+/// `WM_CLASS` the window sets, the `.desktop` file's name and
+/// `StartupWMClass`, and the icon's file name — because that is how a
+/// compositor finds an icon for a window: it matches the id the window
+/// announces to an entry of that name and takes the icon that entry names.
+pub const APP_ID: &str = "com.fopull.Fontelle";
+
+/// The desktop entry for the binary at `exe`.
+///
+/// The same words as `packaging/linux/com.fopull.Fontelle.desktop`, with the
+/// full path in `Exec`: a desktop session does not always have `~/.local/bin`
+/// on its PATH, and an entry that names a program it cannot find fails
+/// silently.
+pub fn desktop_entry(exe: &Path) -> String {
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=Fontelle\n\
+         GenericName=Digital Audio Workstation\n\
+         Comment=A SoundFont-first digital audio workstation by Fopull LLC\n\
+         Exec={}\n\
+         Icon={APP_ID}\n\
+         Terminal=false\n\
+         Categories=AudioVideo;Audio;Music;\n\
+         Keywords=DAW;music;soundfont;sf2;sequencer;synth;\n\
+         StartupWMClass={APP_ID}\n",
+        exe.display()
+    )
+}
+
+/// Writes the desktop entry and the icon under `data` (the XDG data
+/// directory) so the compositor can put a face on the window. `Ok(true)`
+/// when something was written; `Ok(false)` when both were already as they
+/// should be, which is every launch but the first and the one after a
+/// rebuild.
+///
+/// **This is a write outside Fontelle's own directories**, and it is a
+/// deliberate reading of INVARIANT 10 in the same spirit as the soundfont
+/// bank: `~/.local/share/applications` and `~/.local/share/icons` are the
+/// places the desktop *defines* for an application to say what it is, and
+/// there is no other way for a Wayland window to have an icon at all —
+/// Wayland has no per-window icon, only an app id the compositor looks up.
+/// Without this, every `cargo run` shows the compositor's placeholder (a
+/// yellow *W* on KDE), which is what was reported. Flag it to the owner if it
+/// is the wrong reading; it is one call in `main`.
+pub fn register_desktop_entry(data: &Path, exe: &Path, icon_png: &[u8]) -> Result<bool, String> {
+    let entry = data.join("applications").join(format!("{APP_ID}.desktop"));
+    let icon = data
+        .join("icons")
+        .join("hicolor")
+        .join("256x256")
+        .join("apps")
+        .join(format!("{APP_ID}.png"));
+    let wanted = desktop_entry(exe);
+    let mut wrote = false;
+    if std::fs::read_to_string(&entry).ok().as_deref() != Some(wanted.as_str()) {
+        write_file(&entry, wanted.as_bytes())?;
+        wrote = true;
+    }
+    if std::fs::read(&icon).ok().as_deref() != Some(icon_png) {
+        write_file(&icon, icon_png)?;
+        wrote = true;
+    }
+    Ok(wrote)
+}
+
+/// The desktop's own tools to run after the entry or the icon has been
+/// written, so a session that is already running notices.
+///
+/// > *"it looks like the icon for the app is still showing the yellow w"*
+///
+/// The entry and the icon were on disk and correct. What had not happened
+/// was anybody telling the compositor and the panel — both started long
+/// before the files existed, and both had already looked the app id up,
+/// found nothing, and kept that answer. Three notices, each best-effort and
+/// each harmless where it does not apply:
+///
+/// - `update-desktop-database` re-indexes the applications folder, which is
+///   what the freedesktop shells read the entry through.
+/// - `xdg-icon-resource forceupdate` touches the icon theme, which is the
+///   change every toolkit's icon loader watches for.
+/// - KDE's icon loader is told outright over D-Bus (`org.kde.KIconLoader`
+///   `iconChanged`): KWin and Plasma keep an "icon not found" answer until
+///   that signal, and nothing else clears it short of logging out.
+pub fn desktop_refresh_commands(data: &Path) -> Vec<(&'static str, Vec<String>)> {
+    vec![
+        (
+            "update-desktop-database",
+            vec![data.join("applications").to_string_lossy().into_owned()],
+        ),
+        (
+            "xdg-icon-resource",
+            vec![
+                "forceupdate".to_string(),
+                "--theme".to_string(),
+                "hicolor".to_string(),
+            ],
+        ),
+        (
+            "dbus-send",
+            vec![
+                "--session".to_string(),
+                "--type=signal".to_string(),
+                "/KIconLoader".to_string(),
+                "org.kde.KIconLoader.iconChanged".to_string(),
+                "int32:0".to_string(),
+            ],
+        ),
+    ]
+}
+
+/// Runs [`desktop_refresh_commands`], quietly: a tool that is not installed
+/// or a desktop that is not running is not a failure, and the window is
+/// about to open either way.
+pub fn refresh_desktop(data: &Path) {
+    for (program, args) in desktop_refresh_commands(data) {
+        let _ = std::process::Command::new(program)
+            .args(&args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// The folder pickers to try, best first.
 ///
 /// Ordered by how well each one fits in: a KDE session gets its own dialog, a

@@ -27,9 +27,11 @@
 //! is not ours to delete.
 
 use fontelle_types::{
-    BitcrushConfig, BitcrushPreset, DeviceKind, DistortionConfig, DistortionPreset, EffectConfig,
-    InstrumentKind, Preset, PresetPayload, SoftenConfig, SoftenPreset, TrackChain, TrackPreset,
-    TuneConfig, TunePreset,
+    BitcrushConfig, BitcrushPreset, ChorusConfig, ChorusPreset, CompressorConfig, CompressorPreset,
+    DelayConfig, DelayPreset, DeviceKind, DistortionConfig, DistortionPreset, EffectConfig,
+    EqConfig, EqPreset, FilterConfig, FilterPreset, GateConfig, GatePreset, InstrumentKind, Preset,
+    PresetPayload, ReverbConfig, ReverbPreset, SoftenConfig, SoftenPreset, TrackChain, TrackPreset,
+    TuneConfig, TunePreset, UtilityConfig, UtilityPreset,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -95,6 +97,57 @@ fn effect_presets() -> Vec<Preset> {
         out.push(effect_preset(
             preset.label(),
             EffectConfig::Tune(TuneConfig::from_preset(preset)),
+        ));
+    }
+    // The eight banks the other effects shipped without
+    // (`fontelle-types/src/effect_presets.rs`). Same one category, same
+    // reason: each is one control surface with named places on it.
+    for preset in CompressorPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Compressor(CompressorConfig::from_preset(preset)),
+        ));
+    }
+    for preset in GatePreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Gate(GateConfig::from_preset(preset)),
+        ));
+    }
+    for preset in ChorusPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Chorus(ChorusConfig::from_preset(preset)),
+        ));
+    }
+    for preset in DelayPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Delay(DelayConfig::from_preset(preset)),
+        ));
+    }
+    for preset in ReverbPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Reverb(ReverbConfig::from_preset(preset)),
+        ));
+    }
+    for preset in FilterPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Filter(FilterConfig::from_preset(preset)),
+        ));
+    }
+    for preset in EqPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Eq(EqConfig::from_preset(preset)),
+        ));
+    }
+    for preset in UtilityPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Utility(UtilityConfig::from_preset(preset)),
         ));
     }
     // The sixteen **track** chains — a whole mixer strip rather than one

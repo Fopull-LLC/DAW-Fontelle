@@ -1,0 +1,20 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Reverb"
+  },
+  "name": "cathedral",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Reverb": {
+        "size": 1.0,
+        "decay_s": 8.0,
+        "damping_hz": 3000.0,
+        "pre_delay_ms": 60.0,
+        "width": 1.0,
+        "mix": 0.35
+      }
+    }
+  }
+}

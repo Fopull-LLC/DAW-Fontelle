@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Chorus"
+  },
+  "name": "80s synth",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Chorus": {
+        "voices": 3,
+        "mode": "Chorus",
+        "spread": 0.6,
+        "rate_hz": 0.9,
+        "sync": false,
+        "division": "Quarter",
+        "depth": 0.4,
+        "delay_ms": 14.0,
+        "feedback": 0.1,
+        "tone_hz": 12000.0,
+        "mix": 0.5
+      }
+    }
+  }
+}

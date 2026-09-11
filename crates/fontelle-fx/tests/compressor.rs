@@ -383,3 +383,28 @@ fn without_a_sidechain_the_detector_listens_to_the_signal_itself() {
     let quiet = 10f32.powf(-24.0 / 20.0);
     near(through(&plain(), quiet), -24.0, 0.2, "and leaves it alone");
 }
+
+#[test]
+fn every_factory_preset_is_audibly_a_compressor() {
+    // The bank (`fontelle-types/src/effect_presets.rs`) is fourteen recipes
+    // that are distinct on paper; this is the half that says each one
+    // *works*: a loud steady tone comes out of every preset closer to its
+    // threshold than it went in. Auto make-up and the mix knob are the
+    // insert's business, so both are stood down for the measurement.
+    use fontelle_types::CompressorPreset;
+    for preset in CompressorPreset::ALL {
+        let mut config = CompressorConfig::from_preset(preset);
+        config.auto_makeup = false;
+        config.makeup_db = 0.0;
+        config.mix = 1.0;
+        // A signal 10 dB over the threshold, held long enough to settle.
+        let input_db = config.threshold_db + 10.0;
+        let amplitude = 10f32.powf(input_db / 20.0);
+        let out = through(&config, amplitude.min(1.0));
+        let input_db = db(amplitude.min(1.0));
+        assert!(
+            out < input_db - 1.0,
+            "{preset:?}: {input_db:.1} dB in, {out:.1} dB out — no gain reduction"
+        );
+    }
+}

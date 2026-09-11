@@ -16,6 +16,35 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-11 (later).** A crash that read as "the DAW vanished" was
+`SIGXCPU`: the real-time capture thread closing its PipeWire stream and
+blowing rtkit's CPU budget in `malloc_trim` (`PROGRESS.md`'s top entry).
+Two things worth keeping from finding it. **`coredumpctl list` is where a
+silent exit goes** on this machine — three dumps from three days, all the
+same thread and frame, and the crash log's "ended from outside" line is
+what that signal looks like from inside. And **a virtual PipeWire source
+is how you put a known signal into the input path** without a microphone:
+`pactl load-module module-null-sink media.class=Audio/Source/Virtual
+sink_name=X`, start `pw-play` with `node.autoconnect = false`, `pw-link`
+its ports into `X:input_FL/FR` by hand (`--target` alone sends it to the
+speakers), and unload the module after. The meters then show the tone and
+`parecord -d X` proves the source carries it. The report's first sentence —
+no capture on open until the input is toggled — did **not** reproduce here
+on any path; the memo-with-no-expiry is the best candidate and is fixed,
+but if it comes back, ask what "not capturing" looked like (meter, ears,
+or an empty take), and check whether the strip is muted.
+
+**Updated 2026-09-11.** The start menu, the workspace version, the updater
+and the release workflow are in the **working tree, uncommitted** (Ty
+commits here). `PROGRESS.md`'s top entry is the build. Read `CLAUDE.md` at
+the root now: this repo is wired to the `floptle-platform` hub as agent
+**D**, and task 0234 there is the website's product page. Two things about
+this machine that the session learned: `clippy` here is newer than CI's and
+raises lints CI's did not (fixed as found — keep `-D warnings` green
+against whichever is newer); and the headless dump's file name for a shot
+is the theme's name, so a second scene in the same theme needs its own
+suffix (`Fontelle-Dark-start-menu.png`).
+
 **Updated 2026-09-07 (third session).** `cargo test --workspace` is green at
 **3471 passing** and `cargo clippy --workspace --all-targets -- -D warnings`
 is clean. The eight new tests are the stuck-note regression in
@@ -73,6 +102,22 @@ assuming anything about `HEAD`. Three new crates are in the workspace:
 ## 3. What is still open
 
 Ranked by what I would take first.
+
+-1. **The clean-up pass before the repository goes public** (Ty, 2026-09-11:
+   *"making the codebase look human and readable and clean and easy to
+   navigate for developers in a way that will reflect positively on the
+   company"*). Concretely: (a) **CI's `cargo fmt --all -- --check` cannot
+   pass** — 114 of 422 files at `7ce3a23` were not rustfmt-clean and there is
+   no `rustfmt.toml`; either format the tree once in a commit of its own
+   (with Ty's go, since it rewrites his line-breaking) or drop the check;
+   (b) module-level docs where a crate's `lib.rs` is thin; (c) the older
+   `PROGRESS.md` entries say things later work reversed — a "where things
+   stand" summary at the top that is *maintained* would let the history
+   stay history; (d) `docs/` has plans that are done (`first-usable-plan.md`,
+   `flopsynth-plan.md`) and could say so at the top; (e) the screenshots task
+   0234 wants. Then the **first release**: `git tag v0.1.0` is Ty's, and the
+   day it lands the start menu stops saying *no release has been published
+   yet*. Then the public flip, then W publishes the page.
 
 0. **Prefabs are built, mirror-only, and two things wait on decisions.**
    `PROGRESS.md`'s 2026-09-07 entry is the build. Open: (a) *no gesture* for

@@ -40,8 +40,10 @@ pub use nodes::{
     MetronomeNode, MixerTrackNode, SEND_MIN_DB, SamplerNode, SendControls, SendNode, TrackControls,
     VoiceMeter, insert_latency_samples, max_insert_latency_samples,
 };
+#[cfg(target_os = "linux")]
+pub use pipewire::PipeWireInput;
 pub use pipewire::{
-    PipeWireInput, PipeWireSource, find_pipewire_source, parse_pipewire_default_source,
+    PipeWireSource, drop_off_thread, find_pipewire_source, parse_pipewire_default_source,
     parse_pipewire_sources, pipewire_default_source, pipewire_pcm, pipewire_sources, source_menu,
 };
 pub use plugin_node::{PluginNode, PluginRole};

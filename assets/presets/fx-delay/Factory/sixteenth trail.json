@@ -1,0 +1,22 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Delay"
+  },
+  "name": "sixteenth trail",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Delay": {
+        "time_ms": 150.0,
+        "sync": true,
+        "division": "Sixteenth",
+        "feedback": 0.35,
+        "damping_hz": 9000.0,
+        "drive": 0.0,
+        "ping_pong": false,
+        "mix": 0.25
+      }
+    }
+  }
+}

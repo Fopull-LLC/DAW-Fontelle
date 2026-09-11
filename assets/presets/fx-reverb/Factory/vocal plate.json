@@ -1,0 +1,20 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Reverb"
+  },
+  "name": "vocal plate",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Reverb": {
+        "size": 0.5,
+        "decay_s": 1.8,
+        "damping_hz": 7000.0,
+        "pre_delay_ms": 20.0,
+        "width": 1.0,
+        "mix": 0.25
+      }
+    }
+  }
+}

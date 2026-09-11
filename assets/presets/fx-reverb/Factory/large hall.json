@@ -1,0 +1,20 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Reverb"
+  },
+  "name": "large hall",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Reverb": {
+        "size": 0.9,
+        "decay_s": 3.5,
+        "damping_hz": 4500.0,
+        "pre_delay_ms": 30.0,
+        "width": 1.0,
+        "mix": 0.3
+      }
+    }
+  }
+}

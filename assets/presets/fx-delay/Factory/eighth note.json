@@ -1,0 +1,22 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Delay"
+  },
+  "name": "eighth note",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Delay": {
+        "time_ms": 300.0,
+        "sync": true,
+        "division": "Eighth",
+        "feedback": 0.4,
+        "damping_hz": 8000.0,
+        "drive": 0.0,
+        "ping_pong": false,
+        "mix": 0.35
+      }
+    }
+  }
+}

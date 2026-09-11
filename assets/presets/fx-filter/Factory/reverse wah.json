@@ -1,0 +1,28 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Filter"
+  },
+  "name": "reverse wah",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Filter": {
+        "shape": "LowPass24",
+        "cutoff_hz": 3000.0,
+        "resonance": 0.4,
+        "drive": 0.0,
+        "env_amount": -0.6,
+        "env_attack_ms": 10.0,
+        "env_release_ms": 300.0,
+        "lfo_amount": 0.0,
+        "lfo_rate_hz": 1.0,
+        "lfo_sync": false,
+        "lfo_division": "Quarter",
+        "lfo_wave": "Sine",
+        "output_db": 0.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

@@ -1,6 +1,7 @@
 [package]
 name = "fontelle-types"
 description = "Shared identity, addressing, and event primitives used across the fontelle-core / fontelle-model / fontelle-engine boundary."
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

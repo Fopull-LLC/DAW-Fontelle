@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Chorus"
+  },
+  "name": "vibrato",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Chorus": {
+        "voices": 1,
+        "mode": "Chorus",
+        "spread": 0.0,
+        "rate_hz": 5.5,
+        "sync": false,
+        "division": "Quarter",
+        "depth": 0.5,
+        "delay_ms": 8.0,
+        "feedback": 0.0,
+        "tone_hz": 20000.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

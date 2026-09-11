@@ -1,0 +1,24 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Gate"
+  },
+  "name": "gentle expander",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Gate": {
+        "threshold_db": -38.0,
+        "hysteresis_db": 3.0,
+        "key_hp_hz": 20.0,
+        "lookahead_ms": 0.0,
+        "attack_ms": 5.0,
+        "hold_ms": 20.0,
+        "release_ms": 250.0,
+        "ratio": 2.0,
+        "range_db": -12.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

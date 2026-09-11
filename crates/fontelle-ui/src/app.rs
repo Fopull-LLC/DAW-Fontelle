@@ -378,8 +378,10 @@ enum MenuTarget {
     /// [`crate::canvas::name_press`].
     MixerTrack(usize),
     /// A mixer strip's input button (TDD §15.4): which microphone feeds it.
-    /// The strip, by position.
-    TrackInput(usize),
+    /// The strip, by position, and the inputs the machine had when the menu
+    /// opened — the row chosen is read against **that** list, not a fresh
+    /// one; see `canvas::input_menu_entries`.
+    TrackInput { strip: usize, inputs: Vec<String> },
     /// One point of an automation block: its shape, or its removal.
     Point {
         clip: fontelle_types::ClipId,
@@ -505,7 +507,7 @@ impl MenuTarget {
             | Self::RollTools
             | Self::RecordMode
             | Self::MixerTrack(_)
-            | Self::TrackInput(_)
+            | Self::TrackInput { .. }
             | Self::Point { .. }
             | Self::PluginPicker(_)
             | Self::NameProject(_)
@@ -572,6 +574,10 @@ const TRANSPORT: WidgetId = WidgetId::new(1);
 /// importer and the demo both assume anyway.
 const BEATS_PER_BAR: u32 = 4;
 
+/// The window's application id — must equal `fontelle_app::desktop::APP_ID`.
+#[cfg(target_os = "linux")]
+const APP_ID: &str = "com.fopull.Fontelle";
+
 /// What the window is opened with.
 pub struct WindowOptions {
     /// The OS window's title.
@@ -591,6 +597,13 @@ pub struct WindowOptions {
     /// The studio the window shows and edits: the open clip, the channel rack
     /// and the soundfont bank. `None` opens an empty window.
     pub document: Option<Box<dyn StudioHost>>,
+    /// Open on the start menu (`canvas::welcome`) rather than straight into
+    /// the studio. What a plain launch does; a project named on the command
+    /// line skips it, because the person has already said where they are
+    /// going.
+    pub welcome: bool,
+    /// The build's version, for the start menu's "Version …" line.
+    pub version: String,
 }
 
 impl Default for WindowOptions {
@@ -603,8 +616,34 @@ impl Default for WindowOptions {
             run_for: None,
             host: None,
             document: None,
+            welcome: false,
+            version: String::new(),
         }
     }
+}
+
+/// The start menu while it is up (`canvas::welcome`).
+///
+/// Its strings are kept here, already composed, because the renderer looks
+/// every one of them up by exact text (`shape_labels` and the rule in
+/// `text::Labels`): the update line and the version line are the window's
+/// own inventions and have to be shaped under the string that will be drawn.
+struct Welcome {
+    layout: crate::canvas::WelcomeLayout,
+    /// The name, shaped at twice the chrome's size.
+    title: TextLayout,
+    hover: Option<crate::canvas::WelcomeHit>,
+    /// What the host last said, so a change is noticed and drawn.
+    status: crate::document::UpdateStatus,
+    /// The update line and its offer, from `canvas::update_line` — the line
+    /// shaped to the column, so it wraps.
+    line: TextLayout,
+    button: Option<&'static str>,
+    version: String,
+    recent: Vec<crate::document::RecentProject>,
+    /// What went wrong with the last press, if anything did; shaped like
+    /// the update line.
+    message: TextLayout,
 }
 
 #[derive(Debug)]
@@ -691,6 +730,8 @@ pub struct WindowApp {
     /// The floating editor windows that are open (TDD §7.2, §12, §13.4).
     /// At most one of each kind — see [`EditorKind`].
     editors: Vec<Editor>,
+    /// The start menu, until something on it is chosen.
+    welcome: Option<Welcome>,
     /// Editors a click has asked for, opened on the next pass of the loop.
     ///
     /// A window can only be created with an `&ActiveEventLoop` in hand, and
@@ -1111,6 +1152,10 @@ pub struct WindowApp {
     /// `shape_labels`, because shaping is what the caret's position *is* and
     /// doing it in the draw would mean shaping in a function that cannot.
     field_widths: std::collections::HashMap<usize, f32>,
+    /// The inline rename's caret and selection, measured in `shape_labels`
+    /// the way `field_widths` is for the prompt. `None` when nothing is
+    /// being renamed.
+    rename_marks: Option<crate::render::RenameMarks>,
     /// Whether the caret is in its **on** half. Flipped on a timer, because a
     /// caret that does not blink is easy to read as a character.
     caret_on: bool,
@@ -1301,7 +1346,7 @@ impl WindowApp {
             &options.theme.metrics,
             &Docks::default(),
         );
-        Self {
+        let mut app = Self {
             text,
             title,
             layout,
@@ -1311,6 +1356,7 @@ impl WindowApp {
             renderers: Vec::new(),
             live: None,
             editors: Vec::new(),
+            welcome: None,
             activation: None,
             activation_tried: false,
             pending_editors: Vec::new(),
@@ -1515,6 +1561,7 @@ impl WindowApp {
             search_entry: crate::canvas::TextEntry::default(),
             rename_entry: crate::canvas::TextEntry::default(),
             field_widths: std::collections::HashMap::new(),
+            rename_marks: None,
             caret_on: true,
             caret_phase: 0.0,
             renaming: None,
@@ -1538,7 +1585,218 @@ impl WindowApp {
             lane_height_shown: DEFAULT_LANE_HEIGHT,
             animating: false,
             options,
+        };
+        if app.options.welcome && app.options.document.is_some() {
+            app.open_welcome();
         }
+        app
+    }
+
+    // ------------------------------------------------- the start menu ---
+
+    /// Puts the start menu up and starts the update check.
+    fn open_welcome(&mut self) {
+        let font = &self.options.theme.font;
+        let big = crate::theme::FontTokens {
+            family: font.family.clone(),
+            size: font.size * 2.0,
+            line_height: font.line_height,
+        };
+        let title = self.text.layout("Fontelle", &big, None);
+        let version = format!("Version {}", self.options.version);
+        let recent = self
+            .options
+            .document
+            .as_ref()
+            .map(|doc| doc.recent_projects())
+            .unwrap_or_default();
+        if let Some(doc) = &mut self.options.document {
+            doc.check_for_updates();
+        }
+        let status = self
+            .options
+            .document
+            .as_ref()
+            .map_or(crate::document::UpdateStatus::Unchecked, |doc| {
+                doc.update_status()
+            });
+        let (line, button) = crate::canvas::update_line(&status, &self.options.version);
+        let layout = crate::canvas::welcome_layout(
+            self.layout.window,
+            &self.options.theme.metrics,
+            recent.len(),
+            button.is_some(),
+        );
+        let line = self.text.layout(&line, font, Some(layout.update.width));
+        self.welcome = Some(Welcome {
+            layout,
+            title,
+            hover: None,
+            status,
+            line,
+            button,
+            version,
+            recent,
+            message: TextLayout::default(),
+        });
+        self.tree.invalidate_rect(self.layout.window);
+    }
+
+    /// Shapes a sentence for the menu's left column, wrapped to it.
+    fn welcome_sentence(&mut self, sentence: &str, width: f32) -> TextLayout {
+        self.text
+            .layout(sentence, &self.options.theme.font, Some(width))
+    }
+
+    /// Lays the menu out again — after a resize, or when its rows or its
+    /// offer changed.
+    fn relayout_welcome(&mut self) {
+        let window = self.layout.window;
+        let metrics = &self.options.theme.metrics;
+        if let Some(welcome) = &mut self.welcome {
+            welcome.layout = crate::canvas::welcome_layout(
+                window,
+                metrics,
+                welcome.recent.len(),
+                welcome.button.is_some(),
+            );
+            welcome.hover =
+                crate::canvas::welcome_hit(&welcome.layout, self.cursor.0, self.cursor.1);
+        }
+        self.tree.invalidate_rect(window);
+    }
+
+    /// Reads what the host has to say about the update, once a pass of the
+    /// loop, and redraws the menu when it changed.
+    fn poll_welcome(&mut self) {
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let Some(welcome) = &self.welcome else { return };
+        let status = doc.update_status();
+        if status == welcome.status {
+            return;
+        }
+        let (line, button) = crate::canvas::update_line(&status, &self.options.version);
+        let relayout = button.is_some() != welcome.button.is_some();
+        let line = self.welcome_sentence(&line, welcome.layout.update.width);
+        if let Some(welcome) = &mut self.welcome {
+            welcome.status = status;
+            welcome.line = line;
+            welcome.button = button;
+        }
+        if relayout {
+            self.relayout_welcome();
+        } else {
+            self.tree.invalidate_rect(self.layout.window);
+        }
+    }
+
+    /// Takes the menu down: the studio is what is drawn from here on.
+    fn close_welcome(&mut self) {
+        self.welcome = None;
+        self.refresh_title();
+        self.tree.invalidate_rect(self.layout.window);
+        self.update_cursor();
+    }
+
+    /// A press on the start menu.
+    ///
+    /// Every branch is a request to the host and a decision about whether
+    /// the menu stays up: it goes when a project is open — new, recent or
+    /// chosen — and stays for everything else, with what went wrong on its
+    /// message line.
+    fn press_welcome(&mut self, x: f32, y: f32) {
+        use crate::canvas::{REPOSITORY_URL, WEBSITE_URL, WelcomeHit};
+        use crate::document::UpdateStatus;
+        let Some(welcome) = &self.welcome else { return };
+        let Some(hit) = crate::canvas::welcome_hit(&welcome.layout, x, y) else {
+            return;
+        };
+        // > *"when making a new project from the start screen it doesnt
+        // > prompt me to name it first before making it it just names it
+        // > untitled automatically."*
+        //
+        // So it prompts, with the same prompt the Projects tab's *New* uses,
+        // and the prompt's Enter is what makes and opens the project (see
+        // `NameProject` in `choose_menu_entry`). A name needs somewhere to
+        // go first: on a machine with no projects folder yet the folder is
+        // asked for before the name, because a name typed and then refused
+        // for want of a folder is the worse order.
+        if hit == WelcomeHit::NewProject {
+            let Some(doc) = &mut self.options.document else {
+                return;
+            };
+            if !doc.has_projects_dir() {
+                doc.choose_projects_dir();
+                if let Some(said) = doc.take_message() {
+                    self.say_on_welcome(said);
+                    return;
+                }
+                if !doc.has_projects_dir() {
+                    self.say_on_welcome(
+                        "A new project needs a folder to live in \u{2014} choose one to go on"
+                            .to_string(),
+                    );
+                    return;
+                }
+            }
+            self.ask_for_a_name(NameFor::NewProject, String::new());
+            return;
+        }
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        let outcome: Result<bool, String> = match hit {
+            WelcomeHit::NewProject => unreachable!("handled above"),
+            WelcomeHit::OpenProject => doc.choose_and_open_project(),
+            WelcomeHit::Recent(index) => match welcome.recent.get(index) {
+                Some(project) => doc.open_project_path(&project.path).map(|()| true),
+                None => Ok(false),
+            },
+            WelcomeHit::Forget(index) => {
+                doc.forget_recent(index);
+                let recent = doc.recent_projects();
+                if let Some(welcome) = &mut self.welcome {
+                    welcome.recent = recent;
+                }
+                self.relayout_welcome();
+                return;
+            }
+            WelcomeHit::Update => {
+                match welcome.status {
+                    UpdateStatus::Available { .. } => doc.upgrade(),
+                    _ => doc.open_release_page(),
+                }
+                Ok(false)
+            }
+            WelcomeHit::Website => {
+                doc.open_url(WEBSITE_URL);
+                Ok(false)
+            }
+            WelcomeHit::Repository => {
+                doc.open_url(REPOSITORY_URL);
+                Ok(false)
+            }
+        };
+        match outcome {
+            Ok(true) => self.close_welcome(),
+            Ok(false) => {}
+            Err(why) => self.say_on_welcome(why),
+        }
+    }
+
+    /// Puts a sentence on the start menu's message line.
+    fn say_on_welcome(&mut self, why: String) {
+        let width = self
+            .welcome
+            .as_ref()
+            .map_or(0.0, |w| w.layout.message.width);
+        let message = self.welcome_sentence(&why, width);
+        if let Some(welcome) = &mut self.welcome {
+            welcome.message = message;
+        }
+        self.tree.invalidate_rect(self.layout.window);
     }
 
     /// The time signature's numerator, from the document — or 4/4 when there
@@ -1588,6 +1846,7 @@ impl WindowApp {
         // A resize invalidates the lot: the compositor hands back a surface
         // with nothing in it.
         self.tree.invalidate_rect(self.layout.window);
+        self.relayout_welcome();
     }
 
     fn draw(&mut self) {
@@ -1712,6 +1971,7 @@ impl WindowApp {
                             Some(MenuTarget::Channel(index)) => Some(*index),
                             _ => None,
                         },
+                        rename: self.rename_marks,
                     }),
                 prefabs: self
                     .options
@@ -1727,6 +1987,7 @@ impl WindowApp {
                             Some(MenuTarget::Prefab(index)) => Some(*index),
                             _ => None,
                         },
+                        rename: self.rename_marks,
                     }),
                 browser: self.options.document.as_ref().map(|_| BrowserChrome {
                     panel: self.layout.browser,
@@ -1775,6 +2036,7 @@ impl WindowApp {
                         Some(MenuTarget::Lane(index)) => Some(*index),
                         _ => None,
                     },
+                    rename: self.rename_marks,
                     point_clip: self.timeline.point_clip(),
                     point_selection: self.timeline.point_selection(),
                     loop_range: self.loop_range,
@@ -1801,6 +2063,7 @@ impl WindowApp {
                         Some(MenuTarget::MixerTrack(index)) => Some(*index),
                         _ => None,
                     },
+                    rename: self.rename_marks,
                     output_label: output_label.clone(),
                     input_label: input_label.clone(),
                     insert_drag: self.insert_drag,
@@ -1839,6 +2102,19 @@ impl WindowApp {
                         at: self.cursor,
                         target: carry.target,
                         bounds: self.layout.window,
+                    }),
+                welcome: self
+                    .welcome
+                    .as_ref()
+                    .map(|welcome| crate::render::WelcomeChrome {
+                        layout: welcome.layout.clone(),
+                        title: &welcome.title,
+                        version: &welcome.version,
+                        update: &welcome.line,
+                        update_button: welcome.button,
+                        recent: &welcome.recent,
+                        hover: welcome.hover,
+                        message: &welcome.message,
                     }),
             },
         );
@@ -1906,6 +2182,7 @@ impl WindowApp {
     /// view *and* the meter state, because a meter still falling after the
     /// last note is something moving even though the transport is not.
     fn tick(&mut self) {
+        self.poll_welcome();
         let now = std::time::Instant::now();
         // Clamped: a window that was dragged, minimised, or simply not
         // scheduled for a second must not make the meters jump a second's
@@ -1918,16 +2195,22 @@ impl WindowApp {
         // unmistakably a cursor, and it is the cheapest way a box can say
         // "type here". Half a second each way, which is the rate every other
         // text field on the machine uses.
-        if self
+        let prompting = self
             .menu
             .as_ref()
-            .is_some_and(|(target, _)| target.name_prompt().is_some())
-        {
+            .is_some_and(|(target, _)| target.name_prompt().is_some());
+        // An inline rename blinks too, now that its caret is drawn where it
+        // is rather than at the end of the name.
+        if prompting || self.renaming.is_some() {
             self.caret_phase += dt;
             if self.caret_phase >= CARET_BLINK_S {
                 self.caret_phase -= CARET_BLINK_S;
                 self.caret_on = !self.caret_on;
-                self.tree.invalidate_rect(self.menu_at.1);
+                if prompting {
+                    self.tree.invalidate_rect(self.menu_at.1);
+                } else {
+                    self.invalidate_names();
+                }
             }
         } else if !self.caret_on {
             // Nothing is being typed into: leave the caret **on**, so the next
@@ -2153,6 +2436,19 @@ impl WindowApp {
     /// left here is the one match onto winit's vocabulary.
     fn update_cursor(&mut self) {
         let (x, y) = self.cursor;
+        if let Some(welcome) = &self.welcome {
+            let wanted = match crate::canvas::welcome_hit(&welcome.layout, x, y) {
+                Some(_) => Pointer::Hand,
+                None => Pointer::Default,
+            };
+            if wanted != self.pointer {
+                self.pointer = wanted;
+                if let Some(live) = &self.live {
+                    live.window.set_cursor(system_cursor(wanted));
+                }
+            }
+            return;
+        }
         let empty_notes = fontelle_model::Arena::default();
         let notes = match &self.options.document {
             Some(doc) => doc.notes(),
@@ -2241,6 +2537,15 @@ impl WindowApp {
     /// Recomputes what the pointer is over, dirtying the bar only if it
     /// changed.
     fn update_hover(&mut self) {
+        if let Some(welcome) = &mut self.welcome {
+            let over = crate::canvas::welcome_hit(&welcome.layout, self.cursor.0, self.cursor.1);
+            if over != welcome.hover {
+                welcome.hover = over;
+                self.tree.invalidate_rect(self.layout.window);
+            }
+            self.update_cursor();
+            return;
+        }
         let hover = hit(&self.bar, &self.view, self.cursor.0, self.cursor.1);
         if hover != self.hover {
             self.hover = hover;
@@ -2457,12 +2762,29 @@ impl ApplicationHandler for WindowApp {
         self.started = std::time::Instant::now();
         self.build_cursors(event_loop);
 
+        let (icon_w, icon_h, icon_rgba) = crate::branding::window_icon();
         let attributes = Window::default_attributes()
             .with_title(self.options.title.clone())
-            .with_inner_size(winit::dpi::LogicalSize::new(
-                self.options.size.0,
-                self.options.size.1,
-            ));
+            // The mark on the taskbar and in the switcher. `ok()`: a
+            // malformed icon is a window without one, not no window. X11
+            // and Windows take the pixels; Wayland ignores them and finds
+            // an icon by the app id set below.
+            .with_window_icon(winit::window::Icon::from_rgba(icon_rgba, icon_w, icon_h).ok());
+        // The app id (Wayland) and `WM_CLASS` (X11): what a compositor
+        // matches against a `.desktop` entry to put a face on the window.
+        // The same string the desktop entry is named by — see
+        // `fontelle_app::desktop::APP_ID`; it is repeated here rather than
+        // imported because this crate sits below `fontelle-app`.
+        #[cfg(target_os = "linux")]
+        let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
+            winit::platform::x11::WindowAttributesExtX11::with_name(attributes, APP_ID, APP_ID),
+            APP_ID,
+            APP_ID,
+        );
+        let attributes = attributes.with_inner_size(winit::dpi::LogicalSize::new(
+            self.options.size.0,
+            self.options.size.1,
+        ));
         let window = match event_loop.create_window(attributes) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -2759,7 +3081,9 @@ impl ApplicationHandler for WindowApp {
                         (p.x as f32 / 40.0, p.y as f32 / 40.0)
                     }
                 };
-                self.scroll_roll(dx, dy);
+                if self.welcome.is_none() {
+                    self.scroll_roll(dx, dy);
+                }
                 self.request_redraw_if_dirty();
             }
 
@@ -3114,7 +3438,7 @@ impl WindowApp {
             (_, true) => crate::layout::TUNE_MINIMUM,
             _ => kind.minimum_size(),
         };
-        let mut attributes = Window::default_attributes()
+        let attributes = Window::default_attributes()
             .with_title(self.editor_title(kind))
             .with_inner_size(winit::dpi::LogicalSize::new(w, h))
             .with_min_inner_size(winit::dpi::LogicalSize::new(min_w, min_h));
@@ -3125,11 +3449,16 @@ impl WindowApp {
         // it when it does (KWin's `Window::setActivationToken`), and asking
         // for a second would only replace this one as the current token and
         // leave it to fail. See `crate::activation`.
-        if let Some(token) = self.activation_token() {
-            use winit::platform::startup_notify::WindowAttributesExtStartupNotify;
-            attributes =
-                attributes.with_activation_token(winit::window::ActivationToken::from_raw(token));
-        }
+        // Startup notification is a freedesktop protocol: `winit` offers it
+        // on Linux only, and elsewhere a new window is simply put in front.
+        #[cfg(target_os = "linux")]
+        let attributes = match self.activation_token() {
+            Some(token) => {
+                use winit::platform::startup_notify::WindowAttributesExtStartupNotify;
+                attributes.with_activation_token(winit::window::ActivationToken::from_raw(token))
+            }
+            None => attributes,
+        };
         let window = Arc::new(
             event_loop
                 .create_window(attributes)
@@ -4430,6 +4759,34 @@ impl WindowApp {
             labels.ensure(s, &font, text);
         };
 
+        // The start menu, under exactly the strings `draw_welcome` looks up.
+        if let Some(welcome) = &self.welcome {
+            for fixed in [
+                crate::canvas::NEW_PROJECT_LABEL,
+                crate::canvas::OPEN_PROJECT_LABEL,
+                crate::canvas::RECENT_HEADING,
+                crate::canvas::NOTHING_RECENT,
+                crate::canvas::FOOTER_TEXT,
+                crate::canvas::WEBSITE_LABEL,
+                crate::canvas::REPOSITORY_LABEL,
+                "\u{00d7}",
+            ] {
+                want(&mut self.labels, &mut self.text, fixed);
+            }
+            want(&mut self.labels, &mut self.text, &welcome.version);
+            if let Some(button) = welcome.button {
+                want(&mut self.labels, &mut self.text, button);
+            }
+            for project in &welcome.recent {
+                want(&mut self.labels, &mut self.text, &project.name);
+                self.labels.ensure_small(
+                    &project.path.display().to_string(),
+                    &font,
+                    &mut self.text,
+                );
+            }
+        }
+
         for fixed in [
             "Channels",
             ADD_CHANNEL,
@@ -4553,6 +4910,27 @@ impl WindowApp {
                 want_field(&mut self.labels, &mut self.text, prompt);
             }
         }
+
+        // The inline rename's marks, by the same measurement: a rename is a
+        // field too, and its selection and caret were drawn nowhere.
+        self.rename_marks = self.renaming.as_ref().map(|_| {
+            let entry = &self.rename_entry;
+            let text = entry.text();
+            let mut width_to = |at: usize| {
+                if at == 0 {
+                    0.0
+                } else {
+                    self.text.layout(&text[..at], &font, None).width
+                }
+            };
+            crate::render::RenameMarks {
+                caret_x: width_to(entry.caret()),
+                selection: entry
+                    .selection()
+                    .map(|(from, to)| (width_to(from), width_to(to))),
+                caret_on: self.caret_on,
+            }
+        });
 
         // **The corrector's console.** Its cards, their captions and
         // read-outs, the two strings the viewport writes and the twelve note
@@ -5026,6 +5404,17 @@ impl WindowApp {
     fn press(&mut self, button: winit::event::MouseButton, x: f32, y: f32) {
         self.drag = Drag::None;
         self.end_edge_scroll();
+        // The start menu is the whole window while it is up — except for
+        // the name prompt it opens, which is above it like any menu.
+        if self.welcome.is_some() {
+            if self.menu.is_some() && self.press_menu(x, y) {
+                return;
+            }
+            if button == winit::event::MouseButton::Left {
+                self.press_welcome(x, y);
+            }
+            return;
+        }
         // A press outside the soundfont panel hands the arrow keys back to the
         // notes and clips. `press_browser` puts the focus back on straight
         // after, so clicking a preset row keeps it.
@@ -5525,8 +5914,16 @@ impl WindowApp {
                     .as_ref()
                     .map_or(crate::layout::Rect::ZERO, |o| o.input);
                 let bounds = self.layout.window;
+                // Asked of the host **now**, once: the menu is built from
+                // this list and the choice is read against it.
+                let inputs = self
+                    .options
+                    .document
+                    .as_ref()
+                    .map(|doc| doc.audio_inputs())
+                    .unwrap_or_default();
                 self.open_menu(
-                    MenuTarget::TrackInput(strip),
+                    MenuTarget::TrackInput { strip, inputs },
                     anchor.x,
                     anchor.bottom(),
                     bounds,
@@ -9147,9 +9544,11 @@ impl WindowApp {
                 // click on instruments and hear how they sound"*, and *"the
                 // way to change the sound ... should be to double click it or
                 // press enter while its selected"*.
-                let doubled = self
-                    .double_click
-                    .press(x, y, self.input_clock.stamp(std::time::Instant::now()));
+                let doubled = self.double_click.press(
+                    x,
+                    y,
+                    self.input_clock.stamp(std::time::Instant::now()),
+                );
                 if !doubled {
                     self.preview_preset(index);
                     self.tree.invalidate(BROWSER);
@@ -9635,30 +10034,12 @@ impl WindowApp {
             // Every input the machine has, and "none" above them — a track
             // that records nothing is the state every track starts in and the
             // one you need to be able to get back to.
-            MenuTarget::TrackInput(strip) => {
-                let strip = *strip;
+            MenuTarget::TrackInput { strip, inputs } => {
                 let Some(doc) = self.options.document.as_ref() else {
                     return Vec::new();
                 };
-                let current = doc.track_input(strip);
-                let mut entries = vec![if current.is_none() {
-                    MenuEntry::disabled("No input")
-                } else {
-                    MenuEntry::new("No input")
-                }];
-                let inputs = doc.audio_inputs();
-                if inputs.is_empty() {
-                    entries.push(MenuEntry::disabled("nothing to record from").after_rule());
-                }
-                for name in inputs {
-                    let entry = if current.as_deref() == Some(name.as_str()) {
-                        MenuEntry::disabled(name)
-                    } else {
-                        MenuEntry::new(name)
-                    };
-                    entries.push(entry);
-                }
-                entries
+                let current = doc.track_input(*strip);
+                crate::canvas::input_menu_entries(current.as_deref(), inputs)
             }
             // The tools, each of which opens its own dialog — see
             // `canvas::tools`. A rule above the importers: bringing a file in
@@ -10263,14 +10644,23 @@ impl WindowApp {
                     NameFor::NewProject => doc.new_project_named(&name),
                     NameFor::SaveAs => doc.save_as(&name),
                 });
-                self.status = match done {
+                self.status = match &done {
                     Some(Ok(())) => match purpose {
                         NameFor::NewProject => "new project".to_string(),
                         NameFor::SaveAs => "saved".to_string(),
                     },
-                    Some(Err(e)) => e,
+                    Some(Err(e)) => e.clone(),
                     None => String::new(),
                 };
+                // From the start menu: a project made is the way in, and a
+                // refusal is said where the person is looking.
+                if self.welcome.is_some() {
+                    match done {
+                        Some(Ok(())) => self.close_welcome(),
+                        Some(Err(e)) => self.say_on_welcome(e),
+                        None => {}
+                    }
+                }
                 self.studio_revision = u64::MAX;
                 self.refresh_studio();
                 self.refresh_title();
@@ -10591,18 +10981,14 @@ impl WindowApp {
                     self.arm_recording(true);
                 }
             }
-            (MenuTarget::TrackInput(strip), index) => {
-                let strip = *strip;
-                let chosen = match index.checked_sub(1) {
-                    None => None,
-                    Some(n) => self
-                        .options
-                        .document
-                        .as_ref()
-                        .and_then(|doc| doc.audio_inputs().get(n).cloned()),
+            (MenuTarget::TrackInput { strip, inputs }, index) => {
+                // Read against the list the rows were written from, so the
+                // row you clicked is the input you read.
+                let Some(chosen) = crate::canvas::input_menu_choice(inputs, index) else {
+                    return;
                 };
                 if let Some(doc) = &mut self.options.document {
-                    doc.set_track_input(strip, chosen);
+                    doc.set_track_input(*strip, chosen);
                 }
                 self.refresh_studio();
                 self.tree.invalidate(PANEL);
@@ -11997,8 +12383,18 @@ impl WindowApp {
 
         // A menu is in front of everything it was dropped over, so it has the
         // keyboard while it is open — which is what lets the plugin picker be
-        // typed at rather than only scrolled.
+        // typed at rather than only scrolled. Before the start menu's guard,
+        // because the name prompt is a menu over the start menu.
         if self.menu_filter_key(event) {
+            return;
+        }
+
+        // The start menu has the keyboard while it is up, and answers one
+        // key: Escape is "just let me in", the blank studio underneath.
+        if self.welcome.is_some() {
+            if event.logical_key == Key::Named(NamedKey::Escape) {
+                self.close_welcome();
+            }
             return;
         }
 
@@ -12739,6 +13135,20 @@ impl WindowApp {
         );
         if let Some(live) = &self.live {
             live.window.set_title(&title);
+        }
+        // The editor panel's header says the same name. It was shaped once
+        // at launch, which was right until the start menu made opening a
+        // different project the first thing most launches do.
+        if doc.name() != self.options.panel_title {
+            self.options.panel_title = doc.name().to_string();
+            let room =
+                self.layout.panel.header.width - 2.0 * self.options.theme.metrics.panel_padding;
+            self.title = self.text.layout(
+                &self.options.panel_title,
+                &self.options.theme.font,
+                (room > 0.0).then_some(room),
+            );
+            self.tree.invalidate(PANEL);
         }
     }
 

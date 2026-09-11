@@ -39,11 +39,16 @@
 //! period, push it into the take's ring and the monitor's — which is the
 //! same contract the `cpal` input callback keeps.
 
+#[cfg(target_os = "linux")]
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(target_os = "linux")]
 use crate::audio_input::InputWriter;
+#[cfg(target_os = "linux")]
 use crate::device::{BLOCK_SIZE, DeviceError};
+#[cfg(target_os = "linux")]
 use crate::input_monitor::InputMonitor;
 
 /// One capture node, as PipeWire describes it.
@@ -221,11 +226,56 @@ pub fn pipewire_pcm(node: &str) -> String {
 /// progress returns within a period, and the thread is joined. A period is
 /// [`BLOCK_SIZE`] frames where the server allows it, for the reason the
 /// `cpal` path asks for the same: monitoring latency is one input period.
+///
+/// # The stream is never closed on the thread that read it
+///
+/// > *"if you try changing the input it often just crashed for me when i
+/// > set it to no input briefly"*
+///
+/// The core dump was `SIGXCPU` on `fontelle-input`, inside `snd_pcm_close`
+/// → `pw_stream_destroy` → `malloc_trim`. The capture thread runs at
+/// real-time priority, and a real-time thread has a budget of CPU time
+/// (`RLIMIT_RTTIME`, 200 ms as rtkit sets it) it may spend without blocking
+/// before the kernel kills the **whole process**. Reading a period at a time
+/// never comes near it. Closing the stream did: PipeWire's teardown trims the
+/// heap, and on a DAW that has scanned a thousand plugins that is more than
+/// the budget. So the thread hands the stream back through its join and
+/// exits, and the stream is closed by [`drop_off_thread`] — on a thread with
+/// no budget to blow, and not the window's either, so choosing another input
+/// costs the window nothing while the old one goes.
+#[cfg(target_os = "linux")]
 pub struct PipeWireInput {
     stop: Arc<AtomicBool>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    /// Returns what the thread must not close: the stream, and the take's
+    /// ring with it (freeing a ring is a free on a real-time thread,
+    /// INVARIANT 1).
+    thread: Option<std::thread::JoinHandle<Leftovers>>,
 }
 
+/// What a capture thread hands back rather than dropping: the open stream
+/// and the ring it wrote. Closed by whoever joins — see [`PipeWireInput`].
+#[cfg(target_os = "linux")]
+struct Leftovers {
+    _pcm: alsa::pcm::PCM,
+    _writer: InputWriter,
+}
+
+/// Drops `what` on a thread of its own, at ordinary priority, and says which.
+///
+/// For anything whose drop is expensive — a PipeWire stream's close trims
+/// the whole heap — and which is owned, at the moment it has to go, by a
+/// thread that cannot afford it: the window's, which would freeze, or a
+/// real-time one, which the kernel would kill. The handle is returned so a
+/// caller that needs the drop to have *happened* can wait for it; nothing in
+/// the program does.
+pub fn drop_off_thread<T: Send + 'static>(what: T) -> std::thread::JoinHandle<()> {
+    std::thread::Builder::new()
+        .name("fontelle-closer".to_string())
+        .spawn(move || drop(what))
+        .expect("a thread to drop on")
+}
+
+#[cfg(target_os = "linux")]
 impl PipeWireInput {
     /// Opens `node` for capture and starts reading it into `writer` — and
     /// into `monitor`, when there is one, in the same breath.
@@ -284,32 +334,44 @@ impl PipeWireInput {
                 let _rt =
                     audio_thread_priority::promote_current_thread_to_real_time(period as u32, rate)
                         .ok();
-                let Ok(io) = pcm.io_f32() else {
-                    eprintln!("fontelle: {name}: the stream would not read as float");
-                    return;
-                };
-                let mut buffer = vec![0.0f32; period * usize::from(channels)];
-                while !flag.load(Ordering::Relaxed) {
-                    match io.readi(&mut buffer) {
-                        Ok(frames) => {
-                            let block = &buffer[..frames * usize::from(channels)];
-                            writer.write(block);
-                            // The same block into the second ring, so what
-                            // is kept and what is heard are the same samples.
-                            if let Some(monitor) = &monitor {
-                                monitor.write(block);
+                // Scoped so the reader's borrow of the stream ends before the
+                // stream is handed back — and handed back even when it would
+                // not read, because a close is a close wherever it fails.
+                'reading: {
+                    let Ok(io) = pcm.io_f32() else {
+                        eprintln!("fontelle: {name}: the stream would not read as float");
+                        break 'reading;
+                    };
+                    let mut buffer = vec![0.0f32; period * usize::from(channels)];
+                    while !flag.load(Ordering::Relaxed) {
+                        match io.readi(&mut buffer) {
+                            Ok(frames) => {
+                                let block = &buffer[..frames * usize::from(channels)];
+                                writer.write(block);
+                                // The same block into the second ring, so
+                                // what is kept and what is heard are the
+                                // same samples.
+                                if let Some(monitor) = &monitor {
+                                    monitor.write(block);
+                                }
                             }
-                        }
-                        Err(e) => {
-                            // An overrun is recoverable and costs the frames
-                            // that were lost; anything else ends the stream,
-                            // which the next `sync_audio_input` reports.
-                            if pcm.recover(e.errno(), true).is_err() {
-                                eprintln!("fontelle: {name}: capture stopped: {e}");
-                                break;
+                            Err(e) => {
+                                // An overrun is recoverable and costs the
+                                // frames that were lost; anything else ends
+                                // the stream, which the next
+                                // `sync_audio_input` reports.
+                                if pcm.recover(e.errno(), true).is_err() {
+                                    eprintln!("fontelle: {name}: capture stopped: {e}");
+                                    break;
+                                }
                             }
                         }
                     }
+                }
+                // Handed back, not closed: see the type's own note.
+                Leftovers {
+                    _pcm: pcm,
+                    _writer: writer,
                 }
             })
             .map_err(|e| DeviceError(format!("could not start the input thread: {e}")))?;
@@ -324,11 +386,14 @@ impl PipeWireInput {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for PipeWireInput {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        if let Some(thread) = self.thread.take()
+            && let Ok(leftovers) = thread.join()
+        {
+            drop_off_thread(leftovers);
         }
     }
 }

@@ -1,6 +1,7 @@
 [package]
 name = "fontelle-dsp"
 description = "RT-safe DSP primitives: filters, envelopes, oscillators, interpolators, meters. No allocation, no I/O, no DAW knowledge."
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

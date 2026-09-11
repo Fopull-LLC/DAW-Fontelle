@@ -1,0 +1,28 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Filter"
+  },
+  "name": "acid squelch",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Filter": {
+        "shape": "LowPass24",
+        "cutoff_hz": 500.0,
+        "resonance": 0.85,
+        "drive": 0.5,
+        "env_amount": 0.5,
+        "env_attack_ms": 2.0,
+        "env_release_ms": 120.0,
+        "lfo_amount": 0.0,
+        "lfo_rate_hz": 1.0,
+        "lfo_sync": false,
+        "lfo_division": "Quarter",
+        "lfo_wave": "Sine",
+        "output_db": 0.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

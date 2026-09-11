@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Compressor"
+  },
+  "name": "peak stop",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Compressor": {
+        "threshold_db": -6.0,
+        "ratio": 20.0,
+        "attack_ms": 0.1,
+        "release_ms": 60.0,
+        "knee_db": 0.0,
+        "makeup_db": 0.0,
+        "auto_makeup": false,
+        "detection": "Peak",
+        "mix": 1.0
+      }
+    }
+  }
+}

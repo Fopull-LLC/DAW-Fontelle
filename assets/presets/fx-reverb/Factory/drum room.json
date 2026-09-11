@@ -1,0 +1,20 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Reverb"
+  },
+  "name": "drum room",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Reverb": {
+        "size": 0.35,
+        "decay_s": 0.9,
+        "damping_hz": 6500.0,
+        "pre_delay_ms": 10.0,
+        "width": 0.9,
+        "mix": 0.2
+      }
+    }
+  }
+}

@@ -40,11 +40,16 @@ pub use fontelle_types::FolderKind;
 /// do with either.
 ///
 /// Two since the settings file grew [`MidiInputSettings`], three since it grew
-/// the two import folders, four since it grew the favourites. Every added
-/// field carries `#[serde(default)]`, so an older file still reads — the bump
-/// is so that an *older build* handed a newer file says "upgrade Fontelle"
-/// rather than "unknown field `midi_dir`".
-pub const SETTINGS_FORMAT_VERSION: u32 = 5;
+/// the two import folders, four since it grew the favourites, six since it
+/// grew the recent projects and the update switch. Every added field carries
+/// `#[serde(default)]`, so an older file still reads — the bump is so that an
+/// *older build* handed a newer file says "upgrade Fontelle" rather than
+/// "unknown field `midi_dir`".
+pub const SETTINGS_FORMAT_VERSION: u32 = 6;
+
+/// How many projects the start menu remembers. A menu's worth: past this a
+/// list stops being something you glance at and becomes something you search.
+pub const RECENT_PROJECTS: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -121,6 +126,28 @@ pub struct Settings {
     /// matter — see [`Settings::toggle_favorite`], which keeps it one of each.
     #[serde(default)]
     pub favorites: Vec<Favorite>,
+    /// The projects the start menu lists, newest first — every bundle this
+    /// machine last opened, made or saved under a name. See
+    /// [`Settings::remember_project`] for the shape of the list.
+    ///
+    /// Here rather than anywhere else because it is a fact about this
+    /// machine: which files on *this* disk were touched, not a property of
+    /// any one of them.
+    #[serde(default)]
+    pub recent_projects: Vec<PathBuf>,
+    /// Whether the start menu asks GitHub for a newer release at launch.
+    ///
+    /// On by default: a person who never opens the settings tab should still
+    /// hear about a new release, which is half of what a start menu is for.
+    /// Off is a real choice — a DAW that talks to the network at every launch
+    /// is something some people rightly want to switch off — and the menu
+    /// says the check is off rather than drawing nothing.
+    #[serde(default = "yes")]
+    pub check_for_updates: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -137,11 +164,29 @@ impl Default for Settings {
             preset_dir: None,
             plugin_dirs: Vec::new(),
             favorites: Vec::new(),
+            recent_projects: Vec::new(),
+            check_for_updates: true,
         }
     }
 }
 
 impl Settings {
+    /// Puts `path` at the top of the recent list.
+    ///
+    /// One entry per path, so a project opened ten times is one row and not
+    /// ten; newest first, so the row at the top is the one you were in last;
+    /// and no longer than [`RECENT_PROJECTS`], the oldest falling off.
+    pub fn remember_project(&mut self, path: &Path) {
+        self.forget_project(path);
+        self.recent_projects.insert(0, path.to_path_buf());
+        self.recent_projects.truncate(RECENT_PROJECTS);
+    }
+
+    /// Takes `path` out of the recent list, if it is in it.
+    pub fn forget_project(&mut self, path: &Path) {
+        self.recent_projects.retain(|p| p != path);
+    }
+
     /// Whether `favorite` has been starred.
     pub fn is_favorite(&self, favorite: &Favorite) -> bool {
         self.favorites.contains(favorite)
@@ -274,6 +319,9 @@ pub enum SettingRow {
     /// A folder to import from. Clicking it opens a picker rather than
     /// stepping a value — see [`SettingRow::folder`].
     Folder(FolderKind),
+    /// Whether the start menu asks GitHub for a newer release at launch
+    /// (`updates.rs`). A switch: a click flips it, either direction.
+    CheckForUpdates,
 }
 
 /// Every row the settings tab shows, in the order it shows them.
@@ -282,7 +330,7 @@ pub enum SettingRow {
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 16] = [
+pub const SETTING_ROWS: [SettingRow; 18] = [
     SettingRow::Heading("MIDI input"),
     SettingRow::VelocityCurve,
     SettingRow::FixedVelocity,
@@ -307,6 +355,10 @@ pub const SETTING_ROWS: [SettingRow; 16] = [
     // Fontelle *writes* to.
     SettingRow::Heading("Presets"),
     SettingRow::PresetFolder,
+    // Under its own heading, because it is the one row here about the
+    // network rather than about a folder or a keyboard.
+    SettingRow::Heading("Updates"),
+    SettingRow::CheckForUpdates,
 ];
 
 /// How far transpose goes either way. Two octaves is as far as anybody moves a
@@ -341,6 +393,7 @@ impl SettingRow {
             Self::PluginFolder => "Add plugin folder",
             Self::PresetFolder => "My presets",
             Self::RescanPlugins => "Rescan plugins",
+            Self::CheckForUpdates => "Check at launch",
         }
     }
 
@@ -411,6 +464,12 @@ impl SettingRow {
             },
             // A button says what pressing it does rather than what it is at.
             Self::RescanPlugins => "Click".to_string(),
+            Self::CheckForUpdates => if settings.check_for_updates {
+                "On"
+            } else {
+                "Off"
+            }
+            .to_string(),
         }
     }
 
@@ -435,7 +494,8 @@ impl SettingRow {
             | Self::Folder(_)
             | Self::PresetFolder
             | Self::PluginFolder
-            | Self::RescanPlugins => {}
+            | Self::RescanPlugins
+            | Self::CheckForUpdates => {}
             Self::VelocityCurve => {
                 let all = VelocityCurveSetting::ALL;
                 let at = all

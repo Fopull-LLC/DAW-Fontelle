@@ -1,0 +1,24 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Gate"
+  },
+  "name": "reverb tail cut",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Gate": {
+        "threshold_db": -34.0,
+        "hysteresis_db": 6.0,
+        "key_hp_hz": 200.0,
+        "lookahead_ms": 4.0,
+        "attack_ms": 1.0,
+        "hold_ms": 150.0,
+        "release_ms": 400.0,
+        "ratio": 100.0,
+        "range_db": -30.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

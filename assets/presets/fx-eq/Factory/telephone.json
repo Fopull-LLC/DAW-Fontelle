@@ -1,0 +1,89 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Eq"
+  },
+  "name": "telephone",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Eq": {
+        "bands": [
+          {
+            "band_type": "HighPass48",
+            "freq_hz": 400.0,
+            "gain_db": 0.0,
+            "q": 0.70710677,
+            "enabled": true,
+            "solo": false,
+            "channel": "Stereo"
+          },
+          {
+            "band_type": "LowPass48",
+            "freq_hz": 3400.0,
+            "gain_db": 0.0,
+            "q": 0.70710677,
+            "enabled": true,
+            "solo": false,
+            "channel": "Stereo"
+          },
+          {
+            "band_type": "Bell",
+            "freq_hz": 1000.0,
+            "gain_db": 0.0,
+            "q": 0.70710677,
+            "enabled": false,
+            "solo": false,
+            "channel": "Stereo"
+          },
+          {
+            "band_type": "Bell",
+            "freq_hz": 1000.0,
+            "gain_db": 0.0,
+            "q": 0.70710677,
+            "enabled": false,
+            "solo": false,
+            "channel": "Stereo"
+          },
+          {
+            "band_type": "Bell",
+            "freq_hz": 1000.0,
+            "gain_db": 0.0,
+            "q": 0.70710677,
+            "enabled": false,
+            "solo": false,
+            "channel": "Stereo"
+          },
+          {
+            "band_type": "Bell",
+            "freq_hz": 1000.0,
+            "gain_db": 0.0,
+            "q": 0.70710677,
+            "enabled": false,
+            "solo": false,
+            "channel": "Stereo"
+          },
+          {
+            "band_type": "Bell",
+            "freq_hz": 1000.0,
+            "gain_db": 0.0,
+            "q": 0.70710677,
+            "enabled": false,
+            "solo": false,
+            "channel": "Stereo"
+          },
+          {
+            "band_type": "Bell",
+            "freq_hz": 1000.0,
+            "gain_db": 0.0,
+            "q": 0.70710677,
+            "enabled": false,
+            "solo": false,
+            "channel": "Stereo"
+          }
+        ],
+        "mix": 1.0
+      }
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Gate"
+  },
+  "name": "tom cleanup",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Gate": {
+        "threshold_db": -32.0,
+        "hysteresis_db": 5.0,
+        "key_hp_hz": 60.0,
+        "lookahead_ms": 2.0,
+        "attack_ms": 0.3,
+        "hold_ms": 80.0,
+        "release_ms": 150.0,
+        "ratio": 100.0,
+        "range_db": -80.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

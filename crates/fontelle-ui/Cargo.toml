@@ -1,6 +1,7 @@
 [package]
 name = "fontelle-ui"
 description = "Custom widget layer over wgpu, windowed by winit (app) or baseview (plugin editor). Retained tree, dirty-region invalidation, virtualised timeline/piano-roll canvases."
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -26,6 +27,10 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 vello = "0.10.0"
 winit = "0.30.13"
+# Decodes the two PNGs compiled in from `assets/branding/` — the logo the
+# start menu draws and the icon the window wears. See `branding.rs` for why
+# the logo is tinted rather than drawn as shipped.
+png = "0.18.1"
 
 # Bringing an editor window to the front under Wayland — see `activation.rs`.
 # `winit` already speaks the protocol to get a window *created* in front, and
@@ -38,8 +43,3 @@ wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
 
 [dev-dependencies]
 slotmap = { version = "1.1.1", features = ["serde"] }
-# Only so `FONTELLE_UI_DUMP` can write out what the headless renderer produced.
-# §2.5 of `docs/first-usable-plan.md` makes "seen once by a human" half of the
-# done-criterion for every GUI item, and on a machine with no display that is
-# otherwise impossible to satisfy.
-png = "0.18.1"

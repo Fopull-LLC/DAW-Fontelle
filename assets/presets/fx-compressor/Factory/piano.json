@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Compressor"
+  },
+  "name": "piano",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Compressor": {
+        "threshold_db": -16.0,
+        "ratio": 2.0,
+        "attack_ms": 35.0,
+        "release_ms": 250.0,
+        "knee_db": 10.0,
+        "makeup_db": 0.0,
+        "auto_makeup": true,
+        "detection": "Rms",
+        "mix": 1.0
+      }
+    }
+  }
+}

@@ -1,6 +1,7 @@
 [package]
 name = "xtask"
 description = "Build/bundle/package automation (cargo xtask ...). Not part of the public crate graph."
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

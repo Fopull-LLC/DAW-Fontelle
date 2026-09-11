@@ -1,0 +1,20 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Reverb"
+  },
+  "name": "narrow room",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Reverb": {
+        "size": 0.3,
+        "decay_s": 0.8,
+        "damping_hz": 5000.0,
+        "pre_delay_ms": 8.0,
+        "width": 0.3,
+        "mix": 0.2
+      }
+    }
+  }
+}

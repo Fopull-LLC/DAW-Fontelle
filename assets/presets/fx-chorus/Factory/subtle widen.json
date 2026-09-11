@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Chorus"
+  },
+  "name": "subtle widen",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Chorus": {
+        "voices": 2,
+        "mode": "Chorus",
+        "spread": 0.8,
+        "rate_hz": 0.25,
+        "sync": false,
+        "division": "Quarter",
+        "depth": 0.2,
+        "delay_ms": 10.0,
+        "feedback": 0.0,
+        "tone_hz": 20000.0,
+        "mix": 0.35
+      }
+    }
+  }
+}

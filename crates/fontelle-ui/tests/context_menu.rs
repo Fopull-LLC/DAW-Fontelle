@@ -436,3 +436,69 @@ fn a_menu_that_scrolls_shows_a_scrollbar_and_one_that_fits_shows_none() {
 fn menu_fits(bounds: Rect) -> fontelle_ui::canvas::ContextMenu {
     menu((100.0, 100.0), bounds, &["Duplicate", "Delete", "Rename"])
 }
+
+// ------------------------------------------------- the input menu's rows ---
+//
+// A strip's input menu is built from the inputs the machine has **at the
+// moment it opens**, and the row that was clicked has to mean the input that
+// was written on it. The list used to be asked for again when the row was
+// chosen — a microphone plugged in or unplugged between the two, or the open
+// input being put back at the top of one list and not the other, made the
+// second row mean a different device than the one you read.
+
+use fontelle_ui::canvas::{input_menu_choice, input_menu_entries};
+
+fn inputs() -> Vec<String> {
+    ["Webcam", "Scarlett Solo", "Line In"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+#[test]
+fn the_input_menu_lists_no_input_first_and_then_the_machines_inputs() {
+    let entries = input_menu_entries(None, &inputs());
+    let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
+    assert_eq!(labels, ["No input", "Webcam", "Scarlett Solo", "Line In"]);
+    assert!(
+        !entries[0].enabled,
+        "with nothing chosen, \"No input\" is where you already are"
+    );
+    assert!(entries[1..].iter().all(|e| e.enabled));
+}
+
+#[test]
+fn the_input_already_chosen_is_greyed_and_no_input_is_offered() {
+    let entries = input_menu_entries(Some("Scarlett Solo"), &inputs());
+    assert!(entries[0].enabled, "\"No input\" is a way out");
+    assert!(!entries[2].enabled, "the one you have is not a choice");
+    assert!(entries[1].enabled && entries[3].enabled);
+}
+
+#[test]
+fn a_machine_with_nothing_to_record_from_says_so() {
+    let entries = input_menu_entries(None, &[]);
+    let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
+    assert_eq!(labels, ["No input", "nothing to record from"]);
+    assert!(!entries[1].enabled);
+}
+
+#[test]
+fn a_chosen_row_means_the_input_that_was_written_on_it() {
+    let shown = inputs();
+    assert_eq!(input_menu_choice(&shown, 0), Some(None), "row 0 clears it");
+    assert_eq!(
+        input_menu_choice(&shown, 2),
+        Some(Some("Scarlett Solo".to_string()))
+    );
+    assert_eq!(
+        input_menu_choice(&shown, 4),
+        None,
+        "a row past the list is not a choice"
+    );
+    assert_eq!(
+        input_menu_choice(&[], 1),
+        None,
+        "the \"nothing to record from\" row chooses nothing"
+    );
+}

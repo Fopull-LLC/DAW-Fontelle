@@ -112,7 +112,8 @@ fn the_advanced_destinations_are_driven_by_something() {
     let bank = bank();
     // Named individually rather than over a `ALL`, because these are the ones
     // that make a preset *move* — the difference between a patch and a sound.
-    let wanted: [(&str, fn(&fontelle_core::ModDest) -> bool); 6] = [
+    type Wanted = (&'static str, fn(&fontelle_core::ModDest) -> bool);
+    let wanted: [Wanted; 6] = [
         ("OscUnisonBlend", |d| matches!(d, OscUnisonBlend(_))),
         ("OscUnisonDetune", |d| matches!(d, OscUnisonDetune(_))),
         ("FilterDrive", |d| matches!(d, FilterDrive(_))),
