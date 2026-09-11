@@ -29,7 +29,10 @@ freedesktop-only `winit` extension has to be gated too, and
 `cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc`
 is how to know before CI does; and the Linux runners need `liblilv-dev`
 and `libdbus-1-dev` (the README's apt line is the list). The Windows and
-macOS binaries are built, tested by CI, and used by nobody yet.
+macOS binaries are built, tested by CI, and used by nobody yet — with one
+hole: the headless render tests skip themselves on the Windows runner,
+whose software GPU adapter takes the test process down with an access
+violation (`render_headless.rs`, `headless()`); Vulkan and Metal run them.
 
 **Updated 2026-09-11 (later).** A crash that read as "the DAW vanished" was
 `SIGXCPU`: the real-time capture thread closing its PipeWire stream and

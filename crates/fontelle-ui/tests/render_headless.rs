@@ -47,6 +47,15 @@ const RH: u32 = 620;
 /// harness's threads produce — exhausts the GPU and fails with "Out of
 /// Memory". Found the direct way.
 fn headless() -> Option<&'static Mutex<Headless>> {
+    // GitHub's Windows runner has no GPU and its software adapter dies with
+    // an access violation inside the driver — the test process, not a test,
+    // so no assertion can catch it. Vulkan (Linux) and Metal (macOS) render
+    // these frames on their runners; a Windows machine with a real adapter
+    // runs them too.
+    if cfg!(windows) && std::env::var_os("CI").is_some() {
+        eprintln!("skipping: no GPU on this runner");
+        return None;
+    }
     static SHARED: OnceLock<Option<Mutex<Headless>>> = OnceLock::new();
     SHARED
         .get_or_init(|| match Headless::new() {
