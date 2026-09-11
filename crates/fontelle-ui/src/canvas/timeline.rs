@@ -880,6 +880,32 @@ pub fn visible_lanes(view: &TimelineView, grid: Rect, lane_count: usize) -> Rang
     top..(top + rows).min(lane_count)
 }
 
+/// The `top_lane` that brings `lane` into view, leaving the scroll exactly
+/// where it is when that lane is already on screen.
+///
+/// The arrangement's answer to [`crate::canvas::scroll_to_show`], and it
+/// exists for the same reason the rack's does: something has just been added
+/// to the **end** of a list, and a list scrolled away from what you just made
+/// is a gesture that looks like it did nothing. An imported sound arrives on a
+/// lane past the bottom of the stack (`fontelle_model::AddAudioClip`), so in
+/// any project with a screenful of lanes that is exactly where it lands.
+///
+/// Whole rows only: a lane brought half into view at the bottom edge is a clip
+/// you still cannot read.
+pub fn lane_scroll_to_show(view: &TimelineView, grid: Rect, lane: usize) -> usize {
+    if view.lane_height <= 0.0 || grid.height < view.lane_height {
+        return view.top_lane;
+    }
+    let rows = (grid.height / view.lane_height).floor().max(1.0) as usize;
+    if lane < view.top_lane {
+        lane
+    } else if lane >= view.top_lane + rows {
+        lane + 1 - rows
+    } else {
+        view.top_lane
+    }
+}
+
 /// The block a clip draws as.
 ///
 /// Always at least a pixel wide, for the same reason a note is: a clip too

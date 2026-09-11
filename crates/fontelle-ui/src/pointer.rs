@@ -58,6 +58,13 @@ pub enum Pointer {
     Select,
     /// The cut tool: this drag draws a line and cuts what it crosses.
     Cut,
+    /// A drag holding something the thing under the pointer will not take.
+    ///
+    /// The desktop's own "no drop" arrow rather than one of ours: refusing a
+    /// drop is a gesture every window manager already has a picture for, and
+    /// this is the one signal that is there even when the chip under the
+    /// pointer is somewhere the eye is not.
+    Deny,
 }
 
 impl Pointer {

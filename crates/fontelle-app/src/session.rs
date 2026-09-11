@@ -405,6 +405,17 @@ const PREVIEW_BUCKETS: usize = 512;
 const DROPPED_OSC_DB: f32 = -18.0;
 
 impl Session {
+    /// Says something in the window's status line, once.
+    ///
+    /// The same one-line channel every edit reports through
+    /// (`StudioHost::take_message`), for something the *process* has to say
+    /// rather than a command — what happened to the last run
+    /// ([`crate::crashlog`]) is the case it was added for. A crash report
+    /// nobody is told about is a file nobody reads.
+    pub fn announce(&mut self, said: impl Into<String>) {
+        self.message = Some(said.into());
+    }
+
     /// Hands the session a capture ring **that is being recorded**, and what
     /// the device it came from opened at (TDD §15.4).
     ///
@@ -5339,6 +5350,19 @@ impl StudioHost for Session {
             }
             Err(e) => Err(e),
         }
+    }
+
+    fn drop_import_at(&mut self, index: usize, at: fontelle_types::Sample) -> Result<(), String> {
+        // `import_audio_row` is the one place that turns a row into a path,
+        // and it is the place that refuses a row that is not a sound —
+        // dragging is only armed for those (`canvas::browser_row_carries`),
+        // and this is the second half of that claim rather than a repeat of
+        // it.
+        let path = self.import_audio_row(index)?;
+        let name = self.import_audio_at(&path, at.max(0), None)?;
+        self.message = Some(format!("Imported \u{201c}{name}\u{201d}"));
+        self.touch();
+        Ok(())
     }
 
     fn choose_import_dir(&mut self) {

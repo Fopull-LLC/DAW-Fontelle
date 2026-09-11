@@ -309,22 +309,29 @@ fn import_rows() -> Vec<LibraryEntry> {
     ]
 }
 
+/// Asked of the Import tab showing **sounds**, which is the only list a row
+/// is ever carried out of — the kind is checked by its own test in
+/// `carry.rs`, beside the rest of what a carried row means.
+fn carries(rows: &[LibraryEntry], index: usize) -> bool {
+    browser_row_carries(rows, BrowserMode::Import, FolderKind::Audio, index)
+}
+
 #[test]
 fn a_file_row_in_the_import_tab_can_be_carried_out_of_the_panel() {
     let rows = import_rows();
-    assert!(browser_row_carries(&rows, BrowserMode::Import, 3));
-    assert!(browser_row_carries(&rows, BrowserMode::Import, 4));
+    assert!(carries(&rows, 3));
+    assert!(carries(&rows, 4));
 }
 
 #[test]
 fn a_folder_is_a_place_rather_than_a_sound_and_carries_nothing() {
     let rows = import_rows();
     assert!(
-        !browser_row_carries(&rows, BrowserMode::Import, 0),
+        !carries(&rows, 0),
         "the .. row"
     );
-    assert!(!browser_row_carries(&rows, BrowserMode::Import, 1));
-    assert!(!browser_row_carries(&rows, BrowserMode::Import, 2));
+    assert!(!carries(&rows, 1));
+    assert!(!carries(&rows, 2));
 }
 
 #[test]
@@ -333,8 +340,8 @@ fn a_row_that_is_not_in_the_list_carries_nothing() {
     // old test was `!matches!(list.get(8), Some(Folder | Up))` — which is true
     // for `None`, so a row nobody clicked armed a drag on nothing.
     let rows = import_rows();
-    assert!(!browser_row_carries(&rows, BrowserMode::Import, 8));
-    assert!(!browser_row_carries(&[], BrowserMode::Import, 0));
+    assert!(!carries(&rows, 8));
+    assert!(!carries(&[], 0));
 }
 
 #[test]
@@ -349,7 +356,7 @@ fn only_the_import_tab_hands_out_sounds_to_carry() {
         BrowserMode::Settings,
     ] {
         assert!(
-            !browser_row_carries(&rows, mode, 3),
+            !browser_row_carries(&rows, mode, FolderKind::Audio, 3),
             "{mode:?} let a file row be dragged out"
         );
     }

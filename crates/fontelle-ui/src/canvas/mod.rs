@@ -1,6 +1,7 @@
 mod audio_clip;
 mod automation;
 mod browser;
+mod carry;
 mod effect;
 mod favorites;
 mod flopsynth;
@@ -32,6 +33,10 @@ pub use browser::{
     BrowserHit, BrowserLayout, BrowserMode, browser_file_share_at, browser_focus_step, browser_hit,
     browser_layout, browser_layout_for, browser_layout_split, browser_row_carries, row_under,
     scrolled,
+};
+pub use carry::{
+    CARRY_PAD, Carried, CarryRack, CarryScene, CarryTarget, CarryTimeline, carry_chip, carry_note,
+    carry_target,
 };
 pub use effect::{
     EQ_MAX_DB, EQ_MAX_HZ, EQ_MIN_HZ, EqField, EqHandle, EqHit, EqLayout, InsertInfo, NO_KEY,
@@ -135,10 +140,11 @@ pub use timeline::{
     MAX_TIMELINE_PPT, MIN_LANE_ROW, MIN_TIMELINE_PPT, NOTE_PREVIEW_MIN_KEYS, Timeline,
     TimelineControl, TimelineHit, TimelineLayout, TimelineTool, TimelineToolbar, TimelineView,
     clip_bands, clip_cuts, clip_grip, clip_notes, clip_overlaps, clip_rect, clip_waveform,
-    content_end, content_fraction, content_ticks, fade_anatomy, fade_curve, lane_to_y, loop_marks,
-    slice_marks, time_selection, timeline_hit, timeline_layout, timeline_snap, timeline_tick_to_x,
-    timeline_toolbar_hit, timeline_toolbar_layout, timeline_visible_ticks, timeline_x_to_tick,
-    timeline_zoom_x, timeline_zoom_y, visible_lanes, y_to_lane,
+    content_end, content_fraction, content_ticks, fade_anatomy, fade_curve, lane_scroll_to_show,
+    lane_to_y, loop_marks, slice_marks, time_selection, timeline_hit, timeline_layout,
+    timeline_snap, timeline_tick_to_x, timeline_toolbar_hit, timeline_toolbar_layout,
+    timeline_visible_ticks, timeline_x_to_tick, timeline_zoom_x, timeline_zoom_y, visible_lanes,
+    y_to_lane,
 };
 pub use tools::{
     TOOL_MENU, TOOL_ROWS, ToolAction, ToolKind, ToolMenuItem, ToolRow, Tools, ToolsDialog,

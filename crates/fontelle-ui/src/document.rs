@@ -1133,6 +1133,24 @@ pub trait StudioHost: DocumentHost {
         Err("importing files is not available".to_string())
     }
 
+    /// Brings row `index` of the Import tab in as a **clip**, starting at song
+    /// sample `at` — what a row let go over the arrangement means.
+    ///
+    /// > *"im trying to drag into the channel rack or playlist to turn into an
+    /// > instrument or clip."*
+    ///
+    /// [`open_import`](Self::open_import) is the same file with no position:
+    /// it lands at the top of the song (or the time selection), which is what
+    /// a *click* on the row means. A drag names a bar, and a drop that ignored
+    /// it would put the clip somewhere nobody was looking — which is exactly
+    /// what a mark drawn at the pointer must not promise.
+    ///
+    /// Defaults to the click, so a host that has not grown the distinction
+    /// still imports what it was handed.
+    fn drop_import_at(&mut self, index: usize, _at: fontelle_types::Sample) -> Result<(), String> {
+        self.open_import(index)
+    }
+
     /// Picks the folder for the kind the tab is showing.
     fn choose_import_dir(&mut self) {}
 

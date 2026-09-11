@@ -173,6 +173,7 @@ fn shoot_sized(
             status: "",
             tooltip: None,
             menu: None,
+            carry: None,
         },
     );
     let pixels = shared
@@ -832,6 +833,7 @@ fn shoot_roll_everything(
             status: "",
             tooltip: None,
             menu: None,
+            carry: None,
         },
     );
     let pixels = shared
@@ -1167,6 +1169,7 @@ fn shoot_timeline_recording(
             status: "",
             tooltip: None,
             menu: None,
+            carry: None,
         },
     );
     let pixels = shared
@@ -1367,6 +1370,7 @@ fn shoot_instrument() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::Instrument
             hover: None,
             active: Some((1, 2)),
         })),
+        None,
         None,
         None,
         None,
@@ -1849,6 +1853,7 @@ fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
             status: "",
             tooltip: None,
             menu: None,
+            carry: None,
         },
     );
     let pixels = shared
@@ -2172,6 +2177,7 @@ fn shoot_rack(
             status: "",
             tooltip: None,
             menu: None,
+            carry: None,
         },
     );
     let pixels = shared
@@ -3158,6 +3164,7 @@ fn shoot_flopsynth() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLa
         Some(&preset),
         None,
         None,
+        None,
     );
     let pixels = shared
         .lock()
@@ -3611,6 +3618,7 @@ fn shoot_tune() -> Option<TuneShot> {
         None,
         None,
         None,
+        None,
     );
     let pixels = shared
         .lock()
@@ -3849,5 +3857,263 @@ fn a_selection_is_washed_rather_than_inverted() {
     assert!(
         !near(at(&pixels, x, y), at(&plain, x, y)),
         "selecting the text changed nothing under it"
+    );
+}
+
+// ------------------------- a row being carried says where it is going ---
+
+/// The window with a row from the browser held over `pointer`.
+///
+/// > *"i cant see any visuals of the thing being dragged ... right now theres
+/// > virtually no feedback until you actually finish dragging it."*
+///
+/// The target is worked out by the same `canvas::carry_target` the release
+/// reads, so this shot is the drop's own answer drawn — which is the property
+/// the whole feature rests on.
+fn shoot_carry(
+    pointer: Option<(f32, f32)>,
+) -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::RackLayout, u32, u32)> {
+    use fontelle_ui::canvas::rack_layout;
+    use fontelle_ui::canvas::{Carried, CarryRack, CarryScene, carry_note, carry_target};
+    use fontelle_ui::document::ChannelInfo;
+    use fontelle_ui::render::{CarryChrome, RackChrome};
+
+    let theme = Theme::dark_default();
+    let shared = headless()?;
+    let mut text = TextContext::new();
+    let title = text.layout("Fontelle", &theme.font, None);
+
+    let channels: Vec<ChannelInfo> = ["Bass", "Keys"]
+        .iter()
+        .map(|name| ChannelInfo {
+            name: (*name).to_string(),
+            muted: false,
+            soloed: false,
+            has_instrument: true,
+            route: None,
+        })
+        .collect();
+
+    const CARRY_H: u32 = 480;
+    let layout = window_layout(
+        W as f32,
+        CARRY_H as f32,
+        &theme.metrics,
+        DEFAULT_TIMELINE_HEIGHT,
+    );
+    let rack = rack_layout(layout.rack.body, &theme.metrics, channels.len(), 0);
+
+    let names: Vec<String> = channels.iter().map(|c| c.name.clone()).collect();
+    let carried = "CoolBreak.wav";
+    let target = pointer.map(|(x, y)| {
+        carry_target(
+            &CarryScene {
+                carried: Carried::Audio,
+                rack: Some(CarryRack {
+                    frame: layout.rack.frame,
+                    layout: &rack,
+                }),
+                panel: Some(layout.browser.frame),
+                timeline: None,
+                name: None,
+            },
+            x,
+            y,
+        )
+    });
+    let note = target
+        .map(|target| carry_note(&target, &names, 4))
+        .unwrap_or_default();
+
+    let mut labels = Labels::new();
+    for channel in &channels {
+        labels.ensure(&channel.name, &theme.font, &mut text);
+    }
+    labels.ensure("Master", &theme.font, &mut text);
+    for tab in fontelle_ui::document::RackTab::ALL {
+        labels.ensure(tab.label(), &theme.font, &mut text);
+    }
+    labels.ensure(carried, &theme.font, &mut text);
+    labels.ensure_small(&note, &theme.font, &mut text);
+
+    let mut scene = vello::Scene::new();
+    fontelle_ui::render::draw_window(
+        &mut scene,
+        &theme,
+        &layout,
+        &Chrome {
+            field: None,
+            panel_title: &title,
+            transport: TransportChrome {
+                layout: transport_bar_layout(layout.transport, &theme.metrics),
+                view: TransportView::unavailable(),
+                meters: [Meter::new(); 2],
+                readout: &text.layout("1.1.0", &theme.font, None),
+                tempo: &text.layout("120.00", &theme.font, None),
+                signature: &text.layout("4/4", &theme.font, None),
+                mode: &text.layout("Song", &theme.font, None),
+                hover: None,
+                marker_sample: 0,
+                clip_mode: false,
+            },
+            roll: None,
+            rack: Some(RackChrome {
+                panel: layout.rack,
+                layout: rack.clone(),
+                channels: &channels,
+                selected: 0,
+                hover: None,
+                route_names: &["Master".to_string()],
+                strips: 1,
+                route_menu: None,
+                route_menu_open: None,
+                renaming: None,
+            }),
+            prefabs: None,
+            browser: None,
+            timeline: None,
+            mixer: None,
+            tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
+            tab: fontelle_ui::layout::EditorTab::Roll,
+            hover_tab: None,
+            browser_title: "Soundfonts",
+            labels: &labels,
+            status: "",
+            tooltip: None,
+            menu: None,
+            carry: target.zip(pointer).map(|(target, at)| CarryChrome {
+                label: carried,
+                note: &note,
+                at,
+                target,
+                bounds: layout.window,
+            }),
+        },
+    );
+    let pixels = shared
+        .lock()
+        .expect("the shared renderer")
+        .render(&scene, W, CARRY_H, theme.palette.window)
+        .expect("the scene must render");
+    dump_sized(
+        &pixels,
+        &format!("carry-{}", if pointer.is_some() { "held" } else { "none" }),
+        W,
+        CARRY_H,
+    );
+    Some((pixels, theme, rack, W, CARRY_H))
+}
+
+/// **The row a sound would land on is drawn as the row it would land on.**
+///
+/// Before this there was nothing at all between the press and the release: the
+/// only way to find out whether a drop would work was to do it.
+#[test]
+fn a_carried_sound_lights_the_channel_it_is_over() {
+    let Some((quiet, theme, rack, width, _)) = shoot_carry(None) else {
+        return;
+    };
+    let row = rack.rows.get(1).expect("a second row").frame;
+    // The bottom-right corner of the row: the chip hangs down and to the
+    // right of the pointer, so it lands outside the row and what is counted
+    // inside it is the mark and nothing else.
+    let Some((held, _, _, _, _)) = shoot_carry(Some((row.right() - 2.0, row.bottom() - 2.0)))
+    else {
+        return;
+    };
+    let accent_in = |pixels: &[u8], rect: Rect| {
+        let mut count = 0;
+        for dy in 0..rect.height as u32 {
+            for dx in 0..rect.width as u32 {
+                let i = (((rect.y as u32 + dy) * width + rect.x as u32 + dx) * 4) as usize;
+                if near(
+                    Color(pixels[i..i + 4].try_into().expect("four bytes")),
+                    theme.palette.accent,
+                ) {
+                    count += 1;
+                }
+            }
+        }
+        count
+    };
+    assert!(
+        accent_in(&held, row) > accent_in(&quiet, row) + 8,
+        "the channel under the pointer should be visibly marked"
+    );
+    let other = rack.rows.first().expect("a first row").frame;
+    assert_eq!(
+        accent_in(&held, other),
+        accent_in(&quiet, other),
+        "and the channel the pointer is not over should be left alone"
+    );
+}
+
+/// **And the thing being carried is drawn under the pointer.**
+#[test]
+fn a_carried_sound_is_drawn_under_the_pointer() {
+    let Some((quiet, _theme, rack, width, _)) = shoot_carry(None) else {
+        return;
+    };
+    let row = rack.rows.get(1).expect("a second row").frame;
+    let (px, py) = (row.right() - 2.0, row.bottom() - 2.0);
+    let Some((held, _, _, _, _)) = shoot_carry(Some((px, py))) else {
+        return;
+    };
+    // A box just inside where the chip hangs: 14 pixels clear of the pointer,
+    // and the chip is wider and taller than this.
+    let mut changed = 0;
+    for dy in 0..12u32 {
+        for dx in 0..12u32 {
+            let x = px as u32 + 16 + dx;
+            let y = py as u32 + 16 + dy;
+            let i = ((y * width + x) * 4) as usize;
+            if quiet[i..i + 4] != held[i..i + 4] {
+                changed += 1;
+            }
+        }
+    }
+    assert!(
+        changed > 0,
+        "there is nothing drawn under the pointer: the drag is invisible again"
+    );
+}
+
+/// **A drop that would do nothing says so, in the warning ink.**
+///
+/// *"please also ensure that it shows a visual of where its about to go so you
+/// know youre actually placing it right / that is a legal action before you do
+/// it."* The half of that sentence about **legality**: over the piano roll a
+/// sound has nowhere to go, and the chip has to be the thing that says it.
+#[test]
+fn a_carried_sound_over_nowhere_is_refused_where_you_can_see_it() {
+    let Some((_quiet, theme, _rack, width, height)) = shoot_carry(None) else {
+        return;
+    };
+    // The middle of the editor panel — a place with nothing that takes a
+    // sound.
+    let (px, py) = (width as f32 * 0.6, height as f32 * 0.6);
+    let Some((held, _, _, _, _)) = shoot_carry(Some((px, py))) else {
+        return;
+    };
+    let mut warned = 0;
+    for dy in 0..60u32 {
+        for dx in 0..200u32 {
+            let x = px as u32 + 4 + dx;
+            let y = py as u32 + 4 + dy;
+            if x >= width || y >= height {
+                continue;
+            }
+            let i = ((y * width + x) * 4) as usize;
+            if near(
+                Color(held[i..i + 4].try_into().expect("four bytes")),
+                theme.palette.meter_peak,
+            ) {
+                warned += 1;
+            }
+        }
+    }
+    assert!(
+        warned > 0,
+        "a refused drop is drawn exactly like one that would work"
     );
 }

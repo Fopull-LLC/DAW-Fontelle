@@ -29,7 +29,139 @@ over the budget its plan set. The numbers and where the time goes are at the
 end of the section below; the plan's own instruction is that this is a design
 conversation rather than a target to loosen.
 
-## 2026-09-10 (latest): the rest of the rack
+## 2026-09-10 (latest): why the last run went away
+
+> *"for some reason the daw keeps crashing a lot but it doesnt reproduce
+> cleanly. i basically just use the daw and it crashes at a certain action but
+> if i open it up again and do that same action its not guarenteed to crash
+> again. its strange."*
+
+**It was never a crash.** It was `pkill -x fontelle` — this file's own handoff
+notes told agents to clean up that way, and `pkill` by name ends *every*
+Fontelle on the machine, including the one Ty had open at his desk. A SIGTERM
+writes no message, dumps no core and leaves no journal entry, so from the
+user's chair the window simply vanished mid-action and the same action never
+reproduced it. Hours went into hunting a bug that was an agent tidying up.
+`docs/handoff.md` §5 and `docs/flopsynth-plan.md` now say the opposite, in the
+strongest terms the files allow: **record the pid you launched and kill that**.
+The evidence is in the journal — no `SIGSEGV` or `SIGABRT` for the studio in
+two days, only `SIGXCPU` from sandboxed agent runs.
+
+The lesson worth keeping is not about `pkill`. It is that **a window that
+vanishes leaves nothing behind**, so nobody — user or agent — can tell a bug
+from an execution. `fontelle_app::crashlog` is the fix, and it is one file:
+
+| marker | report | verdict |
+|---|---|---|
+| absent | — | closed properly, or a first run: nothing to say |
+| present | present | it panicked, and the report says where |
+| present | absent | it was ended from outside; nothing in the program went wrong |
+
+`begin` writes the marker (pid, version, clock, project) and installs a panic
+hook; `end` removes it on the way out, which a panic never reaches — that is
+what makes the marker's *absence* mean something. The hook chains the previous
+one, so stderr still gets the message for whoever is watching a terminal, and
+the report carries the panic's words, its location, the project that was open
+and a backtrace (with a line telling you to set `RUST_BACKTRACE=1` when there
+is none). Everything in there swallows its own failures: a studio that refused
+to open because it could not write a log would be a worse bug than any it could
+catch.
+
+### Two things the tests caught that reading would not have
+
+The pure tests were lost when an interrupted session deleted them mid-refactor;
+rebuilding them from the module's documented contract found both.
+
+- **`Marker::parse` kept reading fields past `project=`.** The name runs to the
+  end of the line, so a project called `pid=1 song` overwrote the pid the
+  marker was about — and that pid is the number the "ended from outside"
+  message prints at somebody. It stops at the name now.
+- **The status line clips at about forty characters.** The first wording said
+  *"Fontelle did not close cleanly last time, and raised no error: the process
+  (pid N) was ended from outside — not a crash in Fontelle"*, and what reached
+  the eye was *"Fontelle did not close cleanly last time"* — the question
+  rather than the answer. Found in a screenshot, not in a test. The verdict
+  goes first now: **"Not a Fontelle crash — the last run was ended from
+  outside (pid N)"**, with the detail trailing for the terminal and the log.
+
+Verified end to end on the nested server, sandboxed with `XDG_DATA_HOME`: a
+studio launched, killed by its own recorded pid, and relaunched says the
+sentence above in the window and on stderr; a studio that closes cleanly leaves
+no marker and the next launch says nothing.
+
+## 2026-09-10: what a dragged row is about to land on
+
+> *"i cant see any visuals of the thing being dragged when i click and drag
+> something for example an audio clip from the import section im trying to drag
+> into the channel rack or playlist to turn into an instrument or clip. please
+> also ensure that it shows a visual of where its about to go so you know youre
+> actually placing it right / that is a legal action before you do it. right now
+> theres virtually no feedback until you actually finish dragging it."*
+
+The drag itself had worked since `Drag::BrowserRow` was written — a press on a
+row armed it, the release acted on where it landed. What did not exist was any
+way to *ask* where it would land: the answer was computed inside the release
+handler and nowhere else, so there was nothing for the frames in between to
+draw. The whole gesture was therefore invisible until it was over, and the only
+way to find out whether a drop would work was to do it.
+
+**`canvas::carry_target` is that answer lifted out** (`canvas/carry.rs`, pure,
+`tests/carry.rs`). It is read twice — once per pointer move to draw, once on
+release to edit — and that is the property the feature rests on: **the mark and
+the drop are the same function**, so a highlight cannot promise something the
+release will not do. What is drawn:
+
+- **A chip under the pointer**, the row's name over what letting go would do:
+  *"Onto Grand Piano"*, *"A new channel"*, *"A new row at bar 3"*.
+- **A mark on whatever would change**: the channel row, the band a new channel
+  would appear in (with a `+`), the instrument window's name field, or the row
+  at the foot of the arrangement a clip would be made on, with a caret at the
+  tick it would start on.
+- **A refusal, in the warning ink**, plus the desktop's own no-drop cursor
+  (`Pointer::Deny`), wherever letting go would do nothing — which is most of
+  the window, and said nothing at all before.
+
+Two landings are new rather than newly visible:
+
+- **The arrangement takes a sound as a clip at the bar you let go over**
+  (`StudioHost::drop_import_at`). It used to fall through to the *click*, which
+  imports at the top of the song — so a file dropped at bar 33 appeared at bar
+  one, off-screen, which is how a clip ended up somewhere nobody was looking.
+- **A row let go over nowhere now does nothing.** Same reason: it used to
+  import from wherever you happened to release.
+
+And the drop finishes the sentence the mark started: the arrangement scrolls to
+the row the clip landed on (`canvas::lane_scroll_to_show`, the arrangement's
+answer to the rack's `scroll_to_show`). An imported sound arrives on a lane of
+its own past the bottom of the stack, so in a project with a screenful of lanes
+it lands where nobody can see it — and a drop whose result is off-screen looks
+exactly like a drop that did nothing.
+
+And one long-standing mismatch: `browser_row_carries` armed a drag for **any**
+file row in the Import tab, while `Drag::BrowserRow`'s own doc comment had said
+"only audio can be carried" since it was written. A `.mid` therefore armed a
+drag whose every landing could only fail — *"only an audio file can become a
+sampler"*, said after the release rather than before it. It takes the tab's
+kind now; a file that makes tracks of its own is opened by a click.
+
+### Two things worth remembering from building it
+
+**The label cache is the trap.** The chip's name looked right on the first run
+in the real window and its second line was blank: the name happens to be shaped
+anyway (it is a row in a list that is on screen) and the note is not shaped by
+anybody. Anything drawn from a string the window invents has to be shaped in
+`shape_labels` *by name*, and relying on somebody else having asked for it is
+how you get a blank space. The headless test passed throughout, because it
+shapes what it draws.
+
+**The ghost row goes after the last lane, not at the foot of the grid.**
+`AddAudioClip` makes a lane past the bottom of the stack, so that is where the
+mark goes (`lane_to_y(view, grid, lanes)`), held at the foot of the grid only
+when that row is off the bottom of it. The recording band's "foot of the grid"
+approximation is wrong in a project with two lanes and a tall arrangement — it
+points at empty space six rows down.
+
+## 2026-09-10: the rest of the rack
 
 > *"let's expand the modular section more making a vast variety of modular
 > sounding patches."*

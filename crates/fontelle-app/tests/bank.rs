@@ -210,6 +210,12 @@ fn every_path_fontelle_chooses_for_itself_is_under_the_xdg_dirs() {
             "/home/someone/.local/share/fontelle/soundfonts"
         ))
     );
+    // Where the crash log goes (`crashlog`): Fontelle's own data directory,
+    // and not a directory of its own next to it.
+    assert_eq!(
+        Settings::data_dir_from(&env),
+        Some(PathBuf::from("/home/someone/.local/share/fontelle"))
+    );
 
     // With XDG unset, the spec's own fallbacks — and still never anything the
     // user did not ask for, like Documents or Music.
@@ -227,6 +233,7 @@ fn every_path_fontelle_chooses_for_itself_is_under_the_xdg_dirs() {
 
     // No home at all is not a crash, and not a guess.
     assert_eq!(Settings::config_dir_from(&|_: &str| None), None);
+    assert_eq!(Settings::data_dir_from(&|_: &str| None), None);
 }
 
 #[test]

@@ -98,8 +98,9 @@ design follows.
   `PROGRESS.md` gets a section per phase saying what was measured and what was
   cut.
 - **Build in the background** (handoff §6) and check `pgrep -f 'cargo (test|build)'`
-  before starting another. Kill the studio with `pkill -x fontelle`, never
-  `pkill -f`.
+  before starting another. Kill **only the studio you launched**, by the pid you
+  recorded — `pkill` by name ends the user's own session too, and looks to them
+  exactly like a random crash (handoff §5).
 - **Seeing it** is half of every GUI gate (`docs/first-usable-plan.md` §2.5):
   `FONTELLE_UI_DUMP=<dir> cargo test -p fontelle-ui --test render_headless` for
   the pixels, and the nested `Xwayland :99` plus the XTEST script in the

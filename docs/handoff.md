@@ -580,7 +580,27 @@ file does not yet say, learned the hard way this session:
   you mean by matching its `WM_NAME`; without it every key is dropped.
 - **`--run-for <seconds>` expires.** Windows vanishing mid-experiment is usually
   this, not a crash.
-- **`pkill -x fontelle`**, never `pkill -f`, which matches the agent's own shell.
+- **Never kill a studio you did not start.** `pkill -x fontelle` and
+  `pkill -f target/release/fontelle` both kill **every** Fontelle on the
+  machine — including the one the user is working in at their desk, three
+  metres away. That is silent by nature: SIGTERM writes no message, dumps no
+  core, and leaves no journal entry, so from the user's chair the window simply
+  vanishes mid-action and the same action never reproduces it. It was reported
+  as *"the daw keeps crashing a lot but it doesnt reproduce cleanly"* on
+  2026-09-10, and by then this file had been telling agents to do it for a
+  fortnight.
+
+  Record the pid of the studio **you** launched and kill that:
+
+  ```sh
+  ./target/release/fontelle --run-for 120 & echo $! > /tmp/mine.pid
+  ...
+  kill "$(cat /tmp/mine.pid)"      # never pkill, never by name
+  ```
+
+  `--run-for <seconds>` is the belt to that braces: an agent-launched studio
+  expires on its own, so a forgotten one cannot outlive the session. The same
+  goes for `pkill -x cargo`, which ends the user's `cargo run --release`.
 
 ## 6. Build environment
 

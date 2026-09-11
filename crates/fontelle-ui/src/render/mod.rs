@@ -91,6 +91,34 @@ pub struct Chrome<'a> {
     /// The field of whatever is being typed into right now — a name prompt,
     /// the browser's search, an inline rename. `None` when nothing is.
     pub field: Option<TextFieldChrome>,
+    /// A row carried out of the browser, while one is in the air. Drawn
+    /// **after** the menu and the tip, because it is in hand: nothing can be
+    /// on top of the thing the pointer is holding.
+    pub carry: Option<CarryChrome<'a>>,
+}
+
+/// A row from the browser in mid-air, and what letting go would do with it.
+///
+/// > *"i cant see any visuals of the thing being dragged ... please also ensure
+/// > that it shows a visual of where its about to go so you know youre actually
+/// > placing it right / that is a legal action before you do it."*
+///
+/// Two pictures from one value, which is what keeps them honest: the
+/// [`target`](Self::target) both lights up what would change and decides
+/// whether the chip is drawn as a drop or as a refusal, so a mark cannot
+/// promise something the release will not do. See [`crate::canvas::carry_target`].
+pub struct CarryChrome<'a> {
+    /// The name of what is being carried, as it is written on the chip.
+    pub label: &'a str,
+    /// What letting go here would do, in words
+    /// ([`crate::canvas::carry_note`]). Empty draws as one line.
+    pub note: &'a str,
+    /// Where the pointer is.
+    pub at: (f32, f32),
+    pub target: crate::canvas::CarryTarget,
+    /// What the chip has to stay inside — the window, or an editor window's
+    /// own frame when the pointer is over one of those.
+    pub bounds: Rect,
 }
 
 /// The channel rack's contents.
@@ -574,6 +602,10 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
         chrome.field.as_ref(),
     );
     draw_tooltip(scene, theme, chrome);
+    // Last of all: what the pointer is holding.
+    if let Some(carry) = &chrome.carry {
+        draw_carry(scene, theme, chrome.labels, carry);
+    }
 }
 
 /// The hover tip (see [`crate::tooltip`]).
@@ -606,6 +638,10 @@ pub fn draw_editor_window(
     menu: Option<&crate::canvas::ContextMenu>,
     // And its name prompt's field, when that menu is one.
     field: Option<&TextFieldChrome>,
+    // A row from the browser held over *this* window — the instrument
+    // window's name field takes one (§the rack's own rule, applied to the
+    // window that shows one channel).
+    carry: Option<&CarryChrome<'_>>,
 ) {
     let m = &theme.metrics;
     let p = &theme.palette;
@@ -648,6 +684,9 @@ pub fn draw_editor_window(
     }
 
     draw_context_menu(scene, theme, labels, menu, field);
+    if let Some(carry) = carry {
+        draw_carry(scene, theme, labels, carry);
+    }
 }
 
 /// The audio clip editor (TDD §15.1).
@@ -1378,6 +1417,142 @@ fn draw_tooltip(scene: &mut Scene, theme: &Theme, chrome: &Chrome<'_>) {
         p.text,
     );
 }
+
+/// What the pointer is carrying, and what would happen if it let go.
+///
+/// Two things are drawn, and they are two different claims:
+///
+/// - **The mark**, over whatever would change — the channel row that would
+///   take the sound, the band a new channel would appear in, the row at the
+///   foot of the arrangement a clip would be made on. In the accent, because
+///   the accent is what this window uses for "this one".
+/// - **The chip**, under the pointer, saying what is in hand and what would
+///   become of it. Outlined in the warning ink when the answer is *nothing*:
+///   a gesture that will not work has to look different **before** the button
+///   comes up, which is the whole of the report this exists for.
+///
+/// The warning ink is [`crate::theme::Palette::meter_peak`] rather than a
+/// colour of its own. It is the palette's one "something is wrong here" hue —
+/// a clipping meter, the limiter's read-out — and a refused drop is the same
+/// sentence said about a gesture. A new field would mean a theme format
+/// version, for a border.
+pub fn draw_carry(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &CarryChrome<'_>) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let target = &chrome.target;
+
+    // The mark first, so the chip is over it rather than under it.
+    if let Some(rect) = target.mark()
+        && !rect.is_empty()
+    {
+        fill_rect_rounded(scene, rect, m.corner_radius, p.accent.with_alpha(0x33));
+        stroke_rect_rounded(scene, rect.inset(0.75), m.corner_radius, 1.5, p.accent);
+    }
+    // A clip lands at one tick on that row, and the row is the whole width of
+    // the grid — so without this the mark would say "somewhere along here".
+    if let crate::canvas::CarryTarget::Clip { row, at, .. } = target
+        && !row.is_empty()
+    {
+        let caret = Rect::new(at - 1.0, row.y, 2.0, row.height).intersection(row);
+        fill_rect(scene, caret, p.accent);
+    }
+    // A new channel goes on the end of the list; the plus says "another one"
+    // rather than "this one".
+    if let crate::canvas::CarryTarget::NewChannel { rect } = target
+        && rect.height >= 12.0
+    {
+        let side = rect.height.min(16.0);
+        draw_icon(
+            scene,
+            crate::icon::Icon::Plus,
+            Rect::new(
+                rect.x + 4.0,
+                rect.y + (rect.height - side) / 2.0,
+                side,
+                side,
+            ),
+            p.accent,
+        );
+    }
+
+    // The chip. Sized to its own words, so a long file name is readable and a
+    // short one is not padded out into a banner.
+    let label = labels.get(chrome.label);
+    let note = (!chrome.note.is_empty())
+        .then(|| labels.get_small(chrome.note))
+        .flatten();
+    let width = label
+        .map_or(0.0, |text| text.width)
+        .max(note.map_or(0.0, |text| text.width));
+    let height = label.map_or(0.0, |text| text.height)
+        + note.map_or(0.0, |text| text.height + CARRY_LINE_GAP);
+    // Capped, and the words clipped inside it: a sample called
+    // `Doll_Break_120_PL_FINAL_v3.wav` is a real file name, and a chip too
+    // wide for the window is a chip `carry_chip` refuses to place — which
+    // would take the whole gesture's feedback away over a long name.
+    let width = width.min((chrome.bounds.width * 0.4).max(CARRY_MIN_W));
+    if width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    let chip = crate::canvas::carry_chip(
+        (
+            width + crate::canvas::CARRY_PAD * 2.0,
+            height + crate::canvas::CARRY_PAD * 2.0,
+        ),
+        chrome.at,
+        chrome.bounds,
+    );
+    if chip.is_empty() {
+        return;
+    }
+    let edge = if target.refuses() {
+        p.meter_peak
+    } else if target.lands() {
+        p.accent
+    } else {
+        // Back over the list it came from: nothing is wrong and nothing is
+        // promised.
+        p.border
+    };
+    fill_rect_rounded(scene, chip, m.corner_radius, edge);
+    fill_rect_rounded(scene, chip.inset(1.5), m.corner_radius, p.panel_header);
+    let mut y = chip.y + crate::canvas::CARRY_PAD;
+    if let Some(text) = label {
+        draw_text_clipped(
+            scene,
+            text,
+            chip,
+            chip.x + crate::canvas::CARRY_PAD,
+            y,
+            if target.refuses() {
+                p.text_muted
+            } else {
+                p.text
+            },
+        );
+        y += text.height + CARRY_LINE_GAP;
+    }
+    if let Some(text) = note {
+        draw_text_clipped(
+            scene,
+            text,
+            chip,
+            chip.x + crate::canvas::CARRY_PAD,
+            y,
+            if target.refuses() {
+                p.meter_peak
+            } else {
+                p.text_muted
+            },
+        );
+    }
+}
+
+/// Between the chip's two lines.
+const CARRY_LINE_GAP: f32 = 2.0;
+
+/// The narrowest the chip is allowed to be squeezed to on a small window.
+const CARRY_MIN_W: f32 = 80.0;
 
 /// The transport bar (item 7 of `docs/first-usable-plan.md`).
 ///

@@ -4,6 +4,7 @@
 
 pub mod bank;
 mod bundle;
+pub mod crashlog;
 pub mod desktop;
 pub mod flopsynth;
 pub mod tune;

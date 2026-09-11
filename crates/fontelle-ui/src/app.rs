@@ -229,6 +229,31 @@ enum BrowserRow {
     File(usize),
 }
 
+/// A row from the browser in mid-air: what it is, what letting go would do,
+/// and which window the pointer is in.
+///
+/// > *"i cant see any visuals of the thing being dragged ... right now theres
+/// > virtually no feedback until you actually finish dragging it."*
+///
+/// Kept as a field rather than worked out at draw time for one reason: the
+/// words on the chip have to be **shaped** before the frame that draws them
+/// (`shape_labels`), and a string invented inside `draw_window` would come
+/// back from the label cache as a blank space. Refreshed once per pointer
+/// move by [`WindowApp::refresh_carry`].
+#[derive(Debug, Clone, PartialEq)]
+struct Carrying {
+    /// What is being carried, as it is written on the chip.
+    label: String,
+    /// What letting go here would do (`canvas::carry_note`).
+    note: String,
+    /// And where it would land — the same value the release acts on, which is
+    /// what makes the mark a promise rather than a decoration.
+    target: crate::canvas::CarryTarget,
+    /// Which window the pointer is in, so exactly one of them draws the chip.
+    /// `None` is the studio itself.
+    window: Option<EditorKind>,
+}
+
 /// What a right-click menu — or a rename — is about.
 ///
 /// The menu canvas lists **strings** and knows nothing about what they do (see
@@ -640,6 +665,9 @@ fn system_cursor(wanted: Pointer) -> winit::window::CursorIcon {
             winit::window::CursorIcon::Crosshair
         }
         Pointer::Erase => winit::window::CursorIcon::NotAllowed,
+        // `NoDrop` rather than `NotAllowed`: they are different pictures on
+        // every desktop, and this one is about a *drop*.
+        Pointer::Deny => winit::window::CursorIcon::NoDrop,
     }
 }
 
@@ -784,6 +812,8 @@ pub struct WindowApp {
     /// A source badge being carried to a knob (§8.4): which source, and where
     /// the pointer is now, so the badge can be drawn under it.
     flop_assign: Option<(usize, (f32, f32))>,
+    /// The browser row in the air, while one is — see [`Carrying`].
+    carry: Option<Carrying>,
     /// Which of Flopsynth's controls something modulates, and how deeply.
     ///
     /// Worked out with the rest of the studio's lists rather than per knob per
@@ -1341,6 +1371,7 @@ impl WindowApp {
             flopsynth: None,
             flop_page: crate::canvas::FlopsynthPage::Synth,
             flop_assign: None,
+            carry: None,
             flop_modulated: Vec::new(),
             flop_destinations: Vec::new(),
             flop_browse: Default::default(),
@@ -1788,6 +1819,21 @@ impl WindowApp {
                     .as_ref()
                     .filter(|(target, _)| target.editor_window().is_none())
                     .map(|(_, menu)| menu),
+                // Only while the pointer is in *this* window: a chip drawn by
+                // two windows is a chip drawn twice, at coordinates that mean
+                // two different places. The same argument the menu above
+                // makes.
+                carry: self
+                    .carry
+                    .as_ref()
+                    .filter(|carry| carry.window.is_none())
+                    .map(|carry| crate::render::CarryChrome {
+                        label: &carry.label,
+                        note: &carry.note,
+                        at: self.cursor,
+                        target: carry.target,
+                        bounds: self.layout.window,
+                    }),
             },
         );
 
@@ -2065,7 +2111,13 @@ impl WindowApp {
             | Drag::Lane
             | Drag::SidebarSplit
             | Drag::BrowserSplit => Some(Pointer::ResizeY),
-            Drag::BrowserRow(_) => Some(Pointer::Grabbing),
+            // A carried row: the cursor is the coarsest of the three
+            // signals, and the only one that is there even if the chip is
+            // somehow off-screen.
+            Drag::BrowserRow(_) => Some(match &self.carry {
+                Some(carry) if carry.target.refuses() => Pointer::Deny,
+                _ => Pointer::Grabbing,
+            }),
             Drag::SidebarSeam => Some(Pointer::ResizeX),
             Drag::Keys => Some(Pointer::Hand),
             // A fader and the tempo box are both vertical throws; a pan is a
@@ -2515,6 +2567,7 @@ impl ApplicationHandler for WindowApp {
             // is a note that follows the mouse around on its own.
             WindowEvent::Focused(false) => {
                 self.drag = Drag::None;
+                self.carry = None;
                 self.end_edge_scroll();
                 self.knob = None;
                 self.flop_knob = None;
@@ -2620,6 +2673,13 @@ impl ApplicationHandler for WindowApp {
                     self.drop_browser_row(row, x, y);
                 }
                 self.drag = Drag::None;
+                // The chip goes with the drag, and the region it floated over
+                // is repainted — it belongs to no widget, so nothing else
+                // would.
+                if self.carry.take().is_some() {
+                    self.tree.invalidate_rect(self.layout.window);
+                    self.redraw_editor(EditorKind::Instrument);
+                }
                 self.end_edge_scroll();
                 // The press that shut a menu is spent; the next one opens it
                 // again. See `dismissed`.
@@ -3348,6 +3408,7 @@ impl WindowApp {
             // answer the main window gives, for the same reason.
             WindowEvent::Focused(false) => {
                 self.drag = Drag::None;
+                self.carry = None;
                 self.end_edge_scroll();
                 self.knob = None;
                 self.flop_knob = None;
@@ -3985,6 +4046,21 @@ impl WindowApp {
             });
         // Likewise before the borrow: the field reads the menu and the widths.
         let field = self.text_field();
+        // And the chip, whose bounds are this window's frame — read here
+        // because the scene below is borrowed mutably.
+        let frame = self.editors.get(index).map(|editor| editor.panel.frame);
+        let carry = self
+            .carry
+            .as_ref()
+            .filter(|carry| carry.window == Some(kind))
+            .zip(frame)
+            .map(|(carry, frame)| crate::render::CarryChrome {
+                label: &carry.label,
+                note: &carry.note,
+                at: self.cursor,
+                target: carry.target,
+                bounds: frame,
+            });
         let Some(editor) = self.editors.get_mut(index) else {
             return;
         };
@@ -4012,6 +4088,11 @@ impl WindowApp {
                         .is_some_and(|(target, _)| target.editor_window() == Some(kind))
                 })
                 .map(|f| f as &crate::render::TextFieldChrome),
+            // A carried row, while the pointer is over *this* window. Its
+            // bounds are this window's, which is why the chrome carries them:
+            // a chip clamped to the studio's rectangle would be drawn off the
+            // edge of a 320-pixel editor.
+            carry.as_ref(),
         );
 
         let device = &self.context.devices[editor.surface.dev_id];
@@ -4409,6 +4490,24 @@ impl WindowApp {
             }
             want(&mut self.labels, &mut self.text, crate::canvas::ADD_EFFECT);
         }
+        // The chip under a carried row: its name at the chrome size, what
+        // letting go would do at the small one. Cloned rather than borrowed
+        // because `want` holds the label cache mutably.
+        //
+        // Both lines, always. The name is *usually* shaped anyway — it is a
+        // row in a list that is on screen — and relying on that is how the
+        // note came out blank the first time this was run.
+        if let Some((label, note)) = self
+            .carry
+            .as_ref()
+            .map(|carry| (carry.label.clone(), carry.note.clone()))
+        {
+            want(&mut self.labels, &mut self.text, &label);
+            if !note.is_empty() {
+                self.labels.ensure_small(&note, &font, &mut self.text);
+            }
+        }
+
         // **What is being typed**, and how wide it is up to the caret and to
         // each end of the selection.
         //
@@ -5235,8 +5334,9 @@ impl WindowApp {
             Drag::SidebarSplit => self.drag_sidebar_split(y),
             Drag::BrowserSplit => self.drag_browser_split(y),
             // Carried, not acted on: what it means is decided by where it is
-            // let go.
-            Drag::BrowserRow(_) => {}
+            // let go. What *is* done every move is working out what that
+            // would be, so the chip and the mark can say it.
+            Drag::BrowserRow(_) => self.refresh_carry(),
             Drag::Knob => self.drag_knob(y),
             Drag::FlopKnob => self.drag_flop_knob(y),
             Drag::FlopWave(card) => self.drag_flop_wave(card, x),
@@ -5941,6 +6041,20 @@ impl WindowApp {
         if matches!(self.drag, Drag::FlopAssign) {
             let (x, y) = self.cursor;
             self.drop_flop_assign(x, y);
+        }
+        // And a row carried out of the browser and let go over *this* window:
+        // the instrument window's name takes one. The studio's own release
+        // does the same thing — which window hears the release is the
+        // platform's business (a button press grabs the pointer on most of
+        // them), and a drop that only worked on some of them would be worse
+        // than one that never worked at all.
+        if let Drag::BrowserRow(row) = self.drag {
+            let (x, y) = self.cursor;
+            self.drop_browser_row(row, x, y);
+        }
+        if self.carry.take().is_some() {
+            self.tree.invalidate_rect(self.layout.window);
+            self.request_redraw_if_dirty();
         }
         self.flop_assign = None;
         self.flop_node = None;
@@ -8475,72 +8589,194 @@ impl WindowApp {
         self.tree.invalidate(PANEL);
     }
 
-    /// Acts on a row carried out of the soundfont panel, by where it landed.
+    /// Where the row being carried would land, with the pointer at `(x, y)`.
+    ///
+    /// **The one answer**, read twice: once per pointer move to draw the mark
+    /// and the chip, and once on release to make the edit
+    /// ([`Self::drop_browser_row`]). That is what stops a highlight promising
+    /// something the drop will not do — before this, the release worked the
+    /// question out privately and nothing else could ask it.
+    fn carry_target(&self, row: BrowserRow, x: f32, y: f32) -> crate::canvas::CarryTarget {
+        use crate::canvas::{Carried, CarryRack, CarryScene, CarryTimeline};
+        let carried = match row {
+            BrowserRow::Preset(_) => Carried::Preset,
+            BrowserRow::File(_) => Carried::Audio,
+        };
+        // The pointer is in a floating window: those coordinates are that
+        // window's, so none of the studio's panels are in the scene at all.
+        if let Some(kind) = self.pointer_window {
+            let name = (kind == EditorKind::Instrument)
+                .then_some((self.selected_channel, self.instrument_layout.name));
+            return crate::canvas::carry_target(
+                &CarryScene {
+                    carried,
+                    rack: None,
+                    panel: None,
+                    timeline: None,
+                    name,
+                },
+                x,
+                y,
+            );
+        }
+        // One panel, two lists: with the prefabs showing there are no channel
+        // rows on screen, so there is nothing there to drop onto.
+        let showing_rack = self.rack_tab == crate::document::RackTab::Instruments
+            && self.options.document.is_some();
+        crate::canvas::carry_target(
+            &CarryScene {
+                carried,
+                rack: showing_rack.then_some(CarryRack {
+                    frame: self.layout.rack.frame,
+                    layout: &self.rack,
+                }),
+                panel: Some(self.layout.browser.frame),
+                timeline: (self.options.document.is_some()
+                    && !self.layout.timeline.frame.is_empty())
+                .then(|| CarryTimeline {
+                    layout: &self.timeline_layout,
+                    view: &self.timeline.view,
+                    beats_per_bar: self.beats_per_bar(),
+                    lanes: self.lanes.len(),
+                }),
+                name: None,
+            },
+            x,
+            y,
+        )
+    }
+
+    /// What the chip under the pointer says, and where the row would go.
+    ///
+    /// `None` when nothing is being carried — and when the row has gone out
+    /// from under the drag, which a rescan or a folder changing under a search
+    /// can do.
+    fn carried(&self) -> Option<Carrying> {
+        let Drag::BrowserRow(row) = self.drag else {
+            return None;
+        };
+        let (x, y) = self.cursor;
+        let target = self.carry_target(row, x, y);
+        let label = match row {
+            BrowserRow::Preset(index) => self.presets.get(index)?.name.clone(),
+            BrowserRow::File(index) => self.browser_list().get(index)?.name.clone(),
+        };
+        let names: Vec<String> = self.channels.iter().map(|c| c.name.clone()).collect();
+        Some(Carrying {
+            label,
+            note: crate::canvas::carry_note(&target, &names, self.beats_per_bar()),
+            target,
+            window: self.pointer_window,
+        })
+    }
+
+    /// Puts [`Self::carried`]'s answer where the frame can read it, and asks
+    /// for that frame.
+    ///
+    /// One way in and one way out, so the chip cannot be left painted on a
+    /// window nothing is being carried over.
+    fn refresh_carry(&mut self) {
+        let carried = self.carried();
+        if carried.is_none() && self.carry.is_none() {
+            return;
+        }
+        self.carry = carried;
+        // The chip floats over every panel and outside all of their bounds,
+        // so the region it left has to be repainted along with the one it
+        // arrived at — which, for something that follows the pointer, is the
+        // window. The same argument `tip_rect` makes, one gesture up.
+        //
+        // Unconditional: the chip moves with the pointer, so *every* move is
+        // a frame, even the ones where the target has not changed.
+        self.tree.invalidate_rect(self.layout.window);
+        self.redraw_editor(EditorKind::Instrument);
+        // A drag that has wandered into a floating window is driven by that
+        // window's events, and nothing in that path asks the studio for a
+        // frame — without this the chip would freeze at the seam.
+        self.request_redraw_if_dirty();
+    }
+
+    /// Acts on a row carried out of the browser, by where it landed.
     ///
     /// > *"i want to be able to click and drag them into the sampler or into
     /// > the channel rack to make it have a sampler with that clip sampled."*
+    /// > … *"please also ensure that it shows a visual of where its about to
+    /// > go so you know youre actually placing it right / that is a legal
+    /// > action before you do it."*
     ///
-    /// Three landings, three meanings, and they are the ones a rack already
-    /// implies:
+    /// Where it lands is [`Self::carry_target`]'s answer, which is the same
+    /// answer the frames during the drag were drawn from — so the row that
+    /// lit up is the row that changes, and a gesture drawn as refused does
+    /// nothing. The landings a rack and an arrangement already imply:
     ///
     /// - **A channel on the rack** takes the sound: that row becomes a sampler
     ///   playing the file, or a player of that preset. Dropping onto the row
     ///   you are working on is how a kit gets built without eight channels
     ///   appearing beside it.
-    /// - **The empty space under the rows** makes a *new* channel of it.
-    /// - **Anywhere else** is not a drop at all, and the press falls back to
-    ///   what a click on that row has always meant — for an audio file, an
-    ///   import onto the arrangement. The click waits for the release
-    ///   precisely so that one gesture does one thing; see `press_browser`.
+    /// - **The rack itself** makes a *new* channel of it.
+    /// - **The instrument window's name** means the channel that window has
+    ///   open — *"i should be able to drag soundfonts into it from the
+    ///   soundfonts window to also assign a soundfont."*
+    /// - **The arrangement** takes a sound as a clip, at the bar it was let go
+    ///   over. A preset is not a stretch of song and has no landing there.
+    /// - **The panel it came from** is the click the press did not do: for an
+    ///   audio file, an import onto the arrangement. The click waits for the
+    ///   release precisely so that one gesture does one thing; see
+    ///   `press_browser`.
+    /// - **Anywhere else** does nothing, having said so while it was held.
+    ///   It used to import at bar one from wherever you let go, which is how a
+    ///   clip appeared somewhere you were not looking.
     fn drop_browser_row(&mut self, row: BrowserRow, x: f32, y: f32) {
-        let on_rack = self.layout.rack.frame.contains(x, y);
-        // Which channel it landed on, if it landed on one. Any part of the row
-        // counts, the way the right-click menu already does: aiming at a
-        // caption is not a thing anybody should have to do.
-        let onto = match (on_rack, rack_hit(&self.rack, x, y)) {
-            (
-                true,
-                RackHit::Row(index)
-                | RackHit::Mute(index)
-                | RackHit::Solo(index)
-                | RackHit::Edit(index)
-                | RackHit::Route(index),
-            ) => Some(index),
-            // The "+ Add instrument" button and the empty space below the rows
-            // both mean the rack rather than a channel on it.
+        use crate::canvas::CarryTarget;
+        let target = self.carry_target(row, x, y);
+        // Where a clip would start, in samples, which is the unit every
+        // import path takes (`StudioHost::drop_file_at`). Read before the
+        // document is borrowed mutably.
+        let at = match target {
+            CarryTarget::Clip { tick, .. } => self
+                .options
+                .document
+                .as_ref()
+                .map(|doc| doc.sample_of_song_tick(tick.max(0))),
             _ => None,
         };
-        // The instrument window's name field, when the release reached it —
-        // *"i should be able to drag soundfonts into it from the soundfonts
-        // window to also assign a soundfont."* It stands for the channel that
-        // window has open, which is the selected one.
-        let on_name = self.pointer_window == Some(EditorKind::Instrument)
-            && self.instrument_layout.name.contains(x, y);
-        // **The channel it landed on**, from either target. `None` and on the
-        // rack means the rack itself; `None` and off it means it landed
-        // nowhere.
-        let onto = onto.or(on_name.then_some(self.selected_channel));
-        let made = onto.is_none() && on_rack;
+        let made = matches!(target, CarryTarget::NewChannel { .. });
         let Some(doc) = &mut self.options.document else {
             return;
         };
-        let result = match (row, onto, made) {
+        let result = match (row, target) {
             // Onto a channel: it plays this instead of what it was playing.
-            (BrowserRow::Preset(index), Some(channel), _) => {
+            // The instrument window's name is a channel too — the one that
+            // window is showing.
+            (BrowserRow::Preset(index), CarryTarget::Channel { index: channel, .. })
+            | (BrowserRow::Preset(index), CarryTarget::Instrument { channel, .. }) => {
                 doc.set_channel_instrument_on(channel, index)
             }
-            (BrowserRow::File(index), Some(channel), _) => {
+            (BrowserRow::File(index), CarryTarget::Channel { index: channel, .. })
+            | (BrowserRow::File(index), CarryTarget::Instrument { channel, .. }) => {
                 doc.set_sampler_from_import(channel, index)
             }
             // Onto the rack itself: a channel of its own.
-            (BrowserRow::Preset(index), None, true) => doc.add_channel_with(index),
-            (BrowserRow::File(index), None, true) => doc.add_sampler_from_import(index),
-            // Let go over nothing. A file falls back to the click the press
-            // did not do; a preset's click is a listen, and the press already
-            // did that one.
-            (BrowserRow::File(index), None, false) => doc.open_import(index),
-            (BrowserRow::Preset(_), None, false) => return,
+            (BrowserRow::Preset(index), CarryTarget::NewChannel { .. }) => {
+                doc.add_channel_with(index)
+            }
+            (BrowserRow::File(index), CarryTarget::NewChannel { .. }) => {
+                doc.add_sampler_from_import(index)
+            }
+            // Onto the arrangement: a clip, starting where it was let go.
+            (BrowserRow::File(index), CarryTarget::Clip { .. }) => {
+                doc.drop_import_at(index, at.unwrap_or(0))
+            }
+            // Let go back over the list. A file falls back to the click the
+            // press did not do; a preset's click is a listen, and the press
+            // already did that one.
+            (BrowserRow::File(index), CarryTarget::Panel) => doc.open_import(index),
+            (BrowserRow::Preset(_), CarryTarget::Panel) => return,
+            // Nowhere. Said while it was held, so there is nothing to
+            // announce now.
+            (_, CarryTarget::Nowhere) | (BrowserRow::Preset(_), CarryTarget::Clip { .. }) => return,
         };
+        let landed = result.is_ok();
         match result {
             Ok(()) => {
                 // A new row is at the bottom of a list that may be scrolled
@@ -8553,6 +8789,21 @@ impl WindowApp {
         }
         self.refresh_studio();
         self.refresh_title();
+        // A clip arrives on a lane of its own, past the bottom of the stack,
+        // so in any project with a screenful of lanes it lands where nobody
+        // can see it — and a drop whose result is off-screen looks exactly
+        // like a drop that did nothing. The mark said which row; this is what
+        // makes that row visible.
+        if landed
+            && matches!(target, CarryTarget::Clip { .. })
+            && let Some(last) = self.lanes.len().checked_sub(1)
+        {
+            self.timeline.view.top_lane = crate::canvas::lane_scroll_to_show(
+                &self.timeline.view,
+                self.timeline_layout.grid,
+                last,
+            );
+        }
         self.tree.invalidate(RACK);
         self.tree.invalidate(PANEL);
         self.tree.invalidate(BROWSER);
@@ -8808,7 +9059,12 @@ impl WindowApp {
                 // A **file** row in the Import tab can be carried out of the
                 // panel and dropped on the rack to become a sampler. A folder
                 // cannot: it is a place, not a sound.
-                let carried = crate::canvas::browser_row_carries(rows, self.browser_mode, index);
+                let carried = crate::canvas::browser_row_carries(
+                    rows,
+                    self.browser_mode,
+                    self.import_kind,
+                    index,
+                );
                 if carried {
                     self.drag = Drag::BrowserRow(BrowserRow::File(index));
                     // **And the click waits.** What this row means is decided

@@ -520,6 +520,20 @@ impl Settings {
         Self::xdg_from(env, "XDG_CONFIG_HOME", ".config").map(|base| base.join("fontelle"))
     }
 
+    /// `$XDG_DATA_HOME/fontelle`, or `$HOME/.local/share/fontelle`.
+    ///
+    /// Fontelle's own data directory — the parent of the soundfont bank and
+    /// the user presets, and where [`crate::crashlog`] writes. Its own
+    /// function rather than `default_soundfont_dir().parent()`, which would
+    /// make the crash log's home a consequence of where the soundfonts live.
+    pub fn data_dir_from(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
+        Self::xdg_from(env, "XDG_DATA_HOME", ".local/share").map(|base| base.join("fontelle"))
+    }
+
+    pub fn data_dir() -> Option<PathBuf> {
+        Self::data_dir_from(&|key| std::env::var(key).ok())
+    }
+
     /// `$XDG_DATA_HOME/fontelle/soundfonts`, or `$HOME/.local/share/...`.
     pub fn default_soundfont_dir_from(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
         Self::xdg_from(env, "XDG_DATA_HOME", ".local/share")

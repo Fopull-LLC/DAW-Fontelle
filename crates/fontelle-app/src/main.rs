@@ -555,6 +555,19 @@ fn play_or_render(
         .map_err(|e| format!("failed to open the default output device: {e}"))?;
 
     if window {
+        // **Why the last run went away**, before anything can go wrong in this
+        // one — see [`fontelle_app::crashlog`]. Here rather than at the top of
+        // `main` because this is where the project's name is known and where
+        // the interactive life of the process begins; a bounce or a `--help`
+        // has a terminal to print to and needs no file.
+        let crash_dir = fontelle_app::settings::Settings::data_dir();
+        let crash_news = crash_dir.as_ref().and_then(|dir| {
+            fontelle_app::crashlog::begin(dir, Some(&project.meta.name)).message()
+        });
+        if let Some(said) = &crash_news {
+            // On the terminal too, for whoever launched it from one.
+            eprintln!("Fontelle: {said}");
+        }
         // The window owns the transport from here. It opens *stopped* and cued
         // where `--start-beat` asked for: a DAW that starts playing the moment
         // it opens is a DAW you have to race to the stop button.
@@ -665,6 +678,12 @@ fn play_or_render(
             // created and nothing is guessed at (INVARIANT 10): with no folder
             // configured the Projects tab says so and offers to pick one.
             session.open_projects();
+            // And what happened to the last run, in the window's own status
+            // line: a crash report nobody is told about is a file nobody
+            // reads.
+            if let Some(said) = &crash_news {
+                session.announce(said.clone());
+            }
             Box::new(session) as Box<dyn fontelle_ui::StudioHost>
         });
         // Live MIDI, on its own thread, for as long as the window is open.
@@ -695,6 +714,12 @@ fn play_or_render(
         transport.stop();
         std::thread::sleep(std::time::Duration::from_millis(50));
         device.stop();
+        // The window has closed under its own steam, so the next launch has
+        // no news. A panic never reaches this line, which is exactly what
+        // makes the marker's absence mean something.
+        if let Some(dir) = &crash_dir {
+            fontelle_app::crashlog::end(dir);
+        }
         return match result {
             Ok(app) => {
                 if run_for.is_some() {

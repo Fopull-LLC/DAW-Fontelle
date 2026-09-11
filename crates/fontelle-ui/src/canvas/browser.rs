@@ -757,11 +757,21 @@ pub fn browser_focus_step(
 /// Only in the Import tab, and only a file: a folder is a place, the `..` row
 /// is a move, a heading is a label, and a soundfont preset is carried by a
 /// different gesture that means something else (see [`BrowserHit::Preset`]).
+///
+/// And only while that tab is showing **sounds**. `Drag::BrowserRow` has said
+/// "only audio can be carried: a MIDI file dropped on the rack is not an
+/// instrument" since it was written, and this function — the one place that
+/// decision lives — did not ask, so a `.mid` row armed a drag whose every
+/// landing could only fail (`only an audio file can become a sampler`, said
+/// after the release rather than before it). A file that makes tracks of its
+/// own is opened by a click; what is carried is a sound.
 pub fn browser_row_carries(
     rows: &[crate::document::LibraryEntry],
     mode: BrowserMode,
+    kind: fontelle_types::FolderKind,
     index: usize,
 ) -> bool {
     mode == BrowserMode::Import
+        && kind == fontelle_types::FolderKind::Audio
         && rows.get(index).map(|row| row.kind) == Some(crate::document::LibraryKind::File)
 }
