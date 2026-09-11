@@ -92,8 +92,13 @@ fn a_long_path_is_shortened_from_the_left_so_the_end_stays_readable() {
     // `/home/someone/.local/share/fontelle/soundfonts`, and the half worth
     // showing is the end of it.
     let path = Path::new("/home/someone/.local/share/fontelle/soundfonts");
-    assert_eq!(elide_path(path, 2), "…/fontelle/soundfonts");
-    assert_eq!(elide_path(path, 3), "…/share/fontelle/soundfonts");
+    // Joined back with the platform's own separator — a backslash on Windows.
+    let s = std::path::MAIN_SEPARATOR;
+    assert_eq!(elide_path(path, 2), format!("…{s}fontelle{s}soundfonts"));
+    assert_eq!(
+        elide_path(path, 3),
+        format!("…{s}share{s}fontelle{s}soundfonts")
+    );
 
     // Short enough already: no ellipsis, and no lie about there being more.
     assert_eq!(elide_path(Path::new("/sf2"), 2), "/sf2");

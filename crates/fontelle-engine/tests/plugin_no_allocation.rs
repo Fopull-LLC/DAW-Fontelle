@@ -45,16 +45,24 @@ fn bundle() -> PathBuf {
         "{} is missing — run `cargo build -p fontelle-testplug`",
         built.display()
     );
-    let bundle = path.join("fontelle-testplug.clap");
-    let staging = path.join(format!(
-        "fontelle-testplug.alloc.{}.tmp",
-        std::process::id()
-    ));
-    if std::fs::copy(&built, &staging).is_ok() {
-        let _ = std::fs::rename(&staging, &bundle);
-    }
-    let _ = std::fs::remove_file(&staging);
-    bundle
+    // Once per test binary, through a rename — the three tests here run on
+    // three threads, and three copies into one staging file at once was a
+    // truncated bundle on macOS. See `plugin_nodes.rs`, which does the same.
+    static BUNDLE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BUNDLE
+        .get_or_init(|| {
+            let bundle = path.join("fontelle-testplug.clap");
+            let staging = path.join(format!(
+                "fontelle-testplug.alloc.{}.tmp",
+                std::process::id()
+            ));
+            if std::fs::copy(&built, &staging).is_ok() {
+                let _ = std::fs::rename(&staging, &bundle);
+            }
+            let _ = std::fs::remove_file(&staging);
+            bundle
+        })
+        .clone()
 }
 
 fn note_on(sample: i64, key: u8) -> TimedEvent {
