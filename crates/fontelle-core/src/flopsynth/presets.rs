@@ -281,6 +281,46 @@ impl Build {
         self
     }
 
+    /// Take the `organ` archetype's key click away: a transistor combo has
+    /// no contacts and a pipe organ has no keys in the circuit at all. The
+    /// noise layer goes to the floor, every route into it goes with it, and
+    /// the high-pass it fed is switched off rather than left running empty.
+    fn no_click(mut self) -> Self {
+        self.patch.layers[NOISE].gain_db = SILENT_DB;
+        self.patch
+            .mod_matrix
+            .routes
+            .retain(|route| route.destination != ModDest::LayerGain(NOISE as u8));
+        self.patch.filters[1].enabled = false;
+        self
+    }
+
+    /// A pipe organ's speech in place of the Hammond's click: a breath of
+    /// noise through a band-pass at the front of the note, `seconds` long
+    /// and `peak_db` loud at the top of the key's travel. Most of it is
+    /// fixed and a quarter follows velocity, which is roughly what a tracker
+    /// action gives an organist — the harder the pallet is opened, the more
+    /// the pipe speaks before it settles.
+    fn chiff(self, seconds: f32, peak_db: f32) -> Self {
+        let lift = (peak_db - (SILENT_DB + 1.0)) / 96.0;
+        self.no_click()
+            .noise(0.3, SILENT_DB + 1.0)
+            .filter(1, FilterModel::Clean, SvfMode::Bandpass, 1_500.0, 0.5)
+            .filter_route(NOISE, FilterRoute::F2)
+            .env(2, 0.005, seconds, 0.0, seconds)
+            .route(
+                ModSource::Envelope(2),
+                ModDest::LayerGain(NOISE as u8),
+                lift * 0.75,
+            )
+            .route_via(
+                ModSource::Envelope(2),
+                ModDest::LayerGain(NOISE as u8),
+                lift * 0.25,
+                ModSource::Velocity,
+            )
+    }
+
     fn filter(
         mut self,
         slot: usize,
@@ -880,18 +920,57 @@ fn organ(position: f32, leslie_hz: f32) -> Build {
         .off(C)
         .off(SUB)
         .no_filter()
+        // Around the filters, all three. The second filter below is the
+        // click's high-pass, and the Init patch's oscillators are on the
+        // *serial* route, which goes through it — so every organ that did not
+        // route its oscillators to a filter of its own was losing everything
+        // under two kilohertz: the fundamental, the 16′ bar, the pedals. The
+        // Rock Organ routes A and B to F1 by hand, and that, more than its
+        // drive, is why it was the one that sounded like an organ.
+        .filter_route(A, FilterRoute::Bypass)
+        .filter_route(B, FilterRoute::Bypass)
+        .filter_route(C, FilterRoute::Bypass)
         .amp(0.004, 0.0, 1.0, 0.04)
         // The key click: a burst of noise through a high-pass, gated by its
         // own envelope, which is what a Hammond's contacts actually are.
-        .noise(0.0, -30.0)
+        //
+        // **Parked a decibel above the floor, not at −30.** It sat at −30 dB
+        // for as long as the key was down, with the envelope adding a burst
+        // *on top*, and that bed was the whole of the shelf's hiss — "the
+        // rest of the flopsynth organ presets sound very noisy". A layer at
+        // `SILENT_DB` exactly is skipped until a route lifts it, and routes
+        // are read at the start of a block, so a click that short would lose
+        // its first block; a decibel above it renders, and −59 dB of
+        // high-passed noise is nothing under a tone. The envelope brings it
+        // up forty-eight decibels for the click, and velocity scales the
+        // click rather than the bed (`route_via`), so a soft note still has
+        // no hiss under it. `tests/organ_click.rs` holds both halves.
+        //
+        // Fifteen milliseconds of decay rather than eight: a gain route is
+        // read once a block, at its start, so an eight-millisecond envelope
+        // is half gone by the first reading and finished by the second, and
+        // the click was three decibels over the bed. Fifteen gives it five
+        // readings on the way down, which is a click and not a tick, and the
+        // first of them is as loud as the tone for one block — measured, not
+        // reasoned: the decay is bent, and reads about half at that point.
+        .noise(0.0, SILENT_DB + 1.0)
         .filter_route(NOISE, FilterRoute::F2)
         .filter(1, FilterModel::Clean, SvfMode::Highpass, 2_000.0, 0.7)
-        .env(2, 0.0, 0.008, 0.0, 0.008)
-        .route(ModSource::Envelope(2), ModDest::LayerGain(NOISE as u8), 0.2)
+        .env(2, 0.0, 0.015, 0.0, 0.015)
+        .route(
+            ModSource::Envelope(2),
+            ModDest::LayerGain(NOISE as u8),
+            0.62,
+        )
+        .route_via(
+            ModSource::Envelope(2),
+            ModDest::LayerGain(NOISE as u8),
+            0.15,
+            ModSource::Velocity,
+        )
         .lfo(0, LfoWave::Sine, leslie_hz)
         .route(ModSource::Lfo(0), ModDest::LayerPan(A as u8), 0.5)
         .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.000_3)
-        .route(ModSource::Velocity, ModDest::LayerGain(NOISE as u8), 0.15)
         .route(ModSource::Macro(0), ModDest::LfoRate(0), 0.5)
         .route(ModSource::Macro(1), ModDest::OscPosition(A as u8), 0.5)
         .mac(0, "Leslie")
@@ -2575,20 +2654,34 @@ bank! {
         .out(26.0),
 
     // --------------------------------------------------------------- Organ ---
-    Organ: "Drawbar 888" => organ(0.9, 6.5)
+    // The registration the name says: 16′, 5⅓′ and 8′ out and nothing else
+    // — three bars is 0.23 of the knob. It was 0.9, all nine, which is the
+    // full organ (Gospel has that) and not what anybody means by "888".
+    Organ: "Drawbar 888" => organ(0.23, 6.5)
         .fx(drive_fx(DistortionCurve::Tube, 8.0, 0.2))
         .fx(reverb(0.4, 0.2))
-        .out(1.1),
-    Organ: "Drawbar Jazz" => organ(0.45, 0.8).out(2.4),
+        .out(7.6),
+    // The chorale Leslie and the scanner vibrato: the C3's own chorus, a
+    // fast shallow wobble the slow rotor sits under.
+    Organ: "Drawbar Jazz" => organ(0.45, 0.8)
+        .lfo(1, LfoWave::Sine, 6.9)
+        .route(ModSource::Lfo(1), ModDest::LayerPitch(A as u8), 0.000_4)
+        .out(4.8),
     Organ: "Church" => organ(0.7, 0.2)
         .osc(B, WavetableId::Sine, -18.0)
         .semis(B, -12)
         .osc(C, WavetableId::Sine, -26.0)
         .semis(C, 19)
         .amp(0.06, 0.0, 1.0, 0.6)
+        // No contacts to click; a principal pipe speaks instead.
+        .chiff(0.05, -24.0)
         .fx(reverb(0.95, 0.5))
-        .out(1.7),
+        .out(-0.5),
+    // Transistors, both of them: no click, and no velocity in the instrument
+    // at all — the token route on the amp is the bank's rule, not the Vox's.
     Organ: "Combo" => organ(0.2, 6.0)
+        .no_click()
+        .route(ModSource::Velocity, ModDest::Amp, 0.08)
         .osc(A, WavetableId::Square, -14.0)
         .osc(B, WavetableId::Square, -20.0)
         .semis(B, 12)
@@ -2596,17 +2689,21 @@ bank! {
         .semis(C, 24)
         .filter(0, FilterModel::Clean, SvfMode::Lowpass, 4_000.0, 0.5)
         .filter_route(A, FilterRoute::F1)
+        .filter_route(B, FilterRoute::F1)
+        .filter_route(C, FilterRoute::F1)
         .amp(0.003, 0.0, 1.0, 0.03)
         .route(ModSource::Lfo(0), ModDest::Amp, 0.15)
         .out(-4.9),
     Organ: "Farfisa" => organ(0.35, 6.0)
+        .no_click()
+        .route(ModSource::Velocity, ModDest::Amp, 0.08)
         .osc(A, WavetableId::Pulse, -14.0)
         .pos(A, 0.4)
         .uni(A, 2, 3.0)
         .filter(0, FilterModel::Clean, SvfMode::Lowpass, 5_000.0, 0.5)
         .filter_route(A, FilterRoute::F1)
         .amp(0.002, 0.0, 1.0, 0.02)
-        .out(2.5),
+        .out(10.6),
     Organ: "Percussive" => organ(0.3, 5.5)
         // The percussion tab: a second harmonic struck on every key and gone
         // in a quarter of a second, which is the whole of what the tab did.
@@ -2636,29 +2733,39 @@ bank! {
         .osc(C, WavetableId::Sine, -20.0)
         .semis(C, 19)
         .route(ModSource::Velocity, ModDest::Amp, 0.12)
-        .noise(0.0, -44.0)
-        .env(2, 0.0, 0.006, 0.0, 0.006)
         .amp(0.002, 0.0, 1.0, 0.03)
         .fx(drive_fx(DistortionCurve::Tube, 12.0, 0.3))
-        .out(5.6),
+        .out(-6.0),
     // A flue pipe is a sine with wind in front of it: no drawbars, no Leslie,
     // and the room is half the instrument.
     Organ: "Pipe Flute" => organ(0.0, 0.15)
         .osc(A, WavetableId::Sine, -11.0)
         .osc(B, WavetableId::Sine, -26.0)
         .semis(B, 19)
-        .noise(0.4, -34.0)
-        .env(2, 0.0, 0.05, 0.0, 0.04)
+        // The speech, and then the wind: a stopped flute keeps a little
+        // breath under the note for as long as it sounds. It was −34 dB and
+        // read as more wind than note; this is the floor the ear stops
+        // hearing it as hiss.
+        .chiff(0.06, -22.0)
+        .noise(0.5, -50.0)
         .amp(0.08, 0.0, 1.0, 0.25)
         .fx(reverb(0.95, 0.5))
-        .out(13.8),
+        .out(-3.3),
+    // A harmonium: bellows, no contacts, and the player's foot in the level.
+    // A free reed is a saw, near enough — every harmonic, falling off — with
+    // a nasal band where the reed cell resonates; the odd-only table it had
+    // was a stopped pipe with a different name (it read 0.15 from the Pipe
+    // Flute once both had their fundamentals back). The second reed is
+    // seven cents off the first, which is the beating every harmonium has.
     Organ: "Reed Organ" => organ(0.5, 0.9)
-        .osc(A, WavetableId::Odd, -13.0)
-        .osc(B, WavetableId::Pulse, -21.0)
-        .pos(B, 0.3)
+        .no_click()
+        .route(ModSource::Velocity, ModDest::Amp, 0.1)
+        .osc(A, WavetableId::Saw, -14.0)
+        .osc(B, WavetableId::Saw, -20.0)
         .fine(B, 7.0)
-        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 3_000.0, 0.5)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 2_400.0, 0.65)
         .filter_route(A, FilterRoute::F1)
+        .filter_route(B, FilterRoute::F1)
         .amp(0.04, 0.0, 1.0, 0.12)
         .out(-2.3),
     Organ: "Theatre" => organ(0.05, 0.6)
@@ -2668,7 +2775,7 @@ bank! {
         .osc(C, WavetableId::Triangle, -27.0)
         .semis(C, 12)
         .route(ModSource::Velocity, ModDest::Amp, 0.12)
-        .noise(0.0, -42.0)
+        .no_click()
         .amp(0.03, 0.0, 1.0, 0.2)
         .lfo(1, LfoWave::Sine, 6.5)
         .lfo_depth(1, 1.0)
@@ -2677,17 +2784,19 @@ bank! {
         .route(ModSource::Macro(2), ModDest::LfoDepth(1), 1.0)
         .mac(2, "Tremulant")
         .fx(reverb(0.8, 0.4))
-        .out(11.7),
+        .out(-9.2),
     Organ: "Bass Pedals" => organ(0.85, 0.2)
         .semis(A, -24)
         .osc(B, WavetableId::Sine, -18.0)
         .semis(B, -12)
         .route(ModSource::Velocity, ModDest::Amp, 0.12)
-        .noise(0.0, -40.0)
         .filter(0, FilterModel::Clean, SvfMode::Lowpass, 900.0, 0.5)
         .filter_route(A, FilterRoute::F1)
-        .amp(0.01, 0.0, 1.0, 0.12)
-        .out(2.0),
+        // The archetype's attack, not a slower one: the pedal contacts are
+        // the same contacts, and ten milliseconds of amp attack was eating
+        // the click before its first reading.
+        .amp(0.004, 0.0, 1.0, 0.12)
+        .out(-2.9),
 
     // ---------------------------------------------------- Bells & Mallets ---
     BellsAndMallets: "Tubular" => bell(WavetableId::FmBell, 4.0)

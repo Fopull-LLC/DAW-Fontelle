@@ -1028,9 +1028,12 @@ arrangement, a drum part and a bass part inside it. The rule that makes it usabl
 one rule: **the channel rack's selection is the instrument every interaction means.**
 A drawn clip is on the selected channel; a note drawn, pasted or recorded goes on the
 selected channel whatever clip it lands in; the piano roll shows the open clip's notes
-on the selected channel and ghosts the rest; opening a clip does not move the rack and
-selecting a channel does not move the roll off the clip in hand. `None` rather than
-always naming a channel so every note ever saved reads back as it was written.
+on the selected channel and ghosts the rest; opening a clip that holds **several**
+instruments does not move the rack, while opening one that holds a single instrument
+selects it (2026-09-13 — one click to be editing what the clip plays, and only a clip
+that already holds two leaves the question open); selecting a channel does not move
+the roll off the clip in hand. `None` rather than always naming a channel so every
+note ever saved reads back as it was written.
 
 Per-note pan, fine pitch, release, and two free modulation values are included because they are
 cheap to store, cheap to route through the mod matrix (§7.5), and are exactly the kind of

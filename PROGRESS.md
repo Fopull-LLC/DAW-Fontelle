@@ -19,7 +19,7 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-09-11.** The repository is public and `v0.1.0` is the first
+**As of 2026-09-13.** The repository is public and `v0.1.0` is the first
 release. The workspace is one version, `cargo fmt --all -- --check` passes,
 `cargo clippy --workspace --all-targets -- -D warnings` is clean on Linux
 and cross-checked for Windows, and `cargo test --workspace` is green at
@@ -45,7 +45,63 @@ over the budget its plan set. The numbers and where the time goes are at the
 end of the section below; the plan's own instruction is that this is a design
 conversation rather than a target to loosen.
 
-## 2026-09-11 (latest): public, and a first release
+## 2026-09-13 (latest): the organs had no fundamental, the blade marks its notes, a clip picks its instrument
+
+> *"the rock organ sounds good but the rest of the flopsynth organ presets
+> sound very noisy. help me make preset sounds are not too noisy and actually
+> sound like what theyre trying to imitate."* — and two more in the same
+> breath: the cut tool's marks in the roll, and a clip selecting its
+> instrument.
+
+**The organs, measured.** `examples/preset_noise` read the shelf's
+harmonic-to-noise over the sustain: eleven of the twelve between −5 and
++8 dB, the Rock Organ at 17. Muting the noise layer put the same eleven at
+16–50, so it was the noise layer — and it was two things, not one. The
+`organ` archetype's key click was a noise layer **at −30 dB for as long as
+the key was down**, with an envelope adding a burst on top (the memory note
+from 2026-09-07 had already said so and nobody had acted on it). And the
+Init patch's oscillators are on the *serial* filter route, which goes
+through F2 — the click's 2 kHz high-pass — so **every organ that did not
+route its oscillators to a filter of its own had its tone high-passed at
+2 kHz**: no fundamental, no 16′ bar, no pedals. The Rock Organ routes A and
+B to F1 by hand, and that, more than its drive, is why it was the one that
+sounded like an organ. Both fixed in the archetype: the noise parked a
+decibel over `SILENT_DB` (rendered, so the click's first block is not
+lost; inaudible) and lifted 60 dB by a fifteen-millisecond envelope,
+velocity scaling the click rather than a bed (`route_via`); A, B and C on
+`Bypass`. Then the rows: transistor combos and pipe organs have no
+contacts, so `no_click()` for the Vox, the Farfisa, the harmonium and the
+theatre organ, and a `chiff()` — a band-passed breath at the front of the
+note — for the Church and the Pipe Flute; the three rows that had set
+their own continuous noise bed lose it; "Drawbar 888" is *888000000*
+(0.23 of the knob) rather than all nine bars; the harmonium is a saw
+through a nasal low-pass rather than an odd-only table that read 0.15
+from the Pipe Flute once both had fundamentals; the Jazz gets the C3's
+scanner vibrato; the pedals get the archetype's attack back. Eight trims
+rewritten from `preset_probe` — Theatre had been peaking at 4.3 with its
+tone high-passed away. The shelf reads 30–49 dB now; `tests/organ_click.rs`
+holds a 25 dB floor read off the shelf and, on the six Hammonds, that the
+noise layer's first ten milliseconds are 30 dB over its rest. Twelve JSON
+files re-exported, nothing outside the shelf moved. **Nobody has listened**
+— `cargo run --release -- --play-flopsynth "Drawbar 888"`.
+
+**The roll's blade marks its notes.** The arrangement has drawn the
+consequence since 2026-09 — faint stroke, bright mark per clip at the tick
+it will divide — and the roll drew the stroke alone. `canvas::note_marks`
+is the roll's half: one rectangle across each note's own row at the tick
+`slice_cuts` will cut it on, from the same call, so a diagonal through a
+chord shows three marks at three places. `render_headless` has a `roll-cut`
+scene and a pixel test on it; looked at.
+
+**A clip that holds one instrument selects it on open.** `open_clip` used
+to move the rack to the clip's channel; that broke shared clips
+(2026-09-03) so it moved nothing; now it moves for a clip whose
+`NoteData::channels()` is one channel — the same reading the caption's
+`+1` comes from, so the clips that leave the rack alone are exactly the
+ones captioned as holding several. TDD §10.4 amended;
+`multi_instrument_clips.rs` has both halves.
+
+## 2026-09-11: public, and a first release
 
 > *"ensure that all the info agent w needs to make a page for daw fontelle
 > is pushed to the ledger and that the repo is public and the codebase is

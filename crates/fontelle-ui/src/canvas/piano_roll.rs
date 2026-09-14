@@ -2918,3 +2918,36 @@ pub fn slice_cuts(
     }
     cuts
 }
+
+/// **Where the blade will actually cut**, as a mark per note.
+///
+/// > *"it would be nice when im cutting in the piano roll it drew the line
+/// > that cut the notes i was cutting with the cut tool to visualize it
+/// > cleanly."*
+///
+/// The roll's half of the arrangement's `slice_marks`, and the same shape: a
+/// rectangle across each note's own row at the tick that note is cut on. The
+/// stroke says where the hand went; these say which notes it will divide and
+/// where — which on a diagonal is a different place per row, and on a stroke
+/// that misses is nothing at all. Worked out with the same call the release
+/// will make, so the two cannot drift apart.
+pub fn note_marks(
+    view: &RollView,
+    grid: Rect,
+    notes: &Arena<NoteId, Note>,
+    from: (f32, f32),
+    to: (f32, f32),
+) -> Vec<Rect> {
+    /// Two pixels: thick enough to see against a note's own fill, thin enough
+    /// that it reads as a *place* rather than as a region — a cut has no width.
+    const WIDTH: f32 = 2.0;
+    slice_cuts(view, grid, notes, from, to)
+        .into_iter()
+        .filter_map(|(id, at)| {
+            let note = notes.get(id)?;
+            let x = tick_to_x(view, grid, at);
+            let y = key_to_y(view, grid, note.key);
+            Some(Rect::new(x - WIDTH / 2.0, y, WIDTH, view.key_height).intersection(&grid))
+        })
+        .collect()
+}

@@ -35,14 +35,14 @@
             "sustain_level": 0.0
           },
           {
-            "attack_s": 0.0,
+            "attack_s": 0.004999999888241291,
             "attack_shape": 0.0,
             "curve": "Linear",
-            "decay_s": 0.00800000037997961,
+            "decay_s": 0.05000000074505806,
             "decay_shape": -0.6000000238418579,
             "delay_s": 0.0,
             "hold_s": 0.0,
-            "release_s": 0.00800000037997961,
+            "release_s": 0.05000000074505806,
             "release_shape": -0.6000000238418579,
             "sustain_level": 0.0
           },
@@ -73,13 +73,13 @@
           },
           {
             "character": 0.0,
-            "cutoff_hz": 2000.0,
+            "cutoff_hz": 1500.0,
             "drive": 0.0,
             "enabled": true,
             "key_track": 0.0,
-            "mode": "Highpass",
+            "mode": "Bandpass",
             "model": "Clean",
-            "resonance": 0.699999988079071,
+            "resonance": 0.5,
             "slope": "Db12"
           }
         ],
@@ -120,7 +120,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Serial",
+                "filter_route": "Bypass",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -167,7 +167,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Serial",
+                "filter_route": "Bypass",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -214,7 +214,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Serial",
+                "filter_route": "Bypass",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -289,7 +289,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -30.0,
+            "gain_db": -59.0,
             "key_range": [
               0,
               127
@@ -311,7 +311,7 @@
                 "filter_route": "F2",
                 "key_track": false,
                 "modulator": null,
-                "noise_colour": 0.0,
+                "noise_colour": 0.30000001192092896,
                 "phase": 0.0,
                 "position": 0.0,
                 "random_phase": false,
@@ -417,18 +417,6 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.20000000298023224,
-              "destination": {
-                "LayerGain": 4
-              },
-              "invert": false,
-              "source": {
-                "Envelope": 2
-              },
-              "via": null
-            },
-            {
-              "curve": "Linear",
               "depth": 0.5,
               "destination": {
                 "LayerPan": 0
@@ -449,16 +437,6 @@
               "source": {
                 "Lfo": 0
               },
-              "via": null
-            },
-            {
-              "curve": "Linear",
-              "depth": 0.15000000596046448,
-              "destination": {
-                "LayerGain": 4
-              },
-              "invert": false,
-              "source": "Velocity",
               "via": null
             },
             {
@@ -484,10 +462,34 @@
                 "Macro": 1
               },
               "via": null
+            },
+            {
+              "curve": "Linear",
+              "depth": 0.2734375,
+              "destination": {
+                "LayerGain": 4
+              },
+              "invert": false,
+              "source": {
+                "Envelope": 2
+              },
+              "via": null
+            },
+            {
+              "curve": "Linear",
+              "depth": 0.0911458358168602,
+              "destination": {
+                "LayerGain": 4
+              },
+              "invert": false,
+              "source": {
+                "Envelope": 2
+              },
+              "via": "Velocity"
             }
           ]
         },
-        "output_db": 1.7000000476837158,
+        "output_db": -0.5,
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

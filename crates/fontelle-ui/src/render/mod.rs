@@ -3426,9 +3426,20 @@ pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome
         }
     }
 
-    // The cut tool's stroke, over the notes it is about to cut and under the
-    // chrome. A tool whose gesture leaves no mark is one you have to aim
-    // blind, which on rows fourteen pixels apart is a guess.
+    // The cut tool, over the notes it is about to cut and under the chrome.
+    // **Two marks, and they say two different things** — the arrangement's
+    // rule, and now the roll's:
+    //
+    // > *"it would be nice when im cutting in the piano roll it drew the
+    // > line that cut the notes i was cutting with the cut tool to visualize
+    // > it cleanly."*
+    //
+    // The stroke is the gesture — where the hand went — drawn faint, because
+    // it is feedback that the drag is happening and nothing more. The bright
+    // marks are the *cuts*: one across each note the stroke crosses, at the
+    // tick `slice_cuts` will divide it on. The roll drew the stroke alone,
+    // which on a diagonal through a chord left the reader working out which
+    // notes were in it and where each would part.
     if let Some((from, to)) = chrome.slice {
         let mut line = BezPath::new();
         line.move_to(Point::new(from.0 as f64, from.1 as f64));
@@ -3446,12 +3457,24 @@ pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome
             ),
         );
         scene.stroke(
-            &Stroke::new(1.5),
+            &Stroke::new(1.0),
             Affine::IDENTITY,
-            p.meter_peak.to_peniko(),
+            p.meter_peak.with_alpha(0x55).to_peniko(),
             None,
             &line,
         );
+        for mark in crate::canvas::note_marks(v, grid, chrome.notes, from, to) {
+            fill_rect(scene, mark, p.meter_peak);
+            // A cap at each end, so a mark on a note whose colour is close to
+            // the ink still reads as a cut rather than as a stripe.
+            for y in [mark.y, mark.bottom() - 2.0] {
+                fill_rect(
+                    scene,
+                    Rect::new(mark.x - 2.0, y, mark.width + 4.0, 2.0),
+                    p.meter_peak,
+                );
+            }
+        }
         scene.pop_layer();
     }
 

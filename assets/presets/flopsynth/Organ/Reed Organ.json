@@ -38,11 +38,11 @@
             "attack_s": 0.0,
             "attack_shape": 0.0,
             "curve": "Linear",
-            "decay_s": 0.00800000037997961,
+            "decay_s": 0.014999999664723873,
             "decay_shape": -0.6000000238418579,
             "delay_s": 0.0,
             "hold_s": 0.0,
-            "release_s": 0.00800000037997961,
+            "release_s": 0.014999999664723873,
             "release_shape": -0.6000000238418579,
             "sustain_level": 0.0
           },
@@ -62,20 +62,20 @@
         "filters": [
           {
             "character": 0.0,
-            "cutoff_hz": 3000.0,
+            "cutoff_hz": 2400.0,
             "drive": 0.0,
             "enabled": true,
             "key_track": 0.0,
             "mode": "Lowpass",
             "model": "Clean",
-            "resonance": 0.5,
+            "resonance": 0.6499999761581421,
             "slope": "Db24"
           },
           {
             "character": 0.0,
             "cutoff_hz": 2000.0,
             "drive": 0.0,
-            "enabled": true,
+            "enabled": false,
             "key_track": 0.0,
             "mode": "Highpass",
             "model": "Clean",
@@ -87,7 +87,7 @@
         "layers": [
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -13.0,
+            "gain_db": -14.0,
             "key_range": [
               0,
               127
@@ -115,7 +115,7 @@
                 "random_phase": false,
                 "semitones": 0,
                 "source": {
-                  "Table": "Odd"
+                  "Table": "Saw"
                 },
                 "unison": {
                   "blend": 1.0,
@@ -134,7 +134,7 @@
           },
           {
             "fine_tune_cents": 7.0,
-            "gain_db": -21.0,
+            "gain_db": -20.0,
             "key_range": [
               0,
               127
@@ -153,16 +153,16 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Serial",
+                "filter_route": "F1",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
                 "phase": 0.0,
-                "position": 0.30000001192092896,
+                "position": 0.5,
                 "random_phase": false,
                 "semitones": 0,
                 "source": {
-                  "Table": "Pulse"
+                  "Table": "Saw"
                 },
                 "unison": {
                   "blend": 1.0,
@@ -200,7 +200,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Serial",
+                "filter_route": "Bypass",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -275,7 +275,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -30.0,
+            "gain_db": -60.0,
             "key_range": [
               0,
               127
@@ -403,18 +403,6 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.20000000298023224,
-              "destination": {
-                "LayerGain": 4
-              },
-              "invert": false,
-              "source": {
-                "Envelope": 2
-              },
-              "via": null
-            },
-            {
-              "curve": "Linear",
               "depth": 0.5,
               "destination": {
                 "LayerPan": 0
@@ -439,16 +427,6 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.15000000596046448,
-              "destination": {
-                "LayerGain": 4
-              },
-              "invert": false,
-              "source": "Velocity",
-              "via": null
-            },
-            {
-              "curve": "Linear",
               "depth": 0.5,
               "destination": {
                 "LfoRate": 0
@@ -469,6 +447,14 @@
               "source": {
                 "Macro": 1
               },
+              "via": null
+            },
+            {
+              "curve": "Linear",
+              "depth": 0.10000000149011612,
+              "destination": "Amp",
+              "invert": false,
+              "source": "Velocity",
               "via": null
             }
           ]

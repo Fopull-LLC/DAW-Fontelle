@@ -786,9 +786,10 @@ fn clicking_a_clip_on_the_arrangement_opens_it_in_the_roll() {
     assert!(session.clips().iter().any(|c| c.id == first.id && c.open));
     assert_eq!(
         session.selected_channel(),
-        1,
-        "opening a clip leaves the rack where it is — the rack is the instrument \
-         you chose, and the clip is the place you are writing it"
+        0,
+        "the first clip holds one instrument, so opening it selects that one — \
+         see `multi_instrument_clips.rs` for the clip that holds several, \
+         which is the one that leaves the rack where it is"
     );
 
     std::fs::remove_dir_all(&dir).ok();

@@ -355,3 +355,80 @@ fn the_arrangements_own_marks_ask_for_their_frames_too() {
     timeline.release_over(x + 60.0, y + 30.0, &l, &[], 4);
     assert!(!timeline.draws_overlay());
 }
+
+// ------------------------------------------------------------ the marks ---
+//
+// > *"it would be nice when im cutting in the piano roll it drew the line
+// > that cut the notes i was cutting with the cut tool to visualize it
+// > cleanly."*
+//
+// The arrangement has had this since its blade was reported drawing the
+// gesture rather than its consequence: a faint stroke for the hand, and a
+// bright mark on every clip it will actually divide. The roll drew the
+// stroke alone. The marks are worked out by the same call that will make the
+// cuts, so what is shown and what lands cannot disagree.
+
+/// One mark per note the stroke will cut, each across **its own** row at the
+/// tick that note is cut on — which, on a diagonal, is a different x per row.
+#[test]
+fn the_blade_marks_every_note_it_will_cut_on_that_notes_own_row() {
+    use fontelle_ui::canvas::note_marks as slice_marks;
+
+    let v = view();
+    let mut notes = Arena::default();
+    let a = notes.insert(note(0, PPQN * 4, 60));
+    let b = notes.insert(note(0, PPQN * 4, 64));
+    let c = notes.insert(note(0, PPQN * 4, 67));
+
+    // From two beats in above the top note to three beats in below the bottom.
+    let (x0, y_top) = at(&v, PPQN * 2, 67);
+    let (x1, y_bottom) = at(&v, PPQN * 3, 60);
+    let from = (x0, y_top - 20.0);
+    let to = (x1, y_bottom + 20.0);
+
+    let cuts = slice_cuts(&v, grid(), &notes, from, to);
+    assert_eq!(cuts.len(), 3, "the stroke crosses three notes");
+    let marks = slice_marks(&v, grid(), &notes, from, to);
+    assert_eq!(marks.len(), 3, "three cuts, three marks");
+
+    for (id, tick) in cuts {
+        let key = notes.get(id).unwrap().key;
+        let row = key_to_y(&v, grid(), key);
+        let want = tick_to_x(&v, grid(), tick);
+        let mark = marks
+            .iter()
+            .find(|m| (m.y - row).abs() < 0.5)
+            .unwrap_or_else(|| panic!("no mark on key {key}'s row"));
+        let centre = mark.x + mark.width / 2.0;
+        assert!(
+            (centre - want).abs() < 1.5,
+            "key {key}: the mark is at {centre} and the cut lands at {want}"
+        );
+        assert!(
+            (mark.height - v.key_height).abs() < 0.5,
+            "the mark spans the row, not the stroke"
+        );
+        assert!(mark.width >= 1.0 && mark.width <= 3.0, "a cut has no width");
+    }
+    let _ = (a, b, c);
+}
+
+/// A stroke that cuts nothing marks nothing: the marks and the cuts are the
+/// same answer.
+#[test]
+fn a_stroke_that_cuts_nothing_marks_nothing_in_the_roll() {
+    use fontelle_ui::canvas::note_marks as slice_marks;
+
+    let v = view();
+    let mut notes = Arena::default();
+    notes.insert(note(0, PPQN * 4, 60));
+    // Straight down through the row, but past the note's end.
+    let (x, y) = at(&v, PPQN * 6, 60);
+    let marks = slice_marks(&v, grid(), &notes, (x, y - 40.0), (x, y + 40.0));
+    assert!(marks.is_empty(), "a stroke past the note marked something");
+    // And a stroke along the row, which crosses no middle.
+    let (x0, y) = at(&v, PPQN, 60);
+    let (x1, _) = at(&v, PPQN * 3, 60);
+    let marks = slice_marks(&v, grid(), &notes, (x0, y), (x1, y));
+    assert!(marks.is_empty(), "a stroke along the row marked something");
+}

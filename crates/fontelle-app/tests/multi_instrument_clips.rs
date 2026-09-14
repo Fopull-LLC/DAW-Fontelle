@@ -276,25 +276,66 @@ fn editing_a_note_on_the_selected_channel_leaves_the_others_alone() {
 // ----------------------------------------------- the rack and the roll ---
 
 #[test]
-fn opening_a_clip_does_not_move_the_rack() {
-    // The rack is the instrument you chose; a clip is the place you are
-    // writing. Opening the drum clip while the bass is selected means "write
-    // bass in here", which is the whole feature.
-    let dir = scratch("open");
+fn opening_a_clip_holding_one_instrument_selects_it() {
+    // *"if that clip only uses one instrument and not multiple instruments
+    // in it, it should switch my instrument selection automatically to that
+    // instrument that the clip uses ... you could click your clips to
+    // already have the instrument selected to start editing."*
+    let dir = scratch("open-one");
     let mut session = two_instruments(&dir);
+    // A clip drawn with the second channel selected is the second channel's
+    // — empty, and captioned with it.
     let made = session.arrange(ArrangeEdit::Add {
         lane: 0,
         start: PPQN * 16,
     });
+    assert_eq!(session.selected_channel(), 1);
     session.select_channel(0);
     session.open_clip(made.clips[0]);
-    assert_eq!(session.selected_channel(), 0);
+    assert_eq!(
+        session.selected_channel(),
+        1,
+        "the rack follows a one-instrument clip"
+    );
     assert!(
         session
             .clips()
             .iter()
             .any(|c| c.id == made.clips[0] && c.open)
     );
+    // And back: the first clip is the first channel's, with notes on it.
+    let first = session.clips()[0].id;
+    session.select_channel(0);
+    session.open_clip(first);
+    session.edit(RollEdit::Add {
+        note: a_note(0, 60),
+    });
+    session.select_channel(1);
+    session.open_clip(first);
+    assert_eq!(session.selected_channel(), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn opening_a_clip_holding_several_instruments_does_not_move_the_rack() {
+    // The rack is the instrument you chose; a clip is the place you are
+    // writing. Opening the drum clip while the bass is selected means "write
+    // bass in here" — and only a clip that already holds both leaves the
+    // question open, so only that clip leaves the rack alone.
+    let dir = scratch("open-several");
+    let mut session = two_instruments(&dir);
+    // The first clip is the first channel's; a note from the second makes it
+    // hold both.
+    session.edit(RollEdit::Add {
+        note: a_note(0, 60),
+    });
+    let first = session.clips()[0].id;
+    assert_eq!(session.selected_channel(), 1);
+    session.open_clip(first);
+    assert_eq!(session.selected_channel(), 1, "stayed on the second");
+    session.select_channel(0);
+    session.open_clip(first);
+    assert_eq!(session.selected_channel(), 0, "stayed on the first");
     std::fs::remove_dir_all(&dir).ok();
 }
 

@@ -670,6 +670,29 @@ fn shoot_roll_full_ending(
         tools_open,
         clip_length,
         &[],
+        None,
+    )
+}
+
+/// [`shoot_roll`] with the cut tool's stroke in progress from `from` to
+/// `to`, in window points.
+fn shoot_roll_slicing(
+    notes: &Arena<NoteId, Note>,
+    from: (f32, f32),
+    to: (f32, f32),
+) -> Option<RollShot> {
+    shoot_roll_everything(
+        notes,
+        &[],
+        &[],
+        None,
+        &fontelle_ui::document::KeyMap::unknown(),
+        SnapDivision::Step,
+        0,
+        false,
+        None,
+        &[],
+        Some((from, to)),
     )
 }
 
@@ -690,6 +713,7 @@ fn shoot_roll_recording(
         false,
         None,
         takes,
+        None,
     )
 }
 
@@ -705,6 +729,7 @@ fn shoot_roll_everything(
     tools_open: bool,
     clip_length: Option<Tick>,
     takes: &[fontelle_ui::document::NotePreview],
+    slice: Option<((f32, f32), (f32, f32))>,
 ) -> Option<RollShot> {
     let theme = Theme::dark_default();
     let shared = headless()?;
@@ -825,7 +850,7 @@ fn shoot_roll_everything(
                 lane_menu: lane_menu.as_ref(),
                 tools_panel: tools_panel.as_ref(),
                 tools: &tools,
-                slice: None,
+                slice,
                 key_style: fontelle_ui::canvas::KeyStyle::Piano,
                 live_keys,
                 recording: takes,
@@ -855,7 +880,9 @@ fn shoot_roll_everything(
 
     dump_sized(
         &pixels,
-        if tools_open {
+        if slice.is_some() {
+            "roll-cut"
+        } else if tools_open {
             "roll-tools"
         } else if key_map.is_known() {
             "roll-keymap"
@@ -894,6 +921,55 @@ fn a_note_is_drawn_where_the_document_puts_it() {
         near(found, shot.theme.palette.note),
         "expected a note at ({x}, {y}), found {found:?}"
     );
+}
+
+/// The cut tool's marks: a diagonal stroke through a chord draws a bright
+/// mark across each note at the tick it will be cut on, and the stroke itself
+/// is faint — the arrangement's rule, brought to the roll.
+///
+/// > *"it would be nice when im cutting in the piano roll it drew the line
+/// > that cut the notes i was cutting with the cut tool to visualize it
+/// > cleanly."*
+#[test]
+fn the_blade_marks_each_note_it_will_cut() {
+    let mut notes = Arena::default();
+    for key in [60, 64, 67] {
+        notes.insert(note(0, PPQN * 4, key));
+    }
+    let theme = Theme::dark_default();
+    let layout = window_layout(RW as f32, RH as f32, &theme.metrics, 0.0);
+    let roll_l = fontelle_ui::canvas::roll_layout_with_keys(
+        layout.panel.body,
+        &theme.metrics,
+        DEFAULT_LANE_HEIGHT,
+        fontelle_ui::canvas::keyboard_width(&fontelle_ui::document::KeyMap::unknown()),
+    );
+    let view = RollView {
+        top_key: 72,
+        ..RollView::default()
+    };
+    let row_mid =
+        |key: u8| fontelle_ui::canvas::key_to_y(&view, roll_l.grid, key) + view.key_height / 2.0;
+    let from = (tick_to_x(&view, roll_l.grid, PPQN), row_mid(67) - 10.0);
+    let to = (tick_to_x(&view, roll_l.grid, PPQN * 3), row_mid(60) + 10.0);
+    let Some(shot) = shoot_roll_slicing(&notes, from, to) else {
+        return;
+    };
+
+    let marks = fontelle_ui::canvas::note_marks(&shot.view, shot.layout.grid, &notes, from, to);
+    assert_eq!(marks.len(), 3, "three notes crossed, three marks");
+    for mark in &marks {
+        let x = (mark.x + mark.width / 2.0) as u32;
+        let y = (mark.y + mark.height / 2.0) as u32;
+        let found = shot.at(x, y);
+        assert!(
+            near(found, shot.theme.palette.meter_peak),
+            "expected a cut mark at ({x}, {y}), found {found:?}"
+        );
+    }
+    // The three marks are at three different x: a diagonal cuts each row at
+    // its own time, and the picture says so.
+    assert!(marks[0].x != marks[1].x && marks[1].x != marks[2].x);
 }
 
 #[test]

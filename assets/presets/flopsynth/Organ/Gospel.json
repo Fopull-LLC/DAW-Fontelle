@@ -38,11 +38,11 @@
             "attack_s": 0.0,
             "attack_shape": 0.0,
             "curve": "Linear",
-            "decay_s": 0.006000000052154064,
+            "decay_s": 0.014999999664723873,
             "decay_shape": -0.6000000238418579,
             "delay_s": 0.0,
             "hold_s": 0.0,
-            "release_s": 0.006000000052154064,
+            "release_s": 0.014999999664723873,
             "release_shape": -0.6000000238418579,
             "sustain_level": 0.0
           },
@@ -128,7 +128,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Serial",
+                "filter_route": "Bypass",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -175,7 +175,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Serial",
+                "filter_route": "Bypass",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -222,7 +222,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Serial",
+                "filter_route": "Bypass",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -297,7 +297,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -44.0,
+            "gain_db": -59.0,
             "key_range": [
               0,
               127
@@ -425,7 +425,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.20000000298023224,
+              "depth": 0.6200000047683716,
               "destination": {
                 "LayerGain": 4
               },
@@ -434,6 +434,18 @@
                 "Envelope": 2
               },
               "via": null
+            },
+            {
+              "curve": "Linear",
+              "depth": 0.15000000596046448,
+              "destination": {
+                "LayerGain": 4
+              },
+              "invert": false,
+              "source": {
+                "Envelope": 2
+              },
+              "via": "Velocity"
             },
             {
               "curve": "Linear",
@@ -457,16 +469,6 @@
               "source": {
                 "Lfo": 0
               },
-              "via": null
-            },
-            {
-              "curve": "Linear",
-              "depth": 0.15000000596046448,
-              "destination": {
-                "LayerGain": 4
-              },
-              "invert": false,
-              "source": "Velocity",
               "via": null
             },
             {
@@ -503,7 +505,7 @@
             }
           ]
         },
-        "output_db": 5.599999904632568,
+        "output_db": -6.0,
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

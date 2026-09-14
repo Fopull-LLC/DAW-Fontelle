@@ -7872,11 +7872,34 @@ impl StudioHost for Session {
             return;
         }
         self.clip = clip;
-        // The rack does **not** follow. It used to, and that was the report:
-        // a clip holding several instruments could only ever be edited as
-        // the one it was captioned with. The rack is the instrument you
-        // chose and the clip is the place you are writing; opening the drum
-        // clip with the bass selected means *write bass in here*.
+        // The rack follows a clip that holds **one** instrument, and only
+        // that one. It used to follow every clip, and that was a report: a
+        // clip holding several instruments could only ever be edited as the
+        // one it was captioned with. Then it followed none, and that was
+        // the next one — *"you could click your clips to already have the
+        // instrument selected to start editing instead of having to select
+        // the clip and the instrument in it"*. Both are right: a clip that
+        // plays one instrument is unambiguous about which one you mean, and
+        // a clip that plays several is not — opening the drum clip with the
+        // bass selected still means *write bass in here*. `channels()` is
+        // the same reading the caption's `+1` comes from, so the two agree
+        // about which clips hold several.
+        let one = self
+            .project
+            .clip_source(clip)
+            .and_then(|source| match source.as_ref() {
+                ClipSource::Notes(data) => match data.channels().as_slice() {
+                    [only] => Some(*only),
+                    _ => None,
+                },
+                _ => None,
+            });
+        if let Some(channel) = one
+            && let Some(index) = self.channel_ids().iter().position(|id| *id == channel)
+            && index != self.selected
+        {
+            self.select_channel(index);
+        }
         self.touch();
     }
 
