@@ -215,6 +215,8 @@ fn the_status_line_says_what_the_check_found_and_when_there_is_something_to_pres
 
     let downloading = line(&UpdateStatus::Downloading {
         version: "0.2.0".into(),
+        done: 0,
+        total: None,
     });
     assert!(downloading.0.contains("0.2.0"));
     assert_eq!(downloading.1, None, "nothing to press while it downloads");
@@ -252,4 +254,45 @@ fn the_footer_names_the_company_and_the_links_are_real_addresses() {
     assert!(within(layout.website, layout.footer));
     assert!(within(layout.repository, layout.footer));
     assert!(layout.footer.y + layout.footer.height <= layout.frame.y + layout.frame.height + 0.01);
+}
+
+/// *"make it so theres a progress bar when installing an update"*: while
+/// the archive comes down the line says how far, and the slot the offer
+/// button occupied holds a bar — full to the fraction when the size is
+/// known, and a marching indeterminate one when it is not.
+#[test]
+fn a_download_in_progress_says_how_far_and_has_a_bar() {
+    use fontelle_ui::canvas::update_progress;
+    let line = |status: &UpdateStatus| update_line(status, "0.1.0");
+    let known = UpdateStatus::Downloading {
+        version: "0.2.0".into(),
+        done: 3_100_000,
+        total: Some(12_400_000),
+    };
+    let (text, button) = line(&known);
+    assert!(text.contains("3.1"), "{text}");
+    assert!(text.contains("12.4"), "{text}");
+    assert!(text.contains("MB"), "{text}");
+    assert_eq!(button, None);
+    let fraction = update_progress(&known).expect("a bar while downloading");
+    assert!((fraction.unwrap() - 0.25).abs() < 0.01, "{fraction:?}");
+
+    let unknown = UpdateStatus::Downloading {
+        version: "0.2.0".into(),
+        done: 3_100_000,
+        total: None,
+    };
+    let (text, _) = line(&unknown);
+    assert!(text.contains("3.1"), "{text}");
+    assert_eq!(update_progress(&unknown), Some(None), "indeterminate");
+    assert_eq!(update_progress(&UpdateStatus::UpToDate), None);
+
+    // The bar takes the button's slot: the layout has a rectangle for it.
+    let layout = fontelle_ui::canvas::welcome_layout(
+        Rect::new(0.0, 0.0, 1200.0, 800.0),
+        &metrics(),
+        0,
+        true,
+    );
+    assert!(layout.update_button.is_some());
 }

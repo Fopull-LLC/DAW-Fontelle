@@ -34,7 +34,8 @@ fn a_plugin_that_is_not_in_the_bundle_is_refused() {
 #[test]
 fn a_format_this_build_cannot_host_says_so_rather_than_failing_to_find_a_file() {
     let mut host = host();
-    let key = PluginKey::new(fontelle_types::PluginFormat::Vst3, "com.example.thing");
+    // VST 2 is the one format left that needs a bridge — `docs/vst-plan.md`.
+    let key = PluginKey::new(fontelle_types::PluginFormat::Vst2, "com.example.thing");
     let error = host.open(&common::bundle(), &key).err();
     assert!(
         matches!(error, Some(HostError::Unsupported(_))),

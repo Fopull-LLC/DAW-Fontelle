@@ -173,8 +173,20 @@ impl Limiter {
     /// audible as a click on quiet material. The box filter turns that step
     /// into a ramp exactly as long as the look-ahead.
     ///
+    /// `sidechain`, when given, is what the gain computer measures instead of
+    /// the signal itself — the **key** that turns a brickwall into a ducker.
+    /// The gain is still applied to (and the delay still runs on) the main
+    /// signal, so a loud key pushes the main down under the ceiling: feed a
+    /// track a kick's bus and it gets out of the kick's way. The master bus
+    /// passes `None` and limits what runs through it, exactly as before.
+    ///
     /// RT: no allocation.
-    pub fn process(&mut self, channels: &mut [&mut [f32]], config: &LimiterConfig) {
+    pub fn process(
+        &mut self,
+        channels: &mut [&mut [f32]],
+        sidechain: Option<&[f32]>,
+        config: &LimiterConfig,
+    ) {
         if self.box_ring.is_empty() || channels.is_empty() {
             return;
         }
@@ -184,13 +196,21 @@ impl Limiter {
         let used = channels.len().min(CHANNELS);
 
         for frame in 0..frames {
-            // Stereo-linked: one gain for both sides, from whichever is
-            // louder. Independent per-channel gains would pull the image
-            // toward the quieter side every time the other one peaked.
-            let mut peak = 0.0f32;
-            for channel in channels.iter().take(used) {
-                peak = peak.max(channel[frame].abs());
-            }
+            // What the gain computer looks at: the key when there is one, and
+            // otherwise the signal itself. Stereo-linked either way — one gain
+            // for both sides, from whichever is louder — because independent
+            // per-channel gains pull the image toward the quieter side every
+            // time the other one peaks.
+            let peak = match sidechain {
+                Some(key) => key.get(frame).copied().unwrap_or(0.0).abs(),
+                None => {
+                    let mut peak = 0.0f32;
+                    for channel in channels.iter().take(used) {
+                        peak = peak.max(channel[frame].abs());
+                    }
+                    peak
+                }
+            };
 
             let target = if peak > ceiling { ceiling / peak } else { 1.0 };
             let minimum = self.minimum.push(target);
@@ -255,6 +275,24 @@ impl Limiter {
     pub fn take_max_reduction_db(&mut self) -> f32 {
         std::mem::take(&mut self.max_reduction_db)
     }
+
+    /// Back to a clean pass-through, keeping the buffers `prepare` sized: the
+    /// gain back at unity, the delay line and the detector windows cleared. What
+    /// a transport stop needs of an insert limiter, the way every other effect's
+    /// `reset` clears its state without reallocating (INVARIANT 1).
+    pub fn reset(&mut self) {
+        self.gain = 1.0;
+        self.max_reduction_db = 0.0;
+        self.write = 0;
+        self.delay.fill(0.0);
+        // Refill the look-ahead windows with "no reduction", the value they
+        // hold on a fresh `prepare`.
+        let window = self.box_ring.len();
+        self.minimum.prepare(window);
+        self.box_ring.fill(1.0);
+        self.box_write = 0;
+        self.box_sum = window as f64;
+    }
 }
 
 /// The most channels the limiter links. Stereo is what a master bus is.
@@ -280,7 +318,7 @@ mod tests {
         limiter.prepare(SR, config);
         let mut left = input.to_vec();
         let mut right = input.to_vec();
-        limiter.process(&mut [&mut left[..], &mut right[..]], config);
+        limiter.process(&mut [&mut left[..], &mut right[..]], None, config);
         left
     }
 
@@ -396,7 +434,7 @@ mod tests {
         limiter.prepare(SR, &config);
         let mut left = vec![2.0; 4_000];
         let mut right = vec![2.0; 4_000];
-        limiter.process(&mut [&mut left[..], &mut right[..]], &config);
+        limiter.process(&mut [&mut left[..], &mut right[..]], None, &config);
 
         let reduction = limiter.take_max_reduction_db();
         // 2.0 down to 0.966 is about 6.3 dB.
@@ -422,7 +460,7 @@ mod tests {
         // Left overloads, right is quiet and constant.
         let mut left = vec![4.0; 4_000];
         let mut right = vec![0.5; 4_000];
-        limiter.process(&mut [&mut left[..], &mut right[..]], &config);
+        limiter.process(&mut [&mut left[..], &mut right[..]], None, &config);
 
         let settled_right = right[3_000];
         let expected = 0.5 * (config.ceiling / 4.0);

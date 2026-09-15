@@ -537,8 +537,9 @@ fn the_chip_opens_a_menu_of_tools_rather_than_every_tools_settings_at_once() {
     let labels: Vec<String> = TOOL_MENU.iter().map(|item| item.label()).collect();
     assert_eq!(
         labels.len(),
-        7,
-        "four tools that ask something, legato, and the two importers: {labels:?}"
+        8,
+        "four tools that ask something, legato, the two importers, and the MIDI \
+         export: {labels:?}"
     );
     for item in TOOL_MENU {
         assert!(!item.label().is_empty(), "{item:?} has no name");

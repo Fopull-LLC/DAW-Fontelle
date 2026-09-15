@@ -639,6 +639,9 @@ struct Welcome {
     /// shaped to the column, so it wraps.
     line: TextLayout,
     button: Option<&'static str>,
+    /// The bar in the button's slot while an archive comes down —
+    /// `canvas::update_progress`.
+    progress: Option<Option<f32>>,
     version: String,
     recent: Vec<crate::document::RecentProject>,
     /// What went wrong with the last press, if anything did; shaped like
@@ -850,6 +853,20 @@ pub struct WindowApp {
     /// on the Effects page because that is where somebody left it would be
     /// saving a fact about a session.
     flop_page: crate::canvas::FlopsynthPage,
+    /// Whether Flopsynth's Presets search box has the keyboard.
+    ///
+    /// > *"in flopsynth im always typing in the search bar even when ive never
+    /// > clicked that input field ... i cant use any daw keybinds while its
+    /// > open."*
+    ///
+    /// The search used to take **every** key while the Presets page was
+    /// showing, so Space never reached the transport and a typed letter went
+    /// into the box rather than doing anything. It is click-to-focus now, the
+    /// way the browser's search box is (`searching`): a press on the box gives
+    /// it the keyboard, a press anywhere else in the window or Escape takes it
+    /// back, and until then the global keybinds work in here like they do in
+    /// every other editor window.
+    flop_searching: bool,
     /// A source badge being carried to a knob (§8.4): which source, and where
     /// the pointer is now, so the badge can be drawn under it.
     flop_assign: Option<(usize, (f32, f32))>,
@@ -1421,6 +1438,7 @@ impl WindowApp {
             },
             flopsynth: None,
             flop_page: crate::canvas::FlopsynthPage::Synth,
+            flop_searching: false,
             flop_assign: None,
             carry: None,
             flop_modulated: Vec::new(),
@@ -1621,11 +1639,12 @@ impl WindowApp {
                 doc.update_status()
             });
         let (line, button) = crate::canvas::update_line(&status, &self.options.version);
+        let progress = crate::canvas::update_progress(&status);
         let layout = crate::canvas::welcome_layout(
             self.layout.window,
             &self.options.theme.metrics,
             recent.len(),
-            button.is_some(),
+            button.is_some() || progress.is_some(),
         );
         let line = self.text.layout(&line, font, Some(layout.update.width));
         self.welcome = Some(Welcome {
@@ -1635,6 +1654,7 @@ impl WindowApp {
             status,
             line,
             button,
+            progress,
             version,
             recent,
             message: TextLayout::default(),
@@ -1658,7 +1678,7 @@ impl WindowApp {
                 window,
                 metrics,
                 welcome.recent.len(),
-                welcome.button.is_some(),
+                welcome.button.is_some() || welcome.progress.is_some(),
             );
             welcome.hover =
                 crate::canvas::welcome_hit(&welcome.layout, self.cursor.0, self.cursor.1);
@@ -1678,12 +1698,15 @@ impl WindowApp {
             return;
         }
         let (line, button) = crate::canvas::update_line(&status, &self.options.version);
-        let relayout = button.is_some() != welcome.button.is_some();
+        let progress = crate::canvas::update_progress(&status);
+        let had_slot = welcome.button.is_some() || welcome.progress.is_some();
+        let relayout = (button.is_some() || progress.is_some()) != had_slot;
         let line = self.welcome_sentence(&line, welcome.layout.update.width);
         if let Some(welcome) = &mut self.welcome {
             welcome.status = status;
             welcome.line = line;
             welcome.button = button;
+            welcome.progress = progress;
         }
         if relayout {
             self.relayout_welcome();
@@ -2112,6 +2135,7 @@ impl WindowApp {
                         version: &welcome.version,
                         update: &welcome.line,
                         update_button: welcome.button,
+                        progress: welcome.progress,
                         recent: &welcome.recent,
                         hover: welcome.hover,
                         message: &welcome.message,
@@ -3390,6 +3414,11 @@ impl WindowApp {
     fn close_editor(&mut self, kind: EditorKind) {
         self.pending_editors.retain(|k| *k != kind);
         self.editors.retain(|e| e.kind != kind);
+        // A closed Flopsynth window cannot still hold the keyboard for its
+        // search box; a reopened one starts unfocused, waiting for a click.
+        if kind == EditorKind::Instrument {
+            self.flop_searching = false;
+        }
         if self.pointer_window == Some(kind) {
             self.pointer_window = None;
             // A gesture cannot be continued in a window that has gone.
@@ -3909,11 +3938,15 @@ impl WindowApp {
                 }
                 _ => false,
             },
-            // Flopsynth's Presets page has a search box, and while it is
-            // showing the keyboard is its.
+            // Flopsynth's Presets page has a search box, and the keyboard is
+            // its only once you have clicked into it — see `flop_searching`.
+            // Before that, keys fall through to the global keybinds like they
+            // do everywhere else, so Space still plays and a typed letter does
+            // not silently fill a box nobody chose.
             EditorKind::Instrument
                 if self.flopsynth.is_some()
-                    && self.flop_page == crate::canvas::FlopsynthPage::Presets =>
+                    && self.flop_page == crate::canvas::FlopsynthPage::Presets
+                    && self.flop_searching =>
             {
                 self.flop_search_key(event)
             }
@@ -4283,6 +4316,7 @@ impl WindowApp {
                     destinations: self.flop_destinations.clone(),
                     about: self.flop_about(),
                     hover_at: self.cursor,
+                    searching: self.flop_searching,
                 })
             }
             EditorKind::Instrument => {
@@ -4851,8 +4885,12 @@ impl WindowApp {
             for shelf in crate::canvas::preset_shelves(&view.bank) {
                 want(&mut self.labels, &mut self.text, &shelf.label());
             }
+            // Both captions are shaped so a click that focuses the box does not
+            // wait a frame for its caret: whichever the draw asks for is ready.
             let search = crate::render::search_caption(&view.browse.query);
             want(&mut self.labels, &mut self.text, &search);
+            let focused_search = crate::render::focused_search_caption(&view.browse.query);
+            want(&mut self.labels, &mut self.text, &focused_search);
             for line in self.flop_about() {
                 want(&mut self.labels, &mut self.text, &line);
             }
@@ -7290,6 +7328,10 @@ impl WindowApp {
     /// has to mean the same thing in both windows. What is different is only
     /// which layout answers "what is under the pointer".
     fn press_flopsynth(&mut self, x: f32, y: f32) {
+        // A press anywhere in the window takes the keyboard back from the
+        // search box; the one press that gives it away — on the box itself —
+        // sets it again through `press_flop_presets` below.
+        self.flop_searching = false;
         // The page tabs, the badges and the matrix are chrome around the cards
         // and are checked first — each is somewhere no card is, so the order
         // is about reading the code rather than about resolving a conflict.
@@ -7403,9 +7445,13 @@ impl WindowApp {
                     self.set_flop_browse(browse);
                 }
             }
-            // Typing goes to the search whenever the page is showing; the box
-            // is there to say so, and a press on it has nothing to add.
-            PresetsHit::Search => {}
+            // A press on the box is what gives it the keyboard — click-to-focus,
+            // the way the browser's search box works. Until then typing does
+            // not land here (see `flop_searching`).
+            PresetsHit::Search => {
+                self.flop_searching = true;
+                self.tree.invalidate(PANEL);
+            }
             PresetsHit::Row(which) => {
                 if let Some(doc) = self.options.document.as_mut() {
                     doc.apply_preset(PresetDevice::Instrument, which);
@@ -7464,7 +7510,20 @@ impl WindowApp {
         use winit::keyboard::{Key, NamedKey};
         let mut browse = self.flop_browse.clone();
         match &event.logical_key {
-            Key::Named(NamedKey::Escape) if !browse.query.is_empty() => browse.query.clear(),
+            // Escape gives the keyboard back and clears the filter, the way it
+            // does in the browser's search — and because `editor_own_key` only
+            // reaches here while the box is focused, it does not also close the
+            // window on the same press.
+            Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
+                self.flop_searching = false;
+                if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
+                    browse.query.clear();
+                    browse.scroll = 0.0;
+                    self.set_flop_browse(browse);
+                }
+                self.tree.invalidate(PANEL);
+                return true;
+            }
             Key::Named(NamedKey::Backspace) => {
                 browse.query.pop();
             }
@@ -7693,6 +7752,9 @@ impl WindowApp {
             return;
         }
         self.flop_page = page;
+        // Leaving (or arriving at) the Presets page hands the keyboard back —
+        // the search box has to be clicked to take it.
+        self.flop_searching = false;
         // The view is per page — the cards are filtered to it by the host — so
         // the studio's lists have to be read again rather than redrawn.
         self.studio_revision = u64::MAX;
@@ -8735,6 +8797,13 @@ impl WindowApp {
             what,
             TransportHit::Stop | TransportHit::Play if self.view.playing
         );
+        // The stop button also stops a file that is previewing: *"stopping if i
+        // change my selection or press the stop button."* Silenced rather than
+        // released, because the point of pressing stop is that it stops now.
+        if what == TransportHit::Stop {
+            self.silence_audition();
+            self.end_preview();
+        }
         let end = self.view.position_sample;
 
         if let Some(host) = &mut self.options.host {
@@ -9153,6 +9222,12 @@ impl WindowApp {
                 .map(|doc| doc.sample_of_song_tick(tick.max(0))),
             _ => None,
         };
+        // Which arrangement row the drop lands on, when it lands on one that is
+        // already there (see `CarryTarget::Clip`).
+        let onto_lane = match target {
+            CarryTarget::Clip { lane, .. } => lane,
+            _ => None,
+        };
         let made = matches!(target, CarryTarget::NewChannel { .. });
         let Some(doc) = &mut self.options.document else {
             return;
@@ -9176,15 +9251,16 @@ impl WindowApp {
             (BrowserRow::File(index), CarryTarget::NewChannel { .. }) => {
                 doc.add_sampler_from_import(index)
             }
-            // Onto the arrangement: a clip, starting where it was let go.
+            // Onto the arrangement: a clip, starting where it was let go, on
+            // the row the pointer was over (or a new one past the last).
             (BrowserRow::File(index), CarryTarget::Clip { .. }) => {
-                doc.drop_import_at(index, at.unwrap_or(0))
+                doc.drop_import_at(index, at.unwrap_or(0), onto_lane)
             }
-            // Let go back over the list. A file falls back to the click the
-            // press did not do; a preset's click is a listen, and the press
-            // already did that one.
-            (BrowserRow::File(index), CarryTarget::Panel) => doc.open_import(index),
-            (BrowserRow::Preset(_), CarryTarget::Panel) => return,
+            // Let go back over the list: nothing to do. Both kinds' clicks are
+            // now handled at the *press* — a preset's is a listen, a file's is a
+            // listen too (`preview_import`), and a double-click on either is the
+            // import. Importing here as well would import on every click.
+            (BrowserRow::File(_) | BrowserRow::Preset(_), CarryTarget::Panel) => return,
             // Nowhere. Said while it was held, so there is nothing to
             // announce now.
             (_, CarryTarget::Nowhere) | (BrowserRow::Preset(_), CarryTarget::Clip { .. }) => return,
@@ -9207,8 +9283,11 @@ impl WindowApp {
         // can see it — and a drop whose result is off-screen looks exactly
         // like a drop that did nothing. The mark said which row; this is what
         // makes that row visible.
+        // Only a **new** row lands off the bottom; a drop onto an existing row
+        // is already on screen where the pointer was, so scrolling away from it
+        // would be the surprise this guards against, not a fix for one.
         if landed
-            && matches!(target, CarryTarget::Clip { .. })
+            && matches!(target, CarryTarget::Clip { lane: None, .. })
             && let Some(last) = self.lanes.len().checked_sub(1)
         {
             self.timeline.view.top_lane = crate::canvas::lane_scroll_to_show(
@@ -9480,12 +9559,34 @@ impl WindowApp {
                 );
                 if carried {
                     self.drag = Drag::BrowserRow(BrowserRow::File(index));
-                    // **And the click waits.** What this row means is decided
-                    // by where the button comes up: on the rack it is a
-                    // sampler, and anywhere else it is the click it always was
-                    // — an import onto the arrangement. Doing the import here
-                    // as well would leave a clip at bar one behind every drag.
-                    // See `drop_browser_row`.
+                    // **A click plays it; a double-click imports it.** The same
+                    // gesture a soundfont row has, and for the same report:
+                    // *"clicking on an audio file in the import tab instantly
+                    // imports it ... instead if i click one it should play that
+                    // audio ... double clicking it would instantly import it."*
+                    // The press decides which, so a plain click no longer
+                    // imports on the way back up (`drop_browser_row`'s panel
+                    // arm is a no-op now); a drag still lands wherever it is let
+                    // go.
+                    let doubled = self.double_click.press(
+                        x,
+                        y,
+                        self.input_clock.stamp(std::time::Instant::now()),
+                    );
+                    if doubled {
+                        // A double-click is a choice, not a drag.
+                        self.drag = Drag::None;
+                        if let Some(doc) = &mut self.options.document
+                            && let Err(e) = doc.open_import(index)
+                        {
+                            self.status = e;
+                        }
+                        self.refresh_studio();
+                        self.refresh_title();
+                    } else {
+                        self.preview_import(index);
+                    }
+                    self.tree.invalidate(BROWSER);
                     return;
                 }
                 // The same rows in both modes, and the same click: a soundfont
@@ -11628,6 +11729,13 @@ impl WindowApp {
             self.open_import_browser(action);
             return;
         }
+        // Saving the song out is a file operation like the importers, not an
+        // edit to the selection — so it does not go through the selection
+        // check below.
+        if matches!(action, ToolAction::ExportMidi) {
+            self.export_midi();
+            return;
+        }
         let selection = self.roll.selection().to_vec();
         if selection.is_empty() {
             // Said out loud rather than silently doing nothing: a tool that
@@ -11679,8 +11787,25 @@ impl WindowApp {
                 self.tools.value(crate::canvas::ToolRow::ArpRate)
             ),
             ToolAction::Legato => format!("Joined up {} note(s)", selection.len()),
-            ToolAction::ImportMidi | ToolAction::ImportScore => String::new(),
+            ToolAction::ImportMidi | ToolAction::ImportScore | ToolAction::ExportMidi => {
+                String::new()
+            }
         };
+    }
+
+    /// Saves the whole song out as a `.mid`, and says where it went.
+    ///
+    /// The counterpart to [`export`](Self::export)'s WAV bounce: the status
+    /// line carries the path, the cancel, or the reason it could not — the same
+    /// three things you want told rather than left to find in a file manager.
+    fn export_midi(&mut self) {
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        self.status = match doc.export_midi() {
+            Ok(said) | Err(said) => said,
+        };
+        self.tree.invalidate(BROWSER);
     }
 
     /// Picks a property from the open menu, or shuts it because the click
@@ -12071,6 +12196,37 @@ impl WindowApp {
         self.start_audition(key, 0);
     }
 
+    /// Plays an Import-tab file through the preview voice — a click is a listen,
+    /// the same as a soundfont row. The note is held for the file's own length
+    /// so the whole sound plays and then stops on its own; clicking another
+    /// file, or anything else that auditions, replaces it.
+    fn preview_import(&mut self, index: usize) {
+        let seconds = match &mut self.options.document {
+            Some(doc) => doc.preview_import(index),
+            None => return,
+        };
+        let seconds = match seconds {
+            Ok(seconds) => seconds,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
+        // The file's length in ticks, so the held note lasts exactly the file
+        // and no silent voice rings on after it. `start_audition` caps the hold
+        // at a minute, which is the right ceiling for a preview anyway.
+        let ticks = self.options.document.as_ref().map_or(0, |doc| {
+            let per_tick = doc.seconds_per_tick();
+            if per_tick > 0.0 {
+                (seconds / per_tick) as fontelle_types::Tick
+            } else {
+                0
+            }
+        });
+        // Root key, so a sample plays at its own speed and pitch.
+        self.start_audition(60, ticks.max(1));
+    }
+
     /// Sounds a key on the live path for at least `ticks` of song time.
     ///
     /// Zero ticks means "no note behind it" — the on-screen keyboard — and
@@ -12359,7 +12515,11 @@ impl WindowApp {
                 // Beside Ctrl+S, because bouncing is the other thing you do to
                 // a whole project. The button is on the Projects tab; this is
                 // so you do not have to go there.
-                "e" if ctrl => self.export(),
+                "e" if ctrl && !shift => self.export(),
+                // Ctrl+Shift+E saves the song out as a `.mid` — the other
+                // export, sharing E with the WAV bounce the way Ctrl+Shift+Z
+                // shares Z with undo. Also on the roll's Tools menu.
+                "e" if ctrl && shift => self.export_midi(),
                 // *"make ctrl + m toggle the metronome."* A transport switch,
                 // so it is here with Space rather than with the canvas keys:
                 // wanting the click on while you play a part in is not a

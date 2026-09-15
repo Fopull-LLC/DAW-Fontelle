@@ -984,7 +984,7 @@ mod linux_only {
             .map(|p| p.key.to_string())
             .collect();
         assert!(
-            keys.contains(&format!("vst3:{}", fontelle_testbridge::SINE_ID)),
+            keys.contains(&format!("vst2:{}", fontelle_testbridge::SINE_ID)),
             "{keys:?}"
         );
         assert_eq!(rack.scan().instruments().count(), 1);
@@ -997,7 +997,7 @@ mod linux_only {
         project.channels[channel].instrument = Some(InstrumentKind::Plugin);
         project.channels[channel].plugin = Some(PluginState::new(
             PluginKey::new(
-                fontelle_types::PluginFormat::Vst3,
+                fontelle_types::PluginFormat::Vst2,
                 fontelle_testbridge::SINE_ID,
             ),
             "Sine",
@@ -1236,4 +1236,148 @@ fn a_plugins_declared_latency_reaches_the_graph() {
         plain + fontelle_testplug::GAIN_LATENCY_SAMPLES,
         "the plugin's own number, in what the graph costs"
     );
+}
+
+// ------------------------------------------------------------------ VST 3 ---
+//
+// > *"maximum compatibility is what's most important to me"*
+//
+// The same seam, the third format (`docs/vst-plan.md` §2). A `.vst3` bundle
+// in a plugin folder is found, chosen in the document by its class id,
+// opened, realised and heard — through exactly the code above.
+mod vst3 {
+    use super::*;
+
+    const VST3_GAIN: &str = fontelle_testvst3::GAIN_ID;
+    const VST3_SINE: &str = fontelle_testvst3::SINE_ID;
+
+    fn vst3_library() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "fontelle_testvst3.dll"
+        } else if cfg!(target_os = "macos") {
+            "libfontelle_testvst3.dylib"
+        } else {
+            "libfontelle_testvst3.so"
+        }
+    }
+
+    /// A folder holding nothing but the VST 3 test bundle, laid out the way
+    /// the SDK lays a bundle out: `Name.vst3/Contents/<arch>/Name.so`.
+    fn vst3_folder() -> PathBuf {
+        let mut path = std::env::current_exe().unwrap();
+        path.pop();
+        path.pop();
+        let built = path.join(vst3_library());
+        assert!(
+            built.exists(),
+            "{} is missing — run `cargo build -p fontelle-testvst3`",
+            built.display()
+        );
+        let (arch, file) = if cfg!(target_os = "windows") {
+            ("Contents/x86_64-win", "fontelle-testvst3.vst3")
+        } else if cfg!(target_os = "macos") {
+            ("Contents/MacOS", "fontelle-testvst3")
+        } else {
+            ("Contents/x86_64-linux", "fontelle-testvst3.so")
+        };
+        static FOLDER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        FOLDER
+            .get_or_init(|| {
+                let folder = std::env::temp_dir().join("fontelle-app-vst3-tests");
+                let _ = std::fs::create_dir_all(&folder);
+                let staging = folder.join(format!("vst3-staging.{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&staging);
+                std::fs::create_dir_all(staging.join(arch)).unwrap();
+                std::fs::copy(&built, staging.join(arch).join(file)).unwrap();
+                let bundle = folder.join("fontelle-testvst3.vst3");
+                let _ = std::fs::remove_dir_all(&bundle);
+                std::fs::rename(&staging, &bundle).unwrap();
+                folder
+            })
+            .clone()
+    }
+
+    fn rack_with_vst3() -> PluginRack {
+        let mut rack = PluginRack::new();
+        rack.search_standard_folders(false);
+        rack.set_folders(vec![plugin_folder(), vst3_folder()]);
+        rack.rescan();
+        rack
+    }
+
+    fn vst3(id: &str) -> PluginKey {
+        PluginKey::new(fontelle_types::PluginFormat::Vst3, id)
+    }
+
+    #[test]
+    fn the_rack_lists_vst3_plugins_beside_clap_ones() {
+        let rack = rack_with_vst3();
+        let keys: Vec<String> = rack
+            .scan()
+            .plugins
+            .iter()
+            .map(|p| p.key.to_string())
+            .collect();
+        assert!(keys.contains(&format!("vst3:{VST3_GAIN}")), "{keys:?}");
+        assert!(keys.contains(&format!("vst3:{VST3_SINE}")), "{keys:?}");
+        assert!(keys.contains(&format!("clap:{SINE}")), "{keys:?}");
+        assert!(
+            rack.scan().failures.is_empty(),
+            "{:#?}",
+            rack.scan().failures
+        );
+    }
+
+    #[test]
+    fn a_channel_playing_a_vst3_plugin_is_heard_in_the_realised_graph() {
+        let (mut project, channel) = project_with_a_held_note();
+        project.channels[channel].instrument = Some(InstrumentKind::Plugin);
+        project.channels[channel].plugin = Some(PluginState::new(vst3(VST3_SINE), "Sine"));
+        let mut rack = rack_with_vst3();
+        let out = render(&project, &mut rack);
+        assert!(peak(&out) > 0.05, "{}", peak(&out));
+    }
+
+    #[test]
+    fn an_insert_holding_a_vst3_plugin_processes_the_bus() {
+        let (mut project, channel) = project_with_a_held_note();
+        project.channels[channel].instrument = Some(InstrumentKind::Plugin);
+        project.channels[channel].plugin = Some(PluginState::new(vst3(VST3_SINE), "Sine"));
+        let master = project.mixer.master.unwrap();
+        let mut rack = rack_with_vst3();
+        let dry = peak(&render(&project, &mut rack));
+
+        // A normalised gain of 1/16 is a quarter on the fixture.
+        let mut gain = PluginState::new(vst3(VST3_GAIN), "Gain");
+        gain.set_param(0, 0.0625);
+        project.mixer.tracks[master]
+            .inserts
+            .push(EffectSlot::hosting(gain));
+        let mut rack = rack_with_vst3();
+        let quartered = peak(&render(&project, &mut rack));
+        assert!(
+            quartered < dry * 0.5,
+            "dry {dry}, through the plugin {quartered}"
+        );
+    }
+
+    #[test]
+    fn what_a_vst3_plugin_was_set_to_comes_back_after_a_reopen() {
+        let (mut project, channel) = project_with_a_held_note();
+        project.channels[channel].instrument = Some(InstrumentKind::Plugin);
+        let mut state = PluginState::new(vst3(VST3_SINE), "Sine");
+        state.set_param(7, 0.1);
+        project.channels[channel].plugin = Some(state);
+        let mut rack = rack_with_vst3();
+        let quiet = peak(&render(&project, &mut rack));
+        assert!(quiet > 0.03 && quiet < 0.12, "{quiet}");
+        let saved = rack
+            .snapshot(PluginSlot::Channel(channel))
+            .expect("a snapshot");
+        assert_eq!(saved.param(7), Some(0.1));
+        assert!(
+            saved.blob.is_some(),
+            "a VST 3 component always has a stream"
+        );
+    }
 }

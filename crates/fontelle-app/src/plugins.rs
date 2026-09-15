@@ -295,6 +295,21 @@ impl PluginRack {
         self.load_bridges(folders);
     }
 
+    /// Whether any plugin is open — the moment an extension may not be
+    /// installed or removed, because a bridge dropped under an open plugin
+    /// is a plugin with no bridge (`docs/vst-plan.md` §4.2).
+    pub fn has_open_plugins(&self) -> bool {
+        !self.live.is_empty()
+    }
+
+    /// Loads bridges again from Fontelle's own folders — after an extension
+    /// was installed or removed. Only legal while nothing is open, which
+    /// [`set_bridge_folders`](Self::set_bridge_folders) asserts and the
+    /// caller checks first.
+    pub fn reload_bridges(&mut self) {
+        self.load_bridges(fontelle_host::bridge_search_paths());
+    }
+
     /// What each loaded bridge calls itself.
     pub fn bridges(&self) -> Vec<String> {
         self.bridges.names()

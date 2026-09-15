@@ -200,21 +200,62 @@ fn a_sound_over_the_arrangement_is_a_clip_at_the_bar_under_the_pointer() {
         x,
         grid.y + grid.height / 2.0,
     );
-    let CarryTarget::Clip { row, at, tick } = target else {
+    let CarryTarget::Clip {
+        row,
+        at,
+        tick,
+        lane,
+    } = target
+    else {
         panic!("a sound let go on the arrangement is a clip, got {target:?}");
     };
     assert!(target.lands());
     assert_eq!(tick, bar * 4, "snapped to the bar it was let go over");
+    // The pointer is at mid-grid, which is empty space past the two lanes this
+    // scene has — so this is still the make-a-new-row case.
+    assert_eq!(
+        lane, None,
+        "a drop in the empty space past the rows makes a new one"
+    );
     assert!(
         (at - (grid.x + (bar * 4) as f32 * v.pixels_per_tick)).abs() < 0.01,
         "the caret is drawn at the tick it will land on, not where the pointer is"
     );
     assert!(
         (row.height - v.lane_height).abs() < 0.01 && grid.contains(row.x + 1.0, row.y + 1.0),
-        "an imported sound makes a row of its own, one lane tall, inside the \
-         arrangement: {row:?} against {grid:?}"
+        "the new row is one lane tall, inside the arrangement: {row:?} against {grid:?}"
     );
     assert_eq!(target.mark(), Some(row));
+}
+
+#[test]
+fn a_sound_dropped_over_an_existing_row_lands_on_that_row() {
+    // The report's whole complaint: a drop over a row that is there should land
+    // *there*, not always on a new row at the bottom.
+    let rack = rack_layout(rack_body(), &metrics(), 3, 0);
+    let timeline = timeline_layout(timeline_frame(), &metrics());
+    let v = view();
+    let grid = timeline.grid;
+    // Aim at the middle of row 0 (the scene has two rows).
+    let y = fontelle_ui::canvas::lane_to_y(&v, grid, 0) + v.lane_height / 2.0;
+    let target = carry_target(
+        &scene(Carried::Audio, &rack, &timeline, &v),
+        grid.x + 130.0,
+        y,
+    );
+    let CarryTarget::Clip { row, lane, .. } = target else {
+        panic!("got {target:?}");
+    };
+    assert_eq!(
+        lane,
+        Some(0),
+        "the drop lands on the row the pointer is over"
+    );
+    let row0 = fontelle_ui::canvas::lane_to_y(&v, grid, 0);
+    assert!(
+        (row.y - row0).abs() < 0.01,
+        "the mark is row 0's band, where the clip will go: {row:?}"
+    );
 }
 
 #[test]
@@ -243,10 +284,10 @@ fn the_new_row_is_drawn_under_the_rows_that_are_already_there() {
 }
 
 #[test]
-fn a_new_row_past_the_bottom_of_the_arrangement_is_still_drawn() {
-    // A project with more lanes than the grid can show: the row it would land
-    // on is off the bottom, and a mark that vanished there would be a drop
-    // with no feedback at all in exactly the projects that have most of it.
+fn a_full_arrangement_lands_the_drop_on_the_visible_row_under_the_pointer() {
+    // A project with more lanes than the grid can show: every point in the grid
+    // is over a row that exists, so the drop lands on the one under the pointer
+    // rather than on a new row off the bottom.
     let rack = rack_layout(rack_body(), &metrics(), 3, 0);
     let timeline = timeline_layout(timeline_frame(), &metrics());
     let v = view();
@@ -257,15 +298,19 @@ fn a_new_row_past_the_bottom_of_the_arrangement_is_still_drawn() {
         beats_per_bar: 4,
         lanes: 40,
     });
-    let target = carry_target(&scene, mid(timeline.grid).0, mid(timeline.grid).1);
-    let CarryTarget::Clip { row, .. } = target else {
+    let grid = timeline.grid;
+    // The middle of row 3.
+    let y = fontelle_ui::canvas::lane_to_y(&v, grid, 3) + v.lane_height / 2.0;
+    let target = carry_target(&scene, mid(grid).0, y);
+    let CarryTarget::Clip { row, lane, .. } = target else {
         panic!("got {target:?}");
     };
-    assert!(!row.is_empty(), "the mark went away");
-    assert!(
-        (row.bottom() - timeline.grid.bottom()).abs() < 0.01,
-        "and it is held at the foot of the grid: {row:?}"
+    assert_eq!(
+        lane,
+        Some(3),
+        "the drop lands on the visible row it is over"
     );
+    assert!(!row.is_empty() && grid.contains(row.x + 1.0, row.y + 1.0));
 }
 
 #[test]
@@ -448,7 +493,8 @@ fn the_chip_says_what_letting_go_would_do() {
             &CarryTarget::Clip {
                 row: Rect::new(0.0, 0.0, 10.0, 10.0),
                 at: 0.0,
-                tick: PPQN * 4 * 8
+                tick: PPQN * 4 * 8,
+                lane: None,
             },
             &names,
             4
@@ -476,8 +522,17 @@ fn a_clip_that_does_not_start_on_a_bar_line_says_the_beat_too() {
         row: Rect::new(0.0, 0.0, 10.0, 10.0),
         at: 0.0,
         tick: PPQN * 4 * 8 + PPQN * 2,
+        lane: None,
     };
     assert_eq!(carry_note(&target, &names, 4), "A new row at bar 9.3");
+    // And onto an existing row, the label names the row rather than a new one.
+    let onto = CarryTarget::Clip {
+        row: Rect::new(0.0, 0.0, 10.0, 10.0),
+        at: 0.0,
+        tick: PPQN * 4 * 8,
+        lane: Some(2),
+    };
+    assert_eq!(carry_note(&onto, &names, 4), "Onto row 3 at bar 9");
 }
 
 #[test]

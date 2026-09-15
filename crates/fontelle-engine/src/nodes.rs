@@ -432,7 +432,28 @@ pub fn insert_latency_samples(config: &fontelle_types::EffectConfig, sample_rate
             (ms / 1000.0 * sample_rate.max(0.0)).round() as u32
         }
         fontelle_types::EffectConfig::Tune(tune) => tune.latency_samples(sample_rate),
+        // The limiter's look-ahead is fixed, so its latency is one constant
+        // rather than a knob — but it is a latency all the same, and lining the
+        // rest of the mix up to it is what keeps a ducked track in time.
+        fontelle_types::EffectConfig::Limiter(_) => limiter_latency_samples(sample_rate),
         _ => 0,
+    }
+}
+
+/// The limiter's fixed look-ahead in samples — its latency, and the size of its
+/// delay line. One place, because [`insert_latency_samples`],
+/// [`max_insert_latency_samples`] and the buffer it sizes all have to agree.
+fn limiter_latency_samples(sample_rate: f32) -> u32 {
+    (fontelle_types::LIMITER_LOOKAHEAD_MS / 1000.0 * sample_rate.max(0.0)).round() as u32
+}
+
+/// The document limiter's settings as the DSP's, with the fixed look-ahead put
+/// on. The ceiling is stored in dB and the DSP wants it linear.
+fn fx_limiter_config(config: &fontelle_types::LimiterConfig) -> fontelle_fx::LimiterConfig {
+    fontelle_fx::LimiterConfig {
+        ceiling: 10f32.powf(config.ceiling_db / 20.0),
+        lookahead_ms: fontelle_types::LIMITER_LOOKAHEAD_MS,
+        release_ms: config.release_ms,
     }
 }
 
@@ -453,6 +474,8 @@ pub fn max_insert_latency_samples(config: &fontelle_types::EffectConfig, sample_
         fontelle_types::EffectConfig::Gate(_) => {
             (fontelle_types::MAX_GATE_LOOKAHEAD_MS / 1000.0 * sample_rate.max(0.0)).ceil() as u32
         }
+        // Fixed, so the worst case is the only case.
+        fontelle_types::EffectConfig::Limiter(_) => limiter_latency_samples(sample_rate),
         fontelle_types::EffectConfig::Tune(tune) => {
             // The range and the mode are what set it, and a change of either
             // is a graph rebuild (`docs/tune-plan.md` §3.8) — but the live
@@ -738,6 +761,7 @@ enum EffectState {
     Eq(fontelle_fx::ParametricEq),
     Filter(fontelle_fx::Filter),
     Compressor(fontelle_fx::Compressor),
+    Limiter(fontelle_fx::Limiter),
     Gate(fontelle_fx::Gate),
     Distortion(fontelle_fx::Distortion),
     Bitcrush(fontelle_fx::Bitcrush),
@@ -770,6 +794,9 @@ impl EffectState {
             }
             fontelle_types::EffectConfig::Compressor(_) => {
                 EffectState::Compressor(fontelle_fx::Compressor::new())
+            }
+            fontelle_types::EffectConfig::Limiter(_) => {
+                EffectState::Limiter(fontelle_fx::Limiter::new())
             }
             fontelle_types::EffectConfig::Gate(_) => EffectState::Gate(fontelle_fx::Gate::new()),
             fontelle_types::EffectConfig::Distortion(_) => {
@@ -808,6 +835,11 @@ impl EffectState {
             Self::Eq(eq) => eq.prepare(sample_rate),
             Self::Filter(filter) => filter.prepare(sample_rate),
             Self::Compressor(comp) => comp.prepare(sample_rate),
+            Self::Limiter(limiter) => {
+                if let fontelle_types::EffectConfig::Limiter(config) = config {
+                    limiter.prepare(sample_rate, &fx_limiter_config(config));
+                }
+            }
             Self::Gate(gate) => gate.prepare(sample_rate),
             Self::Distortion(dist) => dist.prepare(sample_rate),
             Self::Bitcrush(crush) => crush.prepare(sample_rate),
@@ -846,6 +878,12 @@ impl EffectState {
             }
             (Self::Compressor(comp), fontelle_types::EffectConfig::Compressor(config)) => {
                 comp.process(outputs, key, config);
+            }
+            (Self::Limiter(limiter), fontelle_types::EffectConfig::Limiter(config)) => {
+                // The key is the ducker's whole point: given one, the limiter
+                // measures it instead of the signal, so the kick pushes this
+                // track down under the ceiling.
+                limiter.process(outputs, key, &fx_limiter_config(config));
             }
             (Self::Gate(gate), fontelle_types::EffectConfig::Gate(config)) => {
                 gate.process(outputs, key, config);
@@ -891,6 +929,7 @@ impl EffectState {
             Self::Eq(eq) => eq.reset(),
             Self::Filter(filter) => filter.reset(),
             Self::Compressor(comp) => comp.reset(),
+            Self::Limiter(limiter) => limiter.reset(),
             Self::Gate(gate) => gate.reset(),
             Self::Distortion(dist) => dist.reset(),
             Self::Bitcrush(crush) => crush.reset(),
@@ -2516,7 +2555,8 @@ impl AudioNode for MasterNode {
 
     fn process(&mut self, ctx: &mut ProcessContext) {
         if self.limiter_enabled {
-            self.limiter.process(ctx.outputs, &self.limiter_config);
+            self.limiter
+                .process(ctx.outputs, None, &self.limiter_config);
         }
         // Metered *after* the limiter, because what the meter is for is
         // showing what left the machine.

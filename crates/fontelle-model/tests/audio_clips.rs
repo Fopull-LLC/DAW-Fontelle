@@ -546,3 +546,70 @@ fn cutting_a_repitched_take_cuts_at_the_files_own_time() {
         left.source_end
     );
 }
+
+// --- Dropping onto an existing row, not always a new one -------------------
+//
+// > *"instead of just putting it where im actually dragging it to snapping to
+// > the lane nearest to my mouse ... it automatically places it on a new lane
+// > in the arrangement at the bottom."*
+//
+// A drop over a row that is already there puts the clip on that row; the
+// new-row behaviour above is what a drop into the empty space past the last
+// row still does.
+
+#[test]
+fn a_drop_onto_an_existing_row_puts_the_clip_on_it_and_makes_no_new_row() {
+    let mut project = Project::new("audio");
+    let target = project.lanes.insert(fontelle_model::Lane {
+        name: "Drums".into(),
+        height: 32.0,
+        color: [0; 4],
+        muted: false,
+        locked: false,
+        order: 0,
+    });
+    let lanes = project.lanes.len();
+
+    let mut command = import("Loop.wav", PPQN * 2, PPQN * 4).on_lane(target);
+    command.apply(&mut project).expect("an import applies");
+
+    // No new row — the clip landed on the one that was there.
+    assert_eq!(
+        project.lanes.len(),
+        lanes,
+        "no new row for an onto-lane drop"
+    );
+    let (_, clip) = project.clips.iter().next().expect("a clip");
+    assert_eq!(
+        clip.lane, target,
+        "the clip is on the row it was dropped on"
+    );
+    assert_eq!(clip.start, PPQN * 2);
+}
+
+#[test]
+fn undoing_a_drop_onto_an_existing_row_leaves_that_row_alone() {
+    let mut project = Project::new("audio");
+    let target = project.lanes.insert(fontelle_model::Lane {
+        name: "Drums".into(),
+        height: 32.0,
+        color: [0; 4],
+        muted: false,
+        locked: false,
+        order: 0,
+    });
+
+    let mut command = import("Loop.wav", 0, PPQN * 4).on_lane(target);
+    command.apply(&mut project).expect("applies");
+    let inverse = command.invert();
+    let mut inverse = inverse;
+    inverse.apply(&mut project).expect("undo applies");
+
+    // The clip is gone; the row it was dropped on is not — undoing a drop must
+    // not delete a row that was there before the drop.
+    assert_eq!(project.clips.len(), 0, "the clip is undone");
+    assert!(
+        project.lanes.get(target).is_some(),
+        "the existing row survives the undo"
+    );
+}

@@ -156,7 +156,10 @@ fn every_row_still_says_what_it_is_and_what_it_is_at() {
     // read.
     let settings = Settings::default();
     for row in SETTING_ROWS {
-        assert!(!row.label().is_empty(), "{row:?} has no name");
+        assert!(
+            !row.label(&Settings::default()).is_empty(),
+            "{row:?} has no name"
+        );
         if matches!(row, SettingRow::Heading(_)) {
             continue;
         }

@@ -188,9 +188,12 @@ fn the_update_check_has_a_row_that_says_on_or_off() {
 
 #[test]
 fn clicking_the_row_flips_the_switch_and_writes_it_down() {
-    use fontelle_app::settings::{SETTING_ROWS, SettingRow};
+    use fontelle_app::settings::{SettingRow, setting_rows};
     let mut session = common::a_session_for(common::a_project_with_a_clip(4, 120.0, common::SR));
-    let index = SETTING_ROWS
+    // The window addresses rows by their position in the *displayed* list —
+    // which now expands the Extensions heading into a row per catalogue
+    // entry — so the test finds the switch the same way.
+    let index = setting_rows(&Settings::default())
         .iter()
         .position(|r| *r == SettingRow::CheckForUpdates)
         .unwrap();

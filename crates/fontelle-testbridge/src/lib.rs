@@ -1,14 +1,15 @@
 //! A bridge with no SDK in it.
 //!
 //! **This is a test fixture, not a product.** It implements
-//! [`fontelle_bridge_abi`] for a made-up format, `"vst3"` in name only, whose
-//! "bundles" are folders holding a `plugins.txt` listing the plugins in them
-//! — a gain and a sine, the same two every fixture in this repository is
-//! made of. What it proves is the *loader*: that Fontelle finds a bridge,
-//! reads its table, and hosts what the bridge offers through exactly the
-//! `HostedPlugin`/`HostedProcessor` that CLAP and LV2 go through. A real
-//! bridge — the VST3 one, built elsewhere against Steinberg's SDK under
-//! whatever licence that needs — implements the same table and never
+//! [`fontelle_bridge_abi`] for a made-up format, `"vst2"` in name only —
+//! the one format this build reaches through a bridge — whose "bundles" are
+//! folders (named `.so`, the extension VST 2 has on Linux) holding a
+//! `plugins.txt` listing the plugins in them — a gain and a sine, the same
+//! two every fixture in this repository is made of. What it proves is the
+//! *loader*: that Fontelle finds a bridge, reads its table, and hosts what
+//! the bridge offers through exactly the `HostedPlugin`/`HostedProcessor`
+//! that CLAP, LV2 and VST 3 go through. A real bridge — `fontelle-vst2`,
+//! built in its own repository — implements the same table and never
 //! touches this tree.
 
 use std::ffi::{CStr, CString, c_char};
@@ -30,11 +31,11 @@ pub const EDITOR_HEIGHT: u32 = 200;
 pub const HELLO_FROM_THE_EDITOR: f64 = 0.75;
 /// What a folder needs in it to be one of this bridge's bundles.
 pub const MANIFEST: &str = "plugins.txt";
-pub const EXTENSION: &str = "vst3";
+pub const EXTENSION: &str = "so";
 
-const FORMAT: &CStr = c"vst3";
+const FORMAT: &CStr = c"vst2";
 const NAME: &CStr = c"Fontelle Test Bridge";
-const EXT: &CStr = c"vst3";
+const EXT: &CStr = c"so";
 const GAIN: &CStr = c"test.bridge.gain";
 const SINE: &CStr = c"test.bridge.sine";
 const GAIN_NAME: &CStr = c"Bridged Test Gain";

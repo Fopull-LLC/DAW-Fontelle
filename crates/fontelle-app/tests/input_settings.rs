@@ -49,7 +49,10 @@ fn every_row_says_what_it_is_and_what_it_is_at() {
     // one nobody can tell the state of.
     let s = MidiInputSettings::default();
     for row in SETTING_ROWS {
-        assert!(!row.label().is_empty(), "{row:?} has no name");
+        assert!(
+            !row.label(&Settings::default()).is_empty(),
+            "{row:?} has no name"
+        );
         if let SettingRow::Heading(_) = row {
             continue;
         }
@@ -76,18 +79,20 @@ fn every_row_says_what_it_is_and_what_it_is_at() {
 /// heading three rows up is not enough: the row has to say it.
 #[test]
 fn the_keyboards_transpose_row_says_it_is_the_keyboards() {
-    let label = SettingRow::Transpose.label().to_lowercase();
+    let label = SettingRow::Transpose
+        .label(&Settings::default())
+        .to_lowercase();
     assert!(
         label.contains("keyboard"),
         "a settings row called {:?} reads as the piano roll's transposer, \
          which is a different thing in a different place",
-        SettingRow::Transpose.label()
+        SettingRow::Transpose.label(&Settings::default())
     );
     // And no other row is named so vaguely that it could be read as somebody's
     // song rather than as their setup.
     for row in SETTING_ROWS {
         assert_ne!(
-            row.label().to_lowercase(),
+            row.label(&Settings::default()).to_lowercase(),
             "transpose",
             "{row:?} is named after a piano roll tool"
         );

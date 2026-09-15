@@ -3384,9 +3384,18 @@ pub struct AddAudioClip {
     data: fontelle_types::AudioClipData,
     start: Tick,
     length: Tick,
+    /// The row to drop onto, when the drop landed over one. `None` makes a new
+    /// row past the bottom of the stack — the old behaviour, and what a drop
+    /// into the empty space under the arrangement still does. `Some` puts the
+    /// clip on the row the pointer was over, and makes no row of its own, so an
+    /// undo takes only the clip back.
+    onto: Option<LaneId>,
     /// What it made, kept so a **redo** puts everything back under the ids it
     /// minted the first time. Anything stacked above this entry names them.
-    made: Option<(LaneId, ClipId)>,
+    ///
+    /// The `LaneId` is `None` when the clip was dropped onto a row that already
+    /// existed — there was no row to make, and there is none to take back.
+    made: Option<(Option<LaneId>, ClipId)>,
 }
 
 impl AddAudioClip {
@@ -3403,8 +3412,16 @@ impl AddAudioClip {
             data,
             start,
             length,
+            onto: None,
             made: None,
         }
+    }
+
+    /// Drops the clip onto an existing row rather than a new one — the row the
+    /// pointer was over. See [`AddAudioClip::onto`].
+    pub fn on_lane(mut self, lane: LaneId) -> Self {
+        self.onto = Some(lane);
+        self
     }
 
     /// The clip it made, once it has been applied.
@@ -3412,30 +3429,20 @@ impl AddAudioClip {
         self.made.map(|(_, clip)| clip)
     }
 
-    /// And the row it put it on.
+    /// And the row it made, if it made one — `None` when it dropped onto a row
+    /// that was already there.
     pub fn lane(&self) -> Option<LaneId> {
-        self.made.map(|(lane, _)| lane)
+        self.made.and_then(|(lane, _)| lane)
     }
 }
 
 impl Command for AddAudioClip {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        // Past the bottom of the stack, so a file dropped onto a song does not
-        // push what is already there down the arrangement.
-        let order = doc
-            .lanes
-            .values()
-            .map(|lane| lane.order)
-            .max()
-            .map_or(0, |highest| highest.saturating_add(1));
-        let lane = Lane {
-            name: self.name.clone(),
-            height: DEFAULT_LANE_HEIGHT,
-            color: AUDIO_LANE_COLOR,
-            muted: false,
-            locked: false,
-            order,
-        };
+        // A drop onto a row that is already there uses it — but only if it is
+        // still there. A row removed between the drop and a redo falls back to
+        // making one, which is better than refusing the redo.
+        let onto = self.onto.filter(|lane| doc.lanes.get(*lane).is_some());
+
         let clip = Clip {
             lane: LaneId::default(),
             start: self.start,
@@ -3447,32 +3454,70 @@ impl Command for AddAudioClip {
             loop_length: None,
         };
 
-        let (lane_id, clip_id) = match self.made {
-            Some((lane_id, clip_id)) => {
-                if !doc.lanes.insert_at(lane_id, lane) {
+        // The row a new-row drop makes: past the bottom of the stack, so a file
+        // dropped onto a song does not push what is already there down the
+        // arrangement.
+        let new_lane = || {
+            let order = doc
+                .lanes
+                .values()
+                .map(|lane| lane.order)
+                .max()
+                .map_or(0, |highest| highest.saturating_add(1));
+            Lane {
+                name: self.name.clone(),
+                height: DEFAULT_LANE_HEIGHT,
+                color: AUDIO_LANE_COLOR,
+                muted: false,
+                locked: false,
+                order,
+            }
+        };
+
+        let (made_lane, clip_id) = match self.made {
+            // A redo: put everything back under the ids it minted first time.
+            Some((made_lane, clip_id)) => {
+                if let Some(lane_id) = made_lane
+                    && !doc.lanes.insert_at(lane_id, new_lane())
+                {
                     return Err(CommandError("that row id is taken".into()));
                 }
+                let lane_id = made_lane.or(onto).unwrap_or_default();
                 let mut clip = clip;
                 clip.lane = lane_id;
                 if !doc.clips.insert_at(clip_id, clip) {
-                    doc.lanes.remove(lane_id);
+                    if let Some(lane_id) = made_lane {
+                        doc.lanes.remove(lane_id);
+                    }
                     return Err(CommandError("that clip id is taken".into()));
                 }
-                (lane_id, clip_id)
+                (made_lane, clip_id)
             }
-            None => {
-                let lane_id = doc.lanes.insert(lane);
-                let mut clip = clip;
-                clip.lane = lane_id;
-                (lane_id, doc.clips.insert(clip))
-            }
+            // The first application.
+            None => match onto {
+                // Onto an existing row: no row is made.
+                Some(lane_id) => {
+                    let mut clip = clip;
+                    clip.lane = lane_id;
+                    (None, doc.clips.insert(clip))
+                }
+                // A row of its own.
+                None => {
+                    let lane_id = doc.lanes.insert(new_lane());
+                    let mut clip = clip;
+                    clip.lane = lane_id;
+                    (Some(lane_id), doc.clips.insert(clip))
+                }
+            },
         };
-        self.made = Some((lane_id, clip_id));
+        self.made = Some((made_lane, clip_id));
         Ok(())
     }
 
     fn invert(&self) -> Box<dyn Command> {
         match self.made {
+            // The row goes with the clip only when this command made the row;
+            // a drop onto an existing row leaves it alone.
             Some((lane, clip)) => Box::new(RemoveAudioClip { lane, clip }),
             None => Box::new(NotApplied("importing a sound")),
         }
@@ -3498,14 +3543,18 @@ impl Command for AddAudioClip {
 /// What undoing an [`AddAudioClip`] does: the clip and the row it arrived on,
 /// both gone.
 struct RemoveAudioClip {
-    lane: LaneId,
+    /// `None` when the drop landed on a row that was already there: the clip is
+    /// undone, the row is not.
+    lane: Option<LaneId>,
     clip: ClipId,
 }
 
 impl Command for RemoveAudioClip {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         doc.clips.remove(self.clip);
-        doc.lanes.remove(self.lane);
+        if let Some(lane) = self.lane {
+            doc.lanes.remove(lane);
+        }
         Ok(())
     }
 

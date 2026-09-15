@@ -29,9 +29,9 @@
 use fontelle_types::{
     BitcrushConfig, BitcrushPreset, ChorusConfig, ChorusPreset, CompressorConfig, CompressorPreset,
     DelayConfig, DelayPreset, DeviceKind, DistortionConfig, DistortionPreset, EffectConfig,
-    EqConfig, EqPreset, FilterConfig, FilterPreset, GateConfig, GatePreset, InstrumentKind, Preset,
-    PresetPayload, ReverbConfig, ReverbPreset, SoftenConfig, SoftenPreset, TrackChain, TrackPreset,
-    TuneConfig, TunePreset, UtilityConfig, UtilityPreset,
+    EqConfig, EqPreset, FilterConfig, FilterPreset, GateConfig, GatePreset, InstrumentKind,
+    LimiterConfig, LimiterPreset, Preset, PresetPayload, ReverbConfig, ReverbPreset, SoftenConfig,
+    SoftenPreset, TrackChain, TrackPreset, TuneConfig, TunePreset, UtilityConfig, UtilityPreset,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -106,6 +106,12 @@ fn effect_presets() -> Vec<Preset> {
         out.push(effect_preset(
             preset.label(),
             EffectConfig::Compressor(CompressorConfig::from_preset(preset)),
+        ));
+    }
+    for preset in LimiterPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Limiter(LimiterConfig::from_preset(preset)),
         ));
     }
     for preset in GatePreset::ALL {

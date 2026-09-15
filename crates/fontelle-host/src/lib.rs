@@ -23,18 +23,20 @@
 //!   graph. This split is CLAP's, not ours: the specification names which
 //!   calls belong to which thread, and `clack` encodes that in the types.
 //!
-//! # Two formats, one seam
+//! # Three formats, one seam
 //!
-//! §8.4's order of intent is CLAP first, LV2 second, VST3 through a bridge if
-//! it is ever justified, and §3.4 says why: CLAP is MIT with nothing to sign
-//! and lilv is ISC, while the VST3 SDK has historically wanted a signed
-//! agreement to so much as *host* it. Both of the first two are here now —
-//! see [`lv2`] for what is different about the second — and everything
-//! public is named by [`PluginFormat`] rather than by either, so the format
-//! is an arm in a `match` and not a second host. A key in a format this
-//! build cannot load is refused with [`HostError::Unsupported`], which is a
-//! sentence a person can act on — unless a **bridge** for that format is
-//! installed, which is the third arm: see [`bridge`].
+//! §8.4's order of intent was CLAP first, LV2 second, VST3 through a bridge
+//! if it was ever justified, and §3.4 said why: CLAP is MIT with nothing to
+//! sign and lilv is ISC, while the VST3 SDK wanted a signed agreement to so
+//! much as *host* it. That ended on 31 October 2025, when Steinberg
+//! released the SDK under MIT — so all three are hosted here now: see
+//! [`lv2`] for what is different about the second and [`vst3`] for the
+//! third. Everything public is named by [`PluginFormat`] rather than by any
+//! of them, so a format is an arm in a `match` and not a second host. A key
+//! in a format this build cannot load is refused with
+//! [`HostError::Unsupported`], which is a sentence a person can act on —
+//! unless a **bridge** for that format is installed, which is the fourth
+//! arm: see [`bridge`], which is how VST 2 arrives as an extension.
 //!
 //! # What a plugin is allowed to do to the audio thread
 //!
@@ -69,6 +71,7 @@ mod param;
 mod plugin;
 mod processor;
 mod scan;
+pub mod vst3;
 
 pub use atom::{AtomPipe, AtomPipes, MAX_ATOM_BYTES, trace as atom_trace};
 pub use bridge::{BridgeFailure, Bridges, bridge_search_paths};

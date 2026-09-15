@@ -25,6 +25,7 @@ use crate::lv2::Lv2Plugin;
 use crate::param::{HostedParam, ParamValues};
 use crate::processor::HostedProcessor;
 use crate::scan::PluginInfo;
+use crate::vst3::Vst3Plugin;
 
 /// Why a plugin could not be opened or used.
 #[derive(Debug)]
@@ -247,6 +248,8 @@ pub struct PluginHost {
     /// The feature set every LV2 plugin of this host shares, built on the
     /// first one. It owns a worker thread, which is why there is one.
     lv2_features: Option<Arc<crate::lv2::Features>>,
+    /// One loaded library per VST 3 bundle — see [`crate::vst3::Module`].
+    vst3_modules: HashMap<PathBuf, Arc<crate::vst3::Module>>,
 }
 
 impl PluginHost {
@@ -276,7 +279,7 @@ impl PluginHost {
     /// How many bundles are open, of either format. For tests, and for a
     /// status line.
     pub fn loaded_bundles(&self) -> usize {
-        self.bundles.len() + self.worlds.len()
+        self.bundles.len() + self.worlds.len() + self.vst3_modules.len()
     }
 
     /// Starts one plugin out of `path`.
@@ -284,6 +287,7 @@ impl PluginHost {
         match key.format {
             PluginFormat::Clap => self.open_clap(path, key),
             PluginFormat::Lv2 => self.open_lv2(path, key),
+            PluginFormat::Vst3 => self.open_vst3(path, key),
             other if self.bridges.serves(other) => self.open_bridged(path, key),
             other => Err(HostError::Unsupported(other)),
         }
@@ -310,6 +314,39 @@ impl PluginHost {
             // Neither is read yet: zero is what a host that cannot ask must
             // assume, and it is the honest answer for this build.
             latency: 0,
+            active: false,
+            editor_open: false,
+            lv2_editor: None,
+        })
+    }
+
+    fn open_vst3(&mut self, path: &Path, key: &PluginKey) -> Result<HostedPlugin, HostError> {
+        if !self.vst3_modules.contains_key(path) {
+            let module = crate::vst3::load_module(path).map_err(|why| HostError::Bundle {
+                path: path.to_path_buf(),
+                why,
+            })?;
+            self.vst3_modules.insert(path.to_path_buf(), module);
+        }
+        let module = Arc::clone(&self.vst3_modules[path]);
+        let opened = crate::vst3::open(&module, path, key)?;
+        let accepts_notes = opened.accepts_notes;
+        Ok(HostedPlugin {
+            info: opened.info,
+            atoms: Arc::new(crate::atom::AtomPipes::new(None, None)),
+            inner: Inner::Vst3(opened.plugin),
+            params: opened.params,
+            values: opened.values,
+            audio_inputs: opened.input_ports.main_channels(),
+            audio_outputs: opened.output_ports.main_channels(),
+            input_ports: opened.input_ports,
+            output_ports: opened.output_ports,
+            accepts_notes,
+            note_dialect: crate::vst3::note_dialect(accepts_notes),
+            // Every VST 3 component has a state stream; whether it writes
+            // anything into it is its own business.
+            keeps_state: true,
+            latency: opened.latency,
             active: false,
             editor_open: false,
             lv2_editor: None,
@@ -576,13 +613,31 @@ enum Inner {
     Clap(PluginInstance<FontelleHost>),
     Lv2(Lv2Plugin),
     Bridged(BridgedPlugin),
+    Vst3(Vst3Plugin),
 }
 
 impl HostedPlugin {
     fn clap(&mut self) -> Option<&mut PluginInstance<FontelleHost>> {
         match &mut self.inner {
             Inner::Clap(instance) => Some(instance),
-            Inner::Lv2(_) | Inner::Bridged(_) => None,
+            Inner::Lv2(_) | Inner::Bridged(_) | Inner::Vst3(_) => None,
+        }
+    }
+
+    /// Whether the plugin has asked to be restarted since this was last
+    /// asked — its latency changed, its parameters were reloaded, its
+    /// buses changed. Recorded when the plugin says so and taken here,
+    /// between frames, where a graph rebuild can safely happen; a bridged
+    /// or LV2 plugin has no way to ask and never does.
+    pub fn wants_restart(&self) -> bool {
+        match &self.inner {
+            Inner::Vst3(plugin) => plugin.take_restart(),
+            Inner::Clap(instance) => instance.access_shared_handler(|shared: &FontelleShared| {
+                shared
+                    .wants_restart
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+            }),
+            Inner::Lv2(_) | Inner::Bridged(_) => false,
         }
     }
 
@@ -696,7 +751,11 @@ impl HostedPlugin {
         if !self.values.set(id, value) {
             return false;
         }
-        if !self.active {
+        // A VST 3 controller is told whether or not the plugin runs, so its
+        // editor follows the knob; the processor hears the wire.
+        if let Inner::Vst3(plugin) = &mut self.inner {
+            plugin.set_param(id, value);
+        } else if !self.active {
             self.flush_param(id, value);
         }
         true
@@ -787,6 +846,9 @@ impl HostedPlugin {
         if let Inner::Bridged(plugin) = &self.inner {
             return plugin.save_state();
         }
+        if let Inner::Vst3(plugin) = &self.inner {
+            return plugin.save_state();
+        }
         if let Inner::Lv2(plugin) = &self.inner {
             return plugin.pending_state().map(<[u8]>::to_vec);
         }
@@ -828,6 +890,13 @@ impl HostedPlugin {
             return plugin.stash_state(bytes);
         }
         if let Inner::Bridged(plugin) = &self.inner {
+            let loaded = plugin.load_state(bytes);
+            if loaded {
+                self.reread_params();
+            }
+            return loaded;
+        }
+        if let Inner::Vst3(plugin) = &mut self.inner {
             let loaded = plugin.load_state(bytes);
             if loaded {
                 self.reread_params();
@@ -913,11 +982,26 @@ impl HostedPlugin {
                 self.audio_inputs as usize,
                 self.audio_outputs as usize,
             )?),
+            Inner::Vst3(plugin) => {
+                let (processor, latency) = plugin.activate(
+                    &self.info.key,
+                    Arc::clone(&self.values),
+                    sample_rate,
+                    max_block,
+                )?;
+                // Read again now that it is set up for this rate and block:
+                // a plugin's look-ahead can depend on both.
+                self.latency = latency;
+                HostedProcessor::vst3(processor)
+            }
         };
         self.active = true;
         // A freshly activated plugin is at its own defaults and has never been
-        // told what this project wants.
-        self.values.mark_all();
+        // told what this project wants. A VST 3 component is the exception:
+        // its arm marks only what changed since open, and says why.
+        if !matches!(self.inner, Inner::Vst3(_)) {
+            self.values.mark_all();
+        }
         Ok(processor)
     }
 
@@ -942,6 +1026,7 @@ impl HostedPlugin {
         match (&mut self.inner, processor.into_clap_stopped()) {
             (Inner::Clap(instance), Some(stopped)) => instance.deactivate(stopped),
             (Inner::Bridged(plugin), _) => plugin.deactivate(),
+            (Inner::Vst3(plugin), _) => plugin.deactivate(),
             _ => {}
         }
         self.active = false;
@@ -961,6 +1046,9 @@ impl HostedPlugin {
     /// the panel then shows the number, which is what every LV2 host does.
     pub fn display(&mut self, id: u32, value: f64) -> Option<String> {
         if let Inner::Bridged(plugin) = &self.inner {
+            return plugin.display(id, value);
+        }
+        if let Inner::Vst3(plugin) = &self.inner {
             return plugin.display(id, value);
         }
         let instance = self.clap()?;
@@ -995,6 +1083,9 @@ impl HostedPlugin {
             return plugin.has_editor();
         }
         if let Inner::Bridged(plugin) = &self.inner {
+            return plugin.has_editor();
+        }
+        if let Inner::Vst3(plugin) = &mut self.inner {
             return plugin.has_editor();
         }
         let Some(instance) = self.clap() else {
@@ -1043,6 +1134,13 @@ impl HostedPlugin {
         if let Inner::Bridged(plugin) = &self.inner {
             // The bridge embeds it and says how big it is — ABI 2.
             let wanted = plugin.open_editor(window)?;
+            self.editor_open = true;
+            return Ok(wanted);
+        }
+        if let Inner::Vst3(plugin) = &mut self.inner {
+            // `createView`, `setFrame`, `attached`, `getSize` — the SDK's
+            // order, each the plugin's to refuse.
+            let wanted = plugin.open_editor(window, scale)?;
             self.editor_open = true;
             return Ok(wanted);
         }
@@ -1123,6 +1221,12 @@ impl HostedPlugin {
             }
             return;
         }
+        if let Inner::Vst3(plugin) = &self.inner {
+            if self.editor_open && plugin.editor_resizable() {
+                let _ = plugin.resize_editor(size);
+            }
+            return;
+        }
         let Some(instance) = self.clap() else {
             return;
         };
@@ -1155,6 +1259,9 @@ impl HostedPlugin {
         if matches!(self.inner, Inner::Bridged(_)) {
             return false;
         }
+        if let Inner::Vst3(plugin) = &self.inner {
+            return plugin.editor_resizable();
+        }
         let Some(instance) = self.clap() else {
             return false;
         };
@@ -1177,6 +1284,10 @@ impl HostedPlugin {
             return;
         }
         if let Inner::Bridged(plugin) = &self.inner {
+            plugin.close_editor();
+            return;
+        }
+        if let Inner::Vst3(plugin) = &mut self.inner {
             plugin.close_editor();
             return;
         }
@@ -1234,6 +1345,14 @@ impl HostedPlugin {
             self.reread_params();
             return;
         }
+        if let Inner::Vst3(plugin) = &self.inner {
+            // The run loop's timers and descriptors, and whatever the
+            // controller asked for between frames. A knob moved in the
+            // editor arrived through the component handler already.
+            plugin.tick_editor();
+            plugin.service(&self.values);
+            return;
+        }
         let Some(instance) = self.clap() else {
             return;
         };
@@ -1275,6 +1394,12 @@ impl HostedPlugin {
                 ..EditorRequests::default()
             };
         }
+        if let Inner::Vst3(plugin) = &self.inner {
+            return EditorRequests {
+                resize: plugin.take_resize(),
+                ..EditorRequests::default()
+            };
+        }
         let Inner::Clap(instance) = &self.inner else {
             return EditorRequests::default();
         };
@@ -1296,6 +1421,10 @@ impl HostedPlugin {
     /// instance until it is activated, and the wire is applied then.
     fn flush_param(&mut self, id: u32, value: f64) {
         if let Inner::Bridged(plugin) = &self.inner {
+            plugin.set_param(id, value);
+            return;
+        }
+        if let Inner::Vst3(plugin) = &mut self.inner {
             plugin.set_param(id, value);
             return;
         }
@@ -1332,6 +1461,10 @@ impl HostedPlugin {
             for id in ids {
                 values.set(id, plugin.get_param(id));
             }
+            return;
+        }
+        if let Inner::Vst3(plugin) = &self.inner {
+            plugin.reread_params(&values);
             return;
         }
         let Some(instance) = self.clap() else {

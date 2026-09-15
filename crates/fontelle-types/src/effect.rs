@@ -25,6 +25,7 @@ pub enum EffectKind {
     Eq,
     Filter,
     Compressor,
+    Limiter,
     Gate,
     Distortion,
     Bitcrush,
@@ -43,6 +44,7 @@ impl EffectKind {
             Self::Eq => "EQ",
             Self::Filter => "Filter",
             Self::Compressor => "Comp",
+            Self::Limiter => "Limit",
             Self::Gate => "Gate",
             Self::Distortion => "Dist",
             Self::Bitcrush => "Crush",
@@ -82,7 +84,7 @@ impl EffectKind {
     /// forget. An effect without a detector has nothing to do with a key, and
     /// one set on it is a routing edge that feeds nothing.
     pub fn takes_key(self) -> bool {
-        matches!(self, Self::Compressor | Self::Gate)
+        matches!(self, Self::Compressor | Self::Limiter | Self::Gate)
     }
 
     /// Whether this effect wants **notes** — a channel's part, as the melody
@@ -108,11 +110,14 @@ impl EffectKind {
     ///
     /// The plumbing tool first, then the processors, then the two that sit
     /// under the track.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Utility,
         Self::Eq,
         Self::Filter,
         Self::Compressor,
+        // Beside the compressor, because it is the same machine turned all the
+        // way up — and because the ducking preset makes it the sidechain tool.
+        Self::Limiter,
         Self::Gate,
         Self::Distortion,
         Self::Bitcrush,
@@ -139,6 +144,7 @@ pub enum EffectConfig {
     Eq(EqConfig),
     Filter(FilterConfig),
     Compressor(CompressorConfig),
+    Limiter(LimiterConfig),
     Gate(GateConfig),
     Distortion(DistortionConfig),
     Bitcrush(BitcrushConfig),
@@ -164,6 +170,7 @@ impl EffectConfig {
             Self::Eq(_) => EQ_PARAMS.as_slice(),
             Self::Filter(_) => FILTER_PARAMS.as_slice(),
             Self::Compressor(_) => COMPRESSOR_PARAMS.as_slice(),
+            Self::Limiter(_) => LIMITER_PARAMS.as_slice(),
             Self::Gate(_) => GATE_PARAMS.as_slice(),
             Self::Distortion(_) => DISTORTION_PARAMS.as_slice(),
             Self::Bitcrush(_) => BITCRUSH_PARAMS.as_slice(),
@@ -190,6 +197,7 @@ impl EffectConfig {
             Self::Eq(_) => EQ_SECTIONS.as_slice(),
             Self::Filter(_) => FILTER_SECTIONS.as_slice(),
             Self::Compressor(_) => COMPRESSOR_SECTIONS.as_slice(),
+            Self::Limiter(_) => LIMITER_SECTIONS.as_slice(),
             Self::Gate(_) => GATE_SECTIONS.as_slice(),
             Self::Distortion(_) => DISTORTION_SECTIONS.as_slice(),
             Self::Bitcrush(_) => BITCRUSH_SECTIONS.as_slice(),
@@ -230,6 +238,7 @@ impl EffectConfig {
             Self::Eq(eq) => eq.get(id),
             Self::Filter(filter) => filter.get(id),
             Self::Compressor(comp) => comp.get(id),
+            Self::Limiter(limiter) => limiter.get(id),
             Self::Gate(gate) => gate.get(id),
             Self::Distortion(dist) => dist.get(id),
             Self::Bitcrush(crush) => crush.get(id),
@@ -252,6 +261,7 @@ impl EffectConfig {
             Self::Eq(eq) => eq.set(id, value),
             Self::Filter(filter) => filter.set(id, value),
             Self::Compressor(comp) => comp.set(id, value),
+            Self::Limiter(limiter) => limiter.set(id, value),
             Self::Gate(gate) => gate.set(id, value),
             Self::Distortion(dist) => dist.set(id, value),
             Self::Bitcrush(crush) => crush.set(id, value),
@@ -280,6 +290,7 @@ impl EffectConfig {
             Self::Eq(_) => EffectKind::Eq,
             Self::Filter(_) => EffectKind::Filter,
             Self::Compressor(_) => EffectKind::Compressor,
+            Self::Limiter(_) => EffectKind::Limiter,
             Self::Gate(_) => EffectKind::Gate,
             Self::Distortion(_) => EffectKind::Distortion,
             Self::Bitcrush(_) => EffectKind::Bitcrush,
@@ -304,6 +315,7 @@ impl EffectConfig {
             Self::Eq(eq) => eq.mix,
             Self::Filter(filter) => filter.mix,
             Self::Compressor(comp) => comp.mix,
+            Self::Limiter(limiter) => limiter.mix,
             Self::Gate(gate) => gate.mix,
             Self::Distortion(dist) => dist.mix,
             Self::Bitcrush(crush) => crush.mix,
@@ -363,6 +375,7 @@ impl EffectConfig {
             EffectKind::Eq => Self::Eq(EqConfig::new()),
             EffectKind::Filter => Self::Filter(FilterConfig::new()),
             EffectKind::Compressor => Self::Compressor(CompressorConfig::new()),
+            EffectKind::Limiter => Self::Limiter(LimiterConfig::new()),
             EffectKind::Gate => Self::Gate(GateConfig::new()),
             EffectKind::Distortion => Self::Distortion(DistortionConfig::new()),
             EffectKind::Bitcrush => Self::Bitcrush(BitcrushConfig::new()),
@@ -1791,6 +1804,110 @@ static COMPRESSOR_OWN_PARAMS: [crate::ParamSpec; 8] = [
         positions: &["Peak", "RMS"],
     },
 ];
+
+// ----------------------------------------------------------------- limiter
+
+/// The limiter's look-ahead, in milliseconds. **Fixed, not a knob**: the
+/// brickwall guarantee ties the look-ahead window to the delay line exactly
+/// (`fontelle_fx::Limiter`), so changing it means resizing buffers, which is a
+/// graph rebuild rather than a knob move — and 1.5 ms is enough to catch an
+/// inter-sample peak and short enough that a duck still sits on the beat. It is
+/// also the limiter's latency, compensated like the gate's
+/// (`fontelle_engine::insert_latency_samples`).
+pub const LIMITER_LOOKAHEAD_MS: f32 = 1.5;
+
+/// Everything the limiter's sound depends on, and none of its state.
+///
+/// A brickwall on the ceiling — and, when its detector is keyed from another
+/// track, a **ducker**: the key's overage of the ceiling is how far the signal
+/// is pushed down, which is the sidechain workflow's whole trick
+/// (`fontelle_fx::Limiter`). The compressor is the smooth, knee-and-ratio
+/// version; this is the one with a hard lid, and the Ducking preset is the
+/// reason it takes a key.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LimiterConfig {
+    /// The lid, in dB. Nothing (the signal, or the key when keyed) gets past
+    /// it. Just under 0 for a brickwall; well below for a duck the key can
+    /// push through.
+    pub ceiling_db: f32,
+    /// How long the gain takes to come back up after the peak passes.
+    pub release_ms: f32,
+    /// Dry/wet, 0..=1 — see [`EffectConfig::mix`]. Parallel limiting, and the
+    /// gentler duck: half the ducked signal under half the untouched one.
+    #[serde(default = "all_wet")]
+    pub mix: f32,
+}
+
+impl LimiterConfig {
+    /// A brickwall that changes nothing until it is set: the ceiling just under
+    /// full scale, so a limiter somebody just dropped on a track does not move
+    /// the mix — the same every-effect-opens-harmless rule the compressor's
+    /// 1:1 default follows.
+    pub fn new() -> Self {
+        Self {
+            ceiling_db: -0.3,
+            release_ms: 100.0,
+            mix: 1.0,
+        }
+    }
+
+    fn get(&self, id: &str) -> Option<f32> {
+        Some(match id {
+            MIX => self.mix * 100.0,
+            "ceiling" => self.ceiling_db,
+            "release" => self.release_ms,
+            _ => return None,
+        })
+    }
+
+    fn set(&mut self, id: &str, value: f32) {
+        match id {
+            MIX => self.mix = value / 100.0,
+            "ceiling" => self.ceiling_db = value,
+            "release" => self.release_ms = value,
+            _ => {}
+        }
+    }
+}
+
+impl Default for LimiterConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+static LIMITER_PARAMS: [crate::ParamSpec; 3] = with_mix(&LIMITER_OWN_PARAMS, ALL_WET);
+
+/// The limiter's own two, before the mix every effect has.
+static LIMITER_OWN_PARAMS: [crate::ParamSpec; 2] = [
+    crate::ParamSpec {
+        id: "ceiling",
+        name: "Ceiling",
+        // Down to -36 so a duck has somewhere to go: the ceiling is the duck's
+        // threshold when keyed, and a kick easily clears -12.
+        min: -36.0,
+        max: 0.0,
+        default: -0.3,
+        unit: crate::Unit::Decibels,
+        taper: crate::Taper::Linear,
+        positions: &[],
+    },
+    crate::ParamSpec {
+        id: "release",
+        name: "Release",
+        min: 5.0,
+        max: 1_000.0,
+        default: 100.0,
+        unit: crate::Unit::Milliseconds,
+        taper: crate::Taper::Logarithmic,
+        positions: &[],
+    },
+];
+
+static LIMITER_SECTIONS: [crate::ParamSection; 1] = [crate::ParamSection {
+    name: "Limit",
+    count: LIMITER_PARAMS.len(),
+}];
 
 // -------------------------------------------------------------------- gate
 

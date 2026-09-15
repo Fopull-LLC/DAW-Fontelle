@@ -660,7 +660,7 @@ impl Session {
         // Straight back in through the ordinary import path, so a take and a
         // dropped file are the same kind of thing from here on — one code path
         // for the waveform, the editor, the playback and the undo.
-        self.import_audio_at(&path, at, self.take_track())?;
+        self.import_audio_at(&path, at, self.take_track(), None)?;
         Ok(frames)
     }
 
@@ -1834,7 +1834,7 @@ impl Session {
         // under** that row — a bounce at the bottom of a long arrangement is a
         // bounce you have to go looking for.
         let at = self.project.tempo_map.tick_to_sample(from_tick);
-        self.import_audio_at(&path, at, None)?;
+        self.import_audio_at(&path, at, None, None)?;
         let made = self
             .lane_ids()
             .into_iter()
@@ -1942,6 +1942,70 @@ impl Session {
             1 => format!("exported {} \u{2014} 1 clipped sample", path.display()),
             n => format!("exported {} \u{2014} {n} clipped samples", path.display()),
         })
+    }
+
+    /// Saves the song out as a Standard MIDI File the user chooses the place
+    /// for.
+    ///
+    /// Unlike a WAV bounce, which lives *inside* the project bundle because a
+    /// render belongs to the project, a `.mid` is an interchange file: you
+    /// export it to open somewhere else, so it asks where to put it. The
+    /// picker opens on the projects folder with the song's name already filled
+    /// in. `Ok(None)`'s status is the cancel; a machine with no picker at all
+    /// falls back to writing beside the bundle so the feature is not lost on a
+    /// headless box.
+    ///
+    /// It is the inverse of [`import_midi`](fontelle_assets::import_midi): the
+    /// notes, the loops unrolled, and the tempo, on the project's own tick
+    /// grid. See `fontelle_assets::export_project_to_midi` for what a `.mid`
+    /// can and cannot carry.
+    pub fn export_midi(&mut self) -> Result<String, String> {
+        let default_name = {
+            let name = self.project.meta.name.trim();
+            let stem = if name.is_empty() { "song" } else { name };
+            format!("{stem}.mid")
+        };
+        // Open the picker where the user's projects live, or beside the bundle.
+        let start = self.settings.projects_dir.clone().or_else(|| {
+            self.bundle
+                .as_ref()
+                .and_then(|b| b.parent().map(Path::to_path_buf))
+        });
+
+        let path = match crate::desktop::choose_save_file(
+            "Export project as MIDI",
+            &default_name,
+            start.as_deref(),
+        ) {
+            Ok(Some(mut path)) => {
+                // A picker that gave a name with no extension gets `.mid`, so a
+                // file called "song" is still a MIDI file to everything else.
+                if path.extension().is_none() {
+                    path.set_extension("mid");
+                }
+                path
+            }
+            Ok(None) => return Ok("MIDI export cancelled".to_string()),
+            // No picker on this machine: write beside the bundle rather than
+            // losing the feature, and say where it went.
+            Err(_) => {
+                let dir = self
+                    .bundle
+                    .as_ref()
+                    .and_then(|b| b.parent())
+                    .map(Path::to_path_buf)
+                    .or_else(|| self.settings.projects_dir.clone())
+                    .ok_or_else(|| {
+                        "no folder picker on this machine, and no project folder to \
+                         write into — save this project first"
+                            .to_string()
+                    })?;
+                dir.join(&default_name)
+            }
+        };
+
+        fontelle_assets::export_midi(&self.project, &path).map_err(|e| e.to_string())?;
+        Ok(format!("exported {}", path.display()))
     }
 
     /// Writes a backup of the open project into its own `backups/` folder.
@@ -2273,6 +2337,111 @@ impl Session {
             // A cancel is not an event.
             Ok(None) => {}
             Err(e) => self.message = Some(e),
+        }
+    }
+
+    /// Takes the `which`th folder off the list and scans again.
+    fn remove_plugin_dir(&mut self, which: usize) {
+        if which >= self.settings.plugin_dirs.len() {
+            return;
+        }
+        let gone = self.settings.plugin_dirs.remove(which);
+        self.message = Some(format!(
+            "No longer searching {}",
+            crate::desktop::elide_path(&gone, 2)
+        ));
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+        self.plugins.set_folders(self.settings.plugin_dirs.clone());
+        <Self as StudioHost>::rescan_plugins(self);
+    }
+
+    /// Adds the folders FL Studio searches, and says how many were new.
+    fn import_fl_folders(&mut self) {
+        let found = crate::daw_folders::fl_studio_folders();
+        if found.is_empty() {
+            self.message = Some(
+                "No FL Studio settings found on this machine (its extra search folders \
+                 live in the registry, or in a Wine prefix's user.reg)"
+                    .to_string(),
+            );
+            return;
+        }
+        let mut added = 0;
+        for dir in found {
+            if !self.settings.plugin_dirs.contains(&dir) {
+                self.settings.plugin_dirs.push(dir);
+                added += 1;
+            }
+        }
+        self.message = Some(match added {
+            0 => "FL Studio's folders were already listed".to_string(),
+            1 => "Added the folder FL Studio searches".to_string(),
+            n => format!("Added {n} folders FL Studio searches"),
+        });
+        if added == 0 {
+            return;
+        }
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+        self.plugins.set_folders(self.settings.plugin_dirs.clone());
+        <Self as StudioHost>::rescan_plugins(self);
+    }
+
+    /// Installs or removes the `which`th catalogue extension, depending on
+    /// its state. Both are refused while a plugin is open through it — the
+    /// rack asserts this, so the message says to close the project first
+    /// rather than the rack panicking (`docs/vst-plan.md` §4.2).
+    fn press_extension(&mut self, which: usize) {
+        let Some(extension) = crate::extensions::CATALOGUE.get(which) else {
+            return;
+        };
+        let installed = crate::extensions::is_installed(extension);
+        let state = crate::extensions::ExtensionState::of(extension, installed, None);
+        match crate::extensions::action_for(&state) {
+            crate::extensions::ExtensionAction::None => {
+                self.message = Some(format!("{} needs a newer Fontelle", extension.name));
+            }
+            crate::extensions::ExtensionAction::Remove => {
+                if self.plugins.has_open_plugins() {
+                    self.message =
+                        Some("Close the project before changing an extension".to_string());
+                    return;
+                }
+                match crate::extensions::remove(extension) {
+                    Ok(()) => {
+                        self.message = Some(format!("Removed {}", extension.name));
+                        self.plugins.reload_bridges();
+                        <Self as StudioHost>::rescan_plugins(self);
+                    }
+                    Err(why) => self.message = Some(why),
+                }
+            }
+            crate::extensions::ExtensionAction::Install => {
+                if self.plugins.has_open_plugins() {
+                    self.message =
+                        Some("Close the project before changing an extension".to_string());
+                    return;
+                }
+                self.message = Some(format!("Installing {}\u{2026}", extension.name));
+                let target = crate::updates::target_triple();
+                let fetch: crate::updates::Fetcher = Box::new(crate::updates::fetch_with_progress);
+                match crate::extensions::install(extension, &target, &fetch, &mut |_, _| {}) {
+                    Ok(()) => {
+                        self.message = Some(format!(
+                            "Installed {} \u{2014} its plugins are found on the next scan",
+                            extension.name
+                        ));
+                        self.plugins.reload_bridges();
+                        <Self as StudioHost>::rescan_plugins(self);
+                    }
+                    Err(why) => {
+                        self.message = Some(format!("Could not install {}: {why}", extension.name));
+                    }
+                }
+            }
         }
     }
 
@@ -3197,6 +3366,25 @@ impl Session {
         &mut self,
         path: &Path,
     ) -> Result<(String, fontelle_types::PatchData), String> {
+        let (name, patch, _seconds) = self.sampler_patch(path)?;
+        let data = patch
+            .to_data(self.library.provenance())
+            .map_err(|e| e.to_string())?;
+        Ok((name, data))
+    }
+
+    /// A one-shot sampler [`Patch`](fontelle_core::Patch) that plays the whole
+    /// of `path`, its display name, and how long the file is in seconds.
+    ///
+    /// The one builder for "a file, as an instrument", shared by the two
+    /// callers that turn a file into one — a channel's sampler
+    /// ([`sampler_patch_for`](Self::sampler_patch_for)) and the Import tab's
+    /// **preview**, which loads it into the preview voice to hear it without
+    /// putting it on a channel.
+    fn sampler_patch(
+        &mut self,
+        path: &Path,
+    ) -> Result<(String, fontelle_core::Patch, f64), String> {
         let imported = self
             .library
             .import_sample(path)
@@ -3209,6 +3397,11 @@ impl Session {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| file_label(path));
+        let seconds = if imported.sample_rate > 0 {
+            imported.frames as f64 / imported.sample_rate as f64
+        } else {
+            0.0
+        };
         let patch = fontelle_core::Patch {
             layers: vec![fontelle_core::Layer {
                 source: fontelle_core::Source::Sample { file: imported.id },
@@ -3237,10 +3430,7 @@ impl Session {
             }],
             ..fontelle_core::Patch::basic_synth()
         };
-        let data = patch
-            .to_data(self.library.provenance())
-            .map_err(|e| e.to_string())?;
-        Ok((name, data))
+        Ok((name, patch, seconds))
     }
 
     /// The instrument a channel of `kind` arrives with.
@@ -4112,7 +4302,7 @@ impl Session {
             .map(|(from, _)| from.max(0))
             .unwrap_or(0);
         let at = self.project.tempo_map.tick_to_sample(start);
-        let name = self.import_audio_at(path, at, None)?;
+        let name = self.import_audio_at(path, at, None, None)?;
         Ok(format!("Imported \u{201c}{name}\u{201d}"))
     }
 
@@ -4128,6 +4318,7 @@ impl Session {
         path: &Path,
         at: fontelle_types::Sample,
         track: Option<MixerTrackId>,
+        onto: Option<fontelle_types::LaneId>,
     ) -> Result<String, String> {
         let name = file_label(path);
         let imported = self.library.import_audio(path).map_err(|e| e.to_string())?;
@@ -4150,12 +4341,13 @@ impl Session {
             imported.sample_rate,
         );
         data.mixer_track = track;
-        let command = Box::new(fontelle_model::AddAudioClip::new(
-            name.clone(),
-            data,
-            start,
-            length,
-        ));
+        let mut clip = fontelle_model::AddAudioClip::new(name.clone(), data, start, length);
+        // Onto the row the pointer was over, when the drop named one; otherwise
+        // a row of its own past the bottom (`AddAudioClip`'s default).
+        if let Some(lane) = onto {
+            clip = clip.on_lane(lane);
+        }
+        let command = Box::new(clip);
         self.apply_for::<fontelle_model::AddAudioClip>(command)?;
         // The graph has to be rebuilt: the player nodes hold the audio store,
         // and the one they are holding does not have this file in it.
@@ -5282,6 +5474,10 @@ impl StudioHost for Session {
         Session::export_wav(self)
     }
 
+    fn export_midi(&mut self) -> Result<String, String> {
+        Session::export_midi(self)
+    }
+
     fn autosave(&mut self) -> bool {
         Session::autosave(self)
     }
@@ -5368,9 +5564,9 @@ impl StudioHost for Session {
     }
 
     fn settings(&self) -> Vec<LibraryEntry> {
-        crate::settings::SETTING_ROWS
+        crate::settings::setting_rows(&self.settings)
             .iter()
-            .map(|row| LibraryEntry::file(row.label(), row.value(&self.settings)))
+            .map(|row| LibraryEntry::file(row.label(&self.settings), row.value(&self.settings)))
             .collect()
     }
 
@@ -5386,7 +5582,8 @@ impl StudioHost for Session {
     }
 
     fn nudge_setting(&mut self, index: usize, delta: i32) {
-        let Some(row) = crate::settings::SETTING_ROWS.get(index) else {
+        let rows = crate::settings::setting_rows(&self.settings);
+        let Some(row) = rows.get(index) else {
             return;
         };
         // A folder row is a **button**, not a value to step: clicking it asks
@@ -5405,8 +5602,16 @@ impl StudioHost for Session {
         if row.is_plugin_row() {
             match row {
                 crate::settings::SettingRow::PluginFolder => self.choose_plugin_dir(),
+                crate::settings::SettingRow::PluginDir(which) => self.remove_plugin_dir(*which),
+                crate::settings::SettingRow::ImportFlFolders => self.import_fl_folders(),
                 _ => <Self as StudioHost>::rescan_plugins(self),
             }
+            self.touch();
+            return;
+        }
+        // An extension row is a button too: install it, or remove it.
+        if let crate::settings::SettingRow::Extension(index) = *row {
+            self.press_extension(index);
             self.touch();
             return;
         }
@@ -5585,14 +5790,22 @@ impl StudioHost for Session {
         }
     }
 
-    fn drop_import_at(&mut self, index: usize, at: fontelle_types::Sample) -> Result<(), String> {
+    fn drop_import_at(
+        &mut self,
+        index: usize,
+        at: fontelle_types::Sample,
+        lane: Option<usize>,
+    ) -> Result<(), String> {
         // `import_audio_row` is the one place that turns a row into a path,
         // and it is the place that refuses a row that is not a sound —
         // dragging is only armed for those (`canvas::browser_row_carries`),
         // and this is the second half of that claim rather than a repeat of
         // it.
         let path = self.import_audio_row(index)?;
-        let name = self.import_audio_at(&path, at.max(0), None)?;
+        // The drop's row index into a LaneId. A row that vanished between the
+        // drop and here falls back to a new row rather than refusing.
+        let onto = lane.and_then(|index| self.project.lane_ids().get(index).copied());
+        let name = self.import_audio_at(&path, at.max(0), None, onto)?;
         self.message = Some(format!("Imported \u{201c}{name}\u{201d}"));
         self.touch();
         Ok(())
@@ -5722,7 +5935,7 @@ impl StudioHost for Session {
             // bar you let go over is the bar it starts on; every other kind
             // here has no position to be given.
             return self
-                .import_audio_at(path, at.max(0), None)
+                .import_audio_at(path, at.max(0), None, None)
                 .map(|name| format!("Imported \u{201c}{name}\u{201d}"));
         }
         if crate::bank::is_soundfont(path) {
@@ -6116,6 +6329,26 @@ impl StudioHost for Session {
         self.previewing = true;
         self.rebuild_graph();
         Ok(())
+    }
+
+    fn preview_import(&mut self, index: usize) -> Result<f64, String> {
+        // The same row-to-path the drag and the sampler-import use, refusing a
+        // folder the same way — dragging and previewing are both only offered
+        // for files (`canvas::browser_row_carries`).
+        let path = self.import_audio_row(index)?;
+        // A file, loaded into the preview voice as a one-shot sampler — the same
+        // voice a soundfont preview uses (`preview_preset`), so hearing a file
+        // and hearing an instrument are one path. **Nothing is written to the
+        // document**: a listen is not an import, which is the whole of the
+        // report — *"instead of being like soundfonts where they preview on
+        // select ... if i click one it should play that audio."*
+        let (_name, patch, seconds) = self.sampler_patch(&path)?;
+        self.preview_patch = Some(patch);
+        self.previewing = true;
+        self.rebuild_graph();
+        // How long to hold the note, so the UI can play the whole file and let
+        // it stop on its own rather than ringing a silent voice afterwards.
+        Ok(seconds)
     }
 
     fn end_preview(&mut self) {

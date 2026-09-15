@@ -25,8 +25,8 @@
 
 use crate::effect::{
     BandType, ChorusConfig, ChorusMode, CompressorConfig, DelayConfig, DetectionMode, EqBand,
-    EqConfig, FilterConfig, FilterShape, GateConfig, LfoWave, NoteDivision, ReverbConfig,
-    UtilityConfig,
+    EqConfig, FilterConfig, FilterShape, GateConfig, LfoWave, LimiterConfig, NoteDivision,
+    ReverbConfig, UtilityConfig,
 };
 
 // ------------------------------------------------------------- compressor
@@ -144,6 +144,76 @@ impl CompressorConfig {
             auto_makeup,
             detection,
             mix,
+        }
+    }
+}
+
+// ---------------------------------------------------------------- limiter
+
+/// The limiter's bank. A brickwall at the top of the range, and — the reason
+/// the limiter takes a key — a **ducker** at the bottom, where the ceiling is
+/// low enough that a kick keyed into it pushes the track down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum LimiterPreset {
+    /// The sidechain duck: a low ceiling for the key to clear, a musical
+    /// release, and no look-ahead to speak of so the duck sits right on the
+    /// beat. Key it from the kick.
+    Ducking,
+    /// A tighter, faster duck — a shorter release, so the track comes back up
+    /// between hits rather than staying down.
+    TightDuck,
+    /// A slow swell back up, for pads under a four-to-the-floor kick.
+    PumpingPad,
+    /// A transparent mastering ceiling, just under full scale with enough
+    /// look-ahead to catch inter-sample peaks.
+    Master,
+    /// Loud: a lower ceiling and a fast release, pushed for a competitive
+    /// level rather than transparency.
+    Loud,
+    /// A gentle duck for when a full sidechain pump is too much — the ceiling
+    /// only a little below the material and a slow release, so the track dips
+    /// under the kick rather than getting out of its way entirely.
+    GentleDuck,
+}
+
+impl LimiterPreset {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ducking => "ducking",
+            Self::TightDuck => "tight duck",
+            Self::PumpingPad => "pumping pad",
+            Self::Master => "master",
+            Self::Loud => "loud",
+            Self::GentleDuck => "gentle duck",
+        }
+    }
+
+    pub const ALL: [Self; 6] = [
+        Self::Ducking,
+        Self::TightDuck,
+        Self::PumpingPad,
+        Self::Master,
+        Self::Loud,
+        Self::GentleDuck,
+    ];
+}
+
+impl LimiterConfig {
+    pub fn from_preset(preset: LimiterPreset) -> Self {
+        use LimiterPreset::*;
+        // (ceiling_db, release_ms)
+        let (ceiling_db, release_ms) = match preset {
+            Ducking => (-12.0, 200.0),
+            TightDuck => (-14.0, 90.0),
+            PumpingPad => (-10.0, 400.0),
+            Master => (-0.3, 60.0),
+            Loud => (-1.0, 30.0),
+            GentleDuck => (-7.0, 350.0),
+        };
+        Self {
+            ceiling_db,
+            release_ms,
+            mix: 1.0,
         }
     }
 }

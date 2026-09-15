@@ -144,6 +144,11 @@ pub struct Settings {
     /// says the check is off rather than drawing nothing.
     #[serde(default = "yes")]
     pub check_for_updates: bool,
+    /// Whether the first-run offer to install an extension has been answered
+    /// — either way, so it is shown once and then not again
+    /// (`docs/vst-plan.md` §4.2).
+    #[serde(default)]
+    pub extensions_offered: bool,
 }
 
 fn yes() -> bool {
@@ -166,6 +171,7 @@ impl Default for Settings {
             favorites: Vec::new(),
             recent_projects: Vec::new(),
             check_for_updates: true,
+            extensions_offered: false,
         }
     }
 }
@@ -297,6 +303,14 @@ pub enum SettingRow {
     /// Points Fontelle at a folder of plugins, on top of the ones CLAP
     /// nominates (TDD §8.4). A button: a click opens a picker.
     PluginFolder,
+    /// The `n`th folder in [`Settings::plugin_dirs`], listed under the add
+    /// button. A button: a click removes it. One row per folder, so a
+    /// second folder is no longer invisible except as a count
+    /// (`docs/vst-plan.md` §5).
+    PluginDir(usize),
+    /// Adds the folders FL Studio searches — read off its own settings,
+    /// see [`crate::daw_folders`]. A button.
+    ImportFlFolders,
     /// Where "Save as…" puts a preset, and where the bank reads the user's
     /// own back from (§P.3).
     PresetFolder,
@@ -319,6 +333,10 @@ pub enum SettingRow {
     /// A folder to import from. Clicking it opens a picker rather than
     /// stepping a value — see [`SettingRow::folder`].
     Folder(FolderKind),
+    /// One catalogue extension, by its index in
+    /// [`crate::extensions::CATALOGUE`]. A button: install it, or remove it,
+    /// depending on its state (`docs/vst-plan.md` §4.2).
+    Extension(usize),
     /// Whether the start menu asks GitHub for a newer release at launch
     /// (`updates.rs`). A switch: a click flips it, either direction.
     CheckForUpdates,
@@ -330,7 +348,7 @@ pub enum SettingRow {
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 18] = [
+pub const SETTING_ROWS: [SettingRow; 20] = [
     SettingRow::Heading("MIDI input"),
     SettingRow::VelocityCurve,
     SettingRow::FixedVelocity,
@@ -349,17 +367,45 @@ pub const SETTING_ROWS: [SettingRow; 18] = [
     // *from*, it is somewhere instruments and effects are found (TDD §8.4).
     SettingRow::Heading("Plugins"),
     SettingRow::PluginFolder,
+    // The folder rows go here — see `setting_rows`, which is the list the
+    // tab actually draws.
+    SettingRow::ImportFlFolders,
     SettingRow::RescanPlugins,
     // Its own heading too, and for the same reason: a preset folder is not a
     // place files are imported from, it is the one folder in this list
     // Fontelle *writes* to.
     SettingRow::Heading("Presets"),
     SettingRow::PresetFolder,
+    // Its own heading: an extension is a thing installed beside the product,
+    // not a folder or a keyboard setting (`docs/vst-plan.md` §4.2). The
+    // catalogue's rows go here — see `setting_rows`.
+    SettingRow::Heading("Extensions"),
     // Under its own heading, because it is the one row here about the
     // network rather than about a folder or a keyboard.
     SettingRow::Heading("Updates"),
     SettingRow::CheckForUpdates,
 ];
+
+/// Every row the settings tab shows **for these settings**: the skeleton
+/// above, with one [`SettingRow::PluginDir`] per plugin folder under the add
+/// button.
+///
+/// The window addresses rows by position, and the host answers a press by
+/// looking the position up in this same list — so the two cannot disagree
+/// about which folder the third row removes.
+pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
+    let mut rows = Vec::with_capacity(SETTING_ROWS.len() + settings.plugin_dirs.len());
+    for row in SETTING_ROWS {
+        rows.push(row);
+        if row == SettingRow::PluginFolder {
+            rows.extend((0..settings.plugin_dirs.len()).map(SettingRow::PluginDir));
+        }
+        if row == SettingRow::Heading("Extensions") {
+            rows.extend((0..crate::extensions::CATALOGUE.len()).map(SettingRow::Extension));
+        }
+    }
+    rows
+}
 
 /// How far transpose goes either way. Two octaves is as far as anybody moves a
 /// keyboard to reach a part; past it you have chosen the wrong octave.
@@ -373,9 +419,27 @@ impl SettingRow {
     /// it — with one exception, [`Self::Transpose`], because the piano roll has
     /// a transposer of its own and a row called "Transpose" in a settings list
     /// reads as that tool's missing half. It was reported as exactly that.
-    pub fn label(self) -> &'static str {
+    pub fn label(self, settings: &Settings) -> String {
+        match self {
+            // The **end** of the path, like every folder value here.
+            Self::PluginDir(index) => settings
+                .plugin_dirs
+                .get(index)
+                .map(|dir| crate::desktop::elide_path(dir, 2))
+                .unwrap_or_default(),
+            Self::Extension(index) => crate::extensions::CATALOGUE
+                .get(index)
+                .map(|extension| extension.name.to_string())
+                .unwrap_or_default(),
+            other => other.static_label().to_string(),
+        }
+    }
+
+    fn static_label(self) -> &'static str {
         match self {
             Self::Heading(title) => title,
+            Self::PluginDir(_) => "",
+            Self::Extension(_) => "",
             Self::VelocityCurve => "Velocity curve",
             Self::FixedVelocity => "Fixed velocity",
             Self::VelocityMin => "Velocity min",
@@ -391,6 +455,7 @@ impl SettingRow {
             // rather than replaces: the standard CLAP locations are searched
             // whether or not anything is listed here.
             Self::PluginFolder => "Add plugin folder",
+            Self::ImportFlFolders => "Use FL Studio's folders",
             Self::PresetFolder => "My presets",
             Self::RescanPlugins => "Rescan plugins",
             Self::CheckForUpdates => "Check at launch",
@@ -403,7 +468,10 @@ impl SettingRow {
     /// [`folder`](Self::folder) is: the one place a settings row is pressed
     /// should not have to know which variants are which.
     pub fn is_plugin_row(self) -> bool {
-        matches!(self, Self::PluginFolder | Self::RescanPlugins)
+        matches!(
+            self,
+            Self::PluginFolder | Self::PluginDir(_) | Self::ImportFlFolders | Self::RescanPlugins
+        )
     }
 
     /// Which folder this row is about, for the rows that are about one.
@@ -449,18 +517,44 @@ impl SettingRow {
                 // starts in.
                 None => "Not set \u{2014} click".to_string(),
             },
-            // One folder is named; several are counted. Running three paths
-            // together in a 248-pixel column would name none of them.
-            Self::PluginFolder => match settings.plugin_dirs.as_slice() {
-                [] => "Not set \u{2014} click".to_string(),
-                [one] => crate::desktop::elide_path(one, 2),
-                many => format!("{} folders", many.len()),
-            },
+            // The folders are the rows under this one, each named by its
+            // end; the button says what pressing it does.
+            Self::PluginFolder => if settings.plugin_dirs.is_empty() {
+                "Not set \u{2014} click"
+            } else {
+                "Click to add"
+            }
+            .to_string(),
+            Self::PluginDir(_) => "Remove \u{2014} click".to_string(),
+            Self::ImportFlFolders => "Click".to_string(),
             // Never blank, and never "not set": this folder always has an
             // answer, because Fontelle writes to it (see the field).
             Self::PresetFolder => match settings.user_preset_dir() {
                 Some(path) => crate::desktop::elide_path(&path, 2),
                 None => "Nowhere \u{2014} click".to_string(),
+            },
+            // What the extension's state offers: install, remove, or a
+            // sentence when this build cannot load it.
+            Self::Extension(index) => match crate::extensions::CATALOGUE.get(index) {
+                Some(extension) => {
+                    let state = crate::extensions::ExtensionState::of(
+                        extension,
+                        crate::extensions::is_installed(extension),
+                        None,
+                    );
+                    match crate::extensions::action_for(&state) {
+                        crate::extensions::ExtensionAction::Install => {
+                            "Not installed \u{2014} click".to_string()
+                        }
+                        crate::extensions::ExtensionAction::Remove => {
+                            "Installed \u{2014} click to remove".to_string()
+                        }
+                        crate::extensions::ExtensionAction::None => {
+                            "Needs a newer Fontelle".to_string()
+                        }
+                    }
+                }
+                None => String::new(),
             },
             // A button says what pressing it does rather than what it is at.
             Self::RescanPlugins => "Click".to_string(),
@@ -494,7 +588,10 @@ impl SettingRow {
             | Self::Folder(_)
             | Self::PresetFolder
             | Self::PluginFolder
+            | Self::PluginDir(_)
+            | Self::ImportFlFolders
             | Self::RescanPlugins
+            | Self::Extension(_)
             | Self::CheckForUpdates => {}
             Self::VelocityCurve => {
                 let all = VelocityCurveSetting::ALL;

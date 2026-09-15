@@ -1,0 +1,19 @@
+[package]
+name = "fontelle-testvst3"
+description = "Three tiny VST 3 plugins, built only so the host in fontelle-host has a real module of that format to load in its tests."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The same binding the host uses (MIT OR Apache-2.0, generated from the
+# MIT-licensed SDK headers), so the fixture and the host cannot disagree
+# about an interface.
+vst3 = "0.3.0"

@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Limiter"
+  },
+  "name": "tight duck",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Limiter": {
+        "ceiling_db": -14.0,
+        "release_ms": 90.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

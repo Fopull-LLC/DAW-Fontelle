@@ -17,13 +17,14 @@ use std::fmt;
 
 /// A plugin format this build can name.
 ///
-/// All three are named even though only two are hosted, and that is
+/// All four are named even though only three are hosted, and that is
 /// deliberate: a [`PluginKey`] read out of a project written by a later build
-/// has to say what it could not load, and "a VST3 named X is missing" is a
-/// sentence somebody can act on where "unreadable" is not. §8.4's order of
-/// intent is CLAP first, LV2 second, VST3 only through a bridge if it is ever
-/// justified — and §3.4 is why: CLAP is MIT and lilv is ISC, with no
-/// agreement to sign for either.
+/// has to say what it could not load, and "a VST2 named X is missing" is a
+/// sentence somebody can act on where "unreadable" is not. CLAP, LV2 and
+/// VST 3 are hosted in the tree (§3.4: CLAP is MIT, lilv is ISC, and the
+/// VST 3 SDK has been MIT since October 2025). VST 2 has no licence to
+/// offer, so it is reached only through a bridge — the `fontelle-vst2`
+/// extension, `docs/vst-plan.md` §3.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -31,25 +32,41 @@ pub enum PluginFormat {
     Clap,
     Vst3,
     Lv2,
+    Vst2,
 }
 
 impl PluginFormat {
-    pub const ALL: [Self; 3] = [Self::Clap, Self::Vst3, Self::Lv2];
+    pub const ALL: [Self; 4] = [Self::Clap, Self::Vst3, Self::Lv2, Self::Vst2];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Clap => "CLAP",
             Self::Vst3 => "VST3",
             Self::Lv2 => "LV2",
+            Self::Vst2 => "VST2",
         }
     }
 
     /// What a bundle of this format is called on disk, without the dot.
+    ///
+    /// VST 2 never had a name of its own for a file: a plugin is the
+    /// platform's shared library — `.so`, `.dll`, or a `.vst` bundle on
+    /// macOS — which is why a folder is walked for that extension only
+    /// when a bridge is installed to read it.
     pub fn extension(self) -> &'static str {
         match self {
             Self::Clap => "clap",
             Self::Vst3 => "vst3",
             Self::Lv2 => "lv2",
+            Self::Vst2 => {
+                if cfg!(target_os = "windows") {
+                    "dll"
+                } else if cfg!(target_os = "macos") {
+                    "vst"
+                } else {
+                    "so"
+                }
+            }
         }
     }
 
@@ -59,7 +76,7 @@ impl PluginFormat {
     /// own note. It is asked before a scan walks a folder and before a slot
     /// tries to open what it holds.
     pub fn hosted(self) -> bool {
-        matches!(self, Self::Clap | Self::Lv2)
+        matches!(self, Self::Clap | Self::Lv2 | Self::Vst3)
     }
 
     /// The prefix a [`PluginKey`] of this format is written with.
@@ -68,6 +85,7 @@ impl PluginFormat {
             Self::Clap => "clap",
             Self::Vst3 => "vst3",
             Self::Lv2 => "lv2",
+            Self::Vst2 => "vst2",
         }
     }
 

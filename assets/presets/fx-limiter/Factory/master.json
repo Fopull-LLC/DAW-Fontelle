@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Limiter"
+  },
+  "name": "master",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Limiter": {
+        "ceiling_db": -0.3,
+        "release_ms": 60.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

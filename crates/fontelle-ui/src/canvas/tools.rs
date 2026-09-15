@@ -142,6 +142,9 @@ pub enum ToolAction {
     ImportMidi,
     /// Open the FL score browser.
     ImportScore,
+    /// Save the whole song out as a Standard MIDI File. Not an edit — like the
+    /// importers, it is a file operation the window carries out.
+    ExportMidi,
 }
 
 /// One of the three tools that take settings before they do anything.
@@ -242,6 +245,7 @@ impl ToolMenuItem {
             Self::Run(ToolAction::Legato) => "Legato \u{2014} Ctrl+L".to_string(),
             Self::Run(ToolAction::ImportMidi) => "Import MIDI file\u{2026}".to_string(),
             Self::Run(ToolAction::ImportScore) => "Import FL score\u{2026}".to_string(),
+            Self::Run(ToolAction::ExportMidi) => "Export MIDI file\u{2026}".to_string(),
             // No other action reaches the menu directly: the three that take
             // settings are `Open`, and they are the only others there are.
             Self::Run(other) => format!("{other:?}"),
@@ -250,7 +254,7 @@ impl ToolMenuItem {
 }
 
 /// The menu the Tools chip opens, in the order it lists it.
-pub const TOOL_MENU: [ToolMenuItem; 7] = [
+pub const TOOL_MENU: [ToolMenuItem; 8] = [
     ToolMenuItem::Open(ToolKind::Transpose),
     ToolMenuItem::Open(ToolKind::Adjust),
     ToolMenuItem::Open(ToolKind::Randomize),
@@ -260,6 +264,8 @@ pub const TOOL_MENU: [ToolMenuItem; 7] = [
     ToolMenuItem::Run(ToolAction::Legato),
     ToolMenuItem::Run(ToolAction::ImportMidi),
     ToolMenuItem::Run(ToolAction::ImportScore),
+    // Saving the song back out, beside the two that bring notes in.
+    ToolMenuItem::Run(ToolAction::ExportMidi),
 ];
 
 /// Every row of every dialog, so a test can sweep the lot.
@@ -591,8 +597,9 @@ impl Tools {
             // The same function the keyboard's Ctrl+L reaches, so the menu
             // and the key cannot come to mean different things.
             ToolAction::Legato => super::legato_edits(selection, notes),
-            // The window's to carry out — this crate may not read a file.
-            ToolAction::ImportMidi | ToolAction::ImportScore => Vec::new(),
+            // The window's to carry out — this crate may not read or write a
+            // file.
+            ToolAction::ImportMidi | ToolAction::ImportScore | ToolAction::ExportMidi => Vec::new(),
         }
     }
 }

@@ -29,8 +29,8 @@
 use fontelle_types::{PPQN, Tick};
 
 use crate::canvas::{
-    RackHit, RackLayout, TimelineLayout, TimelineView, rack_hit, timeline_snap, timeline_tick_to_x,
-    timeline_x_to_tick,
+    RackHit, RackLayout, TimelineLayout, TimelineView, lane_to_y, rack_hit, timeline_snap,
+    timeline_tick_to_x, timeline_x_to_tick, y_to_lane,
 };
 use crate::layout::Rect;
 
@@ -65,14 +65,21 @@ pub enum CarryTarget {
     /// The open instrument window's name field, which stands for the channel
     /// that window is showing.
     Instrument { channel: usize, rect: Rect },
-    /// The arrangement: a clip starting at `tick`, on a new row along `row`,
-    /// whose left edge is at `at`.
+    /// The arrangement: a clip starting at `tick`, on the row highlighted by
+    /// `row`, whose left edge is at `at`.
     ///
-    /// The row is at the **foot** of the grid because that is where
-    /// `fontelle_model::AddAudioClip` puts the row it makes, and a mark drawn
-    /// on the lane under the pointer would be a picture of something else
-    /// happening.
-    Clip { row: Rect, at: f32, tick: Tick },
+    /// `lane` is the row the pointer is over — `Some(index)` into the
+    /// arrangement's stack when it is over one that exists, so the clip lands
+    /// *there* rather than on a row of its own; `None` when the pointer is in
+    /// the empty space past the last row, which still makes a new row at the
+    /// foot (`fontelle_model::AddAudioClip`). `row` is the band that lights up
+    /// for whichever it is.
+    Clip {
+        row: Rect,
+        at: f32,
+        tick: Tick,
+        lane: Option<usize>,
+    },
     /// The panel it came out of. Not a drop and not a mistake either: a press
     /// that never leaves the list is a **click**, and the click is what the
     /// release does.
@@ -211,20 +218,34 @@ pub fn carry_target(scene: &CarryScene<'_>, x: f32, y: f32) -> CarryTarget {
     {
         let grid = timeline.layout.grid;
         let loose = timeline_x_to_tick(timeline.view, grid, x);
+        // Snap to whatever grid the arrangement is on, so a dropped clip lines
+        // up with the bars and beats already there rather than landing a few
+        // pixels off — the "snapping to my current grid" the report asks for.
         let tick = timeline_snap(timeline.view, loose, timeline.beats_per_bar).max(0);
         let height = timeline.view.lane_height.min(grid.height);
-        // The row **after the ones that are there**, which is where
-        // `fontelle_model::AddAudioClip` puts the lane it makes. Held at the
-        // foot of the grid when that row is off the bottom of it: a project
-        // with forty lanes is exactly the one where a mark that quietly
-        // disappeared would leave the drop with no feedback at all.
-        let y = crate::canvas::lane_to_y(timeline.view, grid, timeline.lanes)
+        // **The row under the pointer**, not always a new one at the foot: a
+        // drop over an existing row lands on it (`Some(index)`), and only a
+        // drop into the empty space past the last row makes a row of its own
+        // (`None`). This is the "put it where I'm dragging it, nearest lane"
+        // the report asks for; the old always-a-new-row behaviour was the
+        // thing it was asking to be rid of.
+        let under = y_to_lane(timeline.view, grid, y);
+        let (lane, row_lane) = if under < timeline.lanes {
+            (Some(under), under)
+        } else {
+            // Past the bottom: a new row, drawn where `AddAudioClip` will make
+            // it, and held at the foot of the grid when that is off-screen so
+            // the drop still shows feedback.
+            (None, timeline.lanes)
+        };
+        let y = lane_to_y(timeline.view, grid, row_lane)
             .clamp(grid.y, (grid.bottom() - height).max(grid.y));
         let row = Rect::new(grid.x, y, grid.width, height).intersection(&grid);
         return CarryTarget::Clip {
             row,
             at: timeline_tick_to_x(timeline.view, grid, tick),
             tick,
+            lane,
         };
     }
 
@@ -280,9 +301,14 @@ pub fn carry_note(target: &CarryTarget, channels: &[String], beats_per_bar: u32)
         CarryTarget::Channel { index, .. } => name(*index),
         CarryTarget::Instrument { channel, .. } => name(*channel),
         CarryTarget::NewChannel { .. } => "A new channel".to_string(),
-        CarryTarget::Clip { tick, .. } => {
-            format!("A new row at bar {}", bar_label(*tick, beats_per_bar))
-        }
+        CarryTarget::Clip { tick, lane, .. } => match lane {
+            Some(index) => format!(
+                "Onto row {} at bar {}",
+                index + 1,
+                bar_label(*tick, beats_per_bar)
+            ),
+            None => format!("A new row at bar {}", bar_label(*tick, beats_per_bar)),
+        },
         CarryTarget::Nowhere => "Nowhere to put this".to_string(),
         CarryTarget::Panel => String::new(),
     }

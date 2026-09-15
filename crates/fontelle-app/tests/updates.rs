@@ -385,14 +385,27 @@ type Served = Arc<Mutex<Vec<(String, Result<Vec<u8>, String>)>>>;
 /// An updater whose network is a table of URL → answer.
 fn updater_serving(served: &Served) -> Updater {
     let served = Arc::clone(served);
-    Updater::with_fetcher(Box::new(move |url: &str| {
-        let table = served.lock().unwrap();
-        table
-            .iter()
-            .find(|(u, _)| u == url)
-            .map(|(_, answer)| answer.clone())
-            .unwrap_or_else(|| Err(format!("no such url in the test: {url}")))
-    }))
+    Updater::with_fetcher(Box::new(
+        move |url: &str, progress: &mut dyn FnMut(u64, Option<u64>)| {
+            let table = served.lock().unwrap();
+            let answer = table
+                .iter()
+                .find(|(u, _)| u == url)
+                .map(|(_, answer)| answer.clone())
+                .unwrap_or_else(|| Err(format!("no such url in the test: {url}")));
+            // Half-way, then done, the way a real transfer reports — and a
+            // pause between, long enough for a test to see the first.
+            if let Ok(bytes) = &answer
+                && bytes.len() > 100
+            {
+                let total = bytes.len() as u64;
+                progress(total / 2, Some(total));
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                progress(total, Some(total));
+            }
+            answer
+        },
+    ))
 }
 
 fn wait_for(updater: &Updater, done: impl Fn(&UpdateStatus) -> bool) -> UpdateStatus {
@@ -579,4 +592,54 @@ fn a_release_with_no_archive_for_this_machine_says_so() {
         UpdateStatus::Failed(why) => assert!(why.contains("x86_64-unknown-linux-gnu"), "{why}"),
         other => panic!("expected a failure, got {other:?}"),
     }
+}
+
+/// The archive's arrival is reported as it happens, for the bar.
+#[test]
+fn upgrading_reports_how_much_of_the_archive_has_arrived() {
+    let dir = scratch("progress");
+    let archive = a_release_archive(&dir, "build 99");
+    let bytes = std::fs::read(&archive).unwrap();
+    let name = archive.file_name().unwrap().to_string_lossy().into_owned();
+    let sums = format!("{}  {name}\n", sha256_hex(&bytes));
+    let exe = dir.join("bin").join(BIN);
+    std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    std::fs::write(&exe, "build 1").unwrap();
+    let served: Served = Arc::new(Mutex::new(vec![
+        (
+            fontelle_app::updates::LATEST_URL.to_string(),
+            Ok(github_json(
+                "v9.9.9",
+                &[
+                    ("SHA256SUMS", "https://example.test/SHA256SUMS"),
+                    (&name, "https://example.test/archive"),
+                ],
+            )
+            .into_bytes()),
+        ),
+        (
+            "https://example.test/SHA256SUMS".to_string(),
+            Ok(sums.into_bytes()),
+        ),
+        (
+            "https://example.test/archive".to_string(),
+            Ok(bytes.clone()),
+        ),
+    ]));
+    let updater = updater_serving(&served).for_target("x86_64-unknown-linux-gnu");
+    updater.check();
+    wait_for(&updater, not_checking);
+    updater.upgrade(exe.clone());
+    let half = wait_for(&updater, |s| {
+        !matches!(s, UpdateStatus::Downloading { done: 0, .. })
+    });
+    match half {
+        UpdateStatus::Downloading { done, total, .. } => {
+            assert_eq!(done, bytes.len() as u64 / 2);
+            assert_eq!(total, Some(bytes.len() as u64));
+        }
+        other => panic!("expected a half-way download, got {other:?}"),
+    }
+    wait_for(&updater, |s| !matches!(s, UpdateStatus::Downloading { .. }));
+    std::fs::remove_dir_all(&dir).ok();
 }

@@ -1,6 +1,6 @@
 [package]
 name = "fontelle-host"
-description = "Loading and running plugins somebody else wrote (FONTELLE_TDD.md §8.4). CLAP today; the seam is format-shaped."
+description = "Loading and running plugins somebody else wrote (FONTELLE_TDD.md §8.4): CLAP, LV2 and VST 3 in the tree, and bridges for the rest."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,6 +15,11 @@ fontelle-bridge-abi = { path = "../fontelle-bridge-abi" }
 # dlopen for bridges. clack does its own for CLAP and lilv for LV2.
 libloading = "0.8"
 clack-host = "0.1.1"
+# VST 3, through the MIT-era interfaces — see `vst3`. Plain C ABI on every
+# platform, so unlike LV2 it is not gated.
+vst3 = "0.3.0"
+# A bundle's `moduleinfo.json`, read so a scan need not load the library.
+serde_json = "1"
 clack-extensions = { version = "0.1.1", features = ["params", "state", "audio-ports", "note-ports", "gui", "timer", "posix-fd", "latency", "clack-host", "raw-window-handle_06"] }
 
 # Linux only, all three: LV2 loads through `lilv`, a system library that lives
@@ -43,4 +48,5 @@ fontelle-testplug = { path = "../fontelle-testplug" }
 # Only so the editor probe can write out what a plugin actually drew.
 png = "0.18.1"
 fontelle-testlv2 = { path = "../fontelle-testlv2" }
+fontelle-testvst3 = { path = "../fontelle-testvst3" }
 fontelle-testbridge = { path = "../fontelle-testbridge" }

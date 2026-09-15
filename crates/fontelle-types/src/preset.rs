@@ -97,6 +97,7 @@ impl DeviceKind {
                     EffectKind::Eq => "eq",
                     EffectKind::Filter => "filter",
                     EffectKind::Compressor => "compressor",
+                    EffectKind::Limiter => "limiter",
                     EffectKind::Gate => "gate",
                     EffectKind::Distortion => "distortion",
                     EffectKind::Bitcrush => "bitcrush",

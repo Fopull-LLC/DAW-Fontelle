@@ -55,11 +55,12 @@ fighting a plugin host, a licence manager, or a 4GB install.
 
 ### 1.3 Non-goals for v1
 
-- ~~Hosting third-party plugins (CLAP/VST3/LV2).~~ **CLAP hosting is implemented** (§8.4,
-  `fontelle-host`). VST3 and LV2 remain non-goals: §3.4's licence rule puts VST3 behind an
-  out-of-process bridge if it is ever justified, and LV2 is the second format if there is demand.
-  Hosting a plugin's own *editor window* is still a non-goal — a plugin is edited on Fontelle's
-  generic parameter panel.
+- ~~Hosting third-party plugins (CLAP/VST3/LV2).~~ **CLAP, LV2 and VST 3 hosting are all
+  implemented** in the tree (§8.4, `fontelle-host`), the last of them once the VST 3 SDK went
+  MIT (§3.4, `docs/vst-plan.md`). VST 2 is the one format still behind a bridge, as the
+  `fontelle-vst2` extension — the only place a licence question remains. A plugin's own editor
+  window *is* hosted now for all three in-tree formats where the platform allows it (§16); the
+  Windows and macOS builds are the piece still missing there, for every format alike.
 - Video, notation, surround/ambisonics, network collaboration, cloud anything.
 - Windows/macOS parity testing. Both must build and run; neither blocks a release.
 - Comprehensive audio-clip editing. Audio is supported and useful (§15) but the sampler is the
@@ -205,11 +206,19 @@ Two trademark notes for Fopull LLC:
 - "SoundFont" is a Creative/E-mu trademark. It must not appear in the product name, the plugin
   name, or the binary name. Descriptive use in documentation ("loads SoundFont-format files") is
   fine. Prefer "SF2" in UI strings.
-- CLAP is MIT with no additional agreement, and lilv (LV2 hosting) is ISC. The VST3 SDK's
-  licensing has historically required a signed Steinberg agreement to develop or host VST3, and
-  recent tooling suggests this may have changed. **ACTION REQUIRED: verify VST3 SDK licensing
-  terms before shipping a VST3 build.** CLAP is the canonical export format regardless; VST3 is
-  a convenience build and is allowed to be blocked on this question.
+- CLAP is MIT with no additional agreement, and lilv (LV2 hosting) is ISC. **The VST 3 SDK is
+  MIT since 3.8.0 (31 October 2025)** — verified 2026-09-14, `docs/vst-plan.md` §1 has the
+  sources; the GPLv3 and proprietary options are withdrawn and nothing is signed. VST 3 **is
+  hosted in this tree** as of 2026-09-14 (and may later be exported), through the `vst3` crate
+  (MIT OR Apache-2.0) and never `vst3-sys` (GPLv3); `crates/fontelle-host/src/vst3.rs` is the
+  arm and `crates/fontelle-testvst3` its fixture. **The VST trademark is a separate matter**: we
+  describe formats and do not brand with them — no *VST Compatible* logo, "VST" never in a
+  product name, and the line *VST is a registered trademark of Steinberg Media Technologies
+  GmbH* once in the About box and the README, with the first product-material use marked ®.
+- **VST 2 is not licensed and cannot be** (no new agreements since October 2018; Steinberg's
+  headers may not be shared). It is never hosted from this tree. If it is hosted at all it is
+  through a bridge built on a clean-room description of the interface, in its own repository,
+  as a separate download, released only after counsel has answered `docs/vst-plan.md` §3.3.
 - **Hosting a format whose SDK cannot live here goes through a bridge** (§8.4, 2026-09-04): a
   separately built shared library implementing `fontelle-bridge-abi`, found in Fontelle's own
   data folder at run time. This tree holds the contract and the loader and nothing SDK-derived;

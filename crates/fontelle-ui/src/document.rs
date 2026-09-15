@@ -46,8 +46,14 @@ pub enum UpdateStatus {
     UpToDate,
     /// A newer release exists; the button offers it.
     Available { version: String },
-    /// The archive is on its way down and being verified.
-    Downloading { version: String },
+    /// The archive is on its way down and being verified. `done` is how
+    /// many bytes have arrived and `total` how many there are, when the
+    /// server said — what the start menu's bar is drawn from.
+    Downloading {
+        version: String,
+        done: u64,
+        total: Option<u64>,
+    },
     /// The new binary is in place. It runs on the next launch.
     Installed { version: String },
     /// Why the check or the install did not happen — no network, a checksum
@@ -1122,6 +1128,12 @@ pub trait StudioHost: DocumentHost {
         Err("this build cannot export".to_string())
     }
 
+    /// Saves the song out as a Standard MIDI File at a place the user picks.
+    /// The inverse of importing one. `Ok` and `Err` both carry a status line.
+    fn export_midi(&mut self) -> Result<String, String> {
+        Err("this build cannot export MIDI".to_string())
+    }
+
     /// Writes a backup into the project's `backups/` folder, and says whether
     /// anything was written.
     ///
@@ -1228,7 +1240,12 @@ pub trait StudioHost: DocumentHost {
     ///
     /// Defaults to the click, so a host that has not grown the distinction
     /// still imports what it was handed.
-    fn drop_import_at(&mut self, index: usize, _at: fontelle_types::Sample) -> Result<(), String> {
+    fn drop_import_at(
+        &mut self,
+        index: usize,
+        _at: fontelle_types::Sample,
+        _lane: Option<usize>,
+    ) -> Result<(), String> {
         self.open_import(index)
     }
 
@@ -1340,6 +1357,14 @@ pub trait StudioHost: DocumentHost {
     /// not choosing one, and the old answer to "what does this sound like" was
     /// to put it on a channel, which is what was reported as weird.
     fn preview_preset(&mut self, _preset: usize) -> Result<(), String> {
+        Err("this studio cannot preview".to_string())
+    }
+
+    /// Loads the Import tab's file at `index` into the preview voice and hands
+    /// back how long it is in seconds, so a click on it *plays the file* the
+    /// way a click on a soundfont plays the instrument — a listen, not an
+    /// import. `Ok(seconds)` is how long to hold the note for the whole file.
+    fn preview_import(&mut self, _index: usize) -> Result<f64, String> {
         Err("this studio cannot preview".to_string())
     }
     /// Aims the live path back at the selected channel.

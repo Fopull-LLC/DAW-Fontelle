@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 use fontelle_app::desktop::{
     elide_path, open_url_command, parse_picker_output, picker_candidates, reveal_command,
+    save_file_candidates,
 };
 
 #[test]
@@ -301,4 +302,44 @@ fn a_new_entry_or_icon_is_announced_to_the_desktop_that_is_already_running() {
         !names.iter().any(|n| n.contains(APP_ID)),
         "these are the desktop's own tools, not ours"
     );
+}
+
+#[test]
+fn there_is_more_than_one_save_file_picker_to_try() {
+    // The same reasoning as the folder picker: a machine with no zenity is
+    // ordinary, so there has to be more than one program to reach for.
+    let candidates = save_file_candidates("Export MIDI", "song.mid", None);
+    assert!(
+        !candidates.is_empty(),
+        "there must be at least one save picker"
+    );
+    if !cfg!(target_os = "macos") && !cfg!(target_os = "windows") {
+        assert!(
+            candidates.len() >= 2,
+            "Linux offers kdialog and zenity, not just one"
+        );
+    }
+}
+
+#[test]
+fn a_save_picker_carries_the_default_file_name() {
+    // The name the file is offered under has to reach the dialog, or every
+    // export comes up called "Untitled".
+    for (_, args) in save_file_candidates("Export MIDI", "my song.mid", Some(Path::new("/music"))) {
+        assert!(
+            args.iter().any(|a| a.contains("my song.mid")),
+            "the default name must appear in the picker's arguments: {args:?}"
+        );
+    }
+}
+
+#[test]
+fn a_save_picker_says_which_title_it_is_asking_under() {
+    let title = "Export project as MIDI";
+    for (_, args) in save_file_candidates(title, "song.mid", None) {
+        assert!(
+            args.iter().any(|a| a.contains(title)),
+            "every save picker must carry its own title: {args:?}"
+        );
+    }
 }

@@ -5,7 +5,6 @@
 
 mod clock;
 mod device;
-mod file_io;
 mod learn;
 mod mapping;
 mod message;
@@ -13,7 +12,6 @@ mod router;
 
 pub use clock::{ClockSource, ClockSync};
 pub use device::{DeviceKey, HotplugReport, MidiError, MidiHub, RouteTo, available_inputs};
-pub use file_io::{MidiExportError, export_midi_file};
 pub use learn::{CcKey, LearnMode, MidiLearnTable, TakeoverMode};
 pub use mapping::{DeviceMapping, InputSettings, LiveMapping, MappingTable, VelocityCurve};
 pub use message::{MidiMessage, decode};

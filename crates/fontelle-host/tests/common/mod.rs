@@ -235,3 +235,98 @@ pub fn bridged_bundle() -> PathBuf {
         })
         .clone()
 }
+
+// ------------------------------------------------------------------ VST 3
+
+pub const VST3_GAIN: &str = fontelle_testvst3::GAIN_ID;
+pub const VST3_SINE: &str = fontelle_testvst3::SINE_ID;
+pub const VST3_COMBINED: &str = fontelle_testvst3::COMBINED_ID;
+/// A class the `moduleinfo.json` lists and the library does not hold — see
+/// [`vst3_bundle_with_moduleinfo`].
+pub const PHANTOM_NAME: &str = "Fontelle Phantom (listed, not built)";
+
+/// The built `fontelle-testvst3` library.
+fn vst3_library() -> (PathBuf, PathBuf) {
+    let mut path = std::env::current_exe().expect("a test binary knows where it is");
+    path.pop();
+    path.pop();
+    let file = if cfg!(target_os = "windows") {
+        "fontelle_testvst3.dll"
+    } else if cfg!(target_os = "macos") {
+        "libfontelle_testvst3.dylib"
+    } else {
+        "libfontelle_testvst3.so"
+    };
+    let built = path.join(file);
+    assert!(
+        built.exists(),
+        "the VST 3 test plugin has not been built: {} — run `cargo build -p fontelle-testvst3`",
+        built.display()
+    );
+    assert_source_is_older(&built, "../fontelle-testvst3");
+    (path, built)
+}
+
+/// The folder inside a `.vst3` bundle the library goes in on this platform,
+/// and the name it takes there — the SDK's bundle layout.
+fn vst3_layout() -> (&'static str, &'static str) {
+    if cfg!(target_os = "windows") {
+        ("Contents/x86_64-win", "fontelle-testvst3.vst3")
+    } else if cfg!(target_os = "macos") {
+        ("Contents/MacOS", "fontelle-testvst3")
+    } else {
+        ("Contents/x86_64-linux", "fontelle-testvst3.so")
+    }
+}
+
+/// The `fontelle-testvst3` bundle, assembled beside the test binary.
+///
+/// A VST 3 bundle is a **folder**: `Name.vst3/Contents/<arch>/Name.so`.
+/// Assembled the way an installer would, with no `moduleinfo.json`, so a
+/// scan of it has to load the library — the path every bundle built before
+/// SDK 3.7.9 takes. Same rules as [`bundle`]: once per test binary, by a
+/// rename.
+pub fn vst3_bundle() -> PathBuf {
+    static BUNDLE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BUNDLE
+        .get_or_init(|| assemble_vst3("fontelle-testvst3.vst3", None))
+        .clone()
+}
+
+/// The same bundle with a `moduleinfo.json` listing its classes **and one
+/// more** — [`PHANTOM_NAME`] — so a test can tell the file was read rather
+/// than the factory.
+pub fn vst3_bundle_with_moduleinfo() -> PathBuf {
+    static BUNDLE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BUNDLE
+        .get_or_init(|| {
+            assemble_vst3(
+                "fontelle-testvst3-listed.vst3",
+                Some(&fontelle_testvst3::moduleinfo_json_with_phantom(
+                    PHANTOM_NAME,
+                )),
+            )
+        })
+        .clone()
+}
+
+fn assemble_vst3(name: &str, moduleinfo: Option<&str>) -> PathBuf {
+    let (dir, built) = vst3_library();
+    let (arch, file) = vst3_layout();
+    // Each bundle in a folder of its own, so a scan of the folder the bundle
+    // sits in scans one bundle and not all of `target/`.
+    let parent = dir.join(format!("fontelle-test-{name}"));
+    let _ = std::fs::create_dir_all(&parent);
+    let bundle = parent.join(name);
+    let staging = parent.join(format!("{name}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(staging.join(arch)).expect("a staging folder");
+    std::fs::copy(&built, staging.join(arch).join(file)).expect("the library copies");
+    if let Some(json) = moduleinfo {
+        std::fs::create_dir_all(staging.join("Contents/Resources")).unwrap();
+        std::fs::write(staging.join("Contents/Resources/moduleinfo.json"), json).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&bundle);
+    std::fs::rename(&staging, &bundle).expect("the bundle lands");
+    bundle
+}

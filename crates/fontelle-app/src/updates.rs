@@ -266,6 +266,102 @@ pub fn fetch(url: &str) -> Result<Vec<u8>, String> {
     }
 }
 
+/// How long a **download** may take, against [`TIMEOUT_SECONDS`] for a
+/// request whose answer is a page of JSON: an archive over a slow link is
+/// minutes, and giving up at fifteen seconds was a bar that never filled.
+const DOWNLOAD_TIMEOUT_SECONDS: u32 = 900;
+
+/// [`fetch`], reporting how much has arrived as it arrives.
+///
+/// > *"make it so theres a progress bar when installing an update"*
+///
+/// Two requests: a `HEAD` for the size, which GitHub's CDN answers with a
+/// `content-length` after its redirects, then the transfer itself with
+/// `curl` writing to a pipe this reads in chunks — so `progress` is
+/// called with the bytes so far and the total, if the server gave one. A
+/// server that did not gets `None`, which the bar draws as indeterminate
+/// rather than as a lie.
+pub fn fetch_with_progress(
+    url: &str,
+    progress: &mut dyn FnMut(u64, Option<u64>),
+) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let total = content_length(url);
+    progress(0, total);
+    let (program, args) = fetch_command(url);
+    // The same command, with the download's timeout in place of the page's.
+    let args: Vec<String> = {
+        let mut args = args;
+        if let Some(at) = args.iter().position(|a| a == "--max-time") {
+            args[at + 1] = DOWNLOAD_TIMEOUT_SECONDS.to_string();
+        }
+        args.push("--connect-timeout".to_string());
+        args.push(TIMEOUT_SECONDS.to_string());
+        args
+    };
+    let mut child = Command::new(program)
+        .args(&args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not run {program}: {e}"))?;
+    let mut body = Vec::with_capacity(total.unwrap_or(0) as usize);
+    if let Some(mut stdout) = child.stdout.take() {
+        let mut chunk = vec![0u8; 64 * 1024];
+        loop {
+            match stdout.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    body.extend_from_slice(&chunk[..n]);
+                    progress(body.len() as u64, total);
+                }
+                Err(e) => return Err(format!("the download stopped: {e}")),
+            }
+        }
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("could not wait for {program}: {e}"))?;
+    if output.status.success() {
+        Ok(body)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(plain_curl_error(stderr.trim(), output.status.code()))
+    }
+}
+
+/// The size `url` says it is, from a `HEAD` — the last `content-length`
+/// after the redirects, which is the CDN's and the real one.
+fn content_length(url: &str) -> Option<u64> {
+    let output = Command::new("curl")
+        .args([
+            "-sI",
+            "-L",
+            "--max-time",
+            &TIMEOUT_SECONDS.to_string(),
+            "-A",
+            &format!("fontelle/{CURRENT}"),
+            url,
+        ])
+        .output()
+        .ok()?;
+    parse_content_length(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The last `content-length` in a run of response headers.
+pub fn parse_content_length(headers: &str) -> Option<u64> {
+    headers
+        .lines()
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<u64>().ok())
+                .flatten()
+        })
+        .next_back()
+}
+
 /// What `curl` said, as a sentence for the start menu.
 ///
 /// `curl: (22) The requested URL returned error: 404` is true and not
@@ -384,7 +480,11 @@ pub fn tidy(exe: &Path) {
     std::fs::remove_file(exe.with_extension("old")).ok();
 }
 
-type Fetcher = Box<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync>;
+/// What the updater's network is: a URL in, the body out, and the bytes so
+/// far reported along the way — [`fetch_with_progress`], or a table in a
+/// test.
+pub type Fetcher =
+    Box<dyn Fn(&str, &mut dyn FnMut(u64, Option<u64>)) -> Result<Vec<u8>, String> + Send + Sync>;
 
 /// The check and the install, on their own thread, with the answer in a
 /// cell the window reads.
@@ -405,7 +505,7 @@ impl Default for Updater {
 impl Updater {
     /// The real one: `curl` to GitHub, this machine's target.
     pub fn new() -> Self {
-        Self::with_fetcher(Box::new(fetch))
+        Self::with_fetcher(Box::new(fetch_with_progress))
     }
 
     /// One that never asks. [`Updater::status`] answers [`UpdateStatus::Off`].
@@ -457,7 +557,7 @@ impl Updater {
         let release = Arc::clone(&self.release);
         let fetch = Arc::clone(&self.fetch);
         std::thread::spawn(move || {
-            let answer = fetch(LATEST_URL)
+            let answer = fetch(LATEST_URL, &mut |_, _| {})
                 .and_then(|bytes| {
                     String::from_utf8(bytes)
                         .map_err(|_| "the release listing was not text".to_string())
@@ -494,12 +594,23 @@ impl Updater {
         };
         *self.status.lock().unwrap() = UpdateStatus::Downloading {
             version: latest.version.to_string(),
+            done: 0,
+            total: None,
         };
         let status = Arc::clone(&self.status);
         let fetch = Arc::clone(&self.fetch);
         let target = self.target.clone();
         std::thread::spawn(move || {
-            let result = download_and_install(&latest, &target, &exe, &fetch);
+            let version = latest.version.to_string();
+            let progress_status = Arc::clone(&status);
+            let mut progress = move |done: u64, total: Option<u64>| {
+                *progress_status.lock().unwrap() = UpdateStatus::Downloading {
+                    version: version.clone(),
+                    done,
+                    total,
+                };
+            };
+            let result = download_and_install(&latest, &target, &exe, &fetch, &mut progress);
             *status.lock().unwrap() = match result {
                 Ok(()) => UpdateStatus::Installed {
                     version: latest.version.to_string(),
@@ -515,6 +626,7 @@ fn download_and_install(
     target: &str,
     exe: &Path,
     fetch: &Fetcher,
+    progress: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<(), String> {
     let asset = latest
         .asset_for(target)
@@ -522,11 +634,11 @@ fn download_and_install(
     let sums = latest
         .checksums()
         .ok_or_else(|| format!("{} was published without {CHECKSUMS}", latest.version))?;
-    let sums = fetch(&sums.url)?;
+    let sums = fetch(&sums.url, &mut |_, _| {})?;
     let sums = String::from_utf8_lossy(&sums);
     let expected = expected_sha256(&sums, &asset.name)
         .ok_or_else(|| format!("{CHECKSUMS} does not list {}", asset.name))?;
-    let bytes = fetch(&asset.url)?;
+    let bytes = fetch(&asset.url, progress)?;
     let actual = sha256_hex(&bytes);
     if actual != expected {
         return Err(format!(

@@ -19,19 +19,23 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-09-13.** The repository is public and `v0.1.0` is the first
-release. The workspace is one version, `cargo fmt --all -- --check` passes,
+**As of 2026-09-14.** The repository is public; `v0.1.1` is tagged and the
+next release (`0.2.0` — VST 3 hosting, the two top entries' worth of polish,
+and MIDI export) is prepared but not yet tagged — that gate is Ty's. The
+workspace is one version, `cargo fmt --all -- --check` passes,
 `cargo clippy --workspace --all-targets -- -D warnings` is clean on Linux
 and cross-checked for Windows, and `cargo test --workspace` is green at
-3,900-odd tests. What is built is the README's *Project status* section,
+4,000-odd tests. What is built is the README's *Project status* section,
 which is kept true; what is designed and not built is the TDD's later
-milestones plus the two the README names (VST hosting through a bridge,
-plugin export). Every entry below this heading is the account of how each
-part came to be, newest first, and later work sometimes reversed an earlier
-entry's decision — where it did, the later entry says so. Read the code and
-its tests for what is true now; read the entries for why.
+milestones. **Plugin export is now built** (MIDI, top entry); VST hosting is
+VST 3 in the tree plus VST 2 through the `fontelle-vst2` extension (a separate
+repo, built, tested and released — Ty's option-B decision to ship the
+clean-room bridge and own the residual risk; see the 2026-09-14 entries). Every entry below this heading is the account of how each part came
+to be, newest first, and later work sometimes reversed an earlier entry's
+decision — where it did, the later entry says so. Read the code and its tests
+for what is true now; read the entries for why.
 
-**Next:** the real-project shakedown — somebody making an actual multi-part
+**Next after the plugin update:** the real-project shakedown — somebody making an actual multi-part
 piece in the window, on hardware, end to end, and fixing what that finds
 (item 12 of the M0 plan). Two things the release surfaced that are still
 open: the Windows and macOS builds come off the release workflow but are
@@ -45,7 +49,157 @@ over the budget its plan set. The numbers and where the time goes are at the
 end of the section below; the plan's own instruction is that this is a design
 conversation rather than a target to loosen.
 
-## 2026-09-13 (latest): the organs had no fundamental, the blade marks its notes, a clip picks its instrument
+## 2026-09-14 (latest): MIDI export, a limiter that ducks, Flopsynth's search stops eating keys, and clicking a sound plays it
+
+> *"cannot save piano roll to midi files ... im always typing in the search bar
+> even when ive never clicked that input field ... side chain duck by routing a
+> kick to another track ... clicking on an audio file in the import tab
+> instantly imports it instead of ... preview on select."*
+
+Five things, on top of the VST 3 update below it.
+
+**MIDI export** (`fontelle_assets::export_project_to_midi`, the inverse of the
+importer). The stub in `fontelle-midi` was a `todo!()` with no caller;
+`export_midi_file` now lives beside `import_midi` in `fontelle-assets`, because
+that is the crate that can see a `Project`. It writes a Format 1 SMF on the
+project's own PPQN, so no timing is rescaled either way — the song, not the
+open pattern: clip starts offset the notes, loops are unrolled the way the
+compiler unrolls them, and each note is cut at the nearer of its pass end and
+the clip's end. Slides are left out (they sound no voice of their own; writing
+one would double the note it bends), and so are per-note pan/pitch/mod, which
+MIDI has no field for. Reached from the roll's Tools menu (*Export MIDI
+file…*) and **Ctrl+Shift+E**, through a new `desktop::choose_save_file`. The
+roundtrip test is the strongest of the seven: export, import, same notes.
+
+**A limiter as an insert, with a Ducking preset** (`EffectKind::Limiter`). The
+brickwall DSP already existed for the master bus; this makes it the tenth
+built-in effect and gives it a **sidechain**, which is what turns it into a
+ducker: keyed from another track, its gain computer measures the *key*, so a
+kick keyed into a low ceiling pushes the track down under it. Six presets, and
+*ducking* is the one the report asked for — put it on the bass, key it from the
+kick. The look-ahead is fixed (1.5 ms, compensated like the gate's) rather than
+a knob, because the brickwall guarantee ties the window to the delay line and a
+knob would mean resizing buffers on the audio thread. The existing sidechain
+work — the compressor's key picker, the `SidechainPump` preset, adjustable
+sends to "off" — already did most of a duck; this is the effect the report
+named on top of it.
+
+**Flopsynth's Presets search is click-to-focus now.** It used to take *every*
+key while the Presets page was open — *"i cant use any daw keybinds while its
+open"* — so Space never reached the transport and a typed letter went into the
+box. It has the keyboard only after a click into it now (`WindowApp::flop_searching`),
+exactly the way the browser's search box works: a press elsewhere or Escape
+hands the keyboard back, and until then the global keybinds work in the window
+like they do everywhere else. The box draws its lit outline and a caret when it
+has focus so the state is visible.
+
+**Clicking an Import file previews it; double-click imports it.** A click used
+to import instantly; now it plays the file through the preview voice — the same
+voice a soundfont preview uses, loaded with the file as a one-shot sampler
+patch — a *listen*, not an import, nothing written to the document. Double-click
+imports, and the stop button (or clicking another file) stops the preview.
+
+**Dropping an Import file lands where the pointer is.** A drag onto the
+arrangement used to make a new row at the foot every time; now it lands on the
+row under the pointer, snapped to the current grid, and only a drop into the
+empty space past the last row makes a new one (`AddAudioClip::on_lane`, and
+`CarryTarget::Clip` carrying the target lane). The carry chip says which.
+
+**`fontelle-vst2` is built** — the VST 2 extension, in its own repository
+(`/mnt/disks/3tb/GithubRepositories/fontelle-vst2`, Ty's blank repo filled in).
+A clean-room VST 2.4 host bridge implementing `fontelle-bridge-abi` v3: scan,
+open, params, audio, notes, a performance, chunk state, and the plugin's own
+editor embedded in an X11 window. No Steinberg code — the interface is a
+clean-room transliteration with the provenance rule written into
+`CONTRIBUTING.md`. A fixture plugin (an independent transliteration of the same
+ABI) and the bridge load and run each other in the loader test. **It ships** —
+told the interoperability risk is small but real and untested for a commercial
+clean-room host, Ty chose to release it free, separate and opt-in and to own
+that residual risk rather than wait on a formal legal opinion (`docs/vst-plan.md`
+§3.3, option B). The product describes the *format* — "loads plugins in the
+VST 2.4 format", no VST logo, the ® attribution. The Extensions page installs
+it from its own release the way the updater installs Fontelle's.
+
+## 2026-09-14: VST 3 hosted in the tree, plugin folders you can see, VST 2 as an extension, a download that shows its progress
+
+> *"support the maximum amount of plugins and instruments as possible. people
+> should be able to use their vst3s or download the vst2 extension ... also in
+> this update make it so theres a progress bar when installing an update."*
+
+**The research changed the answer, so the code did.** `docs/vst-plan.md` (last
+session) verified the VST 3 SDK went MIT on 31 October 2025, which took away
+every reason VST 3 was behind a bridge. A half-day spike opened Surge XT's
+`.vst3` through the `vst3` crate (coupler-rs, MIT/Apache — not `vst3-sys`,
+GPLv3), pushed a note through it and read audio out, which answered the one
+unknown: the crate's host-side COM support is complete enough, no C++ shim.
+
+**VST 3 is the third arm of `HostedPlugin`/`HostedProcessor**, in
+`crates/fontelle-host/src/vst3.rs`, mapped interface-by-interface onto what
+the CLAP arm already does. The host implements `IHostApplication`,
+`IComponentHandler`, `IEventList`, `IParameterChanges`, `IBStream`,
+`IPlugFrame` and `IRunLoop` as COM objects from Rust. Three things are
+different about the format and the code says so: parameters are **normalised
+on the wire** (a hosted VST 3 parameter's range is 0..1, or 0..steps, and the
+RT thread converts by arithmetic); the wheels are **not events** but the
+parameters `IMidiMapping` maps them to, resolved at open and driven as
+parameter changes; a slide is a `kTuningTypeID` note expression, so per-note
+pitch reaches VST 3 the way it reaches CLAP; and state is **two blobs**, the
+component's and the controller's. Every bus is activated and handed a buffer
+(the 2026-09-05 CLAP lesson), and every plugin is handed a real output
+parameter queue too — a DPF-built plugin asserts on a null one. The editor is
+an `IPlugView` in the same X11 window `gui.rs` makes, its run loop pumped on
+the same `GuiPump` CLAP's timers are.
+
+`crates/fontelle-testvst3` is the fixture — a real VST 3 module in Rust with
+the same crate, a gain (sidechain, two state halves, an editor that drives the
+host's run loop), a sine (mapped wheels, a sub bus, a slide) and a single-
+component plugin — so every test in `hosting.rs` has a twin in `vst3.rs` (37
+of them). **Heard on real plugins**: an ignored test opens every `.vst3` on
+this machine — 205 of them (Surge XT, Dexed, the Dragonfly reverbs, the whole
+LSP suite) — activates each, runs a block and plays every instrument. All 205
+opened; the two instruments sounded. One trap that cost real time and is
+written into the code: seeding Surge XT's 2,855 normalised parameters back to
+it at activation turned its default patch down to a whisper (peak 0.01 against
+0.31), because its values do not all round-trip through its own
+`setParamNormalized` — so the VST 3 arm sends the component **only what the
+document changed since open**, not the whole wire.
+
+**Plugin folders you can see and manage** (`docs/vst-plan.md` §5): the list is
+one row per folder under the add button, each named by its end, each a button
+that removes it — a second folder was invisible except as a count before. The
+VST 3 standard folders (`~/.vst3`, `/usr/lib/vst3`, `/usr/local/lib/vst3`,
+`$VST3_PATH`) are searched by default. And *"sync it to their FL"*: one row,
+*Use FL Studio's folders*, reads FL's extra search folders — off the Windows
+registry through `reg query`, or off a Wine prefix's `user.reg` on Linux,
+mapping a Windows path back through the prefix's drives (`daw_folders.rs`).
+
+**Extensions** (`docs/vst-plan.md` §4): a catalogue compiled into the binary
+(`extensions.rs`), one entry today — `vst2`. A row per entry under an
+Extensions heading in Options installs it with the updater's own downloader
+(the repo's `releases/latest`, the asset verified against `SHA256SUMS`,
+renamed into the bridges folder) and removes it. A bridge whose ABI is not
+this build's is listed as *needs a newer Fontelle* and never fetched.
+Installing or removing is refused while a plugin is open. **`fontelle-vst2`
+itself is a separate repository, gated on counsel** (§3.3) — the catalogue
+points at it and the release of that download stays needs-review; nothing in
+this tree links a VST 2 header. The test bridge fixture moved onto the `vst2`
+tag to prove the path end to end.
+
+**A progress bar when an update downloads.** `UpdateStatus::Downloading` now
+carries `done`/`total`; the updater streams the archive through `curl` to a
+pipe it reads in chunks (`fetch_with_progress`), reporting bytes as they
+arrive, with a `HEAD` for the size first. The start menu draws a bar in the
+offer's slot — filled in the accent to the fraction, marching indeterminate
+when the server gave no size — and the line says *"6.0 of 8.0 MB"*. Looked at
+in the headless dump.
+
+`PluginFormat` gained `Vst2` (named, not hosted — a bridged-only format);
+`hosted()` now returns true for `Vst3`. `FONTELLE_TDD.md` §1.3 and §3.4 are
+brought up to date; `docs/plugin-compatibility-plan.md` §4 is marked
+superseded. The three public gates are unchanged and remain Ty's: tagging a
+release, and the VST 2 extension's own release.
+
+## 2026-09-13: the organs had no fundamental, the blade marks its notes, a clip picks its instrument
 
 > *"the rock organ sounds good but the rest of the flopsynth organ presets
 > sound very noisy. help me make preset sounds are not too noisy and actually

@@ -161,5 +161,6 @@ pub use tune::{
 pub use welcome::{
     FOOTER_TEXT, NEW_PROJECT_LABEL, NOTHING_RECENT, OPEN_PROJECT_LABEL, RECENT_HEADING,
     REPOSITORY_LABEL, REPOSITORY_URL, RecentRow, TITLE_HEIGHT, WEBSITE_LABEL, WEBSITE_URL,
-    WelcomeHit, WelcomeLayout, update_line, welcome_hit, welcome_layout,
+    WelcomeHit, WelcomeLayout, transfer_fraction, transfer_text, update_line, update_progress,
+    welcome_hit, welcome_layout,
 };

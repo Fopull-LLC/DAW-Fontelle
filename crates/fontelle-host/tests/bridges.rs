@@ -30,11 +30,11 @@ fn host() -> PluginHost {
 }
 
 fn gain_key() -> PluginKey {
-    PluginKey::new(PluginFormat::Vst3, common::BRIDGED_GAIN)
+    PluginKey::new(PluginFormat::Vst2, common::BRIDGED_GAIN)
 }
 
 fn sine_key() -> PluginKey {
-    PluginKey::new(PluginFormat::Vst3, common::BRIDGED_SINE)
+    PluginKey::new(PluginFormat::Vst2, common::BRIDGED_SINE)
 }
 
 fn peak(buffers: &[Vec<f32>]) -> f32 {
@@ -61,9 +61,9 @@ fn the_bridges_folder_is_fontelles_own() {
 fn a_bridge_in_a_folder_is_found_and_says_which_format_it_serves() {
     let bridges = Bridges::load(&[common::bridge_folder()]);
     assert!(bridges.failures.is_empty(), "{:#?}", bridges.failures);
-    assert_eq!(bridges.formats(), vec![PluginFormat::Vst3]);
+    assert_eq!(bridges.formats(), vec![PluginFormat::Vst2]);
     assert_eq!(bridges.names(), vec!["Fontelle Test Bridge".to_string()]);
-    assert!(bridges.serves(PluginFormat::Vst3));
+    assert!(bridges.serves(PluginFormat::Vst2));
     assert!(!bridges.serves(PluginFormat::Clap), "CLAP is not bridged");
 }
 
@@ -97,9 +97,9 @@ fn a_folder_that_is_not_there_is_no_bridges_and_no_failure() {
 #[test]
 fn with_no_bridge_a_bridged_format_is_still_refused() {
     let mut host = PluginHost::new();
-    assert!(!host.can_host(PluginFormat::Vst3));
+    assert!(!host.can_host(PluginFormat::Vst2));
     match host.open(&common::bridged_bundle(), &gain_key()) {
-        Err(HostError::Unsupported(PluginFormat::Vst3)) => {}
+        Err(HostError::Unsupported(PluginFormat::Vst2)) => {}
         Err(other) => panic!("{other}"),
         Ok(_) => panic!("opened without a bridge"),
     }
@@ -110,7 +110,7 @@ fn with_no_bridge_a_bridged_format_is_still_refused() {
         )
         .plugins
         .iter()
-        .all(|p| p.key.format != PluginFormat::Vst3)
+        .all(|p| p.key.format != PluginFormat::Vst2)
     );
 }
 
@@ -120,13 +120,13 @@ fn with_no_bridge_a_bridged_format_is_still_refused() {
 fn a_bridged_format_is_scanned_like_any_other() {
     let bridges = bridges();
     let host = PluginHost::with_bridges(Arc::clone(&bridges));
-    assert!(host.can_host(PluginFormat::Vst3));
+    assert!(host.can_host(PluginFormat::Vst2));
     let folder = common::bridged_bundle().parent().unwrap().to_path_buf();
     let scan = PluginScan::of_with(&[folder], &bridges);
     let bridged: Vec<_> = scan
         .plugins
         .iter()
-        .filter(|p| p.key.format == PluginFormat::Vst3)
+        .filter(|p| p.key.format == PluginFormat::Vst2)
         .collect();
     assert_eq!(bridged.len(), 2, "{:#?}", scan.plugins);
     let gain = bridged
@@ -179,7 +179,7 @@ fn a_bridged_plugin_lists_its_parameters_and_says_what_it_is() {
 #[test]
 fn a_plugin_the_bridge_does_not_have_is_refused() {
     let mut host = host();
-    let key = PluginKey::new(PluginFormat::Vst3, "nothing.here");
+    let key = PluginKey::new(PluginFormat::Vst2, "nothing.here");
     match host.open(&common::bridged_bundle(), &key) {
         Err(HostError::NoSuchPlugin { .. }) => {}
         Err(other) => panic!("{other}"),

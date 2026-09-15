@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Limiter"
+  },
+  "name": "ducking",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Limiter": {
+        "ceiling_db": -12.0,
+        "release_ms": 200.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

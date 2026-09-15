@@ -23,11 +23,15 @@ fn a_key_in_a_format_this_build_does_not_know_is_not_a_key() {
 }
 
 #[test]
-fn only_clap_is_hosted_today() {
+fn clap_lv2_and_vst3_are_hosted_and_vst2_is_bridged_only() {
+    // CLAP, LV2 and VST 3 are hosted in the tree; VST 2 is named so a
+    // project can say what it could not load, but reached only through a
+    // bridge (`docs/vst-plan.md`).
     assert!(PluginFormat::Clap.hosted());
-    assert!(!PluginFormat::Vst3.hosted());
     assert!(PluginFormat::Lv2.hosted());
-    assert!(PluginFormat::ALL.contains(&PluginFormat::Clap));
+    assert!(PluginFormat::Vst3.hosted());
+    assert!(!PluginFormat::Vst2.hosted());
+    assert!(PluginFormat::ALL.contains(&PluginFormat::Vst2));
 }
 
 #[test]

@@ -1583,3 +1583,41 @@ fn an_effect_card_can_be_removed_and_a_source_card_cannot() {
         "an oscillator cannot be removed"
     );
 }
+
+// --- The Presets search box's caption, focused and not ---------------------
+//
+// The box used to take every key while the Presets page was open, so a typed
+// letter went into it and Space never reached the transport. It is
+// click-to-focus now; these pin the two captions that focus chooses between.
+
+#[test]
+fn the_search_box_shows_a_hint_when_empty_and_unfocused() {
+    // Nothing typed and the box does not have the keyboard: the prompt, no
+    // caret, because a caret on a box nobody is typing in reads as focus.
+    assert_eq!(
+        fontelle_ui::render::search_caption(""),
+        fontelle_ui::render::PRESET_SEARCH_HINT
+    );
+}
+
+#[test]
+fn a_focused_empty_search_box_shows_a_caret_rather_than_the_hint() {
+    // Clicked into but nothing typed yet: a caret, so it does not look dead.
+    let focused = fontelle_ui::render::focused_search_caption("");
+    assert_ne!(focused, fontelle_ui::render::PRESET_SEARCH_HINT);
+    assert!(
+        focused.contains(fontelle_ui::canvas::NAME_CARET),
+        "a focused box shows where typing will land: {focused:?}"
+    );
+}
+
+#[test]
+fn a_query_shows_with_a_caret_whether_or_not_focus_is_named() {
+    // Once there is text, both captions are the text with a caret — the box is
+    // plainly in use either way.
+    assert_eq!(
+        fontelle_ui::render::search_caption("bass"),
+        fontelle_ui::render::focused_search_caption("bass")
+    );
+    assert!(fontelle_ui::render::search_caption("bass").starts_with("bass"));
+}

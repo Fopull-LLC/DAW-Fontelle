@@ -283,6 +283,98 @@ pub fn picker_candidates(title: &str, start: Option<&Path>) -> Vec<(&'static str
     candidates
 }
 
+/// The save-file pickers to try, best first — the counterpart to
+/// [`picker_candidates`] for the one direction that folder picking cannot do:
+/// asking the user *where to write a new file* and under *what name*.
+///
+/// `default_name` is the name the file is offered under (e.g. `song.mid`);
+/// `start` is the folder to open in. The answer is read the same way a folder
+/// pick is — [`parse_picker_output`], through [`run_picker`] — so all the
+/// subprocess plumbing is shared and only this command-shaping is new.
+pub fn save_file_candidates(
+    title: &str,
+    default_name: &str,
+    start: Option<&Path>,
+) -> Vec<(&'static str, Vec<String>)> {
+    let start = start.map(|p| p.to_string_lossy().into_owned());
+
+    if cfg!(target_os = "macos") {
+        // `choose file name` errors on cancel, which `run_picker` already reads
+        // as a cancel; the default location is only added when we have one.
+        let script = match &start {
+            Some(dir) => format!(
+                "POSIX path of (choose file name with prompt \"{title}\" \
+                 default name \"{default_name}\" \
+                 default location POSIX file \"{dir}\")"
+            ),
+            None => format!(
+                "POSIX path of (choose file name with prompt \"{title}\" \
+                 default name \"{default_name}\")"
+            ),
+        };
+        return vec![("osascript", vec!["-e".to_string(), script])];
+    }
+
+    if cfg!(target_os = "windows") {
+        let dir = start.clone().unwrap_or_default();
+        let script = format!(
+            "Add-Type -AssemblyName System.Windows.Forms; \
+             $d = New-Object System.Windows.Forms.SaveFileDialog; \
+             $d.Title = '{title}'; \
+             $d.FileName = '{default_name}'; \
+             $d.InitialDirectory = '{dir}'; \
+             if ($d.ShowDialog() -eq 'OK') {{ $d.FileName }}"
+        );
+        return vec![(
+            "powershell",
+            vec!["-NoProfile".to_string(), "-Command".to_string(), script],
+        )];
+    }
+
+    let mut candidates: Vec<(&'static str, Vec<String>)> = Vec::new();
+
+    // The full path the dialog opens on: the start folder, or the home
+    // directory, with the offered name already filled in.
+    let where_to = |sep: char| {
+        let dir = start.clone().unwrap_or_else(|| "~".to_string());
+        format!("{dir}{sep}{default_name}")
+    };
+
+    // KDE's own. `--getsavefilename <startpath>` preselects the name; the
+    // trailing `*.mid` is the filter, which keeps the dialog on MIDI files.
+    let kdialog = vec![
+        "--title".to_string(),
+        title.to_string(),
+        "--getsavefilename".to_string(),
+        where_to('/'),
+        "*.mid".to_string(),
+    ];
+    candidates.push(("kdialog", kdialog));
+
+    let zenity = vec![
+        "--file-selection".to_string(),
+        "--save".to_string(),
+        "--confirm-overwrite".to_string(),
+        format!("--title={title}"),
+        format!("--filename={}", where_to('/')),
+    ];
+    candidates.push(("zenity", zenity));
+
+    candidates
+}
+
+/// Asks the user where to save a new file, **blocking** until they answer.
+///
+/// `Ok(None)` is a cancel; `Err` is a machine with no picker at all. The
+/// counterpart to [`choose_folder`], sharing its subprocess plumbing.
+pub fn choose_save_file(
+    title: &str,
+    default_name: &str,
+    start: Option<&Path>,
+) -> Result<Option<PathBuf>, String> {
+    run_picker(&save_file_candidates(title, default_name, start))
+}
+
 /// A picker's answer: the folder, or `None` for a cancel.
 ///
 /// Every one of these prints a trailing newline, and zenity separates a

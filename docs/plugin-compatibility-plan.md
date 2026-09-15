@@ -186,14 +186,21 @@ slide becomes expressible; that is the moment to revisit it.
 
 ## 4. The VST3 bridge — the only thing that changes the format answer
 
+*Superseded 2026-09-14 by `docs/vst-plan.md`: the VST 3 SDK is MIT since
+3.8.0, so VST 3 is hosted in the tree rather than through a bridge, and the
+bridge seam is for VST 2. This section is kept as the record of why the seam
+was built. One correction to it: `yabridge` presents a Windows VST 2 plugin as
+a Linux VST 2 plugin and a Windows VST 3 as a Linux VST 3 — it does not turn
+VST 2 into VST 3, so VST 2 needs its own host.*
+
 **Why last, and why it will not fit in one session.** It is a separate
 repository, it needs Steinberg's SDK, and §3.4 is the reason it lives outside
 this tree: Fontelle never links a bridge and a bridge never links Fontelle.
 
 **What it unlocks.** VST3 is what most paid Linux plugins ship, and `yabridge`
-exposes Windows VST2 and VST3 plugins as native VST3 — so one bridge covers
-both native Linux VST3 *and* the Windows catalogue. Nothing currently installed
-on this machine needs it: there are zero `.vst3` bundles here today.
+exposes Windows VST3 plugins as native VST3 — so one bridge covers both native
+Linux VST3 *and* the Windows VST3 catalogue. Nothing currently installed on
+this machine needs it: there are zero `.vst3` bundles here today.
 
 **The tree is already shaped for it.** `fontelle-bridge-abi` is a versioned
 `#[repr(C)]` vtable at `ABI_VERSION = 1`; `fontelle_host::bridge` loads bridges

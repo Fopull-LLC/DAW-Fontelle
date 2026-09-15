@@ -132,9 +132,15 @@ impl PluginScan {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let is_bundle = path
-                .extension()
-                .is_some_and(|ext| PluginFormat::ALL.iter().any(|f| ext == f.extension()));
+            // A file is a bundle when something here can read it: VST 2's
+            // "extension" is the platform's shared library, and a folder
+            // of `.so` files is not a folder of failures until a bridge is
+            // installed that says which of them are plugins.
+            let is_bundle = path.extension().is_some_and(|ext| {
+                PluginFormat::ALL
+                    .iter()
+                    .any(|f| ext == f.extension() && (f.hosted() || bridges.serves(*f)))
+            });
             if is_bundle {
                 match scan_bundle_with(&path, bridges) {
                     Ok(found) => {
@@ -179,6 +185,7 @@ pub fn scan_bundle_with(path: &Path, bridges: &crate::Bridges) -> Result<Vec<Plu
     match format {
         PluginFormat::Clap => crate::plugin::read_clap_bundle(path),
         PluginFormat::Lv2 => crate::lv2::read_lv2_bundle(path),
+        PluginFormat::Vst3 => crate::vst3::read_vst3_bundle(path),
         other if bridges.serves(other) => bridges.scan_bundle(other, path),
         other => Err(format!(
             "{} plugins cannot be loaded without a bridge",
@@ -189,12 +196,13 @@ pub fn scan_bundle_with(path: &Path, bridges: &crate::Bridges) -> Result<Vec<Plu
 
 /// The folders a plugin of a hosted format is installed in on this platform.
 ///
-/// Read off each format's own specification rather than invented — CLAP and
-/// LV2 both name these, and a host that looked somewhere else would not find
-/// what an installer put where it was told to. `CLAP_PATH` and `LV2_PATH`
-/// are honoured because the specifications say to; they are how somebody
-/// keeps a plugin folder on another disk. CLAP's folders first, then LV2's,
-/// in the order each specification lists them.
+/// Read off each format's own specification rather than invented — CLAP,
+/// LV2 and the VST 3 SDK all name these, and a host that looked somewhere
+/// else would not find what an installer put where it was told to.
+/// `CLAP_PATH`, `LV2_PATH` and `VST3_PATH` are honoured because the
+/// specifications say to; they are how somebody keeps a plugin folder on
+/// another disk. CLAP's folders first, then LV2's, then VST 3's, in the
+/// order each specification lists them.
 pub fn search_paths() -> Vec<PathBuf> {
     search_paths_with(&crate::Bridges::none())
 }
@@ -235,6 +243,7 @@ pub fn search_paths_with(bridges: &crate::Bridges) -> Vec<PathBuf> {
     }
 
     paths.extend(crate::lv2::search_paths(home.as_ref()));
+    paths.extend(crate::vst3::search_paths(home.as_ref()));
     paths.extend(bridges.search_paths());
 
     paths.retain(|path| path.is_absolute());

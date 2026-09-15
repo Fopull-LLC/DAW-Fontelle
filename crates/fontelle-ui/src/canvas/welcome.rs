@@ -92,6 +92,9 @@ pub struct WelcomeLayout {
     /// for updates — no connection" is a sentence and the column is narrow.
     pub update: Rect,
     /// The offer, when there is one: install it, or go to the release page.
+    /// While a download is under way the same slot holds the progress bar
+    /// — [`update_progress`] says when — so the card does not reflow
+    /// between the press and the bar.
     pub update_button: Option<Rect>,
     /// Two rows above the buttons for what went wrong — a bundle that would
     /// not open, a picker that is not installed. Empty most of the time.
@@ -302,9 +305,17 @@ pub fn update_line(status: &UpdateStatus, current: &str) -> (String, Option<&'st
             format!("Fontelle {version} is available"),
             Some("Install update"),
         ),
-        UpdateStatus::Downloading { version } => {
-            (format!("Downloading Fontelle {version}\u{2026}"), None)
-        }
+        UpdateStatus::Downloading {
+            version,
+            done,
+            total,
+        } => (
+            format!(
+                "Downloading Fontelle {version}\u{2026} {}",
+                transfer_text(*done, *total)
+            ),
+            None,
+        ),
         UpdateStatus::Installed { version } => (
             format!("Fontelle {version} is installed \u{2014} restart to use it"),
             None,
@@ -312,4 +323,30 @@ pub fn update_line(status: &UpdateStatus, current: &str) -> (String, Option<&'st
         // Already a sentence: the host says which half failed and why.
         UpdateStatus::Failed(why) => (why.clone(), Some("Release page")),
     }
+}
+
+/// How far the download is, for the bar: `None` when there is no download,
+/// `Some(None)` while one runs whose size the server did not say (an
+/// indeterminate bar), `Some(Some(fraction))` otherwise.
+pub fn update_progress(status: &UpdateStatus) -> Option<Option<f32>> {
+    match status {
+        UpdateStatus::Downloading { done, total, .. } => Some(transfer_fraction(*done, *total)),
+        _ => None,
+    }
+}
+
+/// `3.1 of 12.4 MB`, or `3.1 MB` when the size is not known.
+pub fn transfer_text(done: u64, total: Option<u64>) -> String {
+    let mb = |bytes: u64| bytes as f64 / 1_000_000.0;
+    match total {
+        Some(total) => format!("{:.1} of {:.1} MB", mb(done), mb(total)),
+        None => format!("{:.1} MB", mb(done)),
+    }
+}
+
+/// The fraction done, or `None` when the size is not known.
+pub fn transfer_fraction(done: u64, total: Option<u64>) -> Option<f32> {
+    total
+        .filter(|total| *total > 0)
+        .map(|total| (done as f64 / total as f64).clamp(0.0, 1.0) as f32)
 }

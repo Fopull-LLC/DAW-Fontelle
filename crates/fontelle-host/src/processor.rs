@@ -12,6 +12,7 @@ use clack_host::utils::Cookie;
 use crate::bridge::BridgedProcessor;
 use crate::lv2::Lv2Processor;
 use crate::param::ParamValues;
+use crate::vst3::Vst3Processor;
 
 /// The most events one block may carry into a plugin.
 ///
@@ -49,6 +50,9 @@ enum Inner {
     /// rather than per block.
     Lv2(Box<Lv2Processor>),
     Bridged(BridgedProcessor),
+    /// Boxed for the LV2 reason: it carries a buffer table per bus and the
+    /// COM objects of a block.
+    Vst3(Box<Vst3Processor>),
 }
 
 /// The host handler set, named once so the types below stay readable.
@@ -82,12 +86,19 @@ impl HostedProcessor {
         }
     }
 
+    pub(crate) fn vst3(processor: Vst3Processor) -> Self {
+        Self {
+            inner: Inner::Vst3(Box::new(processor)),
+        }
+    }
+
     /// The block size this was prepared for.
     pub fn max_block(&self) -> usize {
         match &self.inner {
             Inner::Clap(p) => p.max_block,
             Inner::Lv2(p) => p.max_block(),
             Inner::Bridged(p) => p.max_block(),
+            Inner::Vst3(p) => p.max_block(),
         }
     }
 
@@ -102,6 +113,7 @@ impl HostedProcessor {
             Inner::Clap(p) => p.note_on(frame, key, velocity),
             Inner::Lv2(p) => p.note_on(frame, key, velocity),
             Inner::Bridged(p) => p.note_on(frame, key, velocity),
+            Inner::Vst3(p) => p.note_on(frame, key, velocity),
         }
     }
 
@@ -111,6 +123,7 @@ impl HostedProcessor {
             Inner::Clap(p) => p.note_off(frame, key),
             Inner::Lv2(p) => p.note_off(frame, key),
             Inner::Bridged(p) => p.note_off(frame, key),
+            Inner::Vst3(p) => p.note_off(frame, key),
         }
     }
 
@@ -134,6 +147,9 @@ impl HostedProcessor {
             // of a controller is the bridged plugin's business, the same as
             // for the two hosted formats.
             Inner::Bridged(p) => p.controller(frame, controller, value),
+            // VST 3 has no controller events at all: the wheel is whichever
+            // parameter the plugin mapped it to, driven at the frame.
+            Inner::Vst3(p) => p.controller(frame, controller, value),
         }
     }
 
@@ -146,6 +162,7 @@ impl HostedProcessor {
             Inner::Clap(p) => p.pitch_bend(frame, value),
             Inner::Lv2(p) => p.pitch_bend(frame, value),
             Inner::Bridged(p) => p.pitch_bend(frame, value),
+            Inner::Vst3(p) => p.pitch_bend(frame, value),
         }
     }
 
@@ -172,6 +189,9 @@ impl HostedProcessor {
         };
         match &mut self.inner {
             Inner::Clap(p) => p.note_tuning(frame, key, semitones),
+            // VST 3 carries what CLAP carries: a tuning expression on the
+            // note, in semitones, with no range limit.
+            Inner::Vst3(p) => p.note_tuning(frame, key, semitones),
             Inner::Lv2(p) => p.pitch_bend(frame, as_bend()),
             Inner::Bridged(p) => p.pitch_bend(frame, as_bend()),
         }
@@ -184,6 +204,7 @@ impl HostedProcessor {
             Inner::Clap(p) => p.channel_pressure(frame, value),
             Inner::Lv2(p) => p.channel_pressure(frame, value),
             Inner::Bridged(p) => p.channel_pressure(frame, value),
+            Inner::Vst3(p) => p.channel_pressure(frame, value),
         }
     }
 
@@ -198,6 +219,7 @@ impl HostedProcessor {
             Inner::Clap(p) => p.reset(),
             Inner::Lv2(p) => p.reset(),
             Inner::Bridged(p) => p.reset(),
+            Inner::Vst3(p) => p.reset(),
         }
     }
 
@@ -224,6 +246,12 @@ impl HostedProcessor {
                 fill_input(p.input(), input, frames);
                 p.run(frames);
                 drain_output(p.output(), output, frames);
+            }
+            Inner::Vst3(p) => {
+                fill_input(p.main_input(), input, frames);
+                p.fill_key(None, frames);
+                p.run(frames, true);
+                drain_output(p.main_output(), output, frames);
             }
         }
     }
@@ -259,6 +287,12 @@ impl HostedProcessor {
                 p.run(frames);
                 drain_output(p.output(), bus, frames);
             }
+            Inner::Vst3(p) => {
+                fill_input_mut(p.main_input(), bus, frames);
+                p.fill_key(None, frames);
+                p.run(frames, true);
+                drain_output(p.main_output(), bus, frames);
+            }
         }
     }
 
@@ -293,6 +327,13 @@ impl HostedProcessor {
                 drain_output(p.output(), bus, frames);
             }
             Inner::Bridged(_) => self.process_insert(bus, frames),
+            // A VST 3 sidechain is an aux input bus.
+            Inner::Vst3(p) => {
+                fill_input_mut(p.main_input(), bus, frames);
+                p.fill_key(Some(key), frames);
+                p.run(frames, true);
+                drain_output(p.main_output(), bus, frames);
+            }
         }
     }
 
@@ -315,6 +356,10 @@ impl HostedProcessor {
                 p.run(frames);
                 drain_output(p.output(), output, frames);
             }
+            Inner::Vst3(p) => {
+                p.run(frames, false);
+                drain_output(p.main_output(), output, frames);
+            }
         }
     }
 
@@ -327,7 +372,7 @@ impl HostedProcessor {
     pub(crate) fn lv2_save_state(&mut self) -> Option<Vec<u8>> {
         match &mut self.inner {
             Inner::Lv2(p) => p.save_state(),
-            Inner::Clap(_) | Inner::Bridged(_) => None,
+            Inner::Clap(_) | Inner::Bridged(_) | Inner::Vst3(_) => None,
         }
     }
 
@@ -336,7 +381,7 @@ impl HostedProcessor {
     pub(crate) fn into_clap_stopped(self) -> Option<StoppedPluginAudioProcessor<HostHandlersOf>> {
         match self.inner {
             Inner::Clap(p) => Some(p.processor.stop_processing()),
-            Inner::Lv2(_) | Inner::Bridged(_) => None,
+            Inner::Lv2(_) | Inner::Bridged(_) | Inner::Vst3(_) => None,
         }
     }
 }

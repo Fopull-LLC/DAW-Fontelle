@@ -3326,6 +3326,7 @@ fn shoot_flopsynth() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLa
             destinations: vec![(1, 0), (1, 1)],
             about: Vec::new(),
             hover_at: (f32::MIN, f32::MIN),
+            searching: false,
         }),
         Some(&preset),
         None,
@@ -4291,6 +4292,22 @@ fn a_carried_sound_over_nowhere_is_refused_where_you_can_see_it() {
 /// Renders the start menu over an otherwise empty window, at a size the
 /// real window opens at, so the card has room to be itself.
 fn shoot_welcome(theme: Theme, recent: &[fontelle_ui::RecentProject]) -> Option<Shot> {
+    shoot_welcome_status(
+        theme,
+        recent,
+        fontelle_ui::UpdateStatus::Available {
+            version: "9.9.9".to_string(),
+        },
+        "start-menu",
+    )
+}
+
+fn shoot_welcome_status(
+    theme: Theme,
+    recent: &[fontelle_ui::RecentProject],
+    status: fontelle_ui::UpdateStatus,
+    suffix: &str,
+) -> Option<Shot> {
     use fontelle_ui::canvas::welcome_layout;
     use fontelle_ui::render::WelcomeChrome;
     let (width, height) = (1000u32, 620u32);
@@ -4312,15 +4329,13 @@ fn shoot_welcome(theme: Theme, recent: &[fontelle_ui::RecentProject]) -> Option<
     let bar = transport_bar_layout(layout.transport, &theme.metrics);
     let readout = text.layout("0", &theme.font, None);
 
-    let status = fontelle_ui::UpdateStatus::Available {
-        version: "9.9.9".to_string(),
-    };
     let (line, button) = fontelle_ui::canvas::update_line(&status, "0.1.0");
+    let progress = fontelle_ui::canvas::update_progress(&status);
     let welcome = welcome_layout(
         layout.window,
         &theme.metrics,
         recent.len(),
-        button.is_some(),
+        button.is_some() || progress.is_some(),
     );
     // Everything the menu will look up, shaped — the same contract the
     // window keeps in `shape_labels`.
@@ -4389,6 +4404,7 @@ fn shoot_welcome(theme: Theme, recent: &[fontelle_ui::RecentProject]) -> Option<
                 version: "Version 0.1.0",
                 update: &line,
                 update_button: button,
+                progress,
                 recent,
                 hover: Some(fontelle_ui::canvas::WelcomeHit::NewProject),
                 message: &message,
@@ -4400,12 +4416,7 @@ fn shoot_welcome(theme: Theme, recent: &[fontelle_ui::RecentProject]) -> Option<
         .expect("the shared renderer")
         .render(&scene, width, height, theme.palette.window)
         .expect("rendering a scene that fits in memory");
-    dump_sized(
-        &pixels,
-        &format!("{}-start-menu", theme.name),
-        width,
-        height,
-    );
+    dump_sized(&pixels, &format!("{}-{suffix}", theme.name), width, height);
     Some(Shot {
         pixels,
         theme,
@@ -4478,4 +4489,38 @@ fn the_start_menu_with_nothing_recent_still_renders() {
         return;
     };
     assert!(near(shot.at(2, 2), shot.theme.palette.window));
+}
+
+/// *"make it so theres a progress bar when installing an update"*: while the
+/// archive comes down the offer's slot holds a bar, filled in the accent to
+/// the fraction done.
+#[test]
+fn the_start_menu_shows_a_progress_bar_while_an_update_downloads() {
+    let Some(shot) = shoot_welcome_status(
+        Theme::dark_default(),
+        &recent_projects(),
+        fontelle_ui::UpdateStatus::Downloading {
+            version: "9.9.9".to_string(),
+            done: 6_000_000,
+            total: Some(8_000_000),
+        },
+        "start-menu-downloading",
+    ) else {
+        return;
+    };
+    let layout =
+        fontelle_ui::canvas::welcome_layout(shot.layout.window, &shot.theme.metrics, 2, true);
+    let rect = layout.update_button.expect("a slot for the bar");
+    // Three-quarters along, the fill is the accent; past the end, it is not.
+    let y = rect.y as u32 + rect.height as u32 / 2;
+    let lit = rect.x as u32 + (rect.width * 0.7) as u32;
+    let past = rect.x as u32 + rect.width as u32 - 3;
+    assert!(
+        near(shot.at(lit, y), shot.theme.palette.accent),
+        "the filled part of the bar is not the accent"
+    );
+    assert!(
+        !near(shot.at(past, y), shot.theme.palette.accent),
+        "the bar is full past the fraction done"
+    );
 }

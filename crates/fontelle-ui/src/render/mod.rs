@@ -113,6 +113,10 @@ pub struct WelcomeChrome<'a> {
     pub update: &'a TextLayout,
     /// The offer, when there is one.
     pub update_button: Option<&'a str>,
+    /// The bar in the offer's slot while an archive comes down:
+    /// `Some(Some(fraction))`, or `Some(None)` for a size the server did
+    /// not say. See `canvas::update_progress`.
+    pub progress: Option<Option<f32>>,
     pub recent: &'a [crate::document::RecentProject],
     pub hover: Option<crate::canvas::WelcomeHit>,
     /// What went wrong with the last press, if anything did. Shaped to the
@@ -729,6 +733,8 @@ pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
     );
     if let (Some(button), Some(rect)) = (chrome.update_button, l.update_button) {
         draw_welcome_button(scene, theme, labels, button, rect, hot(WelcomeHit::Update));
+    } else if let (Some(progress), Some(rect)) = (chrome.progress, l.update_button) {
+        draw_progress_bar(scene, theme, rect, progress);
     }
 
     // What went wrong, in the warning ink, just above the way out of it.
@@ -863,6 +869,48 @@ fn draw_line(scene: &mut Scene, labels: &Labels, caption: &str, area: Rect, ink:
 
 /// A start-menu button: a plate with its label centred, lit in the accent
 /// under the pointer.
+/// A progress bar: the trough in the panel's header ink, the fill in the
+/// accent to `fraction` of it — or, when the size is not known, a third of
+/// the trough marching along it, its position taken from the clock so it
+/// moves without anybody keeping a counter.
+fn draw_progress_bar(scene: &mut Scene, theme: &Theme, rect: Rect, fraction: Option<f32>) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    // A bar the height of a thin button, centred in the slot it was given.
+    let height = (rect.height * 0.5).max(6.0);
+    let trough = Rect::new(
+        rect.x,
+        rect.y + (rect.height - height) / 2.0,
+        rect.width,
+        height,
+    );
+    fill_rect_rounded(scene, trough, m.corner_radius, p.panel_header);
+    let fill = match fraction {
+        Some(fraction) => Rect::new(
+            trough.x,
+            trough.y,
+            trough.width * fraction.clamp(0.0, 1.0),
+            trough.height,
+        ),
+        None => {
+            let phase = (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() % 1500)
+                .unwrap_or(0)) as f32
+                / 1500.0;
+            let width = trough.width / 3.0;
+            let x = trough.x + (trough.width + width) * phase - width;
+            let left = x.max(trough.x);
+            let right = (x + width).min(trough.x + trough.width);
+            Rect::new(left, trough.y, (right - left).max(0.0), trough.height)
+        }
+    };
+    if fill.width > 0.0 {
+        fill_rect_rounded(scene, fill, m.corner_radius, p.accent);
+    }
+    stroke_rect_rounded(scene, trough, m.corner_radius, m.border_width, p.border);
+}
+
 fn draw_welcome_button(
     scene: &mut Scene,
     theme: &Theme,
@@ -6988,6 +7036,9 @@ pub struct FlopsynthChrome<'a> {
     /// under it — the shelves and the presets, which the hit test already
     /// names and the renderer only has to ask about.
     pub hover_at: (f32, f32),
+    /// Whether the Presets search box has the keyboard, so it can be drawn
+    /// with the lit outline and a caret the way a focused field is.
+    pub searching: bool,
 }
 
 /// What the Presets page's search box says.
@@ -7001,6 +7052,13 @@ pub fn search_caption(query: &str) -> String {
     } else {
         format!("{query}{}", crate::canvas::NAME_CARET)
     }
+}
+
+/// The search box while it has the keyboard: always the caret, even on an empty
+/// query, so a focused-but-empty box is not drawn as the dead hint the way an
+/// unfocused one is.
+pub fn focused_search_caption(query: &str) -> String {
+    format!("{query}{}", crate::canvas::NAME_CARET)
 }
 
 /// The search box with nothing typed in it.
@@ -8226,6 +8284,9 @@ fn draw_flop_presets(
     );
     if !page.search.is_empty() {
         let typing = !view.browse.query.is_empty();
+        // Lit whenever it has the keyboard, not only once something is typed —
+        // that is what says a click landed and this is where keys now go.
+        let lit = typing || chrome.searching;
         fill_rect_rounded(
             scene,
             page.search,
@@ -8237,16 +8298,23 @@ fn draw_flop_presets(
             page.search,
             m.corner_radius,
             1.0,
-            if typing { p.accent } else { p.border },
+            if lit { p.accent } else { p.border },
         );
-        if let Some(text) = labels.get(&search_caption(&view.browse.query)) {
+        // The hint when empty and unfocused; a caret when it has the keyboard,
+        // so a focused-but-empty box is not indistinguishable from a dead one.
+        let caption = if chrome.searching {
+            focused_search_caption(&view.browse.query)
+        } else {
+            search_caption(&view.browse.query)
+        };
+        if let Some(text) = labels.get(&caption) {
             draw_text_clipped(
                 scene,
                 text,
                 page.search,
                 page.search.x + 8.0,
                 page.search.y + (page.search.height - text.height) / 2.0,
-                if typing { p.text } else { p.text_muted },
+                if lit { p.text } else { p.text_muted },
             );
         }
     }

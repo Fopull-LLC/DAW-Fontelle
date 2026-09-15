@@ -5,7 +5,9 @@
 pub mod bank;
 mod bundle;
 pub mod crashlog;
+pub mod daw_folders;
 pub mod desktop;
+pub mod extensions;
 pub mod flopsynth;
 pub mod instrument;
 mod keymap;
