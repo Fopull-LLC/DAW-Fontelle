@@ -67,8 +67,8 @@ use crate::text::{Labels, TextContext, TextLayout};
 use crate::theme::Theme;
 use crate::transport::{
     Meter, TransportAction, TransportBarLayout, TransportHit, TransportHost, TransportView, action,
-    apply, cycle_beats_per_bar, format_readout, format_signature, format_tempo, hit, nudge_tempo,
-    sample_at, step_beats_per_bar, tempo_at, transport_bar_layout,
+    apply, cycle_beats_per_bar, format_readout, format_signature, format_tempo, hit, sample_at,
+    tempo_at, transport_bar_layout,
 };
 use crate::widget::{Sleep, WidgetId, WidgetTree, autosave_due, sleep_budget};
 
@@ -149,6 +149,10 @@ enum Drag {
     /// A track on the audio clip editor. Absolute, like the mixer's fader and
     /// for the same reason: the value goes where the press landed.
     AudioRow(crate::canvas::AudioField),
+    /// A **knob** on the audio clip editor. Relative, like every other knob:
+    /// it turns from where it was grabbed rather than jumping to the pointer,
+    /// so the start value and grab-y live in [`WindowApp::audio_knob`].
+    AudioKnob(crate::canvas::AudioField),
     /// One on an effect's own panel — a compressor's threshold, say. Its own
     /// variant because it writes to a different place, not because it behaves
     /// differently.
@@ -186,6 +190,11 @@ enum Drag {
     /// column. The slot it started in and the slot it is over live in
     /// `insert_drag`; this only says who a `CursorMoved` belongs to.
     InsertRow,
+    /// A slider on a settings row, by its index in the settings list.
+    /// **Absolute**, like the mixer's fader: the value goes where the press
+    /// landed and then follows the pointer — a settings number is a position,
+    /// not a read-out that turns from where it was grabbed.
+    SettingSlider(usize),
 }
 
 /// Where the insert that was in `slot` ends up after one is moved from `from`
@@ -392,6 +401,12 @@ enum MenuTarget {
     /// for some reason are instead shown as buttons you click to toggle
     /// through a list of options in order."*
     AudioRow(crate::canvas::AudioField),
+    /// A drop-down settings row, by its index in the settings list — the
+    /// velocity curve, the channel filter. The same answer as `AudioRow` to the
+    /// same complaint: the list drops down rather than stepping on a click. The
+    /// entries and which one is on are the host's — see `StudioHost`'s
+    /// `setting_controls`, which carries a `Choice`'s options.
+    SettingChoice(usize),
     /// The snap chip, on the roll's toolbar or the arrangement's — which grid
     /// things land on. `true` is the arrangement's; they are two views with
     /// two snaps, which is deliberate (a phrase is written on a finer grid
@@ -496,6 +511,9 @@ impl MenuTarget {
             | Self::TrackPresetCategory(_)
             | Self::TrackPresetNewCategory(_) => None,
             Self::Snap { .. } => None,
+            // The settings drop-down is a row of the browser panel, which is in
+            // the main window.
+            Self::SettingChoice(_) => None,
             Self::Channel(_)
             | Self::AddEffect(_)
             | Self::NewInstrument
@@ -713,6 +731,22 @@ fn system_cursor(wanted: Pointer) -> winit::window::CursorIcon {
     }
 }
 
+/// A transient banner that says what a press just did, and — when the action
+/// can be taken back — offers an Undo for a few seconds. See
+/// [`crate::canvas::toast_layout`].
+struct Toast {
+    text: String,
+    undoable: bool,
+    shown: std::time::Instant,
+}
+
+/// A modal that asks before an action a click cannot take back (uninstalling an
+/// extension). `index` is the settings row to press if the answer is yes.
+struct Confirm {
+    question: String,
+    index: usize,
+}
+
 /// The live window. Public so a caller can read [`WindowApp::frames_drawn`]
 /// after the loop returns.
 pub struct WindowApp {
@@ -812,6 +846,13 @@ pub struct WindowApp {
     /// The audio clip the editor window has open, if it has one — see
     /// [`OpenAudioClip`].
     audio_clip: Option<OpenAudioClip>,
+    /// While a clip-editor knob is turning: the y it was grabbed at and the
+    /// value it was on, for the relative drag — see [`Drag::AudioKnob`].
+    audio_knob: Option<(f32, f32)>,
+    /// The transient banner shown after a destructive-but-reversible action.
+    toast: Option<Toast>,
+    /// The modal shown before an action that cannot be undone by a click.
+    confirm: Option<Confirm>,
     /// Where its rows are, inside the window's body.
     audio_layout: crate::canvas::AudioEditorLayout,
     /// The Tools panel while it is open, laid out. The same shape as
@@ -1103,6 +1144,13 @@ pub struct WindowApp {
     /// studio's other lists, and a `LibraryEntry` for the reason
     /// [`StudioHost::settings`] gives.
     settings: Vec<LibraryEntry>,
+    /// What control each settings row is — parallel to `settings`, so a row is
+    /// drawn and pressed as the slider, switch or drop-down it is rather than
+    /// as a value clicked to step. Rebuilt with `settings` in `refresh_studio`.
+    settings_controls: Vec<crate::canvas::SettingControl>,
+    /// Which settings row the arrow keys are on, once one has been pressed —
+    /// the precision path beside the drag. `None` until a row is touched.
+    settings_focus: Option<usize>,
     /// How many soundfonts the whole collection holds — the browser panel's
     /// heading, which does not change as you browse into a folder.
     library_count: usize,
@@ -1413,6 +1461,9 @@ impl WindowApp {
             imports: Vec::new(),
             import_kind: fontelle_types::FolderKind::Midi,
             audio_clip: None,
+            audio_knob: None,
+            toast: None,
+            confirm: None,
             audio_layout: crate::canvas::AudioEditorLayout {
                 waveform: crate::layout::Rect::ZERO,
                 rows: Vec::new(),
@@ -1541,6 +1592,8 @@ impl WindowApp {
             song_marker: 0,
             browser_mode: BrowserMode::default(),
             settings: Vec::new(),
+            settings_controls: Vec::new(),
+            settings_focus: None,
             projects: Vec::new(),
             library_count: 0,
             query: String::new(),
@@ -2035,6 +2088,14 @@ impl WindowApp {
                     searching: self.searching,
                     focus_preset: self.preset_focus,
                     hover: self.hover_browser,
+                    settings_controls: if self.browser_mode == BrowserMode::Settings {
+                        &self.settings_controls
+                    } else {
+                        &[]
+                    },
+                    focus_setting: (self.browser_mode == BrowserMode::Settings)
+                        .then_some(self.settings_focus)
+                        .flatten(),
                 }),
                 timeline: (!self.layout.timeline.frame.is_empty()
                     && self.options.document.is_some())
@@ -2101,6 +2162,8 @@ impl WindowApp {
                 browser_title: &self.browser_title,
                 labels: &self.labels,
                 status: &self.status,
+                toast: self.toast.as_ref().map(|t| (t.text.as_str(), t.undoable)),
+                confirm: self.confirm.as_ref().map(|c| c.question.as_str()),
                 tooltip: tooltip.as_ref().map(|(text, rect)| (text.as_str(), *rect)),
                 // Only the studio's own menus: one opened on a knob belongs
                 // to a floating editor's window and is drawn there. See
@@ -2207,6 +2270,16 @@ impl WindowApp {
     /// last note is something moving even though the transport is not.
     fn tick(&mut self) {
         self.poll_welcome();
+        // A toast fades after its few seconds are up. The modal does not: it
+        // waits for an answer.
+        if self
+            .toast
+            .as_ref()
+            .is_some_and(|t| t.shown.elapsed().as_secs_f32() >= crate::canvas::TOAST_SECONDS)
+        {
+            self.toast = None;
+            self.tree.invalidate_rect(self.layout.window);
+        }
         let now = std::time::Instant::now();
         // Clamped: a window that was dragged, minimised, or simply not
         // scheduled for a second must not make the meters jump a second's
@@ -2421,6 +2494,7 @@ impl WindowApp {
             | Drag::FlopRing
             | Drag::InsertKnob
             | Drag::TuneKnob
+            | Drag::AudioKnob(_)
             | Drag::Lane
             | Drag::SidebarSplit
             | Drag::BrowserSplit => Some(Pointer::ResizeY),
@@ -2436,9 +2510,11 @@ impl WindowApp {
             // A fader and the tempo box are both vertical throws; a pan is a
             // horizontal one.
             Drag::Fader(_) | Drag::Tempo => Some(Pointer::ResizeY),
-            Drag::Pan(_) | Drag::AudioRow(_) | Drag::FlopWave(_) | Drag::FlopMatrix(_) => {
-                Some(Pointer::ResizeX)
-            }
+            Drag::Pan(_)
+            | Drag::AudioRow(_)
+            | Drag::FlopWave(_)
+            | Drag::FlopMatrix(_)
+            | Drag::SettingSlider(_) => Some(Pointer::ResizeX),
             Drag::FlopAssign => Some(Pointer::Grabbing),
             // A response is dragged in both axes at once, like a band handle.
             Drag::FlopResponse(_) => Some(Pointer::Grabbing),
@@ -3819,9 +3895,11 @@ impl WindowApp {
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
-                // The wheel is the coarse way at a knob, and the only way at
-                // one on a trackpad with no room to drag. Nothing else in an
-                // editor window scrolls: these panels are laid out to fit.
+                // The wheel only navigates — it never changes a value. Over an
+                // open menu it scrolls the menu; in the instrument window it
+                // scrolls the preset list. A knob or slider is set by dragging
+                // it, by an arrow key, or by typing into it, so that scrolling
+                // to look around a panel cannot nudge a control by accident.
                 let steps = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, lines) => lines,
                     winit::event::MouseScrollDelta::PixelDelta(position) => {
@@ -3840,13 +3918,11 @@ impl WindowApp {
                         self.redraw_editor(kind);
                         return;
                     }
-                    match kind {
-                        EditorKind::Effect => self.wheel_effect(x, y, steps),
-                        // *"the pitch changing should be a knob"* — a track
-                        // now, and the wheel over it is the fine way: one
-                        // semitone, one decibel, one rung of the fade ladder.
-                        EditorKind::AudioClip => self.wheel_audio_editor(x, y, steps),
-                        EditorKind::Instrument => self.wheel_flopsynth(x, y, steps),
+                    // Only the instrument window has a list to scroll (its
+                    // presets); the effect and clip panels are laid out to fit
+                    // and have nothing to scroll once a menu is closed.
+                    if kind == EditorKind::Instrument {
+                        self.scroll_flopsynth_presets(x, y, steps);
                     }
                 }
                 self.redraw_editor(kind);
@@ -4002,6 +4078,8 @@ impl WindowApp {
                     {
                         None | Some(AudioControl::None) => Pointer::Default,
                         Some(AudioControl::Slider) => Pointer::ResizeX,
+                        // A knob is dragged up and down.
+                        Some(AudioControl::Knob) => Pointer::ResizeY,
                         Some(AudioControl::Switch | AudioControl::Choice) => Pointer::Hand,
                     }
                 }
@@ -4140,6 +4218,18 @@ impl WindowApp {
                 self.drag = Drag::AudioRow(field);
                 self.drag_audio_row(field, x);
             }
+            AudioControl::Knob => {
+                // A knob is a **relative** drag: it does not jump to the
+                // pointer, it turns from where it was — so grab the value it
+                // is on and the y it was grabbed at, and move from there.
+                let from = self
+                    .audio_clip
+                    .as_ref()
+                    .and_then(|open| crate::canvas::audio_row_fraction(&open.data, field))
+                    .unwrap_or(0.0);
+                self.audio_knob = Some((y, from));
+                self.drag = Drag::AudioKnob(field);
+            }
             AudioControl::Switch => {
                 let Some(open) = &mut self.audio_clip else {
                     return;
@@ -4170,25 +4260,21 @@ impl WindowApp {
         self.write_audio_clip();
     }
 
-    /// The wheel over a row: one step of whatever that row is measured in.
-    fn wheel_audio_editor(&mut self, x: f32, y: f32, steps: f32) {
-        let Some(field) = crate::canvas::audio_editor_hit(&self.audio_layout, x, y) else {
+    /// A knob drag on the audio clip editor: relative, up for more, with Shift
+    /// for a fine turn — the same feel as every other knob in the program.
+    fn drag_audio_knob(&mut self, field: crate::canvas::AudioField, y: f32) {
+        let Some((from_y, from_value)) = self.audio_knob else {
             return;
         };
-        let direction = if steps > 0.0 { 1 } else { -1 };
+        let t = crate::canvas::knob_value(from_value, y - from_y, self.modifiers.shift_key());
         let Some(open) = &mut self.audio_clip else {
             return;
         };
-        if field == crate::canvas::AudioField::Route {
-            let tracks: Vec<Option<fontelle_types::MixerTrackId>> =
-                self.clip_routes.iter().map(|(id, _)| *id).collect();
-            crate::canvas::nudge_route(&mut open.data, direction, &tracks);
-        } else {
-            crate::canvas::nudge_audio_row(&mut open.data, field, direction, open.sample_rate);
-        }
+        crate::canvas::set_audio_row_fraction(&mut open.data, field, t);
         self.write_audio_clip();
     }
 
+    /// The wheel over a row: one step of whatever that row is measured in.
     /// Drops `field`'s list under its row.
     ///
     /// Anchored to the row rather than to the pointer, because that is what a
@@ -4601,6 +4687,7 @@ impl WindowApp {
         self.presets = doc.library_presets();
         self.projects = doc.projects();
         self.settings = doc.settings();
+        self.settings_controls = doc.setting_controls();
         self.library_count = doc.library_count();
         self.selected_channel = doc.selected_channel();
         self.selected_file = doc.selected_file();
@@ -5221,6 +5308,30 @@ impl WindowApp {
             let status = self.status.clone();
             want(&mut self.labels, &mut self.text, &status);
         }
+        // The transient banner and the confirm modal, under exactly the strings
+        // they are drawn with, so a banner invented after this pass would not
+        // have been measured — see the module note on `shape_labels`.
+        if let Some(toast) = &self.toast {
+            let text = toast.text.clone();
+            want(&mut self.labels, &mut self.text, &text);
+            if toast.undoable {
+                want(&mut self.labels, &mut self.text, crate::render::UNDO);
+            }
+        }
+        if let Some(confirm) = &self.confirm {
+            let question = confirm.question.clone();
+            want(&mut self.labels, &mut self.text, &question);
+            want(
+                &mut self.labels,
+                &mut self.text,
+                crate::render::CONFIRM_CANCEL,
+            );
+            want(
+                &mut self.labels,
+                &mut self.text,
+                crate::render::CONFIRM_REMOVE,
+            );
+        }
         // The hover tip. Shaped while it is *pending* rather than when it
         // falls due, so the frame that first shows it already has its width —
         // otherwise the box would be laid out around a string nothing had
@@ -5442,6 +5553,24 @@ impl WindowApp {
     fn press(&mut self, button: winit::event::MouseButton, x: f32, y: f32) {
         self.drag = Drag::None;
         self.end_edge_scroll();
+        // A confirm modal is above everything: the press is answered here and
+        // goes no further — a hit on a button acts, a press anywhere else is a
+        // cancel.
+        if self.confirm.is_some() {
+            self.press_confirm(x, y);
+            return;
+        }
+        // A toast's Undo takes the press before whatever is under it does.
+        if button == winit::event::MouseButton::Left
+            && self.toast.as_ref().is_some_and(|t| t.undoable)
+        {
+            let layout =
+                crate::canvas::toast_layout(self.layout.window, &self.options.theme.metrics, true);
+            if layout.undo.is_some_and(|undo| undo.contains(x, y)) {
+                self.undo_toast();
+                return;
+            }
+        }
         // The start menu is the whole window while it is up — except for
         // the name prompt it opens, which is above it like any menu.
         if self.welcome.is_some() {
@@ -5457,6 +5586,12 @@ impl WindowApp {
         // notes and clips. `press_browser` puts the focus back on straight
         // after, so clicking a preset row keeps it.
         if !self.layout.browser.frame.contains(x, y) && self.preset_focus.take().is_some() {
+            self.tree.invalidate(BROWSER);
+        }
+        // The same for a focused settings row: a click away hands the arrows
+        // back, and `press_settings` puts the focus on again when the click is
+        // a settings value row.
+        if !self.layout.browser.frame.contains(x, y) && self.settings_focus.take().is_some() {
             self.tree.invalidate(BROWSER);
         }
 
@@ -5794,6 +5929,7 @@ impl WindowApp {
                 self.redraw_editors();
             }
             Drag::AudioRow(field) => self.drag_audio_row(field, x),
+            Drag::AudioKnob(field) => self.drag_audio_knob(field, y),
             Drag::InsertKnob => self.drag_insert_knob(y),
             Drag::TuneKnob => self.drag_tune_knob(y),
             Drag::Fader(strip) => self.drag_fader(strip, y),
@@ -5806,6 +5942,7 @@ impl WindowApp {
             Drag::EqField(field) => self.drag_eq_field(field, y),
             Drag::Pan(strip) => self.drag_pan(strip, x),
             Drag::Tempo => self.drag_tempo(y),
+            Drag::SettingSlider(index) => self.drag_setting(index, x),
         }
     }
 
@@ -6516,11 +6653,14 @@ impl WindowApp {
         // has stopped — the same handshake a note drag has. Without it the
         // next unrelated change to the clip would merge into the drag and
         // one Ctrl+Z would take both back.
-        if matches!(self.drag, Drag::EqHandle(_) | Drag::AudioRow(_))
-            && let Some(doc) = &mut self.options.document
+        if matches!(
+            self.drag,
+            Drag::EqHandle(_) | Drag::AudioRow(_) | Drag::AudioKnob(_)
+        ) && let Some(doc) = &mut self.options.document
         {
             doc.end_gesture();
         }
+        self.audio_knob = None;
         self.drag = Drag::None;
         self.end_edge_scroll();
         self.dismissed = None;
@@ -6851,64 +6991,6 @@ impl WindowApp {
         self.refresh_title();
         self.redraw_editor(EditorKind::Effect);
         self.tree.invalidate(PANEL);
-    }
-
-    /// The wheel over the EQ: the Q of the band under the pointer, or the
-    /// control under it.
-    ///
-    /// Over a handle it is the Q, which is the one thing a handle cannot say
-    /// by being dragged — it has two axes and three numbers.
-    fn wheel_effect(&mut self, x: f32, y: f32, steps: f32) {
-        use crate::canvas::{EqField, EqHit};
-        // The corrector's console first: it is an effect window like the other
-        // two, and its knobs step under the wheel like every other knob in
-        // this program.
-        if self.tune.is_some() {
-            self.wheel_tune(x, y, steps);
-            return;
-        }
-        let Some(config) = self.eq else { return };
-        match crate::canvas::eq_hit(&self.eq_layout, x, y) {
-            EqHit::Handle(band) | EqHit::Band(band) => {
-                let Some(mut value) = config.bands.get(band).copied() else {
-                    return;
-                };
-                value.q = crate::canvas::eq_nudge_q(value.q, steps);
-                self.select_eq_band(band);
-                self.write_eq_band(band, value);
-            }
-            EqHit::Field(field) => {
-                let band = self.eq_band;
-                let Some(mut value) = config.bands.get(band).copied() else {
-                    return;
-                };
-                match field {
-                    EqField::Freq => {
-                        value.freq_hz = crate::canvas::eq_nudge_freq(value.freq_hz, steps)
-                    }
-                    EqField::Gain => {
-                        value.gain_db = crate::canvas::eq_nudge_gain(value.gain_db, steps)
-                    }
-                    EqField::Q => value.q = crate::canvas::eq_nudge_q(value.q, steps),
-                    EqField::Type => {
-                        value.band_type =
-                            crate::canvas::next_band_type(value.band_type, steps > 0.0);
-                    }
-                    EqField::Channel => {
-                        value.channel =
-                            crate::canvas::next_band_channel(value.channel, steps > 0.0);
-                    }
-                    EqField::Mix => {
-                        let mix = crate::canvas::eq_nudge_mix(config.mix, steps * 2.0);
-                        self.set_open_insert_mix(mix);
-                        return;
-                    }
-                    EqField::Solo | EqField::Delete => return,
-                }
-                self.write_eq_band(band, value);
-            }
-            EqHit::Curve | EqHit::Nothing => {}
-        }
     }
 
     /// Opens one insert in the effect tab.
@@ -7545,7 +7627,11 @@ impl WindowApp {
     /// The wheel over Flopsynth's window: the Presets list scrolls, and a
     /// knob nudges by a fiftieth of its travel — a three-hundredth with Shift
     /// (§8.7).
-    fn wheel_flopsynth(&mut self, x: f32, y: f32, steps: f32) {
+    /// Scrolls the instrument window's preset list. The wheel does not touch a
+    /// knob any more — a control is dragged, arrow-nudged or typed into — so
+    /// this is navigation only, and does nothing when the pointer is not over
+    /// the list.
+    fn scroll_flopsynth_presets(&mut self, x: f32, y: f32, steps: f32) {
         if self.flopsynth.is_none() {
             return;
         }
@@ -7555,23 +7641,6 @@ impl WindowApp {
             browse.scroll =
                 (browse.scroll - steps * crate::canvas::PRESET_ROW * MENU_WHEEL_ROWS).max(0.0);
             self.set_flop_browse(browse);
-            return;
-        }
-        if let Some(crate::canvas::FlopsynthHit::Control { card, param }) =
-            crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y)
-            && let Some(control) = self.flop_param((card, param)).cloned()
-            && control.kind == ParamKind::Knob
-        {
-            let step = if self.modifiers.shift_key() {
-                1.0 / 300.0
-            } else {
-                0.02
-            };
-            let value = (control.value + steps * step).clamp(0.0, 1.0);
-            self.set_param(&control.address, value);
-            if let Some(doc) = &mut self.options.document {
-                doc.end_gesture();
-            }
         }
     }
 
@@ -8045,41 +8114,6 @@ impl WindowApp {
             _ => {}
         }
         self.redraw_editor(EditorKind::Effect);
-    }
-
-    /// The wheel over the console: one step of whatever is under it.
-    ///
-    /// A **chooser** steps to the next position and a knob nudges by a
-    /// hundredth of its travel, which is the same rule
-    /// [`wheel_flopsynth`](Self::wheel_flopsynth) gives.
-    fn wheel_tune(&mut self, x: f32, y: f32, steps: f32) {
-        let Some(view) = self.tune.clone() else {
-            return;
-        };
-        let Some(crate::canvas::TuneHit::Control { card, param }) =
-            crate::canvas::tune_hit(&self.tune_layout, &view, x, y)
-        else {
-            return;
-        };
-        let Some(control) = view
-            .cards
-            .get(card)
-            .and_then(|card| card.group.params.get(param))
-            .cloned()
-        else {
-            return;
-        };
-        let value = match &control.kind {
-            ParamKind::Knob => (control.value + steps * 0.01).clamp(0.0, 1.0),
-            kind => next_value(kind, control.value),
-        };
-        if (value - control.value).abs() < 1e-6 {
-            return;
-        }
-        self.write_insert_param(control.address.as_str(), value);
-        if let Some(doc) = &mut self.options.document {
-            doc.end_gesture();
-        }
     }
 
     fn drag_tune_knob(&mut self, y: f32) {
@@ -9483,6 +9517,17 @@ impl WindowApp {
 
     /// Walks the preset list by `delta` rows, keeping the focused row on
     /// screen.
+    /// Nudges the focused settings row one unit — the arrow-key precision path.
+    ///
+    /// The same `nudge_setting` a discrete row uses, so a slider steps by one,
+    /// a choice moves to the next (wrapping), and a switch flips. It saves and
+    /// publishes like any other change; the toast a button might raise is shown
+    /// too, so an undoable action reached by keyboard is as reversible as by
+    /// mouse.
+    fn nudge_focused_setting(&mut self, index: usize, delta: i32) {
+        self.apply_setting_press(index, delta < 0);
+    }
+
     fn step_preset_focus(&mut self, delta: i32) {
         let next = crate::canvas::browser_focus_step(&self.presets, self.preset_focus, delta);
         if next == self.preset_focus {
@@ -9522,6 +9567,169 @@ impl WindowApp {
         self.refresh_title();
         self.tree.invalidate(BROWSER);
         self.tree.invalidate(RACK);
+    }
+
+    /// Answers a press while the confirm modal is up: the "yes" button does the
+    /// action, anything else cancels. Either way the modal closes.
+    fn press_confirm(&mut self, x: f32, y: f32) {
+        let layout = crate::canvas::confirm_layout(self.layout.window, &self.options.theme.metrics);
+        let Some(confirm) = self.confirm.take() else {
+            return;
+        };
+        self.tree.invalidate_rect(self.layout.window);
+        if layout.confirm.contains(x, y) {
+            self.apply_setting_press(confirm.index, false);
+        }
+        self.request_redraw_if_dirty();
+    }
+
+    /// Presses a settings row. An irreversible one (uninstalling an extension)
+    /// asks first, through a confirm modal; everything else acts at once and
+    /// leaves a toast — with an Undo when it can be taken back.
+    /// A press on a settings row, routed by what kind of control it is: a
+    /// slider drags, a choice drops down, a switch flips, a button acts. What
+    /// replaces the old click-that-steps-a-value: navigating never edits, and
+    /// an edit is a deliberate drag, pick or flip.
+    fn press_settings(&mut self, index: usize, x: f32, y: f32, back: bool) {
+        use crate::canvas::SettingControl;
+        let control = self
+            .settings_controls
+            .get(index)
+            .cloned()
+            .unwrap_or(SettingControl::Button);
+        // Pressing a **value** row gives the settings list the keyboard, so the
+        // arrows nudge it — the precision path beside the drag. A button and a
+        // heading take no focus: an arrow key must never re-fire a folder
+        // picker or a plugin removal.
+        self.settings_focus = matches!(
+            control,
+            SettingControl::Slider { .. }
+                | SettingControl::Choice { .. }
+                | SettingControl::Switch { .. }
+        )
+        .then_some(index);
+        match control {
+            // A label is not a control; a press on one does nothing.
+            SettingControl::Heading => {}
+            SettingControl::Slider { .. } => {
+                let row = self.setting_row_rect(index);
+                let area = crate::canvas::setting_control_rect(row, &self.options.theme.metrics);
+                // On the groove, the number goes where the press landed and
+                // then follows (absolute, like a fader). On the name, the press
+                // only takes the keyboard so the arrows can nudge it.
+                if area.contains(x, y) {
+                    let fraction = crate::canvas::setting_slider_at(area, x);
+                    if let Some(doc) = &mut self.options.document {
+                        doc.set_setting_fraction(index, fraction);
+                    }
+                    self.drag = Drag::SettingSlider(index);
+                    self.refresh_studio();
+                    self.tree.invalidate(BROWSER);
+                    self.request_redraw_if_dirty();
+                } else {
+                    self.tree.invalidate(BROWSER);
+                    self.request_redraw_if_dirty();
+                }
+            }
+            // A flip, not a step: `nudge_setting` toggles the switch here.
+            SettingControl::Switch { .. } => self.apply_setting_press(index, back),
+            SettingControl::Choice { .. } => {
+                let row = self.setting_row_rect(index);
+                let bounds = self.layout.window;
+                self.open_menu(
+                    MenuTarget::SettingChoice(index),
+                    row.x,
+                    row.bottom(),
+                    bounds,
+                );
+            }
+            // A folder picker, a rescan, an install/remove — with the confirm
+            // and the undo toast Phase C wired.
+            SettingControl::Button => self.press_setting_row(index, back),
+        }
+    }
+
+    /// Where settings row `index` is, from the layout the panel last drew.
+    fn setting_row_rect(&self, index: usize) -> crate::layout::Rect {
+        self.browser
+            .file_rows
+            .iter()
+            .find(|(i, _)| *i == index)
+            .map(|(_, rect)| *rect)
+            .unwrap_or(crate::layout::Rect::ZERO)
+    }
+
+    /// Sets settings slider `index` to where the pointer is along its groove.
+    fn drag_setting(&mut self, index: usize, x: f32) {
+        let row = self.setting_row_rect(index);
+        let area = crate::canvas::setting_control_rect(row, &self.options.theme.metrics);
+        let fraction = crate::canvas::setting_slider_at(area, x);
+        if let Some(doc) = &mut self.options.document {
+            doc.set_setting_fraction(index, fraction);
+        }
+        self.refresh_studio();
+        self.tree.invalidate(BROWSER);
+        self.request_redraw_if_dirty();
+    }
+
+    fn press_setting_row(&mut self, index: usize, back: bool) {
+        let confirm = self
+            .options
+            .document
+            .as_ref()
+            .and_then(|doc| doc.settings_confirm(index));
+        if let Some(question) = confirm {
+            self.confirm = Some(Confirm { question, index });
+            self.tree.invalidate_rect(self.layout.window);
+            self.request_redraw_if_dirty();
+            return;
+        }
+        self.apply_setting_press(index, back);
+    }
+
+    /// Does the settings press and shows whatever note it left.
+    fn apply_setting_press(&mut self, index: usize, back: bool) {
+        let toast = {
+            let Some(doc) = self.options.document.as_mut() else {
+                return;
+            };
+            doc.nudge_setting(index, if back { -1 } else { 1 });
+            doc.take_settings_toast()
+        };
+        if let Some((text, undoable)) = toast {
+            self.show_toast(text, undoable);
+        }
+        self.refresh_studio();
+        self.tree.invalidate(BROWSER);
+        self.request_redraw_if_dirty();
+    }
+
+    /// Raises a transient banner; the tick fades it after
+    /// [`crate::canvas::TOAST_SECONDS`].
+    fn show_toast(&mut self, text: String, undoable: bool) {
+        self.toast = Some(Toast {
+            text,
+            undoable,
+            shown: std::time::Instant::now(),
+        });
+        self.tree.invalidate_rect(self.layout.window);
+        self.request_redraw_if_dirty();
+    }
+
+    /// Runs the undo a toast offered, and says what it did.
+    fn undo_toast(&mut self) {
+        let message = self
+            .options
+            .document
+            .as_mut()
+            .and_then(|doc| doc.undo_settings());
+        self.toast = None;
+        self.refresh_studio();
+        if let Some(text) = message {
+            self.show_toast(text, false);
+        }
+        self.tree.invalidate_rect(self.layout.window);
+        self.request_redraw_if_dirty();
     }
 
     fn press_browser(&mut self, x: f32, y: f32) {
@@ -9593,6 +9801,9 @@ impl WindowApp {
                 // opens to show its presets, a folder opens to show what is
                 // in it, and a project opens as a project.
                 let modifiers = self.modifiers;
+                // A settings press is handled after the match, so it can open a
+                // confirm or a toast without fighting the document borrow here.
+                let mut settings_pressed = None;
                 let result = match (&mut self.options.document, self.browser_mode) {
                     // A device row opens to show its presets, exactly as a
                     // soundfont row does — the same list in the same place.
@@ -9601,20 +9812,17 @@ impl WindowApp {
                     // A folder row walks in, a file row imports. Which of
                     // those it was is the host's to know — it holds the list.
                     (Some(doc), BrowserMode::Import) => doc.open_import(index),
-                    (Some(doc), BrowserMode::Settings) => {
-                        // A setting steps forward when you click it and back
-                        // when you Ctrl+click, which is the same pair of
-                        // gestures a preset row already uses for "this one"
-                        // against "a new one". No text field is involved:
-                        // there is not one in this window yet, and a value
-                        // you can reach with one click is quicker anyway.
-                        doc.nudge_setting(index, if modifiers.control_key() { -1 } else { 1 });
+                    (Some(_), BrowserMode::Settings) => {
+                        settings_pressed = Some(index);
                         Ok(())
                     }
                     (None, _) => Ok(()),
                 };
                 if let Err(e) = result {
                     self.status = e;
+                }
+                if let Some(index) = settings_pressed {
+                    self.press_settings(index, x, y, modifiers.control_key());
                 }
                 if moving {
                     self.file_scroll = 0;
@@ -9728,6 +9936,9 @@ impl WindowApp {
                     // projects.
                     self.file_scroll = 0;
                     self.preset_scroll = 0;
+                    // A different tab is a different list; the arrow-key focus
+                    // in the old one means nothing in the new.
+                    self.settings_focus = None;
                     // The status line says something different in each mode
                     // and the studio's revision has not moved, so ask for the
                     // lists again rather than waiting for something else to
@@ -10242,6 +10453,23 @@ impl WindowApp {
                     })
                     .collect()
             }
+            // The same drop-down for a settings choice: its options, the one it
+            // is on greyed. The options ride along on the `Choice` control the
+            // host already built, so nothing new crosses the boundary.
+            MenuTarget::SettingChoice(index) => match self.settings_controls.get(*index) {
+                Some(crate::canvas::SettingControl::Choice { options, chosen }) => options
+                    .iter()
+                    .enumerate()
+                    .map(|(i, label)| {
+                        if i == *chosen {
+                            MenuEntry::disabled(label)
+                        } else {
+                            MenuEntry::new(label)
+                        }
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            },
         }
     }
 
@@ -11178,6 +11406,16 @@ impl WindowApp {
                     crate::canvas::choose_audio_row(&mut open.data, field, index);
                 }
                 self.write_audio_clip();
+            }
+            // A settings drop-down: the entry chosen, in one press.
+            (MenuTarget::SettingChoice(setting), index) => {
+                let setting = *setting;
+                if let Some(doc) = &mut self.options.document {
+                    doc.choose_setting(setting, index);
+                }
+                self.settings_focus = Some(setting);
+                self.refresh_studio();
+                self.tree.invalidate(BROWSER);
             }
             _ => {}
         }
@@ -12350,22 +12588,14 @@ impl WindowApp {
             return;
         }
 
-        // The transport's document boxes take the wheel, which is how you set
-        // a tempo you already know the number of rather than hunting for it
-        // with a drag.
-        match hit(&self.bar, &self.view, x, y) {
-            Some(TransportHit::Tempo) => {
-                self.set_tempo(nudge_tempo(self.tempo, dy, self.modifiers.shift_key()));
-                if let Some(doc) = &mut self.options.document {
-                    doc.end_gesture();
-                }
-                return;
-            }
-            Some(TransportHit::Signature) => {
-                self.set_beats_per_bar(step_beats_per_bar(self.beats_per_bar(), dy.round() as i32));
-                return;
-            }
-            _ => {}
+        // The wheel does not set the tempo or the time signature: it changed a
+        // value while you were only trying to look around, which is the whole
+        // of what this pass is undoing. Over either box the wheel is consumed
+        // and does nothing — drag the box, or double-click it to type a number.
+        if let Some(TransportHit::Tempo | TransportHit::Signature) =
+            hit(&self.bar, &self.view, x, y)
+        {
+            return;
         }
 
         if self.tab == EditorTab::Mixer && self.layout.panel.body.contains(x, y) {
@@ -12392,22 +12622,12 @@ impl WindowApp {
             return;
         }
         if self.layout.browser.frame.contains(x, y) {
-            // Over a setting, the wheel **changes it** rather than scrolling
-            // past it: the list is seven rows long, so there is nothing to
-            // scroll, and turning a wheel over a value is how every other
-            // number in this window is set.
-            if self.browser_mode == BrowserMode::Settings {
-                if let Some(index) = crate::canvas::row_under(&self.browser, x, y) {
-                    let step = dy.round() as i32;
-                    if step != 0
-                        && let Some(doc) = &mut self.options.document
-                    {
-                        doc.nudge_setting(index, step);
-                        self.tree.invalidate(BROWSER);
-                    }
-                }
-                return;
-            }
+            // The wheel **scrolls** the panel — it never changes a value. A
+            // value is set by dragging its control, by an arrow key, or by
+            // typing into it; scrolling to look around a list of settings must
+            // not nudge whatever row the pointer happened to be over. Settings
+            // scrolls the same `file_scroll` its list is laid out against, the
+            // way Sounds and Projects do.
             let over_presets = self.browser.presets.contains(x, y);
             if over_presets {
                 self.preset_scroll =
@@ -12596,6 +12816,32 @@ impl WindowApp {
             }
             self.tree.invalidate(BROWSER);
             return;
+        }
+
+        // **A focused settings row holds the arrows.** Pressing a row focuses
+        // it (see `press_settings`), and the arrows are then the precision path
+        // beside the drag — one unit a press, the same step a nudge takes.
+        // Left/Down go one way and Right/Up the other, so both the vertical
+        // pairs and the horizontal ones move a slider the way it points.
+        if self.browser_mode == BrowserMode::Settings
+            && let Some(index) = self.settings_focus
+        {
+            match &event.logical_key {
+                Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowUp) => {
+                    self.nudge_focused_setting(index, 1);
+                    return;
+                }
+                Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowDown) => {
+                    self.nudge_focused_setting(index, -1);
+                    return;
+                }
+                Key::Named(NamedKey::Escape) => {
+                    self.settings_focus = None;
+                    self.tree.invalidate(BROWSER);
+                    return;
+                }
+                _ => {}
+            }
         }
 
         // **The soundfont list holds the arrows while one of its rows is

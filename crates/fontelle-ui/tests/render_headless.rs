@@ -180,6 +180,8 @@ fn shoot_sized(
             browser_title: "Soundfonts",
             labels: &Labels::new(),
             status: "",
+            toast: None,
+            confirm: None,
             tooltip: None,
             menu: None,
             carry: None,
@@ -866,6 +868,8 @@ fn shoot_roll_everything(
             browser_title: "Soundfonts",
             labels: &labels,
             status: "",
+            toast: None,
+            confirm: None,
             tooltip: None,
             menu: None,
             carry: None,
@@ -1255,6 +1259,8 @@ fn shoot_timeline_recording(
             browser_title: "Soundfonts",
             labels: &labels,
             status: "",
+            toast: None,
+            confirm: None,
             tooltip: None,
             menu: None,
             carry: None,
@@ -1949,6 +1955,8 @@ fn shoot_mixer_renaming(
             browser_title: "Soundfonts",
             labels: &labels,
             status: "",
+            toast: None,
+            confirm: None,
             tooltip: None,
             menu: None,
             carry: None,
@@ -2340,6 +2348,8 @@ fn shoot_rack(
             browser_title: "Soundfonts",
             labels: &labels,
             status: "",
+            toast: None,
+            confirm: None,
             tooltip: None,
             menu: None,
             carry: None,
@@ -4147,6 +4157,8 @@ fn shoot_carry(
             browser_title: "Soundfonts",
             labels: &labels,
             status: "",
+            toast: None,
+            confirm: None,
             tooltip: None,
             menu: None,
             carry: target.zip(pointer).map(|(target, at)| CarryChrome {
@@ -4395,6 +4407,8 @@ fn shoot_welcome_status(
             browser_title: "Soundfonts",
             labels: &labels,
             status: "",
+            toast: None,
+            confirm: None,
             tooltip: None,
             menu: None,
             carry: None,
@@ -4522,5 +4536,198 @@ fn the_start_menu_shows_a_progress_bar_while_an_update_downloads() {
     assert!(
         !near(shot.at(past, y), shot.theme.palette.accent),
         "the bar is full past the fraction done"
+    );
+}
+
+/// The settings tab, drawn as controls rather than click-to-step values: a
+/// slider's groove, a choice's caret, a switch's pill. A look at Phase B
+/// through the real pipeline — `FONTELLE_UI_DUMP=<dir>` writes it out.
+#[test]
+fn shoot_settings_controls() {
+    use fontelle_ui::canvas::{BrowserMode, SettingControl, browser_layout_for};
+    use fontelle_ui::document::LibraryEntry;
+    use fontelle_ui::render::BrowserChrome;
+
+    let Some(shared) = headless() else {
+        return;
+    };
+    let theme = Theme::dark_default();
+    let mut text = TextContext::new();
+    let title = text.layout("Fontelle", &theme.font, None);
+
+    // One of each kind of control, so the dump shows a groove, a caret, a pill
+    // and a plain button side by side.
+    let rows: Vec<(LibraryEntry, SettingControl)> = vec![
+        (
+            LibraryEntry::file("MIDI input", ""),
+            SettingControl::Heading,
+        ),
+        (
+            LibraryEntry::file("Velocity curve", "Linear"),
+            SettingControl::Choice {
+                options: ["Linear", "Soft", "Hard", "Fixed"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                chosen: 0,
+            },
+        ),
+        (
+            LibraryEntry::file("Fixed velocity", "100"),
+            SettingControl::Slider {
+                fraction: 100.0 / 127.0,
+            },
+        ),
+        (
+            LibraryEntry::file("Velocity min", "0"),
+            SettingControl::Slider { fraction: 0.0 },
+        ),
+        (
+            LibraryEntry::file("Velocity max", "127"),
+            SettingControl::Slider { fraction: 1.0 },
+        ),
+        (
+            LibraryEntry::file("Keyboard transpose", "+3 st"),
+            SettingControl::Slider {
+                fraction: (3.0 + 24.0) / 48.0,
+            },
+        ),
+        (
+            LibraryEntry::file("Channel", "All"),
+            SettingControl::Choice {
+                options: std::iter::once("All".to_string())
+                    .chain((1..=16).map(|n| n.to_string()))
+                    .collect(),
+                chosen: 0,
+            },
+        ),
+        (LibraryEntry::file("Updates", ""), SettingControl::Heading),
+        (
+            LibraryEntry::file("Check at launch", "On"),
+            SettingControl::Switch { on: true },
+        ),
+        (
+            LibraryEntry::file("Add plugin folder", "Not set \u{2014} click"),
+            SettingControl::Button,
+        ),
+    ];
+    let entries: Vec<LibraryEntry> = rows.iter().map(|(e, _)| e.clone()).collect();
+    let controls: Vec<SettingControl> = rows.iter().map(|(_, c)| c.clone()).collect();
+
+    // Taller than the file's usual frame so the whole settings list has room —
+    // a 360-pixel window leaves the sidebar list only a couple of rows.
+    const SETTINGS_H: u32 = 760;
+    let layout = window_layout(
+        W as f32,
+        SETTINGS_H as f32,
+        &theme.metrics,
+        DEFAULT_TIMELINE_HEIGHT,
+    );
+    let bl = browser_layout_for(
+        layout.browser.body,
+        &theme.metrics,
+        BrowserMode::Settings,
+        entries.len(),
+        0,
+        0,
+        0,
+    );
+
+    let mut labels = Labels::new();
+    for entry in &entries {
+        labels.ensure(&entry.name, &theme.font, &mut text);
+        if !entry.detail.is_empty() {
+            labels.ensure(&entry.detail, &theme.font, &mut text);
+        }
+    }
+    for mode in BrowserMode::ALL {
+        labels.ensure(mode.label(), &theme.font, &mut text);
+    }
+    labels.ensure(
+        fontelle_ui::render::OPEN_CONFIG_FOLDER,
+        &theme.font,
+        &mut text,
+    );
+
+    let mut scene = vello::Scene::new();
+    draw_window(
+        &mut scene,
+        &theme,
+        &layout,
+        &Chrome {
+            field: None,
+            panel_title: &title,
+            transport: TransportChrome {
+                layout: transport_bar_layout(layout.transport, &theme.metrics),
+                view: TransportView::unavailable(),
+                meters: [Meter::new(); 2],
+                readout: &text.layout("1.1.0", &theme.font, None),
+                tempo: &text.layout("120.00", &theme.font, None),
+                signature: &text.layout("4/4", &theme.font, None),
+                mode: &text.layout("Song", &theme.font, None),
+                hover: None,
+                marker_sample: 0,
+                clip_mode: false,
+            },
+            roll: None,
+            rack: None,
+            prefabs: None,
+            browser: Some(BrowserChrome {
+                panel: layout.browser,
+                layout: bl,
+                mode: BrowserMode::Settings,
+                import_kind: fontelle_types::FolderKind::Midi,
+                query: "",
+                files: &entries,
+                presets: &[],
+                selected_file: None,
+                selected_preset: None,
+                searching: false,
+                focus_preset: None,
+                hover: None,
+                settings_controls: &controls,
+                focus_setting: Some(5),
+            }),
+            timeline: None,
+            mixer: None,
+            tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
+            tab: fontelle_ui::layout::EditorTab::Roll,
+            hover_tab: None,
+            browser_title: "Settings",
+            labels: &labels,
+            status: "",
+            toast: None,
+            confirm: None,
+            tooltip: None,
+            menu: None,
+            carry: None,
+            welcome: None,
+        },
+    );
+    let pixels = shared
+        .lock()
+        .expect("the shared renderer")
+        .render(&scene, W, SETTINGS_H, theme.palette.window)
+        .expect("the settings scene must render");
+    dump_sized(&pixels, "settings-controls", W, SETTINGS_H);
+
+    // The controls actually drew: a slider fill, a switch and the focus outline
+    // are all painted in the accent, so the panel is not the old plain list of
+    // values. A count rather than one pixel, so a stray accent edge is not
+    // enough to pass.
+    let [ar, ag, ab, _] = theme.palette.accent.0;
+    let accent_pixels = pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|px| {
+            (px[0] as i32 - ar as i32).abs() <= 6
+                && (px[1] as i32 - ag as i32).abs() <= 6
+                && (px[2] as i32 - ab as i32).abs() <= 6
+        })
+        .count();
+    assert!(
+        accent_pixels > 200,
+        "the settings controls did not paint (only {accent_pixels} accent pixels)"
     );
 }

@@ -8,6 +8,7 @@ mod flopsynth;
 mod instrument;
 mod menu;
 mod mixer;
+mod overlays;
 mod piano_roll;
 mod prefabs;
 mod preset_bar;
@@ -20,20 +21,21 @@ mod welcome;
 
 pub use audio_clip::{
     AUDIO_ROWS, AudioControl, AudioEditorLayout, AudioField, MASTER_ROUTE, MAX_CLIP_PITCH,
-    MIN_CLIP_PITCH, audio_editor_hit, audio_editor_layout, audio_row_choices, audio_row_chosen,
-    audio_row_control, audio_row_control_rect, audio_row_fraction, audio_row_is_on,
-    audio_row_label, audio_row_neutral, audio_row_tip, audio_row_value, audio_row_value_at,
-    audio_slider_at, audio_slider_x_of, choose_audio_route, choose_audio_row, nudge_audio_row,
-    nudge_route, set_audio_row_fraction, toggle_audio_row,
+    MIN_CLIP_PITCH, audio_editor_hit, audio_editor_layout, audio_knob_rect, audio_row_choices,
+    audio_row_chosen, audio_row_control, audio_row_control_rect, audio_row_fraction,
+    audio_row_is_on, audio_row_label, audio_row_neutral, audio_row_tip, audio_row_value,
+    audio_row_value_at, audio_slider_at, audio_slider_x_of, choose_audio_route, choose_audio_row,
+    nudge_audio_row, nudge_route, set_audio_row_fraction, toggle_audio_row,
 };
 pub use automation::{
     AutomationBlock, CURVE_SHAPES, automation_block, automation_polyline, block_tick_at,
     block_value_at, block_x_of_tick, block_y_of_value, curve_label, next_curve,
 };
 pub use browser::{
-    BrowserHit, BrowserLayout, BrowserMode, browser_file_share_at, browser_focus_step, browser_hit,
-    browser_layout, browser_layout_for, browser_layout_split, browser_row_carries, row_under,
-    scrolled,
+    BrowserHit, BrowserLayout, BrowserMode, SettingControl, browser_file_share_at,
+    browser_focus_step, browser_hit, browser_layout, browser_layout_for, browser_layout_split,
+    browser_row_carries, row_under, scrolled, setting_control_rect, setting_slider_at,
+    setting_slider_groove, setting_slider_x_of,
 };
 pub use carry::{
     CARRY_PAD, Carried, CarryRack, CarryScene, CarryTarget, CarryTimeline, carry_chip, carry_note,
@@ -72,6 +74,7 @@ pub use menu::{
     context_menu_layout, context_menu_star_hit, input_menu_choice, input_menu_entries,
     instrument_menu_entries, menu_matches, name_prompt_entries,
 };
+pub use overlays::{ConfirmLayout, TOAST_SECONDS, ToastLayout, confirm_layout, toast_layout};
 pub use preset_bar::{
     NO_PRESET, PRESET_MENU_HEADING, PresetBarHit, PresetBarLayout, PresetBarView, PresetChoice,
     PresetDevice, PresetMenuRow, USER_MARK, preset_bar_hit, preset_bar_layout, preset_bar_name,

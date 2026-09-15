@@ -82,6 +82,12 @@ pub struct Chrome<'a> {
     /// One line along the bottom of the browser: what went wrong, or where the
     /// soundfonts are meant to go.
     pub status: &'a str,
+    /// A transient banner — its text and whether it offers an Undo — drawn over
+    /// everything but the modal. See [`crate::canvas::toast_layout`].
+    pub toast: Option<(&'a str, bool)>,
+    /// A confirm modal's question, while one is up. Drawn last of all, over a
+    /// scrim. See [`crate::canvas::confirm_layout`].
+    pub confirm: Option<&'a str>,
     /// The hover tip, once the pointer has sat still long enough — what it
     /// says and where it goes. `None` for the great majority of frames.
     pub tooltip: Option<(&'a str, Rect)>,
@@ -231,6 +237,13 @@ pub struct BrowserChrome<'a> {
     /// Which kind of file the Import tab is showing, so its two buttons can
     /// say which one is on.
     pub import_kind: fontelle_types::FolderKind,
+    /// What control each settings row is drawn as, parallel to `files` in
+    /// [`BrowserMode::Settings`](crate::canvas::BrowserMode::Settings) — a
+    /// slider's groove, a switch's pill, a choice's caret. Empty in every other
+    /// mode, so a soundfont row draws none.
+    pub settings_controls: &'a [crate::canvas::SettingControl],
+    /// Which settings row the arrow keys are on, so it wears the focus outline.
+    pub focus_setting: Option<usize>,
 }
 
 /// The arrangement's contents. Read-only, like every other canvas here
@@ -671,6 +684,108 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     // Last of all: what the pointer is holding.
     if let Some(carry) = &chrome.carry {
         draw_carry(scene, theme, chrome.labels, carry);
+    }
+    // Over even that: the transient banner, and — above everything — the modal.
+    if let Some((text, undoable)) = chrome.toast {
+        draw_toast(scene, theme, chrome.labels, layout.window, text, undoable);
+    }
+    if let Some(question) = chrome.confirm {
+        draw_confirm(scene, theme, chrome.labels, layout.window, question);
+    }
+}
+
+/// The transient banner: a rounded bar with the note, and — when the action can
+/// be taken back — an Undo button on the right.
+fn draw_toast(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    window: Rect,
+    text: &str,
+    undoable: bool,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let l = crate::canvas::toast_layout(window, m, undoable);
+    if l.frame.is_empty() {
+        return;
+    }
+    fill_rect_rounded(scene, l.frame, m.corner_radius, p.panel_header);
+    stroke_rect_rounded(scene, l.frame, m.corner_radius, 1.0, p.grid_line);
+    let inset = m.panel_padding.min(l.frame.width / 4.0);
+    let text_right = l.undo.map_or(l.frame.right() - inset, |u| u.x - inset);
+    if let Some(shaped) = labels.get(text) {
+        draw_text_clipped(
+            scene,
+            shaped,
+            Rect::new(
+                l.frame.x + inset,
+                l.frame.y,
+                (text_right - l.frame.x - inset).max(0.0),
+                l.frame.height,
+            ),
+            l.frame.x + inset,
+            l.frame.y + (l.frame.height - shaped.height) / 2.0,
+            p.text,
+        );
+    }
+    if let Some(undo) = l.undo {
+        fill_rect_rounded(scene, undo, m.corner_radius, p.accent);
+        if let Some(shaped) = labels.get(UNDO) {
+            draw_text_clipped(
+                scene,
+                shaped,
+                undo,
+                undo.x + (undo.width - shaped.width) / 2.0,
+                undo.y + (undo.height - shaped.height) / 2.0,
+                p.window,
+            );
+        }
+    }
+}
+
+/// The confirm modal: a scrim over the window, then a card with the question
+/// and two buttons — Cancel, and a Remove tinted so it reads as the weighty one.
+fn draw_confirm(scene: &mut Scene, theme: &Theme, labels: &Labels, window: Rect, question: &str) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    // A scrim, so what is under the modal reads as out of reach.
+    fill_rect(scene, window, p.window.with_alpha(190));
+    let l = crate::canvas::confirm_layout(window, m);
+    if l.frame.is_empty() {
+        return;
+    }
+    fill_rect_rounded(scene, l.frame, m.corner_radius, p.panel);
+    stroke_rect_rounded(scene, l.frame, m.corner_radius, 1.0, p.grid_line);
+    if let Some(shaped) = labels.get(question) {
+        draw_text_clipped(
+            scene,
+            shaped,
+            l.question,
+            l.question.x,
+            l.question.y + (l.question.height - shaped.height) / 2.0,
+            p.text,
+        );
+    }
+    let buttons = [
+        (l.cancel, CONFIRM_CANCEL, p.panel_header, p.text),
+        (l.confirm, CONFIRM_REMOVE, p.accent, p.window),
+    ];
+    for (rect, word, fill, ink) in buttons {
+        if rect.is_empty() {
+            continue;
+        }
+        fill_rect_rounded(scene, rect, m.corner_radius, fill);
+        if let Some(shaped) = labels.get(word) {
+            draw_text_clipped(
+                scene,
+                shaped,
+                rect,
+                rect.x + (rect.width - shaped.width) / 2.0,
+                rect.y + (rect.height - shaped.height) / 2.0,
+                ink,
+            );
+        }
     }
 }
 
@@ -1116,6 +1231,12 @@ fn draw_audio_editor(
         }
         use crate::canvas::AudioControl;
         let control = crate::canvas::audio_row_control(*field);
+        // A knob is a cell of its own — the dial, then its name and value under
+        // it — not a name-and-track row, so it is drawn and the rest skipped.
+        if control == AudioControl::Knob {
+            draw_audio_knob(scene, theme, labels, chrome, *field, *rect);
+            continue;
+        }
         let heading = control == AudioControl::None;
         if !heading && chrome.hover == Some(*field) {
             fill_rect_rounded(scene, rect.inset(1.0), m.corner_radius, p.panel_header);
@@ -1144,6 +1265,8 @@ fn draw_audio_editor(
         // dragged.
         match control {
             AudioControl::None => {}
+            // Handled above, before the row-style label and track are drawn.
+            AudioControl::Knob => {}
             AudioControl::Slider => draw_audio_track(scene, theme, chrome, *field, track),
             AudioControl::Switch => {
                 let on = crate::canvas::audio_row_is_on(chrome.clip, *field);
@@ -1183,6 +1306,67 @@ fn draw_audio_editor(
             } else {
                 p.accent
             },
+        );
+    }
+}
+
+/// One knob cell on the audio clip editor: the dial, its name under it, and its
+/// value under that — the FL-style control for a compact continuous param.
+fn draw_audio_knob(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &AudioEditorChrome<'_>,
+    field: crate::canvas::AudioField,
+    cell: Rect,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let hot = chrome.hover == Some(field);
+    if hot {
+        fill_rect_rounded(scene, cell.inset(1.0), m.corner_radius, p.panel_header);
+    }
+    let knob = crate::canvas::audio_knob_rect(cell, m);
+    if knob.is_empty() {
+        return;
+    }
+    let value = crate::canvas::audio_row_fraction(chrome.clip, field).unwrap_or(0.0);
+    draw_knob(scene, theme, knob, value, hot, false);
+
+    // The name and the value, centred under the dial and stacked, each on its
+    // own line — "descriptions under it", the way a channel-strip knob reads.
+    let mut text_y = knob.bottom();
+    let room = (cell.bottom() - text_y).max(0.0);
+    if let Some(text) = labels.get(crate::canvas::audio_row_label(field)) {
+        let line = text.height.min(room);
+        if line > 0.0 {
+            draw_text_clipped(
+                scene,
+                text,
+                cell,
+                cell.x + (cell.width - text.width) / 2.0,
+                text_y,
+                p.text_muted,
+            );
+            text_y += line;
+        }
+    }
+    let shown = crate::canvas::audio_row_value_at(
+        chrome.clip,
+        field,
+        chrome.sample_rate,
+        chrome.route_label,
+    );
+    if let Some(text) = labels.get(&shown)
+        && text_y + text.height <= cell.bottom() + 0.5
+    {
+        draw_text_clipped(
+            scene,
+            text,
+            cell,
+            cell.x + (cell.width - text.width) / 2.0,
+            text_y,
+            p.text,
         );
     }
 }
@@ -1298,6 +1482,12 @@ fn draw_chevron(scene: &mut Scene, field: Rect, colour: crate::theme::Color) {
 
 /// The captions that never change, so they can be shaped once.
 pub const SAVE: &str = "Save";
+
+/// The word on a toast's Undo button.
+pub const UNDO: &str = "Undo";
+/// The two buttons on the confirm modal.
+pub const CONFIRM_CANCEL: &str = "Cancel";
+pub const CONFIRM_REMOVE: &str = "Remove";
 pub const SAVE_AS: &str = "Save as\u{2026}";
 
 /// The preset bar, across the right-hand end of an editor window's header
@@ -6125,6 +6315,9 @@ fn draw_browser(
         _ => None,
     };
 
+    // Parallel to the settings list, empty in every other mode — so a
+    // soundfont row draws no control.
+    let settings_controls = chrome.settings_controls;
     let mut list = |area: Rect,
                     rows: &[(usize, Rect)],
                     entries: &[LibraryEntry],
@@ -6223,6 +6416,12 @@ fn draw_browser(
                     p.text_muted,
                 );
             }
+            // A settings row's control, over the right of the row: the groove a
+            // number is dragged along, the pill a switch is, the caret a choice
+            // drops from. The value text above sits in the gutter clear of it.
+            if let Some(control) = settings_controls.get(*index) {
+                draw_setting_control(scene, p, m, control, *rect);
+            }
         }
     };
     list(
@@ -6231,7 +6430,7 @@ fn draw_browser(
         chrome.files,
         chrome.selected_file,
         hover_file,
-        None,
+        chrome.focus_setting,
     );
     list(
         l.presets,
@@ -6298,6 +6497,102 @@ fn draw_browser(
             rect,
             if lit { p.panel } else { p.text },
         );
+    }
+}
+
+/// A settings row's control, drawn over the right of the row.
+///
+/// The value text (the row's `detail`) is already drawn in the gutter to the
+/// right; this adds the thing you *touch* — so a number reads as a slider, a
+/// choice as a drop-down, a switch as a switch, rather than as a value you
+/// click to step. A heading and a button draw nothing extra: a button's whole
+/// row is the target, and its caption is its `detail`.
+fn draw_setting_control(
+    scene: &mut Scene,
+    p: &crate::theme::Palette,
+    m: &crate::theme::Metrics,
+    control: &crate::canvas::SettingControl,
+    row: Rect,
+) {
+    use crate::canvas::SettingControl;
+    let area = crate::canvas::setting_control_rect(row, m);
+    if area.is_empty() {
+        return;
+    }
+    match control {
+        SettingControl::Heading | SettingControl::Button => {}
+        SettingControl::Slider { fraction } => {
+            let groove = crate::canvas::setting_slider_groove(area, m);
+            if groove.is_empty() {
+                return;
+            }
+            let radius = groove.height / 2.0;
+            // The unfilled groove, then the fill up to the handle — the same
+            // read as a fader: how far along says the value at a glance.
+            fill_rect_rounded(scene, groove, radius, p.border);
+            let handle_x = crate::canvas::setting_slider_x_of(area, *fraction);
+            let filled = Rect::new(
+                groove.x,
+                groove.y,
+                (handle_x - groove.x).max(0.0),
+                groove.height,
+            );
+            if !filled.is_empty() {
+                fill_rect_rounded(scene, filled, radius, p.accent);
+            }
+            // A grip at the handle, tall enough to aim at — a groove alone is a
+            // reading, and this says it is a thing you drag.
+            let grip_w = 4.0_f32.min(area.width);
+            let grip_h = (row.height * 0.5).min(row.height);
+            let grip = Rect::new(
+                (handle_x - grip_w / 2.0).clamp(area.x, area.right() - grip_w),
+                row.y + (row.height - grip_h) / 2.0,
+                grip_w,
+                grip_h,
+            );
+            fill_rect_rounded(scene, grip, grip_w / 2.0, p.text);
+        }
+        SettingControl::Switch { on } => {
+            // A pill with the knob at one end or the other, lit when on. Just
+            // left of the value gutter, where the "On"/"Off" is written, so the
+            // two do not overlap. The groove's right edge is that divider.
+            let divider = crate::canvas::setting_slider_groove(area, m).right();
+            let track_w = (m.row_height * 1.4).min(area.width);
+            let track_h = (m.row_height * 0.5).clamp(2.0, row.height);
+            let track = Rect::new(
+                (divider - track_w).max(area.x),
+                row.y + (row.height - track_h) / 2.0,
+                track_w,
+                track_h,
+            );
+            let radius = track_h / 2.0;
+            fill_rect_rounded(scene, track, radius, if *on { p.accent } else { p.border });
+            let knob = track_h - 2.0;
+            let knob_x = if *on {
+                track.right() - knob - 1.0
+            } else {
+                track.x + 1.0
+            };
+            fill_rect_rounded(
+                scene,
+                Rect::new(knob_x, track.y + 1.0, knob, knob),
+                knob / 2.0,
+                if *on { p.panel } else { p.text_muted },
+            );
+        }
+        SettingControl::Choice { .. } => {
+            // A caret just left of the value gutter, saying the value beside it
+            // drops down — the same mark the other drop-down rows here wear.
+            let divider = crate::canvas::setting_slider_groove(area, m).right();
+            let side = (row.height * 0.4).min(area.width);
+            let caret = Rect::new(
+                divider - side,
+                row.y + (row.height - side) / 2.0,
+                side,
+                side,
+            );
+            draw_icon(scene, crate::icon::Icon::Chevron, caret, p.text_muted);
+        }
     }
 }
 

@@ -31,11 +31,11 @@
 //! > knob but instead its a button i click to iteratively go through a list of
 //! > pre made values."*
 //!
-//! Stepping survives as the **wheel**, which is what a wheel over a control
-//! should do anyway and is how a value is nudged by exactly one of whatever it
-//! is measured in — see [`nudge_audio_row`]. What went is stepping being the
-//! *only* way in: a pitch you have to click twelve times to move an octave is
-//! not a pitch control.
+//! Stepping survives as the **arrow keys** — a value is nudged by exactly one
+//! of whatever it is measured in, see [`nudge_audio_row`] — not as the wheel.
+//! The wheel only ever scrolls now, so looking around a panel never edits a
+//! control by accident. What went is stepping being the *only* way in: a pitch
+//! you have to click twelve times to move an octave is not a pitch control.
 //!
 //! A slider rather than a knob because the panel is a **list of rows**: a knob
 //! in a 22-pixel row is a smudge with no readable travel, and a horizontal
@@ -145,7 +145,13 @@ pub enum AudioControl {
     None,
     /// A continuous value along a track, set by where you press and dragged
     /// from there — see [`audio_row_fraction`] and [`set_audio_row_fraction`].
+    /// Kept for the fades, where long horizontal travel is what a fade wants.
     Slider,
+    /// A continuous value as a **rotary knob**, dragged up and down, with its
+    /// label under it — the FL-style control for the compact tone and level
+    /// params. The value model is a slider's (`audio_row_fraction` /
+    /// `set_audio_row_fraction`); only the shape and the drag axis differ.
+    Knob,
     /// Off or on, clicked.
     Switch,
     /// One of a list, chosen from a drop-down — see [`audio_row_choices`].
@@ -163,15 +169,17 @@ pub fn audio_row_control(field: AudioField) -> AudioControl {
         | AudioField::FadeInCurve
         | AudioField::FadeOutCurve
         | AudioField::FilterShape => AudioControl::Choice,
+        // The fades stay sliders: a fade wants long, readable horizontal travel.
+        AudioField::FadeIn | AudioField::FadeOut => AudioControl::Slider,
+        // The compact tone and level params are knobs, laid out as a labelled
+        // grid under the waveform.
         AudioField::Gain
         | AudioField::Pan
         | AudioField::Pitch
         | AudioField::Speed
-        | AudioField::FadeIn
-        | AudioField::FadeOut
         | AudioField::Cutoff
         | AudioField::Resonance
-        | AudioField::Drive => AudioControl::Slider,
+        | AudioField::Drive => AudioControl::Knob,
     }
 }
 
@@ -712,7 +720,31 @@ pub struct AudioEditorLayout {
 /// needs scrolling on a window that opens at its default size.
 const WAVEFORM_ROWS: f32 = 3.0;
 
-/// Lays the editor out inside `body`.
+/// How tall a knob cell is, in rows' worth: the knob, its label, and its value.
+const KNOB_CELL_ROWS: f32 = 3.0;
+
+/// The narrowest a knob cell is allowed to get; the column count falls out of
+/// how many of these fit across the panel (capped, so a wide window does not
+/// spread four knobs into a thin line).
+const KNOB_CELL_MIN_WIDTH: f32 = 96.0;
+
+/// The most knob columns, however wide the window is — four reads as a bank,
+/// more reads as a scatter.
+const KNOB_MAX_COLS: usize = 4;
+
+/// The air between one knob cell and the next, so adjacent cells never touch.
+const KNOB_CELL_GAP: f32 = 2.0;
+
+/// How many knob columns fit across `inner`.
+fn knob_columns(inner_width: f32) -> usize {
+    ((inner_width / KNOB_CELL_MIN_WIDTH).floor() as usize).clamp(1, KNOB_MAX_COLS)
+}
+
+/// Lays the editor out inside `body`: the waveform across the top, then the
+/// rows and the **knob grid**. Knob fields flow into a grid of labelled cells;
+/// everything else (headings, sliders, drop-downs, switches) is a full-width
+/// row. A run of knobs is closed — the cursor drops past the grid row — before
+/// a non-knob row is placed, so the two never overlap.
 pub fn audio_editor_layout(body: Rect, metrics: &Metrics, rows: usize) -> AudioEditorLayout {
     let pad = metrics.panel_padding;
     let row_height = metrics.row_height.max(1.0);
@@ -727,30 +759,66 @@ pub fn audio_editor_layout(body: Rect, metrics: &Metrics, rows: usize) -> AudioE
     let waveform = Rect::new(inner.x, inner.y, inner.width, row_height * WAVEFORM_ROWS)
         .intersection(&inner)
         .clamped();
-    let top = waveform.bottom() + pad;
-    let laid = AUDIO_ROWS
-        .iter()
-        .take(rows)
-        .copied()
-        .enumerate()
-        .map(|(index, field)| {
-            let rect = Rect::new(
-                inner.x,
-                top + row_height * index as f32,
-                inner.width,
-                row_height,
+
+    let cols = knob_columns(inner.width);
+    let cell_w = inner.width / cols as f32;
+    let knob_cell_h = row_height * KNOB_CELL_ROWS;
+
+    let mut laid = Vec::with_capacity(rows);
+    let mut y = waveform.bottom() + pad;
+    let mut col = 0usize;
+    for field in AUDIO_ROWS.iter().take(rows).copied() {
+        let rect = if audio_row_control(field) == AudioControl::Knob {
+            let x = inner.x + col as f32 * cell_w;
+            let cell = Rect::new(
+                x + KNOB_CELL_GAP * 0.5,
+                y + KNOB_CELL_GAP * 0.5,
+                (cell_w - KNOB_CELL_GAP).max(0.0),
+                (knob_cell_h - KNOB_CELL_GAP).max(0.0),
             );
-            // Clipped to the panel rather than dropped, so a row that ran off
-            // the end of a short window is an empty rectangle: it draws as
-            // nothing and hit-tests as absent, and the list keeps its length.
-            (field, rect.intersection(&body).clamped())
-        })
-        .collect();
+            col += 1;
+            if col >= cols {
+                col = 0;
+                y += knob_cell_h;
+            }
+            cell
+        } else {
+            // Close an open grid row before dropping a full-width row onto it.
+            if col > 0 {
+                col = 0;
+                y += knob_cell_h;
+            }
+            let r = Rect::new(inner.x, y, inner.width, row_height);
+            y += row_height;
+            r
+        };
+        // Clipped to the panel rather than dropped, so a control that ran off
+        // the end of a short window is an empty rectangle: it draws as nothing
+        // and hit-tests as absent, and the list keeps its length.
+        laid.push((field, rect.intersection(&body).clamped()));
+    }
 
     AudioEditorLayout {
         waveform,
         rows: laid,
     }
+}
+
+/// The knob's own circle inside a knob `cell` — a square near the top, with the
+/// label and value drawn under it. A knob you cannot read is a knob you cannot
+/// set, so it takes the width it can and leaves two lines of text below.
+pub fn audio_knob_rect(cell: Rect, metrics: &Metrics) -> Rect {
+    if cell.is_empty() {
+        return Rect::ZERO;
+    }
+    let row_height = metrics.row_height.max(1.0);
+    // Two lines under the knob: the name and the value.
+    let text = (row_height * 1.4).min(cell.height * 0.5);
+    let side = (cell.height - text).min(cell.width).max(0.0);
+    let x = cell.x + (cell.width - side) / 2.0;
+    Rect::new(x, cell.y, side, side)
+        .intersection(&cell)
+        .clamped()
 }
 
 /// How much of a row its control takes, as a fraction of the row's width.

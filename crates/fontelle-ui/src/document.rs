@@ -1165,6 +1165,30 @@ pub trait StudioHost: DocumentHost {
         Vec::new()
     }
 
+    /// What kind of control each settings row is, parallel to [`settings`], so
+    /// the panel draws a real control — a slider, a switch, a drop-down —
+    /// rather than a value you click to step (the report this answers).
+    ///
+    /// A [`SettingControl`](crate::canvas::SettingControl) per row and not
+    /// anything the window has to interpret: the host says "this one is a
+    /// slider at 0.4", and which row means what stays entirely the host's, the
+    /// same boundary [`settings`] itself keeps.
+    fn setting_controls(&self) -> Vec<crate::canvas::SettingControl> {
+        Vec::new()
+    }
+
+    /// Sets slider row `index` to `fraction` of its groove (0..=1), as a drag
+    /// does. The host maps the fraction back to the row's own units.
+    fn set_setting_fraction(&mut self, index: usize, fraction: f32) {
+        let _ = (index, fraction);
+    }
+
+    /// Sets drop-down row `index` to its `option`th entry, as choosing from its
+    /// menu does.
+    fn choose_setting(&mut self, index: usize, option: usize) {
+        let _ = (index, option);
+    }
+
     /// One line about the settings — where the file is, or what just went
     /// wrong writing it.
     fn settings_status(&self) -> String {
@@ -1176,6 +1200,29 @@ pub trait StudioHost: DocumentHost {
     /// choice has a next one and a number has an amount.
     fn nudge_setting(&mut self, index: usize, delta: i32) {
         let _ = (index, delta);
+    }
+
+    /// The question to ask before pressing setting `index`, for a row whose
+    /// action cannot be cheaply undone — uninstalling an extension, say, which
+    /// takes a download to get back. `None` for everything else: a reversible
+    /// action does not stop to ask, it acts and offers an undo instead (see
+    /// [`take_settings_toast`](Self::take_settings_toast)).
+    fn settings_confirm(&self, _index: usize) -> Option<String> {
+        None
+    }
+
+    /// A one-off note the last settings press left for the user, and whether it
+    /// can be undone. The window shows it as a transient banner — "Removed X —
+    /// Undo" — rather than as a silent change. Taken, so it is shown once.
+    fn take_settings_toast(&mut self) -> Option<(String, bool)> {
+        None
+    }
+
+    /// Reverses the last undoable settings action (the one a toast offered to
+    /// undo), returning what to say about it. `None` if there is nothing to
+    /// undo.
+    fn undo_settings(&mut self) -> Option<String> {
+        None
     }
 
     /// Shows the folder the settings file lives in.

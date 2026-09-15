@@ -18,7 +18,9 @@
 //! It was one gesture for all eighteen — a click that stepped forward and a
 //! Ctrl+click that stepped back — and that is what *"the pitch changing should
 //! be a knob but instead its a button i click to iteratively go through a list
-//! of pre made values"* was about. Stepping stayed, as the wheel.
+//! of pre made values"* was about. A control is now dragged; stepping by one
+//! survives as the arrow-key nudge, not the wheel — the wheel only scrolls, so
+//! looking around a panel never edits a value.
 //!
 //! Everything here is pure: the panel is geometry, the properties are
 //! `AudioClipData`, and *"what does a click on this row do"* is a function from
@@ -543,24 +545,29 @@ fn every_row_has_a_control_and_a_heading_has_none() {
 }
 
 #[test]
-fn the_continuous_values_are_sliders_and_nothing_steps_through_them() {
-    // The row the complaint named, and every row like it.
+fn the_compact_continuous_values_are_knobs_and_the_fades_are_sliders() {
+    // FL-style: the tone and level params are rotary knobs with a label under
+    // each; the fades keep a slider because a fade wants long, readable travel.
+    // Both are continuous — a knob and a slider are the same value read two
+    // ways, so `audio_row_fraction` answers for either.
     for field in [
         AudioField::Gain,
         AudioField::Pan,
         AudioField::Pitch,
         AudioField::Speed,
-        AudioField::FadeIn,
-        AudioField::FadeOut,
         AudioField::Cutoff,
         AudioField::Resonance,
         AudioField::Drive,
     ] {
-        assert_eq!(audio_row_control(field), AudioControl::Slider, "{field:?}");
+        assert_eq!(audio_row_control(field), AudioControl::Knob, "{field:?}");
         assert!(
             audio_row_fraction(&a_clip(), field).is_some(),
-            "{field:?} is a slider with nowhere to sit"
+            "{field:?} is a knob with nowhere to sit"
         );
+    }
+    for field in [AudioField::FadeIn, AudioField::FadeOut] {
+        assert_eq!(audio_row_control(field), AudioControl::Slider, "{field:?}");
+        assert!(audio_row_fraction(&a_clip(), field).is_some());
     }
 }
 
@@ -767,13 +774,45 @@ fn a_fade_slider_spends_its_travel_where_the_useful_lengths_are() {
 }
 
 #[test]
+fn knobs_in_a_group_are_laid_out_side_by_side_as_a_grid() {
+    use fontelle_ui::canvas::audio_knob_rect;
+    let l = audio_editor_layout(body(), &metrics(), AUDIO_ROWS.len());
+    let cell = |want: AudioField| {
+        l.rows
+            .iter()
+            .find(|(field, _)| *field == want)
+            .map(|(_, r)| *r)
+            .unwrap()
+    };
+    // Gain and Pan are both knobs and adjacent in the Level group: same row,
+    // Pan to the right of Gain.
+    let gain = cell(AudioField::Gain);
+    let pan = cell(AudioField::Pan);
+    assert!(!gain.is_empty() && !pan.is_empty());
+    assert!(
+        (gain.y - pan.y).abs() < 0.01,
+        "boost and pan should share a grid row"
+    );
+    assert!(pan.x >= gain.right() - 0.01, "pan sits after boost");
+    // The knob itself is a real, roughly-square area inside its cell.
+    let knob = audio_knob_rect(gain, &metrics());
+    assert!(!knob.is_empty());
+    assert_eq!(knob.intersection(&gain), knob, "the knob stays in its cell");
+    assert!(
+        (knob.width - knob.height).abs() < knob.width * 0.5 + 1.0,
+        "a knob is roughly square, not a bar"
+    );
+}
+
+#[test]
 fn a_track_sits_in_the_right_hand_half_of_its_row_and_maps_both_ways() {
+    // A slider row — the fades are the sliders now; the boost et al. are knobs.
     let layout = audio_editor_layout(body(), &metrics(), AUDIO_ROWS.len());
     let (_, row) = layout
         .rows
         .iter()
-        .find(|(field, _)| *field == AudioField::Gain)
-        .expect("the boost row");
+        .find(|(field, _)| *field == AudioField::FadeIn)
+        .expect("the fade-in row");
     let track = audio_row_control_rect(*row, &metrics());
     assert!(!track.is_empty());
     assert!(
@@ -797,9 +836,10 @@ fn a_track_sits_in_the_right_hand_half_of_its_row_and_maps_both_ways() {
 }
 
 #[test]
-fn stepping_still_works_because_that_is_what_a_wheel_over_a_control_does() {
-    // The gesture that was the only way in is now the fine one: a wheel moves
-    // a value by exactly one of whatever it is measured in.
+fn stepping_by_one_is_the_arrow_key_nudge_not_the_wheel() {
+    // Stepping is the fine, deliberate way at a value — an arrow key moves it by
+    // exactly one of whatever it is measured in. The wheel does not step
+    // anything any more; it only scrolls, so looking around never edits.
     let mut clip = a_clip();
     nudge_audio_row(&mut clip, AudioField::Pitch, 1, 48_000);
     assert_eq!(clip.pitch_semitones, 1.0);

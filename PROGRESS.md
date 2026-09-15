@@ -19,6 +19,34 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-15 — `v0.3.0`, the UX-polish release.** A pass over the two
+places ordinary navigation caused unintended edits, reported from real use.
+Four changes, each independently tested and the settings panel pixel-verified
+(`render_headless::shoot_settings_controls`):
+
+- **The wheel only ever scrolls, never edits.** It used to step a value under
+  the pointer in the settings list, the transport tempo/signature, and every
+  editor window; scrolling "to look around" nudged velocity, a fade, a knob.
+  Every one of those value-stepping wheel paths is gone (`app.rs`); values
+  change by drag, arrow keys and menus, never by the wheel.
+- **Settings rows are real controls, not click-to-step.** A number is a drag
+  slider (`Drag::SettingSlider`, absolute), a choice drops down
+  (`MenuTarget::SettingChoice`), the update switch flips, folders/extensions
+  stay buttons. The host answers one new query, `setting_controls()`, returning
+  a per-row `SettingControl` descriptor — the window still knows nothing about
+  what a row *means* (`SettingRow::control_kind`/`fraction`/`choices` own that
+  in `fontelle-app`). Arrow keys nudge the focused row for precision.
+- **Destructive settings actions are reversible or ask first.** Removing a
+  plugin folder acts and offers an **Undo** toast; uninstalling an extension —
+  which a click cannot take back — asks with a confirm modal first
+  (`canvas/overlays.rs`).
+- **The clip info panel reads like FL Studio.** The compact continuous
+  parameters are a grid of labelled **knobs**, the fades stay sliders, choices
+  are drop-downs, the waveform on top (`canvas/audio_clip.rs`).
+
+Full workspace suite green (4009 tests) and `clippy --workspace --all-targets
+-D warnings` clean. Ty approved the release.
+
 **As of 2026-09-15.** The repository is public; `v0.2.0` is tagged and
 released (VST 3 hosting, the two top entries' worth of polish, and MIDI
 export). Ty triggered the tag; its `release.yml` built the four archives and

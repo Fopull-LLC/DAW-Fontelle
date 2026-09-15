@@ -262,3 +262,122 @@ fn a_channel_reaches_the_wire_counted_from_zero() {
         Some(15)
     );
 }
+
+// ---------------------------------------------- controls, not click-steps ---
+//
+// A settings row is not a button you click to iterate a list (the report this
+// answers): a number is a slider you drag, a choice is a drop-down, a switch
+// flips. These pure helpers are what a drag and a menu write through, so what
+// each gesture does is checkable without a window.
+
+#[test]
+fn a_numbers_fraction_reads_where_its_handle_sits() {
+    // The four ends, so a slider that is drawn from the fraction lands the
+    // handle where the value is.
+    let s = MidiInputSettings {
+        velocity_min: 0,
+        ..MidiInputSettings::default()
+    };
+    assert_eq!(SettingRow::VelocityMin.fraction(&s), Some(0.0));
+    let mut s = MidiInputSettings {
+        velocity_min: 127,
+        velocity_max: 127,
+        ..MidiInputSettings::default()
+    };
+    assert_eq!(SettingRow::VelocityMin.fraction(&s), Some(1.0));
+    // Transpose is centred: zero is the middle of two octaves either way.
+    s.transpose_semitones = 0;
+    assert_eq!(SettingRow::Transpose.fraction(&s), Some(0.5));
+    // A choice, a switch and a heading have no handle to place.
+    assert_eq!(SettingRow::VelocityCurve.fraction(&s), None);
+    assert_eq!(SettingRow::Heading("MIDI input").fraction(&s), None);
+}
+
+#[test]
+fn dragging_a_slider_to_a_fraction_sets_the_value() {
+    let mut s = MidiInputSettings::default();
+    // The far right of the transpose slider is +24; the middle is 0.
+    SettingRow::Transpose.set_fraction(&mut s, 1.0);
+    assert_eq!(s.transpose_semitones, 24);
+    SettingRow::Transpose.set_fraction(&mut s, 0.5);
+    assert_eq!(s.transpose_semitones, 0);
+    SettingRow::Transpose.set_fraction(&mut s, 0.0);
+    assert_eq!(s.transpose_semitones, -24);
+    // Fixed velocity never reaches zero — a note-off by convention.
+    SettingRow::FixedVelocity.set_fraction(&mut s, 0.0);
+    assert_eq!(s.fixed_velocity, 1);
+    SettingRow::FixedVelocity.set_fraction(&mut s, 1.0);
+    assert_eq!(s.fixed_velocity, 127);
+}
+
+#[test]
+fn the_velocity_window_still_cannot_be_closed_past_itself_by_a_drag() {
+    // The same coupling `nudge` keeps: the two ends push each other rather
+    // than crossing, so a slider cannot make a window that lets nothing
+    // through.
+    let mut s = MidiInputSettings {
+        velocity_min: 40,
+        velocity_max: 80,
+        ..MidiInputSettings::default()
+    };
+    // Drag the top down below the bottom: the bottom comes with it.
+    SettingRow::VelocityMax.set_fraction(&mut s, 0.0);
+    assert_eq!(s.velocity_max, 0);
+    assert_eq!(s.velocity_min, 0);
+    // And the bottom up past the top: the top comes with it.
+    let mut s = MidiInputSettings {
+        velocity_min: 40,
+        velocity_max: 80,
+        ..MidiInputSettings::default()
+    };
+    SettingRow::VelocityMin.set_fraction(&mut s, 1.0);
+    assert_eq!(s.velocity_min, 127);
+    assert_eq!(s.velocity_max, 127);
+}
+
+#[test]
+fn a_choice_lists_its_options_and_which_one_it_is_on() {
+    let mut s = MidiInputSettings::default();
+    let (curves, at) = SettingRow::VelocityCurve.choices(&s).expect("a choice");
+    assert_eq!(curves, ["Linear", "Soft", "Hard", "Fixed"]);
+    assert_eq!(at, 0, "starts on Linear");
+    // The channel is All plus the sixteen a keyboard prints.
+    let (channels, at) = SettingRow::ChannelFilter.choices(&s).expect("a choice");
+    assert_eq!(channels.len(), 17);
+    assert_eq!(channels[0], "All");
+    assert_eq!(channels[16], "16");
+    assert_eq!(at, 0, "starts on All");
+    s.channel_filter = Some(3);
+    assert_eq!(SettingRow::ChannelFilter.choices(&s).unwrap().1, 3);
+    // A slider is not a choice.
+    assert!(SettingRow::VelocityMin.choices(&s).is_none());
+}
+
+#[test]
+fn choosing_a_drop_down_row_sets_it_in_one_press() {
+    let mut s = MidiInputSettings::default();
+    SettingRow::VelocityCurve.choose(&mut s, 2);
+    assert_eq!(s.velocity_curve, VelocityCurveSetting::Hard);
+    // Channel option 0 is All (no filter); option 5 is channel 5.
+    SettingRow::ChannelFilter.choose(&mut s, 5);
+    assert_eq!(s.channel_filter, Some(5));
+    SettingRow::ChannelFilter.choose(&mut s, 0);
+    assert_eq!(s.channel_filter, None);
+}
+
+#[test]
+fn every_row_knows_which_kind_of_control_it_is() {
+    use fontelle_app::settings::SettingControlKind as K;
+    assert_eq!(SettingRow::Heading("x").control_kind(), K::Heading);
+    assert_eq!(SettingRow::VelocityCurve.control_kind(), K::Choice);
+    assert_eq!(SettingRow::ChannelFilter.control_kind(), K::Choice);
+    assert_eq!(SettingRow::VelocityMin.control_kind(), K::Slider);
+    assert_eq!(SettingRow::Transpose.control_kind(), K::Slider);
+    assert_eq!(SettingRow::CheckForUpdates.control_kind(), K::Switch);
+    assert_eq!(SettingRow::PluginFolder.control_kind(), K::Button);
+    assert_eq!(SettingRow::Extension(0).control_kind(), K::Button);
+    assert_eq!(
+        SettingRow::Folder(fontelle_app::settings::FolderKind::Midi).control_kind(),
+        K::Button
+    );
+}

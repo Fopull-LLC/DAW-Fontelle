@@ -239,7 +239,7 @@ impl EqField {
             Self::Type => "What shape this band is \u{2014} click to step, right-click to automate",
             Self::Freq => "Where the band sits. Drag, or drag its handle on the curve",
             Self::Gain => "How much it lifts or cuts",
-            Self::Q => "How wide it is \u{2014} drag, or scroll over the handle",
+            Self::Q => "How wide it is \u{2014} drag up or down",
             Self::Channel => "Which part of the stereo image this band works on",
             Self::Solo => "Listen to this band's region on its own",
             Self::Delete => "Switch this band off, keeping its settings",
@@ -502,7 +502,7 @@ pub fn eq_band_curve_points(layout: &EqLayout, config: &EqConfig, band: usize) -
         .collect()
 }
 
-/// What a scroll over a handle does to its Q, and the bounds it stops at.
+/// What a drag on the Q field does to it, and the bounds it stops at.
 ///
 /// Multiplicative rather than additive: Q is a ratio, and a step that takes
 /// 0.5 to 1.5 would take 8 to 9. Bounded at each end because a Q of zero is

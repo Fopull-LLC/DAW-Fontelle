@@ -411,6 +411,28 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
 /// keyboard to reach a part; past it you have chosen the wrong octave.
 const MAX_TRANSPOSE: i8 = 24;
 
+/// Which kind of control a settings row is drawn and driven as.
+///
+/// The window asks this so it can draw a real control and route a press —
+/// a drag to a slider, a menu to a choice, a flip to a switch — rather than
+/// the old click-that-steps-a-list. It is the row's to decide, like its
+/// [`label`](SettingRow::label) and its [`value`](SettingRow::value): the
+/// window knows nothing about what any of them mean (INVARIANT 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingControlKind {
+    /// A section title — nothing to touch.
+    Heading,
+    /// A press acts: a folder picker, a rescan, an install/remove. The value
+    /// column is a caption saying what the press does, not a value.
+    Button,
+    /// A number set by dragging a groove or nudging with the arrow keys.
+    Slider,
+    /// One of a fixed list, chosen from a drop-down.
+    Choice,
+    /// An on/off switch a press flips.
+    Switch,
+}
+
 impl SettingRow {
     /// The name in the row's left-hand column.
     ///
@@ -630,6 +652,132 @@ impl SettingRow {
                 let next = (at + step).rem_euclid(17);
                 settings.channel_filter = (next > 0).then_some(next as u8);
             }
+        }
+    }
+
+    /// Which kind of control this row is — see [`SettingControlKind`].
+    ///
+    /// One place the classification lives, so the window's rendering and its
+    /// press handling cannot disagree about whether a row is a slider or a
+    /// button. Everything not a number, a choice or the one switch is a button:
+    /// a folder opens a picker, a plugin row and an extension act, a heading is
+    /// a label.
+    pub fn control_kind(self) -> SettingControlKind {
+        match self {
+            Self::Heading(_) => SettingControlKind::Heading,
+            Self::VelocityCurve | Self::ChannelFilter => SettingControlKind::Choice,
+            Self::FixedVelocity | Self::VelocityMin | Self::VelocityMax | Self::Transpose => {
+                SettingControlKind::Slider
+            }
+            Self::CheckForUpdates => SettingControlKind::Switch,
+            Self::PluginFolder
+            | Self::PluginDir(_)
+            | Self::ImportFlFolders
+            | Self::RescanPlugins
+            | Self::PresetFolder
+            | Self::Folder(_)
+            | Self::Extension(_) => SettingControlKind::Button,
+        }
+    }
+
+    /// The value, its floor and its ceiling, for the rows that are a number —
+    /// the one place the four ranges are written, so a fraction read out of one
+    /// and a fraction dragged back into it use the same ends.
+    fn numeric_range(self, settings: &MidiInputSettings) -> Option<(i32, i32, i32)> {
+        Some(match self {
+            // Never zero: velocity zero is a note-off everywhere in MIDI.
+            Self::FixedVelocity => (settings.fixed_velocity as i32, 1, 127),
+            Self::VelocityMin => (settings.velocity_min as i32, 0, 127),
+            Self::VelocityMax => (settings.velocity_max as i32, 0, 127),
+            Self::Transpose => (
+                settings.transpose_semitones as i32,
+                -(MAX_TRANSPOSE as i32),
+                MAX_TRANSPOSE as i32,
+            ),
+            _ => return None,
+        })
+    }
+
+    /// Where a slider row's handle sits, 0..=1, or `None` for a row that is not
+    /// a slider. What draws the groove's fill.
+    pub fn fraction(self, settings: &MidiInputSettings) -> Option<f32> {
+        let (value, low, high) = self.numeric_range(settings)?;
+        Some(((value - low) as f32 / (high - low) as f32).clamp(0.0, 1.0))
+    }
+
+    /// Sets a slider row from a fraction of its groove (0..=1). A no-op on a row
+    /// that is not a slider, so the one press handler can call it for any row.
+    ///
+    /// The same coupling [`nudge`](Self::nudge) keeps: the velocity window's two
+    /// ends push each other rather than crossing, because a window whose bottom
+    /// is above its top lets nothing through — which looks like a broken
+    /// keyboard.
+    pub fn set_fraction(self, settings: &mut MidiInputSettings, fraction: f32) {
+        let Some((_, low, high)) = self.numeric_range(settings) else {
+            return;
+        };
+        let value = (low as f32 + fraction.clamp(0.0, 1.0) * (high - low) as f32).round() as i32;
+        match self {
+            Self::FixedVelocity => settings.fixed_velocity = value.clamp(1, 127) as u8,
+            Self::VelocityMin => {
+                settings.velocity_min = value.clamp(0, 127) as u8;
+                settings.velocity_max = settings.velocity_max.max(settings.velocity_min);
+            }
+            Self::VelocityMax => {
+                settings.velocity_max = value.clamp(0, 127) as u8;
+                settings.velocity_min = settings.velocity_min.min(settings.velocity_max);
+            }
+            Self::Transpose => {
+                settings.transpose_semitones =
+                    value.clamp(-(MAX_TRANSPOSE as i32), MAX_TRANSPOSE as i32) as i8
+            }
+            _ => {}
+        }
+    }
+
+    /// What a drop-down row lists and which entry it is on, or `None` for a row
+    /// that is not a choice. In the order [`nudge`](Self::nudge) steps them, so
+    /// a drag through the list and a menu pick agree on what "the next one" is.
+    pub fn choices(self, settings: &MidiInputSettings) -> Option<(Vec<String>, usize)> {
+        match self {
+            Self::VelocityCurve => {
+                let at = VelocityCurveSetting::ALL
+                    .iter()
+                    .position(|c| *c == settings.velocity_curve)
+                    .unwrap_or(0);
+                let options = VelocityCurveSetting::ALL
+                    .iter()
+                    .map(|c| c.label().to_string())
+                    .collect();
+                Some((options, at))
+            }
+            Self::ChannelFilter => {
+                let mut options = Vec::with_capacity(17);
+                options.push("All".to_string());
+                options.extend((1..=16).map(|n| n.to_string()));
+                // 0 is "All", 1..=16 the channels a keyboard prints on its own
+                // front panel — the same numbering the value column shows.
+                let at = settings.channel_filter.unwrap_or(0) as usize;
+                Some((options, at))
+            }
+            _ => None,
+        }
+    }
+
+    /// Sets a drop-down row to its `option`th entry. A no-op on a row that is
+    /// not a choice, and on an option past the end of the list.
+    pub fn choose(self, settings: &mut MidiInputSettings, option: usize) {
+        match self {
+            Self::VelocityCurve => {
+                if let Some(curve) = VelocityCurveSetting::ALL.get(option) {
+                    settings.velocity_curve = *curve;
+                }
+            }
+            // Option 0 is "All" (no filter); 1..=16 are the channels.
+            Self::ChannelFilter => {
+                settings.channel_filter = (1..=16).contains(&option).then_some(option as u8);
+            }
+            _ => {}
         }
     }
 }

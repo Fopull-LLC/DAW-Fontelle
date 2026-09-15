@@ -208,3 +208,49 @@ fn a_panel_too_small_for_any_of_it_yields_empty_rects_never_negative_ones() {
         }
     }
 }
+
+// -------------------------------------------- rows are controls, not steps ---
+//
+// A settings row draws a real control on its right — a groove a number is
+// dragged along, a pill a switch is, a caret a choice drops from — rather than
+// a value you click to step. This is pure geometry: where the control sits and
+// where along its groove a fraction lands, so a drag and the fill agree.
+
+use fontelle_ui::canvas::{setting_control_rect, setting_slider_at, setting_slider_x_of};
+
+fn a_row() -> Rect {
+    settings(6).file_rows[1].1
+}
+
+#[test]
+fn a_settings_control_sits_on_the_right_of_its_row() {
+    let row = a_row();
+    let c = setting_control_rect(row, &metrics());
+    assert!(!c.is_empty(), "the control has nowhere to go");
+    assert_eq!(c.intersection(&row), c, "the control escapes its row");
+    assert!(c.x > row.x + row.width / 2.0, "the control is on the right");
+    assert!(c.right() <= row.right() + 0.01);
+}
+
+#[test]
+fn a_sliders_fraction_and_its_x_are_two_ways_round_the_same_point() {
+    let c = setting_control_rect(a_row(), &metrics());
+    for f in [0.0, 0.25, 0.5, 0.75, 1.0] {
+        let x = setting_slider_x_of(c, f);
+        assert!((setting_slider_at(c, x) - f).abs() < 0.001, "at {f}");
+    }
+    // The left end is empty and the right end is full.
+    assert_eq!(setting_slider_at(c, c.x), 0.0);
+    assert!(setting_slider_at(c, c.right()) >= 0.999);
+    // Off either end is held inside 0..=1, so a drag past the groove does not
+    // set a value past its ends.
+    assert_eq!(setting_slider_at(c, c.x - 50.0), 0.0);
+    assert_eq!(setting_slider_at(c, c.right() + 50.0), 1.0);
+}
+
+#[test]
+fn a_control_on_a_zero_width_row_is_empty_not_negative() {
+    let c = setting_control_rect(Rect::new(0.0, 0.0, 0.0, 0.0), &metrics());
+    assert!(c.width >= 0.0 && c.height >= 0.0);
+    assert_eq!(setting_slider_at(c, 5.0), 0.0);
+}

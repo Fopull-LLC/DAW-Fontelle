@@ -317,6 +317,12 @@ pub struct Session {
     /// tests wrote a soundfont folder in `/tmp` into the developer's real
     /// `~/.config/fontelle/settings.json`.
     settings_path: Option<PathBuf>,
+    /// The last reversible settings action, kept so a toast's "Undo" can put it
+    /// back: which plugin folder was removed, and from where in the list.
+    settings_undo: Option<(usize, PathBuf)>,
+    /// A note the last settings press left for the window to show as a transient
+    /// banner, and whether it can be undone. Taken by `take_settings_toast`.
+    settings_toast: Option<(String, bool)>,
     /// The folder the Import tab is browsing, and what is in it.
     ///
     /// One bank rather than two, rebuilt when the kind changes: only one of
@@ -952,6 +958,8 @@ impl Session {
             open_insert: None,
             settings,
             settings_path: None,
+            settings_undo: None,
+            settings_toast: None,
             import_bank: FileBank::default(),
             import_kind: fontelle_types::FolderKind::Midi,
             import_query: String::new(),
@@ -1662,6 +1670,20 @@ impl Session {
         }
     }
 
+    /// A changed MIDI-input setting onto the keyboard and into the file.
+    ///
+    /// Onto the keyboard first and into the file second: what somebody is
+    /// adjusting is how the next note feels, and a disk write that fails must
+    /// not stop that. The three ways a MIDI row changes — a nudge, a slider
+    /// drag, a drop-down pick — all end here so they cannot drift.
+    fn write_input_settings(&mut self) {
+        self.publish_input_settings();
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+        self.touch();
+    }
+
     /// Points live MIDI at the selected channel.
     fn publish_live_target(&self) {
         if let Some(target) = &self.live_target {
@@ -2346,10 +2368,12 @@ impl Session {
             return;
         }
         let gone = self.settings.plugin_dirs.remove(which);
-        self.message = Some(format!(
-            "No longer searching {}",
-            crate::desktop::elide_path(&gone, 2)
-        ));
+        let shown = crate::desktop::elide_path(&gone, 2);
+        // Reversible: keep what was removed so the toast's "Undo" can put it
+        // back, and offer that rather than a confirmation prompt up front.
+        self.settings_undo = Some((which, gone));
+        self.settings_toast = Some((format!("No longer searching {shown}"), true));
+        self.message = Some(format!("No longer searching {shown}"));
         if let Err(e) = self.save_settings() {
             self.message = Some(format!("could not write settings: {e}"));
         }
@@ -2412,6 +2436,10 @@ impl Session {
                 }
                 match crate::extensions::remove(extension) {
                     Ok(()) => {
+                        // Not undoable by a click: getting it back is a
+                        // download, which is why this one asks first (see
+                        // `settings_confirm`) rather than offering an undo.
+                        self.settings_toast = Some((format!("Removed {}", extension.name), false));
                         self.message = Some(format!("Removed {}", extension.name));
                         self.plugins.reload_bridges();
                         <Self as StudioHost>::rescan_plugins(self);
@@ -5570,6 +5598,57 @@ impl StudioHost for Session {
             .collect()
     }
 
+    fn setting_controls(&self) -> Vec<fontelle_ui::canvas::SettingControl> {
+        use crate::settings::SettingControlKind as K;
+        use fontelle_ui::canvas::SettingControl;
+        let midi = &self.settings.midi_input;
+        crate::settings::setting_rows(&self.settings)
+            .iter()
+            .map(|row| match row.control_kind() {
+                K::Heading => SettingControl::Heading,
+                K::Button => SettingControl::Button,
+                K::Slider => SettingControl::Slider {
+                    fraction: row.fraction(midi).unwrap_or(0.0),
+                },
+                K::Choice => {
+                    let (options, chosen) = row.choices(midi).unwrap_or_default();
+                    SettingControl::Choice { options, chosen }
+                }
+                // The one switch reads its state off the whole settings, not
+                // the MIDI half — see `nudge_setting`, which flips it here too.
+                K::Switch => SettingControl::Switch {
+                    on: self.settings.check_for_updates,
+                },
+            })
+            .collect()
+    }
+
+    fn set_setting_fraction(&mut self, index: usize, fraction: f32) {
+        let rows = crate::settings::setting_rows(&self.settings);
+        let Some(row) = rows.get(index).copied() else {
+            return;
+        };
+        let before = self.settings.midi_input;
+        row.set_fraction(&mut self.settings.midi_input, fraction);
+        if self.settings.midi_input == before {
+            return;
+        }
+        self.write_input_settings();
+    }
+
+    fn choose_setting(&mut self, index: usize, option: usize) {
+        let rows = crate::settings::setting_rows(&self.settings);
+        let Some(row) = rows.get(index).copied() else {
+            return;
+        };
+        let before = self.settings.midi_input;
+        row.choose(&mut self.settings.midi_input, option);
+        if self.settings.midi_input == before {
+            return;
+        }
+        self.write_input_settings();
+    }
+
     fn settings_status(&self) -> String {
         // The file, not the folder: "where do I edit this by hand" is the
         // question a settings tab leaves somebody with, and the answer is a
@@ -5632,14 +5711,39 @@ impl StudioHost for Session {
             // write to disk or a redraw.
             return;
         }
-        // Onto the keyboard first and into the file second: what somebody is
-        // adjusting is how the next note feels, and a disk write that fails
-        // must not stop that.
-        self.publish_input_settings();
+        self.write_input_settings();
+    }
+
+    fn settings_confirm(&self, index: usize) -> Option<String> {
+        let rows = crate::settings::setting_rows(&self.settings);
+        // Only the irreversible destructive press asks first: uninstalling an
+        // installed extension, which a click cannot bring back (it is a
+        // download). Everything else acts and offers an undo instead.
+        if let crate::settings::SettingRow::Extension(which) = rows.get(index).copied()? {
+            let extension = crate::extensions::CATALOGUE.get(which)?;
+            if crate::extensions::is_installed(extension) {
+                return Some(format!("Remove the {} extension?", extension.name));
+            }
+        }
+        None
+    }
+
+    fn take_settings_toast(&mut self) -> Option<(String, bool)> {
+        self.settings_toast.take()
+    }
+
+    fn undo_settings(&mut self) -> Option<String> {
+        let (index, path) = self.settings_undo.take()?;
+        let shown = crate::desktop::elide_path(&path, 2);
+        let at = index.min(self.settings.plugin_dirs.len());
+        self.settings.plugin_dirs.insert(at, path);
         if let Err(e) = self.save_settings() {
             self.message = Some(format!("could not write settings: {e}"));
         }
+        self.plugins.set_folders(self.settings.plugin_dirs.clone());
+        <Self as StudioHost>::rescan_plugins(self);
         self.touch();
+        Some(format!("Searching {shown} again"))
     }
 
     // ------------------------------------------------ importing files ---

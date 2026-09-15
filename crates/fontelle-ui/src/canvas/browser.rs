@@ -662,6 +662,89 @@ pub fn scrolled(scroll: usize, by: i32, count: usize) -> usize {
     }
 }
 
+/// What a settings row is drawn and driven as.
+///
+/// The host answers this per row (see `StudioHost::setting_controls`), and the
+/// panel draws a real control and routes a press accordingly — a drag along a
+/// groove, a flip of a switch, a drop-down of choices — instead of the old
+/// click that stepped a value one place. The window still knows nothing about
+/// what any row *means* (INVARIANT 2): a `Slider` is a fraction and a value
+/// string, a `Choice` is a list of labels, and which is which is the host's.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SettingControl {
+    /// A section title — nothing to touch.
+    Heading,
+    /// A press acts (a folder picker, a rescan, an install). The row's value
+    /// column is a caption, not a value, so nothing extra is drawn.
+    Button,
+    /// A number the user drags along a groove or nudges with the arrow keys.
+    /// `fraction` (0..=1) is where the handle sits; the value text is the row's
+    /// own `detail`.
+    Slider { fraction: f32 },
+    /// One of a fixed list, opened as a drop-down. `chosen` indexes `options`.
+    Choice { options: Vec<String>, chosen: usize },
+    /// An on/off switch a press flips.
+    Switch { on: bool },
+}
+
+/// How much of a settings row's width its control takes, on the right. The left
+/// is the row's name.
+const CONTROL_SHARE: f32 = 0.46;
+
+/// Room at the right of a slider's control for its value to be written, clear
+/// of the groove — so "+12 st" is not drawn over the handle.
+const VALUE_GUTTER: f32 = 42.0;
+
+/// Where a settings row's control sits — the right of the row, the name filling
+/// the left. What a switch's pill, a choice's caret and a slider's groove are
+/// laid out inside, and the target a press on the control is tested against.
+pub fn setting_control_rect(row: Rect, _metrics: &Metrics) -> Rect {
+    if row.is_empty() {
+        return Rect::ZERO;
+    }
+    let width = (row.width * CONTROL_SHARE).clamp(0.0, row.width);
+    Rect::new(row.right() - width, row.y, width, row.height)
+        .intersection(&row)
+        .clamped()
+}
+
+/// How wide the draggable groove is inside a control — the control less the
+/// gutter its value is written in. One place, so the fill and the drag agree.
+fn slider_span(control: Rect) -> f32 {
+    (control.width - VALUE_GUTTER.min(control.width * 0.5)).max(0.0)
+}
+
+/// Where along a slider's groove a fraction sits, in pixels.
+pub fn setting_slider_x_of(control: Rect, fraction: f32) -> f32 {
+    control.x + slider_span(control) * fraction.clamp(0.0, 1.0)
+}
+
+/// The other way: what fraction a press at `x` is, held inside 0..=1 so a drag
+/// past either end of the groove does not set a value past the row's ends.
+pub fn setting_slider_at(control: Rect, x: f32) -> f32 {
+    let span = slider_span(control);
+    if span <= 0.0 {
+        return 0.0;
+    }
+    ((x - control.x) / span).clamp(0.0, 1.0)
+}
+
+/// The thin groove a slider row draws its fill along, inside its control.
+pub fn setting_slider_groove(control: Rect, metrics: &Metrics) -> Rect {
+    if control.is_empty() {
+        return Rect::ZERO;
+    }
+    let height = (metrics.row_height * 0.26).clamp(2.0, control.height);
+    Rect::new(
+        control.x,
+        control.y + (control.height - height) / 2.0,
+        slider_span(control),
+        height,
+    )
+    .intersection(&control)
+    .clamped()
+}
+
 /// What share of the two lists the bank should get for a seam dragged to `y`.
 ///
 /// The browser's own [`crate::layout::rack_share_at`]: pure, so "it cannot be
