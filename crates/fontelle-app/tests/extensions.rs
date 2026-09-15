@@ -113,6 +113,20 @@ fn a_bridge_archive(dir: &std::path::Path, library: &str) -> Vec<u8> {
     std::fs::read(&tarball).unwrap()
 }
 
+/// The library name the install path looks for on *this* host — the
+/// archive must hold that exact name or install refuses it. Mirrors
+/// `extensions::library_name`'s per-OS spelling so the test is not
+/// Linux-only (CI runs it on macOS and Windows too).
+fn host_library() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "fontelle-vst2.dll"
+    } else if cfg!(target_os = "macos") {
+        "libfontelle_vst2.dylib"
+    } else {
+        "libfontelle_vst2.so"
+    }
+}
+
 #[test]
 fn installing_downloads_verifies_and_puts_the_library_in_place() {
     // Point the bridges folder at a scratch dir so the test does not touch
@@ -128,7 +142,7 @@ fn installing_downloads_verifies_and_puts_the_library_in_place() {
     let vst2 = extensions::find("vst2").unwrap();
     let target = "x86_64-unknown-linux-gnu";
     let asset_name = vst2.asset_name(Version::new(0, 1, 0), target);
-    let library = "libfontelle_vst2.so";
+    let library = host_library();
     let archive = a_bridge_archive(&scratch, library);
     let sums = format!("{}  {asset_name}\n", sha256_hex(&archive));
     let json = format!(
@@ -175,7 +189,7 @@ fn a_download_whose_checksum_is_wrong_is_not_installed() {
     let vst2 = extensions::find("vst2").unwrap();
     let target = "x86_64-unknown-linux-gnu";
     let asset_name = vst2.asset_name(Version::new(0, 1, 0), target);
-    let archive = a_bridge_archive(&scratch, "libfontelle_vst2.so");
+    let archive = a_bridge_archive(&scratch, host_library());
     let sums = format!("{}  {asset_name}\n", sha256_hex(b"something else"));
     let json = format!(
         r#"{{"tag_name":"v0.1.0","assets":[
