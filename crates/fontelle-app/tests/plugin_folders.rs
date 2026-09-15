@@ -3,9 +3,11 @@
 
 use std::path::PathBuf;
 
-use fontelle_app::daw_folders::{
-    fl_folders_from_reg_query, fl_folders_from_user_reg, windows_path_in_prefix,
-};
+use fontelle_app::daw_folders::fl_folders_from_reg_query;
+// Reading a Wine prefix (its dosdevices/drive_c layout) is a Unix-only
+// scenario; on native Windows FL's folders come straight from `reg query`.
+#[cfg(unix)]
+use fontelle_app::daw_folders::{fl_folders_from_user_reg, windows_path_in_prefix};
 use fontelle_app::settings::{
     SETTING_ROWS, SETTINGS_FORMAT_VERSION, SettingRow, Settings, setting_rows,
 };
@@ -118,6 +120,7 @@ fn fl_studios_folders_are_read_off_a_reg_query() {
 
 /// The same key in a Wine prefix's `user.reg`, where a Windows path is
 /// mapped back through the prefix's drives.
+#[cfg(unix)]
 #[test]
 fn fl_studios_folders_are_read_off_a_wine_user_reg() {
     let text = r#"WINE REGISTRY Version 2
@@ -142,6 +145,7 @@ fn fl_studios_folders_are_read_off_a_wine_user_reg() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_windows_path_is_mapped_into_the_prefix_by_its_drive() {
     let prefix = PathBuf::from("/p");
