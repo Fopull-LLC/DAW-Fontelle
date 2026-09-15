@@ -22,8 +22,17 @@ codebase that cost real time to rediscover.
 **As of 2026-09-15.** The repository is public; `v0.2.0` is tagged and
 released (VST 3 hosting, the two top entries' worth of polish, and MIDI
 export). Ty triggered the tag; its `release.yml` built the four archives and
-`SHA256SUMS`, and the `fontelle-vst2` extension released `v0.1.0` alongside
-(Linux-only for now). Two cross-platform test bugs the release CI surfaced
+`SHA256SUMS`, and the `fontelle-vst2` extension released `v0.1.0` alongside. That
+extension is now at **`v0.1.1`**: v0.1.0 was Linux-only and, it turned out,
+broken for *every* real plugin — its `VST_MAGIC` was `0x5665_7350` ('VesP'),
+a transposition of the ABI's `0x5673_7450` ('VstP'), so the loader rejected
+every third-party plugin and only the fixture (which shared the typo) passed.
+Found by loading a real plugin through the bridge, which the fixture test by
+construction could not do. v0.1.1 fixes the constant, adds a real-plugin probe
+(`tests/real.rs`) and CI, and builds all three platforms; verified end to end
+against amsynth/ZynAddSubFX/ZynChorus/Wolf Spectrum on Linux and a real
+`Synsonic BD-909.dll` under Wine on Windows. The shipped 0.2.0 install logic
+needed no change. Two cross-platform test bugs the release CI surfaced
 were fixed after the tag (test-only, shipped binaries unaffected): the
 extension-install test hard-coded the Linux `.so` name where the install path
 picks the per-OS library name (`77c68ee`), and the Wine-prefix folder tests
