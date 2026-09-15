@@ -19,9 +19,16 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-09-14.** The repository is public; `v0.1.1` is tagged and the
-next release (`0.2.0` — VST 3 hosting, the two top entries' worth of polish,
-and MIDI export) is prepared but not yet tagged — that gate is Ty's. The
+**As of 2026-09-15.** The repository is public; `v0.2.0` is tagged and
+released (VST 3 hosting, the two top entries' worth of polish, and MIDI
+export). Ty triggered the tag; its `release.yml` built the four archives and
+`SHA256SUMS`, and the `fontelle-vst2` extension released `v0.1.0` alongside
+(Linux-only for now). Two cross-platform test bugs the release CI surfaced
+were fixed after the tag (test-only, shipped binaries unaffected): the
+extension-install test hard-coded the Linux `.so` name where the install path
+picks the per-OS library name (`77c68ee`), and the Wine-prefix folder tests
+asserted POSIX paths that can't hold on native Windows and are now `cfg(unix)`
+(`31b10ce`). CI is green on Linux, macOS and Windows. The
 workspace is one version, `cargo fmt --all -- --check` passes,
 `cargo clippy --workspace --all-targets -- -D warnings` is clean on Linux
 and cross-checked for Windows, and `cargo test --workspace` is green at
