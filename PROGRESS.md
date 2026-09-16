@@ -19,6 +19,26 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-15 — `v0.5.0`, remappable shortcuts.** TDD §16.5's *"all
+keybinds are remappable"* is built. `canvas/keymap.rs` is the map: a `Chord`
+(modifiers + one key, with a text form), an `Action` for every command a key
+can mean (38, each with a stable id and a context — global, studio, editor),
+and a `Keymap` from chords to actions with FL's defaults. The window's `key`,
+`global_key` and `editor_own_key` now ask the map what a chord means and
+dispatch on the action (`studio_action`); the only keys still literal are
+Esc, the arrows, Enter in lists and text-field keys, which the page lists
+without a chip. On the shortcuts page a rebindable chip has an accent edge;
+click its row and it listens (`Rebind`): the chord is read on the **release**
+of the key with the modifiers held at the press or the release, so Ctrl let
+go before Q is still Ctrl+Q. A chord taken from another action unbinds it
+there and the page says so; *Reset to defaults* puts everything back.
+Tooltips and the Tools menu read their keys off the map (`action()` on
+`TransportHit`, `RollControl`, `TimelineControl`, `ToolMenuItem::label_in`).
+Only the differences from the defaults are kept, in `settings.json` under
+`keybinds` (`StudioHost::keymap_overrides` / `set_keymap_overrides`, written
+on every change). Verified in the running studio: rebind, conflict, the key
+working afterwards, the file, and reset.
+
 **As of 2026-09-15 — `v0.4.0`, the second UX pass.** Seven things from one
 report, each tested first and each looked at in the running studio on the
 nested X server (`docs/handoff.md` §5):
@@ -133,7 +153,47 @@ over the budget its plan set. The numbers and where the time goes are at the
 end of the section below; the plan's own instruction is that this is a design
 conversation rather than a target to loosen.
 
-## 2026-09-15 (latest): the shortcuts page, a typed tempo, a signature list, F and Tab, and the meter that lied twice
+## 2026-09-15 (latest): the keymap — every shortcut a binding, and the page that changes them
+
+> *"could you make these keybinds in the ? tab completely configurable so
+> users can cleanly click on one they don't like, then input the new binding
+> they want ... it waits for the release to see your combination basically.
+> you please figure out the cleanest solution to accomplish this."*
+
+The summary at the top has the build; what follows is the shape and why.
+
+**The cleanest solution was to stop matching on keys at all.** The handlers
+used to say `"z" if ctrl => undo()` in three places. Now they turn the event
+into a `Chord`, ask `Keymap::action(chord, context)`, and `match` on the
+`Action`. That one change is what makes everything else small: the page is
+a list of actions whose chips read `keymap.label(action)`; a rebind is
+`keymap.rebind(action, chord)`; the file is `keymap.overrides()`; the
+tooltips ask the same map. The old catalogue of strings became a list of
+`KeybindEntry::Action(..)` and `Fixed { .. }`, and the test that used to
+check the strings now checks that every `Action` is on the page exactly
+once.
+
+**Contexts, not one flat map.** `D` is the delete tool in the studio and
+`Delete` removes an EQ band in an editor window; the two never listen at
+once, so they may share a key and a rebind of one need not cost the other.
+Global actions (transport, history, file) are heard everywhere and take
+from everywhere. `Context::overlaps` is the whole rule and the defaults
+are tested against it.
+
+**The listener commits on release.** `Rebind` remembers the key that went
+down and the modifiers down with it, and returns the chord when *that* key
+comes up, with the modifiers held at either end OR'd together — so
+Ctrl-then-Q with Ctrl lifted first is Ctrl+Q, a modifier alone is never a
+chord, and a second key pressed before the first lifts is the one listened
+for. The window forwards key *releases* only while the sheet is up; nothing
+else in it has ever needed one.
+
+**Shift means nothing on a non-letter.** `+` is Shift+= here and its own
+key elsewhere, and the window always took both. A chord normalises the
+shift away for non-alphabetic characters at construction, so a binding made
+on one keyboard reads the same on another.
+
+## 2026-09-15: the shortcuts page, a typed tempo, a signature list, F and Tab, and the meter that lied twice
 
 > *"could you make it so the f key toggles the tab between instrument and
 > prefab ... a dedicated keybinds page that shows every single keybind ...

@@ -4754,7 +4754,11 @@ fn shoot_settings_controls() {
 /// opens at, with every string it looks up shaped — the same contract the
 /// window keeps in `shape_labels`.
 fn shoot_keybinds(theme: Theme, scroll: f32) -> Option<(Vec<u8>, Theme, u32, u32)> {
-    use fontelle_ui::canvas::{KEYBIND_SECTIONS, KEYBINDS_CLOSE, KEYBINDS_HINT, KEYBINDS_TITLE};
+    use fontelle_ui::canvas::{
+        KEYBIND_SECTIONS, KEYBINDS_CLOSE, KEYBINDS_HINT, KEYBINDS_LISTENING, KEYBINDS_PRESS,
+        KEYBINDS_RESET, KEYBINDS_TITLE, Keymap,
+    };
+    let keymap = Keymap::default();
     let (width, height) = (1100u32, 700u32);
     let shared = headless()?;
     let layout = window_layout(
@@ -4771,12 +4775,19 @@ fn shoot_keybinds(theme: Theme, scroll: f32) -> Option<(Vec<u8>, Theme, u32, u32
     let mut labels = Labels::new();
     labels.ensure(KEYBINDS_TITLE, &theme.font, &mut text);
     labels.ensure(KEYBINDS_CLOSE, &theme.font, &mut text);
-    labels.ensure_small(KEYBINDS_HINT, &theme.font, &mut text);
+    for small in [
+        KEYBINDS_HINT,
+        KEYBINDS_LISTENING,
+        KEYBINDS_PRESS,
+        KEYBINDS_RESET,
+    ] {
+        labels.ensure_small(small, &theme.font, &mut text);
+    }
     for section in KEYBIND_SECTIONS {
         labels.ensure(section.title, &theme.font, &mut text);
         for bind in section.binds {
-            labels.ensure_small(bind.keys, &theme.font, &mut text);
-            labels.ensure_small(bind.does, &theme.font, &mut text);
+            labels.ensure_small(&bind.keys(&keymap), &theme.font, &mut text);
+            labels.ensure_small(bind.does(), &theme.font, &mut text);
         }
     }
 
@@ -4819,7 +4830,13 @@ fn shoot_keybinds(theme: Theme, scroll: f32) -> Option<(Vec<u8>, Theme, u32, u32
             menu: None,
             carry: None,
             welcome: None,
-            keybinds: Some(scroll),
+            // With a row listening, so the dump shows what that looks like.
+            keybinds: Some(fontelle_ui::render::KeybindsChrome {
+                scroll,
+                keymap: &keymap,
+                listening: Some(fontelle_ui::canvas::Action::Undo),
+                note: "",
+            }),
         },
     );
     let pixels = shared

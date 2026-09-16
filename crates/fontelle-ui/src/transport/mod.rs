@@ -337,21 +337,36 @@ impl TransportHit {
     ///
     /// `None` for anything that is a *place* rather than a button: a tip
     /// following the pointer along the ruler would be a box in the way of the
-    /// thing being scrubbed.
+    /// thing being scrubbed. The key that does the same is not in the words:
+    /// it is [`action`](Self::action)'s, read off the keymap, because the
+    /// page can change it.
     pub fn tip(self) -> Option<&'static str> {
         Some(match self {
-            Self::Play => "Play from the marker \u{2014} Space",
-            Self::Stop => "Stop, and go back to the marker \u{2014} Space",
+            Self::Play => "Play from the marker",
+            Self::Stop => "Stop, and go back to the marker",
             Self::ToggleLoop => "Loop between the markers",
             Self::ToggleRecord => "Arm recording: play, and keep the take",
-            Self::ToggleMetronome => "The click, on every beat \u{2014} Ctrl+M",
+            Self::ToggleMetronome => "The click, on every beat",
             Self::Tempo => "Tempo \u{2014} drag, or click and type",
             Self::Signature => "Beats in a bar \u{2014} click to choose",
-            Self::Mode => {
-                "Song plays the arrangement; Clip plays only the clip you are editing \u{2014} Ctrl+L"
-            }
-            Self::Help => "Every keyboard shortcut \u{2014} F1",
+            Self::Mode => "Song plays the arrangement; Clip plays only the clip you are editing",
+            Self::Help => "Every keyboard shortcut",
             Self::Scrub(_) => return None,
+        })
+    }
+
+    /// The keymap action that does what this button does, for the tip.
+    pub fn action(self) -> Option<crate::canvas::Action> {
+        use crate::canvas::Action;
+        Some(match self {
+            Self::Play => Action::Play,
+            // Space stops too, and it is the key a person reaches for; the
+            // square's own job — back to the start — is Home's.
+            Self::Stop => Action::Stop,
+            Self::ToggleMetronome => Action::Metronome,
+            Self::Mode => Action::LegatoOrPlayMode,
+            Self::Help => Action::Help,
+            _ => return None,
         })
     }
 }

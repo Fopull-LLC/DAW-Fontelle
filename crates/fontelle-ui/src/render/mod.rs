@@ -104,10 +104,23 @@ pub struct Chrome<'a> {
     /// The start menu, while it is up. When it is, it is the whole picture:
     /// the studio behind it is not drawn at all (see [`draw_welcome`]).
     pub welcome: Option<WelcomeChrome<'a>>,
-    /// The keyboard shortcuts sheet, while it is up: how far it is scrolled.
-    /// Over everything, the start menu included — it is opened from both.
-    /// See [`crate::canvas::keybinds_layout`].
-    pub keybinds: Option<f32>,
+    /// The keyboard shortcuts sheet, while it is up. Over everything, the
+    /// start menu included — it is opened from both. See
+    /// [`crate::canvas::keybinds_layout`].
+    pub keybinds: Option<KeybindsChrome<'a>>,
+}
+
+/// The shortcuts sheet (`canvas::keybinds`), as the window draws it.
+pub struct KeybindsChrome<'a> {
+    /// How far the list is scrolled.
+    pub scroll: f32,
+    /// What every rebindable row's chip says.
+    pub keymap: &'a crate::canvas::Keymap,
+    /// The row waiting for a new shortcut, if one is.
+    pub listening: Option<crate::canvas::Action>,
+    /// A line under the title in place of the usual hint — what the last
+    /// rebind took from whom. Empty for none.
+    pub note: &'a str,
 }
 
 /// Everything the start menu draws (`canvas::welcome`).
@@ -520,8 +533,8 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
             chrome.menu,
             chrome.field.as_ref(),
         );
-        if let Some(scroll) = chrome.keybinds {
-            draw_keybinds(scene, theme, chrome.labels, layout.window, scroll);
+        if let Some(keybinds) = &chrome.keybinds {
+            draw_keybinds(scene, theme, chrome.labels, layout.window, keybinds);
         }
         return;
     }
@@ -704,22 +717,29 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     }
     // And the shortcuts sheet, which is a page rather than a prompt: over
     // the studio and its menus, under nothing.
-    if let Some(scroll) = chrome.keybinds {
-        draw_keybinds(scene, theme, chrome.labels, layout.window, scroll);
+    if let Some(keybinds) = &chrome.keybinds {
+        draw_keybinds(scene, theme, chrome.labels, layout.window, keybinds);
     }
 }
 
 /// The keyboard shortcuts sheet (`canvas::keybinds`): a scrim, a card, and
 /// the catalogue on it in columns — a heading per section, and under it one
 /// line per binding with the key in a chip and what it does beside it.
-fn draw_keybinds(scene: &mut Scene, theme: &Theme, labels: &Labels, window: Rect, scroll: f32) {
+fn draw_keybinds(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    window: Rect,
+    chrome: &KeybindsChrome<'_>,
+) {
     use crate::canvas::{
-        KEYBIND_SECTIONS, KEYBINDS_CLOSE, KEYBINDS_HINT, KEYBINDS_TITLE, KeybindRow,
+        KEYBIND_SECTIONS, KEYBINDS_CLOSE, KEYBINDS_HINT, KEYBINDS_LISTENING, KEYBINDS_PRESS,
+        KEYBINDS_RESET, KEYBINDS_TITLE, KeybindRow,
     };
     let p = &theme.palette;
     let m = &theme.metrics;
     fill_rect(scene, window, p.window.with_alpha(200));
-    let l = crate::canvas::keybinds_layout(window, m, scroll);
+    let l = crate::canvas::keybinds_layout(window, m, chrome.scroll);
     if l.frame.is_empty() {
         return;
     }
@@ -736,15 +756,41 @@ fn draw_keybinds(scene: &mut Scene, theme: &Theme, labels: &Labels, window: Rect
             p.text,
         );
     }
-    if let Some(text) = labels.get_small(KEYBINDS_HINT) {
+    // The line under the title says what the page is waiting for: the new
+    // shortcut while a row listens, what the last one took from whom just
+    // after, and how to use the page the rest of the time.
+    let (hint, hint_ink) = if chrome.listening.is_some() {
+        (KEYBINDS_LISTENING, p.accent)
+    } else if !chrome.note.is_empty() {
+        (chrome.note, p.text)
+    } else {
+        (KEYBINDS_HINT, p.text_muted)
+    };
+    if let Some(text) = labels.get_small(hint) {
         draw_text_clipped(
             scene,
             text,
             l.hint,
             l.hint.x,
             l.hint.y + (l.hint.height - text.height) / 2.0,
-            p.text_muted,
+            hint_ink,
         );
+    }
+    // Reset, as a plain button; quiet, because it undoes every change at
+    // once and is not the thing most visits are for.
+    if !l.reset.is_empty() {
+        fill_rect_rounded(scene, l.reset, m.corner_radius, p.panel_header);
+        stroke_rect_rounded(scene, l.reset, m.corner_radius, m.border_width, p.border);
+        if let Some(text) = labels.get_small(KEYBINDS_RESET) {
+            draw_text_clipped(
+                scene,
+                text,
+                l.reset,
+                l.reset.x + ((l.reset.width - text.width) / 2.0).max(2.0),
+                l.reset.y + (l.reset.height - text.height) / 2.0,
+                p.text,
+            );
+        }
     }
     // The ×, on a plate so it reads as the button it is.
     if !l.close.is_empty() {
@@ -806,6 +852,7 @@ fn draw_keybinds(scene: &mut Scene, theme: &Theme, labels: &Labels, window: Rect
             KeybindRow::Bind {
                 section,
                 index,
+                action,
                 keys,
                 does,
             } => {
@@ -815,27 +862,43 @@ fn draw_keybinds(scene: &mut Scene, theme: &Theme, labels: &Labels, window: Rect
                 else {
                     continue;
                 };
+                let listening = action.is_some() && *action == chrome.listening;
                 // The key in a chip the width of its text, not the column:
                 // a chip that is always the column's width is a table cell.
-                if let Some(text) = labels.get_small(bind.keys) {
+                // A rebindable chip wears the accent on its edge, so the
+                // rows a press can change look pressable and the fixed ones
+                // do not; the one listening is filled with it and says so.
+                let caption = if listening {
+                    KEYBINDS_PRESS.to_string()
+                } else {
+                    bind.keys(chrome.keymap)
+                };
+                if let Some(text) = labels.get_small(&caption) {
                     let chip = Rect::new(
                         keys.x,
                         keys.y + 2.0,
                         (text.width + 12.0).min(keys.width),
                         (keys.height - 4.0).max(0.0),
                     );
-                    fill_rect_rounded(scene, chip, m.corner_radius, p.panel_header);
-                    stroke_rect_rounded(scene, chip, m.corner_radius, 1.0, p.border);
+                    let (fill, edge, ink) = if listening {
+                        (p.accent, p.accent, p.window)
+                    } else if action.is_some() {
+                        (p.panel_header, p.accent.with_alpha(0x90), p.text)
+                    } else {
+                        (p.panel_header, p.border, p.text)
+                    };
+                    fill_rect_rounded(scene, chip, m.corner_radius, fill);
+                    stroke_rect_rounded(scene, chip, m.corner_radius, 1.0, edge);
                     draw_text_clipped(
                         scene,
                         text,
                         chip,
                         chip.x + ((chip.width - text.width) / 2.0).max(2.0),
                         chip.y + (chip.height - text.height) / 2.0,
-                        p.text,
+                        ink,
                     );
                 }
-                if let Some(text) = labels.get_small(bind.does) {
+                if let Some(text) = labels.get_small(bind.does()) {
                     draw_text_clipped(
                         scene,
                         text,

@@ -680,7 +680,17 @@ fn legato_is_on_the_menu_with_its_shortcut_on_it() {
         .find(|item| matches!(item, ToolMenuItem::Run(ToolAction::Legato)))
         .expect("legato is on the menu");
     assert!(entry.label().contains("Legato"));
-    assert!(entry.label().contains("Ctrl+L"), "{}", entry.label());
+    // The key on the row comes from the keymap, so a rebinding shows here.
+    let map = fontelle_ui::canvas::Keymap::default();
+    assert!(
+        entry.label_in(&map).contains("Ctrl+L"),
+        "{}",
+        entry.label_in(&map)
+    );
+    assert_eq!(
+        entry.action(),
+        Some(fontelle_ui::canvas::Action::LegatoOrPlayMode)
+    );
     assert!(
         !entry.label().ends_with('\u{2026}'),
         "it asks nothing, so it must not promise a dialog"

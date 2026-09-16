@@ -6241,6 +6241,21 @@ impl StudioHost for Session {
         self.run(Box::new(fontelle_model::SetAudioClip::new(clip, data)));
     }
 
+    fn keymap_overrides(&self) -> Vec<(String, String)> {
+        self.settings
+            .keybinds
+            .iter()
+            .map(|(id, chords)| (id.clone(), chords.clone()))
+            .collect()
+    }
+
+    fn set_keymap_overrides(&mut self, overrides: Vec<(String, String)>) {
+        self.settings.keybinds = overrides.into_iter().collect();
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+    }
+
     fn reveal_config_dir(&mut self) {
         let dir = self
             .settings_path

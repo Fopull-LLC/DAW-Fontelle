@@ -1418,20 +1418,23 @@ impl RollControl {
         })
     }
 
-    pub fn shortcut(self) -> Option<&'static str> {
-        match self {
-            Self::Tool(Tool::Draw) => Some("P"),
-            Self::Tool(Tool::Paint) => Some("B"),
-            Self::Tool(Tool::Select) => Some("E"),
-            Self::Tool(Tool::Delete) => Some("D"),
-            Self::Tool(Tool::Slice) => Some("C"),
-            Self::Snap => Some("S"),
-            Self::Lane => Some("L"),
-            Self::Ghost => Some("G"),
-            Self::Slide => Some("A"),
-            Self::Tools => Some("T"),
-            _ => None,
-        }
+    pub fn action(self) -> Option<super::keymap::Action> {
+        use super::keymap::Action;
+        Some(match self {
+            Self::Tool(Tool::Draw) => Action::DrawTool,
+            Self::Tool(Tool::Paint) => Action::PaintTool,
+            Self::Tool(Tool::Select) => Action::SelectTool,
+            Self::Tool(Tool::Delete) => Action::DeleteTool,
+            Self::Tool(Tool::Slice) => Action::SliceTool,
+            Self::Snap => Action::SnapOrStretch,
+            Self::Lane => Action::LaneProperty,
+            Self::Ghost => Action::Ghosts,
+            Self::Slide => Action::Slide,
+            Self::Tools => Action::ToolsPanel,
+            Self::ZoomInX | Self::ZoomInY => Action::ZoomIn,
+            Self::ZoomOutX | Self::ZoomOutY => Action::ZoomOut,
+            _ => return None,
+        })
     }
 }
 

@@ -126,6 +126,15 @@ pub struct Settings {
     /// matter — see [`Settings::toggle_favorite`], which keeps it one of each.
     #[serde(default)]
     pub favorites: Vec<Favorite>,
+    /// The keyboard shortcuts that differ from the defaults, by action id
+    /// — `"play": "Ctrl+P"`, and `""` for one that has been unbound. Only
+    /// the differences: the defaults are the window's (`fontelle-ui`'s
+    /// `canvas::keymap`), and a file that copied them would go stale the
+    /// day one moved. A `BTreeMap` so the file is stable under a text
+    /// editor. `default` so a file written before shortcuts could be changed
+    /// is not a broken one.
+    #[serde(default)]
+    pub keybinds: std::collections::BTreeMap<String, String>,
     /// The projects the start menu lists, newest first — every bundle this
     /// machine last opened, made or saved under a name. See
     /// [`Settings::remember_project`] for the shape of the list.
@@ -169,6 +178,7 @@ impl Default for Settings {
             preset_dir: None,
             plugin_dirs: Vec::new(),
             favorites: Vec::new(),
+            keybinds: std::collections::BTreeMap::new(),
             recent_projects: Vec::new(),
             check_for_updates: true,
             extensions_offered: false,

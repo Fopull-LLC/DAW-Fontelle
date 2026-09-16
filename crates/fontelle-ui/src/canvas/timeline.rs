@@ -744,18 +744,30 @@ impl TimelineControl {
         })
     }
 
-    /// The keyboard shortcut worth writing down, if there is one.
-    pub fn shortcut(self) -> Option<&'static str> {
+    /// The keymap action that does what this button does, for the tip — the
+    /// key is the keymap's to say, since the shortcuts page can change it.
+    pub fn action(self) -> Option<super::keymap::Action> {
+        use super::keymap::Action;
+        Some(match self {
+            Self::Draw => Action::DrawTool,
+            Self::Select => Action::SelectTool,
+            Self::Slice => Action::SliceTool,
+            Self::Stretch => Action::SnapOrStretch,
+            Self::Repeat => Action::Duplicate,
+            Self::Cut => Action::Cut,
+            Self::Copy => Action::Copy,
+            Self::Paste => Action::Paste,
+            Self::Mute => Action::MuteClips,
+            Self::ZoomIn => Action::ZoomIn,
+            Self::ZoomOut => Action::ZoomOut,
+            _ => return None,
+        })
+    }
+
+    /// A gesture worth writing on the tip that is not a key: the loop grip.
+    pub fn gesture(self) -> Option<&'static str> {
         match self {
-            Self::Draw => Some("P"),
-            Self::Select => Some("E"),
-            Self::Slice => Some("C"),
-            Self::Repeat => Some("Ctrl+B"),
             Self::Loop => Some("Shift+drag"),
-            Self::Cut => Some("Ctrl+X"),
-            Self::Copy => Some("Ctrl+C"),
-            Self::Paste => Some("Ctrl+V"),
-            Self::Mute => Some("Ctrl+Shift+M"),
             _ => None,
         }
     }

@@ -15,8 +15,8 @@
 //! for, with a close button, laid out from a rectangle and a scroll offset.
 
 use fontelle_ui::canvas::{
-    KEYBIND_SECTIONS, KEYBINDS_TITLE, KeybindRow, KeybindsHit, KeybindsLayout, keybinds_hit,
-    keybinds_layout, keybinds_scroll_max, keybinds_scrolled,
+    Action, KEYBIND_SECTIONS, KEYBINDS_TITLE, KeybindEntry, KeybindRow, KeybindsHit,
+    KeybindsLayout, Keymap, keybinds_hit, keybinds_layout, keybinds_scroll_max, keybinds_scrolled,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::{Metrics, Theme};
@@ -56,6 +56,7 @@ fn every_section_has_a_title_and_something_in_it_and_nothing_is_blank() {
         "a page with {} sections is not a page of every keybind in the app",
         KEYBIND_SECTIONS.len()
     );
+    let map = Keymap::default();
     for section in KEYBIND_SECTIONS {
         assert!(!section.title.trim().is_empty(), "a section with no title");
         assert!(
@@ -63,16 +64,16 @@ fn every_section_has_a_title_and_something_in_it_and_nothing_is_blank() {
             "section {:?} lists nothing",
             section.title
         );
-        for bind in section.binds {
+        for entry in section.binds {
             assert!(
-                !bind.keys.trim().is_empty(),
-                "a binding in {:?} has no keys",
+                !entry.keys(&map).trim().is_empty(),
+                "an entry in {:?} has no keys",
                 section.title
             );
             assert!(
-                !bind.does.trim().is_empty(),
+                !entry.does().trim().is_empty(),
                 "{:?} in {:?} says nothing about what it does",
-                bind.keys,
+                entry.keys(&map),
                 section.title
             );
         }
@@ -89,8 +90,9 @@ fn no_section_title_repeats_and_no_key_is_listed_twice_in_one_section() {
         KEYBIND_SECTIONS.len(),
         "two sections share a title"
     );
+    let map = Keymap::default();
     for section in KEYBIND_SECTIONS {
-        let mut keys: Vec<&str> = section.binds.iter().map(|b| b.keys).collect();
+        let mut keys: Vec<String> = section.binds.iter().map(|b| b.keys(&map)).collect();
         keys.sort_unstable();
         let before = keys.len();
         keys.dedup();
@@ -104,67 +106,56 @@ fn no_section_title_repeats_and_no_key_is_listed_twice_in_one_section() {
 }
 
 #[test]
+fn every_rebindable_action_is_on_the_page_exactly_once() {
+    // The page is the only place a binding can be changed, so an action that
+    // is not on it is one nobody can rebind — and one listed twice would be
+    // two rows arguing about one binding.
+    for action in Action::ALL {
+        let listed = KEYBIND_SECTIONS
+            .iter()
+            .flat_map(|section| section.binds.iter())
+            .filter(|entry| entry.action() == Some(action))
+            .count();
+        assert_eq!(listed, 1, "{action:?} is on the page {listed} times");
+    }
+}
+
+#[test]
+fn a_rebindable_row_shows_the_binding_the_map_has_now_not_the_default() {
+    let entry = KEYBIND_SECTIONS
+        .iter()
+        .flat_map(|section| section.binds.iter())
+        .find(|entry| entry.action() == Some(Action::Play))
+        .expect("Play is on the page");
+    assert_eq!(entry.keys(&Keymap::default()), "Space");
+    let mut map = Keymap::default();
+    map.rebind(
+        Action::Play,
+        fontelle_ui::canvas::Chord::parse("Ctrl+P").unwrap(),
+    );
+    assert_eq!(entry.keys(&map), "Ctrl+P");
+    // A fixed entry — a mouse gesture, a text-field key — says the same
+    // whatever the map says.
+    let fixed = KEYBIND_SECTIONS
+        .iter()
+        .flat_map(|section| section.binds.iter())
+        .find(|entry| matches!(entry, KeybindEntry::Fixed { .. }))
+        .expect("there are fixed entries");
+    assert_eq!(fixed.keys(&Keymap::default()), fixed.keys(&map));
+    assert_eq!(fixed.action(), None);
+}
+
+#[test]
 fn the_bindings_the_window_answers_are_all_on_the_page() {
-    // The keys `WindowApp::key` and `global_key` match on, by the name the
-    // page writes them under. A binding added to the window and not here is
-    // a binding nobody can find out about — which is the whole reason the
-    // page exists.
-    let must_mention = [
-        // transport and project
-        "Space",
-        "Home",
-        "Ctrl+M",
-        "Ctrl+S",
-        "Ctrl+Z",
-        "Ctrl+Shift+Z",
-        "Ctrl+Y",
-        "Ctrl+E",
-        "Ctrl+Shift+E",
-        "Ctrl+L",
-        "F1",
-        "Esc",
-        // panels
-        "1",
-        "2",
-        "F",
-        "Tab",
-        "Ctrl+T",
-        "T",
-        "Ctrl+F",
-        // tools
-        "P",
-        "B",
-        "E",
-        "D",
-        "C",
-        "S",
-        "A",
-        "L",
-        "G",
-        // editing
-        "Ctrl+A",
-        "Ctrl+C",
-        "Ctrl+X",
-        "Ctrl+V",
-        "Ctrl+B",
-        "Ctrl+D",
-        "Delete",
-        "Ctrl+Shift+M",
-        // mixer
-        "M",
-        "N",
-        // held while dragging
-        "Shift",
-        "Alt",
-    ];
-    for wanted in must_mention {
+    // The mouse gestures and text-field keys the window answers outside the
+    // keymap, by the name the page writes them under. The keymap's own
+    // actions are covered by `every_rebindable_action_is_on_the_page`.
+    let map = Keymap::default();
+    for wanted in ["Shift", "Alt", "Esc", "Enter", "Home / End"] {
         let found = KEYBIND_SECTIONS.iter().any(|section| {
             section.binds.iter().any(|bind| {
-                bind.keys == wanted
-                    || bind
-                        .keys
-                        .split(['/', ','])
-                        .any(|part| part.trim() == wanted)
+                let keys = bind.keys(&map);
+                keys == wanted || keys.split(['/', ',']).any(|part| part.trim() == wanted)
             })
         });
         assert!(found, "the page never mentions {wanted:?}");
@@ -378,11 +369,11 @@ fn a_press_on_the_close_button_closes_and_one_off_the_card_closes_too() {
     let centre = |r: Rect| (r.x + r.width / 2.0, r.y + r.height / 2.0);
     let (cx, cy) = centre(l.close);
     assert_eq!(keybinds_hit(&l, cx, cy), KeybindsHit::Close);
-    let (bx, by) = centre(l.body);
+    let (hx, hy) = centre(l.hint);
     assert_eq!(
-        keybinds_hit(&l, bx, by),
+        keybinds_hit(&l, hx, hy),
         KeybindsHit::Card,
-        "a press on the list is nothing — it stays up"
+        "a press on the card's own text is nothing — it stays up"
     );
     assert_eq!(
         keybinds_hit(&l, window().x + 1.0, window().y + 1.0),
@@ -405,5 +396,73 @@ fn a_window_of_no_size_lays_out_without_a_negative_anything() {
             );
         }
         assert!(keybinds_scroll_max(&l) >= 0.0);
+    }
+}
+
+#[test]
+fn a_press_on_a_rebindable_row_names_its_action_and_a_fixed_row_is_nothing() {
+    let l = keybinds_layout(Rect::new(0.0, 0.0, 1280.0, 4000.0), &metrics(), 0.0);
+    let centre = |r: Rect| (r.x + r.width / 2.0, r.y + r.height / 2.0);
+    let mut seen_action = false;
+    let mut seen_fixed = false;
+    for row in &l.rows {
+        let KeybindRow::Bind {
+            action, keys, does, ..
+        } = row
+        else {
+            continue;
+        };
+        // Anywhere along the line: the chip and the words are one row.
+        let (kx, ky) = centre(*keys);
+        let (dx, dy) = centre(*does);
+        match action {
+            Some(action) => {
+                assert_eq!(keybinds_hit(&l, kx, ky), KeybindsHit::Row(*action));
+                assert_eq!(keybinds_hit(&l, dx, dy), KeybindsHit::Row(*action));
+                seen_action = true;
+            }
+            None => {
+                assert_eq!(keybinds_hit(&l, kx, ky), KeybindsHit::Card);
+                seen_fixed = true;
+            }
+        }
+    }
+    assert!(seen_action && seen_fixed);
+}
+
+#[test]
+fn the_sheet_has_a_reset_button_beside_the_close_button() {
+    let l = keybinds_layout(window(), &metrics(), 0.0);
+    assert!(!l.reset.is_empty(), "no reset button");
+    assert!(within(l.reset, l.frame));
+    assert!(!l.reset.intersects(&l.close) && !l.reset.intersects(&l.title));
+    assert!(
+        l.reset.right() <= l.close.x + 0.01,
+        "the reset button sits left of the ×"
+    );
+    let (x, y) = (
+        l.reset.x + l.reset.width / 2.0,
+        l.reset.y + l.reset.height / 2.0,
+    );
+    assert_eq!(keybinds_hit(&l, x, y), KeybindsHit::Reset);
+}
+
+#[test]
+fn the_rows_carry_their_actions_in_catalogue_order() {
+    let l = keybinds_layout(Rect::new(0.0, 0.0, 1280.0, 4000.0), &metrics(), 0.0);
+    for row in &l.rows {
+        if let KeybindRow::Bind {
+            section,
+            index,
+            action,
+            ..
+        } = row
+        {
+            assert_eq!(
+                *action,
+                KEYBIND_SECTIONS[*section].binds[*index].action(),
+                "row {section}/{index} names the wrong action"
+            );
+        }
     }
 }

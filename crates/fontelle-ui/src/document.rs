@@ -1237,6 +1237,23 @@ pub trait StudioHost: DocumentHost {
     /// Shows the folder the settings file lives in.
     fn reveal_config_dir(&mut self) {}
 
+    // ------------------------------------------------------ the keymap ---
+
+    /// The shortcuts that differ from the defaults, as the settings file
+    /// keeps them: `(action id, chords)` pairs from
+    /// [`Keymap::overrides`](crate::canvas::Keymap::overrides). The window
+    /// owns the map; the host only remembers it.
+    fn keymap_overrides(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    /// Remembers `overrides` for the next launch. Written at once — a
+    /// shortcut changed and lost on quitting is worse than one that could
+    /// not be changed.
+    fn set_keymap_overrides(&mut self, overrides: Vec<(String, String)>) {
+        let _ = overrides;
+    }
+
     // ------------------------------------------------- files to import ---
 
     /// Tells the host which of the browser's lists is on screen.

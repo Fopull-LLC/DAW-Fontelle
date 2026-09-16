@@ -237,12 +237,33 @@ pub enum ToolMenuItem {
 }
 
 impl ToolMenuItem {
+    /// The keymap action a row also answers to, if one does. The shortcut
+    /// on the row, because a tool nobody can find is a tool nobody uses —
+    /// and legato's is FL's muscle memory. Read off the keymap by
+    /// [`label_in`](Self::label_in), since the shortcuts page can change it.
+    pub fn action(self) -> Option<super::keymap::Action> {
+        match self {
+            Self::Run(ToolAction::Legato) => Some(super::keymap::Action::LegatoOrPlayMode),
+            Self::Run(ToolAction::ExportMidi) => Some(super::keymap::Action::ExportMidi),
+            _ => None,
+        }
+    }
+
+    /// The row as the menu shows it: the label, and the key that does the
+    /// same after a dash when there is one.
+    pub fn label_in(self, keymap: &super::keymap::Keymap) -> String {
+        match self.action() {
+            Some(action) if !keymap.chords(action).is_empty() => {
+                format!("{} \u{2014} {}", self.label(), keymap.label(action))
+            }
+            _ => self.label(),
+        }
+    }
+
     pub fn label(self) -> String {
         match self {
             Self::Open(kind) => format!("{}\u{2026}", kind.title()),
-            // The shortcut on the row, because a tool nobody can find is a
-            // tool nobody uses — and this one is FL's muscle memory.
-            Self::Run(ToolAction::Legato) => "Legato \u{2014} Ctrl+L".to_string(),
+            Self::Run(ToolAction::Legato) => "Legato".to_string(),
             Self::Run(ToolAction::ImportMidi) => "Import MIDI file\u{2026}".to_string(),
             Self::Run(ToolAction::ImportScore) => "Import FL score\u{2026}".to_string(),
             Self::Run(ToolAction::ExportMidi) => "Export MIDI file\u{2026}".to_string(),

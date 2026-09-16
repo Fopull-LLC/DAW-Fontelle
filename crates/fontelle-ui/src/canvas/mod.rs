@@ -7,6 +7,7 @@ mod favorites;
 mod flopsynth;
 mod instrument;
 mod keybinds;
+mod keymap;
 mod menu;
 mod mixer;
 mod overlays;
@@ -71,10 +72,11 @@ pub use instrument::{
     instrument_hit, instrument_key_hit, instrument_layout, knob_value, next_value,
 };
 pub use keybinds::{
-    KEYBIND_SECTIONS, KEYBINDS_CLOSE, KEYBINDS_HINT, KEYBINDS_TITLE, Keybind, KeybindRow,
-    KeybindSection, KeybindsHit, KeybindsLayout, keybinds_hit, keybinds_layout,
-    keybinds_scroll_max, keybinds_scrolled,
+    KEYBIND_SECTIONS, KEYBINDS_CLOSE, KEYBINDS_HINT, KEYBINDS_LISTENING, KEYBINDS_PRESS,
+    KEYBINDS_RESET, KEYBINDS_TITLE, KeybindEntry, KeybindRow, KeybindSection, KeybindsHit,
+    KeybindsLayout, keybinds_hit, keybinds_layout, keybinds_scroll_max, keybinds_scrolled,
 };
+pub use keymap::{Action, Chord, ChordKey, Context, Keymap, Rebind};
 pub use menu::{
     CHOSEN_MARK, ContextMenu, MENU_TEXT_INSET, MenuEntry, NAME_CARET, STAR_WIDTH, context_menu_hit,
     context_menu_layout, context_menu_star_hit, input_menu_choice, input_menu_entries,

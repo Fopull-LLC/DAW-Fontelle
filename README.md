@@ -81,7 +81,7 @@ the selected channel; `Ctrl`+click puts it on a new one), and draw.
 | Scroll | wheel for pitch, `Shift`+wheel for time |
 | Zoom, about the pointer | `Ctrl`+wheel for time, `Ctrl+Shift`+wheel for pitch |
 | Find a soundfont | `Ctrl+F`, then type — it matches letters in order, so `gus` finds `GeneralUser GS` |
-| Every shortcut | `F1`, or the `?` on the start menu and the transport bar |
+| Every shortcut | `F1`, or the `?` on the start menu and the transport bar — click one there to change it |
 
 The command line is still there and does more than the window does — offline
 WAV bounces, MIDI file import, live MIDI in, recording a take. `--play-sf2

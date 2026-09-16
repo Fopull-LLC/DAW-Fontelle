@@ -783,6 +783,14 @@ pub struct WindowApp {
     /// and F1; shut by Esc, F1, its × or a press off the card. See
     /// `canvas::keybinds`.
     keybinds: Option<f32>,
+    /// What every key means (`canvas::keymap`). Read from the host's
+    /// settings once, written back through it on every change.
+    keymap: crate::canvas::Keymap,
+    /// The row on the sheet waiting for a new shortcut, while one is.
+    rebind: Option<crate::canvas::Rebind>,
+    /// What the last rebind took from whom, shown under the sheet's title
+    /// until the next press. Empty for nothing to say.
+    keybinds_note: String,
     /// Editors a click has asked for, opened on the next pass of the loop.
     ///
     /// A window can only be created with an `&ActiveEventLoop` in hand, and
@@ -1447,6 +1455,14 @@ impl WindowApp {
             editors: Vec::new(),
             welcome: None,
             keybinds: None,
+            keymap: options
+                .document
+                .as_ref()
+                .map_or_else(crate::canvas::Keymap::default, |doc| {
+                    crate::canvas::Keymap::with_overrides(&doc.keymap_overrides())
+                }),
+            rebind: None,
+            keybinds_note: String::new(),
             activation: None,
             activation_tried: false,
             pending_editors: Vec::new(),
@@ -2239,7 +2255,12 @@ impl WindowApp {
                         hover: welcome.hover,
                         message: &welcome.message,
                     }),
-                keybinds: self.keybinds,
+                keybinds: self.keybinds.map(|scroll| crate::render::KeybindsChrome {
+                    scroll,
+                    keymap: &self.keymap,
+                    listening: self.rebind.as_ref().map(|r| r.action()),
+                    note: &self.keybinds_note,
+                }),
             },
         );
 
@@ -2776,14 +2797,18 @@ impl WindowApp {
         }
         // The bar is above the panels, and the tabs above the panel they head,
         // so the order here is the order `press` reads them in.
-        let shortcut = |tip: &'static str, key: Option<&'static str>| match key {
-            Some(key) => format!("{tip}  ({key})"),
-            None => tip.to_string(),
+        // The key that does the same, after the words, read off the keymap
+        // — the page can change it, so no tip carries one of its own.
+        let shortcut = |tip: &'static str, action: Option<crate::canvas::Action>| match action {
+            Some(action) if !self.keymap.chords(action).is_empty() => {
+                format!("{tip}  ({})", self.keymap.label(action))
+            }
+            _ => tip.to_string(),
         };
         if let Some(what) = self.hover
             && let Some(tip) = what.tip()
         {
-            return Some(tip.to_string());
+            return Some(shortcut(tip, what.action()));
         }
         if let Some(tab) = self.hover_tab
             && let Some(tip) = tab.tip()
@@ -2793,12 +2818,15 @@ impl WindowApp {
         if let Some(control) = self.hover_control
             && let Some(tip) = control.tip()
         {
-            return Some(shortcut(tip, control.shortcut()));
+            return Some(shortcut(tip, control.action()));
         }
         if let Some(control) = self.hover_timeline
             && let Some(tip) = control.tip()
         {
-            return Some(shortcut(tip, control.shortcut()));
+            return Some(match control.gesture() {
+                Some(gesture) => format!("{tip}  ({gesture})"),
+                None => shortcut(tip, control.action()),
+            });
         }
         if let Some(what) = self.hover_mixer
             && let Some(tip) = what.tip()
@@ -3257,8 +3285,13 @@ impl ApplicationHandler for WindowApp {
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
+                // A release matters to exactly one thing: the shortcuts
+                // sheet listening for a chord, which reads it on the way up.
                 if event.state == winit::event::ElementState::Pressed {
                     self.key(&event);
+                    self.request_redraw_if_dirty();
+                } else if self.keybinds.is_some() {
+                    self.keybinds_key(&event);
                     self.request_redraw_if_dirty();
                 }
             }
@@ -4054,20 +4087,23 @@ impl WindowApp {
 
     /// What one editor makes of a key of its own. Whether it took it.
     fn editor_own_key(&mut self, kind: EditorKind, event: &winit::event::KeyEvent) -> bool {
-        use winit::keyboard::{Key, NamedKey};
-
         match kind {
-            EditorKind::Effect => match &event.logical_key {
-                // *"i cant easily delete bands i didnt mean to make in the eq
-                // plugin i wanna just be able to press delete with it
-                // selected."* The band chip's Ctrl-click does the same thing
-                // and is a chip you have to find first.
-                Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
+            // *"i cant easily delete bands i didnt mean to make in the eq
+            // plugin i wanna just be able to press delete with it
+            // selected."* The band chip's Ctrl-click does the same thing
+            // and is a chip you have to find first. Delete by default, and
+            // the keymap's to change (`Context::Editor`).
+            EditorKind::Effect => {
+                let action = self
+                    .chord_of(event)
+                    .and_then(|chord| self.keymap.action(&chord, crate::canvas::Context::Editor));
+                if action == Some(crate::canvas::Action::RemoveBand) {
                     self.remove_eq_band(self.eq_band);
                     true
+                } else {
+                    false
                 }
-                _ => false,
-            },
+            }
             // Flopsynth's Presets page has a search box, and the keyboard is
             // its only once you have clicked into it — see `flop_searching`.
             // Before that, keys fall through to the global keybinds like they
@@ -5128,13 +5164,26 @@ impl WindowApp {
                 &mut self.text,
                 crate::canvas::KEYBINDS_CLOSE,
             );
-            self.labels
-                .ensure_small(crate::canvas::KEYBINDS_HINT, &font, &mut self.text);
+            for small in [
+                crate::canvas::KEYBINDS_HINT,
+                crate::canvas::KEYBINDS_LISTENING,
+                crate::canvas::KEYBINDS_PRESS,
+                crate::canvas::KEYBINDS_RESET,
+            ] {
+                self.labels.ensure_small(small, &font, &mut self.text);
+            }
+            if !self.keybinds_note.is_empty() {
+                let note = self.keybinds_note.clone();
+                self.labels.ensure_small(&note, &font, &mut self.text);
+            }
             for section in crate::canvas::KEYBIND_SECTIONS {
                 want(&mut self.labels, &mut self.text, section.title);
                 for bind in section.binds {
-                    self.labels.ensure_small(bind.keys, &font, &mut self.text);
-                    self.labels.ensure_small(bind.does, &font, &mut self.text);
+                    // The keys as the map has them now, which is what the
+                    // chip draws.
+                    let keys = bind.keys(&self.keymap);
+                    self.labels.ensure_small(&keys, &font, &mut self.text);
+                    self.labels.ensure_small(bind.does(), &font, &mut self.text);
                 }
             }
         }
@@ -5667,10 +5716,25 @@ impl WindowApp {
         // so does a press off the card, the way a click away from a menu
         // shuts the menu; a press on the card is nothing.
         if self.keybinds.is_some() {
+            use crate::canvas::KeybindsHit;
             let layout = self.keybinds_layout();
-            if crate::canvas::keybinds_hit(&layout, x, y) != crate::canvas::KeybindsHit::Card {
-                self.close_keybinds();
+            // A press anywhere ends a listen without a binding: the row was
+            // waiting for keys, and a click is not keys.
+            self.rebind = None;
+            self.keybinds_note.clear();
+            match crate::canvas::keybinds_hit(&layout, x, y) {
+                KeybindsHit::Close | KeybindsHit::Outside => self.close_keybinds(),
+                KeybindsHit::Reset => {
+                    self.keymap.reset();
+                    self.save_keymap();
+                    self.keybinds_note = "Every shortcut is back to its default".to_string();
+                }
+                KeybindsHit::Row(action) if button == winit::event::MouseButton::Left => {
+                    self.rebind = Some(crate::canvas::Rebind::new(action));
+                }
+                KeybindsHit::Row(_) | KeybindsHit::Card => {}
             }
+            self.tree.invalidate_rect(self.layout.window);
             return;
         }
         // A toast's Undo takes the press before whatever is under it does.
@@ -8920,8 +8984,96 @@ impl WindowApp {
     }
 
     fn close_keybinds(&mut self) {
+        self.rebind = None;
+        self.keybinds_note.clear();
         if self.keybinds.take().is_some() {
             self.tree.invalidate_rect(self.layout.window);
+        }
+    }
+
+    /// Hands the map's changes to the host to remember. On every change,
+    /// not on quit — a shortcut changed and lost would be worse than one
+    /// that could not be changed.
+    fn save_keymap(&mut self) {
+        if let Some(doc) = &mut self.options.document {
+            doc.set_keymap_overrides(self.keymap.overrides());
+        }
+    }
+
+    /// A key, pressed or released, while the sheet is up. The sheet has the
+    /// whole keyboard: a page that let `D` through to the delete tool behind
+    /// it would be a page that edits.
+    ///
+    /// While a row is listening every key is the new shortcut's — except
+    /// Esc, which keeps the old one — and the chord is read on the
+    /// **release** of the key, with whatever modifiers were down at the
+    /// press or the release (`canvas::Rebind`). Otherwise Esc and the Help
+    /// binding shut the page.
+    fn keybinds_key(&mut self, event: &winit::event::KeyEvent) {
+        use winit::event::ElementState;
+        use winit::keyboard::{Key, NamedKey};
+        let pressed = event.state == ElementState::Pressed;
+        if let Some(listen) = &mut self.rebind {
+            if pressed && event.logical_key == Key::Named(NamedKey::Escape) {
+                self.rebind = None;
+                self.tree.invalidate_rect(self.layout.window);
+                return;
+            }
+            // Repeats are the key still down, not pressed again.
+            if pressed && event.repeat {
+                return;
+            }
+            let key = crate::canvas::ChordKey::of(&event.logical_key);
+            let (ctrl, shift, alt) = (
+                self.modifiers.control_key(),
+                self.modifiers.shift_key(),
+                self.modifiers.alt_key(),
+            );
+            let committed = if pressed {
+                listen.press(key, ctrl, shift, alt)
+            } else {
+                listen.release(key, ctrl, shift, alt)
+            };
+            if let Some(chord) = committed {
+                let action = listen.action();
+                self.rebind = None;
+                let taken = self.keymap.rebind(action, chord);
+                self.save_keymap();
+                // Say what the chord was taken from, if anything: a binding
+                // that silently stopped working somewhere else is the one
+                // thing a rebind must not do.
+                self.keybinds_note = match taken.as_slice() {
+                    [] => String::new(),
+                    [one] => format!(
+                        "{} is now {} \u{2014} it was {}'s, which is unbound until you give it a key",
+                        chord.label(),
+                        action.does(),
+                        one.does()
+                    ),
+                    many => format!(
+                        "{} is now {} \u{2014} taken from {}",
+                        chord.label(),
+                        action.does(),
+                        many.iter()
+                            .map(|a| a.does())
+                            .collect::<Vec<_>>()
+                            .join(" and ")
+                    ),
+                };
+                self.tree.invalidate_rect(self.layout.window);
+            }
+            return;
+        }
+        if !pressed {
+            return;
+        }
+        let closes = event.logical_key == Key::Named(NamedKey::Escape)
+            || self
+                .chord_of(event)
+                .and_then(|chord| self.keymap.action(&chord, crate::canvas::Context::Studio))
+                == Some(crate::canvas::Action::Help);
+        if closes {
+            self.close_keybinds();
         }
     }
 
@@ -10627,7 +10779,7 @@ impl WindowApp {
                 .iter()
                 .enumerate()
                 .map(|(index, item)| {
-                    let entry = MenuEntry::new(item.label());
+                    let entry = MenuEntry::new(item.label_in(&self.keymap));
                     if index == crate::canvas::ToolKind::ALL.len() {
                         entry.after_rule()
                     } else {
@@ -12970,12 +13122,21 @@ impl WindowApp {
 
     // ---------------------------------------------------------- keyboard ---
 
-    /// The subset of §16.5's keymap the gate needs. Every binding here is
-    /// hard-coded, and §16.5 says all of them are remappable — the map is a
-    /// later item, and one binding written down twice is one to find and move.
+    /// The chord a key event is, with the modifiers held right now — or
+    /// `None` for a key that is no chord on its own (a modifier, a dead key).
+    fn chord_of(&self, event: &winit::event::KeyEvent) -> Option<crate::canvas::Chord> {
+        let key = crate::canvas::ChordKey::of(&event.logical_key)?;
+        Some(crate::canvas::Chord::new(
+            self.modifiers.control_key(),
+            self.modifiers.shift_key(),
+            self.modifiers.alt_key(),
+            key,
+        ))
+    }
+
     /// The keys that mean the same thing in every window, answered before
-    /// anything that depends on which canvas has the keyboard. Whether one of
-    /// them was pressed.
+    /// anything that depends on which canvas has the keyboard. Whether one
+    /// of them was pressed.
     ///
     /// Reported from using the studio: *"cannot use keybinds to like pause and
     /// play when i have one of the opened windows like an eq plugin window
@@ -12987,42 +13148,46 @@ impl WindowApp {
     /// **These and no others.** Space is the transport, Ctrl+Z is the history
     /// and Ctrl+S is the file, and none of the three is a statement about a
     /// canvas; the tool keys and Delete are, and they stay where the canvas
-    /// that owns them can hear them.
+    /// that owns them can hear them. Which keys they *are* is the keymap's
+    /// business (`canvas::keymap`, `Context::Global`): §16.5 says every
+    /// binding is remappable, and the shortcuts page is where.
     fn global_key(&mut self, event: &winit::event::KeyEvent) -> bool {
-        use winit::keyboard::{Key, NamedKey};
-
-        let ctrl = self.modifiers.control_key();
-        let shift = self.modifiers.shift_key();
-        match &event.logical_key {
+        use crate::canvas::{Action, Context};
+        let Some(chord) = self.chord_of(event) else {
+            return false;
+        };
+        // Asked in the studio's context: the global actions answer in every
+        // context, and this function is only ever the *global* half of a
+        // window's keys — the editor windows ask their own half first.
+        let Some(action) = self.keymap.action(&chord, Context::Studio) else {
+            return false;
+        };
+        if action.context() != Context::Global {
+            return false;
+        }
+        match action {
             // Play from the marker; press it again and the playhead comes back
             // to the marker. See `crate::transport::TransportAction`.
-            Key::Named(NamedKey::Space) => self.transport(TransportHit::Play),
+            Action::Play => self.transport(TransportHit::Play),
             // And the front of the song, which is what the stop square does.
-            Key::Named(NamedKey::Home) => self.transport(TransportHit::Stop),
-            Key::Character(c) => match c.to_lowercase().as_str() {
-                "z" if ctrl && !shift => self.undo(),
-                "z" if ctrl && shift => self.redo(),
-                "y" if ctrl => self.redo(),
-                "s" if ctrl => self.save(),
-                // Beside Ctrl+S, because bouncing is the other thing you do to
-                // a whole project. The button is on the Projects tab; this is
-                // so you do not have to go there.
-                "e" if ctrl && !shift => self.export(),
-                // Ctrl+Shift+E saves the song out as a `.mid` — the other
-                // export, sharing E with the WAV bounce the way Ctrl+Shift+Z
-                // shares Z with undo. Also on the roll's Tools menu.
-                "e" if ctrl && shift => self.export_midi(),
-                // *"make ctrl + m toggle the metronome."* A transport switch,
-                // so it is here with Space rather than with the canvas keys:
-                // wanting the click on while you play a part in is not a
-                // statement about which panel you were last looking at, and
-                // the editor windows answer this function too.
-                //
-                // It took Ctrl+M off muting the selected clips, which has
-                // moved to Ctrl+Shift+M — see `TimelineControl::Mute`.
-                "m" if ctrl && !shift => self.transport(TransportHit::ToggleMetronome),
-                _ => return false,
-            },
+            Action::Stop => self.transport(TransportHit::Stop),
+            Action::Undo => self.undo(),
+            Action::Redo => self.redo(),
+            Action::Save => self.save(),
+            // Beside Ctrl+S, because bouncing is the other thing you do to a
+            // whole project. The button is on the Projects tab; this is so
+            // you do not have to go there.
+            Action::ExportWav => self.export(),
+            // The other export, sharing E with the WAV bounce the way
+            // Ctrl+Shift+Z shares Z with undo. Also on the roll's Tools menu.
+            Action::ExportMidi => self.export_midi(),
+            // *"make ctrl + m toggle the metronome."* A transport switch, so
+            // it is here with Space rather than with the canvas keys: wanting
+            // the click on while you play a part in is not a statement about
+            // which panel you were last looking at, and the editor windows
+            // answer this function too.
+            Action::Metronome => self.transport(TransportHit::ToggleMetronome),
+            Action::Help => self.open_keybinds(),
             _ => return false,
         }
         true
@@ -13030,8 +13195,6 @@ impl WindowApp {
 
     fn key(&mut self, event: &winit::event::KeyEvent) {
         use winit::keyboard::{Key, NamedKey};
-
-        let ctrl = self.modifiers.control_key();
 
         // A menu is in front of everything it was dropped over, so it has the
         // keyboard while it is open — which is what lets the plugin picker be
@@ -13046,23 +13209,22 @@ impl WindowApp {
         // it would be a page that edits — and two keys shut it. Before the
         // start menu, because it opens over that too.
         if self.keybinds.is_some() {
-            if matches!(
-                event.logical_key,
-                Key::Named(NamedKey::Escape) | Key::Named(NamedKey::F1)
-            ) {
-                self.close_keybinds();
-            }
+            self.keybinds_key(event);
             return;
         }
 
         // The start menu has the keyboard while it is up, and answers two
         // keys: Escape is "just let me in", the blank studio underneath, and
-        // F1 is the page its `?` opens.
+        // the Help binding is the page its `?` opens.
         if self.welcome.is_some() {
-            match event.logical_key {
-                Key::Named(NamedKey::Escape) => self.close_welcome(),
-                Key::Named(NamedKey::F1) => self.open_keybinds(),
-                _ => {}
+            if event.logical_key == Key::Named(NamedKey::Escape) {
+                self.close_welcome();
+            } else if self
+                .chord_of(event)
+                .and_then(|chord| self.keymap.action(&chord, crate::canvas::Context::Studio))
+                == Some(crate::canvas::Action::Help)
+            {
+                self.open_keybinds();
             }
             return;
         }
@@ -13174,8 +13336,63 @@ impl WindowApp {
             return;
         }
 
+        // Esc is not a binding: every prompt and page relies on it being
+        // itself, so it is answered here and cannot be given away.
+        if event.logical_key == Key::Named(NamedKey::Escape) {
+            // A menu that is open is what Escape is *for*; only once it is
+            // shut does Escape mean "drop the selection".
+            if let Some((target, menu)) = self.menu.take() {
+                // Escaping the import question drops it, the way clicking
+                // away from it does.
+                if matches!(target, MenuTarget::ImportChoice)
+                    && let Some(doc) = &mut self.options.document
+                {
+                    doc.cancel_import();
+                }
+                self.tree.invalidate_rect(menu.frame);
+                return;
+            }
+            if self.tools_panel.take().is_some() {
+                self.tree.invalidate(PANEL);
+                return;
+            }
+            if self.lane_menu.take().is_some() {
+                self.tree.invalidate(PANEL);
+                return;
+            }
+            self.roll.clear_selection();
+            self.timeline.clear_selection();
+            self.tree.invalidate(PANEL);
+            self.tree.invalidate(TIMELINE);
+            return;
+        }
+        // Nor are the arrows: four directions by four modifier sets with one
+        // meaning is a table (`arrow`), not a list of bindings.
         match &event.logical_key {
-            Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
+            Key::Named(NamedKey::ArrowUp) => return self.arrow(0, 1),
+            Key::Named(NamedKey::ArrowDown) => return self.arrow(0, -1),
+            Key::Named(NamedKey::ArrowLeft) => return self.arrow(-1, 0),
+            Key::Named(NamedKey::ArrowRight) => return self.arrow(1, 0),
+            _ => {}
+        }
+
+        // Everything else is a binding, and the keymap says which — the
+        // studio's own context, with the global ones already answered above.
+        let Some(chord) = self.chord_of(event) else {
+            return;
+        };
+        let Some(action) = self.keymap.action(&chord, crate::canvas::Context::Studio) else {
+            return;
+        };
+        self.studio_action(action);
+    }
+
+    /// One of the studio's own actions, from whichever key the map binds it
+    /// to. The reasoning for each is with the action.
+    fn studio_action(&mut self, action: crate::canvas::Action) {
+        use crate::canvas::Action;
+        match action {
+            Action::DeleteSelection => {
                 // Whichever canvas was last pressed owns the key: "delete the
                 // selection" has two meanings and no reading that means both.
                 if self.focus == Focus::Timeline {
@@ -13194,140 +13411,108 @@ impl WindowApp {
                     doc.end_gesture();
                 }
             }
-            Key::Named(NamedKey::Escape) => {
-                // A menu that is open is what Escape is *for*; only once it is
-                // shut does Escape mean "drop the selection".
-                if let Some((target, menu)) = self.menu.take() {
-                    // Escaping the import question drops it, the way clicking
-                    // away from it does.
-                    if matches!(target, MenuTarget::ImportChoice)
-                        && let Some(doc) = &mut self.options.document
-                    {
-                        doc.cancel_import();
-                    }
-                    self.tree.invalidate_rect(menu.frame);
-                    return;
-                }
-                if self.tools_panel.take().is_some() {
+            Action::SelectAll => {
+                if let Some(doc) = &self.options.document {
+                    self.roll.select_all(doc.notes());
                     self.tree.invalidate(PANEL);
-                    return;
                 }
-                if self.lane_menu.take().is_some() {
-                    self.tree.invalidate(PANEL);
-                    return;
-                }
-                self.roll.clear_selection();
-                self.timeline.clear_selection();
-                self.tree.invalidate(PANEL);
-                self.tree.invalidate(TIMELINE);
             }
-            Key::Named(NamedKey::ArrowUp) => self.arrow(0, 1),
-            Key::Named(NamedKey::ArrowDown) => self.arrow(0, -1),
-            Key::Named(NamedKey::ArrowLeft) => self.arrow(-1, 0),
-            Key::Named(NamedKey::ArrowRight) => self.arrow(1, 0),
-            // The keyboard shortcuts page — the same one the `?` on the bar
-            // opens, for when the bar is too narrow to show one.
-            Key::Named(NamedKey::F1) => self.open_keybinds(),
+            Action::Copy => self.copy(),
+            Action::Cut => self.cut(),
+            Action::Paste => self.paste(),
+            Action::Duplicate => self.duplicate(),
+            // Mute what is selected on the arrangement. **Shifted** by
+            // default, since Ctrl+M became the metronome — see `global_key`.
+            Action::MuteClips => {
+                let edits = self.timeline.toggle_mute(&self.clips);
+                self.apply_arrange_edits(edits);
+                if let Some(doc) = &mut self.options.document {
+                    doc.end_gesture();
+                }
+            }
+            // *"pressing M while having a mixer track selected toggles its
+            // mute and pressing N solos."* Only while the mixer is the open
+            // tab: bare letters belong to whichever canvas is showing, the
+            // same rule the tool keys follow, and `M` over the roll is not
+            // about a mixer strip.
+            Action::MuteTrack | Action::SoloTrack => {
+                if self.tab == EditorTab::Mixer {
+                    self.toggle_selected_track(if action == Action::MuteTrack {
+                        crate::canvas::MixerKey::Mute
+                    } else {
+                        crate::canvas::MixerKey::Solo
+                    });
+                }
+            }
+            // Show and hide the arrangement strip.
+            Action::ToggleTimeline => self.toggle_timeline(),
+            // **Two things, and the selection decides which.** FL binds
+            // Ctrl+L to Quick Legato in the piano roll, which is what was
+            // asked for: *"if i press ctrl l with a note selection in the
+            // piano roll it makes all the notes lengths not have gaps."*
+            // With no notes in hand there is no phrase to close up, and the
+            // key keeps the job it had — song or clip, which the chip on the
+            // transport bar also does but which a narrow window has no room
+            // to show (see `MIN_RULER_WIDTH`), so the mode stays reachable
+            // whatever the bar had room for.
+            //
+            // The split is safe because the two can never both apply:
+            // legato needs a note selection in the roll, and the play mode
+            // is not about notes at all.
+            Action::LegatoOrPlayMode => self.legato_or_play_mode(),
+            Action::Search => {
+                self.searching = true;
+                self.search_entry = crate::canvas::TextEntry::new(self.query.clone());
+                self.tree.invalidate(BROWSER);
+            }
+            // *"make it so the f key toggles the tab between instrument and
+            // prefab."* The rack's two lists.
+            Action::RackTab => self.toggle_rack_tab(),
+            // Tools, from the FL keymap.
+            Action::DrawTool => self.pick_tool(Tool::Draw, crate::canvas::TimelineTool::Draw),
+            Action::PaintTool => self.set_tool(Tool::Paint),
+            Action::SelectTool => self.pick_tool(Tool::Select, crate::canvas::TimelineTool::Select),
+            Action::DeleteTool => self.set_tool(Tool::Delete),
+            // Snap in the roll, Stretch on the arrangement — see
+            // `snap_or_stretch`.
+            Action::SnapOrStretch => self.snap_or_stretch(),
+            Action::LaneProperty => self.cycle_lane_property(),
+            Action::Ghosts => self.cycle_ghosts(),
+            // `A` for a slide by default: `S` is the snap and every other
+            // letter in the word is a tool. FL uses a right-click menu, which
+            // this window does not have yet.
+            Action::Slide => self.toggle_slide(),
+            // The Tools panel. `T` for tools, and no FL binding to clash with
+            // — FL has no equivalent panel.
+            Action::ToolsPanel => self.toggle_tools_panel(),
+            // The cut tool. `C` is FL's, and `Ctrl+C` is copy — the modifier
+            // is what keeps them apart, as it does for `B` (paint) and
+            // `Ctrl+B` (duplicate).
+            Action::SliceTool => self.pick_tool(Tool::Slice, crate::canvas::TimelineTool::Slice),
+            Action::ZoomIn => self.zoom(1.25, 1.0),
+            Action::ZoomOut => self.zoom(0.8, 1.0),
+            // *"swap between piano roll and mixer by pressing 1 and 2."* The
+            // number row used to pick tools, a second binding for keys that
+            // already had FL's letters, and went unused for exactly that
+            // reason.
+            Action::ShowRoll => self.show_tab(EditorTab::Roll),
+            Action::ShowMixer => self.show_tab(EditorTab::Mixer),
             // *"pressing tab should toggle between the piano/mixer section
             // being larger or smaller than the arrangement section."* See
             // `layout::toggled_timeline_height` for the rule.
-            Key::Named(NamedKey::Tab) => self.toggle_split(),
-            Key::Character(c) => {
-                let c = c.to_lowercase();
-                match c.as_str() {
-                    "a" if ctrl => {
-                        if let Some(doc) = &self.options.document {
-                            self.roll.select_all(doc.notes());
-                            self.tree.invalidate(PANEL);
-                        }
-                    }
-                    "c" if ctrl => self.copy(),
-                    "x" if ctrl => self.cut(),
-                    "v" if ctrl => self.paste(),
-                    "b" if ctrl => self.duplicate(),
-                    "d" if ctrl => self.duplicate(),
-                    // Mute what is selected on the arrangement. **Shifted**,
-                    // since Ctrl+M became the metronome — see `global_key`.
-                    "m" if ctrl && self.modifiers.shift_key() => {
-                        let edits = self.timeline.toggle_mute(&self.clips);
-                        self.apply_arrange_edits(edits);
-                        if let Some(doc) = &mut self.options.document {
-                            doc.end_gesture();
-                        }
-                    }
-                    // *"pressing M while having a mixer track selected toggles
-                    // its mute and pressing N solos."* Only while the mixer is
-                    // the open tab: bare letters belong to whichever canvas is
-                    // showing, the same rule the tool keys follow, and `M` over
-                    // the roll is not about a mixer strip. See
-                    // `canvas::mixer_key`.
-                    "m" | "n" if !ctrl && self.tab == EditorTab::Mixer => {
-                        if let Some(key) = crate::canvas::mixer_key(&c) {
-                            self.toggle_selected_track(key);
-                        }
-                    }
-                    // Show and hide the arrangement strip.
-                    "t" if ctrl => self.toggle_timeline(),
-                    // **Two things, and the selection decides which.** FL
-                    // binds Ctrl+L to Quick Legato in the piano roll, which is
-                    // what was asked for: *"if i press ctrl l with a note
-                    // selection in the piano roll it makes all the notes
-                    // lengths not have gaps."* With no notes in hand there is
-                    // no phrase to close up, and the key keeps the job it had
-                    // — song or clip, which the chip on the transport bar also
-                    // does but which a narrow window has no room to show (see
-                    // `MIN_RULER_WIDTH`), so the mode stays reachable whatever
-                    // the bar had room for.
-                    //
-                    // The split is safe because the two can never both apply:
-                    // legato needs a note selection in the roll, and the play
-                    // mode is not about notes at all.
-                    "l" if ctrl => self.legato_or_play_mode(),
-                    "f" if ctrl => {
-                        self.searching = true;
-                        self.search_entry = crate::canvas::TextEntry::new(self.query.clone());
-                        self.tree.invalidate(BROWSER);
-                    }
-                    // *"make it so the f key toggles the tab between
-                    // instrument and prefab."* The rack's two lists, and no
-                    // FL binding to clash with.
-                    "f" => self.toggle_rack_tab(),
-                    // Tools, from the FL keymap.
-                    "p" => self.pick_tool(Tool::Draw, crate::canvas::TimelineTool::Draw),
-                    "b" => self.set_tool(Tool::Paint),
-                    "e" => self.pick_tool(Tool::Select, crate::canvas::TimelineTool::Select),
-                    "d" => self.set_tool(Tool::Delete),
-                    // Snap in the roll, Stretch on the arrangement — see
-                    // `snap_or_stretch`.
-                    "s" => self.snap_or_stretch(),
-                    "l" => self.cycle_lane_property(),
-                    "g" => self.cycle_ghosts(),
-                    // `A` for a slide: `S` is the snap and every other letter
-                    // in the word is a tool. FL uses a right-click menu, which
-                    // this window does not have yet.
-                    "a" => self.toggle_slide(),
-                    // The Tools panel. `T` for tools, and no FL binding to
-                    // clash with — FL has no equivalent panel.
-                    "t" => self.toggle_tools_panel(),
-                    // The cut tool. `C` is FL's, and `Ctrl+C` is copy — the
-                    // modifier is what keeps them apart, as it does for `B`
-                    // (paint) and `Ctrl+B` (duplicate).
-                    "c" => self.pick_tool(Tool::Slice, crate::canvas::TimelineTool::Slice),
-                    "+" | "=" => self.zoom(1.25, 1.0),
-                    "-" | "_" => self.zoom(0.8, 1.0),
-                    // *"swap between piano roll and mixer by pressing 1 and
-                    // 2."* The number row used to pick tools, a second
-                    // binding for keys that already had FL's letters, and
-                    // went unused for exactly that reason.
-                    "1" | "2" => {
-                        if let Some(tab) = crate::layout::editor_tab_for_key(&c) {
-                            self.show_tab(tab);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
+            Action::SwapSplit => self.toggle_split(),
+            // The global ones are `global_key`'s and the editor window's is
+            // `editor_own_key`'s; neither reaches here.
+            Action::Play
+            | Action::Stop
+            | Action::Metronome
+            | Action::Save
+            | Action::Undo
+            | Action::Redo
+            | Action::ExportWav
+            | Action::ExportMidi
+            | Action::Help
+            | Action::RemoveBand => {}
         }
     }
 

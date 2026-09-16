@@ -541,12 +541,29 @@ fn the_bar_has_a_help_button_beside_the_tempo_cluster_and_it_is_a_control() {
         None,
         "the help page is the window's to open, not the engine's"
     );
-    assert!(
-        TransportHit::Help
-            .tip()
-            .is_some_and(|tip| tip.contains("F1")),
-        "the tip names the key that does the same"
+    // The tip names no key of its own: the key is the keymap's to say, since
+    // the page can change it — `action()` is what the window appends.
+    use fontelle_ui::canvas::Action;
+    assert_eq!(TransportHit::Help.action(), Some(Action::Help));
+    assert_eq!(TransportHit::Play.action(), Some(Action::Play));
+    assert_eq!(
+        TransportHit::ToggleMetronome.action(),
+        Some(Action::Metronome)
     );
+    assert_eq!(TransportHit::Tempo.action(), None);
+    for what in [
+        TransportHit::Play,
+        TransportHit::Stop,
+        TransportHit::ToggleMetronome,
+        TransportHit::Mode,
+        TransportHit::Help,
+    ] {
+        let tip = what.tip().unwrap_or("");
+        assert!(
+            !tip.contains("F1") && !tip.contains("Ctrl") && !tip.contains("Space"),
+            "{what:?}'s tip {tip:?} hard-codes a key the page can change"
+        );
+    }
 }
 
 #[test]

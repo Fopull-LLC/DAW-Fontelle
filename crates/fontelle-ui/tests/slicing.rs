@@ -219,7 +219,11 @@ fn the_tool_is_on_the_toolbar_and_answers_to_c() {
         toolbar_hit(&bar, chip.x + chip.width / 2.0, chip.y + chip.height / 2.0),
         Some(RollControl::Tool(Tool::Slice))
     );
-    assert_eq!(RollControl::Tool(Tool::Slice).shortcut(), Some("C"));
+    assert_eq!(
+        RollControl::Tool(Tool::Slice).action(),
+        Some(fontelle_ui::canvas::Action::SliceTool),
+        "the shortcut is the keymap's to say, so the button names the action"
+    );
     assert!(
         RollControl::Tool(Tool::Slice).icon().is_some(),
         "it draws a glyph like every other tool"

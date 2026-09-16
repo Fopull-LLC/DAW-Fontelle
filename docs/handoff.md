@@ -16,6 +16,14 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-15 (v0.5.0).** Shortcuts are remappable. **Adding a
+binding now means adding an `Action`** in `canvas/keymap.rs` (its id,
+words, context and default) and a line in `KEYBIND_SECTIONS`; the window
+dispatches on the action in `studio_action`/`global_key`. Never match on a
+key literal again — `tests/keymap.rs` and `tests/keybinds.rs` hold the map
+and the page to each other. Ids are permanent (they are what `settings.json`
+keeps under `keybinds`).
+
 **Updated 2026-09-15 (v0.4.0).** The second UX pass is committed and
 tagged; `PROGRESS.md`'s top entry is the build. New places to know:
 `canvas/keybinds.rs` is the shortcuts catalogue — **add a line there when
