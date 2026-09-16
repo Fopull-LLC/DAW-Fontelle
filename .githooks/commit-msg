@@ -1,0 +1,8 @@
+#!/bin/sh
+# Rejects a commit whose message carries a tool-attribution line: a
+# Co-Authored-By trailer, or a "Generated with …" / robot line.
+# Enable with:  git config core.hooksPath .githooks
+if grep -qiE '^co-authored-by:|generated with|🤖' "$1"; then
+    echo "commit-msg: attribution trailers are not used in this repository" >&2
+    exit 1
+fi

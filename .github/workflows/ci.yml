@@ -14,6 +14,37 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  # Ty's standing rule (the hub's PROTOCOL.md §3a): no attribution trailers
+  # in any commit. `.githooks/commit-msg` refuses one locally; this refuses
+  # one that got past a clone without the hook.
+  trailers:
+    name: no co-author trailers
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: scan pushed commits
+        env:
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          if [ -n "$BASE" ]; then
+            range="origin/$BASE..HEAD"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE" 2>/dev/null; then
+            range="$BEFORE..HEAD"
+          else
+            range="HEAD~1..HEAD"
+          fi
+          bad=0
+          for c in $(git rev-list "$range"); do
+            if git show -s --format=%B "$c" | grep -qiE '^co-authored-by:|generated with|🤖'; then
+              echo "::error::$c carries an attribution line"; bad=1
+            fi
+          done
+          exit $bad
+
   fmt:
     runs-on: ubuntu-latest
     steps:
