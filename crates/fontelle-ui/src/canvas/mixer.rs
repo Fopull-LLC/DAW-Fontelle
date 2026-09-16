@@ -875,6 +875,16 @@ impl MixerHit {
             Self::Nothing => return None,
         })
     }
+
+    /// The keymap action that does the same to the selected track, for the
+    /// tip — the key is the map's to say.
+    pub fn action(self) -> Option<super::keymap::Action> {
+        Some(match self {
+            Self::Mute(_) => super::keymap::Action::MuteTrack,
+            Self::Solo(_) => super::keymap::Action::SoloTrack,
+            _ => return None,
+        })
+    }
 }
 
 /// What a press on a strip's **name** does.

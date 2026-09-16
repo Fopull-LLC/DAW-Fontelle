@@ -788,6 +788,8 @@ pub struct WindowApp {
     keymap: crate::canvas::Keymap,
     /// The row on the sheet waiting for a new shortcut, while one is.
     rebind: Option<crate::canvas::Rebind>,
+    /// The rebindable row under the pointer, so it can light up.
+    keybinds_hover: Option<crate::canvas::Action>,
     /// What the last rebind took from whom, shown under the sheet's title
     /// until the next press. Empty for nothing to say.
     keybinds_note: String,
@@ -1462,6 +1464,7 @@ impl WindowApp {
                     crate::canvas::Keymap::with_overrides(&doc.keymap_overrides())
                 }),
             rebind: None,
+            keybinds_hover: None,
             keybinds_note: String::new(),
             activation: None,
             activation_tried: false,
@@ -2259,6 +2262,7 @@ impl WindowApp {
                     scroll,
                     keymap: &self.keymap,
                     listening: self.rebind.as_ref().map(|r| r.action()),
+                    hover: self.keybinds_hover,
                     note: &self.keybinds_note,
                 }),
             },
@@ -2596,6 +2600,22 @@ impl WindowApp {
     /// left here is the one match onto winit's vocabulary.
     fn update_cursor(&mut self) {
         let (x, y) = self.cursor;
+        // A hand over anything on the sheet a press does something to.
+        if self.keybinds.is_some() {
+            use crate::canvas::KeybindsHit;
+            let layout = self.keybinds_layout();
+            let wanted = match crate::canvas::keybinds_hit(&layout, x, y) {
+                KeybindsHit::Row(_) | KeybindsHit::Close | KeybindsHit::Reset => Pointer::Hand,
+                KeybindsHit::Card | KeybindsHit::Outside => Pointer::Default,
+            };
+            if wanted != self.pointer {
+                self.pointer = wanted;
+                if let Some(live) = &self.live {
+                    live.window.set_cursor(system_cursor(wanted));
+                }
+            }
+            return;
+        }
         if let Some(welcome) = &self.welcome {
             let wanted = match crate::canvas::welcome_hit(&welcome.layout, x, y) {
                 Some(_) => Pointer::Hand,
@@ -2697,6 +2717,22 @@ impl WindowApp {
     /// Recomputes what the pointer is over, dirtying the bar only if it
     /// changed.
     fn update_hover(&mut self) {
+        // The sheet is over everything, so while it is up the only hover
+        // that matters is its own: the row under the pointer lights up, and
+        // nothing under the sheet is told about the pointer at all.
+        if self.keybinds.is_some() {
+            let layout = self.keybinds_layout();
+            let over = match crate::canvas::keybinds_hit(&layout, self.cursor.0, self.cursor.1) {
+                crate::canvas::KeybindsHit::Row(action) => Some(action),
+                _ => None,
+            };
+            if over != self.keybinds_hover {
+                self.keybinds_hover = over;
+                self.tree.invalidate_rect(self.layout.window);
+            }
+            self.update_cursor();
+            return;
+        }
         if let Some(welcome) = &mut self.welcome {
             let over = crate::canvas::welcome_hit(&welcome.layout, self.cursor.0, self.cursor.1);
             if over != welcome.hover {
@@ -2795,6 +2831,12 @@ impl WindowApp {
         if self.drag != Drag::None {
             return None;
         }
+        // Nothing from under the shortcuts sheet: a tip for a button the
+        // sheet is covering would float over the page explaining a control
+        // nobody can see.
+        if self.keybinds.is_some() {
+            return None;
+        }
         // The bar is above the panels, and the tabs above the panel they head,
         // so the order here is the order `press` reads them in.
         // The key that does the same, after the words, read off the keymap
@@ -2813,7 +2855,7 @@ impl WindowApp {
         if let Some(tab) = self.hover_tab
             && let Some(tip) = tab.tip()
         {
-            return Some(tip.to_string());
+            return Some(shortcut(tip, tab.action()));
         }
         if let Some(control) = self.hover_control
             && let Some(tip) = control.tip()
@@ -2831,22 +2873,22 @@ impl WindowApp {
         if let Some(what) = self.hover_mixer
             && let Some(tip) = what.tip()
         {
-            return Some(tip.to_string());
+            return Some(shortcut(tip, what.action()));
         }
         if let Some(what) = self.hover_browser
             && let Some(tip) = what.tip()
         {
-            return Some(tip.to_string());
+            return Some(shortcut(tip, what.action()));
         }
         if let Some(what) = self.hover_rack
             && let Some(tip) = what.tip()
         {
-            return Some(tip.to_string());
+            return Some(shortcut(tip, what.action()));
         }
         if let Some(what) = self.hover_prefab
             && let Some(tip) = what.tip()
         {
-            return Some(tip.to_string());
+            return Some(shortcut(tip, what.action()));
         }
         None
     }
@@ -3263,6 +3305,8 @@ impl ApplicationHandler for WindowApp {
                     let layout = self.keybinds_layout();
                     self.keybinds = Some(crate::canvas::keybinds_scrolled(&layout, scroll, dy));
                     self.tree.invalidate_rect(self.layout.window);
+                    // The rows moved under a still pointer.
+                    self.update_hover();
                 } else if self.welcome.is_none() {
                     self.scroll_roll(dx, dy);
                 }
@@ -4021,6 +4065,15 @@ impl WindowApp {
             // Ctrl on it.
             WindowEvent::ModifiersChanged(state) => self.modifiers = state.state(),
 
+            // While the shortcuts sheet is up in the studio window it has
+            // the keyboard from *this* window too — F1 pressed here opened
+            // it, and a row listening there hears the chord pressed here,
+            // releases included. Without this the page would appear behind
+            // the editor and answer nothing typed at it.
+            WindowEvent::KeyboardInput { event, .. } if self.keybinds.is_some() => {
+                self.keybinds_key(&event);
+                self.request_redraw_if_dirty();
+            }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == winit::event::ElementState::Pressed =>
             {
@@ -4094,9 +4147,7 @@ impl WindowApp {
             // and is a chip you have to find first. Delete by default, and
             // the keymap's to change (`Context::Editor`).
             EditorKind::Effect => {
-                let action = self
-                    .chord_of(event)
-                    .and_then(|chord| self.keymap.action(&chord, crate::canvas::Context::Editor));
+                let action = self.action_of(event, crate::canvas::Context::Editor);
                 if action == Some(crate::canvas::Action::RemoveBand) {
                     self.remove_eq_band(self.eq_band);
                     true
@@ -8980,11 +9031,19 @@ impl WindowApp {
             self.end_tempo_entry(true);
         }
         self.keybinds = Some(0.0);
+        // The page is drawn in the studio window. Asked for from an editor
+        // window, that window is behind the one the keys are being typed
+        // at, so bring it forward where the desktop allows — and the editor
+        // routes its keys to the page either way (`editor_window_event`).
+        if let Some(live) = &self.live {
+            live.window.focus_window();
+        }
         self.tree.invalidate_rect(self.layout.window);
     }
 
     fn close_keybinds(&mut self) {
         self.rebind = None;
+        self.keybinds_hover = None;
         self.keybinds_note.clear();
         if self.keybinds.take().is_some() {
             self.tree.invalidate_rect(self.layout.window);
@@ -9023,7 +9082,8 @@ impl WindowApp {
             if pressed && event.repeat {
                 return;
             }
-            let key = crate::canvas::ChordKey::of(&event.logical_key);
+            use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+            let key = crate::canvas::ChordKey::of(&event.key_without_modifiers());
             let (ctrl, shift, alt) = (
                 self.modifiers.control_key(),
                 self.modifiers.shift_key(),
@@ -9068,9 +9128,7 @@ impl WindowApp {
             return;
         }
         let closes = event.logical_key == Key::Named(NamedKey::Escape)
-            || self
-                .chord_of(event)
-                .and_then(|chord| self.keymap.action(&chord, crate::canvas::Context::Studio))
+            || self.action_of(event, crate::canvas::Context::Studio)
                 == Some(crate::canvas::Action::Help);
         if closes {
             self.close_keybinds();
@@ -13124,14 +13182,33 @@ impl WindowApp {
 
     /// The chord a key event is, with the modifiers held right now — or
     /// `None` for a key that is no chord on its own (a modifier, a dead key).
+    ///
+    /// The key **without** its modifiers: with Shift held a `1` arrives as
+    /// `!` on one layout and `1` on another, and a chord that recorded the
+    /// `!` would be `Shift+!` here and nothing anywhere else. The chord is
+    /// the key that was pressed plus the modifiers that were held.
     fn chord_of(&self, event: &winit::event::KeyEvent) -> Option<crate::canvas::Chord> {
-        let key = crate::canvas::ChordKey::of(&event.logical_key)?;
+        use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+        let key = crate::canvas::ChordKey::of(&event.key_without_modifiers())?;
         Some(crate::canvas::Chord::new(
             self.modifiers.control_key(),
             self.modifiers.shift_key(),
             self.modifiers.alt_key(),
             key,
         ))
+    }
+
+    /// What a key press means in `context`: the chord it is, and failing
+    /// that the symbol it typed — see `Keymap::action_of_press` for why
+    /// Shift+= has to reach the `+` binding.
+    fn action_of(
+        &self,
+        event: &winit::event::KeyEvent,
+        context: crate::canvas::Context,
+    ) -> Option<crate::canvas::Action> {
+        let chord = self.chord_of(event)?;
+        let typed = crate::canvas::ChordKey::of(&event.logical_key);
+        self.keymap.action_of_press(&chord, typed, context)
     }
 
     /// The keys that mean the same thing in every window, answered before
@@ -13153,13 +13230,10 @@ impl WindowApp {
     /// binding is remappable, and the shortcuts page is where.
     fn global_key(&mut self, event: &winit::event::KeyEvent) -> bool {
         use crate::canvas::{Action, Context};
-        let Some(chord) = self.chord_of(event) else {
-            return false;
-        };
         // Asked in the studio's context: the global actions answer in every
         // context, and this function is only ever the *global* half of a
         // window's keys — the editor windows ask their own half first.
-        let Some(action) = self.keymap.action(&chord, Context::Studio) else {
+        let Some(action) = self.action_of(event, Context::Studio) else {
             return false;
         };
         if action.context() != Context::Global {
@@ -13219,9 +13293,7 @@ impl WindowApp {
         if self.welcome.is_some() {
             if event.logical_key == Key::Named(NamedKey::Escape) {
                 self.close_welcome();
-            } else if self
-                .chord_of(event)
-                .and_then(|chord| self.keymap.action(&chord, crate::canvas::Context::Studio))
+            } else if self.action_of(event, crate::canvas::Context::Studio)
                 == Some(crate::canvas::Action::Help)
             {
                 self.open_keybinds();
@@ -13378,10 +13450,7 @@ impl WindowApp {
 
         // Everything else is a binding, and the keymap says which — the
         // studio's own context, with the global ones already answered above.
-        let Some(chord) = self.chord_of(event) else {
-            return;
-        };
-        let Some(action) = self.keymap.action(&chord, crate::canvas::Context::Studio) else {
+        let Some(action) = self.action_of(event, crate::canvas::Context::Studio) else {
             return;
         };
         self.studio_action(action);

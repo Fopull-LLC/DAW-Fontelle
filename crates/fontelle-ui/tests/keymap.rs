@@ -62,18 +62,61 @@ fn a_chord_is_read_however_it_is_cased_or_spaced() {
 }
 
 #[test]
-fn shift_means_nothing_on_a_key_that_is_not_a_letter() {
-    // `+` is Shift+= on one keyboard and its own key on another, and the
-    // window has always treated the two as one. Recording the shift would
-    // make a binding that works on the keyboard it was made on and no other.
-    assert_eq!(chord("Shift++"), chord("+"));
-    assert_eq!(chord("Shift+1"), chord("1"));
+fn shift_is_part_of_every_chord_and_the_typed_symbol_is_only_a_fallback() {
+    // A chord is the key that was pressed plus the modifiers held — so
+    // Shift+1 is not 1, whatever `!` the layout prints for it. But `+` is
+    // Shift+= on a US keyboard and its own key on another, and the window
+    // has always taken both for zoom: so when a shifted non-letter is bound
+    // to nothing, the symbol it *typed* is tried next. The typed symbol
+    // never overrides a binding to the chord itself.
+    assert_ne!(chord("Shift+1"), chord("1"));
+    assert_ne!(chord("Shift+="), chord("="));
+    assert_eq!(chord("Shift++").label(), "Shift++");
+
+    let map = Keymap::default();
     assert_eq!(
-        Chord::new(true, true, false, ChordKey::Char('=')).label(),
-        "Ctrl+="
+        map.action_of_press(
+            &chord("Shift+="),
+            Some(ChordKey::Char('+')),
+            Context::Studio
+        ),
+        Some(Action::ZoomIn),
+        "Shift+= on a US keyboard types +, and + is zoom"
     );
-    // But on a letter it is a different chord.
-    assert_ne!(chord("Shift+M"), chord("M"));
+    assert_eq!(
+        map.action_of_press(
+            &chord("Shift+1"),
+            Some(ChordKey::Char('!')),
+            Context::Studio
+        ),
+        None,
+        "Shift+1 types !, which is bound to nothing — and 1 is not tried"
+    );
+    assert_eq!(
+        map.action_of_press(
+            &chord("Shift+M"),
+            Some(ChordKey::Char('m')),
+            Context::Studio
+        ),
+        None,
+        "a letter has no typed fallback: Shift+M is not M"
+    );
+    // A binding to the shifted chord itself wins over what it types.
+    let mut map = Keymap::default();
+    map.rebind(Action::Play, chord("Shift+="));
+    assert_eq!(
+        map.action_of_press(
+            &chord("Shift+="),
+            Some(ChordKey::Char('+')),
+            Context::Studio
+        ),
+        Some(Action::Play)
+    );
+    // And without shift there is nothing to fall back to.
+    assert_eq!(
+        map.action_of_press(&chord("="), Some(ChordKey::Char('=')), Context::Studio),
+        Some(Action::ZoomIn)
+    );
 }
 
 #[test]
@@ -443,5 +486,54 @@ fn a_named_key_makes_a_chord_too() {
     assert_eq!(
         listen.release(Some(ChordKey::F(5)), false, true, false),
         Some(chord("Shift+F5"))
+    );
+}
+
+// ------------------------------------------- what the keys are not ---
+
+#[test]
+fn an_arrow_is_not_a_chord_because_the_arrows_are_a_fixed_family() {
+    // Four directions by four modifier sets with one meaning is a table
+    // (`arrow`), answered before the map is asked — so a binding to an arrow
+    // could never fire, and the listener must not offer one.
+    for text in ["Up", "Down", "Left", "Right", "Ctrl+Up", "Shift+Left"] {
+        assert_eq!(Chord::parse(text), None, "{text:?} was read as a chord");
+    }
+    // And Esc, which every prompt and page relies on to be itself.
+    assert_eq!(Chord::parse("Esc"), None);
+    assert_eq!(Chord::parse("Escape"), None);
+}
+
+// ---------------------------- every control a key also drives says so ---
+
+#[test]
+fn the_controls_a_key_also_drives_name_their_action_so_their_tips_read_the_map() {
+    // *"make sure things like when a tooltip is shown it shows ur actual
+    // configured keybind."* A tip's key comes from `action()` and the map,
+    // never from the tip's own words — so every control with a key has one.
+    use fontelle_ui::canvas::{BrowserHit, BrowserMode, MixerHit, PrefabHit, RackHit};
+    use fontelle_ui::document::RackTab;
+    use fontelle_ui::layout::EditorTab;
+    assert_eq!(EditorTab::Roll.action(), Some(Action::ShowRoll));
+    assert_eq!(EditorTab::Mixer.action(), Some(Action::ShowMixer));
+    assert_eq!(MixerHit::Mute(0).action(), Some(Action::MuteTrack));
+    assert_eq!(MixerHit::Solo(3).action(), Some(Action::SoloTrack));
+    assert_eq!(MixerHit::Fader(0).action(), None);
+    assert_eq!(
+        RackHit::Tab(RackTab::Prefabs).action(),
+        Some(Action::RackTab)
+    );
+    assert_eq!(
+        PrefabHit::Tab(RackTab::Instruments).action(),
+        Some(Action::RackTab)
+    );
+    assert_eq!(RackHit::Add.action(), None);
+    assert_eq!(
+        BrowserHit::Search(BrowserMode::Sounds).action(),
+        Some(Action::Search)
+    );
+    assert_eq!(
+        BrowserHit::Search(BrowserMode::Settings).action(),
+        Some(Action::Search)
     );
 }

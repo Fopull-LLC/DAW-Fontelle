@@ -44,10 +44,6 @@ pub enum ChordKey {
     Insert,
     PageUp,
     PageDown,
-    Up,
-    Down,
-    Left,
-    Right,
     /// F1 to F24.
     F(u8),
 }
@@ -66,10 +62,6 @@ impl ChordKey {
             Self::Insert => "Insert".to_string(),
             Self::PageUp => "PageUp".to_string(),
             Self::PageDown => "PageDown".to_string(),
-            Self::Up => "Up".to_string(),
-            Self::Down => "Down".to_string(),
-            Self::Left => "Left".to_string(),
-            Self::Right => "Right".to_string(),
             Self::F(n) => format!("F{n}"),
         }
     }
@@ -90,10 +82,9 @@ impl ChordKey {
             "insert" => Self::Insert,
             "pageup" => Self::PageUp,
             "pagedown" => Self::PageDown,
-            "up" => Self::Up,
-            "down" => Self::Down,
-            "left" => Self::Left,
-            "right" => Self::Right,
+            // The arrows are a fixed family (`WindowApp::arrow`) answered
+            // before the map is asked, and Esc is every prompt's own: neither
+            // is a chord, so neither reads as one.
             other => {
                 let n: u8 = other.strip_prefix('f')?.parse().ok()?;
                 if !(1..=24).contains(&n) {
@@ -128,10 +119,6 @@ impl ChordKey {
                 NamedKey::Insert => Self::Insert,
                 NamedKey::PageUp => Self::PageUp,
                 NamedKey::PageDown => Self::PageDown,
-                NamedKey::ArrowUp => Self::Up,
-                NamedKey::ArrowDown => Self::Down,
-                NamedKey::ArrowLeft => Self::Left,
-                NamedKey::ArrowRight => Self::Right,
                 NamedKey::F1 => Self::F(1),
                 NamedKey::F2 => Self::F(2),
                 NamedKey::F3 => Self::F(3),
@@ -161,12 +148,9 @@ pub struct Chord {
 }
 
 impl Chord {
-    /// A chord, normalised: **shift means nothing on a key that is not a
-    /// letter.** `+` is Shift+= on one keyboard and its own key on another,
-    /// and a binding that recorded the shift would work on the keyboard it
-    /// was made on and no other.
+    /// A chord: the key that was pressed — **without** its modifiers, so
+    /// Shift+1 is `1` with shift and not `!` — and the modifiers held.
     pub fn new(ctrl: bool, shift: bool, alt: bool, key: ChordKey) -> Self {
-        let shift = shift && !matches!(key, ChordKey::Char(c) if !c.is_alphabetic());
         Self {
             ctrl,
             shift,
@@ -561,6 +545,35 @@ impl Keymap {
                     && (action.context() == Context::Global || action.context() == context)
             })
             .map(|(action, _)| *action)
+    }
+
+    /// What a key press means, given both the chord it is and the symbol it
+    /// **typed**.
+    ///
+    /// The chord first. Then, only when shift was held on a key that is not
+    /// a letter and the chord itself is bound to nothing, the typed symbol
+    /// on its own: `+` is Shift+= on a US keyboard and its own key on
+    /// another, and the window has always taken both for zoom. A letter has
+    /// no such fallback — Shift+M is not M — and a binding to the shifted
+    /// chord itself always wins over what it happens to type.
+    pub fn action_of_press(
+        &self,
+        chord: &Chord,
+        typed: Option<ChordKey>,
+        context: Context,
+    ) -> Option<Action> {
+        if let Some(action) = self.action(chord, context) {
+            return Some(action);
+        }
+        let fallback = match (chord.shift, chord.key, typed) {
+            (true, ChordKey::Char(pressed), Some(ChordKey::Char(typed)))
+                if !pressed.is_alphabetic() && typed != pressed =>
+            {
+                Chord::new(chord.ctrl, false, chord.alt, ChordKey::Char(typed))
+            }
+            _ => return None,
+        };
+        self.action(&fallback, context)
     }
 
     /// Binds `action` to `chord` and nothing else, and takes the chord away

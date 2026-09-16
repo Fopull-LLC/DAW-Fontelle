@@ -118,6 +118,9 @@ pub struct KeybindsChrome<'a> {
     pub keymap: &'a crate::canvas::Keymap,
     /// The row waiting for a new shortcut, if one is.
     pub listening: Option<crate::canvas::Action>,
+    /// The rebindable row under the pointer, drawn lit so it reads as a
+    /// thing a press does something to.
+    pub hover: Option<crate::canvas::Action>,
     /// A line under the title in place of the usual hint — what the last
     /// rebind took from whom. Empty for none.
     pub note: &'a str,
@@ -863,6 +866,16 @@ fn draw_keybinds(
                     continue;
                 };
                 let listening = action.is_some() && *action == chrome.listening;
+                // The whole line lights under the pointer — the chip and
+                // the words are one target (`keybinds_hit`).
+                if action.is_some() && *action == chrome.hover && !listening {
+                    fill_rect_rounded(
+                        scene,
+                        keys.union(does),
+                        m.corner_radius,
+                        p.accent.with_alpha(0x28),
+                    );
+                }
                 // The key in a chip the width of its text, not the column:
                 // a chip that is always the column's width is a table cell.
                 // A rebindable chip wears the accent on its edge, so the

@@ -466,3 +466,32 @@ fn the_rows_carry_their_actions_in_catalogue_order() {
         }
     }
 }
+
+#[test]
+fn the_row_under_the_pointer_is_named_so_it_can_light_up() {
+    // A row you can press should look pressable before you press it: the
+    // hit test is what the window lights the row from, so the same point
+    // that would rebind on a press is the one that highlights.
+    let l = keybinds_layout(Rect::new(0.0, 0.0, 1280.0, 4000.0), &metrics(), 0.0);
+    let row = l
+        .rows
+        .iter()
+        .find_map(|row| match row {
+            KeybindRow::Bind {
+                action: Some(action),
+                keys,
+                does,
+                ..
+            } => Some((*action, keys.union(does))),
+            _ => None,
+        })
+        .expect("a rebindable row");
+    let (action, line) = row;
+    // Anywhere along the line, edge to edge.
+    for x in [line.x + 1.0, line.x + line.width / 2.0, line.right() - 1.0] {
+        assert_eq!(
+            keybinds_hit(&l, x, line.y + line.height / 2.0),
+            KeybindsHit::Row(action)
+        );
+    }
+}

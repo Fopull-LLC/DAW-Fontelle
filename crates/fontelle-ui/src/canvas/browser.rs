@@ -566,6 +566,16 @@ impl BrowserHit {
             Self::File(_) | Self::Preset(_) | Self::Nothing => return None,
         })
     }
+
+    /// The keymap action that does the same, for the tip: the search box
+    /// has a key, and the WAV bounce has one.
+    pub fn action(self) -> Option<super::keymap::Action> {
+        Some(match self {
+            Self::Search(_) => super::keymap::Action::Search,
+            Self::Export => super::keymap::Action::ExportWav,
+            _ => return None,
+        })
+    }
 }
 
 impl BrowserLayout {

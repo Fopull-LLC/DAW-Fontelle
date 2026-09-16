@@ -562,6 +562,14 @@ impl EditorTab {
             Self::Mixer => "Levels, effects and routing",
         })
     }
+
+    /// The keymap action that shows this tab, for the tip.
+    pub fn action(self) -> Option<crate::canvas::Action> {
+        Some(match self {
+            Self::Roll => crate::canvas::Action::ShowRoll,
+            Self::Mixer => crate::canvas::Action::ShowMixer,
+        })
+    }
 }
 
 /// What a floating editor window has open (TDD §7.2, §12, §13.4).

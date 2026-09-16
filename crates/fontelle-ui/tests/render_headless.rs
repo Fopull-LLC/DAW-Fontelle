@@ -4835,6 +4835,7 @@ fn shoot_keybinds(theme: Theme, scroll: f32) -> Option<(Vec<u8>, Theme, u32, u32
                 scroll,
                 keymap: &keymap,
                 listening: Some(fontelle_ui::canvas::Action::Undo),
+                hover: Some(fontelle_ui::canvas::Action::Save),
                 note: "",
             }),
         },

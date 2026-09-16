@@ -19,6 +19,23 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-15 — `v0.5.1`, the keymap's edge cases.** A pass over
+*"when a tooltip is shown it shows ur actual configured keybind"* and the
+odd interactions around it: every control a key also drives now names its
+`Action` (the editor tabs, the mixer's M/S, the rack tabs, the browser's
+search box and its Export button, on top of the transport and toolbar
+buttons), so every tip reads the map. A chord is read from the key
+**without** its modifiers (`key_without_modifiers`), so Shift+1 is
+`Shift+1` on every layout rather than `!` here and `1` there — and since
+that would have broken `+` (Shift+= on a US keyboard), the symbol a press
+*typed* is tried as a fallback only when the shifted non-letter chord is
+bound to nothing (`Keymap::action_of_press`). The arrows are no longer
+chords (they are a fixed family answered before the map). On the sheet the
+rebindable row under the pointer lights up and the cursor is a hand;
+tooltips from controls under the sheet are suppressed; an editor window
+routes its keys to the sheet while it is up, so F1 from the EQ window
+works and a row can listen to a chord typed there.
+
 **As of 2026-09-15 — `v0.5.0`, remappable shortcuts.** TDD §16.5's *"all
 keybinds are remappable"* is built. `canvas/keymap.rs` is the map: a `Chord`
 (modifiers + one key, with a text form), an `Action` for every command a key

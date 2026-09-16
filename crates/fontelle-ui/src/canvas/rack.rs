@@ -234,6 +234,14 @@ impl RackHit {
             Self::Row(_) | Self::Nothing => return None,
         })
     }
+
+    /// The keymap action that flips the tabs, for the tip.
+    pub fn action(self) -> Option<super::keymap::Action> {
+        match self {
+            Self::Tab(_) => Some(super::keymap::Action::RackTab),
+            _ => None,
+        }
+    }
 }
 
 pub fn rack_hit(layout: &RackLayout, x: f32, y: f32) -> RackHit {
