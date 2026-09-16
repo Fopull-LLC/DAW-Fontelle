@@ -203,6 +203,60 @@ impl Build {
         self
     }
 
+    /// A **string** in place of a table (`fontelle_dsp::StringModel`): the
+    /// stiffness that stretches its partials, the damping that takes its top
+    /// away first, where the hammer lands, and how long middle C rings.
+    fn string(
+        mut self,
+        layer: usize,
+        gain_db: f32,
+        stiffness: f32,
+        damping: f32,
+        strike: f32,
+        decay_s: f32,
+    ) -> Self {
+        let osc = self.osc_mut(layer);
+        osc.source = SynthSource::String;
+        osc.string = fontelle_dsp::StringModel {
+            stiffness,
+            damping,
+            strike,
+            decay_s,
+        };
+        self.patch.layers[layer].gain_db = gain_db;
+        self
+    }
+
+    /// A **recording** in place of a table: one of the bank's own sets
+    /// (`crate::factory_samples`), which the patch names rather than
+    /// carries. Two layers naming the same set share it.
+    fn sampled(
+        mut self,
+        layer: usize,
+        gain_db: f32,
+        set: crate::factory_samples::FactorySampleSet,
+    ) -> Self {
+        let at = match self
+            .patch
+            .samples
+            .iter()
+            .position(|sample| sample.factory == Some(set))
+        {
+            Some(at) => at,
+            None => {
+                self.patch.samples.push(set.sample());
+                self.patch.samples.len() - 1
+            }
+        };
+        let osc = self.osc_mut(layer);
+        osc.source = SynthSource::Sample(at as u8);
+        // The position is the *start* on a recording, and the Init patch's
+        // half-way is the middle of a table's frames, not of a note.
+        osc.position = 0.0;
+        self.patch.layers[layer].gain_db = gain_db;
+        self
+    }
+
     fn pos(mut self, layer: usize, position: f32) -> Self {
         self.osc_mut(layer).position = position;
         self
@@ -252,6 +306,13 @@ impl Build {
 
     fn fine(mut self, layer: usize, cents: f32) -> Self {
         self.patch.layers[layer].fine_tune_cents = cents;
+        self
+    }
+
+    /// Where the layer sits, −1 left to 1 right. A route on `LayerPan`
+    /// adds to it, which is how a keyboard is laid across the field.
+    fn pan(mut self, layer: usize, pan: f32) -> Self {
+        self.patch.layers[layer].pan = pan;
         self
     }
 
@@ -491,6 +552,44 @@ impl Build {
             depth,
             curve: Curve::Linear,
             via: Some(via),
+            invert: false,
+        });
+        self
+    }
+
+    /// An inverted route scaled by a second source — `(1 − source) × via`.
+    /// What a thing that happens *as the note lets go* wants: `1 − env`
+    /// rises through an envelope's release, and the via is what keeps it
+    /// at nothing on the first block, where every envelope reads zero
+    /// before it has advanced and `1 − 0` would be a burst.
+    fn inverted_via(
+        mut self,
+        source: ModSource,
+        destination: ModDest,
+        depth: f32,
+        via: ModSource,
+    ) -> Self {
+        self.patch.mod_matrix.routes.push(ModRoute {
+            source,
+            destination,
+            depth,
+            curve: Curve::Linear,
+            via: Some(via),
+            invert: true,
+        });
+        self
+    }
+
+    /// A route through a curve: `Exponential` is the source squared, so it
+    /// stays near nothing over most of the travel and arrives late — what
+    /// a thing that only a *hard* strike has wants.
+    fn curved(mut self, source: ModSource, destination: ModDest, depth: f32, curve: Curve) -> Self {
+        self.patch.mod_matrix.routes.push(ModRoute {
+            source,
+            destination,
+            depth,
+            curve,
+            via: None,
             invert: false,
         });
         self
@@ -1612,17 +1711,16 @@ bank! {
     // The FM e-pianos are here because two-operator FM is what a DX7 e-piano
     // *is*.
     //
-    // A **sampled** grand is still the soundfont player's job, and this row
-    // does not pretend otherwise. What it is, is the *physics* of one — and,
-    // after two rounds of *"doesn't sound like a grand"*, the physics as
-    // **measured** rather than as reasoned: every number below was set
-    // against a sampled grand read through `fontelle-app`'s
-    // `examples/piano_probe.rs`, and `tests/grand_piano.rs` holds the
-    // readings as windows. The first pass had reasoned its way to a dark,
-    // slow sine with a knock on it — a struck-string table at its softest
-    // position under a lid, an amplitude envelope over a minute long, and a
-    // high-passed click — which is exactly an electric piano with a
-    // clavinet's attack, and that is what Ty heard.
+    // **The grand is a string now, not a table.** Three rounds of voicing a
+    // struck-string *table* against a sampled grand (`examples/piano_probe.rs`,
+    // `tests/grand_piano.rs`) got the levels and the decays right and the
+    // sound still read as an electric piano, and `examples/piano_partials.rs`
+    // found why: a table is periodic, so its partials are exact multiples of
+    // the fundamental, while a real string is stiff and its twelfth partial
+    // at middle C sits **48 cents sharp**. No level, decay or filter can move
+    // a partial, so the row moved to `SynthSource::String` — a bank of
+    // partials placed where a stiff string puts them, each dying at its own
+    // rate — and the numbers below are the same reference's readings again.
     //
     // What the reference actually is, key by key:
     //
@@ -1637,115 +1735,204 @@ bank! {
     // - **Quieter going up**: the top octave is ten decibels under the
     //   middle, and the bass a shade over it.
     Keys: "Grand Piano" => init()
-        // **The aftersound.** A struck string (`WavetableId::Struck`), three
-        // of them a cent apart with the outer two under the middle — a
-        // piano's chorus is its own unison, and it is *slow*: a trichord
-        // beats at a sixth of a hertz. Read at the **bright** end of the
-        // table in the bass and darker up the keyboard: the position is the
-        // hammer's hardness, and the same felt is harder against a short
-        // stiff treble string than a long bass one. Its level eases off
-        // with the key, and velocity opens it.
+        // **A recording of a grand.** Four reports, three rounds of voicing
+        // a table and then a stiff string against a sampled grand's
+        // measurements, each measuring right and each heard as a synth —
+        // and the fourth said what to do instead: *"use the osc sampling
+        // feature ... if you can find a grand piano one shot to use."* So
+        // this row is forty-six recordings of a Yamaha C5 (the Salamander
+        // Grand Piano, CC BY 3.0 — `assets/flopsynth/samples/grand/README.md`
+        // is the credit), the bottom A and every four semitones up, played
+        // through the same sample oscillator a dropped file plays through.
         //
-        // Its gain starts twenty-nine decibels up and comes down on env 1 —
-        // see the envelopes below for why the decay is two straight lines.
-        // Hot, on purpose: the sine below has to sit ten decibels under
-        // this in the middle and climb over it at the top, and a layer
-        // cannot start below the floor, so the whole voice runs high and
-        // the output trim takes it back down.
-        .osc(A, WavetableId::Struck, -30.5)
-        .pos(A, 0.0)
-        .inverted(ModSource::Key, ModDest::OscPosition(A as u8), 0.9)
+        // And then the fifth report: *"it sounds like a soundfont with
+        // reverb ... use the features in the synth to take this sampled
+        // sound and turn it into a really tactile realistic feeling piano."*
+        // A soundfont is a recording played back. What is around the
+        // recordings here is what a body does: the keyboard laid across the
+        // stereo field, a hammer felt on a hard strike, a damper heard on
+        // letting go, a modelled string singing on under the recording.
+        // `tests/grand_piano.rs` measures each as the difference its layer
+        // makes.
+        //
+        // **Two recordings, crossfaded by velocity.** A soft strike is not a
+        // quiet hard one — its hammer is on the string longer and the top
+        // never arrives — and no filter makes one from the other. So the
+        // piano played at velocity 40 is on A and at 120 on B, and velocity
+        // slides between them: the soft one loses twelve decibels on the
+        // way up, the hard one climbs thirty from twenty-four under to six
+        // over. Those numbers are chosen against each other so the sum of
+        // the two never *dips* mid-way — two equal crossfades in decibels
+        // leave a seventeen-decibel hole where they cross — and so a hard
+        // strike is the hard recording, with the soft one eighteen under
+        // it; the weight is the voice's own velocity curve, below.
+        .sampled(A, 0.0, crate::factory_samples::FactorySampleSet::GrandSoft)
+        .route(ModSource::Velocity, ModDest::LayerGain(A as u8), -12.0 / 96.0)
+        .sampled(B, -24.0, crate::factory_samples::FactorySampleSet::GrandHard)
+        .route(ModSource::Velocity, ModDest::LayerGain(B as u8), 30.0 / 96.0)
+        .filter_route(A, FilterRoute::F1)
+        .filter_route(B, FilterRoute::F1)
+        // **The strings sing on.** A modelled string at the note (the
+        // stiff-string source), dark, fading in over env 1's thirty
+        // milliseconds so the strike is the recording's alone, then some
+        // fourteen decibels under it — and ringing on its own decay, which
+        // the recording's cut cannot shorten, with partials stretched by a
+        // different stiffness than the C5's, so the two beat slowly
+        // against each other the way a piano's three strings do. From a
+        // second or so in it is most of what is heard: it is what keeps the
+        // ring alive under a held chord, and what a recording played back
+        // has not got. Its level follows velocity like the strings'. (A
+        // string's sum is normalised to one where a recording peaks well
+        // under it, so the number here reads some four decibels hotter
+        // than it says.)
+        .string(C, -53.0, 0.3, 0.55, 0.13, 0.9)
+        .route(ModSource::Envelope(1), ModDest::LayerGain(C as u8), 0.25)
+        .pos(C, 0.12)
+        .route(ModSource::Velocity, ModDest::OscPosition(C as u8), 0.3)
+        .route(ModSource::Velocity, ModDest::LayerGain(C as u8), 18.0 / 96.0)
+        // Quieter in the bass, where the recording rings long enough on
+        // its own and a modelled string under it would go on for ever.
+        .route(ModSource::Key, ModDest::LayerGain(C as u8), 0.15)
+        .uni(C, 2, 1.5)
+        .locked(C)
+        .blend(C, 0.5)
+        .width(C, 0.0)
+        .filter_route(C, FilterRoute::F1)
+        .off(SUB)
+        // **The hammer, and the damper.** The noise layer, dark, through
+        // its own low-pass (filter 2), does two things at two moments. At
+        // the strike it is the hammer's thud, gated by env 2 — held ten
+        // milliseconds and gone in thirty more, which is where the
+        // recording's own hammer lands (its first ten milliseconds are the
+        // room before it); a shorter gate is not heard at all, because the
+        // matrix reads an envelope once a block and a block is ten
+        // milliseconds — and scaled by velocity **squared**: the voice's own
+        // curve is the square too, and the thud has to fall away faster
+        // than the note does or a pianissimo would be all thud. On letting
+        // go it is the damper landing on the string: env 3 sits at full
+        // while the key is down and drops the instant the key comes up,
+        // and the noise reads `1 − env 3` — **times env 1**, which is at
+        // full while the key is down and only leaves over a hundred and
+        // fifty milliseconds after, because every envelope reads zero on a
+        // note's first block and `1 − 0` alone was a burst at every strike
+        // — so the felt is heard as the key rises and never before, and
+        // the amp envelope's release takes it away with the note. Below
+        // the recording rather than at the floor: the voice skips a layer
+        // at `SILENT_DB` until a route lifts it, one block late, and a
+        // hammer a block late is no hammer.
+        .noise(0.75, -88.0)
+        .filter_route(NOISE, FilterRoute::F2)
+        .filter(1, FilterModel::Clean, SvfMode::Lowpass, 1_100.0, 0.25)
+        .env(1, 0.03, 0.0, 1.0, 0.15)
+        .env(2, 0.0, 0.03, 0.0, 0.01)
+        .hold(2, 0.01)
+        .route(ModSource::Envelope(2), ModDest::LayerGain(NOISE as u8), 0.62)
+        .curved(ModSource::Velocity, ModDest::LayerGain(NOISE as u8), 0.6, Curve::Exponential)
+        .env(3, 0.0, 0.0, 1.0, 0.004)
+        .inverted_via(
+            ModSource::Envelope(3),
+            ModDest::LayerGain(NOISE as u8),
+            0.9,
+            ModSource::Envelope(1),
+        )
+        // **The keyboard across the field.** From the bench the bass is on
+        // the left and the treble on the right: every layer sits left of
+        // centre and slides right with the key, middle C landing in the
+        // middle.
+        .pan(A, -0.55).pan(B, -0.55).pan(C, -0.55).pan(NOISE, -0.55)
+        .route(ModSource::Key, ModDest::LayerPan(A as u8), 1.15)
+        .route(ModSource::Key, ModDest::LayerPan(B as u8), 1.15)
+        .route(ModSource::Key, ModDest::LayerPan(C as u8), 1.15)
+        .route(ModSource::Key, ModDest::LayerPan(NOISE as u8), 1.15)
+        // **The lid**, open: a gentle 12 dB low-pass at the top of the
+        // range, closed a little by a soft touch so a pianissimo is darker
+        // still, and the Brightness macro's handle.
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 9_000.0, 0.1)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.12)
+        .route(ModSource::Macro(0), ModDest::FilterCutoff(0), 0.25)
+        // **The envelope is the recording's.** No decay of its own: the
+        // recording rings the way the string did and fades where it was
+        // cut (a bass note is kept four seconds, the top just over one).
+        // The release is the damper — a fifth of a second at the top,
+        // half a second in the bass, because a long string takes longer to
+        // stop (and the damper's own sound, above, rides on it).
+        .amp(0.0, 0.0, 1.0, 0.2)
+        .curve(0, EnvelopeCurve::Decibel, 0.0)
+        .inverted(ModSource::Key, ModDest::EnvelopeStageTime(0, 5), 0.2)
+        // **The weight.** The voice's own velocity curve is a soundfont's
+        // (the square of velocity: forty-eight decibels from 8 to 127),
+        // which on top of the crossfade's own six is a fortissimo seventy
+        // decibels over a whisper. A real piano's pp to ff is thirty-odd,
+        // so this leans against the curve from the bottom: twelve decibels
+        // back at the lightest touch, nothing at the hardest.
+        .inverted(ModSource::Velocity, ModDest::Amp, 0.5)
+        .route(ModSource::Macro(1), ModDest::LayerGain(B as u8), 0.15)
+        .mac(0, "Brightness").mac(1, "Hardness")
+        // **Under the lid, not in a hall** — the report's *"soundfont with
+        // reverb"* was the room. What is left is the case: small, short,
+        // dark, a few milliseconds off the strike so the hammer is dry.
+        .fx(EffectConfig::Reverb(ReverbConfig {
+            size: 0.14,
+            decay_s: 0.7,
+            damping_hz: 4_500.0,
+            pre_delay_ms: 6.0,
+            width: 0.8,
+            mix: 0.07,
+        }))
+        .out(-11.2),
+    // **The modelled one.** The string source the third round built — a
+    // stiff string's stretched partials, damped from the top, struck a
+    // seventh of the way along — voiced against a sampled grand's
+    // measurements. It measured right on every axis and was heard as a
+    // synth, which is why the row above is a recording; it stays in the
+    // bank because it is a piano with knobs a recording has not got —
+    // stiffness, damping, where the hammer lands — and because a modelled
+    // piano under a filter envelope is its own sound. The comments over
+    // each knob are in `docs/flopsynth-bridge.md` §1.
+    Keys: "Modelled Piano" => init()
+        .string(A, -30.5, 0.32, 0.5, 0.135, 6.0)
+        .pos(A, 0.1)
+        .route(ModSource::Velocity, ModDest::OscPosition(A as u8), 0.6)
+        .inverted(ModSource::Key, ModDest::OscPosition(A as u8), 0.45)
         .inverted(ModSource::Key, ModDest::LayerGain(A as u8), 0.05)
         .uni(A, 3, 1.2)
         .blend(A, 0.3)
         .locked(A)
         .width(A, 0.25)
         .filter_route(A, FilterRoute::F1)
-        // **The prompt sound**: the same string, harder struck, on a fast
-        // envelope of its own (env 3), at unison and phase-locked to the
-        // one above so the two sum rather than beat. A few decibels over
-        // the aftersound at a normal touch and well over it at a hard one,
-        // which is what makes a strike — and what velocity mostly moves.
-        .osc(B, WavetableId::Struck, SILENT_DB + 2.0)
-        .pos(B, 0.62)
+        // The prompt sound: the same string struck harder and nearer the
+        // end, on a fast envelope of its own (env 3).
+        .string(B, SILENT_DB + 2.0, 0.32, 0.9, 0.1, 1.5)
+        .pos(B, 0.5)
+        .route(ModSource::Velocity, ModDest::OscPosition(B as u8), 0.5)
+        .inverted(ModSource::Key, ModDest::OscPosition(B as u8), 0.3)
         .locked(B)
         .filter_route(B, FilterRoute::F1)
         .inverted(ModSource::Key, ModDest::LayerGain(B as u8), 0.05)
-        // **A sine at the fundamental**, well under the strings in the
-        // middle and *over* them at the top: a treble string is short and
-        // stiff and very nearly a sine, and the reference's C7 has its
-        // second partial twenty-four decibels down. Its level climbs
-        // steeply with the key, which is the whole of the crossfade. It
-        // rides the same fast slope the strings do (env 1): left off it, it
-        // was what the note settled on after a second, and a piano's ring
-        // is a string and not a sine. At unison, not an octave down,
-        // because a piano has no sub.
+        // A sine at the fundamental, under the strings in the middle and
+        // over them at the top, where a short stiff string is nearly one.
         .osc(C, WavetableId::Sine, -60.0)
         .filter_route(C, FilterRoute::F1)
-        .route(ModSource::Key, ModDest::LayerGain(C as u8), 0.612)
-        // **The bass string's octave**, and nothing else's: a short
-        // soundboard cannot radiate 65 Hz, so the reference's C2 has its
-        // second partial eight decibels *over* its fundamental. The same
-        // table an octave up, phase-locked so it sums with the string's own
-        // second partial rather than beating against it, and gone by the
-        // middle of the keyboard. **Not a sub**: a piano has none, and this
-        // is the opposite direction.
-        .osc(SUB, WavetableId::Struck, SILENT_DB + 2.0)
-        .semis(SUB, 12)
-        .pos(SUB, 0.6)
-        .locked(SUB)
-        .filter_route(SUB, FilterRoute::F1)
-        .inverted(ModSource::Key, ModDest::LayerGain(SUB as u8), 0.362)
-        // The hammer: a **thud**, not a knock. Dark noise through its own
-        // low-pass, over in fifteen milliseconds and felt more than heard —
-        // the first pass high-passed it into a click, which is a clavinet's
-        // tangent. Just *above* the floor, because a layer at `SILENT_DB` is
-        // skipped by the voice until a route lifts it, one block late.
+        .route(ModSource::Key, ModDest::LayerGain(C as u8), 0.5)
+        .off(SUB)
+        // The hammer: a thud through its own low-pass, over in fifteen
+        // milliseconds.
         .noise(0.6, SILENT_DB + 2.0)
         .filter_route(NOISE, FilterRoute::F2)
         .filter(1, FilterModel::Clean, SvfMode::Lowpass, 900.0, 0.3)
-        // **The lid.** The strings' own spectrum is where the brightness
-        // comes from, so the filter's job is the very top: at middle C the
-        // reference's partials 9 to 12 sit near −30 dB where the table puts
-        // them near −22, and at C6 and C7 the reference has almost no
-        // second partial at all. So: a 24 dB corner that *closes* as the key
-        // rises — a quarter of an octave per octave — and that closes again
-        // **as the note rings**, on the same fast envelope the strings ride
-        // (env 1, below). It rests at 1.2 kHz and opens two octaves over
-        // that at the strike, which is the shine leaving before the note
-        // does: a string's upper modes are damped first, and a lid that
-        // stayed put would leave the ring as bright as the blow.
-        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 1_200.0, 0.2)
+        // The lid: a 24 dB corner that closes up the keyboard and as the
+        // note rings (env 1).
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 1_600.0, 0.2)
         .slope(0, FilterSlope::Db24)
         .key_track(0, -0.32)
-        // **Quieter going up.** The reference's top octave is ten decibels
-        // under middle C and its bass a shade over: a short string holds
-        // less energy. On the voice as a whole, so it moves the strings and
-        // the sine together and leaves their crossfade alone.
         .inverted(ModSource::Key, ModDest::Amp, 0.4)
-        // **Two straight lines, added.** The reference at middle C is nearly
-        // level for two hundred milliseconds, then falls at some twenty
-        // decibels a second for a second or so, then at three for as long
-        // as anybody listens. One bent curve cannot be that — a bend strong
-        // enough for the tail is a cliff at the front — but two straight
-        // decibel slopes summed are, exactly: the string's gain rides down
-        // env 1 (linear, so a straight line in dB — a gain route reads an
-        // envelope's *level* into decibels) over its first second and a
-        // half, and the amplitude envelope underneath is a long straight
-        // decibel decay that is all that is left after. Both stored for
-        // the top key and stretched down the keyboard by inverted key
-        // routes, so the whole shape follows the key: thirty decibels go in
-        // about 1.3 s at middle C, 3.4 s at C2 and under half a second at
-        // C7, against the reference's 1.4, 2.0 and 0.17. The hold is the
-        // reference's level first two hundred milliseconds.
+        // Two straight decibel lines added: the string's gain down env 1
+        // over its first second and a half, the amp's long decay after.
         .amp(0.002, 2.65, 0.0, 0.10)
         .hold(0, 0.02)
         .curve(0, EnvelopeCurve::Decibel, 0.0)
         .inverted(ModSource::Key, ModDest::EnvelopeStageTime(0, 2), 0.6)
         .inverted(ModSource::Key, ModDest::EnvelopeStageTime(0, 3), 1.0)
-        // **Straight**, which the Init envelopes are not: they carry a bend
-        // that front-loads the fall, and on a gain route that bend was the
-        // whole note dropping ten decibels in its first tenth of a second.
         .env(1, 0.0, 0.13, 0.0, 0.3)
         .hold(1, 0.026)
         .curve(1, EnvelopeCurve::Linear, 0.0)
@@ -1753,36 +1940,22 @@ bank! {
         .inverted(ModSource::Key, ModDest::EnvelopeStageTime(1, 3), 0.85)
         .route(ModSource::Envelope(1), ModDest::LayerGain(A as u8), 0.3)
         .route(ModSource::Envelope(1), ModDest::LayerGain(C as u8), 0.3)
-        .route(ModSource::Envelope(1), ModDest::LayerGain(SUB as u8), 0.3)
         .env_to_cut(0.28)
-        // The hammer's gate: fifteen milliseconds, and nothing after it.
         .env(2, 0.0, 0.015, 0.0, 0.01)
         .route(ModSource::Envelope(2), ModDest::LayerGain(NOISE as u8), 0.462)
-        // **The prompt sound's own envelope**, the same kind of line, and
-        // steeper: a third of a second at C7, a second and a half at middle
-        // C, three and a half in the bass.
         .env(3, 0.0, 0.12, 0.0, 0.2)
         .hold(3, 0.026)
         .curve(3, EnvelopeCurve::Linear, 0.0)
         .inverted(ModSource::Key, ModDest::EnvelopeStageTime(3, 2), 0.6)
         .inverted(ModSource::Key, ModDest::EnvelopeStageTime(3, 3), 0.85)
         .route(ModSource::Envelope(3), ModDest::LayerGain(B as u8), 0.392)
-        // Velocity is a piano's whole vocabulary: harder is brighter and
-        // harder rings the partials. The felt is the first of those — thrown
-        // harder, it is harder, and the string rings partials a soft strike
-        // never reaches — and the prompt string leans on it hardest.
-        .route(ModSource::Velocity, ModDest::OscPosition(A as u8), 0.5)
-        .route(ModSource::Velocity, ModDest::OscPosition(B as u8), 0.6)
         .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.18)
         .route(ModSource::Velocity, ModDest::LayerGain(B as u8), 0.3)
         .route(ModSource::Macro(0), ModDest::FilterCutoff(0), 0.3)
         .route(ModSource::Macro(1), ModDest::LayerGain(NOISE as u8), 0.15)
         .mac(0, "Brightness").mac(1, "Hammer")
-        // A little of the instrument's own lid, not a hall: the reference's
-        // top octave is thirty decibels down in a sixth of a second, which
-        // no room with a tail would allow.
         .fx(reverb(0.2, 0.06))
-        .out(-24.0),
+        .out(-21.4),
     Keys: "EP Tine" => electric_piano(0.25, 2.0).fx(chorus(2, 0.2)).out(-1.9),
     Keys: "EP Soft" => electric_piano(0.08, 3.2)
         .filter(0, FilterModel::Clean, SvfMode::Lowpass, 3_000.0, 0.5)

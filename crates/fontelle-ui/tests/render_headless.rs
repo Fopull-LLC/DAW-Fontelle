@@ -3347,6 +3347,8 @@ fn shoot_flopsynth() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLa
             about: Vec::new(),
             hover_at: (f32::MIN, f32::MIN),
             searching: false,
+            sky: None,
+            skin: None,
         }),
         Some(&preset),
         None,
@@ -4103,13 +4105,14 @@ fn shoot_carry(
                 panel: Some(layout.browser.frame),
                 timeline: None,
                 name: None,
+                oscillators: &[],
             },
             x,
             y,
         )
     });
     let note = target
-        .map(|target| carry_note(&target, &names, 4))
+        .map(|target| carry_note(&target, &names, &[], 4))
         .unwrap_or_default();
 
     let mut labels = Labels::new();

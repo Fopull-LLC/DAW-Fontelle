@@ -227,6 +227,7 @@ pub fn flopsynth_init() -> Patch {
 
     Patch {
         wavetables: Vec::new(),
+        samples: Vec::new(),
         layers: vec![
             synth_layer(osc_a, -12.0),
             synth_layer(osc_b, SILENT_DB),
@@ -337,7 +338,27 @@ pub fn addresses(patch: &Patch) -> Vec<String> {
         if noise {
             out.push(format!("patch/layer[{index}]/synth/noise_colour"));
         } else {
-            out.push(format!("patch/layer[{index}]/synth/table"));
+            // What kind of source it is, then the controls that kind has: a
+            // table's chooser, a recording's loop, a string's string. The
+            // position is every kind's — its frame, its start, its
+            // brightness — see `SynthOsc::position`.
+            out.push(format!("patch/layer[{index}]/synth/kind"));
+            match osc.source {
+                SynthSource::Table(_) | SynthSource::User(_) => {
+                    out.push(format!("patch/layer[{index}]/synth/table"));
+                }
+                SynthSource::Sample(_) => {
+                    for field in ["loop", "loop_start", "loop_end"] {
+                        out.push(format!("patch/layer[{index}]/synth/sample/{field}"));
+                    }
+                }
+                SynthSource::String => {
+                    for field in ["stiffness", "damping", "strike", "decay"] {
+                        out.push(format!("patch/layer[{index}]/synth/string/{field}"));
+                    }
+                }
+                SynthSource::Noise => {}
+            }
             out.push(format!("patch/layer[{index}]/synth/position"));
             out.push(format!("patch/layer[{index}]/synth/warp_mode"));
             out.push(format!("patch/layer[{index}]/synth/warp"));
@@ -433,7 +454,14 @@ pub fn destinations(patch: &Patch) -> Vec<(ModDest, String)> {
         if let Source::Synth(osc) = &layer.source
             && !matches!(osc.source, SynthSource::Noise)
         {
-            out.push((ModDest::OscPosition(i), format!("{role} position")));
+            // Named for what the knob *is* on this kind of source, so a
+            // route reads "OSC A bright" on a string rather than "position".
+            let position = match osc.source {
+                SynthSource::Sample(_) => "start",
+                SynthSource::String => "bright",
+                _ => "position",
+            };
+            out.push((ModDest::OscPosition(i), format!("{role} {position}")));
             out.push((ModDest::OscWarp(i), format!("{role} warp")));
             out.push((ModDest::OscUnisonDetune(i), format!("{role} detune")));
             out.push((ModDest::OscUnisonBlend(i), format!("{role} blend")));

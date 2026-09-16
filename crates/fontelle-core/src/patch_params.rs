@@ -32,7 +32,7 @@
 //!   split as a `&str` and everything else is a field write (INVARIANT 1).
 
 use fontelle_dsp::{
-    FilterModel, FilterRoute, FilterSlope, Interpolation, MAX_UNISON, OscKind, SvfMode,
+    FilterModel, FilterRoute, FilterSlope, Interpolation, MAX_UNISON, OscKind, SampleLoop, SvfMode,
     SynthSource, WarpMode, WavetableId,
 };
 use fontelle_types::{LfoWave, NoteDivision};
@@ -405,10 +405,70 @@ fn set_synth(osc: &mut fontelle_dsp::SynthOsc, field: &str, value: f32) -> bool 
         "unison/blend" => osc.unison.blend = value,
         "unison/width" => osc.unison.width = value,
         "noise_colour" => osc.noise_colour = value,
+        // Which of the three kinds of source this oscillator is (table,
+        // recording, string). Refused on the noise layer for `table`'s
+        // reason. Switching to a table lands on the saw, and to a recording
+        // on the patch's first: the chooser says what the oscillator *is*,
+        // and what it reads is the next choice.
+        "kind" => {
+            if matches!(osc.source, SynthSource::Noise) {
+                return false;
+            }
+            osc.source = match choice_index(value, SOURCE_KINDS.len()) {
+                0 => match osc.source {
+                    SynthSource::Table(_) | SynthSource::User(_) => osc.source,
+                    _ => SynthSource::Table(WavetableId::Saw),
+                },
+                1 => match osc.source {
+                    SynthSource::Sample(_) => osc.source,
+                    _ => {
+                        // The position becomes the start, and a table's
+                        // frame carried over would start every note partway
+                        // through the recording.
+                        osc.position = 0.0;
+                        SynthSource::Sample(0)
+                    }
+                },
+                _ => SynthSource::String,
+            };
+        }
+        "sample/loop" => {
+            osc.sample.loop_mode = SampleLoop::ALL[choice_index(value, SampleLoop::ALL.len())];
+        }
+        "sample/loop_start" => osc.sample.loop_start = value,
+        "sample/loop_end" => osc.sample.loop_end = value,
+        "string/stiffness" => osc.string.stiffness = value,
+        "string/damping" => osc.string.damping = value,
+        "string/strike" => osc.string.strike = lerp(value, STRIKE_MIN, STRIKE_MAX),
+        "string/decay" => {
+            osc.string.decay_s = lerp_log(value, STRING_DECAY_MIN_S, STRING_DECAY_MAX_S)
+        }
         _ => return false,
     }
     true
 }
+
+/// The three kinds of source an oscillator can be, in the order the `kind`
+/// chooser offers them — and their names.
+pub const SOURCE_KINDS: [&str; 3] = ["Table", "Sample", "String"];
+
+/// Which position of [`SOURCE_KINDS`] a source is.
+pub fn source_kind(source: SynthSource) -> usize {
+    match source {
+        SynthSource::Table(_) | SynthSource::User(_) | SynthSource::Noise => 0,
+        SynthSource::Sample(_) => 1,
+        SynthSource::String => 2,
+    }
+}
+
+/// The travel of a string's strike knob, as a fraction of the string. Two
+/// per cent is a hammer at the very end, which excites everything; a half
+/// is the middle, which excites only the odd partials.
+pub const STRIKE_MIN: f32 = 0.02;
+pub const STRIKE_MAX: f32 = 0.5;
+/// And of its decay, in seconds for middle C's fundamental.
+pub const STRING_DECAY_MIN_S: f32 = 0.05;
+pub const STRING_DECAY_MAX_S: f32 = 20.0;
 
 /// How many positions the modulator chooser has: "none", plus the four layers
 /// that could be later than layer 0.
@@ -596,6 +656,30 @@ pub fn value(patch: &Patch, address: &str) -> Option<f32> {
 
 fn synth_value(osc: &fontelle_dsp::SynthOsc, field: &str) -> Option<f32> {
     match field {
+        "kind" => {
+            if matches!(osc.source, SynthSource::Noise) {
+                return None;
+            }
+            Some(choice_value(source_kind(osc.source), SOURCE_KINDS.len()))
+        }
+        "sample/loop" => {
+            let at = SampleLoop::ALL
+                .iter()
+                .position(|m| *m == osc.sample.loop_mode)?;
+            Some(choice_value(at, SampleLoop::ALL.len()))
+        }
+        "sample/loop_start" => Some(osc.sample.loop_start.clamp(0.0, 1.0)),
+        "sample/loop_end" => Some(osc.sample.loop_end.clamp(0.0, 1.0)),
+        "string/stiffness" => Some(osc.string.stiffness.clamp(0.0, 1.0)),
+        "string/damping" => Some(osc.string.damping.clamp(0.0, 1.0)),
+        "string/strike" => Some(unlerp(osc.string.strike, STRIKE_MIN, STRIKE_MAX)),
+        "string/decay" => Some(unlerp_log(
+            osc.string
+                .decay_s
+                .clamp(STRING_DECAY_MIN_S, STRING_DECAY_MAX_S),
+            STRING_DECAY_MIN_S,
+            STRING_DECAY_MAX_S,
+        )),
         "table" => match osc.source {
             SynthSource::Table(id) => {
                 let at = WavetableId::ALL.iter().position(|t| *t == id)?;
@@ -605,7 +689,10 @@ fn synth_value(osc: &fontelle_dsp::SynthOsc, field: &str) -> Option<f32> {
             // chooser reads as nothing rather than as whichever table happens
             // to sit at index zero. The window names it from
             // `Patch::wavetables` instead.
-            SynthSource::User(_) | SynthSource::Noise => None,
+            SynthSource::User(_)
+            | SynthSource::Sample(_)
+            | SynthSource::String
+            | SynthSource::Noise => None,
         },
         "position" => Some(osc.position.clamp(0.0, 1.0)),
         "warp_mode" => {

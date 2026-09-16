@@ -79,6 +79,12 @@ pub struct SamplerNode {
     /// node in an offline render. One relaxed store per block when there is
     /// one, which is the same cost a track's peak meter already pays.
     meter: Option<Arc<VoiceMeter>>,
+    /// A ring of the instrument's own output — after its chain, before the
+    /// channel's gain — for whoever is drawing the sky through Flopsynth's
+    /// canopy. The same ring an EQ's analyser reads, for the same reason:
+    /// one relaxed store per frame and nothing that can block this thread.
+    /// `None` for a node nobody is watching.
+    scope: Option<Arc<crate::SpectrumTap>>,
 }
 
 /// How many voices an instrument is playing, read off the audio thread.
@@ -138,12 +144,19 @@ impl SamplerNode {
             fx: Vec::new(),
             fx_dry: Vec::new(),
             meter: None,
+            scope: None,
         }
     }
 
     /// Reports its voice count here, once a block.
     pub fn with_meter(mut self, meter: Arc<VoiceMeter>) -> Self {
         self.meter = Some(meter);
+        self
+    }
+
+    /// Copies its output here, every block — see [`Self::scope`].
+    pub fn with_scope(mut self, scope: Arc<crate::SpectrumTap>) -> Self {
+        self.scope = Some(scope);
         self
     }
 }
@@ -376,6 +389,12 @@ impl AudioNode for SamplerNode {
                     }
                 }
             }
+        }
+
+        // What the instrument put out, for the sky: after its chain, before
+        // it is summed into whatever else is on the bus.
+        if let Some(scope) = &self.scope {
+            scope.write(&rendered[..channels]);
         }
 
         for (index, channel) in ctx.outputs.iter_mut().enumerate() {

@@ -33,6 +33,35 @@ const WAVE_POINTS: usize = 128;
 /// And how many a filter's response is.
 const RESPONSE_POINTS: usize = 96;
 
+/// How many columns a recording's picture has.
+const SOUND_COLUMNS: usize = 96;
+
+/// How many harmonics a string's picture spans, and the frequency its
+/// partials are drawn up to — middle C's thirty-second, which is what a
+/// picture forty pixels tall can still separate.
+const PARTIALS_DRAWN: usize = 32;
+const PARTIALS_TOP_HZ: f32 = fontelle_core::OSC_ROOT_HZ * (PARTIALS_DRAWN as f32 + 0.5);
+
+/// A recording's shape: the lowest and highest sample in each of
+/// [`SOUND_COLUMNS`] slices of it. The picture the arrangement draws of a
+/// clip, at card size.
+fn sound_peaks(samples: &[f32]) -> Vec<(f32, f32)> {
+    if samples.is_empty() {
+        return Vec::new();
+    }
+    (0..SOUND_COLUMNS)
+        .map(|column| {
+            let from = column * samples.len() / SOUND_COLUMNS;
+            let to = ((column + 1) * samples.len() / SOUND_COLUMNS).max(from + 1);
+            samples[from..to.min(samples.len())]
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(low, high), s| {
+                    (low.min(*s), high.max(*s))
+                })
+        })
+        .collect()
+}
+
 /// Which page a card of this name belongs on (§8.3–§8.6).
 ///
 /// Read off the heading, like [`shape_of`], and for the same reason: the number
@@ -142,6 +171,59 @@ fn picture_for(name: &str, patch: &Patch, phases: &[f32]) -> FlopsynthPicture {
                     // Named but not carried: nothing to draw, which is what
                     // that layer sounds like too.
                     None => FlopsynthPicture::None,
+                }
+            }
+            // A recording: its shape, where the note starts in it, and the
+            // loop when there is one — drawn from the zone that serves
+            // middle C, which is the one most notes will play.
+            fontelle_dsp::SynthSource::Sample(at) => match patch
+                .samples
+                .get(at as usize)
+                .and_then(|sample| sample.zone_for(60).map(|zone| (sample, zone)))
+            {
+                Some((sample, zone)) => FlopsynthPicture::Sound {
+                    peaks: sound_peaks(&zone.samples),
+                    start: osc.position.clamp(0.0, 1.0),
+                    loop_region: (osc.sample.loop_mode == fontelle_dsp::SampleLoop::Forward)
+                        .then_some((
+                            osc.sample.loop_start.clamp(0.0, 1.0),
+                            osc.sample.loop_end.clamp(0.0, 1.0),
+                        )),
+                    name: if sample.zones.len() > 1 {
+                        format!("{} ({} notes)", sample.name, sample.zones.len())
+                    } else {
+                        sample.name.clone()
+                    },
+                },
+                // Nothing dropped yet: an empty picture that says so, since
+                // an oscillator switched to Sample from its chooser is
+                // silent until it has one, and silence reads as a bug.
+                None => FlopsynthPicture::Sound {
+                    peaks: Vec::new(),
+                    start: osc.position.clamp(0.0, 1.0),
+                    loop_region: None,
+                    name: "drop a sound here".to_string(),
+                },
+            },
+            // A string: its partials, off the same function the voice rings
+            // them from, so the stretch the picture shows is the stretch
+            // the note has.
+            fontelle_dsp::SynthSource::String => {
+                let partials = fontelle_dsp::string_partials(
+                    &osc.string,
+                    osc.position,
+                    fontelle_core::OSC_ROOT_HZ,
+                    PARTIALS_TOP_HZ,
+                );
+                let loudest = partials.amp[..partials.count]
+                    .iter()
+                    .fold(0.0f32, |a, b| a.max(*b))
+                    .max(1e-9);
+                FlopsynthPicture::Partials {
+                    bars: (0..partials.count)
+                        .map(|n| (partials.ratio[n], partials.amp[n] / loudest))
+                        .collect(),
+                    harmonics: PARTIALS_DRAWN,
                 }
             }
         };

@@ -15,12 +15,25 @@
 //!
 //! # What it does not own
 //!
-//! The **wavetable**. `SynthState::next_sample` takes a `&Wavetable` resolved
-//! by `Sampler::prepare` and never looks one up itself, because looking one up
+//! The **wavetable**, and the **recording**. `SynthState::next_sample_from`
+//! takes a [`SynthInput`] — a `&Wavetable` or a [`SampleData`] — resolved by
+//! `Sampler::prepare` and never looks one up itself, because looking one up
 //! locks a mutex and may allocate — both forbidden on the RT thread
 //! (INVARIANT 1).
+//!
+//! # Three kinds of source, one oscillator
+//!
+//! A **table** is one cycle, read at the note's pitch. A **sample** is a
+//! whole recording, read at the ratio of the note to the pitch it was
+//! recorded at — the same read head, the same unison stack of detuned
+//! copies, the same warp modulator; what differs is only that it has an end
+//! and a start. A **string** is not read at all: it is a bank of decaying
+//! partials placed where a stiff string puts them, which is the one thing
+//! neither of the other two can be (see [`StringModel`]).
 
-use crate::{WAVETABLE_LEVELS, Wavetable, WavetableId, wavetable_level_for};
+use crate::{
+    Interpolation, WAVETABLE_LEVELS, Wavetable, WavetableId, interpolate, wavetable_level_for,
+};
 
 /// The most voices one oscillator's unison stack may have.
 ///
@@ -48,6 +61,22 @@ pub enum SynthSource {
     /// does not have is silent for that layer, the same answer a missing
     /// bank table gets: a wrong sound is harder to diagnose than no sound.
     User(u8),
+    /// One of the patch's own **recordings**, played as it is across the
+    /// keyboard rather than cut into cycles — `Patch::samples`, by index, for
+    /// the reason [`User`](Self::User) is an index.
+    ///
+    /// > *"we could actually sample a real piano sound and then do effects
+    /// > and modulating and layering with other oscilators and stuff."*
+    ///
+    /// The oscillator's `position` is where in the recording the note
+    /// starts, and [`SynthOsc::sample`] says whether and where it loops.
+    /// A layer naming a recording the patch does not carry is silent.
+    Sample(u8),
+    /// A stiff string: a bank of decaying partials at the frequencies a real
+    /// string rings at, which are **not** multiples of the fundamental. The
+    /// oscillator's `position` is the strike's brightness;
+    /// [`SynthOsc::string`] is the string itself.
+    String,
 }
 
 impl Default for SynthSource {
@@ -171,6 +200,157 @@ impl FilterRoute {
     }
 }
 
+/// Whether a **sample** source plays once or goes round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum SampleLoop {
+    /// Play through to the end and stop. A recording of a struck thing wants
+    /// this: its own decay is the note's.
+    #[default]
+    Off,
+    /// Go round between the loop points for as long as the note is held.
+    Forward,
+}
+
+impl SampleLoop {
+    pub const ALL: [Self; 2] = [Self::Off, Self::Forward];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Once",
+            Self::Forward => "Loop",
+        }
+    }
+}
+
+/// How a **sample** source reads its recording — the part of the read that a
+/// table has no equivalent of.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SampleSettings {
+    pub loop_mode: SampleLoop,
+    /// The loop, as fractions of the recording, 0..1. A loop end at or before
+    /// its start is no loop at all.
+    pub loop_start: f32,
+    pub loop_end: f32,
+}
+
+impl Default for SampleSettings {
+    fn default() -> Self {
+        Self {
+            loop_mode: SampleLoop::Off,
+            // The back half: where a recording of a held thing has settled
+            // into its sustain, which is the part worth going round.
+            loop_start: 0.5,
+            loop_end: 1.0,
+        }
+    }
+}
+
+impl SampleSettings {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// A **string** source's string.
+///
+/// Four numbers, each one thing a real string has and a table cannot:
+///
+/// - **Stiffness.** A real string is stiff, so its nth partial sits at
+///   `n·f0·sqrt(1 + B·n²)` — sharp of the harmonic, more so for every partial
+///   up. This is the stretch tuners tune to, and the one property no
+///   periodic table can have. The knob is scaled so that the same setting is
+///   stiffer on a short treble string than a long bass one, which is how a
+///   piano's strings actually run (B grows about tenfold from the middle to
+///   the top).
+/// - **Damping.** How much faster the high partials die than the low ones.
+///   A string's losses grow with frequency, so its top goes first and the
+///   note darkens as it rings — the thing a filter envelope over a static
+///   table only imitates.
+/// - **Strike.** Where along the string the hammer lands, as a fraction of
+///   its length. A partial with a node under the hammer is not excited: at
+///   an eighth — a piano's — the 8th partial is missing and the 7th weak.
+/// - **Decay.** How long the fundamental rings, at middle C. Longer in the
+///   bass and shorter up the keyboard, the way a string's is.
+///
+/// Brightness is the oscillator's own `position`, so the same velocity route
+/// that opens a table's frame opens a string's strike.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StringModel {
+    /// 0..1.
+    pub stiffness: f32,
+    /// 0..1.
+    pub damping: f32,
+    /// 0.02..0.5 of the string's length.
+    pub strike: f32,
+    /// Seconds, for the fundamental of middle C.
+    pub decay_s: f32,
+}
+
+impl Default for StringModel {
+    fn default() -> Self {
+        Self {
+            // A piano's middle: B ≈ 4e-4 at middle C, which is what this
+            // setting works out to — see `inharmonicity`.
+            stiffness: 0.32,
+            damping: 0.4,
+            strike: 0.12,
+            decay_s: 3.0,
+        }
+    }
+}
+
+impl StringModel {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// A recording, ready for a **sample** source to read: what `Sampler::prepare`
+/// resolves a [`SynthSource::Sample`] to for one note.
+///
+/// Borrowed, for the reason a table is: the samples are the patch's and are
+/// held by an `Arc` off this thread.
+#[derive(Debug, Clone, Copy)]
+pub struct SampleData<'a> {
+    /// Mono, −1..=1.
+    pub samples: &'a [f32],
+    /// The rate it was recorded at, which is what makes a 44.1 kHz file play
+    /// in tune in a 48 kHz session.
+    pub sample_rate: f32,
+    /// The pitch it was recorded at. A note at this pitch plays the
+    /// recording as it is.
+    pub root_hz: f32,
+}
+
+/// What an oscillator reads this sample: nothing, a table, or a recording.
+///
+/// Resolved before the note by whoever holds the `Arc`s — a voice cannot
+/// tell a bank table from a user one or a recording from a file, and that is
+/// the point of resolving them in one place.
+#[derive(Debug, Clone, Copy)]
+pub enum SynthInput<'a> {
+    None,
+    Table(&'a Wavetable),
+    Sample(SampleData<'a>),
+}
+
+/// The most partials a string source rings.
+///
+/// Sixty-four: at middle C that reaches 17 kHz stretched, and in the bass —
+/// where a real string has hundreds — the ear stops resolving them long
+/// before. The bank is a fixed array for INVARIANT 6's reason.
+pub const MAX_PARTIALS: usize = 64;
+
+/// How many partials the string's sample loop advances at once — one AVX
+/// register of `f32`s.
+const LANES: usize = 8;
+
+/// The most unison voices a string source stacks.
+///
+/// Four, not [`MAX_UNISON`]: a piano has three strings to a note and each
+/// voice here is sixty-four resonators, so this is where the cost is held.
+pub const STRING_UNISON: usize = 4;
+
 /// One oscillator of a Flopsynth patch.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SynthOsc {
@@ -195,6 +375,17 @@ pub struct SynthOsc {
     pub filter_route: FilterRoute,
     /// [`SynthSource::Noise`] only: 0 white, 0.5 pink-ish, 1 brown.
     pub noise_colour: f32,
+    /// [`SynthSource::Sample`] only: how the recording is read. Defaulted on
+    /// the stored side, so every patch written before recordings existed
+    /// reads as one that plays its sample once — and **left out** when it
+    /// is the default, so the two hundred preset files written before it
+    /// existed do not all change the day it does.
+    #[serde(default, skip_serializing_if = "SampleSettings::is_default")]
+    pub sample: SampleSettings,
+    /// [`SynthSource::String`] only: the string. Defaulted and left out for
+    /// the same reasons.
+    #[serde(default, skip_serializing_if = "StringModel::is_default")]
+    pub string: StringModel,
 }
 
 impl Default for SynthOsc {
@@ -212,6 +403,8 @@ impl Default for SynthOsc {
             key_track: true,
             filter_route: FilterRoute::F1,
             noise_colour: 0.0,
+            sample: SampleSettings::default(),
+            string: StringModel::default(),
         }
     }
 }
@@ -266,6 +459,75 @@ pub struct SynthState {
     /// that a moved knob is followed on the next sample, and that the cache is
     /// never stale.
     unison: Option<UnisonCache>,
+    /// A **sample** source's read heads, one per unison voice, in the
+    /// recording's own frames. `f64`, because a thirty-second recording is a
+    /// million and a half frames and an `f32` head walks in steps it cannot
+    /// represent by then.
+    heads: [f64; MAX_UNISON],
+    /// Whether the heads have been put at the start knob for this note. Done
+    /// on the first sample rather than at `reset`, because that is when the
+    /// recording's length and the modulated start are both in hand.
+    heads_placed: bool,
+    /// A **string** source's partials.
+    string: StringState,
+}
+
+/// The per-voice half of a string: its partials as rotating phasors.
+///
+/// Structure-of-arrays on purpose — `x`, `y`, the cosine and the sine each a
+/// flat run — so the sample loop is one vectorisable pass. Each partial is a
+/// complex number rotated by its own angle and shrunk by its own decay every
+/// sample: four multiplies and two adds, no transcendental in the loop.
+#[derive(Debug, Clone, Copy)]
+struct StringState {
+    /// Whether the partials have been set ringing for this note.
+    struck: bool,
+    /// What the rotation coefficients were built for.
+    key: Option<StringKey>,
+    /// How many partials sit under Nyquist for this note.
+    count: usize,
+    /// How many of those the strike actually set ringing — the felt takes
+    /// the top ones to nothing, and a partial at −72 dB of the loudest is
+    /// not worth six multiplies a sample for the rest of the note.
+    ringing: usize,
+    x: [[f32; MAX_PARTIALS]; STRING_UNISON],
+    y: [[f32; MAX_PARTIALS]; STRING_UNISON],
+    cos: [[f32; MAX_PARTIALS]; STRING_UNISON],
+    sin: [[f32; MAX_PARTIALS]; STRING_UNISON],
+    /// The per-sample decay of each partial. One set for the stack: a few
+    /// cents of detune moves a partial's loss by nothing anybody hears.
+    decay: [f32; MAX_PARTIALS],
+}
+
+impl Default for StringState {
+    fn default() -> Self {
+        Self {
+            struck: false,
+            key: None,
+            count: 0,
+            ringing: 0,
+            x: [[0.0; MAX_PARTIALS]; STRING_UNISON],
+            y: [[0.0; MAX_PARTIALS]; STRING_UNISON],
+            cos: [[1.0; MAX_PARTIALS]; STRING_UNISON],
+            sin: [[0.0; MAX_PARTIALS]; STRING_UNISON],
+            decay: [0.0; MAX_PARTIALS],
+        }
+    }
+}
+
+/// The settings a string's coefficients are only good for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct StringKey {
+    /// The note, quantised to a fiftieth of a cent, so a bend rebuilds the
+    /// bank every few samples rather than every sample — sixty-four sines
+    /// and cosines a sample is the one thing this source must not spend.
+    hz_q: u32,
+    stiffness: f32,
+    damping: f32,
+    decay_s: f32,
+    voices: usize,
+    detune_cents: f32,
+    sample_rate: f32,
 }
 
 /// What one set of unison settings works out to, per voice.
@@ -303,6 +565,9 @@ impl Default for SynthState {
             noise_pole: 0.0,
             last: 0.0,
             unison: None,
+            heads: [0.0; MAX_UNISON],
+            heads_placed: false,
+            string: StringState::default(),
         }
     }
 }
@@ -322,6 +587,12 @@ impl SynthState {
         self.master_phase = osc.phase.rem_euclid(1.0);
         self.noise_pole = 0.0;
         self.last = 0.0;
+        self.heads_placed = false;
+        // A string is struck on its first sample, not here: the strike's
+        // brightness is the *modulated* position, which `reset` does not
+        // have. Marking it unstruck is what makes the next sample the strike.
+        self.string.struck = false;
+        self.string.key = None;
         for (index, phase) in self.phases.iter_mut().enumerate() {
             // The **centre voice keeps its start phase** even in a
             // random-phase stack, which is §3.1's exception and not an
@@ -349,13 +620,11 @@ impl SynthState {
         self.last
     }
 
-    /// One stereo sample pair.
+    /// One stereo sample pair, for an oscillator reading a table or nothing.
     ///
-    /// `note_hz` is the note's own pitch, before this oscillator's semitones
-    /// and key-tracking switch. `modulator` is the sample the layer named by
-    /// [`SynthOsc::modulator`] produced this frame — zero when there is none,
-    /// which is what makes FM at full depth with no modulator a silent knob
-    /// rather than a broken one.
+    /// [`next_sample_from`](Self::next_sample_from) with the table as its
+    /// input; kept because every caller that predates recordings reads a
+    /// table.
     pub fn next_sample(
         &mut self,
         osc: &SynthOsc,
@@ -364,24 +633,53 @@ impl SynthState {
         sample_rate: f32,
         modulator: f32,
     ) -> (f32, f32) {
+        let input = match table {
+            Some(table) => SynthInput::Table(table),
+            None => SynthInput::None,
+        };
+        self.next_sample_from(osc, input, note_hz, sample_rate, modulator)
+    }
+
+    /// One stereo sample pair.
+    ///
+    /// `note_hz` is the note's own pitch, before this oscillator's semitones
+    /// and key-tracking switch. `modulator` is the sample the layer named by
+    /// [`SynthOsc::modulator`] produced this frame — zero when there is none,
+    /// which is what makes FM at full depth with no modulator a silent knob
+    /// rather than a broken one.
+    ///
+    /// `input` is what the source reads, resolved before the note. A source
+    /// handed the wrong kind of input — a table for a sample, nothing for a
+    /// table — renders silence rather than a substitute: a wrong sound is
+    /// harder to diagnose than no sound.
+    pub fn next_sample_from(
+        &mut self,
+        osc: &SynthOsc,
+        input: SynthInput<'_>,
+        note_hz: f32,
+        sample_rate: f32,
+        modulator: f32,
+    ) -> (f32, f32) {
         if sample_rate <= 0.0 {
             return (0.0, 0.0);
         }
-        let out = match osc.source {
-            SynthSource::Noise => {
+        let out = match (osc.source, input) {
+            (SynthSource::Noise, _) => {
                 let mono = self.noise(osc);
                 (mono, mono)
             }
             // The bank's, or one the patch carries itself: both are a table
             // resolved before the note, and the voice cannot tell them apart
             // — which is the point of resolving them in one place.
-            SynthSource::Table(_) | SynthSource::User(_) => match table {
-                Some(table) => self.table_voices(osc, table, note_hz, sample_rate, modulator),
-                // A layer whose table has not been resolved renders silence
-                // rather than a substitute: a wrong sound is harder to
-                // diagnose than no sound.
-                None => (0.0, 0.0),
-            },
+            (SynthSource::Table(_) | SynthSource::User(_), SynthInput::Table(table)) => {
+                self.table_voices(osc, table, note_hz, sample_rate, modulator)
+            }
+            (SynthSource::Sample(_), SynthInput::Sample(data)) => {
+                self.sample_voices(osc, data, note_hz, sample_rate, modulator)
+            }
+            (SynthSource::String, _) => self.string_voices(osc, note_hz, sample_rate),
+            // A layer whose input has not been resolved renders silence.
+            _ => (0.0, 0.0),
         };
         // The modulator reads the *mono* sum, because FM by one side of a
         // panned stack is not a thing anybody means.
@@ -504,6 +802,252 @@ impl SynthState {
         (left * stack.loudness, right * stack.loudness)
     }
 
+    /// A **sample** source: the recording read at the ratio of the note to
+    /// its root, by a stack of unison heads.
+    fn sample_voices(
+        &mut self,
+        osc: &SynthOsc,
+        data: SampleData<'_>,
+        note_hz: f32,
+        sample_rate: f32,
+        modulator: f32,
+    ) -> (f32, f32) {
+        let len = data.samples.len();
+        if len == 0 || data.root_hz <= 0.0 || data.sample_rate <= 0.0 {
+            return (0.0, 0.0);
+        }
+        let base_hz = osc.frequency(note_hz).max(0.0);
+        let voices = usize::from(osc.unison.voices.clamp(1, MAX_UNISON as u8));
+        let blend = osc.unison.blend.clamp(0.0, 1.0);
+        let width = osc.unison.width.clamp(0.0, 1.0);
+        let amount = osc.warp_amount.clamp(0.0, 1.0);
+        let stack = self.unison_constants(UnisonKey {
+            voices,
+            detune_cents: osc.unison.detune_cents,
+            blend,
+            width,
+            base_hz,
+            sync_ratio: 1.0,
+            sample_rate,
+        });
+        let len_f = len as f64;
+        if !self.heads_placed {
+            // The start knob: where in the recording the note begins. Placed
+            // on the first sample because the modulated position is only
+            // known here — a velocity route to it is a strike that lands
+            // later the softer it is.
+            let start = f64::from(osc.position.clamp(0.0, 1.0)) * len_f;
+            self.heads.fill(start);
+            self.heads_placed = true;
+        }
+        // The loop, in frames. A loop end at or before its start is none.
+        let loop_start = f64::from(osc.sample.loop_start.clamp(0.0, 1.0)) * len_f;
+        let loop_end = f64::from(osc.sample.loop_end.clamp(0.0, 1.0)) * len_f;
+        let loop_len = loop_end - loop_start;
+        let looping = osc.sample.loop_mode == SampleLoop::Forward && loop_len >= 2.0;
+        // A short crossfade into the seam, so a loop that does not land on
+        // its own cycle goes round without a click. Five milliseconds of the
+        // recording, or a quarter of the loop when the loop is shorter than
+        // that.
+        let fade = (f64::from(data.sample_rate) * 0.005).min(loop_len * 0.25);
+        // Frames of the recording per output sample, per voice: the
+        // stack's own step (the note times the detune, in cycles per output
+        // sample) over the root's cycles per recording frame.
+        let frames_per_cycle = f64::from(data.sample_rate) / f64::from(data.root_hz);
+        // FM on a recording: the read head is pushed back and forth by up to
+        // two of the root's cycles, which is the same reach the table's FM
+        // has.
+        let fm = if osc.warp == WarpMode::Fm {
+            f64::from(modulator * amount) * 2.0 * frames_per_cycle
+        } else {
+            0.0
+        };
+        let last = (len - 1) as f64;
+
+        let (mut left, mut right) = (0.0f32, 0.0f32);
+        for voice in 0..voices {
+            let head = &mut self.heads[voice];
+            if looping {
+                // `while`, not `if`: one subtraction is not enough when a
+                // note far above the root steps further than the loop is
+                // long.
+                while *head >= loop_end {
+                    *head -= loop_len;
+                }
+            } else if *head > last {
+                // Past the end of a one-shot: nothing, and the head stays
+                // where it is so the note stays silent.
+                continue;
+            }
+            let at = (*head + fm).clamp(0.0, last);
+            let mut sample = interpolate(data.samples, at, Interpolation::Normal);
+            if looping && fade > 0.0 && *head > loop_end - fade {
+                // Into the seam: blend towards where the loop restarts.
+                let t = ((*head - (loop_end - fade)) / fade).clamp(0.0, 1.0) as f32;
+                let wrapped = (at - loop_len).clamp(0.0, last);
+                let ahead = interpolate(data.samples, wrapped, Interpolation::Normal);
+                sample += (ahead - sample) * t;
+            }
+            if osc.warp == WarpMode::Rm {
+                sample *= 1.0 - amount + amount * modulator;
+            }
+            *head += f64::from(stack.steps[voice]) * frames_per_cycle;
+            let (gl, gr) = stack.gains[voice];
+            left += sample * gl;
+            right += sample * gr;
+        }
+        (left * stack.loudness, right * stack.loudness)
+    }
+
+    /// A **string** source: the stack's strings, each a bank of partials
+    /// rotating and decaying.
+    fn string_voices(&mut self, osc: &SynthOsc, note_hz: f32, sample_rate: f32) -> (f32, f32) {
+        let base_hz = osc.frequency(note_hz).clamp(0.0, sample_rate * 0.5);
+        if base_hz <= 0.0 {
+            return (0.0, 0.0);
+        }
+        let voices = usize::from(osc.unison.voices.clamp(1, STRING_UNISON as u8));
+        let blend = osc.unison.blend.clamp(0.0, 1.0);
+        let width = osc.unison.width.clamp(0.0, 1.0);
+        let stack = self.unison_constants(UnisonKey {
+            voices,
+            detune_cents: osc.unison.detune_cents,
+            blend,
+            width,
+            base_hz,
+            sync_ratio: 1.0,
+            sample_rate,
+        });
+        let key = StringKey {
+            hz_q: (base_hz * 50.0) as u32,
+            stiffness: osc.string.stiffness,
+            damping: osc.string.damping,
+            decay_s: osc.string.decay_s,
+            voices,
+            detune_cents: osc.unison.detune_cents,
+            sample_rate,
+        };
+        if self.string.key != Some(key) {
+            self.tune_string(osc, &stack, base_hz, voices, sample_rate);
+            self.string.key = Some(key);
+        }
+        if !self.string.struck {
+            self.strike_string(osc, base_hz, voices, sample_rate);
+            self.string.struck = true;
+        }
+
+        let count = self.string.ringing;
+        let (mut left, mut right) = (0.0f32, 0.0f32);
+        for voice in 0..voices {
+            let (x, _) = self.string.x[voice][..count].as_chunks_mut::<LANES>();
+            let (y, _) = self.string.y[voice][..count].as_chunks_mut::<LANES>();
+            let (cos, _) = self.string.cos[voice][..count].as_chunks::<LANES>();
+            let (sin, _) = self.string.sin[voice][..count].as_chunks::<LANES>();
+            let (decay, _) = self.string.decay[..count].as_chunks::<LANES>();
+            // Eight partials at a time into eight running sums, and the
+            // sums added at the end: a single `sum +=` across the loop is a
+            // chain the compiler may not reorder, and it was the one thing
+            // keeping this loop scalar. `ringing` is a multiple of `LANES`,
+            // so there is no remainder to walk.
+            let mut acc = [0.0f32; LANES];
+            for ((((px, py), c), s), d) in
+                x.iter_mut().zip(y.iter_mut()).zip(cos).zip(sin).zip(decay)
+            {
+                for lane in 0..LANES {
+                    let (ox, oy) = (px[lane], py[lane]);
+                    // Read where the partial *is*, then advance it, so the
+                    // first sample of a note is the rest it was struck from.
+                    acc[lane] += oy;
+                    px[lane] = (ox * c[lane] - oy * s[lane]) * d[lane];
+                    py[lane] = (ox * s[lane] + oy * c[lane]) * d[lane];
+                }
+            }
+            let sum: f32 = acc.iter().sum();
+            let (gl, gr) = stack.gains[voice];
+            left += sum * gl;
+            right += sum * gr;
+        }
+        (left * stack.loudness, right * stack.loudness)
+    }
+
+    /// Places the partials for this note: where each sits, and how fast it
+    /// dies. Rebuilt when the note or the string moves; the ringing state is
+    /// left alone, so a bend re-tunes a sounding string rather than
+    /// restriking it.
+    fn tune_string(
+        &mut self,
+        osc: &SynthOsc,
+        stack: &UnisonCache,
+        base_hz: f32,
+        voices: usize,
+        sample_rate: f32,
+    ) {
+        let partials = string_partials(&osc.string, osc.position, base_hz, sample_rate * 0.45);
+        // How long the fundamental rings at *this* note: longer in the bass,
+        // shorter up the keyboard, gently — the preset's own key routes do
+        // the rest.
+        let decay_s = osc.string.decay_s.max(0.01) * (261.625_56 / base_hz).powf(0.3);
+        // Losses grow with the square of the frequency, which is what takes
+        // a string's top away first.
+        let damp = osc.string.damping.clamp(0.0, 1.0).powi(2) * 4.0;
+        for n in 0..partials.count {
+            let hz = partials.ratio[n] * base_hz;
+            let khz = hz / 1_000.0;
+            let tau = decay_s / (1.0 + damp * khz * khz);
+            self.string.decay[n] = (-1.0 / (tau * sample_rate)).exp();
+            for voice in 0..voices {
+                // The stack's detune, as the ratio of this voice's step to
+                // the centre's — every partial of a detuned string moves
+                // together.
+                let detune = if stack.steps[0] > 0.0 {
+                    stack.steps[voice] / stack.steps[0]
+                } else {
+                    1.0
+                };
+                let angle = std::f32::consts::TAU * hz * detune / sample_rate;
+                self.string.cos[voice][n] = angle.cos();
+                self.string.sin[voice][n] = angle.sin();
+            }
+        }
+        self.string.count = partials.count;
+    }
+
+    /// Sets the partials ringing: each starts at rest with the amplitude the
+    /// hammer gives it, which is where it lands and how hard.
+    fn strike_string(&mut self, osc: &SynthOsc, base_hz: f32, voices: usize, sample_rate: f32) {
+        let partials = string_partials(&osc.string, osc.position, base_hz, sample_rate * 0.45);
+        // Ring only what was struck: past the last partial within 72 dB of
+        // the loudest, the rest are inaudible and cost the same per sample
+        // as the ones that matter. A soft note on a dull string rings a
+        // dozen; a hard one at the bottom rings them all.
+        let loudest = partials.amp[..partials.count]
+            .iter()
+            .fold(0.0f32, |a, b| a.max(*b));
+        let floor = loudest * 2.5e-4;
+        let ringing = (0..partials.count)
+            .rev()
+            .find(|i| partials.amp[*i] > floor)
+            .map_or(0, |i| i + 1);
+        // Rounded up to whole lanes; the lanes past the last struck partial
+        // are at rest and stay there, whatever coefficients they carry.
+        self.string.ringing = ringing.div_ceil(LANES) * LANES;
+        for voice in 0..voices {
+            // Every partial, not only the ones ringing: the slots past
+            // `count` hold what the last note left, and a lane that reads
+            // them would ring a ghost of it.
+            for i in 0..MAX_PARTIALS {
+                // At rest with a velocity: displacement zero, so the note
+                // starts from nothing rather than from a step.
+                self.string.x[voice][i] = if i < partials.count {
+                    partials.amp[i]
+                } else {
+                    0.0
+                };
+                self.string.y[voice][i] = 0.0;
+            }
+        }
+    }
+
     /// The stack's per-voice constants for `key`, built only when it changes.
     fn unison_constants(&mut self, key: UnisonKey) -> UnisonCache {
         if let Some(cache) = &self.unison
@@ -546,6 +1090,89 @@ impl SynthState {
         self.unison = Some(cache);
         cache
     }
+}
+
+/// Where a string's partials sit and how hard each is struck — the one
+/// description the voice rings and the window draws, so the picture cannot
+/// lie about the sound.
+#[derive(Debug, Clone, Copy)]
+pub struct StringPartials {
+    /// How many sit under `nyquist_hz`.
+    pub count: usize,
+    /// Each partial's frequency as a multiple of the fundamental: `n` for a
+    /// harmonic, more for a stiff string's.
+    pub ratio: [f32; MAX_PARTIALS],
+    /// Each partial's amplitude at the strike, normalised so they sum to one
+    /// — the loudest instant a bank can reach is when they align, and that
+    /// is full scale.
+    pub amp: [f32; MAX_PARTIALS],
+}
+
+/// [`StringPartials`] for `string` struck at `bright` (the oscillator's
+/// position, 0..1) on a note at `base_hz`, keeping only partials under
+/// `nyquist_hz`.
+pub fn string_partials(
+    string: &StringModel,
+    bright: f32,
+    base_hz: f32,
+    nyquist_hz: f32,
+) -> StringPartials {
+    let b = inharmonicity(string.stiffness, base_hz);
+    // The first partial *is* the note: the raw stiff-string formula
+    // stretches it too, and a tuner tunes the partial they hear, not the
+    // ideal string underneath it.
+    let first = (1.0 + b).sqrt();
+    let h = string.strike.clamp(0.02, 0.5);
+    let bright = bright.clamp(0.0, 1.0);
+    // A soft strike is a dull one: the spectrum falls faster with the
+    // partial and the felt's own corner sits lower. The corner spans five
+    // octaves over the knob — 300 Hz to nearly 10 kHz — because a piano's
+    // touch is mostly this: a hard blow shortens the hammer's contact and
+    // throws energy into partials a soft one never reaches.
+    let tilt = 2.0 - 1.3 * bright;
+    let corner_hz = 300.0 * 2f32.powf(5.0 * bright);
+    let mut out = StringPartials {
+        count: 0,
+        ratio: [0.0; MAX_PARTIALS],
+        amp: [0.0; MAX_PARTIALS],
+    };
+    let mut total = 0.0f32;
+    for n in 1..=MAX_PARTIALS {
+        let n_f = n as f32;
+        let ratio = n_f * (1.0 + b * n_f * n_f).sqrt() / first;
+        let hz = ratio * base_hz;
+        if hz >= nyquist_hz {
+            break;
+        }
+        // A partial with a node under the hammer is not excited.
+        let node = (n_f * std::f32::consts::PI * h).sin().abs();
+        let felt = 1.0 / (1.0 + (hz / corner_hz).powi(2));
+        let amp = node * n_f.powf(-tilt) * felt;
+        out.ratio[n - 1] = ratio;
+        out.amp[n - 1] = amp;
+        total += amp;
+        out.count = n;
+    }
+    if total > 0.0 {
+        for amp in &mut out.amp[..out.count] {
+            *amp /= total;
+        }
+    }
+    out
+}
+
+/// A string's inharmonicity coefficient `B` for `stiffness` at `hz`.
+///
+/// The knob is the string at **middle C**: its square, so the useful range
+/// is spread over the travel, times a constant that puts the default at a
+/// grand's own 4e-4. From there `B` climbs with the pitch — about tenfold from
+/// middle C to the top, which is what a piano's short stiff treble strings
+/// measure — so one setting is the whole keyboard's worth of strings rather
+/// than one string transposed.
+fn inharmonicity(stiffness: f32, hz: f32) -> f32 {
+    let at_middle_c = stiffness.clamp(0.0, 1.0).powi(2) * 0.004;
+    let octaves = (hz.max(1.0) / 261.625_56).log2();
+    at_middle_c * 2f32.powf(octaves * 1.2)
 }
 
 /// Constant power either side of centre, so a voice panned out is no quieter

@@ -4,6 +4,7 @@
 //! for "just this one thing from the model layer."
 
 mod drum_kit;
+pub mod factory_samples;
 pub mod flopsynth;
 mod lfo;
 mod mod_matrix;
@@ -23,7 +24,7 @@ pub use lfo::{LfoState, free_phase};
 pub use mod_matrix::{Curve, ModDest, ModMatrix, ModRoute, ModSource};
 pub use patch::{
     FilterSlot, Layer, Lfo, LfoMode, MACRO_COUNT, MAX_PATCH_FX, Macro, Patch, PatchFx, SILENT_DB,
-    Source, UserWavetable, ZoneId,
+    SampleZone, Source, UserSample, UserWavetable, ZoneId, key_ranges,
 };
 pub use patch_format::{
     LoadedPatch, PATCH_FORMAT_VERSION, PatchFormatError, UnresolvedSample, referenced_samples,

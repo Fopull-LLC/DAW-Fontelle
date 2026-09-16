@@ -1483,6 +1483,70 @@ pub trait StudioHost: DocumentHost {
         Err("this instrument does not take sounds".to_string())
     }
 
+    /// Loads a sound onto one of the instrument's oscillators as the
+    /// **recording** it plays, kept whole and pitched across the keyboard
+    /// — *"we could actually sample a real piano sound"*. A folder is a
+    /// multi-sample: one zone per file. Says what arrived, or why nothing
+    /// did.
+    fn load_sample(&mut self, _layer: usize, _path: &std::path::Path) -> Result<String, String> {
+        Err("this instrument does not take sounds".to_string())
+    }
+
+    /// A sound dropped on an oscillator, whichever it turns out to be: a
+    /// recording, or a wavetable when the file is shaped like one. What the
+    /// window calls for a drop, so the rule lives in one place.
+    fn load_sound(&mut self, _layer: usize, _path: &std::path::Path) -> Result<String, String> {
+        Err("this instrument does not take sounds".to_string())
+    }
+
+    /// What the instrument on the selected channel is putting out right
+    /// now, for the sky through Flopsynth's canopy (`sky.rs`): the
+    /// analyser's bands and a stretch of waveform, off a tap on the
+    /// instrument's node. Read once a frame while the window is open, like
+    /// [`spectrum`](StudioHost::spectrum), and for the same reason. `None`
+    /// when nothing is running — an offline session, a graph built a moment
+    /// ago — and the sky then hears silence.
+    fn instrument_sound(&mut self) -> Option<crate::sky::SkySound> {
+        None
+    }
+
+    /// The sounds an oscillator card's own menu offers: every audio file in
+    /// the Import tab's audio folder, by name, whichever tab the browser is
+    /// on. Empty with no folder set. A pick is
+    /// [`load_audio_sound_into_oscillator`](Self::load_audio_sound_into_oscillator)
+    /// by the same index.
+    fn audio_sounds(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// [`load_sound`](Self::load_sound) for entry `index` of
+    /// [`audio_sounds`](Self::audio_sounds).
+    fn load_audio_sound_into_oscillator(
+        &mut self,
+        _layer: usize,
+        _index: usize,
+    ) -> Result<String, String> {
+        Err("this instrument does not take sounds".to_string())
+    }
+
+    /// How many voices the selected channel's instrument is sounding right
+    /// now — the number the window's tab strip shows. Off the audio thread's
+    /// own count, so it moves between revisions; the window polls it once a
+    /// frame while the instrument's window is open.
+    fn instrument_voices(&self) -> usize {
+        0
+    }
+
+    /// [`load_sound`](Self::load_sound) for row `index` of the Import tab,
+    /// which is what the browser's drag carries.
+    fn load_import_into_oscillator(
+        &mut self,
+        _layer: usize,
+        _index: usize,
+    ) -> Result<String, String> {
+        Err("this instrument does not take sounds".to_string())
+    }
+
     // --- the preset system (`docs/flopsynth-plan.md` §P) ---
     /// What the preset bar shows for one device.
     ///

@@ -99,6 +99,7 @@ fn rig() -> (Session, Callback, Transport) {
     )
     .with_graphs(graph_publisher, realised.track_controls)
     .with_voice_meters(realised.voice_meters)
+    .with_scope_taps(realised.scope_taps)
     .with_param_nodes(realised.param_nodes)
     .with_audition(Box::new(port))
     .with_settings_path(std::env::temp_dir().join(format!(
@@ -377,4 +378,45 @@ fn the_flopsynth_view_carries_the_voice_count() {
         .flopsynth(fontelle_ui::canvas::FlopsynthPage::Synth)
         .expect("a Flopsynth window");
     assert_eq!(view.voices, 1);
+}
+
+/// The sky through the canopy hears the instrument: once a note has sounded
+/// through the graph, the host hands the window the instrument's bands and
+/// waveform — **from the first graph**, not the first rebuild, which is how
+/// it was first wired and how the sky stayed dark while a note played.
+#[test]
+fn the_window_hears_the_instrument_from_the_first_graph() {
+    let (mut session, mut callback, transport) = rig();
+    session.set_channel_kind(0, InstrumentKind::Flopsynth);
+    for _ in 0..4 {
+        callback.block(&transport);
+    }
+    // Before a note the graph may not have run at all — the callback's idle
+    // gate skips silent blocks — so the answer is nothing or silence, and
+    // either is honest.
+    if let Some(quiet) = session.instrument_sound() {
+        assert!(
+            quiet.bands_db.iter().all(|db| *db <= -80.0),
+            "silence reads as silence: {:?}",
+            &quiet.bands_db[..8]
+        );
+    }
+    session.audition_on(60, 100, 0);
+    for _ in 0..8 {
+        callback.block(&transport);
+    }
+    let heard = session
+        .instrument_sound()
+        .expect("the tap has a note in it");
+    assert_eq!(heard.bands_db.len(), fontelle_ui::canvas::SPECTRUM_BANDS);
+    let loudest = heard.bands_db.iter().cloned().fold(f32::MIN, f32::max);
+    assert!(
+        loudest > -40.0,
+        "a note at full velocity is loud: {loudest} dB"
+    );
+    assert!(!heard.wave.is_empty());
+    assert!(
+        heard.wave.iter().any(|s| s.abs() > 0.01),
+        "and the waveform is in it"
+    );
 }

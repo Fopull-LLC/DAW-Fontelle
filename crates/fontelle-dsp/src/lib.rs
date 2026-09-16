@@ -47,7 +47,9 @@ pub use synth_filter::{
     key_tracked_cutoff, response_db,
 };
 pub use synth_osc::{
-    FilterRoute, MAX_UNISON, OSC_FIXED_HZ, SynthOsc, SynthSource, SynthState, Unison, WarpMode,
+    FilterRoute, MAX_PARTIALS, MAX_UNISON, OSC_FIXED_HZ, STRING_UNISON, SampleData, SampleLoop,
+    SampleSettings, StringModel, StringPartials, SynthInput, SynthOsc, SynthSource, SynthState,
+    Unison, WarpMode, string_partials,
 };
 pub use wavetable::{
     MAX_USER_FRAMES, VOWEL_FORMANTS, WAVETABLE_LEN, WAVETABLE_LEVELS, Wavetable, WavetableBank,

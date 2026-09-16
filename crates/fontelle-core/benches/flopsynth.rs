@@ -79,7 +79,7 @@ fn voices(c: &mut Criterion) {
     // of a core. Few samples, because each one is a second of work.
     group.sample_size(10);
 
-    let cases: [(&str, Patch, usize); 3] = [
+    let cases: [(&str, Patch, usize); 5] = [
         (
             "init/1 voice",
             fontelle_core::flopsynth::flopsynth_init(),
@@ -90,6 +90,10 @@ fn voices(c: &mut Criterion) {
         ("supersaw/1 voice", named("Supersaw"), 1),
         // The formant filter, and sixteen of them — the chord case.
         ("choir ahh/16 voices", named("Choir Ahh"), 16),
+        // Two strings of sixty-four partials, three unison voices each: the
+        // heaviest *source* the bank has, and a ten-finger chord of it.
+        ("grand piano/1 voice", named("Grand Piano"), 1),
+        ("grand piano/10 voices", named("Grand Piano"), 10),
     ];
     for (name, patch, count) in cases {
         group.bench_function(name, |b| {

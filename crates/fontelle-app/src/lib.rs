@@ -16,6 +16,7 @@ mod plugins;
 pub mod preset_bank;
 mod projects;
 mod realise;
+pub mod sampling;
 mod session;
 pub mod settings;
 pub mod tune;

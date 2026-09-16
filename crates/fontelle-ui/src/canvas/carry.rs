@@ -65,6 +65,24 @@ pub enum CarryTarget {
     /// The open instrument window's name field, which stands for the channel
     /// that window is showing.
     Instrument { channel: usize, rect: Rect },
+    /// One of Flopsynth's oscillator cards: the sound becomes that
+    /// oscillator's, as the recording it plays. `layer` is the patch's own
+    /// index for it and `card` is which of the scene's
+    /// [`CarryScene::oscillators`] it was, for the chip's name.
+    ///
+    /// > *"i tried doing this from the audio import tab and dragging an
+    /// > audio file into flopsynth over one of my oscilator waveforms right
+    /// > now and it didnt do anything unfortunately"*
+    ///
+    /// The desktop drop knew about the cards and the browser's own drag did
+    /// not, which is exactly the kind of gap the one-function rule exists
+    /// to close: the card lights up and the release loads it, off the same
+    /// answer.
+    Oscillator {
+        layer: usize,
+        card: usize,
+        rect: Rect,
+    },
     /// The arrangement: a clip starting at `tick`, on the row highlighted by
     /// `row`, whose left edge is at `at`.
     ///
@@ -109,7 +127,8 @@ impl CarryTarget {
         match self {
             Self::Channel { rect, .. }
             | Self::NewChannel { rect }
-            | Self::Instrument { rect, .. } => Some(*rect),
+            | Self::Instrument { rect, .. }
+            | Self::Oscillator { rect, .. } => Some(*rect),
             Self::Clip { row, .. } => Some(*row),
             Self::Panel | Self::Nowhere => None,
         }
@@ -159,6 +178,19 @@ pub struct CarryScene<'a> {
     pub timeline: Option<CarryTimeline<'a>>,
     /// The instrument window's name field and the channel it stands for.
     pub name: Option<(usize, Rect)>,
+    /// Flopsynth's oscillator cards, when that is the window the pointer is
+    /// in: each one takes a sound. Empty for every other window.
+    pub oscillators: &'a [CarryOscillator],
+}
+
+/// One oscillator card a sound can be dropped on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CarryOscillator {
+    /// The patch's index for the oscillator, which is what the load takes.
+    pub layer: usize,
+    pub frame: Rect,
+    /// What the card is called, for the chip.
+    pub name: String,
 }
 
 /// Where the row would land, with the pointer at `(x, y)`.
@@ -176,6 +208,22 @@ pub fn carry_target(scene: &CarryScene<'_>, x: f32, y: f32) -> CarryTarget {
         return CarryTarget::Instrument {
             channel,
             rect: field,
+        };
+    }
+    // An oscillator card takes a **sound** and nothing else: a preset is a
+    // whole instrument, and there is nothing for one to become on one
+    // oscillator of another.
+    if scene.carried == Carried::Audio
+        && let Some((card, osc)) = scene
+            .oscillators
+            .iter()
+            .enumerate()
+            .find(|(_, osc)| !osc.frame.is_empty() && osc.frame.contains(x, y))
+    {
+        return CarryTarget::Oscillator {
+            layer: osc.layer,
+            card,
+            rect: osc.frame,
         };
     }
 
@@ -289,7 +337,12 @@ fn new_channel_band(rack: &RackLayout) -> Rect {
 /// ahead of drawing it, and the two halves have to ask for the same string.
 ///
 /// An empty string means there is nothing to say, and draws as one line.
-pub fn carry_note(target: &CarryTarget, channels: &[String], beats_per_bar: u32) -> String {
+pub fn carry_note(
+    target: &CarryTarget,
+    channels: &[String],
+    oscillators: &[String],
+    beats_per_bar: u32,
+) -> String {
     let name = |index: usize| match channels.get(index) {
         Some(name) if !name.is_empty() => format!("Onto {name}"),
         // A channel past the end of the list somebody handed us. Still a
@@ -300,6 +353,10 @@ pub fn carry_note(target: &CarryTarget, channels: &[String], beats_per_bar: u32)
     match target {
         CarryTarget::Channel { index, .. } => name(*index),
         CarryTarget::Instrument { channel, .. } => name(*channel),
+        CarryTarget::Oscillator { card, .. } => match oscillators.get(*card) {
+            Some(name) if !name.is_empty() => format!("As {name}\u{2019}s sound"),
+            _ => "As this oscillator\u{2019}s sound".to_string(),
+        },
         CarryTarget::NewChannel { .. } => "A new channel".to_string(),
         CarryTarget::Clip { tick, lane, .. } => match lane {
             Some(index) => format!(
@@ -312,6 +369,65 @@ pub fn carry_note(target: &CarryTarget, channels: &[String], beats_per_bar: u32)
         CarryTarget::Nowhere => "Nowhere to put this".to_string(),
         CarryTarget::Panel => String::new(),
     }
+}
+
+/// What the chip says while the row is **held** (see [`carry_release`]):
+/// the landing, when there is one under the pointer, and otherwise how to
+/// put the row down — because a chip that follows the pointer with nothing
+/// under it has to say it is waiting, not stuck.
+pub fn held_note(target: &CarryTarget, note: &str) -> String {
+    if target.lands() {
+        note.to_string()
+    } else {
+        "Click where it goes \u{b7} Esc lets go".to_string()
+    }
+}
+
+/// What letting go of a carried row does, by where the pointer is.
+///
+/// > *"when i try to drag it out it gets stuck inside the main daw window."*
+///
+/// A press grabs the pointer for the window it happened in, and on Wayland
+/// the grab holds until the button comes up: the studio hears every move
+/// and the release, and the synth window hears nothing until after. So a
+/// row let go over the synth window is, to the studio, a row let go
+/// **outside its own bounds** — which used to be "nowhere", and was the
+/// row stuck at the edge. Now:
+///
+/// - inside the studio, or in a floating window that did get the pointer,
+///   it **drops** where it is, as it always did;
+/// - outside the studio with a floating window open, it is **held**: the
+///   chip stays on the pointer and the next click puts it down, in
+///   whichever window that click lands (or Esc lets go);
+/// - outside with nothing open, it is let go — there is nowhere for it.
+///
+/// `pointer` is in the studio's coordinates unless `in_floating` says the
+/// pointer is in a floating window, where it is that window's. A pointer
+/// the compositor has taken away arrives as `f32::MIN`, which is outside.
+pub fn carry_release(
+    studio: Rect,
+    pointer: (f32, f32),
+    in_floating: bool,
+    floating_open: bool,
+) -> CarryRelease {
+    if in_floating || studio.contains(pointer.0, pointer.1) {
+        CarryRelease::Drop
+    } else if floating_open {
+        CarryRelease::Hold
+    } else {
+        CarryRelease::Cancel
+    }
+}
+
+/// [`carry_release`]'s answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CarryRelease {
+    /// Act on where the pointer is.
+    Drop,
+    /// Keep the row on the pointer until a click puts it down.
+    Hold,
+    /// Nothing, and nothing carried any more.
+    Cancel,
 }
 
 /// A tick as a bar number, with the beat after it when it is not on the bar

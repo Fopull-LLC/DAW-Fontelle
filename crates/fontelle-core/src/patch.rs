@@ -275,6 +275,100 @@ pub struct UserWavetable {
     pub samples: Vec<f32>,
 }
 
+/// One recording a patch carries, kept whole and played across the keyboard
+/// — what [`fontelle_dsp::SynthSource::Sample`] names.
+///
+/// > *"we could actually sample a real piano sound and then do effects and
+/// > modulating and layering with other oscilators and stuff."*
+///
+/// [`UserWavetable`]'s decision, taken again: **the samples live in the
+/// patch**, so a preset made from a recording opens anywhere and never needs
+/// relinking. A recording is bigger than a table — seconds rather than
+/// cycles — so the zones hold their samples behind an `Arc`: the patch is
+/// cloned on every edit and every window refresh, and a clone that copied
+/// thirty seconds of audio each time would be felt.
+///
+/// Several zones, because a sampled instrument is several recordings, one
+/// per stretch of the keyboard: one note pitched four octaves away is a
+/// chipmunk, and a piano dropped in as a folder of notes should play as one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UserSample {
+    /// What to call it in the window. The file's stem, or the folder's.
+    pub name: String,
+    /// Which of the bank's own sets this is, if it is one — in which case
+    /// a patch file stores the *name* and not the zones, because the audio
+    /// is in the binary (`crate::factory_samples`) and a project with a
+    /// piano in it should not be six megabytes of it.
+    pub factory: Option<crate::factory_samples::FactorySampleSet>,
+    pub zones: Vec<SampleZone>,
+}
+
+impl UserSample {
+    /// The zone that plays `key`: the one whose range holds it, or failing
+    /// that the one whose root is nearest — so two recordings still cover the
+    /// whole keyboard rather than leaving holes between them.
+    pub fn zone_for(&self, key: u8) -> Option<&SampleZone> {
+        self.zones
+            .iter()
+            .find(|zone| zone.key_range.0 <= key && key <= zone.key_range.1)
+            .or_else(|| {
+                self.zones
+                    .iter()
+                    .min_by_key(|zone| (i16::from(zone.root_key) - i16::from(key)).unsigned_abs())
+            })
+    }
+}
+
+/// The keys each of `roots` serves: the whole keyboard, split halfway between
+/// neighbouring roots, so every key plays the nearest recording. `roots`
+/// must be sorted.
+pub fn key_ranges(roots: &[u8]) -> Vec<(u8, u8)> {
+    roots
+        .iter()
+        .enumerate()
+        .map(|(i, &root)| {
+            // A key exactly halfway goes to the lower neighbour, and the
+            // upper one starts on the key after — so the two never claim
+            // the same key and never leave one unclaimed.
+            let low = if i == 0 {
+                0
+            } else {
+                ((u16::from(roots[i - 1]) + u16::from(root)) / 2 + 1) as u8
+            };
+            let high = if i + 1 == roots.len() {
+                127
+            } else {
+                ((u16::from(root) + u16::from(roots[i + 1])) / 2) as u8
+            };
+            (low, high)
+        })
+        .collect()
+}
+
+/// One recording of a [`UserSample`]: the audio, the pitch it was recorded
+/// at, and the keys it serves.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SampleZone {
+    /// The key the recording is *of*. A note at this key plays it as it is.
+    pub root_key: u8,
+    /// How far the recording actually sits from that key, in cents — what a
+    /// pitch detector found when the file was dropped. The voice plays the
+    /// note this much the other way, so the recording lands in tune.
+    pub fine_cents: f32,
+    /// Inclusive, both ends.
+    pub key_range: (u8, u8),
+    pub sample_rate: u32,
+    /// Mono, −1..=1.
+    pub samples: std::sync::Arc<[f32]>,
+}
+
+impl SampleZone {
+    /// The pitch the recording is at, in hertz.
+    pub fn root_hz(&self) -> f32 {
+        440.0 * 2f32.powf((f32::from(self.root_key) - 69.0 + self.fine_cents / 100.0) / 12.0)
+    }
+}
+
 /// The user's fully-owned instrument definition (TDD §7.2). An SF2 file seeds this
 /// once at import; after that it has no live link back to the file's metadata.
 #[derive(Debug, Clone, PartialEq)]
@@ -314,6 +408,10 @@ pub struct Patch {
     /// [`fontelle_dsp::SynthSource::User`] — see [`UserWavetable`]. Empty for
     /// every patch that reads only the bank, which is every factory preset.
     pub wavetables: Vec<UserWavetable>,
+    /// The recordings this patch carries itself, named by
+    /// [`fontelle_dsp::SynthSource::Sample`] — see [`UserSample`]. Empty for
+    /// every factory preset.
+    pub samples: Vec<UserSample>,
 }
 
 /// The **blank instrument**: three oscillators, an amplitude envelope with a
@@ -420,6 +518,7 @@ impl Patch {
             macros: Default::default(),
             output_db: 0.0,
             wavetables: Vec::new(),
+            samples: Vec::new(),
         }
     }
 }
@@ -445,6 +544,7 @@ impl Default for Patch {
             macros: Default::default(),
             output_db: 0.0,
             wavetables: Vec::new(),
+            samples: Vec::new(),
         }
     }
 }

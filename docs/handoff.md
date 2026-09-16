@@ -16,6 +16,37 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-16 (v0.6.0).** The string and sample oscillators, the
+Grand Piano as a recording with a body around it, the sound drop from the
+browser (and the held row that makes it land across windows), and the
+bridge (the window as a ship's bridge with a listening sky) —
+`docs/flopsynth-bridge.md` is the write-up, `PROGRESS.md`'s top entry the
+list. It lived in the working tree as an experiment for a day at Ty's ask
+and shipped once he had heard it. Two things worth knowing before touching
+anything: (1) **no attribution trailers in any commit** — `.githooks/
+commit-msg` refuses them (`git config core.hooksPath .githooks` in every
+clone) and CI's `trailers` job refuses a push that carries one;
+(2) **`FLOPSYNTH_SIZE` is 840 tall now** and the layout tests are written
+to it — put it back to 740 and `the_whole_synth_page_fits…` will say the
+consoles shrank, which is the canopy taking its least; (3) **a drag
+between the studio and the instrument window never reaches the second
+window on Wayland** — the press grabs the pointer for the first — so a
+row let go *outside* the studio with the synth window open is **held**
+(`canvas::carry_release`) and the next click in either window puts it
+down; the name-field preset drop rides the same path. The card's
+right-click menu is the path that needs no drag at all, and it lists the
+bank's own sampled grand first. The sky's scope is kept from the first
+graph through `Session::with_scope_taps` (§4 below, again).
+
+Later the same day the **Grand Piano became a recording** — the
+Salamander grand, two velocity layers crossfaded, compiled in and named
+by the patch rather than carried (`fontelle_core::factory_samples`,
+`UserSample::factory`); the string piano is the bank's "Modelled Piano".
+Two traps in `PROGRESS.md`'s top entry: an Init oscillator's position is
+0.5, which on a recording is a note started halfway; and new
+`#[serde(default)]` patch fields must also `skip_serializing_if`, or the
+preset export rewrites every file in the bank.
+
 **Updated 2026-09-15 (v0.5.0).** Shortcuts are remappable. **Adding a
 binding now means adding an `Action`** in `canvas/keymap.rs` (its id,
 words, context and default) and a line in `KEYBIND_SECTIONS`; the window

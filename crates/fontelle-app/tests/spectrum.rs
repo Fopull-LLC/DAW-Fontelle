@@ -141,7 +141,10 @@ fn a_playing_song_reaches_the_eqs_analyser() {
 }
 
 /// And it reads it in the right place: middle C is 261.6 Hz, so the loudest
-/// band is the one covering it or its neighbour.
+/// band is the one covering it or its neighbour — or the octave over it,
+/// since the note is a **recording of a grand** now (the starting project's
+/// Grand Piano, 2026-09-16) and a real piano's middle C has its second
+/// partial standing a few decibels *over* the fundamental at the strike.
 ///
 /// *Or its neighbour*, and that is the transform's resolution rather than
 /// slack in the test: a 2048-point window at 48 kHz is 23 Hz a bin, and
@@ -161,11 +164,21 @@ fn the_loudest_band_is_the_note_that_is_playing() {
         .map(|(band, _)| band)
         .expect("a band is loudest");
     let (low, high) = spectrum_band_hz(loudest);
-    let bin = fontelle_dsp::bin_width_hz(SR as f32);
+    // The band a pitch falls in, so "or its neighbour" is one band either
+    // side of it.
+    let band_of = |hz: f32| {
+        (0..SPECTRUM_BANDS)
+            .find(|band| {
+                let (low, high) = spectrum_band_hz(*band);
+                low <= hz && hz < high
+            })
+            .expect("a band covers the pitch")
+    };
+    let near = |hz: f32| loudest.abs_diff(band_of(hz)) <= 1;
     assert!(
-        low - bin <= 261.63 && 261.63 <= high + bin,
-        "middle C should be the loudest band or its neighbour; got the one \
-         covering {low}..{high} Hz"
+        near(261.63) || near(523.25),
+        "middle C or its second partial should be the loudest band or its \
+         neighbour; got the one covering {low}..{high} Hz"
     );
 }
 

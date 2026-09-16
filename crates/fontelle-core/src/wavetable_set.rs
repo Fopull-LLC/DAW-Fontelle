@@ -44,6 +44,10 @@ pub struct WavetableSet {
     /// nothing on a patch that only reads the bank — which is every factory
     /// preset.
     user: Vec<Option<Arc<Wavetable>>>,
+    /// The patch's own **recordings**, `Patch::samples` in the same order —
+    /// the ones a layer names, cloned here, which is a handful of `Arc`s
+    /// (see `SampleZone::samples`) and no audio.
+    samples: Vec<Option<crate::UserSample>>,
 }
 
 impl WavetableSet {
@@ -52,6 +56,7 @@ impl WavetableSet {
     pub const EMPTY: Self = Self {
         entries: Vec::new(),
         user: Vec::new(),
+        samples: Vec::new(),
     };
 
     pub fn new() -> Self {
@@ -64,6 +69,8 @@ impl WavetableSet {
         self.entries.clear();
         self.user.clear();
         self.user.resize(patch.wavetables.len(), None);
+        self.samples.clear();
+        self.samples.resize(patch.samples.len(), None);
         for layer in &patch.layers {
             let Source::Synth(osc) = &layer.source else {
                 continue;
@@ -93,9 +100,28 @@ impl WavetableSet {
                         table.frames,
                     )));
                 }
-                fontelle_dsp::SynthSource::Noise => {}
+                // One of the patch's own recordings: the `Arc`s to its
+                // zones, so a voice can borrow the audio without a copy.
+                fontelle_dsp::SynthSource::Sample(at) => {
+                    let at = at as usize;
+                    if let (Some(slot), Some(sample)) =
+                        (self.samples.get_mut(at), patch.samples.get(at))
+                        && slot.is_none()
+                    {
+                        *slot = Some(sample.clone());
+                    }
+                }
+                fontelle_dsp::SynthSource::Noise | fontelle_dsp::SynthSource::String => {}
             }
         }
+    }
+
+    /// One of the **patch's own** recordings, or `None` if this set was not
+    /// built for a patch naming it.
+    ///
+    /// RT-safe: an index and a pointer.
+    pub fn get_sample(&self, index: usize) -> Option<&crate::UserSample> {
+        self.samples.get(index)?.as_ref()
     }
 
     /// One table, or `None` if this set was not built for a patch naming it.

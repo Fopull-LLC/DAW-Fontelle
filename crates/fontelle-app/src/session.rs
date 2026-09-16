@@ -169,6 +169,8 @@ pub struct Session {
     /// One analyser tap per insert. **Kept across a rebuild** — see
     /// [`crate::Realised::spectrum_taps`].
     spectrum_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    /// [`crate::Realised::scope_taps`].
+    scope_taps: HashMap<ChannelId, std::sync::Arc<fontelle_engine::SpectrumTap>>,
     /// The pitch traces the corrector's windows read, kept across a rebuild
     /// for the same reason (`docs/tune-plan.md` §7.3).
     tune_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::TuneTap>>,
@@ -928,6 +930,7 @@ impl Session {
             voice_meters: HashMap::new(),
             effect_controls: HashMap::new(),
             spectrum_taps: HashMap::new(),
+            scope_taps: HashMap::new(),
             tune_taps: HashMap::new(),
             plugins: crate::PluginRack::new(),
             plugins_hosted: false,
@@ -1122,6 +1125,18 @@ impl Session {
         meters: HashMap<ChannelId, std::sync::Arc<fontelle_engine::VoiceMeter>>,
     ) -> Self {
         self.voice_meters = meters;
+        self
+    }
+
+    /// Keeps the instrument scopes the first graph was built with — the
+    /// rings the sky through Flopsynth's canopy reads. `with_voice_meters`'
+    /// reason exactly: without it the sky heard nothing until the first
+    /// rebuild, which is how it was found.
+    pub fn with_scope_taps(
+        mut self,
+        taps: HashMap<ChannelId, std::sync::Arc<fontelle_engine::SpectrumTap>>,
+    ) -> Self {
+        self.scope_taps = taps;
         self
     }
 
@@ -2617,6 +2632,7 @@ impl Session {
                 self.voice_meters = realised.voice_meters;
                 self.effect_controls = realised.effect_controls;
                 self.spectrum_taps = realised.spectrum_taps;
+                self.scope_taps = realised.scope_taps;
                 self.tune_taps = realised.tune_taps;
                 self.send_controls = realised.send_controls;
                 self.metronome = Some(realised.metronome);
@@ -3710,6 +3726,281 @@ impl Session {
         Ok(format!("{name} loaded into {role}"))
     }
 
+    /// Loads a sound onto one of Flopsynth's oscillators as the **recording**
+    /// it plays — the whole sound, pitched across the keyboard — or a
+    /// **folder** of sounds as one recording per file.
+    ///
+    /// > *"we could actually sample a real piano sound and then do effects
+    /// > and modulating and layering with other oscilators and stuff."*
+    ///
+    /// The shape is [`load_wavetable`](Self::load_wavetable)'s — the samples
+    /// live in the patch, the oscillator is switched on, a recording it
+    /// already had is replaced, and it is one entry on the history — with
+    /// the two things a recording has that a cycle does not: a **pitch**,
+    /// read off the file's name or failing that its sound
+    /// (`sampling::note_in_name`, `sampling::detect_root`), and a **range**
+    /// of keys, which for a folder of notes is the keys nearest each one
+    /// (`sampling::key_ranges`). Files that are not sounds are skipped; a
+    /// folder with none is refused.
+    pub fn load_sample(&mut self, layer: usize, path: &Path) -> Result<String, String> {
+        let Some(channel) = self.selected_channel_id() else {
+            return Err("no channel is selected".to_string());
+        };
+        let Some(patch) = self.selected_patch() else {
+            return Err("this channel has no instrument to drop a sound into".to_string());
+        };
+        match patch.layers.get(layer).map(|l| &l.source) {
+            Some(fontelle_core::Source::Synth(osc))
+                if matches!(osc.source, fontelle_dsp::SynthSource::Noise) =>
+            {
+                return Err(
+                    "the noise layer plays noise; drop the sound on an oscillator".to_string(),
+                );
+            }
+            Some(fontelle_core::Source::Synth(_)) => {}
+            _ => return Err("that is not one of this instrument's oscillators".to_string()),
+        }
+
+        let name = path
+            .file_stem()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Dropped".to_string());
+        let files: Vec<PathBuf> = if path.is_dir() {
+            let mut files: Vec<PathBuf> = std::fs::read_dir(path)
+                .map_err(|e| format!("could not read {}: {e}", path.display()))?
+                .filter_map(|entry| entry.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.extension().and_then(|e| e.to_str()).is_some_and(|ext| {
+                        fontelle_types::FolderKind::Audio
+                            .extensions()
+                            .iter()
+                            .any(|known| known.eq_ignore_ascii_case(ext))
+                    })
+                })
+                .collect();
+            files.sort();
+            if files.is_empty() {
+                return Err(format!("there are no sounds in {}", path.display()));
+            }
+            files
+        } else {
+            vec![path.to_path_buf()]
+        };
+
+        let mut zones = Vec::new();
+        for file in &files {
+            // **Through `import_audio`**, never straight to the decoder —
+            // see `load_wavetable`.
+            let decoded = match fontelle_assets::import_audio(file) {
+                Ok(decoded) => decoded,
+                // One bad file in a folder is skipped; the one file dropped
+                // is the whole drop, and its reason is the answer.
+                Err(e) if files.len() > 1 => {
+                    self.message = Some(format!("{}: {e}", file.display()));
+                    continue;
+                }
+                Err(e) => return Err(e.to_string()),
+            };
+            if decoded.frames == 0 {
+                if files.len() > 1 {
+                    continue;
+                }
+                return Err(format!("there is no sound in {}", file.display()));
+            }
+            // Mono by averaging, the same fold `load_wavetable` uses; and
+            // no longer than a note is ever held.
+            let channels = decoded.channels.max(1) as usize;
+            let keep = decoded
+                .frames
+                .min(crate::sampling::MAX_SAMPLE_SECONDS * decoded.sample_rate as usize);
+            let samples: Vec<f32> = decoded
+                .samples
+                .chunks(channels)
+                .take(keep)
+                .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+                .collect();
+            let stem = file
+                .file_stem()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            // The name first, the sound second, middle C last: a library's
+            // file names are its truth, a detector can be fooled by a
+            // chord, and a recording that is neither still has to play.
+            let (root_key, fine_cents) = match crate::sampling::note_in_name(&stem) {
+                Some(key) => (key, 0.0),
+                None => {
+                    crate::sampling::detect_root(&samples, decoded.sample_rate).unwrap_or((60, 0.0))
+                }
+            };
+            zones.push(fontelle_core::SampleZone {
+                root_key,
+                fine_cents,
+                key_range: (0, 127),
+                sample_rate: decoded.sample_rate,
+                samples: samples.into(),
+            });
+        }
+        if zones.is_empty() {
+            return Err(format!(
+                "nothing in {} could be read as a sound",
+                path.display()
+            ));
+        }
+        // Sorted by root, and each given the keys nearest it.
+        zones.sort_by_key(|zone| zone.root_key);
+        let roots: Vec<u8> = zones.iter().map(|zone| zone.root_key).collect();
+        for (zone, range) in zones.iter_mut().zip(crate::sampling::key_ranges(&roots)) {
+            zone.key_range = range;
+        }
+        let count = zones.len();
+        let sample = fontelle_core::UserSample {
+            name: name.clone(),
+            factory: None,
+            zones,
+        };
+        self.install_sample(channel, patch, layer, sample, count)
+    }
+
+    /// One of the bank's own recordings (`fontelle_core::factory_samples`)
+    /// onto an oscillator — the card's menu lists them over the folder, so
+    /// the sampled grand can be layered and modulated without a file to
+    /// find. Named in the patch, not carried: see `UserSample::factory`.
+    pub fn load_factory_sample(
+        &mut self,
+        layer: usize,
+        set: fontelle_core::factory_samples::FactorySampleSet,
+    ) -> Result<String, String> {
+        let Some(channel) = self.selected_channel_id() else {
+            return Err("no channel is selected".to_string());
+        };
+        let Some(patch) = self.selected_patch() else {
+            return Err("this channel has no instrument to drop a sound into".to_string());
+        };
+        match patch.layers.get(layer).map(|l| &l.source) {
+            Some(fontelle_core::Source::Synth(osc))
+                if matches!(osc.source, fontelle_dsp::SynthSource::Noise) =>
+            {
+                return Err(
+                    "the noise layer plays noise; drop the sound on an oscillator".to_string(),
+                );
+            }
+            Some(fontelle_core::Source::Synth(_)) => {}
+            _ => return Err("that is not one of this instrument's oscillators".to_string()),
+        }
+        // Already in the patch — another oscillator plays it — so this one
+        // plays the same, rather than the patch naming the same set twice.
+        if let Some(at) = patch
+            .samples
+            .iter()
+            .position(|sample| sample.factory == Some(set))
+        {
+            let mut patch = patch;
+            let Ok(index) = u8::try_from(at) else {
+                return Err(
+                    "this instrument is already carrying as many sounds as it can".to_string(),
+                );
+            };
+            if let fontelle_core::Source::Synth(osc) = &mut patch.layers[layer].source {
+                if !matches!(osc.source, fontelle_dsp::SynthSource::Sample(_)) {
+                    osc.position = 0.0;
+                }
+                osc.source = fontelle_dsp::SynthSource::Sample(index);
+            }
+            if patch.layers[layer].gain_db <= fontelle_core::SILENT_DB {
+                patch.layers[layer].gain_db = DROPPED_OSC_DB;
+            }
+            let role = fontelle_core::flopsynth::layer_role(layer).label();
+            self.store_patch(channel, patch);
+            self.history.break_gesture();
+            self.touch();
+            return Ok(format!("{} loaded into {role}", set.label()));
+        }
+        self.install_sample(channel, patch, layer, set.sample(), 1)
+    }
+
+    /// The second half of a drop: where the recording goes in the patch and
+    /// which oscillator plays it, for a file's recording and the bank's
+    /// alike.
+    fn install_sample(
+        &mut self,
+        channel: ChannelId,
+        mut patch: fontelle_core::Patch,
+        layer: usize,
+        sample: fontelle_core::UserSample,
+        count: usize,
+    ) -> Result<String, String> {
+        let name = sample.name.clone();
+        // Where this oscillator's recording goes: over the one it was
+        // already playing — unless another oscillator plays that one too,
+        // in which case theirs is left alone and this gets its own — or on
+        // the end.
+        let existing = match &patch.layers[layer].source {
+            fontelle_core::Source::Synth(osc) => match osc.source {
+                fontelle_dsp::SynthSource::Sample(at) => Some(at as usize),
+                _ => None,
+            },
+            _ => None,
+        };
+        let shared = |at: usize| {
+            patch.layers.iter().enumerate().any(|(other, l)| {
+                other != layer
+                    && matches!(
+                        &l.source,
+                        fontelle_core::Source::Synth(osc)
+                            if osc.source == fontelle_dsp::SynthSource::Sample(at as u8)
+                    )
+            })
+        };
+        let at = match existing.filter(|at| *at < patch.samples.len() && !shared(*at)) {
+            Some(at) => {
+                patch.samples[at] = sample;
+                at
+            }
+            None => {
+                patch.samples.push(sample);
+                patch.samples.len() - 1
+            }
+        };
+        let Ok(index) = u8::try_from(at) else {
+            return Err("this instrument is already carrying as many sounds as it can".to_string());
+        };
+        if let fontelle_core::Source::Synth(osc) = &mut patch.layers[layer].source {
+            // The position knob becomes the recording's start: a table's
+            // frame position carried over would start every note partway
+            // through the sound (OSC B's Init frame is the middle one).
+            if existing.is_none() {
+                osc.position = 0.0;
+            }
+            osc.source = fontelle_dsp::SynthSource::Sample(index);
+        }
+        if patch.layers[layer].gain_db <= fontelle_core::SILENT_DB {
+            patch.layers[layer].gain_db = DROPPED_OSC_DB;
+        }
+        let role = fontelle_core::flopsynth::layer_role(layer).label();
+        self.store_patch(channel, patch);
+        self.history.break_gesture();
+        self.touch();
+        Ok(if count > 1 {
+            format!("{name}: {count} notes loaded into {role}")
+        } else {
+            format!("{name} loaded into {role}")
+        })
+    }
+
+    /// A sound dropped on an oscillator: a **recording** unless it is shaped
+    /// like a wavetable (`sampling::looks_like_wavetable`), in which case it
+    /// is the table it was exported as. One drop, one rule; the chip says
+    /// which before the button comes up.
+    pub fn load_sound(&mut self, layer: usize, path: &Path) -> Result<String, String> {
+        if !path.is_dir()
+            && let Ok(decoded) = fontelle_assets::import_audio(path)
+            && crate::sampling::looks_like_wavetable(decoded.frames)
+        {
+            return self.load_wavetable(layer, path);
+        }
+        self.load_sample(layer, path)
+    }
+
     fn store_patch(&mut self, channel: ChannelId, patch: fontelle_core::Patch) {
         let data = match patch.to_data(self.library.provenance()) {
             Ok(data) => data,
@@ -4154,6 +4445,22 @@ impl Session {
         }
     }
 
+    /// The audio folder's files, whichever kind the Import tab is on — what
+    /// an oscillator card's own menu lists. Read every time it is asked for:
+    /// a menu opens seldom and a folder somebody just dropped a recording
+    /// into should show it.
+    fn audio_sound_bank(&self) -> FileBank {
+        let dirs = self
+            .settings
+            .folder(fontelle_types::FolderKind::Audio)
+            .map(|dir| vec![dir.to_path_buf()])
+            .unwrap_or_default();
+        let mut bank =
+            FileBank::with_filter(dirs, BankFilter::Files(fontelle_types::FolderKind::Audio));
+        bank.rescan();
+        bank
+    }
+
     /// Reads the import folder **if the bank is not already the right one**.
     ///
     /// The lazy form, and the one every entry point goes through. It exists
@@ -4470,6 +4777,48 @@ impl Session {
             .last_applied()
             .and_then(|c| c.as_any().downcast_ref::<T>())
             .ok_or_else(|| "the command that was just applied is not on the history".to_string())
+    }
+}
+
+/// How much waveform the sky is handed each frame.
+const SKY_WAVE_FRAMES: usize = 512;
+
+impl Session {
+    /// The analyser's bands, in dBFS, off one tap — the shared half of
+    /// `spectrum` and `instrument_sound`. Empty when nothing has gone through
+    /// the tap: an offline session, or a graph built a moment ago. An empty
+    /// spectrum draws nothing, which is honest.
+    fn bands_of(&mut self, tap: &fontelle_engine::SpectrumTap) -> Vec<f32> {
+        use fontelle_ui::canvas::{SPECTRUM_BANDS, SPECTRUM_BOTTOM_DB, spectrum_band_hz};
+
+        if tap.frames_written() == 0 {
+            return Vec::new();
+        }
+        tap.read(&mut self.spectrum_scratch);
+        let magnitudes = self.analyser.analyse(&self.spectrum_scratch);
+
+        // The transform's bins are **linear** in frequency and the picture is
+        // logarithmic, so the bottom of the plot has a handful of bins spread
+        // across a third of the width and the top has hundreds crammed into
+        // the last inch. Each band takes the **loudest** bin it covers rather
+        // than the average: an analyser is read for where the peaks are, and
+        // averaging fifty bins in the top octave buries every one of them in
+        // the quiet between.
+        let bin_hz = fontelle_dsp::bin_width_hz(self.options.sample_rate as f32);
+        (0..SPECTRUM_BANDS)
+            .map(|band| {
+                let (low, high) = spectrum_band_hz(band);
+                let first = (low / bin_hz).floor().max(1.0) as usize;
+                let last = (high / bin_hz).ceil() as usize;
+                // A band narrower than one bin still reads one — the bottom
+                // three octaves, where a 23 Hz bin is wider than the band.
+                let last = last.max(first + 1).min(magnitudes.len());
+                magnitudes
+                    .get(first..last)
+                    .map(|bins| bins.iter().cloned().fold(SPECTRUM_BOTTOM_DB, f32::max))
+                    .unwrap_or(SPECTRUM_BOTTOM_DB)
+            })
+            .collect()
     }
 }
 
@@ -6664,6 +7013,56 @@ impl StudioHost for Session {
         Session::load_wavetable(self, layer, path)
     }
 
+    fn load_sample(&mut self, layer: usize, path: &Path) -> Result<String, String> {
+        Session::load_sample(self, layer, path)
+    }
+
+    fn load_sound(&mut self, layer: usize, path: &Path) -> Result<String, String> {
+        Session::load_sound(self, layer, path)
+    }
+
+    fn load_import_into_oscillator(
+        &mut self,
+        layer: usize,
+        index: usize,
+    ) -> Result<String, String> {
+        let path = self.import_audio_row(index)?;
+        Session::load_sound(self, layer, &path)
+    }
+
+    fn audio_sounds(&self) -> Vec<String> {
+        // The bank's own recordings first — a real piano to layer without a
+        // file to find — then the folder.
+        fontelle_core::factory_samples::FactorySampleSet::ALL
+            .iter()
+            .map(|set| set.label().to_string())
+            .chain(
+                self.audio_sound_bank()
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.name.clone()),
+            )
+            .collect()
+    }
+
+    fn load_audio_sound_into_oscillator(
+        &mut self,
+        layer: usize,
+        index: usize,
+    ) -> Result<String, String> {
+        let factory = fontelle_core::factory_samples::FactorySampleSet::ALL;
+        if let Some(set) = factory.get(index) {
+            return Session::load_factory_sample(self, layer, *set);
+        }
+        let path = self
+            .audio_sound_bank()
+            .entries()
+            .get(index - factory.len())
+            .map(|entry| entry.path.clone())
+            .ok_or_else(|| "that sound is not in the folder any more".to_string())?;
+        Session::load_sound(self, layer, &path)
+    }
+
     fn flopsynth(
         &self,
         page: fontelle_ui::canvas::FlopsynthPage,
@@ -7478,44 +7877,39 @@ impl StudioHost for Session {
     }
 
     fn spectrum(&mut self, strip: usize, slot: usize) -> Vec<f32> {
-        use fontelle_ui::canvas::{SPECTRUM_BANDS, SPECTRUM_BOTTOM_DB, spectrum_band_hz};
-
         let Some(id) = self.mixer_track_ids().get(strip).copied() else {
             return Vec::new();
         };
-        let Some(tap) = self.spectrum_taps.get(&(id, slot)) else {
+        let Some(tap) = self.spectrum_taps.get(&(id, slot)).cloned() else {
             return Vec::new();
         };
-        // Nothing has gone through it: an offline session, or a graph built a
-        // moment ago. An empty spectrum draws nothing, which is honest.
-        if tap.frames_written() == 0 {
-            return Vec::new();
-        }
-        tap.read(&mut self.spectrum_scratch);
-        let magnitudes = self.analyser.analyse(&self.spectrum_scratch);
+        self.bands_of(&tap)
+    }
 
-        // The transform's bins are **linear** in frequency and the picture is
-        // logarithmic, so the bottom of the plot has a handful of bins spread
-        // across a third of the width and the top has hundreds crammed into
-        // the last inch. Each band takes the **loudest** bin it covers rather
-        // than the average: an analyser is read for where the peaks are, and
-        // averaging fifty bins in the top octave buries every one of them in
-        // the quiet between.
-        let bin_hz = fontelle_dsp::bin_width_hz(self.options.sample_rate as f32);
-        (0..SPECTRUM_BANDS)
-            .map(|band| {
-                let (low, high) = spectrum_band_hz(band);
-                let first = (low / bin_hz).floor().max(1.0) as usize;
-                let last = (high / bin_hz).ceil() as usize;
-                // A band narrower than one bin still reads one — the bottom
-                // three octaves, where a 23 Hz bin is wider than the band.
-                let last = last.max(first + 1).min(magnitudes.len());
-                magnitudes
-                    .get(first..last)
-                    .map(|bins| bins.iter().cloned().fold(SPECTRUM_BOTTOM_DB, f32::max))
-                    .unwrap_or(SPECTRUM_BOTTOM_DB)
-            })
-            .collect()
+    fn instrument_voices(&self) -> usize {
+        Session::voice_count(self)
+    }
+
+    fn instrument_sound(&mut self) -> Option<fontelle_ui::sky::SkySound> {
+        let tap = self
+            .selected_channel_id()
+            .and_then(|id| self.scope_taps.get(&id))
+            .cloned()?;
+        let bands_db = self.bands_of(&tap);
+        if bands_db.is_empty() {
+            return None;
+        }
+        // The newest stretch of the ring, for the aurora: a window's worth
+        // of columns is all it draws.
+        let wave = self
+            .spectrum_scratch
+            .iter()
+            .rev()
+            .take(SKY_WAVE_FRAMES)
+            .rev()
+            .copied()
+            .collect();
+        Some(fontelle_ui::sky::SkySound { bands_db, wave })
     }
 
     fn eq_config(&self, strip: usize, slot: usize) -> Option<fontelle_types::EqConfig> {

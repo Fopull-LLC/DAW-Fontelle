@@ -27,6 +27,8 @@ pub mod icon;
 pub mod layout;
 pub mod pointer;
 pub mod render;
+pub mod skin;
+pub mod sky;
 pub mod text;
 pub mod theme;
 pub mod tooltip;

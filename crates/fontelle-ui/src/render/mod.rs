@@ -14,6 +14,10 @@
 //! separate from the device is also what would make that swap a rewrite of one
 //! function rather than of the crate.
 
+mod bridge;
+
+pub use bridge::SkyFrame;
+
 use vello::kurbo::{Affine, BezPath, Point, Rect as KRect, RoundedRect, RoundedRectRadii, Stroke};
 use vello::peniko::{BlendMode, Fill};
 use vello::util::RenderContext;
@@ -5222,6 +5226,9 @@ fn draw_knob(scene: &mut Scene, theme: &Theme, area: Rect, value: f32, hot: bool
     let radius = (area.width.min(area.height) / 2.0 - 1.0).max(2.0);
     let cx = area.x + area.width / 2.0;
     let cy = area.y + area.height / 2.0;
+    // The scale round the knob, like the marks printed on a panel; under
+    // everything, so the arc and the halo sit over it.
+    bridge::draw_knob_ticks(scene, theme, (cx, cy), radius);
     let value = value.clamp(0.0, 1.0);
 
     // Seven o'clock round to five o'clock — the 270-degree sweep every hardware
@@ -7615,6 +7622,12 @@ pub struct FlopsynthChrome<'a> {
     /// Whether the Presets search box has the keyboard, so it can be drawn
     /// with the lit outline and a caret the way a focused field is.
     pub searching: bool,
+    /// This frame of the sky through the canopy — see [`SkyFrame`]. `None`
+    /// draws a still one.
+    pub sky: Option<&'a SkyFrame>,
+    /// Textures dropped into the skin folder (`skin.rs`); every surface is
+    /// procedural without them.
+    pub skin: Option<&'a crate::skin::Skin>,
 }
 
 /// What the Presets page's search box says.
@@ -7792,8 +7805,10 @@ fn fill_glow(scene: &mut Scene, centre: (f32, f32), radius: f32, colour: Color, 
 fn draw_flopsynth_picture(
     scene: &mut Scene,
     theme: &Theme,
+    labels: &Labels,
     rect: Rect,
     picture: &crate::canvas::FlopsynthPicture,
+    ink: Color,
 ) {
     use crate::canvas::{
         FlopsynthPicture, env_curve_points, response_curve_points, wave_curve_points,
@@ -7802,16 +7817,10 @@ fn draw_flopsynth_picture(
     if rect.is_empty() {
         return;
     }
-    // The well the picture sits in: sunken and darker than the card, with a
-    // faint grid behind the curve, so it reads as a scope rather than as
-    // another control.
-    fill_rect_rounded(
-        scene,
-        rect,
-        theme.metrics.corner_radius,
-        p.window.with_alpha(0xd8),
-    );
-    stroke_rect_rounded(scene, rect, theme.metrics.corner_radius, 1.0, p.border);
+    // The screen the picture is shown on: an inset display with a faint
+    // raster (`bridge::draw_screen`) and a grid behind the curve, so it reads
+    // as a scope rather than as another control.
+    bridge::draw_screen(scene, theme, rect, ink);
     let inner = rect.inset(2.0);
     if inner.is_empty() {
         return;
@@ -7897,6 +7906,108 @@ fn draw_flopsynth_picture(
                 );
             }
         }
+        FlopsynthPicture::Sound {
+            peaks,
+            start,
+            loop_region,
+            name,
+        } => {
+            fill_rect(
+                scene,
+                Rect::new(inner.x, inner.y + inner.height * 0.5, inner.width, 1.0),
+                p.border,
+            );
+            // The loop, shaded, under the shape.
+            if let Some((from, to)) = loop_region {
+                let x0 = inner.x + inner.width * from.clamp(0.0, 1.0);
+                let x1 = inner.x + inner.width * to.clamp(0.0, 1.0);
+                if x1 > x0 {
+                    fill_rect(
+                        scene,
+                        Rect::new(x0, inner.y, x1 - x0, inner.height),
+                        p.modulation.with_alpha(0x28),
+                    );
+                    for x in [x0, x1] {
+                        fill_rect(
+                            scene,
+                            Rect::new(x - 0.5, inner.y, 1.0, inner.height),
+                            p.modulation.with_alpha(0xa0),
+                        );
+                    }
+                }
+            }
+            // The recording's shape: one column per peak pair, filled, the
+            // way the arrangement draws a clip.
+            if !peaks.is_empty() {
+                let (top, bottom) = crate::canvas::sound_outline_points(inner, peaks);
+                let mut path = BezPath::new();
+                path.move_to(Point::new(top[0].0 as f64, top[0].1 as f64));
+                for (x, y) in &top[1..] {
+                    path.line_to(Point::new(*x as f64, *y as f64));
+                }
+                for (x, y) in bottom.iter().rev() {
+                    path.line_to(Point::new(*x as f64, *y as f64));
+                }
+                path.close_path();
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    p.accent.with_alpha(0x70).to_peniko(),
+                    None,
+                    &path,
+                );
+                stroke_polyline(scene, &top, inner, 1.0, lighten(p.accent, 0.2));
+                stroke_polyline(scene, &bottom, inner, 1.0, lighten(p.accent, 0.2));
+                // Where the note starts.
+                let x = inner.x + inner.width * start.clamp(0.0, 1.0);
+                fill_rect(
+                    scene,
+                    Rect::new(x - 0.5, inner.y, 1.0, inner.height),
+                    p.playhead,
+                );
+            }
+            // Its name — or, with nothing dropped yet, what to do.
+            if let Some(label) = labels.get_small(name) {
+                draw_text_clipped(
+                    scene,
+                    label,
+                    inner,
+                    inner.x + 4.0,
+                    inner.y + 2.0,
+                    if peaks.is_empty() {
+                        p.text_muted
+                    } else {
+                        p.text
+                    },
+                );
+            }
+        }
+        FlopsynthPicture::Partials { bars, harmonics } => {
+            // The harmonic grid: where a *table's* partials would be. What
+            // the bars stand sharp of.
+            let grid_ink = p.border.with_alpha(0x90);
+            for h in 1..=*harmonics {
+                let x = inner.x + inner.width * h as f32 / (*harmonics as f32 + 0.5);
+                fill_rect(
+                    scene,
+                    Rect::new(x - 0.5, inner.y, 1.0, inner.height),
+                    grid_ink,
+                );
+            }
+            for (at, height) in bars {
+                let x = inner.x + inner.width * at / (*harmonics as f32 + 0.5);
+                if x < inner.x || x > inner.right() {
+                    continue;
+                }
+                let h = inner.height * height.clamp(0.0, 1.0);
+                fill_glow(scene, (x, inner.bottom() - h), 4.0, p.accent, 0x60);
+                fill_rect(
+                    scene,
+                    Rect::new(x - 1.0, inner.bottom() - h, 2.0, h),
+                    lighten(p.accent, 0.2),
+                );
+            }
+        }
         FlopsynthPicture::Lfo { points, phase } => {
             fill_rect(
                 scene,
@@ -7942,56 +8053,17 @@ fn draw_flopsynth_chrome(
     let m = &theme.metrics;
     let l = &chrome.layout;
 
-    // The tab strip: one track with the page you are on lit in it, the shape
-    // of a segmented switch rather than four separate buttons.
-    if let (Some((_, first)), Some((_, last))) = (l.tabs.first(), l.tabs.last())
-        && !first.is_empty()
-    {
-        let track = Rect::new(
-            first.x - 2.0,
-            first.y - 2.0,
-            last.right() - first.x + 4.0,
-            first.height + 4.0,
-        );
-        fill_rect_rounded(
-            scene,
-            track,
-            track.height / 2.0,
-            p.panel_header.with_alpha(0xd0),
-        );
-        stroke_rect_rounded(scene, track, track.height / 2.0, 1.0, p.border);
-    }
+    // The tab strip: a head-up display floating on the sky, the page you
+    // are on lit (`bridge::draw_hud_tab`).
     for (page, rect) in &l.tabs {
-        if rect.is_empty() {
-            continue;
-        }
-        let here = *page == chrome.view.page;
-        if here {
-            fill_glow(
-                scene,
-                (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0),
-                rect.width * 0.7,
-                p.accent,
-                0x50,
-            );
-            fill_rect_vertical(
-                scene,
-                *rect,
-                rect.height / 2.0,
-                lighten(p.accent, 0.15),
-                p.accent,
-            );
-        }
-        if let Some(text) = labels.get(page.label()) {
-            draw_text_clipped(
-                scene,
-                text,
-                *rect,
-                rect.x + ((rect.width - text.width) / 2.0).max(2.0),
-                rect.y + (rect.height - text.height) / 2.0,
-                if here { p.window } else { p.text_muted },
-            );
-        }
+        bridge::draw_hud_tab(
+            scene,
+            theme,
+            labels,
+            *rect,
+            page.label(),
+            *page == chrome.view.page,
+        );
     }
 
     // How many voices are sounding, at the right-hand end of the tab strip.
@@ -8244,11 +8316,27 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
         return;
     }
 
-    // The ground first: the window's own colour graded and lit, with the
-    // cards over it. Nothing else in this program draws a gradient, and this
-    // window is the one place the brief asked for a *look* — "spacey and
-    // futuristic" — rather than a panel.
-    draw_flop_ground(scene, theme, l.body);
+    // The bridge (`bridge.rs`): the hull first, the ground under everything,
+    // then the canopy — the window onto the sky — with the page tabs floating
+    // on it, then the consoles set into the hull. Nothing else in this
+    // program draws a gradient, and this window is the one place the brief
+    // asked for a *room* rather than a panel.
+    let ground = Rect::new(
+        l.whole.x - m.panel_margin,
+        l.whole.y - m.panel_margin,
+        l.whole.width + m.panel_margin * 2.0,
+        l.whole.height + m.panel_margin * 2.0,
+    );
+    // The sky fills from the top of the window down to the canopy's foot:
+    // the tab strip is drawn over it as a head-up display.
+    let opening = Rect::new(
+        ground.x + 2.0,
+        ground.y + 2.0,
+        ground.width - 4.0,
+        (l.canopy.bottom() - ground.y - 2.0).max(0.0),
+    );
+    bridge::draw_hull(scene, theme, ground, opening.bottom() + 4.0, chrome.skin);
+    bridge::draw_canopy(scene, theme, opening, chrome.sky, chrome.skin);
     draw_flopsynth_chrome(scene, theme, labels, chrome);
     if chrome.view.page == crate::canvas::FlopsynthPage::Presets {
         draw_flop_presets(scene, theme, labels, chrome);
@@ -8306,13 +8394,23 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
         if placed.frame.is_empty() {
             continue;
         }
-        draw_flop_card(
+        let ink = card_ink(&card.group.name, p);
+        // The console's lamp is on while a control in it is held or under
+        // the pointer.
+        let hot_card = chrome
+            .active
+            .or(chrome.hover)
+            .is_some_and(|(which, _)| which == index);
+        bridge::draw_console(
             scene,
             theme,
             labels,
             placed.frame,
             placed.header,
             &card.group.name,
+            ink,
+            hot_card,
+            chrome.skin,
         );
         if !placed.remove.is_empty() {
             let lit = placed.remove.contains(chrome.hover_at.0, chrome.hover_at.1);
@@ -8323,7 +8421,7 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
                 if lit { p.meter_peak } else { p.text_muted },
             );
         }
-        draw_flopsynth_picture(scene, theme, placed.picture, &card.picture);
+        draw_flopsynth_picture(scene, theme, labels, placed.picture, &card.picture, ink);
 
         for (param_index, cell) in &placed.cells {
             let Some(param) = card.group.params.get(*param_index) else {
@@ -8334,6 +8432,18 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
             }
             let hot = chrome.active == Some((index, *param_index));
             let lit = hot || chrome.hover == Some((index, *param_index));
+            // The nameplate's chooser: a chip filling its cell, with no
+            // caption — the nameplate is its caption.
+            if crate::canvas::is_nameplate_control(param) {
+                let chip = Rect::new(
+                    cell.x,
+                    cell.y + 2.0,
+                    cell.width,
+                    (cell.height - 4.0).max(0.0),
+                );
+                draw_flop_chip(scene, theme, labels, chip, &param.display, lit);
+                continue;
+            }
             if lit {
                 fill_rect_rounded(scene, *cell, m.corner_radius, p.text.with_alpha(0x10));
             }
@@ -8384,6 +8494,7 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
                         hot,
                         lit,
                         param.automated,
+                        chrome.skin.and_then(|skin| skin.knob.as_ref()),
                     );
                     if let Some(label) = labels.get_small(&param.display) {
                         draw_text_clipped(
@@ -8418,61 +8529,6 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
     }
 }
 
-/// The ground of Flopsynth's window: the window colour graded towards the
-/// accent at the top, a nebula in the accent at one corner and in the
-/// modulation violet at the other, and a scatter of stars.
-///
-/// Everything is the theme's own colours mixed, so a light theme gets a
-/// pale version of the same sky rather than a dark one pasted over it.
-fn draw_flop_ground(scene: &mut Scene, theme: &Theme, body: Rect) {
-    let p = &theme.palette;
-    // The body's own margin, so the sky reaches the window's edge.
-    let sky = Rect::new(
-        body.x - theme.metrics.panel_margin,
-        body.y - theme.metrics.panel_margin,
-        body.width + theme.metrics.panel_margin * 2.0,
-        body.height + theme.metrics.panel_margin * 2.0,
-    );
-    fill_rect_vertical(scene, sky, 0.0, mix(p.window, p.accent, 0.12), p.window);
-    fill_glow(
-        scene,
-        (sky.x + sky.width * 0.18, sky.y + sky.height * 0.1),
-        sky.width * 0.55,
-        p.accent,
-        0x30,
-    );
-    fill_glow(
-        scene,
-        (
-            sky.right() - sky.width * 0.15,
-            sky.bottom() - sky.height * 0.1,
-        ),
-        sky.width * 0.5,
-        p.modulation,
-        0x26,
-    );
-    // Stars: a fixed scatter, so the sky is the same sky every frame. A
-    // linear congruential walk is enough for sixty points nobody counts.
-    let mut seed: u32 = 0x9e37_79b9;
-    for _ in 0..STARS {
-        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        let x = sky.x + sky.width * ((seed >> 8) & 0xffff) as f32 / 65_536.0;
-        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        let y = sky.y + sky.height * ((seed >> 8) & 0xffff) as f32 / 65_536.0;
-        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        let bright = 0x28 + ((seed >> 8) & 0x3f) as u8;
-        let size = if (seed >> 20) & 0x7 == 0 { 2.0 } else { 1.0 };
-        fill_rect(
-            scene,
-            Rect::new(x, y, size, size),
-            p.text.with_alpha(bright),
-        );
-    }
-}
-
-/// How many stars the sky has.
-const STARS: usize = 90;
-
 /// The ink a card's family is drawn in — the rule under its name, and the
 /// glow on its knobs' arcs. The three oscillators take the theme's three
 /// ramps (§8.1 rule 2), so a route's source badge and its oscillator share a
@@ -8492,76 +8548,11 @@ fn card_ink(name: &str, p: &crate::theme::Palette) -> Color {
     }
 }
 
-/// One card: a pane of glass on the sky, with its name and its family's rule
-/// across the top.
-fn draw_flop_card(
-    scene: &mut Scene,
-    theme: &Theme,
-    labels: &Labels,
-    frame: Rect,
-    header: Rect,
-    name: &str,
-) {
-    let p = &theme.palette;
-    let m = &theme.metrics;
-    let ink = card_ink(name, p);
-    let radius = m.corner_radius + 2.0;
-    fill_rect_vertical(
-        scene,
-        frame,
-        radius,
-        p.panel.with_alpha(0xe8),
-        mix(p.panel, p.window, 0.35).with_alpha(0xe8),
-    );
-    stroke_rect_rounded(scene, frame, radius, 1.0, p.border);
-    // A highlight along the top edge, which is what makes glass read as glass.
-    fill_rect(
-        scene,
-        Rect::new(
-            frame.x + radius,
-            frame.y + 1.0,
-            (frame.width - radius * 2.0).max(0.0),
-            1.0,
-        ),
-        p.text.with_alpha(0x18),
-    );
-    // The family's rule, under the name.
-    fill_rect(
-        scene,
-        Rect::new(
-            header.x + 6.0,
-            header.bottom() - 1.0,
-            (header.width - 12.0).max(0.0),
-            1.0,
-        ),
-        ink.with_alpha(0x90),
-    );
-    fill_rect(
-        scene,
-        Rect::new(
-            header.x + 6.0,
-            header.bottom() - 1.0,
-            28.0_f32.min(header.width),
-            2.0,
-        ),
-        ink,
-    );
-    if let Some(text) = labels.get(name) {
-        draw_text_clipped(
-            scene,
-            text,
-            header,
-            header.x + 6.0,
-            header.y + (header.height - text.height) / 2.0,
-            p.text,
-        );
-    }
-}
-
 /// A knob on Flopsynth's window.
 ///
 /// `draw_knob`'s geometry — the same 270-degree sweep, the same needle — with
 /// a domed body and a glow under the value arc, so the arc reads as lit.
+#[allow(clippy::too_many_arguments)]
 fn draw_flop_knob(
     scene: &mut Scene,
     theme: &Theme,
@@ -8570,6 +8561,7 @@ fn draw_flop_knob(
     hot: bool,
     lit: bool,
     automated: bool,
+    cap: Option<&vello::peniko::ImageData>,
 ) {
     use vello::peniko::{Brush, Gradient};
     let p = &theme.palette;
@@ -8628,6 +8620,34 @@ fn draw_flop_knob(
         None,
         &body,
     );
+    // A cap from the skin folder, if there is one, scaled onto the dome and
+    // clipped to it; the dome stays under it as the shading.
+    if let Some(cap) = cap
+        && cap.width > 0
+        && cap.height > 0
+    {
+        let r = (radius - 2.0).max(1.0) as f64;
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            Affine::IDENTITY,
+            &body,
+        );
+        scene.draw_image(
+            &vello::peniko::ImageBrush {
+                image: cap.clone(),
+                sampler: vello::peniko::ImageSampler::new()
+                    .with_quality(vello::peniko::ImageQuality::Medium),
+            },
+            Affine::translate((cx as f64 - r, cy as f64 - r))
+                * Affine::scale_non_uniform(
+                    r * 2.0 / cap.width as f64,
+                    r * 2.0 / cap.height as f64,
+                ),
+        );
+        scene.pop_layer();
+    }
 
     // The groove — the automation ring when a lane owns it, §12.2.
     let width = (radius * 0.24).clamp(1.5, 3.0);
@@ -9538,6 +9558,18 @@ fn draw_tune(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &TuneChr
             }
             let hot = chrome.active == Some((index, *param_index));
             let lit = hot || chrome.hover == Some((index, *param_index));
+            // The nameplate's chooser: a chip filling its cell, with no
+            // caption — the nameplate is its caption.
+            if crate::canvas::is_nameplate_control(param) {
+                let chip = Rect::new(
+                    cell.x,
+                    cell.y + 2.0,
+                    cell.width,
+                    (cell.height - 4.0).max(0.0),
+                );
+                draw_flop_chip(scene, theme, labels, chip, &param.display, lit);
+                continue;
+            }
             if lit {
                 fill_rect_rounded(scene, *cell, m.corner_radius, p.text.with_alpha(0x10));
             }
@@ -9569,6 +9601,7 @@ fn draw_tune(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &TuneChr
                         hot,
                         lit,
                         param.automated,
+                        None,
                     );
                     if let Some(label) = labels.get_small(&param.display) {
                         draw_text_clipped(

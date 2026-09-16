@@ -18,9 +18,9 @@
 
 use fontelle_types::{FolderKind, PPQN};
 use fontelle_ui::canvas::{
-    BrowserMode, Carried, CarryRack, CarryScene, CarryTarget, CarryTimeline, SnapDivision,
-    TimelineView, browser_row_carries, carry_chip, carry_note, carry_target, rack_layout,
-    timeline_layout,
+    BrowserMode, Carried, CarryOscillator, CarryRack, CarryScene, CarryTarget, CarryTimeline,
+    SnapDivision, TimelineView, browser_row_carries, carry_chip, carry_note, carry_target,
+    rack_layout, timeline_layout,
 };
 use fontelle_ui::document::{LibraryEntry, LibraryKind};
 use fontelle_ui::layout::Rect;
@@ -85,6 +85,7 @@ fn scene<'a>(
             lanes: 2,
         }),
         name: None,
+        oscillators: &[],
     }
 }
 
@@ -419,6 +420,7 @@ fn a_window_with_no_studio_in_it_refuses_everything() {
         panel: None,
         timeline: None,
         name: None,
+        oscillators: &[],
     };
     assert!(carry_target(&empty, 100.0, 100.0).refuses());
 }
@@ -439,6 +441,7 @@ fn the_instrument_windows_name_stands_for_the_channel_it_has_open() {
         panel: None,
         timeline: None,
         name: Some((2, field)),
+        oscillators: &[],
     };
     let (x, y) = mid(field);
     let target = carry_target(&over, x, y);
@@ -455,6 +458,80 @@ fn the_instrument_windows_name_stands_for_the_channel_it_has_open() {
     assert!(carry_target(&over, x, field.bottom() + 60.0).refuses());
 }
 
+/// A **sound** carried over one of Flopsynth's oscillator cards becomes that
+/// oscillator's sound — which the file-from-the-desktop drop already did and
+/// the browser's own drag did not, so a file dragged out of the Import tab
+/// onto OSC A did nothing at all.
+///
+/// > *"i tried doing this from the audio import tab and dragging an audio
+/// > file into flopsynth over one of my oscilator waveforms right now and it
+/// > didnt do anything unfortunately"*
+#[test]
+fn a_sound_over_an_oscillator_card_becomes_that_oscillators_sound() {
+    let field = Rect::new(12.0, 30.0, 260.0, 26.0);
+    let cards = [
+        CarryOscillator {
+            layer: 0,
+            frame: Rect::new(10.0, 70.0, 300.0, 200.0),
+            name: "OSC A".to_string(),
+        },
+        CarryOscillator {
+            layer: 3,
+            frame: Rect::new(330.0, 70.0, 150.0, 200.0),
+            name: "SUB".to_string(),
+        },
+    ];
+    let over = CarryScene {
+        carried: Carried::Audio,
+        rack: None,
+        panel: None,
+        timeline: None,
+        name: Some((2, field)),
+        oscillators: &cards,
+    };
+    let (x, y) = mid(cards[1].frame);
+    let target = carry_target(&over, x, y);
+    assert_eq!(
+        target,
+        CarryTarget::Oscillator {
+            layer: 3,
+            card: 1,
+            rect: cards[1].frame,
+        }
+    );
+    assert!(target.lands());
+    assert_eq!(target.mark(), Some(cards[1].frame));
+    // The name field still stands for the channel, above the cards.
+    let (x, y) = mid(field);
+    assert!(matches!(
+        carry_target(&over, x, y),
+        CarryTarget::Instrument { channel: 2, .. }
+    ));
+    // And the window between the cards is nowhere.
+    assert!(carry_target(&over, 320.0, 150.0).refuses());
+}
+
+/// A **preset** is not a sound: over an oscillator card it has nowhere to
+/// go, and the chip says so rather than lighting the card up.
+#[test]
+fn a_preset_over_an_oscillator_card_is_refused() {
+    let cards = [CarryOscillator {
+        layer: 0,
+        frame: Rect::new(10.0, 70.0, 300.0, 200.0),
+        name: "OSC A".to_string(),
+    }];
+    let over = CarryScene {
+        carried: Carried::Preset,
+        rack: None,
+        panel: None,
+        timeline: None,
+        name: None,
+        oscillators: &cards,
+    };
+    let (x, y) = mid(cards[0].frame);
+    assert!(carry_target(&over, x, y).refuses());
+}
+
 // ------------------------------------------------------- what it says ---
 
 #[test]
@@ -468,13 +545,14 @@ fn the_chip_says_what_letting_go_would_do() {
                 rect: rack.rows[1].frame
             },
             &names,
+            &[],
             4
         ),
         "Onto Snare",
         "which channel, by name — a row number is not something you can see"
     );
     assert_eq!(
-        carry_note(&CarryTarget::NewChannel { rect: rack.list }, &names, 4),
+        carry_note(&CarryTarget::NewChannel { rect: rack.list }, &names, &[], 4),
         "A new channel"
     );
     assert_eq!(
@@ -484,6 +562,7 @@ fn the_chip_says_what_letting_go_would_do() {
                 rect: Rect::new(0.0, 0.0, 10.0, 10.0)
             },
             &names,
+            &[],
             4
         ),
         "Onto Kick"
@@ -497,17 +576,32 @@ fn the_chip_says_what_letting_go_would_do() {
                 lane: None,
             },
             &names,
+            &[],
             4
         ),
         "A new row at bar 9",
         "the bar it will start on, counted the way the transport counts"
     );
     assert_eq!(
-        carry_note(&CarryTarget::Nowhere, &names, 4),
+        carry_note(
+            &CarryTarget::Oscillator {
+                layer: 0,
+                card: 1,
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0)
+            },
+            &names,
+            &["OSC A".to_string(), "OSC B".to_string()],
+            4
+        ),
+        "As OSC B\u{2019}s sound",
+        "which oscillator, by the name on its card"
+    );
+    assert_eq!(
+        carry_note(&CarryTarget::Nowhere, &names, &[], 4),
         "Nowhere to put this"
     );
     assert_eq!(
-        carry_note(&CarryTarget::Panel, &names, 4),
+        carry_note(&CarryTarget::Panel, &names, &[], 4),
         "",
         "nothing to say about the list it came from"
     );
@@ -524,7 +618,7 @@ fn a_clip_that_does_not_start_on_a_bar_line_says_the_beat_too() {
         tick: PPQN * 4 * 8 + PPQN * 2,
         lane: None,
     };
-    assert_eq!(carry_note(&target, &names, 4), "A new row at bar 9.3");
+    assert_eq!(carry_note(&target, &names, &[], 4), "A new row at bar 9.3");
     // And onto an existing row, the label names the row rather than a new one.
     let onto = CarryTarget::Clip {
         row: Rect::new(0.0, 0.0, 10.0, 10.0),
@@ -532,7 +626,7 @@ fn a_clip_that_does_not_start_on_a_bar_line_says_the_beat_too() {
         tick: PPQN * 4 * 8,
         lane: Some(2),
     };
-    assert_eq!(carry_note(&onto, &names, 4), "Onto row 3 at bar 9");
+    assert_eq!(carry_note(&onto, &names, &[], 4), "Onto row 3 at bar 9");
 }
 
 #[test]
@@ -546,6 +640,7 @@ fn a_channel_nobody_has_named_is_still_named_in_the_chip() {
                 rect: Rect::ZERO
             },
             &channels(),
+            &[],
             4
         ),
         "Onto channel 8"
@@ -661,4 +756,95 @@ fn only_a_sound_is_carried_out_of_the_import_tab() {
             "{kind:?} rows are opened, not carried"
         );
     }
+}
+
+// ------------------------------------------------- letting go outside ---
+//
+// > *"i also still cant drag audio clips into an osc to sample it from my
+// > import tab when i try to drag it out it gets stuck inside the main daw
+// > window."* — Ty, 2026-09-16
+//
+// A press grabs the pointer for the window it happened in, and on Wayland
+// the grab holds until the button comes up: the studio hears every move and
+// the release, the synth window hears nothing until after. So a row let go
+// over the synth window is, to the studio, a row let go *outside itself* —
+// and that used to mean "nowhere", which is the row getting stuck at the
+// edge. Now it means the row is **held**: it stays on the pointer, and the
+// next click puts it down, in whichever window that click is.
+
+use fontelle_ui::canvas::{CarryRelease, carry_release, held_note};
+
+#[test]
+fn a_release_inside_the_studio_drops_where_it_is() {
+    let studio = window();
+    assert_eq!(
+        carry_release(studio, (300.0, 200.0), false, true),
+        CarryRelease::Drop
+    );
+    // Whether or not a floating window is open.
+    assert_eq!(
+        carry_release(studio, (300.0, 200.0), false, false),
+        CarryRelease::Drop
+    );
+}
+
+#[test]
+fn a_release_in_a_floating_window_drops_there() {
+    // The pointer is in the synth window (a compositor that hands the
+    // pointer over mid-gesture): its coordinates are that window's, and the
+    // release lands as it always did.
+    assert_eq!(
+        carry_release(window(), (40.0, 40.0), true, true),
+        CarryRelease::Drop
+    );
+}
+
+#[test]
+fn a_release_outside_the_studio_holds_the_row_when_there_is_a_window_to_take_it() {
+    let studio = window();
+    for pointer in [
+        (-20.0, 200.0),
+        (1500.0, 200.0),
+        (300.0, -5.0),
+        (300.0, 900.0),
+        // Where the studio puts the pointer once the compositor says it has
+        // left — the shape a Wayland release outside the window arrives in.
+        (f32::MIN, f32::MIN),
+    ] {
+        assert_eq!(
+            carry_release(studio, pointer, false, true),
+            CarryRelease::Hold,
+            "{pointer:?}"
+        );
+    }
+}
+
+#[test]
+fn a_release_outside_the_studio_with_nothing_open_lets_go() {
+    // Nowhere for it to go: not held, because a chip that follows the pointer
+    // around a window that cannot take it is a row that cannot be put down.
+    assert_eq!(
+        carry_release(window(), (-20.0, 200.0), false, false),
+        CarryRelease::Cancel
+    );
+}
+
+#[test]
+fn a_held_row_says_how_to_put_it_down() {
+    let names = vec!["OSC A".to_string()];
+    let over = CarryTarget::Oscillator {
+        card: 0,
+        layer: 0,
+        rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+    };
+    // Over something that takes it, the note is the landing, as it was.
+    let landing = carry_note(&over, &[], &names, 4);
+    assert_eq!(held_note(&over, &landing), landing);
+    // Over nothing, it says what to do — the row is not stuck, it is waiting.
+    let nowhere = held_note(
+        &CarryTarget::Nowhere,
+        &carry_note(&CarryTarget::Nowhere, &[], &names, 4),
+    );
+    assert!(nowhere.to_lowercase().contains("click"), "{nowhere}");
+    assert!(nowhere.contains("Esc"), "{nowhere}");
 }

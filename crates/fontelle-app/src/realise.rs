@@ -101,6 +101,10 @@ pub struct Realised {
     /// one from a graph that no longer exists would report a count that never
     /// moves — which is worse than reporting none.
     pub voice_meters: HashMap<ChannelId, std::sync::Arc<fontelle_engine::VoiceMeter>>,
+    /// One ring of each instrument's output, for the sky through
+    /// Flopsynth's canopy — minted per graph like the voice meters, and read
+    /// through the session's newest copy for the same reason.
+    pub scope_taps: HashMap<ChannelId, std::sync::Arc<fontelle_engine::SpectrumTap>>,
     /// The live end of every insert on every track, addressed the way the
     /// mixer panel addresses one: the strip, and the slot in its chain.
     ///
@@ -598,6 +602,8 @@ pub fn realise_hosting(
     // Declared here rather than beside the tracks below because the channels
     // register theirs as they are built — see `ParamTarget::ChannelGain`.
     let mut param_nodes: HashMap<fontelle_types::ParamAddress, NodeId> = HashMap::new();
+    let mut scope_taps: HashMap<ChannelId, std::sync::Arc<fontelle_engine::SpectrumTap>> =
+        HashMap::new();
     let mut voice_meters: HashMap<ChannelId, std::sync::Arc<fontelle_engine::VoiceMeter>> =
         HashMap::new();
 
@@ -726,9 +732,15 @@ pub fn realise_hosting(
         }
         let meter = std::sync::Arc::new(fontelle_engine::VoiceMeter::new());
         voice_meters.insert(channel_id, meter.clone());
+        let scope = std::sync::Arc::new(fontelle_engine::SpectrumTap::new());
+        scope_taps.insert(channel_id, scope.clone());
         schedule.push(ScheduledNode {
             id: channel_nodes[&channel_id],
-            node: Box::new(SamplerNode::new(sampler, library.store()).with_meter(meter)),
+            node: Box::new(
+                SamplerNode::new(sampler, library.store())
+                    .with_meter(meter)
+                    .with_scope(scope),
+            ),
             input_buffers: Vec::new(),
             output_buffers: bus.to_vec(),
         });
@@ -1139,6 +1151,7 @@ pub fn realise_hosting(
         master: meter,
         track_controls,
         voice_meters,
+        scope_taps,
         effect_controls,
         param_nodes,
         spectrum_taps,

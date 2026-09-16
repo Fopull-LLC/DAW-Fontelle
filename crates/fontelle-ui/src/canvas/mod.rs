@@ -40,8 +40,8 @@ pub use browser::{
     setting_slider_groove, setting_slider_x_of,
 };
 pub use carry::{
-    CARRY_PAD, Carried, CarryRack, CarryScene, CarryTarget, CarryTimeline, carry_chip, carry_note,
-    carry_target,
+    CARRY_PAD, Carried, CarryOscillator, CarryRack, CarryRelease, CarryScene, CarryTarget,
+    CarryTimeline, carry_chip, carry_note, carry_release, carry_target, held_note,
 };
 pub use effect::{
     EQ_MAX_DB, EQ_MAX_HZ, EQ_MIN_HZ, EqField, EqHandle, EqHit, EqLayout, InsertInfo, NO_KEY,
@@ -55,15 +55,16 @@ pub use favorites::{
     instrument_menu_rows, plugin_picker_rows,
 };
 pub use flopsynth::{
-    ADD_EFFECT, BADGE_H, BADGE_W, CARD_GAP, CARD_HEADER, CARD_PAD, CELL_FLOOR, CardLayout, EnvNode,
-    FLOP_CELL_H, FLOP_CELL_W, FLOP_KNOB, FlopsynthCard, FlopsynthHit, FlopsynthLayout,
-    FlopsynthPage, FlopsynthPicture, FlopsynthRoute, FlopsynthView, MATRIX_ROW, MatrixHit,
-    MatrixRow, NODE_GRAB, PICTURE_FLOOR, PICTURE_HEIGHT, PRESET_ROW, PresetBrowse, PresetShelf,
-    PresetsHit, PresetsLayout, RESPONSE_BOTTOM_DB, RESPONSE_TOP_DB, RING_BAND, RING_GAP,
-    TAB_HEIGHT, WIDE_CHOICE, badge_at, cell_span, control_at, env_curve_points, env_node_at,
-    env_node_drag, filter_xy_at, flop_knob_rect, flopsynth_hit, flopsynth_layout, flopsynth_tab_at,
-    lfo_curve_points, matrix_depth_at, matrix_hit, picture_control, preset_about, preset_page_rows,
-    preset_shelves, presets_hit, response_curve_points, ring_depth, ring_hit, wave_curve_points,
+    ADD_EFFECT, BADGE_H, BADGE_W, CANOPY_MAX, CANOPY_MIN, CARD_GAP, CARD_HEADER, CARD_PAD,
+    CELL_FLOOR, CardLayout, EnvNode, FLOP_CELL_H, FLOP_CELL_W, FLOP_KNOB, FlopsynthCard,
+    FlopsynthHit, FlopsynthLayout, FlopsynthPage, FlopsynthPicture, FlopsynthRoute, FlopsynthView,
+    MATRIX_ROW, MatrixHit, MatrixRow, NAMEPLATE_CHIP_W, NODE_GRAB, PICTURE_FLOOR, PICTURE_HEIGHT,
+    PRESET_ROW, PresetBrowse, PresetShelf, PresetsHit, PresetsLayout, RESPONSE_BOTTOM_DB,
+    RESPONSE_TOP_DB, RING_BAND, RING_GAP, TAB_HEIGHT, WIDE_CHOICE, badge_at, cell_span, control_at,
+    env_curve_points, env_node_at, env_node_drag, filter_xy_at, flop_knob_rect, flopsynth_hit,
+    flopsynth_layout, flopsynth_tab_at, is_nameplate_control, lfo_curve_points, matrix_depth_at,
+    matrix_hit, picture_control, preset_about, preset_page_rows, preset_shelves, presets_hit,
+    response_curve_points, ring_depth, ring_hit, sound_outline_points, wave_curve_points,
     wave_position_at,
 };
 pub use instrument::{

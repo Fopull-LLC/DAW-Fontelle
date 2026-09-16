@@ -138,15 +138,10 @@ struct StoredWavetable {
 
 impl StoredWavetable {
     fn of(table: &crate::patch::UserWavetable) -> Self {
-        let mut bytes = Vec::with_capacity(table.samples.len() * 2);
-        for sample in &table.samples {
-            let value = (sample.clamp(-1.0, 1.0) * 32_767.0).round() as i16;
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
         Self {
             name: table.name.clone(),
             frames: table.frames,
-            samples: fontelle_types::encode_base64(&bytes),
+            samples: encode_pcm16(&table.samples),
         }
     }
 
@@ -155,19 +150,114 @@ impl StoredWavetable {
     /// should open with that oscillator silent, the way one naming a missing
     /// table does, rather than refusing to open at all.
     fn into_table(self) -> crate::patch::UserWavetable {
-        let bytes = fontelle_types::decode_base64(&self.samples).unwrap_or_default();
-        let samples = bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|pair| i16::from_le_bytes(*pair) as f32 / 32_767.0)
-            .collect();
         crate::patch::UserWavetable {
             name: self.name,
             frames: self.frames,
-            samples,
+            samples: decode_pcm16(&self.samples),
         }
     }
+}
+
+/// One [`crate::UserSample`] as a patch file holds it: the zones, each with
+/// its samples as sixteen-bit PCM in base64 — [`StoredWavetable`]'s encoding,
+/// for its reasons. Unless it is one of the bank's own sets, in which case
+/// `factory` names it and there are no zones: the audio is in the binary
+/// (`crate::factory_samples`), and a project is not asked to carry it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct StoredSample {
+    name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    factory: Option<String>,
+    #[serde(default)]
+    zones: Vec<StoredZone>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct StoredZone {
+    root_key: u8,
+    fine_cents: f32,
+    key_range: (u8, u8),
+    sample_rate: u32,
+    /// Little-endian `i16`, base64.
+    samples: String,
+}
+
+impl StoredSample {
+    fn of(sample: &crate::UserSample) -> Self {
+        if let Some(set) = sample.factory {
+            return Self {
+                name: sample.name.clone(),
+                factory: Some(set.id().to_string()),
+                zones: Vec::new(),
+            };
+        }
+        Self {
+            name: sample.name.clone(),
+            factory: None,
+            zones: sample
+                .zones
+                .iter()
+                .map(|zone| StoredZone {
+                    root_key: zone.root_key,
+                    fine_cents: zone.fine_cents,
+                    key_range: zone.key_range,
+                    sample_rate: zone.sample_rate,
+                    samples: encode_pcm16(&zone.samples),
+                })
+                .collect(),
+        }
+    }
+
+    /// Back to a recording. A damaged blob is a silent zone, for
+    /// `StoredWavetable::into_table`'s reason; a factory set this build has
+    /// not got — a file from a later one — is a silent recording under the
+    /// stored name, for the same reason.
+    fn into_sample(self) -> crate::UserSample {
+        if let Some(id) = self.factory {
+            return match crate::factory_samples::FactorySampleSet::from_id(&id) {
+                Some(set) => set.sample(),
+                None => crate::UserSample {
+                    name: self.name,
+                    factory: None,
+                    zones: Vec::new(),
+                },
+            };
+        }
+        crate::UserSample {
+            name: self.name,
+            factory: None,
+            zones: self
+                .zones
+                .into_iter()
+                .map(|zone| crate::SampleZone {
+                    root_key: zone.root_key,
+                    fine_cents: zone.fine_cents,
+                    key_range: zone.key_range,
+                    sample_rate: zone.sample_rate,
+                    samples: decode_pcm16(&zone.samples).into(),
+                })
+                .collect(),
+        }
+    }
+}
+
+fn encode_pcm16(samples: &[f32]) -> String {
+    let mut bytes = Vec::with_capacity(samples.len() * 2);
+    for sample in samples {
+        let value = (sample.clamp(-1.0, 1.0) * 32_767.0).round() as i16;
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    fontelle_types::encode_base64(&bytes)
+}
+
+fn decode_pcm16(text: &str) -> Vec<f32> {
+    let bytes = fontelle_types::decode_base64(text).unwrap_or_default();
+    bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| i16::from_le_bytes(*pair) as f32 / 32_767.0)
+        .collect()
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -192,6 +282,11 @@ struct StoredPatch {
     /// reads back as carrying none.
     #[serde(default)]
     wavetables: Vec<StoredWavetable>,
+    /// The patch's own recordings, `#[serde(default)]` for the same reason
+    /// — and left out when there are none, so the files written before
+    /// recordings existed are not all rewritten to say so.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    samples: Vec<StoredSample>,
 }
 
 impl Patch {
@@ -239,6 +334,7 @@ impl Patch {
             macros: self.macros.clone(),
             output_db: self.output_db,
             wavetables: self.wavetables.iter().map(StoredWavetable::of).collect(),
+            samples: self.samples.iter().map(StoredSample::of).collect(),
         };
 
         Ok(PatchData {
@@ -334,6 +430,11 @@ impl Patch {
                     .wavetables
                     .into_iter()
                     .map(StoredWavetable::into_table)
+                    .collect(),
+                samples: stored
+                    .samples
+                    .into_iter()
+                    .map(StoredSample::into_sample)
                     .collect(),
             },
             unresolved,

@@ -654,7 +654,14 @@ impl EditorKind {
 /// [`EditorKind::default_size`], because the kind is `Instrument` either way:
 /// what decides is *which instrument is on the channel*, which the layout
 /// module cannot see and the window can.
-pub const FLOPSYNTH_SIZE: (u32, u32) = (1180, 740);
+///
+/// **Taller since the bridge** (2026-09-16): the canopy — the sky the window
+/// looks out on — takes `canvas::CANOPY_MIN` under the tabs on every page,
+/// and at 740 the consoles had to shrink to make room for it. A hundred
+/// pixels more keeps every control at its design size with a canopy a
+/// hundred and ten tall. Ty decided 740 for the first build (plan §14); this
+/// is the experiment's number, for him to keep or send back.
+pub const FLOPSYNTH_SIZE: (u32, u32) = (1180, 840);
 
 /// And the smallest it may be dragged to. Below this the cards have lost their
 /// air and their pictures and there is nothing left to give (§8.8).

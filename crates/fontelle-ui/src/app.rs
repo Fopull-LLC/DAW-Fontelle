@@ -275,6 +275,13 @@ struct Carrying {
 /// is spinning for a window somebody else is drawing.
 const PLUGIN_EDITOR_FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 
+/// What an oscillator's sound menu says with no audio folder to list.
+const NO_SOUNDS_TO_OFFER: &str = "no audio folder \u{2014} set one on the Import tab";
+
+/// How often the canopy's sky is redrawn while it is moving: thirty a second,
+/// which a nebula needs and a knob does not.
+const SKY_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
+
 /// How many rows one notch of the wheel moves a menu that scrolls.
 ///
 /// Three is what every list in every desktop does, and a menu of 357 plugins
@@ -444,6 +451,16 @@ enum MenuTarget {
     /// Flopsynth's `+ effect` list (`docs/flopsynth-plan.md` §8.5): which
     /// kind to put on the end of the instrument's own chain.
     AddPatchEffect,
+    /// A sound for one of Flopsynth's oscillators — the Import tab's audio
+    /// folder, listed — for the card at `card` whose layer is `layer`.
+    /// Opened by the right button on an oscillator's picture, and by the
+    /// left on a sample card that has no sound yet.
+    ///
+    /// The menu is the path that works whatever the compositor does with a
+    /// drag between two windows: a browser row carried into this window
+    /// lands on a card only if the pointer's moves reach the window while
+    /// the button is down, which is the compositor's call.
+    LoadSound { card: usize, layer: usize },
     /// A mixer strip's own right-click menu, by position. What a strip does
     /// when you right-click its body: the chain's presets, and rename.
     TrackMenu(usize),
@@ -507,7 +524,7 @@ impl MenuTarget {
             | Self::PresetSaveName(editor)
             | Self::PresetCategory(editor)
             | Self::PresetNewCategory(editor) => Some(*editor),
-            Self::AddPatchEffect => Some(EditorKind::Instrument),
+            Self::AddPatchEffect | Self::LoadSound { .. } => Some(EditorKind::Instrument),
             // The mixer is in the main window, so its menus are too.
             Self::TrackMenu(_)
             | Self::TrackPresetMenu(_)
@@ -932,11 +949,27 @@ pub struct WindowApp {
     /// back, and until then the global keybinds work in here like they do in
     /// every other editor window.
     flop_searching: bool,
+    /// The sky through Flopsynth's canopy (`sky.rs`): what it has heard,
+    /// eased, and where everything in it is. Ticked once a frame while the
+    /// window is open, from the instrument's own sound.
+    sky: crate::sky::SkyState,
+    /// This frame of it, drawn — built in `draw_editor` from the state and
+    /// the canopy's size, so the picture and the layout agree.
+    sky_frame: Option<crate::render::SkyFrame>,
+    /// Textures for the bridge, read once from the skin folder (`skin.rs`).
+    skin: crate::skin::Skin,
     /// A source badge being carried to a knob (§8.4): which source, and where
     /// the pointer is now, so the badge can be drawn under it.
     flop_assign: Option<(usize, (f32, f32))>,
     /// The browser row in the air, while one is — see [`Carrying`].
     carry: Option<Carrying>,
+    /// A browser row **held** after its drag was let go outside the studio
+    /// (`canvas::carry_release`): it stays on the pointer, in whichever
+    /// window that is, until a click puts it down or Escape lets go. The
+    /// way a row reaches the synth window on a desktop that keeps the
+    /// pointer with the window the press was in — *"it gets stuck inside
+    /// the main daw window."*
+    held: Option<BrowserRow>,
     /// Which of Flopsynth's controls something modulates, and how deeply.
     ///
     /// Worked out with the rest of the studio's lists rather than per knob per
@@ -1534,8 +1567,12 @@ impl WindowApp {
             flopsynth: None,
             flop_page: crate::canvas::FlopsynthPage::Synth,
             flop_searching: false,
+            sky: crate::sky::SkyState::new(0x5eed),
+            sky_frame: None,
+            skin: crate::skin::Skin::find(),
             flop_assign: None,
             carry: None,
+            held: None,
             flop_modulated: Vec::new(),
             flop_destinations: Vec::new(),
             flop_browse: Default::default(),
@@ -2449,6 +2486,42 @@ impl WindowApp {
             self.spectrum_points.clear();
         }
 
+        // The sky through Flopsynth's canopy, fed the instrument's own sound
+        // once a frame while its window is open — the analyser's rule again.
+        // It keeps ticking in silence, because the stars twinkle and the
+        // clouds settle, and asks for a frame whenever it is moving.
+        if self.is_editor_open(EditorKind::Instrument) && self.flopsynth.is_some() {
+            let sound = self
+                .options
+                .document
+                .as_mut()
+                .and_then(|doc| doc.instrument_sound())
+                .unwrap_or_default();
+            self.sky.tick(&sound, dt);
+            // And the voice count, which the view was built with and which
+            // moves between revisions: a note let go should read as silence
+            // without waiting for the next edit.
+            let voices = self
+                .options
+                .document
+                .as_ref()
+                .map_or(0, |doc| doc.instrument_voices());
+            let mut changed = false;
+            if let Some(view) = &mut self.flopsynth
+                && view.voices != voices
+            {
+                view.voices = voices;
+                changed = true;
+            }
+            if changed {
+                self.shape_labels();
+                self.redraw_editor(EditorKind::Instrument);
+            }
+            if self.sky.is_alive() {
+                self.redraw_editor(EditorKind::Instrument);
+            }
+        }
+
         // The notes of a take being recorded, read once a frame while one is:
         // they are not in the document and will not be until the transport
         // stops, so nothing else would ever redraw them. Only for a *note*
@@ -3099,6 +3172,9 @@ impl ApplicationHandler for WindowApp {
                 self.pointer_window = None;
                 self.update_hover();
                 self.drag_pointer();
+                if self.held.is_some() {
+                    self.refresh_carry();
+                }
                 self.request_redraw_if_dirty();
             }
 
@@ -3219,16 +3295,37 @@ impl ApplicationHandler for WindowApp {
                     self.commit_selection();
                 }
                 // And a row carried out of the soundfont panel is acted on by
-                // **where it was let go** — see `Drag::BrowserRow`.
+                // **where it was let go** — see `Drag::BrowserRow` — unless
+                // it was let go outside this window with the synth window
+                // open, in which case it is held for a click in there: see
+                // `canvas::carry_release` for the desktop that makes that
+                // necessary.
                 if let Drag::BrowserRow(row) = self.drag {
                     let (x, y) = self.cursor;
-                    self.drop_browser_row(row, x, y);
+                    match crate::canvas::carry_release(
+                        self.layout.window,
+                        (x, y),
+                        self.pointer_window.is_some(),
+                        self.editors
+                            .iter()
+                            .any(|e| e.kind == EditorKind::Instrument),
+                    ) {
+                        crate::canvas::CarryRelease::Drop => self.drop_browser_row(row, x, y),
+                        crate::canvas::CarryRelease::Hold => {
+                            self.held = Some(row);
+                            self.status = "Click an oscillator in the synth window to \
+                                           land the sound, Esc to let go"
+                                .to_string();
+                        }
+                        crate::canvas::CarryRelease::Cancel => {}
+                    }
                 }
                 self.drag = Drag::None;
-                // The chip goes with the drag, and the region it floated over
-                // is repainted — it belongs to no widget, so nothing else
+                // The chip goes with the drag — unless the row is held, when
+                // it stays on the pointer — and the region it floated over
+                // is repainted: it belongs to no widget, so nothing else
                 // would.
-                if self.carry.take().is_some() {
+                if self.held.is_none() && self.carry.take().is_some() {
                     self.tree.invalidate_rect(self.layout.window);
                     self.redraw_editor(EditorKind::Instrument);
                 }
@@ -3939,6 +4036,11 @@ impl WindowApp {
                 // EQ handle and an automation point are dragged against the
                 // layouts `relayout_editors` put in this window.
                 self.drag_pointer();
+                // A row held from the studio follows the pointer in here too,
+                // and the card under it lights.
+                if self.held.is_some() {
+                    self.refresh_carry();
+                }
                 self.redraw_editor(kind);
             }
 
@@ -4101,6 +4203,14 @@ impl WindowApp {
     fn editor_key(&mut self, kind: EditorKind, event: &winit::event::KeyEvent) {
         use winit::keyboard::{Key, NamedKey};
 
+        // A held browser row is let go on Escape, before the window is
+        // closed on it.
+        if self.held.is_some() && event.logical_key == Key::Named(NamedKey::Escape) {
+            let (x, y) = self.cursor;
+            self.put_down_held(false, x, y);
+            self.redraw_editor(kind);
+            return;
+        }
         // A menu open over this window has the keyboard first — the preset
         // drop-down filters as you type, and Escape shuts the menu rather
         // than the window it is over. Without this, Escape on an open
@@ -4243,6 +4353,16 @@ impl WindowApp {
 
     /// A press inside an editor window, routed by which editor it is.
     fn press_editor(&mut self, kind: EditorKind, button: MouseButton, x: f32, y: f32) {
+        // A row held since its drag was let go outside the studio — the way
+        // a sound reaches an oscillator on a desktop that keeps the pointer
+        // with the window the press was in. This click puts it down (left)
+        // or lets it go, and is spent either way: it was never a press on
+        // the control under it.
+        if self.held.is_some() {
+            self.put_down_held(button == MouseButton::Left, x, y);
+            self.redraw_editor(kind);
+            return;
+        }
         // The bar first, whatever the window is: it is in the *header*, above
         // the panel, so nothing else can be under the pointer there — and a
         // press that reached the panel's hit test instead would land on
@@ -4530,6 +4650,7 @@ impl WindowApp {
             // channel that is one has both views, and the picture of the
             // signal path is the one worth showing.
             EditorKind::Instrument if self.flopsynth.is_some() => {
+                self.sky_frame = Some(self.sky_frame_for(self.flopsynth_layout.canopy));
                 let Some(view) = self.flopsynth.as_ref() else {
                     return;
                 };
@@ -4544,6 +4665,8 @@ impl WindowApp {
                     about: self.flop_about(),
                     hover_at: self.cursor,
                     searching: self.flop_searching,
+                    sky: self.sky_frame.as_ref(),
+                    skin: Some(&self.skin),
                 })
             }
             EditorKind::Instrument => {
@@ -5099,6 +5222,10 @@ impl WindowApp {
                         .ensure_small(&param.label, &font, &mut self.text);
                     self.labels
                         .ensure_small(&param.display, &font, &mut self.text);
+                }
+                // A recording's picture carries its name.
+                if let crate::canvas::FlopsynthPicture::Sound { name, .. } = &card.picture {
+                    self.labels.ensure_small(name, &font, &mut self.text);
                 }
             }
             // The Presets page: every row, every shelf, the search box's
@@ -5756,6 +5883,12 @@ impl WindowApp {
     fn press(&mut self, button: winit::event::MouseButton, x: f32, y: f32) {
         self.drag = Drag::None;
         self.end_edge_scroll();
+        // A row held since a drag was let go outside the window: this click
+        // puts it down (left) or lets it go (anything else), and is spent.
+        if self.held.is_some() {
+            self.put_down_held(button == winit::event::MouseButton::Left, x, y);
+            return;
+        }
         // A confirm modal is above everything: the press is answered here and
         // goes no further — a hit on a button acts, a press anywhere else is a
         // cancel.
@@ -7966,7 +8099,15 @@ impl WindowApp {
             return;
         };
         match kind {
-            FlopsynthPicture::Wave { .. } => {
+            // A sample card with nothing on it yet: the press is the ask.
+            FlopsynthPicture::Sound { peaks, .. } if peaks.is_empty() => {
+                self.open_load_sound_menu(card, x, y);
+            }
+            // A wave's frame, a recording's start, a string's brightness:
+            // all the position knob, all dragged sideways.
+            FlopsynthPicture::Wave { .. }
+            | FlopsynthPicture::Sound { .. }
+            | FlopsynthPicture::Partials { .. } => {
                 self.drag = Drag::FlopWave(card);
                 self.drag_flop_wave(card, x);
             }
@@ -8167,9 +8308,13 @@ impl WindowApp {
     /// **same** menu target, because it is the same request about the same
     /// kind of thing and a second one would be a second thing to keep in step.
     fn press_flopsynth_menu(&mut self, x: f32, y: f32) {
-        let Some(crate::canvas::FlopsynthHit::Control { card, param }) =
-            crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y)
-        else {
+        let hit = crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y);
+        // The right button on an oscillator's picture: a sound for it.
+        if let Some(crate::canvas::FlopsynthHit::Picture { card }) = hit {
+            self.open_load_sound_menu(card, x, y);
+            return;
+        }
+        let Some(crate::canvas::FlopsynthHit::Control { card, param }) = hit else {
             return;
         };
         let Some(control) = self.flop_param((card, param)).cloned() else {
@@ -8186,6 +8331,26 @@ impl WindowApp {
             .map(|editor| editor.panel.body)
             .unwrap_or(self.flopsynth_layout.body);
         self.open_menu(target, x, y, bounds);
+        self.redraw_editor(EditorKind::Instrument);
+    }
+
+    /// The sound menu for the oscillator behind `card`, if it is one.
+    fn open_load_sound_menu(&mut self, card: usize, x: f32, y: f32) {
+        let Some(layer) = self
+            .flopsynth
+            .as_ref()
+            .and_then(|view| view.cards.get(card))
+            .and_then(|card| card.oscillator)
+        else {
+            return;
+        };
+        let bounds = self
+            .editors
+            .iter()
+            .find(|e| e.kind == EditorKind::Instrument)
+            .map(|editor| editor.panel.body)
+            .unwrap_or(self.flopsynth_layout.body);
+        self.open_menu(MenuTarget::LoadSound { card, layer }, x, y, bounds);
         self.redraw_editor(EditorKind::Instrument);
     }
 
@@ -9600,6 +9765,11 @@ impl WindowApp {
         if let Some(kind) = self.pointer_window {
             let name = (kind == EditorKind::Instrument)
                 .then_some((self.selected_channel, self.instrument_layout.name));
+            let oscillators = if kind == EditorKind::Instrument {
+                self.carry_oscillators()
+            } else {
+                Vec::new()
+            };
             return crate::canvas::carry_target(
                 &CarryScene {
                     carried,
@@ -9607,6 +9777,7 @@ impl WindowApp {
                     panel: None,
                     timeline: None,
                     name,
+                    oscillators: &oscillators,
                 },
                 x,
                 y,
@@ -9633,10 +9804,64 @@ impl WindowApp {
                     lanes: self.lanes.len(),
                 }),
                 name: None,
+                oscillators: &[],
             },
             x,
             y,
         )
+    }
+
+    /// This frame of the sky, for the canopy at `canopy`.
+    ///
+    /// The nebula is shaded at a quarter of the canopy's size and scaled up
+    /// by the renderer; the sprites are placed in the canopy's own pixels.
+    /// The sky's picture is the whole opening, from the top of the window
+    /// to the canopy's foot, which is what `draw_flopsynth` clips it to.
+    fn sky_frame_for(&self, canopy: crate::layout::Rect) -> crate::render::SkyFrame {
+        let margin = self.options.theme.metrics.panel_margin;
+        let above = crate::canvas::TAB_HEIGHT + crate::canvas::CARD_GAP;
+        let opening = crate::layout::Rect::new(
+            canopy.x - margin,
+            canopy.y - above - margin,
+            canopy.width + margin * 2.0,
+            canopy.height + above + margin,
+        );
+        let palette = crate::sky::SkyPalette::for_theme(&self.options.theme.palette);
+        let width = (opening.width / 4.0).ceil().max(1.0) as u32;
+        let height = (opening.height / 4.0).ceil().max(1.0) as u32;
+        let image = if opening.is_empty() {
+            None
+        } else {
+            crate::render::SkyFrame::image_of(&self.sky.render(width, height, &palette))
+        };
+        crate::render::SkyFrame {
+            image,
+            stars: self.sky.stars(opening),
+            shooting: self.sky.shooting(opening),
+            planets: self.sky.planets(opening),
+            aurora: self.sky.aurora(opening),
+            level: self.sky.level(),
+        }
+    }
+
+    /// Flopsynth's oscillator cards as drop targets, off the same layout the
+    /// clicks are hit-tested against — so the card that lights up is the
+    /// card the sound lands on.
+    fn carry_oscillators(&self) -> Vec<crate::canvas::CarryOscillator> {
+        let Some(view) = &self.flopsynth else {
+            return Vec::new();
+        };
+        view.cards
+            .iter()
+            .zip(&self.flopsynth_layout.cards)
+            .filter_map(|(card, placed)| {
+                Some(crate::canvas::CarryOscillator {
+                    layer: card.oscillator?,
+                    frame: placed.frame,
+                    name: card.group.name.clone(),
+                })
+            })
+            .collect()
     }
 
     /// What the chip under the pointer says, and where the row would go.
@@ -9645,8 +9870,9 @@ impl WindowApp {
     /// from under the drag, which a rescan or a folder changing under a search
     /// can do.
     fn carried(&self) -> Option<Carrying> {
-        let Drag::BrowserRow(row) = self.drag else {
-            return None;
+        let row = match self.drag {
+            Drag::BrowserRow(row) => row,
+            _ => self.held?,
         };
         let (x, y) = self.cursor;
         let target = self.carry_target(row, x, y);
@@ -9655,9 +9881,20 @@ impl WindowApp {
             BrowserRow::File(index) => self.browser_list().get(index)?.name.clone(),
         };
         let names: Vec<String> = self.channels.iter().map(|c| c.name.clone()).collect();
+        let oscillators: Vec<String> = self
+            .carry_oscillators()
+            .into_iter()
+            .map(|osc| osc.name)
+            .collect();
+        let note = crate::canvas::carry_note(&target, &names, &oscillators, self.beats_per_bar());
+        let note = if self.held.is_some() {
+            crate::canvas::held_note(&target, &note)
+        } else {
+            note
+        };
         Some(Carrying {
             label,
-            note: crate::canvas::carry_note(&target, &names, self.beats_per_bar()),
+            note,
             target,
             window: self.pointer_window,
         })
@@ -9687,6 +9924,23 @@ impl WindowApp {
         // window's events, and nothing in that path asks the studio for a
         // frame — without this the chip would freeze at the seam.
         self.request_redraw_if_dirty();
+    }
+
+    /// Puts a held row down where the pointer is (`land`), or lets it go.
+    /// Either way the chip leaves the window it was drawn on.
+    fn put_down_held(&mut self, land: bool, x: f32, y: f32) {
+        let Some(row) = self.held.take() else {
+            return;
+        };
+        if land {
+            self.drop_browser_row(row, x, y);
+        }
+        self.status.clear();
+        if self.carry.take().is_some() {
+            self.tree.invalidate_rect(self.layout.window);
+            self.redraw_editor(EditorKind::Instrument);
+        }
+        self.tree.invalidate(BROWSER);
     }
 
     /// Acts on a row carried out of the browser, by where it landed.
@@ -9755,6 +10009,26 @@ impl WindowApp {
             | (BrowserRow::File(index), CarryTarget::Instrument { channel, .. }) => {
                 doc.set_sampler_from_import(channel, index)
             }
+            // Onto one of Flopsynth's oscillator cards: the sound becomes
+            // that oscillator's recording — the browser's half of what a
+            // file from the desktop already did (`drop_on_oscillator`).
+            (BrowserRow::File(index), CarryTarget::Oscillator { layer, .. }) => {
+                let said = doc.load_import_into_oscillator(layer, index);
+                // A recording is a structural change to the patch, so the
+                // window rebuilds its cards from the document rather than
+                // redrawing the old ones.
+                self.studio_revision = u64::MAX;
+                self.redraw_editor(EditorKind::Instrument);
+                match said {
+                    Ok(said) => {
+                        self.status = said;
+                        Ok(())
+                    }
+                    Err(said) => Err(said),
+                }
+            }
+            // A preset over a card was refused while it was held.
+            (BrowserRow::Preset(_), CarryTarget::Oscillator { .. }) => return,
             // Onto the rack itself: a channel of its own.
             (BrowserRow::Preset(index), CarryTarget::NewChannel { .. }) => {
                 doc.add_channel_with(index)
@@ -10755,6 +11029,28 @@ impl WindowApp {
                 }
                 entries
             }
+            MenuTarget::LoadSound { card, .. } => {
+                let name = self
+                    .flopsynth
+                    .as_ref()
+                    .and_then(|view| view.cards.get(*card))
+                    .map(|card| card.group.name.clone())
+                    .unwrap_or_default();
+                let mut entries = vec![MenuEntry::disabled(format!("Sound for {name}"))];
+                let sounds = self
+                    .options
+                    .document
+                    .as_ref()
+                    .map(|doc| doc.audio_sounds())
+                    .unwrap_or_default();
+                if sounds.is_empty() {
+                    entries.push(MenuEntry::disabled(NO_SOUNDS_TO_OFFER));
+                }
+                for sound in sounds {
+                    entries.push(MenuEntry::new(&sound));
+                }
+                entries
+            }
             MenuTarget::PresetSaveName(_) => {
                 crate::canvas::name_prompt_entries("Preset name", self.menu_filter.text())
             }
@@ -11475,6 +11771,18 @@ impl WindowApp {
                 self.tree.invalidate(RACK);
                 self.tree.invalidate(TIMELINE);
                 self.tree.invalidate(PANEL);
+            }
+            (MenuTarget::LoadSound { layer, .. }, index) => {
+                // Row 0 is the heading, so the sounds start at 1.
+                let layer = *layer;
+                if let (Some(which), Some(doc)) =
+                    (index.checked_sub(1), self.options.document.as_mut())
+                {
+                    self.status = match doc.load_audio_sound_into_oscillator(layer, which) {
+                        Ok(said) | Err(said) => said,
+                    };
+                }
+                self.after_flop_structure();
             }
             (MenuTarget::AddPatchEffect, index) => {
                 // Row 0 is the heading, so the kinds start at 1.
@@ -12212,7 +12520,7 @@ impl WindowApp {
         let Some(doc) = &mut self.options.document else {
             return false;
         };
-        self.status = match doc.load_wavetable(layer, path) {
+        self.status = match doc.load_sound(layer, path) {
             Ok(said) | Err(said) => said,
         };
         // A table is a structural change to the patch, so the window rebuilds
@@ -13270,6 +13578,14 @@ impl WindowApp {
     fn key(&mut self, event: &winit::event::KeyEvent) {
         use winit::keyboard::{Key, NamedKey};
 
+        // A held browser row is let go on Escape, before anything else reads
+        // the key: the chip is the nearest thing to the pointer.
+        if self.held.is_some() && event.logical_key == Key::Named(NamedKey::Escape) {
+            let (x, y) = self.cursor;
+            self.put_down_held(false, x, y);
+            return;
+        }
+
         // A menu is in front of everything it was dropped over, so it has the
         // keyboard while it is open — which is what lets the plugin picker be
         // typed at rather than only scrolled. Before the start menu's guard,
@@ -14157,6 +14473,17 @@ impl WindowApp {
             wake = Some(wake.map_or(now + PLUGIN_EDITOR_FRAME, |w| {
                 w.min(now + PLUGIN_EDITOR_FRAME)
             }));
+        }
+
+        // **The sky keeps the loop awake while it moves.** Nothing else asks
+        // for those frames: the instrument's sound arrives on the audio
+        // thread, and the window would otherwise draw the canopy at the
+        // engine's polling rate, which is a slideshow.
+        if self.is_editor_open(EditorKind::Instrument)
+            && self.flopsynth.is_some()
+            && self.sky.is_alive()
+        {
+            wake = Some(wake.map_or(now + SKY_FRAME, |w| w.min(now + SKY_FRAME)));
         }
 
         // A note waiting out its minimum length has to be woken for, or a

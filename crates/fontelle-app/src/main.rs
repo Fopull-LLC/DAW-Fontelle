@@ -631,6 +631,7 @@ fn play_or_render(
             // on a synth says how many voices it is playing from the first
             // frame rather than after the next rebuild.
             .with_voice_meters(realised.voice_meters.clone())
+            .with_scope_taps(realised.scope_taps.clone())
             .with_param_nodes(realised.param_nodes.clone())
             // The same transport the bar drives, so a time selection dragged
             // out on a ruler — and clip mode — reach the thing that loops

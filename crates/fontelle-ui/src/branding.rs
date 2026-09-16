@@ -36,15 +36,42 @@ struct Decoded {
 }
 
 fn decode(png: &[u8]) -> Decoded {
+    try_decode(png).expect("the compiled-in PNG decodes")
+}
+
+/// Any PNG, as straight RGBA — for a texture read off the disk at run time
+/// (`skin.rs`), which may be anything at all.
+pub fn decode_png(png: &[u8]) -> Result<ImageData, String> {
+    let Decoded {
+        width,
+        height,
+        rgba,
+    } = try_decode(png)?;
+    if width == 0 || height == 0 {
+        return Err("an empty image".to_string());
+    }
+    Ok(ImageData {
+        data: Blob::new(Arc::new(rgba)),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width,
+        height,
+    })
+}
+
+fn try_decode(png: &[u8]) -> Result<Decoded, String> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(png));
     // Sixteen-bit and palette files come out as eight-bit colour; how many
     // channels that is still depends on the file, and is dealt with below.
     decoder.set_transformations(png::Transformations::normalize_to_color8());
-    let mut reader = decoder.read_info().expect("the compiled-in PNG decodes");
-    let mut pixels = vec![0; reader.output_buffer_size().expect("a bounded image")];
-    let info = reader
-        .next_frame(&mut pixels)
-        .expect("the compiled-in PNG has a frame");
+    let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
+    let mut pixels = vec![
+        0;
+        reader
+            .output_buffer_size()
+            .ok_or_else(|| "an unbounded image".to_string())?
+    ];
+    let info = reader.next_frame(&mut pixels).map_err(|e| e.to_string())?;
     pixels.truncate(info.buffer_size());
     // Out as RGBA whatever the file held. The logo, being white on nothing,
     // is stored as grey-plus-alpha by any encoder that notices — which is
@@ -66,11 +93,11 @@ fn decode(png: &[u8]) -> Decoded {
         png::ColorType::Grayscale => pixels.iter().flat_map(|&g| [g, g, g, 255]).collect(),
         png::ColorType::Indexed => unreachable!("normalize_to_color8 expands a palette"),
     };
-    Decoded {
+    Ok(Decoded {
         width: info.width,
         height: info.height,
         rgba,
-    }
+    })
 }
 
 /// The logo, in `tint`, ready for `Scene::draw_image`.

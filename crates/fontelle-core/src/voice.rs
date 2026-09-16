@@ -1,3 +1,5 @@
+use fontelle_dsp::SynthInput;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StealPolicy {
     Oldest,
@@ -323,7 +325,9 @@ enum PreparedSource<'a> {
     /// this thread.
     Synth {
         osc: fontelle_dsp::SynthOsc,
-        table: Option<&'a fontelle_dsp::Wavetable>,
+        /// The table or the recording — or nothing, for a noise, a string,
+        /// or a source naming something the patch does not carry.
+        input: fontelle_dsp::SynthInput<'a>,
         note_hz: f32,
     },
 }
@@ -1438,15 +1442,35 @@ impl Voice {
                         + layer_mod(crate::mod_matrix::ModDest::OscUnisonBlend))
                     .clamp(0.0, 1.0);
                     route = osc.filter_route;
-                    let table = match osc.source {
-                        fontelle_dsp::SynthSource::Table(id) => tables.get(id),
+                    let input = match osc.source {
+                        fontelle_dsp::SynthSource::Table(id) => {
+                            tables.get(id).map_or(SynthInput::None, SynthInput::Table)
+                        }
                         // One the patch carries itself — see `UserWavetable`.
-                        fontelle_dsp::SynthSource::User(at) => tables.get_user(at as usize),
-                        fontelle_dsp::SynthSource::Noise => None,
+                        fontelle_dsp::SynthSource::User(at) => tables
+                            .get_user(at as usize)
+                            .map_or(SynthInput::None, SynthInput::Table),
+                        // A recording, by the zone that serves this key —
+                        // see `UserSample::zone_for`. Resolved here rather
+                        // than per sample because which zone a note plays is
+                        // decided when it starts.
+                        fontelle_dsp::SynthSource::Sample(at) => tables
+                            .get_sample(at as usize)
+                            .and_then(|sample| sample.zone_for(self.key))
+                            .map_or(SynthInput::None, |zone| {
+                                SynthInput::Sample(fontelle_dsp::SampleData {
+                                    samples: &zone.samples,
+                                    sample_rate: zone.sample_rate as f32,
+                                    root_hz: zone.root_hz(),
+                                })
+                            }),
+                        fontelle_dsp::SynthSource::Noise | fontelle_dsp::SynthSource::String => {
+                            SynthInput::None
+                        }
                     };
                     PreparedSource::Synth {
                         osc,
-                        table,
+                        input,
                         note_hz: OSC_ROOT_HZ * pitch_ratio,
                     }
                 }
@@ -1630,7 +1654,7 @@ impl Voice {
                     }
                     PreparedSource::Synth {
                         osc,
-                        table,
+                        input,
                         note_hz,
                     } => {
                         // The modulator's sample from *this* frame, already
@@ -1643,7 +1667,7 @@ impl Voice {
                             .map(|m| layer_out.get(usize::from(m)).copied().unwrap_or(0.0))
                             .unwrap_or(0.0);
                         slot.synth
-                            .next_sample(&osc, table, note_hz, sample_rate, modulator)
+                            .next_sample_from(&osc, input, note_hz, sample_rate, modulator)
                     }
                 };
                 // **Before the level knob**, and before the pan.

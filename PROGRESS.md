@@ -19,6 +19,134 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-16, later — the piano is a recording, and a row let go
+outside the window is held — `v0.6.0`.** The day's experiment, released
+once Ty had heard it (*"sounds great go ahead and release this update"*);
+the version bump, the tag and the hub's card 0241 (the no-trailers hook
+and CI job, Ty's standing rule) went with it. Ty, having tested the
+morning's build: *"the grand piano still sounds just a
+lot like a basic synth wave and not a actual grand piano ... maybe you
+could use the osc sampling feature to make the piano sound more realistic
+if you can find a grand piano one shot to use"*, and *"i also still cant
+drag audio clips into an osc ... when i try to drag it out it gets stuck
+inside the main daw window."* Both answered, tests-first:
+
+- **The Grand Piano plays a sampled grand.** Forty-six recordings of a
+  Yamaha C5 — the Salamander Grand Piano, CC BY 3.0, credit in
+  `assets/flopsynth/samples/grand/README.md` and the README — cut by
+  `fontelle-app/examples/grand_samples.rs` out of the FreePats SF2 through
+  Fontelle's own sampler: the bottom A and every four semitones from C1 to
+  C8, at velocity 40 (`soft/`) and 120 (`hard/`), 1.3–4 s each, 24 or
+  32 kHz mono, 6.5 MB compiled in (`fontelle_core::factory_samples`). The
+  row is the soft set on OSC A and the hard on OSC B **crossfaded by
+  velocity** with the two routes chosen so the sum never dips where they
+  cross, nothing synthesised beside them, the recording's own decay, a
+  damper of a release. `UserSample::factory` is the one new field: a patch
+  playing a factory set **names it rather than carrying it**, so the
+  shipped preset and a project with a piano in it stay a page of JSON
+  (`tests/factory_samples.rs`). The card's right-click menu lists the two
+  sets over the audio folder, so a real piano can be layered under
+  anything without a file to find. `tests/grand_piano.rs` is rewritten
+  for a piano that *is* one: the recordings are what sounds, every key
+  lands on one within two semitones, soft is the soft recording and hard
+  the hard, level rises with velocity all the way up, a note outliving
+  its recording fades, a release is a damper. The string piano stays in
+  the bank as **Modelled Piano** — it is a piano with knobs a recording
+  has not got. Two traps for the next person: `flopsynth_init`'s
+  oscillator **position is 0.5**, which on a recording is *start halfway
+  through the note* (the builder and both load paths zero it now); and the
+  new `#[serde(default)]` fields on `SynthOsc` and `Patch::samples` are
+  `skip_serializing_if` defaults, because without that the export tool
+  rewrote all 534 preset files to say nothing.
+- **A row let go outside the studio is held** (`canvas::carry_release`,
+  `held_note`; `WindowApp::held`). Why it stuck: a press grabs the pointer
+  for the window it was in, and on Wayland the grab holds until the
+  button comes up, so the synth window never hears the drag and the
+  studio hears a release *outside its own bounds* — which meant "nowhere".
+  Now that release, with the synth window open, keeps the row on the
+  pointer; the chip follows it into whichever window, cards light as
+  before, and the next click puts it down (Esc, or a right-click, lets
+  go). Verified end to end on the nested X server with the two windows
+  side by side: drag out, release over the synth window, click OSC C,
+  and the card plays `piano_C4`. The "Click where it goes · Esc lets go"
+  chip is what says the row is waiting rather than stuck.
+
+**Then, having heard it:** *"much better however ... it sounds like a
+soundfont with reverb right now pretty much. i want you to use the
+features in the synth to take this sampled sound and then turn it into a
+really tactile realistic feeling piano instrument preset."* So the row
+grew the instrument's mechanics around the recordings, each one measured
+as the difference its layer makes (`tests/grand_piano.rs`, four new
+claims):
+
+- **The keyboard across the stereo field** — every layer sits left of
+  centre and slides right on a `Key → LayerPan` route, so the bass is on
+  the left and the treble on the right as from the bench, middle C in
+  the middle.
+- **The hammer felt on a hard strike** — the noise layer, dark through
+  its own low-pass, gated by env 2 for the 10–40 ms where the recording's
+  own hammer lands, on a velocity route through `Curve::Exponential` so
+  it falls away faster than the note does (a pianissimo is not all thud).
+- **The damper heard on letting go** — the same noise reading
+  `(1 − env 3) × env 1`: env 3 drops the instant the key comes up, env 1
+  is the via that keeps it at nothing on the first block. **Trap:** every
+  envelope reads **zero on a note's first block** (by design, in
+  `EnvelopeGenerator::note_on`), so a plain inverted envelope route is a
+  full-depth burst at every strike; `Build::inverted_via` is the shape
+  that works. And the matrix reads envelopes **once a block**, ten
+  milliseconds at 512/48k — a 12 ms hammer gate was never heard at all.
+- **The strings singing on** — the stiff-string source at the note, fading
+  in over env 1, some fourteen decibels under the recording and ringing
+  on its own decay, partials stretched by a different stiffness so the
+  two beat slowly like a trichord; from a second in it is most of the
+  ring. (A string's sum is normalised to one; with a velocity route on
+  top it read fifteen decibels hotter than its gain said.)
+- The hall is gone: a small, short, dark reverb six milliseconds off the
+  strike, so the hammer is dry. The release is a fifth of a second, keyed
+  longer in the bass, which the damper's sound rides on.
+
+Trim re-measured to the bank's median (`.out(-11.2)`, four-note chord
+peaks 0.98). Ty: *"sounds great."*
+
+**As of 2026-09-16 — the bridge and the string piano, an experiment** (Ty:
+*"saved as an experiment for now for me to test"*; it stayed in the
+working tree until the entry above shipped it). `docs/flopsynth-bridge.md` is the write-up; this is the
+list. Three things, each tests-first:
+
+- **Two new kinds of oscillator.** `SynthSource::String` is a stiff
+  string — a bank of partials at `n·f0·sqrt(1+Bn²)` each decaying at its
+  own rate, with stiff/damp/strike/ring knobs and the position knob as the
+  strike's brightness — because a wavetable is exactly harmonic by
+  construction and that, measured on 2026-09-09, was the whole of why
+  three rounds of voicing never made the Grand Piano a piano.
+  `SynthSource::Sample` is a **recording** played whole across the
+  keyboard through the same unison stack, carried in the patch
+  (`Patch::samples`, zones with a root each); a dropped folder is a
+  multi-sample, the root is read off the file's name or its pitch. The
+  **Grand Piano** row is two strings now and passes its ten claims plus
+  the stretch (`tests/grand_piano.rs`, whose ruler now searches around
+  each harmonic — it had been reading the gaps). 1.6 % of a core a voice.
+- **A sound onto a card three ways**: the desktop drop (a recording now,
+  a wavetable only for a file shaped like one), the Import tab's row
+  carried onto a card (`CarryTarget::Oscillator` — the thing that *"didnt
+  do anything"*; **a drag between two windows is the compositor's to
+  deliver**, unverified on KWin), and the card's own right-click menu of
+  the audio folder, which works regardless. The **kind** chooser sits on
+  each card's nameplate.
+- **The bridge** (`render/bridge.rs`, `sky.rs`, `skin.rs`): the window as
+  a ship's bridge — plated hull, consoles with lamps and screens, and a
+  **canopy** under the tabs onto a sky that listens to the instrument
+  (a CPU-shaded nebula and galaxy at a quarter of the canopy's size,
+  vector stars, planets, shooting stars on transients, the waveform as an
+  aurora) through a scope on the instrument's node
+  (`SamplerNode::with_scope`, kept from the first graph like the voice
+  meters — the trap the handoff names, met again). The window opens at
+  **1180×840** (was 740; Ty's to confirm). Skins from
+  `assets/flopsynth/skin/` replace the procedural surfaces, none required.
+
+(Ty heard this one and called it a synth — the entry above is the answer.)
+
+
 **As of 2026-09-15 — `v0.5.1`, the keymap's edge cases.** A pass over
 *"when a tooltip is shown it shows ur actual configured keybind"* and the
 odd interactions around it: every control a key also drives now names its

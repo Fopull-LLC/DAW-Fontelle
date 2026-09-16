@@ -18,13 +18,13 @@
 //! drawing has nothing left to get wrong but colours (§8.1 rule 10).
 
 use fontelle_ui::canvas::{
-    ADD_EFFECT, CARD_GAP, CARD_HEADER, CELL_FLOOR, EnvNode, FLOP_CELL_H, FLOP_CELL_W,
-    FlopsynthCard, FlopsynthHit, FlopsynthPage, FlopsynthPicture, FlopsynthRoute, FlopsynthView,
-    InstrumentGroup, InstrumentParam, MatrixHit, ParamKind, PresetBrowse, PresetChoice,
-    PresetShelf, PresetsHit, RING_GAP, badge_at, cell_span, env_curve_points, env_node_at,
-    env_node_drag, filter_xy_at, flop_knob_rect, flopsynth_hit, flopsynth_layout, flopsynth_tab_at,
-    lfo_curve_points, matrix_depth_at, matrix_hit, preset_page_rows, preset_shelves, presets_hit,
-    ring_depth, ring_hit, wave_position_at,
+    ADD_EFFECT, CANOPY_MAX, CANOPY_MIN, CARD_GAP, CARD_HEADER, CELL_FLOOR, EnvNode, FLOP_CELL_H,
+    FLOP_CELL_W, FlopsynthCard, FlopsynthHit, FlopsynthPage, FlopsynthPicture, FlopsynthRoute,
+    FlopsynthView, InstrumentGroup, InstrumentParam, MatrixHit, ParamKind, PresetBrowse,
+    PresetChoice, PresetShelf, PresetsHit, RING_GAP, badge_at, cell_span, env_curve_points,
+    env_node_at, env_node_drag, filter_xy_at, flop_knob_rect, flopsynth_hit, flopsynth_layout,
+    flopsynth_tab_at, lfo_curve_points, matrix_depth_at, matrix_hit, preset_page_rows,
+    preset_shelves, presets_hit, ring_depth, ring_hit, wave_position_at,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
@@ -1540,8 +1540,8 @@ fn the_effects_page_offers_an_effect_after_its_cards_until_the_chain_is_full() {
     let empty = flopsynth_layout(BODY, &metrics(), &fx_view(0, true));
     assert!(!empty.add_effect.is_empty());
     assert!(
-        empty.add_effect.y < BODY.y + 100.0,
-        "the button is at the top when the page is bare"
+        empty.add_effect.y < empty.canopy.bottom() + CARD_GAP + 1.0,
+        "the button is at the top when the page is bare — under the canopy"
     );
 
     // And nothing of this on the Synth page.
@@ -1620,4 +1620,158 @@ fn a_query_shows_with_a_caret_whether_or_not_focus_is_named() {
         fontelle_ui::render::focused_search_caption("bass")
     );
     assert!(fontelle_ui::render::search_caption("bass").starts_with("bass"));
+}
+
+// ------------------------------------------------------------ the canopy ---
+
+/// The bridge's window onto the sky sits under the tabs and over the
+/// consoles, on every page, at least a slit tall — and at the size the
+/// window opens at, with every control still at its design size.
+#[test]
+fn the_canopy_is_under_the_tabs_and_over_every_card() {
+    for view in [
+        synth_page(),
+        a_view_on(FlopsynthPage::Modulation),
+        fx_view(2, true),
+    ] {
+        let body = real_body(fontelle_ui::layout::FLOPSYNTH_SIZE);
+        let layout = assert_fits(body, &view);
+        let canopy = layout.canopy;
+        assert!(
+            canopy.height >= CANOPY_MIN - 0.01,
+            "{:?}: the canopy is a slit at least: {canopy:?}",
+            view.page
+        );
+        let tabs_bottom = layout
+            .tabs
+            .iter()
+            .map(|(_, r)| r.bottom())
+            .fold(0.0, f32::max);
+        assert!(canopy.y >= tabs_bottom - 0.01, "under the tabs");
+        for (index, placed) in layout.cards.iter().enumerate() {
+            assert!(
+                placed.frame.y >= canopy.bottom() - 0.01,
+                "{} is drawn over the canopy: {:?} against {canopy:?}",
+                view.cards[index].group.name,
+                placed.frame
+            );
+        }
+        for badge in &layout.badges {
+            assert!(badge.y >= canopy.bottom() - 0.01, "a badge over the canopy");
+        }
+    }
+    // At the opening size the consoles keep their design size: the window
+    // grew for the canopy rather than the canopy taking it from the knobs.
+    let layout = flopsynth_layout(
+        real_body(fontelle_ui::layout::FLOPSYNTH_SIZE),
+        &metrics(),
+        &synth_page(),
+    );
+    let cell = layout.cards[2].cells[1].1;
+    assert!((cell.width - FLOP_CELL_W).abs() < 0.01);
+}
+
+/// A taller window is more sky, not more air between the consoles — up to a
+/// limit, past which the room goes back to being air.
+#[test]
+fn a_taller_window_gives_the_room_to_the_sky() {
+    let view = synth_page();
+    let short = flopsynth_layout(real_body((1180, 840)), &metrics(), &view);
+    let tall = flopsynth_layout(real_body((1180, 1000)), &metrics(), &view);
+    assert!(
+        tall.canopy.height > short.canopy.height + 100.0,
+        "{} against {}",
+        tall.canopy.height,
+        short.canopy.height
+    );
+    assert!(tall.canopy.height <= CANOPY_MAX + 0.01);
+    let huge = flopsynth_layout(real_body((1180, 1400)), &metrics(), &view);
+    assert!(
+        (huge.canopy.height - CANOPY_MAX).abs() < 0.01,
+        "and no more than the most"
+    );
+}
+
+/// In a window too small for both, the sky gives before the controls: the
+/// consoles still fit at their floor and the canopy is whatever is left,
+/// which may be nothing.
+#[test]
+fn the_sky_gives_before_the_controls_do() {
+    let view = synth_page();
+    let layout = assert_fits(SMALL, &view);
+    assert!(
+        layout.canopy.height < CANOPY_MIN,
+        "the canopy gave: {}",
+        layout.canopy.height
+    );
+    assert!(layout.canopy.height >= 0.0);
+}
+
+// --------------------------------------------------------- the nameplate ---
+
+/// A card's **kind** chooser — what the module *is* — sits on its nameplate
+/// beside the name rather than in the grid with the knobs: it is the label
+/// on the module, and putting it in the grid cost every oscillator a row.
+#[test]
+fn the_kind_chooser_sits_on_the_nameplate() {
+    let mut view = synth_page();
+    // Give OSC A a kind chooser first, the way the host lists it.
+    let osc = view
+        .cards
+        .iter_mut()
+        .find(|c| c.group.name == "OSC A")
+        .expect("OSC A");
+    osc.group.params.insert(
+        0,
+        InstrumentParam {
+            address: fontelle_types::ParamAddress::new("patch/layer[0]/synth/kind"),
+            label: "kind".to_string(),
+            value: 0.0,
+            display: "Table".to_string(),
+            kind: ParamKind::Choice(vec![
+                "Table".to_string(),
+                "Sample".to_string(),
+                "String".to_string(),
+            ]),
+            automated: false,
+        },
+    );
+    let before = flopsynth_layout(BODY, &metrics(), &synth_page());
+    let layout = flopsynth_layout(BODY, &metrics(), &view);
+    let index = view
+        .cards
+        .iter()
+        .position(|c| c.group.name == "OSC A")
+        .unwrap();
+    let placed = &layout.cards[index];
+    let (param, cell) = placed.cells[0];
+    assert_eq!(param, 0);
+    assert!(
+        placed
+            .header
+            .contains(cell.x + cell.width / 2.0, cell.y + cell.height / 2.0),
+        "the kind's cell is on the nameplate: {cell:?} in {:?}",
+        placed.header
+    );
+    assert!(cell.right() <= placed.header.right() - CARD_GAP / 2.0);
+    // The other cells start under the picture as before, and the card is
+    // no taller for it.
+    assert!(
+        (placed.frame.height - before.cards[index].frame.height).abs() < 0.01,
+        "a kind chooser costs no height: {} against {}",
+        placed.frame.height,
+        before.cards[index].frame.height
+    );
+    // And it is hit like any control.
+    assert_eq!(
+        flopsynth_hit(
+            &layout,
+            cell.x + cell.width / 2.0,
+            cell.y + cell.height / 2.0
+        ),
+        Some(FlopsynthHit::Control {
+            card: index,
+            param: 0
+        })
+    );
 }

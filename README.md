@@ -156,4 +156,10 @@ reads.
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
 
+The factory Grand Piano's recordings (`assets/flopsynth/samples/grand/`) are
+cut from the **Salamander Grand Piano** by Alexander Holm, published under
+[CC BY 3.0](http://creativecommons.org/licenses/by/3.0/) and assembled as a
+soundfont by the [FreePats project](https://freepats.zenvoid.org/Piano/acoustic-grand-piano.html);
+they stay under that licence, with that credit.
+
 "SoundFont" is a Creative/E-mu trademark and is used here only descriptively.

@@ -560,8 +560,13 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
         BEND_MAX_SEMITONES, LFO_MAX_HZ, LFO_MIN_HZ, LFO_TIME_MAX_S, MODULATOR_CHOICES,
         OUTPUT_MAX_DB, OUTPUT_MIN_DB, SEMITONE_RANGE, UNISON_DETUNE_MAX_CENTS, VOICE_MODES,
     };
+    use fontelle_core::patch_params::{
+        SOURCE_KINDS, STRIKE_MAX, STRIKE_MIN, STRING_DECAY_MAX_S, STRING_DECAY_MIN_S, source_kind,
+        unlerp_log,
+    };
     use fontelle_dsp::{
-        FilterModel, FilterRoute, FilterSlope, MAX_UNISON, SynthSource, WarpMode, WavetableId,
+        FilterModel, FilterRoute, FilterSlope, MAX_UNISON, SampleLoop, SynthSource, WarpMode,
+        WavetableId,
     };
     use fontelle_types::{LfoWave, NoteDivision};
 
@@ -622,35 +627,16 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
         let role = layer_role(index);
         let mut params = Vec::new();
         let noise = matches!(osc.source, SynthSource::Noise);
+        // What the position knob *is* on this kind of source: the frame of
+        // a table, where a recording starts, how hard a string is struck.
+        // Same address, same route, different word — see `SynthOsc::position`.
+        let position_caption = match osc.source {
+            SynthSource::Sample(_) => "start",
+            SynthSource::String => "bright",
+            _ => "pos",
+        };
 
-        if let SynthSource::Table(table) = osc.source {
-            let at = WavetableId::ALL
-                .iter()
-                .position(|t| *t == table)
-                .unwrap_or(0);
-            params.push(param(
-                &format!("patch/layer[{index}]/synth/table"),
-                "table",
-                choice_value(at, WavetableId::ALL.len()),
-                table.label().to_string(),
-                // Grouped by family in the bespoke window; a flat list here,
-                // in the same order, so the two never disagree about which
-                // position is which table (INVARIANT 7).
-                ParamKind::Choice(
-                    WavetableId::ALL
-                        .iter()
-                        .map(|t| t.label().to_string())
-                        .collect(),
-                ),
-            ));
-            params.push(param(
-                &format!("patch/layer[{index}]/synth/position"),
-                "pos",
-                osc.position.clamp(0.0, 1.0),
-                format!("{:.0}%", osc.position.clamp(0.0, 1.0) * 100.0),
-                ParamKind::Knob,
-            ));
-        } else {
+        if noise {
             params.push(param(
                 &format!("patch/layer[{index}]/synth/noise_colour"),
                 "colour",
@@ -660,6 +646,47 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                     c if c < 0.7 => "pink".to_string(),
                     _ => "brown".to_string(),
                 },
+                ParamKind::Knob,
+            ));
+        } else {
+            // The kind first: it decides what the rest of the card is.
+            let kind = source_kind(osc.source);
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/kind"),
+                "kind",
+                choice_value(kind, SOURCE_KINDS.len()),
+                SOURCE_KINDS[kind].to_string(),
+                ParamKind::Choice(SOURCE_KINDS.iter().map(|k| k.to_string()).collect()),
+            ));
+            if let SynthSource::Table(table) = osc.source {
+                let at = WavetableId::ALL
+                    .iter()
+                    .position(|t| *t == table)
+                    .unwrap_or(0);
+                params.push(param(
+                    &format!("patch/layer[{index}]/synth/table"),
+                    "table",
+                    choice_value(at, WavetableId::ALL.len()),
+                    table.label().to_string(),
+                    // Grouped by family in the bespoke window; a flat list
+                    // here, in the same order, so the two never disagree
+                    // about which position is which table (INVARIANT 7).
+                    ParamKind::Choice(
+                        WavetableId::ALL
+                            .iter()
+                            .map(|t| t.label().to_string())
+                            .collect(),
+                    ),
+                ));
+            }
+            // A dropped table (`SynthSource::User`) has no chooser: it is not
+            // in the bank's list, and its name is on its picture. It used
+            // to fall through to the noise arm and draw a colour knob.
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/position"),
+                position_caption,
+                osc.position.clamp(0.0, 1.0),
+                format!("{:.0}%", osc.position.clamp(0.0, 1.0) * 100.0),
                 ParamKind::Knob,
             ));
         }
@@ -685,7 +712,87 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
             ParamKind::Knob,
         ));
 
-        if !noise {
+        match osc.source {
+            SynthSource::Sample(_) => {
+                let at = SampleLoop::ALL
+                    .iter()
+                    .position(|m| *m == osc.sample.loop_mode)
+                    .unwrap_or(0);
+                params.push(param(
+                    &format!("patch/layer[{index}]/synth/sample/loop"),
+                    "loop",
+                    choice_value(at, SampleLoop::ALL.len()),
+                    osc.sample.loop_mode.label().to_string(),
+                    ParamKind::Choice(
+                        SampleLoop::ALL
+                            .iter()
+                            .map(|m| m.label().to_string())
+                            .collect(),
+                    ),
+                ));
+                params.push(param(
+                    &format!("patch/layer[{index}]/synth/sample/loop_start"),
+                    "loop in",
+                    osc.sample.loop_start.clamp(0.0, 1.0),
+                    format!("{:.0}%", osc.sample.loop_start.clamp(0.0, 1.0) * 100.0),
+                    ParamKind::Knob,
+                ));
+                params.push(param(
+                    &format!("patch/layer[{index}]/synth/sample/loop_end"),
+                    "loop out",
+                    osc.sample.loop_end.clamp(0.0, 1.0),
+                    format!("{:.0}%", osc.sample.loop_end.clamp(0.0, 1.0) * 100.0),
+                    ParamKind::Knob,
+                ));
+            }
+            SynthSource::String => {
+                let string = &osc.string;
+                params.push(param(
+                    &format!("patch/layer[{index}]/synth/string/stiffness"),
+                    "stiff",
+                    string.stiffness.clamp(0.0, 1.0),
+                    format!("{:.0}%", string.stiffness.clamp(0.0, 1.0) * 100.0),
+                    ParamKind::Knob,
+                ));
+                params.push(param(
+                    &format!("patch/layer[{index}]/synth/string/damping"),
+                    "damp",
+                    string.damping.clamp(0.0, 1.0),
+                    format!("{:.0}%", string.damping.clamp(0.0, 1.0) * 100.0),
+                    ParamKind::Knob,
+                ));
+                params.push(param(
+                    &format!("patch/layer[{index}]/synth/string/strike"),
+                    "strike",
+                    unlerp(string.strike, STRIKE_MIN, STRIKE_MAX),
+                    // Where along the string, as the fraction every
+                    // textbook writes it: "1/8" is a piano.
+                    format!("1/{:.0}", 1.0 / string.strike.clamp(STRIKE_MIN, STRIKE_MAX)),
+                    ParamKind::Knob,
+                ));
+                params.push(param(
+                    &format!("patch/layer[{index}]/synth/string/decay"),
+                    "ring",
+                    unlerp_log(
+                        string.decay_s.clamp(STRING_DECAY_MIN_S, STRING_DECAY_MAX_S),
+                        STRING_DECAY_MIN_S,
+                        STRING_DECAY_MAX_S,
+                    ),
+                    seconds(string.decay_s),
+                    ParamKind::Knob,
+                ));
+            }
+            _ => {}
+        }
+
+        // The warp reads a table's phase or a recording's head; a string
+        // has neither, so its card leaves the warp out. The start phase is
+        // a table's alone: a recording starts where its start knob says and
+        // a string starts from rest.
+        let warps = !noise && !matches!(osc.source, SynthSource::String);
+        let has_phase =
+            !noise && !matches!(osc.source, SynthSource::String | SynthSource::Sample(_));
+        if warps {
             let warp = WarpMode::ALL
                 .iter()
                 .position(|m| *m == osc.warp)
@@ -725,6 +832,8 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                 choices[at].clone(),
                 ParamKind::Choice(choices),
             ));
+        }
+        if !noise {
             params.push(param(
                 &format!("patch/layer[{index}]/synth/unison/voices"),
                 "unison",
@@ -753,6 +862,8 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                 format!("{:.0}%", osc.unison.width.clamp(0.0, 1.0) * 100.0),
                 ParamKind::Knob,
             ));
+        }
+        if has_phase {
             params.push(param(
                 &format!("patch/layer[{index}]/synth/phase"),
                 "phase",

@@ -99,6 +99,31 @@ pub enum FlopsynthPicture {
         sustain: f32,
         release: f32,
     },
+    /// A **recording** — a sample source's sound, whole: its shape as one
+    /// `(low, high)` pair per column, in −1..=1, where the note starts in it
+    /// (the position knob, 0..1) and the loop when there is one, as 0..1
+    /// fractions. `peaks` is empty when nothing has been dropped on the
+    /// oscillator yet, and `name` then says what to do about it.
+    ///
+    /// Dragged sideways like a wave, to move the start.
+    Sound {
+        peaks: Vec<(f32, f32)>,
+        start: f32,
+        loop_region: Option<(f32, f32)>,
+        name: String,
+    },
+    /// A **string** — its partials as bars, each at `(x, height)`: `x` is
+    /// the partial's frequency as a multiple of the fundamental over
+    /// `0..=harmonics`, so a stiff string's bars stand visibly sharp of the
+    /// harmonic grid and further sharp going up, and `height` is its level
+    /// at the strike, 0..1. The picture is the one thing about a string a
+    /// table cannot be, drawn.
+    ///
+    /// Dragged sideways to move the brightness.
+    Partials {
+        bars: Vec<(f32, f32)>,
+        harmonics: usize,
+    },
     /// One cycle of an LFO's shape, in −1..=1, and where the **newest voice**
     /// is in it, 0..1.
     ///
@@ -179,6 +204,14 @@ pub enum MatrixHit {
 pub const MATRIX_ROW: f32 = 22.0;
 /// How tall the tab strip is.
 pub const TAB_HEIGHT: f32 = 22.0;
+/// The least and the most of the window the canopy takes.
+///
+/// The least is a slit a sky can still be seen through; the most is what a
+/// window taller than the consoles need gives up to it rather than to air
+/// between the cards. The cards shrink for the least (`fit_cards`, in its
+/// own order) and never for more.
+pub const CANOPY_MIN: f32 = 84.0;
+pub const CANOPY_MAX: f32 = 240.0;
 /// And how wide one tab is. Fixed, so the strip does not shuffle when a page's
 /// name changes length — `editor_tabs`' rule.
 pub const TAB_WIDTH: f32 = 96.0;
@@ -313,9 +346,18 @@ pub struct CardLayout {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlopsynthLayout {
+    /// The room the cards were placed in: under the tabs and the canopy.
     pub body: Rect,
+    /// The whole of what the window was given, tabs and canopy included —
+    /// what the bridge's hull and the sky are drawn across.
+    pub whole: Rect,
     /// The page tabs, along the top of the body.
     pub tabs: Vec<(FlopsynthPage, Rect)>,
+    /// The **canopy**: the bridge's window onto the sky, between the tab
+    /// strip and the consoles. On every page, because a bridge always has
+    /// its window; as tall as the cards leave it, within
+    /// [`CANOPY_MIN`]..[`CANOPY_MAX`].
+    pub canopy: Rect,
     pub cards: Vec<CardLayout>,
     /// The Modulation page's source badges, one per `FlopsynthView::sources`.
     /// Empty on every other page.
@@ -340,7 +382,9 @@ impl Default for FlopsynthLayout {
     fn default() -> Self {
         Self {
             body: Rect::ZERO,
+            whole: Rect::ZERO,
             tabs: Vec::new(),
+            canopy: Rect::ZERO,
             cards: Vec::new(),
             badges: Vec::new(),
             matrix: Rect::ZERO,
@@ -374,6 +418,17 @@ const ADD_EFFECT_W: f32 = 108.0;
 const ADD_EFFECT_H: f32 = 26.0;
 /// The ✕ on a removable card's header.
 const REMOVE_SIZE: f32 = 14.0;
+
+/// Whether a control sits on the card's **nameplate** rather than in its
+/// grid: the oscillator's kind chooser, which says what the module *is* —
+/// the label on the module — and which cost every oscillator a row of the
+/// window while it was a cell.
+pub fn is_nameplate_control(param: &InstrumentParam) -> bool {
+    param.address.as_str().ends_with("/synth/kind")
+}
+
+/// How wide the nameplate's chooser is, at the design size.
+pub const NAMEPLATE_CHIP_W: f32 = 66.0;
 
 /// How wide a card is, in cells, when the host did not say.
 ///
@@ -430,6 +485,7 @@ pub fn cell_span(param: &InstrumentParam) -> usize {
 /// *together* because a page of knobs in two sizes is a page that looks
 /// broken.
 pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> FlopsynthLayout {
+    let whole = body;
     let empty_cards = |view: &FlopsynthView| {
         view.cards
             .iter()
@@ -445,7 +501,9 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
     if body.is_empty() {
         return FlopsynthLayout {
             body,
+            whole,
             tabs: Vec::new(),
+            canopy: Rect::ZERO,
             cards: empty_cards(view),
             ..Default::default()
         };
@@ -473,12 +531,54 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
         (body.height - TAB_HEIGHT - CARD_GAP).max(0.0),
     );
 
+    // The canopy, under the tabs and over everything else: the least of the
+    // window it can have, or whatever the cards at their full size leave —
+    // a taller window is more sky, not more air between consoles. The
+    // Presets page keeps its list and gives the canopy the least.
+    let wanted = match view.page {
+        FlopsynthPage::Presets => 0.0,
+        _ => {
+            let natural = place(body, &view.cards, PICTURE_HEIGHT, 1.0);
+            natural
+                .iter()
+                .map(|c| c.frame.bottom())
+                .fold(body.y, f32::max)
+                - body.y
+        }
+    };
+    // The sky gives before the controls do: in a window too small for both
+    // the consoles at their floor and the least canopy, the canopy is what
+    // shrinks, down to nothing.
+    let at_floor = match view.page {
+        FlopsynthPage::Presets => 0.0,
+        _ => {
+            let floor = place(body, &view.cards, PICTURE_FLOOR, CELL_FLOOR);
+            floor
+                .iter()
+                .map(|c| c.frame.bottom())
+                .fold(body.y, f32::max)
+                - body.y
+        }
+    };
+    let canopy_height = (body.height - wanted - CARD_GAP)
+        .clamp(CANOPY_MIN, CANOPY_MAX)
+        .min((body.height - at_floor - CARD_GAP).max(0.0));
+    let canopy = Rect::new(body.x, body.y, body.width, canopy_height).intersection(&body);
+    body = Rect::new(
+        body.x,
+        body.y + canopy_height + CARD_GAP,
+        body.width,
+        (body.height - canopy_height - CARD_GAP).max(0.0),
+    );
+
     // The Presets page is the bank and nothing else: whatever cards the host
     // put in the view are not drawn on it.
     if view.page == FlopsynthPage::Presets {
         return FlopsynthLayout {
             body,
+            whole,
             tabs,
+            canopy,
             cards: empty_cards(view),
             presets: presets_layout(body, view),
             ..Default::default()
@@ -540,7 +640,9 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
         let routes = matrix_rows(matrix, view.routes.len());
         return FlopsynthLayout {
             body,
+            whole,
             tabs,
+            canopy,
             cards: empty_cards(view),
             badges,
             matrix,
@@ -577,7 +679,9 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
     let add_effect = add_effect_button(body, view, &cards);
     FlopsynthLayout {
         body,
+        whole,
         tabs,
+        canopy,
         cards,
         badges,
         matrix,
@@ -668,10 +772,21 @@ fn wanted(card: &FlopsynthCard, picture_height: f32, scale: f32) -> Wanted {
 
     // The cells flow across the rows, and a double cell that would not fit
     // at the end of a row starts the next one rather than hanging off the
-    // card.
+    // card. The card's **kind** chooser is not in the flow at all: it sits
+    // on the nameplate, at the right end of the header — see
+    // [`is_nameplate_control`].
     let mut cells = Vec::with_capacity(card.group.params.len());
     let (mut column, mut row) = (0usize, 0usize);
+    let width = CARD_PAD * 2.0 + columns as f32 * cell_w;
     for (index, param) in card.group.params.iter().enumerate() {
+        if is_nameplate_control(param) {
+            let chip_w = (NAMEPLATE_CHIP_W * scale).min(width - CARD_PAD * 2.0);
+            cells.push((
+                index,
+                Rect::new(width - CARD_PAD - chip_w, 0.0, chip_w, CARD_HEADER),
+            ));
+            continue;
+        }
         let span = cell_span(param).min(columns);
         if column + span > columns {
             column = 0;
@@ -688,13 +803,13 @@ fn wanted(card: &FlopsynthCard, picture_height: f32, scale: f32) -> Wanted {
         ));
         column += span;
     }
-    let rows = if card.group.params.is_empty() {
+    let rows = if card.group.params.iter().all(is_nameplate_control) {
         0
     } else {
         row + 1
     };
     Wanted {
-        width: CARD_PAD * 2.0 + columns as f32 * cell_w,
+        width,
         height: top + rows as f32 * cell_h + CARD_PAD,
         cells,
         picture: if card.picture.is_none() {
@@ -1110,6 +1225,36 @@ pub fn wave_curve_points(rect: Rect, samples: &[f32]) -> Vec<(f32, f32)> {
             )
         })
         .collect()
+}
+
+/// A run of points, as every picture here hands the renderer.
+pub type Polyline = Vec<(f32, f32)>;
+
+/// A recording's shape, as two polylines: its highs along the top and its
+/// lows along the bottom, one point per column of `peaks`, in `rect`.
+///
+/// Two lines rather than a bar per column, so the shape can be filled
+/// between them and stroked along them — what makes it read as a sound and
+/// not as a histogram.
+pub fn sound_outline_points(rect: Rect, peaks: &[(f32, f32)]) -> (Polyline, Polyline) {
+    if peaks.is_empty() || rect.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let mid = rect.y + rect.height * 0.5;
+    let half = rect.height * 0.5;
+    let step = if peaks.len() > 1 {
+        rect.width / (peaks.len() - 1) as f32
+    } else {
+        0.0
+    };
+    let mut top = Vec::with_capacity(peaks.len());
+    let mut bottom = Vec::with_capacity(peaks.len());
+    for (i, (low, high)) in peaks.iter().enumerate() {
+        let x = rect.x + step * i as f32;
+        top.push((x, mid - half * high.clamp(-1.0, 1.0)));
+        bottom.push((x, mid - half * low.clamp(-1.0, 1.0)));
+    }
+    (top, bottom)
 }
 
 /// A filter response's polyline, from its magnitudes in dB.
