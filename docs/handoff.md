@@ -16,6 +16,17 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-15 (v0.4.0).** The second UX pass is committed and
+tagged; `PROGRESS.md`'s top entry is the build. New places to know:
+`canvas/keybinds.rs` is the shortcuts catalogue — **add a line there when
+you add a binding**, `tests/keybinds.rs` checks the keys the window matches
+on are listed. The transport bar's meter is fed through `KeptTaps.master`
+across rebuilds, the same wire as the metronome (§4 below still applies to
+any *other* `Arc` the first graph hands out: keep it, or the bar goes dead
+on the first rebuild). And on §5: a grab of the nested server lags by
+**seconds** while the transport rolls, not one frame — stop it before
+judging a layout.
+
 **Updated 2026-09-11 (evening).** Everything is committed and pushed; the
 repository is public and `v0.1.0` is tagged. Three things changed about
 how this tree is kept, all in the commits of that day: the whole tree is

@@ -43,7 +43,15 @@ fn bar() -> Rect {
 #[test]
 fn every_piece_of_the_bar_is_inside_it_and_none_of_them_overlap() {
     let l = transport_bar_layout(bar(), &Theme::dark_default().metrics);
-    let pieces = [l.play, l.stop, l.loop_toggle, l.readout, l.ruler, l.meter];
+    let pieces = [
+        l.play,
+        l.stop,
+        l.loop_toggle,
+        l.readout,
+        l.help,
+        l.ruler,
+        l.meter,
+    ];
 
     for (i, a) in pieces.iter().enumerate() {
         assert!(!a.is_empty(), "piece {i} has no room");
@@ -237,6 +245,31 @@ fn a_meter_rises_instantly_and_falls_slowly() {
         (meter.level_db - expected).abs() < 0.01,
         "after half a second of silence the meter read {} dB, expected {expected}",
         meter.level_db
+    );
+}
+
+#[test]
+fn a_meter_lets_go_of_a_hit_within_a_second_of_silence() {
+    // *"other times it plays then leaves it hanging too long when nothings
+    // on anymore."* The bar's meter is read against the master strip's, which
+    // draws the peak since the last frame and nothing more — so the bar's
+    // ballistics have to be quick enough that the two agree about when the
+    // song went quiet. Full scale to the floor, bar and hold marker both,
+    // inside a second.
+    let mut meter = Meter::new();
+    meter.update(1.0, 1.0 / 60.0);
+    for _ in 0..60 {
+        meter.update(0.0, 1.0 / 60.0);
+    }
+    assert_eq!(
+        meter.level_db, METER_FLOOR_DB,
+        "a second after the last sound the bar was still at {} dB",
+        meter.level_db
+    );
+    assert_eq!(
+        meter.hold_db, METER_FLOOR_DB,
+        "a second after the last sound the hold marker was still at {} dB",
+        meter.hold_db
     );
 }
 
@@ -474,6 +507,67 @@ fn play_mode_steps_between_its_two_values_and_says_which_it_is() {
         PlayMode::Song.label().len() <= 5,
         "a chip's word, not a sentence"
     );
+}
+
+// ---------------------------------------------------------- the help button ---
+
+#[test]
+fn the_bar_has_a_help_button_beside_the_tempo_cluster_and_it_is_a_control() {
+    // *"a new small ? icon next to the tempo indicator and pressing that
+    // will pop up the same keybinds menu."* A small square after the three
+    // document boxes, before the ruler — with them rather than at the far
+    // end, because it explains the controls it sits next to.
+    let l = transport_bar_layout(bar(), &Theme::dark_default().metrics);
+    assert!(
+        !l.help.is_empty(),
+        "a wide bar has room for the help button"
+    );
+    assert!(
+        l.help.x >= l.tempo.right(),
+        "the help button sits after the tempo box"
+    );
+    assert!(l.ruler.x >= l.help.right(), "and before the ruler");
+    assert!(
+        l.help.width <= l.play.width + 0.01,
+        "small: no wider than a transport button"
+    );
+    let (x, y) = (
+        l.help.x + l.help.width / 2.0,
+        l.help.y + l.help.height / 2.0,
+    );
+    assert_eq!(hit(&l, &view(), x, y), Some(TransportHit::Help));
+    assert_eq!(
+        action(TransportHit::Help, &view()),
+        None,
+        "the help page is the window's to open, not the engine's"
+    );
+    assert!(
+        TransportHit::Help
+            .tip()
+            .is_some_and(|tip| tip.contains("F1")),
+        "the tip names the key that does the same"
+    );
+}
+
+#[test]
+fn a_narrow_bar_gives_the_help_button_up_before_the_read_outs() {
+    // F1 always works, so the button is the least essential thing on the bar
+    // and the first to go — before the mode chip, and long before the ruler.
+    let m = Theme::dark_default().metrics;
+    for width in [520.0, 560.0, 640.0, 800.0, 1264.0] {
+        let l = transport_bar_layout(Rect::new(8.0, 8.0, width, 36.0), &m);
+        assert!(
+            l.ruler.width >= 80.0,
+            "at {width} the ruler is {} wide",
+            l.ruler.width
+        );
+        if l.mode.is_empty() {
+            assert!(
+                l.help.is_empty(),
+                "at {width} the help button survived the mode chip"
+            );
+        }
+    }
 }
 
 #[test]

@@ -19,6 +19,46 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-15 — `v0.4.0`, the second UX pass.** Seven things from one
+report, each tested first and each looked at in the running studio on the
+nested X server (`docs/handoff.md` §5):
+
+- **A keyboard shortcuts page** (`canvas/keybinds.rs`): every binding the
+  window answers, in eleven sections, on a scrolling two-column sheet. Opened
+  by a `?` on the start menu, a small `?` after the transport bar's mode chip,
+  and **F1**; Esc, F1, its × or a press off the card shuts it. The catalogue
+  is data, and `tests/keybinds.rs` holds it to the keys `key`/`global_key`
+  actually match on, so a binding added without a line here fails a test.
+- **The tempo box is typed into.** A click (press and release without
+  travel) opens it as a field seeded with the tempo, all selected; Enter
+  writes what `transport::parse_tempo` accepts (clamped, rounded to the two
+  places the box shows), Esc puts it back, a press elsewhere keeps a valid
+  entry. Drag still slides it.
+- **The signature is a drop-down** (`MenuTarget::Signature`,
+  `signature_menu_entries`): 1/4 … 16/4 with the current one greyed. The
+  click-to-step `cycle_beats_per_bar` is gone.
+- **F** flips the rack between Instruments and Prefabs (`RackTab::other`).
+- **Tab** swaps which of the arrangement and the editor is the tall one
+  (`layout::toggled_timeline_height`, two thirds / one third). Stateless:
+  whichever has more than half gives it up, so a seam dragged by hand needs
+  nothing undone before the next press.
+- **The transport bar's meter was broken two ways**, both fixed. (1) Every
+  graph rebuild minted a fresh `MasterMeter` while `EngineHost` kept the
+  first graph's `Arc` — so the bar read silence from the first added
+  channel/insert onward ("shows sometimes but not always"). The same wire
+  the metronome switch was once dead on: `KeptTaps.master`,
+  `MasterNode::with_meter`, `Session::with_master_meter`
+  (`fontelle-app/tests/master_meter.rs`). (2) `MasterNode` published
+  `PeakRmsMeter::peak`, which is *held* since the node's last reset, so the
+  bar re-read the session's loudest moment every frame until a rebuild
+  ("leaves it hanging"). It publishes each block's own peak now, like the
+  track meters, and the bar's ballistics are 120 dB/s with a 0.6 s hold so
+  it agrees with the master strip about when the song went quiet.
+- `Icon::Help`, and the tooltips on the new controls.
+
+Full workspace suite (4036 tests) and `clippy --workspace --all-targets
+-D warnings` green; released as `v0.4.0` on Ty's go-ahead for this update.
+
 **As of 2026-09-15 — `v0.3.0`, the UX-polish release.** A pass over the two
 places ordinary navigation caused unintended edits, reported from real use.
 Four changes, each independently tested and the settings panel pixel-verified
@@ -93,7 +133,39 @@ over the budget its plan set. The numbers and where the time goes are at the
 end of the section below; the plan's own instruction is that this is a design
 conversation rather than a target to loosen.
 
-## 2026-09-14 (latest): MIDI export, a limiter that ducks, Flopsynth's search stops eating keys, and clicking a sound plays it
+## 2026-09-15 (latest): the shortcuts page, a typed tempo, a signature list, F and Tab, and the meter that lied twice
+
+> *"could you make it so the f key toggles the tab between instrument and
+> prefab ... a dedicated keybinds page that shows every single keybind ...
+> i cant click and type in the field like an input field to input my tempo
+> ... it should be a dropdown instead of just iterating through pre set
+> list of options ... pressing tab should toggle between the piano/mixer
+> section being larger or smaller than the arrangement ... the top right
+> theres an audio monitor but it doesnt work correctly."*
+
+The summary at the top of this file has the build. Two things worth
+keeping from the day.
+
+**The meter had two faults that presented as one.** The first was the
+metronome's old bug on the other `Arc` — a rebuild minting a new
+`MasterMeter` while the bar held the first — and was found by reading
+`realise.rs`. The second was only found by *looking*: with the first fixed,
+the bar tracked the master strip while a preview played and then sat at a
+constant level for seconds after the strip had gone dark. That was
+`MasterNode` publishing the DSP meter's **held** peak, so "peak since last
+read" on the window's side was reading "peak since the node was reset" on
+the engine's. A block's own peak is what a meter wants published; the hold
+and the release belong to the reader. `nodes.rs` has the unit test, and
+the limiter's look-ahead is why that test reads twice.
+
+**Grabs of the nested X server fall seconds behind while the window
+animates.** `docs/handoff.md` already says a grab is a frame behind; with
+the transport rolling it was several, and three "Tab did nothing" and
+"the keys were dropped" readings were nothing but that. Judge steady
+states, stop the transport before judging a layout, and grab again
+before believing a change is missing.
+
+## 2026-09-14: MIDI export, a limiter that ducks, Flopsynth's search stops eating keys, and clicking a sound plays it
 
 > *"cannot save piano roll to midi files ... im always typing in the search bar
 > even when ive never clicked that input field ... side chain duck by routing a

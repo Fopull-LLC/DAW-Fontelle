@@ -787,6 +787,15 @@ pub enum RackTab {
 impl RackTab {
     pub const ALL: [Self; 2] = [Self::Instruments, Self::Prefabs];
 
+    /// The tab this one is not. What **F** shows: *"make it so the f key
+    /// toggles the tab between instrument and prefab."*
+    pub fn other(self) -> Self {
+        match self {
+            Self::Instruments => Self::Prefabs,
+            Self::Prefabs => Self::Instruments,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Instruments => "Instruments",

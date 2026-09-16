@@ -19,9 +19,9 @@
 //! except quitting.
 
 use fontelle_ui::layout::{
-    DEFAULT_TIMELINE_HEIGHT, Docks, MIN_BROWSER_HEIGHT, MIN_RACK_HEIGHT, MIN_ROLL_WIDTH,
-    MIN_SIDEBAR_WIDTH, Rect, WindowLayout, rack_share_at, sidebar_width_at, window_layout,
-    window_layout_with,
+    DEFAULT_TIMELINE_HEIGHT, Docks, MIN_BROWSER_HEIGHT, MIN_EDITOR_HEIGHT, MIN_RACK_HEIGHT,
+    MIN_ROLL_WIDTH, MIN_SIDEBAR_WIDTH, Rect, TIMELINE_LARGE_SHARE, WindowLayout, rack_share_at,
+    sidebar_width_at, toggled_timeline_height, window_layout, window_layout_with,
 };
 use fontelle_ui::theme::{Metrics, Theme};
 
@@ -286,4 +286,138 @@ fn a_seam_is_wide_enough_to_hit_without_aiming() {
         Rect::new(0.0, 0.0, 0.0, 0.0).is_empty(),
         "sanity: an empty rect is empty"
     );
+}
+
+// ------------------------------------------------ Tab swaps the two heights ---
+
+/// The height of everything the arrangement and the editor share: the two
+/// frames and the seam between them.
+fn column_height(layout: &WindowLayout) -> f32 {
+    layout
+        .timeline
+        .frame
+        .union(&layout.divider)
+        .union(&layout.panel.frame)
+        .height
+}
+
+#[test]
+fn tab_makes_the_arrangement_the_big_one_when_the_editor_is_and_the_other_way_round() {
+    // *"pressing tab should toggle between the piano/mixer section being
+    // larger or smaller than the arrangement section vertically ... about a
+    // 66.66%/33.33% ratio."* Two positions, and the press goes to whichever
+    // the window is not in.
+    assert!((TIMELINE_LARGE_SHARE - 2.0 / 3.0).abs() < 1e-6);
+    // A window tall enough that neither position is clamped.
+    let tall = window_layout_with(W, 1200.0, &metrics(), &docks());
+    let column = column_height(&tall);
+    let big = toggled_timeline_height(&tall);
+    assert!(
+        (big / column - TIMELINE_LARGE_SHARE).abs() < 0.02,
+        "from the default (editor bigger) Tab gives the arrangement two thirds; got {}",
+        big / column
+    );
+    let now_big = window_layout_with(
+        W,
+        1200.0,
+        &metrics(),
+        &Docks {
+            timeline_height: big,
+            ..docks()
+        },
+    );
+    let small = toggled_timeline_height(&now_big);
+    assert!(
+        (small / column - (1.0 - TIMELINE_LARGE_SHARE)).abs() < 0.02,
+        "from two thirds Tab gives the arrangement one third; got {}",
+        small / column
+    );
+    let now_small = window_layout_with(
+        W,
+        1200.0,
+        &metrics(),
+        &Docks {
+            timeline_height: small,
+            ..docks()
+        },
+    );
+    assert!(
+        (toggled_timeline_height(&now_small) - big).abs() < 0.5,
+        "and back again"
+    );
+}
+
+#[test]
+fn after_a_free_drag_tab_goes_to_whichever_position_swaps_who_is_bigger() {
+    // *"pressing it after freely adjusting just goes back to toggling through
+    // those positioning modes."* No memory of a mode: the rule is simply
+    // "if the arrangement has more than half, give it a third; otherwise
+    // give it two thirds", which is the same answer at both fixed positions
+    // and a sensible one from anywhere in between.
+    let column = column_height(&window_layout_with(W, 1200.0, &metrics(), &docks()));
+    for share in [0.05, 0.3, 0.49, 0.51, 0.6, 0.9] {
+        let laid = window_layout_with(
+            W,
+            1200.0,
+            &metrics(),
+            &Docks {
+                timeline_height: column * share,
+                ..docks()
+            },
+        );
+        let next = toggled_timeline_height(&laid) / column;
+        let wanted = if share >= 0.5 {
+            1.0 - TIMELINE_LARGE_SHARE
+        } else {
+            TIMELINE_LARGE_SHARE
+        };
+        assert!(
+            (next - wanted).abs() < 0.02,
+            "from {share} Tab went to {next}, wanted {wanted}"
+        );
+    }
+}
+
+#[test]
+fn tab_brings_a_hidden_arrangement_back_as_the_big_one() {
+    let hidden = window_layout_with(
+        W,
+        1200.0,
+        &metrics(),
+        &Docks {
+            timeline_height: 0.0,
+            ..docks()
+        },
+    );
+    assert!(hidden.timeline.frame.is_empty());
+    let column = column_height(&hidden);
+    let shown = toggled_timeline_height(&hidden);
+    assert!(
+        shown > column * 0.5,
+        "an arrangement that was hidden comes back as the larger panel, got {shown} of {column}"
+    );
+}
+
+#[test]
+fn tab_never_squeezes_the_editor_under_its_minimum() {
+    // A short window cannot give the arrangement two thirds without taking
+    // the editor under `MIN_EDITOR_HEIGHT`, and the same clamp the seam drag
+    // has applies here.
+    let short = window_layout_with(W, 420.0, &metrics(), &docks());
+    let height = toggled_timeline_height(&short);
+    let laid = window_layout_with(
+        W,
+        420.0,
+        &metrics(),
+        &Docks {
+            timeline_height: height,
+            ..docks()
+        },
+    );
+    assert!(
+        laid.panel.frame.height >= MIN_EDITOR_HEIGHT - 0.01,
+        "the editor was squeezed to {}",
+        laid.panel.frame.height
+    );
+    assert!(height >= 0.0);
 }

@@ -460,6 +460,11 @@ pub struct KeptTaps {
     pub spectrum: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
     /// One pitch trace per corrector insert — see [`Realised::tune_taps`].
     pub tune: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::TuneTap>>,
+    /// The master meter the transport bar reads — see [`Realised::master`].
+    /// `None` mints one, which is right for the first graph and wrong for
+    /// every graph after it: the bar keeps the first, so a rebuild that
+    /// minted its own left the bar reading a meter nothing wrote to.
+    pub master: Option<std::sync::Arc<MasterMeter>>,
 }
 
 /// A live input, and the mixer track it is heard through (TDD §15.4).
@@ -1106,7 +1111,10 @@ pub fn realise_hosting(
     // arrangement reaches are a property of the material, and picking a gain
     // that neither clips nor throws away 20 dB was a judgement the tool could
     // not make.
-    let master_node = fontelle_engine::MasterNode::new();
+    let master_node = match &existing_taps.master {
+        Some(kept) => fontelle_engine::MasterNode::new().with_meter(std::sync::Arc::clone(kept)),
+        None => fontelle_engine::MasterNode::new(),
+    };
     let meter = master_node.meter();
     schedule.push(ScheduledNode {
         id: NodeId::default(),

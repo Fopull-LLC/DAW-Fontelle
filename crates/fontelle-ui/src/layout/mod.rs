@@ -252,6 +252,49 @@ pub fn timeline_height_at(layout: &WindowLayout, y: f32) -> f32 {
     wanted.clamp(MIN_TIMELINE_HEIGHT.min(ceiling), ceiling)
 }
 
+/// How much of the column the bigger of the arrangement and the editor gets
+/// when Tab swaps them — see [`toggled_timeline_height`].
+pub const TIMELINE_LARGE_SHARE: f32 = 2.0 / 3.0;
+
+/// The arrangement height a press of **Tab** asks for.
+///
+/// > *"pressing tab should toggle between the piano/mixer section being
+/// > larger or smaller than the arrangement section vertically ... either the
+/// > mixer/piano roll is taller and the arrangement is smaller, about a
+/// > 66.66%/33.33% ratio and then pressing that keybind just swaps between
+/// > the arrangement being the one thats larger and the mixer/piano roll
+/// > being larger."*
+///
+/// Two positions, and no memory of which one the window is "in": the rule is
+/// simply that whichever panel has more than half the column gives it up. At
+/// either fixed position that is the other fixed position, and after the seam
+/// has been dragged somewhere else by hand it is still the sensible answer —
+/// which is what lets a free drag *"cleanly exit"* the toggle without any
+/// bookkeeping about whether one is in progress. A hidden arrangement has
+/// none of the column, so Tab brings it back as the big one.
+///
+/// Clamped the way a seam drag is: a short window cannot give the arrangement
+/// two thirds without taking the editor under [`MIN_EDITOR_HEIGHT`].
+pub fn toggled_timeline_height(layout: &WindowLayout) -> f32 {
+    let column = layout
+        .timeline
+        .frame
+        .union(&layout.divider)
+        .union(&layout.panel.frame);
+    if column.is_empty() {
+        return 0.0;
+    }
+    let current = layout.timeline.frame.height / column.height;
+    let share = if current >= 0.5 {
+        1.0 - TIMELINE_LARGE_SHARE
+    } else {
+        TIMELINE_LARGE_SHARE
+    };
+    // Through the same arithmetic the divider's drag goes through, so the
+    // clamps live in one place.
+    timeline_height_at(layout, column.y + column.height * share)
+}
+
 /// How much of the sidebar's height the channel rack gets **until somebody
 /// drags the seam**.
 ///

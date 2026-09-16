@@ -2527,6 +2527,18 @@ impl MasterNode {
         self.published.clone()
     }
 
+    /// Publishes into `meter` instead of a fresh one.
+    ///
+    /// What a **rebuild** hands in: the transport bar's meter was given the
+    /// first graph's `Arc` and goes on reading it, so the node in every later
+    /// graph has to write to that same one or the bar reads silence for the
+    /// rest of the session — *"it seems to show sometimes but not always."*
+    /// The same wire the metronome switch is kept on (`Metronome`).
+    pub fn with_meter(mut self, meter: Arc<MasterMeter>) -> Self {
+        self.published = meter;
+        self
+    }
+
     /// Peak and RMS per channel, for a meter. The peak is held until
     /// [`MasterNode::reset_peaks`].
     pub fn channel_meter(&self, channel: usize) -> Option<&fontelle_dsp::PeakRmsMeter> {
@@ -2560,10 +2572,20 @@ impl AudioNode for MasterNode {
         }
         // Metered *after* the limiter, because what the meter is for is
         // showing what left the machine.
+        //
+        // **This block's own peak** goes to the published meter, not the
+        // `PeakRmsMeter`'s, which is held — the highest sample since the last
+        // reset. Publishing the held one is what made the transport bar's
+        // meter *"leave it hanging too long when nothings on anymore"*: every
+        // frame read the loudest moment of the session over again, and the
+        // bar came down only when a rebuild replaced the node. The reader
+        // already folds the block peaks into its own hold and release, the
+        // way it does for the track meters (`MixerTrackNode`).
         for (index, (meter, channel)) in self.meters.iter_mut().zip(ctx.outputs.iter()).enumerate()
         {
             meter.process_block(channel);
-            self.published.record(index, meter.peak());
+            let peak = channel.iter().fold(0.0f32, |acc, s| acc.max(s.abs()));
+            self.published.record(index, peak);
         }
         self.published
             .record_reduction(self.limiter.take_max_reduction_db());
@@ -3097,6 +3119,62 @@ mod tests {
             peaks[0]
         );
         assert_eq!(meter.take_peaks()[0], 0.0, "and reading it resets it");
+    }
+
+    /// The transport bar's meter *"leaves it hanging too long when nothings
+    /// on anymore"*: what the node published was `PeakRmsMeter::peak`, which
+    /// is **held** — the highest sample since the node was last reset — so
+    /// every frame after the loudest moment read that moment again and the
+    /// bar never fell until the graph was rebuilt. What a meter wants per
+    /// block is that block's own peak, which is what the track meters
+    /// publish.
+    #[test]
+    fn the_master_meter_publishes_each_blocks_own_peak_not_the_highest_ever() {
+        let mut node = MasterNode::new();
+        node.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 256,
+        });
+        let meter = node.meter();
+        let mut boxed: Box<dyn AudioNode> = Box::new(node);
+        let mut run = |level: f32| {
+            let mut buffers: Vec<Vec<f32>> = (0..2).map(|_| vec![level; 256]).collect();
+            let mut slices: Vec<&mut [f32]> =
+                buffers.iter_mut().map(|b| b.as_mut_slice()).collect();
+            let mut ctx = ProcessContext {
+                inputs: &[],
+                outputs: &mut slices,
+                all_events: &[],
+                live_events: &[],
+                audio: &[],
+                node: fontelle_types::NodeId::default(),
+                transport: TransportSnapshot {
+                    state: TransportState::Playing,
+                    position_sample: 0,
+                    bpm: fontelle_types::DEFAULT_BPM,
+                },
+                sample_range: 0..256,
+            };
+            boxed.process(&mut ctx);
+        };
+        run(0.5);
+        assert!((meter.take_peaks()[0] - 0.5).abs() < 1e-6);
+        // Two silent blocks, read between them: the limiter's look-ahead
+        // carries the tail of the loud one a couple of milliseconds into the
+        // first, and the meter is a highest-since-last-read.
+        run(0.0);
+        let _ = meter.take_peaks();
+        run(0.0);
+        assert_eq!(
+            meter.take_peaks()[0],
+            0.0,
+            "a silent block after a loud one must publish silence, not the loud one again"
+        );
+        run(0.1);
+        assert!(
+            (meter.take_peaks()[0] - 0.1).abs() < 1e-6,
+            "and a quieter block publishes its own level"
+        );
     }
 
     /// The last step of the per-note pan's journey: the wire carries it as the

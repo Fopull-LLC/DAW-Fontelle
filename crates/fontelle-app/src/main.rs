@@ -641,6 +641,10 @@ fn play_or_render(
             // the transport bar and the node in the schedule stay one thing
             // across every rebuild — see `Session::with_metronome`.
             .with_metronome(realised.metronome.clone())
+            // And the same meter, for the same reason: the bar's meter
+            // *"doesnt render anything sometimes"* was a rebuild leaving it
+            // on a meter nothing wrote to. See `Session::with_master_meter`.
+            .with_master_meter(realised.master.clone())
             // And the cell the MIDI hub's routers read, so a keyboard plays
             // whichever instrument is selected — including after a rebuild has
             // renumbered every node.

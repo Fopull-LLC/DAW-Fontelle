@@ -20,8 +20,8 @@ use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
 use fontelle_ui::transport::{
     MAX_BEATS_PER_BAR, MAX_TEMPO, MIN_BEATS_PER_BAR, MIN_TEMPO, TransportHit, TransportView,
-    action, cycle_beats_per_bar, format_signature, format_tempo, hit, nudge_tempo,
-    step_beats_per_bar, tempo_at, transport_bar_layout,
+    action, beats_per_bar_at, format_signature, format_tempo, hit, nudge_tempo, parse_tempo,
+    signature_menu_entries, tempo_at, transport_bar_layout,
 };
 
 const RATE: f64 = 48_000.0;
@@ -241,22 +241,80 @@ fn a_dragged_tempo_is_a_value_the_box_can_show_exactly() {
     }
 }
 
-// ------------------------------------------------------- the time signature ---
+// ---------------------------------------------------------- typing a tempo ---
 
 #[test]
-fn clicking_the_signature_steps_the_beats_in_a_bar_and_wraps_round() {
-    // Wrapping, not clamping: a click is the only gesture on it that needs no
-    // aim, and one that stops at the top is one you cannot get back down from.
-    assert_eq!(cycle_beats_per_bar(4), 5);
-    assert_eq!(cycle_beats_per_bar(MAX_BEATS_PER_BAR), MIN_BEATS_PER_BAR);
+fn a_typed_tempo_is_read_as_a_number_and_rounded_to_what_the_box_can_show() {
+    // *"i cant click and type in the field like an input field to input my
+    // tempo."* A click on the box opens it for typing; this is what the typed
+    // text becomes on Enter.
+    assert_eq!(parse_tempo("128"), Some(128.0));
+    assert_eq!(parse_tempo("128.5"), Some(128.5));
+    assert_eq!(
+        parse_tempo(" 90 "),
+        Some(90.0),
+        "surrounding space is not a typo"
+    );
+    assert_eq!(
+        parse_tempo("120.004"),
+        Some(120.0),
+        "rounded to the two places the box shows, like a drag is"
+    );
+    assert_eq!(parse_tempo("174.995"), Some(175.0));
 }
 
 #[test]
-fn the_wheel_steps_the_signature_and_clamps_at_both_ends() {
-    assert_eq!(step_beats_per_bar(4, 1), 5);
-    assert_eq!(step_beats_per_bar(4, -1), 3);
-    assert_eq!(step_beats_per_bar(MIN_BEATS_PER_BAR, -1), MIN_BEATS_PER_BAR);
-    assert_eq!(step_beats_per_bar(MAX_BEATS_PER_BAR, 1), MAX_BEATS_PER_BAR);
+fn a_typed_tempo_is_kept_inside_the_same_limits_a_drag_has() {
+    assert_eq!(parse_tempo("0"), Some(MIN_TEMPO));
+    assert_eq!(parse_tempo("5"), Some(MIN_TEMPO));
+    assert_eq!(parse_tempo("100000"), Some(MAX_TEMPO));
+    assert_eq!(parse_tempo("-40"), Some(MIN_TEMPO));
+}
+
+#[test]
+fn text_that_is_not_a_tempo_is_refused_rather_than_guessed_at() {
+    // Enter on any of these leaves the tempo where it was.
+    for text in ["", "   ", "fast", "12O", "1.2.3", "nan", "inf", "-inf"] {
+        assert_eq!(parse_tempo(text), None, "{text:?} was read as a tempo");
+    }
+}
+
+// ------------------------------------------------------- the time signature ---
+
+#[test]
+fn clicking_the_signature_drops_a_list_of_every_metre_with_the_current_one_greyed() {
+    // *"instead it should be a dropdown instead of just iterating through
+    // pre set list of options when being clicked."* The list is every value
+    // the box can hold, in order, each written the way the box writes it —
+    // and the one in force is greyed, so the list says where you are.
+    let entries = signature_menu_entries(4);
+    assert_eq!(
+        entries.len(),
+        (MAX_BEATS_PER_BAR - MIN_BEATS_PER_BAR + 1) as usize,
+        "one row per metre"
+    );
+    for (row, entry) in entries.iter().enumerate() {
+        let beats = beats_per_bar_at(row);
+        assert_eq!(entry.label, format_signature(beats));
+        assert_eq!(
+            entry.enabled,
+            beats != 4,
+            "row {row} ({}) should be {}",
+            entry.label,
+            if beats == 4 { "greyed" } else { "live" }
+        );
+    }
+    assert_eq!(beats_per_bar_at(0), MIN_BEATS_PER_BAR);
+    assert_eq!(
+        beats_per_bar_at(entries.len() - 1),
+        MAX_BEATS_PER_BAR,
+        "the last row is the widest metre"
+    );
+    assert_eq!(
+        beats_per_bar_at(usize::MAX),
+        MAX_BEATS_PER_BAR,
+        "a row past the end is clamped, never a panic"
+    );
 }
 
 #[test]

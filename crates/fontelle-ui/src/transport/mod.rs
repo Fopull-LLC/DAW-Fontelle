@@ -31,12 +31,21 @@ use crate::theme::Metrics;
 /// unreadably compressed.
 pub const METER_FLOOR_DB: f32 = -60.0;
 
-/// How fast a peak meter falls. Roughly PPM ballistics — 20 dB per second is
-/// slow enough to read and fast enough to follow a phrase.
-pub const RELEASE_DB_PER_SECOND: f32 = 20.0;
+/// How fast a peak meter falls.
+///
+/// It was 20 dB a second — PPM ballistics, three seconds from full scale to
+/// the floor — and that read as a fault: *"it plays then leaves it hanging
+/// too long when nothings on anymore."* The bar's meter is looked at beside
+/// the mixer's master strip, which draws the peak since the last frame and
+/// falls at once, so the two have to agree about *when* the song went
+/// quiet. Half a second across the whole scale keeps a fall you can see
+/// without a tail the strip does not have.
+pub const RELEASE_DB_PER_SECOND: f32 = 120.0;
 
-/// How long the peak-hold marker stays where it was hit.
-pub const HOLD_SECONDS: f32 = 1.5;
+/// How long the peak-hold marker stays where it was hit. Shorter than the
+/// fall, for the reason above: a marker still up a second after the last
+/// note is the meter "hanging".
+pub const HOLD_SECONDS: f32 = 0.6;
 
 /// Everything the window can see of the engine, read once per frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -156,6 +165,10 @@ pub struct TransportBarLayout {
     /// Song or clip: what pressing play plays. See
     /// [`PlayMode`](crate::document::PlayMode).
     pub mode: Rect,
+    /// The `?`: the keyboard shortcuts page. Beside the boxes it explains
+    /// rather than at the far end of the bar, and the first thing given up
+    /// when the bar is narrow — F1 opens the same page.
+    pub help: Rect,
     /// The song, end to end. Clicking it seeks.
     pub ruler: Rect,
     pub meter: Rect,
@@ -224,11 +237,19 @@ pub fn transport_bar_layout(bar: Rect, metrics: &Metrics) -> TransportBarLayout 
     // go, because "where am I in the song" is the other half of what this bar
     // is for. A box that is left out is an empty rectangle, which nothing
     // draws and nothing can be clicked on (`Rect::contains` is false for one).
-    const BOXES: [f32; 4] = [READOUT_WIDTH, TEMPO_WIDTH, SIGNATURE_WIDTH, MODE_WIDTH];
+    // The help button is the fifth, and the first to go: F1 opens the same
+    // page, so nothing is lost with it but a hint.
+    let boxes: [f32; 5] = [
+        READOUT_WIDTH,
+        TEMPO_WIDTH,
+        SIGNATURE_WIDTH,
+        MODE_WIDTH,
+        button,
+    ];
     let room = (meter.x - gap - x).max(0.0);
-    let mut shown = BOXES.len();
+    let mut shown = boxes.len();
     while shown > 0 {
-        let wanted: f32 = BOXES[..shown].iter().map(|w| w + gap).sum();
+        let wanted: f32 = boxes[..shown].iter().map(|w| w + gap).sum();
         if room - wanted >= MIN_RULER_WIDTH {
             break;
         }
@@ -260,6 +281,13 @@ pub fn transport_bar_layout(bar: Rect, metrics: &Metrics) -> TransportBarLayout 
     } else {
         Rect::ZERO
     };
+    // A square the height of the bar, like the transport buttons, so the
+    // glyph in it is the same size as theirs.
+    let help = if shown > 4 {
+        take(&mut x, button)
+    } else {
+        Rect::ZERO
+    };
 
     let ruler = Rect::new(x, inner.y, (meter.x - gap - x).max(0.0), inner.height).clamped();
 
@@ -274,6 +302,7 @@ pub fn transport_bar_layout(bar: Rect, metrics: &Metrics) -> TransportBarLayout 
         tempo,
         signature,
         mode,
+        help,
         ruler,
         meter,
     }
@@ -298,6 +327,9 @@ pub enum TransportHit {
     /// The song/clip chip. The studio's business, like the two boxes before
     /// it: what the timeline carries is the document host's to decide.
     Mode,
+    /// The `?`: open the keyboard shortcuts page. The window's business,
+    /// like the boxes — nothing about the engine changes.
+    Help,
 }
 
 impl TransportHit {
@@ -314,10 +346,11 @@ impl TransportHit {
             Self::ToggleRecord => "Arm recording: play, and keep the take",
             Self::ToggleMetronome => "The click, on every beat \u{2014} Ctrl+M",
             Self::Tempo => "Tempo \u{2014} drag, or click and type",
-            Self::Signature => "Beats in a bar \u{2014} drag to change",
+            Self::Signature => "Beats in a bar \u{2014} click to choose",
             Self::Mode => {
                 "Song plays the arrangement; Clip plays only the clip you are editing \u{2014} Ctrl+L"
             }
+            Self::Help => "Every keyboard shortcut \u{2014} F1",
             Self::Scrub(_) => return None,
         })
     }
@@ -359,6 +392,9 @@ pub fn hit(
     }
     if layout.mode.contains(x, y) {
         return Some(TransportHit::Mode);
+    }
+    if layout.help.contains(x, y) {
+        return Some(TransportHit::Help);
     }
     if layout.ruler.contains(x, y) {
         return Some(TransportHit::Scrub(sample_at(
@@ -419,7 +455,9 @@ pub fn action(hit: TransportHit, view: &TransportView) -> Option<TransportAction
         TransportHit::ToggleRecord => TransportAction::SetArmed(!view.armed),
         TransportHit::ToggleMetronome => TransportAction::SetMetronome(!view.metronome),
         TransportHit::Scrub(sample) => TransportAction::Mark(sample),
-        TransportHit::Tempo | TransportHit::Signature | TransportHit::Mode => return None,
+        TransportHit::Tempo | TransportHit::Signature | TransportHit::Mode | TransportHit::Help => {
+            return None;
+        }
     })
 }
 
@@ -459,6 +497,26 @@ pub fn tempo_at(start: f64, dy: f32, fine: bool) -> f64 {
     round_tempo(start - dy as f64 * per_pixel)
 }
 
+/// The tempo a string typed into the box means, or `None` for one that is
+/// not a number.
+///
+/// > *"right now you can only slide the tempo up and down i cant click and
+/// > type in the field like an input field to input my tempo."*
+///
+/// A click on the box opens it for typing and Enter hands the text here.
+/// Whatever is a number is kept inside the same limits a drag has and rounded
+/// to the two places the box shows, so what you typed is what it reads;
+/// whatever is not — a letter, two dots, nothing — is refused, and the tempo
+/// stays where it was rather than becoming somebody's guess at what was meant.
+/// `inf` and `nan` parse as floats and are refused too: neither is a tempo.
+pub fn parse_tempo(text: &str) -> Option<f64> {
+    let bpm: f64 = text.trim().parse().ok()?;
+    if !bpm.is_finite() {
+        return None;
+    }
+    Some(round_tempo(bpm))
+}
+
 /// The tempo `steps` wheel notches from `current` — a beat per minute each,
 /// or a tenth with Shift held.
 pub fn nudge_tempo(current: f64, steps: f32, fine: bool) -> f64 {
@@ -489,24 +547,36 @@ pub const MIN_BEATS_PER_BAR: u32 = 1;
 /// apart than the roll is wide at any useful zoom.
 pub const MAX_BEATS_PER_BAR: u32 = 16;
 
-/// The next value a *click* on the box asks for: one more beat, wrapping back
-/// to the bottom at the top.
+/// The signature box's drop-down: every metre the box can hold, in order,
+/// with the one in force greyed.
 ///
-/// Wrapping, not clamping. A click is the only gesture on the box that needs
-/// no aim, and one that stops at the top is one you cannot get back down from
-/// without knowing about the wheel.
-pub fn cycle_beats_per_bar(current: u32) -> u32 {
-    if current >= MAX_BEATS_PER_BAR {
-        MIN_BEATS_PER_BAR
-    } else {
-        current.max(MIN_BEATS_PER_BAR) + 1
-    }
+/// > *"remember we are trying to move away from iterating through options,
+/// > instead it should be a dropdown."*
+///
+/// A click used to step the box to the next value and wrap at the top, which
+/// made 3/4 from 4/4 fifteen clicks away. The list is the same answer the
+/// settings rows and the clip editor's choices give: the choice is a row, and
+/// the row you are on says where you are.
+pub fn signature_menu_entries(current: u32) -> Vec<crate::canvas::MenuEntry> {
+    (MIN_BEATS_PER_BAR..=MAX_BEATS_PER_BAR)
+        .map(|beats| {
+            let label = format_signature(beats);
+            if beats == current {
+                crate::canvas::MenuEntry::disabled(label)
+            } else {
+                crate::canvas::MenuEntry::new(label)
+            }
+        })
+        .collect()
 }
 
-/// The value `by` wheel notches from `current`, clamped.
-pub fn step_beats_per_bar(current: u32, by: i32) -> u32 {
-    let wanted = current as i64 + by as i64;
-    wanted.clamp(MIN_BEATS_PER_BAR as i64, MAX_BEATS_PER_BAR as i64) as u32
+/// The metre the `row`th entry of [`signature_menu_entries`] stands for.
+/// Clamped, so a row past the end is the widest metre rather than a panic.
+pub fn beats_per_bar_at(row: usize) -> u32 {
+    let offset = u32::try_from(row).unwrap_or(u32::MAX);
+    MIN_BEATS_PER_BAR
+        .saturating_add(offset)
+        .clamp(MIN_BEATS_PER_BAR, MAX_BEATS_PER_BAR)
 }
 
 /// What the signature box says.
@@ -630,9 +700,12 @@ impl Meter {
         } else {
             self.hold_remaining -= dt;
             if self.hold_remaining <= 0.0 {
-                // Never below the level it is holding for — a hold marker
-                // under its own bar is not a marker.
-                self.hold_db = (self.hold_db - RELEASE_DB_PER_SECOND * dt).max(self.level_db);
+                // Twice as fast as the bar once it lets go: it had its hold,
+                // and a marker that then ambles down behind the bar is the
+                // "hanging" the release time was shortened to stop. Never
+                // below the level it is holding for — a hold marker under
+                // its own bar is not a marker.
+                self.hold_db = (self.hold_db - 2.0 * RELEASE_DB_PER_SECOND * dt).max(self.level_db);
             }
         }
     }

@@ -247,6 +247,9 @@ pub struct Session {
     /// The metronome the running graph is playing through. Kept across a
     /// rebuild — choosing a soundfont with the click on must not turn it off.
     metronome: Option<std::sync::Arc<fontelle_engine::Metronome>>,
+    /// The master meter the transport bar reads. Kept across a rebuild for
+    /// the same reason — see `with_master_meter`.
+    master_meter: Option<std::sync::Arc<fontelle_engine::MasterMeter>>,
     /// Where live input is mirrored while the transport is recording, and what
     /// has been mirrored so far.
     ///
@@ -940,6 +943,7 @@ impl Session {
             live_input: None,
             live_keys: None,
             metronome: None,
+            master_meter: None,
             capture: None,
             take: Vec::new(),
             publisher,
@@ -1623,6 +1627,31 @@ impl Session {
         self.metronome
             .clone()
             .unwrap_or_else(|| std::sync::Arc::new(fontelle_engine::Metronome::new()))
+    }
+
+    /// Gives the session the master meter the transport bar reads.
+    ///
+    /// **Without this the bar's meter goes dead on the first rebuild** —
+    /// the same fault `with_metronome` closes, on the other `Arc` the first
+    /// graph hands out. `rebuild_graph` passes whatever it holds to
+    /// `realise`, and `realise` mints a fresh `MasterMeter` when handed
+    /// `None`; the bar's `EngineHost` goes on holding the original. Reported
+    /// as *"it seems to show sometimes but not always"*: it showed until
+    /// anything rebuilt the graph. See `fontelle-app/tests/master_meter.rs`.
+    pub fn with_master_meter(
+        mut self,
+        meter: std::sync::Arc<fontelle_engine::MasterMeter>,
+    ) -> Self {
+        self.master_meter = Some(meter);
+        self
+    }
+
+    /// The meter the running graph publishes into, so a caller can check it
+    /// is the one the bar was given.
+    pub fn master_meter(&self) -> std::sync::Arc<fontelle_engine::MasterMeter> {
+        self.master_meter
+            .clone()
+            .unwrap_or_else(|| std::sync::Arc::new(fontelle_engine::MasterMeter::default()))
     }
 
     /// Gives the session the cell live MIDI is routed through (TDD §14.3).
@@ -2567,6 +2596,7 @@ impl Session {
             &crate::realise::KeptTaps {
                 spectrum: self.spectrum_taps.clone(),
                 tune: self.tune_taps.clone(),
+                master: self.master_meter.clone(),
             },
             monitor.as_ref(),
             // Put back whatever the browser was letting you hear: the node is
@@ -2591,6 +2621,7 @@ impl Session {
                 self.send_controls = realised.send_controls;
                 self.metronome = Some(realised.metronome);
                 self.publish_metronome();
+                self.master_meter = Some(realised.master);
                 // New graph, new node ids — including the one a plugged-in
                 // keyboard is playing through.
                 self.publish_live_target();

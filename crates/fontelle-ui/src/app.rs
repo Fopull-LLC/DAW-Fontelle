@@ -54,7 +54,7 @@ use crate::document::{ChannelInfo, ClipInfo, LaneInfo, LibraryEntry, MixerStrip,
 use crate::layout::{
     DEFAULT_TIMELINE_HEIGHT, Docks, EditorKind, EditorTab, EditorTabs, PanelLayout, WindowLayout,
     editor_tab_at, editor_tabs, editor_window_layout, rack_share_at, sidebar_width_at,
-    timeline_height_at, window_layout_with,
+    timeline_height_at, toggled_timeline_height, window_layout_with,
 };
 use crate::pointer::{Pointer, PointerScene, pointer_at};
 use crate::render::{
@@ -67,8 +67,8 @@ use crate::text::{Labels, TextContext, TextLayout};
 use crate::theme::Theme;
 use crate::transport::{
     Meter, TransportAction, TransportBarLayout, TransportHit, TransportHost, TransportView, action,
-    apply, cycle_beats_per_bar, format_readout, format_signature, format_tempo, hit, sample_at,
-    tempo_at, transport_bar_layout,
+    apply, beats_per_bar_at, format_readout, format_signature, format_tempo, hit, parse_tempo,
+    sample_at, signature_menu_entries, tempo_at, transport_bar_layout,
 };
 use crate::widget::{Sleep, WidgetId, WidgetTree, autosave_due, sleep_budget};
 
@@ -356,6 +356,10 @@ enum MenuTarget {
     /// The transport bar's tempo box. §12.3 names the tempo as automatable
     /// and it is a control like any other; the menu is how it becomes a lane.
     Tempo,
+    /// The transport bar's signature box: which metre, from a list. *"it
+    /// should be a dropdown instead of just iterating through pre set list of
+    /// options when being clicked."* See `transport::signature_menu_entries`.
+    Signature,
     /// Which part of a `.mid` file to bring in. The entries come from the
     /// host — see `StudioHost::import_prompt` — because it is the half that
     /// read the file.
@@ -522,6 +526,7 @@ impl MenuTarget {
             | Self::Lane(_)
             | Self::Prefab(_)
             | Self::Tempo
+            | Self::Signature
             | Self::RollTools
             | Self::RecordMode
             | Self::MixerTrack(_)
@@ -558,6 +563,10 @@ const SPECTRUM_FALL_DB_PER_S: f32 = 36.0;
 
 /// How long the caret spends on, and then off. Half a second each way.
 const CARET_BLINK_S: f32 = 0.5;
+
+/// How far a press on the tempo box may travel and still be a click that
+/// opens it for typing rather than a drag that slides it.
+const TEMPO_CLICK_SLOP: f32 = 3.0;
 
 /// How often a backup is taken, while the window is being used.
 ///
@@ -769,6 +778,11 @@ pub struct WindowApp {
     editors: Vec<Editor>,
     /// The start menu, until something on it is chosen.
     welcome: Option<Welcome>,
+    /// The keyboard shortcuts sheet, while it is up: how far it is scrolled.
+    /// Opened from the `?` on the start menu, the `?` on the transport bar
+    /// and F1; shut by Esc, F1, its × or a press off the card. See
+    /// `canvas::keybinds`.
+    keybinds: Option<f32>,
     /// Editors a click has asked for, opened on the next pass of the loop.
     ///
     /// A window can only be created with an `&ActiveEventLoop` in hand, and
@@ -1099,6 +1113,16 @@ pub struct WindowApp {
     // --- the transport bar's two document boxes ---
     /// The tempo at the start of the piece, read with the studio's lists.
     tempo: f64,
+    /// The tempo box while it is being typed into. A **click** on the box —
+    /// a press and release that did not move — opens it, seeded with the
+    /// tempo and all of it selected; Enter writes what parses
+    /// (`transport::parse_tempo`) and Escape puts the box back. *"i cant
+    /// click and type in the field like an input field to input my tempo."*
+    tempo_entry: Option<crate::canvas::TextEntry>,
+    /// The caret and selection of that field, in points — measured in
+    /// `shape_labels`, the way `rename_marks` is, because placing a caret
+    /// means shaping the text before it.
+    tempo_marks: Option<crate::render::RenameMarks>,
     tempo_text: TextLayout,
     signature_text: TextLayout,
     /// What the two boxes above were last shaped *from*, so a frame where
@@ -1422,6 +1446,7 @@ impl WindowApp {
             live: None,
             editors: Vec::new(),
             welcome: None,
+            keybinds: None,
             activation: None,
             activation_tried: false,
             pending_editors: Vec::new(),
@@ -1573,6 +1598,8 @@ impl WindowApp {
             send_menu: None,
             insert_drag: None,
             tempo: 120.0,
+            tempo_entry: None,
+            tempo_marks: None,
             tempo_text: TextLayout::default(),
             signature_text: TextLayout::default(),
             shaped_tempo: f64::NAN,
@@ -1799,6 +1826,12 @@ impl WindowApp {
         // go first: on a machine with no projects folder yet the folder is
         // asked for before the name, because a name typed and then refused
         // for want of a folder is the worse order.
+        // The `?` needs no document: the page is the same one the studio's
+        // bar opens, over the start menu.
+        if hit == WelcomeHit::Help {
+            self.open_keybinds();
+            return;
+        }
         if hit == WelcomeHit::NewProject {
             let Some(doc) = &mut self.options.document else {
                 return;
@@ -1854,6 +1887,7 @@ impl WindowApp {
                 doc.open_url(REPOSITORY_URL);
                 Ok(false)
             }
+            WelcomeHit::Help => unreachable!("handled above"),
         };
         match outcome {
             Ok(true) => self.close_welcome(),
@@ -1969,6 +2003,7 @@ impl WindowApp {
         // Likewise: the field reads the menu and the measured widths, and the
         // scene below is borrowed mutably.
         let field = self.text_field();
+        let tempo_field = self.tempo_field();
         let Some(Some(renderer)) = self.renderers.get_mut(live.surface.dev_id) else {
             return;
         };
@@ -1991,6 +2026,7 @@ impl WindowApp {
                     hover: self.hover,
                     marker_sample: self.marker,
                     clip_mode: self.play_mode == crate::document::PlayMode::Clip,
+                    tempo_field,
                 },
                 roll: self.options.document.as_ref().map(|doc| RollChrome {
                     focused: self.focus == Focus::Roll,
@@ -2203,6 +2239,7 @@ impl WindowApp {
                         hover: welcome.hover,
                         message: &welcome.message,
                     }),
+                keybinds: self.keybinds,
             },
         );
 
@@ -2298,13 +2335,15 @@ impl WindowApp {
             .is_some_and(|(target, _)| target.name_prompt().is_some());
         // An inline rename blinks too, now that its caret is drawn where it
         // is rather than at the end of the name.
-        if prompting || self.renaming.is_some() {
+        if prompting || self.renaming.is_some() || self.tempo_entry.is_some() {
             self.caret_phase += dt;
             if self.caret_phase >= CARET_BLINK_S {
                 self.caret_phase -= CARET_BLINK_S;
                 self.caret_on = !self.caret_on;
                 if prompting {
                     self.tree.invalidate_rect(self.menu_at.1);
+                } else if self.tempo_entry.is_some() {
+                    self.tree.invalidate(TRANSPORT);
                 } else {
                     self.invalidate_names();
                 }
@@ -3079,6 +3118,17 @@ impl ApplicationHandler for WindowApp {
                         | Drag::SendLevel(_)
                         | Drag::InsertMix(_)
                 );
+                // A press on the tempo box that comes up where it went down
+                // is a **click**, and a click opens the box for typing; a
+                // press that travelled was the drag it has always been. The
+                // slop is a couple of pixels, because a hand at rest is not
+                // perfectly still.
+                if self.drag == Drag::Tempo
+                    && let Some((_, from_y)) = self.value_drag
+                    && (self.cursor.1 - from_y).abs() < TEMPO_CLICK_SLOP
+                {
+                    self.start_tempo_entry();
+                }
                 // An EQ band drag coalesces into one history entry while it
                 // runs; this is what tells the document it has stopped, the
                 // same handshake a note drag has.
@@ -3181,7 +3231,11 @@ impl ApplicationHandler for WindowApp {
                         (p.x as f32 / 40.0, p.y as f32 / 40.0)
                     }
                 };
-                if self.welcome.is_none() {
+                if let Some(scroll) = self.keybinds {
+                    let layout = self.keybinds_layout();
+                    self.keybinds = Some(crate::canvas::keybinds_scrolled(&layout, scroll, dy));
+                    self.tree.invalidate_rect(self.layout.window);
+                } else if self.welcome.is_none() {
                     self.scroll_roll(dx, dy);
                 }
                 self.request_redraw_if_dirty();
@@ -5036,6 +5090,55 @@ impl WindowApp {
             }
         }
 
+        // The tempo box's, by the same measurement, while it is a field.
+        self.tempo_marks = self.tempo_entry.as_ref().map(|entry| {
+            let text = entry.text();
+            let mut width_to = |at: usize| {
+                if at == 0 {
+                    0.0
+                } else {
+                    self.text.layout(&text[..at], &font, None).width
+                }
+            };
+            crate::render::RenameMarks {
+                caret_x: width_to(entry.caret()),
+                selection: entry
+                    .selection()
+                    .map(|(from, to)| (width_to(from), width_to(to))),
+                caret_on: self.caret_on,
+            }
+        });
+        if let Some(text) = self.tempo_entry.as_ref().map(|e| e.text().to_string()) {
+            want_field(&mut self.labels, &mut self.text, &text);
+            want_field(&mut self.labels, &mut self.text, "120.00");
+        }
+
+        // The shortcuts sheet, under exactly the strings `draw_keybinds`
+        // looks up: the title and the × at the chrome's size, the hint and
+        // every key and description at the small one. Two hundred strings,
+        // and only while the page is up.
+        if self.keybinds.is_some() {
+            want(
+                &mut self.labels,
+                &mut self.text,
+                crate::canvas::KEYBINDS_TITLE,
+            );
+            want(
+                &mut self.labels,
+                &mut self.text,
+                crate::canvas::KEYBINDS_CLOSE,
+            );
+            self.labels
+                .ensure_small(crate::canvas::KEYBINDS_HINT, &font, &mut self.text);
+            for section in crate::canvas::KEYBIND_SECTIONS {
+                want(&mut self.labels, &mut self.text, section.title);
+                for bind in section.binds {
+                    self.labels.ensure_small(bind.keys, &font, &mut self.text);
+                    self.labels.ensure_small(bind.does, &font, &mut self.text);
+                }
+            }
+        }
+
         // The inline rename's marks, by the same measurement: a rename is a
         // field too, and its selection and caret were drawn nowhere.
         self.rename_marks = self.renaming.as_ref().map(|_| {
@@ -5560,6 +5663,16 @@ impl WindowApp {
             self.press_confirm(x, y);
             return;
         }
+        // The shortcuts sheet is a page over the window: its × shuts it and
+        // so does a press off the card, the way a click away from a menu
+        // shuts the menu; a press on the card is nothing.
+        if self.keybinds.is_some() {
+            let layout = self.keybinds_layout();
+            if crate::canvas::keybinds_hit(&layout, x, y) != crate::canvas::KeybindsHit::Card {
+                self.close_keybinds();
+            }
+            return;
+        }
         // A toast's Undo takes the press before whatever is under it does.
         if button == winit::event::MouseButton::Left
             && self.toast.as_ref().is_some_and(|t| t.undoable)
@@ -5651,6 +5764,13 @@ impl WindowApp {
             // off the strip it was on.
             self.invalidate_names();
         }
+        // And a tempo being typed, for the same reason. A press elsewhere
+        // **keeps** what was typed when it is a tempo — clicking away from a
+        // field is how most people finish with one — and drops it when it is
+        // not, which is what Enter would have done too.
+        if self.tempo_entry.is_some() {
+            self.end_tempo_entry(true);
+        }
 
         // The transport bar first: it is the only thing above the panels.
         if let Some(what) = hit(&self.bar, &self.view, x, y) {
@@ -5675,12 +5795,22 @@ impl WindowApp {
                         self.drag = Drag::Tempo;
                         return;
                     }
+                    // The metre drops its list, under the box, like every
+                    // other choice in the window — it used to step on each
+                    // click, and 3/4 from 4/4 was fifteen clicks away.
                     TransportHit::Signature => {
-                        self.set_beats_per_bar(cycle_beats_per_bar(self.beats_per_bar()));
+                        let at = self.bar.signature;
+                        let bounds = self.layout.window;
+                        self.open_menu(MenuTarget::Signature, at.x, at.bottom(), bounds);
+                        self.tree.invalidate(TRANSPORT);
                         return;
                     }
                     TransportHit::Mode => {
                         self.toggle_play_mode();
+                        return;
+                    }
+                    TransportHit::Help => {
+                        self.open_keybinds();
                         return;
                     }
                     _ => {}
@@ -8744,6 +8874,143 @@ impl WindowApp {
         self.resize_from_window();
     }
 
+    /// **Tab**: the arrangement and the editor swap which is the tall one.
+    ///
+    /// Stateless on purpose — see `layout::toggled_timeline_height`: the
+    /// rule reads the layout as it stands, so a seam dragged by hand needs
+    /// nothing undone before the next press, and the press after a drag
+    /// still goes somewhere sensible.
+    fn toggle_split(&mut self) {
+        let wanted = toggled_timeline_height(&self.layout);
+        if (wanted - self.timeline_height).abs() < 0.5 {
+            return;
+        }
+        self.timeline_height = wanted;
+        if wanted > 0.0 {
+            self.timeline_height_shown = wanted;
+        }
+        self.resize_from_window();
+    }
+
+    /// **F**: the rack shows its other list.
+    fn toggle_rack_tab(&mut self) {
+        let wanted = self.rack_tab.other();
+        if let Some(doc) = &mut self.options.document {
+            doc.set_rack_tab(wanted);
+        }
+        self.refresh_studio();
+        self.tree.invalidate(RACK);
+        self.tree.invalidate(PANEL);
+    }
+
+    // ---------------------------------------------- the shortcuts sheet ---
+
+    /// Opens the keyboard shortcuts page, scrolled to the top. Over the start
+    /// menu or over the studio, whichever is up; it is one page.
+    fn open_keybinds(&mut self) {
+        if self.keybinds.is_some() {
+            return;
+        }
+        // Whatever was being typed stops: the page has the keyboard now.
+        if self.tempo_entry.is_some() {
+            self.end_tempo_entry(true);
+        }
+        self.keybinds = Some(0.0);
+        self.tree.invalidate_rect(self.layout.window);
+    }
+
+    fn close_keybinds(&mut self) {
+        if self.keybinds.take().is_some() {
+            self.tree.invalidate_rect(self.layout.window);
+        }
+    }
+
+    /// The sheet as it is laid out right now — for a press or a scroll. The
+    /// renderer lays it out again from the same two numbers, so the two
+    /// cannot disagree.
+    fn keybinds_layout(&self) -> crate::canvas::KeybindsLayout {
+        crate::canvas::keybinds_layout(
+            self.layout.window,
+            &self.options.theme.metrics,
+            self.keybinds.unwrap_or(0.0),
+        )
+    }
+
+    // --------------------------------------------- typing a tempo ---
+
+    /// Opens the tempo box for typing: seeded with the tempo as the box shows
+    /// it, all of it selected, so a typed number replaces it in one go — the
+    /// same rule a rename follows, and for the same reason.
+    fn start_tempo_entry(&mut self) {
+        let mut entry = crate::canvas::TextEntry::new(format_tempo(self.tempo));
+        entry.select_all();
+        self.tempo_entry = Some(entry);
+        self.caret_on = true;
+        self.caret_phase = 0.0;
+        self.status = "Type a tempo \u{2014} Enter when you are done".to_string();
+        self.tree.invalidate(TRANSPORT);
+        self.tree.invalidate(BROWSER);
+    }
+
+    /// Shuts the tempo box. With `keep`, what was typed is written if it is
+    /// a tempo (`transport::parse_tempo`); anything else, or a cancel,
+    /// leaves the tempo where it was.
+    fn end_tempo_entry(&mut self, keep: bool) {
+        let Some(entry) = self.tempo_entry.take() else {
+            return;
+        };
+        if keep && let Some(bpm) = parse_tempo(entry.text()) {
+            if (bpm - self.tempo).abs() > 1e-9 {
+                self.set_tempo(bpm);
+            }
+            if let Some(doc) = &mut self.options.document {
+                doc.end_gesture();
+            }
+        }
+        self.status.clear();
+        self.tree.invalidate(TRANSPORT);
+        self.tree.invalidate(BROWSER);
+    }
+
+    /// A key pressed while the tempo box is being typed into. Whether it was
+    /// taken — and it takes all of them, like every field: a typed "d" is a
+    /// digit's neighbour, not the delete tool.
+    fn tempo_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        let Some(entry) = &self.tempo_entry else {
+            return false;
+        };
+        match &event.logical_key {
+            Key::Named(NamedKey::Enter) => self.end_tempo_entry(true),
+            Key::Named(NamedKey::Escape) => self.end_tempo_entry(false),
+            key => {
+                let ctrl = self.modifiers.control_key();
+                let shift = self.modifiers.shift_key();
+                let mut entry = entry.clone();
+                let what =
+                    crate::canvas::text_key(&mut entry, key, ctrl, shift, &mut self.clipboard_text);
+                if what != crate::canvas::TextKey::Ignored {
+                    self.tempo_entry = Some(entry);
+                    self.tree.invalidate(TRANSPORT);
+                }
+            }
+        }
+        true
+    }
+
+    /// The tempo box as a field, while it is one.
+    fn tempo_field(&self) -> Option<crate::render::TextFieldChrome> {
+        let entry = self.tempo_entry.as_ref()?;
+        let marks = self.tempo_marks?;
+        Some(crate::render::TextFieldChrome {
+            entry: entry.clone(),
+            caret_x: marks.caret_x,
+            selection: marks.selection,
+            placeholder: "120.00",
+            caret_on: marks.caret_on,
+        })
+    }
+
     /// Recomputes the whole window from the live surface size — what a change
     /// to the arrangement's height needs, because it moves every panel below
     /// it.
@@ -10456,6 +10723,7 @@ impl WindowApp {
             // The same drop-down for a settings choice: its options, the one it
             // is on greyed. The options ride along on the `Choice` control the
             // host already built, so nothing new crosses the boundary.
+            MenuTarget::Signature => signature_menu_entries(self.beats_per_bar()),
             MenuTarget::SettingChoice(index) => match self.settings_controls.get(*index) {
                 Some(crate::canvas::SettingControl::Choice { options, chosen }) => options
                     .iter()
@@ -11406,6 +11674,10 @@ impl WindowApp {
                     crate::canvas::choose_audio_row(&mut open.data, field, index);
                 }
                 self.write_audio_clip();
+            }
+            // The metre chosen from the signature box's list.
+            (MenuTarget::Signature, index) => {
+                self.set_beats_per_bar(beats_per_bar_at(index));
             }
             // A settings drop-down: the entry chosen, in one press.
             (MenuTarget::SettingChoice(setting), index) => {
@@ -12769,11 +13041,28 @@ impl WindowApp {
             return;
         }
 
-        // The start menu has the keyboard while it is up, and answers one
-        // key: Escape is "just let me in", the blank studio underneath.
+        // The shortcuts sheet has the whole keyboard while it is up — it is
+        // a page, and a page that let `D` through to the delete tool behind
+        // it would be a page that edits — and two keys shut it. Before the
+        // start menu, because it opens over that too.
+        if self.keybinds.is_some() {
+            if matches!(
+                event.logical_key,
+                Key::Named(NamedKey::Escape) | Key::Named(NamedKey::F1)
+            ) {
+                self.close_keybinds();
+            }
+            return;
+        }
+
+        // The start menu has the keyboard while it is up, and answers two
+        // keys: Escape is "just let me in", the blank studio underneath, and
+        // F1 is the page its `?` opens.
         if self.welcome.is_some() {
-            if event.logical_key == Key::Named(NamedKey::Escape) {
-                self.close_welcome();
+            match event.logical_key {
+                Key::Named(NamedKey::Escape) => self.close_welcome(),
+                Key::Named(NamedKey::F1) => self.open_keybinds(),
+                _ => {}
             }
             return;
         }
@@ -12781,6 +13070,10 @@ impl WindowApp {
         // While a name is being typed, that has the keyboard: the same rule
         // the search box follows, and for the same reason.
         if self.rename_key(event) {
+            return;
+        }
+        // And while a tempo is.
+        if self.tempo_key(event) {
             return;
         }
 
@@ -12932,6 +13225,13 @@ impl WindowApp {
             Key::Named(NamedKey::ArrowDown) => self.arrow(0, -1),
             Key::Named(NamedKey::ArrowLeft) => self.arrow(-1, 0),
             Key::Named(NamedKey::ArrowRight) => self.arrow(1, 0),
+            // The keyboard shortcuts page — the same one the `?` on the bar
+            // opens, for when the bar is too narrow to show one.
+            Key::Named(NamedKey::F1) => self.open_keybinds(),
+            // *"pressing tab should toggle between the piano/mixer section
+            // being larger or smaller than the arrangement section."* See
+            // `layout::toggled_timeline_height` for the rule.
+            Key::Named(NamedKey::Tab) => self.toggle_split(),
             Key::Character(c) => {
                 let c = c.to_lowercase();
                 match c.as_str() {
@@ -12988,6 +13288,10 @@ impl WindowApp {
                         self.search_entry = crate::canvas::TextEntry::new(self.query.clone());
                         self.tree.invalidate(BROWSER);
                     }
+                    // *"make it so the f key toggles the tab between
+                    // instrument and prefab."* The rack's two lists, and no
+                    // FL binding to clash with.
+                    "f" => self.toggle_rack_tab(),
                     // Tools, from the FL keymap.
                     "p" => self.pick_tool(Tool::Draw, crate::canvas::TimelineTool::Draw),
                     "b" => self.set_tool(Tool::Paint),

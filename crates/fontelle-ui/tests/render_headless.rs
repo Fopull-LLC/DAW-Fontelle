@@ -167,6 +167,7 @@ fn shoot_sized(
                 hover: None,
                 marker_sample: 0,
                 clip_mode,
+                tempo_field: None,
             },
             roll: None,
             rack: None,
@@ -186,6 +187,7 @@ fn shoot_sized(
             menu: None,
             carry: None,
             welcome: None,
+            keybinds: None,
         },
     );
     let pixels = shared
@@ -824,6 +826,7 @@ fn shoot_roll_everything(
                 hover: None,
                 marker_sample: 0,
                 clip_mode: false,
+                tempo_field: None,
             },
             roll: Some(RollChrome {
                 focused: false,
@@ -874,6 +877,7 @@ fn shoot_roll_everything(
             menu: None,
             carry: None,
             welcome: None,
+            keybinds: None,
         },
     );
     let pixels = shared
@@ -1221,6 +1225,7 @@ fn shoot_timeline_recording(
                 hover: None,
                 marker_sample: 0,
                 clip_mode: false,
+                tempo_field: None,
             },
             roll: None,
             rack: None,
@@ -1265,6 +1270,7 @@ fn shoot_timeline_recording(
             menu: None,
             carry: None,
             welcome: None,
+            keybinds: None,
         },
     );
     let pixels = shared
@@ -1926,6 +1932,7 @@ fn shoot_mixer_renaming(
                 hover: None,
                 marker_sample: 0,
                 clip_mode: false,
+                tempo_field: None,
             },
             roll: None,
             rack: None,
@@ -1961,6 +1968,7 @@ fn shoot_mixer_renaming(
             menu: None,
             carry: None,
             welcome: None,
+            keybinds: None,
         },
     );
     let pixels = shared
@@ -2323,6 +2331,7 @@ fn shoot_rack(
                 hover: None,
                 marker_sample: 0,
                 clip_mode: false,
+                tempo_field: None,
             },
             roll: None,
             rack: Some(RackChrome {
@@ -2354,6 +2363,7 @@ fn shoot_rack(
             menu: None,
             carry: None,
             welcome: None,
+            keybinds: None,
         },
     );
     let pixels = shared
@@ -4132,6 +4142,7 @@ fn shoot_carry(
                 hover: None,
                 marker_sample: 0,
                 clip_mode: false,
+                tempo_field: None,
             },
             roll: None,
             rack: Some(RackChrome {
@@ -4169,6 +4180,7 @@ fn shoot_carry(
                 bounds: layout.window,
             }),
             welcome: None,
+            keybinds: None,
         },
     );
     let pixels = shared
@@ -4394,6 +4406,7 @@ fn shoot_welcome_status(
                 hover: None,
                 marker_sample: 0,
                 clip_mode: false,
+                tempo_field: None,
             },
             roll: None,
             rack: None,
@@ -4423,6 +4436,7 @@ fn shoot_welcome_status(
                 hover: Some(fontelle_ui::canvas::WelcomeHit::NewProject),
                 message: &message,
             }),
+            keybinds: None,
         },
     );
     let pixels = shared
@@ -4668,6 +4682,7 @@ fn shoot_settings_controls() {
                 hover: None,
                 marker_sample: 0,
                 clip_mode: false,
+                tempo_field: None,
             },
             roll: None,
             rack: None,
@@ -4702,6 +4717,7 @@ fn shoot_settings_controls() {
             menu: None,
             carry: None,
             welcome: None,
+            keybinds: None,
         },
     );
     let pixels = shared
@@ -4730,4 +4746,142 @@ fn shoot_settings_controls() {
         accent_pixels > 200,
         "the settings controls did not paint (only {accent_pixels} accent pixels)"
     );
+}
+
+// --- the keyboard shortcuts sheet ---
+
+/// The sheet over an otherwise empty studio, at a size the real window
+/// opens at, with every string it looks up shaped — the same contract the
+/// window keeps in `shape_labels`.
+fn shoot_keybinds(theme: Theme, scroll: f32) -> Option<(Vec<u8>, Theme, u32, u32)> {
+    use fontelle_ui::canvas::{KEYBIND_SECTIONS, KEYBINDS_CLOSE, KEYBINDS_HINT, KEYBINDS_TITLE};
+    let (width, height) = (1100u32, 700u32);
+    let shared = headless()?;
+    let layout = window_layout(
+        width as f32,
+        height as f32,
+        &theme.metrics,
+        DEFAULT_TIMELINE_HEIGHT,
+    );
+    let mut text = TextContext::new();
+    let title = text.layout("Fontelle", &theme.font, None);
+    let bar = transport_bar_layout(layout.transport, &theme.metrics);
+    let readout = text.layout("0", &theme.font, None);
+
+    let mut labels = Labels::new();
+    labels.ensure(KEYBINDS_TITLE, &theme.font, &mut text);
+    labels.ensure(KEYBINDS_CLOSE, &theme.font, &mut text);
+    labels.ensure_small(KEYBINDS_HINT, &theme.font, &mut text);
+    for section in KEYBIND_SECTIONS {
+        labels.ensure(section.title, &theme.font, &mut text);
+        for bind in section.binds {
+            labels.ensure_small(bind.keys, &theme.font, &mut text);
+            labels.ensure_small(bind.does, &theme.font, &mut text);
+        }
+    }
+
+    let mut scene = vello::Scene::new();
+    draw_window(
+        &mut scene,
+        &theme,
+        &layout,
+        &Chrome {
+            field: None,
+            panel_title: &title,
+            transport: TransportChrome {
+                layout: bar,
+                view: TransportView::unavailable(),
+                meters: [Meter::new(); 2],
+                readout: &readout,
+                tempo: &readout,
+                signature: &readout,
+                mode: &readout,
+                hover: None,
+                marker_sample: 0,
+                clip_mode: false,
+                tempo_field: None,
+            },
+            roll: None,
+            rack: None,
+            prefabs: None,
+            browser: None,
+            timeline: None,
+            mixer: None,
+            tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
+            tab: fontelle_ui::layout::EditorTab::Roll,
+            hover_tab: None,
+            browser_title: "",
+            labels: &labels,
+            status: "",
+            toast: None,
+            confirm: None,
+            tooltip: None,
+            menu: None,
+            carry: None,
+            welcome: None,
+            keybinds: Some(scroll),
+        },
+    );
+    let pixels = shared
+        .lock()
+        .expect("the shared renderer")
+        .render(&scene, width, height, theme.palette.window)
+        .expect("rendering a scene that fits in memory");
+    let suffix = if scroll > 0.0 {
+        "keybinds-scrolled"
+    } else {
+        "keybinds"
+    };
+    dump_sized(&pixels, &format!("{}-{suffix}", theme.name), width, height);
+    Some((pixels, theme, width, height))
+}
+
+#[test]
+fn the_shortcuts_sheet_is_drawn_over_the_studio_with_its_headings_in_the_accent() {
+    for theme in [Theme::dark_default(), Theme::light_default()] {
+        let Some((pixels, theme, width, height)) = shoot_keybinds(theme, 0.0) else {
+            return;
+        };
+        let l = fontelle_ui::canvas::keybinds_layout(
+            fontelle_ui::layout::Rect::new(0.0, 0.0, width as f32, height as f32),
+            &theme.metrics,
+            0.0,
+        );
+        // The card is the panel colour, not the window's: the sheet is there.
+        let at = |x: f32, y: f32| {
+            let i = ((y as u32) * width + x as u32) as usize * 4;
+            Color([pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]])
+        };
+        assert!(
+            near(at(l.frame.x + 4.0, l.frame.y + 4.0), theme.palette.panel),
+            "{}: the card's corner is not the panel colour",
+            theme.name
+        );
+        // Every heading drew something in the accent along its row.
+        for row in &l.rows {
+            let fontelle_ui::canvas::KeybindRow::Heading { rect, section } = row else {
+                continue;
+            };
+            let [ar, ag, ab, _] = theme.palette.accent.0;
+            let mut accent = 0;
+            for y in rect.y as u32..rect.bottom() as u32 {
+                for x in rect.x as u32..(rect.x + 120.0) as u32 {
+                    let i = (y * width + x) as usize * 4;
+                    if pixels[i].abs_diff(ar) < 40
+                        && pixels[i + 1].abs_diff(ag) < 40
+                        && pixels[i + 2].abs_diff(ab) < 40
+                    {
+                        accent += 1;
+                    }
+                }
+            }
+            assert!(
+                accent > 20,
+                "{}: heading {section} drew {accent} accent pixels — its caption is missing",
+                theme.name
+            );
+        }
+    }
+    // And scrolled, so the dump shows the list moving.
+    let _ = shoot_keybinds(Theme::dark_default(), 300.0);
 }

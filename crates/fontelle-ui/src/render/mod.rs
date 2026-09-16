@@ -104,6 +104,10 @@ pub struct Chrome<'a> {
     /// The start menu, while it is up. When it is, it is the whole picture:
     /// the studio behind it is not drawn at all (see [`draw_welcome`]).
     pub welcome: Option<WelcomeChrome<'a>>,
+    /// The keyboard shortcuts sheet, while it is up: how far it is scrolled.
+    /// Over everything, the start menu included — it is opened from both.
+    /// See [`crate::canvas::keybinds_layout`].
+    pub keybinds: Option<f32>,
 }
 
 /// Everything the start menu draws (`canvas::welcome`).
@@ -482,6 +486,9 @@ pub struct TransportChrome<'a> {
     pub marker_sample: i64,
     /// Whether the transport is in clip mode, so the chip can be lit.
     pub clip_mode: bool,
+    /// The tempo box while it is being **typed into**: the field replaces
+    /// the number. `None` — nearly always — draws the number.
+    pub tempo_field: Option<TextFieldChrome>,
 }
 
 /// Builds the whole window picture.
@@ -513,10 +520,13 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
             chrome.menu,
             chrome.field.as_ref(),
         );
+        if let Some(scroll) = chrome.keybinds {
+            draw_keybinds(scene, theme, chrome.labels, layout.window, scroll);
+        }
         return;
     }
 
-    draw_transport_bar(scene, theme, &chrome.transport);
+    draw_transport_bar(scene, theme, chrome.labels, &chrome.transport);
 
     if let Some(rack) = &chrome.rack {
         draw_panel_frame(scene, theme, &rack.panel);
@@ -692,6 +702,153 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     if let Some(question) = chrome.confirm {
         draw_confirm(scene, theme, chrome.labels, layout.window, question);
     }
+    // And the shortcuts sheet, which is a page rather than a prompt: over
+    // the studio and its menus, under nothing.
+    if let Some(scroll) = chrome.keybinds {
+        draw_keybinds(scene, theme, chrome.labels, layout.window, scroll);
+    }
+}
+
+/// The keyboard shortcuts sheet (`canvas::keybinds`): a scrim, a card, and
+/// the catalogue on it in columns — a heading per section, and under it one
+/// line per binding with the key in a chip and what it does beside it.
+fn draw_keybinds(scene: &mut Scene, theme: &Theme, labels: &Labels, window: Rect, scroll: f32) {
+    use crate::canvas::{
+        KEYBIND_SECTIONS, KEYBINDS_CLOSE, KEYBINDS_HINT, KEYBINDS_TITLE, KeybindRow,
+    };
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    fill_rect(scene, window, p.window.with_alpha(200));
+    let l = crate::canvas::keybinds_layout(window, m, scroll);
+    if l.frame.is_empty() {
+        return;
+    }
+    fill_rect_rounded(scene, l.frame, m.corner_radius * 2.0, p.panel);
+    stroke_rect_rounded(scene, l.frame, m.corner_radius * 2.0, 1.0, p.border);
+
+    if let Some(text) = labels.get(KEYBINDS_TITLE) {
+        draw_text_clipped(
+            scene,
+            text,
+            l.title,
+            l.title.x,
+            l.title.y + (l.title.height - text.height) / 2.0,
+            p.text,
+        );
+    }
+    if let Some(text) = labels.get_small(KEYBINDS_HINT) {
+        draw_text_clipped(
+            scene,
+            text,
+            l.hint,
+            l.hint.x,
+            l.hint.y + (l.hint.height - text.height) / 2.0,
+            p.text_muted,
+        );
+    }
+    // The ×, on a plate so it reads as the button it is.
+    if !l.close.is_empty() {
+        fill_rect_rounded(scene, l.close, m.corner_radius, p.panel_header);
+        stroke_rect_rounded(scene, l.close, m.corner_radius, m.border_width, p.border);
+        if let Some(text) = labels.get(KEYBINDS_CLOSE) {
+            draw_text_clipped(
+                scene,
+                text,
+                l.close,
+                l.close.x + (l.close.width - text.width) / 2.0,
+                l.close.y + (l.close.height - text.height) / 2.0,
+                p.text,
+            );
+        }
+    }
+
+    // The list, clipped to its body: a row half off the top draws its
+    // visible half and nothing else, which is what a scrolling list is.
+    if l.body.is_empty() {
+        return;
+    }
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(
+            l.body.x as f64,
+            l.body.y as f64,
+            l.body.right() as f64,
+            l.body.bottom() as f64,
+        ),
+    );
+    for row in &l.rows {
+        match row {
+            KeybindRow::Heading { section, rect } => {
+                let Some(section) = KEYBIND_SECTIONS.get(*section) else {
+                    continue;
+                };
+                // A rule under the heading, the way the panels' headers sit
+                // over their bodies, so a section is a block and not a run.
+                if let Some(text) = labels.get(section.title) {
+                    draw_text_clipped(
+                        scene,
+                        text,
+                        *rect,
+                        rect.x,
+                        rect.y + (rect.height - text.height) / 2.0,
+                        p.accent,
+                    );
+                }
+                fill_rect(
+                    scene,
+                    Rect::new(rect.x, rect.bottom() - 1.0, rect.width, 1.0),
+                    p.grid_line,
+                );
+            }
+            KeybindRow::Bind {
+                section,
+                index,
+                keys,
+                does,
+            } => {
+                let Some(bind) = KEYBIND_SECTIONS
+                    .get(*section)
+                    .and_then(|section| section.binds.get(*index))
+                else {
+                    continue;
+                };
+                // The key in a chip the width of its text, not the column:
+                // a chip that is always the column's width is a table cell.
+                if let Some(text) = labels.get_small(bind.keys) {
+                    let chip = Rect::new(
+                        keys.x,
+                        keys.y + 2.0,
+                        (text.width + 12.0).min(keys.width),
+                        (keys.height - 4.0).max(0.0),
+                    );
+                    fill_rect_rounded(scene, chip, m.corner_radius, p.panel_header);
+                    stroke_rect_rounded(scene, chip, m.corner_radius, 1.0, p.border);
+                    draw_text_clipped(
+                        scene,
+                        text,
+                        chip,
+                        chip.x + ((chip.width - text.width) / 2.0).max(2.0),
+                        chip.y + (chip.height - text.height) / 2.0,
+                        p.text,
+                    );
+                }
+                if let Some(text) = labels.get_small(bind.does) {
+                    draw_text_clipped(
+                        scene,
+                        text,
+                        *does,
+                        does.x,
+                        does.y + (does.height - text.height) / 2.0,
+                        p.text,
+                    );
+                }
+            }
+        }
+    }
+    scene.pop_layer();
 }
 
 /// The transient banner: a rounded bar with the note, and — when the action can
@@ -945,6 +1102,25 @@ pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
                 cross_ink,
             );
         }
+    }
+
+    // The `?` in the corner: a plate like the buttons, the glyph from the
+    // icon set, lit under the pointer.
+    if !l.help.is_empty() {
+        let hot_help = hot(WelcomeHit::Help);
+        fill_rect_rounded(
+            scene,
+            l.help,
+            m.corner_radius,
+            if hot_help { p.accent } else { p.panel_header },
+        );
+        stroke_rect_rounded(scene, l.help, m.corner_radius, m.border_width, p.border);
+        draw_icon(
+            scene,
+            crate::icon::Icon::Help,
+            l.help.inset(l.help.height * 0.2),
+            if hot_help { p.window } else { p.text },
+        );
     }
 
     // The footer: who made it, and where they are.
@@ -2109,7 +2285,12 @@ const CARRY_MIN_W: f32 = 80.0;
 /// shape when the sound card goes away is worse than one that says so — but
 /// everything in it is muted and the playhead is absent when `view.available`
 /// is false.
-pub fn draw_transport_bar(scene: &mut Scene, theme: &Theme, chrome: &TransportChrome<'_>) {
+pub fn draw_transport_bar(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &TransportChrome<'_>,
+) {
     let l = &chrome.layout;
     let view = &chrome.view;
     let p = &theme.palette;
@@ -2191,8 +2372,24 @@ pub fn draw_transport_bar(scene: &mut Scene, theme: &Theme, chrome: &TransportCh
             TransportHit::Scrub(_)
             | TransportHit::Tempo
             | TransportHit::Signature
-            | TransportHit::Mode => {}
+            | TransportHit::Mode
+            | TransportHit::Help => {}
         }
+    }
+
+    // The `?`: a glyph button like the five on the left, drawn quieter — it
+    // is a hint, not a transport control — until the pointer is on it.
+    if !l.help.is_empty() {
+        let hot = chrome.hover == Some(TransportHit::Help) && view.available;
+        if hot {
+            fill_rect_rounded(scene, l.help, m.corner_radius, p.border);
+        }
+        draw_icon(
+            scene,
+            crate::icon::Icon::Help,
+            l.help.inset(l.help.height * 0.28),
+            if hot { p.text } else { p.text_muted },
+        );
     }
 
     draw_text(
@@ -2219,6 +2416,14 @@ pub fn draw_transport_bar(scene: &mut Scene, theme: &Theme, chrome: &TransportCh
             continue;
         }
         let box_rect = rect.inset(2.0);
+        // While a tempo is being typed the box **is** a field — the recess,
+        // the lit edge, the caret — so there is no doubt where the keys go.
+        if what == TransportHit::Tempo
+            && let Some(field) = &chrome.tempo_field
+        {
+            draw_text_field(scene, theme, labels, box_rect, field);
+            continue;
+        }
         let clip_mode = what == TransportHit::Mode && chrome.clip_mode;
         fill_rect_rounded(
             scene,

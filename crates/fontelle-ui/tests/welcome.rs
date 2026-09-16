@@ -296,3 +296,51 @@ fn a_download_in_progress_says_how_far_and_has_a_bar() {
     );
     assert!(layout.update_button.is_some());
 }
+
+// ------------------------------------------------------------- the help icon ---
+
+#[test]
+fn the_card_has_a_help_button_in_its_top_corner_and_it_is_pressable() {
+    // *"should be accessible from the start screen with a new ? icon"*. In
+    // the top right, out of the way of the logo and the list, the size of a
+    // row so it reads as a button rather than a stray glyph.
+    let l = welcome_layout(window(), &metrics(), 3, true);
+    assert!(!l.help.is_empty(), "no help button");
+    assert!(within(l.help, l.frame), "the help button is off the card");
+    assert!(
+        l.help.right() >= l.frame.right() - 40.0,
+        "the help button is not in the right-hand corner: {:?} on {:?}",
+        l.help,
+        l.frame
+    );
+    assert!(
+        l.help.y <= l.frame.y + 40.0,
+        "the help button is not at the top: {:?} on {:?}",
+        l.help,
+        l.frame
+    );
+    for other in [
+        l.logo,
+        l.title,
+        l.version,
+        l.recent_heading,
+        l.new_button,
+        l.open_button,
+    ] {
+        assert!(
+            !overlaps(l.help, other),
+            "the help button is over {other:?}"
+        );
+    }
+    for row in &l.rows {
+        assert!(
+            !overlaps(l.help, row.frame),
+            "the help button is over a recent row"
+        );
+    }
+    let (x, y) = (
+        l.help.x + l.help.width / 2.0,
+        l.help.y + l.help.height / 2.0,
+    );
+    assert_eq!(welcome_hit(&l, x, y), Some(WelcomeHit::Help));
+}

@@ -130,10 +130,13 @@ pub enum Icon {
     /// the filled star is what a favourite *looks like* wherever it is drawn
     /// and the cursor rasteriser only knows icons.
     StarFilled,
+    /// A question mark: the keyboard shortcuts page, on the start menu and
+    /// the transport bar.
+    Help,
 }
 
 /// Every icon, for a test that has to check all of them.
-pub const EVERY_ICON: [Icon; 34] = [
+pub const EVERY_ICON: [Icon; 35] = [
     Icon::Play,
     Icon::Stop,
     Icon::Record,
@@ -168,6 +171,7 @@ pub const EVERY_ICON: [Icon; 34] = [
     Icon::Blade,
     Icon::Star,
     Icon::StarFilled,
+    Icon::Help,
 ];
 
 /// What `icon` is made of, in the unit box.
@@ -260,6 +264,28 @@ pub fn shapes(icon: Icon) -> Vec<Shape> {
             (0.05, 0.39),
             (0.38, 0.38),
         ])],
+        // The hook, as a polyline round the top of the glyph and down to the
+        // stem, and the dot under it. Nine points is enough for the curve to
+        // read as one at sixteen pixels; the stroke is what gives it weight.
+        Icon::Help => vec![
+            Shape::line(&[
+                (0.26, 0.34),
+                (0.30, 0.22),
+                (0.40, 0.14),
+                (0.52, 0.12),
+                (0.64, 0.16),
+                (0.72, 0.26),
+                (0.72, 0.38),
+                (0.64, 0.48),
+                (0.52, 0.56),
+                (0.50, 0.66),
+            ]),
+            Shape::Circle {
+                at: (0.50, 0.84),
+                r: 0.06,
+                filled: true,
+            },
+        ],
         Icon::StarFilled => vec![Shape::poly(&[
             (0.50, 0.07),
             (0.62, 0.38),

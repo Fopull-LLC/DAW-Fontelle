@@ -110,6 +110,8 @@ pub struct WelcomeLayout {
     pub footer: Rect,
     pub website: Rect,
     pub repository: Rect,
+    /// The `?` in the top right corner: the keyboard shortcuts page.
+    pub help: Rect,
 }
 
 /// Lays the card out in `window`, with `recent` rows wanted and an update
@@ -130,6 +132,11 @@ pub fn welcome_layout(
         height,
     );
     let inner = frame.inset(PADDING);
+
+    // The `?`, in the corner the card has nothing else in: the logo is top
+    // left and the recent list starts a heading's height down. A row square,
+    // so it reads as a button and not a stray glyph.
+    let help = Rect::new(inner.right() - row, inner.y, row, row).clamped();
 
     // The footer first, because everything else stops above it.
     let footer = Rect::new(inner.x, inner.y + inner.height - row, inner.width, row);
@@ -199,7 +206,13 @@ pub fn welcome_layout(
     // footer.
     let right_x = left.x + left.width + GUTTER;
     let right_width = (inner.x + inner.width - right_x).max(0.0);
-    let recent_heading = Rect::new(right_x, inner.y, right_width, row);
+    // The heading stops short of the help button beside it.
+    let recent_heading = Rect::new(
+        right_x,
+        inner.y,
+        (right_width - row - BUTTON_GAP).max(0.0),
+        row,
+    );
     let rows_top = recent_heading.y + row + BUTTON_GAP;
     let room = (above_footer - rows_top).max(0.0);
     let fit = (room / ROW_HEIGHT).floor() as usize;
@@ -238,6 +251,7 @@ pub fn welcome_layout(
         footer,
         website,
         repository,
+        help,
     }
 }
 
@@ -255,6 +269,8 @@ pub enum WelcomeHit {
     Update,
     Website,
     Repository,
+    /// The `?`: the keyboard shortcuts page.
+    Help,
 }
 
 /// What is under `(x, y)`, if anything is.
@@ -281,6 +297,9 @@ pub fn welcome_hit(layout: &WelcomeLayout, x: f32, y: f32) -> Option<WelcomeHit>
     }
     if layout.repository.contains(x, y) {
         return Some(WelcomeHit::Repository);
+    }
+    if layout.help.contains(x, y) {
+        return Some(WelcomeHit::Help);
     }
     None
 }

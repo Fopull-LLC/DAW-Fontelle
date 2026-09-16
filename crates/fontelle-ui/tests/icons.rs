@@ -152,3 +152,15 @@ fn every_icon_rasterises_without_running_off_the_bitmap() {
         }
     }
 }
+
+#[test]
+fn there_is_a_help_icon_and_it_is_in_the_set_the_tests_walk() {
+    // The `?` on the start menu and the transport bar. In `EVERY_ICON` so the
+    // checks above — draws something, stays in its box, fills it — hold for
+    // it too.
+    assert!(EVERY_ICON.contains(&Icon::Help));
+    assert!(
+        shapes(Icon::Help).len() >= 2,
+        "a question mark is a hook and a dot"
+    );
+}

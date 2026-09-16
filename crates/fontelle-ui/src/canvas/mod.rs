@@ -6,6 +6,7 @@ mod effect;
 mod favorites;
 mod flopsynth;
 mod instrument;
+mod keybinds;
 mod menu;
 mod mixer;
 mod overlays;
@@ -68,6 +69,11 @@ pub use instrument::{
     CELL_HEIGHT, CELL_WIDTH, CHIP_HEIGHT, CHIP_WIDTH, InstrumentGroup, InstrumentLayout,
     InstrumentParam, InstrumentView, MIXER_GAIN, MIXER_PAN, ParamKind, choice_index,
     instrument_hit, instrument_key_hit, instrument_layout, knob_value, next_value,
+};
+pub use keybinds::{
+    KEYBIND_SECTIONS, KEYBINDS_CLOSE, KEYBINDS_HINT, KEYBINDS_TITLE, Keybind, KeybindRow,
+    KeybindSection, KeybindsHit, KeybindsLayout, keybinds_hit, keybinds_layout,
+    keybinds_scroll_max, keybinds_scrolled,
 };
 pub use menu::{
     CHOSEN_MARK, ContextMenu, MENU_TEXT_INSET, MenuEntry, NAME_CARET, STAR_WIDTH, context_menu_hit,

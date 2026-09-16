@@ -249,3 +249,16 @@ fn scrolling_past_the_end_still_shows_the_last_one() {
     assert!(!l.rows.is_empty(), "a list scrolled off its end went blank");
     assert_eq!(l.rows.last().unwrap().index, 2);
 }
+
+// ---------------------------------------------------------- the F key ---
+
+#[test]
+fn f_flips_the_rack_between_its_two_tabs() {
+    // *"make it so the f key toggles the tab between instrument and prefab."*
+    // Two tabs, so the other one is the answer either way.
+    assert_eq!(RackTab::Instruments.other(), RackTab::Prefabs);
+    assert_eq!(RackTab::Prefabs.other(), RackTab::Instruments);
+    for tab in RackTab::ALL {
+        assert_eq!(tab.other().other(), tab, "two presses come back");
+    }
+}
