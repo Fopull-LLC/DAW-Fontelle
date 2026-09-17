@@ -466,3 +466,67 @@ fn a_desktop_sound_dropped_on_the_rack_becomes_a_channel_of_its_own() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ------------------------------------------ how wide the block will be ---
+//
+// > *"the preview for dragging in things into the arrangement ... showed
+// > the preview just taking up the entire lane."*
+//
+// The window draws the block a dragged sound will become, and asks the host
+// how long that is (`sound_footprint`) — the same arithmetic the import
+// itself does, so the block drawn is the block that lands.
+
+#[test]
+fn a_sounds_footprint_is_the_length_its_clip_will_have() {
+    use fontelle_ui::document::CarriedSound;
+    let dir = scratch("footprint");
+    let path = a_take(&dir, "Beat.wav"); // half a second: one beat at 120
+    let mut session = a_session(&dir);
+    let ticks = session
+        .sound_footprint(CarriedSound::File(&path), 0)
+        .expect("a wav has a footprint");
+    session.drop_file_on(&path, 0, Some(0)).expect("imports");
+    let clips = session.clips();
+    let clip = clips
+        .iter()
+        .find(|c| c.kind == ClipKind::Audio)
+        .expect("a clip");
+    assert_eq!(
+        ticks, clip.length,
+        "the block drawn is the block that lands"
+    );
+    assert!((ticks - fontelle_types::PPQN).abs() <= 2);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_browser_rows_footprint_is_its_files() {
+    use fontelle_ui::document::CarriedSound;
+    let dir = scratch("footprint-row");
+    let path = a_take(&dir, "Beat.wav");
+    let mut session = a_session(&dir);
+    session.set_import_folder(FolderKind::Audio, Some(dir.clone()));
+    session.set_import_kind(FolderKind::Audio);
+    session.set_browser_mode(fontelle_ui::canvas::BrowserMode::Import);
+    let row = session
+        .import_files()
+        .iter()
+        .position(|entry| entry.name == "Beat")
+        .expect("the row is listed");
+    assert_eq!(
+        session.sound_footprint(CarriedSound::ImportRow(row), 0),
+        session.sound_footprint(CarriedSound::File(&path), 0)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_file_that_is_not_a_sound_has_no_footprint() {
+    use fontelle_ui::document::CarriedSound;
+    let dir = scratch("footprint-none");
+    let path = dir.join("notes.txt");
+    std::fs::write(&path, "hello").unwrap();
+    let mut session = a_session(&dir);
+    assert_eq!(session.sound_footprint(CarriedSound::File(&path), 0), None);
+    std::fs::remove_dir_all(&dir).ok();
+}

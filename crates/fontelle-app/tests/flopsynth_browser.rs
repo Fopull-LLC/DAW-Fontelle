@@ -22,7 +22,11 @@ use fontelle_ui::document::{DocumentHost, LibraryKind, StudioHost};
 use common::SR;
 
 fn a_session() -> fontelle_app::Session {
-    common::a_session_for(common::a_project_with_a_clip(8, 120.0, SR))
+    let mut session = common::a_session_for(common::a_project_with_a_clip(8, 120.0, SR));
+    // The soundfont browser's tests; the studio opens on the Import tab now,
+    // so the tab is switched the way a click would.
+    session.set_browser_mode(fontelle_ui::canvas::BrowserMode::Sounds);
+    session
 }
 
 /// The index of the row called `name`, or a panic naming what was there.

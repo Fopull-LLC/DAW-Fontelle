@@ -380,6 +380,9 @@ mod through_the_session {
         .with_settings_path(dir.join("settings.json"));
         session.add_soundfont_dir(dir);
         session.open_bank();
+        // These are the soundfont browser's tests; the studio opens on the
+        // Import tab now, so the tab is switched the way a click would.
+        session.set_browser_mode(fontelle_ui::canvas::BrowserMode::Sounds);
         session
     }
 
@@ -707,6 +710,9 @@ mod presets {
         .with_settings_path(dir.join("settings.json"));
         session.add_soundfont_dir(dir);
         session.open_bank();
+        // These are the soundfont browser's tests; the studio opens on the
+        // Import tab now, so the tab is switched the way a click would.
+        session.set_browser_mode(fontelle_ui::canvas::BrowserMode::Sounds);
         session
     }
 

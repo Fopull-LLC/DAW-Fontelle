@@ -87,6 +87,18 @@ impl BankFilter {
             Self::Files(fontelle_types::FolderKind::Audio) => "sound",
         }
     }
+
+    /// `n` of these files, as a folder row counts them: "2 sf2", but
+    /// "2 sounds" — the one noun that is a word takes a plural, and a row
+    /// saying "675 sound" read as clipped.
+    pub fn count(self, n: usize) -> String {
+        let noun = self.noun();
+        if n == 1 || noun != "sound" {
+            format!("{n} {noun}")
+        } else {
+            format!("{n} {noun}s")
+        }
+    }
 }
 
 /// Whether `path` is something [`crate::SampleLibrary::import_sf2`] can open.

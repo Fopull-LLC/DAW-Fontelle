@@ -88,8 +88,9 @@ pub enum CarryTarget {
         card: usize,
         rect: Rect,
     },
-    /// The arrangement: a clip starting at `tick`, on the row highlighted by
-    /// `row`, whose left edge is at `at`.
+    /// The arrangement: a clip starting at `tick`, marked by `row` — the
+    /// block it will become when its length is known, and otherwise the
+    /// whole row it will land on — with its left edge at `at`.
     ///
     /// `lane` is the row the pointer is over — `Some(index)` into the
     /// arrangement's stack when it is over one that exists, so the clip lands
@@ -174,6 +175,13 @@ pub struct CarryTimeline<'a> {
     /// How many lanes the project has, because an imported sound arrives on a
     /// **new** one after the last of them — see [`CarryTarget::Clip`].
     pub lanes: usize,
+    /// How long the carried sound is on the arrangement, in ticks from the
+    /// bar it would start on, when the host has read the file
+    /// (`StudioHost::sound_footprint`). With it the mark is the **block**
+    /// the clip will become; without it, the whole row.
+    ///
+    /// > *"it showed the preview just taking up the entire lane."*
+    pub length: Option<Tick>,
 }
 
 /// Everything the decision needs, borrowed from the window.
@@ -334,10 +342,21 @@ fn carry_place(scene: &CarryScene<'_>, x: f32, y: f32) -> CarryTarget {
         };
         let y = lane_to_y(timeline.view, grid, row_lane)
             .clamp(grid.y, (grid.bottom() - height).max(grid.y));
-        let row = Rect::new(grid.x, y, grid.width, height).intersection(&grid);
+        let at = timeline_tick_to_x(timeline.view, grid, tick);
+        // **The block, not the lane**, when the sound's length is known: the
+        // mark is the clip that will be made — where it starts and where it
+        // ends — which is what "am I placing it right" asks. A hit a few
+        // milliseconds long is still a couple of pixels, or it would vanish.
+        let row = match timeline.length {
+            Some(length) => {
+                let width = (length.max(0) as f32 * timeline.view.pixels_per_tick).max(2.0);
+                Rect::new(at, y, width, height).intersection(&grid)
+            }
+            None => Rect::new(grid.x, y, grid.width, height).intersection(&grid),
+        };
         return CarryTarget::Clip {
             row,
-            at: timeline_tick_to_x(timeline.view, grid, tick),
+            at,
             tick,
             lane,
         };

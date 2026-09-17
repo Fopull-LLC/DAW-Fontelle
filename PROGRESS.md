@@ -19,8 +19,8 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-09-17, later — where a sound lands, and the drag that never
-arrived on Wayland.** Ty: *"i dont like how when recording something,
+**As of 2026-09-17, later — `v0.8.0`: where a sound lands, and the drag
+that never arrived on Wayland.** Ty: *"i dont like how when recording something,
 importing something, dragging an audio file in, etc anything it always
 goes on a new lane at the very bottom its very annoying. i wish instead if
 i was dragging it in, it showed me a preview where im dragging it and let
@@ -31,8 +31,8 @@ added in between the lane in the middlemost of your arrangement screen
 that way its cleanly visible for you ... also im noticing that on my
 particular setup at least i still cannot drag in files from my file
 explorer. im on cacheyos with kde plasma i use dolphin as my file
-browser."* Built tests-first, in the working tree for Ty to test before
-the version bump and the tag:
+browser."* Built tests-first; Ty tested it and asked for four more things
+before the release (below the list). Released as `v0.8.0`.
 
 - **The drop never arrived because winit has no drag-and-drop on
   Wayland.** Its `HoveredFile`/`DroppedFile` events come from the X11
@@ -80,6 +80,34 @@ the version bump and the tag:
   `fontelle-ui/tests/arrival_row.rs`, `carry.rs`;
   `fontelle-app/tests/audio_import.rs`, `audio_recording.rs`,
   `importing.rs`.
+
+Then, from testing it: *"the preview for dragging in things into the
+arrangement was showing it in the correct vertical lane, but was not
+positioning the clip horizontally correctly ... it showed the preview
+just taking up the entire lane"*; *"make your audio files load on startup
+instead of being when you open the import audio section"*; *"this section
+is also quite crowded we should make use of icons"*; *"make it start out
+opened on the audio import tab by default"*.
+
+- **The mark is the block.** `fontelle_assets::audio_length` reads a
+  file's length off its header (a decode only when the container does not
+  say); `StudioHost::sound_footprint(CarriedSound, from)` turns that into
+  ticks through the same `footprint_ticks` the import uses, cached per
+  path in the session; the window asks once per sound and bar
+  (`refresh_carry_length`) and `CarryTimeline::length` makes
+  `CarryTarget::Clip`'s `row` the block — start at the snapped bar, as
+  wide as the sound, never under two pixels. Seen on the nested server:
+  the block drawn is the clip that lands.
+- **The Import tab is where the studio starts, on Audio, already read.**
+  `BrowserMode::default()` is `Import`, the session's kind is `Audio`, and
+  `Session::read_import_folder` runs at launch beside the plugin scan (and
+  as a session takes its settings file). The soundfont browser's tests
+  switch their tab the way a click would.
+- **Glyphs on the tabs and the kind chips.** Six icons — `Wave`, `Tag`,
+  `Page`, `Import`, `Gear`, `Notes` — `BrowserMode::icon`, `kind_icon`,
+  and `tab_shows_word` (the word comes back beside the glyph past 92 px,
+  a widened sidebar). "675 sound" was the unpluralised noun, not a clipped
+  column: `BankFilter::count`.
 
 **As of 2026-09-17 — `v0.7.0`: the sampled shelves, and the bank audited.**
 Ty, having heard the shelves: *"these sound great release it after you

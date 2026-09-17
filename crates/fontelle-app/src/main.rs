@@ -674,6 +674,9 @@ fn play_or_render(
             if let Some(created) = session.open_bank() {
                 println!("  soundfont folder: {}", created.display());
             }
+            // The Import tab's folder too, for the same reason as the plugin
+            // scan below: the tab is the first thing on screen now.
+            session.read_import_folder();
             // The machine searched for plugins **now**, while the studio is
             // opening, rather than the first time a menu wants the list. See
             // `Session::scan_plugins`: the wait exists either way, and this is

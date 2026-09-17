@@ -311,6 +311,13 @@ fn is_soundfont_path(path: &std::path::Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("sf2"))
 }
 
+/// Which sound the window last asked the host the length of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CarryKey {
+    Path(std::path::PathBuf),
+    Row(usize),
+}
+
 /// A path's last component, as the chip and the status line say it.
 fn file_name(path: &std::path::Path) -> String {
     path.file_name()
@@ -853,6 +860,12 @@ pub struct WindowApp {
     /// the way a browser row is ([`Self::carried`]), so the mark and the chip
     /// say where it will land before it does.
     hovering: Option<Hovering>,
+    /// How long the sound in the air is, on the arrangement, from the bar
+    /// under the pointer — what the mark's width is drawn from
+    /// (`CarryTimeline::length`). Asked of the host once per sound and bar
+    /// (`carry_length_for`), because it is read on every pointer move.
+    carry_length: Option<fontelle_types::Tick>,
+    carry_length_for: Option<(CarryKey, fontelle_types::Tick)>,
     /// Files winit has said were dropped this pass, one event each, taken as
     /// one drop in `about_to_wait` — several files let go together land on
     /// rows under one another rather than all on the row under the pointer.
@@ -1570,6 +1583,8 @@ impl WindowApp {
             activation_tried: false,
             file_drag: None,
             hovering: None,
+            carry_length: None,
+            carry_length_for: None,
             dropped: Vec::new(),
             pending_editors: Vec::new(),
             pointer_window: None,
@@ -9880,6 +9895,7 @@ impl WindowApp {
                     view: &self.timeline.view,
                     beats_per_bar: self.beats_per_bar(),
                     lanes: self.lanes.len(),
+                    length: self.carry_length,
                 }),
                 name: None,
                 oscillators: &[],
@@ -10008,6 +10024,7 @@ impl WindowApp {
     /// One way in and one way out, so the chip cannot be left painted on a
     /// window nothing is being carried over.
     fn refresh_carry(&mut self) {
+        self.refresh_carry_length();
         let carried = self.carried();
         if carried.is_none() && self.carry.is_none() {
             return;
@@ -10026,6 +10043,44 @@ impl WindowApp {
         // window's events, and nothing in that path asks the studio for a
         // frame — without this the chip would freeze at the seam.
         self.request_redraw_if_dirty();
+    }
+
+    /// Asks the host how long the sound in the air is from the bar under the
+    /// pointer, when that is a new question — the block drawn under a drag
+    /// is as wide as the sound, and only the host can read the file.
+    ///
+    /// Only while the pointer is over the arrangement's grid and a sound is
+    /// carried; anywhere else there is no block to draw and nothing is asked.
+    fn refresh_carry_length(&mut self) {
+        let key = match (&self.hovering, self.drag, self.held) {
+            (Some(hovering), _, _) => hovering.paths.first().map(|p| CarryKey::Path(p.clone())),
+            (None, Drag::BrowserRow(BrowserRow::File(index)), _)
+            | (None, _, Some(BrowserRow::File(index))) => Some(CarryKey::Row(index)),
+            _ => None,
+        };
+        let grid = self.timeline_layout.grid;
+        let (x, y) = self.cursor;
+        let over_grid = self.pointer_window.is_none() && grid.contains(x, y);
+        let Some(key) = key.filter(|_| over_grid && self.options.document.is_some()) else {
+            self.carry_length = None;
+            self.carry_length_for = None;
+            return;
+        };
+        let loose = crate::canvas::timeline_x_to_tick(&self.timeline.view, grid, x);
+        let from =
+            crate::canvas::timeline_snap(&self.timeline.view, loose, self.beats_per_bar()).max(0);
+        if self.carry_length_for.as_ref() == Some(&(key.clone(), from)) {
+            return;
+        }
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        let sound = match &key {
+            CarryKey::Path(path) => crate::document::CarriedSound::File(path),
+            CarryKey::Row(index) => crate::document::CarriedSound::ImportRow(*index),
+        };
+        self.carry_length = doc.sound_footprint(sound, from);
+        self.carry_length_for = Some((key, from));
     }
 
     /// Puts a held row down where the pointer is (`land`), or lets it go.

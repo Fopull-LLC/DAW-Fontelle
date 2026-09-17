@@ -81,6 +81,66 @@ pub fn import_audio(path: &Path) -> Result<AudioAsset, ImportError> {
     read_audio(&bytes, &name)
 }
 
+/// How long the file at `path` is — frames, and the rate they are at —
+/// **without decoding it** when the container says.
+///
+/// > *"the preview for dragging in things into the arrangement ... showed
+/// > the preview just taking up the entire lane."*
+///
+/// The block a dragged sound will become has to be drawn while the sound is
+/// still in the air, and decoding a whole file to find out how wide to draw
+/// a rectangle is a stall at the moment the drag enters the window. A `.wav`
+/// and a `.flac` carry their length in the header; an MP3 with a Xing frame
+/// does too. A stream that does not say is decoded, once — the answer has to
+/// be right, because the block drawn is the block that lands.
+pub fn audio_length(path: &Path) -> Result<(u64, u32), ImportError> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let bytes =
+        std::fs::read(path).map_err(|e| ImportError(format!("could not read {name}: {e}")))?;
+    if bytes.is_empty() {
+        return Err(ImportError(format!("{name} is empty")));
+    }
+    let (probed, wrapped) = match ogg_in_wav(&bytes) {
+        Some(ogg) => (ogg, true),
+        None => (bytes.as_slice(), false),
+    };
+    let source = std::io::Cursor::new(probed.to_vec());
+    let stream = MediaSourceStream::new(Box::new(source), Default::default());
+    let mut hint = Hint::new();
+    if wrapped {
+        hint.with_extension("ogg");
+    } else if let Some(extension) = Path::new(&name).extension().and_then(|e| e.to_str()) {
+        hint.with_extension(extension);
+    }
+    let format = symphonia::default::get_probe()
+        .probe(
+            &hint,
+            stream,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .map_err(|e| ImportError(format!("{name} is not a readable sound file: {e}")))?;
+    let track = format
+        .default_track(TrackType::Audio)
+        .ok_or_else(|| ImportError(format!("{name} holds no audio track")))?;
+    let rate = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .and_then(|p| p.sample_rate);
+    if let (Some(frames), Some(rate)) = (track.num_frames, rate)
+        && frames > 0
+        && rate > 0
+    {
+        return Ok((frames, rate));
+    }
+    let decoded = read_audio(&bytes, &name)?;
+    Ok((decoded.frames as u64, decoded.sample_rate))
+}
+
 /// The same, on bytes already in hand — what a test uses, and what a
 /// recording's own buffer would use if it ever needed decoding.
 ///

@@ -340,6 +340,10 @@ pub struct Session {
     /// of the arrangement's screen, kept current by the window
     /// (`StudioHost::set_arrival_row`).
     arrival_row: usize,
+    /// The length of each sound the window has asked about while it was in
+    /// the air (`StudioHost::sound_footprint`): frames and rate, by path, so
+    /// a drag that crosses forty bars reads the header once.
+    sound_lengths: std::collections::HashMap<PathBuf, Option<(u64, u32)>>,
     /// What the Import tab's search box holds. Its own, not the bank's: a
     /// query typed against soundfonts means nothing against MIDI files.
     import_query: String,
@@ -975,11 +979,15 @@ impl Session {
             settings_undo: None,
             settings_toast: None,
             import_bank: FileBank::default(),
-            import_kind: fontelle_types::FolderKind::Midi,
+            // Sounds, and the Import tab, are where a session starts: *"make
+            // it start out opened on the audio import tab by default instead
+            // of the soundfonts tab"*.
+            import_kind: fontelle_types::FolderKind::Audio,
             arrival_row: 0,
+            sound_lengths: std::collections::HashMap::new(),
             import_query: String::new(),
             pending_import: None,
-            browser_mode: fontelle_ui::canvas::BrowserMode::Sounds,
+            browser_mode: fontelle_ui::canvas::BrowserMode::default(),
             bank: SoundfontBank::default(),
             projects: ProjectLibrary::default(),
             updater: Updater::disabled(),
@@ -1073,7 +1081,24 @@ impl Session {
             self.message = Some(e.to_string());
         }
         self.settings_path = Some(path);
+        self.read_import_folder();
         self
+    }
+
+    /// Reads the folder the Import tab opens on, **now**, rather than the
+    /// first time somebody opens the tab.
+    ///
+    /// > *"make your audio files load on startup instead of being when you
+    /// > open the import audio section"*
+    ///
+    /// The same rule [`scan_plugins`](Self::scan_plugins) follows: startup is
+    /// where a wait is expected, and a tab that fills in a beat after you
+    /// look at it is not. The studio calls this while it is opening; a
+    /// session built with its own settings file reads the folder as it takes
+    /// them. Switching the tab to another kind still reads that kind's folder
+    /// when it is asked for.
+    pub fn read_import_folder(&mut self) {
+        self.ensure_import_bank();
     }
 
     /// Where this session's settings are read from and written to, when it
@@ -4662,6 +4687,19 @@ impl Session {
         Ok(format!("Imported \u{201c}{name}\u{201d}"))
     }
 
+    /// How many ticks a sound of `frames` at `rate` covers from song tick
+    /// `from` — its own duration, through the tempo map that already owns
+    /// every sample-to-tick conversion in the project. **One function** for
+    /// the import and for the block drawn before it (`sound_footprint`), so
+    /// the two cannot disagree.
+    fn footprint_ticks(&self, frames: u64, rate: u32, from: Tick) -> Tick {
+        let samples =
+            (frames as f64 * self.options.sample_rate as f64 / f64::from(rate.max(1))) as i64;
+        let start = self.project.tempo_map.tick_to_sample(from.max(0));
+        let length = self.project.tempo_map.sample_to_tick(start + samples) - from.max(0);
+        length.max(fontelle_model::MIN_CLIP_LENGTH)
+    }
+
     /// Row index `row` of the arrangement as a landing: the row itself when
     /// there is one, and a new row at the foot when `row` is past the stack.
     fn landing_for(&self, row: usize) -> Landing {
@@ -4692,13 +4730,7 @@ impl Session {
         }
 
         let start = self.project.tempo_map.sample_to_tick(at.max(0)).max(0);
-        // Its own duration in ticks, through the tempo map that already owns
-        // every sample-to-tick conversion in the project.
-        let samples = (imported.frames as f64 * self.options.sample_rate as f64
-            / f64::from(imported.sample_rate)) as i64;
-        let from = self.project.tempo_map.tick_to_sample(start);
-        let length = self.project.tempo_map.sample_to_tick(from + samples) - start;
-        let length = length.max(fontelle_model::MIN_CLIP_LENGTH);
+        let length = self.footprint_ticks(imported.frames as u64, imported.sample_rate, start);
 
         let mut data = fontelle_types::AudioClipData::whole(
             imported.asset.clone(),
@@ -6186,7 +6218,7 @@ impl StudioHost for Session {
                 })
                 .collect();
         }
-        let noun = self.import_bank.filter().noun();
+        let filter = self.import_bank.filter();
         self.import_bank
             .rows()
             .iter()
@@ -6200,7 +6232,7 @@ impl StudioHost for Session {
                     name: name.clone(),
                     detail: match files {
                         0 => String::new(),
-                        n => format!("{n} {noun}"),
+                        n => filter.count(*n),
                     },
                     kind: LibraryKind::Folder,
                 },
@@ -6262,6 +6294,31 @@ impl StudioHost for Session {
 
     fn set_arrival_row(&mut self, row: usize) {
         self.arrival_row = row;
+    }
+
+    fn sound_footprint(
+        &mut self,
+        sound: fontelle_ui::document::CarriedSound<'_>,
+        from: Tick,
+    ) -> Option<Tick> {
+        use fontelle_ui::document::CarriedSound;
+        let path = match sound {
+            CarriedSound::File(path) => path.to_path_buf(),
+            CarriedSound::ImportRow(index) => self.import_audio_row(index).ok()?,
+        };
+        let length = match self.sound_lengths.get(&path) {
+            Some(known) => *known,
+            None => {
+                // Off the header where the file has one, a decode where it
+                // does not; either way once, and a refusal is remembered
+                // too, or a `.txt` in the air would be re-read every move.
+                let read = fontelle_assets::audio_length(&path).ok();
+                self.sound_lengths.insert(path, read);
+                read
+            }
+        };
+        let (frames, rate) = length?;
+        Some(self.footprint_ticks(frames, rate, from))
     }
 
     fn set_channel_instrument_on(&mut self, channel: usize, preset: usize) -> Result<(), String> {

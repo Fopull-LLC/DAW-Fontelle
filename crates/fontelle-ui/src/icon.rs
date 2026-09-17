@@ -133,10 +133,25 @@ pub enum Icon {
     /// A question mark: the keyboard shortcuts page, on the start menu and
     /// the transport bar.
     Help,
+    // The browser's tabs and the Import tab's kinds — *"this section is also
+    // quite crowded we should make use of icons to make it better designed"*.
+    // Five words across a 248-pixel sidebar were every one of them clipped.
+    /// A wave: sounds, whether a soundfont or an audio file.
+    Wave,
+    /// A tag: a preset, a sound with a name on it.
+    Tag,
+    /// A page: a project.
+    Page,
+    /// A tray with an arrow going in: import.
+    Import,
+    /// A gear: settings.
+    Gear,
+    /// Two beamed notes: a score, a phrase written down.
+    Notes,
 }
 
 /// Every icon, for a test that has to check all of them.
-pub const EVERY_ICON: [Icon; 35] = [
+pub const EVERY_ICON: [Icon; 41] = [
     Icon::Play,
     Icon::Stop,
     Icon::Record,
@@ -172,6 +187,12 @@ pub const EVERY_ICON: [Icon; 35] = [
     Icon::Star,
     Icon::StarFilled,
     Icon::Help,
+    Icon::Wave,
+    Icon::Tag,
+    Icon::Page,
+    Icon::Import,
+    Icon::Gear,
+    Icon::Notes,
 ];
 
 /// What `icon` is made of, in the unit box.
@@ -441,6 +462,95 @@ pub fn shapes(icon: Icon) -> Vec<Shape> {
         Icon::Minus => vec![Shape::line(&[(0.14, 0.50), (0.86, 0.50)])],
         Icon::Chevron => vec![Shape::line(&[(0.24, 0.36), (0.50, 0.64), (0.76, 0.36)])],
         // The tab, then the body, in one outline.
+        // One cycle of a sine, nine points: enough to read as a wave at
+        // sixteen pixels, the way the question mark is.
+        Icon::Wave => vec![Shape::line(&[
+            (0.06, 0.50),
+            (0.16, 0.26),
+            (0.28, 0.14),
+            (0.40, 0.26),
+            (0.50, 0.50),
+            (0.60, 0.74),
+            (0.72, 0.86),
+            (0.84, 0.74),
+            (0.94, 0.50),
+        ])],
+        // A luggage tag: the pointed end, and the hole the string goes
+        // through.
+        Icon::Tag => vec![
+            Shape::closed(&[
+                (0.10, 0.20),
+                (0.56, 0.20),
+                (0.90, 0.54),
+                (0.56, 0.88),
+                (0.10, 0.88),
+            ]),
+            Shape::Circle {
+                at: (0.30, 0.40),
+                r: 0.08,
+                filled: true,
+            },
+        ],
+        // A page with the corner turned — `NewFile` without the plus — and
+        // two lines of what is written on it.
+        Icon::Page => vec![
+            Shape::closed(&[
+                (0.18, 0.08),
+                (0.60, 0.08),
+                (0.80, 0.30),
+                (0.80, 0.92),
+                (0.18, 0.92),
+            ]),
+            Shape::line(&[(0.60, 0.08), (0.60, 0.30), (0.80, 0.30)]),
+            Shape::line(&[(0.32, 0.52), (0.66, 0.52)]),
+            Shape::line(&[(0.32, 0.70), (0.66, 0.70)]),
+        ],
+        // An arrow coming down into a tray.
+        Icon::Import => vec![
+            Shape::line(&[(0.50, 0.08), (0.50, 0.56)]),
+            Shape::poly(&[(0.32, 0.46), (0.68, 0.46), (0.50, 0.68)]),
+            Shape::line(&[(0.10, 0.62), (0.10, 0.90), (0.90, 0.90), (0.90, 0.62)]),
+        ],
+        // A gear: the hub, the rim, and eight teeth out from it.
+        Icon::Gear => {
+            let mut shapes = vec![
+                Shape::Circle {
+                    at: (0.50, 0.50),
+                    r: 0.14,
+                    filled: false,
+                },
+                Shape::Circle {
+                    at: (0.50, 0.50),
+                    r: 0.30,
+                    filled: false,
+                },
+            ];
+            for tooth in 0..8 {
+                let angle = tooth as f32 * std::f32::consts::FRAC_PI_4;
+                let (sin, cos) = angle.sin_cos();
+                shapes.push(Shape::line(&[
+                    (0.50 + cos * 0.30, 0.50 + sin * 0.30),
+                    (0.50 + cos * 0.44, 0.50 + sin * 0.44),
+                ]));
+            }
+            shapes
+        }
+        // Two eighth notes on a beam.
+        Icon::Notes => vec![
+            Shape::Circle {
+                at: (0.28, 0.76),
+                r: 0.12,
+                filled: true,
+            },
+            Shape::Circle {
+                at: (0.70, 0.68),
+                r: 0.12,
+                filled: true,
+            },
+            Shape::line(&[(0.40, 0.76), (0.40, 0.22)]),
+            Shape::line(&[(0.82, 0.68), (0.82, 0.14)]),
+            Shape::poly(&[(0.40, 0.14), (0.82, 0.06), (0.82, 0.22), (0.40, 0.30)]),
+        ],
         Icon::Folder => vec![Shape::closed(&[
             (0.08, 0.82),
             (0.08, 0.20),

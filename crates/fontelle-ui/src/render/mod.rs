@@ -6441,6 +6441,45 @@ fn draw_timeline_ruler(
     );
 }
 
+/// A glyph centred in `rect`, or a glyph with `word` after it, the pair
+/// centred — a chip that reads as one thing rather than an icon with a
+/// caption bolted on. The glyph is the height of the text, so the row stays
+/// the row's height.
+fn draw_glyph_and_word(
+    scene: &mut Scene,
+    icon: crate::icon::Icon,
+    word: Option<&TextLayout>,
+    rect: Rect,
+    ink: Color,
+) {
+    const GAP: f32 = 5.0;
+    let side = (rect.height - 10.0).clamp(8.0, 16.0);
+    let word_width = word.map_or(0.0, |text| text.width);
+    let whole = side
+        + if word.is_some() {
+            GAP + word_width
+        } else {
+            0.0
+        };
+    let x = rect.x + ((rect.width - whole) / 2.0).max(2.0);
+    draw_icon(
+        scene,
+        icon,
+        Rect::new(x, rect.y + (rect.height - side) / 2.0, side, side),
+        ink,
+    );
+    if let Some(text) = word {
+        draw_text_clipped(
+            scene,
+            text,
+            rect,
+            x + side + GAP,
+            rect.y + (rect.height - text.height) / 2.0,
+            ink,
+        );
+    }
+}
+
 fn draw_browser(
     scene: &mut Scene,
     theme: &Theme,
@@ -6472,16 +6511,14 @@ fn draw_browser(
                 p.window
             },
         );
-        if let Some(text) = labels.get(mode.label()) {
-            draw_text_clipped(
-                scene,
-                text,
-                rect,
-                rect.x + ((rect.width - text.width) / 2.0).max(2.0),
-                rect.y + (rect.height - text.height) / 2.0,
-                if on { p.panel } else { p.text },
-            );
-        }
+        // The glyph, and the word beside it only when the tab can hold
+        // both (`tab_shows_word`): five words across the sidebar were five
+        // clipped words. The tooltip says the word the rest of the time.
+        let ink = if on { p.panel } else { p.text };
+        let word = crate::canvas::tab_shows_word(rect.width)
+            .then(|| labels.get(mode.label()))
+            .flatten();
+        draw_glyph_and_word(scene, mode.icon(), word, rect, ink);
     }
 
     // Which kind of file the Import tab is showing. A button each rather than
@@ -6506,16 +6543,14 @@ fn draw_browser(
                 p.panel
             },
         );
-        if let Some(text) = labels.get(kind.tab_label()) {
-            draw_text_clipped(
-                scene,
-                text,
-                rect,
-                rect.x + ((rect.width - text.width) / 2.0).max(2.0),
-                rect.y + (rect.height - text.height) / 2.0,
-                if on { p.panel } else { p.text },
-            );
-        }
+        let ink = if on { p.panel } else { p.text };
+        draw_glyph_and_word(
+            scene,
+            crate::canvas::kind_icon(kind),
+            labels.get(kind.tab_label()),
+            rect,
+            ink,
+        );
     }
 
     // The two project-level actions, in the mode that has them.

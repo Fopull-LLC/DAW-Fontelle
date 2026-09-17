@@ -110,7 +110,6 @@ const SEAM_PX: f32 = 6.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BrowserMode {
     /// The soundfont bank (TDD §17.5): files, and the presets inside one.
-    #[default]
     Sounds,
     /// The projects folder (TDD §17.3): one list, and a way to make one.
     Projects,
@@ -124,6 +123,11 @@ pub enum BrowserMode {
     ///
     /// **One tab for both kinds**, with a pair of buttons inside it saying
     /// which: five tabs across a 248-pixel sidebar is a row of abbreviations.
+    ///
+    /// **Where the studio starts**, on sounds: *"make it start out opened on
+    /// the audio import tab by default instead of the soundfonts tab"*. A
+    /// song is made of loops and takes more often than of soundfonts.
+    #[default]
     Import,
     /// What Fontelle is set to (TDD §14.3, §18): one list of names and values,
     /// each of which a click changes.
@@ -167,6 +171,50 @@ impl BrowserMode {
             Self::Presets => "Presets",
         }
     }
+
+    /// What the tab shows: its glyph, which is all of it at the sidebar's
+    /// usual width, and the word beside it when there is room
+    /// ([`tab_shows_word`]).
+    ///
+    /// > *"this section is also quite crowded we should make use of icons
+    /// > to make it better designed."*
+    ///
+    /// Five words across 248 pixels were "Sound: Preset: Project Import
+    /// Setting" — every one clipped. The tooltip still says the word.
+    pub fn icon(self) -> crate::icon::Icon {
+        use crate::icon::Icon;
+        match self {
+            Self::Sounds => Icon::Wave,
+            Self::Presets => Icon::Tag,
+            Self::Projects => Icon::Page,
+            Self::Import => Icon::Import,
+            Self::Settings => Icon::Gear,
+        }
+    }
+}
+
+/// The glyph on the Import tab's chip for `kind`: keys for MIDI, written
+/// notes for a score, a wave for a sound.
+pub fn kind_icon(kind: fontelle_types::FolderKind) -> crate::icon::Icon {
+    use crate::icon::Icon;
+    match kind {
+        fontelle_types::FolderKind::Midi => Icon::Piano,
+        fontelle_types::FolderKind::Scores => Icon::Notes,
+        fontelle_types::FolderKind::Audio => Icon::Wave,
+    }
+}
+
+/// How wide a tab has to be before its word is drawn beside its glyph.
+///
+/// A glyph, a gap and "Settings" at the chrome's size is about eighty
+/// pixels; at the sidebar's usual width a tab is forty-odd, and a word
+/// clipped to "Setti" is worse than none. The sidebar's seam can be dragged
+/// wider, and then the words come back.
+pub const TAB_WORD_MIN_WIDTH: f32 = 92.0;
+
+/// See [`TAB_WORD_MIN_WIDTH`].
+pub fn tab_shows_word(width: f32) -> bool {
+    width >= TAB_WORD_MIN_WIDTH
 }
 
 /// [`browser_layout_for`] in [`BrowserMode::Sounds`], which is what every

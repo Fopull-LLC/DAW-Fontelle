@@ -166,7 +166,7 @@ fn a_folder_already_in_the_settings_file_is_read_without_anything_being_changed(
     // The fresh-launch path, and the one every other test here bypasses by
     // going through `set_import_folder`. On a real launch the settings are
     // read at construction and *nothing changes afterwards*: the kind is
-    // already MIDI, the folder is already set, and the Import tab is simply
+    // set to MIDI, the folder is already set, and the Import tab is simply
     // opened. The version of this that rescanned "when the kind changed"
     // browsed a bank that had never been read and reported "no sf2 files"
     // over a folder full of MIDI.
@@ -180,8 +180,10 @@ fn a_folder_already_in_the_settings_file_is_read_without_anything_being_changed(
         .expect("the settings must be writable");
 
     let mut session = a_session(&dir);
-    // The only thing the window does: open the tab.
+    // The only thing the window does: open the tab, and pick MIDI (the tab
+    // opens on Audio now — see the launch test below).
     session.set_browser_mode(BrowserMode::Import);
+    session.set_import_kind(FolderKind::Midi);
 
     let names: Vec<String> = session
         .import_files()
@@ -794,4 +796,62 @@ fn a_midi_file_arrives_on_the_row_the_window_is_looking_at() {
         "and the rows under it moved down"
     );
     std::fs::remove_dir_all(&dir).ok();
+}
+
+// --------------------------------------------------- what a launch reads ---
+//
+// > *"make your audio files load on startup instead of being when you open
+// > the import audio section ... we should also make it start out opened
+// > on the audio import tab by default instead of the soundfonts tab"*
+//
+// The Import tab is where a session starts, on Audio, and the folder it
+// shows is read when the settings are — the same rule the plugin scan
+// follows (`Session::scan_plugins`): startup is where a wait is expected,
+// and a tab that fills in a beat after you look at it is not.
+
+#[test]
+fn a_launch_reads_the_audio_folder_before_anybody_opens_the_tab() {
+    let dir = scratch("launch-audio");
+    std::fs::write(
+        dir.join("Kick.wav"),
+        fontelle_assets::fixtures::build_wav(48_000, 1, &[0.0; 4800]),
+    )
+    .unwrap();
+    let mut settings = fontelle_app::settings::Settings::default();
+    settings.set_folder(FolderKind::Audio, Some(dir.clone()));
+    settings
+        .save_to(&dir.join("settings.json"))
+        .expect("the settings must be writable");
+
+    let session = a_session(&dir);
+    assert_eq!(
+        session.import_kind(),
+        FolderKind::Audio,
+        "the tab starts on sounds"
+    );
+    let names: Vec<String> = session
+        .import_files()
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["Kick"],
+        "the folder was read at launch, with no tab opened and no kind picked"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A folder of sounds counts them as "sounds": the one noun in the browser
+/// that is a word rather than an extension takes its plural — "675 sound"
+/// read as a clipped column.
+#[test]
+fn a_folder_of_sounds_counts_them_in_words() {
+    use fontelle_app::bank::BankFilter;
+    assert_eq!(BankFilter::Files(FolderKind::Audio).count(1), "1 sound");
+    assert_eq!(
+        BankFilter::Files(FolderKind::Audio).count(675),
+        "675 sounds"
+    );
+    assert_eq!(BankFilter::Files(FolderKind::Midi).count(2), "2 mid");
 }

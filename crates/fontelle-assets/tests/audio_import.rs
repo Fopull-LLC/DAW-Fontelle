@@ -123,3 +123,49 @@ fn a_file_that_is_not_there_says_so() {
         .expect_err("a missing file cannot be imported");
     assert!(err.0.contains("all.wav"), "{}", err.0);
 }
+
+// --- How long a file is, without decoding it ------------------------------
+//
+// > *"the preview for dragging in things into the arrangement was showing
+// > it in the correct vertical lane, but was not positioning the clip
+// > horizontally correctly in the preview ... it showed the preview just
+// > taking up the entire lane."*
+//
+// The mark under a dragged sound is the block it will become, which needs
+// the sound's length while it is still in the air. A `.wav` says its length
+// in its header and a decode would be wasted; a stream that does not say
+// (an Ogg with no length in its pages) is decoded, once, rather than guessed.
+
+#[test]
+fn a_files_length_is_read_off_its_header_and_matches_the_decode() {
+    use fontelle_assets::audio_length;
+    let bytes = build_wav(44_100, 2, &[0.0; 2 * 12_345]);
+    let path = write_fixture_to_temp_file("length-wav", &bytes);
+    let (frames, rate) = audio_length(&path).expect("a wav says its length");
+    assert_eq!((frames, rate), (12_345, 44_100));
+    let decoded = import_audio(&path).expect("decodes");
+    assert_eq!(
+        decoded.frames as u64, frames,
+        "the header and the decode agree"
+    );
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn a_stream_that_does_not_say_its_length_is_decoded_for_it() {
+    use fontelle_assets::audio_length;
+    let ogg = include_bytes!("data/tone.ogg");
+    let path = write_fixture_to_temp_file("length-ogg", ogg);
+    let (frames, rate) = audio_length(&path).expect("an ogg has a length");
+    let decoded = read_audio(ogg, "tone.ogg").expect("decodes");
+    assert_eq!((frames, rate), (decoded.frames as u64, decoded.sample_rate));
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn a_file_that_is_not_audio_has_no_length() {
+    use fontelle_assets::audio_length;
+    let path = write_fixture_to_temp_file("length-text", b"not a sound");
+    assert!(audio_length(&path).is_err());
+    std::fs::remove_file(&path).ok();
+}

@@ -643,6 +643,14 @@ pub struct ImportPrompt {
     pub choices: Vec<String>,
 }
 
+/// A sound in the air, for [`StudioHost::sound_footprint`]: a file from the
+/// desktop, or a row of the Import tab, which the host turns into a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CarriedSound<'a> {
+    File(&'a std::path::Path),
+    ImportRow(usize),
+}
+
 /// One row of the browser: a soundfont, a folder, or a preset inside a file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibraryEntry {
@@ -1411,6 +1419,22 @@ pub trait StudioHost: DocumentHost {
     /// of its own.
     fn drop_file_as_channel(&mut self, _path: &std::path::Path) -> Result<(), String> {
         Err("this build cannot open dropped files".to_string())
+    }
+
+    /// How long `sound` would be on the arrangement, in ticks, starting at
+    /// song tick `from` — the width of the block the window draws under a
+    /// dragged sound, before it is dropped.
+    ///
+    /// > *"the preview for dragging in things into the arrangement was
+    /// > showing it in the correct vertical lane, but was not positioning the
+    /// > clip horizontally correctly in the preview ... it showed the
+    /// > preview just taking up the entire lane."*
+    ///
+    /// The same arithmetic the import does, through the same tempo map, so
+    /// the block drawn is the block that lands. `None` for a file that is not
+    /// a sound, and the window falls back to lighting the row.
+    fn sound_footprint(&mut self, _sound: CarriedSound<'_>, _from: Tick) -> Option<Tick> {
+        None
     }
 
     /// Where a sound, a take or a file's parts go when they arrive with **no

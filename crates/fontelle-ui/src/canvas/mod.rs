@@ -34,10 +34,11 @@ pub use automation::{
     block_value_at, block_x_of_tick, block_y_of_value, curve_label, next_curve,
 };
 pub use browser::{
-    BrowserHit, BrowserLayout, BrowserMode, SettingControl, browser_file_share_at,
-    browser_focus_step, browser_hit, browser_layout, browser_layout_for, browser_layout_split,
-    browser_row_carries, row_under, scrolled, setting_control_rect, setting_slider_at,
-    setting_slider_groove, setting_slider_x_of,
+    BrowserHit, BrowserLayout, BrowserMode, SettingControl, TAB_WORD_MIN_WIDTH,
+    browser_file_share_at, browser_focus_step, browser_hit, browser_layout, browser_layout_for,
+    browser_layout_split, browser_row_carries, kind_icon, row_under, scrolled,
+    setting_control_rect, setting_slider_at, setting_slider_groove, setting_slider_x_of,
+    tab_shows_word,
 };
 pub use carry::{
     CARRY_PAD, Carried, CarryOscillator, CarryRack, CarryRelease, CarryScene, CarryTarget,

@@ -16,9 +16,13 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
-**Updated 2026-09-17, later (uncommitted → for Ty to test).** Where a
-sound lands, and file drops on Wayland — `PROGRESS.md`'s top entry is the
-list. Three things to know before touching it: (1) **winit 0.30 has no
+**Updated 2026-09-17, later (v0.8.0).** Where a sound lands, and file
+drops on Wayland — `PROGRESS.md`'s top entry is the list, with the four
+follow-ups from Ty's testing (the block preview, the Import tab first and
+read at launch, glyph tabs). Four things to know before touching it: (0)
+the width of the mark under a dragged sound comes from
+`StudioHost::sound_footprint`, which shares `footprint_ticks` with the
+import — change one and the block stops being the clip; (1) **winit 0.30 has no
 drag-and-drop on Wayland**; `fontelle-ui/src/file_drag.rs` is the
 `wl_data_device` client on winit's own display, polled from
 `about_to_wait` like `activation.rs` — if a drop stops arriving on

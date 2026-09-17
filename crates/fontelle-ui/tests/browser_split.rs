@@ -163,3 +163,60 @@ fn a_panel_too_short_for_two_lists_does_not_produce_a_negative_seam() {
         }
     }
 }
+
+/// > *"we should also make it start out opened on the audio import tab by
+/// > default instead of the soundfonts tab"*
+///
+/// The studio opens on the tab the window starts in, and that is the
+/// enum's default: the browser reads it, the host reads it, and one place
+/// says which.
+#[test]
+fn the_browser_starts_on_the_import_tab() {
+    assert_eq!(BrowserMode::default(), BrowserMode::Import);
+}
+
+// ------------------------------------------------- the tabs are icons ---
+//
+// > *"this section is also quite crowded we should make use of icons to
+// > make it better designed."*
+//
+// Five tabs across a 248-pixel sidebar were "Sound: Preset: Project Import
+// Setting" — every label clipped. Each mode has a glyph now, and so does
+// each kind of file the Import tab shows; the word comes back beside the
+// glyph when the tab is wide enough to hold both (a widened sidebar), and
+// the tooltip says it the rest of the time.
+
+#[test]
+fn every_browser_mode_has_a_glyph_of_its_own() {
+    let icons: Vec<_> = BrowserMode::ALL.iter().map(|mode| mode.icon()).collect();
+    for (i, a) in icons.iter().enumerate() {
+        for b in &icons[i + 1..] {
+            assert_ne!(a, b, "two tabs share a glyph: {:?}", BrowserMode::ALL);
+        }
+    }
+}
+
+#[test]
+fn every_kind_of_import_has_a_glyph_of_its_own() {
+    use fontelle_ui::canvas::kind_icon;
+    let icons: Vec<_> = fontelle_types::FolderKind::ALL
+        .iter()
+        .map(|kind| kind_icon(*kind))
+        .collect();
+    for (i, a) in icons.iter().enumerate() {
+        for b in &icons[i + 1..] {
+            assert_ne!(a, b, "two kinds share a glyph");
+        }
+    }
+}
+
+#[test]
+fn a_tab_shows_its_word_only_when_there_is_room_beside_the_glyph() {
+    use fontelle_ui::canvas::{TAB_WORD_MIN_WIDTH, tab_shows_word};
+    // The five tabs of a 248-pixel sidebar: glyphs only.
+    assert!(!tab_shows_word(44.0));
+    // A sidebar dragged wide: the words come back.
+    assert!(tab_shows_word(TAB_WORD_MIN_WIDTH));
+    assert!(tab_shows_word(140.0));
+    assert!(!tab_shows_word(TAB_WORD_MIN_WIDTH - 1.0));
+}

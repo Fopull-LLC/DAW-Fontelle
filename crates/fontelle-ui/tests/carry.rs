@@ -83,6 +83,7 @@ fn scene<'a>(
             view,
             beats_per_bar: 4,
             lanes: 2,
+            length: None,
         }),
         name: None,
         oscillators: &[],
@@ -299,6 +300,7 @@ fn a_full_arrangement_lands_the_drop_on_the_visible_row_under_the_pointer() {
         view: &v,
         beats_per_bar: 4,
         lanes: 40,
+        length: None,
     });
     let grid = timeline.grid;
     // The middle of row 3.
@@ -1006,4 +1008,94 @@ fn the_chip_says_an_opened_file_turns_up_in_view() {
         carry_note(&CarryTarget::Open, &channels(), &[], 4),
         "A new row in view"
     );
+}
+
+// ------------------------------------------- the block, not the lane ---
+//
+// > *"the preview for dragging in things into the arrangement was showing
+// > it in the correct vertical lane, but was not positioning the clip
+// > horizontally correctly in the preview only snapped where i dropped it
+// > after it actually placed it there instead it showed the preview just
+// > taking up the entire lane. fix this please too."*
+//
+// With the sound's length known (`CarryTimeline::length`, the host's
+// `sound_footprint`), the mark is the block the clip will become: starting
+// at the snapped bar, as wide as the sound, on the row under the pointer.
+// Without it — a file the host could not read — the whole row lights up as
+// it did, which is still an honest "this row".
+
+#[test]
+fn a_sound_of_known_length_is_marked_as_the_block_it_will_become() {
+    let rack = rack_layout(rack_body(), &metrics(), 3, 0);
+    let timeline = timeline_layout(timeline_frame(), &metrics());
+    let v = view();
+    let grid = timeline.grid;
+    let bar = PPQN * 4;
+    let mut scene = scene(Carried::Audio, &rack, &timeline, &v);
+    if let Some(t) = &mut scene.timeline {
+        t.length = Some(bar * 2);
+    }
+    let x = grid.x + (bar * 3) as f32 * v.pixels_per_tick + 5.0;
+    let y = grid.y + v.lane_height * 1.5;
+    let CarryTarget::Clip {
+        row,
+        at,
+        tick,
+        lane,
+    } = carry_target(&scene, x, y)
+    else {
+        panic!("a clip");
+    };
+    assert_eq!(tick, bar * 3);
+    assert_eq!(lane, Some(1));
+    assert!(
+        (row.x - at).abs() < 0.01,
+        "the block starts at the snapped bar: {row:?}"
+    );
+    assert!(
+        (row.width - (bar * 2) as f32 * v.pixels_per_tick).abs() < 0.01,
+        "and is as wide as the sound: {row:?}"
+    );
+    assert!(
+        (row.y - (grid.y + v.lane_height)).abs() < 0.01
+            && (row.height - v.lane_height).abs() < 0.01,
+        "on the second row: {row:?}"
+    );
+}
+
+#[test]
+fn a_block_past_the_right_edge_is_clipped_to_the_grid_not_dropped() {
+    let rack = rack_layout(rack_body(), &metrics(), 3, 0);
+    let timeline = timeline_layout(timeline_frame(), &metrics());
+    let v = view();
+    let grid = timeline.grid;
+    let bar = PPQN * 4;
+    let mut scene = scene(Carried::Audio, &rack, &timeline, &v);
+    if let Some(t) = &mut scene.timeline {
+        t.length = Some(bar * 400);
+    }
+    let CarryTarget::Clip { row, .. } = carry_target(&scene, grid.x + 100.0, grid.y + 5.0) else {
+        panic!("a clip");
+    };
+    assert!(!row.is_empty());
+    assert!(
+        row.right() <= grid.right() + 0.01,
+        "{row:?} runs past {grid:?}"
+    );
+}
+
+#[test]
+fn a_very_short_sound_is_still_a_visible_block() {
+    let rack = rack_layout(rack_body(), &metrics(), 3, 0);
+    let timeline = timeline_layout(timeline_frame(), &metrics());
+    let v = view();
+    let grid = timeline.grid;
+    let mut scene = scene(Carried::Audio, &rack, &timeline, &v);
+    if let Some(t) = &mut scene.timeline {
+        t.length = Some(1);
+    }
+    let CarryTarget::Clip { row, .. } = carry_target(&scene, grid.x + 100.0, grid.y + 5.0) else {
+        panic!("a clip");
+    };
+    assert!(row.width >= 2.0, "a hit is a block you can see: {row:?}");
 }
