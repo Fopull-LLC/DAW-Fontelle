@@ -19,6 +19,68 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-17, later — where a sound lands, and the drag that never
+arrived on Wayland.** Ty: *"i dont like how when recording something,
+importing something, dragging an audio file in, etc anything it always
+goes on a new lane at the very bottom its very annoying. i wish instead if
+i was dragging it in, it showed me a preview where im dragging it and let
+me drag it exactly where i wanted on any lane instead of making a new one
+automatically for me and putting it there on the bottom. if i wasnt
+dragging however and imported some other way it should go on a new lane
+added in between the lane in the middlemost of your arrangement screen
+that way its cleanly visible for you ... also im noticing that on my
+particular setup at least i still cannot drag in files from my file
+explorer. im on cacheyos with kde plasma i use dolphin as my file
+browser."* Built tests-first, in the working tree for Ty to test before
+the version bump and the tag:
+
+- **The drop never arrived because winit has no drag-and-drop on
+  Wayland.** Its `HoveredFile`/`DroppedFile` events come from the X11
+  backend's XDND and from nothing else; a native Wayland window on Plasma
+  had never bound a data device, so Dolphin's drag was offered to nobody.
+  `fontelle-ui/src/file_drag.rs` speaks `wl_data_device` itself on winit's
+  own `wl_display` (the `activation.rs` pattern): binds the manager at v3
+  and the seat, takes `text/uri-list` and **copy only** (a source told its
+  drop was a move deletes the file), asks for the list on `enter` so the
+  chip can name the file while it is in the air, reads it off a socket a
+  little each pass, `finish`es the offer on a drop that was taken. The
+  window polls it in `about_to_wait`. Positions come with every event —
+  more than XDND gives winit — and on X11, where the source holds the
+  pointer grab for the whole drag, `file_drag::pointer_in` asks the server
+  (`x11rb` QueryPointer) once a pass so the mark follows there too. The
+  URI-list parser is the pure half (`tests/file_drag.rs`); the protocol
+  half was **looked at on a nested `kwin_wayland --x11-display :99`**
+  with a real Wayland Dolphin as the source and XTEST driving it, and on
+  the bare `Xwayland :99` with an X11 Dolphin — both landed the clip where
+  the mark said.
+- **A file from the desktop is carried like a browser row.** `Hovering` in
+  the window feeds `carried()`; `CarryScene::desktop` and `Carried::File`
+  are the two additions to `canvas::carry`: the same targets (a row, a
+  channel, a new channel, an oscillator card, the instrument window's
+  name) and one new answer, `CarryTarget::Open` — a desktop file let go
+  where a browser row would go nowhere still opens, on a new row in view.
+  The drop reads the same function the frames were drawn from
+  (`drop_files`), so the mark is a promise; several files together land
+  on rows under one another. The chip is **lifted** above the pointer for
+  a desktop drag (`carry_chip_lifted`) because the desktop's own picture
+  of the file hangs below it — seen covering the chip's second line.
+- **Nothing lands at the foot by default any more.** `AddAudioClip::at_row`
+  and `ImportParts::at_row` make a row *at* an index (one `open_rows`
+  helper, shared with `AddLane::at`); `Landing` in the session is the
+  three cases that used to be one `Option<LaneId>`. The window computes
+  `canvas::arrival_row` — the middle of the rows actually on screen, an
+  odd count rounding towards the foot — and hands it to the host every
+  pass (`StudioHost::set_arrival_row`); a take, an Import-tab double-click,
+  a `.mid`'s parts and a drop that named no row all arrive there. A drop
+  onto a row lands on it; a drop under the last row makes one at the foot,
+  where the pointer is. The lane bounce uses `at_row(index + 1)` now
+  instead of renumbering by hand. `StudioHost::drop_file_on`,
+  `drop_file_on_channel`, `drop_file_as_channel` are the new verbs.
+  `fontelle-model/tests/audio_clips.rs`, `importing.rs`;
+  `fontelle-ui/tests/arrival_row.rs`, `carry.rs`;
+  `fontelle-app/tests/audio_import.rs`, `audio_recording.rs`,
+  `importing.rs`.
+
 **As of 2026-09-17 — `v0.7.0`: the sampled shelves, and the bank audited.**
 Ty, having heard the shelves: *"these sound great release it after you
 audit existing sounds for how you could make them better with the new

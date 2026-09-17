@@ -1374,6 +1374,59 @@ pub trait StudioHost: DocumentHost {
         self.drop_file(path)
     }
 
+    /// The same, landing on **row `row`** of the arrangement: the one the
+    /// pointer was over, which is made when it is past the last (a drop into
+    /// the empty space under the stack). `None` is a drop that named no row
+    /// — over the browser, say — and lands where
+    /// [`set_arrival_row`](Self::set_arrival_row) points.
+    ///
+    /// > *"i wish instead if i was dragging it in, it showed me a preview
+    /// > where im dragging it and let me drag it exactly where i wanted on
+    /// > any lane instead of making a new one automatically for me and
+    /// > putting it there on the bottom."*
+    ///
+    /// Only a sound has a row; every other kind of file ignores it, for the
+    /// reason [`drop_file_at`](Self::drop_file_at) gives about the position.
+    fn drop_file_on(
+        &mut self,
+        path: &std::path::Path,
+        at: fontelle_types::Sample,
+        _row: Option<usize>,
+    ) -> Result<String, String> {
+        self.drop_file_at(path, at)
+    }
+
+    /// A sound from the desktop let go on channel `channel` of the rack: that
+    /// channel becomes a sampler playing it — what a row out of the Import
+    /// tab does there ([`set_sampler_from_import`](Self::set_sampler_from_import)).
+    fn drop_file_on_channel(
+        &mut self,
+        _channel: usize,
+        _path: &std::path::Path,
+    ) -> Result<(), String> {
+        Err("this build cannot open dropped files".to_string())
+    }
+
+    /// A sound from the desktop let go on the rack itself: a sampler channel
+    /// of its own.
+    fn drop_file_as_channel(&mut self, _path: &std::path::Path) -> Result<(), String> {
+        Err("this build cannot open dropped files".to_string())
+    }
+
+    /// Where a sound, a take or a file's parts go when they arrive with **no
+    /// row of their own**: a new row at this index in the stack, pushing what
+    /// is there down.
+    ///
+    /// > *"if i wasnt dragging however and imported some other way it should
+    /// > go on a new lane added in between the lane in the middlemost of your
+    /// > arrangement screen that way its cleanly visible for you."*
+    ///
+    /// The window keeps it current — it is [`crate::canvas::arrival_row`], the
+    /// middle of the rows on screen — and the host reads it when a recording
+    /// stops, when a row of the Import tab is double-clicked, when a `.mid` is
+    /// answered. Past the stack is the foot.
+    fn set_arrival_row(&mut self, _row: usize) {}
+
     /// Shows the projects folder in the desktop's file manager.
     fn reveal_projects_dir(&mut self) {}
 

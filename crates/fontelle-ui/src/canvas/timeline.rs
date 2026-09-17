@@ -918,6 +918,36 @@ pub fn lane_scroll_to_show(view: &TimelineView, grid: Rect, lane: usize) -> usiz
     }
 }
 
+/// The row a sound with **no position of its own** should arrive on: the
+/// middle of the rows that are on screen.
+///
+/// > *"if i wasnt dragging however and imported some other way it should go
+/// > on a new lane added in between the lane in the middlemost of your
+/// > arrangement screen that way its cleanly visible for you."*
+///
+/// A recording, a double-click in the Import tab and a `.mid` all used to go
+/// past the foot of the stack, which in any project with a screenful of rows
+/// is under everything — the report above. This is the index the window
+/// hands the host for those (`StudioHost::set_arrival_row`), and
+/// `fontelle_model::AddAudioClip::at_row` is what puts the row there.
+///
+/// The rows counted are the ones actually showing, `top_lane` up to whichever
+/// comes first of the grid's foot and the stack's; an odd count rounds
+/// towards the foot, so the new row goes *under* the middle one. A grid with
+/// no height, or a stack the scroll has run past, still answers with an index
+/// inside `0..=lanes` — the model would clamp anything else, but a question
+/// that can be answered here should be.
+pub fn arrival_row(view: &TimelineView, grid: Rect, lanes: usize) -> usize {
+    let top = view.top_lane.min(lanes);
+    let showing = if view.lane_height > 0.0 && grid.height >= view.lane_height {
+        (grid.height / view.lane_height).floor() as usize
+    } else {
+        lanes
+    };
+    let count = showing.min(lanes - top);
+    top + count.div_ceil(2)
+}
+
 /// The block a clip draws as.
 ///
 /// Always at least a pixel wide, for the same reason a note is: a clip too

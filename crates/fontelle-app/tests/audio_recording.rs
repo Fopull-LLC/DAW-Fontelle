@@ -268,6 +268,38 @@ fn a_take_lands_where_recording_started_rather_than_at_the_top_of_the_song() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A take names no row, so it arrives on the row the window is looking at
+/// (`StudioHost::set_arrival_row`; the report is in `audio_import.rs`,
+/// "where the row turns up") — and not under everything.
+#[test]
+fn a_take_arrives_on_the_row_the_window_is_looking_at() {
+    let dir = scratch("arrival");
+    let mut session = a_session(&dir);
+    for name in ["Drums", "Bass", "Keys", "Vox"] {
+        session.add_lane();
+        let last = session.lanes().len() - 1;
+        session.rename_lane(last, name);
+    }
+    let before: Vec<String> = session.lanes().into_iter().map(|l| l.name).collect();
+    with_a_take(&mut session, 4800);
+    session.set_arrival_row(1);
+    session
+        .keep_audio_take(0, 4800)
+        .expect("the take was not kept");
+    let after: Vec<String> = session.lanes().into_iter().map(|l| l.name).collect();
+    assert_eq!(after.len(), before.len() + 1);
+    assert_eq!(
+        &after[2..],
+        &before[1..],
+        "the rows from 1 down moved down one"
+    );
+    assert!(
+        after[1].starts_with("Take"),
+        "the take's row is at the arrival index: {after:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn a_take_is_routed_to_the_track_it_was_recorded_through() {
     // *"when its recording its going through that track."* A take that arrived

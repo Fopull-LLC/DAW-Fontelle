@@ -336,6 +336,10 @@ pub struct Session {
     import_bank: FileBank,
     /// Which kind the Import tab is showing.
     import_kind: fontelle_types::FolderKind,
+    /// The row a sound that names no row of its own arrives on — the middle
+    /// of the arrangement's screen, kept current by the window
+    /// (`StudioHost::set_arrival_row`).
+    arrival_row: usize,
     /// What the Import tab's search box holds. Its own, not the bank's: a
     /// query typed against soundfonts means nothing against MIDI files.
     import_query: String,
@@ -671,7 +675,10 @@ impl Session {
         // Straight back in through the ordinary import path, so a take and a
         // dropped file are the same kind of thing from here on — one code path
         // for the waveform, the editor, the playback and the undo.
-        self.import_audio_at(&path, at, self.take_track(), None)?;
+        // A take names no row: the middle of the screen, where the person
+        // who just pressed stop is looking.
+        let landing = Landing::NewRow(self.arrival_row);
+        self.import_audio_at(&path, at, self.take_track(), landing)?;
         Ok(frames)
     }
 
@@ -969,6 +976,7 @@ impl Session {
             settings_toast: None,
             import_bank: FileBank::default(),
             import_kind: fontelle_types::FolderKind::Midi,
+            arrival_row: 0,
             import_query: String::new(),
             pending_import: None,
             browser_mode: fontelle_ui::canvas::BrowserMode::Sounds,
@@ -1895,12 +1903,12 @@ impl Session {
         crate::write_wav16(&path, &cut, 2, self.options.sample_rate)
             .map_err(|e| format!("{}: {e}", path.display()))?;
 
-        // The import makes a row of its own (`AddAudioClip`), so what is left
-        // is to **name** it for the row it came from and to **put it directly
-        // under** that row — a bounce at the bottom of a long arrangement is a
-        // bounce you have to go looking for.
+        // The import makes a row of its own (`AddAudioClip`), **directly
+        // under** the row it is a render of — a bounce at the bottom of a
+        // long arrangement is a bounce you have to go looking for — and what
+        // is left is to **name** it for that row.
         let at = self.project.tempo_map.tick_to_sample(from_tick);
-        self.import_audio_at(&path, at, None, None)?;
+        self.import_audio_at(&path, at, None, Landing::NewRow(index + 1))?;
         let made = self
             .lane_ids()
             .into_iter()
@@ -1908,27 +1916,6 @@ impl Session {
             .ok_or("the row for the render was not made")?;
         if let Some(lane) = self.project.lanes.get_mut(made) {
             lane.name = format!("{name} (rendered)");
-        }
-        // Ordered under the row it is a render of, by renumbering rather than
-        // by touching ids: a clip names a lane id, and shuffling the arena
-        // would move somebody's music (`AddLane::at`'s rule).
-        let mut order: Vec<(fontelle_types::LaneId, u32)> = self
-            .project
-            .lanes
-            .iter()
-            .map(|(id, lane)| (id, lane.order))
-            .collect();
-        order.sort_by_key(|(_, order)| *order);
-        order.retain(|(id, _)| *id != made);
-        let seat = order
-            .iter()
-            .position(|(id, _)| *id == lane)
-            .map_or(order.len(), |at| at + 1);
-        order.insert(seat, (made, 0));
-        for (position, (id, _)) in order.iter().enumerate() {
-            if let Some(lane) = self.project.lanes.get_mut(*id) {
-                lane.order = position as u32;
-            }
         }
         self.history.break_gesture();
         self.dirty = true;
@@ -4558,7 +4545,9 @@ impl Session {
         }
         let names: Vec<String> = parts.iter().map(|part| part.name.clone()).collect();
         let empty = self.project.clips.is_empty();
-        let command = Box::new(ImportParts::new(what.to_string(), parts));
+        // A file's parts name no row: they arrive as a block where the
+        // window is looking (`arrival_row`), not under everything.
+        let command = Box::new(ImportParts::new(what.to_string(), parts).at_row(self.arrival_row));
         let made = self.apply_for::<ImportParts>(command)?.made().to_vec();
         if made.is_empty() {
             return Err(format!("there is nothing in {what} to import"));
@@ -4669,8 +4658,17 @@ impl Session {
             .map(|(from, _)| from.max(0))
             .unwrap_or(0);
         let at = self.project.tempo_map.tick_to_sample(start);
-        let name = self.import_audio_at(path, at, None, None)?;
+        let name = self.import_audio_at(path, at, None, Landing::NewRow(self.arrival_row))?;
         Ok(format!("Imported \u{201c}{name}\u{201d}"))
+    }
+
+    /// Row index `row` of the arrangement as a landing: the row itself when
+    /// there is one, and a new row at the foot when `row` is past the stack.
+    fn landing_for(&self, row: usize) -> Landing {
+        match self.project.lane_ids().get(row) {
+            Some(lane) => Landing::Onto(*lane),
+            None => Landing::NewRow(self.project.lanes.len()),
+        }
     }
 
     /// Brings a sound in at song sample `at`, routed to `track`, and hands back
@@ -4685,7 +4683,7 @@ impl Session {
         path: &Path,
         at: fontelle_types::Sample,
         track: Option<MixerTrackId>,
-        onto: Option<fontelle_types::LaneId>,
+        landing: Landing,
     ) -> Result<String, String> {
         let name = file_label(path);
         let imported = self.library.import_audio(path).map_err(|e| e.to_string())?;
@@ -4708,12 +4706,15 @@ impl Session {
             imported.sample_rate,
         );
         data.mixer_track = track;
-        let mut clip = fontelle_model::AddAudioClip::new(name.clone(), data, start, length);
-        // Onto the row the pointer was over, when the drop named one; otherwise
-        // a row of its own past the bottom (`AddAudioClip`'s default).
-        if let Some(lane) = onto {
-            clip = clip.on_lane(lane);
-        }
+        let clip = fontelle_model::AddAudioClip::new(name.clone(), data, start, length);
+        let clip = match landing {
+            // Onto the row the pointer was over.
+            Landing::Onto(lane) => clip.on_lane(lane),
+            // A row of its own, at the index — the foot when the drop was
+            // past the last row, the middle of the screen when nothing named
+            // a row at all (`arrival_row`).
+            Landing::NewRow(index) => clip.at_row(index),
+        };
         let command = Box::new(clip);
         self.apply_for::<fontelle_model::AddAudioClip>(command)?;
         // The graph has to be rebuilt: the player nodes hold the audio store,
@@ -4779,6 +4780,21 @@ impl Session {
             .and_then(|c| c.as_any().downcast_ref::<T>())
             .ok_or_else(|| "the command that was just applied is not on the history".to_string())
     }
+}
+
+/// Which row a sound coming into the arrangement lands on.
+///
+/// Three things used to be one `Option<LaneId>` whose `None` meant "past the
+/// bottom": a drop onto a row, a drop under the last row, and everything that
+/// never named a row — a take, a double-click in the Import tab. The third is
+/// the one the report is about (*"it always goes on a new lane at the very
+/// bottom"*), and it needed an index rather than an absence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Landing {
+    /// Onto a row that is there.
+    Onto(fontelle_types::LaneId),
+    /// A row of its own at this index in the stack.
+    NewRow(usize),
 }
 
 /// How much waveform the sky is handed each frame.
@@ -6232,6 +6248,22 @@ impl StudioHost for Session {
         Ok(())
     }
 
+    fn drop_file_on_channel(&mut self, channel: usize, path: &Path) -> Result<(), String> {
+        let name = Session::set_channel_sampler_from(self, channel, path)?;
+        self.message = Some(format!("{name} \u{2014} sampler"));
+        Ok(())
+    }
+
+    fn drop_file_as_channel(&mut self, path: &Path) -> Result<(), String> {
+        let name = Session::add_sampler_from(self, path)?;
+        self.message = Some(format!("{name} \u{2014} sampler"));
+        Ok(())
+    }
+
+    fn set_arrival_row(&mut self, row: usize) {
+        self.arrival_row = row;
+    }
+
     fn set_channel_instrument_on(&mut self, channel: usize, preset: usize) -> Result<(), String> {
         let channel = self
             .channel_ids()
@@ -6287,10 +6319,11 @@ impl StudioHost for Session {
         // and this is the second half of that claim rather than a repeat of
         // it.
         let path = self.import_audio_row(index)?;
-        // The drop's row index into a LaneId. A row that vanished between the
-        // drop and here falls back to a new row rather than refusing.
-        let onto = lane.and_then(|index| self.project.lane_ids().get(index).copied());
-        let name = self.import_audio_at(&path, at.max(0), None, onto)?;
+        // The drop's row index into a landing: the row, or a new one at the
+        // foot when the pointer was past the last (a row that vanished between
+        // the drop and here counts as past the last rather than refusing).
+        let landing = self.landing_for(lane.unwrap_or(usize::MAX));
+        let name = self.import_audio_at(&path, at.max(0), None, landing)?;
         self.message = Some(format!("Imported \u{201c}{name}\u{201d}"));
         self.touch();
         Ok(())
@@ -6398,10 +6431,28 @@ impl StudioHost for Session {
     }
 
     fn drop_file(&mut self, path: &Path) -> Result<String, String> {
-        self.drop_file_at(path, 0)
+        // No position at all: the time selection's start if there is one,
+        // and otherwise the top of the song — the rule a row of the Import
+        // tab follows (`import_audio_file`), since this is the same case.
+        let start = self
+            .project
+            .loop_range
+            .map(|(from, _)| from.max(0))
+            .unwrap_or(0);
+        let at = self.project.tempo_map.tick_to_sample(start);
+        self.drop_file_on(path, at, None)
     }
 
     fn drop_file_at(&mut self, path: &Path, at: fontelle_types::Sample) -> Result<String, String> {
+        self.drop_file_on(path, at, None)
+    }
+
+    fn drop_file_on(
+        &mut self,
+        path: &Path,
+        at: fontelle_types::Sample,
+        row: Option<usize>,
+    ) -> Result<String, String> {
         let name = file_label(path);
         if !path.exists() {
             return Err(format!("{name} is not there"));
@@ -6417,10 +6468,15 @@ impl StudioHost for Session {
         }
         if fontelle_types::FolderKind::Audio.accepts(path) {
             // **Where it was dropped.** A clip is a stretch of song, so the
-            // bar you let go over is the bar it starts on; every other kind
-            // here has no position to be given.
+            // bar you let go over is the bar it starts on and the row you
+            // let go over is its row; every other kind here has no position
+            // to be given. No row at all is the middle of the screen.
+            let landing = match row {
+                Some(row) => self.landing_for(row),
+                None => Landing::NewRow(self.arrival_row),
+            };
             return self
-                .import_audio_at(path, at.max(0), None, None)
+                .import_audio_at(path, at.max(0), None, landing)
                 .map(|name| format!("Imported \u{201c}{name}\u{201d}"));
         }
         if crate::bank::is_soundfont(path) {

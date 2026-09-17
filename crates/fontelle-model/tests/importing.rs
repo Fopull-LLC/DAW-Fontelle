@@ -249,3 +249,75 @@ fn imported_rows_go_under_the_ones_that_are_already_there() {
         "the new row landed above the old one"
     );
 }
+
+// --- Parts arrive where you are looking, not at the foot ------------------
+//
+// The same ask `AddAudioClip::at_row` answers (`audio_clips.rs`): a file
+// imported with no position of its own lands in the middle of the screen
+// rather than under everything. A `.mid` is a row per part, so its rows go
+// in as a block starting at the index, in the file's own order.
+
+fn a_lane(name: &str, order: u32) -> fontelle_model::Lane {
+    fontelle_model::Lane {
+        name: name.into(),
+        height: 32.0,
+        color: [0; 4],
+        muted: false,
+        locked: false,
+        order,
+    }
+}
+
+fn stack(project: &Project) -> Vec<String> {
+    project
+        .lane_ids()
+        .into_iter()
+        .map(|id| project.lanes[id].name.clone())
+        .collect()
+}
+
+#[test]
+fn parts_imported_at_a_row_index_arrive_there_in_order_and_push_the_rest_down() {
+    let mut doc = project();
+
+    for (i, name) in ["Drums", "Keys", "Vox"].iter().enumerate() {
+        doc.lanes.insert(a_lane(name, i as u32));
+    }
+    let mut command = ImportParts::new(
+        "song.mid",
+        vec![a_part("Bass", &[36]), a_part("Lead", &[60])],
+    )
+    .at_row(1);
+    command.apply(&mut doc).expect("applies");
+    assert_eq!(
+        stack(&doc),
+        ["Drums", "Bass", "Lead", "Keys", "Vox"],
+        "the parts are a block at index 1, in the file's order"
+    );
+}
+
+#[test]
+fn undoing_parts_imported_at_a_row_index_restores_the_stack() {
+    let mut doc = project();
+
+    for (i, name) in ["Drums", "Keys", "Vox"].iter().enumerate() {
+        doc.lanes.insert(a_lane(name, i as u32));
+    }
+    let mut history = History::new();
+    history
+        .apply(
+            Box::new(
+                ImportParts::new(
+                    "song.mid",
+                    vec![a_part("Bass", &[36]), a_part("Lead", &[60])],
+                )
+                .at_row(1),
+            ),
+            &mut doc,
+        )
+        .expect("applies");
+    history.undo(&mut doc).expect("undoes").expect("applies");
+    assert_eq!(stack(&doc), ["Drums", "Keys", "Vox"]);
+    history.redo(&mut doc).expect("redoes").expect("applies");
+    assert_eq!(stack(&doc), ["Drums", "Bass", "Lead", "Keys", "Vox"]);
+}

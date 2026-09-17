@@ -45,8 +45,13 @@ use crate::layout::Rect;
 pub enum Carried {
     /// A preset of the open soundfont or device.
     Preset,
-    /// An audio file out of the Import tab.
+    /// An audio file — out of the Import tab, or dragged in from the
+    /// desktop.
     Audio,
+    /// A file from the desktop that is not a sound: a `.mid`, a score, a
+    /// soundfont. It has no row to land on and no channel to become, so it
+    /// opens wherever it is let go ([`CarryTarget::Open`]).
+    File,
 }
 
 /// Where a carried row would land if the button came up now.
@@ -98,6 +103,18 @@ pub enum CarryTarget {
         tick: Tick,
         lane: Option<usize>,
     },
+    /// Somewhere that is not a target, for a file from the **desktop**: it
+    /// still opens, and turns up where you are looking rather than under
+    /// everything (`arrival_row`). A drop that silently did nothing would
+    /// look like a broken window, which is what the window said about every
+    /// drop before it could tell where one was.
+    ///
+    /// > *"if i wasnt dragging however and imported some other way it should
+    /// > go on a new lane added in between the lane in the middlemost of
+    /// > your arrangement screen that way its cleanly visible for you."*
+    ///
+    /// No mark: nothing on screen is the target.
+    Open,
     /// The panel it came out of. Not a drop and not a mistake either: a press
     /// that never leaves the list is a **click**, and the click is what the
     /// release does.
@@ -130,7 +147,7 @@ impl CarryTarget {
             | Self::Instrument { rect, .. }
             | Self::Oscillator { rect, .. } => Some(*rect),
             Self::Clip { row, .. } => Some(*row),
-            Self::Panel | Self::Nowhere => None,
+            Self::Open | Self::Panel | Self::Nowhere => None,
         }
     }
 }
@@ -181,6 +198,19 @@ pub struct CarryScene<'a> {
     /// Flopsynth's oscillator cards, when that is the window the pointer is
     /// in: each one takes a sound. Empty for every other window.
     pub oscillators: &'a [CarryOscillator],
+    /// Whether what is carried came in from **outside the window** — a file
+    /// dragged out of the file manager rather than a row out of the browser.
+    ///
+    /// > *"i wish instead if i was dragging it in, it showed me a preview
+    /// > where im dragging it and let me drag it exactly where i wanted on
+    /// > any lane instead of making a new one automatically for me and
+    /// > putting it there on the bottom."*
+    ///
+    /// The targets are the same — that is the point of carrying it through
+    /// this function — and one thing differs: a browser row let go nowhere
+    /// goes back where it was, but a file from the desktop has nowhere to go
+    /// back to, so it opens ([`CarryTarget::Open`]).
+    pub desktop: bool,
 }
 
 /// One oscillator card a sound can be dropped on.
@@ -199,6 +229,22 @@ pub struct CarryOscillator {
 /// the rule `press` already follows: a floating window is above the studio,
 /// and a panel is above the gaps between panels.
 pub fn carry_target(scene: &CarryScene<'_>, x: f32, y: f32) -> CarryTarget {
+    let target = carry_place(scene, x, y);
+    // A file from the desktop has nowhere to go back to: where a browser row
+    // would be let go of, it opens.
+    if scene.desktop && matches!(target, CarryTarget::Panel | CarryTarget::Nowhere) {
+        return CarryTarget::Open;
+    }
+    target
+}
+
+/// [`carry_target`] before the desktop rule: the place under the pointer.
+fn carry_place(scene: &CarryScene<'_>, x: f32, y: f32) -> CarryTarget {
+    // A file that is neither a sound nor a preset has no place of its own
+    // anywhere: not a card, not a channel, not a row.
+    if scene.carried == Carried::File {
+        return CarryTarget::Nowhere;
+    }
     // The instrument window first: while the pointer is in it, nothing else in
     // the scene is even in the same coordinate space.
     if let Some((channel, field)) = scene.name
@@ -358,6 +404,7 @@ pub fn carry_note(
             _ => "As this oscillator\u{2019}s sound".to_string(),
         },
         CarryTarget::NewChannel { .. } => "A new channel".to_string(),
+        CarryTarget::Open => "A new row in view".to_string(),
         CarryTarget::Clip { tick, lane, .. } => match lane {
             Some(index) => format!(
                 "Onto row {} at bar {}",
@@ -468,6 +515,22 @@ const CARRY_CLEARANCE: f32 = 14.0;
 ///
 /// Empty when the window cannot hold the chip at all, which draws as nothing.
 pub fn carry_chip(size: (f32, f32), pointer: (f32, f32), bounds: Rect) -> Rect {
+    chip_at(size, pointer, bounds, false)
+}
+
+/// The same chip **above** the pointer rather than under it, for a file
+/// dragged in from the desktop.
+///
+/// The desktop's own picture of what is being dragged — the file manager's
+/// icon and name — hangs down-right of the pointer, exactly where
+/// [`carry_chip`] puts the chip; seen on a nested server, the chip's second
+/// line was under Dolphin's picture. Up-right is clear of it, and flipped
+/// below when there is no room above.
+pub fn carry_chip_lifted(size: (f32, f32), pointer: (f32, f32), bounds: Rect) -> Rect {
+    chip_at(size, pointer, bounds, true)
+}
+
+fn chip_at(size: (f32, f32), pointer: (f32, f32), bounds: Rect, lifted: bool) -> Rect {
     let (width, height) = size;
     if bounds.is_empty() || width > bounds.width || height > bounds.height {
         return Rect::ZERO;
@@ -480,10 +543,15 @@ pub fn carry_chip(size: (f32, f32), pointer: (f32, f32), bounds: Rect) -> Rect {
         (px - CARRY_CLEARANCE - width).clamp(bounds.x, (bounds.right() - width).max(bounds.x))
     };
     let below = py + CARRY_CLEARANCE;
-    let y = if below + height <= bounds.bottom() {
-        below
-    } else {
-        (py - CARRY_CLEARANCE - height).clamp(bounds.y, (bounds.bottom() - height).max(bounds.y))
+    let above = py - CARRY_CLEARANCE - height;
+    let fits_below = below + height <= bounds.bottom();
+    let fits_above = above >= bounds.y;
+    let y = match (lifted, fits_above, fits_below) {
+        (true, true, _) | (false, true, false) => above,
+        (true, false, true) | (false, _, true) => below,
+        // Neither: the side with the pointer's own clearance, pinned inside.
+        (true, false, false) => below.clamp(bounds.y, (bounds.bottom() - height).max(bounds.y)),
+        (false, false, false) => above.clamp(bounds.y, (bounds.bottom() - height).max(bounds.y)),
     };
     Rect::new(x, y, width, height).intersection(&bounds)
 }

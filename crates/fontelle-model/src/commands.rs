@@ -666,50 +666,61 @@ fn a_lane(name: String) -> Lane {
     }
 }
 
+/// Makes room for `count` new rows in the stack and hands back the order the
+/// first of them takes; the rest follow it one at a time.
+///
+/// `at` is **a position in the stack**, counted the way the arrangement counts
+/// rows, and everything from there down moves towards the bottom to make the
+/// room. The rows are moved by their `order` and never by their ids: a clip
+/// names a lane id, so renumbering the arena would move somebody's music to
+/// another row (`MoveLane` keeps ids still for the same reason). Past the end
+/// is the end — a menu built against a list that has since changed must not
+/// fail, it must do the obvious thing.
+///
+/// `None` is **past the bottom of the stack**, which is where a row added from
+/// the empty space under the arrangement is looking for it — and not wherever
+/// a default of zero would sort it once the rows have been reordered.
+///
+/// One function for the three commands that make rows (`AddLane`,
+/// `AddAudioClip`, `ImportParts`), because *"it always goes on a new lane at
+/// the very bottom"* was three copies of the bottom and none of the position.
+fn open_rows(doc: &mut Project, at: Option<usize>, count: usize) -> u32 {
+    match at {
+        Some(index) => {
+            let mut order: Vec<(LaneId, u32)> = doc
+                .lanes
+                .iter()
+                .map(|(id, lane)| (id, lane.order))
+                .collect();
+            order.sort_by_key(|(_, order)| *order);
+            let index = index.min(order.len());
+            // Renumbered from zero rather than nudged, so a stack whose orders
+            // have gaps or duplicates in it comes out of this with neither.
+            for (position, (id, _)) in order.iter().enumerate() {
+                let moved = if position < index {
+                    position
+                } else {
+                    position + count
+                };
+                if let Some(lane) = doc.lanes.get_mut(*id) {
+                    lane.order = moved as u32;
+                }
+            }
+            index as u32
+        }
+        None => doc
+            .lanes
+            .values()
+            .map(|lane| lane.order)
+            .max()
+            .map_or(0, |highest| highest.saturating_add(1)),
+    }
+}
+
 impl Command for AddLane {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let mut lane = a_lane(self.name.clone());
-        match self.at {
-            // **At a position in the stack**, which means everything from
-            // there down moves one row towards the bottom. The rows are moved
-            // by their `order` and never by their ids: a clip names a lane id,
-            // so renumbering the arena would move somebody's music to another
-            // row. `MoveLane` keeps ids still for the same reason.
-            Some(index) => {
-                let mut order: Vec<(LaneId, u32)> = doc
-                    .lanes
-                    .iter()
-                    .map(|(id, lane)| (id, lane.order))
-                    .collect();
-                order.sort_by_key(|(_, order)| *order);
-                let index = index.min(order.len());
-                // Renumbered from zero rather than nudged, so a stack whose
-                // orders have gaps or duplicates in it comes out of this with
-                // neither.
-                for (position, (id, _)) in order.iter().enumerate() {
-                    let moved = if position < index {
-                        position
-                    } else {
-                        position + 1
-                    };
-                    if let Some(lane) = doc.lanes.get_mut(*id) {
-                        lane.order = moved as u32;
-                    }
-                }
-                lane.order = index as u32;
-            }
-            // Past the bottom of the stack, which is where somebody adding a
-            // row is looking for it — and not wherever a default of zero would
-            // sort it once the rows have been reordered.
-            None => {
-                lane.order = doc
-                    .lanes
-                    .values()
-                    .map(|lane| lane.order)
-                    .max()
-                    .map_or(0, |highest| highest.saturating_add(1));
-            }
-        }
+        lane.order = open_rows(doc, self.at, 1);
         match self.created {
             // The same id on a redo, or the clips a later command moved onto
             // this lane would be pointing at nothing.
@@ -3390,6 +3401,17 @@ pub struct AddAudioClip {
     /// clip on the row the pointer was over, and makes no row of its own, so an
     /// undo takes only the clip back.
     onto: Option<LaneId>,
+    /// Where in the stack the row this makes goes, when it makes one. `None`
+    /// is past the bottom; `Some` is a position, and the rows from there down
+    /// move to make room (see [`open_rows`]).
+    ///
+    /// > *"if i wasnt dragging however and imported some other way it should
+    /// > go on a new lane added in between the lane in the middlemost of your
+    /// > arrangement screen that way its cleanly visible for you."*
+    ///
+    /// The window works out which index that is; this only puts the row
+    /// there.
+    at: Option<usize>,
     /// What it made, kept so a **redo** puts everything back under the ids it
     /// minted the first time. Anything stacked above this entry names them.
     ///
@@ -3413,6 +3435,7 @@ impl AddAudioClip {
             start,
             length,
             onto: None,
+            at: None,
             made: None,
         }
     }
@@ -3421,6 +3444,14 @@ impl AddAudioClip {
     /// pointer was over. See [`AddAudioClip::onto`].
     pub fn on_lane(mut self, lane: LaneId) -> Self {
         self.onto = Some(lane);
+        self
+    }
+
+    /// Makes the clip's row at `index` in the stack rather than past the
+    /// bottom — the middle of the screen, for a sound that arrived with no
+    /// position of its own. See [`AddAudioClip::at`].
+    pub fn at_row(mut self, index: usize) -> Self {
+        self.at = Some(index);
         self
     }
 
@@ -3454,33 +3485,30 @@ impl Command for AddAudioClip {
             loop_length: None,
         };
 
-        // The row a new-row drop makes: past the bottom of the stack, so a file
-        // dropped onto a song does not push what is already there down the
-        // arrangement.
-        let new_lane = || {
-            let order = doc
-                .lanes
-                .values()
-                .map(|lane| lane.order)
-                .max()
-                .map_or(0, |highest| highest.saturating_add(1));
-            Lane {
-                name: self.name.clone(),
-                height: DEFAULT_LANE_HEIGHT,
-                color: AUDIO_LANE_COLOR,
-                muted: false,
-                locked: false,
-                order,
-            }
+        // The row a new-row drop makes: where `at` says, and otherwise past
+        // the bottom of the stack, so a file dropped onto a song does not
+        // push what is already there down the arrangement. The room is opened
+        // only when a row is actually going to be made — a drop onto an
+        // existing row must not shuffle the stack.
+        let at = self.at;
+        let name = self.name.clone();
+        let new_lane = |doc: &mut Project| Lane {
+            name: name.clone(),
+            height: DEFAULT_LANE_HEIGHT,
+            color: AUDIO_LANE_COLOR,
+            muted: false,
+            locked: false,
+            order: open_rows(doc, at, 1),
         };
 
         let (made_lane, clip_id) = match self.made {
             // A redo: put everything back under the ids it minted first time.
             Some((made_lane, clip_id)) => {
-                if let Some(lane_id) = made_lane
-                    && !doc.lanes.insert_at(lane_id, new_lane())
-                {
-                    return Err(CommandError("that row id is taken".into()));
+                if let Some(lane_id) = made_lane {
+                    let lane = new_lane(doc);
+                    if !doc.lanes.insert_at(lane_id, lane) {
+                        return Err(CommandError("that row id is taken".into()));
+                    }
                 }
                 let lane_id = made_lane.or(onto).unwrap_or_default();
                 let mut clip = clip;
@@ -3503,7 +3531,8 @@ impl Command for AddAudioClip {
                 }
                 // A row of its own.
                 None => {
-                    let lane_id = doc.lanes.insert(new_lane());
+                    let lane = new_lane(doc);
+                    let lane_id = doc.lanes.insert(lane);
                     let mut clip = clip;
                     clip.lane = lane_id;
                     (Some(lane_id), doc.clips.insert(clip))
@@ -3744,6 +3773,10 @@ const DEFAULT_LANE_HEIGHT: f32 = 32.0;
 /// — eight presses of Ctrl+Z to undo one drop would be a bug report.
 pub struct ImportParts {
     parts: Vec<ImportPart>,
+    /// Where in the stack the rows go: a block starting at this index, and
+    /// otherwise past the bottom. The same field, for the same report, as
+    /// [`AddAudioClip::at`].
+    at: Option<usize>,
     /// What it made, kept so a **redo** puts everything back under the ids it
     /// minted the first time. Without that, anything stacked above this entry
     /// would be pointing at nothing after an undo and a redo.
@@ -3762,8 +3795,16 @@ impl ImportParts {
                 .into_iter()
                 .filter(|part| !part.notes.is_empty())
                 .collect(),
+            at: None,
             made: Vec::new(),
         }
+    }
+
+    /// Puts the parts' rows in at `index` in the stack, in the file's order,
+    /// rather than past the bottom. See [`ImportParts::at`].
+    pub fn at_row(mut self, index: usize) -> Self {
+        self.at = Some(index);
+        self
     }
 
     /// What this made, once it has been applied. Empty before that.
@@ -3779,14 +3820,10 @@ impl Command for ImportParts {
                 "there is nothing in that file to import".into(),
             ));
         }
-        // Past the bottom of the stack, so a file dropped onto a song does
-        // not push what is already there down the arrangement.
-        let mut order = doc
-            .lanes
-            .values()
-            .map(|lane| lane.order)
-            .max()
-            .map_or(0, |highest| highest.saturating_add(1));
+        // Where `at` says, as one block, and otherwise past the bottom of the
+        // stack so a file dropped onto a song does not push what is already
+        // there down the arrangement.
+        let mut order = open_rows(doc, self.at, self.parts.len());
 
         // A redo re-uses the ids of the first run; a first run mints them.
         let redoing = !self.made.is_empty();

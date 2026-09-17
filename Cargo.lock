@@ -1296,6 +1296,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "winit",
+ "x11rb",
 ]
 
 [[package]]

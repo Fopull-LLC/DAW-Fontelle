@@ -16,6 +16,32 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-17, later (uncommitted → for Ty to test).** Where a
+sound lands, and file drops on Wayland — `PROGRESS.md`'s top entry is the
+list. Three things to know before touching it: (1) **winit 0.30 has no
+drag-and-drop on Wayland**; `fontelle-ui/src/file_drag.rs` is the
+`wl_data_device` client on winit's own display, polled from
+`about_to_wait` like `activation.rs` — if a drop stops arriving on
+Plasma, that module is where, and the nested-KWin recipe below is how to
+watch it; (2) the row a positionless import lands on is
+`canvas::arrival_row`, pushed to the host each pass — a new import path
+in the session should take `Landing::NewRow(self.arrival_row)`, not
+`None`; (3) a desktop file in the air is `WindowApp::hovering`, and
+`carried()` reads it before the browser drag, so anything that draws the
+chip has to handle `CarryTarget::Open` (no mark).
+
+**How to see a real file drag** without touching Ty's session: `Xwayland
+:99 -geometry 1800x1000 &`, then `env -u WAYLAND_DISPLAY DISPLAY=:99
+kwin_wayland --x11-display :99 --socket wayland-99 --width 1800 --height
+1000 --no-global-shortcuts --no-lockscreen &`, then Fontelle and `dolphin
+<folder>` with `env -u DISPLAY WAYLAND_DISPLAY=wayland-99` (and
+`QT_QPA_PLATFORM=wayland` for Dolphin). XTEST on `:99` drives the nested
+compositor — press on the file row, move in steps, grab mid-drag, release
+— and `ffmpeg -f x11grab -i :99.0` sees KWin's output. The same with
+`QT_QPA_PLATFORM=xcb` and no KWin is the X11 (XDND) path. Grabs lag by a
+frame or two as ever: the "drop did nothing" and the "chip is in the wrong
+place" both turned out to be the previous frame.
+
 **Updated 2026-09-17 (v0.7.0).** The sample source reads a
 recording five ways now (Bounce, Reverse and a phase-locked grain cloud
 beside Once and Loop), can be locked to one zone, and the bank has two

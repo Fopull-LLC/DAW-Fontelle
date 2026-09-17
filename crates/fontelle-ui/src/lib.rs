@@ -23,6 +23,7 @@ pub mod backend;
 pub mod branding;
 pub mod canvas;
 pub mod document;
+pub mod file_drag;
 pub mod icon;
 pub mod layout;
 pub mod pointer;

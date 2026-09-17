@@ -345,3 +345,124 @@ fn a_clip_that_is_not_audio_has_nothing_for_the_editor_to_show() {
     assert_eq!(session.audio_clip_rate(notes), 0);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ------------------------------------------- where the row turns up ---
+//
+// > *"i dont like how when recording something, importing something,
+// > dragging an audio file in, etc anything it always goes on a new lane at
+// > the very bottom its very annoying. i wish instead if i was dragging it
+// > in, it showed me a preview where im dragging it and let me drag it
+// > exactly where i wanted on any lane instead of making a new one
+// > automatically for me and putting it there on the bottom. if i wasnt
+// > dragging however and imported some other way it should go on a new lane
+// > added in between the lane in the middlemost of your arrangement screen
+// > that way its cleanly visible for you."*
+//
+// The window tells the host which row is the middle of the screen
+// (`set_arrival_row`, from `fontelle_ui::canvas::arrival_row`); anything
+// that arrives with no row of its own goes there. A drop names its row.
+
+fn lane_names(session: &Session) -> Vec<String> {
+    session.lanes().into_iter().map(|lane| lane.name).collect()
+}
+
+/// A session with rows named Drums, Bass, Keys, Vox under the blank
+/// project's own first row.
+fn a_session_with_rows(dir: &Path) -> Session {
+    let mut session = a_session(dir);
+    for name in ["Drums", "Bass", "Keys", "Vox"] {
+        session.add_lane();
+        let last = session.lanes().len() - 1;
+        session.rename_lane(last, name);
+    }
+    session
+}
+
+#[test]
+fn a_sound_with_no_row_of_its_own_arrives_on_the_row_the_window_is_looking_at() {
+    let dir = scratch("arrival");
+    let mut session = a_session_with_rows(&dir);
+    let before = lane_names(&session);
+    session.set_arrival_row(2);
+    session
+        .drop_file(&a_take(&dir, "Take.wav"))
+        .expect("imports");
+    let after = lane_names(&session);
+    assert_eq!(after.len(), before.len() + 1);
+    assert_eq!(after[2], "Take.wav", "the new row is at the arrival index");
+    assert_eq!(
+        &after[3..],
+        &before[2..],
+        "and the rows under it moved down"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_drop_that_names_a_row_lands_on_it_and_makes_no_row() {
+    let dir = scratch("drop-on-row");
+    let mut session = a_session_with_rows(&dir);
+    let before = lane_names(&session);
+    session.set_arrival_row(0);
+    session
+        .drop_file_on(&a_take(&dir, "Loop.wav"), 0, Some(3))
+        .expect("imports");
+    assert_eq!(lane_names(&session), before, "no row was made");
+    let clips = session.clips();
+    let clip = clips
+        .iter()
+        .find(|c| c.kind == ClipKind::Audio)
+        .expect("a clip");
+    assert_eq!(clip.lane, 3, "on the row the drop named");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_drop_past_the_last_row_makes_one_at_the_foot() {
+    // The empty space under the arrangement is a place too: a row of its own
+    // there, where the pointer is, and not in the middle of the screen.
+    let dir = scratch("drop-past");
+    let mut session = a_session_with_rows(&dir);
+    let rows = session.lanes().len();
+    session.set_arrival_row(0);
+    session
+        .drop_file_on(&a_take(&dir, "Tail.wav"), 0, Some(rows + 4))
+        .expect("imports");
+    let after = lane_names(&session);
+    assert_eq!(after.len(), rows + 1);
+    assert_eq!(after[rows], "Tail.wav", "at the foot: {after:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_desktop_sound_dropped_on_a_channel_becomes_that_channels_sampler() {
+    let dir = scratch("drop-channel");
+    let mut session = a_session(&dir);
+    let clips = session.clips().len();
+    session
+        .drop_file_on_channel(0, &a_take(&dir, "Kick.wav"))
+        .expect("a sampler");
+    assert_eq!(
+        session.channel_kind(0),
+        Some(fontelle_types::InstrumentKind::Sampler),
+        "the channel plays the file now"
+    );
+    assert_eq!(session.clips().len(), clips, "and no clip was made");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_desktop_sound_dropped_on_the_rack_becomes_a_channel_of_its_own() {
+    let dir = scratch("drop-rack");
+    let mut session = a_session(&dir);
+    let channels = session.channels().len();
+    session
+        .drop_file_as_channel(&a_take(&dir, "Snare.wav"))
+        .expect("a sampler channel");
+    assert_eq!(session.channels().len(), channels + 1);
+    assert_eq!(
+        session.channel_kind(channels),
+        Some(fontelle_types::InstrumentKind::Sampler)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

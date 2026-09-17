@@ -759,3 +759,39 @@ fn a_clip_of_an_imported_part_holds_that_parts_notes() {
     assert!(counts.contains(&1), "the lead's one note: {counts:?}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// A `.mid` with no row of its own arrives where the window is looking, the
+// way a sound does (`audio_import.rs`, "where the row turns up").
+#[test]
+fn a_midi_file_arrives_on_the_row_the_window_is_looking_at() {
+    let dir = scratch("arrival-midi");
+    let mut session = a_session(&dir);
+    let path = dir.join("Song.mid");
+    std::fs::write(
+        &path,
+        build_midi(&[("Strings", 0, &[60, 64]), ("Brass", 1, &[48, 50])]),
+    )
+    .unwrap();
+    for name in ["Drums", "Bass", "Keys", "Vox"] {
+        session.add_lane();
+        let last = session.lanes().len() - 1;
+        session.rename_lane(last, name);
+    }
+    let before: Vec<String> = session.lanes().into_iter().map(|lane| lane.name).collect();
+    session.set_arrival_row(3);
+    session.drop_file(&path).expect("a one-question file");
+    // Two parts: all of them.
+    session.answer_import(0);
+    let after: Vec<String> = session.lanes().into_iter().map(|lane| lane.name).collect();
+    assert_eq!(
+        &after[3..5],
+        &["Strings".to_string(), "Brass".to_string()],
+        "the parts are a block at the arrival index: {after:?}"
+    );
+    assert_eq!(
+        &after[5..],
+        &before[3..],
+        "and the rows under it moved down"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

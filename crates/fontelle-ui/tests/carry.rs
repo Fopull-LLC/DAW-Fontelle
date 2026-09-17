@@ -86,6 +86,7 @@ fn scene<'a>(
         }),
         name: None,
         oscillators: &[],
+        desktop: false,
     }
 }
 
@@ -421,6 +422,7 @@ fn a_window_with_no_studio_in_it_refuses_everything() {
         timeline: None,
         name: None,
         oscillators: &[],
+        desktop: false,
     };
     assert!(carry_target(&empty, 100.0, 100.0).refuses());
 }
@@ -442,6 +444,7 @@ fn the_instrument_windows_name_stands_for_the_channel_it_has_open() {
         timeline: None,
         name: Some((2, field)),
         oscillators: &[],
+        desktop: false,
     };
     let (x, y) = mid(field);
     let target = carry_target(&over, x, y);
@@ -488,6 +491,7 @@ fn a_sound_over_an_oscillator_card_becomes_that_oscillators_sound() {
         timeline: None,
         name: Some((2, field)),
         oscillators: &cards,
+        desktop: false,
     };
     let (x, y) = mid(cards[1].frame);
     let target = carry_target(&over, x, y);
@@ -527,6 +531,7 @@ fn a_preset_over_an_oscillator_card_is_refused() {
         timeline: None,
         name: None,
         oscillators: &cards,
+        desktop: false,
     };
     let (x, y) = mid(cards[0].frame);
     assert!(carry_target(&over, x, y).refuses());
@@ -689,6 +694,34 @@ fn a_chip_bigger_than_the_window_is_not_drawn() {
     assert!(carry_chip((4000.0, 40.0), (10.0, 10.0), window()).is_empty());
 }
 
+/// A file dragged in from the desktop comes with the desktop's own picture
+/// of it — Dolphin's icon and name — hanging down-right of the pointer,
+/// exactly where the chip goes. Seen on the nested server: the chip's
+/// second line was under the file manager's picture. So for that drag the
+/// chip is **lifted** above the pointer, and still flipped rather than slid
+/// when there is no room that way.
+#[test]
+fn a_desktop_files_chip_sits_above_the_pointer_clear_of_the_desktops_own_picture() {
+    use fontelle_ui::canvas::carry_chip_lifted;
+    let chip = carry_chip_lifted((140.0, 34.0), (400.0, 300.0), window());
+    assert!(!chip.is_empty());
+    assert!(chip.bottom() <= 300.0, "above the pointer: {chip:?}");
+    assert!(
+        chip.x >= 400.0,
+        "and to its right, where the eye already is"
+    );
+    assert!(!chip.contains(400.0, 300.0));
+    // Against the top edge there is no room above: below, like the other.
+    let w = window();
+    let chip = carry_chip_lifted((140.0, 34.0), (400.0, w.y + 2.0), w);
+    assert!(!chip.is_empty());
+    assert!(
+        chip.y >= w.y + 2.0,
+        "flipped below when there is no room above: {chip:?}"
+    );
+    assert!(chip.bottom() <= w.bottom() + 0.01);
+}
+
 // --------------------------------------------- and then you can see it ---
 
 #[test]
@@ -847,4 +880,130 @@ fn a_held_row_says_how_to_put_it_down() {
     );
     assert!(nowhere.to_lowercase().contains("click"), "{nowhere}");
     assert!(nowhere.contains("Esc"), "{nowhere}");
+}
+
+// -------------------------------------------- a file from the desktop ---
+//
+// > *"i wish instead if i was dragging it in, it showed me a preview where
+// > im dragging it and let me drag it exactly where i wanted on any lane
+// > instead of making a new one automatically for me and putting it there
+// > on the bottom."*
+//
+// A file dragged in from the file manager is carried the way a browser row
+// is — the same function, the same mark, the same chip — with one
+// difference: it came from *outside*, so letting go somewhere that is not a
+// target still opens it (the window used to say "Drop to open" everywhere,
+// and a drop that does nothing looks like a broken window). That is
+// `CarryTarget::Open`: no mark, because nothing on screen is the target, and
+// a note that says where the file will turn up.
+
+fn desktop<'a>(
+    carried: Carried,
+    rack: &'a fontelle_ui::canvas::RackLayout,
+    timeline: &'a fontelle_ui::canvas::TimelineLayout,
+    view: &'a TimelineView,
+) -> CarryScene<'a> {
+    let mut scene = scene(carried, rack, timeline, view);
+    scene.desktop = true;
+    scene
+}
+
+#[test]
+fn a_desktop_sound_over_the_arrangement_lands_on_the_row_under_the_pointer() {
+    let rack = rack_layout(rack_body(), &metrics(), 3, 0);
+    let timeline = timeline_layout(timeline_frame(), &metrics());
+    let v = view();
+    let grid = timeline.grid;
+    let y = grid.y + v.lane_height * 1.5;
+    let target = carry_target(
+        &desktop(Carried::Audio, &rack, &timeline, &v),
+        grid.x + 200.0,
+        y,
+    );
+    assert!(
+        matches!(target, CarryTarget::Clip { lane: Some(1), .. }),
+        "the second row, exactly as a browser row would: {target:?}"
+    );
+}
+
+#[test]
+fn a_desktop_sound_over_a_channel_lands_on_that_channel() {
+    let rack = rack_layout(rack_body(), &metrics(), 3, 0);
+    let timeline = timeline_layout(timeline_frame(), &metrics());
+    let v = view();
+    let (x, y) = mid(rack.rows[2].name);
+    assert!(matches!(
+        carry_target(&desktop(Carried::Audio, &rack, &timeline, &v), x, y),
+        CarryTarget::Channel { index: 2, .. }
+    ));
+}
+
+#[test]
+fn a_desktop_file_let_go_anywhere_else_still_opens() {
+    let rack = rack_layout(rack_body(), &metrics(), 3, 0);
+    let timeline = timeline_layout(timeline_frame(), &metrics());
+    let v = view();
+    // Over the browser, and over the gap between panels: both would be
+    // "nothing" for a row from the browser, and both open a file from the
+    // desktop.
+    let (bx, by) = mid(browser_frame());
+    for (x, y) in [(bx, by), (252.0, 350.0)] {
+        let target = carry_target(&desktop(Carried::Audio, &rack, &timeline, &v), x, y);
+        assert_eq!(target, CarryTarget::Open, "at ({x}, {y})");
+        assert!(target.lands(), "letting go opens the file");
+        assert!(!target.refuses(), "so it is not drawn as refused");
+        assert_eq!(target.mark(), None, "and nothing on screen is the target");
+    }
+}
+
+#[test]
+fn a_desktop_file_that_is_not_a_sound_opens_wherever_it_is_let_go() {
+    // A `.mid` or a soundfont has no row to land on and no channel to become:
+    // over the arrangement, over a channel, over the browser, it opens.
+    let rack = rack_layout(rack_body(), &metrics(), 3, 0);
+    let timeline = timeline_layout(timeline_frame(), &metrics());
+    let v = view();
+    let grid = timeline.grid;
+    let (cx, cy) = mid(rack.rows[0].name);
+    let (bx, by) = mid(browser_frame());
+    for (x, y) in [(grid.x + 100.0, grid.y + 20.0), (cx, cy), (bx, by)] {
+        assert_eq!(
+            carry_target(&desktop(Carried::File, &rack, &timeline, &v), x, y),
+            CarryTarget::Open,
+            "at ({x}, {y})"
+        );
+    }
+    // And not an oscillator's sound either.
+    let cards = [CarryOscillator {
+        layer: 0,
+        frame: Rect::new(10.0, 70.0, 300.0, 200.0),
+        name: "OSC A".to_string(),
+    }];
+    let over = CarryScene {
+        carried: Carried::File,
+        rack: None,
+        panel: None,
+        timeline: None,
+        name: None,
+        oscillators: &cards,
+        desktop: true,
+    };
+    let (x, y) = mid(cards[0].frame);
+    assert_eq!(carry_target(&over, x, y), CarryTarget::Open);
+}
+
+#[test]
+fn a_browser_row_is_not_from_the_desktop_so_nowhere_stays_nowhere() {
+    let rack = rack_layout(rack_body(), &metrics(), 3, 0);
+    let timeline = timeline_layout(timeline_frame(), &metrics());
+    let v = view();
+    assert!(carry_target(&scene(Carried::Audio, &rack, &timeline, &v), 252.0, 350.0).refuses());
+}
+
+#[test]
+fn the_chip_says_an_opened_file_turns_up_in_view() {
+    assert_eq!(
+        carry_note(&CarryTarget::Open, &channels(), &[], 4),
+        "A new row in view"
+    );
 }

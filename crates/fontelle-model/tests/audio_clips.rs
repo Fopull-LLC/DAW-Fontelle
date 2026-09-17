@@ -613,3 +613,101 @@ fn undoing_a_drop_onto_an_existing_row_leaves_that_row_alone() {
         "the existing row survives the undo"
     );
 }
+
+// --- A row where you are looking, not always at the foot ------------------
+//
+// > *"i dont like how when recording something, importing something,
+// > dragging an audio file in, etc anything it always goes on a new lane at
+// > the very bottom its very annoying ... if i wasnt dragging however and
+// > imported some other way it should go on a new lane added in between the
+// > lane in the middlemost of your arrangement screen that way its cleanly
+// > visible for you."*
+//
+// `at_row` is the command's half of that: a new row put *at* an index in the
+// stack, pushing what was there down, the way `AddLane::at` already does for
+// the right-click menu. Which index is the middle of the screen is the
+// window's business (`fontelle_ui::canvas::arrival_row`).
+
+fn a_row(name: &str, order: u32) -> fontelle_model::Lane {
+    fontelle_model::Lane {
+        name: name.into(),
+        height: 32.0,
+        color: [0; 4],
+        muted: false,
+        locked: false,
+        order,
+    }
+}
+
+fn stack(project: &Project) -> Vec<String> {
+    project
+        .lane_ids()
+        .into_iter()
+        .map(|id| project.lanes[id].name.clone())
+        .collect()
+}
+
+#[test]
+fn an_import_at_a_row_index_goes_there_and_pushes_the_rest_down() {
+    let mut project = Project::new("audio");
+    for (i, name) in ["Drums", "Bass", "Keys", "Vox"].iter().enumerate() {
+        project.lanes.insert(a_row(name, i as u32));
+    }
+    let mut command = import("Take.wav", 0, PPQN).at_row(2);
+    command.apply(&mut project).expect("applies");
+
+    assert_eq!(
+        stack(&project),
+        ["Drums", "Bass", "Take.wav", "Keys", "Vox"],
+        "the new row is at index 2 and the rows under it moved down one"
+    );
+    let made = command.lane().expect("a row was made");
+    let (_, clip) = project.clips.iter().next().expect("a clip");
+    assert_eq!(clip.lane, made, "and the clip is on it");
+}
+
+#[test]
+fn an_import_at_a_row_index_past_the_stack_is_the_foot() {
+    let mut project = Project::new("audio");
+    project.lanes.insert(a_row("Drums", 0));
+    project.lanes.insert(a_row("Bass", 1));
+    let mut command = import("Take.wav", 0, PPQN).at_row(99);
+    command.apply(&mut project).expect("applies");
+    assert_eq!(stack(&project), ["Drums", "Bass", "Take.wav"]);
+}
+
+#[test]
+fn undoing_an_import_at_a_row_index_closes_the_gap_it_opened() {
+    let mut project = Project::new("audio");
+    for (i, name) in ["Drums", "Bass", "Keys"].iter().enumerate() {
+        project.lanes.insert(a_row(name, i as u32));
+    }
+    let mut command = import("Take.wav", 0, PPQN).at_row(1);
+    command.apply(&mut project).expect("applies");
+    let mut inverse = command.invert();
+    inverse.apply(&mut project).expect("undo applies");
+
+    assert_eq!(project.clips.len(), 0);
+    assert_eq!(
+        stack(&project),
+        ["Drums", "Bass", "Keys"],
+        "the stack reads as it did before the import"
+    );
+}
+
+#[test]
+fn redoing_an_import_at_a_row_index_puts_it_back_at_that_index() {
+    let mut project = Project::new("audio");
+    for (i, name) in ["Drums", "Bass", "Keys"].iter().enumerate() {
+        project.lanes.insert(a_row(name, i as u32));
+    }
+    let mut command = import("Take.wav", 0, PPQN).at_row(1);
+    command.apply(&mut project).expect("applies");
+    let made = command.lane().expect("a row");
+    let mut inverse = command.invert();
+    inverse.apply(&mut project).expect("undo applies");
+    command.apply(&mut project).expect("redo applies");
+
+    assert_eq!(stack(&project), ["Drums", "Take.wav", "Bass", "Keys"]);
+    assert_eq!(command.lane(), Some(made), "under the id it minted first");
+}

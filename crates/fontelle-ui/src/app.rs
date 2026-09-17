@@ -263,6 +263,61 @@ struct Carrying {
     window: Option<EditorKind>,
 }
 
+/// A file from the desktop in the air over the window.
+///
+/// > *"i wish instead if i was dragging it in, it showed me a preview where
+/// > im dragging it and let me drag it exactly where i wanted on any lane
+/// > instead of making a new one automatically for me and putting it there
+/// > on the bottom."*
+///
+/// `paths` is empty until the source has said what it is carrying — on
+/// Wayland that is a moment after the drag comes in, on X11 it is what winit
+/// hands over with `HoveredFile`. The chip says "A file" until then.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct Hovering {
+    paths: Vec<std::path::PathBuf>,
+}
+
+impl Hovering {
+    /// What the chip calls it.
+    fn label(&self) -> String {
+        match self.paths.as_slice() {
+            [] => "A file".to_string(),
+            [one] => file_name(one),
+            many => format!("{} files", many.len()),
+        }
+    }
+
+    /// What is being carried, as far as where it can land goes: a sound has
+    /// rows and channels and cards to land on, anything else only opens.
+    /// Unknown is *not* a sound — a mark that promised a row for a `.mid`
+    /// would be a mark the drop does not honour.
+    fn carried(&self) -> crate::canvas::Carried {
+        match self.paths.first() {
+            Some(path) if fontelle_types::FolderKind::Audio.accepts(path) => {
+                crate::canvas::Carried::Audio
+            }
+            _ => crate::canvas::Carried::File,
+        }
+    }
+}
+
+/// Whether `path` is a soundfont — the one kind of file a drop opens as an
+/// instrument rather than as rows. The same test `fontelle_app::bank` makes;
+/// by extension, because that is all a drop carries.
+fn is_soundfont_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("sf2"))
+}
+
+/// A path's last component, as the chip and the status line say it.
+fn file_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
 /// What a right-click menu — or a rename — is about.
 ///
 /// The menu canvas lists **strings** and knows nothing about what they do (see
@@ -790,6 +845,18 @@ pub struct WindowApp {
     /// and `None` for good on X11.
     activation: Option<crate::activation::Activation>,
     activation_tried: bool,
+    /// The seat's data device, where the display is Wayland — how a file
+    /// dragged out of the file manager reaches the window there, since winit
+    /// has no drag-and-drop on that backend. See [`crate::file_drag`].
+    file_drag: Option<crate::file_drag::FileDrag>,
+    /// A file from the desktop in the air over one of the windows. Carried
+    /// the way a browser row is ([`Self::carried`]), so the mark and the chip
+    /// say where it will land before it does.
+    hovering: Option<Hovering>,
+    /// Files winit has said were dropped this pass, one event each, taken as
+    /// one drop in `about_to_wait` — several files let go together land on
+    /// rows under one another rather than all on the row under the pointer.
+    dropped: Vec<std::path::PathBuf>,
     /// The floating editor windows that are open (TDD §7.2, §12, §13.4).
     /// At most one of each kind — see [`EditorKind`].
     editors: Vec<Editor>,
@@ -1501,6 +1568,9 @@ impl WindowApp {
             keybinds_note: String::new(),
             activation: None,
             activation_tried: false,
+            file_drag: None,
+            hovering: None,
+            dropped: Vec::new(),
             pending_editors: Vec::new(),
             pointer_window: None,
             frames: 0,
@@ -2280,6 +2350,7 @@ impl WindowApp {
                         at: self.cursor,
                         target: carry.target,
                         bounds: self.layout.window,
+                        lifted: self.hovering.is_some(),
                     }),
                 welcome: self
                     .welcome
@@ -3121,6 +3192,9 @@ impl ApplicationHandler for WindowApp {
         }
 
         let scale = window.scale_factor();
+        // Bound now rather than on first use: a drag that arrives before the
+        // device exists is a drag the compositor never offers this process.
+        self.file_drag = crate::file_drag::FileDrag::open(&window);
         self.live = Some(Live { window, surface });
         self.resize(physical.width, physical.height, scale);
         if let Some(live) = &self.live {
@@ -3204,28 +3278,21 @@ impl ApplicationHandler for WindowApp {
             // why it is worth having: a file you can see is a file you can
             // drop, and INVARIANT 10 is about what Fontelle goes looking for
             // rather than about what it is handed.
-            WindowEvent::DroppedFile(path) => {
-                self.drop_file(&path);
-                self.request_redraw_if_dirty();
-            }
+            // One event per file; the lot is one drop, taken in
+            // `about_to_wait` (see `dropped`).
+            WindowEvent::DroppedFile(path) => self.dropped.push(path),
 
-            // While one is over the window, say what will happen to it. A
-            // drop that silently does nothing looks like a broken window.
+            // While one is over the window it is **carried**, the way a row
+            // out of the browser is: the row it would land on lights up and
+            // the chip says what letting go would do. A drop that silently
+            // does nothing looks like a broken window, and a mark that shows
+            // where it will land is the report's "preview where im dragging
+            // it".
             WindowEvent::HoveredFile(path) => {
-                self.status = format!(
-                    "Drop to open {}",
-                    path.file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.display().to_string())
-                );
-                self.tree.invalidate(BROWSER);
-                self.request_redraw_if_dirty();
+                self.pointer_window = None;
+                self.file_hovered(Some(path));
             }
-            WindowEvent::HoveredFileCancelled => {
-                self.status.clear();
-                self.tree.invalidate(BROWSER);
-                self.request_redraw_if_dirty();
-            }
+            WindowEvent::HoveredFileCancelled => self.file_left(),
 
             WindowEvent::CursorLeft { .. } => {
                 self.cursor = (f32::MIN, f32::MIN);
@@ -3476,6 +3543,17 @@ impl ApplicationHandler for WindowApp {
         if let Some(activation) = &mut self.activation {
             activation.poll();
         }
+        // The data device, on Wayland: a drag's enter, motion and drop come
+        // through here, positions and all. Then whatever winit said was
+        // dropped this pass, as one drop.
+        self.poll_file_drag();
+        if !self.dropped.is_empty() {
+            let paths = std::mem::take(&mut self.dropped);
+            self.drop_files(paths);
+        }
+        // Under X11 the source holds the pointer grab for the whole drag, so
+        // the window hears no motion; the pointer is asked where it is.
+        self.follow_hover_pointer();
         // The graph the audio thread handed back is freed here, on this
         // thread — see `fontelle_engine::GraphPublisher`. Cheap, and it has to
         // happen somewhere that runs whether or not a frame does.
@@ -3486,6 +3564,7 @@ impl ApplicationHandler for WindowApp {
             self.plugin_editor_open = doc.tick_plugin_editors();
         }
         self.refresh_studio();
+        self.push_arrival_row();
         self.settle_audition();
         self.maybe_autosave();
         self.tick();
@@ -4049,32 +4128,15 @@ impl WindowApp {
             // why it is worth having: a file you can see is a file you can
             // drop, and INVARIANT 10 is about what Fontelle goes looking for
             // rather than about what it is handed.
-            WindowEvent::DroppedFile(path) => {
-                self.drop_file(&path);
-                self.request_redraw_if_dirty();
-            }
-
-            // While one is over the window, say what will happen to it. A
-            // drop that silently does nothing looks like a broken window —
-            // and over an oscillator it does something else entirely, so it
-            // says which.
+            // The studio's rule (see `window_event`): one drop per pass,
+            // and a file in the air is carried, so an oscillator card under
+            // it lights up rather than being named on the status line.
+            WindowEvent::DroppedFile(path) => self.dropped.push(path),
             WindowEvent::HoveredFile(path) => {
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.display().to_string());
-                self.status = match self.hovered_oscillator() {
-                    Some(role) => format!("Drop {name} into {role}"),
-                    None => format!("Drop to open {name}"),
-                };
-                self.tree.invalidate(BROWSER);
-                self.request_redraw_if_dirty();
+                self.pointer_window = Some(kind);
+                self.file_hovered(Some(path));
             }
-            WindowEvent::HoveredFileCancelled => {
-                self.status.clear();
-                self.tree.invalidate(BROWSER);
-                self.request_redraw_if_dirty();
-            }
+            WindowEvent::HoveredFileCancelled => self.file_left(),
 
             WindowEvent::CursorLeft { .. } => {
                 if self.pointer_window == Some(kind) {
@@ -4787,6 +4849,7 @@ impl WindowApp {
                 at: self.cursor,
                 target: carry.target,
                 bounds: frame,
+                lifted: self.hovering.is_some(),
             });
         let Some(editor) = self.editors.get_mut(index) else {
             return;
@@ -9755,11 +9818,25 @@ impl WindowApp {
     /// something the drop will not do — before this, the release worked the
     /// question out privately and nothing else could ask it.
     fn carry_target(&self, row: BrowserRow, x: f32, y: f32) -> crate::canvas::CarryTarget {
-        use crate::canvas::{Carried, CarryRack, CarryScene, CarryTimeline};
+        use crate::canvas::Carried;
         let carried = match row {
             BrowserRow::Preset(_) => Carried::Preset,
             BrowserRow::File(_) => Carried::Audio,
         };
+        self.carry_target_for(carried, false, x, y)
+    }
+
+    /// The same, for anything that can be in the air: a browser row, or a
+    /// file from the desktop (`desktop`), which lands in the same places and
+    /// opens where a row would go nowhere.
+    fn carry_target_for(
+        &self,
+        carried: crate::canvas::Carried,
+        desktop: bool,
+        x: f32,
+        y: f32,
+    ) -> crate::canvas::CarryTarget {
+        use crate::canvas::{CarryRack, CarryScene, CarryTimeline};
         // The pointer is in a floating window: those coordinates are that
         // window's, so none of the studio's panels are in the scene at all.
         if let Some(kind) = self.pointer_window {
@@ -9778,6 +9855,7 @@ impl WindowApp {
                     timeline: None,
                     name,
                     oscillators: &oscillators,
+                    desktop,
                 },
                 x,
                 y,
@@ -9805,6 +9883,7 @@ impl WindowApp {
                 }),
                 name: None,
                 oscillators: &[],
+                desktop,
             },
             x,
             y,
@@ -9870,15 +9949,23 @@ impl WindowApp {
     /// from under the drag, which a rescan or a folder changing under a search
     /// can do.
     fn carried(&self) -> Option<Carrying> {
-        let row = match self.drag {
-            Drag::BrowserRow(row) => row,
-            _ => self.held?,
-        };
         let (x, y) = self.cursor;
-        let target = self.carry_target(row, x, y);
-        let label = match row {
-            BrowserRow::Preset(index) => self.presets.get(index)?.name.clone(),
-            BrowserRow::File(index) => self.browser_list().get(index)?.name.clone(),
+        // A file from the desktop first: while one is over the window the
+        // mouse button is down in another program, so nothing of this
+        // window's own can be mid-drag.
+        let (target, label) = if let Some(hovering) = &self.hovering {
+            let target = self.carry_target_for(hovering.carried(), true, x, y);
+            (target, hovering.label())
+        } else {
+            let row = match self.drag {
+                Drag::BrowserRow(row) => row,
+                _ => self.held?,
+            };
+            let label = match row {
+                BrowserRow::Preset(index) => self.presets.get(index)?.name.clone(),
+                BrowserRow::File(index) => self.browser_list().get(index)?.name.clone(),
+            };
+            (self.carry_target(row, x, y), label)
         };
         let names: Vec<String> = self.channels.iter().map(|c| c.name.clone()).collect();
         let oscillators: Vec<String> = self
@@ -9887,7 +9974,22 @@ impl WindowApp {
             .map(|osc| osc.name)
             .collect();
         let note = crate::canvas::carry_note(&target, &names, &oscillators, self.beats_per_bar());
-        let note = if self.held.is_some() {
+        let note = if self.hovering.is_some() {
+            // A soundfont is the one desktop file that opens as something
+            // other than rows: it goes on the channel that is selected.
+            match &self.hovering {
+                Some(hovering)
+                    if target == crate::canvas::CarryTarget::Open
+                        && hovering
+                            .paths
+                            .first()
+                            .is_some_and(|path| is_soundfont_path(path)) =>
+                {
+                    "Onto the selected channel".to_string()
+                }
+                _ => note,
+            }
+        } else if self.held.is_some() {
             crate::canvas::held_note(&target, &note)
         } else {
             note
@@ -10047,8 +10149,12 @@ impl WindowApp {
             // import. Importing here as well would import on every click.
             (BrowserRow::File(_) | BrowserRow::Preset(_), CarryTarget::Panel) => return,
             // Nowhere. Said while it was held, so there is nothing to
-            // announce now.
-            (_, CarryTarget::Nowhere) | (BrowserRow::Preset(_), CarryTarget::Clip { .. }) => return,
+            // announce now. `Open` is a desktop file's answer and a browser
+            // row never gets it (`carry_target` is asked with `desktop`
+            // false); listed rather than wildcarded so a new landing is a
+            // compile error here and not a silent nothing.
+            (_, CarryTarget::Nowhere | CarryTarget::Open)
+            | (BrowserRow::Preset(_), CarryTarget::Clip { .. }) => return,
         };
         let landed = result.is_ok();
         match result {
@@ -12463,134 +12569,236 @@ impl WindowApp {
     ///
     /// What it *is* is the host's to work out from its name — a `.mid`, an FL
     /// score, or a soundfont — because this crate may not read one.
-    /// What an oscillator card under the pointer is called, if one is — the
-    /// half of [`drop_on_oscillator`](Self::drop_on_oscillator) the hover
-    /// message needs, so that what a drop will do is said before it happens.
-    fn hovered_oscillator(&self) -> Option<String> {
-        if self.pointer_window != Some(EditorKind::Instrument) {
-            return None;
-        }
-        let (x, y) = self.cursor;
-        let (crate::canvas::FlopsynthHit::Control { card, .. }
-        | crate::canvas::FlopsynthHit::Picture { card }
-        | crate::canvas::FlopsynthHit::Header { card }) =
-            crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y)?
-        else {
-            return None;
-        };
-        let card = self.flopsynth.as_ref()?.cards.get(card)?;
-        card.oscillator.map(|_| card.group.name.clone())
-    }
-
-    /// A file dropped **onto one of Flopsynth's oscillator cards**, if that
-    /// is where the pointer was: the sound becomes that oscillator's
-    /// waveform rather than a clip on the arrangement.
+    /// A file from the desktop has come in over one of the windows, or
+    /// winit has said one more of the files in the air is `path`.
     ///
-    /// > *"i want to like with omnisphere or serum ... drag audio files into
-    /// > it to use those waveforms in the synthesis."*
-    ///
-    /// Whether it was dropped there is the whole question, and it is asked of
-    /// the same layout the clicks are hit-tested against, so the target is
-    /// whatever the pointer is visibly over. Anywhere else in the window —
-    /// the filter card, the matrix, the preset page — falls through to the
-    /// ordinary import, because a sound dropped on a synth's window is still
-    /// a sound and refusing it silently would be worse than putting it on
-    /// the arrangement.
-    fn drop_on_oscillator(&mut self, path: &std::path::Path) -> bool {
-        if self.pointer_window != Some(EditorKind::Instrument) || self.flopsynth.is_none() {
-            return false;
+    /// The pointer's window has been set by the caller; the position is
+    /// wherever the pointer was last known to be, which under Wayland is the
+    /// drag's own `enter` and under X11 is asked for each pass
+    /// ([`Self::follow_hover_pointer`]).
+    fn file_hovered(&mut self, path: Option<std::path::PathBuf>) {
+        let hovering = self.hovering.get_or_insert_with(Hovering::default);
+        if let Some(path) = path
+            && !hovering.paths.contains(&path)
+        {
+            hovering.paths.push(path);
         }
-        let (x, y) = self.cursor;
-        let Some(
-            crate::canvas::FlopsynthHit::Control { card, .. }
-            | crate::canvas::FlopsynthHit::Picture { card }
-            | crate::canvas::FlopsynthHit::Header { card },
-        ) = crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y)
-        else {
-            return false;
-        };
-        let Some(layer) = self
-            .flopsynth
-            .as_ref()
-            .and_then(|view| view.cards.get(card))
-            .and_then(|card| card.oscillator)
-        else {
-            return false;
-        };
-        let Some(doc) = &mut self.options.document else {
-            return false;
-        };
-        self.status = match doc.load_sound(layer, path) {
-            Ok(said) | Err(said) => said,
-        };
-        // A table is a structural change to the patch, so the window rebuilds
-        // its cards from the document rather than redrawing the old ones.
-        self.studio_revision = u64::MAX;
-        self.refresh_studio();
-        self.tree.invalidate(PANEL);
+        self.status.clear();
         self.tree.invalidate(BROWSER);
-        self.redraw_editor(EditorKind::Instrument);
-        true
+        self.refresh_carry();
     }
 
-    fn drop_file(&mut self, path: &std::path::Path) {
-        // An oscillator first: a sound dropped on one is a waveform, and only
-        // a sound dropped anywhere else is a clip.
-        if self.drop_on_oscillator(path) {
+    /// The source has said what the drag is carrying.
+    fn files_known(&mut self, paths: Vec<std::path::PathBuf>) {
+        if let Some(hovering) = &mut self.hovering {
+            hovering.paths = paths;
+            self.refresh_carry();
+        }
+    }
+
+    /// The drag left, or was let go: nothing is in the air any more.
+    fn file_left(&mut self) {
+        if self.hovering.take().is_none() {
             return;
         }
-        // Where the pointer is, which for a file that has a position on the
-        // song is where it goes. winit's drop carries no coordinates of its
-        // own, so this is the last place the pointer was known to be — which
-        // is the drop point on every backend that tracks a drag, and the point
-        // you were last at on the ones that do not.
-        let at = self.drop_sample();
-        let result = match &mut self.options.document {
-            Some(doc) => doc.drop_file_at(path, at),
-            None => return,
+        self.status.clear();
+        self.tree.invalidate(BROWSER);
+        self.refresh_carry();
+    }
+
+    /// The data device's news, where there is one (Wayland).
+    fn poll_file_drag(&mut self) {
+        use crate::file_drag::FileDragEvent;
+        let Some(drag) = &mut self.file_drag else {
+            return;
         };
-        match result {
-            // An empty message is a question going up instead: the file held
-            // several parts, and `refresh_studio` will find the prompt.
-            Ok(message) => {
-                if !message.is_empty() {
-                    self.status = message;
+        let events = drag.poll();
+        for event in events {
+            match event {
+                FileDragEvent::Enter { surface, x, y } => {
+                    self.pointer_window = self.window_of_surface(surface);
+                    self.cursor = (x, y);
+                    self.file_hovered(None);
+                }
+                FileDragEvent::Motion { x, y } => {
+                    self.cursor = (x, y);
+                    if self.hovering.is_some() {
+                        self.refresh_carry();
+                    }
+                }
+                FileDragEvent::Files(paths) => self.files_known(paths),
+                FileDragEvent::Leave => self.file_left(),
+                FileDragEvent::Drop { surface, paths } => {
+                    self.pointer_window = self.window_of_surface(surface);
+                    self.drop_files(paths);
                 }
             }
-            Err(e) => self.status = e,
+        }
+    }
+
+    /// Which window a `wl_surface` is, by the raw handle each window gives
+    /// out. `None` is the studio; an unknown surface is the studio too,
+    /// which is the harmless answer.
+    fn window_of_surface(&self, surface: usize) -> Option<EditorKind> {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let key = |window: &winit::window::Window| match window.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Wayland(handle) => Some(handle.surface.as_ptr() as usize),
+            _ => None,
+        };
+        self.editors
+            .iter()
+            .find(|editor| key(&editor.window) == Some(surface))
+            .map(|editor| editor.kind)
+    }
+
+    /// Under X11 the drag's source holds the pointer grab, so the window is
+    /// told nothing about where the pointer is while a file is over it — and
+    /// a mark that stays where the pointer was before the drag is a mark
+    /// that lies. The pointer is asked directly, once a pass, while a file
+    /// is in the air.
+    fn follow_hover_pointer(&mut self) {
+        if self.hovering.is_none() || self.file_drag.is_some() {
+            return;
+        }
+        let window = match self.pointer_window {
+            None => self.live.as_ref().map(|live| live.window.clone()),
+            Some(kind) => self
+                .editors
+                .iter()
+                .find(|editor| editor.kind == kind)
+                .map(|editor| editor.window.clone()),
+        };
+        let Some(window) = window else {
+            return;
+        };
+        if let Some((x, y)) = crate::file_drag::pointer_in(&window)
+            && (x, y) != self.cursor
+        {
+            self.cursor = (x, y);
+            self.refresh_carry();
+        }
+    }
+
+    /// Tells the host which row is the middle of the arrangement's screen,
+    /// so a sound that arrives with no row of its own turns up there.
+    fn push_arrival_row(&mut self) {
+        let row = crate::canvas::arrival_row(
+            &self.timeline.view,
+            self.timeline_layout.grid,
+            self.lanes.len(),
+        );
+        if let Some(doc) = &mut self.options.document {
+            doc.set_arrival_row(row);
+        }
+    }
+
+    /// Files let go over one of the windows: each lands where the mark said
+    /// it would — the same [`Self::carry_target_for`] the frames during the
+    /// drag were drawn from, which is what makes the mark a promise.
+    ///
+    /// Several files together land on rows under one another, in the order
+    /// they were given: all on the one row at the one bar would be music
+    /// dropped over music.
+    fn drop_files(&mut self, paths: Vec<std::path::PathBuf>) {
+        use crate::canvas::CarryTarget;
+        self.file_left();
+        if self.options.document.is_none() {
+            return;
+        }
+        let (x, y) = self.cursor;
+        let arrival = crate::canvas::arrival_row(
+            &self.timeline.view,
+            self.timeline_layout.grid,
+            self.lanes.len(),
+        );
+        let mut made_channel = false;
+        let mut made_row_at_foot = false;
+        for (index, path) in paths.iter().enumerate() {
+            let hovering = Hovering {
+                paths: vec![path.clone()],
+            };
+            let target = self.carry_target_for(hovering.carried(), true, x, y);
+            let at = match target {
+                CarryTarget::Clip { tick, .. } => self
+                    .options
+                    .document
+                    .as_ref()
+                    .map(|doc| doc.sample_of_song_tick(tick.max(0))),
+                _ => None,
+            };
+            let Some(doc) = &mut self.options.document else {
+                return;
+            };
+            let result = match target {
+                // Onto one of Flopsynth's oscillator cards: the sound becomes
+                // that oscillator's recording.
+                CarryTarget::Oscillator { layer, .. } => {
+                    let said = doc.load_sound(layer, path);
+                    // A recording is a structural change to the patch, so the
+                    // window rebuilds its cards from the document rather than
+                    // redrawing the old ones.
+                    self.studio_revision = u64::MAX;
+                    self.redraw_editor(EditorKind::Instrument);
+                    said
+                }
+                // Onto a channel — the instrument window's name is the
+                // channel that window is showing — it plays this now.
+                CarryTarget::Channel { index: channel, .. }
+                | CarryTarget::Instrument { channel, .. } => doc
+                    .drop_file_on_channel(channel, path)
+                    .map(|()| String::new()),
+                // Onto the rack itself: a channel of its own.
+                CarryTarget::NewChannel { .. } => {
+                    made_channel = true;
+                    doc.drop_file_as_channel(path).map(|()| String::new())
+                }
+                // Onto the arrangement: a clip, starting at the bar it was
+                // let go over, on the row the pointer was over — the next
+                // file on the row under that one.
+                CarryTarget::Clip { lane, .. } => {
+                    let row = lane.unwrap_or(self.lanes.len()) + index;
+                    made_row_at_foot |= lane.is_none();
+                    doc.drop_file_on(path, at.unwrap_or(0), Some(row))
+                }
+                // Anywhere else: it opens, on a new row where the window is
+                // looking, and the next file on the row under it.
+                CarryTarget::Open | CarryTarget::Panel | CarryTarget::Nowhere => {
+                    doc.set_arrival_row(arrival + index);
+                    doc.drop_file(path)
+                }
+            };
+            match result {
+                // An empty message is either nothing to say or a question
+                // going up instead: the file held several parts, and
+                // `show_import_prompt` will find it.
+                Ok(message) => {
+                    if !message.is_empty() {
+                        self.status = message;
+                    }
+                }
+                Err(e) => self.status = e,
+            }
         }
         self.refresh_studio();
         self.refresh_title();
         self.lane_made();
+        // What was made is where nobody is looking: a channel on the end of
+        // a scrolled list, a row past the foot of the stack.
+        if made_channel {
+            self.rack_scroll = usize::MAX;
+        }
+        if made_row_at_foot && let Some(last) = self.lanes.len().checked_sub(1) {
+            self.timeline.view.top_lane = crate::canvas::lane_scroll_to_show(
+                &self.timeline.view,
+                self.timeline_layout.grid,
+                last,
+            );
+        }
         self.tree.invalidate(PANEL);
         self.tree.invalidate(RACK);
         self.tree.invalidate(TIMELINE);
         self.tree.invalidate(BROWSER);
         self.show_import_prompt();
-    }
-
-    /// Which sample of the song a dropped file should land on.
-    ///
-    /// The bar under the pointer when it is over the arrangement, and the top
-    /// of the song otherwise: dropping a file on the browser or the rack is
-    /// not a statement about *where*, and guessing a position from a pointer
-    /// that was never over the timeline would scatter imports along the song.
-    ///
-    /// Snapped, because a clip dropped a few pixels off the bar is a clip you
-    /// then have to nudge — the same rule every other gesture on this
-    /// timeline follows.
-    fn drop_sample(&self) -> fontelle_types::Sample {
-        let (x, y) = self.cursor;
-        let grid = self.timeline_layout.grid;
-        if !grid.contains(x, y) {
-            return 0;
-        }
-        let Some(doc) = &self.options.document else {
-            return 0;
-        };
-        let tick = crate::canvas::timeline_x_to_tick(&self.timeline.view, grid, x);
-        let snapped = crate::canvas::timeline_snap(&self.timeline.view, tick, doc.beats_per_bar());
-        doc.sample_of_song_tick(snapped.max(0))
     }
 
     /// Puts up the question a file has raised, if one is waiting and no menu
@@ -14484,6 +14692,17 @@ impl WindowApp {
             && self.sky.is_alive()
         {
             wake = Some(wake.map_or(now + SKY_FRAME, |w| w.min(now + SKY_FRAME)));
+        }
+
+        // **A file in the air holds the loop awake.** Under X11 the pointer
+        // has to be asked where it is, since the drag's source holds the
+        // grab; under Wayland the list of files is being read off a socket
+        // the source writes to on its own time. Neither is an event this
+        // loop would otherwise wake for.
+        if self.hovering.is_some() {
+            wake = Some(wake.map_or(now + PLUGIN_EDITOR_FRAME, |w| {
+                w.min(now + PLUGIN_EDITOR_FRAME)
+            }));
         }
 
         // A note waiting out its minimum length has to be woken for, or a

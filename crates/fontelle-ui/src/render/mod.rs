@@ -176,6 +176,10 @@ pub struct CarryChrome<'a> {
     /// What the chip has to stay inside — the window, or an editor window's
     /// own frame when the pointer is over one of those.
     pub bounds: Rect,
+    /// Whether the chip sits above the pointer rather than under it: a file
+    /// from the desktop comes with the desktop's own picture hanging below
+    /// ([`crate::canvas::carry_chip_lifted`]).
+    pub lifted: bool,
 }
 
 /// The channel rack's contents.
@@ -2299,14 +2303,15 @@ pub fn draw_carry(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Ca
     if width <= 0.0 || height <= 0.0 {
         return;
     }
-    let chip = crate::canvas::carry_chip(
-        (
-            width + crate::canvas::CARRY_PAD * 2.0,
-            height + crate::canvas::CARRY_PAD * 2.0,
-        ),
-        chrome.at,
-        chrome.bounds,
+    let size = (
+        width + crate::canvas::CARRY_PAD * 2.0,
+        height + crate::canvas::CARRY_PAD * 2.0,
     );
+    let chip = if chrome.lifted {
+        crate::canvas::carry_chip_lifted(size, chrome.at, chrome.bounds)
+    } else {
+        crate::canvas::carry_chip(size, chrome.at, chrome.bounds)
+    };
     if chip.is_empty() {
         return;
     }

@@ -40,6 +40,11 @@ png = "0.18.1"
 wayland-backend = { version = "0.3.17", features = ["client_system"] }
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
+# Where the pointer is while a file is being dragged over the window under
+# X11 — the drag's source holds the pointer grab, so winit hears nothing.
+# See `file_drag.rs`. The same crate `fontelle-host` embeds plugin editors
+# with; nothing new is linked.
+x11rb = "0.13.2"
 
 [dev-dependencies]
 slotmap = { version = "1.1.1", features = ["serde"] }
