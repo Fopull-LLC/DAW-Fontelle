@@ -125,6 +125,7 @@ fn a_users_own_recording_is_still_carried_whole() {
         name: "Mine".to_string(),
         factory: None,
         zones: vec![SampleZone {
+            name: String::new(),
             root_key: 60,
             fine_cents: 0.0,
             key_range: (0, 127),
@@ -161,4 +162,141 @@ fn a_set_this_build_does_not_know_reads_back_silent_not_broken() {
     assert!(back.samples[0].zones.is_empty());
     assert_eq!(back.samples[0].factory, None);
     assert_eq!(back.layers.len(), patch.layers.len());
+}
+
+/// The kits: every General MIDI hit of the drum machine's Studio and 808
+/// kits, one recording per key, each named for the roll — so a Flopsynth
+/// preset can be a kit, and a zone lock can make one hit an instrument.
+#[test]
+fn the_kits_ship_every_gm_hit_named_on_its_own_key() {
+    use fontelle_core::GM_DRUM_MAP;
+    assert_eq!(FactorySampleSet::ALL.len(), 4);
+    for set in [FactorySampleSet::KitStudio, FactorySampleSet::Kit808] {
+        let sample = set.sample();
+        assert_eq!(sample.factory, Some(set));
+        assert_eq!(
+            sample.zones.len(),
+            GM_DRUM_MAP.len(),
+            "{set:?}: one recording per GM hit"
+        );
+        for (zone, slot) in sample.zones.iter().zip(GM_DRUM_MAP.iter()) {
+            assert_eq!(zone.root_key, slot.key, "{set:?}: in key order");
+            assert_eq!(
+                zone.key_range,
+                (slot.key, slot.key),
+                "{set:?}: {} is its own key alone",
+                slot.name
+            );
+            assert_eq!(zone.name, slot.name, "{set:?}: named as the roll names it");
+            let seconds = zone.samples.len() as f32 / zone.sample_rate as f32;
+            assert!(
+                (0.05..=3.0).contains(&seconds),
+                "{set:?} {}: {seconds} s is not a hit",
+                slot.name
+            );
+            // The kit's own balance is kept — one gain for the whole kit,
+            // so an 808's shaker sits well under its kick — which is why
+            // the floor is thirty decibels down and not ten.
+            let peak = zone.samples.iter().fold(0f32, |m, s| m.max(s.abs()));
+            assert!(
+                peak > 0.03,
+                "{set:?} {}: a hit that peaks at {peak} was not recorded",
+                slot.name
+            );
+            // Cut at the hit and faded at its end: the first sample is
+            // rest, and so is the last.
+            assert!(zone.samples[0].abs() < 0.05);
+            assert!(zone.samples[zone.samples.len() - 1].abs() < 0.01);
+        }
+    }
+    assert_eq!(FactorySampleSet::KitStudio.id(), "kit-studio");
+    assert_eq!(FactorySampleSet::Kit808.id(), "kit-808");
+    assert_eq!(
+        FactorySampleSet::from_id("kit-808"),
+        Some(FactorySampleSet::Kit808)
+    );
+    // The kick and the snare are not the same hit.
+    let kit = FactorySampleSet::KitStudio.sample();
+    let kick = kit.zone_for(36).unwrap();
+    let snare = kit.zone_for(38).unwrap();
+    assert_eq!(kick.name, "Kick");
+    assert_eq!(snare.name, "Snare");
+    let crossings = |zone: &SampleZone| {
+        zone.samples
+            .windows(2)
+            .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+            .count() as f32
+            / (zone.samples.len() as f32 / zone.sample_rate as f32)
+    };
+    assert!(
+        crossings(snare) > crossings(kick) * 3.0,
+        "a snare is brighter than a kick: {} vs {} crossings a second",
+        crossings(snare),
+        crossings(kick)
+    );
+}
+
+/// A kit's zone lock through the voice: locked to the snare, every key is
+/// the snare, pitched by the key.
+#[test]
+fn a_kit_locked_to_one_hit_plays_it_on_every_key() {
+    let mut patch = patch_playing(FactorySampleSet::KitStudio);
+    let snare_at = patch.samples[0]
+        .zones
+        .iter()
+        .position(|zone| zone.name == "Snare")
+        .unwrap();
+    let Source::Synth(osc) = &mut patch.layers[0].source else {
+        unreachable!()
+    };
+    osc.sample.zone = Some(snare_at as u8);
+    let mut sampler = fontelle_core::Sampler::new(patch);
+    sampler.prepare(&fontelle_core::PrepareContext {
+        sample_rate: 48_000.0,
+        max_block_size: 512,
+    });
+    let store = fontelle_core::SampleStore::new();
+    let render = |sampler: &mut fontelle_core::Sampler, key: u8| -> Vec<f32> {
+        sampler.trigger(fontelle_core::NoteTrigger::new(key, 100));
+        let mut out = Vec::new();
+        for _ in 0..40 {
+            let mut left = [0.0f32; 512];
+            let mut right = [0.0f32; 512];
+            sampler.render(&store, &mut [&mut left[..], &mut right[..]]);
+            out.extend(left.iter().zip(&right).map(|(a, b)| (a + b) * 0.5));
+        }
+        sampler.release_all();
+        for _ in 0..40 {
+            let mut left = [0.0f32; 512];
+            let mut right = [0.0f32; 512];
+            sampler.render(&store, &mut [&mut left[..], &mut right[..]]);
+        }
+        out
+    };
+    // Over the first fifty milliseconds only: a hit an octave up is over
+    // twice as fast, so counted to the end the two would tie.
+    let crossings = |out: &[f32]| {
+        out[..2_400]
+            .windows(2)
+            .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+            .count() as f32
+    };
+    // Key 36 is the kick's key: locked, it is the snare an octave down —
+    // a bright hit, not the kick's thud, and lower than the snare at its
+    // own key.
+    let low = render(&mut sampler, 36);
+    let own = render(&mut sampler, 38);
+    let high = render(&mut sampler, 50);
+    assert!(
+        crossings(&low) > 0.4 * crossings(&own),
+        "on the kick's key the locked snare is still a snare: {} vs {} crossings",
+        crossings(&low),
+        crossings(&own)
+    );
+    assert!(
+        crossings(&high) > crossings(&own) * 1.5,
+        "and an octave up it is the snare pitched up: {} vs {}",
+        crossings(&high),
+        crossings(&own)
+    );
 }

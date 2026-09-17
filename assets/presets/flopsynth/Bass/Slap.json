@@ -128,7 +128,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Serial",
+                "filter_route": "F1",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -471,7 +471,7 @@
             }
           ]
         },
-        "output_db": 3.799999952316284,
+        "output_db": 0.6000000238418579,
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

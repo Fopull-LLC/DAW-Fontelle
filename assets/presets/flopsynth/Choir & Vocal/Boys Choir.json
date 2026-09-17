@@ -119,7 +119,7 @@
         "layers": [
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -8.299999237060547,
+            "gain_db": -15.0,
             "key_range": [
               0,
               127
@@ -138,7 +138,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Serial",
+                "filter_route": "F1",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -166,7 +166,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -17.299999237060547,
+            "gain_db": -24.0,
             "key_range": [
               0,
               127
@@ -185,7 +185,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Serial",
+                "filter_route": "F1",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -307,7 +307,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -33.29999923706055,
+            "gain_db": -40.0,
             "key_range": [
               0,
               127
@@ -493,7 +493,7 @@
             }
           ]
         },
-        "output_db": 12.0,
+        "output_db": 10.199999809265137,
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

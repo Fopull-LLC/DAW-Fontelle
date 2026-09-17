@@ -32,8 +32,8 @@
 //!   split as a `&str` and everything else is a field write (INVARIANT 1).
 
 use fontelle_dsp::{
-    FilterModel, FilterRoute, FilterSlope, Interpolation, MAX_UNISON, OscKind, SampleLoop, SvfMode,
-    SynthSource, WarpMode, WavetableId,
+    FilterModel, FilterRoute, FilterSlope, GRAIN_MAX_MS, GRAIN_MIN_MS, Interpolation, MAX_UNISON,
+    OscKind, SampleLoop, SvfMode, SynthSource, WarpMode, WavetableId,
 };
 use fontelle_types::{LfoWave, NoteDivision};
 
@@ -321,10 +321,14 @@ fn set_layer(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool {
     // and pan stay the addresses they have always been and only what is new
     // is new (INVARIANT 7).
     if let Some(field) = field.strip_prefix("synth/") {
-        let Source::Synth(osc) = &mut layer.source else {
+        let Source::Synth(osc) = &layer.source else {
             return false;
         };
-        return set_synth(osc, field, value);
+        let zones = zone_choices(&patch.samples, osc);
+        let Source::Synth(osc) = &mut patch.layers[index].source else {
+            return false;
+        };
+        return set_synth(osc, field, value, zones);
     }
     let is_oscillator = matches!(layer.source, crate::patch::Source::Oscillator(_));
     let is_synth = matches!(layer.source, Source::Synth(_));
@@ -365,7 +369,17 @@ fn set_layer(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool {
     true
 }
 
-fn set_synth(osc: &mut fontelle_dsp::SynthOsc, field: &str, value: f32) -> bool {
+/// How many positions a sample oscillator's zone chooser has: *any*, then
+/// one per zone of the recording it plays. One position — any — for an
+/// oscillator whose recording is not there.
+fn zone_choices(samples: &[crate::UserSample], osc: &fontelle_dsp::SynthOsc) -> usize {
+    match osc.source {
+        SynthSource::Sample(at) => 1 + samples.get(usize::from(at)).map_or(0, |s| s.zones.len()),
+        _ => 1,
+    }
+}
+
+fn set_synth(osc: &mut fontelle_dsp::SynthOsc, field: &str, value: f32, zones: usize) -> bool {
     match field {
         "table" => {
             // A noise layer has no table, and one given one would stop being
@@ -437,6 +451,15 @@ fn set_synth(osc: &mut fontelle_dsp::SynthOsc, field: &str, value: f32) -> bool 
         }
         "sample/loop_start" => osc.sample.loop_start = value,
         "sample/loop_end" => osc.sample.loop_end = value,
+        "sample/grain" => osc.sample.grain_ms = lerp_log(value, GRAIN_MIN_MS, GRAIN_MAX_MS),
+        "sample/spray" => osc.sample.spray = value,
+        // Position 0 is *any* — the zone whose range holds the key; the
+        // rest are the recording's zones in order.
+        "sample/zone" => {
+            osc.sample.zone = choice_index(value, zones)
+                .checked_sub(1)
+                .map(|zone| zone as u8);
+        }
         "string/stiffness" => osc.string.stiffness = value,
         "string/damping" => osc.string.damping = value,
         "string/strike" => osc.string.strike = lerp(value, STRIKE_MIN, STRIKE_MAX),
@@ -608,7 +631,7 @@ pub fn value(patch: &Patch, address: &str) -> Option<f32> {
                     let Source::Synth(osc) = &layer.source else {
                         return None;
                     };
-                    return synth_value(osc, field);
+                    return synth_value(osc, field, zone_choices(&patch.samples, osc));
                 }
                 return match field {
                     "gain" => Some(unlerp(layer.gain_db, GAIN_MIN_DB, GAIN_MAX_DB)),
@@ -654,7 +677,7 @@ pub fn value(patch: &Patch, address: &str) -> Option<f32> {
     }
 }
 
-fn synth_value(osc: &fontelle_dsp::SynthOsc, field: &str) -> Option<f32> {
+fn synth_value(osc: &fontelle_dsp::SynthOsc, field: &str, zones: usize) -> Option<f32> {
     match field {
         "kind" => {
             if matches!(osc.source, SynthSource::Noise) {
@@ -670,6 +693,19 @@ fn synth_value(osc: &fontelle_dsp::SynthOsc, field: &str) -> Option<f32> {
         }
         "sample/loop_start" => Some(osc.sample.loop_start.clamp(0.0, 1.0)),
         "sample/loop_end" => Some(osc.sample.loop_end.clamp(0.0, 1.0)),
+        "sample/grain" => Some(unlerp_log(
+            osc.sample.grain_ms.clamp(GRAIN_MIN_MS, GRAIN_MAX_MS),
+            GRAIN_MIN_MS,
+            GRAIN_MAX_MS,
+        )),
+        "sample/spray" => Some(osc.sample.spray.clamp(0.0, 1.0)),
+        "sample/zone" => Some(choice_value(
+            osc.sample
+                .zone
+                .map_or(0, |z| usize::from(z) + 1)
+                .min(zones - 1),
+            zones,
+        )),
         "string/stiffness" => Some(osc.string.stiffness.clamp(0.0, 1.0)),
         "string/damping" => Some(osc.string.damping.clamp(0.0, 1.0)),
         "string/strike" => Some(unlerp(osc.string.strike, STRIKE_MIN, STRIKE_MAX)),

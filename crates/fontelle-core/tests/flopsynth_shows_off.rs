@@ -20,7 +20,7 @@
 
 use fontelle_core::flopsynth::presets::FACTORY;
 use fontelle_core::{Patch, Source};
-use fontelle_dsp::{WarpMode, WavetableId};
+use fontelle_dsp::{SampleLoop, SynthSource, WarpMode, WavetableId};
 
 /// Every patch in the bank, built once.
 fn bank() -> Vec<(&'static str, Patch)> {
@@ -142,5 +142,120 @@ fn the_bank_is_big_enough_to_browse() {
         FACTORY.len() >= 260,
         "the bank is {} presets; the expansion was meant to take it past 260",
         FACTORY.len()
+    );
+}
+
+// ---------------------------------------------------------- the sampling ---
+//
+// > *"use flopsynths new sampling features to make a variety of new complex
+// > presets that can be experimental, synthy, modulating, instruments,
+// > percussion kits, growls, dubstep sounds"* — Ty, 2026-09-16
+//
+// The sample source can read a recording five ways, lock to one zone of it,
+// and be another oscillator's FM or RM modulator; the bank ships four sets of
+// recordings. Each of those is a thing a person opening the synthesiser
+// should be able to *find* — so each must be in some preset.
+
+/// A sample oscillator that is heard: on, or somebody's modulator.
+fn sampled<'a>(patch: &'a Patch) -> impl Iterator<Item = &'a fontelle_dsp::SynthOsc> + 'a {
+    let modulators: Vec<u8> = oscs(patch).filter_map(|osc| osc.modulator).collect();
+    patch
+        .layers
+        .iter()
+        .enumerate()
+        .filter_map(move |(index, layer)| match &layer.source {
+            Source::Synth(osc)
+                if matches!(osc.source, SynthSource::Sample(_))
+                    && (layer.gain_db > fontelle_core::SILENT_DB
+                        || modulators.contains(&(index as u8))) =>
+            {
+                Some(osc)
+            }
+            _ => None,
+        })
+}
+
+#[test]
+fn every_way_of_reading_a_recording_is_shown_off() {
+    let bank = bank();
+    let unused: Vec<&str> = SampleLoop::ALL
+        .iter()
+        .filter(|mode| {
+            !bank
+                .iter()
+                .any(|(_, patch)| sampled(patch).any(|osc| osc.sample.loop_mode == **mode))
+        })
+        .map(|m| m.label())
+        .collect();
+    assert!(
+        unused.is_empty(),
+        "ways of reading a recording no preset uses: {unused:?}"
+    );
+}
+
+#[test]
+fn every_factory_recording_is_played_by_something() {
+    use fontelle_core::factory_samples::FactorySampleSet;
+    let bank = bank();
+    let unused: Vec<&str> = FactorySampleSet::ALL
+        .iter()
+        .filter(|set| {
+            !bank.iter().any(|(_, patch)| {
+                patch
+                    .samples
+                    .iter()
+                    .position(|sample| sample.factory == Some(**set))
+                    .is_some_and(|at| {
+                        sampled(patch).any(|osc| osc.source == SynthSource::Sample(at as u8))
+                    })
+            })
+        })
+        .map(|s| s.label())
+        .collect();
+    assert!(
+        unused.is_empty(),
+        "recordings the bank ships and no preset plays: {unused:?}"
+    );
+}
+
+/// A recording as the thing that *modulates*: FM by a piano's decay is a
+/// sound that changes over the note the way no LFO does, and RM by a drum
+/// is a sub-harmonic nothing else here makes.
+#[test]
+fn a_recording_is_somebodys_modulator() {
+    let bank = bank();
+    let count = bank
+        .iter()
+        .filter(|(_, patch)| {
+            oscs(patch).any(|osc| {
+                osc.warp.needs_a_modulator()
+                    && osc.warp_amount > 0.0
+                    && osc.modulator.is_some_and(|from| {
+                        matches!(
+                            patch.layers.get(usize::from(from)).map(|l| &l.source),
+                            Some(Source::Synth(m)) if matches!(m.source, SynthSource::Sample(_))
+                        )
+                    })
+            })
+        })
+        .count();
+    assert!(
+        count >= 3,
+        "presets whose FM or RM modulator is a recording: {count}, and the \
+         bank should show that off more than once"
+    );
+}
+
+/// A zone lock: one hit of a kit across the keyboard.
+#[test]
+fn a_kit_hit_is_an_instrument_somewhere() {
+    let bank = bank();
+    let count = bank
+        .iter()
+        .filter(|(_, patch)| sampled(patch).any(|osc| osc.sample.zone.is_some()))
+        .count();
+    assert!(
+        count >= 3,
+        "presets locked to one zone of a recording: {count}"
     );
 }

@@ -4,6 +4,10 @@
 //! > more realistic if you can find a grand piano one shot to use."* — Ty,
 //! > 2026-09-16
 //!
+//! > *"use flopsynths new sampling features to make a variety of new complex
+//! > presets that can be experimental, synthy, modulating, instruments,
+//! > percussion kits, growls, dubstep sounds"* — Ty, later the same day
+//!
 //! A `SynthSource::Sample` oscillator plays one of the patch's own
 //! recordings (`Patch::samples`), which the patch carries whole so a preset
 //! made from a drop opens anywhere. The factory Grand Piano plays a sampled
@@ -16,9 +20,14 @@
 //! the first time a set is asked for and shared from then on — a project
 //! with four piano channels holds one piano.
 //!
-//! The recordings are the Salamander Grand Piano (Alexander Holm, CC BY
-//! 3.0); `assets/flopsynth/samples/grand/README.md` is the credit and says
-//! how they were cut (`fontelle-app/examples/grand_samples.rs`).
+//! The grand's recordings are the Salamander Grand Piano (Alexander Holm,
+//! CC BY 3.0); `assets/flopsynth/samples/grand/README.md` is the credit and
+//! says how they were cut (`fontelle-app/examples/grand_samples.rs`). The
+//! **kits** are this program's own drum machine, every General MIDI hit of
+//! its Studio and 808 kits played once through the kit's bus
+//! (`fontelle-app/examples/kit_samples.rs`) — one recording per key, each
+//! named as the roll names it, so a preset can be a kit and a zone lock
+//! can make one hit an instrument.
 
 use std::sync::{Arc, OnceLock};
 
@@ -31,10 +40,19 @@ pub enum FactorySampleSet {
     GrandSoft,
     /// The grand played hard (velocity 120).
     GrandHard,
+    /// The drum machine's Studio kit: acoustic, every GM hit on its own key.
+    KitStudio,
+    /// The drum machine's 808.
+    Kit808,
 }
 
 impl FactorySampleSet {
-    pub const ALL: [Self; 2] = [Self::GrandSoft, Self::GrandHard];
+    pub const ALL: [Self; 4] = [
+        Self::GrandSoft,
+        Self::GrandHard,
+        Self::KitStudio,
+        Self::Kit808,
+    ];
 
     /// The name a patch file stores. Stable: a file written by this build
     /// names the set by it, so it can never change without a migration.
@@ -42,6 +60,8 @@ impl FactorySampleSet {
         match self {
             Self::GrandSoft => "grand-soft",
             Self::GrandHard => "grand-hard",
+            Self::KitStudio => "kit-studio",
+            Self::Kit808 => "kit-808",
         }
     }
 
@@ -54,6 +74,8 @@ impl FactorySampleSet {
         match self {
             Self::GrandSoft => "Grand (soft)",
             Self::GrandHard => "Grand (hard)",
+            Self::KitStudio => "Studio kit",
+            Self::Kit808 => "808 kit",
         }
     }
 
@@ -66,15 +88,29 @@ impl FactorySampleSet {
     }
 
     fn decode(self) -> UserSample {
-        let files: &[(u8, &[u8])] = match self {
-            Self::GrandSoft => grand::SOFT,
-            Self::GrandHard => grand::HARD,
+        let zones = match self {
+            Self::GrandSoft => Self::keyboard(grand::SOFT),
+            Self::GrandHard => Self::keyboard(grand::HARD),
+            Self::KitStudio => Self::kit(kit::STUDIO),
+            Self::Kit808 => Self::kit(kit::EIGHT_OH_EIGHT),
         };
+        UserSample {
+            name: self.label().to_string(),
+            factory: Some(self),
+            zones,
+        }
+    }
+
+    /// An instrument sampled every few keys: the zones tile the keyboard
+    /// between their roots, so every key is a recording transposed by at
+    /// most a couple of semitones.
+    fn keyboard(files: &[(u8, &[u8])]) -> Vec<SampleZone> {
         let mut zones: Vec<SampleZone> = files
             .iter()
             .filter_map(|(root, wav)| {
                 let (sample_rate, samples) = read_wav_mono16(wav)?;
                 Some(SampleZone {
+                    name: String::new(),
                     root_key: *root,
                     fine_cents: 0.0,
                     key_range: (0, 127),
@@ -88,11 +124,29 @@ impl FactorySampleSet {
         for (zone, range) in zones.iter_mut().zip(key_ranges(&roots)) {
             zone.key_range = range;
         }
-        UserSample {
-            name: self.label().to_string(),
-            factory: Some(self),
-            zones,
-        }
+        zones
+    }
+
+    /// A kit: one hit per key, each its own key alone and named for the
+    /// roll — the shape `drum_kit` gives a kit's layers, which is what lets
+    /// `fontelle_app::key_map` write the names on the rows.
+    fn kit(files: &[(&str, &[u8])]) -> Vec<SampleZone> {
+        crate::GM_DRUM_MAP
+            .iter()
+            .zip(files)
+            .filter_map(|(slot, (name, wav))| {
+                debug_assert_eq!(slot.name, *name, "the kit's files are in GM order");
+                let (sample_rate, samples) = read_wav_mono16(wav)?;
+                Some(SampleZone {
+                    name: slot.name.to_string(),
+                    root_key: slot.key,
+                    fine_cents: 0.0,
+                    key_range: (slot.key, slot.key),
+                    sample_rate,
+                    samples: Arc::from(samples),
+                })
+            })
+            .collect()
     }
 }
 
@@ -163,4 +217,41 @@ mod grand {
     }
     pub(super) static SOFT: &[(u8, &[u8])] = keys!("soft");
     pub(super) static HARD: &[(u8, &[u8])] = keys!("hard");
+}
+
+/// The kits' files, one per General MIDI hit in `GM_DRUM_MAP`'s order,
+/// named as `kit_samples` names them (the roll's name, spaces as dashes).
+mod kit {
+    macro_rules! kit {
+        ($dir:literal: $(($name:literal, $file:literal)),* $(,)?) => {
+            &[$(($name, include_bytes!(concat!(
+                "../../../assets/flopsynth/samples/kit/", $dir, "/", $file, ".wav"
+            )))),*]
+        };
+    }
+    macro_rules! hits {
+        ($dir:literal) => {
+            kit!($dir:
+                ("Kick 2", "Kick-2"), ("Kick", "Kick"), ("Rim", "Rim"),
+                ("Snare", "Snare"), ("Clap", "Clap"), ("Snare 2", "Snare-2"),
+                ("Floor Tom", "Floor-Tom"), ("Closed Hat", "Closed-Hat"),
+                ("Tom Low", "Tom-Low"), ("Pedal Hat", "Pedal-Hat"),
+                ("Tom Mid", "Tom-Mid"), ("Open Hat", "Open-Hat"),
+                ("Tom Mid 2", "Tom-Mid-2"), ("Tom High", "Tom-High"),
+                ("Crash", "Crash"), ("Tom Top", "Tom-Top"), ("Ride", "Ride"),
+                ("China", "China"), ("Ride Bell", "Ride-Bell"),
+                ("Tambourine", "Tambourine"), ("Splash", "Splash"),
+                ("Cowbell", "Cowbell"), ("Crash 2", "Crash-2"),
+                ("Vibraslap", "Vibraslap"), ("Ride 2", "Ride-2"),
+                ("Bongo High", "Bongo-High"), ("Bongo Low", "Bongo-Low"),
+                ("Conga Mute", "Conga-Mute"), ("Conga High", "Conga-High"),
+                ("Conga Low", "Conga-Low"), ("Timbale High", "Timbale-High"),
+                ("Timbale Low", "Timbale-Low"), ("Agogo High", "Agogo-High"),
+                ("Agogo Low", "Agogo-Low"), ("Cabasa", "Cabasa"),
+                ("Maraca", "Maraca"),
+            )
+        };
+    }
+    pub(super) static STUDIO: &[(&str, &[u8])] = hits!("studio");
+    pub(super) static EIGHT_OH_EIGHT: &[(&str, &[u8])] = hits!("808");
 }

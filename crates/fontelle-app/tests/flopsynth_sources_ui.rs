@@ -155,8 +155,9 @@ fn a_sample_card_has_its_loop_and_start_and_draws_the_recording() {
         }
         other => panic!("expected the recording's picture, got {other:?}"),
     }
-    // Turn the loop on and the picture shows the region.
-    set(&mut session, "patch/layer[1]/synth/sample/loop", 1.0);
+    // Turn the loop on (the second of the five ways of reading) and the
+    // picture shows the region.
+    set(&mut session, "patch/layer[1]/synth/sample/loop", 0.25);
     set(&mut session, "patch/layer[1]/synth/position", 0.25);
     match card(&session, "OSC B").picture {
         FlopsynthPicture::Sound {
@@ -323,4 +324,104 @@ fn every_control_on_every_kind_of_card_is_readable() {
             .iter()
             .any(|(a, _)| a == "patch/layer[4]/synth/kind")
     );
+}
+
+/// The grain cloud's own knobs stand where the loop points stood — a cloud
+/// has no loop — and a recording with more than one zone gets a chooser
+/// that can lock the oscillator to one of them.
+#[test]
+fn a_grain_card_swaps_the_loop_points_for_grain_and_spray_and_a_kit_lists_its_hits() {
+    use fontelle_core::factory_samples::FactorySampleSet;
+    let mut session = a_flopsynth();
+    session
+        .load_factory_sample(1, FactorySampleSet::KitStudio)
+        .expect("the kit loads");
+    let osc = card(&session, "OSC B");
+    let list = captions(&osc);
+    assert_eq!(
+        caption_of(&list, "patch/layer[1]/synth/sample/loop_start"),
+        "loop in"
+    );
+    assert!(!has(&list, "patch/layer[1]/synth/sample/grain"));
+    assert!(!has(&list, "patch/layer[1]/synth/sample/spray"));
+    // The zone chooser: *any*, then every hit by the name the roll gives it.
+    let zone = osc
+        .group
+        .params
+        .iter()
+        .find(|p| p.address.as_str() == "patch/layer[1]/synth/sample/zone")
+        .expect("a kit's card has a zone chooser");
+    assert_eq!(zone.label, "zone");
+    assert_eq!(zone.display, "any");
+    let ParamKind::Choice(options) = &zone.kind else {
+        panic!("the zone is a chooser");
+    };
+    assert_eq!(options.len(), 37);
+    assert_eq!(options[0], "any");
+    assert_eq!(options[1], "Kick 2");
+    assert_eq!(options[4], "Snare");
+    set(&mut session, "patch/layer[1]/synth/sample/zone", 4.0 / 36.0);
+    let osc = card(&session, "OSC B");
+    let zone = osc
+        .group
+        .params
+        .iter()
+        .find(|p| p.address.as_str() == "patch/layer[1]/synth/sample/zone")
+        .unwrap();
+    assert_eq!(zone.display, "Snare");
+    // A recording of one zone has nothing to choose between.
+    let dir = std::env::temp_dir().join(format!("fontelle-grainui-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let samples: Vec<f32> = (0..24_000)
+        .map(|i| (std::f32::consts::TAU * 440.0 * i as f32 / 48_000.0).sin() * 0.8)
+        .collect();
+    let path = dir.join("Tone A4.wav");
+    std::fs::write(
+        &path,
+        fontelle_assets::fixtures::build_wav(48_000, 1, &samples),
+    )
+    .unwrap();
+    session.load_sample(2, &path).expect("loads");
+    let list = captions(&card(&session, "OSC C"));
+    assert!(
+        !has(&list, "patch/layer[2]/synth/sample/zone"),
+        "one zone is no choice"
+    );
+
+    // Grains: the last way of reading. The loop points go, the grain and
+    // the spray come, and the picture shows where the grains may land.
+    set(&mut session, "patch/layer[1]/synth/sample/loop", 1.0);
+    set(&mut session, "patch/layer[1]/synth/position", 0.5);
+    set(&mut session, "patch/layer[1]/synth/sample/spray", 0.2);
+    let osc = card(&session, "OSC B");
+    let list = captions(&osc);
+    assert!(!has(&list, "patch/layer[1]/synth/sample/loop_start"));
+    assert!(!has(&list, "patch/layer[1]/synth/sample/loop_end"));
+    assert_eq!(
+        caption_of(&list, "patch/layer[1]/synth/sample/grain"),
+        "grain"
+    );
+    assert_eq!(
+        caption_of(&list, "patch/layer[1]/synth/sample/spray"),
+        "spray"
+    );
+    let grain = osc
+        .group
+        .params
+        .iter()
+        .find(|p| p.address.as_str() == "patch/layer[1]/synth/sample/grain")
+        .unwrap();
+    assert_eq!(grain.display, "80 ms");
+    assert!(matches!(grain.kind, ParamKind::Knob));
+    match osc.picture {
+        FlopsynthPicture::Sound {
+            start, loop_region, ..
+        } => {
+            assert!((start - 0.5).abs() < 1e-3);
+            let (a, b) = loop_region.expect("the spray shows as a region");
+            assert!((a - 0.3).abs() < 1e-3 && (b - 0.7).abs() < 1e-3, "{a}..{b}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

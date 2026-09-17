@@ -162,4 +162,8 @@ cut from the **Salamander Grand Piano** by Alexander Holm, published under
 soundfont by the [FreePats project](https://freepats.zenvoid.org/Piano/acoustic-grand-piano.html);
 they stay under that licence, with that credit.
 
+The factory kits' recordings (`assets/flopsynth/samples/kit/`) are Fontelle's
+own drum machine, cut hit by hit; `assets/flopsynth/samples/kit/README.md` says
+how.
+
 "SoundFont" is a Creative/E-mu trademark and is used here only descriptively.

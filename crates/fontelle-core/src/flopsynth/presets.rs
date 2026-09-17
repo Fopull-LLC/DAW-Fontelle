@@ -36,8 +36,8 @@
 //!   the instrument's own room, never the mix's hall.
 
 use fontelle_dsp::{
-    EnvelopeCurve, FilterModel, FilterRoute, FilterSlope, SvfMode, SynthSource, WarpMode,
-    WavetableId,
+    EnvelopeCurve, FilterModel, FilterRoute, FilterSlope, SampleLoop, SvfMode, SynthSource,
+    WarpMode, WavetableId,
 };
 use fontelle_types::{
     ChorusConfig, ChorusMode, DelayConfig, DistortionConfig, DistortionCurve, EffectConfig,
@@ -92,10 +92,27 @@ pub enum FlopsynthCategory {
     Cinematic,
     LoFiAndTape,
     Modular,
+    // ---- the sampled expansion (2026-09-16) ----
+    //
+    // > *"use flopsynths new sampling features to make a variety of new
+    // > complex presets that can be experimental, synthy, modulating,
+    // > instruments, percussion kits, growls, dubstep sounds"*
+    //
+    // Four shelves for what a **recording** in an oscillator can be that a
+    // table cannot: the sampled grand as other keyboards, the grain cloud
+    // and the backwards read as textures, the drum machine's kits as kits
+    // and as instruments, and the recordings as the thing that *modulates*
+    // a growl. On shelves of their own for the reason the first expansion
+    // was: a piano remade eleven ways would collide with the eleven pianos
+    // already on Keys.
+    SampledKeys,
+    GrainsAndClouds,
+    KitsAndHits,
+    GrowlsAndScreams,
 }
 
 impl FlopsynthCategory {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 26] = [
         Self::Bass,
         Self::Lead,
         Self::Pad,
@@ -118,6 +135,10 @@ impl FlopsynthCategory {
         Self::Cinematic,
         Self::LoFiAndTape,
         Self::Modular,
+        Self::SampledKeys,
+        Self::GrainsAndClouds,
+        Self::KitsAndHits,
+        Self::GrowlsAndScreams,
     ];
 
     /// The folder name and the heading.
@@ -148,6 +169,10 @@ impl FlopsynthCategory {
             Self::Cinematic => "Cinematic",
             Self::LoFiAndTape => "Lo-Fi & Tape",
             Self::Modular => "Modular",
+            Self::SampledKeys => "Sampled Keys",
+            Self::GrainsAndClouds => "Grains & Clouds",
+            Self::KitsAndHits => "Kits & Hits",
+            Self::GrowlsAndScreams => "Growls & Screams",
         }
     }
 }
@@ -254,6 +279,56 @@ impl Build {
         // half-way is the middle of a table's frames, not of a note.
         osc.position = 0.0;
         self.patch.layers[layer].gain_db = gain_db;
+        self
+    }
+
+    /// How a recording is read — once, round a loop, bouncing between the
+    /// loop points, backwards, or as a cloud of grains
+    /// (`fontelle_dsp::SampleLoop`).
+    fn read(mut self, layer: usize, mode: SampleLoop) -> Self {
+        self.osc_mut(layer).sample.loop_mode = mode;
+        self
+    }
+
+    /// The loop points, as fractions of the recording.
+    fn loop_points(mut self, layer: usize, start: f32, end: f32) -> Self {
+        let osc = self.osc_mut(layer);
+        osc.sample.loop_start = start;
+        osc.sample.loop_end = end;
+        self
+    }
+
+    /// A grain cloud: the recording read as grains `ms` long, each landing
+    /// within `spray` of the start knob.
+    fn grains(mut self, layer: usize, ms: f32, spray: f32) -> Self {
+        let osc = self.osc_mut(layer);
+        osc.sample.loop_mode = SampleLoop::Grains;
+        osc.sample.grain_ms = ms;
+        osc.sample.spray = spray;
+        self
+    }
+
+    /// Lock the layer to one zone of its recording, by the name the roll
+    /// gives the hit — every key then plays that hit, transposed from its
+    /// own key. A factory row naming a hit the kit has not got is a mistake
+    /// in the row, so it is a panic here rather than a silent layer.
+    fn zone(mut self, layer: usize, name: &str) -> Self {
+        let SynthSource::Sample(at) = self.osc_mut(layer).source else {
+            unreachable!("a zone lock is a recording's");
+        };
+        let at = self.patch.samples[usize::from(at)]
+            .zones
+            .iter()
+            .position(|zone| zone.name == name)
+            .unwrap_or_else(|| unreachable!("the kit has no hit called {name}"));
+        self.osc_mut(layer).sample.zone = Some(at as u8);
+        self
+    }
+
+    /// The note's pitch does not reach this layer: a hit plays at its own
+    /// pitch on every key, a drone stays where it is.
+    fn untracked(mut self, layer: usize) -> Self {
+        self.osc_mut(layer).key_track = false;
         self
     }
 
@@ -642,6 +717,18 @@ impl Build {
         self
     }
 
+    /// One voice that **starts again** on every note, gliding between
+    /// touching ones. What a one-shot recording wants: a legato take-over
+    /// keeps the read head where it is, so the second note of a slide on
+    /// an 808 kick would be the kick's tail at the new pitch. Retriggered,
+    /// every note is a kick, and the glide is still the slide.
+    fn mono_retrig(mut self, glide_s: f32) -> Self {
+        self.patch.voice_config.retrigger = crate::voice::RetriggerMode::Mono;
+        self.patch.voice_config.glide_time_s = glide_s;
+        self.patch.voice_config.glide_legato_only = true;
+        self
+    }
+
     /// The loudness trim §7.4 matches the bank on.
     ///
     /// One number per preset, produced by the measuring pass
@@ -807,6 +894,15 @@ fn choir(vowel: f32, attack: f32) -> Build {
         .uni(B, 3, 7.0)
         .noise(0.8, -40.0)
         .filter_route(NOISE, FilterRoute::F2)
+        // The voices go through the formant filter **alone**. They sat on
+        // the Init patch's serial route until 2026-09-17, which runs
+        // through Filter 2 as well — and Filter 2 is the breath's 3 kHz
+        // band-pass, so every choir had its fundamental thirty decibels
+        // down at C3 and read as air with a faint vowel behind it (the
+        // organ shelf's fault of 2026-09-13, found again by
+        // `examples/preset_audit.rs`).
+        .filter_route(A, FilterRoute::F1)
+        .filter_route(B, FilterRoute::F1)
         // A high Q, because the vowel has to be **decisive**: at a gentle
         // one the Choir table's own spectrum is what you hear and every
         // vowel setting is the same sound.
@@ -1156,6 +1252,66 @@ fn drum(table: WavetableId, drop_semitones: f32, drop_s: f32, decay: f32) -> Bui
 // One row per preset, in the order the browser lists them. A row is a
 // sentence: the archetype it is, and what is different about it.
 
+// ------------------------------------------------ the sampled archetypes ---
+//
+// > *"use flopsynths new sampling features to make a variety of new complex
+// > presets that can be experimental, synthy, modulating, instruments,
+// > percussion kits, growls, dubstep sounds"* — Ty, 2026-09-16
+//
+// Three shapes under the four sampled shelves. What they share with the
+// archetypes above is that each is the answer to "what *is* this", written
+// once; what is new is that the source is a recording, and the shape says
+// how it is read.
+
+use crate::factory_samples::FactorySampleSet;
+
+/// The sampled grand on one oscillator, everything else off, the strike
+/// starting where the recording does and the recording's own decay as the
+/// note's. What every remade piano starts from: `Keys: "Grand Piano"` is
+/// the *faithful* one; these are the grand as something else.
+fn grand(set: FactorySampleSet, gain_db: f32) -> Build {
+    init()
+        .sampled(A, gain_db, set)
+        .filter_route(A, FilterRoute::F1)
+        .off(B)
+        .off(C)
+        .off(SUB)
+        .amp(0.0, 0.0, 1.0, 0.25)
+        .curve(0, EnvelopeCurve::Decibel, 0.0)
+        .inverted(ModSource::Velocity, ModDest::Amp, 0.45)
+        .pan(A, -0.4)
+        .route(ModSource::Key, ModDest::LayerPan(A as u8), 0.85)
+}
+
+/// A kit: the drum machine's recordings, one on every key, played as they
+/// are — no filter, an envelope that is only a release so the hit's own
+/// decay is what is heard, and velocity as the hit's weight. The toms and
+/// the percussion sit across the field by key, the way a kit is set up.
+fn kit(set: FactorySampleSet) -> Build {
+    init()
+        .sampled(A, -6.0, set)
+        .filter_route(A, FilterRoute::Bypass)
+        .off(B)
+        .off(C)
+        .off(SUB)
+        .no_filter()
+        .amp(0.0, 0.0, 1.0, 0.35)
+        .curve(0, EnvelopeCurve::Decibel, 0.0)
+        .inverted(ModSource::Velocity, ModDest::Amp, 0.3)
+        .pan(A, -0.25)
+        .route(ModSource::Key, ModDest::LayerPan(A as u8), 0.5)
+}
+
+/// One hit of a kit as an instrument: locked to the zone, pitched by the
+/// key from the hit's own, and centred rather than laid across the field.
+fn hit(set: FactorySampleSet, name: &str) -> Build {
+    kit(set)
+        .zone(A, name)
+        .pan(A, 0.0)
+        .filter_route(A, FilterRoute::F1)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 20_000.0, 0.2)
+}
+
 macro_rules! bank {
     ($($category:ident : $name:literal => $build:expr,)*) => {
         /// Every factory preset, in the order the browser lists them.
@@ -1313,6 +1469,9 @@ bank! {
         .mono(0.05)
         .out(3.7),
     Bass: "Slap" => bass(WavetableId::Square, 700.0, 0.1)
+        // The body around the slap's high-pass (F2), not through it: on
+        // the serial route the bass was gone and the slap was all thumb.
+        .filter_route(A, FilterRoute::F1)
         .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 620.0, 0.78)
         .character(0, 0.5)
         .env(1, 0.0, 0.055, 0.0, 0.05)
@@ -1324,7 +1483,7 @@ bank! {
         .env(2, 0.0, 0.012, 0.0, 0.01)
         .route(ModSource::Envelope(2), ModDest::LayerGain(NOISE as u8), 0.4)
         .fx(drive_fx(DistortionCurve::SoftClip, 8.0, 0.25))
-        .out(3.8),
+        .out(0.6),
     Bass: "Rubber" => bass(WavetableId::Square, 500.0, 0.18)
         .warp(A, WarpMode::Mirror, 0.45)
         .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 460.0, 0.55)
@@ -1568,7 +1727,7 @@ bank! {
         .route(ModSource::Lfo(0), ModDest::OscPosition(A as u8), 0.4)
         .fx(reverb(0.85, 0.45))
         .out(7.5),
-    Pad: "Choir Pad" => choir(0.0, 0.6).out(24.0),
+    Pad: "Choir Pad" => choir(0.0, 0.6).out(14.7),
     Pad: "String Pad" => strings(2_200.0, 0.45, 3.0)
         .fx(ensemble(4, 0.45))
         .fx(reverb(0.7, 0.35))
@@ -1617,7 +1776,7 @@ bank! {
         .pos(A, 0.5)
         .uni(A, 4, 9.0)
         .noise(0.7, -32.0)
-        .out(33.7),
+        .out(23.1),
     Pad: "Filtered Saw" => pad(WavetableId::Saw, 1_000.0, 0.02, 1.4)
         .uni(A, 4, 12.0)
         .filter(0, FilterModel::Clean, SvfMode::Lowpass, 1_000.0, 0.8)
@@ -1659,6 +1818,9 @@ bank! {
         .filter(1, FilterModel::Clean, SvfMode::Lowpass, 6_000.0, 0.5)
         .out(8.1),
     Pad: "Ice Field" => pad(WavetableId::BrightStack, 14_000.0, 0.9, 2.4)
+        // The stack around the wind's 5 kHz high-pass, not through it.
+        .filter_route(A, FilterRoute::F1)
+        .filter_route(B, FilterRoute::F1)
         .pos(A, 0.5)
         .uni(A, 4, 9.0)
         .off(B)
@@ -1671,7 +1833,7 @@ bank! {
         .route(ModSource::Macro(2), ModDest::LayerGain(NOISE as u8), 0.25)
         .mac(2, "Air")
         .fx(reverb(0.95, 0.5))
-        .out(25.7),
+        .out(14.5),
     // A ladder in **band-pass**, swelling: the pad that is a formant rather
     // than a wall, which is the one shape a low-pass pad cannot reach.
     Pad: "Reso Swell" => pad(WavetableId::Saw, 600.0, 1.8, 3.0)
@@ -2074,11 +2236,16 @@ bank! {
         .fx(reverb(0.4, 0.2))
         .out(1.2),
     Keys: "Melodica" => init()
-        .osc(A, WavetableId::Square, -13.0)
+        // A narrow pulse rather than a square: a free reed is asymmetric,
+        // and as a square this read as the Wurlitzer with breath.
+        .osc(A, WavetableId::Pulse, -13.0)
+        .pos(A, 0.25)
+        .filter_route(A, FilterRoute::F1)
         .off(B).off(C).off(SUB)
         .noise(0.35, -28.0)
         .filter_route(NOISE, FilterRoute::F2)
-        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 3_200.0, 0.6)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 2_600.0, 0.7)
+        .key_track(0, 0.5)
         .key_track(0, 0.5)
         .filter(1, FilterModel::Clean, SvfMode::Bandpass, 2_200.0, 1.0)
         .amp(0.02, 0.25, 0.7, 0.1)
@@ -2088,7 +2255,7 @@ bank! {
         .route(ModSource::Macro(0), ModDest::LayerGain(NOISE as u8), 0.2)
         .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.3)
         .mac(0, "Breath").mac(1, "Tone")
-        .out(8.3),
+        .out(10.1),
     Keys: "Clav Wah" => init()
         .osc(A, WavetableId::Pulse, -12.0)
         .pos(A, 0.7)
@@ -2104,16 +2271,28 @@ bank! {
         .mac(0, "Wah rate").mac(1, "Resonance")
         .fx(drive_fx(DistortionCurve::SoftClip, 6.0, 0.2))
         .out(13.7),
-    Keys: "Electric Grand" => electric_piano(0.12, 4.0)
+    // The CP-70: real strings under a pickup, not a tine — the sampled
+    // grand through a pickup's band (nothing under 100 Hz, a corner at
+    // 4.5 kHz that follows the key), a little of a ladder's drive for the
+    // pickup's edge, the chorus every CP-70 was played through, and a
+    // decay shorter than a grand's because the strings are.
+    Keys: "Electric Grand" => grand(FactorySampleSet::GrandHard, -4.0)
         .uni(A, 2, 4.0)
-        .semis(B, 24)
-        .amp(0.002, 3.5, 0.15, 0.4)
-        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 5_000.0, 0.5)
+        .blend(A, 0.6)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 4_500.0, 0.25)
+        .drive(0, 0.25)
         .key_track(0, 0.6)
-        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.35)
-        .fx(chorus(2, 0.15))
+        .filter(1, FilterModel::Clean, SvfMode::Highpass, 100.0, 0.3)
+        .filter_route(A, FilterRoute::Serial)
+        .amp(0.0, 3.5, 0.0, 0.4)
+        .curve(0, EnvelopeCurve::Decibel, 0.0)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.3)
+        .route(ModSource::Macro(0), ModDest::FilterCutoff(0), 0.3)
+        .route(ModSource::Macro(1), ModDest::FilterDrive(0), 0.5)
+        .mac(0, "Brightness").mac(1, "Pickup")
+        .fx(chorus(2, 0.25))
         .fx(reverb(0.4, 0.2))
-        .out(-1.5),
+        .out(-5.2),
     Keys: "Rhodes Bell" => electric_piano(0.45, 2.2)
         .semis(B, 31)
         .amp(0.002, 2.2, 0.12, 0.3)
@@ -2188,20 +2367,42 @@ bank! {
         .filter_route(A, FilterRoute::Serial)
         .filter(1, FilterModel::Clean, SvfMode::Lowpass, 4_000.0, 0.5)
         .out(14.3),
-    Pluck: "Pizzicato" => pluck(WavetableId::Saw, 6_000.0, 0.22)
-        .uni(A, 4, 14.0)
-        .width(A, 0.7)
-        .env(1, 0.0, 0.05, 0.0, 0.04)
-        .env_to_cut(0.35)
+    // A plucked string is a struck one without the hammer: the sampled
+    // grand from thirty milliseconds in, dark, and over in a third of a
+    // second.
+    Pluck: "Pizzicato" => grand(FactorySampleSet::GrandSoft, -4.0)
+        .pos(A, 0.015)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 3_200.0, 0.3)
+        .key_track(0, 0.5)
+        .amp(0.0, 0.35, 0.0, 0.12)
+        .curve(0, EnvelopeCurve::Decibel, 0.0)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.3)
+        .route(ModSource::Macro(0), ModDest::FilterCutoff(0), 0.3)
+        .route(ModSource::Macro(1), ModDest::EnvelopeStageTime(0, 2), 0.6)
+        .mac(0, "Tone").mac(1, "Length")
         .fx(reverb(0.3, 0.25))
-        .out(6.0),
-    Pluck: "Harp" => pluck(WavetableId::Triangle, 3_000.0, 1.8)
-        .uni(A, 1, 0.0)
-        .osc(B, WavetableId::Saw, -21.0)
-        .semis(B, 12)
+        .out(1.3),
+    // A real string, plucked: the sampled grand with its hammer skipped —
+    // the start knob past the first thirty milliseconds — so what is left
+    // is the string's own ring, and a string is what a harp has. On a
+    // table this was a triangle with an octave over it (2026-09-17: *"make
+    // sure all the presets are up to par"*).
+    Pluck: "Harp" => grand(FactorySampleSet::GrandSoft, -4.0)
+        .pos(A, 0.015)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 5_500.0, 0.2)
         .key_track(0, 0.6)
+        .filter(1, FilterModel::Clean, SvfMode::Highpass, 120.0, 0.3)
+        .filter_route(A, FilterRoute::Serial)
+        .amp(0.0, 1.8, 0.0, 0.5)
+        .curve(0, EnvelopeCurve::Decibel, 0.0)
+        .inverted(ModSource::Key, ModDest::EnvelopeStageTime(0, 2), 0.5)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.25)
+        .route(ModSource::Macro(0), ModDest::FilterCutoff(0), 0.3)
+        .route(ModSource::Macro(1), ModDest::EnvelopeStageTime(0, 2), 0.6)
+        .mac(0, "Tone").mac(1, "Length")
         .fx(delay(NoteDivision::Sixteenth, 0.25, 0.1))
-        .out(1.4),
+        .fx(reverb(0.4, 0.2))
+        .out(0.0),
     Pluck: "Marimba" => init()
         .amp(0.001, 0.9, 0.0, 0.25)
         .osc(A, WavetableId::Sine, -11.0)
@@ -2303,17 +2504,20 @@ bank! {
     Pluck: "Sitar" => pluck(WavetableId::Grit, 7_000.0, 1.6)
         .pos(A, 0.35)
         .uni(A, 2, 5.0)
-        .osc(B, WavetableId::Sawstack, -22.0)
+        .osc(B, WavetableId::Sawstack, -15.0)
         .semis(B, 12)
         .filter(0, FilterModel::Comb, SvfMode::Lowpass, 280.0, 0.2)
         .character(0, 0.9)
         .key_track(0, 1.0)
-        .filter_route(A, FilterRoute::Serial)
+        // The string to the comb alone; the octave layer is what goes
+        // through the jawari's band. Through both, the note had no
+        // fundamental at all.
+        .filter_route(A, FilterRoute::F1)
         .filter_route(B, FilterRoute::F2)
         .filter(1, FilterModel::Clean, SvfMode::Bandpass, 3_000.0, 0.9)
         .amp(0.001, 1.6, 0.0, 0.5)
         .fx(reverb(0.6, 0.3))
-        .out(14.8),
+        .out(1.8),
     Pluck: "Ukulele" => pluck(WavetableId::Triangle, 5_000.0, 0.55)
         .semis(A, 12)
         .uni(A, 1, 0.0)
@@ -2401,11 +2605,23 @@ bank! {
         .slope(0, FilterSlope::Db12)
         .fx(ensemble(4, 0.45))
         .out(10.0),
-    Strings: "Pizz Section" => strings(2_500.0, 0.001, 0.15)
-        .amp(0.001, 0.28, 0.0, 0.1)
-        .uni(A, 4, 14.0)
+    // The section: the same plucked string three times a few cents apart,
+    // wide, through the ensemble, in a hall.
+    Strings: "Pizz Section" => grand(FactorySampleSet::GrandSoft, -6.0)
+        .pos(A, 0.015)
+        .uni(A, 3, 9.0)
+        .width(A, 0.8)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 2_800.0, 0.3)
+        .key_track(0, 0.5)
+        .amp(0.003, 0.4, 0.0, 0.15)
+        .curve(0, EnvelopeCurve::Decibel, 0.0)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.3)
+        .route(ModSource::Macro(0), ModDest::FilterCutoff(0), 0.3)
+        .route(ModSource::Macro(1), ModDest::OscUnisonDetune(A as u8), 0.5)
+        .mac(0, "Tone").mac(1, "Section")
+        .fx(ensemble(3, 0.35))
         .fx(reverb(0.7, 0.35))
-        .out(7.4),
+        .out(-0.9),
     Strings: "Baroque" => strings(2_500.0, 0.02, 0.18)
         .osc(A, WavetableId::Sawstack, -16.0)
         .pos(A, 0.3)
@@ -2502,10 +2718,12 @@ bank! {
         .out(6.2),
     BrassAndWinds: "Flute" => init()
         .osc(A, WavetableId::Sine, -12.0)
+        .filter_route(A, FilterRoute::F1)
         .osc(B, WavetableId::Triangle, -28.0)
         .semis(B, 12)
+        .filter_route(B, FilterRoute::F1)
         .off(C).off(SUB)
-        .noise(0.25, -42.0)
+        .noise(0.25, -37.0)
         .filter_route(NOISE, FilterRoute::F2)
         .filter(1, FilterModel::Clean, SvfMode::Bandpass, 2_500.0, 1.2)
         .no_filter()
@@ -2520,7 +2738,7 @@ bank! {
         .route(ModSource::Macro(1), ModDest::LfoDepth(0), 0.6)
         .mac(0, "Breath").mac(1, "Vibrato")
         .fx(reverb(0.5, 0.3))
-        .out(10.2),
+        .out(-5.3),
     BrassAndWinds: "Clarinet" => init()
         .osc(A, WavetableId::Square, -13.0)
         .off(B).off(C).off(SUB)
@@ -2545,6 +2763,9 @@ bank! {
         .off(B).off(C).off(SUB)
         .filter(0, FilterModel::Formant, SvfMode::Bandpass, 1_000.0, 0.4)
         .character(0, 0.45)
+        // The throat rides part way up the keyboard: fixed, the top
+        // octave was fifteen decibels under the middle.
+        .key_track(0, 0.4)
         .filter_route(A, FilterRoute::Serial)
         .filter(1, FilterModel::Clean, SvfMode::Lowpass, 4_000.0, 0.5)
         .amp(0.04, 0.0, 1.0, 0.15)
@@ -2556,8 +2777,15 @@ bank! {
         .route(ModSource::Macro(1), ModDest::LfoDepth(0), 0.6)
         .mac(0, "Reed").mac(1, "Vibrato")
         .out(10.4),
+    // > *"pan flute sounds very noisy right now it just sounds like noise
+    // > and air and a faint wave in the background"* — Ty, 2026-09-17.
+    // The sine was on the serial route, through the breath's band-pass:
+    // at C3 its fundamental was twenty-three decibels under where it is
+    // now, and the "faint wave" was what the band-pass let through. Every
+    // wind below routes its tone to F1 for the same reason.
     BrassAndWinds: "Pan Pipe" => init()
         .osc(A, WavetableId::Sine, -12.0)
+        .filter_route(A, FilterRoute::F1)
         .off(B).off(C).off(SUB)
         .noise(0.15, -37.0)
         .filter_route(NOISE, FilterRoute::F2)
@@ -2570,7 +2798,7 @@ bank! {
         .route(ModSource::Macro(1), ModDest::FilterCutoff(1), 0.3)
         .mac(0, "Chiff").mac(1, "Air")
         .fx(delay(NoteDivision::Eighth, 0.25, 0.2))
-        .out(8.6),
+        .out(-0.9),
 
     BrassAndWinds: "Trombone" => brass(900.0, 0.06)
         .uni(A, 1, 0.0)
@@ -2664,8 +2892,10 @@ bank! {
     BrassAndWinds: "Piccolo" => init()
         .osc(A, WavetableId::Sine, -12.0)
         .semis(A, 24)
+        .filter_route(A, FilterRoute::F1)
         .osc(B, WavetableId::Triangle, -30.0)
         .semis(B, 36)
+        .filter_route(B, FilterRoute::F1)
         .off(C).off(SUB)
         .noise(0.3, -38.0)
         .filter_route(NOISE, FilterRoute::F2)
@@ -2679,7 +2909,7 @@ bank! {
         .route(ModSource::Macro(0), ModDest::LayerGain(NOISE as u8), 0.2)
         .route(ModSource::Macro(1), ModDest::LfoDepth(0), 0.6)
         .mac(0, "Breath").mac(1, "Vibrato")
-        .out(9.0),
+        .out(-2.2),
     BrassAndWinds: "Muted Trumpet" => brass(20_000.0, 0.03)
         .uni(A, 1, 0.0)
         .off(B)
@@ -2692,16 +2922,21 @@ bank! {
         .out(16.5),
     // The breath is half the instrument, and the note arrives *under* pitch and
     // rises into it — a shakuhachi that starts in tune is a recorder.
+    // A triangle rather than the flute's sine — bamboo has the odd
+    // harmonics a metal tube has not — with more breath and a slower
+    // start; with the tone through the band-pass gone the two read alike.
     BrassAndWinds: "Shakuhachi" => init()
-        .osc(A, WavetableId::Sine, -12.0)
-        .osc(B, WavetableId::Triangle, -26.0)
+        .osc(A, WavetableId::Triangle, -13.0)
+        .filter_route(A, FilterRoute::F1)
+        .osc(B, WavetableId::Sine, -30.0)
         .semis(B, 12)
+        .filter_route(B, FilterRoute::F1)
         .off(C).off(SUB)
-        .noise(0.2, -36.0)
+        .noise(0.2, -28.0)
         .filter_route(NOISE, FilterRoute::F2)
         .no_filter()
         .filter(1, FilterModel::Clean, SvfMode::Bandpass, 1_600.0, 0.9)
-        .amp(0.09, 0.0, 1.0, 0.3)
+        .amp(0.12, 0.0, 1.0, 0.3)
         .env(2, 0.0, 0.12, 0.0, 0.1)
         .route(ModSource::Envelope(2), ModDest::LayerPitch(A as u8), -0.008)
         .route(ModSource::Envelope(2), ModDest::LayerGain(NOISE as u8), 0.35)
@@ -2713,20 +2948,25 @@ bank! {
         .route(ModSource::Macro(1), ModDest::LfoDepth(0), 0.6)
         .mac(0, "Breath").mac(1, "Vibrato")
         .fx(reverb(0.6, 0.3))
-        .out(9.1),
+        .out(-2.4),
 
     // ------------------------------------------------------ Choir & Vocal ---
-    ChoirAndVocal: "Choir Ahh" => choir(0.0, 0.45).out(23.7),
-    ChoirAndVocal: "Choir Ooh" => choir(1.0, 0.9).out(34.2),
+    ChoirAndVocal: "Choir Ahh" => choir(0.0, 0.45).out(14.3),
+    ChoirAndVocal: "Choir Ooh" => choir(1.0, 0.9).out(15.4),
+    // The closed mouth: the voices go on through a low-pass (F2 is the
+    // hum's here, not the breath's), which is the one choir that means the
+    // serial route.
     ChoirAndVocal: "Choir Mmm" => choir(0.9, 0.55)
         .filter(1, FilterModel::Clean, SvfMode::Lowpass, 1_500.0, 0.6)
+        .filter_route(A, FilterRoute::Serial)
+        .filter_route(B, FilterRoute::Serial)
         .filter_route(NOISE, FilterRoute::F2)
         .out(16.2),
     ChoirAndVocal: "Vowel Morph" => choir(0.5, 0.15)
         .lfo(1, LfoWave::Sine, 0.08)
         .lfo_mode(1, LfoMode::Free)
         .route(ModSource::Lfo(1), ModDest::FilterCharacter(0), 0.5)
-        .out(27.8),
+        .out(12.5),
     ChoirAndVocal: "Boys Choir" => choir(0.1, 0.25)
         .semis(A, 12)
         .semis(B, 0)
@@ -2736,7 +2976,7 @@ bank! {
         .filter(0, FilterModel::Formant, SvfMode::Bandpass, 1_700.0, 0.8)
         .character(0, 0.1)
         .amp(0.25, 0.0, 1.0, 0.5)
-        .out(18.7),
+        .out(10.2),
     ChoirAndVocal: "Synth Vox" => init()
         .osc(A, WavetableId::Vowel, -15.0)
         .pos(A, 0.3)
@@ -2796,7 +3036,7 @@ bank! {
         .late(0, 0.35, 0.4)
         .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.001_5)
         .mono(0.03)
-        .out(37.3),
+        .out(30.9),
     ChoirAndVocal: "Baritone" => choir(0.75, 0.35)
         .uni(A, 1, 0.0)
         .semis(A, -12)
@@ -2807,16 +3047,17 @@ bank! {
         .lfo(0, LfoWave::Sine, 5.0)
         .late(0, 0.4, 0.5)
         .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.001_5)
-        .out(43.0),
+        .out(32.4),
     ChoirAndVocal: "Gregorian" => choir(0.55, 1.4)
         .uni(A, 4, 7.0)
         .semis(A, -12)
         .osc(C, WavetableId::Choir, -22.0)
         .semis(C, -24)
         .pos(C, 0.6)
+        .filter_route(C, FilterRoute::F1)
         .filter(0, FilterModel::Formant, SvfMode::Bandpass, 700.0, 0.6)
         .amp(1.4, 0.0, 1.0, 2.0)
-        .out(31.7),
+        .out(12.2),
     ChoirAndVocal: "Vocal Stab" => choir(0.15, 0.02)
         .uni(A, 3, 9.0)
         .amp(0.01, 0.35, 0.0, 0.12)
@@ -2824,7 +3065,7 @@ bank! {
         .env(1, 0.0, 0.1, 0.0, 0.08)
         .env_to_cut(0.3)
         .fx(delay(NoteDivision::Eighth, 0.3, 0.2))
-        .out(26.0),
+        .out(17.7),
 
     // --------------------------------------------------------------- Organ ---
     // The registration the name says: 16′, 5⅓′ and 8′ out and nothing else
@@ -2992,11 +3233,24 @@ bank! {
         .route(ModSource::Lfo(1), ModDest::Amp, 0.5)
         .fx(reverb(0.5, 0.3))
         .out(0.1),
-    BellsAndMallets: "Celesta" => bell(WavetableId::Tine, 0.55)
-        .pos(A, 0.2)
+    // Hammered steel plates: the sampled grand's hard strike two octaves
+    // up, high-passed until only the plate is left, over in a second,
+    // with a sine three octaves up for the shimmer a plate has and a
+    // string has not.
+    BellsAndMallets: "Celesta" => grand(FactorySampleSet::GrandHard, -8.0)
+        .semis(A, 24)
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 350.0, 0.3)
         .osc(B, WavetableId::Sine, -27.0)
         .semis(B, 36)
-        .out(5.1),
+        .filter_route(B, FilterRoute::F1)
+        .amp(0.0, 1.0, 0.0, 0.5)
+        .curve(0, EnvelopeCurve::Decibel, 0.0)
+        .route(ModSource::Velocity, ModDest::LayerGain(B as u8), 0.15)
+        .route(ModSource::Macro(0), ModDest::LayerGain(B as u8), 0.2)
+        .route(ModSource::Macro(1), ModDest::EnvelopeStageTime(0, 2), 0.6)
+        .mac(0, "Shimmer").mac(1, "Length")
+        .fx(reverb(0.35, 0.18))
+        .out(0.6),
     BellsAndMallets: "Gong" => bell(WavetableId::Gong, 6.0)
         .pos(A, 0.6)
         .uni(A, 2, 4.0)
@@ -4427,7 +4681,7 @@ bank! {
         .semis(A, -12)
         .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 1_300.0, 0.25)
         .fx(reverb(1.0, 0.55))
-        .out(32.0),
+        .out(18.2),
     Cinematic: "Air Tension" => atmos(0.15, SvfMode::Highpass, 3_000.0)
         .lfo(0, LfoWave::Triangle, 0.08)
         .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.6)
@@ -4448,6 +4702,9 @@ bank! {
         .out(10.5),
     LoFiAndTape: "Dusty Rhodes" => electric_piano(0.1, 3.8)
         .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 780.0, 0.2)
+        // Keyed: a fixed 780 Hz corner had the top octave eighteen
+        // decibels under the middle.
+        .key_track(0, 1.0)
         .filter_route(A, FilterRoute::F1)
         .noise(0.8, -44.0)
         .filter_route(NOISE, FilterRoute::F1)
@@ -4455,7 +4712,7 @@ bank! {
         .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.25)
         .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.006)
         .fx(drive_fx(DistortionCurve::Tube, 7.0, 0.3))
-        .out(20.5),
+        .out(17.0),
     LoFiAndTape: "Cassette Pad" => pad(WavetableId::AnalogMorph, 3_600.0, 0.35, 1.1)
         .uni(A, 3, 8.0)
         .lfo(0, LfoWave::Triangle, 1.6)
@@ -4907,4 +5164,927 @@ bank! {
         .fx(reverb(0.9, 0.45))
         .out(2.9),
 
+    // --------------------------------------------------------- Sampled Keys ---
+    //
+    // The sampled grand as eleven other keyboards. A recording is what a
+    // table can never be — a whole note with its own decay and its own
+    // hammer — and what a *synthesiser* can do with it is everything the
+    // bank does to a table: filter it, detune it, transpose it, modulate it,
+    // loop its sustain, play it backwards, ring-modulate it. None of these
+    // is a piano preset; each is the piano being some other instrument.
+    //
+    // The soft set is what dark things start from — its hammer is on the
+    // string longer and the top never arrives — and the hard set is what
+    // bright ones do.
+    SampledKeys: "Felt Piano" => grand(FactorySampleSet::GrandSoft, 0.0)
+        // The blanket: a low-pass that closes up the keyboard, and the
+        // hammer heard *through* it as a soft thud (the noise layer, dark,
+        // gated for thirty milliseconds).
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 2_200.0, 0.15)
+        .slope(0, FilterSlope::Db24)
+        .key_track(0, 0.4)
+        .noise(0.85, SILENT_DB + 2.0)
+        .filter_route(NOISE, FilterRoute::F2)
+        .filter(1, FilterModel::Clean, SvfMode::Lowpass, 500.0, 0.3)
+        .env(2, 0.0, 0.03, 0.0, 0.01)
+        .hold(2, 0.012)
+        .route(ModSource::Envelope(2), ModDest::LayerGain(NOISE as u8), 0.6)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.15)
+        .route(ModSource::Macro(0), ModDest::FilterCutoff(0), 0.3)
+        .route(ModSource::Macro(1), ModDest::LayerGain(NOISE as u8), 0.2)
+        .mac(0, "Blanket").mac(1, "Thud")
+        .fx(reverb(0.25, 0.14))
+        .out(-5.9),
+    SampledKeys: "Honky Tonk" => grand(FactorySampleSet::GrandHard, -4.0)
+        // Three strings nobody tuned: the recording as a three-voice stack
+        // fourteen cents wide, which beats the way a bar piano's unisons
+        // do, and a little brighter than the lid allows.
+        .uni(A, 3, 14.0)
+        .blend(A, 0.8)
+        .width(A, 0.3)
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 160.0, 0.2)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.1)
+        .route(ModSource::Macro(0), ModDest::OscUnisonDetune(A as u8), 0.6)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.3)
+        .mac(0, "Detune").mac(1, "Thin")
+        .fx(reverb(0.35, 0.12))
+        .out(7.3),
+    SampledKeys: "Tack Piano" => grand(FactorySampleSet::GrandHard, -6.0)
+        // The thumbtacks: a bright click on the strike (the noise layer
+        // through a band-pass, gone in fifteen milliseconds) and a ladder
+        // driven just enough to bring the attack's harmonics forward. The
+        // recording's own decay is shortened by the amp, because a tack
+        // piano's felt is gone with the tacks in it.
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 6_500.0, 0.2)
+        .drive(0, 0.35)
+        .amp(0.0, 1.6, 0.0, 0.2)
+        .noise(0.2, SILENT_DB + 2.0)
+        .filter_route(NOISE, FilterRoute::F2)
+        .filter(1, FilterModel::Clean, SvfMode::Bandpass, 3_800.0, 0.6)
+        .env(2, 0.0, 0.015, 0.0, 0.01)
+        .hold(2, 0.01)
+        .route(ModSource::Envelope(2), ModDest::LayerGain(NOISE as u8), 0.7)
+        .route(ModSource::Velocity, ModDest::LayerGain(NOISE as u8), 0.15)
+        .route(ModSource::Macro(0), ModDest::FilterDrive(0), 0.5)
+        .route(ModSource::Macro(1), ModDest::LayerGain(NOISE as u8), 0.2)
+        .mac(0, "Drive").mac(1, "Tack")
+        .out(-5.5),
+    SampledKeys: "Toy Grand" => grand(FactorySampleSet::GrandSoft, -6.0)
+        // Two octaves up, and a bell in the strike: the recording FM'd by a
+        // sine a nineteenth above it (the same ratio the e-piano's tine
+        // uses) at an index that a short envelope takes away — so the first
+        // fifty milliseconds ring like a rod and the rest is a small piano.
+        .semis(A, 24)
+        .warp(A, WarpMode::Fm, 0.0)
+        .modulator(A, B)
+        .osc(B, WavetableId::Sine, SILENT_DB)
+        .semis(B, 19)
+        .env(2, 0.0, 0.06, 0.0, 0.05)
+        .route(ModSource::Envelope(2), ModDest::OscWarp(A as u8), 0.3)
+        .route(ModSource::Velocity, ModDest::OscWarp(A as u8), 0.15)
+        .amp(0.0, 1.1, 0.0, 0.15)
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 300.0, 0.3)
+        .route(ModSource::Macro(0), ModDest::OscWarp(A as u8), 0.4)
+        .route(ModSource::Macro(1), ModDest::EnvelopeStageTime(0, 2), 0.6)
+        .mac(0, "Bell").mac(1, "Length")
+        .fx(reverb(0.2, 0.1))
+        .out(3.6),
+    SampledKeys: "Grand Music Box" => grand(FactorySampleSet::GrandHard, -8.0)
+        // Three octaves up the top of the keyboard becomes tines: a hard
+        // strike transposed until its partials are a comb's, high-passed so
+        // there is no body, over in half a second, and a second copy an
+        // octave down under it for the tine's own fundamental.
+        .semis(A, 36)
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 900.0, 0.3)
+        .amp(0.0, 0.7, 0.0, 0.4)
+        .sampled(B, -18.0, FactorySampleSet::GrandHard)
+        .semis(B, 24)
+        .filter_route(B, FilterRoute::F1)
+        .route(ModSource::Velocity, ModDest::LayerGain(B as u8), 0.2)
+        .route(ModSource::Macro(0), ModDest::LayerGain(B as u8), 0.2)
+        .route(ModSource::Macro(1), ModDest::EnvelopeStageTime(0, 2), 0.5)
+        .mac(0, "Body").mac(1, "Length")
+        .fx(delay(NoteDivision::EighthDotted, 0.3, 0.15))
+        .fx(reverb(0.3, 0.18))
+        .out(4.3),
+    SampledKeys: "Piano Pad" => grand(FactorySampleSet::GrandSoft, -2.0)
+        // The sustain looped: from a third of the way in, where the strike
+        // has settled, round to nine tenths, so a held key holds. A slow
+        // attack takes the hammer away entirely, a second copy a fifth
+        // above sits under it, and the ensemble is what turns eleven
+        // strings into a section.
+        .read(A, SampleLoop::Forward)
+        .loop_points(A, 0.35, 0.9)
+        .uni(A, 3, 6.0)
+        .width(A, 0.7)
+        .sampled(B, -16.0, FactorySampleSet::GrandSoft)
+        .read(B, SampleLoop::Forward)
+        .loop_points(B, 0.4, 0.9)
+        .semis(B, 7)
+        .filter_route(B, FilterRoute::F1)
+        .amp(0.9, 0.0, 1.0, 1.6)
+        .curve(0, EnvelopeCurve::Linear, -0.6)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 3_200.0, 0.2)
+        .lfo(0, LfoWave::Sine, 0.18)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.12)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.15)
+        .route(ModSource::Macro(0), ModDest::FilterCutoff(0), 0.3)
+        .route(ModSource::Macro(1), ModDest::LayerGain(B as u8), 0.25)
+        .mac(0, "Brightness").mac(1, "Fifth")
+        .fx(ensemble(4, 0.45))
+        .fx(reverb(0.8, 0.35))
+        .out(7.9),
+    SampledKeys: "Bowed Grand" => grand(FactorySampleSet::GrandHard, -3.0)
+        // Backwards: the recording's decay becomes a swell into the strike
+        // and the strike becomes the note's end — what a bow does to a
+        // piano string. Read from the end, filtered open as it comes, and
+        // let go with no release because the strike *is* the release.
+        .read(A, SampleLoop::Reverse)
+        // Not from the very end — a grand's last two seconds are its
+        // quietest — but from two thirds of the way back, where the ring is.
+        .pos(A, 0.65)
+        .uni(A, 2, 4.0)
+        .amp(0.0, 0.0, 1.0, 0.05)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 1_200.0, 0.3)
+        .env(1, 1.2, 0.0, 1.0, 0.2)
+        .env_to_cut(0.5)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.2)
+        .route(ModSource::Macro(0), ModDest::FilterCutoff(0), 0.4)
+        .route(ModSource::Macro(1), ModDest::EnvelopeStageTime(1, 1), 0.6)
+        .mac(0, "Brightness").mac(1, "Swell")
+        .fx(reverb(0.7, 0.3))
+        .out(-2.9),
+    SampledKeys: "Prepared Piano" => grand(FactorySampleSet::GrandHard, -2.0)
+        // A bolt between the strings: the recording ring-modulated by a
+        // sine a tritone up, which puts sum and difference tones where no
+        // harmonic is and turns the note metallic — and the amount follows
+        // velocity, because a soft touch on a prepared string is mostly
+        // string.
+        .warp(A, WarpMode::Rm, 0.35)
+        .modulator(A, B)
+        .osc(B, WavetableId::Sine, SILENT_DB)
+        .semis(B, 6)
+        .route(ModSource::Velocity, ModDest::OscWarp(A as u8), 0.35)
+        .amp(0.0, 2.2, 0.0, 0.3)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 7_000.0, 0.2)
+        .route(ModSource::Macro(0), ModDest::OscWarp(A as u8), 0.5)
+        .route(ModSource::Macro(1), ModDest::LayerPitch(B as u8), 0.02)
+        .mac(0, "Bolt").mac(1, "Where")
+        .fx(reverb(0.4, 0.2))
+        .out(2.8),
+    SampledKeys: "Cinema Piano" => grand(FactorySampleSet::GrandSoft, 0.0)
+        // The trailer's piano: the soft grand dark, with a pad rising under
+        // every note — a saw stack through a closed low-pass, a second and
+        // a half late — and a hall that is most of the sound.
+        // The trailer's piano: the soft grand dark, doubled an octave
+        // below so every note has a floor, with a pad rising under it — a
+        // saw stack through a closed low-pass, half a second late — and a
+        // hall that is most of the sound.
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 2_600.0, 0.2)
+        .sampled(B, -7.0, FactorySampleSet::GrandSoft)
+        .semis(B, -12)
+        .filter_route(B, FilterRoute::F1)
+        .osc(C, WavetableId::Sawstack, -24.0)
+        .uni(C, 5, 12.0)
+        .width(C, 0.9)
+        .filter_route(C, FilterRoute::F2)
+        .filter(1, FilterModel::Clean, SvfMode::Lowpass, 700.0, 0.2)
+        .env(2, 0.5, 0.0, 1.0, 1.5)
+        .route(ModSource::Envelope(2), ModDest::LayerGain(C as u8), 0.2)
+        .amp(0.0, 0.0, 1.0, 1.2)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.15)
+        .route(ModSource::Macro(0), ModDest::LayerGain(C as u8), 0.25)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.3)
+        .mac(0, "Pad").mac(1, "Brightness")
+        .fx(reverb(0.95, 0.5))
+        .out(-9.7),
+    SampledKeys: "Pianotron" => grand(FactorySampleSet::GrandSoft, -2.0)
+        // A piano on tape in a machine with a wobble: a slow wow on the
+        // pitch, two heads a few cents apart, a tape's band (nothing under
+        // 250 Hz, nothing over 4 kHz), a second tape an octave up under
+        // it, a bed of hiss, and a note that fades as a tape's does rather
+        // than ringing as a string's.
+        .lfo(0, LfoWave::Sine, 0.6)
+        .route(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.000_8)
+        .uni(A, 2, 12.0)
+        .blend(A, 0.6)
+        .sampled(B, -12.0, FactorySampleSet::GrandSoft)
+        .semis(B, 12)
+        .filter_route(B, FilterRoute::Serial)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 4_200.0, 0.25)
+        .filter(1, FilterModel::Clean, SvfMode::Highpass, 250.0, 0.3)
+        .filter_route(A, FilterRoute::Serial)
+        .noise(0.5, -32.0)
+        .filter_route(NOISE, FilterRoute::F1)
+        .amp(0.01, 3.0, 0.35, 0.3)
+        .curve(0, EnvelopeCurve::Decibel, 0.0)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.12)
+        .route(ModSource::Macro(0), ModDest::LfoDepth(0), 0.8)
+        .route(ModSource::Macro(1), ModDest::LayerGain(NOISE as u8), 0.2)
+        .mac(0, "Wow").mac(1, "Hiss")
+        .fx(crush(10.0, 22_000.0, 0.35))
+        .out(0.0),
+    SampledKeys: "Harpsi Grand" => grand(FactorySampleSet::GrandHard, -6.0)
+        // Plucked: the strike thinned through a high-pass and a copy an
+        // octave up beside it (a four-foot stop), the decay cut to a
+        // second, and **no dynamics** — a plectrum plucks the same however
+        // the key is pressed, so the velocity route the row keeps is on the
+        // filter alone and the archetype's weight is put back.
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 400.0, 0.4)
+        .sampled(B, -12.0, FactorySampleSet::GrandHard)
+        .semis(B, 12)
+        .filter_route(B, FilterRoute::F1)
+        .amp(0.0, 1.0, 0.0, 0.08)
+        .route(ModSource::Velocity, ModDest::Amp, 0.45)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.05)
+        .route(ModSource::Macro(0), ModDest::LayerGain(B as u8), 0.25)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.3)
+        .mac(0, "Four Foot").mac(1, "Thin")
+        .fx(reverb(0.3, 0.15))
+        .out(0.3),
+    SampledKeys: "Sub Piano" => grand(FactorySampleSet::GrandHard, -2.0)
+        // The hip-hop piano: the hard grand under a low-pass, with a sine
+        // an octave down (the sub, around the filter) carrying the weight
+        // and a little drive on the way out.
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 1_500.0, 0.3)
+        .drive(0, 0.2)
+        .osc(SUB, WavetableId::SubSine, -10.0)
+        .semis(SUB, -12)
+        .filter_route(SUB, FilterRoute::Bypass)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.2)
+        .route(ModSource::Macro(0), ModDest::LayerGain(SUB as u8), 0.2)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.3)
+        .mac(0, "Sub").mac(1, "Brightness")
+        .out(-10.3),
+
+    // ----------------------------------------------------- Grains & Clouds ---
+    //
+    // The grain cloud (`SampleLoop::Grains`): the recording read as short
+    // windows that keep landing where the start knob points, so a note
+    // never ends, and a route on the knob moves *through* the sound. The
+    // grains are landed in phase with the recording's own pitch, which is
+    // why a frozen note here is a note and not the metallic comb a granular
+    // freeze usually is (`synth_osc::grain_voices`). Twelve textures, half
+    // from the grand and half from the kits: the same recording a
+    // percussionist hears as a hit, frozen, is a drone.
+    GrainsAndClouds: "Grand Cloud" => grand(FactorySampleSet::GrandHard, -4.0)
+        // The whole note as weather: long grains sprayed over the middle
+        // of the recording, a slow attack, a stack of three, and a hall.
+        .grains(A, 160.0, 0.3)
+        .pos(A, 0.12)
+        .uni(A, 3, 7.0)
+        .width(A, 0.8)
+        .amp(1.2, 0.0, 1.0, 2.0)
+        .curve(0, EnvelopeCurve::Linear, -0.6)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 5_000.0, 0.2)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.15)
+        .route(ModSource::Macro(0), ModDest::OscPosition(A as u8), 0.5)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.3)
+        .mac(0, "Where").mac(1, "Brightness")
+        .fx(chorus(3, 0.3))
+        .fx(reverb(0.9, 0.45))
+        .out(8.3),
+    GrainsAndClouds: "Frozen Note" => grand(FactorySampleSet::GrandSoft, -3.0)
+        // One moment of a piano note held for ever — no spray, so every
+        // grain is the same instant — and env 2 walking the knob slowly
+        // from the strike into the decay, so the frozen moment is a
+        // different one as the key is held: the note's own history, slowed
+        // down twenty times.
+        .grains(A, 60.0, 0.0)
+        .pos(A, 0.02)
+        .env(2, 6.0, 0.0, 1.0, 0.5)
+        .route(ModSource::Envelope(2), ModDest::OscPosition(A as u8), 0.6)
+        .amp(0.05, 0.0, 1.0, 0.8)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 6_000.0, 0.2)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.15)
+        .route(ModSource::Macro(0), ModDest::EnvelopeStageTime(2, 1), 0.6)
+        .route(ModSource::Macro(1), ModDest::OscPosition(A as u8), 0.3)
+        .mac(0, "Slower").mac(1, "Where")
+        .fx(reverb(0.5, 0.25))
+        .out(0.3),
+    GrainsAndClouds: "Scan Pad" => grand(FactorySampleSet::GrandHard, -4.0)
+        // A triangle LFO sweeping the knob through the whole recording and
+        // back every ten seconds: the strike comes round like a tide. Wide,
+        // detuned, ensembled — a pad whose motion is the recording's.
+        .grains(A, 120.0, 0.08)
+        .pos(A, 0.5)
+        .uni(A, 4, 9.0)
+        .width(A, 0.9)
+        .lfo(0, LfoWave::Triangle, 0.1)
+        .route(ModSource::Lfo(0), ModDest::OscPosition(A as u8), 0.48)
+        .amp(0.6, 0.0, 1.0, 1.5)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 4_000.0, 0.25)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.15)
+        .route(ModSource::Macro(0), ModDest::LfoRate(0), 0.6)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.3)
+        .mac(0, "Tide").mac(1, "Brightness")
+        .fx(ensemble(4, 0.4))
+        .fx(reverb(0.85, 0.4))
+        .out(2.0),
+    GrainsAndClouds: "Cymbal Wash" => hit(FactorySampleSet::KitStudio, "Crash")
+        // A crash that never decays: grains sprayed over its first
+        // quarter-second, high-passed so the wash is all shimmer, swelling
+        // in over a second. Pitched by the key, so a chord of crashes is a
+        // chord.
+        .grains(A, 200.0, 0.08)
+        .pos(A, 0.06)
+        .amp(1.0, 0.0, 1.0, 1.8)
+        .curve(0, EnvelopeCurve::Linear, -0.6)
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 1_200.0, 0.3)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.15)
+        .route(ModSource::Macro(0), ModDest::OscPosition(A as u8), 0.5)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.4)
+        .mac(0, "Where").mac(1, "Shimmer")
+        .fx(reverb(0.9, 0.4))
+        .out(25.3),
+    GrainsAndClouds: "808 Freeze" => hit(FactorySampleSet::Kit808, "Kick")
+        // The 808's own tone, frozen: short grains at the point where the
+        // kick has settled into its sine, no spray, and the phase lock is
+        // what makes it a clean sub rather than a flutter. A sub drone at
+        // the note, with the kick's click on the front from the amp
+        // envelope's first blocks.
+        .grains(A, 40.0, 0.0)
+        .pos(A, 0.12)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 400.0, 0.3)
+        .amp(0.005, 0.0, 1.0, 0.2)
+        .mono(0.06)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.15)
+        .route(ModSource::Macro(0), ModDest::OscPosition(A as u8), 0.3)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.3)
+        .mac(0, "Where").mac(1, "Brightness")
+        .out(15.7),
+    GrainsAndClouds: "Snare Sheet" => hit(FactorySampleSet::KitStudio, "Snare")
+        // The snare's wires as a sheet of noise: tiny grains sprayed over
+        // the whole hit, a band-pass sweeping slowly through them, and no
+        // pitch to speak of — the key tunes the band, not the note.
+        .grains(A, 25.0, 0.2)
+        .pos(A, 0.12)
+        .untracked(A)
+        .filter(0, FilterModel::Clean, SvfMode::Bandpass, 2_000.0, 0.55)
+        .key_track(0, 1.0)
+        .lfo(0, LfoWave::Triangle, 0.25)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.35)
+        .amp(0.4, 0.0, 1.0, 1.0)
+        .route(ModSource::Velocity, ModDest::FilterResonance(0), 0.3)
+        .route(ModSource::Macro(0), ModDest::LfoRate(0), 0.6)
+        .route(ModSource::Macro(1), ModDest::FilterResonance(0), 0.4)
+        .mac(0, "Sweep").mac(1, "Whistle")
+        .fx(reverb(0.6, 0.3))
+        .out(29.0),
+    GrainsAndClouds: "Glass Grains" => grand(FactorySampleSet::GrandHard, -8.0)
+        // Two octaves up and cut into twelve-millisecond grains: at that
+        // length a piano's partials blur into glass, and the ping-pong
+        // delay scatters the glass across the field.
+        .semis(A, 24)
+        .grains(A, 12.0, 0.05)
+        .pos(A, 0.1)
+        .amp(0.01, 0.0, 1.0, 0.6)
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 600.0, 0.2)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.1)
+        .route(ModSource::Macro(0), ModDest::OscPosition(A as u8), 0.4)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.3)
+        .mac(0, "Where").mac(1, "Thin")
+        .fx(ping_pong(NoteDivision::Eighth, 0.5, 0.35))
+        .fx(reverb(0.6, 0.25))
+        .out(18.7),
+    GrainsAndClouds: "Reverse Grand" => grand(FactorySampleSet::GrandHard, -2.0)
+        // The riser: the recording backwards from its very end, so a held
+        // key is three seconds of swell that arrive at the hammer. The
+        // opposite of `Bowed Grand`: bright, the whole recording, and the
+        // strike at the end lands like a downbeat.
+        .read(A, SampleLoop::Reverse)
+        .pos(A, 0.55)
+        .uni(A, 3, 5.0)
+        .width(A, 0.6)
+        .amp(0.0, 0.0, 1.0, 0.08)
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 200.0, 0.2)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.1)
+        .route(ModSource::Macro(0), ModDest::OscPosition(A as u8), 0.6)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.3)
+        .mac(0, "Skip").mac(1, "Thin")
+        .fx(reverb(0.8, 0.35))
+        .out(9.9),
+    GrainsAndClouds: "Bounce Piano" => grand(FactorySampleSet::GrandHard, -3.0)
+        // The strike bounced: the loop points around the first tenth of a
+        // second, read back and forth, so a held note is the hammer
+        // stuttering at ten a second — a rhythm from a recording, which is
+        // a thing only a bouncing loop makes without a click.
+        .read(A, SampleLoop::PingPong)
+        .loop_points(A, 0.0, 0.05)
+        .amp(0.0, 0.0, 1.0, 0.15)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 5_000.0, 0.3)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.2)
+        .route(ModSource::Macro(0), ModDest::OscPosition(A as u8), 0.2)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.4)
+        .mac(0, "Skip").mac(1, "Brightness")
+        .fx(delay(NoteDivision::Sixteenth, 0.35, 0.2))
+        .out(-7.1),
+    GrainsAndClouds: "Tape Stop Cloud" => grand(FactorySampleSet::GrandSoft, -3.0)
+        // Every note a tape stop: a cloud of the grand with env 2 pulling
+        // the pitch down two octaves over a second and a half — and since
+        // the grains keep coming, the note does not end when the tape does.
+        .grains(A, 90.0, 0.2)
+        .pos(A, 0.2)
+        .env(2, 0.0, 1.5, 0.0, 0.5)
+        .curve(2, EnvelopeCurve::Linear, 0.4)
+        .inverted(ModSource::Envelope(2), ModDest::LayerPitch(A as u8), -0.24)
+        .amp(0.01, 0.0, 1.0, 0.6)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 4_000.0, 0.2)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.15)
+        .route(ModSource::Macro(0), ModDest::EnvelopeStageTime(2, 2), 0.6)
+        .route(ModSource::Macro(1), ModDest::OscPosition(A as u8), 0.4)
+        .mac(0, "Stop").mac(1, "Where")
+        .fx(reverb(0.6, 0.3))
+        .out(3.0),
+    GrainsAndClouds: "Ghost Choir" => grand(FactorySampleSet::GrandSoft, 0.0)
+        // A piano that sings: the cloud through the formant filter, a slow
+        // LFO walking the vowel, and the recording's harmonics are what
+        // the vowel is made of — a choir with a hammer's history.
+        .grains(A, 140.0, 0.25)
+        .pos(A, 0.25)
+        .uni(A, 3, 6.0)
+        .width(A, 0.8)
+        .filter(0, FilterModel::Formant, SvfMode::Bandpass, 900.0, 0.85)
+        .character(0, 0.6)
+        // A little keyed: a vowel fixed at 900 Hz lost the bottom octave,
+        // and a vowel that follows the key fully loses the top one.
+        .key_track(0, 0.2)
+        .lfo(0, LfoWave::Sine, 0.15)
+        .route(ModSource::Lfo(0), ModDest::FilterCharacter(0), 0.35)
+        .amp(0.3, 0.0, 1.0, 3.0)
+        .curve(0, EnvelopeCurve::Linear, -0.6)
+        .route(ModSource::Velocity, ModDest::FilterCharacter(0), 0.1)
+        .route(ModSource::Macro(0), ModDest::FilterCharacter(0), 0.5)
+        .route(ModSource::Macro(1), ModDest::LfoRate(0), 0.6)
+        .mac(0, "Vowel").mac(1, "Sway")
+        .fx(ensemble(4, 0.4))
+        .fx(reverb(0.9, 0.45))
+        .out(-4.0),
+    GrainsAndClouds: "Bongo Drone" => kit(FactorySampleSet::KitStudio)
+        // The whole kit, frozen: every key its own hit as a cloud, so the
+        // bongo on C4 is a bongo tone and the ride on D#4 a bell. Sprayed
+        // a little so each has movement, and centred by an `untracked`
+        // read — the hits keep their own pitch, a kit does not transpose.
+        .grains(A, 70.0, 0.05)
+        .pos(A, 0.08)
+        .untracked(A)
+        .filter_route(A, FilterRoute::F1)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 6_000.0, 0.25)
+        .amp(0.2, 0.0, 1.0, 0.8)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.15)
+        .route(ModSource::Macro(0), ModDest::OscPosition(A as u8), 0.4)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.3)
+        .mac(0, "Where").mac(1, "Brightness")
+        .fx(reverb(0.5, 0.25))
+        .out(18.7),
+
+    // -------------------------------------------------------- Kits & Hits ---
+    //
+    // The drum machine's Studio and 808 kits as recordings, on every key
+    // the roll labels — and then what a synthesiser does to a kit that a
+    // drum machine does not: reads it backwards, bounces it, crushes it,
+    // FM's it, gates it. The **hits**: one zone of a kit locked across the
+    // keyboard, pitched by the key, which is how an 808 kick has been a
+    // bass line since 1985.
+    KitsAndHits: "Studio Kit" => kit(FactorySampleSet::KitStudio)
+        .route(ModSource::Macro(0), ModDest::EnvelopeStageTime(0, 5), 0.5)
+        .route(ModSource::Macro(1), ModDest::LayerPan(A as u8), 0.5)
+        .mac(0, "Ring").mac(1, "Spread")
+        .out(7.9),
+    KitsAndHits: "808 Kit" => kit(FactorySampleSet::Kit808)
+        // The 808 with the saturation it always had on the way to tape.
+        .route(ModSource::Macro(0), ModDest::EnvelopeStageTime(0, 5), 0.5)
+        .route(ModSource::Macro(1), ModDest::LayerPan(A as u8), 0.5)
+        .mac(0, "Ring").mac(1, "Spread")
+        .fx(drive_fx(DistortionCurve::Tube, 6.0, 0.5))
+        .out(8.4),
+    KitsAndHits: "Crunch Kit" => kit(FactorySampleSet::KitStudio)
+        // The lo-fi kit: the whole kit pitched a fifth down, the way a
+        // sampler from 1988 was played to stretch its two seconds — every
+        // hit longer and darker — then eight bits at eleven kilohertz and
+        // a ladder driven hard and closed.
+        .semis(A, -7)
+        .filter_route(A, FilterRoute::F1)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 2_200.0, 0.4)
+        .drive(0, 0.8)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.2)
+        .route(ModSource::Macro(0), ModDest::FilterDrive(0), 0.5)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.4)
+        .mac(0, "Crunch").mac(1, "Tone")
+        .fx(crush(8.0, 11_000.0, 1.0))
+        .out(-5.5),
+    KitsAndHits: "Reverse Kit" => kit(FactorySampleSet::KitStudio)
+        // Every hit backwards: the cymbals swell, the snare sucks in, the
+        // kick arrives from nowhere. What the fill before the drop is made
+        // of, on every key at once.
+        .read(A, SampleLoop::Reverse)
+        .amp(0.0, 0.0, 1.0, 0.05)
+        .route(ModSource::Macro(0), ModDest::OscPosition(A as u8), 0.6)
+        .route(ModSource::Macro(1), ModDest::LayerPan(A as u8), 0.5)
+        .mac(0, "Skip").mac(1, "Spread")
+        .fx(reverb(0.5, 0.2))
+        .out(10.6),
+    KitsAndHits: "FM Kit" => kit(FactorySampleSet::Kit808)
+        // The 808 with a bell in every hit: each recording FM'd by a sine
+        // an octave and a fifth above the key, at an index a short envelope
+        // takes away, so the metal is in the attack and the drum is in the
+        // body. On a kit the modulator is untracked too, or the bell would
+        // be a different interval on every key.
+        .warp(A, WarpMode::Fm, 0.0)
+        .modulator(A, B)
+        .osc(B, WavetableId::Sine, SILENT_DB)
+        .semis(B, 19)
+        .untracked(B)
+        .env(2, 0.0, 0.08, 0.0, 0.05)
+        .route(ModSource::Envelope(2), ModDest::OscWarp(A as u8), 0.45)
+        .route(ModSource::Velocity, ModDest::OscWarp(A as u8), 0.2)
+        .route(ModSource::Macro(0), ModDest::OscWarp(A as u8), 0.5)
+        .route(ModSource::Macro(1), ModDest::EnvelopeStageTime(2, 2), 0.6)
+        .mac(0, "Metal").mac(1, "Length")
+        .out(8.5),
+    KitsAndHits: "Gated Kit" => kit(FactorySampleSet::KitStudio)
+        // The eighties: a big room on every hit, cut off by the amp
+        // envelope a tenth of a second in. The gate is the envelope, the
+        // room is the reverb before it — which is the order a patch chain
+        // cannot do, so the room here is the recording's own tail, held
+        // loud by a decay that does not fall, and the gate is the release.
+        .amp(0.0, 0.12, 0.0, 0.02)
+        .curve(0, EnvelopeCurve::Linear, 0.9)
+        .filter_route(A, FilterRoute::F1)
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 120.0, 0.3)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.1)
+        .route(ModSource::Macro(0), ModDest::EnvelopeStageTime(0, 2), 0.6)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.3)
+        .mac(0, "Gate").mac(1, "Thin")
+        .fx(EffectConfig::Reverb(ReverbConfig {
+            size: 0.6,
+            decay_s: 0.4,
+            damping_hz: 6_000.0,
+            pre_delay_ms: 0.0,
+            width: 1.0,
+            mix: 0.35,
+        }))
+        .out(14.8),
+    KitsAndHits: "Buzz Roll Kit" => kit(FactorySampleSet::KitStudio)
+        // Hold a key for a roll: the first thirty milliseconds of each hit
+        // bounced back and forth, sixteen times a second — a buzz roll on
+        // the snare, a flutter on the toms, a rattle on the hats.
+        .read(A, SampleLoop::PingPong)
+        .loop_points(A, 0.02, 0.1)
+        .amp(0.0, 0.0, 1.0, 0.12)
+        .route(ModSource::Macro(0), ModDest::OscPosition(A as u8), 0.15)
+        .route(ModSource::Macro(1), ModDest::LayerPan(A as u8), 0.5)
+        .mac(0, "Skip").mac(1, "Spread")
+        .out(7.4),
+    KitsAndHits: "808 Sub" => hit(FactorySampleSet::Kit808, "Kick")
+        // The 808 kick as the bass it has always been: the recording
+        // pitched by the key, mono with a glide, saturated, and held by an
+        // amp envelope that lets a long note ring past the recording (the
+        // recording's fade is the note's decay; the release is the gate).
+        .amp(0.0, 0.0, 1.0, 0.12)
+        .mono_retrig(0.08)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 900.0, 0.2)
+        .drive(0, 0.4)
+        .route(ModSource::Velocity, ModDest::FilterDrive(0), 0.3)
+        .route(ModSource::Macro(0), ModDest::FilterDrive(0), 0.6)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.4)
+        .mac(0, "Drive").mac(1, "Brightness")
+        .fx(drive_fx(DistortionCurve::Tube, 8.0, 0.4))
+        .out(-11.3),
+    KitsAndHits: "Tom Melody" => hit(FactorySampleSet::KitStudio, "Floor Tom")
+        // The floor tom as a tuned drum across the keyboard: the skin's
+        // own pitch drop is in the recording, so every note bends into
+        // itself; a little room, and the top rolled off up the keyboard
+        // where a small drum would be tighter.
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 1_800.0, 0.3)
+        .key_track(0, -0.5)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.2)
+        .route(ModSource::Macro(0), ModDest::FilterCutoff(0), 0.4)
+        .route(ModSource::Macro(1), ModDest::EnvelopeStageTime(0, 5), 0.5)
+        .mac(0, "Skin").mac(1, "Ring")
+        .fx(reverb(0.45, 0.25))
+        .out(-0.2),
+    KitsAndHits: "Cowbell Keys" => hit(FactorySampleSet::KitStudio, "Cowbell")
+        // The cowbell tuned: its two partials are a bell's, so pitched by
+        // the key it is a small gamelan, and the dotted delay makes a
+        // pattern of one note.
+        .uni(A, 2, 5.0)
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 250.0, 0.3)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.1)
+        .route(ModSource::Macro(0), ModDest::OscUnisonDetune(A as u8), 0.5)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.3)
+        .mac(0, "Detune").mac(1, "Thin")
+        .fx(delay(NoteDivision::EighthDotted, 0.45, 0.3))
+        .fx(reverb(0.4, 0.2))
+        .out(12.8),
+    KitsAndHits: "Snare Riser" => hit(FactorySampleSet::KitStudio, "Snare")
+        // The snare backwards with its pitch climbing: env 2 lifts the
+        // recording an octave over its length, so a held key is a snare
+        // sucked up and in. Mono, so a run of keys is one riser.
+        .read(A, SampleLoop::Reverse)
+        // Two copies a few cents apart, and less of the velocity curve: a
+        // riser is wider for it, and one copy at full velocity peaked past
+        // full scale.
+        .uni(A, 2, 9.0)
+        .width(A, 0.6)
+        .inverted(ModSource::Velocity, ModDest::Amp, 0.4)
+        .env(2, 0.5, 0.0, 1.0, 0.1)
+        .route(ModSource::Envelope(2), ModDest::LayerPitch(A as u8), 0.12)
+        .amp(0.0, 0.0, 1.0, 0.04)
+        .mono_retrig(0.0)
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 300.0, 0.4)
+        .route(ModSource::Velocity, ModDest::LayerPitch(A as u8), 0.06)
+        .route(ModSource::Macro(0), ModDest::EnvelopeStageTime(2, 1), 0.6)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.4)
+        .mac(0, "Rise").mac(1, "Thin")
+        .fx(reverb(0.7, 0.3))
+        .out(14.4),
+    KitsAndHits: "Hat Arp" => hit(FactorySampleSet::KitStudio, "Closed Hat")
+        // The closed hat as a sixteenth-note pattern: the hit, pitched by
+        // the key, into a delay a sixteenth long with enough feedback for
+        // five repeats — a hat line from one key.
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 2_000.0, 0.3)
+        // Every note starts a few milliseconds into the hit, a different
+        // few each time: a hat is all peak, and four struck together on the
+        // same sample were four peaks on top of each other — twice full
+        // scale. Scattered, they are a hat player's, and inside it.
+        .route(ModSource::Random, ModDest::OscPosition(A as u8), 0.08)
+        .amp(0.003, 0.0, 1.0, 0.35)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.2)
+        .route(ModSource::Macro(0), ModDest::FilterCutoff(0), 0.4)
+        .route(ModSource::Macro(1), ModDest::LayerPan(A as u8), 0.6)
+        .mac(0, "Thin").mac(1, "Side")
+        .fx(delay(NoteDivision::Sixteenth, 0.62, 0.45))
+        .out(26.9),
+    KitsAndHits: "Conga Choir" => hit(FactorySampleSet::KitStudio, "Conga High")
+        // Four congas thirty cents apart: a section of hand drums on every
+        // key, wide, with a room. The detune is what makes it a section
+        // rather than one conga four times.
+        .uni(A, 4, 30.0)
+        .width(A, 0.9)
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 150.0, 0.3)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.2)
+        .route(ModSource::Macro(0), ModDest::OscUnisonDetune(A as u8), 0.5)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.3)
+        .mac(0, "Section").mac(1, "Skin")
+        .fx(reverb(0.5, 0.3))
+        .out(12.4),
+
+    // --------------------------------------------------- Growls & Screams ---
+    //
+    // The bass-music growl is FM, formants and a wobble — and the thing no
+    // other synth's growl has is a **recording as the modulator**: a saw
+    // FM'd by the grand changes over the note the way the piano's decay
+    // does, and a Reese ring-modulated by a frozen 808 has a sub-harmonic
+    // in it that nothing periodic makes. Twelve, half of them modulated by
+    // a recording and the rest the growl's own vocabulary — sync, vowels,
+    // quantise — so the shelf is the genre and not one trick.
+    GrowlsAndScreams: "Piano Growl" => bass(WavetableId::Growl, 1_600.0, 0.15)
+        // The growl table FM'd by the hard grand: the index is high and the
+        // recording's decay is what moves it — bright and tearing at the
+        // strike, settling as the piano does — with the formant filter on a
+        // synced eighth-note wobble over the top.
+        .pos(A, 0.3)
+        .warp(A, WarpMode::Fm, 0.55)
+        .modulator(A, B)
+        .sampled(B, SILENT_DB, FactorySampleSet::GrandHard)
+        .semis(B, 12)
+        .filter(0, FilterModel::Formant, SvfMode::Bandpass, 800.0, 0.6)
+        .character(0, 0.4)
+        .lfo_sync(0, LfoWave::Sine, NoteDivision::Eighth)
+        .lfo_mode(0, LfoMode::Retrigger)
+        .route(ModSource::Lfo(0), ModDest::FilterCharacter(0), 0.4)
+        .route(ModSource::Velocity, ModDest::OscWarp(A as u8), 0.3)
+        .route(ModSource::Macro(0), ModDest::OscWarp(A as u8), 0.4)
+        .route(ModSource::Macro(1), ModDest::LfoRate(0), 0.6)
+        .mac(0, "Tear").mac(1, "Wobble")
+        .fx(drive_fx(DistortionCurve::Diode, 10.0, 0.4))
+        .out(1.8),
+    GrowlsAndScreams: "Snarl" => bass(WavetableId::Reese, 700.0, 0.2)
+        // A Reese ring-modulated by the 808's frozen tone (the kick as a
+        // grain cloud, locked and untracked so it stays at one pitch): the
+        // sum and difference of a moving Reese and a fixed sub is a snarl
+        // an octave under the note, wobbled on a quarter.
+        .uni(A, 2, 10.0)
+        .warp(A, WarpMode::Rm, 0.6)
+        .modulator(A, B)
+        .sampled(B, SILENT_DB, FactorySampleSet::Kit808)
+        .zone(B, "Kick")
+        .grains(B, 40.0, 0.0)
+        .pos(B, 0.12)
+        .untracked(B)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 1_200.0, 0.5)
+        .drive(0, 0.4)
+        .lfo_sync(0, LfoWave::Sine, NoteDivision::Quarter)
+        .lfo_mode(0, LfoMode::Retrigger)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.5)
+        .route(ModSource::Velocity, ModDest::OscWarp(A as u8), 0.3)
+        .route(ModSource::Macro(0), ModDest::OscWarp(A as u8), 0.4)
+        .route(ModSource::Macro(1), ModDest::LfoRate(0), 0.6)
+        .mac(0, "Snarl").mac(1, "Wobble")
+        .out(1.6),
+    GrowlsAndScreams: "Metal Throat" => bass(WavetableId::Saw, 2_500.0, 0.12)
+        // A saw FM'd by a frozen ride cymbal: a cymbal's partials are
+        // nowhere near harmonic, so the sidebands land everywhere and the
+        // saw turns to metal — through the formant filter with the vowel
+        // walked by a sample-and-hold, a throat of metal. The saw is up
+        // and the sub well under, because a formant filter is a narrow
+        // window and with the archetype's balance the row read as a sub.
+        .osc(A, WavetableId::Saw, -4.0)
+        .warp(A, WarpMode::Fm, 0.4)
+        .modulator(A, B)
+        .osc(SUB, WavetableId::SubSine, -30.0)
+        .sampled(B, SILENT_DB, FactorySampleSet::KitStudio)
+        .zone(B, "Ride")
+        .grains(B, 60.0, 0.1)
+        .pos(B, 0.1)
+        .filter(0, FilterModel::Formant, SvfMode::Bandpass, 1_000.0, 0.55)
+        .character(0, 0.5)
+        .lfo_sync(0, LfoWave::SampleHold, NoteDivision::Sixteenth)
+        .lfo_mode(0, LfoMode::Free)
+        .route(ModSource::Lfo(0), ModDest::FilterCharacter(0), 0.5)
+        .route(ModSource::Velocity, ModDest::OscWarp(A as u8), 0.3)
+        .route(ModSource::Macro(0), ModDest::OscWarp(A as u8), 0.5)
+        .route(ModSource::Macro(1), ModDest::FilterCharacter(0), 0.5)
+        .mac(0, "Metal").mac(1, "Vowel")
+        .fx(drive_fx(DistortionCurve::Diode, 8.0, 0.35))
+        .out(-2.5),
+    GrowlsAndScreams: "Choir Growl" => bass(WavetableId::Choir, 1_800.0, 0.2)
+        // The choir table FM'd by the soft grand with the index on env 2:
+        // a growl that sings its vowel, tearing at the front of every note
+        // and settling into a chord of formants.
+        .pos(A, 0.5)
+        .warp(A, WarpMode::Fm, 0.15)
+        .modulator(A, B)
+        .sampled(B, SILENT_DB, FactorySampleSet::GrandSoft)
+        .env(2, 0.0, 0.4, 0.0, 0.2)
+        .route(ModSource::Envelope(2), ModDest::OscWarp(A as u8), 0.5)
+        .route(ModSource::Velocity, ModDest::OscWarp(A as u8), 0.25)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 1_000.0, 0.5)
+        .drive(0, 0.3)
+        .osc(SUB, WavetableId::SubSine, -18.0)
+        .route(ModSource::Macro(0), ModDest::OscWarp(A as u8), 0.4)
+        .route(ModSource::Macro(1), ModDest::OscPosition(A as u8), 0.5)
+        .mac(0, "Tear").mac(1, "Vowel")
+        .fx(drive_fx(DistortionCurve::Tube, 8.0, 0.35))
+        .out(1.6),
+    GrowlsAndScreams: "Kick Roar" => hit(FactorySampleSet::Kit808, "Kick")
+        // The 808's frozen tone FM'd by a saw a fifth above it: a sub with
+        // teeth, and the ladder opened and shut on a synced quarter — the
+        // roar under a drop.
+        .grains(A, 40.0, 0.0)
+        .pos(A, 0.12)
+        .warp(A, WarpMode::Fm, 0.5)
+        .modulator(A, B)
+        .osc(B, WavetableId::Saw, SILENT_DB)
+        .semis(B, 7)
+        .mono(0.05)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 1_000.0, 0.55)
+        .drive(0, 0.5)
+        .lfo_sync(0, LfoWave::Triangle, NoteDivision::Quarter)
+        .lfo_mode(0, LfoMode::Retrigger)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.55)
+        .amp(0.005, 0.0, 1.0, 0.15)
+        .route(ModSource::Velocity, ModDest::OscWarp(A as u8), 0.3)
+        .route(ModSource::Macro(0), ModDest::OscWarp(A as u8), 0.4)
+        .route(ModSource::Macro(1), ModDest::LfoRate(0), 0.6)
+        .mac(0, "Teeth").mac(1, "Wobble")
+        .fx(drive_fx(DistortionCurve::Diode, 12.0, 0.45))
+        .out(3.4),
+    GrowlsAndScreams: "Talk Grains" => grand(FactorySampleSet::GrandHard, -2.0)
+        // The grand as a mouth: a grain cloud through the formant filter
+        // with the vowel stepped through a sample-and-hold on sixteenths,
+        // and the knob wobbling on an eighth so the cloud's own spectrum
+        // moves under the vowel. Mono, with a glide, because it is a lead.
+        .grains(A, 50.0, 0.1)
+        .pos(A, 0.15)
+        .mono(0.04)
+        .filter(0, FilterModel::Formant, SvfMode::Bandpass, 700.0, 0.7)
+        .character(0, 0.5)
+        .lfo_sync(0, LfoWave::SampleHold, NoteDivision::Sixteenth)
+        .lfo_mode(0, LfoMode::Free)
+        .route(ModSource::Lfo(0), ModDest::FilterCharacter(0), 0.6)
+        .lfo_sync(1, LfoWave::Sine, NoteDivision::Eighth)
+        .route(ModSource::Lfo(1), ModDest::OscPosition(A as u8), 0.15)
+        .amp(0.005, 0.0, 1.0, 0.15)
+        .route(ModSource::Velocity, ModDest::FilterCharacter(0), 0.15)
+        .route(ModSource::Macro(0), ModDest::FilterCharacter(0), 0.5)
+        .route(ModSource::Macro(1), ModDest::LfoRate(0), 0.6)
+        .mac(0, "Vowel").mac(1, "Talk")
+        .fx(drive_fx(DistortionCurve::Diode, 9.0, 0.4))
+        .out(23.7),
+    GrowlsAndScreams: "Wub" => bass(WavetableId::Growl, 500.0, 0.2)
+        // The wobble itself: the ladder driven, opened and shut by a synced
+        // eighth, resonant enough to bark. Three voices so the wub has a
+        // width, and the sub under it untouched.
+        .pos(A, 0.6)
+        .uni(A, 3, 12.0)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 500.0, 0.6)
+        .drive(0, 0.5)
+        .lfo_sync(0, LfoWave::Sine, NoteDivision::Eighth)
+        .lfo_mode(0, LfoMode::Retrigger)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.6)
+        .route(ModSource::Macro(0), ModDest::LfoRate(0), 0.7)
+        .route(ModSource::Macro(1), ModDest::FilterResonance(0), 0.4)
+        .mac(0, "Rate").mac(1, "Bark")
+        .fx(drive_fx(DistortionCurve::Diode, 10.0, 0.4))
+        .out(-1.5),
+    GrowlsAndScreams: "Yoi Scream" => lead(WavetableId::Vowel, 4_000.0, 0.03)
+        // The scream: a vowel table hard-synced, the sync ratio swept by a
+        // synced quarter-note triangle, through the formant filter with the
+        // vowel following the sweep — "yoi" is what a sync sweep through a
+        // vowel says. Every note restarts the sweep: the sweep is the word,
+        // and a take-over half way through it is half a word.
+        .mono_retrig(0.03)
+        .warp(A, WarpMode::Sync, 0.2)
+        .lfo_sync(0, LfoWave::Triangle, NoteDivision::Quarter)
+        .lfo_mode(0, LfoMode::Retrigger)
+        .late(0, 0.0, 0.0)
+        .route(ModSource::Lfo(0), ModDest::OscWarp(A as u8), 0.5)
+        .route(ModSource::Lfo(0), ModDest::FilterCharacter(0), 0.5)
+        .filter(0, FilterModel::Formant, SvfMode::Bandpass, 1_100.0, 0.6)
+        .character(0, 0.4)
+        .route(ModSource::Velocity, ModDest::OscWarp(A as u8), 0.2)
+        .route(ModSource::Macro(0), ModDest::OscWarp(A as u8), 0.5)
+        .route(ModSource::Macro(1), ModDest::LfoRate(0), 0.6)
+        .mac(0, "Scream").mac(1, "Rate")
+        .fx(drive_fx(DistortionCurve::Diode, 9.0, 0.4))
+        .out(11.0),
+    GrowlsAndScreams: "Robot Vox" => bass(WavetableId::Vowel, 3_000.0, 0.12)
+        // The vowel table quantised to a handful of steps per cycle, the
+        // frame stepped by a sample-and-hold — and the pitch stepped with
+        // it, in whole semitones, so the robot speaks in intervals — through
+        // a telephone band, with bits taken off on the way out: a mouth
+        // made of squares.
+        .warp(A, WarpMode::Quantise, 0.4)
+        // No sub: a voice on a telephone has none, and with one the row
+        // read as its sub and nothing else.
+        .off(SUB)
+        .filter(0, FilterModel::Clean, SvfMode::Bandpass, 2_400.0, 0.7)
+        .lfo_sync(0, LfoWave::SampleHold, NoteDivision::Sixteenth)
+        .lfo_mode(0, LfoMode::Free)
+        .route(ModSource::Lfo(0), ModDest::OscPosition(A as u8), 0.8)
+        .stepped(ModSource::Lfo(0), ModDest::LayerPitch(A as u8), 0.07, 7)
+        .route(ModSource::Velocity, ModDest::OscWarp(A as u8), 0.2)
+        .route(ModSource::Macro(0), ModDest::OscWarp(A as u8), 0.4)
+        .route(ModSource::Macro(1), ModDest::LfoRate(0), 0.6)
+        .mac(0, "Bits").mac(1, "Rate")
+        .fx(crush(6.0, 9_000.0, 0.6))
+        .out(21.9),
+    GrowlsAndScreams: "Rip Bass" => bass(WavetableId::Growl, 4_000.0, 0.1)
+        // The tearing bass: the table's phase mirrored by an amount env 2
+        // pulls back over a third of a second, so every note rips open and
+        // heals — into a driven ladder with the sub under it.
+        .pos(A, 0.4)
+        .warp(A, WarpMode::Mirror, 0.1)
+        .env(2, 0.0, 0.3, 0.0, 0.1)
+        .route(ModSource::Envelope(2), ModDest::OscWarp(A as u8), 0.8)
+        .route(ModSource::Velocity, ModDest::OscWarp(A as u8), 0.3)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 1_800.0, 0.4)
+        .drive(0, 0.6)
+        .route(ModSource::Macro(0), ModDest::OscWarp(A as u8), 0.5)
+        .route(ModSource::Macro(1), ModDest::FilterDrive(0), 0.5)
+        .mac(0, "Rip").mac(1, "Drive")
+        .out(-1.4),
+    GrowlsAndScreams: "Tearout" => bass(WavetableId::Sawstack, 2_000.0, 0.1)
+        // Neuro's other move: the phase bent by a synced sixteenth, a
+        // second stack a fifth up under it, and the ladder driven until
+        // the two fight.
+        .warp(A, WarpMode::Bend, 0.3)
+        .lfo_sync(0, LfoWave::Triangle, NoteDivision::Sixteenth)
+        .lfo_mode(0, LfoMode::Retrigger)
+        .route(ModSource::Lfo(0), ModDest::OscWarp(A as u8), 0.6)
+        .osc(B, WavetableId::Sawstack, -18.0)
+        .semis(B, 7)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 2_000.0, 0.35)
+        .drive(0, 0.7)
+        .route(ModSource::Velocity, ModDest::FilterDrive(0), 0.3)
+        .route(ModSource::Macro(0), ModDest::LfoRate(0), 0.6)
+        .route(ModSource::Macro(1), ModDest::LayerGain(B as u8), 0.25)
+        .mac(0, "Rate").mac(1, "Fifth")
+        .fx(drive_fx(DistortionCurve::Diode, 14.0, 0.5))
+        .out(-10.3),
+    GrowlsAndScreams: "Grain Scream" => grand(FactorySampleSet::GrandHard, -2.0)
+        // The grand two octaves up as eight-millisecond grains — glass —
+        // hard-synced at a ratio a synced quarter sweeps, so the glass
+        // screams. The one row that puts a warp on a grain cloud.
+        .semis(A, 24)
+        .grains(A, 8.0, 0.02)
+        .pos(A, 0.05)
+        .mono(0.02)
+        .warp(A, WarpMode::Fm, 0.3)
+        .modulator(A, B)
+        .osc(B, WavetableId::Saw, SILENT_DB)
+        .semis(B, -5)
+        .lfo_sync(0, LfoWave::Triangle, NoteDivision::Quarter)
+        .lfo_mode(0, LfoMode::Retrigger)
+        .route(ModSource::Lfo(0), ModDest::OscWarp(A as u8), 0.5)
+        .amp(0.005, 0.0, 1.0, 0.1)
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 500.0, 0.4)
+        .route(ModSource::Velocity, ModDest::OscWarp(A as u8), 0.2)
+        .route(ModSource::Macro(0), ModDest::OscWarp(A as u8), 0.5)
+        .route(ModSource::Macro(1), ModDest::LfoRate(0), 0.6)
+        .mac(0, "Scream").mac(1, "Rate")
+        .fx(drive_fx(DistortionCurve::Diode, 10.0, 0.4))
+        .out(10.0),
 }

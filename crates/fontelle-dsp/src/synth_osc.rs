@@ -200,7 +200,16 @@ impl FilterRoute {
     }
 }
 
-/// Whether a **sample** source plays once or goes round.
+/// How a **sample** source's head moves through its recording.
+///
+/// The first two are a sampler's. The other three are why the recording is
+/// in a synthesiser: a tape head cannot bounce, and a cloud of grains is
+/// what turns a note into a texture — the start knob stops being where the
+/// note begins and becomes *where in the sound the note is*, which a route
+/// can then move.
+///
+/// > *"experimental, synthy, modulating ... genuinely stand up to other
+/// > synths like omnisphere and serum."* — Ty, 2026-09-16
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum SampleLoop {
     /// Play through to the end and stop. A recording of a struck thing wants
@@ -209,28 +218,74 @@ pub enum SampleLoop {
     Off,
     /// Go round between the loop points for as long as the note is held.
     Forward,
+    /// Go back and forth between the loop points: the head turns round at
+    /// each rather than jumping, so a loop that never lands on its own cycle
+    /// still has no seam.
+    PingPong,
+    /// Backwards, once: the recording's end is the note's start, and the
+    /// start knob counts from the end so a knob at rest plays all of it.
+    Reverse,
+    /// A cloud of short grains, each landing at the start knob (scattered by
+    /// [`SampleSettings::spray`]) and played at the note. The recording never
+    /// ends because the grains keep coming, and a route on the start knob
+    /// scans through it.
+    Grains,
 }
 
 impl SampleLoop {
-    pub const ALL: [Self; 2] = [Self::Off, Self::Forward];
+    pub const ALL: [Self; 5] = [
+        Self::Off,
+        Self::Forward,
+        Self::PingPong,
+        Self::Reverse,
+        Self::Grains,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Off => "Once",
             Self::Forward => "Loop",
+            Self::PingPong => "Bounce",
+            Self::Reverse => "Reverse",
+            Self::Grains => "Grains",
         }
     }
 }
 
+/// The shortest and longest grain, in milliseconds. Five is where a grain
+/// stops being a piece of the sound and becomes a click at the grain rate;
+/// half a second is where it stops being a grain.
+pub const GRAIN_MIN_MS: f32 = 5.0;
+pub const GRAIN_MAX_MS: f32 = 500.0;
+
 /// How a **sample** source reads its recording — the part of the read that a
 /// table has no equivalent of.
+///
+/// Every field but the first three arrived after the first files that carry
+/// this block were written, so each defaults on its own: a file that says
+/// only the loop still reads as it did.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct SampleSettings {
     pub loop_mode: SampleLoop,
     /// The loop, as fractions of the recording, 0..1. A loop end at or before
     /// its start is no loop at all.
     pub loop_start: f32,
     pub loop_end: f32,
+    /// [`SampleLoop::Grains`] only: how long each grain is, in milliseconds
+    /// ([`GRAIN_MIN_MS`]..=[`GRAIN_MAX_MS`]). Short grains smear a tone
+    /// into a band; long ones keep the recording's own texture.
+    pub grain_ms: f32,
+    /// [`SampleLoop::Grains`] only: how far either side of the start knob a
+    /// grain may land, as a fraction of the recording, 0..1. Nothing means
+    /// every grain is the same moment of the sound, frozen; one means they
+    /// come from anywhere in it.
+    pub spray: f32,
+    /// Play **this** zone of the recording for every key, transposed from
+    /// its own root, instead of the zone whose range holds the key. What a
+    /// kit's snare across the keyboard wants, and what a set of one
+    /// recording per hit is otherwise unable to give.
+    pub zone: Option<u8>,
 }
 
 impl Default for SampleSettings {
@@ -241,6 +296,11 @@ impl Default for SampleSettings {
             // into its sustain, which is the part worth going round.
             loop_start: 0.5,
             loop_end: 1.0,
+            // Long enough to carry a note's pitch cleanly, short enough that
+            // a moving start knob is heard to move.
+            grain_ms: 80.0,
+            spray: 0.0,
+            zone: None,
         }
     }
 }
@@ -350,6 +410,24 @@ const LANES: usize = 8;
 /// Four, not [`MAX_UNISON`]: a piano has three strings to a note and each
 /// voice here is sixty-four resonators, so this is where the cost is held.
 pub const STRING_UNISON: usize = 4;
+
+/// How many grains a [`SampleLoop::Grains`] read has in the air at once.
+///
+/// Four, evenly staggered: their raised-cosine windows then add to a
+/// constant, so a cloud of a steady sound is steady and not a tremolo at
+/// the grain rate. More grains would only thicken a spray, and each is a
+/// read per unison voice per sample.
+pub const GRAINS: usize = 4;
+
+/// One grain of a [`SampleLoop::Grains`] read: where in the recording it
+/// landed, and how far through its window it is. The window is a raised
+/// cosine over `len` output samples.
+#[derive(Debug, Clone, Copy, Default)]
+struct Grain {
+    start: f64,
+    age: u32,
+    len: u32,
+}
 
 /// One oscillator of a Flopsynth patch.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -468,6 +546,20 @@ pub struct SynthState {
     /// on the first sample rather than at `reset`, because that is when the
     /// recording's length and the modulated start are both in hand.
     heads_placed: bool,
+    /// Which way each head is going — a bouncing loop turns each round on
+    /// its own, since a detuned stack reaches the loop's end at different
+    /// times.
+    backwards: [bool; MAX_UNISON],
+    /// The grain cloud's grains, for [`SampleLoop::Grains`]. Shared across
+    /// the unison stack: a grain is *when* in the recording and *how far
+    /// through its window*, and each voice reads it at its own rate from
+    /// the same start, which is what makes the stack a chorus of the same
+    /// grains rather than eight unrelated clouds.
+    grains: [Grain; GRAINS],
+    /// Output samples since the grain cloud started, for landing each new
+    /// grain in phase with the ones already in the air — see
+    /// [`grain_voices`](Self::grain_voices).
+    grain_clock: u32,
     /// A **string** source's partials.
     string: StringState,
 }
@@ -567,6 +659,9 @@ impl Default for SynthState {
             unison: None,
             heads: [0.0; MAX_UNISON],
             heads_placed: false,
+            backwards: [false; MAX_UNISON],
+            grains: [Grain::default(); GRAINS],
+            grain_clock: 0,
             string: StringState::default(),
         }
     }
@@ -803,7 +898,8 @@ impl SynthState {
     }
 
     /// A **sample** source: the recording read at the ratio of the note to
-    /// its root, by a stack of unison heads.
+    /// its root, by a stack of unison heads — or, for [`SampleLoop::Grains`],
+    /// by a cloud of grains the stack reads together.
     fn sample_voices(
         &mut self,
         osc: &SynthOsc,
@@ -831,25 +927,8 @@ impl SynthState {
             sample_rate,
         });
         let len_f = len as f64;
-        if !self.heads_placed {
-            // The start knob: where in the recording the note begins. Placed
-            // on the first sample because the modulated position is only
-            // known here — a velocity route to it is a strike that lands
-            // later the softer it is.
-            let start = f64::from(osc.position.clamp(0.0, 1.0)) * len_f;
-            self.heads.fill(start);
-            self.heads_placed = true;
-        }
-        // The loop, in frames. A loop end at or before its start is none.
-        let loop_start = f64::from(osc.sample.loop_start.clamp(0.0, 1.0)) * len_f;
-        let loop_end = f64::from(osc.sample.loop_end.clamp(0.0, 1.0)) * len_f;
-        let loop_len = loop_end - loop_start;
-        let looping = osc.sample.loop_mode == SampleLoop::Forward && loop_len >= 2.0;
-        // A short crossfade into the seam, so a loop that does not land on
-        // its own cycle goes round without a click. Five milliseconds of the
-        // recording, or a quarter of the loop when the loop is shorter than
-        // that.
-        let fade = (f64::from(data.sample_rate) * 0.005).min(loop_len * 0.25);
+        let last = (len - 1) as f64;
+        let mode = osc.sample.loop_mode;
         // Frames of the recording per output sample, per voice: the
         // stack's own step (the note times the detune, in cycles per output
         // sample) over the root's cycles per recording frame.
@@ -862,11 +941,54 @@ impl SynthState {
         } else {
             0.0
         };
-        let last = (len - 1) as f64;
+        let rm = if osc.warp == WarpMode::Rm {
+            1.0 - amount + amount * modulator
+        } else {
+            1.0
+        };
+        if mode == SampleLoop::Grains {
+            return self.grain_voices(
+                osc,
+                data,
+                &stack,
+                voices,
+                frames_per_cycle,
+                fm,
+                rm,
+                sample_rate,
+            );
+        }
+        if !self.heads_placed {
+            // The start knob: where in the recording the note begins. Placed
+            // on the first sample because the modulated position is only
+            // known here — a velocity route to it is a strike that lands
+            // later the softer it is. Backwards, it counts from the end, so
+            // the knob at rest is the whole recording either way.
+            let start = f64::from(osc.position.clamp(0.0, 1.0)) * len_f;
+            let backwards = mode == SampleLoop::Reverse;
+            self.heads
+                .fill(if backwards { last - start } else { start });
+            self.backwards.fill(backwards);
+            self.heads_placed = true;
+        }
+        // The loop, in frames. A loop end at or before its start is none.
+        let loop_start = f64::from(osc.sample.loop_start.clamp(0.0, 1.0)) * len_f;
+        let loop_end = f64::from(osc.sample.loop_end.clamp(0.0, 1.0)) * len_f;
+        let loop_len = loop_end - loop_start;
+        let has_loop = loop_len >= 2.0;
+        let looping = mode == SampleLoop::Forward && has_loop;
+        let bouncing = mode == SampleLoop::PingPong && has_loop;
+        // A short crossfade into the seam, so a loop that does not land on
+        // its own cycle goes round without a click. Five milliseconds of the
+        // recording, or a quarter of the loop when the loop is shorter than
+        // that. A bounce has no seam: the head turns round on the sample it
+        // reached.
+        let fade = (f64::from(data.sample_rate) * 0.005).min(loop_len * 0.25);
 
         let (mut left, mut right) = (0.0f32, 0.0f32);
         for voice in 0..voices {
             let head = &mut self.heads[voice];
+            let backwards = &mut self.backwards[voice];
             if looping {
                 // `while`, not `if`: one subtraction is not enough when a
                 // note far above the root steps further than the loop is
@@ -874,9 +996,22 @@ impl SynthState {
                 while *head >= loop_end {
                     *head -= loop_len;
                 }
-            } else if *head > last {
-                // Past the end of a one-shot: nothing, and the head stays
-                // where it is so the note stays silent.
+            } else if bouncing {
+                // Reflected off whichever point it passed, and turned round.
+                // A head that overshot by more than the loop is long (a note
+                // far above a short loop) is put back inside rather than
+                // reflected out the other side.
+                if !*backwards && *head >= loop_end {
+                    *head = (2.0 * loop_end - *head).max(loop_start);
+                    *backwards = true;
+                } else if *backwards && *head < loop_start {
+                    *head = (2.0 * loop_start - *head).min(loop_end);
+                    *backwards = false;
+                }
+            } else if *head > last || *head < 0.0 {
+                // Past the end of a one-shot — or, backwards, past its
+                // start: nothing, and the head stays where it is so the
+                // note stays silent.
                 continue;
             }
             let at = (*head + fm).clamp(0.0, last);
@@ -888,15 +1023,136 @@ impl SynthState {
                 let ahead = interpolate(data.samples, wrapped, Interpolation::Normal);
                 sample += (ahead - sample) * t;
             }
-            if osc.warp == WarpMode::Rm {
-                sample *= 1.0 - amount + amount * modulator;
-            }
-            *head += f64::from(stack.steps[voice]) * frames_per_cycle;
+            sample *= rm;
+            let step = f64::from(stack.steps[voice]) * frames_per_cycle;
+            *head += if *backwards { -step } else { step };
             let (gl, gr) = stack.gains[voice];
             left += sample * gl;
             right += sample * gr;
         }
         (left * stack.loudness, right * stack.loudness)
+    }
+
+    /// The grain cloud.
+    ///
+    /// [`GRAINS`] grains in the air, each a raised-cosine window over a
+    /// piece of the recording that starts where the start knob points (give
+    /// or take the spray) and is read at the note. A grain whose window has
+    /// closed is respawned where the knob points *now* — which is why a
+    /// route on the knob scans the recording, and why a knob left alone is
+    /// a sound frozen at one moment of it. The windows are staggered a
+    /// quarter of a grain apart at the note's start, so four of them add to
+    /// a constant and a cloud of a steady sound is steady.
+    ///
+    /// **The grains are landed in phase.** Four grains that all start at the
+    /// same frame but a hop apart in time read the recording a hop apart in
+    /// phase, and at any grain length where that hop is an odd number of
+    /// half-cycles they cancel — the metallic comb every granular freeze has.
+    /// This one knows the recording's pitch (`root_hz`), so each grain is
+    /// landed a fraction of a period along from the knob: the fraction the
+    /// clock has advanced since the cloud began, modulo the period. Every
+    /// grain then reads the same phase of the recording at the same moment,
+    /// whatever its length, and a frozen note is a note rather than a comb.
+    #[allow(clippy::too_many_arguments)]
+    fn grain_voices(
+        &mut self,
+        osc: &SynthOsc,
+        data: SampleData<'_>,
+        stack: &UnisonCache,
+        voices: usize,
+        frames_per_cycle: f64,
+        fm: f64,
+        rm: f32,
+        sample_rate: f32,
+    ) -> (f32, f32) {
+        let len_f = data.samples.len() as f64;
+        let last = len_f - 1.0;
+        let grain_len =
+            ((osc.sample.grain_ms.clamp(GRAIN_MIN_MS, GRAIN_MAX_MS) * 1e-3 * sample_rate) as u32)
+                .max(2);
+        // The centre voice's frames per output sample: what the phase
+        // alignment is worked out against. The side voices drift from it by
+        // their detune, a few frames over a grain, which is the chorus.
+        let rate = f64::from(stack.steps[0]) * frames_per_cycle;
+        if !self.heads_placed {
+            self.grain_clock = 0;
+            for index in 0..GRAINS {
+                let age = (grain_len as usize * index / GRAINS) as u32;
+                // Staggered grains began before the clock did.
+                let start = self.land(osc, len_f, -f64::from(age) * rate, frames_per_cycle);
+                let grain = &mut self.grains[index];
+                grain.len = grain_len;
+                grain.age = age;
+                grain.start = start;
+            }
+            self.heads_placed = true;
+        }
+        let elapsed = f64::from(self.grain_clock) * rate;
+        let (mut left, mut right) = (0.0f32, 0.0f32);
+        for index in 0..GRAINS {
+            if self.grains[index].age >= self.grains[index].len {
+                // Its window has closed: land again where the knob is now,
+                // at the length the knob says now.
+                let start = self.land(osc, len_f, elapsed, frames_per_cycle);
+                let grain = &mut self.grains[index];
+                grain.start = start;
+                grain.age = 0;
+                grain.len = grain_len;
+            }
+            let grain = &mut self.grains[index];
+            let t = grain.age as f32 / grain.len as f32;
+            let window = 0.5 - 0.5 * (std::f32::consts::TAU * t).cos();
+            let age = f64::from(grain.age);
+            for voice in 0..voices {
+                let at = grain.start + age * f64::from(stack.steps[voice]) * frames_per_cycle + fm;
+                // A grain that runs off either end of the recording reads
+                // nothing there, rather than holding the last frame as a
+                // level: the recording's end is silence, not a value.
+                if !(0.0..=last).contains(&at) {
+                    continue;
+                }
+                let sample = interpolate(data.samples, at, Interpolation::Normal) * window * rm;
+                let (gl, gr) = stack.gains[voice];
+                left += sample * gl;
+                right += sample * gr;
+            }
+            grain.age += 1;
+        }
+        self.grain_clock = self.grain_clock.wrapping_add(1);
+        // Four staggered raised cosines add to two.
+        let norm = stack.loudness * 2.0 / GRAINS as f32;
+        (left * norm, right * norm)
+    }
+
+    /// Where a grain lands: the start knob, pushed either way by up to the
+    /// spray, kept inside the recording — and then along by the fraction
+    /// of a period the cloud's clock has reached (`elapsed` frames, modulo
+    /// `period` frames), so that it reads in phase with the grains already
+    /// in the air.
+    fn land(&mut self, osc: &SynthOsc, len_f: f64, elapsed: f64, period: f64) -> f64 {
+        let position = f64::from(osc.position.clamp(0.0, 1.0));
+        let spray = f64::from(osc.sample.spray.clamp(0.0, 1.0));
+        let offset = if spray > 0.0 {
+            let mut x = self.rng;
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            self.rng = x;
+            (f64::from(x >> 8) / 8_388_608.0 - 1.0) * spray
+        } else {
+            0.0
+        };
+        let phase = if period > 0.0 {
+            elapsed.rem_euclid(period)
+        } else {
+            0.0
+        };
+        // A grain sprayed past either end is folded back in rather than
+        // piled up on it: clamped, a wide spray from near the start put
+        // half its grains on frame zero.
+        let folded = (position + offset).rem_euclid(2.0);
+        let folded = if folded > 1.0 { 2.0 - folded } else { folded };
+        (folded * len_f + phase).min((len_f - 1.0).max(0.0))
     }
 
     /// A **string** source: the stack's strings, each a bank of partials

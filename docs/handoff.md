@@ -16,6 +16,24 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-17 (v0.7.0).** The sample source reads a
+recording five ways now (Bounce, Reverse and a phase-locked grain cloud
+beside Once and Loop), can be locked to one zone, and the bank has two
+kits in it and four sampled shelves — `docs/flopsynth-sampling.md` is the
+write-up, `PROGRESS.md`'s top entry the list. Released once Ty had heard
+it and the bank had been audited (§6 of the write-up): **before adding a
+row that enables Filter 2 for its noise, route the oscillators to F1** —
+the Init patch's serial route goes through Filter 2, and that fault was in
+twenty-two rows; `tests/tone_route.rs` refuses it now, and
+`cargo run -p fontelle-core --example preset_audit --release` is the
+reading to run over a new shelf. Three more things: (1) the loop
+chooser has five positions, so `synth/sample/loop` at 1.0 is Grains, not
+Loop — the address is a day old and nothing depends on the old two; (2)
+`FactorySampleSet::ALL` is four, and a set's zone order is `GM_DRUM_MAP`'s
+— a preset's `zone` is an *index* into it; (3) the chooser clips a
+single-cell option past about five characters ("Grains", "Reverse", and
+"Ladder" and "Bypass" before them), which the write-up's §5 lists as open.
+
 **Updated 2026-09-16 (v0.6.0).** The string and sample oscillators, the
 Grand Piano as a recording with a body around it, the sound drop from the
 browser (and the held row that makes it land across windows), and the

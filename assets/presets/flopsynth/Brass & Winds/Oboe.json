@@ -65,7 +65,7 @@
             "cutoff_hz": 1000.0,
             "drive": 0.0,
             "enabled": true,
-            "key_track": 0.0,
+            "key_track": 0.4000000059604645,
             "mode": "Bandpass",
             "model": "Formant",
             "resonance": 0.4000000059604645,

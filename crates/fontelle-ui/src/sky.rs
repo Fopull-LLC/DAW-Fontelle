@@ -420,7 +420,11 @@ impl SkyState {
                 // the core's ink in the densest knots — the clusters.
                 let which = ((r.1 - 0.5) * 2.4 + 0.5).clamp(0.0, 1.0);
                 let ink = mix3(a, b, which);
-                let ink = mix3(ink, palette.core, ((density - 0.72) * 3.0).clamp(0.0, 1.0) * 0.6);
+                let ink = mix3(
+                    ink,
+                    palette.core,
+                    ((density - 0.72) * 3.0).clamp(0.0, 1.0) * 0.6,
+                );
                 let mut rgb = palette.deep;
                 for c in 0..3 {
                     rgb[c] +=

@@ -132,7 +132,7 @@
         "layers": [
           {
             "fine_tune_cents": 0.0,
-            "gain_db": 5.0,
+            "gain_db": -8.799999237060547,
             "key_range": [
               0,
               127
@@ -151,7 +151,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Serial",
+                "filter_route": "F1",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -179,7 +179,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -4.0,
+            "gain_db": -17.799999237060547,
             "key_range": [
               0,
               127
@@ -198,7 +198,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Serial",
+                "filter_route": "F1",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -320,7 +320,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -20.0,
+            "gain_db": -33.79999923706055,
             "key_range": [
               0,
               127

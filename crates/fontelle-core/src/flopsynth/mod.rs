@@ -348,7 +348,7 @@ pub fn addresses(patch: &Patch) -> Vec<String> {
                     out.push(format!("patch/layer[{index}]/synth/table"));
                 }
                 SynthSource::Sample(_) => {
-                    for field in ["loop", "loop_start", "loop_end"] {
+                    for field in ["loop", "loop_start", "loop_end", "grain", "spray", "zone"] {
                         out.push(format!("patch/layer[{index}]/synth/sample/{field}"));
                     }
                 }

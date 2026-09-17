@@ -349,6 +349,10 @@ pub fn key_ranges(roots: &[u8]) -> Vec<(u8, u8)> {
 /// at, and the keys it serves.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SampleZone {
+    /// What the window calls this zone when it lists them — a hit's name in
+    /// a kit, the file's stem for a dropped folder. Empty for a zone with
+    /// nothing to say, which the window names by its root instead.
+    pub name: String,
     /// The key the recording is *of*. A note at this key plays it as it is.
     pub root_key: u8,
     /// How far the recording actually sits from that key, in cents — what a
@@ -367,6 +371,26 @@ impl SampleZone {
     pub fn root_hz(&self) -> f32 {
         440.0 * 2f32.powf((f32::from(self.root_key) - 69.0 + self.fine_cents / 100.0) / 12.0)
     }
+
+    /// What a chooser lists this zone as: its name, or its root key's note
+    /// when it has none.
+    pub fn label(&self) -> String {
+        if self.name.is_empty() {
+            note_name(self.root_key)
+        } else {
+            self.name.clone()
+        }
+    }
+}
+
+/// A key's name the way the roll writes it: `C4` is middle C. The pitch
+/// classes are `fontelle_types::TUNE_ROOTS`, for its reason.
+pub fn note_name(key: u8) -> String {
+    format!(
+        "{}{}",
+        fontelle_types::TUNE_ROOTS[usize::from(key % 12)],
+        i32::from(key / 12) - 1
+    )
 }
 
 /// The user's fully-owned instrument definition (TDD §7.2). An SF2 file seeds this

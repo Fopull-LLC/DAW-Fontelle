@@ -1451,12 +1451,20 @@ impl Voice {
                             .get_user(at as usize)
                             .map_or(SynthInput::None, SynthInput::Table),
                         // A recording, by the zone that serves this key —
-                        // see `UserSample::zone_for`. Resolved here rather
-                        // than per sample because which zone a note plays is
-                        // decided when it starts.
+                        // see `UserSample::zone_for` — or by the one zone
+                        // the oscillator is locked to, whatever the key,
+                        // which is how one hit of a kit becomes an
+                        // instrument. Resolved here rather than per sample
+                        // because which zone a note plays is decided when
+                        // it starts. A lock on a zone the recording has not
+                        // got is silence, like every other thing a patch
+                        // names and does not have.
                         fontelle_dsp::SynthSource::Sample(at) => tables
                             .get_sample(at as usize)
-                            .and_then(|sample| sample.zone_for(self.key))
+                            .and_then(|sample| match osc.sample.zone {
+                                Some(locked) => sample.zones.get(usize::from(locked)),
+                                None => sample.zone_for(self.key),
+                            })
                             .map_or(SynthInput::None, |zone| {
                                 SynthInput::Sample(fontelle_dsp::SampleData {
                                     samples: &zone.samples,

@@ -3833,6 +3833,7 @@ impl Session {
                 }
             };
             zones.push(fontelle_core::SampleZone {
+                name: stem.clone(),
                 root_key,
                 fine_cents,
                 key_range: (0, 127),

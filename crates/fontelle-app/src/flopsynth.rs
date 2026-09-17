@@ -184,11 +184,23 @@ fn picture_for(name: &str, patch: &Patch, phases: &[f32]) -> FlopsynthPicture {
                 Some((sample, zone)) => FlopsynthPicture::Sound {
                     peaks: sound_peaks(&zone.samples),
                     start: osc.position.clamp(0.0, 1.0),
-                    loop_region: (osc.sample.loop_mode == fontelle_dsp::SampleLoop::Forward)
-                        .then_some((
-                            osc.sample.loop_start.clamp(0.0, 1.0),
-                            osc.sample.loop_end.clamp(0.0, 1.0),
-                        )),
+                    // The region: the loop for the two modes that have one,
+                    // and for the grain cloud the span either side of the
+                    // start where its grains may land.
+                    loop_region: match osc.sample.loop_mode {
+                        fontelle_dsp::SampleLoop::Forward | fontelle_dsp::SampleLoop::PingPong => {
+                            Some((
+                                osc.sample.loop_start.clamp(0.0, 1.0),
+                                osc.sample.loop_end.clamp(0.0, 1.0),
+                            ))
+                        }
+                        fontelle_dsp::SampleLoop::Grains => {
+                            let start = osc.position.clamp(0.0, 1.0);
+                            let spray = osc.sample.spray.clamp(0.0, 1.0);
+                            Some(((start - spray).max(0.0), (start + spray).min(1.0)))
+                        }
+                        fontelle_dsp::SampleLoop::Off | fontelle_dsp::SampleLoop::Reverse => None,
+                    },
                     name: if sample.zones.len() > 1 {
                         format!("{} ({} notes)", sample.name, sample.zones.len())
                     } else {

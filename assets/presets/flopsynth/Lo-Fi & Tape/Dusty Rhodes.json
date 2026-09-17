@@ -65,7 +65,7 @@
             "cutoff_hz": 780.0,
             "drive": 0.0,
             "enabled": true,
-            "key_track": 0.0,
+            "key_track": 1.0,
             "mode": "Lowpass",
             "model": "Ladder",
             "resonance": 0.20000000298023224,
@@ -109,7 +109,7 @@
         "layers": [
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -2.5,
+            "gain_db": -6.0,
             "key_range": [
               0,
               127
@@ -297,7 +297,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -35.5,
+            "gain_db": -39.0,
             "key_range": [
               0,
               127

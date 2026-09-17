@@ -19,6 +19,72 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-17 — `v0.7.0`: the sampled shelves, and the bank audited.**
+Ty, having heard the shelves: *"these sound great release it after you
+audit existing sounds for how you could make them better with the new
+features. for example pan flute sounds very noisy right now it just sounds
+like noise and air and a faint wave in the background. make sure all the
+presets are up to par then you can release."* The audit
+(`examples/preset_audit.rs`, `docs/flopsynth-sampling.md` §6) found the
+organ shelf's 2026-09-13 fault in **twenty-two more rows** — the Init
+patch's serial route running the tone through Filter 2 when Filter 2 is the
+breath's band-pass: all four flutes, Melodica, Sitar, Slap, Ice Field and
+the whole `choir()` family, fundamentals twenty to thirty decibels down.
+Routed to F1, re-trimmed, four pairs re-separated, and held by
+`tests/tone_route.rs`. Oboe and Dusty Rhodes keyed (cliffs at C5). Five
+struck-or-plucked-string rows rebuilt on the sampled grand: Harp,
+Pizzicato, Pizz Section, Celesta, Electric Grand. Then the release.
+
+**The evening before — the sampled shelves: grains, kits, growls.** Ty,
+after `v0.6.0`: *"use
+flopsynths new sampling features to make a variety of new complex presets
+that can be experimental, synthy, modulating, instruments, percussion
+kits, growls, dubstep sounds ... if you think we can expand the features
+any way to make our synth even more awesome and genuinely stand up to
+other synths like omnisphere and serum we should do that."*
+`docs/flopsynth-sampling.md` is the write-up; this is the list, each
+piece tests-first:
+
+- **Five ways to read a recording** (`SampleLoop`; the card's `loop`
+  chooser): Once, Loop, **Bounce** (back and forth between the loop
+  points, no seam), **Reverse** (the start knob counts from the end) and
+  **Grains** — a cloud of four raised-cosine grains that keep landing
+  where the start knob points, so a note never ends and a route on the
+  knob scans the recording. Two knobs stand in for the loop points in
+  that mode: `grain` (5–500 ms) and `spray`. **The grains are landed in
+  phase** with the recording's own pitch — each a fraction of a period
+  along, the fraction the cloud's clock has reached — which is why a
+  frozen note here is a note and not the comb a granular freeze usually
+  is (at 50 ms it rendered at −104 dB before that).
+  `fontelle-dsp/tests/synth_sample_modes.rs`.
+- **A zone lock** (`SampleSettings::zone`, the card's `zone` chooser on a
+  recording with more than one zone): play this zone for every key,
+  pitched from its own root — one hit of a kit as an instrument. Zones
+  have names now (`SampleZone::name`, a hit's or a dropped file's stem;
+  left out of the file when empty). Addresses `sample/grain`,
+  `sample/spray`, `sample/zone` (`tests/user_sample.rs`).
+- **Two kits in the binary** (`FactorySampleSet::KitStudio`, `Kit808`):
+  every GM hit of the drum machine's Studio and 808 kits played through
+  the kit's bus and cut by `fontelle-app/examples/kit_samples.rs`, one per
+  key, named for the roll, 1.7 MB (`tests/factory_samples.rs`). The
+  card's menu lists all four sets.
+- **Four shelves, 48 presets, bank at 388**: *Sampled Keys* (the grand as
+  eleven other keyboards), *Grains & Clouds*, *Kits & Hits* (seven kits,
+  six hits — `808 Sub` is the recording pitched by the key, mono,
+  retriggered) and *Growls & Screams*, where the thing no other synth's
+  growl has is a **recording as the FM or RM modulator**: a growl that
+  tears the way the piano's decay does, a Reese ring-modulated by the
+  frozen 808. `tests/flopsynth_shows_off.rs` holds that every read mode,
+  every set, a sampled modulator and a zone lock are each in some
+  preset; every bank gate passes; `Build::read`, `loop_points`, `grains`,
+  `zone`, `untracked`, `mono_retrig` are the new verbs.
+- Looked at on the nested X server: the kit's card with its zone chooser
+  and the grain knobs in place of the loop points. Two things learned
+  voicing the rows are in the write-up's §4 — a one-shot under a legato
+  take-over keeps its head (hence `mono_retrig`), and a hit is all peak
+  (four hats on one sample were twice full scale; a random start offset
+  is the answer, not a ladder's drive, which is a gain).
+
 **As of 2026-09-16, later — the piano is a recording, and a row let go
 outside the window is held — `v0.6.0`.** The day's experiment, released
 once Ty had heard it (*"sounds great go ahead and release this update"*);

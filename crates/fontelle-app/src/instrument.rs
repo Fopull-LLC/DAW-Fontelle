@@ -565,8 +565,8 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
         unlerp_log,
     };
     use fontelle_dsp::{
-        FilterModel, FilterRoute, FilterSlope, MAX_UNISON, SampleLoop, SynthSource, WarpMode,
-        WavetableId,
+        FilterModel, FilterRoute, FilterSlope, GRAIN_MAX_MS, GRAIN_MIN_MS, MAX_UNISON, SampleLoop,
+        SynthSource, WarpMode, WavetableId,
     };
     use fontelle_types::{LfoWave, NoteDivision};
 
@@ -713,7 +713,7 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
         ));
 
         match osc.source {
-            SynthSource::Sample(_) => {
+            SynthSource::Sample(sample_at) => {
                 let at = SampleLoop::ALL
                     .iter()
                     .position(|m| *m == osc.sample.loop_mode)
@@ -730,20 +730,65 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                             .collect(),
                     ),
                 ));
-                params.push(param(
-                    &format!("patch/layer[{index}]/synth/sample/loop_start"),
-                    "loop in",
-                    osc.sample.loop_start.clamp(0.0, 1.0),
-                    format!("{:.0}%", osc.sample.loop_start.clamp(0.0, 1.0) * 100.0),
-                    ParamKind::Knob,
-                ));
-                params.push(param(
-                    &format!("patch/layer[{index}]/synth/sample/loop_end"),
-                    "loop out",
-                    osc.sample.loop_end.clamp(0.0, 1.0),
-                    format!("{:.0}%", osc.sample.loop_end.clamp(0.0, 1.0) * 100.0),
-                    ParamKind::Knob,
-                ));
+                if osc.sample.loop_mode == SampleLoop::Grains {
+                    // A cloud has no loop: its two knobs stand where the
+                    // loop points stood, so the card is the same size in
+                    // every mode.
+                    let grain = osc.sample.grain_ms.clamp(GRAIN_MIN_MS, GRAIN_MAX_MS);
+                    params.push(param(
+                        &format!("patch/layer[{index}]/synth/sample/grain"),
+                        "grain",
+                        unlerp_log(grain, GRAIN_MIN_MS, GRAIN_MAX_MS),
+                        format!("{grain:.0} ms"),
+                        ParamKind::Knob,
+                    ));
+                    params.push(param(
+                        &format!("patch/layer[{index}]/synth/sample/spray"),
+                        "spray",
+                        osc.sample.spray.clamp(0.0, 1.0),
+                        format!("{:.0}%", osc.sample.spray.clamp(0.0, 1.0) * 100.0),
+                        ParamKind::Knob,
+                    ));
+                } else {
+                    params.push(param(
+                        &format!("patch/layer[{index}]/synth/sample/loop_start"),
+                        "loop in",
+                        osc.sample.loop_start.clamp(0.0, 1.0),
+                        format!("{:.0}%", osc.sample.loop_start.clamp(0.0, 1.0) * 100.0),
+                        ParamKind::Knob,
+                    ));
+                    params.push(param(
+                        &format!("patch/layer[{index}]/synth/sample/loop_end"),
+                        "loop out",
+                        osc.sample.loop_end.clamp(0.0, 1.0),
+                        format!("{:.0}%", osc.sample.loop_end.clamp(0.0, 1.0) * 100.0),
+                        ParamKind::Knob,
+                    ));
+                }
+                // The zone chooser, on a recording with zones to choose
+                // between: *any* — the zone whose range holds the key —
+                // then each by name, which on a kit is the hit's. One zone
+                // is no choice, and the card leaves the chooser out.
+                if let Some(sample) = patch.samples.get(usize::from(sample_at))
+                    && sample.zones.len() > 1
+                {
+                    let choices = 1 + sample.zones.len();
+                    let chosen = osc
+                        .sample
+                        .zone
+                        .map_or(0, |z| usize::from(z) + 1)
+                        .min(choices - 1);
+                    let names: Vec<String> = std::iter::once("any".to_string())
+                        .chain(sample.zones.iter().map(|zone| zone.label()))
+                        .collect();
+                    params.push(param(
+                        &format!("patch/layer[{index}]/synth/sample/zone"),
+                        "zone",
+                        choice_value(chosen, choices),
+                        names[chosen].clone(),
+                        ParamKind::Choice(names),
+                    ));
+                }
             }
             SynthSource::String => {
                 let string = &osc.string;

@@ -174,6 +174,10 @@ struct StoredSample {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StoredZone {
+    /// Left out when empty, so a file written before zones had names is
+    /// byte for byte the file written after.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    name: String,
     root_key: u8,
     fine_cents: f32,
     key_range: (u8, u8),
@@ -198,6 +202,7 @@ impl StoredSample {
                 .zones
                 .iter()
                 .map(|zone| StoredZone {
+                    name: zone.name.clone(),
                     root_key: zone.root_key,
                     fine_cents: zone.fine_cents,
                     key_range: zone.key_range,
@@ -230,6 +235,7 @@ impl StoredSample {
                 .zones
                 .into_iter()
                 .map(|zone| crate::SampleZone {
+                    name: zone.name,
                     root_key: zone.root_key,
                     fine_cents: zone.fine_cents,
                     key_range: zone.key_range,

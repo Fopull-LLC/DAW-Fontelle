@@ -1079,7 +1079,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-app"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "fontelle-assets",
  "fontelle-bridge-abi",
@@ -1105,7 +1105,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-assets"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "fontelle-core",
  "fontelle-dsp",
@@ -1121,11 +1121,11 @@ dependencies = [
 
 [[package]]
 name = "fontelle-bridge-abi"
-version = "0.6.0"
+version = "0.7.0"
 
 [[package]]
 name = "fontelle-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "criterion",
  "fontelle-dsp",
@@ -1137,7 +1137,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-dsp"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1145,7 +1145,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-engine"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "alsa",
  "audio_thread_priority",
@@ -1167,7 +1167,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-fx"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "criterion",
  "fontelle-dsp",
@@ -1177,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-host"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "clack-extensions",
  "clack-host",
@@ -1198,7 +1198,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-midi"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "fontelle-types",
  "midir",
@@ -1209,7 +1209,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-model"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "fontelle-types",
  "serde",
@@ -1220,7 +1220,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-plugin"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "baseview",
  "fontelle-core",
@@ -1232,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-sequencer"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "fontelle-model",
  "fontelle-types",
@@ -1242,21 +1242,21 @@ dependencies = [
 
 [[package]]
 name = "fontelle-testbridge"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "fontelle-bridge-abi",
 ]
 
 [[package]]
 name = "fontelle-testlv2"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "lv2_raw 0.3.2",
 ]
 
 [[package]]
 name = "fontelle-testplug"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "clack-extensions",
  "clack-plugin",
@@ -1264,14 +1264,14 @@ dependencies = [
 
 [[package]]
 name = "fontelle-testvst3"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "vst3",
 ]
 
 [[package]]
 name = "fontelle-types"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1281,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-ui"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "baseview",
  "cosmic-text",
@@ -4906,7 +4906,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "fontelle-core",
  "fontelle-types",

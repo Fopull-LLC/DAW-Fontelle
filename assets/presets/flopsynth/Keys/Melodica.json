@@ -62,13 +62,13 @@
         "filters": [
           {
             "character": 0.0,
-            "cutoff_hz": 3200.0,
+            "cutoff_hz": 2600.0,
             "drive": 0.0,
             "enabled": true,
             "key_track": 0.5,
             "mode": "Lowpass",
             "model": "Clean",
-            "resonance": 0.6000000238418579,
+            "resonance": 0.699999988079071,
             "slope": "Db24"
           },
           {
@@ -106,16 +106,16 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Serial",
+                "filter_route": "F1",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
                 "phase": 0.0,
-                "position": 0.0,
+                "position": 0.25,
                 "random_phase": false,
                 "semitones": 0,
                 "source": {
-                  "Table": "Square"
+                  "Table": "Pulse"
                 },
                 "unison": {
                   "blend": 1.0,
@@ -449,7 +449,7 @@
             }
           ]
         },
-        "output_db": 8.300000190734863,
+        "output_db": 10.100000381469727,
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

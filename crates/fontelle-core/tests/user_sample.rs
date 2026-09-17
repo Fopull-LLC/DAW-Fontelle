@@ -33,6 +33,7 @@ fn a_recording() -> UserSample {
         name: "Piano A4".to_string(),
         factory: None,
         zones: vec![SampleZone {
+            name: String::new(),
             root_key: 69,
             fine_cents: 0.0,
             key_range: (0, 127),
@@ -101,6 +102,7 @@ fn a_key_plays_the_zone_that_covers_it_or_the_nearest_root() {
         factory: None,
         zones: vec![
             SampleZone {
+                name: "Low".to_string(),
                 root_key: 48,
                 fine_cents: 0.0,
                 key_range: (40, 54),
@@ -108,6 +110,7 @@ fn a_key_plays_the_zone_that_covers_it_or_the_nearest_root() {
                 samples: tone(130.8, 0.1),
             },
             SampleZone {
+                name: "High".to_string(),
                 root_key: 72,
                 fine_cents: 0.0,
                 key_range: (66, 78),
@@ -202,11 +205,13 @@ fn a_patch_with_a_recording_survives_being_saved_and_opened() {
         osc.sample.loop_mode = SampleLoop::Forward;
         osc.sample.loop_start = 0.25;
     }
+    patch.samples[0].zones[0].name = "A4 soft".to_string();
     let data = patch.to_data(&Default::default()).expect("writes");
     let back = Patch::from_data(&data, |_| None).expect("reads").patch;
     assert_eq!(back.samples.len(), 1);
     assert_eq!(back.samples[0].name, "Piano A4");
     let zone = &back.samples[0].zones[0];
+    assert_eq!(zone.name, "A4 soft", "a zone's name is kept");
     assert_eq!(zone.root_key, 69);
     assert_eq!(zone.fine_cents, 12.5);
     assert_eq!(zone.key_range, (40, 80));
@@ -269,7 +274,7 @@ fn each_kind_of_source_lists_its_own_addresses() {
         osc.source = SynthSource::Sample(0);
     }
     let sample = flopsynth::addresses(&patch);
-    for field in ["loop", "loop_start", "loop_end"] {
+    for field in ["loop", "loop_start", "loop_end", "grain", "spray", "zone"] {
         let address = format!("patch/layer[0]/synth/sample/{field}");
         assert!(sample.contains(&address), "a sample lists {address}");
     }
@@ -308,10 +313,11 @@ fn the_new_addresses_write_and_read_back() {
             ..
         })
     ));
+    // The loop chooser: five ways of reading, Loop the second of them.
     assert!(patch_params::set(
         &mut patch,
         "patch/layer[0]/synth/sample/loop",
-        1.0
+        0.25
     ));
     assert!(patch_params::set(
         &mut patch,
@@ -323,16 +329,37 @@ fn the_new_addresses_write_and_read_back() {
         "patch/layer[0]/synth/sample/loop_end",
         0.9
     ));
+    // The grain knob is logarithmic over 5..500 ms, so half way is fifty;
+    // the spray is plain; the zone chooser's first position is "any".
+    assert!(patch_params::set(
+        &mut patch,
+        "patch/layer[0]/synth/sample/grain",
+        0.5
+    ));
+    assert!(patch_params::set(
+        &mut patch,
+        "patch/layer[0]/synth/sample/spray",
+        0.4
+    ));
     let Source::Synth(osc) = &patch.layers[0].source else {
         panic!()
     };
     assert_eq!(osc.sample.loop_mode, SampleLoop::Forward);
     assert!((osc.sample.loop_start - 0.3).abs() < 1e-6);
     assert!((osc.sample.loop_end - 0.9).abs() < 1e-6);
+    assert!(
+        (osc.sample.grain_ms - 50.0).abs() < 0.5,
+        "half way up the grain knob is fifty milliseconds: {}",
+        osc.sample.grain_ms
+    );
+    assert!((osc.sample.spray - 0.4).abs() < 1e-6);
     for (address, value) in [
-        ("patch/layer[0]/synth/sample/loop", 1.0),
+        ("patch/layer[0]/synth/sample/loop", 0.25),
         ("patch/layer[0]/synth/sample/loop_start", 0.3),
         ("patch/layer[0]/synth/sample/loop_end", 0.9),
+        ("patch/layer[0]/synth/sample/grain", 0.5),
+        ("patch/layer[0]/synth/sample/spray", 0.4),
+        ("patch/layer[0]/synth/sample/zone", 0.0),
         ("patch/layer[0]/synth/kind", 0.5),
     ] {
         let read = patch_params::value(&patch, address).expect(address);
@@ -462,4 +489,101 @@ fn the_position_destination_is_named_for_what_it_does() {
         osc.source = SynthSource::String;
     }
     assert_eq!(label(&patch), "OSC A bright");
+}
+
+/// A locked zone plays for every key, transposed from its own root, where
+/// the unlocked read picks the zone whose range holds the key. What a
+/// kit's snare across the keyboard is.
+#[test]
+fn a_locked_zone_plays_for_every_key() {
+    let mut patch = flopsynth::flopsynth_init();
+    patch.samples.push(UserSample {
+        name: "Two".to_string(),
+        factory: None,
+        zones: vec![
+            SampleZone {
+                name: "Low".to_string(),
+                root_key: 48,
+                fine_cents: 0.0,
+                key_range: (0, 60),
+                sample_rate: SR as u32,
+                samples: tone(130.8, 1.0),
+            },
+            // Recorded an octave *above* its root on purpose, so that what
+            // it plays for a key is unmistakably this zone and not the
+            // other one transposed to the same pitch.
+            SampleZone {
+                name: "High".to_string(),
+                root_key: 72,
+                fine_cents: 0.0,
+                key_range: (61, 127),
+                sample_rate: SR as u32,
+                samples: tone(1_046.5, 1.0),
+            },
+        ],
+    });
+    if let Source::Synth(osc) = &mut patch.layers[0].source {
+        osc.source = SynthSource::Sample(0);
+    }
+    let unlocked = render(patch.clone(), 48, 24_000);
+    let measured = zero_crossings_per_second(&unlocked[4_000..]);
+    assert!(
+        (measured - 130.8).abs() < 3.0,
+        "unlocked, key 48 plays the low zone: {measured} Hz"
+    );
+
+    if let Source::Synth(osc) = &mut patch.layers[0].source {
+        osc.sample.zone = Some(1);
+    }
+    let locked = render(patch.clone(), 48, 24_000);
+    let measured = zero_crossings_per_second(&locked[4_000..]);
+    assert!(
+        (measured - 261.6).abs() < 4.0,
+        "locked to the high zone, key 48 plays it two octaves down: {measured} Hz"
+    );
+
+    // A lock on a zone the recording has not got is silence, like every
+    // other thing a patch names and does not have.
+    if let Source::Synth(osc) = &mut patch.layers[0].source {
+        osc.sample.zone = Some(9);
+    }
+    let missing = render(patch, 48, 24_000);
+    assert!(
+        missing.iter().all(|s| s.abs() < 1e-6),
+        "a zone that is not there is silence"
+    );
+}
+
+/// The zone chooser: its first position is *any* and the rest are the
+/// recording's zones in order, so an automation lane can pick a hit.
+#[test]
+fn the_zone_address_is_a_chooser_over_the_recordings_zones() {
+    use fontelle_core::patch_params;
+    let mut patch = a_patch_playing_its_own_recording();
+    patch.samples[0].zones.push(SampleZone {
+        name: "Second".to_string(),
+        root_key: 60,
+        fine_cents: 0.0,
+        key_range: (0, 127),
+        sample_rate: SR as u32,
+        samples: tone(261.6, 0.1),
+    });
+    let address = "patch/layer[0]/synth/sample/zone";
+    // Three positions: any, the first zone, the second.
+    assert!(patch_params::set(&mut patch, address, 1.0));
+    let Source::Synth(osc) = &patch.layers[0].source else {
+        panic!()
+    };
+    assert_eq!(osc.sample.zone, Some(1));
+    assert!((patch_params::value(&patch, address).unwrap() - 1.0).abs() < 1e-6);
+    assert!(patch_params::set(&mut patch, address, 0.5));
+    let Source::Synth(osc) = &patch.layers[0].source else {
+        panic!()
+    };
+    assert_eq!(osc.sample.zone, Some(0));
+    assert!(patch_params::set(&mut patch, address, 0.0));
+    let Source::Synth(osc) = &patch.layers[0].source else {
+        panic!()
+    };
+    assert_eq!(osc.sample.zone, None);
 }
