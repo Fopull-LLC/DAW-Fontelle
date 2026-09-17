@@ -22,6 +22,7 @@ fn view() -> RollView {
     RollView {
         scroll_tick: 0,
         top_key: 84,
+        key_offset: 0.0,
         pixels_per_tick: 0.125, // one beat (960 ticks) = 120 px
         key_height: 12.0,
         snap: SnapDivision::Step,

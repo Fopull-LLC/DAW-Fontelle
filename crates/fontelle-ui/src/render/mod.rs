@@ -289,7 +289,7 @@ pub struct TimelineChrome<'a> {
     pub beats_per_bar: u32,
     pub marquee: Option<Rect>,
     /// Whether the arrangement is the panel the keyboard is talking to, so
-    /// Delete and Ctrl+B visibly belong to one canvas rather than to both.
+    /// Delete and Ctrl+D visibly belong to one canvas rather than to both.
     pub focused: bool,
     /// The controls across the top.
     pub toolbar: TimelineToolbar,
@@ -300,6 +300,15 @@ pub struct TimelineChrome<'a> {
     pub stretch: bool,
     /// Which one the pointer is over, so it lights before it is pressed.
     pub hover: Option<TimelineControl>,
+    /// The block under the pointer and which part of it, so an audio block
+    /// shows its fade handles before it is chosen and the handle under the
+    /// pointer lights — FL shows its fade handles on the clip under the
+    /// pointer, and a corner that looks like the rest of the caption is one
+    /// nobody finds.
+    pub hover_clip: Option<(fontelle_types::ClipId, crate::canvas::ClipPart)>,
+    /// The fade being dragged right now, so the block can say how long it
+    /// is while it is being set.
+    pub fading: Option<(fontelle_types::ClipId, crate::canvas::FadeEnd)>,
     /// Whether there is anything on the clip clipboard, so Paste can say
     /// whether pressing it would do anything.
     pub can_paste: bool,
@@ -5591,7 +5600,17 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
             // And its fades over the waveform: the curve the player uses,
             // the part it takes away shaded, and — on the chosen block —
             // the handles that set it (TDD §15.2). See `canvas::fade_anatomy`.
-            draw_clip_fades(scene, theme, l.grid, whole, clip, selected);
+            let hovered = chrome
+                .hover_clip
+                .filter(|(id, _)| *id == clip.id)
+                .map(|(_, part)| part);
+            let fading = chrome
+                .fading
+                .filter(|(id, _)| *id == clip.id)
+                .map(|(_, end)| end);
+            draw_clip_fades(
+                scene, theme, labels, l.grid, whole, clip, selected, hovered, fading,
+            );
         } else {
             // And a note clip shows the notes that are in it, for the same
             // reason: what is *in* a clip is the thing you are looking for
@@ -5966,6 +5985,11 @@ fn lighten(colour: Color, amount: f32) -> Color {
 /// where a note is a slab: the same distance from the ground reads fainter.
 const WAVEFORM_LIGHTEN: f32 = 0.7;
 
+/// How solid the waveform's **outline** is, against the core drawn solid
+/// inside it — see `canvas::clip_waveform_core`. Enough that the extremes
+/// are read as the take's reach, not so much that the core is lost in them.
+const WAVEFORM_OUTLINE_ALPHA: u8 = 0x78;
+
 /// The waveform inside an audio clip's block (TDD §15.3).
 ///
 /// *"i should be able to see the waveform of the audio inside the clip."* The
@@ -5975,6 +5999,13 @@ const WAVEFORM_LIGHTEN: f32 = 0.7;
 /// The ink is the block's own colour **lightened**, exactly as the note
 /// preview's is and for the same reason: what is inside a clip has to read as
 /// part of it rather than as something lying on top.
+///
+/// **Two tones.** The extremes are the outline, in a translucent ink; the
+/// loudness (`canvas::clip_waveform_core`) is drawn solid inside it. The
+/// outline says how far the take swung and the core how loud it was, and
+/// for a voice the two are far apart — drawn as one shape, speech was a
+/// fuzz of peaks; drawn as two, it reads as syllables. A preview without a
+/// core yet draws the outline solid, so nothing is fainter for being older.
 fn draw_clip_waveform(
     scene: &mut Scene,
     theme: &Theme,
@@ -5995,7 +6026,20 @@ fn draw_clip_waveform(
     } else {
         lighten(Color(clip.color), WAVEFORM_LIGHTEN)
     };
+    let core = crate::canvas::clip_waveform_core(block, grid, clip);
+    let outline = if core.is_empty() {
+        ink
+    } else {
+        ink.with_alpha(WAVEFORM_OUTLINE_ALPHA)
+    };
     for column in columns {
+        let column = column.intersection(&grid);
+        if column.is_empty() {
+            continue;
+        }
+        fill_rect(scene, column, outline);
+    }
+    for column in core {
         let column = column.intersection(&grid);
         if column.is_empty() {
             continue;
@@ -6033,20 +6077,27 @@ fn draw_clip_waveform(
 }
 
 /// An audio block's fades: each curve, the region above it shaded, and
-/// the handles and nodes when the block is selected.
+/// the handles and nodes when the block is selected **or under the
+/// pointer** — with the one the pointer is on lit, and a caption saying
+/// how long a fade is while its handle is being dragged.
 ///
 /// The curve is `canvas::fade_curve` — the same bend the player applies —
 /// and the handles are `canvas::fade_anatomy`'s, the same rectangles the
 /// pointer is tested against, so what you see is what you can grab. Drawn
 /// clipped to the grid, like everything else on the block.
+#[allow(clippy::too_many_arguments)]
 fn draw_clip_fades(
     scene: &mut Scene,
     theme: &Theme,
+    labels: &Labels,
     grid: Rect,
     block: Rect,
     clip: &ClipInfo,
     selected: bool,
+    hovered: Option<crate::canvas::ClipPart>,
+    fading: Option<crate::canvas::FadeEnd>,
 ) {
+    use crate::canvas::{ClipPart, FadeEnd};
     let Some(anatomy) = crate::canvas::fade_anatomy(block, clip) else {
         return;
     };
@@ -6107,26 +6158,73 @@ fn draw_clip_fades(
             &line,
         );
     }
-    if selected {
-        // The handles, only on the block in hand: a corner mark on every
-        // take would be a mark nobody asked to read. FL shows its fade
-        // handles on the clip under the pointer; the chosen block is the
-        // nearest thing this window has to that.
-        for handle in [anatomy.handle_in, anatomy.handle_out] {
+    if selected || hovered.is_some() {
+        // The handles, on the block in hand and on the one under the
+        // pointer: a corner mark on every take would be a mark nobody asked
+        // to read, and a corner with no mark until the block is chosen is a
+        // handle nobody finds — FL shows its fade handles on the clip under
+        // the pointer, and so does this now. The one the pointer is on is
+        // lit, so it reads as a thing to take hold of.
+        let lit = |part: ClipPart| {
+            hovered == Some(part) || fading.is_some_and(|end| part == ClipPart::FadeHandle(end))
+        };
+        for (handle, part) in [
+            (anatomy.handle_in, ClipPart::FadeHandle(FadeEnd::In)),
+            (anatomy.handle_out, ClipPart::FadeHandle(FadeEnd::Out)),
+        ] {
             let mark = Rect::new(
                 handle.x + 1.0,
                 handle.y + 1.0,
                 (handle.width - 2.0).max(1.0),
                 (handle.height - 2.0).max(1.0),
             );
-            fill_rect_rounded(scene, mark, 2.0, ink);
+            fill_rect_rounded(scene, mark, 2.0, if lit(part) { p.accent } else { ink });
         }
-        for node in [anatomy.node_in, anatomy.node_out].into_iter().flatten() {
-            fill_rect_rounded(scene, node, node.width / 2.0, ink);
-            stroke_rect_rounded(scene, node, node.width / 2.0, 1.0, p.accent);
+        for (node, part) in [
+            (anatomy.node_in, ClipPart::FadeNode(FadeEnd::In)),
+            (anatomy.node_out, ClipPart::FadeNode(FadeEnd::Out)),
+        ] {
+            let Some(node) = node else { continue };
+            let (fill, edge) = if lit(part) {
+                (p.accent, ink)
+            } else {
+                (ink, p.accent)
+            };
+            fill_rect_rounded(scene, node, node.width / 2.0, fill);
+            stroke_rect_rounded(scene, node, node.width / 2.0, 1.0, edge);
         }
     }
     scene.pop_layer();
+
+    // **How long, while it is being set.** A caption beside the handle in
+    // hand, outside the block's clip so it is readable on a short lane, in
+    // a small plate so it reads over whatever is under it — the number a
+    // fade drag is really about, which the block cannot otherwise say.
+    if let Some(end) = fading {
+        let caption = crate::canvas::fade_caption(clip, end);
+        if let Some(text) = labels.get(&caption) {
+            let handle = match end {
+                FadeEnd::In => anatomy.handle_in,
+                FadeEnd::Out => anatomy.handle_out,
+            };
+            let pad = 4.0;
+            let width = text.width + pad * 2.0;
+            let height = text.height + pad;
+            // Above the block, and on the side of the handle the fade is
+            // on, so the plate never covers the curve being shaped. Kept
+            // inside the grid whichever way it is pushed.
+            let x = match end {
+                FadeEnd::In => handle.x,
+                FadeEnd::Out => handle.right() - width,
+            }
+            .clamp(grid.x, (grid.right() - width).max(grid.x));
+            let y = (block.y - height - 2.0).max(grid.y);
+            let plate = Rect::new(x, y, width, height);
+            fill_rect_rounded(scene, plate, 3.0, p.panel);
+            stroke_rect_rounded(scene, plate, 3.0, 1.0, p.accent);
+            draw_text_clipped(scene, text, plate, x + pad, y + pad / 2.0, p.text);
+        }
+    }
 }
 
 /// How far apart the overlap stripes are, in points.

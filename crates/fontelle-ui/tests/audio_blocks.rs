@@ -21,7 +21,9 @@
 
 use fontelle_model::Arena;
 use fontelle_types::{ClipId, PPQN, Tick};
-use fontelle_ui::canvas::{TimelineView, clip_bands, clip_rect, clip_waveform, timeline_layout};
+use fontelle_ui::canvas::{
+    TimelineView, clip_bands, clip_rect, clip_waveform, clip_waveform_core, timeline_layout,
+};
 use fontelle_ui::document::{AudioPreview, ClipInfo, ClipKind};
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
@@ -58,7 +60,7 @@ fn clip(length: Tick, peaks: Vec<(f32, f32)>) -> ClipInfo {
         curve: Vec::new(),
         notes: Vec::new(),
         audio: AudioPreview {
-            peaks,
+            peaks: peaks.into(),
             ..AudioPreview::default()
         },
         prefab: None,
@@ -296,4 +298,112 @@ fn a_stroke_that_starts_below_a_take_still_crosses_it() {
         4,
     );
     assert_eq!(cuts.len(), 1, "a stroke drawn upwards cuts nothing");
+}
+
+/// **A column is the loudest of everything it covers, not one bucket picked
+/// from its middle.**
+///
+/// > *"its showing going up when theres not actual volume there"* — and the
+/// > other half of the same fault: a picture fine enough to be honest about
+/// > where a sound starts has far more buckets than a zoomed-out block has
+/// > columns, and a column that read one of its buckets dropped the rest.
+/// > Forty hits spread through a take are forty columns, every one of them.
+#[test]
+fn a_column_shows_the_loudest_bucket_it_covers_and_drops_none_of_them() {
+    const BUCKETS: usize = 4000;
+    const HITS: usize = 40;
+    let mut peaks = flat(BUCKETS, 0.0);
+    for hit in 0..HITS {
+        // Spread unevenly, so no column pitch lines up with them by luck.
+        peaks[(hit * 97 + 4) % BUCKETS] = (-1.0, 1.0);
+    }
+    let c = clip(PPQN * 16, peaks);
+    let block = clip_rect(&view(), grid(), &c);
+    let (_, content) = clip_bands(block);
+    // Runs rather than columns: a bucket astride a pixel boundary is rightly
+    // in both columns, so a hit may be two wide — but it is one hit.
+    let mut runs = 0;
+    let mut in_run = false;
+    for column in clip_waveform(block, grid(), &c) {
+        let tall = column.height > content.height * 0.9;
+        if tall && !in_run {
+            runs += 1;
+        }
+        in_run = tall;
+    }
+    assert_eq!(runs, HITS, "{HITS} hits in the take and {runs} drawn tall");
+}
+
+// ------------------------------------------------------------- loudness ---
+//
+// > *"please help make the clip audio visualization look much better."*
+//
+// The outline says how far the take swung; the **core** says how loud it
+// was — `AudioPreview::rms`, drawn solid inside the outline, which is the
+// two-tone waveform every editor people call good draws, and the one that
+// makes a voice read as syllables rather than as a fuzz of peaks.
+
+/// A clip whose outline is `peaks` and whose core is `rms`.
+fn clip_with_core(length: Tick, peaks: Vec<(f32, f32)>, rms: Vec<f32>) -> ClipInfo {
+    let mut c = clip(length, peaks);
+    c.audio.rms = rms.into();
+    c
+}
+
+#[test]
+fn the_core_sits_inside_the_outline_centred_on_the_middle() {
+    let c = clip_with_core(PPQN * 16, flat(64, 0.8), vec![0.3; 64]);
+    let block = clip_rect(&view(), grid(), &c);
+    let (_, content) = clip_bands(block);
+    let middle = content.y + content.height / 2.0;
+    let outline = clip_waveform(block, grid(), &c);
+    let core = clip_waveform_core(block, grid(), &c);
+    assert_eq!(
+        core.len(),
+        outline.len(),
+        "a core column under every outline column"
+    );
+    for (inner, outer) in core.iter().zip(outline.iter()) {
+        assert_eq!(inner.x, outer.x);
+        assert!(
+            inner.y >= outer.y - 0.01 && inner.bottom() <= outer.bottom() + 0.01,
+            "the core {inner:?} pokes out of the outline {outer:?}"
+        );
+        let centre = inner.y + inner.height / 2.0;
+        assert!((centre - middle).abs() < 1.0, "the core is hung off centre");
+        // 0.3 of the half band each way.
+        assert!(
+            (inner.height - content.height * 0.3).abs() < 2.0,
+            "a 0.3 core is {} tall in a {} band",
+            inner.height,
+            content.height
+        );
+    }
+}
+
+#[test]
+fn a_take_with_no_loudness_yet_draws_an_outline_and_no_core() {
+    // A preview from before the RMS levels existed, or a picture still
+    // being built: the outline is drawn as ever, the core simply absent —
+    // never a slab, never a guess.
+    let c = clip(PPQN * 16, flat(64, 0.8));
+    let block = clip_rect(&view(), grid(), &c);
+    assert!(!clip_waveform(block, grid(), &c).is_empty());
+    assert!(clip_waveform_core(block, grid(), &c).is_empty());
+}
+
+#[test]
+fn the_core_is_shaped_by_the_fades_as_the_outline_is() {
+    let mut c = clip_with_core(PPQN * 16, flat(64, 0.8), vec![0.5; 64]);
+    c.audio.fade_in = 0.5;
+    let block = clip_rect(&view(), grid(), &c);
+    let core = clip_waveform_core(block, grid(), &c);
+    let first = core.first().expect("a core");
+    let last = core.last().expect("a core");
+    assert!(
+        first.height < last.height * 0.2,
+        "the core at the start of a fade in ({}) is not much shorter than at the end ({})",
+        first.height,
+        last.height
+    );
 }

@@ -138,3 +138,81 @@ fn the_window_a_range_of_frames_falls_in_is_arithmetic_anyone_can_check() {
     );
     assert_eq!(fine, peaks.levels.len() - 1, "the finest there is");
 }
+
+// ------------------------------------------------------------- loudness ---
+//
+// > *"please help make the clip audio visualization look much better."*
+//
+// The extremes say how far a bucket swung; they do not say how *loud* it
+// was, and for a voice the two are far apart — a syllable's peaks are twice
+// its body. Every waveform people call good draws both: the extremes as an
+// outline and the RMS as a solid core inside it. So each bucket carries its
+// RMS too, at every level, and a coarser level's RMS is the **power**
+// average of the finer ones rather than a plain mean, which is what makes
+// it the RMS of the same frames.
+
+#[test]
+fn every_level_carries_an_rms_per_bucket() {
+    let samples: Vec<f32> = (0..PEAK_BUCKET * 8)
+        .map(|i| (i as f32 * 0.3).sin() * 0.9)
+        .collect();
+    let peaks = generate_peaks(an_asset(), &samples, 1);
+    assert_eq!(
+        peaks.rms.len(),
+        peaks.levels.len(),
+        "one RMS level per peak level"
+    );
+    for (rms, level) in peaks.rms.iter().zip(peaks.levels.iter()) {
+        assert_eq!(rms.len(), level.len(), "one RMS per bucket");
+    }
+    // A full-swing sine's RMS is its amplitude over root two.
+    let finest = peaks.rms.last().expect("a level");
+    for value in finest {
+        assert!(
+            (value - 0.9 / 2f32.sqrt()).abs() < 0.05,
+            "a 0.9 sine reads {value} RMS"
+        );
+    }
+}
+
+#[test]
+fn rms_is_never_above_the_peak_and_silence_is_zero() {
+    let mut samples = vec![0.0f32; PEAK_BUCKET * 4];
+    // One loud sample in the third bucket: the peak says 1.0, the RMS says a
+    // bucket that was almost entirely quiet.
+    samples[PEAK_BUCKET * 2 + 5] = 1.0;
+    let peaks = generate_peaks(an_asset(), &samples, 1);
+    let finest = peaks.rms.last().expect("a level");
+    let extremes = peaks.levels.last().expect("a level");
+    assert_eq!(finest[0], 0.0);
+    assert_eq!(finest[1], 0.0);
+    assert!(
+        finest[2] > 0.0 && finest[2] < 0.2,
+        "a single spike reads {}",
+        finest[2]
+    );
+    for (rms, (lo, hi)) in finest.iter().zip(extremes.iter()) {
+        assert!(
+            *rms <= hi.abs().max(lo.abs()) + 1e-6,
+            "RMS {rms} over peak ({lo}, {hi})"
+        );
+    }
+}
+
+#[test]
+fn a_coarse_levels_rms_is_the_power_average_of_the_fine_ones() {
+    // Two buckets, one silent and one at a steady 0.8: the RMS of both
+    // together is 0.8 over root two, not 0.4.
+    let mut samples = vec![0.0f32; PEAK_BUCKET * 2];
+    for value in &mut samples[PEAK_BUCKET..] {
+        *value = 0.8;
+    }
+    let peaks = generate_peaks(an_asset(), &samples, 1);
+    let coarsest = &peaks.rms[0];
+    assert_eq!(coarsest.len(), 1);
+    assert!(
+        (coarsest[0] - 0.8 / 2f32.sqrt()).abs() < 0.01,
+        "the power average reads {}",
+        coarsest[0]
+    );
+}

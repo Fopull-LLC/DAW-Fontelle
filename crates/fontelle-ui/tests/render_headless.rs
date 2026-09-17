@@ -752,6 +752,7 @@ fn shoot_roll_everything(
     );
     let roll_view = RollView {
         top_key: 72,
+        key_offset: 0.0,
         snap,
         ..RollView::default()
     };
@@ -954,6 +955,7 @@ fn the_blade_marks_each_note_it_will_cut() {
     );
     let view = RollView {
         top_key: 72,
+        key_offset: 0.0,
         ..RollView::default()
     };
     let row_mid =
@@ -1156,16 +1158,25 @@ fn shoot_timeline_switch(
     selection: &[fontelle_types::ClipId],
     stretch: bool,
 ) -> Option<TimelineShot> {
-    shoot_timeline_recording(clips, selection, stretch, &[])
+    shoot_timeline_recording(clips, selection, stretch, &[], None)
+}
+
+/// The same again, with the pointer over one part of one block.
+fn shoot_timeline_hovered(
+    clips: &[fontelle_ui::document::ClipInfo],
+    hover_clip: Option<(fontelle_types::ClipId, fontelle_ui::canvas::ClipPart)>,
+) -> Option<TimelineShot> {
+    shoot_timeline_recording(clips, &[], false, &[], hover_clip)
 }
 
 /// The same again, with the notes of a take being recorded into the open
-/// clip.
+/// clip, and the pointer over one part of one block.
 fn shoot_timeline_recording(
     clips: &[fontelle_ui::document::ClipInfo],
     selection: &[fontelle_types::ClipId],
     stretch: bool,
     takes: &[fontelle_ui::document::NotePreview],
+    hover_clip: Option<(fontelle_types::ClipId, fontelle_ui::canvas::ClipPart)>,
 ) -> Option<TimelineShot> {
     use fontelle_ui::canvas::{TimelineView, timeline_layout};
     use fontelle_ui::document::LaneInfo;
@@ -1236,6 +1247,8 @@ fn shoot_timeline_recording(
                 stretch,
                 toolbar: fontelle_ui::canvas::timeline_toolbar_layout(l.toolbar, &theme.metrics),
                 hover: None,
+                hover_clip,
+                fading: None,
                 can_paste: false,
                 panel: layout.timeline,
                 layout: l,
@@ -2921,17 +2934,80 @@ fn an_audio_clip(
     let mut clip = a_clip(lane, start, length, [0x4f, 0x8f, 0xd0, 0xff]);
     clip.kind = fontelle_ui::document::ClipKind::Audio;
     clip.audio = fontelle_ui::document::AudioPreview {
-        peaks: vec![(-0.6, 0.6); 128],
+        peaks: vec![(-0.6, 0.6); 128].into(),
+        rms: vec![0.4; 128].into(),
         fade_in,
         fade_out,
         fade_in_tension: 0.5,
         fade_out_tension: 0.0,
+        seconds: 4.0,
         // The file exactly fills its block, which is what a drop makes and
         // so what these shots should be of.
         natural_length: length,
         stretched: false,
     };
     clip
+}
+
+/// **A block under the pointer shows its fade handles, and lights the one
+/// the pointer is on** — though it is not selected.
+///
+/// > *"the clip fades also feels a little janky please make it have really
+/// > polished ux like fl studios clip fades"*
+///
+/// The handles used to appear only on the selected block, so a corner of
+/// an unselected take looked like the rest of the caption: the first thing
+/// to learn about fades was that the corner did anything at all.
+#[test]
+fn a_block_under_the_pointer_shows_its_fade_handles_with_the_one_under_it_lit() {
+    use fontelle_ui::canvas::{ClipPart, FadeEnd, clip_rect, fade_anatomy};
+    let clip = an_audio_clip(0, 0, PPQN * 8, 0.0, 0.0);
+    let clips = vec![clip.clone()];
+    let Some(plain) = shoot_timeline_hovered(&clips, None) else {
+        return;
+    };
+    let block = clip_rect(&plain.view, plain.layout.grid, &clip);
+    let anatomy = fade_anatomy(block, &clip).expect("an audio block has fade handles");
+    let probe = |handle: fontelle_ui::layout::Rect| {
+        (
+            (handle.x + handle.width / 2.0) as u32,
+            (handle.y + handle.height / 2.0) as u32,
+        )
+    };
+    let (ix, iy) = probe(anatomy.handle_in);
+    let (ox, oy) = probe(anatomy.handle_out);
+    let body = Color(clip.color);
+    assert!(
+        near(plain.at(ix, iy), body),
+        "with no pointer on it the corner is the block: {:?}",
+        plain.at(ix, iy)
+    );
+
+    // The pointer on the body: both handles drawn, neither lit.
+    let over_body = shoot_timeline_hovered(&clips, Some((clip.id, ClipPart::Body))).unwrap();
+    assert!(
+        !near(over_body.at(ix, iy), body) && !near(over_body.at(ox, oy), body),
+        "the pointer on the block did not bring its handles up"
+    );
+    let accent = plain.theme.palette.accent;
+    assert!(
+        !near(over_body.at(ix, iy), accent),
+        "a handle the pointer is not on is lit"
+    );
+
+    // The pointer on the in handle: that one lit, the other not.
+    let over_handle =
+        shoot_timeline_hovered(&clips, Some((clip.id, ClipPart::FadeHandle(FadeEnd::In)))).unwrap();
+    assert!(
+        near(over_handle.at(ix, iy), accent),
+        "the handle under the pointer is not lit: {:?} against {:?}",
+        over_handle.at(ix, iy),
+        accent
+    );
+    assert!(
+        !near(over_handle.at(ox, oy), accent),
+        "the other handle lit too"
+    );
 }
 
 #[test]
@@ -3024,7 +3100,7 @@ fn the_crossfade_is_drawn_across_the_striped_overlap() {
     let mut ids: Arena<fontelle_types::ClipId, ()> = Arena::default();
     for clip in &mut clips {
         clip.id = ids.insert(());
-        clip.audio.peaks.clear();
+        clip.audio.peaks = Vec::new().into();
     }
     let Some(shot) = shoot_timeline(&clips) else {
         return;
@@ -3480,7 +3556,7 @@ fn the_notes_being_recorded_appear_in_the_open_clips_block() {
     open.open = true;
     let takes = std::mem::take(&mut open.notes);
     let clips = vec![open.clone()];
-    let Some(shot) = shoot_timeline_recording(&clips, &[], false, &takes) else {
+    let Some(shot) = shoot_timeline_recording(&clips, &[], false, &takes, None) else {
         return;
     };
     // Where the notes would be drawn if they were the clip's own.
@@ -3502,7 +3578,7 @@ fn the_notes_being_recorded_appear_in_the_open_clips_block() {
     other.open = false;
     other.notes.clear();
     let clips = vec![other.clone()];
-    let Some(shot) = shoot_timeline_recording(&clips, &[], false, &takes) else {
+    let Some(shot) = shoot_timeline_recording(&clips, &[], false, &takes, None) else {
         return;
     };
     let found = shot.at((r.x + r.width / 2.0) as u32, (r.y + r.height / 2.0) as u32);

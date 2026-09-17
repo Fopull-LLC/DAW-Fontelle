@@ -5,6 +5,7 @@ mod carry;
 mod effect;
 mod favorites;
 mod flopsynth;
+mod glide;
 mod instrument;
 mod keybinds;
 mod keymap;
@@ -82,8 +83,9 @@ pub use keybinds::{
 pub use keymap::{Action, Chord, ChordKey, Context, Keymap, Rebind};
 pub use menu::{
     CHOSEN_MARK, ContextMenu, MENU_TEXT_INSET, MenuEntry, NAME_CARET, STAR_WIDTH, context_menu_hit,
-    context_menu_layout, context_menu_star_hit, input_menu_choice, input_menu_entries,
-    instrument_menu_entries, menu_matches, name_prompt_entries,
+    context_menu_layout, context_menu_star_hit, export_menu_choice, export_menu_entries,
+    input_menu_choice, input_menu_entries, instrument_menu_entries, menu_matches,
+    name_prompt_entries,
 };
 pub use overlays::{ConfirmLayout, TOAST_SECONDS, ToastLayout, confirm_layout, toast_layout};
 pub use preset_bar::{
@@ -120,6 +122,7 @@ pub fn zoom_anchor(grid: crate::layout::Rect, cursor: (f32, f32)) -> f32 {
     }
 }
 
+pub use glide::{Glide, wheel_travel};
 pub use mixer::{
     CHAIN_DOT, CHAIN_DOT_GAP, FADER_DETENT_PX, InsertRowLayout, MAX_FADER_DB, MAX_SEND_DB,
     MIN_FADER_DB, MIN_SEND_DB, MixerHit, MixerKey, MixerLayout, MixerStripLayout, NamePress,
@@ -151,15 +154,15 @@ pub use rack::{
 };
 pub use text_entry::{TextEntry, TextKey, text_key};
 pub use timeline::{
-    ArrangeEdit, CLIP_HEADER_PX, ClipOverlap, ClipPart, FadeAnatomy, FadeEnd, MAX_LANE_ROW,
-    MAX_TIMELINE_PPT, MIN_LANE_ROW, MIN_TIMELINE_PPT, NOTE_PREVIEW_MIN_KEYS, Timeline,
-    TimelineControl, TimelineHit, TimelineLayout, TimelineTool, TimelineToolbar, TimelineView,
-    arrival_row, clip_bands, clip_cuts, clip_grip, clip_notes, clip_overlaps, clip_rect,
-    clip_waveform, content_end, content_fraction, content_ticks, fade_anatomy, fade_curve,
-    lane_scroll_to_show, lane_to_y, loop_marks, slice_marks, time_selection, timeline_hit,
-    timeline_layout, timeline_snap, timeline_tick_to_x, timeline_toolbar_hit,
-    timeline_toolbar_layout, timeline_visible_ticks, timeline_x_to_tick, timeline_zoom_x,
-    timeline_zoom_y, visible_lanes, y_to_lane,
+    ArrangeEdit, CLIP_HEADER_PX, ClipOverlap, ClipPart, FadeAnatomy, FadeEnd, FadeGrip,
+    MAX_LANE_ROW, MAX_TIMELINE_PPT, MIN_LANE_ROW, MIN_TIMELINE_PPT, NOTE_PREVIEW_MIN_KEYS,
+    Timeline, TimelineControl, TimelineHit, TimelineLayout, TimelineTool, TimelineToolbar,
+    TimelineView, arrival_row, clip_bands, clip_cuts, clip_grip, clip_notes, clip_overlaps,
+    clip_rect, clip_waveform, clip_waveform_core, content_end, content_fraction, content_ticks,
+    fade_anatomy, fade_caption, fade_curve, lane_scroll_to_show, lane_to_y, loop_marks,
+    slice_marks, time_selection, timeline_hit, timeline_layout, timeline_snap, timeline_tick_to_x,
+    timeline_toolbar_hit, timeline_toolbar_layout, timeline_visible_ticks, timeline_x_to_tick,
+    timeline_zoom_x, timeline_zoom_y, visible_lanes, y_to_lane,
 };
 pub use tools::{
     TOOL_MENU, TOOL_ROWS, ToolAction, ToolKind, ToolMenuItem, ToolRow, Tools, ToolsDialog,

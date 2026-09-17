@@ -184,6 +184,11 @@ pub fn pointer_at(scene: &PointerScene<'_>, x: f32, y: f32) -> Pointer {
     if scene.layout.timeline.frame.contains(x, y) {
         return match timeline_hit(scene.timeline_view, scene.timeline, scene.clips, x, y) {
             TimelineHit::Clip(_, ClipPart::RightEdge) => Pointer::ResizeX,
+            // A fade's handle is dragged along the block, its node up and
+            // down — and the corner has to say so, because a handle that
+            // looks like the rest of the caption is one nobody finds.
+            TimelineHit::Clip(_, ClipPart::FadeHandle(_)) => Pointer::ResizeX,
+            TimelineHit::Clip(_, ClipPart::FadeNode(_)) => Pointer::ResizeY,
             TimelineHit::Clip(_, ClipPart::Body) => Pointer::Grab,
             TimelineHit::Ruler(_) => Pointer::Grab,
             TimelineHit::Lane(_) => Pointer::Hand,

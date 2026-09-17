@@ -48,6 +48,17 @@ pub struct PeakData {
     /// One `Vec<(min, max)>` per zoom level, **coarsest first** — so
     /// `levels.last()` is the most detailed and `levels[0]` is the summary.
     pub levels: Vec<Vec<(f32, f32)>>,
+    /// The RMS of each bucket, level for level and bucket for bucket with
+    /// `levels`.
+    ///
+    /// The extremes say how far a bucket swung, not how loud it was, and
+    /// for a voice the two are far apart: a syllable's peaks are twice its
+    /// body. A waveform that draws both — the extremes as an outline, the
+    /// RMS as a solid core — is the one every editor people call good
+    /// draws, and *"make the clip audio visualization look much better"*
+    /// is largely this. A coarser level's value is the **power** average of
+    /// the finer ones, which is what makes it the RMS of the same frames.
+    pub rms: Vec<Vec<f32>>,
 }
 
 impl PeakData {
@@ -91,28 +102,40 @@ pub fn generate_peaks(asset: AssetId, samples: &[f32], channels: u16) -> PeakDat
             asset,
             frames: 0,
             levels: Vec::new(),
+            rms: Vec::new(),
         };
     }
 
-    // The finest level, straight off the samples.
-    let mut finest: Vec<(f32, f32)> = Vec::with_capacity(frames.div_ceil(PEAK_BUCKET));
+    // The finest level, straight off the samples: the extremes, and the
+    // mean square — kept as a power until the last step so the coarser
+    // levels can be folded from it exactly.
+    let buckets = frames.div_ceil(PEAK_BUCKET);
+    let mut finest: Vec<(f32, f32)> = Vec::with_capacity(buckets);
+    let mut power: Vec<f32> = Vec::with_capacity(buckets);
     let mut frame = 0;
     while frame < frames {
         let end = (frame + PEAK_BUCKET).min(frames);
         let mut lo = f32::INFINITY;
         let mut hi = f32::NEG_INFINITY;
-        for value in &samples[frame * channels..end * channels] {
+        let mut squares = 0.0f64;
+        let slice = &samples[frame * channels..end * channels];
+        for value in slice {
             lo = lo.min(*value);
             hi = hi.max(*value);
+            squares += f64::from(*value) * f64::from(*value);
         }
         finest.push((lo, hi));
+        power.push((squares / slice.len().max(1) as f64) as f32);
         frame = end;
     }
 
     // And each coarser level by folding pairs of the one below — which is what
     // makes "a coarse level keeps the extremes the fine one found" true by
-    // construction rather than by a second pass that could disagree.
+    // construction rather than by a second pass that could disagree. The
+    // power folds the same way, as a mean of the pair: every bucket but the
+    // last is the same size, and the last is close enough.
     let mut levels = vec![finest];
+    let mut powers = vec![power];
     while levels[levels.len() - 1].len() > 1 {
         let below = &levels[levels.len() - 1];
         let above: Vec<(f32, f32)> = below
@@ -125,11 +148,23 @@ pub fn generate_peaks(asset: AssetId, samples: &[f32], channels: u16) -> PeakDat
             })
             .collect();
         levels.push(above);
+        let below = &powers[powers.len() - 1];
+        let above: Vec<f32> = below
+            .chunks(2)
+            .map(|pair| pair.iter().sum::<f32>() / pair.len() as f32)
+            .collect();
+        powers.push(above);
     }
     levels.reverse();
+    powers.reverse();
+    let rms = powers
+        .into_iter()
+        .map(|level| level.into_iter().map(f32::sqrt).collect())
+        .collect();
     PeakData {
         asset,
         frames,
         levels,
+        rms,
     }
 }

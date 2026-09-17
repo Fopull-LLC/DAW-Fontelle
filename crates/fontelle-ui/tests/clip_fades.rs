@@ -63,7 +63,7 @@ fn a_clip(kind: ClipKind, fade_in: f32, fade_out: f32) -> ClipInfo {
         curve: Vec::new(),
         notes: Vec::new(),
         audio: AudioPreview {
-            peaks: vec![(-0.5, 0.5); 64],
+            peaks: vec![(-0.5, 0.5); 64].into(),
             fade_in,
             fade_out,
             ..AudioPreview::default()
@@ -529,4 +529,181 @@ fn the_curve_ends_where_its_own_handle_sits() {
         "the fade-out curve starts at {start_out} and its handle is at {:?}",
         anatomy.handle_out
     );
+}
+
+// ------------------------------------------------------------- polish ---
+//
+// > *"the clip fades also feels a little janky please make it have really
+// > polished ux like fl studios clip fades"*
+//
+// Four things made it feel that way, and each is a test below: the handle
+// jumped under the pointer on the first move of a drag because the drag was
+// absolute; so did the node; nothing said which gesture was in hand, so the
+// cursor could not say either; and there was no way back to *no fade* short
+// of dragging the handle into the corner by eye.
+
+/// **The handle moves with the pointer, not to it.** Pressed four pixels
+/// right of the fade's end and dragged a quarter of the block, the fade end
+/// is a quarter of the block from where it was — not a quarter plus four.
+#[test]
+fn a_handle_pressed_off_centre_moves_by_the_distance_dragged() {
+    let clip = a_clip(ClipKind::Audio, 0.25, 0.0);
+    let clips = vec![clip.clone()];
+    let block = block_of(&clip);
+    let anatomy = fade_anatomy(block, &clip).unwrap();
+    let (x, y) = centre(anatomy.handle_in);
+    let grabbed = x + 4.0;
+    let mut timeline = Timeline::new(view());
+    press_at(&mut timeline, &clips, grabbed, y);
+    let edits = drag_to(&mut timeline, &clips, grabbed + block.width * 0.25, y);
+    let ArrangeEdit::SetFade { fraction, .. } = edits[0] else {
+        panic!("asked for {edits:?}");
+    };
+    assert!(
+        (fraction - 0.5).abs() < 0.005,
+        "a quarter more than a quarter is a half, not {fraction}"
+    );
+}
+
+/// The same for the out handle, measured from the end.
+#[test]
+fn the_out_handle_pressed_off_centre_moves_by_the_distance_dragged() {
+    let clip = a_clip(ClipKind::Audio, 0.0, 0.25);
+    let clips = vec![clip.clone()];
+    let block = block_of(&clip);
+    let anatomy = fade_anatomy(block, &clip).unwrap();
+    let (x, y) = centre(anatomy.handle_out);
+    let grabbed = x - 3.0;
+    let mut timeline = Timeline::new(view());
+    press_at(&mut timeline, &clips, grabbed, y);
+    let edits = drag_to(&mut timeline, &clips, grabbed - block.width * 0.25, y);
+    let ArrangeEdit::SetFade { end, fraction, .. } = edits[0] else {
+        panic!("asked for {edits:?}");
+    };
+    assert_eq!(end, FadeEnd::Out);
+    assert!((fraction - 0.5).abs() < 0.005, "fraction {fraction}");
+}
+
+/// **And the node.** Pressed three pixels under its centre and not moved, it
+/// asks for nothing; moved up by a fifth of the band, the curve's midpoint
+/// is a fifth higher than it was — the node stays under the finger.
+#[test]
+fn a_node_pressed_off_centre_bends_by_the_distance_dragged() {
+    let clip = a_clip(ClipKind::Audio, 0.5, 0.0);
+    let clips = vec![clip.clone()];
+    let block = block_of(&clip);
+    let (_, content) = clip_bands(block);
+    let node = fade_anatomy(block, &clip).unwrap().node_in.unwrap();
+    let (x, y) = centre(node);
+    let mut timeline = Timeline::new(view());
+    press_at(&mut timeline, &clips, x, y + 3.0);
+    assert!(
+        drag_to(&mut timeline, &clips, x, y + 3.0).is_empty(),
+        "a press that has not moved bent the curve"
+    );
+    let edits = drag_to(&mut timeline, &clips, x, y + 3.0 - content.height * 0.2);
+    let ArrangeEdit::SetFadeTension { tension, .. } = edits[0] else {
+        panic!("asked for {edits:?}");
+    };
+    // A straight fade's midpoint is at half; a fifth higher is 0.7 of the
+    // band, and the tension that puts it there is whatever `bend` says.
+    let wanted = fontelle_types::tension_for_midpoint(0.7);
+    assert!(
+        (tension - wanted).abs() < 0.02,
+        "tension {tension} against {wanted} for a midpoint at 0.7"
+    );
+}
+
+/// The canvas says which fade gesture is in hand, so the window can keep
+/// the cursor it showed on hover for the whole drag rather than switching
+/// to the body's hand the moment the pointer leaves the handle.
+#[test]
+fn the_timeline_says_when_a_fade_or_its_bend_is_in_hand() {
+    use fontelle_ui::canvas::FadeGrip;
+    let clip = a_clip(ClipKind::Audio, 0.5, 0.0);
+    let clips = vec![clip.clone()];
+    let block = block_of(&clip);
+    let anatomy = fade_anatomy(block, &clip).unwrap();
+    let mut timeline = Timeline::new(view());
+    assert_eq!(timeline.fade_grip(), None);
+
+    let (x, y) = centre(anatomy.handle_in);
+    press_at(&mut timeline, &clips, x, y);
+    assert_eq!(timeline.fade_grip(), Some(FadeGrip::Handle));
+    timeline.release();
+    assert_eq!(timeline.fade_grip(), None);
+
+    let (x, y) = centre(anatomy.node_in.unwrap());
+    press_at(&mut timeline, &clips, x, y);
+    assert_eq!(timeline.fade_grip(), Some(FadeGrip::Node));
+    timeline.release();
+
+    let (x, y) = centre(block);
+    press_at(&mut timeline, &clips, x, y);
+    assert_eq!(timeline.fade_grip(), None, "a body drag is not a fade");
+}
+
+/// **Double-click takes it back.** On a handle, the fade is gone; on a node,
+/// the bend is straight again. The one way to *no fade* used to be dragging
+/// the handle into the corner and hoping it reached zero.
+#[test]
+fn a_double_click_on_a_handle_removes_the_fade_and_on_a_node_straightens_it() {
+    let mut clip = a_clip(ClipKind::Audio, 0.5, 0.3);
+    clip.audio.fade_in_tension = 0.6;
+    let clips = vec![clip.clone()];
+    let block = block_of(&clip);
+    let anatomy = fade_anatomy(block, &clip).unwrap();
+    let mut timeline = Timeline::new(view());
+
+    let (x, y) = centre(anatomy.handle_in);
+    let edits = timeline.double_press(MouseButton::Left, x, y, &layout(), &clips, 4);
+    assert_eq!(
+        edits,
+        vec![ArrangeEdit::SetFade {
+            clip: clip.id,
+            end: FadeEnd::In,
+            fraction: 0.0
+        }]
+    );
+
+    let (x, y) = centre(anatomy.handle_out);
+    let edits = timeline.double_press(MouseButton::Left, x, y, &layout(), &clips, 4);
+    assert_eq!(
+        edits,
+        vec![ArrangeEdit::SetFade {
+            clip: clip.id,
+            end: FadeEnd::Out,
+            fraction: 0.0
+        }]
+    );
+
+    let (x, y) = centre(anatomy.node_in.unwrap());
+    let edits = timeline.double_press(MouseButton::Left, x, y, &layout(), &clips, 4);
+    assert_eq!(
+        edits,
+        vec![ArrangeEdit::SetFadeTension {
+            clip: clip.id,
+            end: FadeEnd::In,
+            tension: 0.0
+        }]
+    );
+
+    // And nothing is picked up by it: the double-click is not the start of a
+    // drag.
+    assert_eq!(timeline.fade_grip(), None);
+}
+
+/// The length a fade drag is showing, in words: seconds of the file, from
+/// the fraction the block carries and how long the file is.
+#[test]
+fn a_fade_reads_in_seconds_of_the_file() {
+    use fontelle_ui::canvas::fade_caption;
+    let mut clip = a_clip(ClipKind::Audio, 0.25, 0.0);
+    clip.audio.seconds = 8.0;
+    assert_eq!(fade_caption(&clip, FadeEnd::In), "fade in 2.00 s");
+    clip.audio.fade_out = 0.05;
+    assert_eq!(fade_caption(&clip, FadeEnd::Out), "fade out 0.40 s");
+    // A short one reads in milliseconds, as a fade this short is spoken of.
+    clip.audio.fade_out = 0.01;
+    assert_eq!(fade_caption(&clip, FadeEnd::Out), "fade out 80 ms");
 }

@@ -16,6 +16,24 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-17, evening (v0.9.0).** The waveform, the fades, the
+cut, Ctrl+B, the scroll glide, the export prompt and the drag stutter —
+`PROGRESS.md`'s top entry. Things to know: (0) the block preview is cached
+per clip (`Session::previews`); anything that changes what a clip *shows*
+must be in `PreviewKey`, or the picture goes stale; (1) a fade handle at
+rest is grabbed absolutely and one with a fade relatively — see
+`Timeline::press`'s `FadeHandle` arm before "fixing" a jump; (2) the drag
+stutter was **per-revision work, not audio**: with snap off a drag is a
+revision per pointer motion, and `refresh_studio` re-reads every list on
+each — anything added there has to be a fraction of a millisecond, and
+`FONTELLE_TRACE_FRAME=1`'s `arrange edit` line is how to check (the knob
+marks were 8.6 ms; now one `modulation_marks()` call); (3) the wheel
+writes a **target**, not the view —
+anything that sets `scroll_tick`/`top_lane`/`top_key` directly is adopted
+by the glide on the next frame, but a test that reads the view right after
+a wheel event will see it unmoved until `glide_views` runs; (4) three
+`studio.rs` tests were already red at v0.8.0 (see PROGRESS).
+
 **Updated 2026-09-17, later (v0.8.0).** Where a sound lands, and file
 drops on Wayland — `PROGRESS.md`'s top entry is the list, with the four
 follow-ups from Ty's testing (the block preview, the Import tab first and

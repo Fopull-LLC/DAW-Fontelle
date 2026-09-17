@@ -106,6 +106,7 @@ fn the_grid_hit_test_follows_the_keyboard_when_it_widens() {
     let v = RollView {
         scroll_tick: 0,
         top_key: 72,
+        key_offset: 0.0,
         pixels_per_tick: 0.25,
         key_height: 12.0,
         snap: SnapDivision::Step,

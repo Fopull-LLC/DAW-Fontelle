@@ -21,6 +21,7 @@ fn view(top_lane: usize) -> TimelineView {
     TimelineView {
         scroll_tick: 0,
         top_lane,
+        lane_offset: 0.0,
         pixels_per_tick: 0.025,
         lane_height: 30.0,
         snap: SnapDivision::Bar,

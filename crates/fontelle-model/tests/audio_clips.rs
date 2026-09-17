@@ -310,6 +310,109 @@ fn cutting_a_take_in_half_gives_two_halves_of_the_take() {
     );
 }
 
+/// **A cut deals the fades out, it does not copy them.**
+///
+/// > *"when cutting a clip with a clip fade it should not apply the same
+/// > clip fade to the new split clip only on the part that was on the edge
+/// > it was on if theres enough room for it otherwise squish it to fit"*
+///
+/// A fade belongs to an edge of the sound. The fade in is the left half's,
+/// the fade out the right half's, and the other half gets none of it: a
+/// right half that faded in at the blade is a dip in the middle of the take
+/// that was not there before the cut. Each kept fade is no longer than the
+/// half it lands on.
+#[test]
+fn a_cut_keeps_each_fade_on_the_half_whose_edge_it_was_on() {
+    let mut project = Project::new("audio");
+    let mut import = AddAudioClip::new("Take.wav", a_clip("Take.wav"), 0, TAKE_LENGTH);
+    import.apply(&mut project).expect("applies");
+    let id = import.clip().expect("a clip");
+    let mut faded = data_of(&project, id);
+    faded.fade_in = Fade {
+        frames: 6_000,
+        curve: FadeCurve::Linear,
+        tension: 0.4,
+    };
+    faded.fade_out = Fade {
+        frames: 9_000,
+        curve: FadeCurve::Linear,
+        tension: -0.3,
+    };
+    SetAudioClip::new(id, faded.clone())
+        .apply(&mut project)
+        .expect("sets the fades");
+
+    let mut cut = SplitClip::new(id, TAKE_LENGTH / 2);
+    cut.apply(&mut project).expect("cuts");
+    let mut clips: Vec<_> = project
+        .clips
+        .iter()
+        .map(|(id, c)| (id, c.clone()))
+        .collect();
+    clips.sort_by_key(|(_, c)| c.start);
+    let (left, right) = (data_of(&project, clips[0].0), data_of(&project, clips[1].0));
+
+    assert_eq!(
+        left.fade_in, faded.fade_in,
+        "the left half lost its fade in"
+    );
+    assert_eq!(
+        left.fade_out.frames, 0,
+        "the left half was given a fade out at the blade"
+    );
+    assert_eq!(
+        right.fade_out, faded.fade_out,
+        "the right half lost its fade out"
+    );
+    assert_eq!(
+        right.fade_in.frames, 0,
+        "the right half was given a fade in at the blade"
+    );
+}
+
+/// And a fade longer than the half it lands on is **squeezed to fit** — the
+/// shape kept, the length the most the half has room for.
+#[test]
+fn a_fade_longer_than_its_half_is_squeezed_to_the_half() {
+    let mut project = Project::new("audio");
+    let mut import = AddAudioClip::new("Take.wav", a_clip("Take.wav"), 0, TAKE_LENGTH);
+    import.apply(&mut project).expect("applies");
+    let id = import.clip().expect("a clip");
+    let mut faded = data_of(&project, id);
+    // Three quarters of a one-second take, cut at a quarter: the left half
+    // is 12 000 frames and the fade in wanted 36 000 of them.
+    faded.fade_in = Fade {
+        frames: 36_000,
+        curve: FadeCurve::Linear,
+        tension: 0.6,
+    };
+    SetAudioClip::new(id, faded)
+        .apply(&mut project)
+        .expect("sets the fade");
+
+    let mut cut = SplitClip::new(id, TAKE_LENGTH / 4);
+    cut.apply(&mut project).expect("cuts");
+    let mut clips: Vec<_> = project
+        .clips
+        .iter()
+        .map(|(id, c)| (id, c.clone()))
+        .collect();
+    clips.sort_by_key(|(_, c)| c.start);
+    let left = data_of(&project, clips[0].0);
+    assert!(
+        left.fade_in.frames > 0 && left.fade_in.frames <= left.source_frames(),
+        "the left half's fade in is {} frames over {} of take",
+        left.fade_in.frames,
+        left.source_frames()
+    );
+    assert_eq!(
+        left.fade_in.frames,
+        left.source_frames(),
+        "it should fill the half"
+    );
+    assert_eq!(left.fade_in.tension, 0.6, "the bend went with the length");
+}
+
 #[test]
 fn a_cut_lands_where_the_blade_did_rather_than_halfway() {
     // A quarter of the way along a four-bar clip is a quarter of the way into

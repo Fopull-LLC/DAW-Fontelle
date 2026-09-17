@@ -394,21 +394,72 @@ pub fn project_from_midi(import: fontelle_assets::MidiImport, sample_rate: u32) 
 
 /// How long a project runs, in samples, including a tail so the last note's
 /// release is not cut off mid-ring.
+///
+/// The end of the last thing that **sounds** — see [`song_end_tick`]. It
+/// used to be the end of the last note and nothing else, so a project of
+/// audio clips was as long as its notes, which was none: *"it wasnt
+/// accounting for my audio clips ... it was now only exporting about the
+/// first few seconds."*
 pub fn project_duration_samples(project: &Project, release_tail: Tick) -> i64 {
-    let last_tick = project
+    project
+        .tempo_map
+        .tick_to_sample(song_end_tick(project) + release_tail)
+}
+
+/// The tick the last thing that sounds ends on, or zero for a silent
+/// project.
+///
+/// Each clip by what it plays, and through `Project::clip_source` so a
+/// place for a prefab counts the prefab's notes rather than its own empty
+/// source:
+///
+/// - **An audio block** sounds for its whole length, looping or not — the
+///   block is the window on the file, and the file runs to the window's
+///   edge.
+/// - **A note block that loops** sounds again every pass to its end, so its
+///   end is the end.
+/// - **A note block that does not** ends with its last note — or at its
+///   own edge if a note runs past it, since the sequencer cuts a note off
+///   at the clip's end.
+/// - An automation block makes no sound of its own.
+pub fn song_end_tick(project: &Project) -> Tick {
+    project
         .clips
-        .values()
-        .filter_map(|clip| match &clip.source {
-            ClipSource::Notes(data) => data
-                .notes
-                .values()
-                .map(|note| clip.start + note.start + note.length)
-                .max(),
-            _ => None,
+        .iter()
+        .filter_map(|(id, clip)| {
+            let end = clip.start + clip.length;
+            let source = project.clip_source(id)?;
+            match source.as_ref() {
+                ClipSource::Audio(_) => Some(end),
+                ClipSource::Notes(_) if clip.loop_length.is_some_and(|p| p > 0) => Some(end),
+                ClipSource::Notes(data) => data
+                    .notes
+                    .values()
+                    .map(|note| (clip.start + note.start + note.length).min(end))
+                    .max(),
+                ClipSource::Automation(_) => None,
+            }
         })
         .max()
-        .unwrap_or(0);
-    project.tempo_map.tick_to_sample(last_tick + release_tail)
+        .unwrap_or(0)
+}
+
+/// Where a rendered stretch's **tail** ends: the frame after the last one
+/// that is not silence past `end`, plus a breath, in frames of
+/// interleaved-stereo `pcm` — and never before `end` itself.
+///
+/// What "silence" means here is −80 dBFS: a reverb's last wisps are well
+/// above it and dither is below it. The breath is a tenth of a second, so
+/// a file does not end on the very sample the sound crosses the floor.
+pub fn tail_end(pcm: &[f32], end: usize, sample_rate: u32) -> usize {
+    const SILENCE: f32 = 1e-4;
+    let frames = pcm.len() / 2;
+    let last_sound = pcm
+        .iter()
+        .rposition(|s| s.abs() > SILENCE)
+        .map_or(0, |i| i / 2 + 1);
+    let breath = sample_rate as usize / 10;
+    (last_sound + breath).clamp(end.min(frames), frames)
 }
 
 /// The rate everything in the demo path runs at: the device is asked for it,

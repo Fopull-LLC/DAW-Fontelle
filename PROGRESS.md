@@ -19,6 +19,112 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-17, evening, shipped as v0.9.0 — the waveform tells the
+truth, the fades are FL's, a cut deals the fades out, Ctrl+B cuts at the
+marker, the scroll glides, export counts every clip, and the drag stutter
+was the knob marks.** Ty, with a
+screenshot: *"audio shown in clips doesnt seem to actually be matching when
+visualised to me its showing going up when theres not actual volume there
+like it looks like i start talking sooner than i actually do audibly.
+please help make the clip audio visualization look much better"*, then
+*"the clip fades also feels a little janky please make it have really
+polished ux like fl studios clip fades"*, *"when cutting a clip with a clip
+fade it should not apply the same clip fade to the new split clip only on
+the part that was on the edge it was on if theres enough room for it
+otherwise squish it to fit"*, and *"make ctrl b split my selection at the
+playhead marker"*. All tests-first; looked at on the nested `Xwayland :99`
+with a three-minute voice-shaped take. Not released.
+
+- **The picture started early because it was coarse.** The block preview
+  was a fixed 512 buckets across the clip whatever its length, so on a
+  long take a bucket was the loudest sample in the better part of a
+  second, drawn loud from the bucket's start. It is sized by the take now
+  (`PREVIEW_BUCKET_FRAMES`, ~3 ms; floor 512, ceiling 65 536 buckets) and
+  the canvas **folds** the buckets under each column instead of reading
+  the one under its middle — forty hits in a take used to draw as eight
+  when zoomed out. The preview is behind an `Arc` and **cached per clip**
+  (`Session::previews`, keyed by everything the picture depends on and
+  nothing it does not), so a drag — a revision per pointer move — hands
+  the same picture out again; a cut makes new ones.
+  `fontelle-app/tests/audio_waveform.rs`, `fontelle-ui/tests/audio_blocks.rs`.
+- **Two tones.** `PeakData::rms` carries each bucket's RMS at every level
+  (a coarse level's is the power mean of the fine ones), the preview
+  carries it (`AudioPreview::rms`), and the block draws the extremes as a
+  translucent outline with the loudness solid inside
+  (`canvas::clip_waveform_core`, one column walk shared with the outline).
+  A voice reads as syllables rather than as a fuzz of peaks. A preview
+  with no core yet draws the outline solid. `fontelle-assets/tests/audio_peaks.rs`.
+- **Fades, FL's way.** The handles come up on the block under the pointer
+  (`TimelineChrome::hover_clip`), the one under the pointer lit; the
+  cursor is ↔ over a handle and ↕ over a node and **stays** so through the
+  drag (`Timeline::fade_grip`); the drag is relative — a handle with a
+  fade in place is taken hold of where it was grabbed, a handle at rest
+  grows from the corner, and a press that has not moved asks for nothing;
+  a caption beside the handle reads the length (`fade_caption`,
+  `AudioPreview::seconds`); double-click on a handle takes the fade off,
+  on a node straightens it, and does **not** open the audio editor.
+  `fontelle-ui/tests/clip_fades.rs`, `pointer.rs`, `render_headless.rs`.
+- **A cut deals the fades out.** `SplitClip` keeps the fade in on the head
+  and the fade out on the tail, each squeezed to its half's frames, and
+  gives the other half none — a tail that faded in at the blade was a dip
+  in the middle of the take. `fontelle-model/tests/audio_clips.rs`.
+- **Ctrl+B is `Action::SplitAtMarker`**: every selected clip the blue
+  marker (where play returns to — *"not ... the play marker"*, Ty
+  corrected) is strictly inside, cut there, one `ArrangeEdit::Split` so one
+  undo. Duplicate keeps Ctrl+D. `fontelle-ui/tests/arrange_clipboard.rs`, `keymap.rs`.
+- **Scrolling glides, and scrolls by the screen.** *"scrolling feels so
+  rigid it should be smoother animated and it should also scroll slower
+  when really zoomed in."* `canvas::Glide`: the wheel moves a target and
+  the view follows it over a few frames (`glide_views`, stepped from
+  `tick`, holding the loop awake while it moves); anything else that
+  moves a view — a zoom, the playhead, a scroll-to-show — is adopted, not
+  fought. `wheel_travel`: a notch is a tenth of what is on screen, a burst
+  at most half — fewer ticks the further in, which is the ask. Rows and
+  keys scroll by fractions (`TimelineView::lane_offset`,
+  `RollView::key_offset`; `lane_to_y`/`key_to_y` and their inverses,
+  `visible_keys`). `fontelle-ui/tests/glide.rs`.
+- **Export counts the audio, and asks first.** *"it wasnt accounting for
+  my audio clips ... when i click export it prompts me with the export
+  options."* `song_end_tick` is the end of every clip that sounds (an
+  audio block to its edge, a looping note block to its edge, a place
+  through `clip_source`), where `project_duration_samples` used to count
+  notes alone. Ctrl+E opens `MenuTarget::Export` — whole song or the time
+  selection, tail kept or cut (`export_menu_entries`/`_choice`) — and
+  `StudioHost::export_wav_with(ExportOptions)` renders from zero, cuts to
+  the stretch, and with the tail kept renders on up to `EXPORT_TAIL_MAX_S`
+  and trims back to the last sound plus a breath (`tail_end`).
+  `fontelle-app/tests/export.rs`, `fontelle-ui/tests/export_menu.rs`.
+- **The drag stutter, found and fixed** — *"the drag stutter occurred
+  for me while i had my cursor snap mode set to none"*. That was the
+  detail: with snap off every pointer motion is a `MoveClip`, every
+  accepted command is a revision, and every revision re-read the window's
+  lists — including the Flopsynth window's knob marks, which asked
+  `routes_to` and `is_mod_destination` for **every control**, each answer
+  a clone of the selected patch and a rebuild of its destination list.
+  On the Grand Piano a new project opens on: 8.6 ms per pointer motion
+  (`trace: arrange edit 8.6 ms — edit 0.0, lists 8.6`), reproduced on the
+  nested server with a 1 kHz motion stream, 2.0 s of CPU for 1500
+  motions. Nothing about it was audio — a note clip with snap off would
+  have stuttered the same — audio is just the kind nobody drags on the
+  grid. Now `StudioHost::modulation_marks()` answers for the whole window
+  in one call (one patch, one walk of `destinations`), and the same drag
+  costs 0.29 s with no pointer move over the trace threshold.
+  `fontelle-app/tests/mod_marks.rs` holds the equivalence with the
+  per-knob answers and the per-revision budget. The trace stays in the
+  binary (`FONTELLE_TRACE_FRAME=1`), with the `arrange edit` line that
+  found this. *Next if it ever comes back:* a drag step per pointer motion
+  is still a revision per motion; coalescing the drag to one step per
+  frame (apply the latest pointer position in `RedrawRequested`) would
+  make the cost per-frame however fast the mouse reports — left alone
+  because an erase or draw stroke may depend on every position.
+- **Known, not this session's:** three tests in
+  `fontelle-app/tests/studio.rs` (`opening_a_file_lists_its_presets…`,
+  `the_search_filters_the_bank…`, `the_bank_folder_is_reachable…`) fail
+  at `v0.8.0` on a clean tree, with an empty `XDG_CONFIG_HOME` and
+  `XDG_DATA_HOME` too: the Flopsynth row is a *folder* since the v0.7.0
+  shelves and a search still lists it, and `open_file(1)` no longer lights
+  the fixture. Not touched here.
+
 **As of 2026-09-17, later — `v0.8.0`: where a sound lands, and the drag
 that never arrived on Wayland.** Ty: *"i dont like how when recording something,
 importing something, dragging an audio file in, etc anything it always

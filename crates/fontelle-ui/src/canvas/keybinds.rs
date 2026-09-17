@@ -165,6 +165,7 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
             act(Action::Cut),
             act(Action::Paste),
             act(Action::Duplicate),
+            act(Action::SplitAtMarker),
             act(Action::DeleteSelection),
             act(Action::MuteClips),
             fixed("\u{2190} \u{2192}", "Move one snap step"),

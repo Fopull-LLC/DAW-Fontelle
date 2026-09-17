@@ -477,3 +477,157 @@ fn a_stretched_clip_dragged_short_and_long_again_gets_its_whole_take_back() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ------------------------------------------------------------ resolution ---
+//
+// > *"audio shown in clips doesnt seem to actually be matching when
+// > visualised to me its showing going up when theres not actual volume
+// > there like it looks like i start talking sooner than i actually do
+// > audibly."*
+//
+// The preview used to be a fixed 512 buckets across the clip whatever its
+// length, so a long take's bucket was the loudest sample in a good part of a
+// second — and a bucket that held the first word was drawn loud from its own
+// start, the better part of a second before the voice. The picture has to
+// be built fine enough that a sound starts where it starts.
+
+/// `seconds` of a take shaped by `sample(t)`, as a 16-bit mono WAV.
+fn a_shaped_take(dir: &Path, name: &str, seconds: f32, sample: impl Fn(f32) -> f32) -> PathBuf {
+    let path = dir.join(name);
+    let frames = (SR as f32 * seconds) as usize;
+    let mut bytes = Vec::with_capacity(44 + frames * 2);
+    let data = frames as u32 * 2;
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + data).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&(SR).to_le_bytes());
+    bytes.extend_from_slice(&(SR * 2).to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data.to_le_bytes());
+    for i in 0..frames {
+        let t = i as f32 / SR as f32;
+        let v = (sample(t).clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    std::fs::write(&path, bytes).expect("the take must be writable");
+    path
+}
+
+fn the_audio_preview(session: &Session) -> fontelle_ui::document::AudioPreview {
+    session
+        .clips()
+        .into_iter()
+        .find(|c| c.kind == ClipKind::Audio)
+        .expect("an audio clip")
+        .audio
+}
+
+/// **The report.** Two minutes of take, silent until 30.1 s and then a
+/// voice: the picture's first loud bucket has to be within ten milliseconds
+/// of where the voice is, not the better part of a second before it.
+#[test]
+fn a_long_takes_picture_starts_where_the_sound_does() {
+    let dir = scratch("onset");
+    const ONSET: f32 = 30.1;
+    let path = a_shaped_take(&dir, "Take.wav", 120.0, |t| {
+        if t < ONSET {
+            0.0
+        } else {
+            (t * 220.0 * std::f32::consts::TAU).sin() * 0.8
+        }
+    });
+    let mut session = a_session(&dir);
+    session.drop_file(&path).expect("imports");
+    let preview = the_audio_preview(&session);
+    let peaks = &preview.peaks;
+    let first_loud = peaks
+        .iter()
+        .position(|(lo, hi)| hi.abs() > 0.3 || lo.abs() > 0.3)
+        .expect("the voice is in the picture");
+    let drawn_onset = first_loud as f32 / peaks.len() as f32 * 120.0;
+    assert!(
+        (drawn_onset - ONSET).abs() < 0.010,
+        "the picture goes loud at {drawn_onset:.3} s; the voice starts at {ONSET} s \
+         ({} buckets over the take)",
+        peaks.len()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The picture is **shared, not rebuilt**, by every edit that does not
+/// change what it shows: a fine picture of a long take costs real time to
+/// fold, and a clip dragged along the arrangement is redrawn every pointer
+/// move. Moving the clip keeps the very same buckets; cutting it makes new
+/// ones, because each half then shows something else.
+#[test]
+fn moving_a_clip_keeps_its_picture_and_cutting_it_makes_new_ones() {
+    let dir = scratch("share");
+    let path = a_shaped_take(&dir, "Take.wav", 20.0, |t| {
+        (t * 220.0 * std::f32::consts::TAU).sin() * 0.8
+    });
+    let mut session = a_session(&dir);
+    session.drop_file(&path).expect("imports");
+    let id = the_audio_clip(&session);
+    let before = the_audio_preview(&session);
+
+    session.arrange(fontelle_ui::canvas::ArrangeEdit::Move {
+        ids: vec![id],
+        tick_delta: fontelle_types::PPQN * 4,
+        lane_delta: 0,
+    });
+    let moved = the_audio_preview(&session);
+    assert!(
+        std::sync::Arc::ptr_eq(&before.peaks, &moved.peaks),
+        "a move rebuilt the picture"
+    );
+
+    let clip = &session.project().clips[id];
+    let cut = clip.start + clip.length / 2;
+    session.arrange(fontelle_ui::canvas::ArrangeEdit::Split {
+        cuts: vec![(id, cut)],
+    });
+    let halves: Vec<_> = session
+        .clips()
+        .into_iter()
+        .filter(|c| c.kind == ClipKind::Audio)
+        .collect();
+    assert_eq!(halves.len(), 2, "the cut made two clips");
+    for half in &halves {
+        assert!(
+            !std::sync::Arc::ptr_eq(&before.peaks, &half.audio.peaks),
+            "a half of the cut kept the whole take's picture"
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The picture carries the take's **loudness** beside its extremes — the
+/// core the block draws inside the outline. A 0.8 tone reads 0.8 over root
+/// two, and the same number of buckets as the outline has.
+#[test]
+fn the_picture_carries_the_takes_loudness_bucket_for_bucket() {
+    let dir = scratch("loudness");
+    let path = a_shaped_take(&dir, "Take.wav", 10.0, |t| {
+        (t * 220.0 * std::f32::consts::TAU).sin() * 0.8
+    });
+    let mut session = a_session(&dir);
+    session.drop_file(&path).expect("imports");
+    let preview = the_audio_preview(&session);
+    assert_eq!(preview.rms.len(), preview.peaks.len());
+    let middle = preview.rms[preview.rms.len() / 2];
+    assert!(
+        (middle - 0.8 / 2f32.sqrt()).abs() < 0.05,
+        "a 0.8 tone reads {middle} RMS in the picture"
+    );
+    let (lo, hi) = preview.peaks[preview.peaks.len() / 2];
+    assert!(
+        middle < hi && middle < -lo,
+        "the core is not inside the outline"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

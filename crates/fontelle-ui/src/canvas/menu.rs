@@ -608,3 +608,51 @@ pub fn name_prompt_entries(title: &str, typed: &str) -> Vec<MenuEntry> {
         }),
     ]
 }
+
+// ------------------------------------------------------------- exporting ---
+
+/// The export prompt's rows: a heading, then the four answers — each a
+/// stretch of the song and what happens to its tail. See
+/// [`export_menu_choice`] for what each row means.
+///
+/// > *"when i click export it prompts me with the export options so i can
+/// > chose things like time selection, whole song, keep things like reverb
+/// > tail or cut short, etc."*
+///
+/// The two rows that need a time selection are **shown greyed** without
+/// one rather than left out: a menu that only ever listed "whole song"
+/// would never tell you a selection could be exported at all.
+pub fn export_menu_entries(has_selection: bool) -> Vec<MenuEntry> {
+    let selection = |label: &str| {
+        if has_selection {
+            MenuEntry::new(label)
+        } else {
+            MenuEntry::disabled(label)
+        }
+    };
+    vec![
+        MenuEntry::disabled("Export"),
+        MenuEntry::new("Whole song, keep the tail"),
+        MenuEntry::new("Whole song, cut at the end"),
+        selection("Time selection, keep the tail").after_rule(),
+        selection("Time selection, cut at the end"),
+    ]
+}
+
+/// What row `index` of [`export_menu_entries`] asks for — `None` for the
+/// heading, for a row past the end, and for a selection row when there is
+/// no selection to export.
+pub fn export_menu_choice(
+    has_selection: bool,
+    index: usize,
+) -> Option<crate::document::ExportOptions> {
+    use crate::document::{ExportOptions, ExportRange, ExportTail};
+    let (range, tail) = match index {
+        1 => (ExportRange::WholeSong, ExportTail::Keep),
+        2 => (ExportRange::WholeSong, ExportTail::Cut),
+        3 if has_selection => (ExportRange::Selection, ExportTail::Keep),
+        4 if has_selection => (ExportRange::Selection, ExportTail::Cut),
+        _ => return None,
+    };
+    Some(ExportOptions { range, tail })
+}

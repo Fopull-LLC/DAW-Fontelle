@@ -76,7 +76,7 @@ fn audio(id: ClipId, length: Tick, natural: Tick, stretched: bool) -> ClipInfo {
         curve: Vec::new(),
         notes: Vec::new(),
         audio: AudioPreview {
-            peaks: vec![(-0.5, 0.5); 64],
+            peaks: vec![(-0.5, 0.5); 64].into(),
             natural_length: natural,
             stretched,
             ..AudioPreview::default()

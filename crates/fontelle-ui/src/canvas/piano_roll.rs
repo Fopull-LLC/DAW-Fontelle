@@ -81,6 +81,10 @@ pub struct RollView {
     /// The MIDI key whose row is at the *top* of the grid. Pitch increases
     /// upwards, which is the one thing everybody gets backwards once.
     pub top_key: u8,
+    /// How much of the key **above** `top_key` shows at the top of the
+    /// grid, 0..1 — so the keys can be scrolled by less than a key, and
+    /// glided (`canvas::Glide`). Zero is `top_key`'s row flush with the grid.
+    pub key_offset: f32,
     /// Horizontal zoom.
     pub pixels_per_tick: f32,
     /// Row height — the vertical zoom. §16.4: continuous, and independent of
@@ -96,6 +100,7 @@ impl Default for RollView {
             // C6 at the top puts middle C comfortably in view on a normal
             // window without anyone having to scroll to find it.
             top_key: 84,
+            key_offset: 0.0,
             pixels_per_tick: 0.125,
             // Tall enough for a key's name to fit beside it and for a note to
             // be an easy target. Twelve was neither.
@@ -364,7 +369,7 @@ pub fn x_to_tick(view: &RollView, grid: Rect, x: f32) -> Tick {
 
 /// The top of `key`'s row.
 pub fn key_to_y(view: &RollView, grid: Rect, key: u8) -> f32 {
-    grid.y + (i32::from(view.top_key) - i32::from(key)) as f32 * view.key_height
+    grid.y + ((i32::from(view.top_key) - i32::from(key)) as f32 + view.key_offset) * view.key_height
 }
 
 /// The rectangle one key's row occupies, **snapped to whole pixels**.
@@ -417,7 +422,7 @@ pub fn y_to_key(view: &RollView, grid: Rect, y: f32) -> u8 {
     if view.key_height <= 0.0 {
         return view.top_key;
     }
-    let rows = ((y - grid.y) / view.key_height).floor() as i32;
+    let rows = ((y - grid.y) / view.key_height - view.key_offset).floor() as i32;
     (i32::from(view.top_key) - rows).clamp(0, KEY_COUNT - 1) as u8
 }
 
@@ -440,8 +445,11 @@ pub fn visible_keys(view: &RollView, grid: Rect) -> Range<i32> {
         return 0..0;
     }
     let rows = (grid.height / view.key_height).ceil() as i32;
-    let top = i32::from(view.top_key);
-    let bottom = top - rows + 1;
+    // The key above the top one shows when the top one is part-way up —
+    // and the bottom then reaches one key further too, since the rows
+    // start part-way up.
+    let top = i32::from(view.top_key) + i32::from(view.key_offset > 0.0);
+    let bottom = i32::from(view.top_key) - rows + 1;
     bottom.max(0)..(top + 1).min(KEY_COUNT)
 }
 
@@ -2720,7 +2728,7 @@ impl PianoRoll {
         vec![RollEdit::Insert(notes)]
     }
 
-    /// `Ctrl+B`: the selection again, starting where it ends.
+    /// `Ctrl+D`: the selection again, starting where it ends.
     ///
     /// Rounded up to the next bar, which is what makes duplicating a phrase
     /// produce a phrase twice as long rather than an overlap nobody asked for.

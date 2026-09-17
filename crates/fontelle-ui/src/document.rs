@@ -294,14 +294,28 @@ pub enum ClipKind {
 /// **A summary, not the samples.** A four-bar take is four hundred thousand
 /// frames and the block is a few hundred pixels wide, so what reaches the
 /// canvas is the loudest and quietest sample in each bucket —
-/// `fontelle_assets::generate_peaks`, resampled once per document revision onto
-/// the clip's own trimmed range rather than per frame.
+/// `fontelle_assets::generate_peaks`, resampled onto the clip's own trimmed
+/// range once per change to what the clip *shows* rather than per frame.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AudioPreview {
     /// `(min, max)` per bucket, evenly covering the clip's own range **in play
     /// order** — so a reversed clip's picture is reversed too, because what you
     /// see has to be what you hear.
-    pub peaks: Vec<(f32, f32)>,
+    ///
+    /// **Fine, and shared.** A bucket is a few milliseconds of the take
+    /// whatever its length — *"it looks like i start talking sooner than i
+    /// actually do audibly"* was a fixed five hundred buckets across a long
+    /// take, each drawn loud from its own start. That is far more buckets
+    /// than a block has columns, so the canvas folds them (`clip_waveform`),
+    /// and it is behind an `Arc` so the host hands the same picture out
+    /// again on every revision that does not change it — a clip being
+    /// dragged is a revision per pointer move.
+    pub peaks: std::sync::Arc<[(f32, f32)]>,
+    /// The RMS of each bucket of `peaks`, bucket for bucket — the take's
+    /// loudness, drawn as a solid core inside the outline the extremes
+    /// make. Empty when the host has no loudness for it yet, and the block
+    /// then draws the outline alone.
+    pub rms: std::sync::Arc<[f32]>,
     /// The fades, as a fraction of the clip's length (TDD §15.2). Drawn into
     /// the waveform rather than beside it, for the same reason: the picture is
     /// the envelope.
@@ -311,6 +325,10 @@ pub struct AudioPreview {
     /// carried so the block draws the bend the node asked for.
     pub fade_in_tension: f32,
     pub fade_out_tension: f32,
+    /// How long the clip's range of the file is, in seconds at the file's
+    /// own rate — so a fade can be read out as a time while its handle is
+    /// dragged (`canvas::fade_caption`). Zero when the rate is not known.
+    pub seconds: f32,
     /// How many ticks of the song the file takes **at its own rate**, from
     /// the start of each pass — the length a drop gives the block, and the
     /// length the block keeps drawing the file at after it has been dragged
@@ -775,6 +793,17 @@ pub struct RouteInfo {
     pub depth_address: fontelle_types::ParamAddress,
 }
 
+/// What one of the Flopsynth window's controls wears: a glow because a
+/// source badge could land on it, and a ring at `depth` when a route already
+/// reaches it. See [`StudioHost::modulation_marks`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModMark {
+    pub address: fontelle_types::ParamAddress,
+    /// The newest route's depth, bipolar -1..=1 — `None` for a control
+    /// nothing modulates yet.
+    pub depth: Option<f32>,
+}
+
 /// Which list the left-hand panel is showing.
 ///
 /// > *"the prefab tab should be where the channel rack is can be tabbed
@@ -826,6 +855,39 @@ pub struct PrefabInfo {
 }
 
 /// Everything the window shows that is not the clip.
+/// What an export is asked to be (§15's bounce, with the questions FL's
+/// export dialog asks first).
+///
+/// > *"when i click export it prompts me with the export options so i can
+/// > chose things like time selection, whole song, keep things like reverb
+/// > tail or cut short, etc."*
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExportOptions {
+    pub range: ExportRange,
+    pub tail: ExportTail,
+}
+
+/// Which stretch of the song an export renders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportRange {
+    /// From the start to the end of the last thing that sounds.
+    WholeSong,
+    /// The time selection on the ruler — the loop range. An export asked
+    /// for this with no selection is refused with a line saying so.
+    Selection,
+}
+
+/// What happens to what is still ringing when the stretch ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportTail {
+    /// Render on past the end until the sound has died away — a reverb, a
+    /// delay, a long release — and keep it. The file ends where the sound
+    /// does.
+    Keep,
+    /// Stop exactly at the end of the stretch, whatever is still ringing.
+    Cut,
+}
+
 pub trait StudioHost: DocumentHost {
     /// Bumped whenever anything a panel draws has changed.
     ///
@@ -1142,6 +1204,13 @@ pub trait StudioHost: DocumentHost {
     /// Bounces the whole project to a WAV inside its own `renders/` folder.
     /// `Ok` carries a line worth showing; `Err` does too.
     fn export_wav(&mut self) -> Result<String, String> {
+        Err("this build cannot export".to_string())
+    }
+
+    /// [`export_wav`](Self::export_wav) with a say in what: which stretch
+    /// of the song, and whether what rings past its end is kept. The
+    /// window asks these of the person first — see `MenuTarget::Export`.
+    fn export_wav_with(&mut self, _options: ExportOptions) -> Result<String, String> {
         Err("this build cannot export".to_string())
     }
 
@@ -1729,6 +1798,22 @@ pub trait StudioHost: DocumentHost {
     /// tell those apart before it lights one up and then does nothing.
     fn is_mod_destination(&self, _address: &fontelle_types::ParamAddress) -> bool {
         false
+    }
+
+    /// Every control a route could reach, with the depth of the one that
+    /// does — the marks the window's knobs wear, **for the whole window in
+    /// one call**.
+    ///
+    /// The window used to ask [`routes_to`](Self::routes_to) and
+    /// [`is_mod_destination`](Self::is_mod_destination) for every control
+    /// each time the revision moved, and each of those answers was a clone
+    /// of the patch and a walk of its destinations: nine milliseconds a
+    /// revision on the bank's Grand Piano. With snap off a drag is a
+    /// revision per pointer motion, which is where *"stuttering when
+    /// dragging audio clips"* came from. One question a revision is a
+    /// fraction of a frame; see `tests/mod_marks.rs`.
+    fn modulation_marks(&self) -> Vec<ModMark> {
+        Vec::new()
     }
 
     /// Adds a route from source `source` to the control at `address`.

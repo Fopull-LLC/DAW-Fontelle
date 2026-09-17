@@ -352,7 +352,7 @@ fn a_stretched_clip(start: Tick, length: Tick) -> Vec<ClipInfo> {
     items[0].kind = ClipKind::Audio;
     items[0].audio.stretched = true;
     items[0].audio.natural_length = length;
-    items[0].audio.peaks = vec![(-0.5, 0.5); 64];
+    items[0].audio.peaks = vec![(-0.5, 0.5); 64].into();
     items
 }
 

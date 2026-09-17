@@ -38,8 +38,9 @@ use fontelle_types::{
 };
 use fontelle_ui::canvas::{ArrangeEdit, InstrumentView, PresetDevice, RollEdit};
 use fontelle_ui::document::{
-    ChannelInfo, ClipInfo, ClipKind, Created, CurvePoint, DocumentHost, GhostFilter, GhostNote,
-    LaneInfo, LibraryEntry, MixerStrip, PlayMode, RecentProject, StudioHost, UpdateStatus,
+    ChannelInfo, ClipInfo, ClipKind, Created, CurvePoint, DocumentHost, ExportOptions, ExportRange,
+    ExportTail, GhostFilter, GhostNote, LaneInfo, LibraryEntry, MixerStrip, PlayMode,
+    RecentProject, StudioHost, UpdateStatus,
 };
 
 use crate::bank::{BankFilter, BankRow, FileBank, SoundfontBank, matches_names};
@@ -59,6 +60,12 @@ const NEW_PROJECT_BARS: i64 = 8;
 /// How much silence a bounce keeps past the last note, so its release is not
 /// cut off mid-ring. Two bars, which covers a long pad at a slow tempo.
 const RELEASE_TAIL: Tick = PPQN * 8;
+
+/// The most an export renders on past the end of its stretch when the
+/// tail is kept, in seconds — long enough for any reverb or delay somebody
+/// would keep, and the render is trimmed back to where the sound actually
+/// stops (`fontelle_app::tail_end`), so this is a ceiling, not a length.
+const EXPORT_TAIL_MAX_S: i64 = 12;
 
 /// The voice context every audition carries.
 ///
@@ -436,18 +443,84 @@ pub struct Session {
     /// What the roll is shown: the open clip's notes on the selected
     /// channel. See `refresh_roll_notes`.
     roll_notes: Arena<NoteId, Note>,
+
+    /// Each audio clip's block picture, kept from one revision to the next
+    /// while what it shows has not changed — see [`audio_preview`]
+    /// (Self::audio_preview). Behind a `RefCell` because the window reads
+    /// clips through `&self`, and a cache that could only fill on a
+    /// mutation would hand out blank blocks until the first edit.
+    previews: std::cell::RefCell<HashMap<ClipId, CachedPreview>>,
 }
 
-/// How many buckets an audio clip's block preview holds.
+/// One audio clip's block picture and what it was built from.
+struct CachedPreview {
+    key: PreviewKey,
+    peaks: std::sync::Arc<[(f32, f32)]>,
+    rms: std::sync::Arc<[f32]>,
+}
+
+/// Everything the picture depends on, and nothing it does not.
+///
+/// The clip's place on the song, its gain, its fades and its mixer track
+/// are deliberately absent: a block being dragged along the arrangement is a
+/// revision per pointer move, and rebuilding a fine picture of a long take
+/// on each of them is a drag that stutters. The file's frame count is in it
+/// so a picture built before the peaks arrived is rebuilt once they have.
+#[derive(Clone, PartialEq)]
+struct PreviewKey {
+    asset: fontelle_types::AssetId,
+    file_frames: usize,
+    source_start: fontelle_types::Sample,
+    source_end: fontelle_types::Sample,
+    reverse: bool,
+    loop_mode: fontelle_types::ClipLoopMode,
+    stretch: fontelle_types::ClipStretch,
+    /// `time_rate()`, by its bits: the picture covers a span that depends
+    /// on it, and floats are compared exactly here on purpose — two rates
+    /// that differ at all draw two pictures.
+    time_rate: u64,
+}
+
+impl PreviewKey {
+    fn of(data: &fontelle_types::AudioClipData, file_frames: usize) -> Self {
+        Self {
+            asset: data.asset.id,
+            file_frames,
+            source_start: data.source_start,
+            source_end: data.source_end,
+            reverse: data.reverse,
+            loop_mode: data.loop_mode,
+            stretch: data.stretch,
+            time_rate: data.time_rate().to_bits(),
+        }
+    }
+}
+
+/// How many clip frames one bucket of an audio clip's block preview covers,
+/// at most.
 ///
 /// A summary of a summary: the peak file already holds the loudest and
-/// quietest sample per 64 frames, and this resamples that onto a fixed number
-/// of columns covering the clip's own trimmed range. Fixed rather than
-/// per-block-width because it is built per document revision and the block is
-/// resized per frame — a preview rebuilt on every zoom is the cost §15.3 exists
-/// to avoid. 512 is more columns than a clip is usually wide, so the picture
-/// is smooth at any width a lane has room for.
-const PREVIEW_BUCKETS: usize = 512;
+/// quietest sample per 64 frames, and this resamples that onto buckets
+/// covering the clip's own trimmed range. **Sized by the take, not by the
+/// block**: it used to be a fixed 512 buckets across the clip however long,
+/// which on a long take was the loudest sample in the better part of a
+/// second, drawn from that second's start — *"it looks like i start talking
+/// sooner than i actually do audibly"*. About three milliseconds at 48 kHz
+/// is under a pixel at any zoom the arrangement reaches, so the picture
+/// starts where the sound does; the canvas folds the buckets a column
+/// covers, so a zoomed-out block reads the same picture rather than a
+/// sample of it.
+const PREVIEW_BUCKET_FRAMES: f64 = 128.0;
+
+/// Fewest buckets a preview holds, so a clip a few hundred frames long is
+/// still a picture rather than a handful of steps.
+const PREVIEW_BUCKETS_MIN: usize = 512;
+
+/// Most buckets a preview holds — half a megabyte of picture. An hour-long
+/// take is a bucket per fifty milliseconds past this, which is a picture
+/// nobody zooms far enough into to see the difference, and a bound on what a
+/// project full of long takes costs to hold.
+const PREVIEW_BUCKETS_MAX: usize = 1 << 16;
 
 /// How loud an oscillator comes on at when a sound is dropped onto it.
 ///
@@ -795,16 +868,17 @@ impl Session {
 
     /// The waveform an audio clip's block draws (TDD §15.3).
     ///
-    /// See [`PREVIEW_BUCKETS`] for how much of it there is.
+    /// See [`PREVIEW_BUCKET_FRAMES`] for how fine it is.
     ///
-    /// Resampled onto a fixed number of buckets covering **this clip's own
-    /// trimmed range**, and in **play order** — so a clip trimmed to the middle
-    /// of a file draws the middle of it, and a reversed one draws backwards,
-    /// which is what makes the picture the sound rather than a decoration
-    /// beside it.
+    /// Resampled onto buckets covering **this clip's own trimmed range**,
+    /// and in **play order** — so a clip trimmed to the middle of a file
+    /// draws the middle of it, and a reversed one draws backwards, which is
+    /// what makes the picture the sound rather than a decoration beside it.
     ///
-    /// Built per document revision rather than per frame, and from the peak
-    /// summary rather than the samples: §15.3's whole point.
+    /// Built from the peak summary rather than the samples, and kept
+    /// (`previews`) until what the clip shows changes — never per frame,
+    /// and not per revision either: §15.3's whole point, and the reason a
+    /// long take can afford a fine picture.
     ///
     /// `start` is where the clip sits on the song, because the length its
     /// file takes **in ticks** depends on the tempo there: that length is
@@ -812,15 +886,18 @@ impl Session {
     /// is not stretched (`AudioPreview::natural_length`).
     fn audio_preview(
         &self,
+        id: ClipId,
         start: Tick,
         data: &fontelle_types::AudioClipData,
     ) -> fontelle_ui::document::AudioPreview {
         let mut preview = fontelle_ui::document::AudioPreview {
-            peaks: Vec::new(),
+            peaks: Vec::new().into(),
+            rms: Vec::new().into(),
             fade_in: 0.0,
             fade_out: 0.0,
             fade_in_tension: data.fade_in.tension,
             fade_out_tension: data.fade_out.tension,
+            seconds: data.seconds() as f32,
             natural_length: 0,
             stretched: data.stretch == fontelle_types::ClipStretch::Resample,
         };
@@ -855,9 +932,12 @@ impl Session {
             // slab, which would say the take is loud all the way through.
             return preview;
         };
-        // The finest level that is not more detail than the buckets can hold.
-        let level = &peaks.levels[peaks.level_for(frames as usize, PREVIEW_BUCKETS)];
-        if level.is_empty() {
+        let key = PreviewKey::of(data, peaks.frames);
+        if let Some(cached) = self.previews.borrow().get(&id)
+            && cached.key == key
+        {
+            preview.peaks = cached.peaks.clone();
+            preview.rms = cached.rms.clone();
             return preview;
         }
         // How many of the **clip's own** frames the picture covers, which is
@@ -888,23 +968,58 @@ impl Session {
             }
             fontelle_types::ClipStretch::Resample => frames as f64,
         };
-        let per_bucket = covered / PREVIEW_BUCKETS as f64;
-        preview.peaks = (0..PREVIEW_BUCKETS)
+        let buckets = ((covered / PREVIEW_BUCKET_FRAMES).ceil() as usize)
+            .clamp(PREVIEW_BUCKETS_MIN, PREVIEW_BUCKETS_MAX);
+        // The finest level that is not more detail than the buckets can hold.
+        let which = peaks.level_for(frames as usize, buckets);
+        let level = &peaks.levels[which];
+        if level.is_empty() {
+            return preview;
+        }
+        // The loudness at the same level, when the file has it: a peak file
+        // read back from an older cache may not, and the outline alone is
+        // then what is drawn.
+        let loudness = peaks.rms.get(which).filter(|l| l.len() == level.len());
+        let per_bucket = covered / buckets as f64;
+        let scale = level.len() as f64 / peaks.frames.max(1) as f64;
+        // Which slice of the *file* a bucket covers. Through
+        // `source_position`, so trim, speed, reverse and looping are all
+        // obeyed by one function rather than four.
+        let span = |bucket: usize| {
+            let from = data.source_position(bucket as f64 * per_bucket);
+            let to = data.source_position((bucket + 1) as f64 * per_bucket);
+            let (from, to) = if from <= to { (from, to) } else { (to, from) };
+            let a = ((from * scale) as usize).min(level.len() - 1);
+            let b = ((to * scale) as usize).min(level.len() - 1);
+            (a, b)
+        };
+        preview.peaks = (0..buckets)
             .map(|bucket| {
-                // Which slice of the *file* this bucket covers. Through
-                // `source_position`, so trim, speed, reverse and looping are
-                // all obeyed by one function rather than four.
-                let from = data.source_position(bucket as f64 * per_bucket);
-                let to = data.source_position((bucket + 1) as f64 * per_bucket);
-                let (from, to) = if from <= to { (from, to) } else { (to, from) };
-                let scale = level.len() as f64 / peaks.frames.max(1) as f64;
-                let a = ((from * scale) as usize).min(level.len() - 1);
-                let b = ((to * scale) as usize).min(level.len() - 1);
+                let (a, b) = span(bucket);
                 level[a..=b].iter().fold((0.0f32, 0.0f32), |acc, (lo, hi)| {
                     (acc.0.min(*lo), acc.1.max(*hi))
                 })
             })
             .collect();
+        if let Some(loudness) = loudness {
+            // The **power** mean over the run, then the root: the RMS of
+            // the frames the bucket covers, not a mean of RMS values.
+            preview.rms = (0..buckets)
+                .map(|bucket| {
+                    let (a, b) = span(bucket);
+                    let run = &loudness[a..=b];
+                    (run.iter().map(|v| v * v).sum::<f32>() / run.len() as f32).sqrt()
+                })
+                .collect();
+        }
+        self.previews.borrow_mut().insert(
+            id,
+            CachedPreview {
+                key,
+                peaks: preview.peaks.clone(),
+                rms: preview.rms.clone(),
+            },
+        );
         preview
     }
 
@@ -1005,6 +1120,7 @@ impl Session {
             message: error.map(|e| e.to_string()),
             audition: None,
             roll_notes: Arena::default(),
+            previews: std::cell::RefCell::new(HashMap::new()),
         };
         session.selected = session.channel_index_of_clip().unwrap_or(0);
         session.effective_tempo = session.tempo_for_scope();
@@ -1949,7 +2065,31 @@ impl Session {
         Ok(format!("Rendered \u{2014} {}", path.display()))
     }
 
+    /// The whole song, with what rings past its end kept — the export the
+    /// keyboard's plain Ctrl+E and the command line ask for.
     pub fn export_wav(&mut self) -> Result<String, String> {
+        self.export_wav_with(ExportOptions {
+            range: ExportRange::WholeSong,
+            tail: ExportTail::Keep,
+        })
+    }
+
+    /// Bounces `options`' stretch of the song to a WAV inside the bundle's
+    /// `renders/` folder — see [`ExportOptions`].
+    ///
+    /// > *"when exporting my project it wasnt exporting the time length
+    /// > properly it was cut short it wasnt accounting for my audio clips"*
+    ///
+    /// The end of the song is [`crate::song_end_tick`]'s — every clip that
+    /// sounds — where it used to be the last note's. Rendered from the
+    /// song's zero whatever the stretch, then cut to it, for the reason the
+    /// lane bounce gives: a note that starts before the selection is still
+    /// ringing inside it. With the tail kept, the render runs on past the
+    /// end for as long as [`EXPORT_TAIL_MAX`] allows and is then trimmed
+    /// back to the last sound plus a breath, so a dry project does not get
+    /// ten seconds of silence and a wet one keeps every second of its
+    /// reverb.
+    pub fn export_wav_with(&mut self, export: ExportOptions) -> Result<String, String> {
         // A render lives inside the bundle, so there has to be a bundle.
         // Guessing at somewhere else would be a write outside anywhere the
         // user named (INVARIANT 10). Every project *made in the window* is on
@@ -1959,6 +2099,17 @@ impl Session {
             .bundle
             .clone()
             .ok_or_else(|| "save this project first — a render goes inside it".to_string())?;
+        let (from_tick, to_tick) = match export.range {
+            ExportRange::WholeSong => (0, crate::song_end_tick(&self.project)),
+            ExportRange::Selection => self.project.loop_range.ok_or_else(|| {
+                "select a stretch of the song first — drag along the ruler".to_string()
+            })?,
+        };
+        // A silent song still exports — *"a silent bounce is a legitimate
+        // thing to have asked for"* (`tests/exporting.rs`) — as its tail's
+        // worth of silence, so the file exists and is not a refusal. The
+        // tail allowance is trimmed to the last sound, and with no sound it
+        // trims to the breath after the end: a short, silent file.
 
         let options = RealiseOptions {
             quality: crate::RENDER_QUALITY,
@@ -1975,8 +2126,32 @@ impl Session {
             },
             fontelle_sequencer::CompileScope::Song,
         );
-        let samples = crate::project_duration_samples(&self.project, RELEASE_TAIL);
-        let audio = crate::render_offline(&timeline, &mut realised.graph, samples);
+        let from = self.project.tempo_map.tick_to_sample(from_tick).max(0);
+        let to = self.project.tempo_map.tick_to_sample(to_tick).max(from);
+        let allowance = match export.tail {
+            ExportTail::Keep => i64::from(self.options.sample_rate) * EXPORT_TAIL_MAX_S,
+            ExportTail::Cut => 0,
+        };
+        let rendered = crate::render_offline(
+            &timeline,
+            &mut realised.graph,
+            to + allowance.max(i64::from(self.options.sample_rate) / 10),
+        );
+        // Interleaved stereo, so a frame is two samples.
+        let end = match export.tail {
+            ExportTail::Keep => crate::tail_end(&rendered, to as usize, self.options.sample_rate),
+            ExportTail::Cut => to as usize,
+        }
+        // Never an empty file: a cut export of nothing is its breath of
+        // silence rather than a WAV with no frames in it.
+        .max(from as usize + self.options.sample_rate as usize / 10)
+        .min(rendered.len() / 2);
+        let audio: Vec<f32> = rendered
+            .iter()
+            .copied()
+            .skip((from as usize).saturating_mul(2))
+            .take(end.saturating_sub(from as usize).saturating_mul(2))
+            .collect();
 
         let renders = bundle.join("renders");
         std::fs::create_dir_all(&renders).map_err(|e| format!("{}: {e}", renders.display()))?;
@@ -5931,6 +6106,10 @@ impl StudioHost for Session {
         Session::export_wav(self)
     }
 
+    fn export_wav_with(&mut self, options: ExportOptions) -> Result<String, String> {
+        Session::export_wav_with(self, options)
+    }
+
     fn export_midi(&mut self) -> Result<String, String> {
         Session::export_midi(self)
     }
@@ -6995,6 +7174,10 @@ impl StudioHost for Session {
 
     fn is_mod_destination(&self, address: &fontelle_types::ParamAddress) -> bool {
         Session::is_mod_destination(self, address)
+    }
+
+    fn modulation_marks(&self) -> Vec<fontelle_ui::document::ModMark> {
+        Session::modulation_marks(self)
     }
 
     fn add_route(&mut self, source: usize, address: &fontelle_types::ParamAddress) {
@@ -8233,6 +8416,11 @@ impl StudioHost for Session {
 
     fn clips(&self) -> Vec<ClipInfo> {
         let lanes = self.lane_ids();
+        // A deleted clip's picture goes with it; the cache is otherwise only
+        // ever added to.
+        self.previews
+            .borrow_mut()
+            .retain(|id, _| self.project.clips.contains_key(*id));
         self.project
             .clips
             .iter()
@@ -8331,7 +8519,7 @@ impl StudioHost for Session {
                     // from — the same question the other two answer: what is
                     // this, at a glance, without opening it.
                     ClipSource::Audio(data) => {
-                        audio = self.audio_preview(clip.start, data);
+                        audio = self.audio_preview(id, clip.start, data);
                         (
                             ClipKind::Audio,
                             data.asset
@@ -9751,6 +9939,42 @@ impl Session {
         self.matrix_patch().is_some_and(|patch| {
             fontelle_core::flopsynth::dest_for_address(&patch, address.as_str()).is_some()
         })
+    }
+
+    /// Every destination the selected patch has, by address, with the depth
+    /// of the newest route reaching it — [`routes_to`](Self::routes_to)'s
+    /// last answer and [`is_mod_destination`](Self::is_mod_destination)'s,
+    /// for every control at once.
+    ///
+    /// **One patch, one walk of its destinations.** The two per-control
+    /// questions each take a copy of the patch and rebuild the destination
+    /// list to answer, which is fine for the one knob under a dragged badge
+    /// and was not fine for the hundred the window re-asked about on every
+    /// revision (`tests/mod_marks.rs`).
+    pub fn modulation_marks(&self) -> Vec<fontelle_ui::document::ModMark> {
+        let Some(patch) = self.matrix_patch() else {
+            return Vec::new();
+        };
+        fontelle_core::flopsynth::destinations(&patch)
+            .into_iter()
+            .filter_map(|(dest, _)| {
+                let address = fontelle_core::flopsynth::dest_address(dest)?;
+                // The routes are oldest first, so the last one to this
+                // destination is the newest — the one `routes_to(..).last()`
+                // names, and the one whose depth the ring shows.
+                let depth = patch
+                    .mod_matrix
+                    .routes
+                    .iter()
+                    .rev()
+                    .find(|route| route.destination == dest)
+                    .map(|route| route.depth);
+                Some(fontelle_ui::document::ModMark {
+                    address: fontelle_types::ParamAddress::new(address),
+                    depth,
+                })
+            })
+            .collect()
     }
 
     pub fn add_route(&mut self, source: usize, address: &fontelle_types::ParamAddress) {

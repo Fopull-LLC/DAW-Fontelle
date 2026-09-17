@@ -225,3 +225,59 @@ fn being_handed_no_new_clips_leaves_the_selection_alone() {
         "a duplicate that created nothing must not clear what was selected"
     );
 }
+
+// --------------------------------------------------- the cut at the marker ---
+//
+// > *"please also make ctrl b split my selection at the playhead marker"*
+// > — then: *"not split at the play marker but instead at where the blue
+// > marker where the play marker returns to is."*
+//
+// One key, the same cut the blade makes — `ArrangeEdit::Split`, one edit
+// carrying every selected clip the mark crosses, so one press of Ctrl+Z
+// takes the whole cut back. The canvas is handed a tick; which tick is the
+// window's business, and it hands over the marker.
+
+/// Every selected clip the mark is **inside** is cut there; one it is not
+/// inside is left alone, and so is a clip that is not selected.
+#[test]
+fn a_split_at_the_marker_cuts_each_selected_clip_the_mark_crosses() {
+    let mut timeline = Timeline::new(TimelineView::default());
+    let items = clips(&[
+        (0, PPQN * 8, 0),
+        (PPQN * 2, PPQN * 8, 1),
+        (PPQN * 12, PPQN * 4, 2),
+        (0, PPQN * 8, 3),
+    ]);
+    // The first three chosen, the fourth not.
+    timeline.select(items[..3].iter().map(|c| c.id).collect());
+
+    let at = PPQN * 4;
+    let edits = timeline.split_at(&items, at);
+    assert_eq!(
+        edits,
+        vec![ArrangeEdit::Split {
+            cuts: vec![(items[0].id, at), (items[1].id, at)],
+        }],
+        "the two selected clips under the mark, cut there, in one edit"
+    );
+}
+
+/// A mark on a clip's very edge cuts nothing: a zero-length half is not a
+/// cut, and neither is a whole clip with nothing taken off it.
+#[test]
+fn a_split_on_an_edge_or_with_nothing_selected_asks_for_nothing() {
+    let mut timeline = Timeline::new(TimelineView::default());
+    let items = clips(&[(PPQN * 2, PPQN * 4, 0)]);
+    assert!(
+        timeline.split_at(&items, PPQN * 4).is_empty(),
+        "nothing selected"
+    );
+    select_first(&mut timeline, &items);
+    assert!(
+        timeline.split_at(&items, PPQN * 2).is_empty(),
+        "on the start"
+    );
+    assert!(timeline.split_at(&items, PPQN * 6).is_empty(), "on the end");
+    assert!(timeline.split_at(&items, PPQN).is_empty(), "before it");
+    assert_eq!(timeline.split_at(&items, PPQN * 3).len(), 1, "inside it");
+}

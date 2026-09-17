@@ -65,6 +65,7 @@ fn rig() -> Rig {
     let view = RollView {
         scroll_tick: 0,
         top_key: 72,
+        key_offset: 0.0,
         pixels_per_tick: 0.25,
         key_height: 14.0,
         snap: SnapDivision::Step,
@@ -444,4 +445,36 @@ fn the_tempo_box_offers_a_drag_and_the_signature_a_click() {
     let x = r.bar.signature.x + r.bar.signature.width / 2.0;
     let y = r.bar.signature.y + r.bar.signature.height / 2.0;
     assert_eq!(pointer_at(&scene, x, y), Pointer::Hand);
+}
+
+/// An audio block's fade handle is dragged along, and its node up and down —
+/// and the cursor says so before the press, the way the note's edge does.
+///
+/// > *"the clip fades also feels a little janky please make it have really
+/// > polished ux like fl studios clip fades"*
+///
+/// The handle used to answer with the plain arrow, and the drag with the
+/// body's grabbing hand: nothing under the pointer said the corner was
+/// anything, and nothing during the drag said what was being dragged.
+#[test]
+fn a_fade_handle_offers_a_sideways_drag_and_its_node_an_up_and_down_one() {
+    use fontelle_ui::canvas::{clip_rect, fade_anatomy};
+    let mut r = rig();
+    r.clips[0].kind = fontelle_ui::document::ClipKind::Audio;
+    r.clips[0].audio = fontelle_ui::document::AudioPreview {
+        peaks: vec![(-0.5, 0.5); 64].into(),
+        fade_in: 0.3,
+        ..Default::default()
+    };
+    let block = clip_rect(&r.timeline_view, r.timeline.grid, &r.clips[0]);
+    let anatomy = fade_anatomy(block, &r.clips[0]).expect("an audio block has fades");
+    let centre =
+        |rect: fontelle_ui::layout::Rect| (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+
+    let (x, y) = centre(anatomy.handle_in);
+    assert_eq!(r.at(x, y), Pointer::ResizeX, "the in handle");
+    let (x, y) = centre(anatomy.handle_out);
+    assert_eq!(r.at(x, y), Pointer::ResizeX, "the out handle");
+    let (x, y) = centre(anatomy.node_in.expect("a fade has a node"));
+    assert_eq!(r.at(x, y), Pointer::ResizeY, "the node");
 }

@@ -52,6 +52,7 @@ fn view() -> TimelineView {
     TimelineView {
         scroll_tick: 0,
         top_lane: 0,
+        lane_offset: 0.0,
         // A bar is 96 pixels, which is about what an arrangement is read at.
         pixels_per_tick: 0.025,
         lane_height: 34.0,

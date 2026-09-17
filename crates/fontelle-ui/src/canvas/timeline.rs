@@ -186,6 +186,47 @@ pub fn fade_anatomy(block: Rect, clip: &ClipInfo) -> Option<FadeAnatomy> {
     })
 }
 
+/// What a fade drag has hold of — see [`Timeline::fade_grip`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FadeGrip {
+    /// A handle: the fade's length, dragged along the block.
+    Handle,
+    /// A node: the fade's bend, dragged up and down.
+    Node,
+}
+
+/// Where one fade **ends** on the block, in screen points — the point a
+/// handle drag carries. Measured against the file the way
+/// [`fade_anatomy`] measures the handles, so the two agree.
+fn fade_end_x(block: Rect, clip: &ClipInfo, end: FadeEnd) -> f32 {
+    let (file_px, file_end) = content_span(block, clip);
+    match end {
+        FadeEnd::In => block.x + file_px * clip.audio.fade_in.clamp(0.0, 1.0),
+        FadeEnd::Out => file_end - file_px * clip.audio.fade_out.clamp(0.0, 1.0),
+    }
+}
+
+/// A fade's length in words, for the caption a block shows while its
+/// handle is being dragged: seconds of the file, or milliseconds when it is
+/// under a tenth of a second, which is how a fade that short is spoken of.
+pub fn fade_caption(clip: &ClipInfo, end: FadeEnd) -> String {
+    let fraction = match end {
+        FadeEnd::In => clip.audio.fade_in,
+        FadeEnd::Out => clip.audio.fade_out,
+    }
+    .clamp(0.0, 1.0);
+    let seconds = fraction * clip.audio.seconds.max(0.0);
+    let which = match end {
+        FadeEnd::In => "fade in",
+        FadeEnd::Out => "fade out",
+    };
+    if seconds < 0.1 {
+        format!("{which} {:.0} ms", seconds * 1000.0)
+    } else {
+        format!("{which} {seconds:.2} s")
+    }
+}
+
 /// How many points a fade curve is drawn with.
 const FADE_CURVE_POINTS: usize = 24;
 
@@ -327,27 +368,120 @@ pub fn fade_curve(block: Rect, clip: &ClipInfo, end: FadeEnd) -> Vec<(f32, f32)>
 /// - The **fades shape it**, because what you see has to be what you hear.
 /// - Only the part on screen is built, like the note preview: a twenty-minute
 ///   take scrolled mostly off must not cost twenty minutes of columns a frame.
+/// - **A column is the loudest of everything it covers.** The summary is
+///   built fine — a bucket is milliseconds — so a zoomed-out column spans
+///   dozens of them, and one that read the bucket under its middle dropped
+///   the rest: forty hits in a take drew as eight. Folding the range is what
+///   keeps the picture the same picture as the block is zoomed.
 pub fn clip_waveform(block: Rect, visible: Rect, clip: &ClipInfo) -> Vec<Rect> {
-    if clip.kind != ClipKind::Audio || clip.audio.peaks.is_empty() {
+    if clip.audio.peaks.is_empty() {
         return Vec::new();
+    }
+    let peaks = &clip.audio.peaks;
+    let mut columns = Vec::new();
+    waveform_columns(
+        block,
+        visible,
+        clip,
+        peaks.len(),
+        |x, first, last, envelope, band| {
+            let (low, high) = peaks[first..=last]
+                .iter()
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |acc, (lo, hi)| {
+                    (acc.0.min(*lo), acc.1.max(*hi))
+                });
+            let top = band.middle - (high.clamp(-1.0, 1.0) * band.half * envelope).max(0.0);
+            let bottom = band.middle - (low.clamp(-1.0, 1.0) * band.half * envelope).min(0.0);
+            // At least a pixel: silence is a line through the middle, which is
+            // what says "this part of the take is quiet" rather than "the take
+            // stops here".
+            let height = (bottom - top).max(1.0);
+            columns.push(Rect::new(x, top.min(band.middle), 1.0, height));
+        },
+    );
+    columns
+}
+
+/// The **loudness core** of an audio clip's waveform: one rectangle per
+/// pixel column, as [`clip_waveform`] makes them, but from the RMS of the
+/// buckets rather than their extremes — centred on the middle of the band
+/// and inside the outline by construction, since a bucket's RMS is never
+/// above its peak.
+///
+/// > *"please help make the clip audio visualization look much better."*
+///
+/// The outline says how far the take swung; this says how loud it was, and
+/// for a voice the two are far apart — a syllable's peaks are twice its
+/// body. Drawn solid inside the outline's lighter ink, the picture reads as
+/// syllables rather than as a fuzz of peaks, which is the two-tone waveform
+/// every editor people call good draws. Empty when the preview has no
+/// loudness yet: the outline is then all there is, never a guess.
+pub fn clip_waveform_core(block: Rect, visible: Rect, clip: &ClipInfo) -> Vec<Rect> {
+    let rms = &clip.audio.rms;
+    if rms.is_empty() {
+        return Vec::new();
+    }
+    let mut columns = Vec::new();
+    waveform_columns(
+        block,
+        visible,
+        clip,
+        rms.len(),
+        |x, first, last, envelope, band| {
+            // The loudest bucket under the column, like the outline: a column
+            // is what it covers at its loudest, or a hit disappears as the
+            // block is zoomed out.
+            let loud = rms[first..=last].iter().fold(0.0f32, |acc, v| acc.max(*v));
+            let reach = (loud.clamp(0.0, 1.0) * band.half * envelope).max(0.0);
+            columns.push(Rect::new(x, band.middle - reach, 1.0, reach * 2.0));
+        },
+    );
+    columns
+}
+
+/// The content band's vertical geometry, handed to each column of a
+/// waveform walk.
+struct WaveformBand {
+    middle: f32,
+    half: f32,
+}
+
+/// The column walk the outline and the core share: which pixel columns of
+/// the block are on screen, which run of `buckets` each covers, and the
+/// fade envelope there. `draw` is called once per column with the column's
+/// x, the first and last bucket under it, the envelope, and the band.
+///
+/// One walk rather than two so the two pictures cannot disagree about a
+/// column — the core of a column is inside the outline of the *same*
+/// column, at the same x, over the same buckets.
+fn waveform_columns(
+    block: Rect,
+    visible: Rect,
+    clip: &ClipInfo,
+    buckets: usize,
+    mut draw: impl FnMut(f32, usize, usize, f32, &WaveformBand),
+) {
+    if clip.kind != ClipKind::Audio || buckets == 0 {
+        return;
     }
     let (_, content) = clip_bands(block);
     if content.is_empty() || content.width <= 0.0 || content.height < MIN_WAVEFORM_BLOCK_PX {
-        return Vec::new();
+        return;
     }
     // The columns actually on screen. The block may run for a screen either
     // way, and a column outside the grid is one nobody sees.
     let from = content.x.max(visible.x).floor();
     let to = content.right().min(visible.right()).ceil();
     if to <= from {
-        return Vec::new();
+        return;
     }
 
-    let middle = content.y + content.height / 2.0;
-    let half = content.height / 2.0;
-    let peaks = &clip.audio.peaks;
+    let band = WaveformBand {
+        middle: content.y + content.height / 2.0,
+        half: content.height / 2.0,
+    };
     let ticks_per_px = clip.length.max(1) as f32 / content.width;
-    let mut columns = Vec::with_capacity((to - from) as usize + 1);
+    let half_px = 0.5 * ticks_per_px / content_ticks(clip).max(1) as f32;
     let mut x = from;
     while x < to {
         // Where this column sits along the **file**, 0..1 — through the
@@ -361,19 +495,17 @@ pub fn clip_waveform(block: Rect, visible: Rect, clip: &ClipInfo) -> Vec<Rect> {
             x += 1.0;
             continue;
         };
-        let bucket = ((t * peaks.len() as f32) as usize).min(peaks.len() - 1);
-        let (low, high) = peaks[bucket];
+        // The stretch of the file under this column, half a pixel either
+        // side of its middle and held inside the pass — a column astride a
+        // loop's seam is the end of one pass, not a mix of two.
+        let first = (((t - half_px).max(0.0) * buckets as f32) as usize).min(buckets - 1);
+        let last = (((t + half_px).min(1.0) * buckets as f32).ceil() as usize)
+            .saturating_sub(1)
+            .clamp(first, buckets - 1);
         let envelope = preview_fade(&clip.audio, t);
-        let top = middle - (high.clamp(-1.0, 1.0) * half * envelope).max(0.0);
-        let bottom = middle - (low.clamp(-1.0, 1.0) * half * envelope).min(0.0);
-        // At least a pixel: silence is a line through the middle, which is
-        // what says "this part of the take is quiet" rather than "the take
-        // stops here".
-        let height = (bottom - top).max(1.0);
-        columns.push(Rect::new(x, top.min(middle), 1.0, height));
+        draw(x, first, last, envelope, &band);
         x += 1.0;
     }
-    columns
 }
 
 /// **Where the take runs out inside its block**, in screen points — or `None`
@@ -549,6 +681,10 @@ pub struct TimelineView {
     /// The lane in the top row. Lanes read downwards, unlike the roll's keys —
     /// a track list is a list, not a keyboard.
     pub top_lane: usize,
+    /// How much of `top_lane`'s row is scrolled up out of the grid, 0..1 —
+    /// so the rows can be scrolled by less than a row, and glided
+    /// (`canvas::Glide`). Zero is the top row flush with the grid.
+    pub lane_offset: f32,
     pub pixels_per_tick: f32,
     pub lane_height: f32,
     pub snap: SnapDivision,
@@ -559,6 +695,7 @@ impl Default for TimelineView {
         Self {
             scroll_tick: 0,
             top_lane: 0,
+            lane_offset: 0.0,
             // About a hundred pixels to the bar: enough of a piece on screen to
             // be an arrangement rather than a magnified clip.
             pixels_per_tick: 0.025,
@@ -861,14 +998,14 @@ pub fn timeline_x_to_tick(view: &TimelineView, grid: Rect, x: f32) -> Tick {
 }
 
 pub fn lane_to_y(view: &TimelineView, grid: Rect, lane: usize) -> f32 {
-    grid.y + (lane as f32 - view.top_lane as f32) * view.lane_height
+    grid.y + (lane as f32 - view.top_lane as f32 - view.lane_offset) * view.lane_height
 }
 
 pub fn y_to_lane(view: &TimelineView, grid: Rect, y: f32) -> usize {
     if view.lane_height <= 0.0 {
         return view.top_lane;
     }
-    let rows = ((y - grid.y) / view.lane_height).floor() as i64;
+    let rows = ((y - grid.y) / view.lane_height + view.lane_offset).floor() as i64;
     (view.top_lane as i64 + rows).max(0) as usize
 }
 
@@ -887,7 +1024,9 @@ pub fn visible_lanes(view: &TimelineView, grid: Rect, lane_count: usize) -> Rang
     if view.lane_height <= 0.0 || grid.height <= 0.0 || lane_count == 0 {
         return 0..0;
     }
-    let rows = (grid.height / view.lane_height).ceil() as usize + 1;
+    // One more than fit, for the row cut off at the bottom — and one more
+    // again when the top row is part-way up, for the one cut off there.
+    let rows = (grid.height / view.lane_height).ceil() as usize + 2;
     let top = view.top_lane.min(lane_count.saturating_sub(1));
     top..(top + rows).min(lane_count)
 }
@@ -1620,12 +1759,21 @@ enum Gesture {
         clip: ClipId,
         end: FadeEnd,
         applied: Option<f32>,
+        /// How far right of the fade's end the press landed, in points —
+        /// so the drag is **relative**: the end moves by the distance the
+        /// pointer moves, and a handle grabbed by its edge does not jump
+        /// under the finger on the first move. *"feels a little janky"*
+        /// was, in part, that jump.
+        grab: f32,
     },
     /// A fade's node, carried up or down the content band.
     Bending {
         clip: ClipId,
         end: FadeEnd,
         applied: Option<f32>,
+        /// How far below the node's centre the press landed, for the
+        /// reason `Fading::grab` gives.
+        grab: f32,
     },
     /// Points on an automation block's curve, carried. **Relative**, like a
     /// note drag and for the same reason: several can move at once and they
@@ -1978,10 +2126,34 @@ impl Timeline {
                 self.selection = vec![id];
                 self.stamp = Some(id);
                 self.clear_point_selection();
+                // Relative to the fade's end when there is one — the handle
+                // is centred on it, and stays centred under the finger. A
+                // handle **at rest** sits inside the corner rather than on
+                // it, so it is taken hold of absolutely: the fade grows to
+                // wherever the pointer goes, which is what the corner is
+                // for, and the handle recentres itself on the first move.
+                let (grab, applied) =
+                    clips
+                        .iter()
+                        .find(|c| c.id == id)
+                        .map_or((0.0, None), |clip| {
+                            let fraction = match end {
+                                FadeEnd::In => clip.audio.fade_in,
+                                FadeEnd::Out => clip.audio.fade_out,
+                            }
+                            .clamp(0.0, 1.0);
+                            let grab = if fraction > 0.0 {
+                                x - fade_end_x(clip_rect(&self.view, layout.grid, clip), clip, end)
+                            } else {
+                                0.0
+                            };
+                            (grab, Some(fraction))
+                        });
                 self.gesture = Gesture::Fading {
                     clip: id,
                     end,
-                    applied: None,
+                    applied,
+                    grab,
                 };
                 Vec::new()
             }
@@ -1989,10 +2161,27 @@ impl Timeline {
                 self.selection = vec![id];
                 self.stamp = Some(id);
                 self.clear_point_selection();
+                // Relative to the node's centre, and starting from the bend
+                // the fade already has: a press that has not moved asks for
+                // nothing, and the node stays under the finger when it does.
+                let (grab, applied) = clips
+                    .iter()
+                    .find(|c| c.id == id)
+                    .and_then(|clip| {
+                        let anatomy = fade_anatomy(clip_rect(&self.view, layout.grid, clip), clip)?;
+                        let (node, tension) = match end {
+                            FadeEnd::In => (anatomy.node_in, clip.audio.fade_in_tension),
+                            FadeEnd::Out => (anatomy.node_out, clip.audio.fade_out_tension),
+                        };
+                        let node = node?;
+                        Some((y - (node.y + node.height / 2.0), Some(tension)))
+                    })
+                    .unwrap_or((0.0, None));
                 self.gesture = Gesture::Bending {
                     clip: id,
                     end,
-                    applied: None,
+                    applied,
+                    grab,
                 };
                 Vec::new()
             }
@@ -2129,7 +2318,50 @@ impl Timeline {
                 let start = timeline_snap(&self.view, tick, beats_per_bar).max(0);
                 vec![ArrangeEdit::Add { lane, start }]
             }
+            // **A fade's way back.** Double-click on a handle takes the fade
+            // off; on a node, straightens its curve. Dragging a handle into
+            // the corner by eye used to be the only way to *no fade*, and a
+            // bend, once made, could only be unmade by finding the middle
+            // of the band again.
+            TimelineHit::Clip(id, ClipPart::FadeHandle(end)) => {
+                self.selection = vec![id];
+                self.stamp = Some(id);
+                vec![ArrangeEdit::SetFade {
+                    clip: id,
+                    end,
+                    fraction: 0.0,
+                }]
+            }
+            TimelineHit::Clip(id, ClipPart::FadeNode(end)) => {
+                self.selection = vec![id];
+                self.stamp = Some(id);
+                vec![ArrangeEdit::SetFadeTension {
+                    clip: id,
+                    end,
+                    tension: 0.0,
+                }]
+            }
             _ => Vec::new(),
+        }
+    }
+
+    /// Which fade gesture is in hand, if one is — so the window can keep
+    /// the cursor it showed over the handle for the whole drag rather than
+    /// letting the pointer's travel over the body turn it into a hand.
+    pub fn fade_grip(&self) -> Option<FadeGrip> {
+        match self.gesture {
+            Gesture::Fading { .. } => Some(FadeGrip::Handle),
+            Gesture::Bending { .. } => Some(FadeGrip::Node),
+            _ => None,
+        }
+    }
+
+    /// The fade being dragged right now, for the caption the block shows
+    /// while it is: which clip and which end. `None` when no fade is in hand.
+    pub fn fading(&self) -> Option<(ClipId, FadeEnd)> {
+        match self.gesture {
+            Gesture::Fading { clip, end, .. } => Some((clip, end)),
+            _ => None,
         }
     }
 
@@ -2181,6 +2413,7 @@ impl Timeline {
                 clip: id,
                 end,
                 applied,
+                grab,
             } => {
                 let Some(clip) = clips.iter().find(|c| c.id == id) else {
                     return Vec::new();
@@ -2191,11 +2424,14 @@ impl Timeline {
                 }
                 // A fraction of the **file**, which is what the host turns
                 // into frames — measured the way `fade_anatomy` places the
-                // handles, so the handle lands under the pointer.
+                // handles, so the handle stays under the pointer: the end
+                // is where the pointer is, less where on the handle it was
+                // taken hold of.
                 let (file_px, file_end) = content_span(block, clip);
+                let at = x - grab;
                 let raw = match end {
-                    FadeEnd::In => (x - block.x) / file_px,
-                    FadeEnd::Out => (file_end - x) / file_px,
+                    FadeEnd::In => (at - block.x) / file_px,
+                    FadeEnd::Out => (file_end - at) / file_px,
                 };
                 let fraction = raw.clamp(0.0, 1.0);
                 if applied == Some(fraction) {
@@ -2205,6 +2441,7 @@ impl Timeline {
                     clip: id,
                     end,
                     applied: Some(fraction),
+                    grab,
                 };
                 vec![ArrangeEdit::SetFade {
                     clip: id,
@@ -2220,6 +2457,7 @@ impl Timeline {
                 clip: id,
                 end,
                 applied,
+                grab,
             } => {
                 let Some(clip) = clips.iter().find(|c| c.id == id) else {
                     return Vec::new();
@@ -2228,7 +2466,9 @@ impl Timeline {
                 if content.height <= 0.0 {
                     return Vec::new();
                 }
-                let gain = ((content.bottom() - y) / content.height).clamp(0.0, 1.0);
+                // Where the node's centre is now, not where the pointer is:
+                // the difference is where on the node it was taken hold of.
+                let gain = ((content.bottom() - (y - grab)) / content.height).clamp(0.0, 1.0);
                 let tension = fontelle_types::tension_for_midpoint(gain);
                 if applied == Some(tension) {
                     return Vec::new();
@@ -2237,6 +2477,7 @@ impl Timeline {
                     clip: id,
                     end,
                     applied: Some(tension),
+                    grab,
                 };
                 vec![ArrangeEdit::SetFadeTension {
                     clip: id,
@@ -2636,7 +2877,7 @@ impl Timeline {
         vec![ArrangeEdit::Remove(std::mem::take(&mut self.selection))]
     }
 
-    /// `Ctrl+B`: the selection again, starting where it ends.
+    /// `Ctrl+D`: the selection again, starting where it ends.
     ///
     /// Rounded up to the next bar, so duplicating a phrase produces a phrase
     /// twice as long rather than an overlap nobody asked for — the same rule
@@ -2760,6 +3001,27 @@ impl Timeline {
                 tick_offset: stride * n,
             })
             .collect()
+    }
+
+    /// Cuts every selected clip `at` is inside, there — the blade's cut
+    /// from the keyboard, and the same edit, so one press of Ctrl+Z takes
+    /// the whole cut back. The window hands it the **marker**, the blue
+    /// mark play returns to: *"make ctrl b split my selection at ... where
+    /// the blue marker where the play marker returns to is."*
+    ///
+    /// **Inside**, strictly: a mark on a clip's start or end would cut a
+    /// half of nothing off it, and a clip the mark is not on is not asked
+    /// to change at all.
+    pub fn split_at(&self, clips: &[ClipInfo], at: Tick) -> Vec<ArrangeEdit> {
+        let cuts: Vec<(ClipId, Tick)> = self
+            .selected(clips)
+            .filter(|clip| at > clip.start && at < clip.start + clip.length)
+            .map(|clip| (clip.id, at))
+            .collect();
+        if cuts.is_empty() {
+            return Vec::new();
+        }
+        vec![ArrangeEdit::Split { cuts }]
     }
 
     /// Mutes the selection, or unmutes it when all of it is already muted —

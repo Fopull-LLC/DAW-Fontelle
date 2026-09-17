@@ -272,6 +272,11 @@ pub enum Action {
     Cut,
     Paste,
     Duplicate,
+    /// Cut every selected clip at the marker — the blue mark play returns
+    /// to — the blade's cut, from the keyboard. *"make ctrl b split my
+    /// selection at ... where the blue marker where the play marker returns
+    /// to is."*
+    SplitAtMarker,
     DeleteSelection,
     MuteClips,
     // --- mixer ---
@@ -282,7 +287,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 39] = [
         Self::Play,
         Self::Stop,
         Self::Metronome,
@@ -316,6 +321,7 @@ impl Action {
         Self::Cut,
         Self::Paste,
         Self::Duplicate,
+        Self::SplitAtMarker,
         Self::DeleteSelection,
         Self::MuteClips,
         Self::MuteTrack,
@@ -361,6 +367,7 @@ impl Action {
             Self::Cut => "cut",
             Self::Paste => "paste",
             Self::Duplicate => "duplicate",
+            Self::SplitAtMarker => "split-at-marker",
             Self::DeleteSelection => "delete-selection",
             Self::MuteClips => "mute-clips",
             Self::MuteTrack => "mute-track",
@@ -384,7 +391,7 @@ impl Action {
             Self::Save => "Save",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
-            Self::ExportWav => "Export the song as a WAV",
+            Self::ExportWav => "Export as a WAV — asks which stretch, and about the tail",
             Self::ExportMidi => "Export the song as a MIDI file",
             Self::Help => "This page",
             Self::ShowRoll => "Show the piano roll",
@@ -410,6 +417,7 @@ impl Action {
             Self::Cut => "Cut",
             Self::Paste => "Paste",
             Self::Duplicate => "Duplicate the selection after itself",
+            Self::SplitAtMarker => "Cut the selected clips at the marker",
             Self::DeleteSelection => "Delete the selection",
             Self::MuteClips => "Mute the selected clips",
             Self::MuteTrack => "Mute the selected track (mixer showing)",
@@ -470,7 +478,10 @@ impl Action {
             Self::Copy => &["Ctrl+C"],
             Self::Cut => &["Ctrl+X"],
             Self::Paste => &["Ctrl+V"],
-            Self::Duplicate => &["Ctrl+B", "Ctrl+D"],
+            // Ctrl+B was a second Duplicate until the cut asked for it;
+            // Duplicate keeps Ctrl+D.
+            Self::Duplicate => &["Ctrl+D"],
+            Self::SplitAtMarker => &["Ctrl+B"],
             Self::DeleteSelection => &["Delete", "Backspace"],
             Self::MuteClips => &["Ctrl+Shift+M"],
             Self::MuteTrack => &["M"],

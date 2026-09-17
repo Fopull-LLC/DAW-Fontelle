@@ -4630,6 +4630,23 @@ impl Command for SplitClip {
                 // front half that stopped looping would play the file once and
                 // then sit silent for the passes it used to play — the cut
                 // changing the sound, which is the thing a cut may not do.
+                //
+                // **The fades are dealt out, not copied.** *"when cutting a
+                // clip with a clip fade it should not apply the same clip
+                // fade to the new split clip only on the part that was on
+                // the edge it was on if theres enough room for it otherwise
+                // squish it to fit."* A fade belongs to an edge of the sound:
+                // the fade in stays with the head, the fade out with the
+                // tail, and the other half gets none — a tail that faded in
+                // at the blade is a dip in the middle of the take that was
+                // not there before the cut. A fade longer than the half it
+                // lands on is squeezed to the half, its bend kept; the player
+                // measures each from its own end of the range, so "the
+                // half's frames" is the most it can be.
+                head.fade_out = fontelle_types::Fade::default();
+                head.fade_in.frames = head.fade_in.frames.min(head.source_frames());
+                tail.fade_in = fontelle_types::Fade::default();
+                tail.fade_out.frames = tail.fade_out.frames.min(tail.source_frames());
             }
             (
                 ClipSource::Automation(source),

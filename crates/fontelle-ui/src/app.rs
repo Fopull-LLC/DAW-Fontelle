@@ -22,6 +22,7 @@
 //! [`WindowApp::frames_drawn`] counts what actually reached the GPU, so the
 //! claim is checkable rather than asserted.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use vello::util::{RenderContext, RenderSurface};
@@ -456,6 +457,10 @@ enum MenuTarget {
     /// The record button: *"when i click record it prompts me what i would
     /// like to record: notes, audio from mic, automation, etc."*
     RecordMode,
+    /// Export: which stretch of the song and what happens to its tail —
+    /// *"when i click export it prompts me with the export options."* See
+    /// `canvas::export_menu_entries`.
+    Export,
     /// A mixer strip, by position — what its name row renames. See
     /// [`crate::canvas::name_press`].
     MixerTrack(usize),
@@ -608,6 +613,7 @@ impl MenuTarget {
             | Self::Signature
             | Self::RollTools
             | Self::RecordMode
+            | Self::Export
             | Self::MixerTrack(_)
             | Self::TrackInput { .. }
             | Self::Point { .. }
@@ -660,6 +666,29 @@ const AUTOSAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 /// still read as a pencil. Scaled by the compositor on a high-density display
 /// like every other cursor is.
 const CURSOR_SIZE: u32 = 32;
+
+/// Whether `FONTELLE_TRACE_FRAME` is set: the window then reports, on
+/// stderr, every pass, frame or pointer move that took longer than
+/// [`TRACE_FRAME_MS`], with where the time went.
+///
+/// A diagnostic, kept in the binary because the report it is for arrives
+/// from a machine this code has never run on — *"stuttering when dragging
+/// audio clips"* could not be reproduced here, where the frame is bound by
+/// the compositor's vsync and everything the session does per drag step is
+/// microseconds. Asking for a trace is cheaper than guessing.
+fn trace_frames() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("FONTELLE_TRACE_FRAME").is_some())
+}
+
+/// How slow a step has to be before the trace mentions it: half a frame
+/// at 60 Hz, which is where a drag starts to feel like it stutters.
+const TRACE_FRAME_MS: f64 = 8.0;
+
+/// Milliseconds since `from`.
+fn ms_since(from: std::time::Instant) -> f64 {
+    from.elapsed().as_secs_f64() * 1000.0
+}
 
 /// The piano roll's panel.
 const PANEL: WidgetId = WidgetId::new(0);
@@ -1256,7 +1285,7 @@ pub struct WindowApp {
     /// What a tempo drag started from, and where the pointer was when it did.
     /// The same shape as `knob`, for the same reason.
     value_drag: Option<(f64, f32)>,
-    /// Which canvas Delete and Ctrl+B are addressed to.
+    /// Which canvas Delete and Ctrl+D are addressed to.
     focus: Focus,
 
     // --- the docked panels (item 9) ---
@@ -1323,6 +1352,10 @@ pub struct WindowApp {
     /// over — the same pair the roll's toolbar has.
     timeline_bar: crate::canvas::TimelineToolbar,
     hover_timeline: Option<crate::canvas::TimelineControl>,
+    /// The block under the pointer and which part of it, for the fade
+    /// handles an audio block shows before it is chosen — see
+    /// `TimelineChrome::hover_clip`.
+    hover_clip: Option<(fontelle_types::ClipId, crate::canvas::ClipPart)>,
     /// What in the browser the pointer is over — a button *or* a row, because
     /// a list whose rows do not light up under the pointer does not look like a
     /// list you can click.
@@ -1493,6 +1526,13 @@ pub struct WindowApp {
     /// counter is there so several moving things can coexist, and a caller
     /// that begins twice for one thing defeats it.
     animating: bool,
+    /// The four scroll positions the wheel drives, gliding — see
+    /// `canvas::Glide`. Ticks sideways in each canvas; rows down the
+    /// arrangement and keys up the roll, both fractional.
+    glide_timeline_x: crate::canvas::Glide,
+    glide_timeline_y: crate::canvas::Glide,
+    glide_roll_x: crate::canvas::Glide,
+    glide_roll_y: crate::canvas::Glide,
 }
 
 /// The window and its surface, which only exist between `resumed` and
@@ -1777,6 +1817,7 @@ impl WindowApp {
             live_keys: 0,
             timeline_bar: crate::canvas::TimelineToolbar { items: Vec::new() },
             hover_timeline: None,
+            hover_clip: None,
             rack_scroll: 0,
             prefab_scroll: 0,
             hover_prefab: None,
@@ -1823,6 +1864,10 @@ impl WindowApp {
             marker: 0,
             lane_height_shown: DEFAULT_LANE_HEIGHT,
             animating: false,
+            glide_timeline_x: crate::canvas::Glide::at(0.0),
+            glide_timeline_y: crate::canvas::Glide::at(0.0),
+            glide_roll_x: crate::canvas::Glide::at(0.0),
+            glide_roll_y: crate::canvas::Glide::at(84.0).with_bounds(11.0, 127.0),
             options,
         };
         if app.options.welcome && app.options.document.is_some() {
@@ -2104,6 +2149,7 @@ impl WindowApp {
         if self.live.is_none() {
             return;
         }
+        let started = std::time::Instant::now();
         // Everything the frame is about to need, before the frame: the panels'
         // contents when the studio has changed them, and a shaped form of
         // every string the (pure) renderer will look up.
@@ -2292,6 +2338,8 @@ impl WindowApp {
                     tool: self.timeline.tool(),
                     stretch: self.timeline.stretch(),
                     hover: self.hover_timeline,
+                    hover_clip: self.hover_clip,
+                    fading: self.timeline.fading(),
                     slice: self.timeline.slice_line(),
                     renaming: match &self.renaming {
                         Some(MenuTarget::Lane(index)) => Some(*index),
@@ -2391,6 +2439,7 @@ impl WindowApp {
             },
         );
 
+        let built = ms_since(started);
         let surface_texture = match live.surface.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -2403,6 +2452,15 @@ impl WindowApp {
                 return;
             }
         };
+        // The wait for the compositor is the one part of a frame this
+        // program does not control, and the one most often mistaken for its
+        // own slowness.
+        if trace_frames() && ms_since(started) > TRACE_FRAME_MS {
+            eprintln!(
+                "trace: scene built in {built:.1} ms, then waited {:.1} ms for the surface",
+                ms_since(started) - built
+            );
+        }
         if let Err(e) = renderer.render_to_texture(
             &device.device,
             &device.queue,
@@ -2471,6 +2529,8 @@ impl WindowApp {
         // worth of release in one step.
         let dt = (now - self.last_tick).as_secs_f32().min(0.25);
         self.last_tick = now;
+        // The wheel's glides, a frame further on.
+        let gliding = self.glide_views(dt);
 
         // **The caret blinks**, and only while there is one. A caret that does
         // not blink is easy to read as a character; one that does is
@@ -2649,6 +2709,7 @@ impl WindowApp {
         // is what `arm_deadline` reads — one source of truth for "may the
         // window sleep", rather than two that can disagree.
         let moving = view.playing
+            || gliding
             || self.live_keys != 0
             // An open analyser is a moving picture, and it has to keep moving
             // while it falls back to the floor as well as while it is being
@@ -2706,7 +2767,15 @@ impl WindowApp {
     fn drag_pointer_shape(&self) -> Option<Pointer> {
         match self.drag {
             Drag::None => None,
-            Drag::Roll | Drag::Timeline => Some(Pointer::Grabbing),
+            // A fade keeps the cursor it was taken hold of with: the handle
+            // is dragged along, the node up and down, and the pointer's
+            // travel over the body must not turn either into a hand.
+            Drag::Timeline => Some(match self.timeline.fade_grip() {
+                Some(crate::canvas::FadeGrip::Handle) => Pointer::ResizeX,
+                Some(crate::canvas::FadeGrip::Node) => Pointer::ResizeY,
+                None => Pointer::Grabbing,
+            }),
+            Drag::Roll => Some(Pointer::Grabbing),
             Drag::RollRuler | Drag::BarRuler | Drag::TimelineRuler => Some(Pointer::Grabbing),
             Drag::MenuScroll
             | Drag::LaneGrip
@@ -2917,6 +2986,32 @@ impl WindowApp {
             self.tree.invalidate(TIMELINE);
         }
         let (x, y) = self.cursor;
+        // The block under the pointer, and which part: an audio block shows
+        // its fade handles while the pointer is on it, and lights the one
+        // the pointer is over. Only the part matters for the picture, so a
+        // pointer travelling along a body redraws nothing.
+        let over_clip = self
+            .layout
+            .timeline
+            .frame
+            .contains(x, y)
+            .then(|| {
+                timeline_hit(
+                    &self.timeline.view,
+                    &self.timeline_layout,
+                    &self.clips,
+                    x,
+                    y,
+                )
+            })
+            .and_then(|hit| match hit {
+                TimelineHit::Clip(id, part) => Some((id, part)),
+                _ => None,
+            });
+        if over_clip != self.hover_clip {
+            self.hover_clip = over_clip;
+            self.tree.invalidate(TIMELINE);
+        }
         let over_browser = self.layout.browser.frame.contains(x, y);
         let browser = over_browser
             .then(|| browser_hit(&self.browser, x, y))
@@ -3259,10 +3354,19 @@ impl ApplicationHandler for WindowApp {
                 let scale = live.window.scale_factor();
                 self.cursor = ((position.x / scale) as f32, (position.y / scale) as f32);
                 self.pointer_window = None;
+                let started = std::time::Instant::now();
                 self.update_hover();
+                let hovered = ms_since(started);
                 self.drag_pointer();
                 if self.held.is_some() {
                     self.refresh_carry();
+                }
+                if trace_frames() && ms_since(started) > TRACE_FRAME_MS {
+                    eprintln!(
+                        "trace: pointer move {:.1} ms — hover {hovered:.1}, drag {:.1}",
+                        ms_since(started),
+                        ms_since(started) - hovered
+                    );
                 }
                 self.request_redraw_if_dirty();
             }
@@ -3535,7 +3639,11 @@ impl ApplicationHandler for WindowApp {
                 if !self.tree.has_dirty_regions() {
                     self.tree.invalidate_rect(self.layout.window);
                 }
+                let started = std::time::Instant::now();
                 self.draw();
+                if trace_frames() && ms_since(started) > TRACE_FRAME_MS {
+                    eprintln!("trace: frame {:.1} ms", ms_since(started));
+                }
                 if self.failure.is_some() {
                     event_loop.exit();
                     return;
@@ -3578,11 +3686,22 @@ impl ApplicationHandler for WindowApp {
             // call fires. See `fontelle_host::gui`.
             self.plugin_editor_open = doc.tick_plugin_editors();
         }
+        let started = std::time::Instant::now();
         self.refresh_studio();
+        let refreshed = ms_since(started);
         self.push_arrival_row();
         self.settle_audition();
         self.maybe_autosave();
+        let saved = ms_since(started);
         self.tick();
+        if trace_frames() && ms_since(started) > TRACE_FRAME_MS {
+            eprintln!(
+                "trace: pass {:.1} ms — lists {refreshed:.1}, autosave {:.1}, tick {:.1}",
+                ms_since(started),
+                saved - refreshed,
+                ms_since(started) - saved
+            );
+        }
         self.request_redraw_if_dirty();
         self.arm_deadline(event_loop);
         // Everything is answered and the loop is about to wait: from here the
@@ -5041,20 +5160,31 @@ impl WindowApp {
         if let Some(view) = &mut self.flopsynth {
             view.browse = self.flop_browse.clone();
         }
-        // Which knobs wear an arc, and which could take one. Both are asked
-        // once here, where the view has just been built, rather than per knob
-        // while the window is being drawn.
+        // Which knobs wear an arc, and which could take one. Asked once here,
+        // where the view has just been built, rather than per knob while the
+        // window is being drawn — and asked of the document **once for the
+        // whole window**, not once per knob: `routes_to` and
+        // `is_mod_destination` each copy the patch to answer, and a hundred
+        // knobs' worth of that on every revision was nine milliseconds. A
+        // drag with snap off is a revision per pointer motion, so that was
+        // *"stuttering when dragging audio clips"* (`fontelle-app`'s
+        // `tests/mod_marks.rs`).
         (self.flop_modulated, self.flop_destinations) = match &self.flopsynth {
             Some(view) => {
+                let marks = doc.modulation_marks();
+                let marks: HashMap<&str, Option<f32>> = marks
+                    .iter()
+                    .map(|mark| (mark.address.as_str(), mark.depth))
+                    .collect();
                 let mut modulated = Vec::new();
                 let mut destinations = Vec::new();
                 for (card, placed) in view.cards.iter().enumerate() {
                     for (param, control) in placed.group.params.iter().enumerate() {
-                        if let Some(route) = doc.routes_to(&control.address).last() {
-                            modulated.push(((card, param), route.depth));
-                        }
-                        if doc.is_mod_destination(&control.address) {
+                        if let Some(depth) = marks.get(control.address.as_str()) {
                             destinations.push((card, param));
+                            if let Some(depth) = depth {
+                                modulated.push(((card, param), *depth));
+                            }
                         }
                     }
                 }
@@ -5806,6 +5936,13 @@ impl WindowApp {
                 {
                     self.labels.ensure(&clip.name, &font, &mut self.text);
                 }
+            }
+            // The fade in hand says how long it is, beside its handle.
+            if let Some((id, end)) = self.timeline.fading()
+                && let Some(clip) = self.clips.iter().find(|c| c.id == id)
+            {
+                let caption = crate::canvas::fade_caption(clip, end);
+                self.labels.ensure(&caption, &font, &mut self.text);
             }
             let bar = fontelle_types::PPQN * i64::from(self.beats_per_bar().max(1));
             if let Some(stride) = label_stride(bar as f32 * self.timeline.view.pixels_per_tick) {
@@ -9057,7 +9194,26 @@ impl WindowApp {
         // rather than the first, because clicking one is how you move it and a
         // window that appeared every time you nudged a take along the bar
         // would be in the way of the thing you were doing.
+        //
+        // **Not from a fade handle or node**, though: a double-click there
+        // takes the fade off or straightens it (`Timeline::double_press`),
+        // and an editor window opening over the block you were tidying a
+        // fade on is the editor getting in the way.
+        let on_fade = matches!(
+            timeline_hit(
+                &self.timeline.view,
+                &self.timeline_layout,
+                &self.clips,
+                x,
+                y
+            ),
+            TimelineHit::Clip(
+                _,
+                crate::canvas::ClipPart::FadeHandle(_) | crate::canvas::ClipPart::FadeNode(_)
+            )
+        );
         if doubled
+            && !on_fade
             && let Some(clip) = self
                 .clips
                 .iter()
@@ -9112,6 +9268,7 @@ impl WindowApp {
             &crate::canvas::RollView {
                 scroll_tick: self.timeline.view.scroll_tick,
                 top_key: 0,
+                key_offset: 0.0,
                 pixels_per_tick: self.timeline.view.pixels_per_tick,
                 key_height: self.timeline.view.lane_height,
                 snap: self.timeline.view.snap,
@@ -9504,6 +9661,7 @@ impl WindowApp {
             .flatten();
 
         let mut created = crate::document::Created::default();
+        let started = std::time::Instant::now();
         if let Some(doc) = &mut self.options.document {
             for edit in edits {
                 let made = match (prefab, &edit) {
@@ -9530,10 +9688,22 @@ impl WindowApp {
         // The blocks are re-read now rather than at the next frame: a point
         // drag reads the curve it is on, and one frame stale is one step of
         // the drag applied to the wrong list.
+        let edited = ms_since(started);
         self.refresh_studio();
         self.tree.invalidate(TIMELINE);
         self.tree.invalidate(PANEL);
         self.refresh_title();
+        // Per edit, which with snap off is per pointer motion — so this is
+        // the line that says whether a drag is starving the frames, and the
+        // split says whether it is the document or the lists. It was the
+        // lists (see `refresh_studio`'s knob marks).
+        if trace_frames() && ms_since(started) > TRACE_FRAME_MS {
+            eprintln!(
+                "trace: arrange edit {:.1} ms — edit {edited:.1}, lists {:.1}",
+                ms_since(started),
+                ms_since(started) - edited
+            );
+        }
     }
 
     /// One transport press, marker and all.
@@ -9703,14 +9873,16 @@ impl WindowApp {
     /// The status line either way: a bounce that clipped, or one that had
     /// nowhere to go, is exactly the thing you want told rather than left to
     /// discover in a file manager.
+    /// Ctrl+E **asks** before it renders — which stretch, and whether the
+    /// tail is kept — and the answer renders (`MenuTarget::Export`). It used
+    /// to bounce the whole song on the spot, with no say in either.
     fn export(&mut self) {
-        let Some(doc) = &mut self.options.document else {
+        if self.options.document.is_none() {
             return;
-        };
-        self.status = match doc.export_wav() {
-            Ok(said) | Err(said) => said,
-        };
-        self.tree.invalidate(BROWSER);
+        }
+        let (x, y) = self.cursor;
+        let bounds = self.layout.window;
+        self.open_menu(MenuTarget::Export, x, y, bounds);
     }
 
     /// Takes a backup if one is due and there is anything to back up.
@@ -11133,6 +11305,7 @@ impl WindowApp {
                 MenuEntry::new("Time selection"),
                 MenuEntry::new("Whole track"),
             ],
+            MenuTarget::Export => crate::canvas::export_menu_entries(self.loop_range.is_some()),
             // Both instrument menus are one list — see
             // `canvas::instrument_menu_rows`. This one is not changing
             // anything, so nothing in it is the kind you already have.
@@ -11810,6 +11983,22 @@ impl WindowApp {
             (MenuTarget::Lane(lane), _) => {
                 if let Some(doc) = &mut self.options.document {
                     doc.remove_lane(*lane);
+                }
+            }
+
+            // The export the row asks for, or nothing for the heading and
+            // for a greyed row — see `canvas::export_menu_choice`.
+            (MenuTarget::Export, index) => {
+                let Some(options) =
+                    crate::canvas::export_menu_choice(self.loop_range.is_some(), index)
+                else {
+                    return;
+                };
+                if let Some(doc) = &mut self.options.document {
+                    self.status = match doc.export_wav_with(options) {
+                        Ok(said) | Err(said) => said,
+                    };
+                    self.tree.invalidate(BROWSER);
                 }
             }
 
@@ -13711,13 +13900,19 @@ impl WindowApp {
             } else if ctrl {
                 timeline_zoom_x(v, grid, x.max(grid.x), 1.15_f32.powf(dy));
             } else if shift || dx != 0.0 {
+                // A fraction of the bars in view, glided — see
+                // `canvas::wheel_travel` and `Glide`. Nothing is written to
+                // the view here; `glide_views` writes it a frame at a time.
                 let by = if dx != 0.0 { dx } else { dy };
-                let step = (160.0 / v.pixels_per_tick.max(0.0001)) as fontelle_types::Tick;
-                v.scroll_tick = (v.scroll_tick - by as fontelle_types::Tick * step).max(0);
+                let px = crate::canvas::wheel_travel(grid.width, by);
+                self.glide_timeline_x
+                    .push(-f64::from(px) / f64::from(v.pixels_per_tick.max(0.0001)));
             } else {
-                let rows = (dy * 2.0).round() as i64;
-                v.top_lane = (v.top_lane as i64 - rows).max(0) as usize;
+                let px = crate::canvas::wheel_travel(grid.height, dy);
+                self.glide_timeline_y
+                    .push(-f64::from(px) / f64::from(v.lane_height.max(1.0)));
             }
+            self.glide_views(0.0);
             self.tree.invalidate(TIMELINE);
             return;
         }
@@ -13738,15 +13933,83 @@ impl WindowApp {
             zoom_x(&mut self.roll.view, grid, x.max(grid.x), 1.15_f32.powf(dy));
         } else if shift || dx != 0.0 {
             let by = if dx != 0.0 { dx } else { dy };
-            let v = &mut self.roll.view;
-            let step = (120.0 / v.pixels_per_tick.max(0.0001)) as fontelle_types::Tick;
-            v.scroll_tick = (v.scroll_tick - by as fontelle_types::Tick * step).max(0);
+            let px = crate::canvas::wheel_travel(grid.width, by);
+            let ppt = f64::from(self.roll.view.pixels_per_tick.max(0.0001));
+            self.glide_roll_x.push(-f64::from(px) / ppt);
         } else {
-            let v = &mut self.roll.view;
-            let rows = (dy * 3.0).round() as i32;
-            v.top_key = (i32::from(v.top_key) + rows).clamp(11, 127) as u8;
+            // Up the wheel is up the keyboard: the key at the top goes up.
+            let px = crate::canvas::wheel_travel(grid.height, dy);
+            let key_height = f64::from(self.roll.view.key_height.max(1.0));
+            self.glide_roll_y.push(f64::from(px) / key_height);
         }
+        self.glide_views(0.0);
         self.tree.invalidate(PANEL);
+    }
+
+    /// One frame of the four glides: each adopts whatever moved its view
+    /// since it last wrote it, then closes on its target and writes the
+    /// view. Returns whether any is still on its way, which is what keeps
+    /// the loop awake for the next frame.
+    ///
+    /// `dt` of zero settles nothing and writes nothing new — it is called
+    /// that way from the wheel handler only so a view that something else
+    /// moved is adopted *before* the push lands on it.
+    fn glide_views(&mut self, dt: f32) -> bool {
+        const KEY_COUNT: i32 = 128;
+        let mut moving = false;
+
+        // The arrangement, sideways: ticks, written rounded.
+        let v = &mut self.timeline.view;
+        self.glide_timeline_x.adopt(v.scroll_tick as f64);
+        let settle = 0.5 / f64::from(v.pixels_per_tick.max(0.0001));
+        if let Some(at) = self.glide_timeline_x.step(dt, settle) {
+            v.scroll_tick = (at.round() as fontelle_types::Tick).max(0);
+            self.glide_timeline_x.wrote(v.scroll_tick as f64);
+            self.tree.invalidate(TIMELINE);
+        }
+        moving |= self.glide_timeline_x.moving();
+
+        // And down: a row and the fraction of it scrolled past.
+        let v = &mut self.timeline.view;
+        self.glide_timeline_y
+            .adopt(v.top_lane as f64 + f64::from(v.lane_offset));
+        let settle = 0.5 / f64::from(v.lane_height.max(1.0));
+        if let Some(at) = self.glide_timeline_y.step(dt, settle) {
+            v.top_lane = at.floor().max(0.0) as usize;
+            v.lane_offset = (at - at.floor()) as f32;
+            self.glide_timeline_y
+                .wrote(v.top_lane as f64 + f64::from(v.lane_offset));
+            self.tree.invalidate(TIMELINE);
+        }
+        moving |= self.glide_timeline_y.moving();
+
+        // The roll, sideways.
+        let v = &mut self.roll.view;
+        self.glide_roll_x.adopt(v.scroll_tick as f64);
+        let settle = 0.5 / f64::from(v.pixels_per_tick.max(0.0001));
+        if let Some(at) = self.glide_roll_x.step(dt, settle) {
+            v.scroll_tick = (at.round() as fontelle_types::Tick).max(0);
+            self.glide_roll_x.wrote(v.scroll_tick as f64);
+            self.tree.invalidate(PANEL);
+        }
+        moving |= self.glide_roll_x.moving();
+
+        // And up the keyboard: the key at the top and how much of the one
+        // above it shows.
+        let v = &mut self.roll.view;
+        self.glide_roll_y
+            .adopt(f64::from(v.top_key) + f64::from(v.key_offset));
+        let settle = 0.5 / f64::from(v.key_height.max(1.0));
+        if let Some(at) = self.glide_roll_y.step(dt, settle) {
+            let top = at.floor().clamp(0.0, f64::from(KEY_COUNT - 1));
+            v.top_key = top as u8;
+            v.key_offset = (at - top).clamp(0.0, 1.0) as f32;
+            self.glide_roll_y
+                .wrote(f64::from(v.top_key) + f64::from(v.key_offset));
+            self.tree.invalidate(PANEL);
+        }
+        moving |= self.glide_roll_y.moving();
+        moving
     }
 
     // ---------------------------------------------------------- keyboard ---
@@ -14069,6 +14332,7 @@ impl WindowApp {
             Action::Cut => self.cut(),
             Action::Paste => self.paste(),
             Action::Duplicate => self.duplicate(),
+            Action::SplitAtMarker => self.split_at_marker(),
             // Mute what is selected on the arrangement. **Shifted** by
             // default, since Ctrl+M became the metronome — see `global_key`.
             Action::MuteClips => {
@@ -14135,7 +14399,7 @@ impl WindowApp {
             Action::ToolsPanel => self.toggle_tools_panel(),
             // The cut tool. `C` is FL's, and `Ctrl+C` is copy — the modifier
             // is what keeps them apart, as it does for `B` (paint) and
-            // `Ctrl+B` (duplicate).
+            // `Ctrl+D` (duplicate).
             Action::SliceTool => self.pick_tool(Tool::Slice, crate::canvas::TimelineTool::Slice),
             Action::ZoomIn => self.zoom(1.25, 1.0),
             Action::ZoomOut => self.zoom(0.8, 1.0),
@@ -14259,7 +14523,7 @@ impl WindowApp {
 
     /// One press of an arrangement toolbar button.
     ///
-    /// It reuses the very same methods the keyboard does — `Ctrl+B` and the
+    /// It reuses the very same methods the keyboard does — `Ctrl+D` and the
     /// Repeat button are one code path — because a button that does *almost*
     /// what its shortcut does is worse than no button.
     fn activate_timeline(&mut self, control: crate::canvas::TimelineControl) {
@@ -14377,7 +14641,7 @@ impl WindowApp {
         }
     }
 
-    /// The selection again, laid after itself. `Ctrl+B` on the arrangement and
+    /// The selection again, laid after itself. `Ctrl+D` on the arrangement and
     /// the Repeat button both come here.
     fn repeat_timeline(&mut self) {
         let beats = self
@@ -14386,6 +14650,24 @@ impl WindowApp {
             .as_ref()
             .map_or(BEATS_PER_BAR, |doc| doc.beats_per_bar());
         let edits = self.timeline.repeat(&self.clips, 1, beats);
+        self.apply_arrange_edits(edits);
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+        }
+    }
+
+    /// Ctrl+B: the selected clips, cut at the **marker** — the blue mark
+    /// play returns to, not the playhead running from it. *"not split at
+    /// the play marker but instead at where the blue marker where the play
+    /// marker returns to is."* The marker is where you put it; the playhead
+    /// is wherever the song has got to, and a cut that landed there would
+    /// land a little later every time you pressed. The same edit the blade
+    /// makes, and the same gesture break after it, so it is one undo.
+    fn split_at_marker(&mut self) {
+        let edits = self.timeline.split_at(&self.clips, self.song_marker);
+        if edits.is_empty() {
+            return;
+        }
         self.apply_arrange_edits(edits);
         if let Some(doc) = &mut self.options.document {
             doc.end_gesture();

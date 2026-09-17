@@ -195,7 +195,11 @@ fn the_defaults_are_the_bindings_the_window_has_always_had() {
     assert_eq!(bound(Action::Copy), "Ctrl+C");
     assert_eq!(bound(Action::Cut), "Ctrl+X");
     assert_eq!(bound(Action::Paste), "Ctrl+V");
-    assert_eq!(bound(Action::Duplicate), "Ctrl+B / Ctrl+D");
+    // Ctrl+B used to be a second Duplicate; it is the cut at the marker
+    // now — *"make ctrl b split my selection at ... where the blue marker
+    // where the play marker returns to is"* — and Duplicate keeps Ctrl+D.
+    assert_eq!(bound(Action::Duplicate), "Ctrl+D");
+    assert_eq!(bound(Action::SplitAtMarker), "Ctrl+B");
     assert_eq!(bound(Action::DeleteSelection), "Delete / Backspace");
     assert_eq!(bound(Action::MuteClips), "Ctrl+Shift+M");
     assert_eq!(bound(Action::MuteTrack), "M");
