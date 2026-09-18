@@ -635,6 +635,14 @@ impl Voice {
         self.held
     }
 
+    /// How loud this voice is right now, as its amp envelope's level times
+    /// its velocity — what `StealPolicy::Quietest` compares. Not the
+    /// rendered peak: that would need a meter per voice, and the envelope
+    /// is what a player hears as "still sounding".
+    pub fn loudness(&self) -> f32 {
+        self.amp_env.level() * self.velocity_gain
+    }
+
     pub fn key(&self) -> u8 {
         self.key
     }
@@ -1810,10 +1818,20 @@ impl VoicePool {
         self.voices.iter().filter(|v| v.is_active()).count()
     }
 
-    /// Finds a free voice, or steals one per `policy`. `Quietest` and
-    /// `LowestPriority` aren't distinguished from `Oldest` yet — neither
-    /// per-voice level tracking nor a priority concept exists — so both fall
-    /// back to age-based stealing for now (tracked in `PROGRESS.md`).
+    /// Finds a free voice, or steals one per `policy`.
+    ///
+    /// `Oldest` takes the voice that has sounded longest. `Quietest` takes
+    /// the one with the least [`Voice::loudness`] — its amp envelope's level
+    /// times its velocity — which on a chord under a soft afterthought is the
+    /// afterthought, not the root. `LowestPriority` takes a voice nobody is
+    /// holding first (a released tail is the thing least missed), and among
+    /// those, or failing any, the quietest. Ties fall to age, never to pool
+    /// order: a tie broken by slot would take slot 0 every time, which on a
+    /// repeated chord is the same note.
+    ///
+    /// The last two were `Oldest` under other names from the first build to
+    /// v0.9.0 (`docs/flopsynth-next.md` §1.4(9)); `tests/voice_stealing.rs`
+    /// holds each to the voice it says it takes.
     pub fn allocate(&mut self, policy: StealPolicy) -> Option<&mut Voice> {
         let age = self.next_age;
         self.next_age = self.next_age.wrapping_add(1);
@@ -1826,14 +1844,27 @@ impl VoicePool {
         let usable = self.limit.min(self.voices.len());
         let index = match self.voices[..usable].iter().position(|v| !v.is_active()) {
             Some(i) => i,
-            None => match policy {
-                StealPolicy::Oldest | StealPolicy::Quietest | StealPolicy::LowestPriority => self
-                    .voices[..usable]
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(_, v)| v.age)
-                    .map(|(i, _)| i)?,
-            },
+            None => {
+                let candidates = self.voices[..usable].iter().enumerate();
+                // A key for `min_by`: the policy's own measure first, age
+                // to break the tie. Loudness is a float and is compared
+                // as one; a NaN would be a broken voice, not a quiet one.
+                let quietest = |v: &Voice| (v.loudness(), v.age);
+                match policy {
+                    StealPolicy::Oldest => candidates.min_by_key(|(_, v)| v.age),
+                    StealPolicy::Quietest => candidates.min_by(|(_, a), (_, b)| {
+                        quietest(a)
+                            .partial_cmp(&quietest(b))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    }),
+                    StealPolicy::LowestPriority => candidates.min_by(|(_, a), (_, b)| {
+                        (a.is_held(), quietest(a))
+                            .partial_cmp(&(b.is_held(), quietest(b)))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    }),
+                }
+                .map(|(i, _)| i)?
+            }
         };
 
         let voice = self.voices.get_mut(index)?;

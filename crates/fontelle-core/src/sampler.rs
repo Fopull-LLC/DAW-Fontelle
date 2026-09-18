@@ -316,6 +316,13 @@ impl Sampler {
         self.voices.active_count()
     }
 
+    /// The key of every voice that is sounding, in pool order — what says
+    /// *which* note a steal took (`tests/voice_stealing.rs`). An iterator,
+    /// because this may be asked on the audio thread.
+    pub fn sounding_keys(&self) -> impl Iterator<Item = u8> + '_ {
+        self.voices.iter_active().map(|voice| voice.key())
+    }
+
     /// Where the **newest** voice's LFOs are in their cycles, 0..1 each.
     ///
     /// The newest, because the LFOs are per voice and retriggered per note
