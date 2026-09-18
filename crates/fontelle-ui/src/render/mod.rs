@@ -1386,6 +1386,17 @@ pub fn draw_editor_window(
     // window that shows one channel).
     carry: Option<&CarryChrome<'_>>,
 ) {
+    // The bridge is painted in its own palette, dark under both themes —
+    // `Theme::for_bridge` says why — and everything drawn in its window
+    // with it: the header, the preset bar, a menu, a field, the chip.
+    let bridge;
+    let theme = match chrome {
+        EditorWindowChrome::Flopsynth(_) => {
+            bridge = theme.for_bridge();
+            &bridge
+        }
+        _ => theme,
+    };
     let m = &theme.metrics;
     let p = &theme.palette;
 

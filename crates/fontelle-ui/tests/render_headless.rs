@@ -3283,6 +3283,16 @@ fn a_roll_with_no_clip_end_shades_nothing() {
 /// from `canvas/flopsynth.rs`, which is pure and tested, so what is left here
 /// is **colour** — and colour is the one thing a geometry test cannot see.
 fn shoot_flopsynth() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLayout, u32)> {
+    shoot_flopsynth_in(Theme::dark_default(), "flopsynth")
+}
+
+/// [`shoot_flopsynth`] in a theme of the caller's choosing. The theme handed
+/// back is the one the **window was painted in**, which for this window is
+/// its own (`Theme::for_bridge`) whatever the studio's.
+fn shoot_flopsynth_in(
+    theme: Theme,
+    name: &str,
+) -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLayout, u32)> {
     use fontelle_types::ParamAddress;
     use fontelle_ui::canvas::{
         FlopsynthCard, FlopsynthPicture, FlopsynthView, InstrumentGroup, InstrumentParam,
@@ -3290,7 +3300,6 @@ fn shoot_flopsynth() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLa
     };
     use fontelle_ui::render::FlopsynthChrome;
 
-    let theme = Theme::dark_default();
     let shared = headless()?;
     let mut text = TextContext::new();
     let title = text.layout("Flopsynth \u{2014} Choir Ahh", &theme.font, None);
@@ -3436,8 +3445,88 @@ fn shoot_flopsynth() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLa
         .expect("the shared renderer")
         .render(&scene, ew, eh, theme.palette.window)
         .expect("the scene must render");
-    dump_sized(&pixels, "flopsynth", ew, eh);
-    Some((pixels, theme, l, ew))
+    dump_sized(&pixels, name, ew, eh);
+    Some((pixels, theme.for_bridge(), l, ew))
+}
+
+/// WCAG relative luminance of a pixel, and the contrast ratio between the
+/// brightest and darkest pixels in a rectangle — which for a rectangle
+/// holding a label on a ground is the label against its ground, whatever
+/// the anti-aliasing between.
+fn luminance(c: Color) -> f32 {
+    let channel = |v: u8| {
+        let v = v as f32 / 255.0;
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(c.0[0]) + 0.7152 * channel(c.0[1]) + 0.0722 * channel(c.0[2])
+}
+
+fn contrast_in(pixels: &[u8], width: u32, rect: fontelle_ui::layout::Rect) -> f32 {
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    for y in rect.y as u32..rect.bottom() as u32 {
+        for x in rect.x as u32..rect.right() as u32 {
+            let i = ((y * width + x) * 4) as usize;
+            let l = luminance(Color::rgb(pixels[i], pixels[i + 1], pixels[i + 2]));
+            lo = lo.min(l);
+            hi = hi.max(l);
+        }
+    }
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// `docs/flopsynth-next.md` §1.4(4), Ty's decision §9.2(a): Flopsynth's
+/// window keeps **its own palette, dark under both themes**. Grabbed with
+/// `--light` at v0.9.0 the window was a purple smear on grey, the *Synth*
+/// tab label and the voice read-out white on white, the pictures grey on
+/// grey. Serum, Omnisphere and Vital are dark-only and it is not a defect;
+/// the skins are the way to change it.
+#[test]
+fn flopsynths_window_is_dark_and_legible_under_the_light_theme() {
+    let Some((light, painted, l, width)) =
+        shoot_flopsynth_in(Theme::light_default(), "flopsynth-light")
+    else {
+        return;
+    };
+    let Some((dark, _, _, _)) = shoot_flopsynth() else {
+        return;
+    };
+    // The same window: what the studio's theme is makes no difference to it.
+    assert_eq!(painted.palette.window, Theme::dark_default().palette.window);
+    let ground = |pixels: &[u8]| {
+        let (x, y) = (l.body.x as u32 + 2, l.body.bottom() as u32 - 2);
+        let i = ((y * width + x) * 4) as usize;
+        Color::rgb(pixels[i], pixels[i + 1], pixels[i + 2])
+    };
+    assert!(
+        near(ground(&light), ground(&dark)),
+        "the ground under the cards is {:?} in the light theme and {:?} in the dark",
+        ground(&light),
+        ground(&dark)
+    );
+    assert!(
+        luminance(ground(&light)) < 0.1,
+        "the ground is not dark: {:?}",
+        ground(&light)
+    );
+    // The tab label against the canopy's glass, and the picture's ink against
+    // its screen: each at least 3:1, which is WCAG's floor for large text and
+    // for graphics — and the two that were 1:1 at v0.9.0.
+    let (_, tab) = l.tabs[0];
+    let tab_contrast = contrast_in(&light, width, tab);
+    assert!(
+        tab_contrast >= 3.0,
+        "the Synth tab reads at {tab_contrast:.1}:1 against the canopy"
+    );
+    let picture = l.cards[0].picture;
+    let picture_contrast = contrast_in(&light, width, picture);
+    assert!(
+        picture_contrast >= 3.0,
+        "the wave reads at {picture_contrast:.1}:1 against its screen"
+    );
 }
 
 #[test]

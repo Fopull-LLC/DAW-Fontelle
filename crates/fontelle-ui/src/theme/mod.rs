@@ -275,6 +275,29 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// The theme Flopsynth's window — the bridge — is painted in, whatever
+    /// the studio's: the dark palette, with this theme's metrics and font.
+    ///
+    /// Ty's decision (`docs/flopsynth-next.md` §9.2(a)): the window keeps
+    /// its own palette, dark under both themes. Grabbed with `--light` at
+    /// v0.9.0 it was a purple smear on grey, the *Synth* tab label white on
+    /// white and the pictures grey on grey — the hull, the glass and the sky
+    /// were drawn in inks chosen for a dark ground, mixed from a light one.
+    /// Serum, Omnisphere and Vital are dark-only and it is not a defect; the
+    /// skins in `assets/flopsynth/skin/` are the way to change it. The
+    /// accent inks stay the dark theme's too: a light theme's accent is
+    /// chosen against a light ground and nothing promises it reads on this
+    /// one.
+    pub fn for_bridge(&self) -> Self {
+        Self {
+            format_version: self.format_version,
+            name: self.name.clone(),
+            palette: Self::dark_default().palette,
+            metrics: self.metrics,
+            font: self.font.clone(),
+        }
+    }
+
     /// The default. Chosen against WCAG contrast rather than by eye — the
     /// chrome is small and dense, and a DAW is looked at for hours.
     pub fn dark_default() -> Self {

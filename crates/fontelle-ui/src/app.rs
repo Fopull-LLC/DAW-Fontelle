@@ -5046,7 +5046,16 @@ impl WindowApp {
                 &editor.scene,
                 &editor.surface.target_view,
                 &RenderParams {
-                    base_color: self.options.theme.palette.window.to_peniko(),
+                    // The bridge's ground is its own, dark under both
+                    // themes (`Theme::for_bridge`) — the edge a resize shows
+                    // before the hull is painted should be it, not a light
+                    // theme's grey.
+                    base_color: if matches!(chrome, EditorWindowChrome::Flopsynth(_)) {
+                        self.options.theme.for_bridge().palette.window
+                    } else {
+                        self.options.theme.palette.window
+                    }
+                    .to_peniko(),
                     width: editor.surface.config.width,
                     height: editor.surface.config.height,
                     antialiasing_method: AaConfig::Area,
@@ -10130,7 +10139,9 @@ impl WindowApp {
             canopy.width + margin * 2.0,
             canopy.height + above + margin,
         );
-        let palette = crate::sky::SkyPalette::for_theme(&self.options.theme.palette);
+        // The bridge's own palette, dark under both themes (`Theme::for_bridge`):
+        // the sky is shaded here, before the renderer sees a theme at all.
+        let palette = crate::sky::SkyPalette::for_theme(&self.options.theme.for_bridge().palette);
         let width = (opening.width / 4.0).ceil().max(1.0) as u32;
         let height = (opening.height / 4.0).ceil().max(1.0) as u32;
         let image = if opening.is_empty() {
