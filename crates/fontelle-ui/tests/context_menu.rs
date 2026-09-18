@@ -31,6 +31,64 @@ fn a_menu_opens_below_and_right_of_the_pointer() {
     assert!(menu.rows[0].y < menu.rows[1].y, "in the order given");
 }
 
+/// A menu opened **beside a control** — a knob's right-click menu — never
+/// covers the control: to its right when that fits, to its left when it
+/// does not, its top on the control's top, and folded up rather than down
+/// at the bottom of the window. The knob's menu used to open at the
+/// pointer, which is on the knob, so it covered the knob's own value and
+/// its neighbours (`docs/flopsynth-next.md` §1.4(6)).
+#[test]
+fn a_menu_beside_a_control_never_covers_it() {
+    let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let entries = || {
+        ["cutoff", "Create automation clip"]
+            .iter()
+            .map(|l| MenuEntry::new(*l))
+            .collect::<Vec<_>>()
+    };
+    let beside = |cell: Rect| {
+        fontelle_ui::canvas::context_menu_layout_beside(
+            cell,
+            bounds,
+            &metrics(),
+            font_size(),
+            entries(),
+        )
+    };
+    // Room on the right: the menu starts a little right of the cell, level
+    // with its top.
+    let cell = Rect::new(100.0, 100.0, 52.0, 54.0);
+    let menu = beside(cell);
+    assert!(!menu.frame.is_empty());
+    assert!(
+        menu.frame.x >= cell.right() && (menu.frame.y - cell.y).abs() < 0.01,
+        "not beside the cell: {:?} vs {cell:?}",
+        menu.frame
+    );
+    assert!(!menu.frame.intersects(&cell));
+
+    // Against the right edge: the menu goes to the left of the cell, still
+    // clear of it.
+    let cell = Rect::new(740.0, 100.0, 52.0, 54.0);
+    let menu = beside(cell);
+    assert!(
+        menu.frame.right() <= cell.x + 0.01 && menu.frame.right() <= bounds.right() + 0.01,
+        "not left of the cell: {:?} vs {cell:?}",
+        menu.frame
+    );
+    assert!(!menu.frame.intersects(&cell));
+
+    // At the foot: folded up, inside the window, clear of the cell.
+    let cell = Rect::new(100.0, 560.0, 52.0, 40.0);
+    let menu = beside(cell);
+    assert!(menu.frame.bottom() <= bounds.bottom() + 0.01);
+    assert!(
+        !menu.frame.intersects(&cell),
+        "{:?} covers {cell:?}",
+        menu.frame
+    );
+}
+
 #[test]
 fn a_menu_near_an_edge_folds_back_inside_the_window() {
     let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);

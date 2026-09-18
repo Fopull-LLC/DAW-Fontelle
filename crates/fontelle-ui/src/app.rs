@@ -1393,6 +1393,9 @@ pub struct WindowApp {
     /// [`Self::menu_filter`] — and a menu that jumped to the pointer on every
     /// keystroke would be a menu you cannot read.
     menu_at: ((f32, f32), crate::layout::Rect),
+    /// The control the open menu stands beside, when it was opened beside
+    /// one (a knob's menu — `open_menu_beside`) rather than at the pointer.
+    menu_beside: Option<crate::layout::Rect>,
     /// What has been typed into the plugin picker since it opened.
     ///
     /// > *"its still not seeing my plugins"* — with 357 effects installed,
@@ -1851,6 +1854,7 @@ impl WindowApp {
             hover_rack: None,
             menu: None,
             menu_at: ((0.0, 0.0), crate::layout::Rect::ZERO),
+            menu_beside: None,
             menu_filter: crate::canvas::TextEntry::default(),
             clipboard_text: String::new(),
             search_entry: crate::canvas::TextEntry::default(),
@@ -8661,7 +8665,12 @@ impl WindowApp {
             .find(|e| e.kind == EditorKind::Instrument)
             .map(|editor| editor.panel.body)
             .unwrap_or(self.flopsynth_layout.body);
-        self.open_menu(target, x, y, bounds);
+        // Beside the control's cell, not at the pointer: the pointer is on
+        // the knob, and the menu covered its read-out.
+        match self.flop_cell((card, param)) {
+            Some(cell) => self.open_menu_beside(target, cell, bounds),
+            None => self.open_menu(target, x, y, bounds),
+        }
         self.redraw_editor(EditorKind::Instrument);
     }
 
@@ -11743,9 +11752,42 @@ impl WindowApp {
         // that typing into it can re-lay it out in the same place.
         self.menu_filter.clear();
         self.menu_at = ((x, y), bounds);
+        self.menu_beside = None;
         let entries = self.menu_entries(&target);
         let menu = crate::canvas::context_menu_layout(
             (x, y),
+            bounds,
+            &self.options.theme.metrics,
+            self.options.theme.font.size,
+            entries,
+        );
+        if menu.is_empty() {
+            return;
+        }
+        self.menu = Some((target, menu));
+        self.tree.invalidate_rect(bounds);
+    }
+
+    /// [`open_menu`](Self::open_menu), but **beside** `cell` rather than at
+    /// the pointer — a knob's menu. The pointer is on the knob when the
+    /// menu is asked for, and a menu dropped there covered the knob's own
+    /// read-out and the controls beside it (`docs/flopsynth-next.md`
+    /// §1.4(6)); `context_menu_layout_beside` keeps it clear.
+    fn open_menu_beside(
+        &mut self,
+        target: MenuTarget,
+        cell: crate::layout::Rect,
+        bounds: crate::layout::Rect,
+    ) {
+        if self.dismissed.as_ref() == Some(&target) {
+            return;
+        }
+        self.menu_filter.clear();
+        self.menu_at = ((cell.right(), cell.y), bounds);
+        self.menu_beside = Some(cell);
+        let entries = self.menu_entries(&target);
+        let menu = crate::canvas::context_menu_layout_beside(
+            cell,
             bounds,
             &self.options.theme.metrics,
             self.options.theme.font.size,
@@ -11770,13 +11812,22 @@ impl WindowApp {
         };
         let (at, bounds) = self.menu_at;
         let entries = self.menu_entries(&target);
-        let menu = crate::canvas::context_menu_layout(
-            at,
-            bounds,
-            &self.options.theme.metrics,
-            self.options.theme.font.size,
-            entries,
-        );
+        let menu = match self.menu_beside {
+            Some(cell) => crate::canvas::context_menu_layout_beside(
+                cell,
+                bounds,
+                &self.options.theme.metrics,
+                self.options.theme.font.size,
+                entries,
+            ),
+            None => crate::canvas::context_menu_layout(
+                at,
+                bounds,
+                &self.options.theme.metrics,
+                self.options.theme.font.size,
+                entries,
+            ),
+        };
         if !menu.is_empty() {
             self.menu = Some((target, menu));
         }

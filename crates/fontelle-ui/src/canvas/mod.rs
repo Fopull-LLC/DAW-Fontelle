@@ -83,9 +83,9 @@ pub use keybinds::{
 pub use keymap::{Action, Chord, ChordKey, Context, Keymap, Rebind};
 pub use menu::{
     CHOSEN_MARK, ContextMenu, MENU_TEXT_INSET, MenuEntry, NAME_CARET, STAR_WIDTH, context_menu_hit,
-    context_menu_layout, context_menu_star_hit, export_menu_choice, export_menu_entries,
-    input_menu_choice, input_menu_entries, instrument_menu_entries, menu_matches,
-    name_prompt_entries,
+    context_menu_layout, context_menu_layout_beside, context_menu_star_hit, export_menu_choice,
+    export_menu_entries, input_menu_choice, input_menu_entries, instrument_menu_entries,
+    menu_matches, name_prompt_entries,
 };
 pub use overlays::{ConfirmLayout, TOAST_SECONDS, ToastLayout, confirm_layout, toast_layout};
 pub use preset_bar::{

@@ -373,6 +373,47 @@ const CHAR_WIDTH: f32 = 0.6;
 /// The narrowest a menu may be, whatever is in it.
 const MIN_WIDTH: f32 = 120.0;
 
+/// How far a menu opened beside a control stands off it.
+const BESIDE_GAP: f32 = 4.0;
+
+/// Drops a menu **beside** `cell`, kept inside `bounds` — a knob's menu.
+///
+/// To the right of the cell when that fits, level with its top; to the
+/// left when it does not; folded up at the foot of the window. Never over
+/// the cell: a menu opened at the pointer opens on the knob, and covered
+/// the knob's own read-out and the controls beside it
+/// (`docs/flopsynth-next.md` §1.4(6)). Where there is no room either side
+/// the menu is clamped inside `bounds` and may cover it after all, which is
+/// a window narrower than a menu.
+pub fn context_menu_layout_beside(
+    cell: Rect,
+    bounds: Rect,
+    metrics: &Metrics,
+    font_size: f32,
+    entries: Vec<MenuEntry>,
+) -> ContextMenu {
+    let right = context_menu_layout(
+        (cell.right() + BESIDE_GAP, cell.y),
+        bounds,
+        metrics,
+        font_size,
+        entries.clone(),
+    );
+    if right.frame.is_empty() || right.frame.x >= cell.right() + BESIDE_GAP - 0.01 {
+        return right;
+    }
+    // It folded back over the cell: the layout knows its width now, so ask
+    // for the same menu with its right edge a gap short of the cell.
+    let width = right.frame.width;
+    context_menu_layout(
+        (cell.x - BESIDE_GAP - width, cell.y),
+        bounds,
+        metrics,
+        font_size,
+        entries,
+    )
+}
+
 /// Drops a menu from `at`, kept inside `bounds`.
 ///
 /// Down and to the right of the pointer by preference — that is where every
