@@ -19,6 +19,25 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-18 — Flopsynth II, Phase 1 in progress (steps 1–3 of
+§7 done; 4–10 to come).** Ty's call on the fit: the §3.1 sizes do not
+hold three bands at 1180×840, so the Synth page is two bands and the
+envelopes go to the strip's inspector (the Modulation page until it
+lands). Built so far, each tests-first and looked at on `:99`: the grid
+(`f3d66bf`: 56×72 cells, Large/Medium/Small knobs, half cells stacked two
+to a column with the whole cells placed first, a fixed 120 canopy, a
+window scale 75–150 % that sizes the window and is a setting, the
+cascade gone; the corrector's console keeps the old grid), the type scale
+and the caption file (`051aede`: 15/11/11 px, Medium/Regular/Medium,
+`fontelle_app::captions` is the vocabulary and the test holds every word
+to a control), the gestures and the menu (`0359956`: Ctrl 20×, Alt reset,
+double-click types against the read-out, arrows, Ctrl-wheel, the full
+right-click menu with *Modulate from…* and *Assign to macro…*), the hover
+bubble and tips (`007b16b`), and thumbnails in the choosers of shapes
+(`1770a0e`). Next: the canopy as scope and spectrum (4), rings per
+source (5), the strip and inspector (6), the LFO/envelope editors (7),
+the effects rack (8), motion (9). The light theme (10) is Phase 0's (4).
+
 **As of 2026-09-17, late — Flopsynth II, Phase 0: the ten defects of
 `docs/flopsynth-next.md` §1.4, closed.** Ty's answers to §9: the canopy
 becomes the scope and spectrum with the sky behind (planets go); the synth
