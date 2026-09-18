@@ -1010,3 +1010,63 @@ fn the_effects_page_fits_the_window_with_four_slots() {
     assert_eq!(view.cards.len(), 4, "four slots, four cards");
     assert_page_fits(&session, fontelle_ui::canvas::FlopsynthPage::Effects);
 }
+
+/// At the smallest size the window may be dragged to, the Synth page of the
+/// preset a studio opens on keeps every cell at its design size — the
+/// layout's own test holds this with a fixture; this holds it with the
+/// Grand Piano's real page, measured by the real shaper the way the window
+/// measures it. `docs/flopsynth-next.md` §1.4(3): the floor is where no
+/// caption or value is cut.
+#[test]
+fn at_the_minimum_size_the_grand_pianos_synth_page_keeps_every_cell_whole() {
+    use fontelle_ui::canvas::{
+        FLOP_CELL_H, FLOP_CELL_W, FlopsynthPage, ParamKind, is_nameplate_control,
+    };
+    let session = common::a_session_for(fontelle_app::blank_project(8, 120.0, SR));
+    let view = session
+        .flopsynth(FlopsynthPage::Synth)
+        .expect("Flopsynth's window");
+    let theme = fontelle_ui::theme::Theme::dark_default();
+    let mut text = fontelle_ui::text::TextContext::new();
+    let mut labels = fontelle_ui::text::Labels::new();
+    for card in &view.cards {
+        for param in &card.group.params {
+            labels.ensure_small(&param.label, &theme.font, &mut text);
+            if let ParamKind::Choice(options) = &param.kind {
+                for option in options {
+                    labels.ensure_small(option, &theme.font, &mut text);
+                }
+            }
+        }
+    }
+    let measure = |s: &str| {
+        labels
+            .get_small(s)
+            .map(|l| l.width)
+            .unwrap_or_else(|| fontelle_ui::canvas::estimated_width(s))
+    };
+    let (w, h) = fontelle_ui::layout::FLOPSYNTH_MINIMUM;
+    let body = fontelle_ui::layout::editor_window_layout(w as f32, h as f32, &theme.metrics).body;
+    let layout = fontelle_ui::canvas::flopsynth_layout_with(body, &theme.metrics, &view, &measure);
+    for (index, placed) in layout.cards.iter().enumerate() {
+        assert!(
+            placed.frame.bottom() <= body.bottom() + 0.01,
+            "{} runs off the window at the minimum size",
+            view.cards[index].group.name
+        );
+        for (param, cell) in &placed.cells {
+            let control = &view.cards[index].group.params[*param];
+            if is_nameplate_control(control) {
+                continue;
+            }
+            assert!(
+                cell.width >= FLOP_CELL_W - 0.01 && (cell.height - FLOP_CELL_H).abs() < 0.01,
+                "{}'s {} is {}x{} at {w}x{h}",
+                view.cards[index].group.name,
+                control.label,
+                cell.width,
+                cell.height
+            );
+        }
+    }
+}

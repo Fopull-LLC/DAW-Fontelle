@@ -8694,7 +8694,13 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
                     }
                 }
                 ParamKind::Choice(_) => {
-                    let chip = Rect::new(cell.x + 2.0, control.y, cell.width - 4.0, control.height);
+                    let inset = crate::canvas::CHIP_INSET;
+                    let chip = Rect::new(
+                        cell.x + inset,
+                        control.y,
+                        cell.width - inset * 2.0,
+                        control.height,
+                    );
                     draw_flop_chip(scene, theme, labels, chip, &param.display, lit);
                 }
             }
@@ -8900,6 +8906,9 @@ fn draw_flop_chip(
         1.0,
         if lit { p.accent } else { p.border },
     );
+    // The text's room and the chevron's are the canvas's numbers, so what
+    // `cell_span_measured` promises fits is what is drawn.
+    use crate::canvas::{CHIP_CHEVRON, CHIP_TEXT_INDENT};
     if let Some(text) = labels.get_small(value) {
         draw_text_clipped(
             scene,
@@ -8907,15 +8916,33 @@ fn draw_flop_chip(
             Rect::new(
                 chip.x,
                 chip.y,
-                (chip.width - CHEVRON_PX - 6.0).max(0.0),
+                (chip.width - CHIP_CHEVRON).max(0.0),
                 chip.height,
             ),
-            chip.x + 4.0,
+            chip.x + CHIP_TEXT_INDENT,
             chip.y + (chip.height - text.height) / 2.0,
             p.text,
         );
     }
-    draw_chevron(scene, chip, if lit { p.accent } else { p.text_muted });
+    // The wedge, two pixels in from the chip's edge.
+    if chip.width >= CHIP_CHEVRON + CHIP_TEXT_INDENT {
+        let colour = if lit { p.accent } else { p.text_muted };
+        let x = chip.right() - 2.0 - CHEVRON_PX;
+        let middle = chip.y + chip.height / 2.0;
+        for step in 0..3 {
+            let step = step as f32;
+            fill_rect(
+                scene,
+                Rect::new(x + step, middle - 1.0 + step, 1.0, 1.0),
+                colour,
+            );
+            fill_rect(
+                scene,
+                Rect::new(x + CHEVRON_PX - 1.0 - step, middle - 1.0 + step, 1.0, 1.0),
+                colour,
+            );
+        }
+    }
 }
 
 /// A switch: a pill with its dot at one end or the other.
@@ -9801,7 +9828,13 @@ fn draw_tune(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &TuneChr
                     }
                 }
                 ParamKind::Choice(_) => {
-                    let chip = Rect::new(cell.x + 2.0, control.y, cell.width - 4.0, control.height);
+                    let inset = crate::canvas::CHIP_INSET;
+                    let chip = Rect::new(
+                        cell.x + inset,
+                        control.y,
+                        cell.width - inset * 2.0,
+                        control.height,
+                    );
                     draw_flop_chip(scene, theme, labels, chip, &param.display, lit);
                 }
             }

@@ -64,11 +64,6 @@ const PICTURE_SOFT_FLOOR: f32 = 36.0;
 /// page is allowed to run off the bottom. Below this the captions no longer
 /// fit their cells, and a window that small is not one anybody is using.
 pub const CELL_FLOOR: f32 = 0.8;
-/// How long a chooser's longest option may be, in characters, before the
-/// chooser takes two cells rather than one. "NES Pulse 12.5" in a cell fifty
-/// pixels wide is "NES Pu", and a chooser whose value cannot be read is one
-/// nobody can set on purpose.
-pub const WIDE_CHOICE: usize = 9;
 
 /// What a card draws above its controls.
 ///
@@ -467,13 +462,13 @@ pub const NAMEPLATE_CHIP_W: f32 = 66.0;
 /// one, so past [`WIDE_CARD_CELLS`] the card goes as wide as it must to stay
 /// within [`WIDE_CARD_ROWS`], up to [`MAX_COLUMNS`]. The rack of §3.6 is the
 /// design answer; this is what keeps the page honest until it lands.
-fn columns_for(card: &FlopsynthCard) -> usize {
+fn columns_for(card: &FlopsynthCard, measure: Measure<'_>) -> usize {
     let cells: usize = card
         .group
         .params
         .iter()
         .filter(|param| !is_nameplate_control(param))
-        .map(cell_span)
+        .map(|param| cell_span_measured(param, measure))
         .sum();
     if cells <= WIDE_CARD_CELLS {
         cells.clamp(1, 5)
@@ -490,8 +485,43 @@ const WIDE_CARD_ROWS: usize = 6;
 /// window still holds.
 const MAX_COLUMNS: usize = 16;
 
+/// How wide a string is, in pixels, at the size the captions are drawn.
+///
+/// The window hands the layout the shaper's own answer ([`Labels`]'s small
+/// form — `flopsynth_layout_with`); the fixture tests, and a layout asked
+/// before anything is shaped, get [`estimated_width`].
+pub type Measure<'a> = &'a dyn Fn(&str) -> f32;
+
+/// A width from a character count, for when nothing has been shaped:
+/// the mean advance of the caption face at its size, measured over the
+/// bank's captions (5.0–6.5 px a glyph; "Hardness" 6.1, "division" 4.9).
+pub fn estimated_width(text: &str) -> f32 {
+    text.chars().count() as f32 * ESTIMATED_CHAR_W
+}
+
+const ESTIMATED_CHAR_W: f32 = 5.9;
+
+/// The room a caption has: its cell. A caption is drawn centred over the
+/// control and may fill the cell edge to edge — "mod from" is 51.6 px in a
+/// 52 px cell and reads.
+pub const CAPTION_ROOM: f32 = FLOP_CELL_W;
+/// The room a chooser's chip gives its text in a single cell: the cell less
+/// the chip's inset either side, the text's own indent, and the chevron
+/// with its gap. The renderer draws the chip from the same three numbers.
+///
+/// Trimmed with the counting rule's fall: the chip used to spend twenty-one
+/// of its cell's fifty-two pixels on itself, and "Bypass", "chorus" and
+/// "Grains" — the words the reports named — are thirty-three to thirty-six
+/// wide in this face. Thirty-seven fits them in one cell; "Reverse",
+/// "Quantise" and "Formant" are wider still and take two.
+pub const CHIP_TEXT_ROOM: f32 = FLOP_CELL_W - CHIP_INSET * 2.0 - CHIP_TEXT_INDENT - CHIP_CHEVRON;
+pub const CHIP_INSET: f32 = 1.0;
+pub const CHIP_TEXT_INDENT: f32 = 3.0;
+/// The chevron's wedge, its margin from the edge, and its gap from the text.
+pub const CHIP_CHEVRON: f32 = 10.0;
+
 /// How many cells a control takes across its row: two when something about it
-/// would not fit in one ([`WIDE_CHOICE`]), one for everything else.
+/// would not fit in one, one for everything else.
 ///
 /// Two things can overflow, and both do. A **chooser's options** are the
 /// obvious one — "NES Pulse 12.5" in a fifty-pixel cell is "NES Pu". The
@@ -499,29 +529,32 @@ const MAX_COLUMNS: usize = 16;
 /// over choosers: "Natural vibrato" over a knob reads "Natural vi", and a
 /// knob you cannot name is one you set by counting along the row.
 ///
-/// The caption rule is what `docs/tune-plan.md` §7.2 asks for in so many
-/// words — "a chooser with a name over `WIDE_CHOICE` characters spans two
-/// cells" — and the corrector is where it began to matter, because its
-/// parameters are named for a panel with wider rows (§4.3) and its console
-/// draws them at 52 pixels.
-pub fn cell_span(param: &InstrumentParam) -> usize {
-    // One character less room than an option gets: the caption is drawn over
-    // the control with the cell's own padding either side, where an option
-    // sits inside a chooser that fills the cell. "MIDI bend" is the nine that
-    // proves it — it reads "MIDI benc" in one cell.
-    if param.label.chars().count() >= WIDE_CHOICE {
+/// **Measured, not counted.** The rule used to be nine characters, and by
+/// it "Bypass" fitted and read "Bypas", "Reverse" read "Revers", "chorus"
+/// "choru" (`docs/flopsynth-next.md` §1.4(7), open since v0.7.0): a
+/// chooser's text has a third of its cell taken by the chip's own chrome,
+/// and six letters of this face are wider than that. The caption is held to
+/// [`CAPTION_ROOM`] and every option to [`CHIP_TEXT_ROOM`], by the width
+/// `measure` gives.
+pub fn cell_span_measured(param: &InstrumentParam, measure: Measure<'_>) -> usize {
+    if measure(&param.label) > CAPTION_ROOM + 0.01 {
         return 2;
     }
     match &param.kind {
         ParamKind::Choice(options)
             if options
                 .iter()
-                .any(|option| option.chars().count() > WIDE_CHOICE) =>
+                .any(|option| measure(option) > CHIP_TEXT_ROOM + 0.01) =>
         {
             2
         }
         _ => 1,
     }
+}
+
+/// [`cell_span_measured`] with the count-based estimate.
+pub fn cell_span(param: &InstrumentParam) -> usize {
+    cell_span_measured(param, &estimated_width)
 }
 
 /// Lays the cards out as the signal flows — the bands top to bottom, each
@@ -535,6 +568,18 @@ pub fn cell_span(param: &InstrumentParam) -> usize {
 /// *together* because a page of knobs in two sizes is a page that looks
 /// broken.
 pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> FlopsynthLayout {
+    flopsynth_layout_with(body, metrics, view, &estimated_width)
+}
+
+/// [`flopsynth_layout`], measuring captions and options with `measure` —
+/// the window's shaper — to decide which controls take a double cell
+/// ([`cell_span_measured`]).
+pub fn flopsynth_layout_with(
+    body: Rect,
+    metrics: &Metrics,
+    view: &FlopsynthView,
+    measure: Measure<'_>,
+) -> FlopsynthLayout {
     let whole = body;
     let empty_cards = |view: &FlopsynthView| {
         view.cards
@@ -610,7 +655,7 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
     let wanted = match view.page {
         FlopsynthPage::Presets => 0.0,
         _ => {
-            let natural = place(body, &view.cards, PICTURE_HEIGHT, 1.0);
+            let natural = place(body, &view.cards, PICTURE_HEIGHT, 1.0, measure);
             natural
                 .iter()
                 .map(|c| c.frame.bottom())
@@ -625,7 +670,7 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
     let cards_floor = match view.page {
         FlopsynthPage::Presets => 0.0,
         _ => {
-            let floor = place(body, &view.cards, PICTURE_FLOOR, CELL_FLOOR);
+            let floor = place(body, &view.cards, PICTURE_FLOOR, CELL_FLOOR, measure);
             floor
                 .iter()
                 .map(|c| c.frame.bottom())
@@ -706,7 +751,7 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
             // "release a shaped shaper shape" (§1.4(8)). A card's captions
             // cannot scroll; a list can.
             let wanted = matrix_wanted - CARD_GAP;
-            let natural = place(body, &view.cards, PICTURE_HEIGHT, 1.0)
+            let natural = place(body, &view.cards, PICTURE_HEIGHT, 1.0, measure)
                 .iter()
                 .map(|c| c.frame.bottom())
                 .fold(body.y, f32::max)
@@ -749,7 +794,7 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
     // Place, and if the result is taller than the body give something up and
     // go again — in the order the doc comment states. A further pass would be
     // a scrollbar, and this window does not have one.
-    let cards = fit_cards(body, &view.cards);
+    let cards = fit_cards(body, &view.cards, measure);
     // The matrix was given the least it needs before the cards were placed;
     // now that they are, it takes everything under them. Pinned to the
     // bottom with the cards at the top, the page had a dead band across its
@@ -796,12 +841,12 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
 /// cards: `docs/tune-plan.md` §7.2 says the corrector's console uses this
 /// grid, this shrink order and these floors, and two copies of that would be
 /// two windows that stopped agreeing about what a knob is.
-pub fn fit_cards(body: Rect, cards: &[FlopsynthCard]) -> Vec<CardLayout> {
+pub fn fit_cards(body: Rect, cards: &[FlopsynthCard], measure: Measure<'_>) -> Vec<CardLayout> {
     let mut picture_height = PICTURE_HEIGHT;
     let mut scale = 1.0f32;
     let mut placed;
     loop {
-        placed = place(body, cards, picture_height, scale);
+        placed = place(body, cards, picture_height, scale, measure);
         let bottom = placed.iter().map(|c| c.frame.bottom()).fold(0.0, f32::max);
         if bottom <= body.bottom() + 0.01 {
             break;
@@ -853,10 +898,10 @@ struct Wanted {
     removable: bool,
 }
 
-fn wanted(card: &FlopsynthCard, picture_height: f32, scale: f32) -> Wanted {
+fn wanted(card: &FlopsynthCard, picture_height: f32, scale: f32, measure: Measure<'_>) -> Wanted {
     let (cell_w, cell_h) = (FLOP_CELL_W * scale, FLOP_CELL_H * scale);
     let columns = match card.columns {
-        0 => columns_for(card),
+        0 => columns_for(card, measure),
         n => n,
     }
     .max(1);
@@ -884,7 +929,7 @@ fn wanted(card: &FlopsynthCard, picture_height: f32, scale: f32) -> Wanted {
             ));
             continue;
         }
-        let span = cell_span(param).min(columns);
+        let span = cell_span_measured(param, measure).min(columns);
         if column + span > columns {
             column = 0;
             row += 1;
@@ -967,10 +1012,11 @@ fn place(
     cards_in: &[FlopsynthCard],
     picture_height: f32,
     scale: f32,
+    measure: Measure<'_>,
 ) -> Vec<CardLayout> {
     let wants: Vec<Wanted> = cards_in
         .iter()
-        .map(|card| wanted(card, picture_height, scale))
+        .map(|card| wanted(card, picture_height, scale, measure))
         .collect();
     let mut cards: Vec<Option<CardLayout>> = vec![None; cards_in.len()];
 

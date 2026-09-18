@@ -41,7 +41,7 @@ pub fn trace_hops(config: &TuneConfig, sample_rate: f32) -> usize {
 /// The order within each band is still the signal's.
 ///
 /// The **Input card is five cells wide and not four**, because
-/// "Baritone/Bass" is past `WIDE_CHOICE` and its chooser takes two of them.
+/// "Baritone/Bass" is wider than a cell and its chooser takes two of them.
 pub fn shape_of(name: &str) -> (usize, bool, usize) {
     match name {
         "Input" => (0, false, 5),

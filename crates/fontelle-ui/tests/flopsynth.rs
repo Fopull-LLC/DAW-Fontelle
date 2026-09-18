@@ -1307,7 +1307,11 @@ fn a_card_declares_its_own_width_in_columns() {
         2,
         "three cells across, one of them the double table chooser"
     );
-    assert_eq!(across("Filter 1"), 5);
+    assert_eq!(
+        across("Filter 1"),
+        4,
+        "five cells across, one of them the double model chooser — \"Formant\" is 44 px"
+    );
     assert_eq!(across("Channel"), 2);
 }
 
@@ -1339,6 +1343,85 @@ fn a_chooser_with_long_names_gets_a_double_cell() {
         (osc[0].1.y - osc[1].1.y).abs() < 0.01,
         "the double cell shares its row with the next control"
     );
+}
+
+/// A chooser spans two cells when its widest option, **measured**, would not
+/// fit the chip's text room in one — and a caption likewise against the
+/// cell. Counting characters said "Bypass" (six) fit and it read "Bypas";
+/// "Reverse" read "Revers" and "chorus" "choru"
+/// (`docs/flopsynth-next.md` §1.4(7), open since v0.7.0). The window hands
+/// the layout the shaper's own widths; without one the layout estimates from
+/// the count, which is what the fixture tests run on.
+#[test]
+fn a_chooser_spans_two_cells_when_its_widest_option_measures_too_wide_for_one() {
+    use fontelle_ui::canvas::{CHIP_TEXT_ROOM, cell_span_measured};
+    let route = chooser(
+        "patch/layer[0]/sample/loop",
+        "loop",
+        &["Once", "Loop", "Bounce", "Reverse", "Grains"],
+    );
+    // The real widths at the small size: "Reverse" is 40.7 px, "Bypass"
+    // 36.1, "Grains" 33.5; the chip's room in a 52 px cell holds the last
+    // two and not the first.
+    let real = |text: &str| -> f32 {
+        match text {
+            "Reverse" => 40.7,
+            "Bypass" => 36.1,
+            "Grains" => 33.5,
+            "Bounce" => 34.0,
+            "loop" => 22.0,
+            _ => 12.0,
+        }
+    };
+    let room = std::hint::black_box(CHIP_TEXT_ROOM);
+    assert!(
+        (36.1..40.7).contains(&room),
+        "the room is {room}: Bypass must fit and Reverse must not"
+    );
+    assert_eq!(cell_span_measured(&route, &real), 2, "Reverse does not fit");
+    let bypass = chooser("patch/layer[0]/route", "route", &["F1", "Bypass"]);
+    assert_eq!(
+        cell_span_measured(&bypass, &real),
+        1,
+        "Bypass fits — it read \"Bypas\""
+    );
+    let narrow = |text: &str| -> f32 { if text == "loop" { 22.0 } else { 10.0 } };
+    assert_eq!(
+        cell_span_measured(&route, &narrow),
+        1,
+        "in a face where every option is narrow it takes one cell"
+    );
+    // A caption wider than its cell takes two whatever its kind.
+    let knob = knob("patch/voice/glide", "portamento time", 0.2);
+    let wide_caption = |text: &str| -> f32 {
+        if text == "portamento time" {
+            FLOP_CELL_W + 5.0
+        } else {
+            10.0
+        }
+    };
+    assert_eq!(cell_span_measured(&knob, &wide_caption), 2);
+    assert_eq!(cell_span_measured(&knob, &narrow), 1);
+
+    // And the layout takes the measure: the same page laid out with the two
+    // faces puts the route chooser in a double cell under one and a single
+    // under the other.
+    let mut view = a_view();
+    view.cards[0].group.params.push(route.clone());
+    let body = real_body(fontelle_ui::layout::FLOPSYNTH_SIZE);
+    let last = view.cards[0].group.params.len() - 1;
+    let wide = fontelle_ui::canvas::flopsynth_layout_with(body, &metrics(), &view, &real);
+    let cell_of = |layout: &fontelle_ui::canvas::FlopsynthLayout| {
+        layout.cards[0]
+            .cells
+            .iter()
+            .find(|(p, _)| *p == last)
+            .map(|(_, c)| *c)
+            .expect("the route has a cell")
+    };
+    assert!((cell_of(&wide).width - FLOP_CELL_W * 2.0).abs() < 0.01);
+    let single = fontelle_ui::canvas::flopsynth_layout_with(body, &metrics(), &view, &narrow);
+    assert!((cell_of(&single).width - FLOP_CELL_W).abs() < 0.01);
 }
 
 /// At the smallest size the window may be dragged to, every cell is its

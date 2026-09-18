@@ -220,7 +220,7 @@ fn every_control_is_where_the_layout_says() {
 
 #[test]
 fn a_wide_chooser_takes_two_cells() {
-    // "Baritone/Bass" is thirteen characters, past `WIDE_CHOICE`, so the
+    // "Baritone/Bass" is thirteen characters, wider than a cell, so the
     // range chooser is two cells wide — which is why §7.2's Input card is
     // five cells and not four.
     let wide = a_param(

@@ -673,10 +673,13 @@ pub const FLOPSYNTH_SIZE: (u32, u32) = (1180, 840);
 /// it can promise is the cell the text was drawn for, so the floor is where
 /// the shrink cascade stops touching cells — the design width, at which the
 /// three oscillators and the aside column exactly fill a row, and the
-/// height at which the Synth page fits with its pictures at their floor and
-/// the canopy at its least. The scale chooser of `docs/flopsynth-next.md`
-/// §3.2 is what will make a smaller window possible.
-pub const FLOPSYNTH_MINIMUM: (u32, u32) = (1180, 780);
+/// height at which the Grand Piano's Synth page fits with its pictures at
+/// their floor and the canopy at its least (measured by
+/// `tests/flopsynth_ui.rs`; ten short of the design height since the
+/// choosers began to be measured rather than counted). The scale chooser of
+/// `docs/flopsynth-next.md` §3.2 is what will make a smaller window
+/// possible.
+pub const FLOPSYNTH_MINIMUM: (u32, u32) = (1180, 830);
 
 /// What the pitch corrector's console opens at (`docs/tune-plan.md` §7.2).
 ///

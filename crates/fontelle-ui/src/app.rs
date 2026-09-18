@@ -4134,7 +4134,35 @@ impl WindowApp {
                     // the same body; only one of them is drawn, and the host
                     // decides which by whether it offered a Flopsynth view.
                     self.flopsynth_layout = match &self.flopsynth {
-                        Some(view) => crate::canvas::flopsynth_layout(body, &m, view),
+                        Some(view) => {
+                            // The layout decides which controls take a
+                            // double cell by **measuring** their captions
+                            // and options (`cell_span_measured`), and the
+                            // shaper's own widths are the measure. Shaped
+                            // here, ahead of the frame, so the first layout
+                            // is the same as every later one; after the
+                            // first these are cache hits.
+                            let font = self.options.theme.font.clone();
+                            for card in &view.cards {
+                                for param in &card.group.params {
+                                    self.labels
+                                        .ensure_small(&param.label, &font, &mut self.text);
+                                    if let crate::canvas::ParamKind::Choice(options) = &param.kind {
+                                        for option in options {
+                                            self.labels.ensure_small(option, &font, &mut self.text);
+                                        }
+                                    }
+                                }
+                            }
+                            let labels = &self.labels;
+                            let measure = |text: &str| {
+                                labels
+                                    .get_small(text)
+                                    .map(|shaped| shaped.width)
+                                    .unwrap_or_else(|| crate::canvas::estimated_width(text))
+                            };
+                            crate::canvas::flopsynth_layout_with(body, &m, view, &measure)
+                        }
                         None => crate::canvas::FlopsynthLayout {
                             body,
                             ..Default::default()

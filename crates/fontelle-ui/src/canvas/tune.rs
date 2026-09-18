@@ -193,7 +193,7 @@ pub fn tune_layout(body: Rect, view: &TuneView) -> TuneLayout {
     // What the cards need, measured by laying them out in a body of unlimited
     // height: the two bands take what is left over, down to their floors.
     let probe = Rect::new(body.x, body.y, body.width, f32::MAX / 4.0);
-    let wanted_cards = fit_cards(probe, &view.cards);
+    let wanted_cards = fit_cards(probe, &view.cards, &super::flopsynth::estimated_width);
     let cards_height = wanted_cards
         .iter()
         .map(|card| card.frame.bottom())
@@ -240,7 +240,7 @@ pub fn tune_layout(body: Rect, view: &TuneView) -> TuneLayout {
         body.width,
         (body.bottom() - keyboard.bottom() - CARD_GAP).max(0.0),
     );
-    let cards = fit_cards(below, &view.cards);
+    let cards = fit_cards(below, &view.cards, &super::flopsynth::estimated_width);
 
     TuneLayout {
         body,
