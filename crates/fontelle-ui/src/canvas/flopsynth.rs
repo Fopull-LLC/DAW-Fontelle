@@ -410,6 +410,11 @@ pub struct FlopsynthView {
     /// design size. Window state, read off the settings by whoever builds
     /// the view.
     pub scale: f32,
+    /// A picture per option, for the choosers whose options are shapes —
+    /// a wavetable's first frame, an LFO wave's cycle — by the chooser's
+    /// address (§3.3). Behind an `Arc`, because the bank's forty tables are
+    /// the same forty pictures every revision.
+    pub thumbnails: Vec<(fontelle_types::ParamAddress, std::sync::Arc<[Vec<f32>]>)>,
     /// Whether the chain has room for another effect (§8.5) — what draws the
     /// `+ effect` button on the Effects page. The host knows the limit; the
     /// window only needs to know whether it has been reached.
@@ -429,8 +434,20 @@ impl Default for FlopsynthView {
             browse: PresetBrowse::default(),
             matrix_scroll: 0.0,
             scale: 1.0,
+            thumbnails: Vec::new(),
             fx_room: false,
         }
+    }
+}
+
+impl FlopsynthView {
+    /// The pictures for the chooser at `address`, one per option, or `None`
+    /// for a chooser of words.
+    pub fn thumbnails_for(&self, address: &fontelle_types::ParamAddress) -> Option<&[Vec<f32>]> {
+        self.thumbnails
+            .iter()
+            .find(|(at, _)| at == address)
+            .map(|(_, shapes)| &shapes[..])
     }
 }
 

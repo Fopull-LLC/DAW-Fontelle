@@ -1423,3 +1423,57 @@ fn a_knob_has_a_preset_value_a_default_and_takes_a_typed_value() {
         .unwrap();
     assert_eq!(param.display, "Mono");
 }
+
+/// §3.3: the choosers whose options are shapes carry a thumbnail per option
+/// — a wavetable's first frame, an LFO wave's cycle — so the menu can draw
+/// them. A chooser of words (the voice mode) carries none.
+#[test]
+fn the_table_and_the_lfo_wave_choosers_carry_a_thumbnail_per_option() {
+    use fontelle_types::ParamAddress;
+    use fontelle_ui::canvas::FlopsynthPage;
+    let session = a_flopsynth();
+    let synth = session.flopsynth(FlopsynthPage::Synth).unwrap();
+    let modulation = session.flopsynth(FlopsynthPage::Modulation).unwrap();
+    let options = |view: &fontelle_ui::canvas::FlopsynthView, address: &str| -> usize {
+        view.cards
+            .iter()
+            .flat_map(|c| c.group.params.iter())
+            .find(|p| p.address.as_str() == address)
+            .map(|p| match &p.kind {
+                fontelle_ui::canvas::ParamKind::Choice(o) => o.len(),
+                _ => 0,
+            })
+            .unwrap_or_else(|| panic!("no {address}"))
+    };
+    let table = ParamAddress::new("patch/layer[0]/synth/table");
+    let shapes = synth
+        .thumbnails_for(&table)
+        .expect("the table chooser has thumbnails");
+    assert_eq!(
+        shapes.len(),
+        options(&synth, table.as_str()),
+        "one per table"
+    );
+    for (index, shape) in shapes.iter().enumerate() {
+        assert!(
+            shape.len() >= 32,
+            "table {index} is drawn from {} points",
+            shape.len()
+        );
+        assert!(shape.iter().all(|s| (-1.0..=1.0).contains(s)));
+        assert!(
+            shape.iter().any(|s| s.abs() > 0.2),
+            "table {index} is not flat"
+        );
+    }
+    let wave = ParamAddress::new("patch/lfo[0]/wave");
+    let shapes = modulation
+        .thumbnails_for(&wave)
+        .expect("the wave chooser has thumbnails");
+    assert_eq!(shapes.len(), options(&modulation, wave.as_str()));
+    let mode = ParamAddress::new("patch/voice/mode");
+    assert!(
+        synth.thumbnails_for(&mode).is_none(),
+        "a chooser of words has no pictures"
+    );
+}

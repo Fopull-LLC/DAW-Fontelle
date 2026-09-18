@@ -547,8 +547,114 @@ pub fn describe(
         browse: Default::default(),
         matrix_scroll: 0.0,
         scale: 1.0,
+        thumbnails: chooser_thumbnails(patch, page),
         fx_room: page == FlopsynthPage::Effects && patch.fx.len() < fontelle_core::MAX_PATCH_FX,
     }
+}
+
+/// How many points a chooser's thumbnail is drawn from: a 32-pixel picture.
+const THUMB_POINTS: usize = 32;
+
+/// The pictures for the choosers whose options are shapes (§3.3): every
+/// table oscillator's table chooser gets the bank's forty first frames, and
+/// every LFO's wave chooser its six cycles. The bank's pictures are built
+/// **once** — the first asks `wavetables()` to build every table, a few
+/// milliseconds each — and shared after, so a revision hands out the same
+/// `Arc` rather than a copy.
+fn chooser_thumbnails(
+    patch: &Patch,
+    page: FlopsynthPage,
+) -> Vec<(fontelle_types::ParamAddress, std::sync::Arc<[Vec<f32>]>)> {
+    use fontelle_core::Source;
+    use fontelle_dsp::{SynthSource, WavetableId};
+    use fontelle_types::LfoWave;
+    static TABLES: std::sync::OnceLock<std::sync::Arc<[Vec<f32>]>> = std::sync::OnceLock::new();
+    static WAVES: std::sync::OnceLock<std::sync::Arc<[Vec<f32>]>> = std::sync::OnceLock::new();
+    let mut out = Vec::new();
+    match page {
+        FlopsynthPage::Synth => {
+            for (index, layer) in patch.layers.iter().enumerate() {
+                if let Source::Synth(osc) = &layer.source
+                    && matches!(osc.source, SynthSource::Table(_))
+                {
+                    let tables = TABLES.get_or_init(|| {
+                        WavetableId::ALL
+                            .iter()
+                            .map(|id| {
+                                let table = fontelle_dsp::wavetables().get(*id);
+                                // The frame with the most in it of the
+                                // first, the middle and the last: a morphing
+                                // table's first frame can be next to nothing
+                                // (SubSaw's is), and a picture of nothing
+                                // says nothing about the table.
+                                [0.0f32, 0.5, 1.0]
+                                    .into_iter()
+                                    .map(|position| {
+                                        (0..THUMB_POINTS)
+                                            .map(|i| {
+                                                table.read(
+                                                    position,
+                                                    i as f32 / THUMB_POINTS as f32,
+                                                    0,
+                                                )
+                                            })
+                                            .collect::<Vec<f32>>()
+                                    })
+                                    .max_by(|a, b| {
+                                        let peak = |s: &Vec<f32>| {
+                                            s.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+                                        };
+                                        peak(a).total_cmp(&peak(b))
+                                    })
+                                    .map(|mut shape| {
+                                        // A picture of the shape, not of the
+                                        // level: a table trimmed quiet
+                                        // (FormantSweep sits at a fifth of
+                                        // full scale) is drawn full height.
+                                        let peak = shape.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+                                        if peak > 1e-6 {
+                                            for s in &mut shape {
+                                                *s /= peak;
+                                            }
+                                        }
+                                        shape
+                                    })
+                                    .unwrap_or_default()
+                            })
+                            .collect::<Vec<Vec<f32>>>()
+                            .into()
+                    });
+                    out.push((
+                        fontelle_types::ParamAddress::new(format!(
+                            "patch/layer[{index}]/synth/table"
+                        )),
+                        tables.clone(),
+                    ));
+                }
+            }
+        }
+        FlopsynthPage::Modulation => {
+            let waves = WAVES.get_or_init(|| {
+                LfoWave::ALL
+                    .iter()
+                    .map(|wave| {
+                        (0..THUMB_POINTS)
+                            .map(|i| wave.value(i as f32 / THUMB_POINTS as f32))
+                            .collect()
+                    })
+                    .collect::<Vec<Vec<f32>>>()
+                    .into()
+            });
+            for index in 0..patch.lfos.len() {
+                out.push((
+                    fontelle_types::ParamAddress::new(format!("patch/lfo[{index}]/wave")),
+                    waves.clone(),
+                ));
+            }
+        }
+        _ => {}
+    }
+    out
 }
 
 /// The matrix, as the rows §8.4 draws.

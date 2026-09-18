@@ -12256,14 +12256,27 @@ impl WindowApp {
                     return Vec::new();
                 };
                 let at = crate::canvas::choice_index(&param.kind, param.value);
+                // The pictures, for a chooser whose options are shapes on
+                // Flopsynth's window (§3.3).
+                let thumbnails = (*editor == EditorKind::Instrument)
+                    .then_some(self.flopsynth.as_ref())
+                    .flatten()
+                    .and_then(|view| {
+                        view.thumbnails_for(&param.address)
+                            .map(<[Vec<f32>]>::to_vec)
+                    });
                 options
                     .iter()
                     .enumerate()
                     .map(|(index, label)| {
-                        if index == at {
+                        let entry = if index == at {
                             MenuEntry::disabled(label)
                         } else {
                             MenuEntry::new(label)
+                        };
+                        match thumbnails.as_ref().and_then(|shapes| shapes.get(index)) {
+                            Some(shape) => entry.with_thumbnail(shape.clone()),
+                            None => entry,
                         }
                     })
                     .collect()

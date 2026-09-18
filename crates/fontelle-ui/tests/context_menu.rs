@@ -560,3 +560,61 @@ fn a_chosen_row_means_the_input_that_was_written_on_it() {
         "the \"nothing to record from\" row chooses nothing"
     );
 }
+
+/// A chooser whose options are **shapes** — a wavetable, an LFO wave —
+/// draws each option's picture beside its name (`docs/flopsynth-next.md`
+/// §3.3): nobody knows what "Bitwave" is from the word. A row with a
+/// thumbnail keeps a column for it at the left, and the menu is that much
+/// wider; a menu with none is as it was.
+#[test]
+fn a_row_with_a_thumbnail_keeps_a_column_for_it() {
+    use fontelle_ui::canvas::{THUMB_H, THUMB_W};
+    let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
+    // Names long enough that the menu is as wide as its words rather than
+    // its least: the column has to show in the width.
+    let plain = menu(
+        (100.0, 100.0),
+        bounds,
+        &["Analog Morph, a long name", "Square, a long name"],
+    );
+    let shape: Vec<f32> = (0..32).map(|i| (i as f32 / 31.0) * 2.0 - 1.0).collect();
+    let pictured = context_menu_layout(
+        (100.0, 100.0),
+        bounds,
+        &metrics(),
+        font_size(),
+        vec![
+            MenuEntry::new("Analog Morph, a long name").with_thumbnail(shape.clone()),
+            MenuEntry::new("Square, a long name").with_thumbnail(shape),
+        ],
+    );
+    assert!(
+        pictured.frame.width >= plain.frame.width + THUMB_W,
+        "{} vs {}",
+        pictured.frame.width,
+        plain.frame.width
+    );
+    for index in 0..2 {
+        let thumb = pictured.thumbnail_rect(index);
+        let row = pictured.rows[index];
+        assert!((thumb.width - THUMB_W).abs() < 0.01 && (thumb.height - THUMB_H).abs() < 0.01);
+        assert!(row.contains(thumb.x + 1.0, thumb.y + 1.0), "in its row");
+        assert!(
+            thumb.right() <= pictured.label_x(index) + 0.01,
+            "left of the label"
+        );
+        assert!(pictured.thumbnail_rect(index).width > 0.0);
+    }
+    assert!(
+        plain.thumbnail_rect(0).is_empty(),
+        "no column where no row has one"
+    );
+    // The picture's own points, mapped into the thumbnail: the first at the
+    // left edge, the last at the right, a value of 1 at the top.
+    let points =
+        fontelle_ui::canvas::thumbnail_points(pictured.thumbnail_rect(0), &[-1.0, 0.0, 1.0]);
+    assert_eq!(points.len(), 3);
+    let thumb = pictured.thumbnail_rect(0);
+    assert!((points[0].0 - thumb.x).abs() < 0.01 && (points[2].0 - thumb.right()).abs() < 0.01);
+    assert!(points[2].1 < points[0].1, "up is more");
+}

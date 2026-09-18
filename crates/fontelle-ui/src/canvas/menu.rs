@@ -22,7 +22,7 @@ use crate::layout::Rect;
 use crate::theme::Metrics;
 
 /// One line of a menu.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MenuEntry {
     pub label: String,
     /// A greyed row: it says what would be there, and does nothing. *"Delete
@@ -41,6 +41,11 @@ pub struct MenuEntry {
     /// press on the row: [`context_menu_star_hit`] and [`context_menu_hit`]
     /// divide the row between them.
     pub star: Option<bool>,
+    /// A picture of what the row names, drawn beside it — one cycle of a
+    /// wavetable's frame, an LFO's wave — as samples in −1..=1 across the
+    /// thumbnail's width (`docs/flopsynth-next.md` §3.3: nobody knows what
+    /// "Bitwave" is from the word). A menu with any keeps a column for them.
+    pub thumbnail: Option<Vec<f32>>,
 }
 
 impl MenuEntry {
@@ -50,7 +55,14 @@ impl MenuEntry {
             enabled: true,
             separator: false,
             star: None,
+            thumbnail: None,
         }
+    }
+
+    /// With a picture beside the name.
+    pub fn with_thumbnail(mut self, shape: Vec<f32>) -> Self {
+        self.thumbnail = Some(shape);
+        self
     }
 
     pub fn disabled(label: impl Into<String>) -> Self {
@@ -58,6 +70,7 @@ impl MenuEntry {
             label: label.into(),
             enabled: false,
             separator: false,
+            thumbnail: None,
             star: None,
         }
     }
@@ -255,6 +268,43 @@ impl ContextMenu {
     ///
     /// Empty for a row with no star, for one scrolled out of sight (its row
     /// is empty too), and for an index that is not a row.
+    /// Whether any row carries a picture — what keeps the column for them.
+    fn has_thumbnails(&self) -> bool {
+        self.entries.iter().any(|entry| entry.thumbnail.is_some())
+    }
+
+    /// Where row `index`'s picture goes: at the row's left, in the column
+    /// every row keeps once any has one. Empty for a row without one, and
+    /// in a menu without any.
+    pub fn thumbnail_rect(&self, index: usize) -> Rect {
+        let (Some(row), Some(entry)) = (self.rows.get(index), self.entries.get(index)) else {
+            return Rect::ZERO;
+        };
+        if entry.thumbnail.is_none() || row.is_empty() {
+            return Rect::ZERO;
+        }
+        Rect::new(
+            row.x + MENU_TEXT_INSET,
+            row.y + (row.height - THUMB_H) / 2.0,
+            THUMB_W,
+            THUMB_H,
+        )
+        .intersection(row)
+    }
+
+    /// Where row `index`'s caption starts: past the picture column when
+    /// the menu has one.
+    pub fn label_x(&self, index: usize) -> f32 {
+        let row = self.rows.get(index).copied().unwrap_or(Rect::ZERO);
+        row.x
+            + MENU_TEXT_INSET
+            + if self.has_thumbnails() {
+                THUMB_W + THUMB_GAP
+            } else {
+                0.0
+            }
+    }
+
     pub fn star_rect(&self, index: usize) -> Rect {
         let (Some(row), Some(entry)) = (self.rows.get(index), self.entries.get(index)) else {
             return Rect::ZERO;
@@ -342,6 +392,27 @@ pub fn menu_matches(label: &str, query: &str) -> bool {
         return true;
     }
     label.to_lowercase().contains(&query.to_lowercase())
+}
+
+/// A row's picture: 32×16, as §3.3 sizes it, and its gap from the caption.
+pub const THUMB_W: f32 = 32.0;
+pub const THUMB_H: f32 = 16.0;
+const THUMB_GAP: f32 = 6.0;
+
+/// The points of a thumbnail's picture inside `rect`: the samples spread
+/// across its width, +1 at the top.
+pub fn thumbnail_points(rect: Rect, shape: &[f32]) -> Vec<(f32, f32)> {
+    let last = shape.len().saturating_sub(1).max(1) as f32;
+    shape
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            (
+                rect.x + rect.width * i as f32 / last,
+                rect.y + rect.height * (1.0 - (s.clamp(-1.0, 1.0) + 1.0) / 2.0),
+            )
+        })
+        .collect()
 }
 
 /// A little air around the rows, and how far the caption is indented.
@@ -440,7 +511,13 @@ pub fn context_menu_layout(
     } else {
         0.0
     };
-    let width = (longest * font_size * CHAR_WIDTH + MENU_TEXT_INSET * 2.0 + stars)
+    // And for the pictures, when any row has one.
+    let thumbs = if entries.iter().any(|entry| entry.thumbnail.is_some()) {
+        THUMB_W + THUMB_GAP
+    } else {
+        0.0
+    };
+    let width = (longest * font_size * CHAR_WIDTH + MENU_TEXT_INSET * 2.0 + stars + thumbs)
         .max(MIN_WIDTH)
         .min(bounds.width);
     // As tall as its rows, or as tall as there is room for — whichever is

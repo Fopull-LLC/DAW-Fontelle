@@ -2078,6 +2078,20 @@ pub fn draw_context_menu(
         let Some(text) = labels_get(labels, &entry.label) else {
             continue;
         };
+        // The row's picture, when it has one: one cycle in the row's ink.
+        if let Some(shape) = &entry.thumbnail {
+            let thumb = menu.thumbnail_rect(index);
+            if !thumb.is_empty() {
+                let points = crate::canvas::thumbnail_points(thumb, shape);
+                stroke_polyline(
+                    scene,
+                    &points,
+                    thumb,
+                    1.2,
+                    if entry.enabled { p.accent } else { p.border },
+                );
+            }
+        }
         // The caption stops where the star starts, rather than running under
         // it.
         let caption = Rect::new(row.x, row.y, (row.width - star.width).max(0.0), row.height);
@@ -2085,7 +2099,7 @@ pub fn draw_context_menu(
             scene,
             text,
             caption,
-            row.x + crate::canvas::MENU_TEXT_INSET,
+            menu.label_x(index),
             row.y + (row.height - text.height) / 2.0,
             // A greyed entry is drawn in the same ink as a panel's border,
             // which is this theme's "there, and not for you".
