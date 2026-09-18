@@ -137,6 +137,12 @@ fn studio_with_timeline(
     .with_settings_path(dir.join("settings.json"));
     session.add_soundfont_dir(dir);
     session.open_bank();
+    // The studio opens on the Import tab since v0.8.0, and on that tab the
+    // search is the import folder's and no soundfont row is lit — which is
+    // what turned three of the bank tests below red (`docs/flopsynth-next.md`
+    // §1.4(10)). These are the soundfont browser's tests, so the tab is
+    // switched the way a click would, as `flopsynth_browser.rs` does.
+    session.set_browser_mode(fontelle_ui::canvas::BrowserMode::Sounds);
     (session, source, timeline_source)
 }
 
