@@ -3442,6 +3442,7 @@ fn shoot_flopsynth_in(
             destinations: vec![(1, 0), (1, 1)],
             about: Vec::new(),
             hover_at: (f32::MIN, f32::MIN),
+            tooltip: None,
             searching: false,
             sky: None,
             skin: None,

@@ -1114,6 +1114,14 @@ pub struct WindowApp {
     /// A knob's value, copied from its menu (§3.3), normalised — so it
     /// pastes onto a knob of any range as the same share of the travel.
     flop_clipboard: Option<f32>,
+    /// The tip for what the pointer is on in Flopsynth's window, and when it
+    /// arrived there — the studio's own tip is the studio's window's
+    /// (`hover_tip`), and this one is drawn in the synth's.
+    flop_tip: Option<String>,
+    flop_tip_since: std::time::Instant,
+    /// Whether the synth window has been asked for the frame its tip
+    /// appears in, so the wake for a due tip draws once rather than never.
+    flop_tip_drawn: bool,
     /// The browser row in the air, while one is — see [`Carrying`].
     carry: Option<Carrying>,
     /// A browser row **held** after its drag was let go outside the studio
@@ -1750,6 +1758,9 @@ impl WindowApp {
             flop_slot: None,
             flop_focus: None,
             flop_clipboard: None,
+            flop_tip: None,
+            flop_tip_since: std::time::Instant::now(),
+            flop_tip_drawn: false,
             carry: None,
             held: None,
             flop_modulated: Vec::new(),
@@ -2623,6 +2634,15 @@ impl WindowApp {
         // A tip that has just fallen due. Nothing else will ask for the frame:
         // the pointer coming to rest is the last event there was, which is the
         // whole reason the dwell exists.
+        // The synth window's tip likewise: one frame of its own when the
+        // dwell is up, and it is drawn from then on with every frame.
+        if self.due_flop_tip().is_some() && !self.flop_tip_drawn {
+            self.flop_tip_drawn = true;
+            self.redraw_editor(EditorKind::Instrument);
+        } else if self.flop_tip.is_none() && self.flop_tip_drawn {
+            self.flop_tip_drawn = false;
+            self.redraw_editor(EditorKind::Instrument);
+        }
         if self.due_tip().is_some() && self.tip_rect.is_empty() {
             self.tree.invalidate_rect(self.tooltip_region());
         }
@@ -3215,6 +3235,13 @@ impl WindowApp {
         let reach = 420.0;
         crate::layout::Rect::new(x - reach, y - 64.0, reach * 2.0, 128.0)
             .intersection(&self.layout.window)
+    }
+
+    /// Flopsynth's window's tip to draw **now** — `None` until the pointer
+    /// has sat still long enough.
+    fn due_flop_tip(&self) -> Option<&str> {
+        let tip = self.flop_tip.as_deref()?;
+        (self.flop_tip_since.elapsed() >= crate::tooltip::TOOLTIP_DELAY).then_some(tip)
     }
 
     /// The tip to draw **now** — `None` until the pointer has sat still long
@@ -4729,12 +4756,27 @@ impl WindowApp {
             });
         match kind {
             EditorKind::Instrument if self.flopsynth.is_some() => {
-                self.hover_card = match crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y) {
+                let hit = crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y);
+                self.hover_card = match hit {
                     Some(crate::canvas::FlopsynthHit::Control { card, param }) => {
                         Some((card, param))
                     }
                     _ => None,
                 };
+                // The tip for what is under the pointer (§3.3), with the
+                // studio's dwell — and none while a button is held, for the
+                // studio's reason: a box under a drag is in the drag's way.
+                let tip = match (self.drag, hit, self.flopsynth.as_ref()) {
+                    (Drag::None, Some(hit), Some(view)) => {
+                        crate::canvas::flopsynth_tip(hit, &view.cards)
+                    }
+                    _ => None,
+                };
+                if tip != self.flop_tip {
+                    self.flop_tip = tip;
+                    self.flop_tip_since = std::time::Instant::now();
+                    self.flop_tip_drawn = false;
+                }
             }
             EditorKind::Instrument => {
                 self.hover_param = instrument_hit(&self.instrument_layout, x, y);
@@ -4989,6 +5031,21 @@ impl WindowApp {
                     destinations: self.flop_destinations.clone(),
                     about: self.flop_about(),
                     hover_at: self.cursor,
+                    tooltip: self.due_flop_tip().and_then(|tip| {
+                        let text = self.labels.get(tip)?;
+                        let bounds = self
+                            .editors
+                            .iter()
+                            .find(|e| e.kind == EditorKind::Instrument)
+                            .map(|e| e.panel.frame)
+                            .unwrap_or(self.flopsynth_layout.whole);
+                        let rect = crate::tooltip::tooltip_layout(
+                            (text.width, text.height),
+                            self.cursor,
+                            bounds,
+                        );
+                        (!rect.is_empty()).then(|| (tip.to_string(), rect))
+                    }),
                     searching: self.flop_searching,
                     sky: self.sky_frame.as_ref(),
                     skin: Some(&self.skin),
@@ -5578,6 +5635,27 @@ impl WindowApp {
             for route in &view.routes {
                 want(&mut self.labels, &mut self.text, &route.source);
                 want(&mut self.labels, &mut self.text, &route.destination);
+            }
+            if let Some(tip) = &self.flop_tip {
+                want(&mut self.labels, &mut self.text, tip);
+            }
+            // The bubble over the knob under the pointer, or the one being
+            // turned.
+            if let Some(which) = self
+                .flop_knob
+                .map(|(which, _, _)| which)
+                .or(self.hover_card)
+                && let Some(param) = view
+                    .cards
+                    .get(which.0)
+                    .and_then(|card| card.group.params.get(which.1))
+            {
+                styled(
+                    &mut self.labels,
+                    &mut self.text,
+                    &crate::render::bubble_label(&param.label, &param.display),
+                    t.value,
+                );
             }
             for card in &view.cards {
                 styled(
@@ -15815,6 +15893,10 @@ impl WindowApp {
         // wake the window to draw the tip that rest earned.
         if self.hover_tip.is_some() && self.due_tip().is_none() {
             let due = self.hover_since + crate::tooltip::TOOLTIP_DELAY;
+            wake = Some(wake.map_or(due, |w| w.min(due)));
+        }
+        if self.flop_tip.is_some() && self.due_flop_tip().is_none() {
+            let due = self.flop_tip_since + crate::tooltip::TOOLTIP_DELAY;
             wake = Some(wake.map_or(due, |w| w.min(due)));
         }
 

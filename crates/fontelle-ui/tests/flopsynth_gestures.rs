@@ -173,3 +173,109 @@ fn the_knob_menu_offers_what_is_true_of_the_knob() {
             .any(|(_, i)| matches!(i, Item::TypeValue | Item::CopyValue))
     );
 }
+
+/// §3.3: every kind of thing the pointer can land on in the window has a
+/// tip — one sentence, what it does and how — and a knob's hover bubble
+/// sits above the knob, never over it, and below it only at the top of
+/// the window.
+#[test]
+fn every_hit_kind_has_a_tip_and_the_bubble_sits_above_the_knob() {
+    use fontelle_ui::canvas::{
+        FlopsynthHit, FlopsynthPicture, KnobSize, flopsynth_tip, hover_bubble_rect,
+    };
+    use fontelle_ui::layout::Rect;
+    let knob = |kind: ParamKind| fontelle_ui::canvas::InstrumentParam {
+        address: fontelle_types::ParamAddress::new("patch/x"),
+        label: "CUTOFF".to_string(),
+        value: 0.5,
+        display: "9.00 kHz".to_string(),
+        kind,
+        automated: false,
+    };
+    let control = |kind: ParamKind, picture: FlopsynthPicture, removable: bool| {
+        fontelle_ui::canvas::FlopsynthCard {
+            group: fontelle_ui::canvas::InstrumentGroup {
+                name: "Filter 1".to_string(),
+                params: vec![knob(kind)],
+            },
+            picture,
+            oscillator: None,
+            row: 0,
+            aside: false,
+            columns: 0,
+            removable,
+            sizes: vec![KnobSize::Large],
+        }
+    };
+    let response = FlopsynthPicture::Response {
+        points: vec![0.0; 8],
+        cutoff: 0.5,
+        resonance: 0.2,
+    };
+    let cards = [
+        control(ParamKind::Knob, response.clone(), false),
+        control(
+            ParamKind::Choice(vec!["a".into()]),
+            FlopsynthPicture::None,
+            true,
+        ),
+        control(
+            ParamKind::Switch,
+            FlopsynthPicture::Wave {
+                points: vec![0.0; 8],
+                position: 0.0,
+            },
+            true,
+        ),
+    ];
+    let hits = [
+        FlopsynthHit::Control { card: 0, param: 0 },
+        FlopsynthHit::Control { card: 1, param: 0 },
+        FlopsynthHit::Control { card: 2, param: 0 },
+        FlopsynthHit::Picture { card: 0 },
+        FlopsynthHit::Picture { card: 2 },
+        FlopsynthHit::Header { card: 1 },
+        FlopsynthHit::Remove { card: 1 },
+        FlopsynthHit::AddEffect,
+        FlopsynthHit::Scale,
+    ];
+    for hit in hits {
+        let tip = flopsynth_tip(hit, &cards).unwrap_or_else(|| panic!("{hit:?} has no tip"));
+        assert!(!tip.is_empty() && tip.len() < 140, "{hit:?}: {tip}");
+    }
+    // A knob's tip says the four gestures; a switch's does not send anyone
+    // double-clicking.
+    let knob_tip = flopsynth_tip(FlopsynthHit::Control { card: 0, param: 0 }, &cards).unwrap();
+    assert!(
+        knob_tip.contains("Alt")
+            && knob_tip.contains("ouble-click")
+            && knob_tip.contains("ight-click")
+    );
+    let switch_tip = flopsynth_tip(FlopsynthHit::Control { card: 2, param: 0 }, &cards).unwrap();
+    assert!(!switch_tip.contains("ouble-click"));
+    // An oscillator's header is its name, and has nothing to say.
+    let header_of_a_source = flopsynth_tip(FlopsynthHit::Header { card: 0 }, &cards);
+    assert_eq!(header_of_a_source, None);
+
+    // The bubble: centred over the knob, a gap above it, inside the window.
+    let bounds = Rect::new(0.0, 0.0, 1180.0, 840.0);
+    let knob_rect = Rect::new(400.0, 300.0, 40.0, 40.0);
+    let bubble = hover_bubble_rect(knob_rect, (80.0, 14.0), bounds);
+    assert!(bubble.bottom() < knob_rect.y, "above the knob: {bubble:?}");
+    assert!(
+        bubble.width >= 80.0 && bubble.height >= 14.0,
+        "room for its words"
+    );
+    assert!(
+        ((bubble.x + bubble.width / 2.0) - (knob_rect.x + 20.0)).abs() < 0.5,
+        "centred"
+    );
+    // At the top of the window it goes below instead, still clear of the knob.
+    let high = Rect::new(400.0, 4.0, 40.0, 40.0);
+    let bubble = hover_bubble_rect(high, (80.0, 14.0), bounds);
+    assert!(bubble.y > high.bottom(), "below: {bubble:?}");
+    // At the edge it stays inside.
+    let edge = Rect::new(1160.0, 300.0, 40.0, 40.0);
+    let bubble = hover_bubble_rect(edge, (80.0, 14.0), bounds);
+    assert!(bubble.right() <= bounds.right() + 0.01);
+}

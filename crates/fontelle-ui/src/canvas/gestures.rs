@@ -4,7 +4,9 @@
 //! own read-out. Pure, and tested in `tests/flopsynth_gestures.rs`; the
 //! window dispatches (plan §13).
 
+use super::flopsynth::{FlopsynthCard, FlopsynthHit, FlopsynthPicture};
 use super::instrument::ParamKind;
+use crate::layout::Rect;
 
 /// How fine a drag or a nudge is: the plain gesture, Shift, or Ctrl.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,4 +256,70 @@ pub fn flop_knob_menu(menu: &FlopKnobMenu<'_>) -> Vec<(super::MenuEntry, FlopKno
         rows.push((enabled("Paste value", menu.clipboard), Item::PasteValue));
     }
     rows
+}
+
+/// The tip for what the pointer is on (§3.3): one sentence, what it does
+/// and how. `None` for a thing with nothing to say — a source card's
+/// header is its name.
+pub fn flopsynth_tip(hit: FlopsynthHit, cards: &[FlopsynthCard]) -> Option<String> {
+    Some(match hit {
+        FlopsynthHit::Control { card, param } => {
+            let control = cards.get(card)?.group.params.get(param)?;
+            match control.kind {
+                ParamKind::Knob => "Drag to set \u{b7} Shift or Ctrl for finer \u{b7} \
+                                    Alt-click resets \u{b7} double-click to type a value \u{b7} \
+                                    right-click for more"
+                    .to_string(),
+                ParamKind::Choice(_) => {
+                    "Click to choose \u{b7} double-click to type a name \u{b7} \
+                                         right-click for more"
+                        .to_string()
+                }
+                ParamKind::Switch => "Click to switch \u{b7} right-click for more".to_string(),
+            }
+        }
+        FlopsynthHit::Picture { card } => match cards.get(card)?.picture {
+            FlopsynthPicture::Wave { .. } => "Drag sideways to move the position".to_string(),
+            FlopsynthPicture::Response { .. } => {
+                "Drag to set the cutoff and the resonance".to_string()
+            }
+            FlopsynthPicture::Envelope { .. } => "Drag a corner to shape the envelope".to_string(),
+            FlopsynthPicture::Sound { .. } => {
+                "Drag sideways to move the start \u{b7} right-click for a sound".to_string()
+            }
+            FlopsynthPicture::Partials { .. } => "The string's partials".to_string(),
+            FlopsynthPicture::Lfo { .. } => "The LFO's cycle".to_string(),
+            FlopsynthPicture::None => return None,
+        },
+        FlopsynthHit::Header { card } => {
+            if cards.get(card)?.removable {
+                "Drag to move this effect along the chain".to_string()
+            } else {
+                return None;
+            }
+        }
+        FlopsynthHit::Remove { .. } => "Take this effect off the chain".to_string(),
+        FlopsynthHit::AddEffect => "Add an effect to the end of the chain".to_string(),
+        FlopsynthHit::Scale => "Window scale".to_string(),
+    })
+}
+
+/// How far a bubble stands off its knob.
+const BUBBLE_GAP: f32 = 4.0;
+const BUBBLE_PAD: f32 = 5.0;
+
+/// Where a knob's hover bubble goes (§3.3): centred over the knob, a gap
+/// above it, and never over it — below it at the top of the window, and
+/// kept inside the window at its edges.
+pub fn hover_bubble_rect(knob: Rect, text: (f32, f32), bounds: Rect) -> Rect {
+    let (width, height) = (text.0 + BUBBLE_PAD * 2.0, text.1 + BUBBLE_PAD * 2.0);
+    let above = knob.y - BUBBLE_GAP - height;
+    let y = if above >= bounds.y {
+        above
+    } else {
+        knob.bottom() + BUBBLE_GAP
+    };
+    let x = (knob.x + knob.width / 2.0 - width / 2.0)
+        .clamp(bounds.x, (bounds.right() - width).max(bounds.x));
+    Rect::new(x, y, width, height).intersection(&bounds)
 }

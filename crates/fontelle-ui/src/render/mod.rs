@@ -1430,7 +1430,10 @@ pub fn draw_editor_window(
         EditorWindowChrome::Instrument(None) => {
             draw_label(scene, labels, NO_INSTRUMENT, layout.body, m, p.text_muted)
         }
-        EditorWindowChrome::Flopsynth(flopsynth) => draw_flopsynth(scene, theme, labels, flopsynth),
+        EditorWindowChrome::Flopsynth(flopsynth) => {
+            draw_flopsynth(scene, theme, labels, flopsynth);
+            draw_flopsynth_overlays(scene, theme, labels, flopsynth);
+        }
         EditorWindowChrome::Tune(tune) => draw_tune(scene, theme, labels, tune),
         EditorWindowChrome::Effect(effect) => draw_effect(scene, theme, labels, effect),
         EditorWindowChrome::Insert(insert) => draw_instrument(scene, theme, labels, insert),
@@ -7771,6 +7774,9 @@ pub struct FlopsynthChrome<'a> {
     /// under it — the shelves and the presets, which the hit test already
     /// names and the renderer only has to ask about.
     pub hover_at: (f32, f32),
+    /// The tip due for what the pointer is on (§3.3), and its box —
+    /// `canvas::flopsynth_tip`, after the studio's dwell.
+    pub tooltip: Option<(String, crate::layout::Rect)>,
     /// Whether the Presets search box has the keyboard, so it can be drawn
     /// with the lit outline and a caret the way a focused field is.
     pub searching: bool,
@@ -8459,6 +8465,12 @@ pub fn bridge_type(scale: f32) -> BridgeType {
     }
 }
 
+/// What a knob's hover bubble reads: its caption and its value. A
+/// function, for [`voice_count_label`]'s reason.
+pub fn bubble_label(caption: &str, display: &str) -> String {
+    format!("{caption}  {display}")
+}
+
 /// What the scale chooser reads: "100 %". A function, for
 /// [`voice_count_label`]'s reason — shaped ahead and drawn under one
 /// spelling.
@@ -8532,6 +8544,71 @@ fn draw_modulation_ring(scene: &mut Scene, theme: &Theme, knob: Rect, depth: f32
             theme.palette.modulation.to_peniko(),
             None,
             &arc(0.0, 1.0),
+        );
+    }
+}
+
+/// The hover bubble and the tip (§3.3), drawn after every console so
+/// nothing paints over them. The bubble is the knob under the pointer — or
+/// the one being turned — saying its caption and its value above itself,
+/// opaque, never over the knob; a knob only, since a chip and a pill carry
+/// their own value. The tip is drawn like the studio's: its own outline,
+/// because it floats over whatever is under it.
+fn draw_flopsynth_overlays(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &FlopsynthChrome<'_>,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let l = &chrome.layout;
+    let t = bridge_type(chrome.view.scale);
+    if let Some(which) = chrome.active.or(chrome.hover)
+        && let Some(card) = chrome.view.cards.get(which.0)
+        && let Some(param) = card.group.params.get(which.1)
+        && matches!(param.kind, ParamKind::Knob)
+        && let Some(cell) = l
+            .cards
+            .get(which.0)
+            .and_then(|placed| placed.cells.iter().find(|(p, _)| *p == which.1))
+            .map(|(_, cell)| *cell)
+        && let Some(text) = labels.get_styled(&bubble_label(&param.label, &param.display), t.value)
+    {
+        let knob = crate::canvas::cell_anatomy(
+            cell,
+            card.size_of(which.1),
+            &param.kind,
+            chrome.view.scale,
+        )
+        .control;
+        let bubble = crate::canvas::hover_bubble_rect(knob, (text.width, text.height), l.whole);
+        if !bubble.is_empty() {
+            fill_rect_rounded(scene, bubble, m.corner_radius, p.border);
+            fill_rect_rounded(scene, bubble.inset(1.0), m.corner_radius, p.panel_header);
+            draw_text_clipped(
+                scene,
+                text,
+                bubble,
+                bubble.x + (bubble.width - text.width) / 2.0,
+                bubble.y + (bubble.height - text.height) / 2.0,
+                p.text,
+            );
+        }
+    }
+    if let Some((caption, rect)) = &chrome.tooltip
+        && !rect.is_empty()
+        && let Some(text) = labels.get(caption)
+    {
+        fill_rect_rounded(scene, *rect, m.corner_radius, p.border);
+        fill_rect_rounded(scene, rect.inset(1.0), m.corner_radius, p.panel_header);
+        draw_text_clipped(
+            scene,
+            text,
+            *rect,
+            rect.x + crate::tooltip::TOOLTIP_PAD,
+            rect.y + (rect.height - text.height) / 2.0,
+            p.text,
         );
     }
 }

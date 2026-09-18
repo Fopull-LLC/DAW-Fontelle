@@ -75,8 +75,8 @@ pub use flopsynth::{
     sound_outline_points, wave_curve_points, wave_position_at,
 };
 pub use gestures::{
-    FlopKnobMenu, FlopKnobMenuItem, NUDGE, NUDGE_FINE, Precision, Typed, flop_knob_menu, knob_drag,
-    nudged, parse_typed, wheel_nudge,
+    FlopKnobMenu, FlopKnobMenuItem, NUDGE, NUDGE_FINE, Precision, Typed, flop_knob_menu,
+    flopsynth_tip, hover_bubble_rect, knob_drag, nudged, parse_typed, wheel_nudge,
 };
 pub use instrument::{
     CELL_HEIGHT, CELL_WIDTH, CHIP_HEIGHT, CHIP_WIDTH, InstrumentGroup, InstrumentLayout,
