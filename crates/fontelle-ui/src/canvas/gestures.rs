@@ -301,6 +301,28 @@ pub fn flopsynth_tip(hit: FlopsynthHit, cards: &[FlopsynthCard]) -> Option<Strin
         FlopsynthHit::Remove { .. } => "Take this effect off the chain".to_string(),
         FlopsynthHit::AddEffect => "Add an effect to the end of the chain".to_string(),
         FlopsynthHit::Scale => "Window scale".to_string(),
+        FlopsynthHit::InspectorClose => "Close the inspector".to_string(),
+    })
+}
+
+/// The tip for a cell of the Matrix page's table (§3.4).
+pub fn matrix_tip(hit: super::MatrixHit) -> Option<String> {
+    use super::MatrixHit;
+    Some(match hit {
+        MatrixHit::Grip(_) => "Drag to move this route up or down".to_string(),
+        MatrixHit::Source(_) => "The source \u{b7} click to choose another".to_string(),
+        MatrixHit::Destination(_) => "The destination \u{b7} click to choose another".to_string(),
+        MatrixHit::Depth(_) => {
+            "Drag to set the depth \u{b7} left of the middle is negative".to_string()
+        }
+        MatrixHit::Via(_) => "A second source scaling this route's depth".to_string(),
+        MatrixHit::Curve(_) => "How the source's value is shaped on the way".to_string(),
+        MatrixHit::Invert(_) => "Read 1 \u{2212} source instead of the source".to_string(),
+        MatrixHit::Bypass(_) => "Whether this route is heard".to_string(),
+        MatrixHit::Remove(_) => "Take this route out of the matrix".to_string(),
+        MatrixHit::Add => "Add a route".to_string(),
+        MatrixHit::SortSource => "Sort the routes by source".to_string(),
+        MatrixHit::SortDestination => "Sort the routes by destination".to_string(),
     })
 }
 
@@ -322,4 +344,41 @@ pub fn hover_bubble_rect(knob: Rect, text: (f32, f32), bounds: Rect) -> Rect {
     let x = (knob.x + knob.width / 2.0 - width / 2.0)
         .clamp(bounds.x, (bounds.right() - width).max(bounds.x));
     Rect::new(x, y, width, height).intersection(&bounds)
+}
+
+/// How far a badge may wander under a pressed button and still be a click
+/// (§3.4). Four pixels: a hand that presses is not still, and a badge is
+/// small enough that the far side of it is a drag nobody meant.
+pub const BADGE_CLICK_SLOP: f32 = 4.0;
+
+/// What a press on a badge turned out to be by the time it was let go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BadgeGesture {
+    /// Let go where it was pressed: open or close the source in the
+    /// inspector.
+    Click,
+    /// Carried off: a drag to a knob, which the release over the knob
+    /// makes a route of.
+    Drag,
+}
+
+/// A click or a drag, by distance — not by time, because a slow click is
+/// still a click.
+pub fn badge_gesture(pressed: (f32, f32), released: (f32, f32)) -> BadgeGesture {
+    let (dx, dy) = (released.0 - pressed.0, released.1 - pressed.1);
+    if dx.abs() <= BADGE_CLICK_SLOP && dy.abs() <= BADGE_CLICK_SLOP {
+        BadgeGesture::Click
+    } else {
+        BadgeGesture::Drag
+    }
+}
+
+/// The inspector after a badge is clicked: the source clicked, or closed
+/// if it was the one already showing.
+pub fn inspector_after_click(open: Option<usize>, source: usize) -> Option<usize> {
+    if open == Some(source) {
+        None
+    } else {
+        Some(source)
+    }
 }

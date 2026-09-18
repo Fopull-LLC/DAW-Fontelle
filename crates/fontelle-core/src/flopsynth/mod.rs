@@ -286,6 +286,7 @@ pub fn flopsynth_init() -> Patch {
                 curve: Curve::Linear,
                 via: None,
                 invert: false,
+                bypass: false,
             }],
         },
         voice_config: VoiceConfig {

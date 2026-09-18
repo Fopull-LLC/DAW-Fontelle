@@ -232,6 +232,7 @@ fn routed(store: &mut SampleStore, source: ModSource) -> Patch {
             curve: Curve::Linear,
             via: None,
             invert: true,
+            bypass: false,
         }],
     };
     patch

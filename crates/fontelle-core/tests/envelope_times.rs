@@ -38,6 +38,7 @@ fn route(source: ModSource, destination: ModDest, depth: f32) -> ModRoute {
         curve: Curve::Linear,
         via: None,
         invert: false,
+        bypass: false,
     }
 }
 
@@ -127,6 +128,7 @@ fn an_inverted_key_route_lengthens_the_bass_instead() {
     let tracked = || {
         let mut patch = patch_with(Some(ModRoute {
             invert: true,
+            bypass: false,
             ..route(ModSource::Key, ModDest::EnvelopeStageTime(0, 3), 0.5)
         }));
         patch.envelopes[0].decay_s = 0.1;

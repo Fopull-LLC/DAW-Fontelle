@@ -229,7 +229,10 @@ impl FlopsynthPage {
     pub fn label(self) -> &'static str {
         match self {
             Self::Synth => "Synth",
-            Self::Modulation => "Modulation",
+            // The Matrix page (§3.4): the inspector and the full table. The
+            // variant keeps its name — the window's state and the tests know
+            // the page by it.
+            Self::Modulation => "Matrix",
             Self::Effects => "Effects",
             Self::Presets => "Presets",
         }
@@ -240,33 +243,120 @@ impl FlopsynthPage {
 ///
 /// Labels rather than the matrix's own types, for INVARIANT 4's reason: this
 /// crate may not see a `ModSource`. The host turns them into words and back.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Default, Debug, Clone, PartialEq)]
 pub struct FlopsynthRoute {
     pub source: String,
     pub destination: String,
     /// Bipolar, -1..=1.
     pub depth: f32,
+    /// The source scaling this route's depth, if one does (§3.4 "via").
+    pub via: Option<String>,
+    /// The curve's name, one of the view's `curves`.
+    pub curve: String,
+    /// `1 - source` in place of the source.
+    pub invert: bool,
+    /// Kept and not heard.
+    pub bypass: bool,
 }
 
 /// Where one matrix row's parts are.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MatrixRow {
     pub frame: Rect,
-    /// The source and destination captions, left to right.
+    /// The grip at the left end, to drag the row by (§3.4).
+    pub grip: Rect,
+    /// The source and destination choosers, left to right.
     pub source: Rect,
     pub destination: Rect,
     /// A **slider**, not a knob: the row is 22 pixels tall, which is the audio
     /// editor's argument for the same shape.
     pub depth: Rect,
+    /// The via chooser, the curve chooser, the invert and on/off switches.
+    pub via: Rect,
+    pub curve: Rect,
+    pub invert: Rect,
+    pub bypass: Rect,
     pub remove: Rect,
+}
+
+/// The table's header: a head over each column — the source's and the
+/// destination's sort the rows — and the `+` that adds one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MatrixHeader {
+    pub source: Rect,
+    pub destination: Rect,
+    pub depth: Rect,
+    pub via: Rect,
+    pub curve: Rect,
+    pub invert: Rect,
+    pub bypass: Rect,
+    pub add: Rect,
+}
+
+impl Default for MatrixHeader {
+    fn default() -> Self {
+        Self {
+            source: Rect::ZERO,
+            destination: Rect::ZERO,
+            depth: Rect::ZERO,
+            via: Rect::ZERO,
+            curve: Rect::ZERO,
+            invert: Rect::ZERO,
+            bypass: Rect::ZERO,
+            add: Rect::ZERO,
+        }
+    }
 }
 
 /// What a press in the matrix landed on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatrixHit {
+    Grip(usize),
+    Source(usize),
+    Destination(usize),
     Depth(usize),
+    Via(usize),
+    Curve(usize),
+    Invert(usize),
+    Bypass(usize),
     Remove(usize),
+    /// The `+` on the header.
+    Add,
+    /// The source head: sort the rows by source.
+    SortSource,
+    /// The destination head: sort by destination.
+    SortDestination,
 }
+
+/// The table's columns at scale 1 (§3.4), left to right: what does not
+/// flex. The destination takes what is left, because it has the longest
+/// names ("Env 1 release time").
+const MATRIX_GRIP: f32 = 12.0;
+const MATRIX_SOURCE: f32 = 128.0;
+const MATRIX_DEPTH: f32 = 110.0;
+const MATRIX_VIA: f32 = 110.0;
+const MATRIX_CURVE: f32 = 104.0;
+const MATRIX_SWITCH: f32 = 40.0;
+const MATRIX_REMOVE: f32 = 18.0;
+const MATRIX_COL_GAP: f32 = 6.0;
+/// The `+` on the header: a round chip over the ✕ column, no wider, so
+/// the ON head beside it keeps its word.
+const MATRIX_ADD_W: f32 = 22.0;
+/// What a via cell says, and the via chooser's first row, when nothing
+/// scales the route.
+pub const NO_VIA: &str = "none";
+/// What the `+` on the table's header says.
+pub const ADD_ROUTE: &str = "+";
+/// The column heads.
+pub const MATRIX_HEADS: [&str; 7] = [
+    "SOURCE",
+    "DESTINATION",
+    "DEPTH",
+    "VIA",
+    "CURVE",
+    "INV",
+    "ON",
+];
 
 /// How tall one matrix row is.
 pub const MATRIX_ROW: f32 = 22.0;
@@ -282,9 +372,15 @@ pub const TAB_WIDTH: f32 = 96.0;
 /// the right edge — room for the voice read-out beside it.
 pub const SCALE_CHIP_W: f32 = 52.0;
 const SCALE_CHIP_RIGHT: f32 = 92.0;
-/// One source badge.
-pub const BADGE_W: f32 = 74.0;
-pub const BADGE_H: f32 = 20.0;
+/// One source badge — on the strip now (§3.4), where it carries the
+/// source's name and a thumbnail of it.
+pub const BADGE_W: f32 = 52.0;
+pub const BADGE_H: f32 = 44.0;
+/// The mod strip: the band across the foot of every page (§3.4).
+pub const STRIP_HEIGHT: f32 = 56.0;
+/// A card in the inspector (§3.4) says so with this row, and the layout
+/// places it in the drawer over the page rather than in a band.
+pub const INSPECTOR_ROW: usize = usize::MAX;
 
 /// One box of the block diagram: a heading, a picture, and its controls.
 #[derive(Debug, Clone, PartialEq)]
@@ -380,8 +476,8 @@ pub struct FlopsynthView {
     /// whoever built the view: the page is a fact about what this window is
     /// looking at, and the layout draws what it is given.
     pub page: FlopsynthPage,
-    /// Every modulation source, in the order the badge row shows them. Drawn
-    /// on the Modulation page only.
+    /// Every modulation source, in the order the strip's badges show them —
+    /// on every page (§3.4).
     pub sources: Vec<String>,
     /// The matrix, as rows.
     pub routes: Vec<FlopsynthRoute>,
@@ -410,6 +506,23 @@ pub struct FlopsynthView {
     /// design size. Window state, read off the settings by whoever builds
     /// the view.
     pub scale: f32,
+    /// A thumbnail per source, index for index with `sources`, for the
+    /// strip's badges (§3.4): an envelope's curve, an LFO's cycle, a macro's
+    /// value as one sample; empty for a source with no picture.
+    pub source_shapes: Vec<Vec<f32>>,
+    /// Which family each source is, index for index with `sources` — the
+    /// ink its badge and its rings wear (§3.3). The host's to say: the
+    /// window never sees a `ModSource` (INVARIANT 4), and a name is not a
+    /// family.
+    pub source_families: Vec<crate::document::SourceFamily>,
+    /// Every destination a route could reach, by label, in the order the
+    /// table's destination chooser lists them (§3.4). On the Matrix page.
+    pub destinations: Vec<String>,
+    /// The curves a route can have, by name, in the curve chooser's order.
+    pub curves: Vec<String>,
+    /// The source whose editor the inspector shows, if it is open — window
+    /// state; the card that edits it is in `cards`, marked `INSPECTOR_ROW`.
+    pub inspector: Option<usize>,
     /// A picture per option, for the choosers whose options are shapes —
     /// a wavetable's first frame, an LFO wave's cycle — by the chooser's
     /// address (§3.3). Behind an `Arc`, because the bank's forty tables are
@@ -434,6 +547,11 @@ impl Default for FlopsynthView {
             browse: PresetBrowse::default(),
             matrix_scroll: 0.0,
             scale: 1.0,
+            source_shapes: Vec::new(),
+            source_families: Vec::new(),
+            destinations: Vec::new(),
+            curves: Vec::new(),
+            inspector: None,
             thumbnails: Vec::new(),
             fx_room: false,
         }
@@ -482,9 +600,15 @@ pub struct FlopsynthLayout {
     /// The scale chooser's chip, at the right end of the tab strip (§3.2).
     pub scale_chip: Rect,
     pub cards: Vec<CardLayout>,
-    /// The Modulation page's source badges, one per `FlopsynthView::sources`.
-    /// Empty on every other page.
+    /// The strip across the foot of the page (§3.4), on every page.
+    pub strip: Rect,
+    /// The strip's source badges, one per `FlopsynthView::sources`.
     pub badges: Vec<Rect>,
+    /// The inspector's drawer over the page, above the strip, when a source
+    /// is being inspected; empty otherwise. The card in it is the one in
+    /// `cards` marked `INSPECTOR_ROW`.
+    pub inspector: Rect,
+    pub inspector_close: Rect,
     /// The panel the matrix rows are in. Present on the Modulation page even
     /// with no routes, so it can say there are none — an empty area where a
     /// list should be reads as a bug.
@@ -493,6 +617,8 @@ pub struct FlopsynthLayout {
     /// route it names whatever the scroll. A row scrolled out of the panel
     /// has an empty frame and is neither drawn nor pressed.
     pub routes: Vec<MatrixRow>,
+    /// The table's header: the column heads and the `+` (§3.4).
+    pub matrix_header: MatrixHeader,
     /// The furthest `FlopsynthView::matrix_scroll` can go: the rows that do
     /// not fit, in pixels; zero when they all do.
     pub matrix_max_scroll: f32,
@@ -519,9 +645,13 @@ impl Default for FlopsynthLayout {
             canopy: Rect::ZERO,
             scale_chip: Rect::ZERO,
             cards: Vec::new(),
+            strip: Rect::ZERO,
             badges: Vec::new(),
+            inspector: Rect::ZERO,
+            inspector_close: Rect::ZERO,
             matrix: Rect::ZERO,
             routes: Vec::new(),
+            matrix_header: MatrixHeader::default(),
             matrix_max_scroll: 0.0,
             matrix_scrollbar: Rect::ZERO,
             presets: PresetsLayout::default(),
@@ -546,6 +676,8 @@ pub enum FlopsynthHit {
     AddEffect,
     /// The scale chooser on the tab strip.
     Scale,
+    /// The inspector's ✕.
+    InspectorClose,
 }
 
 /// What the `+ effect` button says.
@@ -786,54 +918,152 @@ pub fn flopsynth_layout_with(
         (body.height - canopy_height - gap).max(0.0),
     );
 
+    // The strip across the foot of every page (§3.4), and its badges: one
+    // per source, left to right, as wide as the strip lets that many be.
+    let strip_h = (STRIP_HEIGHT * scale).min(body.height);
+    let strip = Rect::new(body.x, body.bottom() - strip_h, body.width, strip_h).intersection(&body);
+    let badges = strip_badges(strip, view.sources.len(), scale);
+    body = Rect::new(
+        body.x,
+        body.y,
+        body.width,
+        (body.height - strip_h - gap).max(0.0),
+    );
+    // What the layout hands back as its body: the page, between the canopy
+    // and the strip. `body` goes on being cut — by the drawer, by the
+    // matrix — and what is left of it is where the cards went, which on a
+    // page whose table took all of it is nothing at all; and a window whose
+    // body is nothing draws nothing (2026-09-18: the first click on a badge
+    // on the Matrix page).
+    let page_body = body;
+
+    // The inspector's drawer (§3.4): the card marked for it, full width,
+    // laid over the page just above the strip, as tall as the card and its
+    // header need. The page's own cards are placed as if it were not there
+    // — it is a drawer, and what is under it comes back when it shuts.
+    let inspected: Vec<usize> = view
+        .cards
+        .iter()
+        .enumerate()
+        .filter(|(_, card)| card.row == INSPECTOR_ROW)
+        .map(|(index, _)| index)
+        .collect();
+    let page_cards: Vec<FlopsynthCard> = view
+        .cards
+        .iter()
+        .filter(|card| card.row != INSPECTOR_ROW)
+        .cloned()
+        .collect();
+    let (inspector, inspector_close, inspector_cards) =
+        if view.inspector.is_some() && !inspected.is_empty() {
+            let pad = CARD_PAD * scale;
+            // As wide as the drawer, whatever columns the host declared: the
+            // editor of one source has the whole width to itself, which is
+            // what the LFO's and the envelope's pictures want.
+            let inner_w = body.width - pad * 2.0;
+            let columns = ((inner_w - pad * 2.0) / (FLOP_GRID.cell_w * scale)).floor() as usize;
+            let inspected_cards: Vec<FlopsynthCard> = inspected
+                .iter()
+                .map(|i| {
+                    let mut card = view.cards[*i].clone();
+                    card.columns = columns.max(1);
+                    card
+                })
+                .collect();
+            let probe = Rect::new(body.x + pad, body.y, body.width - pad * 2.0, f32::MAX / 4.0);
+            let natural = place(probe, &inspected_cards, FLOP_GRID, scale, measure);
+            let tall = natural
+                .iter()
+                .map(|c| c.frame.bottom())
+                .fold(probe.y, f32::max)
+                - probe.y;
+            let height = (tall + pad * 2.0).min(body.height);
+            // Over the page's foot on every page but the Matrix, where the
+            // drawer is the top of the page and the table takes the rest —
+            // §3.4's "the inspector plus the full table".
+            let drawer = if view.page == FlopsynthPage::Modulation {
+                let drawer = Rect::new(body.x, body.y, body.width, height);
+                body = Rect::new(
+                    body.x,
+                    body.y + height + gap,
+                    body.width,
+                    (body.height - height - gap).max(0.0),
+                );
+                drawer
+            } else {
+                Rect::new(body.x, body.bottom() - height, body.width, height)
+            };
+            let inner = Rect::new(
+                drawer.x + pad,
+                drawer.y + pad,
+                drawer.width - pad * 2.0,
+                (drawer.height - pad * 2.0).max(0.0),
+            );
+            let placed = place(inner, &inspected_cards, FLOP_GRID, scale, measure);
+            // The ✕ sits at the right end of the card's own header: the
+            // drawer has no header of its own, because the card's nameplate
+            // already says what is in it and a band saying it again over
+            // the band that says it was two headers for one thing.
+            let close = placed.first().map_or(Rect::ZERO, |card| {
+                let size = REMOVE_SIZE * scale;
+                Rect::new(
+                    card.header.right() - pad - size,
+                    card.header.y + (card.header.height - size) / 2.0,
+                    size,
+                    size,
+                )
+            });
+            (drawer, close, placed)
+        } else {
+            (Rect::ZERO, Rect::ZERO, Vec::new())
+        };
+    // Stitches a layout of the page's cards and of the inspected ones back
+    // into the view's own order, so a card's index is the same everywhere.
+    let stitch = |page: Vec<CardLayout>, inspector: Vec<CardLayout>| -> Vec<CardLayout> {
+        let (mut page, mut inspector) = (page.into_iter(), inspector.into_iter());
+        view.cards
+            .iter()
+            .map(|card| {
+                if card.row == INSPECTOR_ROW {
+                    inspector.next()
+                } else {
+                    page.next()
+                }
+                .unwrap_or(CardLayout {
+                    frame: Rect::ZERO,
+                    header: Rect::ZERO,
+                    picture: Rect::ZERO,
+                    cells: Vec::new(),
+                    remove: Rect::ZERO,
+                })
+            })
+            .collect()
+    };
+
     // The Presets page is the bank and nothing else: whatever cards the host
     // put in the view are not drawn on it.
     if view.page == FlopsynthPage::Presets {
         return FlopsynthLayout {
-            body,
+            body: page_body,
             whole,
             tabs,
             canopy,
             scale_chip,
-            cards: empty_cards(view),
+            strip,
+            badges,
+            inspector,
+            inspector_close,
+            cards: stitch(empty_cards(view), inspector_cards),
             presets: presets_layout(body, view),
             ..Default::default()
         };
     }
 
-    // The Modulation page's two extra pieces: the badge row across the top of
-    // what is left, and the matrix along the bottom. Both are taken out of the
-    // body *before* the cards are placed, so the cards cannot run under them.
-    let (badges, matrix) = match view.page {
+    // The Modulation page's matrix, along the bottom of what is left. Taken
+    // out of the body *before* the cards are placed, so the cards cannot
+    // run under it.
+    let matrix = match view.page {
         FlopsynthPage::Modulation => {
-            let per_row = ((body.width + CARD_GAP) / (BADGE_W + CARD_GAP)).max(1.0) as usize;
-            let rows = view.sources.len().div_ceil(per_row.max(1));
-            let badges: Vec<Rect> = view
-                .sources
-                .iter()
-                .enumerate()
-                .map(|(index, _)| {
-                    let (column, row) = (index % per_row, index / per_row);
-                    Rect::new(
-                        body.x + column as f32 * (BADGE_W + CARD_GAP),
-                        body.y + row as f32 * (BADGE_H + 2.0),
-                        BADGE_W,
-                        BADGE_H,
-                    )
-                    .intersection(&body)
-                })
-                .collect();
-            let used = match rows {
-                0 => 0.0,
-                rows => rows as f32 * (BADGE_H + 2.0) + gap,
-            };
-            body = Rect::new(
-                body.x,
-                body.y + used,
-                body.width,
-                (body.height - used).max(0.0),
-            );
-
             // The matrix takes the room its rows need — a matrix with two
             // routes in it should not take a third of the window — up to
             // what the cards leave it, and never less than
@@ -842,7 +1072,7 @@ pub fn flopsynth_layout_with(
             let wanted =
                 CARD_HEADER + CARD_PAD * 2.0 + (view.routes.len().max(1) as f32) * MATRIX_ROW;
             let least = CARD_HEADER + CARD_PAD * 2.0 + MATRIX_ROWS_LEAST as f32 * MATRIX_ROW;
-            let natural = place(body, &view.cards, FLOP_GRID, scale, measure)
+            let natural = place(body, &page_cards, FLOP_GRID, scale, measure)
                 .iter()
                 .map(|c| c.frame.bottom())
                 .fold(body.y, f32::max)
@@ -850,31 +1080,43 @@ pub fn flopsynth_layout_with(
             let height = wanted
                 .min((body.height - natural - gap).max(least.min(wanted)))
                 .min(body.height);
-            let matrix =
-                Rect::new(body.x, body.bottom() - height, body.width, height).intersection(&body);
+            // A page with no cards of its own — the Matrix page since §3.4
+            // — is the table, from the canopy (or the drawer) down: a list
+            // floating at the foot of an empty page reads as one that lost
+            // something.
+            let matrix = if page_cards.is_empty() {
+                body
+            } else {
+                Rect::new(body.x, body.bottom() - height, body.width, height).intersection(&body)
+            };
+            let height = matrix.height;
             body = Rect::new(
                 body.x,
                 body.y,
                 body.width,
                 (body.height - height - gap).max(0.0),
             );
-            (badges, matrix)
+            matrix
         }
-        _ => (Vec::new(), Rect::ZERO),
+        _ => Rect::ZERO,
     };
-    if view.cards.is_empty() {
-        let (routes, matrix_max_scroll, matrix_scrollbar) =
-            matrix_rows(matrix, view.routes.len(), view.matrix_scroll);
+    if page_cards.is_empty() {
+        let (routes, matrix_header, matrix_max_scroll, matrix_scrollbar) =
+            matrix_rows(matrix, view.routes.len(), view.matrix_scroll, scale);
         return FlopsynthLayout {
-            body,
+            body: page_body,
             whole,
             tabs,
             canopy,
             scale_chip,
-            cards: empty_cards(view),
+            strip,
             badges,
+            inspector,
+            inspector_close,
+            cards: stitch(Vec::new(), inspector_cards),
             matrix,
             routes,
+            matrix_header,
             matrix_max_scroll,
             matrix_scrollbar,
             add_effect: add_effect_button(body, view, &[]),
@@ -885,7 +1127,7 @@ pub fn flopsynth_layout_with(
     // Placed once, at the window's scale. Nothing shrinks: a page that would
     // not fit is a window smaller than the page's size at its scale, which
     // the window refuses (`layout::flopsynth_window_size`).
-    let cards = place(body, &view.cards, FLOP_GRID, scale, measure);
+    let cards = place(body, &page_cards, FLOP_GRID, scale, measure);
     // The matrix was given the least it needs before the cards were placed;
     // now that they are, it takes everything under them.
     let matrix = if matrix.is_empty() {
@@ -903,19 +1145,23 @@ pub fn flopsynth_layout_with(
             (matrix.bottom() - top).max(0.0),
         )
     };
-    let (routes, matrix_max_scroll, matrix_scrollbar) =
-        matrix_rows(matrix, view.routes.len(), view.matrix_scroll);
+    let (routes, matrix_header, matrix_max_scroll, matrix_scrollbar) =
+        matrix_rows(matrix, view.routes.len(), view.matrix_scroll, scale);
     let add_effect = add_effect_button(body, view, &cards);
     FlopsynthLayout {
-        body,
+        body: page_body,
         whole,
         tabs,
         canopy,
         scale_chip,
-        cards,
+        cards: stitch(cards, inspector_cards),
+        strip,
         badges,
+        inspector,
+        inspector_close,
         matrix,
         routes,
+        matrix_header,
         matrix_max_scroll,
         matrix_scrollbar,
         presets: PresetsLayout::default(),
@@ -1289,37 +1535,34 @@ fn place(
 }
 
 /// The rows inside the matrix panel, under its heading, scrolled by
-/// `scroll` (clamped to what is hidden); with how far it could scroll and
-/// the thumb that says where it is.
-///
-/// A row is drawn **whole or not at all**: the list under the heading is a
-/// whole number of rows, a row scrolled above it or below the panel's foot
-/// is an empty rect, and the thumb's length is the share of the rows on
-/// show. Half a row at either end was tried and read as a row cut off.
-fn matrix_rows(panel: Rect, count: usize, scroll: f32) -> (Vec<MatrixRow>, f32, Rect) {
+/// `scroll` (clamped to what is hidden); with the header's heads, how far it
+/// could scroll and the thumb that says where it is.
+fn matrix_rows(
+    panel: Rect,
+    count: usize,
+    scroll: f32,
+    scale: f32,
+) -> (Vec<MatrixRow>, MatrixHeader, f32, Rect) {
     if panel.is_empty() {
-        return (Vec::new(), 0.0, Rect::ZERO);
+        return (Vec::new(), MatrixHeader::default(), 0.0, Rect::ZERO);
     }
-    // The four columns, as shares of the row: the two names take most of it,
-    // the depth slider is fixed because a slider that changed length would
-    // change what a pixel is worth, and the ✕ is square.
-    const REMOVE: f32 = 18.0;
-    const DEPTH: f32 = 110.0;
-    let list_top = panel.y + CARD_HEADER + CARD_PAD;
-    let list_height = (panel.bottom() - CARD_PAD - list_top).max(0.0);
-    let fit = ((list_height + 0.01) / MATRIX_ROW).floor().max(0.0) as usize;
+    let row_h = MATRIX_ROW * scale;
+    let pad = CARD_PAD * scale;
+    let list_top = panel.y + CARD_HEADER * scale + pad;
+    let list_height = (panel.bottom() - pad - list_top).max(0.0);
+    let fit = ((list_height + 0.01) / row_h).floor().max(0.0) as usize;
     let hidden = count.saturating_sub(fit);
-    let max_scroll = hidden as f32 * MATRIX_ROW;
+    let max_scroll = hidden as f32 * row_h;
     // Whole rows: a scroll between rows is rounded to the nearer one.
-    let scroll = (scroll.clamp(0.0, max_scroll) / MATRIX_ROW).round() * MATRIX_ROW;
-    let first = (scroll / MATRIX_ROW).round() as usize;
+    let scroll = (scroll.clamp(0.0, max_scroll) / row_h).round() * row_h;
+    let first = (scroll / row_h).round() as usize;
     // The thumb, down the right edge of the list, in a lane the rows stop
     // short of so it covers no row's ✕.
-    let lane = if hidden == 0 { 0.0 } else { 8.0 };
+    let lane = if hidden == 0 { 0.0 } else { 8.0 * scale };
     let scrollbar = if hidden == 0 || count == 0 {
         Rect::ZERO
     } else {
-        let track = Rect::new(panel.right() - CARD_PAD - 4.0, list_top, 4.0, list_height);
+        let track = Rect::new(panel.right() - pad - 4.0, list_top, 4.0, list_height);
         let length = (track.height * fit as f32 / count as f32).max(12.0);
         let travel = (track.height - length).max(0.0);
         let at = if max_scroll > 0.0 {
@@ -1329,46 +1572,236 @@ fn matrix_rows(panel: Rect, count: usize, scroll: f32) -> (Vec<MatrixRow>, f32, 
         };
         Rect::new(track.x, track.y + at, track.width, length).intersection(&panel)
     };
+    // The columns, cut once for every row from the width a row has: the
+    // fixed ones from each end, the destination what is left.
+    let width = (panel.width - pad * 2.0 - lane).max(0.0);
+    let columns = matrix_columns(panel.x + pad, width, scale);
     let rows = (0..count)
         .map(|index| {
             let frame = if index < first || index >= first + fit {
                 Rect::ZERO
             } else {
                 Rect::new(
-                    panel.x + CARD_PAD,
-                    list_top + (index - first) as f32 * MATRIX_ROW,
-                    (panel.width - CARD_PAD * 2.0 - lane).max(0.0),
-                    MATRIX_ROW,
+                    panel.x + pad,
+                    list_top + (index - first) as f32 * row_h,
+                    width,
+                    row_h,
                 )
                 .intersection(&panel)
             };
-            let remove = Rect::new(
-                frame.right() - REMOVE,
-                frame.y + (frame.height - REMOVE) / 2.0,
-                REMOVE,
-                REMOVE,
-            )
-            .intersection(&frame);
-            let depth = Rect::new(
-                (remove.x - CARD_GAP - DEPTH).max(frame.x),
-                frame.y + 4.0,
-                DEPTH.min((remove.x - CARD_GAP - frame.x).max(0.0)),
-                (frame.height - 8.0).max(0.0),
-            )
-            .intersection(&frame);
-            let names = (depth.x - frame.x - CARD_GAP).max(0.0);
-            let source = Rect::new(frame.x, frame.y, names * 0.4, frame.height);
-            let destination = Rect::new(frame.x + names * 0.4, frame.y, names * 0.6, frame.height);
+            let cell = |(x, w): (f32, f32), inset: f32| {
+                if frame.is_empty() {
+                    Rect::ZERO
+                } else {
+                    Rect::new(x, frame.y + inset, w, (frame.height - inset * 2.0).max(0.0))
+                        .intersection(&frame)
+                }
+            };
+            let switch = 3.0 * scale;
             MatrixRow {
                 frame,
-                source,
-                destination,
-                depth,
-                remove,
+                grip: cell(columns.grip, 0.0),
+                source: cell(columns.source, 0.0),
+                destination: cell(columns.destination, 0.0),
+                depth: cell(columns.depth, 4.0 * scale),
+                via: cell(columns.via, 0.0),
+                curve: cell(columns.curve, 0.0),
+                invert: cell(columns.invert, switch),
+                bypass: cell(columns.bypass, switch),
+                remove: {
+                    let size = MATRIX_REMOVE * scale;
+                    cell(columns.remove, ((row_h - size) / 2.0).max(0.0))
+                },
             }
         })
         .collect();
-    (rows, max_scroll, scrollbar)
+    // The heads, in the header band over the same columns; the `+` at the
+    // right end, over the ✕ column and what it borrows from the switches.
+    let header_h = CARD_HEADER * scale;
+    let head = |(x, w): (f32, f32)| Rect::new(x, panel.y, w, header_h).intersection(&panel);
+    let add_w = MATRIX_ADD_W * scale;
+    let header = MatrixHeader {
+        source: head(columns.source),
+        destination: head(columns.destination),
+        depth: head(columns.depth),
+        via: head(columns.via),
+        curve: head(columns.curve),
+        invert: head(columns.invert),
+        bypass: head(columns.bypass),
+        add: Rect::new(
+            columns.remove.0 + columns.remove.1 - add_w,
+            panel.y + 2.0 * scale,
+            add_w,
+            (header_h - 4.0 * scale).max(0.0),
+        )
+        .intersection(&panel),
+    };
+    (rows, header, max_scroll, scrollbar)
+}
+
+/// Where each column of the table starts and how wide it is, across a row
+/// `width` wide from `x`.
+struct MatrixColumns {
+    grip: (f32, f32),
+    source: (f32, f32),
+    destination: (f32, f32),
+    depth: (f32, f32),
+    via: (f32, f32),
+    curve: (f32, f32),
+    invert: (f32, f32),
+    bypass: (f32, f32),
+    remove: (f32, f32),
+}
+
+fn matrix_columns(x: f32, width: f32, scale: f32) -> MatrixColumns {
+    let gap = MATRIX_COL_GAP * scale;
+    let fixed = [
+        MATRIX_GRIP,
+        MATRIX_SOURCE,
+        MATRIX_DEPTH,
+        MATRIX_VIA,
+        MATRIX_CURVE,
+        MATRIX_SWITCH,
+        MATRIX_SWITCH,
+        MATRIX_REMOVE,
+    ]
+    .iter()
+    .map(|w| w * scale)
+    .sum::<f32>()
+        + gap * 8.0;
+    // The destination flexes; when the row is too narrow even for the
+    // fixed columns, every column shrinks alike rather than the last ones
+    // falling off the end.
+    let squeeze = if fixed > width && fixed > 0.0 {
+        width / fixed
+    } else {
+        1.0
+    };
+    let w = |px: f32| px * scale * squeeze;
+    let destination_w = (width - fixed).max(0.0);
+    let mut at = x;
+    let mut take = |width: f32| {
+        let cell = (at, width);
+        at += width + gap * squeeze;
+        cell
+    };
+    MatrixColumns {
+        grip: take(w(MATRIX_GRIP)),
+        source: take(w(MATRIX_SOURCE)),
+        destination: take(destination_w),
+        depth: take(w(MATRIX_DEPTH)),
+        via: take(w(MATRIX_VIA)),
+        curve: take(w(MATRIX_CURVE)),
+        invert: take(w(MATRIX_SWITCH)),
+        bypass: take(w(MATRIX_SWITCH)),
+        remove: take(w(MATRIX_REMOVE)),
+    }
+}
+
+/// The strip's badges: `count` of them left to right, [`BADGE_W`] wide at
+/// `scale` or narrower when that many will not fit, centred in the strip's
+/// height with a little air.
+fn strip_badges(strip: Rect, count: usize, scale: f32) -> Vec<Rect> {
+    if strip.is_empty() || count == 0 {
+        return Vec::new();
+    }
+    let pad = CARD_PAD * scale;
+    let gap = 3.0 * scale;
+    let room = strip.width - pad * 2.0;
+    let width = ((room - gap * (count as f32 - 1.0)) / count as f32).min(BADGE_W * scale);
+    let height = (BADGE_H * scale).min(strip.height - pad);
+    (0..count)
+        .map(|i| {
+            Rect::new(
+                strip.x + pad + i as f32 * (width + gap),
+                strip.y + (strip.height - height) / 2.0,
+                width,
+                height,
+            )
+            .intersection(&strip)
+        })
+        .collect()
+}
+
+/// The three bands of a badge (§3.4): the source's name across the top, its
+/// picture under it, and a hairline along the foot that reads its level.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BadgeAnatomy {
+    pub name: Rect,
+    pub picture: Rect,
+    pub level: Rect,
+}
+
+/// Where a badge's name, picture and level go, at the window's scale.
+pub fn badge_anatomy(badge: Rect, scale: f32) -> BadgeAnatomy {
+    let text = CELL_TEXT_H * scale;
+    let level_h = 2.0 * scale;
+    let inset = 3.0 * scale;
+    let name = Rect::new(
+        badge.x + inset,
+        badge.y + 1.0,
+        badge.width - inset * 2.0,
+        text,
+    );
+    let level = Rect::new(
+        badge.x + inset,
+        badge.bottom() - inset - level_h,
+        badge.width - inset * 2.0,
+        level_h,
+    );
+    let picture = Rect::new(
+        badge.x + inset,
+        name.bottom() + 1.0,
+        badge.width - inset * 2.0,
+        (level.y - 2.0 * scale - name.bottom() - 1.0).max(0.0),
+    );
+    BadgeAnatomy {
+        name,
+        picture,
+        level,
+    }
+}
+
+/// A source's name as its badge says it: whole if it fits the name band,
+/// else cut to what does with an ellipsis — "Bright…" for a macro called
+/// Brightness. The window shapes each candidate it tries (the measure is
+/// the shaper's), so the renderer, asking the same question of the same
+/// labels, gets the same answer.
+pub fn badge_caption(name: &str, room: f32, measure: Measure<'_>) -> String {
+    if measure(name) <= room {
+        return name.to_string();
+    }
+    let chars: Vec<char> = name.chars().collect();
+    for n in (1..chars.len()).rev() {
+        let head: String = chars[..n].iter().collect();
+        let candidate = format!("{}\u{2026}", head.trim_end());
+        if measure(&candidate) <= room {
+            return candidate;
+        }
+    }
+    format!("{}\u{2026}", chars.first().copied().unwrap_or(' '))
+}
+
+/// A source's picture fitted to its badge: a shape that never dips under
+/// zero — an envelope, a macro — fills the picture from its floor; one that
+/// swings both ways is centred on it, the way [`super::thumbnail_points`]
+/// draws a wave.
+pub fn badge_points(picture: Rect, shape: &[f32]) -> Vec<(f32, f32)> {
+    if shape.iter().any(|s| *s < 0.0) {
+        return super::thumbnail_points(picture, shape);
+    }
+    let last = shape.len().saturating_sub(1).max(1) as f32;
+    let inset = 1.0;
+    shape
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            (
+                picture.x + picture.width * i as f32 / last,
+                picture.bottom() - inset - (picture.height - inset * 2.0) * s.clamp(0.0, 1.0),
+            )
+        })
+        .collect()
 }
 
 /// Which page's tab is under `(x, y)`.
@@ -1407,15 +1840,66 @@ pub fn badge_at(layout: &FlopsynthLayout, x: f32, y: f32) -> Option<usize> {
 
 /// What a press in the matrix landed on.
 pub fn matrix_hit(layout: &FlopsynthLayout, x: f32, y: f32) -> Option<MatrixHit> {
+    let inside = |rect: Rect| !rect.is_empty() && rect.contains(x, y);
+    let head = &layout.matrix_header;
+    if inside(head.add) {
+        return Some(MatrixHit::Add);
+    }
+    if inside(head.source) {
+        return Some(MatrixHit::SortSource);
+    }
+    if inside(head.destination) {
+        return Some(MatrixHit::SortDestination);
+    }
     for (index, row) in layout.routes.iter().enumerate() {
-        if !row.remove.is_empty() && row.remove.contains(x, y) {
-            return Some(MatrixHit::Remove(index));
+        if row.frame.is_empty() || !row.frame.contains(x, y) {
+            continue;
         }
-        if !row.depth.is_empty() && row.depth.contains(x, y) {
-            return Some(MatrixHit::Depth(index));
-        }
+        let cells = [
+            (row.remove, MatrixHit::Remove(index)),
+            (row.depth, MatrixHit::Depth(index)),
+            (row.grip, MatrixHit::Grip(index)),
+            (row.source, MatrixHit::Source(index)),
+            (row.destination, MatrixHit::Destination(index)),
+            (row.via, MatrixHit::Via(index)),
+            (row.curve, MatrixHit::Curve(index)),
+            (row.invert, MatrixHit::Invert(index)),
+            (row.bypass, MatrixHit::Bypass(index)),
+        ];
+        return cells
+            .iter()
+            .find(|(rect, _)| inside(*rect))
+            .map(|(_, hit)| *hit);
     }
     None
+}
+
+/// Where a row dragged by its grip would land if let go with the pointer
+/// at `y` (§3.4): the index of the row under it, one past the last for a
+/// pointer below them all, `None` for one outside the table.
+pub fn route_landing(layout: &FlopsynthLayout, y: f32) -> Option<usize> {
+    if layout.matrix.is_empty() || y < layout.matrix.y || y > layout.matrix.bottom() {
+        return None;
+    }
+    let shown: Vec<(usize, Rect)> = layout
+        .routes
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| !row.frame.is_empty())
+        .map(|(index, row)| (index, row.frame))
+        .collect();
+    let Some((first, top)) = shown.first().copied() else {
+        return Some(0);
+    };
+    if y < top.y {
+        return Some(first);
+    }
+    for (index, frame) in &shown {
+        if y <= frame.bottom() {
+            return Some(*index);
+        }
+    }
+    shown.last().map(|(index, _)| index + 1)
 }
 
 /// The depth a press at `x` on a row's slider means, -1..=1.
@@ -1440,7 +1924,12 @@ pub fn flopsynth_hit(layout: &FlopsynthLayout, x: f32, y: f32) -> Option<Flopsyn
     if !layout.scale_chip.is_empty() && layout.scale_chip.contains(x, y) {
         return Some(FlopsynthHit::Scale);
     }
-    for (card, placed) in layout.cards.iter().enumerate() {
+    if !layout.inspector_close.is_empty() && layout.inspector_close.contains(x, y) {
+        return Some(FlopsynthHit::InspectorClose);
+    }
+    // In reverse: the last card drawn is the first one under the pointer,
+    // which is what puts the inspector's drawer over the page.
+    for (card, placed) in layout.cards.iter().enumerate().rev() {
         for (param, cell) in &placed.cells {
             if cell.contains(x, y) {
                 return Some(FlopsynthHit::Control {

@@ -7202,6 +7202,146 @@ impl StudioHost for Session {
         Session::remove_route(self, address, index);
     }
 
+    fn set_route_source(&mut self, row: usize, source: usize) {
+        self.edit_route(row, |patch, route| {
+            let (source, _) = fontelle_core::flopsynth::sources(patch)
+                .into_iter()
+                .nth(source)?;
+            route.source = source;
+            Some(())
+        });
+    }
+
+    fn set_route_destination(&mut self, row: usize, destination: usize) {
+        self.edit_route(row, |patch, route| {
+            let (dest, _) = fontelle_core::flopsynth::destinations(patch)
+                .into_iter()
+                .nth(destination)?;
+            route.destination = dest;
+            Some(())
+        });
+    }
+
+    fn set_route_via(&mut self, row: usize, via: Option<usize>) {
+        self.edit_route(row, |patch, route| {
+            route.via = match via {
+                None => None,
+                Some(index) => Some(
+                    fontelle_core::flopsynth::sources(patch)
+                        .into_iter()
+                        .nth(index)?
+                        .0,
+                ),
+            };
+            Some(())
+        });
+    }
+
+    fn set_route_curve(&mut self, row: usize, curve: usize) {
+        self.edit_route(row, |_, route| {
+            route.curve = crate::flopsynth::CURVES.get(curve)?.0;
+            Some(())
+        });
+    }
+
+    fn set_route_invert(&mut self, row: usize, invert: bool) {
+        self.edit_route(row, |_, route| {
+            route.invert = invert;
+            Some(())
+        });
+    }
+
+    fn set_route_bypass(&mut self, row: usize, bypass: bool) {
+        self.edit_route(row, |_, route| {
+            route.bypass = bypass;
+            Some(())
+        });
+    }
+
+    fn remove_route_row(&mut self, row: usize) {
+        self.edit_matrix(|_, routes| {
+            if row >= routes.len() {
+                return false;
+            }
+            routes.remove(row);
+            true
+        });
+    }
+
+    fn add_route_row(&mut self) {
+        self.edit_matrix(|patch, routes| {
+            // From the first LFO to the first filter's cutoff — the route
+            // most patches have, and one that is heard at once — or to the
+            // first destination there is, for a patch with no filter.
+            let sources = fontelle_core::flopsynth::sources(patch);
+            let destinations = fontelle_core::flopsynth::destinations(patch);
+            let source = sources
+                .iter()
+                .find(|(s, _)| matches!(s, fontelle_core::ModSource::Lfo(_)))
+                .or(sources.first())
+                .map(|(s, _)| *s);
+            let destination = destinations
+                .iter()
+                .find(|(d, _)| matches!(d, fontelle_core::ModDest::FilterCutoff(0)))
+                .or(destinations.first())
+                .map(|(d, _)| *d);
+            let (Some(source), Some(destination)) = (source, destination) else {
+                return false;
+            };
+            routes.push(fontelle_core::ModRoute {
+                source,
+                destination,
+                depth: NEW_ROUTE_DEPTH,
+                curve: fontelle_core::Curve::Linear,
+                via: None,
+                invert: false,
+                bypass: false,
+            });
+            true
+        });
+    }
+
+    fn move_route(&mut self, row: usize, to: usize) {
+        self.edit_matrix(|_, routes| {
+            if row >= routes.len() || to == row || to == row + 1 {
+                return false;
+            }
+            let route = routes.remove(row);
+            // Before the row that was at `to`, which slid up one if it was
+            // past the one taken out; last for `to` past the end.
+            let at = if to > row { to - 1 } else { to }.min(routes.len());
+            routes.insert(at, route);
+            true
+        });
+    }
+
+    fn sort_routes(&mut self, by: fontelle_ui::document::RouteSort) {
+        self.edit_matrix(|patch, routes| {
+            let before = routes.clone();
+            match by {
+                fontelle_ui::document::RouteSort::Source => {
+                    let order = fontelle_core::flopsynth::sources(patch);
+                    routes.sort_by_key(|route| {
+                        order
+                            .iter()
+                            .position(|(s, _)| *s == route.source)
+                            .unwrap_or(usize::MAX)
+                    });
+                }
+                fontelle_ui::document::RouteSort::Destination => {
+                    let order = fontelle_core::flopsynth::destinations(patch);
+                    routes.sort_by_key(|route| {
+                        order
+                            .iter()
+                            .position(|(d, _)| *d == route.destination)
+                            .unwrap_or(usize::MAX)
+                    });
+                }
+            }
+            *routes != before
+        });
+    }
+
     // --- the preset system (`docs/flopsynth-plan.md` §P) ---
     //
     // Thin overrides onto the inherent methods below, which are where the work
@@ -7425,6 +7565,14 @@ impl StudioHost for Session {
         &self,
         page: fontelle_ui::canvas::FlopsynthPage,
     ) -> Option<fontelle_ui::canvas::FlopsynthView> {
+        self.flopsynth_inspecting(page, None)
+    }
+
+    fn flopsynth_inspecting(
+        &self,
+        page: fontelle_ui::canvas::FlopsynthPage,
+        inspector: Option<usize>,
+    ) -> Option<fontelle_ui::canvas::FlopsynthView> {
         let channel_id = self.selected_channel_id()?;
         let channel = self.project.channels.get(channel_id)?;
         // A channel playing a plugin draws the plugin's own parameters, even
@@ -7454,6 +7602,7 @@ impl StudioHost for Session {
                 lfo_phases: Session::lfo_phases(self).to_vec(),
             },
             bank,
+            inspector,
         );
         view.scale = self.flopsynth_scale();
         // The ring §12.2 asks for. Built once for the whole window rather than
@@ -9900,23 +10049,6 @@ impl Session {
 /// The modulation matrix, as the window asks about it
 /// (`docs/flopsynth-plan.md` §8.4).
 ///
-/// Which of the five inks a source's ring wears (`docs/flopsynth-next.md`
-/// §3.3) — the window may not see a `ModSource` (INVARIANT 4), so the
-/// host names the family.
-fn source_family(source: fontelle_core::ModSource) -> fontelle_ui::document::SourceFamily {
-    use fontelle_core::ModSource;
-    use fontelle_ui::document::SourceFamily;
-    match source {
-        ModSource::Envelope(_) => SourceFamily::Envelope,
-        ModSource::Lfo(_) => SourceFamily::Lfo,
-        ModSource::Macro(_) => SourceFamily::Macro,
-        ModSource::Aftertouch | ModSource::ModWheel | ModSource::PitchBend => {
-            SourceFamily::Performance
-        }
-        _ => SourceFamily::Note,
-    }
-}
-
 /// Every one of these is about the **selected channel's** patch, because the
 /// matrix is per-voice and a voice belongs to a channel. An insert has no
 /// matrix and never will: an effect is not per-voice (§3.6), which is why the
@@ -10265,7 +10397,7 @@ impl Session {
                     .filter_map(|route| {
                         let source = sources.iter().position(|(s, _)| *s == route.source)?;
                         Some(fontelle_ui::document::ModRing {
-                            family: source_family(route.source),
+                            family: crate::flopsynth::source_family(route.source),
                             depth: route.depth,
                             source,
                         })
@@ -10345,6 +10477,7 @@ impl Session {
                 curve: fontelle_core::Curve::Linear,
                 via: None,
                 invert: false,
+                bypass: false,
             });
         }
         // Structural: the number of routes changed, so the running voice's
@@ -10376,6 +10509,48 @@ impl Session {
             .nth(index);
         let Some(at) = at else { return };
         patch.mod_matrix.routes.remove(at);
+        self.store_patch_structural(channel, patch);
+    }
+
+    /// One edit to row `row` of the matrix (`docs/flopsynth-next.md` §3.4),
+    /// stored as one structural change — one undo — when `edit` made one.
+    /// A row that is not there, or a choice that is not, does nothing and
+    /// leaves no undo behind.
+    fn edit_route(
+        &mut self,
+        row: usize,
+        edit: impl FnOnce(&fontelle_core::Patch, &mut fontelle_core::ModRoute) -> Option<()>,
+    ) {
+        self.edit_matrix(|patch, routes| {
+            let Some(route) = routes.get(row).copied() else {
+                return false;
+            };
+            let mut edited = route;
+            if edit(patch, &mut edited).is_none() || edited == route {
+                return false;
+            }
+            routes[row] = edited;
+            true
+        });
+    }
+
+    /// One edit to the matrix's rows — an add, a remove, a move, a sort —
+    /// stored as one structural change when `edit` says it changed them.
+    fn edit_matrix(
+        &mut self,
+        edit: impl FnOnce(&fontelle_core::Patch, &mut Vec<fontelle_core::ModRoute>) -> bool,
+    ) {
+        let Some(channel) = self.selected_channel_id() else {
+            return;
+        };
+        let Some(mut patch) = self.matrix_patch() else {
+            return;
+        };
+        let mut routes = patch.mod_matrix.routes.clone();
+        if !edit(&patch, &mut routes) {
+            return;
+        }
+        patch.mod_matrix.routes = routes;
         self.store_patch_structural(channel, patch);
     }
 }

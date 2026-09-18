@@ -104,6 +104,7 @@ fn the_heaviest_patch() -> fontelle_core::Patch {
         curve: Curve::Linear,
         via: None,
         invert: false,
+        bypass: false,
     };
     patch.mod_matrix.routes.extend([
         route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.4),

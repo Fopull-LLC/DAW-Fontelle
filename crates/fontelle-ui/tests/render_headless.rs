@@ -3307,6 +3307,17 @@ fn shoot_flopsynth_full(
     name: &str,
     sky: Option<fontelle_ui::render::SkyFrame>,
 ) -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLayout, u32)> {
+    shoot_flopsynth_view(theme, name, sky, |_| {})
+}
+
+/// [`shoot_flopsynth_full`] with the view changed before it is laid out —
+/// a page, a strip's sources, an open inspector.
+fn shoot_flopsynth_view(
+    theme: Theme,
+    name: &str,
+    sky: Option<fontelle_ui::render::SkyFrame>,
+    tweak: impl FnOnce(&mut fontelle_ui::canvas::FlopsynthView),
+) -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLayout, u32)> {
     use fontelle_types::ParamAddress;
     use fontelle_ui::canvas::{
         FlopsynthCard, FlopsynthPicture, FlopsynthView, InstrumentGroup, InstrumentParam,
@@ -3371,6 +3382,8 @@ fn shoot_flopsynth_full(
         voices: 3,
         ..FlopsynthView::default()
     };
+    let mut view = view;
+    tweak(&mut view);
 
     let (ew, eh) = fontelle_ui::layout::FLOPSYNTH_SIZE;
     let panel = fontelle_ui::layout::editor_window_layout(ew as f32, eh as f32, &theme.metrics);
@@ -3378,7 +3391,6 @@ fn shoot_flopsynth_full(
 
     let mut labels = Labels::new();
     for caption in [
-        fontelle_ui::render::MATRIX_HEADING,
         fontelle_ui::render::NO_ROUTES,
         fontelle_ui::render::SAVE,
         fontelle_ui::render::SAVE_AS,
@@ -3410,6 +3422,12 @@ fn shoot_flopsynth_full(
             labels.ensure_styled(&param.label, &theme.font, t.caption, &mut text);
             labels.ensure_styled(&param.display, &theme.font, t.value, &mut text);
         }
+    }
+    // The strip's badges wear their names as captions, and the drawer's
+    // header is the inspected source's name as a heading.
+    for source in &view.sources {
+        labels.ensure_styled(source, &theme.font, t.caption, &mut text);
+        labels.ensure_styled(source, &theme.font, t.heading, &mut text);
     }
 
     // A route on the filter's cutoff, so the violet arc is in the shot.
@@ -3461,6 +3479,7 @@ fn shoot_flopsynth_full(
             source_values: Vec::new(),
             assigning: None,
             carrying_slot: None,
+            carrying_route: None,
             destinations: vec![(1, 0), (1, 1)],
             about: Vec::new(),
             hover_at: (f32::MIN, f32::MIN),
@@ -3481,6 +3500,136 @@ fn shoot_flopsynth_full(
         .expect("the scene must render");
     dump_sized(&pixels, name, ew, eh);
     Some((pixels, theme.for_bridge(), l, ew))
+}
+
+/// §3.4: the strip under every page wears a badge per source in its family's
+/// ink, with the source's own picture on it, and the inspector is an opaque
+/// drawer over the page with the inspected source's name and a ✕ — read
+/// back by pixel, the way the canopy is.
+#[test]
+fn the_strip_wears_a_badge_per_source_and_the_inspector_is_a_drawer() {
+    use fontelle_types::ParamAddress;
+    use fontelle_ui::canvas::{
+        FlopsynthCard, FlopsynthPicture, INSPECTOR_ROW, InstrumentGroup, InstrumentParam, ParamKind,
+    };
+    use fontelle_ui::document::SourceFamily;
+    let Some((pixels, theme, l, width)) =
+        shoot_flopsynth_view(Theme::dark_default(), "flopsynth-strip", None, |view| {
+            view.sources = vec!["ENV 1".into(), "LFO 1".into(), "Macro 1".into()];
+            view.source_families = vec![
+                SourceFamily::Envelope,
+                SourceFamily::Lfo,
+                SourceFamily::Macro,
+            ];
+            let cycle: Vec<f32> = (0..64)
+                .map(|i| (i as f32 / 64.0 * std::f32::consts::TAU).sin())
+                .collect();
+            let rise: Vec<f32> = (0..64).map(|i| (i as f32 / 20.0).min(1.0)).collect();
+            view.source_shapes = vec![rise, cycle, vec![0.4]];
+            view.inspector = Some(1);
+            view.cards.push(FlopsynthCard {
+                oscillator: None,
+                row: INSPECTOR_ROW,
+                aside: false,
+                columns: 8,
+                removable: false,
+                sizes: vec![fontelle_ui::canvas::KnobSize::Large],
+                group: InstrumentGroup {
+                    name: "LFO 1".to_string(),
+                    params: vec![InstrumentParam {
+                        address: ParamAddress::new("patch/lfo[0]/rate"),
+                        label: "RATE".to_string(),
+                        value: 0.4,
+                        display: "2.0 Hz".to_string(),
+                        kind: ParamKind::Knob,
+                        automated: false,
+                    }],
+                },
+                picture: FlopsynthPicture::Lfo {
+                    points: vec![0.0; 64],
+                    phase: 0.0,
+                },
+            });
+        })
+    else {
+        return;
+    };
+    let at = |x: u32, y: u32| {
+        let i = ((y * width + x) * 4) as usize;
+        Color::rgb(pixels[i], pixels[i + 1], pixels[i + 2])
+    };
+    let p = &theme.palette;
+    let inks = [
+        p.mod_envelope,
+        p.mod_lfo,
+        p.mod_macro,
+        p.mod_note,
+        p.mod_performance,
+    ];
+    let distance = |a: Color, b: Color| -> u32 {
+        a.0.iter()
+            .zip(b.0.iter())
+            .take(3)
+            .map(|(x, y)| x.abs_diff(*y) as u32)
+            .sum()
+    };
+    // A hairline is anti-aliased, so "wears the ink" is a pixel nearer this
+    // family's ink than any other's, and near it at all.
+    let has_ink = |rect: fontelle_ui::layout::Rect, ink: Color| {
+        (rect.y as u32..rect.bottom() as u32).any(|y| {
+            (rect.x as u32..rect.right() as u32).any(|x| {
+                let c = at(x, y);
+                let d = distance(c, ink);
+                d <= 60
+                    && inks
+                        .iter()
+                        .all(|other| *other == ink || distance(c, *other) > d)
+            })
+        })
+    };
+    assert!(!l.strip.is_empty() && l.badges.len() == 3);
+    assert!(
+        has_ink(l.badges[0], p.mod_envelope),
+        "the envelope's badge wears no envelope ink"
+    );
+    assert!(
+        has_ink(l.badges[1], p.mod_lfo),
+        "the LFO's badge wears no LFO ink"
+    );
+    assert!(
+        has_ink(l.badges[2], p.mod_macro),
+        "the macro's badge wears no macro ink"
+    );
+    assert!(
+        !has_ink(l.badges[0], p.mod_lfo),
+        "the envelope's badge wears the LFO's ink"
+    );
+    // The drawer: opaque over the page — its ground is the panel's flat
+    // ink, not the graded sky — with its card on it and the ✕ drawn over
+    // the card's header.
+    let drawer = l.inspector;
+    assert!(!drawer.is_empty());
+    let ground = at(drawer.x as u32 + 3, drawer.y as u32 + 3);
+    assert!(
+        near(ground, p.panel),
+        "the drawer's ground is not a flat panel: {ground:?}"
+    );
+    assert!(
+        contrast_in(&pixels, width, l.inspector_close) > 1.8,
+        "no ✕ in the drawer's corner"
+    );
+    let card = l.cards.last().expect("the inspected card");
+    assert!(
+        card.header
+            .contains(l.inspector_close.x + 1.0, l.inspector_close.y + 1.0),
+        "the ✕ is in the card's header"
+    );
+    let heading =
+        fontelle_ui::layout::Rect::new(card.header.x, card.header.y, 80.0, card.header.height);
+    assert!(
+        contrast_in(&pixels, width, heading) > 2.0,
+        "the card's header names nothing"
+    );
 }
 
 /// WCAG relative luminance of a pixel, and the contrast ratio between the

@@ -7786,6 +7786,9 @@ pub struct FlopsynthChrome<'a> {
     /// An effect card carried by its header (§8.5): the card, and the card
     /// it would land on if let go now — whose header is lit to say so.
     pub carrying_slot: Option<(usize, Option<usize>)>,
+    /// A matrix row carried by its grip (§3.4): the row, and where it would
+    /// land — a rule drawn there.
+    pub carrying_route: Option<(usize, Option<usize>)>,
     /// Which controls could take it — the same list, worked out once by the
     /// host rather than asked per knob while a drag is running.
     pub destinations: Vec<(usize, usize)>,
@@ -8072,9 +8075,11 @@ fn draw_flopsynth_picture(
             sustain,
             release,
         } => {
+            // In the card's ink — the envelope family's (§3.3), the same
+            // its badge and its rings wear.
             let points = env_curve_points(inner, *attack, *decay, *sustain, *release);
-            fill_under_polyline(scene, &points, inner, p.modulation.with_alpha(0x2a));
-            glow_polyline(scene, &points, inner, p.modulation);
+            fill_under_polyline(scene, &points, inner, ink.with_alpha(0x2a));
+            glow_polyline(scene, &points, inner, ink);
             // A node at each corner, so the shape reads as four stages rather
             // than as one line.
             for (x, y) in points.iter().skip(1).take(points.len().saturating_sub(2)) {
@@ -8105,13 +8110,13 @@ fn draw_flopsynth_picture(
                     fill_rect(
                         scene,
                         Rect::new(x0, inner.y, x1 - x0, inner.height),
-                        p.modulation.with_alpha(0x28),
+                        ink.with_alpha(0x28),
                     );
                     for x in [x0, x1] {
                         fill_rect(
                             scene,
                             Rect::new(x - 0.5, inner.y, 1.0, inner.height),
-                            p.modulation.with_alpha(0xa0),
+                            ink.with_alpha(0xa0),
                         );
                     }
                 }
@@ -8195,7 +8200,7 @@ fn draw_flopsynth_picture(
                 p.border,
             );
             let curve = wave_curve_points(inner, points);
-            glow_polyline(scene, &curve, inner, p.modulation);
+            glow_polyline(scene, &curve, inner, ink);
             // The dot: where the newest voice is in the cycle. The shape says
             // what the LFO is; this says what it is doing (§11, phase 6).
             //
@@ -8300,8 +8305,22 @@ fn draw_flopsynth_chrome(
         }
     }
 
-    // The source badges. Violet, because they are the thing the violet arcs
-    // come from — one ink for one idea (§8.1 rule 6).
+    // The mod strip (§3.4): a band set into the hull under every page,
+    // with a badge per source on it. Each badge wears its family's ink —
+    // the ink its rings are drawn in, so a ring on a knob and the badge it
+    // came from read as one thing (§8.1 rule 6) — with the source's own
+    // picture on it and a hairline along its foot reading where the source
+    // is now.
+    if !l.strip.is_empty() {
+        fill_rect_rounded(scene, l.strip, m.corner_radius, p.window.with_alpha(0xa0));
+        stroke_rect_rounded(
+            scene,
+            l.strip,
+            m.corner_radius,
+            1.0,
+            p.border.with_alpha(0x80),
+        );
+    }
     for (index, rect) in l.badges.iter().enumerate() {
         let Some(name) = chrome.view.sources.get(index) else {
             continue;
@@ -8309,110 +8328,91 @@ fn draw_flopsynth_chrome(
         if rect.is_empty() {
             continue;
         }
+        let ink = chrome
+            .view
+            .source_families
+            .get(index)
+            .map_or(p.modulation, |family| family_ink(*family, p));
         let carried = chrome.assigning.map(|(which, _)| which) == Some(index);
-        fill_rect_rounded(
+        let inspected = chrome.view.inspector == Some(index);
+        let lit = rect.contains(chrome.hover_at.0, chrome.hover_at.1);
+        let ground = if carried {
+            ink
+        } else if inspected {
+            mix(p.panel, ink, 0.35)
+        } else if lit {
+            mix(p.panel, ink, 0.15)
+        } else {
+            p.panel
+        };
+        fill_rect_rounded(scene, *rect, m.corner_radius, ground);
+        stroke_rect_rounded(
             scene,
             *rect,
             m.corner_radius,
-            if carried { p.modulation } else { p.panel },
+            if inspected { 1.5 } else { 1.0 },
+            if inspected || lit {
+                lighten(ink, 0.2)
+            } else {
+                ink.with_alpha(0xa0)
+            },
         );
-        stroke_rect_rounded(scene, *rect, m.corner_radius, 1.0, p.modulation);
-        if let Some(text) = labels.get(name) {
+        let anatomy = crate::canvas::badge_anatomy(*rect, chrome.view.scale);
+        let measure = |s: &str| -> f32 {
+            labels
+                .get_styled(s, t.caption)
+                .map_or(f32::MAX, |l| l.width)
+        };
+        let caption = crate::canvas::badge_caption(name, anatomy.name.width, &measure);
+        if let Some(text) = labels.get_styled(&caption, t.caption) {
             draw_text_clipped(
                 scene,
                 text,
-                *rect,
-                rect.x + 5.0,
-                rect.y + (rect.height - text.height) / 2.0,
+                anatomy.name,
+                anatomy.name.x + ((anatomy.name.width - text.width) / 2.0).max(0.0),
+                anatomy.name.y + (anatomy.name.height - text.height) / 2.0,
                 if carried { p.window } else { p.text },
             );
         }
+        // The picture: the source's shape, in its ink; a source with none
+        // (a velocity, the wheel) shows its level as a bar instead, so
+        // every badge has something that moves.
+        let shape = chrome
+            .view
+            .source_shapes
+            .get(index)
+            .map(|s| s.as_slice())
+            .unwrap_or(&[]);
+        let now = chrome.source_values.get(index).copied();
+        let bipolar = chrome
+            .view
+            .source_families
+            .get(index)
+            .is_some_and(|family| family.bipolar());
+        if shape.len() >= 2 {
+            let points = crate::canvas::badge_points(anatomy.picture, shape);
+            stroke_polyline(scene, &points, anatomy.picture, 1.2, ink);
+        } else if !anatomy.picture.is_empty() {
+            // One value — a macro's — or none: a bar from the floor (or the
+            // middle, for a source that swings both ways) to where it is.
+            let value = shape.first().copied().or(now).unwrap_or(0.0);
+            let bar = level_bar(anatomy.picture, value, bipolar);
+            fill_rect_rounded(scene, bar, 1.0, ink);
+        }
+        // The level hairline: where the source is now, from the left, or
+        // from the middle for a bipolar one.
+        if !anatomy.level.is_empty() {
+            fill_rect_rounded(scene, anatomy.level, 1.0, p.border);
+            if let Some(now) = now {
+                let live = level_run(anatomy.level, now, bipolar);
+                fill_rect_rounded(scene, live, 1.0, lighten(ink, 0.15));
+            }
+        }
     }
 
-    // The matrix.
+    // The table (`docs/flopsynth-next.md` §3.4).
     if !l.matrix.is_empty() {
-        fill_rect_rounded(scene, l.matrix, m.corner_radius, p.panel);
-        stroke_rect_rounded(scene, l.matrix, m.corner_radius, 1.0, p.border);
-        let header = Rect::new(
-            l.matrix.x,
-            l.matrix.y,
-            l.matrix.width,
-            crate::canvas::CARD_HEADER.min(l.matrix.height),
-        );
-        fill_rect(scene, header, p.panel_header);
-        if let Some(text) = labels.get(MATRIX_HEADING) {
-            draw_text_clipped(
-                scene,
-                text,
-                header,
-                header.x + 6.0,
-                header.y + (header.height - text.height) / 2.0,
-                p.text_muted,
-            );
-        }
-        if chrome.view.routes.is_empty()
-            && let Some(text) = labels.get(NO_ROUTES)
-        {
-            let body = Rect::new(
-                l.matrix.x,
-                header.bottom(),
-                l.matrix.width,
-                (l.matrix.height - header.height).max(0.0),
-            );
-            draw_text_clipped(scene, text, body, body.x + 8.0, body.y + 6.0, p.text_muted);
-        }
-        for (index, row) in l.routes.iter().enumerate() {
-            let Some(route) = chrome.view.routes.get(index) else {
-                continue;
-            };
-            for (rect, text) in [
-                (row.source, route.source.as_str()),
-                (row.destination, route.destination.as_str()),
-            ] {
-                if let Some(label) = labels.get(text) {
-                    draw_text_clipped(
-                        scene,
-                        label,
-                        rect,
-                        rect.x + 2.0,
-                        rect.y + (rect.height - label.height) / 2.0,
-                        p.text,
-                    );
-                }
-            }
-            // The depth slider: a groove, a centre mark, and a bar growing
-            // from the middle — bipolar, because a depth is.
-            if !row.depth.is_empty() {
-                fill_rect_rounded(scene, row.depth, 2.0, p.window);
-                let middle = row.depth.x + row.depth.width / 2.0;
-                fill_rect(
-                    scene,
-                    Rect::new(middle - 0.5, row.depth.y, 1.0, row.depth.height),
-                    p.border,
-                );
-                let reach = row.depth.width / 2.0 * route.depth.clamp(-1.0, 1.0);
-                let bar = Rect::new(
-                    middle.min(middle + reach),
-                    row.depth.y + 2.0,
-                    reach.abs(),
-                    (row.depth.height - 4.0).max(0.0),
-                );
-                fill_rect_rounded(scene, bar, 2.0, p.modulation);
-            }
-            if !row.remove.is_empty() {
-                draw_icon(
-                    scene,
-                    crate::icon::Icon::Trash,
-                    row.remove.inset(3.0),
-                    p.text_muted,
-                );
-            }
-        }
-        // The thumb, when rows are hidden: the same mark the menus and the
-        // preset list use for the same fact.
-        if !l.matrix_scrollbar.is_empty() {
-            fill_rect_rounded(scene, l.matrix_scrollbar, 2.0, p.text_muted);
-        }
+        draw_flop_matrix(scene, theme, labels, chrome, t);
     }
 
     // The badge under the pointer while it is being carried, so a drag has
@@ -8437,6 +8437,297 @@ fn draw_flopsynth_chrome(
                 p.window,
             );
         }
+    }
+}
+
+/// The Matrix page's table (`docs/flopsynth-next.md` §3.4): a head over
+/// each column — the source's and the destination's sort — and `+ route`
+/// at the right; then a row per route, its grip, the source and destination
+/// as chips (they are choosers), the depth slider with the source's live
+/// dot on it, the via and the curve as chips, the invert and on/off pills,
+/// and the ✕. A row being carried is dimmed, with a rule where it would
+/// land.
+fn draw_flop_matrix(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &FlopsynthChrome<'_>,
+    t: BridgeType,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let l = &chrome.layout;
+    let scale = chrome.view.scale;
+    let hover = chrome.hover_at;
+    fill_rect_rounded(scene, l.matrix, m.corner_radius, p.panel);
+    stroke_rect_rounded(scene, l.matrix, m.corner_radius, 1.0, p.border);
+    let header = Rect::new(
+        l.matrix.x,
+        l.matrix.y,
+        l.matrix.width,
+        (crate::canvas::CARD_HEADER * scale).min(l.matrix.height),
+    );
+    fill_rect(scene, header, p.panel_header);
+    let head = &l.matrix_header;
+    let heads = [
+        head.source,
+        head.destination,
+        head.depth,
+        head.via,
+        head.curve,
+        head.invert,
+        head.bypass,
+    ];
+    for (rect, caption) in heads.iter().zip(crate::canvas::MATRIX_HEADS) {
+        if rect.is_empty() {
+            continue;
+        }
+        // The two that sort light under the pointer, like a tab.
+        let sorts = *rect == head.source || *rect == head.destination;
+        let lit = sorts && rect.contains(hover.0, hover.1);
+        if let Some(text) = labels.get_styled(caption, t.caption) {
+            draw_text_clipped(
+                scene,
+                text,
+                *rect,
+                rect.x + 4.0 * scale,
+                rect.y + (rect.height - text.height) / 2.0,
+                if lit { p.text } else { p.text_muted },
+            );
+        }
+    }
+    if !head.add.is_empty() {
+        let lit = head.add.contains(hover.0, hover.1);
+        fill_rect_rounded(
+            scene,
+            head.add,
+            head.add.height / 2.0,
+            if lit {
+                p.accent.with_alpha(0x40)
+            } else {
+                p.panel
+            },
+        );
+        stroke_rect_rounded(scene, head.add, head.add.height / 2.0, 1.0, p.accent);
+        if let Some(text) = labels.get_styled(crate::canvas::ADD_ROUTE, t.value) {
+            draw_text_clipped(
+                scene,
+                text,
+                head.add,
+                head.add.x + ((head.add.width - text.width) / 2.0).max(0.0),
+                head.add.y + (head.add.height - text.height) / 2.0,
+                if lit { p.text } else { p.accent },
+            );
+        }
+    }
+    if chrome.view.routes.is_empty()
+        && let Some(text) = labels.get(NO_ROUTES)
+    {
+        let body = Rect::new(
+            l.matrix.x,
+            header.bottom(),
+            l.matrix.width,
+            (l.matrix.height - header.height).max(0.0),
+        );
+        draw_text_clipped(scene, text, body, body.x + 8.0, body.y + 6.0, p.text_muted);
+    }
+    let carried = chrome.carrying_route.map(|(row, _)| row);
+    for (index, row) in l.routes.iter().enumerate() {
+        let Some(route) = chrome.view.routes.get(index) else {
+            continue;
+        };
+        if row.frame.is_empty() {
+            continue;
+        }
+        let dim = carried == Some(index) || route.bypass;
+        let ink = if dim { p.text_muted } else { p.text };
+        // The grip: three dots down the left, brighter under the pointer.
+        if !row.grip.is_empty() {
+            let lit = row.grip.contains(hover.0, hover.1);
+            let cx = row.grip.x + row.grip.width / 2.0;
+            let cy = row.grip.y + row.grip.height / 2.0;
+            for dy in [-4.0, 0.0, 4.0] {
+                fill_rect_rounded(
+                    scene,
+                    Rect::new(cx - 1.0, cy + dy * scale - 1.0, 2.0, 2.0),
+                    1.0,
+                    if lit { p.text } else { p.text_muted },
+                );
+            }
+        }
+        let chip_of = |rect: Rect| {
+            Rect::new(
+                rect.x,
+                rect.y + 2.0 * scale,
+                rect.width,
+                (rect.height - 4.0 * scale).max(0.0),
+            )
+        };
+        for (rect, text) in [
+            (row.source, route.source.as_str()),
+            (row.destination, route.destination.as_str()),
+            (
+                row.via,
+                route.via.as_deref().unwrap_or(crate::canvas::NO_VIA),
+            ),
+            (row.curve, route.curve.as_str()),
+        ] {
+            if rect.is_empty() {
+                continue;
+            }
+            let lit = rect.contains(hover.0, hover.1);
+            draw_flop_chip(
+                scene,
+                theme,
+                labels,
+                chip_of(rect),
+                text,
+                lit,
+                Some(t.value),
+            );
+        }
+        // The depth slider: a groove, a centre mark, and a bar growing
+        // from the middle — bipolar, because a depth is — in the source's
+        // ink, with the source's live value as a dot along it.
+        if !row.depth.is_empty() {
+            let source = chrome.view.sources.iter().position(|s| *s == route.source);
+            let family_ink = source
+                .and_then(|i| chrome.view.source_families.get(i))
+                .map_or(p.modulation, |family| family_ink(*family, p));
+            let bar_ink = if dim {
+                family_ink.with_alpha(0x60)
+            } else {
+                family_ink
+            };
+            fill_rect_rounded(scene, row.depth, 2.0, p.window);
+            let middle = row.depth.x + row.depth.width / 2.0;
+            fill_rect(
+                scene,
+                Rect::new(middle - 0.5, row.depth.y, 1.0, row.depth.height),
+                p.border,
+            );
+            let reach = row.depth.width / 2.0 * route.depth.clamp(-1.0, 1.0);
+            let bar = Rect::new(
+                middle.min(middle + reach),
+                row.depth.y + 2.0,
+                reach.abs(),
+                (row.depth.height - 4.0).max(0.0),
+            );
+            fill_rect_rounded(scene, bar, 2.0, bar_ink);
+            if let Some(now) = source.and_then(|i| chrome.source_values.get(i))
+                && !route.bypass
+            {
+                let bipolar = source
+                    .and_then(|i| chrome.view.source_families.get(i))
+                    .is_some_and(|family| family.bipolar());
+                // Where the route is *now*: the source's value along the
+                // bar, from the middle, as far as the depth reaches.
+                let at = if bipolar { *now } else { now.clamp(0.0, 1.0) };
+                let x = middle + reach * at.clamp(-1.0, 1.0);
+                let r = 2.5 * scale;
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    lighten(bar_ink, 0.4).to_peniko(),
+                    None,
+                    &vello::kurbo::Circle::new(
+                        (x as f64, (row.depth.y + row.depth.height / 2.0) as f64),
+                        r as f64,
+                    ),
+                );
+            }
+        }
+        for (rect, on) in [(row.invert, route.invert), (row.bypass, !route.bypass)] {
+            if rect.is_empty() {
+                continue;
+            }
+            let lit = rect.contains(hover.0, hover.1);
+            let pill = Rect::new(
+                rect.x + (rect.width - 26.0 * scale) / 2.0,
+                rect.y,
+                26.0 * scale,
+                rect.height,
+            );
+            draw_flop_switch(scene, theme, pill, pill.width + 12.0, on, lit);
+        }
+        if !row.remove.is_empty() {
+            let lit = row.remove.contains(hover.0, hover.1);
+            draw_icon(
+                scene,
+                crate::icon::Icon::Trash,
+                row.remove.inset(3.0),
+                if lit { p.meter_peak } else { ink },
+            );
+        }
+        if carried == Some(index) {
+            fill_rect_rounded(scene, row.frame, 2.0, p.window.with_alpha(0x90));
+        }
+    }
+    // Where a carried row would land: a rule above the row it goes before,
+    // or under the last.
+    if let Some((_, Some(landing))) = chrome.carrying_route {
+        let y = l
+            .routes
+            .get(landing)
+            .filter(|row| !row.frame.is_empty())
+            .map(|row| row.frame.y)
+            .or_else(|| {
+                l.routes
+                    .iter()
+                    .rev()
+                    .find(|row| !row.frame.is_empty())
+                    .map(|row| row.frame.bottom())
+            });
+        if let Some(y) = y {
+            fill_rect(
+                scene,
+                Rect::new(l.matrix.x + 4.0, y - 1.0, l.matrix.width - 8.0, 2.0),
+                p.accent,
+            );
+        }
+    }
+    // The thumb, when rows are hidden: the same mark the menus and the
+    // preset list use for the same fact.
+    if !l.matrix_scrollbar.is_empty() {
+        fill_rect_rounded(scene, l.matrix_scrollbar, 2.0, p.text_muted);
+    }
+}
+
+/// A vertical bar in `area` from its floor up to `value`, or from its
+/// middle either way for a bipolar value — a badge's picture of a source
+/// that is one number.
+fn level_bar(area: Rect, value: f32, bipolar: bool) -> Rect {
+    let w = (area.width * 0.4).clamp(4.0, 12.0);
+    let x = area.x + (area.width - w) / 2.0;
+    if bipolar {
+        let middle = area.y + area.height / 2.0;
+        let reach = area.height / 2.0 * value.clamp(-1.0, 1.0);
+        Rect::new(x, (middle - reach).min(middle), w, reach.abs().max(1.0))
+    } else {
+        let h = area.height * value.clamp(0.0, 1.0);
+        Rect::new(x, area.bottom() - h, w, h.max(1.0))
+    }
+}
+
+/// A run along a hairline from its left end to `value`, or from its middle
+/// either way for a bipolar value.
+fn level_run(line: Rect, value: f32, bipolar: bool) -> Rect {
+    if bipolar {
+        let middle = line.x + line.width / 2.0;
+        let reach = line.width / 2.0 * value.clamp(-1.0, 1.0);
+        Rect::new(
+            (middle + reach).min(middle),
+            line.y,
+            reach.abs().max(1.0),
+            line.height,
+        )
+    } else {
+        Rect::new(
+            line.x,
+            line.y,
+            (line.width * value.clamp(0.0, 1.0)).max(1.0),
+            line.height,
+        )
     }
 }
 
@@ -8500,7 +8791,6 @@ pub fn scale_label(scale: f32) -> String {
 }
 
 /// The matrix panel's heading, and what it says when it is empty.
-pub const MATRIX_HEADING: &str = "Modulation matrix";
 pub const NO_ROUTES: &str = "no routes \u{2014} drag a source onto a knob";
 
 /// The arc round a control something modulates (§8.1 rule 6).
@@ -8777,12 +9067,83 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
         }
     }
 
+    // The page's own cards, then the inspector's drawer over them with the
+    // inspected source's card in it (§3.4) — in that order, because the
+    // drawer is opaque and lies over the page.
+    let inspected = |index: usize| {
+        chrome
+            .view
+            .cards
+            .get(index)
+            .is_some_and(|card| card.row == crate::canvas::INSPECTOR_ROW)
+    };
     for (index, placed) in l.cards.iter().enumerate() {
+        if !inspected(index) {
+            draw_flop_card(scene, theme, labels, chrome, index, placed, t);
+        }
+    }
+    if !l.inspector.is_empty() {
+        // The drawer: an opaque panel over the page, in the inspected
+        // source's ink at its edge, with its card on it. No header of its
+        // own — the card's nameplate says what is in it — and the ✕ drawn
+        // last, over the card's header.
+        let drawer = l.inspector;
+        let ink = chrome
+            .view
+            .inspector
+            .and_then(|index| chrome.view.source_families.get(index))
+            .map_or(p.modulation, |family| family_ink(*family, p));
+        fill_rect_rounded(scene, drawer, m.corner_radius, p.panel);
+        stroke_rect_rounded(scene, drawer, m.corner_radius, 1.0, ink.with_alpha(0xa0));
+        for (index, placed) in l.cards.iter().enumerate() {
+            if inspected(index) {
+                draw_flop_card(scene, theme, labels, chrome, index, placed, t);
+            }
+        }
+        // The ✕: two strokes, not a glyph — nothing to shape, nothing to
+        // keep in step with a label — lit under the pointer.
+        if !l.inspector_close.is_empty() {
+            let lit = l
+                .inspector_close
+                .contains(chrome.hover_at.0, chrome.hover_at.1);
+            let x = l.inspector_close.inset(l.inspector_close.width * 0.3);
+            let ink = if lit { p.text } else { p.text_muted };
+            stroke_polyline(
+                scene,
+                &[(x.x, x.y), (x.right(), x.bottom())],
+                drawer,
+                1.5,
+                ink,
+            );
+            stroke_polyline(
+                scene,
+                &[(x.right(), x.y), (x.x, x.bottom())],
+                drawer,
+                1.5,
+                ink,
+            );
+        }
+    }
+}
+
+/// One of Flopsynth's cards: the console, its picture and its cells.
+fn draw_flop_card(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &FlopsynthChrome<'_>,
+    index: usize,
+    placed: &crate::canvas::CardLayout,
+    t: BridgeType,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    {
         let Some(card) = chrome.view.cards.get(index) else {
-            continue;
+            return;
         };
         if placed.frame.is_empty() {
-            continue;
+            return;
         }
         let ink = card_ink(&card.group.name, p);
         // The console's lamp is on while a control in it is held or under
@@ -8998,9 +9359,12 @@ pub fn card_ink(name: &str, p: &crate::theme::Palette) -> Color {
         "OSC B" => p.playhead,
         "OSC C" => p.note,
         n if n.starts_with("Filter") => p.accent,
-        n if n.starts_with("ENV") || n.starts_with("LFO") || n.starts_with("Modulation") => {
-            p.modulation
-        }
+        // A source's card in its family's ink (§3.3): the same ink its badge
+        // and its rings wear, so the three read as one thing.
+        n if n.starts_with("ENV") => p.mod_envelope,
+        n if n.starts_with("LFO") => p.mod_lfo,
+        "Macros" => p.mod_macro,
+        n if n.starts_with("Modulation") => p.modulation,
         n if n.starts_with("FX") => p.meter,
         _ => p.text_muted,
     }

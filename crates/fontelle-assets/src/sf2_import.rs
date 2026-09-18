@@ -535,6 +535,7 @@ pub fn import_sf2_preset(
             curve: Curve::Linear,
             via: None,
             invert: true,
+            bypass: false,
         });
     }
     let amp = amp_envelope.unwrap();
@@ -726,6 +727,7 @@ impl ZoneModulation {
                     curve: Curve::Linear,
                     via: Some(hand),
                     invert: false,
+                    bypass: false,
                 });
             }
         }
@@ -744,6 +746,7 @@ impl ZoneModulation {
                 // the direction bit belongs to SF2's *modulators*, not to its
                 // generators.
                 invert: false,
+                bypass: false,
             });
         };
 

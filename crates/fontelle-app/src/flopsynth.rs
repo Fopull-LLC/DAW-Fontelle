@@ -21,8 +21,8 @@
 
 use fontelle_core::Patch;
 use fontelle_ui::canvas::{
-    FlopsynthCard, FlopsynthPage, FlopsynthPicture, FlopsynthRoute, FlopsynthView, InstrumentGroup,
-    InstrumentParam, KnobSize,
+    FlopsynthCard, FlopsynthPage, FlopsynthPicture, FlopsynthRoute, FlopsynthView, INSPECTOR_ROW,
+    InstrumentGroup, InstrumentParam, KnobSize,
 };
 
 /// How many points a wave picture is drawn from.
@@ -63,28 +63,47 @@ fn sound_peaks(samples: &[f32]) -> Vec<(f32, f32)> {
         .collect()
 }
 
-/// Which page a card of this name belongs on (§8.3–§8.6).
+/// Which of the five inks a source's ring wears (`docs/flopsynth-next.md`
+/// §3.3) — the window may not see a `ModSource` (INVARIANT 4), so the
+/// host names the family.
+pub(crate) fn source_family(
+    source: fontelle_core::ModSource,
+) -> fontelle_ui::document::SourceFamily {
+    use fontelle_core::ModSource;
+    use fontelle_ui::document::SourceFamily;
+    match source {
+        ModSource::Envelope(_) => SourceFamily::Envelope,
+        ModSource::Lfo(_) => SourceFamily::Lfo,
+        ModSource::Macro(_) => SourceFamily::Macro,
+        ModSource::Aftertouch | ModSource::ModWheel | ModSource::PitchBend => {
+            SourceFamily::Performance
+        }
+        _ => SourceFamily::Note,
+    }
+}
+
+/// Which page a card of this name belongs on (§8.3–§8.6), or `None` for a
+/// card reached through the inspector alone.
 ///
 /// Read off the heading, like [`shape_of`], and for the same reason: the number
 /// of cards changes with the patch, so a card's page cannot be its index.
 ///
 /// The split is by **what the controls are about**. The Synth page is making
-/// the sound; Modulation is what moves it, which is the LFOs, the two spare
-/// envelopes and the matrix itself; Effects is the chain after the voice. The
-/// amp and filter envelopes stay on the Synth page even though they are
-/// modulators, because they are the two every patch uses to shape its own
-/// sound and a synth page without an amp envelope is not one.
-fn page_of(name: &str) -> FlopsynthPage {
-    match name {
-        // Every envelope is off the Synth page since 2026-09-18 (Ty's call
-        // on `docs/flopsynth-next.md` §3.5): the page is two bands of
-        // consoles over the mod strip, and the envelopes are edited in the
-        // strip's inspector — here on the Modulation page until it lands.
-        n if n.starts_with("LFO") || n.starts_with("ENV") => FlopsynthPage::Modulation,
+/// the sound; the Matrix page is the routes; Effects is the chain after the
+/// voice. What moves the sound — the envelopes and the LFOs — is on the strip
+/// under every page, and edited in the inspector.
+fn page_of(name: &str) -> Option<FlopsynthPage> {
+    Some(match name {
+        // The envelopes and the LFOs are on no page since 2026-09-18 (Ty's
+        // call on `docs/flopsynth-next.md` §3.4–3.5): the Synth page is two
+        // bands of consoles over the mod strip, the Matrix page is the
+        // inspector and the table, and an envelope or an LFO is edited in
+        // the inspector — click its badge on the strip.
+        n if n.starts_with("LFO") || n.starts_with("ENV") => return None,
         n if n.starts_with("Modulation") => FlopsynthPage::Modulation,
         n if n.starts_with("FX ") => FlopsynthPage::Effects,
         _ => FlopsynthPage::Synth,
-    }
+    })
 }
 
 /// The shape of each card: which band of the window it belongs to, whether it
@@ -460,7 +479,12 @@ pub struct Heard {
 /// `bank` is the device's presets, for the Presets page (§8.6): the caller
 /// hands them over on that page and an empty list on every other, because a
 /// hundred and twenty-eight rows built for a page that is not showing is work
-/// nobody sees.
+/// nobody sees. `inspector` is the source open in the strip's inspector
+/// (§3.4), whose card comes along marked for the drawer.
+// Eight, one more than clippy's seven, for `tune::describe`'s reason: every
+// one is a different source, and a struct whose only job is to be unpacked
+// one line later would be a second thing to keep in step.
+#[allow(clippy::too_many_arguments)]
 pub fn describe(
     title: &str,
     patch: &Patch,
@@ -469,6 +493,7 @@ pub fn describe(
     page: FlopsynthPage,
     heard: Heard,
     bank: Vec<fontelle_ui::canvas::PresetChoice>,
+    inspector: Option<usize>,
 ) -> FlopsynthView {
     let Heard {
         voices,
@@ -499,45 +524,90 @@ pub fn describe(
             param.label = crate::captions::captioned(&param.label);
         }
     }
-    let sources: Vec<String> = match page {
-        FlopsynthPage::Modulation => fontelle_core::flopsynth::sources(patch)
-            .into_iter()
-            .map(|(_, label)| label)
-            .collect(),
-        _ => Vec::new(),
+    // The strip's sources, on every page (§3.4), each with its picture.
+    let source_list = fontelle_core::flopsynth::sources(patch);
+    let sources: Vec<String> = source_list.iter().map(|(_, label)| label.clone()).collect();
+    let source_shapes: Vec<Vec<f32>> = source_list
+        .iter()
+        .map(|(source, _)| source_shape(patch, *source))
+        .collect();
+    let source_families = source_list
+        .iter()
+        .map(|(source, _)| source_family(*source))
+        .collect();
+    let (routes, destinations, curves) = match page {
+        FlopsynthPage::Modulation => (
+            route_rows(patch),
+            destination_labels(patch),
+            CURVES.iter().map(|(_, label)| label.to_string()).collect(),
+        ),
+        _ => (Vec::new(), Vec::new(), Vec::new()),
     };
-    let routes = match page {
-        FlopsynthPage::Modulation => route_rows(patch),
-        _ => Vec::new(),
-    };
+    // The inspected source's card (§3.4): the group that edits it, marked
+    // for the drawer — an envelope's or an LFO's own card, the macros'
+    // card for a macro. A source with nothing to edit (the velocity) opens
+    // no drawer.
+    let inspected_group: Option<String> = inspector
+        .and_then(|index| source_list.get(index))
+        .and_then(|(source, _)| match source {
+            fontelle_core::ModSource::Envelope(i) => Some(format!("ENV {}", i + 1)),
+            fontelle_core::ModSource::Lfo(i) => Some(format!("LFO {}", i + 1)),
+            fontelle_core::ModSource::Macro(_) => Some("Macros".to_string()),
+            _ => None,
+        });
+    let inspected_card = inspected_group.as_ref().and_then(|name| {
+        view.groups
+            .iter()
+            .find(|group| group.name == *name || group.name.starts_with(&format!("{name} \u{b7}")))
+            .map(|group| FlopsynthCard {
+                row: INSPECTOR_ROW,
+                aside: false,
+                // The layout widens the drawer's card to the drawer; this
+                // is only what it would be with nothing to widen it to.
+                columns: 8,
+                oscillator: None,
+                removable: false,
+                picture: picture_for(&group.name, patch, &phases),
+                sizes: knob_sizes(&group.name, &group.params),
+                group: group.clone(),
+            })
+    });
+    let mut cards: Vec<FlopsynthCard> = view
+        .groups
+        .into_iter()
+        // The matrix has a page of its own now, drawn as rows rather than
+        // as a card of knobs: `describe_flopsynth`'s depth group is what
+        // an automation lane addresses, and this window shows the routes.
+        .filter(|group: &InstrumentGroup| !group.name.starts_with("Modulation"))
+        .filter(|group| page_of(&group.name) == Some(page))
+        .map(|group: InstrumentGroup| {
+            let (row, aside, columns) = shape_of(&group.name);
+            FlopsynthCard {
+                row,
+                aside,
+                columns,
+                oscillator: oscillator_of(patch, &group.name),
+                // An effect slot is the one card that can be taken off
+                // the window — see `Session::remove_patch_effect`.
+                removable: group.name.starts_with("FX "),
+                picture: picture_for(&group.name, patch, &phases),
+                sizes: knob_sizes(&group.name, &group.params),
+                group,
+            }
+        })
+        .collect();
+    let inspector = inspected_card.as_ref().and(inspector);
+    cards.extend(inspected_card);
     FlopsynthView {
         title: view.title,
-        cards: view
-            .groups
-            .into_iter()
-            // The matrix has a page of its own now, drawn as rows rather than
-            // as a card of knobs: `describe_flopsynth`'s depth group is what
-            // an automation lane addresses, and this window shows the routes.
-            .filter(|group: &InstrumentGroup| !group.name.starts_with("Modulation"))
-            .filter(|group| page_of(&group.name) == page)
-            .map(|group: InstrumentGroup| {
-                let (row, aside, columns) = shape_of(&group.name);
-                FlopsynthCard {
-                    row,
-                    aside,
-                    columns,
-                    oscillator: oscillator_of(patch, &group.name),
-                    // An effect slot is the one card that can be taken off
-                    // the window — see `Session::remove_patch_effect`.
-                    removable: group.name.starts_with("FX "),
-                    picture: picture_for(&group.name, patch, &phases),
-                    sizes: knob_sizes(&group.name, &group.params),
-                    group,
-                }
-            })
-            .collect(),
+        cards,
         page,
         sources,
+        source_shapes,
+        source_families,
+        destinations,
+        curves,
+        inspector,
         routes,
         voices,
         bank: match page {
@@ -554,6 +624,57 @@ pub fn describe(
 
 /// How many points a chooser's thumbnail is drawn from: a 32-pixel picture.
 const THUMB_POINTS: usize = 32;
+
+/// A source's picture for its badge on the strip (§3.4): an envelope's
+/// curve — up over the attack, down to the sustain over the decay, held,
+/// then the release — an LFO's cycle, a macro's value as a level; nothing
+/// for a source with no shape of its own.
+fn source_shape(patch: &Patch, source: fontelle_core::ModSource) -> Vec<f32> {
+    use fontelle_core::ModSource;
+    use fontelle_core::patch_params::unlerp_stage;
+    match source {
+        ModSource::Envelope(i) => {
+            let Some(env) = patch.envelopes.get(usize::from(i)) else {
+                return Vec::new();
+            };
+            // The stage lengths as shares of the picture, the way the card's
+            // own picture draws them: each a share of the dial rather than
+            // of a second, so a short envelope is still readable.
+            let attack = unlerp_stage(env.attack_s).max(0.04);
+            let decay = unlerp_stage(env.decay_s).max(0.04);
+            let release = unlerp_stage(env.release_s).max(0.04);
+            let hold = 0.25;
+            let total = attack + decay + hold + release;
+            let sustain = env.sustain_level.clamp(0.0, 1.0);
+            (0..THUMB_POINTS)
+                .map(|i| {
+                    let t = i as f32 / (THUMB_POINTS - 1) as f32 * total;
+                    let level = if t < attack {
+                        t / attack
+                    } else if t < attack + decay {
+                        1.0 - (1.0 - sustain) * ((t - attack) / decay)
+                    } else if t < attack + decay + hold {
+                        sustain
+                    } else {
+                        sustain * (1.0 - ((t - attack - decay - hold) / release).min(1.0))
+                    };
+                    level * 2.0 - 1.0
+                })
+                .collect()
+        }
+        ModSource::Lfo(i) => match patch.lfos.get(usize::from(i)) {
+            Some(lfo) => (0..THUMB_POINTS)
+                .map(|n| lfo.wave.value(n as f32 / THUMB_POINTS as f32))
+                .collect(),
+            None => Vec::new(),
+        },
+        ModSource::Macro(i) => match patch.macros.get(usize::from(i)) {
+            Some(m) => vec![m.value * 2.0 - 1.0; 2],
+            None => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
 
 /// The pictures for the choosers whose options are shapes (§3.3): every
 /// table oscillator's table chooser gets the bank's forty first frames, and
@@ -680,6 +801,46 @@ fn route_rows(patch: &Patch) -> Vec<FlopsynthRoute> {
                 .map(|(_, label)| label.clone())
                 .unwrap_or_else(|| format!("{:?}", route.destination)),
             depth: route.depth,
+            via: route.via.and_then(|via| {
+                sources
+                    .iter()
+                    .find(|(source, _)| *source == via)
+                    .map(|(_, label)| label.clone())
+            }),
+            curve: curve_label(route.curve).to_string(),
+            invert: route.invert,
+            bypass: route.bypass,
         })
+        .collect()
+}
+
+/// The curves a route can have, in the table's chooser order, and what
+/// each is called. One name for the stepped curve whatever its step count:
+/// the count is not in the table, and twelve is the count that makes a
+/// pitch route play semitones.
+pub const CURVES: [(fontelle_core::Curve, &str); 5] = [
+    (fontelle_core::Curve::Linear, "Linear"),
+    (fontelle_core::Curve::Exponential, "Exponential"),
+    (fontelle_core::Curve::Logarithmic, "Logarithmic"),
+    (fontelle_core::Curve::SCurve, "S-curve"),
+    (fontelle_core::Curve::Quantised { steps: 12 }, "Stepped"),
+];
+
+pub fn curve_label(curve: fontelle_core::Curve) -> &'static str {
+    match curve {
+        fontelle_core::Curve::Quantised { .. } => "Stepped",
+        other => CURVES
+            .iter()
+            .find(|(c, _)| *c == other)
+            .map_or("Linear", |(_, label)| label),
+    }
+}
+
+/// Every destination this patch's routes could reach, by label — the
+/// table's destination chooser (§3.4).
+pub fn destination_labels(patch: &Patch) -> Vec<String> {
+    fontelle_core::flopsynth::destinations(patch)
+        .into_iter()
+        .map(|(_, label)| label)
         .collect()
 }

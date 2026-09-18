@@ -819,6 +819,14 @@ pub struct ModRing {
     pub source: usize,
 }
 
+/// Which column the Matrix page's table is sorted by when its head is
+/// pressed (`docs/flopsynth-next.md` §3.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteSort {
+    Source,
+    Destination,
+}
+
 /// What kind of thing a modulation source is — the five inks the rings
 /// wear (§3.3): envelopes violet, LFOs teal, macros amber, the note's own
 /// values green, the performance's rose.
@@ -1654,6 +1662,17 @@ pub trait StudioHost: DocumentHost {
         None
     }
 
+    /// [`flopsynth`](Self::flopsynth), with a source being inspected
+    /// (`docs/flopsynth-next.md` §3.4): the source's card comes in the view
+    /// marked for the inspector's drawer. `None` inspects nothing.
+    fn flopsynth_inspecting(
+        &self,
+        page: crate::canvas::FlopsynthPage,
+        _inspector: Option<usize>,
+    ) -> Option<crate::canvas::FlopsynthView> {
+        self.flopsynth(page)
+    }
+
     /// Loads a sound file onto one of the instrument's oscillators, as the
     /// waveform it reads — *"drag audio files into it to use those waveforms
     /// in the synthesis"*.
@@ -1877,6 +1896,39 @@ pub trait StudioHost: DocumentHost {
 
     /// Removes the route at `index` of [`routes_to`](Self::routes_to).
     fn remove_route(&mut self, _address: &fontelle_types::ParamAddress, _index: usize) {}
+
+    // --- the Matrix page's table (`docs/flopsynth-next.md` §3.4) ---
+    //
+    // Every one of these names a row by its **position in the whole
+    // matrix** — `FlopsynthView::routes`' index — and a choice by its
+    // position in the list the view offers for that cell: `sources` for a
+    // source or a via, `destinations` for a destination, `curves` for a
+    // curve. Each is one undo. A row or a choice that is not there does
+    // nothing.
+
+    /// Sets row `row`'s source to `sources[source]`.
+    fn set_route_source(&mut self, _row: usize, _source: usize) {}
+    /// Sets row `row`'s destination to `destinations[destination]`.
+    fn set_route_destination(&mut self, _row: usize, _destination: usize) {}
+    /// Sets, or clears, the source scaling row `row`'s depth.
+    fn set_route_via(&mut self, _row: usize, _via: Option<usize>) {}
+    /// Sets row `row`'s curve to `curves[curve]`.
+    fn set_route_curve(&mut self, _row: usize, _curve: usize) {}
+    /// Whether row `row` reads `1 - source`.
+    fn set_route_invert(&mut self, _row: usize, _invert: bool) {}
+    /// Whether row `row` is kept and not heard.
+    fn set_route_bypass(&mut self, _row: usize, _bypass: bool) {}
+    /// Takes row `row` out of the matrix.
+    fn remove_route_row(&mut self, _row: usize) {}
+    /// The `+`: a new row at the end, audible at once.
+    fn add_route_row(&mut self) {}
+    /// Row `row` dragged by its grip and let go on row `to`: it goes before
+    /// the row that was there, or last for `to` past the end. Dropped where
+    /// it was, nothing happens.
+    fn move_route(&mut self, _row: usize, _to: usize) {}
+    /// Sorts the rows, stably, by the order the view lists that column's
+    /// choices in.
+    fn sort_routes(&mut self, _by: RouteSort) {}
 
     // --- the instrument's own effects (`docs/flopsynth-plan.md` §8.5) ---
     /// The kinds the `+ effect` list offers, in its order: the ones that cost

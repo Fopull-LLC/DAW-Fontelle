@@ -533,5 +533,6 @@ fn route(source: fontelle_core::ModSource) -> fontelle_core::ModRoute {
         curve: fontelle_core::Curve::Linear,
         via: None,
         invert: true,
+        bypass: false,
     }
 }

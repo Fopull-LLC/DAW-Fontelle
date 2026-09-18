@@ -262,6 +262,7 @@ fn every_oscillator_card_says_which_layer_it_is() {
         FlopsynthPage::Synth,
         Default::default(),
         Vec::new(),
+        None,
     );
     let named = |name: &str| {
         view.cards

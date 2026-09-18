@@ -117,6 +117,9 @@ enum Drag {
     /// An effect card carried by its header to another slot (§8.5). Which
     /// card, and the card under the pointer, are in `flop_slot`.
     FlopSlot,
+    /// A matrix row carried by its grip (§3.4). Which row, and where it
+    /// would land, are in `flop_route`.
+    FlopRoute,
     /// A matrix row's depth slider.
     FlopMatrix(usize),
     /// The seam between the grid and the lane, which resizes the lane.
@@ -425,7 +428,10 @@ enum MenuTarget {
     /// One control on an effect's own panel, by the effect's stable id for it
     /// — a compressor's `threshold`. §12.4's "right-click any control", on the
     /// window that did not exist.
-    InsertParam { param: String, name: String },
+    InsertParam {
+        param: String,
+        name: String,
+    },
     /// The transport bar's tempo box. §12.3 names the tempo as automatable
     /// and it is a control like any other; the menu is how it becomes a lane.
     Tempo,
@@ -471,7 +477,10 @@ enum MenuTarget {
     /// The strip, by position, and the inputs the machine had when the menu
     /// opened — the row chosen is read against **that** list, not a fresh
     /// one; see `canvas::input_menu_entries`.
-    TrackInput { strip: usize, inputs: Vec<String> },
+    TrackInput {
+        strip: usize,
+        inputs: Vec<String>,
+    },
     /// One point of an automation block: its shape, or its removal.
     Point {
         clip: fontelle_types::ClipId,
@@ -492,7 +501,9 @@ enum MenuTarget {
     /// things land on. `true` is the arrangement's; they are two views with
     /// two snaps, which is deliberate (a phrase is written on a finer grid
     /// than the blocks it is arranged into).
-    Snap { timeline: bool },
+    Snap {
+        timeline: bool,
+    },
     /// A [`ParamKind::Choice`] on the instrument panel or on an effect's own
     /// — a filter's slope, an LFO's shape. The same complaint as
     /// [`MenuTarget::AudioRow`] and the same answer: the list drops down.
@@ -537,6 +548,12 @@ enum MenuTarget {
         name: String,
         macros_only: bool,
     },
+    /// The table's choosers (§3.4), by row: a source, a destination, a via
+    /// (none first), a curve.
+    RouteSource(usize),
+    RouteDestination(usize),
+    RouteVia(usize),
+    RouteCurve(usize),
     /// A value typed for one of Flopsynth's controls (§3.3): a name prompt
     /// beside the knob, seeded with its read-out, read back through the
     /// host's `instrument_param_from_text`.
@@ -553,7 +570,10 @@ enum MenuTarget {
     /// drag between two windows: a browser row carried into this window
     /// lands on a card only if the pointer's moves reach the window while
     /// the button is down, which is the compositor's call.
-    LoadSound { card: usize, layer: usize },
+    LoadSound {
+        card: usize,
+        layer: usize,
+    },
     /// A mixer strip's own right-click menu, by position. What a strip does
     /// when you right-click its body: the chain's presets, and rename.
     TrackMenu(usize),
@@ -622,6 +642,10 @@ impl MenuTarget {
             | Self::FlopScale
             | Self::FlopKnob { .. }
             | Self::ModulateFrom { .. }
+            | Self::RouteSource(_)
+            | Self::RouteDestination(_)
+            | Self::RouteVia(_)
+            | Self::RouteCurve(_)
             | Self::TypeValue { .. }
             | Self::LoadSound { .. } => Some(EditorKind::Instrument),
             // The mixer is in the main window, so its menus are too.
@@ -1106,12 +1130,22 @@ pub struct WindowApp {
     /// A source badge being carried to a knob (§8.4): which source, and where
     /// the pointer is now, so the badge can be drawn under it.
     flop_assign: Option<(usize, (f32, f32))>,
+    /// Where the badge was pressed, so the release can tell a click from a
+    /// drag (`canvas::badge_gesture`).
+    flop_badge_pressed: (f32, f32),
+    /// The source open in the strip's inspector (§3.4), if one is — window
+    /// state, like the page; the host builds its card into the view.
+    flop_inspector: Option<usize>,
     /// An effect card being carried by its header: the card, and the effect
     /// card under the pointer — where it would land if let go now. The
     /// `FlopsynthHit::Header` this answers was returned by the hit test and
     /// matched by nothing from the first build to v0.9.0
     /// (`docs/flopsynth-next.md` §1.4(5)).
     flop_slot: Option<(usize, Option<usize>)>,
+    /// A matrix row carried by its grip: the row, and where it would land
+    /// if let go now (`canvas::route_landing`) — a rule drawn between the
+    /// rows there.
+    flop_route: Option<(usize, Option<usize>)>,
     /// The control the arrow keys nudge (§3.3): the last one pressed. The
     /// focus spine's answer for this window.
     flop_focus: Option<(usize, usize)>,
@@ -1764,6 +1798,9 @@ impl WindowApp {
             last_sound: Default::default(),
             skin: crate::skin::Skin::find(),
             flop_assign: None,
+            flop_badge_pressed: (0.0, 0.0),
+            flop_route: None,
+            flop_inspector: None,
             flop_slot: None,
             flop_focus: None,
             flop_clipboard: None,
@@ -2906,7 +2943,7 @@ impl WindowApp {
             | Drag::FlopWave(_)
             | Drag::FlopMatrix(_)
             | Drag::SettingSlider(_) => Some(Pointer::ResizeX),
-            Drag::FlopAssign | Drag::FlopSlot => Some(Pointer::Grabbing),
+            Drag::FlopAssign | Drag::FlopSlot | Drag::FlopRoute => Some(Pointer::Grabbing),
             // A response is dragged in both axes at once, like a band handle.
             Drag::FlopResponse(_) => Some(Pointer::Grabbing),
             // A band handle goes wherever the pointer does, in both axes.
@@ -4793,6 +4830,10 @@ impl WindowApp {
                     (Drag::None, Some(hit), Some(view)) => {
                         crate::canvas::flopsynth_tip(hit, &view.cards)
                     }
+                    (Drag::None, None, Some(_)) => {
+                        crate::canvas::matrix_hit(&self.flopsynth_layout, x, y)
+                            .and_then(crate::canvas::matrix_tip)
+                    }
                     _ => None,
                 };
                 if tip != self.flop_tip {
@@ -5053,6 +5094,7 @@ impl WindowApp {
                     source_values: self.flop_source_values.clone(),
                     assigning: self.flop_assign,
                     carrying_slot: self.flop_slot,
+                    carrying_route: self.flop_route,
                     destinations: self.flop_destinations.clone(),
                     about: self.flop_about(),
                     hover_at: self.cursor,
@@ -5376,7 +5418,7 @@ impl WindowApp {
         self.lanes = doc.lanes();
         self.clips = doc.clips();
         self.instrument = doc.instrument();
-        self.flopsynth = doc.flopsynth(self.flop_page);
+        self.flopsynth = doc.flopsynth_inspecting(self.flop_page, self.flop_inspector);
         if let Some(view) = &mut self.flopsynth {
             view.browse = self.flop_browse.clone();
             view.matrix_scroll = self.flop_matrix_scroll;
@@ -5620,7 +5662,6 @@ impl WindowApp {
             crate::render::SAVE,
             crate::render::SAVE_AS,
             crate::canvas::NO_PRESET,
-            crate::render::MATRIX_HEADING,
             crate::render::NO_ROUTES,
         ] {
             want(&mut self.labels, &mut self.text, fixed);
@@ -5654,12 +5695,59 @@ impl WindowApp {
                 &crate::render::scale_label(view.scale),
                 t.value,
             );
+            // A badge wears its name as a caption; the carried badge and
+            // the matrix's rows read the plain form.
+            // A badge's name band is narrower than a macro's name: the
+            // caption is shortened to fit (`badge_caption`), and every
+            // candidate it tries is shaped here so the renderer, trying
+            // the same ones against the same labels, finds them.
+            let name_room = self
+                .flopsynth_layout
+                .badges
+                .first()
+                .map(|badge| crate::canvas::badge_anatomy(*badge, view.scale).name.width)
+                .unwrap_or(crate::canvas::BADGE_W * view.scale);
             for name in &view.sources {
                 want(&mut self.labels, &mut self.text, name);
+                let labels = std::cell::RefCell::new((&mut self.labels, &mut self.text));
+                let measure = |s: &str| -> f32 {
+                    let (labels, text) = &mut *labels.borrow_mut();
+                    labels.ensure_styled(s, &font, t.caption, text);
+                    labels.get_styled(s, t.caption).map_or(0.0, |l| l.width)
+                };
+                let _ = crate::canvas::badge_caption(name, name_room, &measure);
             }
+            // The table's chips read in the value style; its heads as
+            // captions; `+ route` and "none" with them.
             for route in &view.routes {
-                want(&mut self.labels, &mut self.text, &route.source);
-                want(&mut self.labels, &mut self.text, &route.destination);
+                styled(&mut self.labels, &mut self.text, &route.source, t.value);
+                styled(
+                    &mut self.labels,
+                    &mut self.text,
+                    &route.destination,
+                    t.value,
+                );
+                styled(&mut self.labels, &mut self.text, &route.curve, t.value);
+                if let Some(via) = &route.via {
+                    styled(&mut self.labels, &mut self.text, via, t.value);
+                }
+            }
+            if view.page == crate::canvas::FlopsynthPage::Modulation {
+                for head in crate::canvas::MATRIX_HEADS {
+                    styled(&mut self.labels, &mut self.text, head, t.caption);
+                }
+                styled(
+                    &mut self.labels,
+                    &mut self.text,
+                    crate::canvas::ADD_ROUTE,
+                    t.value,
+                );
+                styled(
+                    &mut self.labels,
+                    &mut self.text,
+                    crate::canvas::NO_VIA,
+                    t.value,
+                );
             }
             if let Some(tip) = &self.flop_tip {
                 want(&mut self.labels, &mut self.text, tip);
@@ -6797,6 +6885,16 @@ impl WindowApp {
                 self.tree.invalidate(PANEL);
                 self.redraw_editors();
             }
+            Drag::FlopRoute => {
+                let target = crate::canvas::route_landing(&self.flopsynth_layout, y);
+                if let Some((_, landing)) = &mut self.flop_route
+                    && *landing != target
+                {
+                    *landing = target;
+                    self.tree.invalidate(PANEL);
+                    self.redraw_editors();
+                }
+            }
             Drag::AudioRow(field) => self.drag_audio_row(field, x),
             Drag::AudioKnob(field) => self.drag_audio_knob(field, y),
             Drag::InsertKnob => self.drag_insert_knob(y),
@@ -7502,6 +7600,9 @@ impl WindowApp {
         if matches!(self.drag, Drag::FlopSlot) {
             self.drop_flop_slot();
         }
+        if matches!(self.drag, Drag::FlopRoute) {
+            self.drop_flop_route();
+        }
         // And a row carried out of the browser and let go over *this* window:
         // the instrument window's name takes one. The studio's own release
         // does the same thing — which window hears the release is the
@@ -7518,6 +7619,7 @@ impl WindowApp {
         }
         self.flop_assign = None;
         self.flop_slot = None;
+        self.flop_route = None;
         self.flop_node = None;
         self.flop_ring = None;
         // A band or point drag coalesces into one history entry while it
@@ -8300,8 +8402,12 @@ impl WindowApp {
             self.press_flop_presets(hit);
             return;
         }
+        // A badge: a drag to a knob, or — let go where it was pressed — a
+        // click that opens its source in the inspector. Which it was is
+        // decided on the release (`drop_flop_assign`).
         if let Some(source) = crate::canvas::badge_at(&self.flopsynth_layout, x, y) {
             self.flop_assign = Some((source, (x, y)));
+            self.flop_badge_pressed = (x, y);
             self.drag = Drag::FlopAssign;
             self.tree.invalidate(PANEL);
             return;
@@ -8346,6 +8452,10 @@ impl WindowApp {
             return;
         }
         // The scale chooser on the tab strip (§3.2).
+        if let Some(crate::canvas::FlopsynthHit::InspectorClose) = hit {
+            self.set_flop_inspector(None);
+            return;
+        }
         if let Some(crate::canvas::FlopsynthHit::Scale) = hit {
             let chip = self.flopsynth_layout.scale_chip;
             let bounds = self
@@ -8906,14 +9016,46 @@ impl WindowApp {
         self.redraw_editors();
     }
 
-    /// A press on one of the matrix's rows.
+    /// Opens the inspector on a source, or closes it (`None`). The view is
+    /// per inspector as it is per page — the host builds the inspected
+    /// source's card into it — so the studio's lists are read again.
+    fn set_flop_inspector(&mut self, source: Option<usize>) {
+        if self.flop_inspector == source {
+            return;
+        }
+        self.flop_inspector = source;
+        self.studio_revision = u64::MAX;
+        self.refresh_studio();
+        self.tree.invalidate(PANEL);
+        self.redraw_editors();
+    }
+
+    /// A press on the table (`docs/flopsynth-next.md` §3.4): a cell is a
+    /// chooser, a switch, the depth slider, the grip, or the ✕; the header
+    /// sorts and adds. Every edit goes to the host **by row**, the row's
+    /// position in the whole matrix — the ✕ used to ask for a route to the
+    /// depth control's *address*, which is not a destination, and removed
+    /// nothing (`fontelle-app/tests/mod_matrix_table.rs`).
     fn press_flop_matrix(&mut self, hit: crate::canvas::MatrixHit, x: f32) {
         use crate::canvas::MatrixHit;
+        let bounds = self
+            .editors
+            .iter()
+            .find(|e| e.kind == EditorKind::Instrument)
+            .map(|e| e.panel.frame)
+            .unwrap_or(self.layout.window);
+        let cell = |rows: &[crate::canvas::MatrixRow],
+                    index: usize,
+                    pick: fn(&crate::canvas::MatrixRow) -> crate::layout::Rect| {
+            rows.get(index)
+                .map(pick)
+                .unwrap_or(crate::layout::Rect::ZERO)
+        };
+        let rows = self.flopsynth_layout.routes.clone();
         match hit {
             MatrixHit::Remove(index) => {
-                let address = self.route_address(index);
-                if let (Some(address), Some(doc)) = (address, self.options.document.as_mut()) {
-                    doc.remove_route(&address, 0);
+                if let Some(doc) = self.options.document.as_mut() {
+                    doc.remove_route_row(index);
                 }
                 self.after_flop_structure();
             }
@@ -8921,23 +9063,88 @@ impl WindowApp {
                 self.drag = Drag::FlopMatrix(index);
                 self.drag_flop_matrix(index, x);
             }
+            MatrixHit::Grip(index) => {
+                self.flop_route = Some((index, Some(index)));
+                self.drag = Drag::FlopRoute;
+                self.tree.invalidate(PANEL);
+            }
+            MatrixHit::Source(index) => {
+                let at = cell(&rows, index, |r| r.source);
+                self.open_menu_beside(MenuTarget::RouteSource(index), at, bounds);
+            }
+            MatrixHit::Destination(index) => {
+                let at = cell(&rows, index, |r| r.destination);
+                self.open_menu_beside(MenuTarget::RouteDestination(index), at, bounds);
+            }
+            MatrixHit::Via(index) => {
+                let at = cell(&rows, index, |r| r.via);
+                self.open_menu_beside(MenuTarget::RouteVia(index), at, bounds);
+            }
+            MatrixHit::Curve(index) => {
+                let at = cell(&rows, index, |r| r.curve);
+                self.open_menu_beside(MenuTarget::RouteCurve(index), at, bounds);
+            }
+            MatrixHit::Invert(index) => {
+                let now = self
+                    .flopsynth
+                    .as_ref()
+                    .and_then(|v| v.routes.get(index))
+                    .is_some_and(|r| r.invert);
+                if let Some(doc) = self.options.document.as_mut() {
+                    doc.set_route_invert(index, !now);
+                }
+                self.after_flop_structure();
+            }
+            MatrixHit::Bypass(index) => {
+                let now = self
+                    .flopsynth
+                    .as_ref()
+                    .and_then(|v| v.routes.get(index))
+                    .is_some_and(|r| r.bypass);
+                if let Some(doc) = self.options.document.as_mut() {
+                    doc.set_route_bypass(index, !now);
+                }
+                self.after_flop_structure();
+            }
+            MatrixHit::Add => {
+                if let Some(doc) = self.options.document.as_mut() {
+                    doc.add_route_row();
+                }
+                self.after_flop_structure();
+            }
+            MatrixHit::SortSource => {
+                if let Some(doc) = self.options.document.as_mut() {
+                    doc.sort_routes(crate::document::RouteSort::Source);
+                }
+                self.after_flop_structure();
+            }
+            MatrixHit::SortDestination => {
+                if let Some(doc) = self.options.document.as_mut() {
+                    doc.sort_routes(crate::document::RouteSort::Destination);
+                }
+                self.after_flop_structure();
+            }
         }
     }
 
-    /// The destination address of the matrix row at `index`.
-    ///
-    /// The rows are the *whole* matrix in order, and `remove_route` counts the
-    /// routes to one destination — so this hands over the destination and the
-    /// position of this route among the routes to it.
-    fn route_address(&self, index: usize) -> Option<fontelle_types::ParamAddress> {
-        let route = self.flopsynth.as_ref()?.routes.get(index)?;
-        // The row carries the destination's *label*, and the depth knob the
-        // panel already draws carries its address — matched here rather than
-        // stored twice.
-        let doc = self.options.document.as_ref()?;
-        let _ = route;
-        let _ = doc;
-        self.flop_route_depth_address(index)
+    /// A row let go: on another row, it moves there; anywhere else the drag
+    /// is called off, like a slot's.
+    fn drop_flop_route(&mut self) {
+        let Some((row, landing)) = self.flop_route.take() else {
+            return;
+        };
+        match landing {
+            Some(to) if to != row && to != row + 1 => {
+                if let Some(doc) = self.options.document.as_mut() {
+                    doc.move_route(row, to);
+                }
+                self.after_flop_structure();
+            }
+            _ => {
+                self.tree.invalidate(PANEL);
+                self.redraw_editors();
+            }
+        }
     }
 
     /// The address of the depth control of the matrix row at `index`.
@@ -8963,6 +9170,15 @@ impl WindowApp {
         let Some((source, _)) = self.flop_assign.take() else {
             return;
         };
+        // Let go where it was pressed: a click, which opens the source in
+        // the inspector (§3.4) — or closes it, if that is the one showing.
+        if crate::canvas::badge_gesture(self.flop_badge_pressed, (x, y))
+            == crate::canvas::BadgeGesture::Click
+        {
+            let next = crate::canvas::inspector_after_click(self.flop_inspector, source);
+            self.set_flop_inspector(next);
+            return;
+        }
         let landed = match crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y) {
             Some(crate::canvas::FlopsynthHit::Control { card, param }) => Some((card, param)),
             _ => None,
@@ -12131,6 +12347,75 @@ impl WindowApp {
                 .into_iter()
                 .map(|(entry, _)| entry)
                 .collect(),
+            // The table's choosers: the view's own lists, the row's current
+            // choice ticked, the sources with their pictures.
+            MenuTarget::RouteSource(row) | MenuTarget::RouteVia(row) => {
+                let Some(view) = self.flopsynth.as_ref() else {
+                    return Vec::new();
+                };
+                let route = view.routes.get(*row);
+                let via = matches!(target, MenuTarget::RouteVia(_));
+                let current: Option<&str> = route.and_then(|r| {
+                    if via {
+                        r.via.as_deref()
+                    } else {
+                        Some(r.source.as_str())
+                    }
+                });
+                let marked = |name: &str, chosen: bool| {
+                    MenuEntry::new(if chosen {
+                        format!("{}{name}", crate::canvas::CHOSEN_MARK)
+                    } else {
+                        format!("   {name}")
+                    })
+                };
+                let mut entries = Vec::with_capacity(view.sources.len() + 1);
+                if via {
+                    entries.push(marked(crate::canvas::NO_VIA, current.is_none()));
+                }
+                for (index, source) in view.sources.iter().enumerate() {
+                    let mut entry = marked(source, current == Some(source.as_str()));
+                    if let Some(shape) = view.source_shapes.get(index)
+                        && shape.len() >= 2
+                    {
+                        entry.thumbnail = Some(shape.clone());
+                    }
+                    entries.push(entry);
+                }
+                entries
+            }
+            MenuTarget::RouteDestination(row) => {
+                let Some(view) = self.flopsynth.as_ref() else {
+                    return Vec::new();
+                };
+                let current = view.routes.get(*row).map(|r| r.destination.as_str());
+                view.destinations
+                    .iter()
+                    .map(|name| {
+                        MenuEntry::new(if current == Some(name.as_str()) {
+                            format!("{}{name}", crate::canvas::CHOSEN_MARK)
+                        } else {
+                            format!("   {name}")
+                        })
+                    })
+                    .collect()
+            }
+            MenuTarget::RouteCurve(row) => {
+                let Some(view) = self.flopsynth.as_ref() else {
+                    return Vec::new();
+                };
+                let current = view.routes.get(*row).map(|r| r.curve.as_str());
+                view.curves
+                    .iter()
+                    .map(|name| {
+                        MenuEntry::new(if current == Some(name.as_str()) {
+                            format!("{}{name}", crate::canvas::CHOSEN_MARK)
+                        } else {
+                            format!("   {name}")
+                        })
+                    })
+                    .collect()
+            }
             MenuTarget::ModulateFrom {
                 address,
                 name,
@@ -13024,6 +13309,35 @@ impl WindowApp {
                 if let Some(item) = item {
                     self.choose_flop_knob_menu(&address, &name, item);
                 }
+            }
+            (MenuTarget::RouteSource(row), index) => {
+                let row = *row;
+                if let Some(doc) = self.options.document.as_mut() {
+                    doc.set_route_source(row, index);
+                }
+                self.after_flop_structure();
+            }
+            (MenuTarget::RouteVia(row), index) => {
+                let row = *row;
+                if let Some(doc) = self.options.document.as_mut() {
+                    // Row 0 is "none"; the sources follow in their order.
+                    doc.set_route_via(row, index.checked_sub(1));
+                }
+                self.after_flop_structure();
+            }
+            (MenuTarget::RouteDestination(row), index) => {
+                let row = *row;
+                if let Some(doc) = self.options.document.as_mut() {
+                    doc.set_route_destination(row, index);
+                }
+                self.after_flop_structure();
+            }
+            (MenuTarget::RouteCurve(row), index) => {
+                let row = *row;
+                if let Some(doc) = self.options.document.as_mut() {
+                    doc.set_route_curve(row, index);
+                }
+                self.after_flop_structure();
             }
             (MenuTarget::ModulateFrom { address, .. }, index) => {
                 let address = address.clone();

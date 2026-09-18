@@ -136,6 +136,14 @@ pub struct ModRoute {
     /// product of source and depth cannot express at any depth. Only
     /// meaningful for unipolar sources; a bipolar one is already symmetric.
     pub invert: bool,
+    /// Kept in the matrix and heard by nothing (`docs/flopsynth-next.md`
+    /// §3.4): the way an effect slot is switched off rather than pulled
+    /// out, so a route taken out to hear the sound without it comes back
+    /// with its depth. Absent from the file unless set, so a patch written
+    /// before the field reads with every route live and a live route
+    /// writes what it always wrote.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bypass: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -190,7 +198,7 @@ impl ModMatrix {
     pub fn evaluate(&self, dest: ModDest, source_values: &dyn Fn(ModSource) -> f32) -> f32 {
         let mut total = 0.0;
         for route in &self.routes {
-            if route.destination != dest {
+            if route.destination != dest || route.bypass {
                 continue;
             }
             let value = source_values(route.source);
@@ -215,6 +223,7 @@ mod tests {
             curve: Curve::Linear,
             via: None,
             invert: false,
+            bypass: false,
         }
     }
 

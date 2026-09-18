@@ -2553,6 +2553,7 @@ mod tests {
                 curve: crate::mod_matrix::Curve::Linear,
                 via: None,
                 invert,
+                bypass: false,
             }],
         }
     }
@@ -2772,6 +2773,7 @@ mod tests {
                 curve: Curve::Linear,
                 via: None,
                 invert: false,
+                bypass: false,
             }],
         };
 
@@ -2903,6 +2905,7 @@ mod tests {
                 curve: Curve::Linear,
                 via: None,
                 invert: false,
+                bypass: false,
             }],
         }
     }
@@ -3172,6 +3175,7 @@ mod tests {
                 curve: Curve::Linear,
                 via: Some(ModSource::Lfo(0)),
                 invert: false,
+                bypass: false,
             }],
         };
 

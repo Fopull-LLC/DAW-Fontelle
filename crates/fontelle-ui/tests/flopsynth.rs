@@ -661,16 +661,19 @@ fn the_modulation_page_lays_out_a_badge_for_every_source() {
 }
 
 #[test]
-fn the_synth_page_has_no_badges() {
-    // The badges belong to the page that is *about* modulation. A row of them
-    // on every page would be a row of buttons that mean nothing where they are.
+fn the_synth_page_has_the_badges_too_now_on_the_strip() {
+    // The badges used to belong to the page that is *about* modulation; the
+    // strip (§3.4) puts them on every page, where a badge dragged onto a
+    // knob is what "modulate this" means wherever the knob is.
     let theme = Theme::dark_default();
     let mut view = a_view_on(FlopsynthPage::Synth);
     view.sources = vec!["ENV 1".into()];
+    let layout = flopsynth_layout(BODY, &theme.metrics, &view);
+    assert_eq!(layout.badges.len(), 1);
     assert!(
-        flopsynth_layout(BODY, &theme.metrics, &view)
-            .badges
-            .is_empty()
+        layout
+            .strip
+            .contains(layout.badges[0].x + 1.0, layout.badges[0].y + 1.0)
     );
 }
 
@@ -685,11 +688,13 @@ fn every_route_gets_a_row_with_something_to_press() {
             source: "ENV 2".into(),
             destination: "Filter 1 cutoff".into(),
             depth: 0.62,
+            ..Default::default()
         },
         FlopsynthRoute {
             source: "LFO 1".into(),
             destination: "OSC A pitch".into(),
             depth: -0.05,
+            ..Default::default()
         },
     ];
     let layout = flopsynth_layout(BODY, &theme.metrics, &view);
@@ -741,6 +746,7 @@ fn a_matrix_with_more_rows_than_room_scrolls_rather_than_running_off() {
             source: format!("LFO {}", i % 4 + 1),
             destination: format!("dest {i}"),
             depth: 0.5,
+            ..Default::default()
         })
         .collect();
     let layout = flopsynth_layout(BODY, &theme.metrics, &view);
@@ -846,6 +852,7 @@ fn the_matrix_scrolls_before_a_card_shrinks() {
             source: "ENV 3".into(),
             destination: format!("dest {i}"),
             depth: 0.5,
+            ..Default::default()
         })
         .collect();
     let body = real_body(fontelle_ui::layout::FLOPSYNTH_SIZE);
@@ -1845,6 +1852,7 @@ fn the_matrix_takes_the_room_under_the_cards() {
         source: "ENV 2".into(),
         destination: "Filter 1 cutoff".into(),
         depth: 0.6,
+        ..Default::default()
     }];
     let layout = flopsynth_layout(BODY, &theme.metrics, &view);
     let cards_bottom = layout
@@ -1857,13 +1865,13 @@ fn the_matrix_takes_the_room_under_the_cards() {
         "the matrix starts at {} and the cards end at {cards_bottom}",
         layout.matrix.y
     );
-    // `layout.body` is the strip the cards were given, which stops above the
-    // matrix; the matrix itself runs to the bottom of the window's body.
+    // `layout.body` is the band the cards were given, which stops above the
+    // matrix; the matrix itself runs down to the strip.
     assert!(
-        (layout.matrix.bottom() - BODY.bottom()).abs() < 0.51,
-        "the matrix runs to the bottom of the body: {} vs {}",
+        (layout.matrix.bottom() - (layout.strip.y - CARD_GAP)).abs() < 0.51,
+        "the matrix runs down to the strip: {} vs {}",
         layout.matrix.bottom(),
-        BODY.bottom()
+        layout.strip.y
     );
     assert!(!layout.routes[0].frame.is_empty());
 }
@@ -2336,4 +2344,441 @@ fn the_rings_stack_outward_one_band_per_route_and_a_press_names_its_band() {
         (ring_live(0.3, 0.5, -1.0)).abs() < 1e-6,
         "a bipolar source at its bottom, clamped"
     );
+}
+
+// ------------------------------------------------- the strip and the inspector
+//
+// `docs/flopsynth-next.md` §3.4: a band across the bottom of **every** page
+// with a badge per modulation source — drag one onto any knob on any page
+// to route; click one to open its editor in the inspector, a drawer over
+// the page above the strip. The Modulation page's badge rows were the
+// strip's first draft, on one page.
+
+fn twenty_one_sources() -> Vec<String> {
+    let mut sources: Vec<String> = (1..=4).map(|i| format!("ENV {i}")).collect();
+    sources.extend((1..=4).map(|i| format!("LFO {i}")));
+    sources.extend(["Brightness", "Hardness", "M3", "M4"].map(String::from));
+    sources.extend(
+        [
+            "Velocity",
+            "Key",
+            "Aftertouch",
+            "Wheel",
+            "Bend",
+            "Random",
+            "Counter",
+            "Note X",
+            "Note Y",
+        ]
+        .map(String::from),
+    );
+    sources
+}
+
+#[test]
+fn the_strip_runs_along_the_foot_of_every_page_with_a_badge_per_source() {
+    use fontelle_ui::canvas::STRIP_HEIGHT;
+    let body = real_body(fontelle_ui::layout::FLOPSYNTH_SIZE);
+    for page in FlopsynthPage::ALL {
+        let mut view = match page {
+            FlopsynthPage::Synth => synth_page(),
+            FlopsynthPage::Effects => fx_view(2, true),
+            FlopsynthPage::Presets => presets_view(PresetBrowse::default()),
+            FlopsynthPage::Modulation => a_view_on(page),
+        };
+        view.page = page;
+        view.sources = twenty_one_sources();
+        let layout = flopsynth_layout(body, &metrics(), &view);
+        let strip = layout.strip;
+        assert!(!strip.is_empty(), "{page:?}: no strip");
+        assert!(
+            (strip.bottom() - body.bottom()).abs() < 0.51
+                && (strip.height - STRIP_HEIGHT).abs() < 0.01,
+            "{page:?}: the strip is along the foot: {strip:?} in {body:?}"
+        );
+        assert_eq!(layout.badges.len(), 21, "{page:?}: a badge per source");
+        for (index, badge) in layout.badges.iter().enumerate() {
+            assert!(!badge.is_empty(), "{page:?}: badge {index} has no room");
+            assert!(
+                badge.y >= strip.y - 0.01 && badge.bottom() <= strip.bottom() + 0.01,
+                "{page:?}: badge {index} is outside the strip"
+            );
+            assert_eq!(
+                badge_at(
+                    &layout,
+                    badge.x + badge.width / 2.0,
+                    badge.y + badge.height / 2.0
+                ),
+                Some(index)
+            );
+            if index > 0 {
+                assert!(
+                    badge.x >= layout.badges[index - 1].right() - 0.01,
+                    "left to right"
+                );
+            }
+        }
+        // Everything on the page keeps clear of the strip.
+        for (index, placed) in layout.cards.iter().enumerate() {
+            assert!(
+                placed.frame.is_empty() || placed.frame.bottom() <= strip.y + 0.01,
+                "{page:?}: {} runs into the strip",
+                view.cards[index].group.name
+            );
+        }
+        if page == FlopsynthPage::Modulation {
+            assert!(
+                layout.matrix.bottom() <= strip.y + 0.01,
+                "the matrix keeps clear"
+            );
+        }
+        if page == FlopsynthPage::Presets {
+            assert!(
+                layout.presets.list.bottom() <= strip.y + 0.01,
+                "the list keeps clear"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_inspector_is_a_drawer_over_the_page_above_the_strip_and_is_hit_first() {
+    use fontelle_ui::canvas::INSPECTOR_ROW;
+    let body = real_body(fontelle_ui::layout::FLOPSYNTH_SIZE);
+    let mut view = synth_page();
+    view.sources = twenty_one_sources();
+    // The inspected source's card, marked as the inspector's: the LFO's
+    // controls, eight across so it is one row.
+    let lfo = sized(
+        card(
+            "LFO 1",
+            INSPECTOR_ROW,
+            false,
+            8,
+            FlopsynthPicture::Lfo {
+                points: vec![0.0; 64],
+                phase: 0.0,
+            },
+            vec![
+                chooser("patch/lfo[0]/wave", "WAVE", &["sine", "tri"]),
+                knob("patch/lfo[0]/rate", "RATE", 0.5),
+                knob("patch/lfo[0]/depth", "DEPTH", 0.5),
+                knob("patch/lfo[0]/phase", "PHASE", 0.0),
+            ],
+        ),
+        "M L M S",
+    );
+    view.cards.push(lfo);
+    view.inspector = Some(4);
+    let index = view.cards.len() - 1;
+    let layout = flopsynth_layout(body, &metrics(), &view);
+    let drawer = layout.inspector;
+    assert!(!drawer.is_empty(), "the drawer is open");
+    assert!(
+        (drawer.bottom() - layout.strip.y).abs() < fontelle_ui::canvas::CARD_GAP + 0.01,
+        "above the strip"
+    );
+    assert!(
+        (drawer.x - body.x).abs() < 0.01 && (drawer.right() - body.right()).abs() < 0.01,
+        "full width"
+    );
+    let placed = &layout.cards[index];
+    assert!(
+        !placed.frame.is_empty() && drawer.contains(placed.frame.x + 1.0, placed.frame.y + 1.0)
+    );
+    assert!(placed.frame.bottom() <= drawer.bottom() + 0.01);
+    // The inspected card is as wide as the drawer, whatever columns the
+    // host declared: the editor of one source has the whole width to
+    // itself, which is what the LFO's and the envelope's pictures want.
+    assert!(
+        placed.frame.width
+            >= drawer.width
+                - fontelle_ui::canvas::FLOP_CELL_W
+                - 2.0 * fontelle_ui::canvas::CARD_PAD,
+        "the card is {} wide in a drawer {} wide",
+        placed.frame.width,
+        drawer.width
+    );
+    assert!(
+        !layout.inspector_close.is_empty()
+            && drawer.contains(
+                layout.inspector_close.x + 1.0,
+                layout.inspector_close.y + 1.0
+            )
+    );
+    // The drawer lies over the page's second band; a press on one of its
+    // cells is the inspector's control, not the card underneath.
+    let (param, cell) = placed.cells[1];
+    let under = layout
+        .cards
+        .iter()
+        .enumerate()
+        .filter(|(i, c)| *i != index && c.frame.contains(cell.x + 1.0, cell.y + 1.0))
+        .count();
+    assert!(under >= 1, "the drawer covers a card: {cell:?}");
+    assert_eq!(
+        flopsynth_hit(
+            &layout,
+            cell.x + cell.width / 2.0,
+            cell.y + cell.height / 2.0
+        ),
+        Some(FlopsynthHit::Control { card: index, param })
+    );
+    assert_eq!(
+        flopsynth_hit(
+            &layout,
+            layout.inspector_close.x + 2.0,
+            layout.inspector_close.y + 2.0
+        ),
+        Some(FlopsynthHit::InspectorClose)
+    );
+    // Closed, the same view lays out with no drawer and the card unplaced.
+    view.inspector = None;
+    view.cards.pop();
+    let closed = flopsynth_layout(body, &metrics(), &view);
+    assert!(closed.inspector.is_empty());
+}
+
+#[test]
+fn on_the_matrix_page_the_inspector_is_the_top_of_the_page_and_the_table_the_rest() {
+    // §3.4: the Matrix page is "the inspector plus the full table". The
+    // drawer that lies over the foot of every other page sits under the
+    // canopy here, and the table takes what is left — the page has no
+    // cards of its own to cover.
+    use fontelle_ui::canvas::{FlopsynthPage, INSPECTOR_ROW};
+    let body = real_body(fontelle_ui::layout::FLOPSYNTH_SIZE);
+    let mut view = a_view_on(FlopsynthPage::Modulation);
+    // The host sends this page no cards of its own.
+    view.cards.clear();
+    view.sources = twenty_one_sources();
+    view.routes = (0..30)
+        .map(|i| FlopsynthRoute {
+            source: "LFO 1".into(),
+            destination: format!("Filter 1 cutoff {i}"),
+            depth: 0.3,
+            ..Default::default()
+        })
+        .collect();
+    view.cards.push(sized(
+        card(
+            "LFO 1",
+            INSPECTOR_ROW,
+            false,
+            8,
+            FlopsynthPicture::Lfo {
+                points: vec![0.0; 64],
+                phase: 0.0,
+            },
+            vec![
+                chooser("patch/lfo[0]/wave", "WAVE", &["sine", "tri"]),
+                knob("patch/lfo[0]/rate", "RATE", 0.5),
+            ],
+        ),
+        "M L",
+    ));
+    view.inspector = Some(4);
+    let layout = flopsynth_layout(body, &metrics(), &view);
+    let drawer = layout.inspector;
+    assert!(!drawer.is_empty());
+    assert!(
+        drawer.y < layout.canopy.bottom() + fontelle_ui::canvas::STRIP_HEIGHT,
+        "under the canopy, not over the strip: {drawer:?} vs {:?}",
+        layout.canopy
+    );
+    assert!(
+        layout.matrix.y >= drawer.bottom() - 0.01,
+        "the table starts under the drawer: {:?} vs {drawer:?}",
+        layout.matrix
+    );
+    assert!(
+        layout.matrix.bottom() <= layout.strip.y + 0.01,
+        "and ends above the strip"
+    );
+    assert!(
+        layout.matrix.height > 100.0,
+        "with room for rows: {:?}",
+        layout.matrix
+    );
+    let shown: Vec<_> = layout
+        .routes
+        .iter()
+        .filter(|r| !r.frame.is_empty())
+        .collect();
+    assert!(shown.len() >= 4, "{} rows showing", shown.len());
+    assert!(shown.iter().all(|r| r.frame.y >= drawer.bottom() - 0.01));
+    assert!(layout.matrix_max_scroll > 0.0, "the rest scroll");
+}
+
+#[test]
+fn a_badge_caption_is_shortened_with_an_ellipsis_to_fit_its_badge() {
+    use fontelle_ui::canvas::{BADGE_W, badge_anatomy, badge_caption};
+    // Six pixels a glyph: "Brightness" is sixty, a badge's name band is
+    // forty-six, and "Bright…" is forty-two.
+    let measure = |s: &str| s.chars().count() as f32 * 6.0;
+    let badge = fontelle_ui::layout::Rect::new(0.0, 0.0, BADGE_W, 44.0);
+    let room = badge_anatomy(badge, 1.0).name.width;
+    assert_eq!(badge_caption("ENV 1", room, &measure), "ENV 1");
+    assert_eq!(
+        badge_caption("Brightness", room, &measure),
+        "Bright\u{2026}"
+    );
+    // Trailing spaces go before the ellipsis, and a name that fits is
+    // itself, whatever the room.
+    assert_eq!(
+        badge_caption("Note X Y Z", 42.0, &measure),
+        "Note X\u{2026}"
+    );
+    assert_eq!(badge_caption("M1", 5.0, &measure), "M\u{2026}");
+}
+
+// ------------------------------------------------------ the full table (§3.4)
+
+/// §3.4's table: every row has a grip to drag it by, a source, a
+/// destination, the depth slider, a via, a curve, an invert switch and an
+/// on/off switch, then the ✕ — left to right, none overlapping, each hit
+/// by its own name; the header names the columns, the source and
+/// destination heads sort, and a `+` on the header adds a row.
+#[test]
+fn every_row_of_the_table_has_its_eight_cells_and_the_header_sorts_and_adds() {
+    let theme = Theme::dark_default();
+    let mut view = a_view_on(FlopsynthPage::Modulation);
+    view.cards.clear();
+    view.routes = vec![
+        FlopsynthRoute {
+            source: "ENV 2".into(),
+            destination: "Filter 1 cutoff".into(),
+            depth: 0.62,
+            via: Some("Wheel".into()),
+            curve: "Linear".into(),
+            invert: false,
+            bypass: false,
+        },
+        FlopsynthRoute {
+            source: "LFO 1".into(),
+            destination: "OSC A pitch".into(),
+            depth: -0.05,
+            via: None,
+            curve: "S-curve".into(),
+            invert: true,
+            bypass: true,
+        },
+    ];
+    let layout = flopsynth_layout(BODY, &theme.metrics, &view);
+    assert_eq!(layout.routes.len(), 2);
+    let centre = |r: Rect| (r.x + r.width / 2.0, r.y + r.height / 2.0);
+    for (index, row) in layout.routes.iter().enumerate() {
+        let cells = [
+            ("grip", row.grip, MatrixHit::Grip(index)),
+            ("source", row.source, MatrixHit::Source(index)),
+            (
+                "destination",
+                row.destination,
+                MatrixHit::Destination(index),
+            ),
+            ("depth", row.depth, MatrixHit::Depth(index)),
+            ("via", row.via, MatrixHit::Via(index)),
+            ("curve", row.curve, MatrixHit::Curve(index)),
+            ("invert", row.invert, MatrixHit::Invert(index)),
+            ("bypass", row.bypass, MatrixHit::Bypass(index)),
+            ("remove", row.remove, MatrixHit::Remove(index)),
+        ];
+        let mut right = row.frame.x - 0.01;
+        for (name, rect, hit) in cells {
+            assert!(!rect.is_empty(), "row {index}: no {name}");
+            assert!(
+                rect.x >= right - 0.01,
+                "row {index}: {name} at {rect:?} overlaps the cell before it, which ends at {right}"
+            );
+            assert!(
+                rect.y >= row.frame.y - 0.01 && rect.bottom() <= row.frame.bottom() + 0.01,
+                "row {index}: {name} is outside its row"
+            );
+            let (x, y) = centre(rect);
+            assert_eq!(matrix_hit(&layout, x, y), Some(hit), "row {index}: {name}");
+            right = rect.right();
+        }
+        assert!(
+            right <= row.frame.right() + 0.01,
+            "row {index} runs past its frame"
+        );
+        assert!(
+            row.source.width >= 60.0 && row.destination.width >= row.source.width,
+            "the names have room: {:?} {:?}",
+            row.source,
+            row.destination
+        );
+    }
+    // The header: a head over each column, the two that sort hit by name,
+    // and the `+` at the right end.
+    let head = &layout.matrix_header;
+    for (name, rect) in [
+        ("source", head.source),
+        ("destination", head.destination),
+        ("depth", head.depth),
+        ("via", head.via),
+        ("curve", head.curve),
+        ("invert", head.invert),
+        ("bypass", head.bypass),
+        ("add", head.add),
+    ] {
+        assert!(!rect.is_empty(), "no {name} head");
+        assert!(
+            rect.y >= layout.matrix.y - 0.01
+                && rect.bottom() <= layout.matrix.y + CARD_HEADER + 0.01,
+            "{name} head is not in the header"
+        );
+    }
+    assert!(
+        (head.source.x - layout.routes[0].source.x).abs() < 0.01,
+        "the head is over its column"
+    );
+    assert!((head.via.x - layout.routes[0].via.x).abs() < 0.01);
+    let (x, y) = centre(head.source);
+    assert_eq!(matrix_hit(&layout, x, y), Some(MatrixHit::SortSource));
+    let (x, y) = centre(head.destination);
+    assert_eq!(matrix_hit(&layout, x, y), Some(MatrixHit::SortDestination));
+    let (x, y) = centre(head.add);
+    assert_eq!(matrix_hit(&layout, x, y), Some(MatrixHit::Add));
+    assert!(head.add.right() <= layout.matrix.right() + 0.01);
+    // Between rows is nothing.
+    assert_eq!(
+        matrix_hit(
+            &layout,
+            layout.matrix.x + 2.0,
+            layout.routes[0].frame.bottom() + 0.5
+        ),
+        None
+    );
+}
+
+/// A row dragged by its grip lands on the row under the pointer, or after
+/// the last one below them all — `route_landing` says which, from the
+/// pointer's height alone, so a drag past the last row still has an answer.
+#[test]
+fn a_row_dragged_by_its_grip_lands_on_the_row_under_the_pointer() {
+    use fontelle_ui::canvas::route_landing;
+    let theme = Theme::dark_default();
+    let mut view = a_view_on(FlopsynthPage::Modulation);
+    view.cards.clear();
+    view.routes = (0..5)
+        .map(|i| FlopsynthRoute {
+            source: "LFO 1".into(),
+            destination: format!("dest {i}"),
+            depth: 0.5,
+            ..Default::default()
+        })
+        .collect();
+    let layout = flopsynth_layout(BODY, &theme.metrics, &view);
+    let row = |i: usize| layout.routes[i].frame;
+    assert_eq!(route_landing(&layout, row(0).y + 2.0), Some(0));
+    assert_eq!(
+        route_landing(&layout, row(3).y + row(3).height / 2.0),
+        Some(3)
+    );
+    // Below the last row, still inside the panel: after the last.
+    assert_eq!(route_landing(&layout, row(4).bottom() + 10.0), Some(5));
+    // Above the first row is the first; outside the panel is nowhere.
+    assert_eq!(route_landing(&layout, row(0).y - 2.0), Some(0));
+    assert_eq!(route_landing(&layout, layout.matrix.y - 10.0), None);
+    assert_eq!(route_landing(&layout, layout.matrix.bottom() + 10.0), None);
 }

@@ -593,6 +593,7 @@ impl Build {
             curve: Curve::Linear,
             via: None,
             invert: false,
+            bypass: false,
         });
         self
     }
@@ -610,6 +611,7 @@ impl Build {
             curve: Curve::Linear,
             via: None,
             invert: true,
+            bypass: false,
         });
         self
     }
@@ -628,6 +630,7 @@ impl Build {
             curve: Curve::Linear,
             via: Some(via),
             invert: false,
+            bypass: false,
         });
         self
     }
@@ -651,6 +654,7 @@ impl Build {
             curve: Curve::Linear,
             via: Some(via),
             invert: true,
+            bypass: false,
         });
         self
     }
@@ -666,6 +670,7 @@ impl Build {
             curve,
             via: None,
             invert: false,
+            bypass: false,
         });
         self
     }
@@ -680,6 +685,7 @@ impl Build {
             curve: Curve::Quantised { steps },
             via: None,
             invert: false,
+            bypass: false,
         });
         self
     }

@@ -344,21 +344,36 @@ fn a_flopsynth_channel_offers_its_own_window_and_nothing_else_does() {
         "two bands since the envelopes left the page"
     );
 
-    // The LFOs are on the page that is about modulation (§8.4), not on the one
-    // about making the sound — which is what the page split is for.
+    // The LFOs are on no page (`docs/flopsynth-next.md` §3.4): the Matrix
+    // page is the table, and an LFO is edited in the strip's inspector.
     let modulation = session
         .flopsynth(fontelle_ui::canvas::FlopsynthPage::Modulation)
         .expect("a Flopsynth channel has every page");
-    let moved: Vec<&str> = modulation
+    let on_matrix: Vec<&str> = modulation
         .cards
         .iter()
         .map(|c| c.group.name.as_str())
         .collect();
-    assert!(moved.contains(&"LFO 1"), "{moved:?}");
+    assert!(
+        on_matrix.is_empty(),
+        "the Matrix page is the table: {on_matrix:?}"
+    );
     assert!(!names.contains(&"LFO 1"), "the Synth page has no LFOs");
     assert!(
         !modulation.sources.is_empty(),
-        "the Modulation page lists the sources a badge can be dragged from"
+        "the Matrix page lists the sources a badge can be dragged from"
+    );
+    let lfo = modulation
+        .sources
+        .iter()
+        .position(|s| s == "LFO 1")
+        .unwrap();
+    let inspecting = session
+        .flopsynth_inspecting(fontelle_ui::canvas::FlopsynthPage::Modulation, Some(lfo))
+        .unwrap();
+    assert!(
+        inspecting.cards.iter().any(|c| c.group.name == "LFO 1"),
+        "an LFO's card comes with the inspector"
     );
 
     // And every other instrument gets the knob grid, not this.
@@ -385,22 +400,23 @@ fn a_flopsynth_channel_offers_its_own_window_and_nothing_else_does() {
         picture("Filter 1"),
         FlopsynthPicture::Response { .. }
     ));
-    // The envelopes are on the Modulation page since the Synth page became
-    // two bands, and the picture is the same picture.
-    let env = modulation
+    // The envelopes and the LFOs are in the inspector, and the picture is
+    // the same picture.
+    let env = session
+        .flopsynth_inspecting(fontelle_ui::canvas::FlopsynthPage::Modulation, Some(0))
+        .unwrap()
         .cards
         .iter()
         .find(|c| c.group.name == "ENV 1 \u{b7} amp")
         .map(|c| c.picture.clone())
-        .expect("the Modulation page draws the envelopes");
+        .expect("the inspector draws the envelope");
     assert!(matches!(env, FlopsynthPicture::Envelope { .. }));
-    // The LFO's picture is on its own page, and it is the same picture.
-    let lfo = modulation
+    let lfo = inspecting
         .cards
         .iter()
         .find(|c| c.group.name == "LFO 1")
         .map(|c| c.picture.clone())
-        .expect("the Modulation page draws the LFOs");
+        .expect("the inspector draws the LFO");
     assert!(matches!(lfo, FlopsynthPicture::Lfo { .. }));
     // Noise has no cycle to draw, and a picture of one realisation of it would
     // be a different picture every frame.
@@ -887,7 +903,21 @@ fn an_effect_card_is_the_effect_windows_own_controls() {
 /// the last cut at the window's edge. The canopy took what the cards left
 /// and forgot the badges and the matrix were on the page too.
 fn assert_page_fits(session: &fontelle_app::Session, page: fontelle_ui::canvas::FlopsynthPage) {
-    let view = session.flopsynth(page).expect("Flopsynth's window");
+    assert_page_fits_inspecting(session, page, None);
+}
+
+/// [`assert_page_fits`] with a source open in the inspector: the drawer and
+/// its card are on the window, the page's own cards are still drawn under
+/// it, and the window still has a body — a drawer that ate the page was a
+/// blank window (2026-09-18, the first click on a badge on the Matrix page).
+fn assert_page_fits_inspecting(
+    session: &fontelle_app::Session,
+    page: fontelle_ui::canvas::FlopsynthPage,
+    inspector: Option<usize>,
+) {
+    let view = session
+        .flopsynth_inspecting(page, inspector)
+        .expect("Flopsynth's window");
     let theme = fontelle_ui::theme::Theme::dark_default();
     let (w, h) = fontelle_ui::layout::FLOPSYNTH_SIZE;
     let body = fontelle_ui::layout::editor_window_layout(w as f32, h as f32, &theme.metrics).body;
@@ -898,10 +928,42 @@ fn assert_page_fits(session: &fontelle_app::Session, page: fontelle_ui::canvas::
             && r.y >= body.y - 0.01
             && r.bottom() <= body.bottom() + 0.01
     };
+    assert!(
+        !layout.body.is_empty() && !layout.canopy.is_empty() && !layout.strip.is_empty(),
+        "{page:?} inspecting {inspector:?}: the window lost its body"
+    );
+    if view.inspector.is_some() {
+        assert!(
+            !layout.inspector.is_empty() && inside(&layout.inspector),
+            "{page:?} inspecting {inspector:?}: the drawer is off the window: {:?}",
+            layout.inspector
+        );
+        assert!(
+            layout.inspector.bottom() <= layout.strip.y + 0.01,
+            "{page:?} inspecting {inspector:?}: the drawer covers the strip"
+        );
+        assert!(
+            view.cards
+                .iter()
+                .any(|c| c.row == fontelle_ui::canvas::INSPECTOR_ROW),
+            "{page:?} inspecting {inspector:?}: no card in the drawer"
+        );
+    }
     let mut cards_bottom = body.y;
     for (index, placed) in layout.cards.iter().enumerate() {
         let name = &view.cards[index].group.name;
         assert!(!placed.frame.is_empty(), "{page:?}: {name} was not drawn");
+        if view.cards[index].row == fontelle_ui::canvas::INSPECTOR_ROW {
+            assert!(
+                placed.frame.y >= layout.inspector.y - 0.01
+                    && placed.frame.bottom() <= layout.inspector.bottom() + 0.01,
+                "{page:?}: {name} is outside the drawer {:?}: {:?}",
+                layout.inspector,
+                placed.frame
+            );
+            assert_eq!(placed.cells.len(), view.cards[index].group.params.len());
+            continue;
+        }
         assert!(
             inside(&placed.frame),
             "{page:?}: {name} runs off the window: {:?} in {body:?}",
@@ -914,6 +976,10 @@ fn assert_page_fits(session: &fontelle_app::Session, page: fontelle_ui::canvas::
         );
         cards_bottom = cards_bottom.max(placed.frame.bottom());
         for (other_index, other) in layout.cards.iter().enumerate().skip(index + 1) {
+            // The drawer lies over the page: its card may cover this one.
+            if view.cards[other_index].row == fontelle_ui::canvas::INSPECTOR_ROW {
+                continue;
+            }
             let (a, b) = (placed.frame, other.frame);
             let overlaps = a.x < b.right() - 0.01
                 && b.x < a.right() - 0.01
@@ -937,6 +1003,14 @@ fn assert_page_fits(session: &fontelle_app::Session, page: fontelle_ui::canvas::
             "{page:?}: the matrix at {} starts under the cards, which end at {cards_bottom}",
             layout.matrix.y
         );
+        if !layout.inspector.is_empty() {
+            assert!(
+                layout.matrix.y >= layout.inspector.bottom() - 0.01,
+                "{page:?}: the table at {} runs under the drawer, which ends at {}",
+                layout.matrix.y,
+                layout.inspector.bottom()
+            );
+        }
         assert_eq!(layout.routes.len(), view.routes.len());
         // A row that does not fit is **not drawn** — the matrix scrolls
         // (`fontelle-ui/tests/flopsynth.rs`, the scrolling test) — and a
@@ -1164,9 +1238,10 @@ fn every_card_declares_its_knob_sizes_and_the_synth_page_is_two_bands() {
     let voice = card("Voice");
     assert!(voice.group.params.iter().any(|p| p.label == "VOLUME"));
     assert!(voice.group.params.iter().any(|p| p.label == "PAN"));
-    // And the envelopes are on the Modulation page, with the LFOs, until
-    // the inspector takes them.
-    let modulation = session.flopsynth(FlopsynthPage::Modulation).unwrap();
+    // And the envelopes are in the inspector, with the LFOs.
+    let modulation = session
+        .flopsynth_inspecting(FlopsynthPage::Modulation, Some(0))
+        .unwrap();
     assert!(
         modulation
             .cards
@@ -1387,7 +1462,14 @@ fn a_knob_has_a_preset_value_a_default_and_takes_a_typed_value() {
         .instrument_param_from_typed(&division, &typed)
         .expect("1/8 is a division");
     session.set_instrument_param(&division, normalised);
-    let view = session.flopsynth(FlopsynthPage::Modulation).unwrap();
+    let lfo = session
+        .mod_sources()
+        .iter()
+        .position(|s| s == "LFO 1")
+        .unwrap();
+    let view = session
+        .flopsynth_inspecting(FlopsynthPage::Modulation, Some(lfo))
+        .unwrap();
     let param = view
         .cards
         .iter()
@@ -1400,7 +1482,14 @@ fn a_knob_has_a_preset_value_a_default_and_takes_a_typed_value() {
         .instrument_param_from_typed(&division, &typed)
         .unwrap();
     session.set_instrument_param(&division, normalised);
-    let view = session.flopsynth(FlopsynthPage::Modulation).unwrap();
+    let lfo = session
+        .mod_sources()
+        .iter()
+        .position(|s| s == "LFO 1")
+        .unwrap();
+    let view = session
+        .flopsynth_inspecting(FlopsynthPage::Modulation, Some(lfo))
+        .unwrap();
     let param = view
         .cards
         .iter()
@@ -1433,7 +1522,14 @@ fn the_table_and_the_lfo_wave_choosers_carry_a_thumbnail_per_option() {
     use fontelle_ui::canvas::FlopsynthPage;
     let session = a_flopsynth();
     let synth = session.flopsynth(FlopsynthPage::Synth).unwrap();
-    let modulation = session.flopsynth(FlopsynthPage::Modulation).unwrap();
+    let lfo = session
+        .mod_sources()
+        .iter()
+        .position(|s| s == "LFO 1")
+        .unwrap();
+    let modulation = session
+        .flopsynth_inspecting(FlopsynthPage::Modulation, Some(lfo))
+        .unwrap();
     let options = |view: &fontelle_ui::canvas::FlopsynthView, address: &str| -> usize {
         view.cards
             .iter()
@@ -1476,4 +1572,115 @@ fn the_table_and_the_lfo_wave_choosers_carry_a_thumbnail_per_option() {
         synth.thumbnails_for(&mode).is_none(),
         "a chooser of words has no pictures"
     );
+}
+
+/// §3.4: the strip's sources are on every page, each with a thumbnail — an
+/// envelope's curve, an LFO's cycle, a macro's value — and asking for a
+/// source to be inspected puts its card in the view marked for the
+/// drawer, on whatever page is showing.
+#[test]
+fn every_page_carries_the_sources_and_the_inspected_sources_card() {
+    use fontelle_ui::canvas::{FlopsynthPage, INSPECTOR_ROW};
+    let session = common::a_session_for(fontelle_app::blank_project(8, 120.0, SR));
+    for page in FlopsynthPage::ALL {
+        let view = session.flopsynth(page).expect("Flopsynth's window");
+        assert!(
+            view.sources.len() >= 20,
+            "{page:?}: {} sources",
+            view.sources.len()
+        );
+        assert_eq!(view.source_shapes.len(), view.sources.len());
+        let env = view.sources.iter().position(|s| s == "ENV 1").unwrap();
+        let lfo = view.sources.iter().position(|s| s == "LFO 1").unwrap();
+        let velocity = view.sources.iter().position(|s| s == "Velocity").unwrap();
+        assert!(
+            view.source_shapes[env].len() >= 16,
+            "{page:?}: the envelope has a curve"
+        );
+        assert!(view.source_shapes[env].iter().any(|s| *s > 0.5), "it rises");
+        assert!(
+            view.source_shapes[lfo].len() >= 16,
+            "{page:?}: the LFO has a cycle"
+        );
+        assert!(
+            view.source_shapes[velocity].is_empty(),
+            "{page:?}: the velocity has no picture"
+        );
+        // And a family per source, index for index — the ink its badge
+        // wears, which the host names because the window may not see the
+        // source itself.
+        use fontelle_ui::document::SourceFamily;
+        assert_eq!(view.source_families.len(), view.sources.len());
+        assert_eq!(view.source_families[env], SourceFamily::Envelope);
+        assert_eq!(view.source_families[lfo], SourceFamily::Lfo);
+        assert_eq!(view.source_families[velocity], SourceFamily::Note);
+        let wheel = view.sources.iter().position(|s| s == "Wheel").unwrap();
+        assert_eq!(view.source_families[wheel], SourceFamily::Performance);
+        assert!(view.inspector.is_none());
+        assert!(view.cards.iter().all(|c| c.row != INSPECTOR_ROW));
+    }
+    // Inspecting LFO 2 on the Synth page: its card comes along, marked.
+    let synth = session
+        .flopsynth_inspecting(FlopsynthPage::Synth, Some(5))
+        .expect("Flopsynth's window");
+    assert_eq!(synth.inspector, Some(5));
+    let inspected: Vec<&str> = synth
+        .cards
+        .iter()
+        .filter(|c| c.row == INSPECTOR_ROW)
+        .map(|c| c.group.name.as_str())
+        .collect();
+    assert_eq!(inspected, ["LFO 2"]);
+    assert!(
+        synth.cards.iter().any(|c| c.group.name == "OSC A"),
+        "the page's own cards stay"
+    );
+    // An envelope's card too, and a macro's is the macros' card; the
+    // velocity has nothing to edit and no card comes.
+    let envelope = session
+        .flopsynth_inspecting(FlopsynthPage::Effects, Some(0))
+        .unwrap();
+    assert!(
+        envelope
+            .cards
+            .iter()
+            .any(|c| c.row == INSPECTOR_ROW && c.group.name.starts_with("ENV 1"))
+    );
+    let macros = session
+        .flopsynth_inspecting(FlopsynthPage::Synth, Some(8))
+        .unwrap();
+    assert!(
+        macros
+            .cards
+            .iter()
+            .any(|c| c.row == INSPECTOR_ROW && c.group.name == "Macros")
+    );
+    let velocity = session
+        .mod_sources()
+        .iter()
+        .position(|s| s == "Velocity")
+        .unwrap();
+    let none = session
+        .flopsynth_inspecting(FlopsynthPage::Synth, Some(velocity))
+        .unwrap();
+    assert!(none.cards.iter().all(|c| c.row != INSPECTOR_ROW));
+    assert_eq!(none.inspector, None, "nothing to inspect is not inspecting");
+}
+
+/// Every page holds every source's drawer (§3.4): the pages under the
+/// Grand Piano, with each envelope, LFO and macro open in turn.
+#[test]
+fn every_page_fits_with_every_source_open_in_the_inspector() {
+    use fontelle_ui::canvas::FlopsynthPage;
+    // The project a studio opens on: the Grand Piano, nineteen routes.
+    let session = common::a_session_for(fontelle_app::blank_project(8, 120.0, SR));
+    let sources = session.mod_sources();
+    for page in FlopsynthPage::ALL {
+        for (index, name) in sources.iter().enumerate() {
+            if !(name.starts_with("ENV") || name.starts_with("LFO") || name.starts_with('M')) {
+                continue;
+            }
+            assert_page_fits_inspecting(&session, page, Some(index));
+        }
+    }
 }

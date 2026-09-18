@@ -279,3 +279,34 @@ fn every_hit_kind_has_a_tip_and_the_bubble_sits_above_the_knob() {
     let bubble = hover_bubble_rect(edge, (80.0, 14.0), bounds);
     assert!(bubble.right() <= bounds.right() + 0.01);
 }
+
+/// §3.4: a badge pressed and let go where it was pressed opens (or closes)
+/// its source in the inspector; one carried away is a drag to a knob.
+/// The two are told apart by how far the pointer travelled, not by time —
+/// a slow click is still a click.
+#[test]
+fn a_badge_let_go_where_it_was_pressed_is_a_click_and_one_carried_off_is_a_drag() {
+    use fontelle_ui::canvas::{BADGE_CLICK_SLOP, BadgeGesture, badge_gesture};
+    assert_eq!(
+        badge_gesture((100.0, 700.0), (100.0, 700.0)),
+        BadgeGesture::Click
+    );
+    assert_eq!(
+        badge_gesture((100.0, 700.0), (102.0, 698.0)),
+        BadgeGesture::Click
+    );
+    assert_eq!(
+        badge_gesture((100.0, 700.0), (100.0 + BADGE_CLICK_SLOP + 1.0, 700.0)),
+        BadgeGesture::Drag
+    );
+    assert_eq!(
+        badge_gesture((100.0, 700.0), (100.0, 640.0)),
+        BadgeGesture::Drag
+    );
+    // And what a click does: the inspector toggles on the source clicked —
+    // clicking the one it shows closes it, clicking another moves it.
+    use fontelle_ui::canvas::inspector_after_click;
+    assert_eq!(inspector_after_click(None, 3), Some(3));
+    assert_eq!(inspector_after_click(Some(3), 3), None);
+    assert_eq!(inspector_after_click(Some(3), 5), Some(5));
+}

@@ -457,6 +457,7 @@ fn random_differs_per_note_and_repeats_for_the_same_sequence() {
         curve: Curve::Linear,
         via: None,
         invert: false,
+        bypass: false,
     });
 
     let sequence = || {

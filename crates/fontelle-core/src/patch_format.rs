@@ -666,6 +666,7 @@ mod tests {
                     curve: Curve::Quantised { steps: 12 },
                     via: Some(ModSource::ModWheel),
                     invert: true,
+                    bypass: false,
                 }],
             },
             voice_config: VoiceConfig {
