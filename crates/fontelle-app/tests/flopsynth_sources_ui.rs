@@ -69,7 +69,7 @@ fn a_table_card_has_a_kind_chooser_a_table_and_a_frame() {
     let list = captions(&osc);
     assert!(has(&list, "patch/layer[0]/synth/kind"));
     assert!(has(&list, "patch/layer[0]/synth/table"));
-    assert_eq!(caption_of(&list, "patch/layer[0]/synth/position"), "pos");
+    assert_eq!(caption_of(&list, "patch/layer[0]/synth/position"), "WT POS");
     assert!(!has(&list, "patch/layer[0]/synth/sample/loop"));
     assert!(!has(&list, "patch/layer[0]/synth/string/stiffness"));
     let kind = osc
@@ -109,18 +109,18 @@ fn a_sample_card_has_its_loop_and_start_and_draws_the_recording() {
         !has(&list, "patch/layer[1]/synth/table"),
         "a recording has no table chooser"
     );
-    assert_eq!(caption_of(&list, "patch/layer[1]/synth/position"), "start");
+    assert_eq!(caption_of(&list, "patch/layer[1]/synth/position"), "START");
     assert_eq!(
         caption_of(&list, "patch/layer[1]/synth/sample/loop"),
-        "loop"
+        "LOOP"
     );
     assert_eq!(
         caption_of(&list, "patch/layer[1]/synth/sample/loop_start"),
-        "loop in"
+        "LOOP IN"
     );
     assert_eq!(
         caption_of(&list, "patch/layer[1]/synth/sample/loop_end"),
-        "loop out"
+        "LOOP OUT"
     );
     let kind = osc
         .group
@@ -213,22 +213,22 @@ fn a_string_card_has_its_string_and_draws_the_partials() {
     let list = captions(&osc);
     assert!(!has(&list, "patch/layer[0]/synth/table"));
     assert!(!has(&list, "patch/layer[0]/synth/sample/loop"));
-    assert_eq!(caption_of(&list, "patch/layer[0]/synth/position"), "bright");
+    assert_eq!(caption_of(&list, "patch/layer[0]/synth/position"), "BRIGHT");
     assert_eq!(
         caption_of(&list, "patch/layer[0]/synth/string/stiffness"),
-        "stiff"
+        "STIFF"
     );
     assert_eq!(
         caption_of(&list, "patch/layer[0]/synth/string/damping"),
-        "damp"
+        "DAMP"
     );
     assert_eq!(
         caption_of(&list, "patch/layer[0]/synth/string/strike"),
-        "strike"
+        "STRIKE"
     );
     assert_eq!(
         caption_of(&list, "patch/layer[0]/synth/string/decay"),
-        "ring"
+        "RING"
     );
     match &osc.picture {
         FlopsynthPicture::Partials { bars, harmonics } => {
@@ -340,7 +340,7 @@ fn a_grain_card_swaps_the_loop_points_for_grain_and_spray_and_a_kit_lists_its_hi
     let list = captions(&osc);
     assert_eq!(
         caption_of(&list, "patch/layer[1]/synth/sample/loop_start"),
-        "loop in"
+        "LOOP IN"
     );
     assert!(!has(&list, "patch/layer[1]/synth/sample/grain"));
     assert!(!has(&list, "patch/layer[1]/synth/sample/spray"));
@@ -351,7 +351,7 @@ fn a_grain_card_swaps_the_loop_points_for_grain_and_spray_and_a_kit_lists_its_hi
         .iter()
         .find(|p| p.address.as_str() == "patch/layer[1]/synth/sample/zone")
         .expect("a kit's card has a zone chooser");
-    assert_eq!(zone.label, "zone");
+    assert_eq!(zone.label, "ZONE");
     assert_eq!(zone.display, "any");
     let ParamKind::Choice(options) = &zone.kind else {
         panic!("the zone is a chooser");
@@ -399,11 +399,11 @@ fn a_grain_card_swaps_the_loop_points_for_grain_and_spray_and_a_kit_lists_its_hi
     assert!(!has(&list, "patch/layer[1]/synth/sample/loop_end"));
     assert_eq!(
         caption_of(&list, "patch/layer[1]/synth/sample/grain"),
-        "grain"
+        "GRAIN"
     );
     assert_eq!(
         caption_of(&list, "patch/layer[1]/synth/sample/spray"),
-        "spray"
+        "SPRAY"
     );
     let grain = osc
         .group

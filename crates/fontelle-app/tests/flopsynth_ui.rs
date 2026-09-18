@@ -1118,9 +1118,9 @@ fn every_card_declares_its_knob_sizes_and_the_synth_page_is_two_bands() {
         );
     }
     // The Grand Piano: two sampled oscillators, one string.
-    assert_eq!(large_of("OSC A"), ["start"]);
-    assert_eq!(large_of("OSC C"), ["bright"]);
-    assert_eq!(large_of("Filter 1"), ["cutoff"]);
+    assert_eq!(large_of("OSC A"), ["START"]);
+    assert_eq!(large_of("OSC C"), ["BRIGHT"]);
+    assert_eq!(large_of("Filter 1"), ["CUTOFF"]);
     assert!(
         large_of("SUB").is_empty(),
         "the sub is set aside, nothing on it is Large"
@@ -1135,11 +1135,11 @@ fn every_card_declares_its_knob_sizes_and_the_synth_page_is_two_bands() {
             .unwrap();
         c.size_of(i) == KnobSize::Small
     };
-    for label in ["pan", "semis", "fine", "width", "blend"] {
+    for label in ["PAN", "SEMI", "FINE", "WIDTH", "BLEND"] {
         assert!(small("OSC A", label), "{label} is a fine adjustment");
     }
-    assert!(small("Filter 1", "key trk"));
-    assert!(!small("OSC A", "level") && !small("OSC A", "unison"));
+    assert!(small("Filter 1", "KEY TRK"));
+    assert!(!small("OSC A", "LEVEL") && !small("OSC A", "UNISON"));
 
     // Two bands: sources in 0, everything else in 1, nothing further.
     for c in &view.cards {
@@ -1162,8 +1162,8 @@ fn every_card_declares_its_knob_sizes_and_the_synth_page_is_two_bands() {
     // fit the second band beside the aside column.
     assert!(view.cards.iter().all(|c| c.group.name != "Channel"));
     let voice = card("Voice");
-    assert!(voice.group.params.iter().any(|p| p.label == "volume"));
-    assert!(voice.group.params.iter().any(|p| p.label == "pan"));
+    assert!(voice.group.params.iter().any(|p| p.label == "VOLUME"));
+    assert!(voice.group.params.iter().any(|p| p.label == "PAN"));
     // And the envelopes are on the Modulation page, with the LFOs, until
     // the inspector takes them.
     let modulation = session.flopsynth(FlopsynthPage::Modulation).unwrap();
@@ -1183,7 +1183,7 @@ fn every_card_declares_its_knob_sizes_and_the_synth_page_is_two_bands() {
         .group
         .params
         .iter()
-        .position(|p| p.label == "decay")
+        .position(|p| p.label == "DECAY")
         .unwrap();
     assert_eq!(env.size_of(decay), KnobSize::Large);
 }
@@ -1213,4 +1213,85 @@ fn the_scale_is_a_setting_the_view_carries() {
         "not a scale the window offers"
     );
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// §3.1 principle 12: words are design. Every caption on the window is a
+/// word a player uses, from the caption file (`fontelle_app::captions`),
+/// drawn in capitals — and the file has no word the window never uses.
+/// The generic panel and the automation lanes keep the lowercase words:
+/// the caption is what the bridge *draws*, the label is the parameter's
+/// name.
+///
+/// The macros are their own names (a person's words, as typed) and an
+/// effect card's captions are its effect's (the rack of §3.6 is where they
+/// are redrawn), so those two are outside the file.
+#[test]
+fn every_caption_on_the_window_is_a_word_from_the_caption_file() {
+    use fontelle_app::captions::{CAPTIONS, caption};
+    use fontelle_types::EffectKind;
+    use fontelle_ui::canvas::FlopsynthPage;
+    let mut session = common::a_session_for(fontelle_app::blank_project(8, 120.0, SR));
+    session.add_patch_effect(EffectKind::Chorus);
+    let mut used: std::collections::BTreeSet<&'static str> = Default::default();
+    for page in [
+        FlopsynthPage::Synth,
+        FlopsynthPage::Modulation,
+        FlopsynthPage::Effects,
+    ] {
+        let view = session.flopsynth(page).expect("Flopsynth's window");
+        for card in &view.cards {
+            if card.group.name == "Macros" || card.group.name.starts_with("FX ") {
+                continue;
+            }
+            for param in &card.group.params {
+                if fontelle_ui::canvas::is_nameplate_control(param) {
+                    continue;
+                }
+                let word = CAPTIONS
+                    .iter()
+                    .find(|(_, drawn)| *drawn == param.label)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{}'s {:?} ({}) is not a caption in the file",
+                            card.group.name, param.label, param.address
+                        )
+                    });
+                used.insert(word.1);
+                assert_eq!(
+                    param.label,
+                    param.label.to_uppercase(),
+                    "{} is drawn in capitals",
+                    param.label
+                );
+                assert!(
+                    param.label.chars().count() <= 9,
+                    "{} is longer than a cell holds",
+                    param.label
+                );
+            }
+        }
+    }
+    // The Init patch and the Grand Piano between them show every source
+    // kind but the user table; the words for a table oscillator's controls
+    // are used on the sub. Whatever the two do not show, the file may still
+    // hold — but a word no control anywhere maps to is a word to delete.
+    for (word, drawn) in CAPTIONS {
+        assert_eq!(caption(word), Some(*drawn));
+        assert!(
+            !drawn.is_empty() && *drawn == drawn.to_uppercase(),
+            "{drawn} is not capitals"
+        );
+    }
+    assert!(used.len() > 40, "{} captions used", used.len());
+    // A word that is not in the file is drawn in capitals rather than
+    // dropped, and says so.
+    assert_eq!(caption("not a caption"), None);
+    // The generic panel keeps the parameter's own name.
+    let panel = session.instrument().expect("the panel");
+    assert!(
+        panel
+            .groups
+            .iter()
+            .any(|g| g.params.iter().any(|p| p.label == "cutoff"))
+    );
 }

@@ -4156,22 +4156,39 @@ impl WindowApp {
                             // is the same as every later one; after the
                             // first these are cache hits.
                             let font = self.options.theme.font.clone();
+                            let t = crate::render::bridge_type(view.scale);
                             for card in &view.cards {
                                 for param in &card.group.params {
-                                    self.labels
-                                        .ensure_small(&param.label, &font, &mut self.text);
+                                    self.labels.ensure_styled(
+                                        &param.label,
+                                        &font,
+                                        t.caption,
+                                        &mut self.text,
+                                    );
                                     if let crate::canvas::ParamKind::Choice(options) = &param.kind {
                                         for option in options {
-                                            self.labels.ensure_small(option, &font, &mut self.text);
+                                            self.labels.ensure_styled(
+                                                option,
+                                                &font,
+                                                t.value,
+                                                &mut self.text,
+                                            );
                                         }
                                     }
                                 }
                             }
                             let labels = &self.labels;
+                            // A caption is measured as a caption and an
+                            // option as a value — the styles they are drawn
+                            // in — and the room is the design room at the
+                            // window's scale, so a scaled window measures
+                            // in design pixels.
+                            let scale = view.scale;
                             let measure = |text: &str| {
                                 labels
-                                    .get_small(text)
-                                    .map(|shaped| shaped.width)
+                                    .get_styled(text, t.caption)
+                                    .or_else(|| labels.get_styled(text, t.value))
+                                    .map(|shaped| shaped.width / scale)
                                     .unwrap_or_else(|| crate::canvas::estimated_width(text))
                             };
                             crate::canvas::flopsynth_layout_with(body, &m, view, &measure)
@@ -5479,19 +5496,32 @@ impl WindowApp {
         for page in crate::canvas::FlopsynthPage::ALL {
             want(&mut self.labels, &mut self.text, page.label());
         }
-        if let Some(view) = &self.flopsynth {
-            let voices = crate::render::voice_count_label(view.voices);
-            want(&mut self.labels, &mut self.text, &voices);
-            // The scale chooser's chip, at the small size it is drawn at.
-            self.labels.ensure_small(
-                &crate::render::scale_label(view.scale),
-                &font,
-                &mut self.text,
-            );
-        }
         // The Modulation page's badges and matrix rows, which are the source
         // and destination names the host worked out.
         if let Some(view) = self.flopsynth.clone() {
+            // The bridge's own type: headings, captions and values at the
+            // window's scale (`render::bridge_type`). Everything the bridge
+            // draws in them is shaped here under the same style it is drawn
+            // under, which is what makes a style a key.
+            let t = crate::render::bridge_type(view.scale);
+            let styled = |labels: &mut Labels, text: &mut TextContext, s: &str, style| {
+                labels.ensure_styled(s, &font, style, text);
+            };
+            for page in crate::canvas::FlopsynthPage::ALL {
+                styled(&mut self.labels, &mut self.text, page.label(), t.heading);
+            }
+            styled(
+                &mut self.labels,
+                &mut self.text,
+                &crate::render::voice_count_label(view.voices),
+                t.value,
+            );
+            styled(
+                &mut self.labels,
+                &mut self.text,
+                &crate::render::scale_label(view.scale),
+                t.value,
+            );
             for name in &view.sources {
                 want(&mut self.labels, &mut self.text, name);
             }
@@ -5499,19 +5529,20 @@ impl WindowApp {
                 want(&mut self.labels, &mut self.text, &route.source);
                 want(&mut self.labels, &mut self.text, &route.destination);
             }
-            // The cards' captions and read-outs, at the small size Flopsynth
-            // draws them; the card names at the chrome's.
             for card in &view.cards {
-                want(&mut self.labels, &mut self.text, &card.group.name);
+                styled(
+                    &mut self.labels,
+                    &mut self.text,
+                    &card.group.name,
+                    t.heading,
+                );
                 for param in &card.group.params {
-                    self.labels
-                        .ensure_small(&param.label, &font, &mut self.text);
-                    self.labels
-                        .ensure_small(&param.display, &font, &mut self.text);
+                    styled(&mut self.labels, &mut self.text, &param.label, t.caption);
+                    styled(&mut self.labels, &mut self.text, &param.display, t.value);
                 }
                 // A recording's picture carries its name.
                 if let crate::canvas::FlopsynthPicture::Sound { name, .. } = &card.picture {
-                    self.labels.ensure_small(name, &font, &mut self.text);
+                    styled(&mut self.labels, &mut self.text, name, t.value);
                 }
             }
             // The Presets page: every row, every shelf, the search box's

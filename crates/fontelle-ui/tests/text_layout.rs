@@ -231,3 +231,58 @@ fn labels_from_an_earlier_frame_are_let_go_when_the_cache_is_full() {
         "a string nobody has asked for since the cache filled is still in it"
     );
 }
+
+/// The bridge's type scale (`docs/flopsynth-next.md` §3.1, principle 11):
+/// three sizes and two weights, shaped through `Labels` by a **style** —
+/// the size in pixels and the weight — so a card's name at 15 px Medium and
+/// its captions at 12 px Regular are two shaped strings, and the same word
+/// at a different scale is a third. A style the cache was not asked for
+/// answers nothing, like an unshaped string.
+#[test]
+fn labels_shape_a_string_per_style_and_a_heavier_weight_is_wider() {
+    use fontelle_ui::text::{Labels, TextStyle, Weight};
+    if !has_fonts() {
+        eprintln!("skipping: no system fonts on this machine");
+        return;
+    }
+    let font = Theme::dark_default().font;
+    let mut ctx = text().lock().expect("font system");
+    let mut labels = Labels::new();
+    let heading = TextStyle::new(15.0, Weight::MEDIUM);
+    let caption = TextStyle::new(12.0, Weight::NORMAL);
+    let scaled = TextStyle::new(18.0, Weight::MEDIUM);
+    labels.ensure_styled("CUTOFF", &font, heading, &mut ctx);
+    labels.ensure_styled("CUTOFF", &font, caption, &mut ctx);
+    let big = labels
+        .get_styled("CUTOFF", heading)
+        .expect("shaped as a heading")
+        .clone();
+    let small = labels
+        .get_styled("CUTOFF", caption)
+        .expect("shaped as a caption")
+        .clone();
+    assert!(
+        big.width > small.width * 1.15,
+        "{} vs {}",
+        big.width,
+        small.width
+    );
+    assert!(big.height > small.height);
+    assert!(
+        labels.get_styled("CUTOFF", scaled).is_none(),
+        "a style nobody shaped answers nothing"
+    );
+    // Weight alone widens: the same size, Medium against Regular.
+    let regular = TextStyle::new(12.0, Weight::NORMAL);
+    let medium = TextStyle::new(12.0, Weight::MEDIUM);
+    labels.ensure_styled("9.00 kHz", &font, regular, &mut ctx);
+    labels.ensure_styled("9.00 kHz", &font, medium, &mut ctx);
+    let (r, m) = (
+        labels.get_styled("9.00 kHz", regular).unwrap().width,
+        labels.get_styled("9.00 kHz", medium).unwrap().width,
+    );
+    assert!(m >= r, "medium {m} is not narrower than regular {r}");
+    // A line is its size: the bridge's captions sit in a 13-pixel band, so
+    // a shaped caption must not claim a taller line than its glyphs.
+    assert!(small.height <= 12.0 + 0.5, "the line is {}", small.height);
+}

@@ -3372,21 +3372,29 @@ fn shoot_flopsynth_in(
     ] {
         labels.ensure(caption, &theme.font, &mut text);
     }
+    // The bridge's three styles, the way the window shapes them
+    // (`render::bridge_type`).
+    let t = fontelle_ui::render::bridge_type(view.scale);
     for page in fontelle_ui::canvas::FlopsynthPage::ALL {
-        labels.ensure(page.label(), &theme.font, &mut text);
+        labels.ensure_styled(page.label(), &theme.font, t.heading, &mut text);
     }
-    labels.ensure(
+    labels.ensure_styled(
         &fontelle_ui::render::voice_count_label(view.voices),
         &theme.font,
+        t.value,
+        &mut text,
+    );
+    labels.ensure_styled(
+        &fontelle_ui::render::scale_label(view.scale),
+        &theme.font,
+        t.value,
         &mut text,
     );
     for card in &view.cards {
-        labels.ensure(&card.group.name, &theme.font, &mut text);
+        labels.ensure_styled(&card.group.name, &theme.font, t.heading, &mut text);
         for param in &card.group.params {
-            // Captions and read-outs are drawn at the small size on this
-            // window — see `text::SMALL_LABEL`.
-            labels.ensure_small(&param.label, &theme.font, &mut text);
-            labels.ensure_small(&param.display, &theme.font, &mut text);
+            labels.ensure_styled(&param.label, &theme.font, t.caption, &mut text);
+            labels.ensure_styled(&param.display, &theme.font, t.value, &mut text);
         }
     }
 

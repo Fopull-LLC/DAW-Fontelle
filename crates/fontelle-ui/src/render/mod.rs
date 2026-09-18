@@ -7961,6 +7961,7 @@ fn draw_flopsynth_picture(
     rect: Rect,
     picture: &crate::canvas::FlopsynthPicture,
     ink: Color,
+    t: BridgeType,
 ) {
     use crate::canvas::{
         FlopsynthPicture, env_curve_points, response_curve_points, wave_curve_points,
@@ -8119,7 +8120,7 @@ fn draw_flopsynth_picture(
                 );
             }
             // Its name — or, with nothing dropped yet, what to do.
-            if let Some(label) = labels.get_small(name) {
+            if let Some(label) = labels.get_styled(name, t.value) {
                 draw_text_clipped(
                     scene,
                     label,
@@ -8207,6 +8208,7 @@ fn draw_flopsynth_chrome(
 
     // The tab strip: a head-up display floating on the sky, the page you
     // are on lit (`bridge::draw_hud_tab`).
+    let t = bridge_type(chrome.view.scale);
     for (page, rect) in &l.tabs {
         bridge::draw_hud_tab(
             scene,
@@ -8215,6 +8217,7 @@ fn draw_flopsynth_chrome(
             *rect,
             page.label(),
             *page == chrome.view.page,
+            t.heading,
         );
     }
 
@@ -8225,7 +8228,7 @@ fn draw_flopsynth_chrome(
     // sixteen is enough for what they are playing is to watch this (§11,
     // phase 6). Off the audio thread's own state — see `VoiceMeter`.
     if let Some((_, first)) = l.tabs.first()
-        && let Some(text) = labels.get(&voice_count_label(chrome.view.voices))
+        && let Some(text) = labels.get_styled(&voice_count_label(chrome.view.voices), t.value)
     {
         let strip = Rect::new(l.body.x, first.y, l.body.width, first.height);
         draw_text_clipped(
@@ -8258,7 +8261,7 @@ fn draw_flopsynth_chrome(
             1.0,
             if lit { p.accent } else { p.border },
         );
-        if let Some(text) = labels.get_small(&scale_label(chrome.view.scale)) {
+        if let Some(text) = labels.get_styled(&scale_label(chrome.view.scale), t.value) {
             draw_text_clipped(
                 scene,
                 text,
@@ -8424,6 +8427,38 @@ pub fn voice_count_label(voices: usize) -> String {
     }
 }
 
+/// The bridge's type scale (`docs/flopsynth-next.md` §3.1, principle 11)
+/// at the window's scale: headings — card names, tabs — at 15 px Medium,
+/// captions at 11 px Regular, values at 11 px Medium. Three sizes of
+/// everything, and the same three at 75 % or 150 %. Eleven rather than
+/// §3.1's twelve for the captions and values: they are capitals in a
+/// 56-pixel cell, and "WARP AMT" is 61 pixels at twelve and 56 at eleven
+/// (measured; the cell was 60 in the plan).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BridgeType {
+    pub heading: crate::text::TextStyle,
+    pub caption: crate::text::TextStyle,
+    pub value: crate::text::TextStyle,
+}
+
+pub const HEADING_PX: f32 = 15.0;
+pub const CAPTION_PX: f32 = 11.0;
+pub const VALUE_PX: f32 = 11.0;
+
+pub fn bridge_type(scale: f32) -> BridgeType {
+    use crate::text::{TextStyle, Weight};
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    BridgeType {
+        heading: TextStyle::new(HEADING_PX * scale, Weight::MEDIUM),
+        caption: TextStyle::new(CAPTION_PX * scale, Weight::NORMAL),
+        value: TextStyle::new(VALUE_PX * scale, Weight::MEDIUM),
+    }
+}
+
 /// What the scale chooser reads: "100 %". A function, for
 /// [`voice_count_label`]'s reason — shaped ahead and drawn under one
 /// spelling.
@@ -8508,6 +8543,7 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
     if l.body.is_empty() {
         return;
     }
+    let t = bridge_type(chrome.view.scale);
 
     // The bridge (`bridge.rs`): the hull first, the ground under everything,
     // then the canopy — the window onto the sky — with the page tabs floating
@@ -8604,6 +8640,7 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
             ink,
             hot_card,
             chrome.skin,
+            t.heading,
         );
         // A slot being carried: its own header dimmed, and the header of the
         // slot it would land on lit in its ink — the landing is said before
@@ -8630,7 +8667,7 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
                 if lit { p.meter_peak } else { p.text_muted },
             );
         }
-        draw_flopsynth_picture(scene, theme, labels, placed.picture, &card.picture, ink);
+        draw_flopsynth_picture(scene, theme, labels, placed.picture, &card.picture, ink, t);
 
         for (param_index, cell) in &placed.cells {
             let Some(param) = card.group.params.get(*param_index) else {
@@ -8650,7 +8687,15 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
                     cell.width,
                     (cell.height - 4.0).max(0.0),
                 );
-                draw_flop_chip(scene, theme, labels, chip, &param.display, lit);
+                draw_flop_chip(
+                    scene,
+                    theme,
+                    labels,
+                    chip,
+                    &param.display,
+                    lit,
+                    Some(t.value),
+                );
                 continue;
             }
             if lit {
@@ -8693,7 +8738,7 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
                     band.x + ((band.width - width) / 2.0).max(1.0)
                 }
             };
-            if let Some(label) = labels.get_small(&param.label) {
+            if let Some(label) = labels.get_styled(&param.label, t.caption) {
                 draw_text_clipped(
                     scene,
                     label,
@@ -8715,7 +8760,7 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
                         param.automated,
                         chrome.skin.and_then(|skin| skin.knob.as_ref()),
                     );
-                    if let Some(label) = labels.get_small(&param.display) {
+                    if let Some(label) = labels.get_styled(&param.display, t.value) {
                         draw_text_clipped(
                             scene,
                             label,
@@ -8732,7 +8777,7 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
                     let pill_w = (control.width * 0.55).clamp(18.0, 34.0);
                     let pill = Rect::new(control.x + 2.0, control.y, pill_w, control.height);
                     draw_flop_switch(scene, theme, pill, pill_w + 12.0, param.value >= 0.5, lit);
-                    if let Some(label) = labels.get_small(&param.display) {
+                    if let Some(label) = labels.get_styled(&param.display, t.value) {
                         let word = Rect::new(
                             pill.right() + 4.0,
                             control.y,
@@ -8757,7 +8802,15 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
                         control.width - inset * 2.0,
                         control.height,
                     );
-                    draw_flop_chip(scene, theme, labels, chip, &param.display, lit);
+                    draw_flop_chip(
+                        scene,
+                        theme,
+                        labels,
+                        chip,
+                        &param.display,
+                        lit,
+                        Some(t.value),
+                    );
                 }
             }
         }
@@ -8942,6 +8995,9 @@ fn draw_flop_chip(
     chip: Rect,
     value: &str,
     lit: bool,
+    // The bridge's value style; `None` on the corrector's console, which
+    // draws at the small label size.
+    style: Option<crate::text::TextStyle>,
 ) {
     let p = &theme.palette;
     let m = &theme.metrics;
@@ -8965,7 +9021,11 @@ fn draw_flop_chip(
     // The text's room and the chevron's are the canvas's numbers, so what
     // `cell_span_measured` promises fits is what is drawn.
     use crate::canvas::{CHIP_CHEVRON, CHIP_TEXT_INDENT};
-    if let Some(text) = labels.get_small(value) {
+    let text = match style {
+        Some(style) => labels.get_styled(value, style),
+        None => labels.get_small(value),
+    };
+    if let Some(text) = text {
         draw_text_clipped(
             scene,
             text,
@@ -9823,7 +9883,7 @@ fn draw_tune(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &TuneChr
                     cell.width,
                     (cell.height - 4.0).max(0.0),
                 );
-                draw_flop_chip(scene, theme, labels, chip, &param.display, lit);
+                draw_flop_chip(scene, theme, labels, chip, &param.display, lit, None);
                 continue;
             }
             if lit {
@@ -9891,7 +9951,7 @@ fn draw_tune(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &TuneChr
                         cell.width - inset * 2.0,
                         control.height,
                     );
-                    draw_flop_chip(scene, theme, labels, chip, &param.display, lit);
+                    draw_flop_chip(scene, theme, labels, chip, &param.display, lit, None);
                 }
             }
         }

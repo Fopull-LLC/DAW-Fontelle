@@ -8,9 +8,39 @@
 
 use std::collections::HashMap;
 
+pub use cosmic_text::Weight;
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, Shaping, Wrap};
 
 use crate::theme::FontTokens;
+
+/// A size and a weight to shape a string at — the bridge's type scale
+/// (`docs/flopsynth-next.md` §3.1, principle 11): 15 px Medium headings,
+/// 12 px Regular captions, 12 px Medium values, each times the window's
+/// scale. The size is kept in tenths of a pixel so a style can be a map
+/// key, and the line is the size — the bridge's captions sit in a band of
+/// their own size, and a line taller than its glyphs would be clipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TextStyle {
+    size_tenths: u32,
+    weight: u16,
+}
+
+impl TextStyle {
+    pub fn new(size_px: f32, weight: Weight) -> Self {
+        Self {
+            size_tenths: (size_px.max(1.0) * 10.0).round() as u32,
+            weight: weight.0,
+        }
+    }
+
+    pub fn size(self) -> f32 {
+        self.size_tenths as f32 / 10.0
+    }
+
+    pub fn weight(self) -> Weight {
+        Weight(self.weight)
+    }
+}
 
 /// Glyphs that share a font and a size — exactly one `vello` draw call.
 ///
@@ -61,6 +91,18 @@ impl TextContext {
 
     /// Shapes `text` in `font`, wrapping at `max_width` when one is given.
     pub fn layout(&mut self, text: &str, font: &FontTokens, max_width: Option<f32>) -> TextLayout {
+        self.layout_weighted(text, font, max_width, Weight::NORMAL)
+    }
+
+    /// [`layout`](Self::layout) at `weight` — the face's Medium or Bold
+    /// where it has one; `cosmic-text` picks the nearest it finds.
+    pub fn layout_weighted(
+        &mut self,
+        text: &str,
+        font: &FontTokens,
+        max_width: Option<f32>,
+        weight: Weight,
+    ) -> TextLayout {
         let metrics = cosmic_text::Metrics::new(font.size, font.size * font.line_height);
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
         // No width means no wrapping — otherwise `cosmic-text`'s default word
@@ -77,7 +119,7 @@ impl TextContext {
         buffer.set_text(
             &mut self.font_system,
             text,
-            &Attrs::new().family(family(&font.family)),
+            &Attrs::new().family(family(&font.family)).weight(weight),
             Shaping::Advanced,
             None,
         );
@@ -186,6 +228,10 @@ pub struct Labels {
     /// The same strings at [`SMALL_LABEL`] of the chrome's size, kept apart
     /// so that a caption and a heading spelt the same way can both be drawn.
     small: HashMap<String, Shaped>,
+    /// Strings shaped at a [`TextStyle`] of the caller's — the bridge's
+    /// three sizes at its scale — keyed by the style too, so a card's name
+    /// and its captions spelt alike are two shaped strings.
+    styled: HashMap<(String, TextStyle), Shaped>,
     /// Which frame is being shaped. Bumped by [`Labels::begin_frame`].
     frame: u64,
 }
@@ -263,6 +309,41 @@ impl Labels {
     /// The small form of `text`, or `None` when nobody shaped it small.
     pub fn get_small(&self, text: &str) -> Option<&TextLayout> {
         self.small.get(text).map(|entry| &entry.layout)
+    }
+
+    /// Shapes `text` at `style` — its size, in `font`'s family, at its
+    /// weight, with the line as tall as the size — if it has not been
+    /// already. Asked back with [`Labels::get_styled`].
+    pub fn ensure_styled(
+        &mut self,
+        text: &str,
+        font: &FontTokens,
+        style: TextStyle,
+        context: &mut TextContext,
+    ) {
+        let frame = self.frame;
+        let key = (text.to_string(), style);
+        if let Some(entry) = self.styled.get_mut(&key) {
+            entry.frame = frame;
+            return;
+        }
+        if self.styled.len() >= LABEL_CAP {
+            self.styled.retain(|_, entry| entry.frame == frame);
+        }
+        let sized = FontTokens {
+            family: font.family.clone(),
+            size: style.size(),
+            line_height: 1.0,
+        };
+        let layout = context.layout_weighted(text, &sized, None, style.weight());
+        self.styled.insert(key, Shaped { frame, layout });
+    }
+
+    /// The form of `text` at `style`, or `None` when nobody shaped it so.
+    pub fn get_styled(&self, text: &str, style: TextStyle) -> Option<&TextLayout> {
+        self.styled
+            .get(&(text.to_string(), style))
+            .map(|entry| &entry.layout)
     }
 
     /// The shaped form, or `None` when nobody asked for it this frame — which

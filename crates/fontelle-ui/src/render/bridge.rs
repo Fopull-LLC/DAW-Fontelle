@@ -588,6 +588,7 @@ pub(super) fn draw_hud_tab(
     rect: Rect,
     label: &str,
     here: bool,
+    style: crate::text::TextStyle,
 ) {
     let p = &theme.palette;
     if rect.is_empty() {
@@ -616,7 +617,7 @@ pub(super) fn draw_hud_tab(
         fill_rect_rounded(scene, rect, radius, p.window.with_alpha(0x70));
         stroke_rect_rounded(scene, rect, radius, 1.0, p.accent.with_alpha(0x50));
     }
-    if let Some(text) = labels.get(label) {
+    if let Some(text) = labels.get_styled(label, style) {
         draw_text_clipped(
             scene,
             text,
@@ -648,6 +649,7 @@ pub(super) fn draw_console(
     ink: Color,
     hot: bool,
     skin: Option<&Skin>,
+    style: crate::text::TextStyle,
 ) {
     let p = &theme.palette;
     let m = &theme.metrics;
@@ -783,7 +785,7 @@ pub(super) fn draw_console(
             ),
             if hot { lighten(ink, 0.3) } else { ink },
         );
-        if let Some(text) = labels.get(name) {
+        if let Some(text) = labels.get_styled(name, style) {
             // Engraved: a dark copy a pixel down, the text over it.
             draw_text_clipped(
                 scene,

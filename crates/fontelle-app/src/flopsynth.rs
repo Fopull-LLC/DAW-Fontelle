@@ -125,43 +125,59 @@ fn shape_of(name: &str) -> (usize, bool, usize) {
 }
 
 /// How big each control's knob is (`docs/flopsynth-next.md` §3.1, §3.5),
-/// read off the card's name and the control's caption — the layer that
-/// knows what a control *is* says how big it is drawn. One Large knob per
-/// card: the one a player reaches for first — an oscillator's position,
-/// start or brightness, a filter's cutoff, an envelope's decay, an LFO's
-/// rate. The continuous controls Medium. The fine adjustments — pan, fine,
-/// semis, width, blend, phase, a filter's key tracking, an envelope's
-/// shapes — Small, which is half a cell. The sub and the noise are set
-/// aside and small, so nothing on them is Large.
+/// read off the card's name and the control's **address** — the stable
+/// name (INVARIANT 7), so a caption can change its word without moving a
+/// knob. The layer that knows what a control *is* says how big it is
+/// drawn. One Large knob per card: the one a player reaches for first — an
+/// oscillator's position (its start on a recording, its brightness on a
+/// string), a filter's cutoff, an envelope's decay, an LFO's rate. The
+/// continuous controls Medium. The fine adjustments — pan, fine, semis,
+/// width, blend, phase, the loop points, a filter's key tracking and
+/// character, an envelope's curves, an LFO's delay, fade, phase and
+/// smoothing, the bend range — Small, which is half a cell. The sub and
+/// the noise are set aside and small, so nothing on them is Large and the
+/// sub's position is Small too.
 fn knob_sizes(name: &str, params: &[InstrumentParam]) -> Vec<KnobSize> {
-    let large: &[&str] = match name {
-        n if n.starts_with("OSC") => &["pos", "start", "bright"],
-        n if n.starts_with("Filter") => &["cutoff"],
-        n if n.starts_with("ENV") => &["decay"],
-        n if n.starts_with("LFO") => &["rate"],
-        _ => &[],
-    };
-    let small: &[&str] = match name {
-        n if n.starts_with("OSC") || n == "SUB" => &[
-            "pan", "fine", "semis", "width", "blend", "phase", "pos", "ring", "loop in",
-            "loop out", "grain", "spray",
-        ],
-        "NOISE" => &["pan", "fine", "semis"],
-        n if n.starts_with("Filter") => &["key trk", "character"],
-        n if n.starts_with("ENV") => &["a shape", "d shape", "r shape"],
-        n if n.starts_with("LFO") => &["delay", "fade", "phase", "smooth"],
-        "Voice" => &["bend"],
-        _ => &[],
-    };
+    const LARGE: &[&str] = &["synth/position", "filter/cutoff", "env/decay", "lfo/rate"];
+    const SMALL: &[&str] = &[
+        "/pan",
+        "/tune",
+        "synth/semitones",
+        "unison/width",
+        "unison/blend",
+        "synth/phase",
+        "sample/loop_start",
+        "sample/loop_end",
+        "sample/grain",
+        "sample/spray",
+        "string/decay",
+        "filter/key_track",
+        "/character",
+        "attack_shape",
+        "decay_shape",
+        "release_shape",
+        "lfo/delay",
+        "lfo/fade",
+        "lfo/phase",
+        "lfo/smooth",
+        "voice/bend_range",
+    ];
+    let aside = name == "SUB" || name == "NOISE";
     params
         .iter()
         .map(|param| {
-            let label = param.label.as_str();
-            // The sub's position is small: it is set aside. An oscillator's
-            // is the knob the card is about.
-            if name != "SUB" && large.contains(&label) {
+            let address = param.address.as_str();
+            // The tails are matched after the index, so "filter/key_track"
+            // reads "filter[0]/key_track".
+            let tail: String = address
+                .chars()
+                .filter(|c| !c.is_ascii_digit() && *c != '[' && *c != ']')
+                .collect();
+            if !aside && LARGE.iter().any(|large| tail.ends_with(large)) {
                 KnobSize::Large
-            } else if small.contains(&label) {
+            } else if SMALL.iter().any(|small| tail.ends_with(small))
+                || (aside && tail.ends_with("synth/position"))
+            {
                 KnobSize::Small
             } else {
                 KnobSize::Medium
@@ -470,6 +486,17 @@ pub fn describe(
             voice.params.extend(channel.params);
         } else {
             view.groups.push(channel);
+        }
+    }
+    // The captions: the words this window draws over its controls
+    // (`crate::captions`), in capitals. The macros keep their names and the
+    // effect cards their effect's captions.
+    for group in &mut view.groups {
+        if group.name == "Macros" || group.name.starts_with("FX ") {
+            continue;
+        }
+        for param in &mut group.params {
+            param.label = crate::captions::captioned(&param.label);
         }
     }
     let sources: Vec<String> = match page {
