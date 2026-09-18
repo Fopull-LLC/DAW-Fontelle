@@ -7283,6 +7283,10 @@ impl StudioHost for Session {
         Session::instrument_param_preset_value(self, address)
     }
 
+    fn mod_source_values(&self) -> Vec<f32> {
+        Session::mod_source_values(self)
+    }
+
     fn macro_sources(&self) -> Vec<usize> {
         match self.matrix_patch() {
             Some(patch) => fontelle_core::flopsynth::sources(&patch)
@@ -9896,6 +9900,23 @@ impl Session {
 /// The modulation matrix, as the window asks about it
 /// (`docs/flopsynth-plan.md` §8.4).
 ///
+/// Which of the five inks a source's ring wears (`docs/flopsynth-next.md`
+/// §3.3) — the window may not see a `ModSource` (INVARIANT 4), so the
+/// host names the family.
+fn source_family(source: fontelle_core::ModSource) -> fontelle_ui::document::SourceFamily {
+    use fontelle_core::ModSource;
+    use fontelle_ui::document::SourceFamily;
+    match source {
+        ModSource::Envelope(_) => SourceFamily::Envelope,
+        ModSource::Lfo(_) => SourceFamily::Lfo,
+        ModSource::Macro(_) => SourceFamily::Macro,
+        ModSource::Aftertouch | ModSource::ModWheel | ModSource::PitchBend => {
+            SourceFamily::Performance
+        }
+        _ => SourceFamily::Note,
+    }
+}
+
 /// Every one of these is about the **selected channel's** patch, because the
 /// matrix is per-voice and a voice belongs to a channel. An insert has no
 /// matrix and never will: an effect is not per-voice (§3.6), which is why the
@@ -10219,6 +10240,7 @@ impl Session {
         let Some(patch) = self.matrix_patch() else {
             return Vec::new();
         };
+        let sources = fontelle_core::flopsynth::sources(&patch);
         fontelle_core::flopsynth::destinations(&patch)
             .into_iter()
             .filter_map(|(dest, _)| {
@@ -10233,10 +10255,57 @@ impl Session {
                     .rev()
                     .find(|route| route.destination == dest)
                     .map(|route| route.depth);
+                // Every route to it, oldest first, each with its source's
+                // family and index — one ring each (§3.3).
+                let rings = patch
+                    .mod_matrix
+                    .routes
+                    .iter()
+                    .filter(|route| route.destination == dest)
+                    .filter_map(|route| {
+                        let source = sources.iter().position(|(s, _)| *s == route.source)?;
+                        Some(fontelle_ui::document::ModRing {
+                            family: source_family(route.source),
+                            depth: route.depth,
+                            source,
+                        })
+                    })
+                    .collect();
                 Some(fontelle_ui::document::ModMark {
                     address: fontelle_types::ParamAddress::new(address),
                     depth,
+                    rings,
                 })
+            })
+            .collect()
+    }
+
+    /// Where every source is now — see `StudioHost::mod_source_values`.
+    /// An LFO reads its wave at the phase the audio thread reports
+    /// (`lfo_phases`), a macro reads the patch; the rest have no live
+    /// reading yet.
+    pub fn mod_source_values(&self) -> Vec<f32> {
+        let Some(patch) = self.matrix_patch() else {
+            return Vec::new();
+        };
+        let phases = Session::lfo_phases(self);
+        fontelle_core::flopsynth::sources(&patch)
+            .into_iter()
+            .map(|(source, _)| match source {
+                fontelle_core::ModSource::Lfo(index) => {
+                    let index = usize::from(index);
+                    match (patch.lfos.get(index), phases.get(index)) {
+                        (Some(lfo), Some(phase)) => {
+                            lfo.wave.value((phase + lfo.phase).rem_euclid(1.0))
+                        }
+                        _ => 0.0,
+                    }
+                }
+                fontelle_core::ModSource::Macro(index) => patch
+                    .macros
+                    .get(usize::from(index))
+                    .map_or(0.0, |m| m.value),
+                _ => 0.0,
             })
             .collect()
     }

@@ -1991,6 +1991,65 @@ pub fn ring_band(knob: Rect) -> (f32, f32) {
     }
 }
 
+/// The bands of a knob with `count` routes on it (§3.3): `(inner radius,
+/// thickness)` each, the oldest route nearest the groove and the rest
+/// stacked outward with a pixel between. Thinner than the single ring was
+/// — three of them have to fit under a caption — and thinner still on a
+/// Small knob.
+pub fn ring_bands(knob: Rect, count: usize) -> Vec<(f32, f32)> {
+    let (gap, band) = ring_band(knob);
+    let band = (band * 0.65).max(1.5);
+    let radius = knob.width / 2.0;
+    (0..count)
+        .map(|i| (radius + gap + i as f32 * (band + 1.0), band))
+        .collect()
+}
+
+/// The stretch of the travel a route covers (§3.3: the band's arc is the
+/// route's range): from the knob's own `value` out by `depth` — a unipolar
+/// source pushes one way, a bipolar one both — clamped to the travel.
+pub fn ring_range(value: f32, depth: f32, bipolar: bool) -> (f32, f32) {
+    let (lo, hi) = if bipolar {
+        (value - depth.abs(), value + depth.abs())
+    } else if depth >= 0.0 {
+        (value, value + depth)
+    } else {
+        (value + depth, value)
+    };
+    (lo.clamp(0.0, 1.0), hi.clamp(0.0, 1.0))
+}
+
+/// Where a source at `source` (−1..=1 for a bipolar one, 0..=1 for a
+/// unipolar one) puts the knob right now: its value plus the depth's share
+/// of the source, on the travel.
+pub fn ring_live(value: f32, depth: f32, source: f32) -> f32 {
+    (value + depth * source).clamp(0.0, 1.0)
+}
+
+/// Which of `count` bands `(x, y)` is on, if any — the route a press on the
+/// ring edits.
+pub fn ring_hit_index(knob: Rect, x: f32, y: f32, count: usize) -> Option<usize> {
+    if knob.is_empty() {
+        return None;
+    }
+    let (cx, cy) = (knob.x + knob.width / 2.0, knob.y + knob.height / 2.0);
+    let distance = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
+    ring_bands(knob, count)
+        .into_iter()
+        .position(|(inner, band)| (inner..=inner + band).contains(&distance))
+}
+
+/// The point on a band at `t` of the knob's own sweep — 0 at seven o'clock,
+/// 0.5 straight up, 1 at five — the same sweep the value arc is drawn on,
+/// so a ring and the needle agree about where a value is.
+pub fn ring_dot(knob: Rect, band: (f32, f32), t: f32) -> (f32, f32) {
+    let (inner, thick) = band;
+    let radius = inner + thick / 2.0;
+    let (cx, cy) = (knob.x + knob.width / 2.0, knob.y + knob.height / 2.0);
+    let angle = (-0.75 + 1.5 * t.clamp(0.0, 1.0)) * std::f32::consts::PI;
+    (cx + radius * angle.sin(), cy - radius * angle.cos())
+}
+
 /// Whether `(x, y)` is on this control's modulation ring.
 pub fn ring_hit(knob: Rect, x: f32, y: f32) -> bool {
     if knob.is_empty() {

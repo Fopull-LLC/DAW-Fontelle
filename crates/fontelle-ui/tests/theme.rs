@@ -463,6 +463,59 @@ fn a_v6_theme_gains_the_modulation_ink_and_keeps_its_own() {
     );
 }
 
+/// v8 gave every modulation source its own ring ink
+/// (`docs/flopsynth-next.md` §3.3): a v7 theme gains the five, keeps its
+/// own violet, and the five are five — a knob with three rings has to say
+/// which is which.
+#[test]
+fn a_v7_theme_gains_the_five_source_inks_and_they_differ() {
+    let mut json: serde_json::Value =
+        serde_json::from_str(&Theme::dark_default().to_json()).expect("valid JSON");
+    json["format_version"] = serde_json::json!(7);
+    json["palette"]["modulation"] = serde_json::json!("#123456");
+    let palette = json["palette"].as_object_mut().expect("an object");
+    for key in [
+        "mod_envelope",
+        "mod_lfo",
+        "mod_macro",
+        "mod_note",
+        "mod_performance",
+    ] {
+        palette.remove(key).expect("v8 added this");
+    }
+    let migrated = Theme::from_json(&json.to_string()).expect("a v7 theme must still open");
+    assert_eq!(migrated.format_version, THEME_FORMAT_VERSION);
+    assert_eq!(migrated.palette.modulation, Color::rgb(0x12, 0x34, 0x56));
+    assert_eq!(
+        migrated.palette.mod_lfo,
+        Theme::dark_default().palette.mod_lfo
+    );
+    for theme in [Theme::dark_default(), Theme::light_default()] {
+        let p = &theme.palette;
+        let inks = [
+            p.mod_envelope,
+            p.mod_lfo,
+            p.mod_macro,
+            p.mod_note,
+            p.mod_performance,
+        ];
+        for (i, a) in inks.iter().enumerate() {
+            for b in &inks[i + 1..] {
+                let apart: u32 =
+                    a.0.iter()
+                        .zip(b.0.iter())
+                        .map(|(x, y)| x.abs_diff(*y) as u32)
+                        .sum();
+                assert!(
+                    apart > 90,
+                    "{}: two ring inks too alike: {a:?} {b:?}",
+                    theme.name
+                );
+            }
+        }
+    }
+}
+
 /// The arc has to be tellable from every other three-pixel mark on a control.
 ///
 /// §8.8's reason for a fifth ink rather than reusing one: at three pixels an

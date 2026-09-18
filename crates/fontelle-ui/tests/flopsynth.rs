@@ -2258,3 +2258,82 @@ fn the_canopy_holds_a_scope_a_spectrum_and_the_lamps_left_to_right() {
     let taller = lamp_dots(eyes.lamps, 8, 1.0);
     assert_eq!(taller.len(), 8);
 }
+
+// ---------------------------------------------------- the rings per source
+//
+// §3.3: one band per route, stacked outward from the knob, each in its
+// source's colour; a press on a band edits that route; a moving source
+// draws a dot on its band at the live value.
+
+#[test]
+fn the_rings_stack_outward_one_band_per_route_and_a_press_names_its_band() {
+    use fontelle_ui::canvas::{ring_bands, ring_dot, ring_hit_index};
+    let knob = Rect::new(100.0, 100.0, 32.0, 32.0);
+    let centre = (116.0, 116.0);
+    for count in 1..=3 {
+        let bands = ring_bands(knob, count);
+        assert_eq!(bands.len(), count);
+        for (i, (inner, thick)) in bands.iter().enumerate() {
+            assert!(*inner > knob.width / 2.0, "band {i} is outside the groove");
+            assert!(*thick > 0.0);
+            if i > 0 {
+                let (prev_inner, prev_thick) = bands[i - 1];
+                assert!(
+                    *inner >= prev_inner + prev_thick,
+                    "band {i} is outside band {}",
+                    i - 1
+                );
+            }
+        }
+        // A press on the middle of band `i`, level with the spindle, names
+        // band `i`; on the groove, none; well outside, none.
+        for (i, (inner, thick)) in bands.iter().enumerate() {
+            let x = centre.0 + inner + thick / 2.0;
+            assert_eq!(ring_hit_index(knob, x, centre.1, count), Some(i));
+        }
+        assert_eq!(ring_hit_index(knob, centre.0, centre.1, count), None);
+        assert_eq!(
+            ring_hit_index(knob, centre.0 + 200.0, centre.1, count),
+            None
+        );
+    }
+    // A point on a band, by the knob's own sweep: half way is twelve
+    // o'clock, above the spindle; the end has swung clockwise, to the right
+    // and below the top; the start is to the left.
+    let bands = ring_bands(knob, 2);
+    let top = ring_dot(knob, bands[1], 0.5);
+    assert!((top.0 - centre.0).abs() < 0.01 && top.1 < centre.1);
+    let right = ring_dot(knob, bands[1], 1.0);
+    assert!(right.0 > centre.0 + 5.0 && right.1 > top.1);
+    let left = ring_dot(knob, bands[1], 0.0);
+    assert!(left.0 < centre.0 - 5.0);
+    // A dot on the outer band is further out than one on the inner.
+    let inner_dot = ring_dot(knob, bands[0], 0.5);
+    assert!(inner_dot.1 > top.1);
+
+    // The band's arc is the route's **range** (§3.3): from the knob's own
+    // value out by the depth — a unipolar source (an envelope, a macro)
+    // pushes one way, a bipolar one (an LFO) both — and clamped to the
+    // travel, and the live dot sits where the source is now inside it.
+    use fontelle_ui::canvas::{ring_live, ring_range};
+    let close = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 1e-5 && (a.1 - b.1).abs() < 1e-5;
+    assert!(close(ring_range(0.3, 0.5, false), (0.3, 0.8)));
+    assert!(
+        close(ring_range(0.3, -0.5, false), (0.0, 0.3)),
+        "a negative depth pulls down, to the floor"
+    );
+    assert!(close(ring_range(0.3, 0.5, true), (0.0, 0.8)));
+    assert!(close(ring_range(0.9, 0.5, true), (0.4, 1.0)));
+    assert!(
+        (ring_live(0.3, 0.5, 1.0) - 0.8).abs() < 1e-6,
+        "a source at full is at the range's end"
+    );
+    assert!(
+        (ring_live(0.3, 0.5, 0.0) - 0.3).abs() < 1e-6,
+        "a source at nothing is at the value"
+    );
+    assert!(
+        (ring_live(0.3, 0.5, -1.0)).abs() < 1e-6,
+        "a bipolar source at its bottom, clamped"
+    );
+}

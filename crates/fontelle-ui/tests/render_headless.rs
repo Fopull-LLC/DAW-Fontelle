@@ -3450,7 +3450,15 @@ fn shoot_flopsynth_full(
             view: &view,
             hover: None,
             active: None,
-            modulated: vec![((1, 0), 0.6)],
+            modulated: vec![(
+                (1, 0),
+                vec![fontelle_ui::document::ModRing {
+                    family: fontelle_ui::document::SourceFamily::Envelope,
+                    depth: 0.6,
+                    source: 0,
+                }],
+            )],
+            source_values: Vec::new(),
             assigning: None,
             carrying_slot: None,
             destinations: vec![(1, 0), (1, 1)],

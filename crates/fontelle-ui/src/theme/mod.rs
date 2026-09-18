@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Its own number, separate from the project's and the patch's: a colour token
 /// added to the chrome has nothing to do with either.
-pub const THEME_FORMAT_VERSION: u32 = 7;
+pub const THEME_FORMAT_VERSION: u32 = 8;
 
 /// An 8-bit sRGB colour with alpha, written to file as hex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +222,18 @@ pub struct Palette {
     /// is a control whose owner you have to guess at. Violet is the hue none
     /// of them has claimed.
     pub modulation: Color,
+
+    // --- the rings per source (theme format v8; `docs/flopsynth-next.md`
+    // §3.3) ---
+    /// The five inks a modulation ring wears, by what kind of source made
+    /// the route: envelopes, LFOs, macros, the note's own values, the
+    /// performance's. Five because a knob with three rings has to say
+    /// which is which at a glance; `modulation` stays the matrix's own ink.
+    pub mod_envelope: Color,
+    pub mod_lfo: Color,
+    pub mod_macro: Color,
+    pub mod_note: Color,
+    pub mod_performance: Color,
 }
 
 /// Sizes and radii, in logical pixels.
@@ -342,6 +354,11 @@ impl Theme {
                 note_silent: Color::rgb(0x2b, 0x3b, 0x48),
                 param_automated: Color::rgb(0xd0, 0x8a, 0x3c),
                 modulation: Color::rgb(0x9a, 0x6f, 0xd0),
+                mod_envelope: Color::rgb(0x9a, 0x6f, 0xd0),
+                mod_lfo: Color::rgb(0x3f, 0xb8, 0xc4),
+                mod_macro: Color::rgb(0xe0, 0xa4, 0x3a),
+                mod_note: Color::rgb(0x5d, 0xc2, 0x7a),
+                mod_performance: Color::rgb(0xe0, 0x6a, 0x9a),
             },
             metrics: METRICS,
             font: FontTokens {
@@ -386,6 +403,11 @@ impl Theme {
                 // Darker, for the same reason every other ink is on a light
                 // ground: a violet that reads on charcoal is a smudge on paper.
                 modulation: Color::rgb(0x6b, 0x3f, 0xa8),
+                mod_envelope: Color::rgb(0x6b, 0x3f, 0xa8),
+                mod_lfo: Color::rgb(0x18, 0x6f, 0xa0),
+                mod_macro: Color::rgb(0xa8, 0x6a, 0x10),
+                mod_note: Color::rgb(0x2e, 0x8a, 0x3a),
+                mod_performance: Color::rgb(0xb0, 0x3a, 0x6a),
             },
             metrics: METRICS,
             font: FontTokens {
@@ -563,6 +585,28 @@ fn migrate(mut json: serde_json::Value, mut from: u32) -> Result<serde_json::Val
                 .or_insert_with(|| serde_json::json!(dark.modulation.to_hex()));
         }
         from = 7;
+    }
+
+    if from == 7 {
+        // v8 gave every modulation source its own ring ink
+        // (`docs/flopsynth-next.md` §3.3). A v7 file was written when every
+        // ring was the matrix's violet, and cannot have an opinion about
+        // the other four.
+        let dark = Theme::dark_default().palette;
+        if let Some(palette) = json.get_mut("palette").and_then(|p| p.as_object_mut()) {
+            for (key, value) in [
+                ("mod_envelope", dark.mod_envelope),
+                ("mod_lfo", dark.mod_lfo),
+                ("mod_macro", dark.mod_macro),
+                ("mod_note", dark.mod_note),
+                ("mod_performance", dark.mod_performance),
+            ] {
+                palette
+                    .entry(key)
+                    .or_insert_with(|| serde_json::json!(value.to_hex()));
+            }
+        }
+        from = 8;
     }
 
     if from != THEME_FORMAT_VERSION {

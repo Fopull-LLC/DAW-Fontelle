@@ -1140,7 +1140,10 @@ pub struct WindowApp {
     /// Worked out with the rest of the studio's lists rather than per knob per
     /// frame: answering it walks the matrix, and there are a hundred and fifty
     /// knobs on that window.
-    flop_modulated: Vec<((usize, usize), f32)>,
+    flop_modulated: Vec<((usize, usize), Vec<crate::document::ModRing>)>,
+    /// Where every source is now, read once a frame while the window is
+    /// open — the live dots on the rings (§3.3).
+    flop_source_values: Vec<f32>,
     /// And which of them *could* take a route — what lights up while a badge
     /// is in flight.
     flop_destinations: Vec<(usize, usize)>,
@@ -1256,7 +1259,7 @@ pub struct WindowApp {
     flop_node: Option<(usize, crate::canvas::EnvNode, (f32, f32), f32)>,
     /// A modulation ring being dragged: which control, where it started, and
     /// the depth it started from.
-    flop_ring: Option<((usize, usize), f32, f32)>,
+    flop_ring: Option<((usize, usize), f32, f32, usize)>,
     /// A "Save as…" half-finished: which window, and the name typed, waiting
     /// for the category to be chosen. Two prompts because a preset needs both
     /// and one box cannot ask two questions.
@@ -1770,6 +1773,7 @@ impl WindowApp {
             carry: None,
             held: None,
             flop_modulated: Vec::new(),
+            flop_source_values: Vec::new(),
             flop_destinations: Vec::new(),
             flop_browse: Default::default(),
             flop_matrix_scroll: 0.0,
@@ -2727,6 +2731,18 @@ impl WindowApp {
                 .unwrap_or_default();
             self.sky.tick(&sound, dt);
             self.last_sound = sound;
+            // And where every source is, for the dots on the rings (§3.3):
+            // a frame while a note sounds, so the LFOs are seen to turn.
+            let values = self
+                .options
+                .document
+                .as_ref()
+                .map(|doc| doc.mod_source_values())
+                .unwrap_or_default();
+            if values != self.flop_source_values {
+                self.flop_source_values = values;
+                self.redraw_editor(EditorKind::Instrument);
+            }
             // And the voice count, which the view was built with and which
             // moves between revisions: a note let go should read as silence
             // without waiting for the next edit.
@@ -5034,6 +5050,7 @@ impl WindowApp {
                     hover: self.hover_card,
                     active: self.flop_knob.map(|(which, _, _)| which),
                     modulated: self.flop_modulated.clone(),
+                    source_values: self.flop_source_values.clone(),
                     assigning: self.flop_assign,
                     carrying_slot: self.flop_slot,
                     destinations: self.flop_destinations.clone(),
@@ -5376,18 +5393,18 @@ impl WindowApp {
         (self.flop_modulated, self.flop_destinations) = match &self.flopsynth {
             Some(view) => {
                 let marks = doc.modulation_marks();
-                let marks: HashMap<&str, Option<f32>> = marks
+                let marks: HashMap<&str, &Vec<crate::document::ModRing>> = marks
                     .iter()
-                    .map(|mark| (mark.address.as_str(), mark.depth))
+                    .map(|mark| (mark.address.as_str(), &mark.rings))
                     .collect();
                 let mut modulated = Vec::new();
                 let mut destinations = Vec::new();
                 for (card, placed) in view.cards.iter().enumerate() {
                     for (param, control) in placed.group.params.iter().enumerate() {
-                        if let Some(depth) = marks.get(control.address.as_str()) {
+                        if let Some(rings) = marks.get(control.address.as_str()) {
                             destinations.push((card, param));
-                            if let Some(depth) = depth {
-                                modulated.push(((card, param), *depth));
+                            if !rings.is_empty() {
+                                modulated.push(((card, param), (*rings).clone()));
                             }
                         }
                     }
@@ -8363,10 +8380,17 @@ impl WindowApp {
         // that lands on it is a depth and not a value — see `ring_hit`, which
         // is where that band is defined.
         if let Some(knob) = self.flop_knob_rect(which)
-            && crate::canvas::ring_hit(knob, x, y)
-            && let Some((depth, _)) = self.route_depth(which)
+            && let Some(rings) = self
+                .flop_modulated
+                .iter()
+                .find(|(w, _)| *w == which)
+                .map(|(_, rings)| rings)
+            && let Some(band) = crate::canvas::ring_hit_index(knob, x, y, rings.len())
+            && let Some(ring) = rings.get(band)
         {
-            self.flop_ring = Some((which, y, depth));
+            // The band under the press names its route (§3.3) — it used to
+            // be the newest, whichever band was pressed.
+            self.flop_ring = Some((which, y, ring.depth, band));
             self.drag = Drag::FlopRing;
             self.tree.invalidate(PANEL);
             return;
@@ -8730,12 +8754,18 @@ impl WindowApp {
     /// **The newest**, which is §8.4's rule for the ring: with two or more
     /// routes the ring edits the last one added and the tooltip says to use
     /// the matrix. A control with none has no ring to press.
-    fn route_depth(&self, which: (usize, usize)) -> Option<(f32, fontelle_types::ParamAddress)> {
+    /// The depth address of route `band` to this control — the ring's own
+    /// knob on the wire.
+    fn route_depth_address(
+        &self,
+        which: (usize, usize),
+        band: usize,
+    ) -> Option<fontelle_types::ParamAddress> {
         let address = self.flop_param(which)?.address.clone();
         let doc = self.options.document.as_ref()?;
         doc.routes_to(&address)
-            .last()
-            .map(|route| (route.depth, route.depth_address.clone()))
+            .get(band)
+            .map(|route| route.depth_address.clone())
     }
 
     /// A press on one of the pictures.
@@ -8846,10 +8876,10 @@ impl WindowApp {
     }
 
     fn drag_flop_ring(&mut self, y: f32) {
-        let Some((which, from_y, from)) = self.flop_ring else {
+        let Some((which, from_y, from, band)) = self.flop_ring else {
             return;
         };
-        let Some((_, address)) = self.route_depth(which) else {
+        let Some(address) = self.route_depth_address(which, band) else {
             return;
         };
         let depth = crate::canvas::ring_depth(from, y - from_y);

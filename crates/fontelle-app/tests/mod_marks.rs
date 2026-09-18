@@ -145,3 +145,53 @@ fn a_revisions_marks_for_the_grand_piano_are_a_fraction_of_a_frame() {
         "200 revisions of marks took {took:?}; one has to fit inside a frame"
     );
 }
+
+/// §3.3: one ring per route, in the **source's** colour — so the marks
+/// carry every route to a control, oldest first, each with its source's
+/// family, and the newest's depth is still the depth the old ring showed.
+/// The Grand Piano's cutoff has three: an envelope, the velocity and a
+/// macro.
+#[test]
+fn a_mark_carries_every_route_with_its_sources_family() {
+    use fontelle_ui::document::SourceFamily;
+    let session = common::a_session_for(fontelle_app::blank_project(8, 120.0, SR));
+    let marks = session.modulation_marks();
+    let cutoff = marks
+        .iter()
+        .find(|mark| mark.address.as_str() == "patch/filter[0]/cutoff")
+        .expect("the cutoff can be modulated");
+    let families: Vec<SourceFamily> = cutoff.rings.iter().map(|ring| ring.family).collect();
+    assert_eq!(
+        families,
+        [
+            SourceFamily::Envelope,
+            SourceFamily::Note,
+            SourceFamily::Macro
+        ],
+        "ENV 2, Velocity, Brightness"
+    );
+    assert_eq!(
+        cutoff.depth,
+        cutoff.rings.last().map(|ring| ring.depth),
+        "the newest route's depth is the one the ring used to show"
+    );
+    let routes = session.routes_to(&fontelle_types::ParamAddress::new("patch/filter[0]/cutoff"));
+    for (ring, route) in cutoff.rings.iter().zip(routes.iter()) {
+        assert!((ring.depth - route.depth).abs() < 1e-6);
+        assert_eq!(
+            session.mod_sources()[ring.source],
+            route.source,
+            "the ring names its source by index"
+        );
+    }
+    // The live values, one per source, for the dot on each band: the
+    // macros read the patch, and the list is as long as the sources.
+    let values = session.mod_source_values();
+    assert_eq!(values.len(), session.mod_sources().len());
+    let brightness = session
+        .mod_sources()
+        .iter()
+        .position(|s| s == "Brightness")
+        .unwrap();
+    assert!((0.0..=1.0).contains(&values[brightness]));
+}

@@ -1945,6 +1945,11 @@ pub struct PresetBarChrome<'a> {
 }
 
 /// Which panel a floating editor window is drawing, and what it needs.
+///
+/// Flopsynth's chrome is the big variant — a layout, a view and the lists
+/// the bridge draws from — and one is built per frame per window, which is
+/// not a place a box would earn its allocation.
+#[allow(clippy::large_enum_variant)]
 pub enum EditorWindowChrome<'a> {
     Instrument(Option<InstrumentChrome<'a>>),
     /// **Flopsynth**, which draws a picture of a signal path because that is
@@ -7769,10 +7774,12 @@ pub struct FlopsynthChrome<'a> {
     pub hover: Option<(usize, usize)>,
     /// Which control is being dragged.
     pub active: Option<(usize, usize)>,
-    /// How deep the newest route to each control is, for the controls
-    /// something modulates: `(card, param)` to a bipolar depth. What draws the
-    /// arc (§8.1 rule 6).
-    pub modulated: Vec<((usize, usize), f32)>,
+    /// The routes to each control something modulates: `(card, param)` to
+    /// its rings, oldest first — one band each, in its source's ink (§3.3).
+    pub modulated: Vec<((usize, usize), Vec<crate::document::ModRing>)>,
+    /// Where every source is now, one per `StudioHost::mod_sources` — the
+    /// live dot on each band.
+    pub source_values: Vec<f32>,
     /// A source badge being carried: which source, and where the pointer is.
     /// While one is in flight every control that could take it is lit.
     pub assigning: Option<(usize, (f32, f32))>,
@@ -8507,30 +8514,55 @@ pub const NO_ROUTES: &str = "no routes \u{2014} drag a source onto a knob";
 /// and the caption sits in its first fourteen, so a ring that went over the
 /// top struck through the word naming the knob it belonged to. A bipolar depth
 /// grows from straight up, which is the middle of that sweep.
-fn draw_modulation_ring(scene: &mut Scene, theme: &Theme, knob: Rect, depth: f32, lit: bool) {
-    use vello::kurbo::{BezPath, Stroke};
+/// The ink a source's family wears (§3.3; theme format v8).
+pub fn family_ink(family: crate::document::SourceFamily, p: &crate::theme::Palette) -> Color {
+    use crate::document::SourceFamily;
+    match family {
+        SourceFamily::Envelope => p.mod_envelope,
+        SourceFamily::Lfo => p.mod_lfo,
+        SourceFamily::Macro => p.mod_macro,
+        SourceFamily::Note => p.mod_note,
+        SourceFamily::Performance => p.mod_performance,
+    }
+}
+
+/// A knob's modulation rings (§3.3): one band per route, stacked outward
+/// from the groove, the oldest nearest — each an arc from straight up out
+/// to its depth in its source's ink, with a dot at where the source is now
+/// (`values`, per source) when it is moving. `lit` draws the whole sweep in
+/// the matrix's ink while a badge is over the knob: "this one will take
+/// it".
+fn draw_modulation_rings(
+    scene: &mut Scene,
+    theme: &Theme,
+    knob: Rect,
+    value: f32,
+    rings: &[crate::document::ModRing],
+    values: &[f32],
+    lit: bool,
+) {
+    use vello::kurbo::{BezPath, Circle, Stroke};
 
     if knob.is_empty() {
         return;
     }
-    let (gap, band) = crate::canvas::ring_band(knob);
-    let radius = knob.width / 2.0 + gap + band / 2.0;
+    let p = &theme.palette;
     let (cx, cy) = (knob.x + knob.width / 2.0, knob.y + knob.height / 2.0);
-    // `draw_knob`'s own angles, so the two are one control: `t` runs 0..1 over
-    // the sweep and `0.5` is straight up.
-    let point = |t: f32| {
+    // `draw_knob`'s own angles, so the two are one control: `t` runs 0..1
+    // over the sweep and `0.5` is straight up.
+    let point = |radius: f32, t: f32| {
         let a = (-0.75 + 1.5 * t) * std::f32::consts::PI;
         (
             (cx + radius * a.sin()) as f64,
             (cy - radius * a.cos()) as f64,
         )
     };
-    let arc = |from: f32, to: f32| {
+    let arc = |radius: f32, from: f32, to: f32| {
         let mut path = BezPath::new();
         const STEPS: usize = 32;
         for step in 0..=STEPS {
             let t = from + (to - from) * step as f32 / STEPS as f32;
-            let at = point(t);
+            let at = point(radius, t);
             if step == 0 {
                 path.move_to(at);
             } else {
@@ -8540,24 +8572,54 @@ fn draw_modulation_ring(scene: &mut Scene, theme: &Theme, knob: Rect, depth: f32
         path
     };
 
-    // From straight up, out to the depth: right for a positive route and left
-    // for a negative one, which is what bipolar means on a dial.
-    let reach = 0.5 + depth.clamp(-1.0, 1.0) * 0.5;
-    scene.stroke(
-        &Stroke::new(2.0),
-        vello::kurbo::Affine::IDENTITY,
-        theme.palette.modulation.to_peniko(),
-        None,
-        &arc(0.5, reach),
-    );
+    let bands = crate::canvas::ring_bands(knob, rings.len());
+    for (ring, band) in rings.iter().zip(bands.iter()) {
+        let (inner, thick) = *band;
+        let radius = inner + thick / 2.0;
+        let ink = family_ink(ring.family, p);
+        // The band's arc is the route's **range** (§3.3): from the knob's
+        // own value out by the depth, one way for an envelope or a macro
+        // and both for an LFO. The whole band faintly under it, so a route
+        // at nothing is still a ring.
+        scene.stroke(
+            &Stroke::new(f64::from(thick.max(1.0))),
+            vello::kurbo::Affine::IDENTITY,
+            ink.with_alpha(0x30).to_peniko(),
+            None,
+            &arc(radius, 0.0, 1.0),
+        );
+        let (from, to) = crate::canvas::ring_range(value, ring.depth, ring.family.bipolar());
+        scene.stroke(
+            &Stroke::new(f64::from(thick.max(1.0))),
+            vello::kurbo::Affine::IDENTITY,
+            ink.to_peniko(),
+            None,
+            &arc(radius, from, to),
+        );
+        // The live dot: where the source is putting the knob now.
+        if let Some(source) = values.get(ring.source)
+            && source.abs() > 1e-3
+        {
+            let t = crate::canvas::ring_live(value, ring.depth, *source);
+            let (x, y) = crate::canvas::ring_dot(knob, *band, t);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                vello::kurbo::Affine::IDENTITY,
+                lighten(ink, 0.5).to_peniko(),
+                None,
+                &Circle::new((x as f64, y as f64), f64::from(thick.max(1.5)) * 0.9),
+            );
+        }
+    }
     if lit {
-        // The whole sweep while a badge is over it: "this one will take it".
+        let (gap, band) = crate::canvas::ring_band(knob);
+        let radius = knob.width / 2.0 + gap + rings.len() as f32 * (band + 1.0) + band / 2.0;
         scene.stroke(
             &Stroke::new(1.0),
             vello::kurbo::Affine::IDENTITY,
-            theme.palette.modulation.to_peniko(),
+            p.modulation.to_peniko(),
             None,
-            &arc(0.0, 1.0),
+            &arc(radius, 0.0, 1.0),
         );
     }
 }
@@ -8804,11 +8866,12 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
             // past the knob (see `ring_hit`, which is the band it is drawn
             // in), and drawn last it struck through the caption above the
             // knob it belongs to.
-            let depth = chrome
+            let rings = chrome
                 .modulated
                 .iter()
                 .find(|(which, _)| *which == (index, *param_index))
-                .map(|(_, depth)| *depth);
+                .map(|(_, rings)| rings.as_slice())
+                .unwrap_or(&[]);
             let takes =
                 chrome.assigning.is_some() && chrome.destinations.contains(&(index, *param_index));
 
@@ -8825,8 +8888,16 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
             );
             let (caption, control, readout) = (anatomy.caption, anatomy.control, anatomy.readout);
             let half = cell.height < crate::canvas::FLOP_CELL_H * chrome.view.scale - 0.5;
-            if (depth.is_some() || takes) && matches!(param.kind, ParamKind::Knob) {
-                draw_modulation_ring(scene, theme, control, depth.unwrap_or(0.0), takes);
+            if (!rings.is_empty() || takes) && matches!(param.kind, ParamKind::Knob) {
+                draw_modulation_rings(
+                    scene,
+                    theme,
+                    control,
+                    param.value,
+                    rings,
+                    &chrome.source_values,
+                    takes,
+                );
             }
             // A whole cell centres its read-out; a half knob's sits beside
             // the knob, against the cell's right edge.

@@ -800,8 +800,45 @@ pub struct RouteInfo {
 pub struct ModMark {
     pub address: fontelle_types::ParamAddress,
     /// The newest route's depth, bipolar -1..=1 — `None` for a control
-    /// nothing modulates yet.
+    /// nothing modulates yet. The last of `rings`, kept for the callers
+    /// that want only that.
     pub depth: Option<f32>,
+    /// Every route to the control, oldest first: one ring each
+    /// (`docs/flopsynth-next.md` §3.3), in its source's colour.
+    pub rings: Vec<ModRing>,
+}
+
+/// One route's ring: its source's family (the colour), its depth (the
+/// arc), and which source it is (the live dot's value).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModRing {
+    pub family: SourceFamily,
+    /// Bipolar -1..=1.
+    pub depth: f32,
+    /// The source, as an index into [`StudioHost::mod_sources`].
+    pub source: usize,
+}
+
+/// What kind of thing a modulation source is — the five inks the rings
+/// wear (§3.3): envelopes violet, LFOs teal, macros amber, the note's own
+/// values green, the performance's rose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceFamily {
+    Envelope,
+    Lfo,
+    Macro,
+    /// Velocity, key, the note's X and Y, the random draw, the counter.
+    Note,
+    /// The wheel, the bend, aftertouch.
+    Performance,
+}
+
+impl SourceFamily {
+    /// Whether the family's sources swing both ways: an LFO and the bend
+    /// do; an envelope, a macro, a velocity push one way.
+    pub fn bipolar(self) -> bool {
+        matches!(self, Self::Lfo | Self::Performance)
+    }
 }
 
 /// Which list the left-hand panel is showing.
@@ -1785,6 +1822,15 @@ pub trait StudioHost: DocumentHost {
     /// Which of [`mod_sources`](Self::mod_sources) are the macros — what
     /// *Assign to macro…* lists (`docs/flopsynth-next.md` §3.3).
     fn macro_sources(&self) -> Vec<usize> {
+        Vec::new()
+    }
+
+    /// Where every source is **now**, one per [`mod_sources`](Self::mod_sources)
+    /// — an LFO's value at its phase, a macro's value; what draws the live
+    /// dot on a ring's band (§3.3). Asked once a frame while the window is
+    /// open, so it has to be cheap. Zero for a source with no live reading
+    /// yet (the envelopes, until Phase 3 sends their levels).
+    fn mod_source_values(&self) -> Vec<f32> {
         Vec::new()
     }
 
