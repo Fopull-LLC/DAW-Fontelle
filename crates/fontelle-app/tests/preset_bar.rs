@@ -87,7 +87,13 @@ fn a_flopsynth_preset(session: &Session, name: &str) -> usize {
 #[test]
 fn a_channel_that_came_from_nowhere_says_so() {
     let dir = scratch("fresh");
-    let session = a_session(&dir);
+    let mut session = a_session(&dir);
+    // Away and back: a project opens on the Grand Piano and says so now
+    // (`docs/flopsynth-next.md` §1.4(1)); this is about a channel nobody
+    // chose a preset for, and choosing another kind is what takes the
+    // piano's name off the channel.
+    session.set_channel_kind(0, InstrumentKind::Osc3);
+    session.set_channel_kind(0, InstrumentKind::Flopsynth);
     let bar = session.preset_bar(INSTRUMENT);
     assert_eq!(bar.name, None);
     assert!(!bar.can_save, "there is no file to save over");

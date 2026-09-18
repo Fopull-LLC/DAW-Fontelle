@@ -1755,6 +1755,12 @@ pub struct SetChannelKind {
     channel: ChannelId,
     kind: fontelle_types::InstrumentKind,
     previous: Option<Option<fontelle_types::InstrumentKind>>,
+    /// The preset the channel said it was loaded from, before. A preset is
+    /// for one kind of instrument, so choosing another kind is the moment it
+    /// stops applying — and a channel that kept saying "Grand Piano" over
+    /// the Init patch read as *edited* on the bar rather than as fresh
+    /// (`tests/preset_bar.rs`, once a new project named its preset).
+    previous_preset: Option<Option<fontelle_types::PresetRef>>,
 }
 
 impl SetChannelKind {
@@ -1763,6 +1769,7 @@ impl SetChannelKind {
             channel,
             kind,
             previous: None,
+            previous_preset: None,
         }
     }
 }
@@ -1774,6 +1781,12 @@ impl Command for SetChannelKind {
         };
         let previous = channel.instrument.replace(self.kind);
         self.previous.get_or_insert(previous);
+        // The same kind again leaves the patch alone (see `set_channel_kind`),
+        // so it leaves the preset alone too.
+        if previous != Some(self.kind) {
+            let preset = channel.preset.take();
+            self.previous_preset.get_or_insert(preset);
+        }
         Ok(())
     }
 
@@ -1785,6 +1798,7 @@ impl Command for SetChannelKind {
             Some(previous) => Box::new(RestoreChannelKind {
                 channel: self.channel,
                 kind: previous,
+                preset: self.previous_preset.clone(),
             }),
             None => Box::new(NotApplied("choosing an instrument")),
         }
@@ -1813,6 +1827,8 @@ impl Command for SetChannelKind {
 struct RestoreChannelKind {
     channel: ChannelId,
     kind: Option<fontelle_types::InstrumentKind>,
+    /// The preset ref to put back, when the kind change took one.
+    preset: Option<Option<fontelle_types::PresetRef>>,
 }
 
 impl Command for RestoreChannelKind {
@@ -1821,6 +1837,9 @@ impl Command for RestoreChannelKind {
             return Err(CommandError("that channel is not there".into()));
         };
         channel.instrument = self.kind;
+        if let Some(preset) = &self.preset {
+            channel.preset = preset.clone();
+        }
         Ok(())
     }
 

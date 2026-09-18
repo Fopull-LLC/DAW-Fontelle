@@ -470,7 +470,14 @@ fn a_kit_touched_by_hand_wears_a_star() {
 fn a_synth_that_came_from_no_preset_says_so() {
     let dir = scratch("synth-mark");
     let mut session = a_session(&dir);
-    session.select_channel(0);
+    // A **new** Flopsynth channel, not the starting one: a project opens on
+    // the Grand Piano and says so now (`docs/flopsynth-next.md` §1.4(1)),
+    // and this test is about a synth nobody chose a preset for.
+    session
+        .add_channel_of(InstrumentKind::Flopsynth)
+        .expect("adds");
+    let made = session.channels().len() - 1;
+    session.select_channel(made);
     assert_eq!(
         session
             .preset_bar(fontelle_ui::canvas::PresetDevice::Instrument)

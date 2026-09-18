@@ -19,6 +19,89 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-17, late — Flopsynth II, Phase 0: the ten defects of
+`docs/flopsynth-next.md` §1.4, closed.** Ty's answers to §9: the canopy
+becomes the scope and spectrum with the sky behind (planets go); the synth
+window keeps its own dark palette under both themes; step-sequencer mod
+sources now and a design note before any arp; MPE after Phase 4;
+1180×840 at 100 % with a scale chooser (ask before 1240); eight macros,
+eight LFOs, six envelopes; the tags gate and the one-time bank rewrite in
+one commit. Each defect tests-first, each looked at on the nested
+`Xwayland :99` in both themes, one commit per defect (`7afc75b`…`2f48b84`).
+Not released — Ty publishes.
+
+- **(1)** `blank_project` records the Grand Piano's `PresetRef`, so a new
+  project's bar reads *Grand Piano · Keys* and the About column *factory
+  preset* rather than *— no preset —\** and *edited since it was loaded*.
+  `flopsynth_browser.rs`.
+- **(2)** The canopy on the Modulation page was sized from the cards
+  alone; the badge row and the matrix are measured first now. The Grand
+  Piano has **nineteen** routes (the plan said eleven) and at 840 the page
+  has rows for six with the cards whole, so **the matrix scrolls** — the
+  table, never the page: `FlopsynthView::matrix_scroll`,
+  `FlopsynthLayout::matrix_max_scroll`/`matrix_scrollbar`, whole rows or
+  none, the wheel over the panel, a thumb. The Effects fit test found the
+  EQ card 894 px tall (fifty controls, most two cells wide); a
+  count-sized card past 25 cells widens instead (`columns_for`).
+  `flopsynth_ui.rs` (`assert_page_fits`), `fontelle-ui/tests/flopsynth.rs`.
+- **(3, 8)** `FLOPSYNTH_MINIMUM` is where no cell shrinks — the layout has
+  no text to measure, so the floor is the cell the captions were drawn
+  for. ENV 3/4's *"release a shaped shaper shape"* at the design size was
+  the same fault from the other side: the matrix took four tenths of the
+  body and the cards shrank to make room. The matrix takes what the cards
+  at full size leave (never under `MATRIX_ROWS_LEAST`) and scrolls.
+- **(4)** `Theme::for_bridge`: the dark palette with the studio's metrics
+  and font; `draw_editor_window` paints the whole window with it when the
+  chrome is Flopsynth's, the sky is shaded from it, the surface clears to
+  it. `render_headless.rs` shoots the window under the light theme and
+  holds the tab label and the wave to 3:1.
+- **(5)** `FlopsynthHit::Header` is live: `Drag::FlopSlot` carries an
+  effect card by its header, `canvas::effect_card_at` names the landing,
+  `Session::move_patch_effect` moves it. Found writing the undo test:
+  `store_patch` merges consecutive writes (a knob drag is forty), which
+  had turned three effects added in a row into one undo —
+  `store_patch_structural` breaks the gesture either side for a slot
+  added/removed/moved and a route added/removed.
+- **(6)** `context_menu_layout_beside`: a knob's menu opens right of its
+  cell (left when that does not fit, folded up at the foot) and never
+  over the knob's read-out. It was opaque already — the plan's
+  "translucent" was the next card seen past its edge.
+- **(7)** `cell_span_measured` replaces `WIDE_CHOICE`: a caption is held
+  to its cell and every option to `CHIP_TEXT_ROOM` by the shaper's own
+  width (`flopsynth_layout_with`; the window shapes captions and options
+  ahead of the layout, cache hits after the first). The chip's chrome is
+  trimmed from 21 to 16 px of its cell so "Bypass", "chorus", "Grains"
+  fit one cell; "Reverse", "Quantise", "Formant" take two — a row more
+  on a sample oscillator's card, pictures at their soft floor at 840, and
+  the floor **1180×830**, held on the Grand Piano's real page.
+- **(9)** `StealPolicy::Quietest` (least `Voice::loudness`, the amp
+  envelope's level × velocity) and `LowestPriority` (a released voice
+  first, then quietest); ties fall to age. `Sampler::sounding_keys`.
+  `fontelle-core/tests/voice_stealing.rs`.
+- **Found by the workspace suite (4,268 tests, three red, all three the
+  starting preset's doing):** `drum_machine.rs` and `preset_bar.rs` asked
+  channel 0 to have come from no preset, which it no longer does — and the
+  away-and-back fixture showed `SetChannelKind` leaving the old preset's
+  ref on a channel whose kind had changed, so an Init patch read as an
+  *edited Grand Piano*. The command takes the ref now and its undo puts it
+  back. Targeted reruns green.
+- **(10)** The three red `studio.rs` tests were on the Import tab (the
+  default since v0.8.0), where `set_query` writes the import search and
+  `selected_file` is `None`; the fixture switches to Sounds like a click.
+- **Bench (§6), `cargo bench -p fontelle-core --bench flopsynth`, load
+  average 3.5–4.2:** Init 0.58 %, Supersaw 1.41 %, Grand Piano 1.23 %
+  per voice, Choir Ahh ×16 27.6 %. Phase 0 touches the note-on allocator
+  and the window only, not the render loop, so these are the tree's
+  baseline — over §6's "today" column, which for the choir was §10's
+  budget and never a measurement. The per-revision cost is unchanged
+  (`mod_marks.rs` holds it; the relayout's label shaping is hash hits).
+- **Seen, not fixed:** a matrix destination reads `EnvelopeStageTime(0,
+  5)` — the keyed release has no label in `flopsynth::destinations`; for
+  the matrix table of Phase 1 (6), where every cell becomes a chooser.
+- **Learned on `:99`:** a nudge that lands on the hull draws nothing, so
+  the grab stays a page behind however many times it is taken — nudge
+  over something that redraws (the tab strip).
+
 **As of 2026-09-17, night — `docs/flopsynth-next.md`, the plan for
 Flopsynth II, written and nothing built.** Ty: *"i still feel like our
 flopsynth doesnt stack up to professional high quality synths like

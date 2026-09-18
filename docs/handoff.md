@@ -16,6 +16,24 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-17, late (Flopsynth II, Phase 0).** The ten defects of
+`docs/flopsynth-next.md` §1.4 are closed, one commit each —
+`PROGRESS.md`'s top entry. Things to know: (0) the bridge is painted in
+`Theme::for_bridge` whatever the studio's theme — anything new drawn in
+that window that reads `theme.palette` directly will be the studio's
+colour, so take the theme `draw_editor_window` hands down; (1) the
+matrix scrolls (`FlopsynthView::matrix_scroll`, rows past the panel have
+empty frames, index for index); (2) `cell_span_measured` decides a
+control's width from the shaper's widths — a new caption or option is
+measured, never counted, and `flopsynth_layout` without a measure runs
+on `estimated_width`; (3) `store_patch_structural` for any write that
+changes the patch's *shape*, or the undo merges it into the last knob
+drag; (4) `FLOPSYNTH_MINIMUM` is 1180×830 and derived from the fit —
+change the cells and re-derive it (`tests/flopsynth_ui.rs`,
+`at_the_minimum_size…`); (5) on `:99`, nudge over the tab strip before a
+grab — a nudge on the hull redraws nothing and the grab stays a page
+behind.
+
 **Updated 2026-09-17, night.** `docs/flopsynth-next.md` is the plan for
 the next round on the built-in synth — read it before touching
 Flopsynth's window or engine; it names ten defects to fix first (§1.4),
