@@ -307,6 +307,13 @@ pub struct FlopsynthView {
     /// How the Presets page is being looked at: which shelf, what has been
     /// typed, how far it is scrolled. Window state, set by the window.
     pub browse: PresetBrowse,
+    /// How far down the matrix is scrolled, in pixels. Window state, like
+    /// `browse.scroll`, and clamped by the layout for the same reason: only
+    /// the layout knows how many rows fit. The **table** scrolls; the page
+    /// still does not (§8.1 rule 7) — a patch can have more routes than any
+    /// window has rows, and the Grand Piano's nineteen do not fit the size
+    /// the window opens at.
+    pub matrix_scroll: f32,
     /// Whether the chain has room for another effect (§8.5) — what draws the
     /// `+ effect` button on the Effects page. The host knows the limit; the
     /// window only needs to know whether it has been reached.
@@ -324,6 +331,7 @@ impl Default for FlopsynthView {
             voices: 0,
             bank: Vec::new(),
             browse: PresetBrowse::default(),
+            matrix_scroll: 0.0,
             fx_room: false,
         }
     }
@@ -366,7 +374,16 @@ pub struct FlopsynthLayout {
     /// with no routes, so it can say there are none — an empty area where a
     /// list should be reads as a bug.
     pub matrix: Rect,
+    /// One per `FlopsynthView::routes`, **index for index**, so a hit is the
+    /// route it names whatever the scroll. A row scrolled out of the panel
+    /// has an empty frame and is neither drawn nor pressed.
     pub routes: Vec<MatrixRow>,
+    /// The furthest `FlopsynthView::matrix_scroll` can go: the rows that do
+    /// not fit, in pixels; zero when they all do.
+    pub matrix_max_scroll: f32,
+    /// The thumb down the panel's right edge, saying where the list is.
+    /// Empty when nothing is hidden.
+    pub matrix_scrollbar: Rect,
     /// The Presets page (§8.6). Empty on every other page.
     pub presets: PresetsLayout,
     /// The Effects page's `+ effect` button (§8.5): after the last card, or
@@ -389,6 +406,8 @@ impl Default for FlopsynthLayout {
             badges: Vec::new(),
             matrix: Rect::ZERO,
             routes: Vec::new(),
+            matrix_max_scroll: 0.0,
+            matrix_scrollbar: Rect::ZERO,
             presets: PresetsLayout::default(),
             add_effect: Rect::ZERO,
         }
@@ -436,9 +455,37 @@ pub const NAMEPLATE_CHIP_W: f32 = 66.0;
 /// eight controls and a macro row's four do not both get a third of the
 /// window. Five across is the widest a card gets on its own: past that the
 /// eye stops reading it as a group, and the cards that want six say so.
-fn columns_for(count: usize) -> usize {
-    count.clamp(1, 5)
+///
+/// Unless five across would make it **taller than the window**. The patch
+/// chain's EQ is fifty controls, most of them two cells wide by
+/// [`cell_span`]'s caption rule — ninety cells, sixteen rows, an 894-pixel
+/// card on a 798-pixel body (`docs/flopsynth-next.md` §1.4(2), found by the
+/// Effects fit test). A card that runs off the window is worse than a wide
+/// one, so past [`WIDE_CARD_CELLS`] the card goes as wide as it must to stay
+/// within [`WIDE_CARD_ROWS`], up to [`MAX_COLUMNS`]. The rack of §3.6 is the
+/// design answer; this is what keeps the page honest until it lands.
+fn columns_for(card: &FlopsynthCard) -> usize {
+    let cells: usize = card
+        .group
+        .params
+        .iter()
+        .filter(|param| !is_nameplate_control(param))
+        .map(cell_span)
+        .sum();
+    if cells <= WIDE_CARD_CELLS {
+        cells.clamp(1, 5)
+    } else {
+        cells.div_ceil(WIDE_CARD_ROWS).clamp(5, MAX_COLUMNS)
+    }
 }
+
+/// Past this many cells a count-sized card widens rather than deepens, and
+/// this is how deep it may go — see [`columns_for`].
+const WIDE_CARD_CELLS: usize = 25;
+const WIDE_CARD_ROWS: usize = 6;
+/// The widest a card can be: sixteen cells is 844 pixels, which the least
+/// window still holds.
+const MAX_COLUMNS: usize = 16;
 
 /// How many cells a control takes across its row: two when something about it
 /// would not fit in one ([`WIDE_CHOICE`]), one for everything else.
@@ -531,6 +578,28 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
         (body.height - TAB_HEIGHT - CARD_GAP).max(0.0),
     );
 
+    // The Modulation page's two extra pieces — the badge row across the top
+    // and the matrix along the bottom — measured **before the canopy is
+    // sized**, because the canopy takes what the page leaves and they are on
+    // the page. The first build measured the cards alone, and on the Grand
+    // Piano's eleven routes the matrix was drawn under ENV 3 and ENV 4 with
+    // its first two rows hidden (`docs/flopsynth-next.md` §1.4(2)).
+    let (badge_rows, badges_used, matrix_wanted) = match view.page {
+        FlopsynthPage::Modulation => {
+            let per_row = ((body.width + CARD_GAP) / (BADGE_W + CARD_GAP)).max(1.0) as usize;
+            let rows = view.sources.len().div_ceil(per_row.max(1));
+            let used = match rows {
+                0 => 0.0,
+                rows => rows as f32 * (BADGE_H + 2.0) + CARD_GAP,
+            };
+            let matrix =
+                CARD_HEADER + CARD_PAD * 2.0 + (view.routes.len().max(1) as f32) * MATRIX_ROW;
+            (per_row, used, matrix + CARD_GAP)
+        }
+        _ => (1, 0.0, 0.0),
+    };
+    let extras = badges_used + matrix_wanted;
+
     // The canopy, under the tabs and over everything else: the least of the
     // window it can have, or whatever the cards at their full size leave —
     // a taller window is more sky, not more air between consoles. The
@@ -544,12 +613,13 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
                 .map(|c| c.frame.bottom())
                 .fold(body.y, f32::max)
                 - body.y
+                + extras
         }
     };
     // The sky gives before the controls do: in a window too small for both
     // the consoles at their floor and the least canopy, the canopy is what
     // shrinks, down to nothing.
-    let at_floor = match view.page {
+    let cards_floor = match view.page {
         FlopsynthPage::Presets => 0.0,
         _ => {
             let floor = place(body, &view.cards, PICTURE_FLOOR, CELL_FLOOR);
@@ -560,6 +630,7 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
                 - body.y
         }
     };
+    let at_floor = cards_floor + extras;
     let canopy_height = (body.height - wanted - CARD_GAP)
         .clamp(CANOPY_MIN, CANOPY_MAX)
         .min((body.height - at_floor - CARD_GAP).max(0.0));
@@ -590,8 +661,7 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
     // body *before* the cards are placed, so the cards cannot run under them.
     let (badges, matrix) = match view.page {
         FlopsynthPage::Modulation => {
-            let per_row = ((body.width + CARD_GAP) / (BADGE_W + CARD_GAP)).max(1.0) as usize;
-            let rows = view.sources.len().div_ceil(per_row.max(1));
+            let per_row = badge_rows;
             let badges: Vec<Rect> = view
                 .sources
                 .iter()
@@ -607,23 +677,21 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
                     .intersection(&body)
                 })
                 .collect();
-            let used = match rows {
-                0 => 0.0,
-                rows => rows as f32 * (BADGE_H + 2.0) + CARD_GAP,
-            };
             body = Rect::new(
                 body.x,
-                body.y + used,
+                body.y + badges_used,
                 body.width,
-                (body.height - used).max(0.0),
+                (body.height - badges_used).max(0.0),
             );
 
-            // The matrix takes the bottom third, or the room its rows need,
-            // whichever is less — a matrix with two routes in it should not
-            // take a third of the window.
-            let wanted =
-                CARD_HEADER + CARD_PAD * 2.0 + (view.routes.len().max(1) as f32) * MATRIX_ROW;
-            let height = wanted.min(body.height * 0.4);
+            // The matrix takes the room its rows need — a matrix with two
+            // routes in it should not take a third of the window — up to
+            // what the cards at their floor leave it. It used to be capped
+            // at four tenths of the body whatever the cards needed, which on
+            // the Grand Piano's fourteen routes cut the last three off with
+            // the cards a hundred pixels short of their floor.
+            let wanted = matrix_wanted - CARD_GAP;
+            let height = wanted.min((body.height - cards_floor - CARD_GAP).max(0.0));
             let matrix =
                 Rect::new(body.x, body.bottom() - height, body.width, height).intersection(&body);
             body = Rect::new(
@@ -637,7 +705,8 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
         _ => (Vec::new(), Rect::ZERO),
     };
     if view.cards.is_empty() {
-        let routes = matrix_rows(matrix, view.routes.len());
+        let (routes, matrix_max_scroll, matrix_scrollbar) =
+            matrix_rows(matrix, view.routes.len(), view.matrix_scroll);
         return FlopsynthLayout {
             body,
             whole,
@@ -647,6 +716,8 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
             badges,
             matrix,
             routes,
+            matrix_max_scroll,
+            matrix_scrollbar,
             add_effect: add_effect_button(body, view, &[]),
             ..Default::default()
         };
@@ -675,7 +746,8 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
             (matrix.bottom() - top).max(0.0),
         )
     };
-    let routes = matrix_rows(matrix, view.routes.len());
+    let (routes, matrix_max_scroll, matrix_scrollbar) =
+        matrix_rows(matrix, view.routes.len(), view.matrix_scroll);
     let add_effect = add_effect_button(body, view, &cards);
     FlopsynthLayout {
         body,
@@ -686,6 +758,8 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
         badges,
         matrix,
         routes,
+        matrix_max_scroll,
+        matrix_scrollbar,
         presets: PresetsLayout::default(),
         add_effect,
     }
@@ -759,7 +833,7 @@ struct Wanted {
 fn wanted(card: &FlopsynthCard, picture_height: f32, scale: f32) -> Wanted {
     let (cell_w, cell_h) = (FLOP_CELL_W * scale, FLOP_CELL_H * scale);
     let columns = match card.columns {
-        0 => columns_for(card.group.params.len()),
+        0 => columns_for(card),
         n => n,
     }
     .max(1);
@@ -957,25 +1031,60 @@ fn place(
         .collect()
 }
 
-/// The rows inside the matrix panel, under its heading.
-fn matrix_rows(panel: Rect, count: usize) -> Vec<MatrixRow> {
+/// The rows inside the matrix panel, under its heading, scrolled by
+/// `scroll` (clamped to what is hidden); with how far it could scroll and
+/// the thumb that says where it is.
+///
+/// A row is drawn **whole or not at all**: the list under the heading is a
+/// whole number of rows, a row scrolled above it or below the panel's foot
+/// is an empty rect, and the thumb's length is the share of the rows on
+/// show. Half a row at either end was tried and read as a row cut off.
+fn matrix_rows(panel: Rect, count: usize, scroll: f32) -> (Vec<MatrixRow>, f32, Rect) {
     if panel.is_empty() {
-        return Vec::new();
+        return (Vec::new(), 0.0, Rect::ZERO);
     }
     // The four columns, as shares of the row: the two names take most of it,
     // the depth slider is fixed because a slider that changed length would
     // change what a pixel is worth, and the ✕ is square.
     const REMOVE: f32 = 18.0;
     const DEPTH: f32 = 110.0;
-    (0..count)
+    let list_top = panel.y + CARD_HEADER + CARD_PAD;
+    let list_height = (panel.bottom() - CARD_PAD - list_top).max(0.0);
+    let fit = ((list_height + 0.01) / MATRIX_ROW).floor().max(0.0) as usize;
+    let hidden = count.saturating_sub(fit);
+    let max_scroll = hidden as f32 * MATRIX_ROW;
+    // Whole rows: a scroll between rows is rounded to the nearer one.
+    let scroll = (scroll.clamp(0.0, max_scroll) / MATRIX_ROW).round() * MATRIX_ROW;
+    let first = (scroll / MATRIX_ROW).round() as usize;
+    // The thumb, down the right edge of the list, in a lane the rows stop
+    // short of so it covers no row's ✕.
+    let lane = if hidden == 0 { 0.0 } else { 8.0 };
+    let scrollbar = if hidden == 0 || count == 0 {
+        Rect::ZERO
+    } else {
+        let track = Rect::new(panel.right() - CARD_PAD - 4.0, list_top, 4.0, list_height);
+        let length = (track.height * fit as f32 / count as f32).max(12.0);
+        let travel = (track.height - length).max(0.0);
+        let at = if max_scroll > 0.0 {
+            travel * (scroll / max_scroll)
+        } else {
+            0.0
+        };
+        Rect::new(track.x, track.y + at, track.width, length).intersection(&panel)
+    };
+    let rows = (0..count)
         .map(|index| {
-            let frame = Rect::new(
-                panel.x + CARD_PAD,
-                panel.y + CARD_HEADER + CARD_PAD + index as f32 * MATRIX_ROW,
-                (panel.width - CARD_PAD * 2.0).max(0.0),
-                MATRIX_ROW,
-            )
-            .intersection(&panel);
+            let frame = if index < first || index >= first + fit {
+                Rect::ZERO
+            } else {
+                Rect::new(
+                    panel.x + CARD_PAD,
+                    list_top + (index - first) as f32 * MATRIX_ROW,
+                    (panel.width - CARD_PAD * 2.0 - lane).max(0.0),
+                    MATRIX_ROW,
+                )
+                .intersection(&panel)
+            };
             let remove = Rect::new(
                 frame.right() - REMOVE,
                 frame.y + (frame.height - REMOVE) / 2.0,
@@ -1001,7 +1110,8 @@ fn matrix_rows(panel: Rect, count: usize) -> Vec<MatrixRow> {
                 remove,
             }
         })
-        .collect()
+        .collect();
+    (rows, max_scroll, scrollbar)
 }
 
 /// Which page's tab is under `(x, y)`.

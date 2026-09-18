@@ -454,6 +454,7 @@ pub fn describe(
             _ => Vec::new(),
         },
         browse: Default::default(),
+        matrix_scroll: 0.0,
         fx_room: page == FlopsynthPage::Effects && patch.fx.len() < fontelle_core::MAX_PATCH_FX,
     }
 }

@@ -782,3 +782,142 @@ fn an_effect_card_is_the_effect_windows_own_controls() {
         "every control is addressed on the patch's own chain"
     );
 }
+
+/// Everything on `page` at the size the window opens at: every card drawn
+/// and inside the body, no two cards over one another, the matrix panel and
+/// every route row inside the body and under the last card, and the
+/// `+ effect` button (when there is one) in the body too.
+///
+/// `docs/flopsynth-next.md` §1.4(2): the fit was tested for the Synth page
+/// and nothing else, and the Modulation page drew its matrix *under* the
+/// ENV 3/4 cards — the first two of the Grand Piano's eleven routes hidden,
+/// the last cut at the window's edge. The canopy took what the cards left
+/// and forgot the badges and the matrix were on the page too.
+fn assert_page_fits(session: &fontelle_app::Session, page: fontelle_ui::canvas::FlopsynthPage) {
+    let view = session.flopsynth(page).expect("Flopsynth's window");
+    let theme = fontelle_ui::theme::Theme::dark_default();
+    let (w, h) = fontelle_ui::layout::FLOPSYNTH_SIZE;
+    let body = fontelle_ui::layout::editor_window_layout(w as f32, h as f32, &theme.metrics).body;
+    let layout = fontelle_ui::canvas::flopsynth_layout(body, &theme.metrics, &view);
+    let inside = |r: &fontelle_ui::layout::Rect| {
+        r.x >= body.x - 0.01
+            && r.right() <= body.right() + 0.01
+            && r.y >= body.y - 0.01
+            && r.bottom() <= body.bottom() + 0.01
+    };
+    let mut cards_bottom = body.y;
+    for (index, placed) in layout.cards.iter().enumerate() {
+        let name = &view.cards[index].group.name;
+        assert!(!placed.frame.is_empty(), "{page:?}: {name} was not drawn");
+        assert!(
+            inside(&placed.frame),
+            "{page:?}: {name} runs off the window: {:?} in {body:?}",
+            placed.frame
+        );
+        assert_eq!(
+            placed.cells.len(),
+            view.cards[index].group.params.len(),
+            "{page:?}: {name} lost a control"
+        );
+        cards_bottom = cards_bottom.max(placed.frame.bottom());
+        for (other_index, other) in layout.cards.iter().enumerate().skip(index + 1) {
+            let (a, b) = (placed.frame, other.frame);
+            let overlaps = a.x < b.right() - 0.01
+                && b.x < a.right() - 0.01
+                && a.y < b.bottom() - 0.01
+                && b.y < a.bottom() - 0.01;
+            assert!(
+                !overlaps,
+                "{page:?}: {name} and {} overlap: {a:?} and {b:?}",
+                view.cards[other_index].group.name
+            );
+        }
+    }
+    if page == fontelle_ui::canvas::FlopsynthPage::Modulation {
+        assert!(
+            !layout.matrix.is_empty() && inside(&layout.matrix),
+            "{page:?}: the matrix panel is off the window: {:?} in {body:?}",
+            layout.matrix
+        );
+        assert!(
+            layout.matrix.y >= cards_bottom - 0.01,
+            "{page:?}: the matrix at {} starts under the cards, which end at {cards_bottom}",
+            layout.matrix.y
+        );
+        assert_eq!(layout.routes.len(), view.routes.len());
+        // A row that does not fit is **not drawn** — the matrix scrolls
+        // (`fontelle-ui/tests/flopsynth.rs`, the scrolling test) — and a
+        // row that is drawn is inside the panel.
+        let mut drawn = 0;
+        for (index, row) in layout.routes.iter().enumerate() {
+            if row.frame.is_empty() {
+                continue;
+            }
+            drawn += 1;
+            assert!(
+                row.frame.y >= layout.matrix.y - 0.01
+                    && row.frame.bottom() <= layout.matrix.bottom() + 0.01,
+                "{page:?}: route {index} at {:?} is outside the matrix {:?}",
+                row.frame,
+                layout.matrix
+            );
+        }
+        assert!(
+            drawn >= 8,
+            "{page:?}: only {drawn} of {} routes are drawn at the design size",
+            view.routes.len()
+        );
+        let hidden = view.routes.len() - drawn;
+        assert!(
+            layout.matrix_max_scroll >= hidden as f32 * fontelle_ui::canvas::MATRIX_ROW - 0.01,
+            "{page:?}: {hidden} rows are hidden and the matrix scrolls only {}",
+            layout.matrix_max_scroll
+        );
+        for (index, badge) in layout.badges.iter().enumerate() {
+            assert!(
+                !badge.is_empty() && inside(badge),
+                "{page:?}: badge {index} is off the window"
+            );
+        }
+    }
+    if view.fx_room {
+        assert!(
+            !layout.add_effect.is_empty() && inside(&layout.add_effect),
+            "{page:?}: the + effect button is off the window"
+        );
+    }
+}
+
+#[test]
+fn the_modulation_page_fits_the_window_with_the_grand_pianos_routes() {
+    // The project a studio opens on: the Grand Piano, eleven routes.
+    let session = common::a_session_for(fontelle_app::blank_project(8, 120.0, SR));
+    let view = session
+        .flopsynth(fontelle_ui::canvas::FlopsynthPage::Modulation)
+        .expect("Flopsynth's window");
+    assert!(
+        view.routes.len() >= 8,
+        "the piano's matrix is what this test is for; it has {} routes",
+        view.routes.len()
+    );
+    assert_page_fits(&session, fontelle_ui::canvas::FlopsynthPage::Modulation);
+}
+
+#[test]
+fn the_effects_page_fits_the_window_with_four_slots() {
+    use fontelle_types::EffectKind;
+    let mut session = a_flopsynth();
+    for kind in [
+        EffectKind::Chorus,
+        EffectKind::Delay,
+        EffectKind::Reverb,
+        EffectKind::Eq,
+    ] {
+        session.add_patch_effect(kind);
+    }
+    let view = session
+        .flopsynth(fontelle_ui::canvas::FlopsynthPage::Effects)
+        .expect("Flopsynth's window");
+    assert_eq!(view.cards.len(), 4, "four slots, four cards");
+    assert_page_fits(&session, fontelle_ui::canvas::FlopsynthPage::Effects);
+}

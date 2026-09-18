@@ -223,3 +223,28 @@ fn opening_something_else_closes_the_bank() {
         assert_eq!(session.selected_file(), None);
     }
 }
+
+/// A new project opens on the Grand Piano, and the bar says so.
+///
+/// `docs/flopsynth-next.md` §1.4(1): `blank_project` built the Grand Piano's
+/// patch and named the channel after it but never recorded the *choice*, so
+/// the bar read "— no preset —\*" and the About column said "edited since it
+/// was loaded" on a project nobody had touched. The point of a starting
+/// preset was "a sound somebody chose"; a bar that says nobody chose it is
+/// the opposite claim.
+#[test]
+fn a_fresh_project_reports_the_grand_piano_as_its_preset_unmodified() {
+    let session = common::a_session_for(fontelle_app::blank_project(8, 120.0, SR));
+    let bar = session.preset_bar(fontelle_ui::canvas::PresetDevice::Instrument);
+    assert_eq!(
+        bar.name.as_deref(),
+        Some(fontelle_app::STARTING_PRESET),
+        "the bar names the starting preset"
+    );
+    assert_eq!(bar.category, "Keys");
+    assert_eq!(bar.origin, Some(fontelle_types::PresetOrigin::Factory));
+    assert!(
+        !bar.dirty,
+        "nothing has been touched, so the row is not marked edited"
+    );
+}

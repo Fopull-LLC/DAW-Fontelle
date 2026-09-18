@@ -1092,6 +1092,10 @@ pub struct WindowApp {
     /// been typed into its search, how far it is scrolled. Window state, like
     /// the page itself, and copied onto the view whenever the view is built.
     flop_browse: crate::canvas::PresetBrowse,
+    /// How far the Modulation page's matrix is scrolled — window state like
+    /// `flop_browse.scroll`, clamped by the layout, which is what knows how
+    /// many rows fit. The page does not scroll; the table does.
+    flop_matrix_scroll: f32,
     /// Which insert the effect tab is showing: the strip, and the slot in its
     /// chain. `None` closes the tab — a tab for a thing that is not there is a
     /// tab that does nothing when clicked.
@@ -1701,6 +1705,7 @@ impl WindowApp {
             flop_modulated: Vec::new(),
             flop_destinations: Vec::new(),
             flop_browse: Default::default(),
+            flop_matrix_scroll: 0.0,
             flopsynth_layout: crate::canvas::FlopsynthLayout {
                 body: layout.panel.body,
                 ..Default::default()
@@ -4352,6 +4357,7 @@ impl WindowApp {
                     // and have nothing to scroll once a menu is closed.
                     if kind == EditorKind::Instrument {
                         self.scroll_flopsynth_presets(x, y, steps);
+                        self.scroll_flopsynth_matrix(x, y, steps);
                     }
                 }
                 self.redraw_editor(kind);
@@ -5159,6 +5165,7 @@ impl WindowApp {
         self.flopsynth = doc.flopsynth(self.flop_page);
         if let Some(view) = &mut self.flopsynth {
             view.browse = self.flop_browse.clone();
+            view.matrix_scroll = self.flop_matrix_scroll;
         }
         // Which knobs wear an arc, and which could take one. Asked once here,
         // where the view has just been built, rather than per knob while the
@@ -8235,6 +8242,36 @@ impl WindowApp {
                 (browse.scroll - steps * crate::canvas::PRESET_ROW * MENU_WHEEL_ROWS).max(0.0);
             self.set_flop_browse(browse);
         }
+    }
+
+    /// Scrolls the Modulation page's matrix, when the pointer is over it.
+    ///
+    /// The Grand Piano has nineteen routes and the window, at the size it
+    /// opens at, has rows for fourteen (`docs/flopsynth-next.md` §1.4(2)):
+    /// the rest were drawn off the window's foot. Now the panel is a list
+    /// with a thumb, and the wheel is what moves it — navigation, never a
+    /// value, which is the rule the wheel keeps everywhere.
+    fn scroll_flopsynth_matrix(&mut self, x: f32, y: f32, steps: f32) {
+        if self.flopsynth.is_none() {
+            return;
+        }
+        let panel = self.flopsynth_layout.matrix;
+        if panel.is_empty() || !panel.contains(x, y) {
+            return;
+        }
+        let max = self.flopsynth_layout.matrix_max_scroll;
+        let wanted = (self.flop_matrix_scroll
+            - steps * crate::canvas::MATRIX_ROW * MENU_WHEEL_ROWS)
+            .clamp(0.0, max);
+        if (wanted - self.flop_matrix_scroll).abs() < 0.01 {
+            return;
+        }
+        self.flop_matrix_scroll = wanted;
+        if let Some(view) = &mut self.flopsynth {
+            view.matrix_scroll = wanted;
+        }
+        self.relayout_editors();
+        self.redraw_editors();
     }
 
     /// Which slot of the chain the card at `card` is, read off its first

@@ -722,6 +722,102 @@ fn every_route_gets_a_row_with_something_to_press() {
     }
 }
 
+/// A matrix with more routes than the panel has rows for **scrolls**, and
+/// the page still does not (§8.1 rule 7; `docs/flopsynth-next.md` §3.4).
+///
+/// Found by the Modulation fit test (§1.4(2)): the Grand Piano's nineteen
+/// routes want 448 pixels and the page, with the canopy at nothing and every
+/// card at its floor, has room for fourteen. The rows that do not fit are not
+/// drawn rather than drawn off the window's edge; the wheel brings them up;
+/// the layout says how far it can go.
+#[test]
+fn a_matrix_with_more_rows_than_room_scrolls_rather_than_running_off() {
+    let theme = Theme::dark_default();
+    let mut view = a_view_on(FlopsynthPage::Modulation);
+    view.routes = (0..40)
+        .map(|i| FlopsynthRoute {
+            source: format!("LFO {}", i % 4 + 1),
+            destination: format!("dest {i}"),
+            depth: 0.5,
+        })
+        .collect();
+    let layout = flopsynth_layout(BODY, &theme.metrics, &view);
+    assert_eq!(layout.routes.len(), 40, "every route keeps its index");
+    let drawn: Vec<usize> = (0..40)
+        .filter(|i| !layout.routes[*i].frame.is_empty())
+        .collect();
+    assert!(
+        drawn.len() < 40 && drawn.len() >= 4,
+        "forty rows do not fit a 700-pixel body, and some do: {drawn:?}"
+    );
+    assert_eq!(drawn[0], 0, "unscrolled, the first row is the first route");
+    for index in &drawn {
+        let row = layout.routes[*index].frame;
+        assert!(
+            row.y >= layout.matrix.y + CARD_HEADER - 0.01
+                && row.bottom() <= layout.matrix.bottom() + 0.01,
+            "row {index} at {row:?} is drawn outside the panel {:?}",
+            layout.matrix
+        );
+    }
+    let hidden = 40 - drawn.len();
+    assert!(
+        (layout.matrix_max_scroll - hidden as f32 * fontelle_ui::canvas::MATRIX_ROW).abs() < 0.01,
+        "the most it can scroll is the rows that are hidden: {} vs {hidden} rows",
+        layout.matrix_max_scroll
+    );
+    assert!(
+        !layout.matrix_scrollbar.is_empty()
+            && layout.matrix_scrollbar.right() <= layout.matrix.right() + 0.01,
+        "a thumb says where the list is: {:?}",
+        layout.matrix_scrollbar
+    );
+
+    // Scrolled to the end: the last route is drawn and the first is not.
+    view.matrix_scroll = layout.matrix_max_scroll;
+    let scrolled = flopsynth_layout(BODY, &theme.metrics, &view);
+    assert!(scrolled.routes[0].frame.is_empty());
+    let last = scrolled.routes[39].frame;
+    // Whole rows: the foot may have less than a row of air under the last.
+    assert!(
+        !last.is_empty()
+            && last.bottom() <= scrolled.matrix.bottom() + 0.01
+            && last.bottom() > scrolled.matrix.bottom() - fontelle_ui::canvas::MATRIX_ROW - 8.0,
+        "the last row sits at the panel's foot: {last:?} in {:?}",
+        scrolled.matrix
+    );
+    assert_eq!(
+        matrix_hit(
+            &scrolled,
+            last.x + last.width - 9.0,
+            last.y + last.height / 2.0
+        ),
+        Some(MatrixHit::Remove(39)),
+        "and a press on it is a press on route 39, not on whatever was there unscrolled"
+    );
+    assert_eq!(
+        matrix_hit(
+            &scrolled,
+            layout.routes[0].depth.x + 1.0,
+            layout.routes[0].depth.y + 1.0
+        )
+        .filter(|hit| matches!(hit, MatrixHit::Depth(0) | MatrixHit::Remove(0))),
+        None,
+        "route 0 is off the top and cannot be pressed"
+    );
+    // Past the end is the end.
+    view.matrix_scroll = 10_000.0;
+    let clamped = flopsynth_layout(BODY, &theme.metrics, &view);
+    assert_eq!(clamped.routes[39].frame, last);
+
+    // And with room for every row, nothing scrolls.
+    view.routes.truncate(2);
+    view.matrix_scroll = 0.0;
+    let short = flopsynth_layout(BODY, &theme.metrics, &view);
+    assert_eq!(short.matrix_max_scroll, 0.0);
+    assert!(short.matrix_scrollbar.is_empty());
+}
+
 #[test]
 fn a_depth_slider_reads_the_press_as_a_bipolar_value() {
     // A slider rather than a knob, because the row is 22 pixels: the audio

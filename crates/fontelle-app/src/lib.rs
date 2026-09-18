@@ -343,6 +343,21 @@ pub fn blank_project(bars: i64, bpm: f64, sample_rate: u32) -> Project {
     fontelle_model::SetChannelKind::new(channel, fontelle_types::InstrumentKind::Flopsynth)
         .apply(&mut project)
         .expect("a channel that was just made must take a kind");
+    // And the **choice** itself, the way `ApplyPreset` records one: without it
+    // the bar read *"— no preset —\*"* and the About column said "edited
+    // since it was loaded" on a project nobody had touched
+    // (`docs/flopsynth-next.md` §1.4(1)). The `*` is measured against the
+    // bank's file for this ref, so a preset that is what it says it is comes
+    // up clean.
+    if let Some(row) = starter
+        && let Some(channel) = project.channels.get_mut(channel)
+    {
+        channel.preset = Some(fontelle_types::PresetRef::new(
+            row.name,
+            row.category.label(),
+            fontelle_types::PresetOrigin::Factory,
+        ));
+    }
 
     // **A stack, not a row.** *"instead of only starting with 1 lane in a new
     // arrangement make it like 10 or something just not one its too barren."*

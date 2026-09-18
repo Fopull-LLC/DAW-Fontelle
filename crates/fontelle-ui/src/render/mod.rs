@@ -8335,6 +8335,11 @@ fn draw_flopsynth_chrome(
                 );
             }
         }
+        // The thumb, when rows are hidden: the same mark the menus and the
+        // preset list use for the same fact.
+        if !l.matrix_scrollbar.is_empty() {
+            fill_rect_rounded(scene, l.matrix_scrollbar, 2.0, p.text_muted);
+        }
     }
 
     // The badge under the pointer while it is being carried, so a drag has
