@@ -16,6 +16,13 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-17, night.** `docs/flopsynth-next.md` is the plan for
+the next round on the built-in synth — read it before touching
+Flopsynth's window or engine; it names ten defects to fix first (§1.4),
+the build order (§7) and seven decisions that are Ty's (§9). Nothing in it
+is built. The grabs it cites were taken on `:99` at v0.9.0 and are not
+kept; re-take them (`docs/flopsynth-next.md` §0 says how).
+
 **Updated 2026-09-17, evening (v0.9.0).** The waveform, the fades, the
 cut, Ctrl+B, the scroll glide, the export prompt and the drag stutter —
 `PROGRESS.md`'s top entry. Things to know: (0) the block preview is cached

@@ -19,6 +19,25 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-17, night — `docs/flopsynth-next.md`, the plan for
+Flopsynth II, written and nothing built.** Ty: *"i still feel like our
+flopsynth doesnt stack up to professional high quality synths like
+omnisphere and serum both in terms of visual polish/quality/design, as well
+as features ... put together a in depth plan for another agent to follow
+through on ... youre free to harshly critique the current work
+adversarially."* The window was opened on the nested `Xwayland :99` at
+v0.9.0 and every page grabbed in both themes; the engine and the window
+were inventoried against the source. The plan's §1 is the critique (with
+file:line for every claim), §2 the gap table against Serum 2, Omnisphere
+2.8 and Vital, §3–5 the redesign, §7 the build order, §9 seven decisions
+for Ty. **Ten defects found with a green suite behind them** (§1.4) — the
+ones worth knowing tonight: a new project opens on *"— no preset —\*"*
+because `blank_project` never records the starting preset; the Modulation
+page draws its matrix *under* the ENV 3/4 cards; the minimum window size
+clips captions; the light theme is unreadable on this window;
+`FlopsynthHit::Header` has never been handled; `StealPolicy::Quietest`
+and `LowestPriority` are `Oldest`. Nothing committed but the plan.
+
 **As of 2026-09-17, evening, shipped as v0.9.0 — the waveform tells the
 truth, the fades are FL's, a cut deals the fades out, Ctrl+B cuts at the
 marker, the scroll glides, export counts every clip, and the drag stutter
