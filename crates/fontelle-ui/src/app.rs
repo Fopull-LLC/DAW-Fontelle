@@ -524,6 +524,26 @@ enum MenuTarget {
     /// Flopsynth's scale chooser (`docs/flopsynth-next.md` §3.2): one of
     /// `canvas::SCALES`.
     FlopScale,
+    /// The right-click menu on one of Flopsynth's controls (§3.3):
+    /// `canvas::flop_knob_menu`'s rows, dispatched on by what each means.
+    FlopKnob {
+        address: fontelle_types::ParamAddress,
+        name: String,
+    },
+    /// *Modulate from…* and *Assign to macro…*: the sources, the ones
+    /// already routed to the control ticked; a choice adds a route.
+    ModulateFrom {
+        address: fontelle_types::ParamAddress,
+        name: String,
+        macros_only: bool,
+    },
+    /// A value typed for one of Flopsynth's controls (§3.3): a name prompt
+    /// beside the knob, seeded with its read-out, read back through the
+    /// host's `instrument_param_from_text`.
+    TypeValue {
+        address: fontelle_types::ParamAddress,
+        name: String,
+    },
     /// A sound for one of Flopsynth's oscillators — the Import tab's audio
     /// folder, listed — for the card at `card` whose layer is `layer`.
     /// Opened by the right button on an oscillator's picture, and by the
@@ -568,6 +588,7 @@ impl MenuTarget {
             Self::PresetNewCategory(_) => "New category",
             Self::TrackPresetName(_) => "Track preset name",
             Self::TrackPresetNewCategory(_) => "New shelf",
+            Self::TypeValue { .. } => "Value",
             _ => return None,
         })
     }
@@ -597,9 +618,12 @@ impl MenuTarget {
             | Self::PresetSaveName(editor)
             | Self::PresetCategory(editor)
             | Self::PresetNewCategory(editor) => Some(*editor),
-            Self::AddPatchEffect | Self::FlopScale | Self::LoadSound { .. } => {
-                Some(EditorKind::Instrument)
-            }
+            Self::AddPatchEffect
+            | Self::FlopScale
+            | Self::FlopKnob { .. }
+            | Self::ModulateFrom { .. }
+            | Self::TypeValue { .. }
+            | Self::LoadSound { .. } => Some(EditorKind::Instrument),
             // The mixer is in the main window, so its menus are too.
             Self::TrackMenu(_)
             | Self::TrackPresetMenu(_)
@@ -1084,6 +1108,12 @@ pub struct WindowApp {
     /// matched by nothing from the first build to v0.9.0
     /// (`docs/flopsynth-next.md` §1.4(5)).
     flop_slot: Option<(usize, Option<usize>)>,
+    /// The control the arrow keys nudge (§3.3): the last one pressed. The
+    /// focus spine's answer for this window.
+    flop_focus: Option<(usize, usize)>,
+    /// A knob's value, copied from its menu (§3.3), normalised — so it
+    /// pastes onto a knob of any range as the same share of the travel.
+    flop_clipboard: Option<f32>,
     /// The browser row in the air, while one is — see [`Carrying`].
     carry: Option<Carrying>,
     /// A browser row **held** after its drag was let go outside the studio
@@ -1718,6 +1748,8 @@ impl WindowApp {
             skin: crate::skin::Skin::find(),
             flop_assign: None,
             flop_slot: None,
+            flop_focus: None,
+            flop_clipboard: None,
             carry: None,
             held: None,
             flop_modulated: Vec::new(),
@@ -4428,6 +4460,10 @@ impl WindowApp {
                     // presets); the effect and clip panels are laid out to fit
                     // and have nothing to scroll once a menu is closed.
                     if kind == EditorKind::Instrument {
+                        if self.wheel_flopsynth_control(x, y, steps) {
+                            self.redraw_editor(kind);
+                            return;
+                        }
                         self.scroll_flopsynth_presets(x, y, steps);
                         self.scroll_flopsynth_matrix(x, y, steps);
                     }
@@ -4550,6 +4586,20 @@ impl WindowApp {
                     && self.flop_searching =>
             {
                 self.flop_search_key(event)
+            }
+            // The arrows nudge the focused knob (§3.3): up and right more,
+            // down and left less, a hundredth a press and a thousandth with
+            // Shift. The arrows are the fixed family the keymap leaves
+            // alone, like everywhere else they mean "this one, a step".
+            EditorKind::Instrument if self.flopsynth.is_some() && self.flop_focus.is_some() => {
+                use winit::keyboard::{Key, NamedKey};
+                let steps = match &event.logical_key {
+                    Key::Named(NamedKey::ArrowUp | NamedKey::ArrowRight) => 1,
+                    Key::Named(NamedKey::ArrowDown | NamedKey::ArrowLeft) => -1,
+                    _ => return false,
+                };
+                self.nudge_focused_flop_control(steps);
+                true
             }
             EditorKind::Instrument | EditorKind::AudioClip => false,
         }
@@ -8238,6 +8288,56 @@ impl WindowApp {
         let Some(control) = self.flop_param(which).cloned() else {
             return;
         };
+        // The control under the press is the one the arrow keys nudge.
+        self.flop_focus = Some(which);
+        // **Alt-click resets to the preset's value** (§3.3) — the Init
+        // patch's on a channel that came from no preset.
+        if self.modifiers.alt_key() {
+            let reset = self.options.document.as_ref().and_then(|doc| {
+                doc.instrument_param_preset_value(&control.address)
+                    .or_else(|| doc.instrument_param_default_value(&control.address))
+            });
+            if let Some(value) = reset {
+                self.set_param(&control.address, value);
+                if let Some(doc) = &mut self.options.document {
+                    doc.end_gesture();
+                }
+                self.after_flop_structure();
+            }
+            return;
+        }
+        // **A double-click opens a typed field** in the knob's unit (§3.3),
+        // seeded with its read-out and set beside the cell.
+        let doubled =
+            self.double_click
+                .press(x, y, self.input_clock.stamp(std::time::Instant::now()));
+        if doubled && matches!(control.kind, ParamKind::Knob | ParamKind::Choice(_)) {
+            self.drag = Drag::None;
+            self.flop_knob = None;
+            if let Some(cell) = self.flop_cell(which) {
+                let bounds = self
+                    .editors
+                    .iter()
+                    .find(|e| e.kind == EditorKind::Instrument)
+                    .map(|e| e.panel.frame)
+                    .unwrap_or(self.layout.window);
+                self.dismissed = None;
+                self.open_menu_beside(
+                    MenuTarget::TypeValue {
+                        address: control.address.clone(),
+                        name: control.label.clone(),
+                    },
+                    cell,
+                    bounds,
+                );
+                if self.menu.is_some() {
+                    self.menu_filter.set(control.display.clone());
+                    self.menu_filter.select_all();
+                    self.relayout_menu();
+                }
+            }
+            return;
+        }
         match control.kind {
             ParamKind::Knob => {
                 self.flop_knob = Some((which, y, control.value));
@@ -8391,6 +8491,65 @@ impl WindowApp {
                 (browse.scroll - steps * crate::canvas::PRESET_ROW * MENU_WHEEL_ROWS).max(0.0);
             self.set_flop_browse(browse);
         }
+    }
+
+    /// Nudges the focused control by `steps` (§3.3): a knob a hundredth a
+    /// step (a thousandth with Shift or Ctrl), a chooser an option, a switch
+    /// over.
+    fn nudge_focused_flop_control(&mut self, steps: i32) {
+        let Some(which) = self.flop_focus else {
+            return;
+        };
+        let Some(control) = self.flop_param(which).cloned() else {
+            return;
+        };
+        let value = match &control.kind {
+            ParamKind::Knob => crate::canvas::nudged(
+                control.value,
+                steps,
+                crate::canvas::Precision::from_modifiers(
+                    self.modifiers.shift_key(),
+                    self.modifiers.control_key(),
+                ),
+            ),
+            kind => crate::canvas::wheel_nudge(control.value, steps as f32, kind),
+        };
+        if (value - control.value).abs() < 1e-6 {
+            return;
+        }
+        self.set_param(&control.address, value);
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+        }
+        self.after_flop_structure();
+    }
+
+    /// The wheel with Ctrl held over a control nudges it (§3.3): a
+    /// hundredth a notch on a knob, an option on a chooser. The wheel alone
+    /// still only scrolls — that rule stands, and this is the one exception
+    /// it allows, behind a modifier.
+    fn wheel_flopsynth_control(&mut self, x: f32, y: f32, notches: f32) -> bool {
+        if !self.modifiers.control_key() {
+            return false;
+        }
+        let Some(crate::canvas::FlopsynthHit::Control { card, param }) =
+            crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y)
+        else {
+            return false;
+        };
+        let which = (card, param);
+        let Some(control) = self.flop_param(which).cloned() else {
+            return false;
+        };
+        let value = crate::canvas::wheel_nudge(control.value, notches, &control.kind);
+        if (value - control.value).abs() > 1e-6 {
+            self.set_param(&control.address, value);
+            if let Some(doc) = &mut self.options.document {
+                doc.end_gesture();
+            }
+            self.after_flop_structure();
+        }
+        true
     }
 
     /// Scrolls the Modulation page's matrix, when the pointer is over it.
@@ -8782,7 +8941,9 @@ impl WindowApp {
         let Some(control) = self.flop_param((card, param)).cloned() else {
             return;
         };
-        let target = MenuTarget::InstrumentParam {
+        // The knob's own menu (§3.3) — `canvas::flop_knob_menu` — and not
+        // the two-line one the generic panel has.
+        let target = MenuTarget::FlopKnob {
             address: control.address.clone(),
             name: control.label.clone(),
         };
@@ -8799,6 +8960,179 @@ impl WindowApp {
             None => self.open_menu(target, x, y, bounds),
         }
         self.redraw_editor(EditorKind::Instrument);
+    }
+
+    /// The rows of a control's menu, from what is true of it now: the same
+    /// list is built to draw and to dispatch, so a row cannot mean one
+    /// thing and do another.
+    fn flop_knob_menu_rows(
+        &self,
+        address: &fontelle_types::ParamAddress,
+        name: &str,
+    ) -> Vec<(crate::canvas::MenuEntry, crate::canvas::FlopKnobMenuItem)> {
+        let kind = self
+            .flopsynth
+            .as_ref()
+            .and_then(|view| {
+                view.cards
+                    .iter()
+                    .flat_map(|card| card.group.params.iter())
+                    .find(|param| param.address == *address)
+            })
+            .map(|param| param.kind.clone())
+            .unwrap_or(ParamKind::Knob);
+        let (has_preset, routes, is_destination) = match self.options.document.as_ref() {
+            Some(doc) => (
+                doc.instrument_param_preset_value(address).is_some(),
+                doc.routes_to(address)
+                    .into_iter()
+                    .map(|route| route.source)
+                    .collect::<Vec<_>>(),
+                doc.is_mod_destination(address),
+            ),
+            None => (false, Vec::new(), false),
+        };
+        crate::canvas::flop_knob_menu(&crate::canvas::FlopKnobMenu {
+            name,
+            kind: &kind,
+            has_preset,
+            routes: &routes,
+            is_destination,
+            clipboard: self.flop_clipboard.is_some(),
+        })
+    }
+
+    /// A row of the control's menu, chosen.
+    fn choose_flop_knob_menu(
+        &mut self,
+        address: &fontelle_types::ParamAddress,
+        name: &str,
+        item: crate::canvas::FlopKnobMenuItem,
+    ) {
+        use crate::canvas::FlopKnobMenuItem as Item;
+        let set = |app: &mut Self, value: Option<f32>| {
+            if let Some(value) = value {
+                app.set_param(address, value);
+                if let Some(doc) = &mut app.options.document {
+                    doc.end_gesture();
+                }
+                app.after_flop_structure();
+            }
+        };
+        match item {
+            Item::Heading => {}
+            Item::ResetPreset => {
+                let value = self
+                    .options
+                    .document
+                    .as_ref()
+                    .and_then(|doc| doc.instrument_param_preset_value(address));
+                set(self, value);
+            }
+            Item::ResetDefault => {
+                let value = self
+                    .options
+                    .document
+                    .as_ref()
+                    .and_then(|doc| doc.instrument_param_default_value(address));
+                set(self, value);
+            }
+            Item::TypeValue => {
+                let which = self.flop_control_at_address(address);
+                let display = which
+                    .and_then(|which| self.flop_param(which))
+                    .map(|param| param.display.clone())
+                    .unwrap_or_default();
+                let cell = which.and_then(|which| self.flop_cell(which));
+                let bounds = self
+                    .editors
+                    .iter()
+                    .find(|e| e.kind == EditorKind::Instrument)
+                    .map(|e| e.panel.frame)
+                    .unwrap_or(self.layout.window);
+                self.dismissed = None;
+                let target = MenuTarget::TypeValue {
+                    address: address.clone(),
+                    name: name.to_string(),
+                };
+                match cell {
+                    Some(cell) => self.open_menu_beside(target, cell, bounds),
+                    None => {
+                        let (x, y) = self.cursor;
+                        self.open_menu(target, x, y, bounds);
+                    }
+                }
+                if self.menu.is_some() {
+                    self.menu_filter.set(display);
+                    self.menu_filter.select_all();
+                    self.relayout_menu();
+                }
+                self.redraw_editors();
+            }
+            Item::ModulateFrom | Item::AssignMacro => {
+                let cell = self
+                    .flop_control_at_address(address)
+                    .and_then(|which| self.flop_cell(which));
+                let bounds = self
+                    .editors
+                    .iter()
+                    .find(|e| e.kind == EditorKind::Instrument)
+                    .map(|e| e.panel.frame)
+                    .unwrap_or(self.layout.window);
+                self.dismissed = None;
+                let target = MenuTarget::ModulateFrom {
+                    address: address.clone(),
+                    name: name.to_string(),
+                    macros_only: item == Item::AssignMacro,
+                };
+                match cell {
+                    Some(cell) => self.open_menu_beside(target, cell, bounds),
+                    None => {
+                        let (x, y) = self.cursor;
+                        self.open_menu(target, x, y, bounds);
+                    }
+                }
+                self.redraw_editors();
+            }
+            Item::RemoveRoute(index) => {
+                if let Some(doc) = self.options.document.as_mut() {
+                    doc.remove_route(address, index);
+                }
+                self.after_flop_structure();
+            }
+            Item::CreateAutomation => {
+                let at = self.view.position_sample;
+                if let Some(doc) = &mut self.options.document {
+                    doc.automate_instrument_param(address, at);
+                }
+                self.lane_made();
+            }
+            Item::CopyValue => {
+                self.flop_clipboard = self
+                    .flop_control_at_address(address)
+                    .and_then(|which| self.flop_param(which))
+                    .map(|param| param.value);
+            }
+            Item::PasteValue => {
+                let value = self.flop_clipboard;
+                set(self, value);
+            }
+        }
+    }
+
+    /// Which control on the window is at `address`.
+    fn flop_control_at_address(
+        &self,
+        address: &fontelle_types::ParamAddress,
+    ) -> Option<(usize, usize)> {
+        let view = self.flopsynth.as_ref()?;
+        view.cards.iter().enumerate().find_map(|(card, c)| {
+            c.group
+                .params
+                .iter()
+                .position(|param| param.address == *address)
+                .map(|param| (card, param))
+        })
     }
 
     /// The sound menu for the oscillator behind `card`, if it is one.
@@ -8825,8 +9159,13 @@ impl WindowApp {
         let Some((which, from_y, from_value)) = self.flop_knob else {
             return;
         };
-        // Shift is a fine drag, the same modifier every other knob here has.
-        let value = knob_value(from_value, y - from_y, self.modifiers.shift_key());
+        // Shift is a fine drag, the same modifier every other knob here has;
+        // Ctrl is finer still (§3.3) — twenty times, a knob set to the cent.
+        let precision = crate::canvas::Precision::from_modifiers(
+            self.modifiers.shift_key(),
+            self.modifiers.control_key(),
+        );
+        let value = crate::canvas::knob_drag(from_value, y - from_y, precision);
         let Some(control) = self.flop_param(which) else {
             return;
         };
@@ -11617,6 +11956,48 @@ impl WindowApp {
                 }
                 entries
             }
+            MenuTarget::TypeValue { name, .. } => {
+                crate::canvas::name_prompt_entries(name, self.menu_filter.text())
+            }
+            MenuTarget::FlopKnob { address, name } => self
+                .flop_knob_menu_rows(address, name)
+                .into_iter()
+                .map(|(entry, _)| entry)
+                .collect(),
+            MenuTarget::ModulateFrom {
+                address,
+                name,
+                macros_only,
+            } => {
+                let Some(doc) = self.options.document.as_ref() else {
+                    return Vec::new();
+                };
+                let routed: Vec<String> = doc
+                    .routes_to(address)
+                    .into_iter()
+                    .map(|route| route.source)
+                    .collect();
+                let macros = doc.macro_sources();
+                let mut entries = vec![MenuEntry::disabled(if *macros_only {
+                    format!("Assign {name} to")
+                } else {
+                    format!("Modulate {name} from")
+                })];
+                for (index, source) in doc.mod_sources().into_iter().enumerate() {
+                    if *macros_only && !macros.contains(&index) {
+                        continue;
+                    }
+                    // A tick on the ones already there: a second route from
+                    // the same source is allowed, and rare, so the menu says
+                    // which is which rather than refusing.
+                    entries.push(MenuEntry::new(if routed.contains(&source) {
+                        format!("\u{2713} {source}")
+                    } else {
+                        format!("   {source}")
+                    }));
+                }
+                entries
+            }
             MenuTarget::FlopScale => {
                 let current = self.flopsynth.as_ref().map_or(1.0, |view| view.scale);
                 let mut entries = vec![MenuEntry::disabled("Window scale")];
@@ -12017,6 +12398,7 @@ impl WindowApp {
                     | MenuTarget::PresetNewCategory(_)
                     | MenuTarget::TrackPresetName(_)
                     | MenuTarget::TrackPresetNewCategory(_)
+                    | MenuTarget::TypeValue { .. }
             )
         );
         if !naming
@@ -12452,6 +12834,68 @@ impl WindowApp {
                     doc.add_patch_effect(kind);
                 }
                 self.after_flop_structure();
+            }
+            (MenuTarget::FlopKnob { address, name }, index) => {
+                let (address, name) = (address.clone(), name.clone());
+                let item = self
+                    .flop_knob_menu_rows(&address, &name)
+                    .get(index)
+                    .map(|(_, item)| *item);
+                if let Some(item) = item {
+                    self.choose_flop_knob_menu(&address, &name, item);
+                }
+            }
+            (MenuTarget::ModulateFrom { address, .. }, index) => {
+                let address = address.clone();
+                let Some(doc) = self.options.document.as_mut() else {
+                    return;
+                };
+                // Row 0 is the heading; the sources follow in
+                // `mod_sources`'s order, the macros-only list skipping the
+                // rest — so the row is mapped back through the same filter.
+                let macros_only = matches!(
+                    self.menu.as_ref().map(|(t, _)| t),
+                    Some(MenuTarget::ModulateFrom {
+                        macros_only: true,
+                        ..
+                    })
+                );
+                let macros = doc.macro_sources();
+                let source = (0..doc.mod_sources().len())
+                    .filter(|i| !macros_only || macros.contains(i))
+                    .nth(index.wrapping_sub(1));
+                if let Some(source) = source {
+                    doc.add_route(source, &address);
+                    self.after_flop_structure();
+                }
+            }
+            (MenuTarget::TypeValue { address, .. }, _) => {
+                let address = address.clone();
+                let text = self.menu_filter.text().trim().to_string();
+                self.menu_filter.clear();
+                let value = self
+                    .options
+                    .document
+                    .as_ref()
+                    .and_then(|doc| doc.instrument_param_from_text(&address, &text));
+                match value {
+                    Some(value) => {
+                        self.set_param(&address, value);
+                        if let Some(doc) = &mut self.options.document {
+                            doc.end_gesture();
+                        }
+                        self.after_flop_structure();
+                    }
+                    // A value that reads as nothing changes nothing, and the
+                    // window says so rather than guessing.
+                    None => {
+                        self.show_toast(
+                            format!("\"{text}\" is not a value this knob takes"),
+                            false,
+                        );
+                        self.redraw_editors();
+                    }
+                }
             }
             (MenuTarget::FlopScale, index) => {
                 let scale = index

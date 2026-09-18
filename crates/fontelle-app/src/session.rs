@@ -7279,6 +7279,37 @@ impl StudioHost for Session {
         Session::set_flopsynth_scale(self, scale);
     }
 
+    fn instrument_param_preset_value(&self, address: &fontelle_types::ParamAddress) -> Option<f32> {
+        Session::instrument_param_preset_value(self, address)
+    }
+
+    fn macro_sources(&self) -> Vec<usize> {
+        match self.matrix_patch() {
+            Some(patch) => fontelle_core::flopsynth::sources(&patch)
+                .iter()
+                .enumerate()
+                .filter(|(_, (source, _))| matches!(source, fontelle_core::ModSource::Macro(_)))
+                .map(|(index, _)| index)
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    fn instrument_param_default_value(
+        &self,
+        address: &fontelle_types::ParamAddress,
+    ) -> Option<f32> {
+        Session::instrument_param_default_value(self, address)
+    }
+
+    fn instrument_param_from_text(
+        &self,
+        address: &fontelle_types::ParamAddress,
+        text: &str,
+    ) -> Option<f32> {
+        Session::instrument_param_from_text(self, address, text)
+    }
+
     fn instrument(&self) -> Option<InstrumentView> {
         let channel_id = self.selected_channel_id()?;
         let channel = self.project.channels.get(channel_id)?;
@@ -9966,6 +9997,160 @@ impl Session {
             self.message = Some(format!("could not write settings: {e}"));
         }
         self.touch();
+    }
+
+    /// The value the loaded preset has for `address`, normalised — what
+    /// Alt-click and *Reset to preset* put back (`docs/flopsynth-next.md`
+    /// §3.3). `None` on a channel that came from no preset, or for an
+    /// address the patch does not hold (the channel's own gain and pan).
+    pub fn instrument_param_preset_value(
+        &self,
+        address: &fontelle_types::ParamAddress,
+    ) -> Option<f32> {
+        let device = PresetDevice::Instrument;
+        let kind = self.preset_device(device)?;
+        let reference = self.preset_ref(device)?;
+        let entry = self.preset_bank.find(&kind, &reference)?;
+        let preset = self.preset_bank.load(entry).ok()?;
+        let fontelle_types::PresetPayload::Patch(data) = preset.payload else {
+            return None;
+        };
+        let loaded =
+            fontelle_core::Patch::from_data(&data, |file| self.library.resolve(file)).ok()?;
+        fontelle_core::patch_params::value(&loaded.patch, address.as_str())
+    }
+
+    /// The value the Init patch has for `address` — *Reset to default*.
+    pub fn instrument_param_default_value(
+        &self,
+        address: &fontelle_types::ParamAddress,
+    ) -> Option<f32> {
+        let init = fontelle_core::flopsynth::flopsynth_init();
+        fontelle_core::patch_params::value(&init, address.as_str())
+    }
+
+    /// What the selected instrument's window would show for `address` if
+    /// it held `value` — the read-out `describe_flopsynth` formats, which is
+    /// the one inverse that cannot disagree with the knob.
+    fn flopsynth_display_at(
+        &self,
+        patch: &fontelle_core::Patch,
+        address: &fontelle_types::ParamAddress,
+        value: f32,
+    ) -> Option<(String, fontelle_ui::canvas::ParamKind)> {
+        let mut probe = patch.clone();
+        fontelle_core::patch_params::set(&mut probe, address.as_str(), value);
+        let view = crate::instrument::describe_flopsynth("", &probe, 0.0, 0.0);
+        view.groups
+            .iter()
+            .flat_map(|group| group.params.iter())
+            .find(|param| param.address == *address)
+            .map(|param| (param.display.clone(), param.kind.clone()))
+    }
+
+    /// The normalised value a typed entry means for `address`
+    /// (`docs/flopsynth-next.md` §3.3: "2.4k", "-12", "1/8", "37%").
+    ///
+    /// A percentage is a share of the travel. Anything else is read
+    /// **against the knob's own read-out**: the travel is sampled, each
+    /// sample's read-out parsed the way the entry was, the nearest taken
+    /// and refined — so "9 kHz" lands where the read-out says "9.00 kHz",
+    /// in whatever taper the address has, with no second table of ranges
+    /// to keep in step with the first. A unit the read-out does not speak
+    /// reads as nothing. A chooser takes the option whose name reads the
+    /// same number ("1/8").
+    pub fn instrument_param_from_typed(
+        &self,
+        address: &fontelle_types::ParamAddress,
+        typed: &fontelle_ui::canvas::Typed,
+    ) -> Option<f32> {
+        use fontelle_ui::canvas::{ParamKind, parse_typed};
+        if typed.unit == "%" {
+            return Some(typed.value.clamp(0.0, 1.0));
+        }
+        let patch = self.selected_patch()?;
+        let (_, kind) = self.flopsynth_display_at(&patch, address, 0.0)?;
+        match kind {
+            ParamKind::Choice(options) => {
+                let last = options.len().saturating_sub(1).max(1) as f32;
+                let at = options.iter().position(|option| {
+                    parse_typed(option).is_some_and(|read| {
+                        (read.value - typed.value).abs() < 1e-4 && read.matches_unit(typed)
+                    })
+                })?;
+                Some(at as f32 / last)
+            }
+            ParamKind::Switch => Some(if typed.value >= 0.5 { 1.0 } else { 0.0 }),
+            ParamKind::Knob => {
+                let read = |value: f32| -> Option<f32> {
+                    let (display, _) = self.flopsynth_display_at(&patch, address, value)?;
+                    let shown = parse_typed(&display)?;
+                    shown.matches_unit(typed).then_some(shown.value)
+                };
+                const SAMPLES: usize = 64;
+                let mut best: Option<(f32, f32)> = None;
+                for step in 0..=SAMPLES {
+                    let value = step as f32 / SAMPLES as f32;
+                    if let Some(number) = read(value) {
+                        let error = (number - typed.value).abs();
+                        if best.is_none_or(|(_, e)| error < e) {
+                            best = Some((value, error));
+                        }
+                    }
+                }
+                let (coarse, _) = best?;
+                // Refined between the neighbours: the read-out is monotonic
+                // in the travel for every knob here.
+                let (mut lo, mut hi) = (
+                    (coarse - 1.0 / SAMPLES as f32).max(0.0),
+                    (coarse + 1.0 / SAMPLES as f32).min(1.0),
+                );
+                let rising = read(hi).zip(read(lo)).is_none_or(|(h, l)| h >= l);
+                for _ in 0..20 {
+                    let mid = (lo + hi) / 2.0;
+                    let Some(number) = read(mid) else { break };
+                    if (number < typed.value) == rising {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                Some(((lo + hi) / 2.0).clamp(0.0, 1.0))
+            }
+        }
+    }
+
+    /// [`instrument_param_from_typed`](Self::instrument_param_from_typed)
+    /// from the text as typed — which for a chooser of words is the option's
+    /// name, whole or begun, in any case.
+    pub fn instrument_param_from_text(
+        &self,
+        address: &fontelle_types::ParamAddress,
+        text: &str,
+    ) -> Option<f32> {
+        use fontelle_ui::canvas::{ParamKind, parse_typed};
+        let text = text.trim();
+        if let Some(typed) = parse_typed(text)
+            && let Some(value) = self.instrument_param_from_typed(address, &typed)
+        {
+            return Some(value);
+        }
+        let patch = self.selected_patch()?;
+        let (_, kind) = self.flopsynth_display_at(&patch, address, 0.0)?;
+        let ParamKind::Choice(options) = kind else {
+            return None;
+        };
+        let wanted = text.to_lowercase();
+        let last = options.len().saturating_sub(1).max(1) as f32;
+        let at = options
+            .iter()
+            .position(|option| option.to_lowercase() == wanted)
+            .or_else(|| {
+                options
+                    .iter()
+                    .position(|option| option.to_lowercase().starts_with(&wanted))
+            })?;
+        Some(at as f32 / last)
     }
 
     pub fn mod_sources(&self) -> Vec<String> {

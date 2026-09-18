@@ -1782,6 +1782,12 @@ pub trait StudioHost: DocumentHost {
         Vec::new()
     }
 
+    /// Which of [`mod_sources`](Self::mod_sources) are the macros — what
+    /// *Assign to macro…* lists (`docs/flopsynth-next.md` §3.3).
+    fn macro_sources(&self) -> Vec<usize> {
+        Vec::new()
+    }
+
     /// The routes reaching the control at `address`, oldest first.
     ///
     /// Empty for a control nothing modulates, which is also what draws no
@@ -1843,6 +1849,33 @@ pub trait StudioHost: DocumentHost {
     /// Chooses the scale — kept as a setting. A scale the window does not
     /// offer changes nothing.
     fn set_flopsynth_scale(&mut self, _scale: f32) {}
+
+    /// The loaded preset's value for a control, normalised — what Alt-click
+    /// and *Reset to preset* put back (`docs/flopsynth-next.md` §3.3).
+    /// `None` on a channel that came from no preset.
+    fn instrument_param_preset_value(
+        &self,
+        _address: &fontelle_types::ParamAddress,
+    ) -> Option<f32> {
+        None
+    }
+    /// The Init patch's value for a control — *Reset to default*.
+    fn instrument_param_default_value(
+        &self,
+        _address: &fontelle_types::ParamAddress,
+    ) -> Option<f32> {
+        None
+    }
+    /// The normalised value a typed entry means for a control, read against
+    /// the control's own read-out ("2.4k", "-12", "1/8", "37%", or an
+    /// option's name); `None` when it reads as nothing.
+    fn instrument_param_from_text(
+        &self,
+        _address: &fontelle_types::ParamAddress,
+        _text: &str,
+    ) -> Option<f32> {
+        None
+    }
 
     /// Puts an effect of `kind` on the end of the selected instrument's own
     /// chain. Refused, quietly, when the chain is full.

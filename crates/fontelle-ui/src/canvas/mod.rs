@@ -57,6 +57,7 @@ pub use favorites::{
     EffectRow, FAVORITES_HEADING, InstrumentRow, PickerRow, RESCAN_PLUGINS, effect_menu_rows,
     instrument_menu_rows, plugin_picker_rows,
 };
+pub mod gestures;
 pub use flopsynth::{
     ADD_EFFECT, BADGE_H, BADGE_W, CANOPY_HEIGHT, CAPTION_ROOM, CARD_GAP, CARD_HEADER, CARD_PAD,
     CELL_FLOOR, CELL_TEXT_H, CHIP_CHEVRON, CHIP_INSET, CHIP_TEXT_INDENT, CHIP_TEXT_ROOM,
@@ -72,6 +73,10 @@ pub use flopsynth::{
     lfo_curve_points, matrix_depth_at, matrix_hit, picture_control, preset_about, preset_page_rows,
     preset_shelves, presets_hit, response_curve_points, ring_band, ring_depth, ring_hit,
     sound_outline_points, wave_curve_points, wave_position_at,
+};
+pub use gestures::{
+    FlopKnobMenu, FlopKnobMenuItem, NUDGE, NUDGE_FINE, Precision, Typed, flop_knob_menu, knob_drag,
+    nudged, parse_typed, wheel_nudge,
 };
 pub use instrument::{
     CELL_HEIGHT, CELL_WIDTH, CHIP_HEIGHT, CHIP_WIDTH, InstrumentGroup, InstrumentLayout,

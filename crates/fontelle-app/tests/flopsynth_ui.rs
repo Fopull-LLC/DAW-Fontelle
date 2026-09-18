@@ -1295,3 +1295,131 @@ fn every_caption_on_the_window_is_a_word_from_the_caption_file() {
             .any(|g| g.params.iter().any(|p| p.label == "cutoff"))
     );
 }
+
+/// §3.3: Alt-click resets a knob to the **preset's** value, the menu offers
+/// the **default** (the Init patch's) too, and a value can be **typed** in
+/// the knob's own unit — read back through the same read-out the knob
+/// shows, so "9 kHz" lands where the read-out says "9.00 kHz". A chooser
+/// takes an option's name.
+#[test]
+fn a_knob_has_a_preset_value_a_default_and_takes_a_typed_value() {
+    use fontelle_types::ParamAddress;
+    use fontelle_ui::canvas::{FlopsynthPage, Typed};
+    let mut session = common::a_session_for(fontelle_app::blank_project(8, 120.0, SR));
+    let cutoff = ParamAddress::new("patch/filter[0]/cutoff");
+    let display = |session: &fontelle_app::Session, address: &ParamAddress| -> String {
+        session
+            .flopsynth(FlopsynthPage::Synth)
+            .unwrap()
+            .cards
+            .iter()
+            .flat_map(|c| c.group.params.iter())
+            .find(|p| p.address == *address)
+            .map(|p| p.display.clone())
+            .expect("the cutoff is on the page")
+    };
+    let value = |session: &fontelle_app::Session, address: &ParamAddress| -> f32 {
+        session
+            .flopsynth(FlopsynthPage::Synth)
+            .unwrap()
+            .cards
+            .iter()
+            .flat_map(|c| c.group.params.iter())
+            .find(|p| p.address == *address)
+            .map(|p| p.value)
+            .unwrap()
+    };
+    let loaded = value(&session, &cutoff);
+    assert_eq!(
+        display(&session, &cutoff),
+        "9.00 kHz",
+        "the Grand Piano's filter"
+    );
+    let preset = session
+        .instrument_param_preset_value(&cutoff)
+        .expect("the channel came from a preset");
+    assert!((preset - loaded).abs() < 1e-4);
+    let default = session
+        .instrument_param_default_value(&cutoff)
+        .expect("every address has a default");
+    assert!(
+        (default - loaded).abs() > 0.01,
+        "the Init patch's cutoff is not the piano's"
+    );
+
+    // Turned, the preset's value is still the preset's; the default too.
+    session.set_instrument_param(&cutoff, 0.2);
+    assert!((session.instrument_param_preset_value(&cutoff).unwrap() - preset).abs() < 1e-4);
+    assert!((session.instrument_param_default_value(&cutoff).unwrap() - default).abs() < 1e-4);
+
+    // Typed in the knob's unit, with and without the unit, with a prefix.
+    for text in ["9 kHz", "9000", "9k", "9.0 khz"] {
+        let typed = fontelle_ui::canvas::parse_typed(text).unwrap();
+        let normalised = session
+            .instrument_param_from_typed(&cutoff, &typed)
+            .unwrap_or_else(|| panic!("{text} did not read"));
+        session.set_instrument_param(&cutoff, normalised);
+        assert_eq!(display(&session, &cutoff), "9.00 kHz", "typed {text}");
+    }
+    // A percentage is a share of the travel whatever the unit.
+    let typed = fontelle_ui::canvas::parse_typed("37%").unwrap();
+    let normalised = session
+        .instrument_param_from_typed(&cutoff, &typed)
+        .unwrap();
+    assert!((normalised - 0.37).abs() < 1e-4);
+    // Out of range is the nearest end.
+    let typed = fontelle_ui::canvas::parse_typed("900 kHz").unwrap();
+    assert!(
+        (session
+            .instrument_param_from_typed(&cutoff, &typed)
+            .unwrap()
+            - 1.0)
+            .abs()
+            < 1e-3
+    );
+    // A unit the read-out does not speak reads as nothing.
+    let typed = fontelle_ui::canvas::parse_typed("9 ms").unwrap();
+    assert_eq!(session.instrument_param_from_typed(&cutoff, &typed), None);
+    // A chooser takes an option's name, and its number as a fraction.
+    let division = ParamAddress::new("patch/lfo[0]/division");
+    let typed = Typed::fraction(0.125);
+    let normalised = session
+        .instrument_param_from_typed(&division, &typed)
+        .expect("1/8 is a division");
+    session.set_instrument_param(&division, normalised);
+    let view = session.flopsynth(FlopsynthPage::Modulation).unwrap();
+    let param = view
+        .cards
+        .iter()
+        .flat_map(|c| c.group.params.iter())
+        .find(|p| p.address == division)
+        .unwrap();
+    assert_eq!(param.display, "1/8");
+    let typed = fontelle_ui::canvas::parse_typed("1/16").unwrap();
+    let normalised = session
+        .instrument_param_from_typed(&division, &typed)
+        .unwrap();
+    session.set_instrument_param(&division, normalised);
+    let view = session.flopsynth(FlopsynthPage::Modulation).unwrap();
+    let param = view
+        .cards
+        .iter()
+        .flat_map(|c| c.group.params.iter())
+        .find(|p| p.address == division)
+        .unwrap();
+    assert_eq!(param.display, "1/16");
+    // A word that is an option's name, for a chooser of words.
+    let mode = ParamAddress::new("patch/voice/mode");
+    let normalised = session
+        .instrument_param_from_text(&mode, "mono")
+        .expect("Mono is a mode");
+    session.set_instrument_param(&mode, normalised);
+    let view = session.flopsynth(FlopsynthPage::Synth).unwrap();
+    let param = view
+        .cards
+        .iter()
+        .flat_map(|c| c.group.params.iter())
+        .find(|p| p.address == mode)
+        .unwrap();
+    assert_eq!(param.display, "Mono");
+}
