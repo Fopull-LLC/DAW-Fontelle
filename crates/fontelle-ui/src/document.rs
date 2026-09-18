@@ -1840,6 +1840,10 @@ pub trait StudioHost: DocumentHost {
 
     /// Takes slot `index` off the selected instrument's own chain.
     fn remove_patch_effect(&mut self, _index: usize) {}
+    /// Moves slot `from` of the selected instrument's own chain to `to`, the
+    /// slots between sliding — a card dragged by its header onto another
+    /// (§8.5). One undo.
+    fn move_patch_effect(&mut self, _from: usize, _to: usize) {}
 
     /// Moves one control. `value` is normalised, 0..=1, exactly as the panel
     /// draws it; what it means is the implementation's business.

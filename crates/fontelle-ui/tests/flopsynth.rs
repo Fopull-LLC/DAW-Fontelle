@@ -1769,6 +1769,50 @@ fn an_effect_card_can_be_removed_and_a_source_card_cannot() {
     );
 }
 
+/// A drag by an effect card's header lands on another effect card — the
+/// one under the pointer — and nowhere else (`docs/flopsynth-next.md`
+/// §1.4(5): `FlopsynthHit::Header` was returned by the hit test and matched
+/// by nothing, a dead affordance since the first build).
+#[test]
+fn a_dragged_effect_header_lands_on_the_effect_card_under_the_pointer() {
+    let view = fx_view(3, true);
+    let layout = flopsynth_layout(BODY, &metrics(), &view);
+    for (index, placed) in layout.cards.iter().enumerate() {
+        let (cx, cy) = (
+            placed.frame.x + placed.frame.width / 2.0,
+            placed.frame.y + placed.frame.height / 2.0,
+        );
+        assert_eq!(
+            fontelle_ui::canvas::effect_card_at(&layout, &view, cx, cy),
+            Some(index),
+            "the middle of card {index} is card {index}"
+        );
+    }
+    assert_eq!(
+        fontelle_ui::canvas::effect_card_at(
+            &layout,
+            &view,
+            BODY.right() - 1.0,
+            BODY.bottom() - 1.0
+        ),
+        None,
+        "the hull is nobody's"
+    );
+    // An oscillator is not a slot: on the Synth page nothing takes the drop.
+    let synth = a_view();
+    let synth_layout = flopsynth_layout(BODY, &metrics(), &synth);
+    let osc = synth_layout.cards[0].frame;
+    assert_eq!(
+        fontelle_ui::canvas::effect_card_at(
+            &synth_layout,
+            &synth,
+            osc.x + osc.width / 2.0,
+            osc.y + osc.height / 2.0
+        ),
+        None
+    );
+}
+
 // --- The Presets search box's caption, focused and not ---------------------
 //
 // The box used to take every key while the Presets page was open, so a typed

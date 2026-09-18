@@ -3428,6 +3428,7 @@ fn shoot_flopsynth_in(
             active: None,
             modulated: vec![((1, 0), 0.6)],
             assigning: None,
+            carrying_slot: None,
             destinations: vec![(1, 0), (1, 1)],
             about: Vec::new(),
             hover_at: (f32::MIN, f32::MIN),

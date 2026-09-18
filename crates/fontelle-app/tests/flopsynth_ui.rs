@@ -20,7 +20,7 @@ mod common;
 
 use fontelle_types::InstrumentKind;
 use fontelle_ui::canvas::ParamKind;
-use fontelle_ui::document::StudioHost;
+use fontelle_ui::document::{DocumentHost, StudioHost};
 
 use common::SR;
 
@@ -740,6 +740,95 @@ fn an_effect_is_added_to_the_patch_from_the_window_and_taken_off_again() {
             .cards
             .len(),
         fontelle_core::MAX_PATCH_FX
+    );
+}
+
+/// A slot is moved along the chain from the window — the drag by the
+/// card's header that `FlopsynthHit::Header` was always for
+/// (`docs/flopsynth-next.md` §1.4(5)) — and it is one undo.
+#[test]
+fn an_effect_slot_is_moved_along_the_chain_and_it_is_one_undo() {
+    use fontelle_types::EffectKind;
+    use fontelle_ui::canvas::FlopsynthPage;
+    let mut session = a_flopsynth();
+    for kind in [EffectKind::Chorus, EffectKind::Delay, EffectKind::Reverb] {
+        session.add_patch_effect(kind);
+    }
+    let names = |session: &fontelle_app::Session| -> Vec<String> {
+        session
+            .flopsynth(FlopsynthPage::Effects)
+            .unwrap()
+            .cards
+            .iter()
+            .map(|c| c.group.name.clone())
+            .collect()
+    };
+    assert_eq!(
+        names(&session),
+        [
+            "FX 1 \u{b7} Chorus",
+            "FX 2 \u{b7} Delay",
+            "FX 3 \u{b7} Reverb"
+        ]
+    );
+
+    // The reverb dragged onto the chorus's card goes first; the others slide.
+    session.move_patch_effect(2, 0);
+    assert_eq!(
+        names(&session),
+        [
+            "FX 1 \u{b7} Reverb",
+            "FX 2 \u{b7} Chorus",
+            "FX 3 \u{b7} Delay"
+        ]
+    );
+    // The chain is what sounds: the patch says so too, not only the cards.
+    let patch = session.selected_patch().expect("a patch");
+    assert_eq!(patch.fx[0].config.kind(), EffectKind::Reverb);
+    assert_eq!(patch.fx[2].config.kind(), EffectKind::Delay);
+
+    // Forwards too: the first dragged onto the last goes last.
+    session.move_patch_effect(0, 2);
+    assert_eq!(
+        names(&session),
+        [
+            "FX 1 \u{b7} Chorus",
+            "FX 2 \u{b7} Delay",
+            "FX 3 \u{b7} Reverb"
+        ]
+    );
+
+    // A slot dropped on itself, or an index that is not there, is nothing —
+    // not an undo entry that does nothing.
+    session.move_patch_effect(1, 1);
+    session.move_patch_effect(7, 0);
+    session.undo();
+    assert_eq!(
+        names(&session),
+        [
+            "FX 1 \u{b7} Reverb",
+            "FX 2 \u{b7} Chorus",
+            "FX 3 \u{b7} Delay"
+        ],
+        "one undo takes back the last move, whole"
+    );
+    // And only the last: a change to the chain's shape is one thing
+    // somebody did, not a step of a drag to merge with the one before.
+    session.undo();
+    assert_eq!(
+        names(&session),
+        [
+            "FX 1 \u{b7} Chorus",
+            "FX 2 \u{b7} Delay",
+            "FX 3 \u{b7} Reverb"
+        ],
+        "the second undo takes back the first move and nothing else"
+    );
+    session.undo();
+    assert_eq!(
+        names(&session),
+        ["FX 1 \u{b7} Chorus", "FX 2 \u{b7} Delay"],
+        "and the third takes off the last effect added, not all three"
     );
 }
 

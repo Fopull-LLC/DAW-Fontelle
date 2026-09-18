@@ -1146,6 +1146,23 @@ pub fn flopsynth_tab_at(layout: &FlopsynthLayout, x: f32, y: f32) -> Option<Flop
         .map(|(page, _)| *page)
 }
 
+/// Which **effect** card is under `(x, y)` — where a slot dragged by its
+/// header lands (§8.5). A card that cannot be taken off the chain is not a
+/// slot, so an oscillator answers `None` and a drag let go over it is called
+/// off.
+pub fn effect_card_at(
+    layout: &FlopsynthLayout,
+    view: &FlopsynthView,
+    x: f32,
+    y: f32,
+) -> Option<usize> {
+    layout.cards.iter().enumerate().position(|(index, placed)| {
+        view.cards.get(index).is_some_and(|card| card.removable)
+            && !placed.frame.is_empty()
+            && placed.frame.contains(x, y)
+    })
+}
+
 /// Which source badge is under `(x, y)` — where a drag-to-assign starts.
 pub fn badge_at(layout: &FlopsynthLayout, x: f32, y: f32) -> Option<usize> {
     layout

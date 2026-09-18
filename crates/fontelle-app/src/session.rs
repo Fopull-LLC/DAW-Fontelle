@@ -4189,6 +4189,20 @@ impl Session {
         self.load_sample(layer, path)
     }
 
+    /// [`store_patch`](Self::store_patch) for a change to the patch's
+    /// **shape** — a slot added, taken off or moved; a route added or taken
+    /// off — which is one thing somebody did and one undo entry. `store_patch`
+    /// merges consecutive writes into one, because a knob drag is forty of
+    /// them; that rule turned three effects added one after another into one
+    /// undo, and a slot moved and then moved back into nothing to undo at all
+    /// (found by the move test, `tests/flopsynth_ui.rs`). The gesture is
+    /// broken on either side, the way choosing a preset breaks it.
+    fn store_patch_structural(&mut self, channel: ChannelId, patch: fontelle_core::Patch) {
+        self.history.break_gesture();
+        self.store_patch(channel, patch);
+        self.history.break_gesture();
+    }
+
     fn store_patch(&mut self, channel: ChannelId, patch: fontelle_core::Patch) {
         let data = match patch.to_data(self.library.provenance()) {
             Ok(data) => data,
@@ -7253,6 +7267,10 @@ impl StudioHost for Session {
         Session::remove_patch_effect(self, index);
     }
 
+    fn move_patch_effect(&mut self, from: usize, to: usize) {
+        Session::move_patch_effect(self, from, to);
+    }
+
     fn instrument(&self) -> Option<InstrumentView> {
         let channel_id = self.selected_channel_id()?;
         let channel = self.project.channels.get(channel_id)?;
@@ -9871,7 +9889,7 @@ impl Session {
         });
         // Structural, like a route: the node's chain is rebuilt in `prepare`
         // rather than nudged down the live wire.
-        self.store_patch(channel, patch);
+        self.store_patch_structural(channel, patch);
     }
 
     /// Takes slot `index` off the selected instrument's own chain.
@@ -9886,7 +9904,29 @@ impl Session {
             return;
         }
         patch.fx.remove(index);
-        self.store_patch(channel, patch);
+        self.store_patch_structural(channel, patch);
+    }
+
+    /// Moves slot `from` to `to` along the selected instrument's own chain,
+    /// the slots between sliding to make room — the drag by a card's header
+    /// (`docs/flopsynth-next.md` §1.4(5); plan §8.5). The order is the order
+    /// the sound goes through them, so this is a change to the sound and one
+    /// undo entry, like adding a slot. A move to where it already is, or of
+    /// a slot that is not there, writes nothing — an undo entry that does
+    /// nothing is a lie about what happened.
+    pub fn move_patch_effect(&mut self, from: usize, to: usize) {
+        let Some(channel) = self.selected_channel_id() else {
+            return;
+        };
+        let Some(mut patch) = self.matrix_patch() else {
+            return;
+        };
+        if from == to || from >= patch.fx.len() || to >= patch.fx.len() {
+            return;
+        }
+        let slot = patch.fx.remove(from);
+        patch.fx.insert(to, slot);
+        self.store_patch_structural(channel, patch);
     }
 
     pub fn mod_sources(&self) -> Vec<String> {
@@ -10017,7 +10057,7 @@ impl Session {
         // Structural: the number of routes changed, so the running voice's
         // matrix has to be rebuilt rather than nudged down the live wire —
         // which is the same rule a wavetable swap follows (§2.3).
-        self.store_patch(channel, patch);
+        self.store_patch_structural(channel, patch);
     }
 
     pub fn remove_route(&mut self, address: &fontelle_types::ParamAddress, index: usize) {
@@ -10043,7 +10083,7 @@ impl Session {
             .nth(index);
         let Some(at) = at else { return };
         patch.mod_matrix.routes.remove(at);
-        self.store_patch(channel, patch);
+        self.store_patch_structural(channel, patch);
     }
 }
 

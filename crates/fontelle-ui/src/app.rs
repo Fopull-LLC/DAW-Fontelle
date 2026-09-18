@@ -114,6 +114,9 @@ enum Drag {
     /// A source badge being carried to a knob (§8.4). Which source is in
     /// `flop_assign`, with where the pointer is, so the badge follows it.
     FlopAssign,
+    /// An effect card carried by its header to another slot (§8.5). Which
+    /// card, and the card under the pointer, are in `flop_slot`.
+    FlopSlot,
     /// A matrix row's depth slider.
     FlopMatrix(usize),
     /// The seam between the grid and the lane, which resizes the lane.
@@ -1070,6 +1073,12 @@ pub struct WindowApp {
     /// A source badge being carried to a knob (§8.4): which source, and where
     /// the pointer is now, so the badge can be drawn under it.
     flop_assign: Option<(usize, (f32, f32))>,
+    /// An effect card being carried by its header: the card, and the effect
+    /// card under the pointer — where it would land if let go now. The
+    /// `FlopsynthHit::Header` this answers was returned by the hit test and
+    /// matched by nothing from the first build to v0.9.0
+    /// (`docs/flopsynth-next.md` §1.4(5)).
+    flop_slot: Option<(usize, Option<usize>)>,
     /// The browser row in the air, while one is — see [`Carrying`].
     carry: Option<Carrying>,
     /// A browser row **held** after its drag was let go outside the studio
@@ -1700,6 +1709,7 @@ impl WindowApp {
             sky_frame: None,
             skin: crate::skin::Skin::find(),
             flop_assign: None,
+            flop_slot: None,
             carry: None,
             held: None,
             flop_modulated: Vec::new(),
@@ -2812,7 +2822,7 @@ impl WindowApp {
             | Drag::FlopWave(_)
             | Drag::FlopMatrix(_)
             | Drag::SettingSlider(_) => Some(Pointer::ResizeX),
-            Drag::FlopAssign => Some(Pointer::Grabbing),
+            Drag::FlopAssign | Drag::FlopSlot => Some(Pointer::Grabbing),
             // A response is dragged in both axes at once, like a band handle.
             Drag::FlopResponse(_) => Some(Pointer::Grabbing),
             // A band handle goes wherever the pointer does, in both axes.
@@ -4863,6 +4873,7 @@ impl WindowApp {
                     active: self.flop_knob.map(|(which, _, _)| which),
                     modulated: self.flop_modulated.clone(),
                     assigning: self.flop_assign,
+                    carrying_slot: self.flop_slot,
                     destinations: self.flop_destinations.clone(),
                     about: self.flop_about(),
                     hover_at: self.cursor,
@@ -6530,6 +6541,20 @@ impl WindowApp {
             Drag::FlopRing => self.drag_flop_ring(y),
             Drag::FlopMatrix(index) => self.drag_flop_matrix(index, x),
             // The badge follows the pointer, and the knobs light up behind it.
+            // The card under the pointer is worked out every move so the
+            // header it would land on can light before it is let go.
+            Drag::FlopSlot => {
+                let target = self.flopsynth.as_ref().and_then(|view| {
+                    crate::canvas::effect_card_at(&self.flopsynth_layout, view, x, y)
+                });
+                if let Some((_, landing)) = &mut self.flop_slot
+                    && *landing != target
+                {
+                    *landing = target;
+                    self.tree.invalidate(PANEL);
+                    self.redraw_editors();
+                }
+            }
             Drag::FlopAssign => {
                 if let Some((_, at)) = &mut self.flop_assign {
                     *at = (x, y);
@@ -7237,6 +7262,11 @@ impl WindowApp {
             let (x, y) = self.cursor;
             self.drop_flop_assign(x, y);
         }
+        // A slot let go over another slot moves there (§8.5); over anything
+        // else the drag is called off, like a badge's.
+        if matches!(self.drag, Drag::FlopSlot) {
+            self.drop_flop_slot();
+        }
         // And a row carried out of the browser and let go over *this* window:
         // the instrument window's name takes one. The studio's own release
         // does the same thing — which window hears the release is the
@@ -7252,6 +7282,7 @@ impl WindowApp {
             self.request_redraw_if_dirty();
         }
         self.flop_assign = None;
+        self.flop_slot = None;
         self.flop_node = None;
         self.flop_ring = None;
         // A band or point drag coalesces into one history entry while it
@@ -8079,6 +8110,21 @@ impl WindowApp {
             self.after_flop_structure();
             return;
         }
+        // An effect card's header is its handle: a drag reorders the chain.
+        // Only an effect's — the header of an oscillator is its name.
+        if let Some(crate::canvas::FlopsynthHit::Header { card }) = hit {
+            let removable = self
+                .flopsynth
+                .as_ref()
+                .and_then(|view| view.cards.get(card))
+                .is_some_and(|c| c.removable);
+            if removable {
+                self.flop_slot = Some((card, Some(card)));
+                self.drag = Drag::FlopSlot;
+                self.tree.invalidate(PANEL);
+            }
+            return;
+        }
         let Some(crate::canvas::FlopsynthHit::Control { card, param }) = hit else {
             return;
         };
@@ -8551,6 +8597,30 @@ impl WindowApp {
         }
         self.tree.invalidate(PANEL);
         self.redraw_editors();
+    }
+
+    fn drop_flop_slot(&mut self) {
+        let Some((card, landing)) = self.flop_slot.take() else {
+            return;
+        };
+        let moved = match (
+            self.flop_fx_slot(card),
+            landing.and_then(|c| self.flop_fx_slot(c)),
+        ) {
+            (Some(from), Some(to)) if from != to => {
+                if let Some(doc) = self.options.document.as_mut() {
+                    doc.move_patch_effect(from, to);
+                }
+                true
+            }
+            _ => false,
+        };
+        if moved {
+            self.after_flop_structure();
+        } else {
+            self.tree.invalidate(PANEL);
+            self.redraw_editors();
+        }
     }
 
     /// After a route is added or removed: the matrix changed shape, so the

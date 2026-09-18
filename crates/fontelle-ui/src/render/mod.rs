@@ -7759,6 +7759,9 @@ pub struct FlopsynthChrome<'a> {
     /// A source badge being carried: which source, and where the pointer is.
     /// While one is in flight every control that could take it is lit.
     pub assigning: Option<(usize, (f32, f32))>,
+    /// An effect card carried by its header (§8.5): the card, and the card
+    /// it would land on if let go now — whose header is lit to say so.
+    pub carrying_slot: Option<(usize, Option<usize>)>,
     /// Which controls could take it — the same list, worked out once by the
     /// host rather than asked per knob while a drag is running.
     pub destinations: Vec<(usize, usize)>,
@@ -8566,6 +8569,22 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
             hot_card,
             chrome.skin,
         );
+        // A slot being carried: its own header dimmed, and the header of the
+        // slot it would land on lit in its ink — the landing is said before
+        // the button comes up, the way a carried badge lights the knobs.
+        if let Some((carried, landing)) = chrome.carrying_slot {
+            if carried == index {
+                fill_rect_rounded(
+                    scene,
+                    placed.header,
+                    m.corner_radius,
+                    p.window.with_alpha(128),
+                );
+            } else if landing == Some(index) {
+                stroke_rect_rounded(scene, placed.frame.inset(0.5), m.corner_radius, 2.0, ink);
+                fill_rect_rounded(scene, placed.header, m.corner_radius, ink.with_alpha(90));
+            }
+        }
         if !placed.remove.is_empty() {
             let lit = placed.remove.contains(chrome.hover_at.0, chrome.hover_at.1);
             draw_icon(
