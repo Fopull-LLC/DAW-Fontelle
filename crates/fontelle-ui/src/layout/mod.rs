@@ -663,9 +663,20 @@ impl EditorKind {
 /// is the experiment's number, for him to keep or send back.
 pub const FLOPSYNTH_SIZE: (u32, u32) = (1180, 840);
 
-/// And the smallest it may be dragged to. Below this the cards have lost their
-/// air and their pictures and there is nothing left to give (§8.8).
-pub const FLOPSYNTH_MINIMUM: (u32, u32) = (980, 620);
+/// And the smallest it may be dragged to.
+///
+/// **The size at which no cell shrinks.** It was 980×620 — the point at which
+/// the cards had given up their air, their pictures and a fifth of every
+/// cell — and at that size the captions and values, designed for a 52-pixel
+/// cell, were cut: "20.00 kH", "Hardne:macro 3"
+/// (`docs/flopsynth-next.md` §1.4(3)). The layout cannot measure text; what
+/// it can promise is the cell the text was drawn for, so the floor is where
+/// the shrink cascade stops touching cells — the design width, at which the
+/// three oscillators and the aside column exactly fill a row, and the
+/// height at which the Synth page fits with its pictures at their floor and
+/// the canopy at its least. The scale chooser of `docs/flopsynth-next.md`
+/// §3.2 is what will make a smaller window possible.
+pub const FLOPSYNTH_MINIMUM: (u32, u32) = (1180, 780);
 
 /// What the pitch corrector's console opens at (`docs/tune-plan.md` §7.2).
 ///

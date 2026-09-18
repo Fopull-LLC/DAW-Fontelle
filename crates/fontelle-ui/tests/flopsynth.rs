@@ -818,6 +818,59 @@ fn a_matrix_with_more_rows_than_room_scrolls_rather_than_running_off() {
     assert!(short.matrix_scrollbar.is_empty());
 }
 
+/// The cards do not shrink to make room for the matrix. They did: at the
+/// size the window opens at, the Grand Piano's routes pushed ENV 3 and ENV 4
+/// to the cell floor, and their captions read "release a shaped shaper
+/// shape" (`docs/flopsynth-next.md` §1.4(8)). The matrix scrolls; a card's
+/// captions cannot.
+#[test]
+fn the_matrix_scrolls_before_a_card_shrinks() {
+    let mut view = a_view_on(FlopsynthPage::Modulation);
+    // Two cards with two rows of cells each, and a matrix that wants more
+    // than the page has.
+    let envelope = || FlopsynthPicture::Envelope {
+        attack: 0.1,
+        decay: 0.3,
+        sustain: 0.8,
+        release: 0.4,
+    };
+    view.cards = vec![
+        card("ENV 3", 1, false, 5, envelope(), env_params(3)),
+        card("ENV 4", 1, false, 5, envelope(), env_params(4)),
+    ];
+    view.sources = (0..21).map(|i| format!("source {i}")).collect();
+    view.routes = (0..40)
+        .map(|i| FlopsynthRoute {
+            source: "ENV 3".into(),
+            destination: format!("dest {i}"),
+            depth: 0.5,
+        })
+        .collect();
+    let body = real_body(fontelle_ui::layout::FLOPSYNTH_SIZE);
+    let layout = assert_fits(body, &view);
+    for card in &layout.cards {
+        for (_, cell) in &card.cells {
+            assert!(
+                (cell.height - FLOP_CELL_H).abs() < 0.01,
+                "a cell shrank to {} to make room for the matrix",
+                cell.height
+            );
+        }
+    }
+    let drawn = layout.routes.iter().filter(|r| !r.frame.is_empty()).count();
+    assert!(
+        drawn >= 3 && layout.matrix_max_scroll > 0.0,
+        "the matrix shows {drawn} rows and scrolls {}",
+        layout.matrix_max_scroll
+    );
+    let cards_bottom = layout
+        .cards
+        .iter()
+        .map(|c| c.frame.bottom())
+        .fold(0.0f32, f32::max);
+    assert!(layout.matrix.y >= cards_bottom - 0.01);
+}
+
 #[test]
 fn a_depth_slider_reads_the_press_as_a_bipolar_value() {
     // A slider rather than a knob, because the row is 22 pixels: the audio
@@ -1288,14 +1341,50 @@ fn a_chooser_with_long_names_gets_a_double_cell() {
     );
 }
 
+/// At the smallest size the window may be dragged to, every cell is its
+/// design size — because the captions and values were designed for that
+/// cell and a smaller one clips them ("20.00 kH", "Hardne:macro 3" at the
+/// old 980×620 minimum: `docs/flopsynth-next.md` §1.4(3)). The layout has no
+/// text to measure; what it can promise is the cell the text was drawn for.
+/// The pictures may still be at their floor here — a picture has no caption.
+#[test]
+fn at_the_minimum_size_every_cell_is_its_design_size() {
+    let view = synth_page();
+    let body = real_body(fontelle_ui::layout::FLOPSYNTH_MINIMUM);
+    let layout = assert_fits(body, &view);
+    for (index, card) in layout.cards.iter().enumerate() {
+        for (param, cell) in &card.cells {
+            let control = &view.cards[index].group.params[*param];
+            if fontelle_ui::canvas::is_nameplate_control(control) {
+                continue;
+            }
+            let span = cell_span(control) as f32;
+            assert!(
+                (cell.width - FLOP_CELL_W * span).abs() < 0.01
+                    && (cell.height - FLOP_CELL_H).abs() < 0.01,
+                "{}'s {} is {}x{} at the minimum size, not {}x{}",
+                view.cards[index].group.name,
+                control.label,
+                cell.width,
+                cell.height,
+                FLOP_CELL_W * span,
+                FLOP_CELL_H
+            );
+        }
+    }
+}
+
 #[test]
 fn a_full_page_in_a_small_window_shrinks_its_cells_rather_than_overflowing() {
     // §8.8: below the default size the cards lose their air, then their
     // pictures, and — this is the new step — then the controls shrink
     // together, down to a floor. A window at its minimum has every control on
     // it, smaller, rather than a page with its bottom band missing.
+    //
+    // The window refuses a size this small now (the test above says why);
+    // the layout asked anyway still answers with every control on the page.
     let view = synth_page();
-    let body = real_body(fontelle_ui::layout::FLOPSYNTH_MINIMUM);
+    let body = real_body((980, 620));
     let layout = assert_fits(body, &view);
     let cell = layout.cards[2].cells[1].1;
     assert!(

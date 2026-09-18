@@ -863,7 +863,7 @@ fn assert_page_fits(session: &fontelle_app::Session, page: fontelle_ui::canvas::
             );
         }
         assert!(
-            drawn >= 8,
+            drawn >= fontelle_ui::canvas::MATRIX_ROWS_LEAST,
             "{page:?}: only {drawn} of {} routes are drawn at the design size",
             view.routes.len()
         );

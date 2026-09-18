@@ -202,6 +202,9 @@ pub enum MatrixHit {
 
 /// How tall one matrix row is.
 pub const MATRIX_ROW: f32 = 22.0;
+/// The fewest rows the matrix shows before the cards above it give: the
+/// list scrolls for the rest, and a list three rows tall is still a list.
+pub const MATRIX_ROWS_LEAST: usize = 3;
 /// How tall the tab strip is.
 pub const TAB_HEIGHT: f32 = 22.0;
 /// The least and the most of the window the canopy takes.
@@ -630,7 +633,16 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
                 - body.y
         }
     };
-    let at_floor = cards_floor + extras;
+    // The least the page can be: the cards at their floor, the badges, and
+    // the matrix showing [`MATRIX_ROWS_LEAST`] rows — it scrolls for the
+    // rest.
+    let matrix_least = if matrix_wanted > 0.0 {
+        (CARD_HEADER + CARD_PAD * 2.0 + MATRIX_ROWS_LEAST as f32 * MATRIX_ROW + CARD_GAP)
+            .min(matrix_wanted)
+    } else {
+        0.0
+    };
+    let at_floor = cards_floor + badges_used + matrix_least;
     let canopy_height = (body.height - wanted - CARD_GAP)
         .clamp(CANOPY_MIN, CANOPY_MAX)
         .min((body.height - at_floor - CARD_GAP).max(0.0));
@@ -686,12 +698,23 @@ pub fn flopsynth_layout(body: Rect, metrics: &Metrics, view: &FlopsynthView) -> 
 
             // The matrix takes the room its rows need — a matrix with two
             // routes in it should not take a third of the window — up to
-            // what the cards at their floor leave it. It used to be capped
-            // at four tenths of the body whatever the cards needed, which on
-            // the Grand Piano's fourteen routes cut the last three off with
-            // the cards a hundred pixels short of their floor.
+            // what the cards **at their full size** leave it, and never less
+            // than [`MATRIX_ROWS_LEAST`] rows. It scrolls for the rest. It
+            // used to take four tenths of the body whatever the cards
+            // needed, and the cards shrank to their floor to make room: at
+            // the size the window opens at, ENV 3 and ENV 4's captions read
+            // "release a shaped shaper shape" (§1.4(8)). A card's captions
+            // cannot scroll; a list can.
             let wanted = matrix_wanted - CARD_GAP;
-            let height = wanted.min((body.height - cards_floor - CARD_GAP).max(0.0));
+            let natural = place(body, &view.cards, PICTURE_HEIGHT, 1.0)
+                .iter()
+                .map(|c| c.frame.bottom())
+                .fold(body.y, f32::max)
+                - body.y;
+            let least = (matrix_least - CARD_GAP).max(0.0);
+            let height = wanted
+                .min((body.height - natural - CARD_GAP).max(least))
+                .min(body.height);
             let matrix =
                 Rect::new(body.x, body.bottom() - height, body.width, height).intersection(&body);
             body = Rect::new(
