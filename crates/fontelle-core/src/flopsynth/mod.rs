@@ -481,11 +481,26 @@ pub fn destinations(patch: &Patch) -> Vec<(ModDest, String)> {
     for index in 0..patch.envelopes.len() {
         let Ok(i) = u8::try_from(index) else { continue };
         let name = index + 1;
-        // Stage 3 is decay and 4 is sustain, matching `ModDest`'s own
-        // numbering of the AHDSR stages.
+        // Stage 1 is attack, 3 decay, 4 sustain and 5 release, matching
+        // `ModDest`'s own numbering of the AHDSR stages — every stage
+        // `dest_address` maps, so a route the bank already makes (the Grand
+        // Piano keys its release) has a name in the window rather than a
+        // `Debug` print.
+        out.push((
+            ModDest::EnvelopeStageTime(i, 1),
+            format!("Env {name} attack time"),
+        ));
         out.push((
             ModDest::EnvelopeStageTime(i, 3),
             format!("Env {name} decay time"),
+        ));
+        out.push((
+            ModDest::EnvelopeStageLevel(i, 4),
+            format!("Env {name} sustain"),
+        ));
+        out.push((
+            ModDest::EnvelopeStageTime(i, 5),
+            format!("Env {name} release time"),
         ));
     }
     for index in 0..patch.lfos.len() {

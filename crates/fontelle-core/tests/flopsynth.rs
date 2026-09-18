@@ -556,6 +556,19 @@ fn a_control_that_nothing_can_modulate_has_no_destination() {
     assert!(has("patch/filter[0]/cutoff"));
     assert!(!has("patch/output"));
     assert!(!has("patch/voice/mode"));
+    // Every envelope stage `dest_address` maps is a destination the list
+    // offers, with a label: the Grand Piano keys its release time, and the
+    // window read that route as `EnvelopeStageTime(0, 5)` because only the
+    // decay was listed (`docs/flopsynth-next.md`, seen in Phase 0).
+    for stage in ["attack", "decay", "release", "sustain"] {
+        assert!(
+            has(&format!("patch/env[0]/{stage}")),
+            "{stage} is a destination"
+        );
+    }
+    let labels: Vec<&str> = destinations.iter().map(|(_, l)| l.as_str()).collect();
+    assert!(labels.contains(&"Env 1 release time"));
+    assert!(labels.contains(&"Env 1 sustain"));
 }
 
 /// A layer nobody can hear and nobody reads costs nothing to render.
