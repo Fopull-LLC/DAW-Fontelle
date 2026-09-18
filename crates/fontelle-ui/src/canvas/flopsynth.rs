@@ -1488,6 +1488,100 @@ pub fn flop_knob_rect(cell: Rect) -> Rect {
 
 // ------------------------------------------------------------- gestures ---
 
+/// The canopy's eyes (`docs/flopsynth-next.md` §3.2): where the
+/// oscilloscope, the spectrum and the voice lamps go inside the canopy,
+/// left to right, with the sky behind them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Eyes {
+    pub scope: Rect,
+    pub spectrum: Rect,
+    pub lamps: Rect,
+}
+
+/// The lamps: a grid of `LAMP_COLUMNS` across, at `LAMP_PITCH` apart.
+pub const LAMP_COLUMNS: usize = 8;
+pub const LAMP_PITCH: f32 = 11.0;
+const EYES_INSET: f32 = 14.0;
+const EYES_GAP: f32 = 12.0;
+
+/// Lays the eyes out in `canopy` at `scale`: the lamps' column at the
+/// right, then the scope with two fifths of the rest and the spectrum
+/// with three — the spectrum is the picture with the most in it.
+pub fn canopy_eyes(canopy: Rect, scale: f32) -> Eyes {
+    if canopy.is_empty() {
+        return Eyes {
+            scope: Rect::ZERO,
+            spectrum: Rect::ZERO,
+            lamps: Rect::ZERO,
+        };
+    }
+    let inset = EYES_INSET * scale;
+    let gap = EYES_GAP * scale;
+    let inner = canopy.inset(inset);
+    let lamps_w = (LAMP_COLUMNS as f32 * LAMP_PITCH * scale).min(inner.width / 3.0);
+    let lamps = Rect::new(inner.right() - lamps_w, inner.y, lamps_w, inner.height);
+    let room = (inner.width - lamps_w - gap * 2.0).max(0.0);
+    let scope = Rect::new(inner.x, inner.y, room * 0.4, inner.height);
+    let spectrum = Rect::new(scope.right() + gap, inner.y, room * 0.6, inner.height);
+    Eyes {
+        scope: scope.intersection(&canopy),
+        spectrum: spectrum.intersection(&canopy),
+        lamps: lamps.intersection(&canopy),
+    }
+}
+
+/// The spectrum's floor: sixty decibels down is nothing to see.
+pub const SPECTRUM_FLOOR_DB: f32 = -60.0;
+
+/// One bar per band across `rect`, standing on its floor, as tall as the
+/// band is above [`SPECTRUM_FLOOR_DB`]. The bands are already a log axis
+/// (`canvas::spectrum_band_hz`), so evenly across is the octaves evenly
+/// across.
+pub fn spectrum_bars(rect: Rect, bands_db: &[f32]) -> Vec<Rect> {
+    if rect.is_empty() || bands_db.is_empty() {
+        return Vec::new();
+    }
+    let width = rect.width / bands_db.len() as f32;
+    bands_db
+        .iter()
+        .enumerate()
+        .map(|(i, db)| {
+            let share = ((db - SPECTRUM_FLOOR_DB) / -SPECTRUM_FLOOR_DB).clamp(0.0, 1.0);
+            let height = rect.height * share;
+            Rect::new(
+                rect.x + i as f32 * width,
+                rect.bottom() - height,
+                (width - 1.0).max(0.5),
+                height,
+            )
+        })
+        .collect()
+}
+
+/// One dot per voice of `polyphony`, in rows of [`LAMP_COLUMNS`] from the
+/// top-left of `rect`; the renderer lights the first `sounding` of them.
+pub fn lamp_dots(rect: Rect, polyphony: usize, scale: f32) -> Vec<Rect> {
+    if rect.is_empty() {
+        return Vec::new();
+    }
+    let pitch = LAMP_PITCH * scale;
+    let size = (pitch * 0.55).max(2.0);
+    let rows = polyphony.div_ceil(LAMP_COLUMNS).max(1);
+    let top = rect.y + ((rect.height - rows as f32 * pitch) / 2.0).max(0.0);
+    (0..polyphony)
+        .map(|i| {
+            let (column, row) = (i % LAMP_COLUMNS, i / LAMP_COLUMNS);
+            Rect::new(
+                rect.x + column as f32 * pitch + (pitch - size) / 2.0,
+                top + row as f32 * pitch + (pitch - size) / 2.0,
+                size,
+                size,
+            )
+            .intersection(&rect)
+        })
+        .collect()
+}
+
 /// Where a cell's three parts go — the caption, the control, the read-out
 /// — for a control of `size` and `kind` in `cell`, at `scale`.
 ///

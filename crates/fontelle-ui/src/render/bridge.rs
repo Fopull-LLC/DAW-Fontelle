@@ -27,7 +27,7 @@
 //! without one, every surface here is procedural.
 
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Ellipse, Point, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Point, Stroke};
 use vello::peniko::{
     BlendMode, Blob, Brush, Extend, Fill, Gradient, ImageAlphaType, ImageBrush, ImageData,
     ImageFormat, ImageQuality, ImageSampler,
@@ -39,24 +39,33 @@ use super::{
 };
 use crate::layout::Rect;
 use crate::skin::Skin;
-use crate::sky::{PlanetSprite, ShootingStar, StarSprite};
+use crate::sky::{ShootingStar, StarSprite};
 use crate::text::Labels;
 use crate::theme::{Color, Theme};
 
 /// One frame of the sky, ready to draw: the shaded nebula as an image and
 /// the sprites over it. Built by the window from its [`crate::sky::SkyState`]
 /// once a frame; `None` in the chrome draws a still sky.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SkyFrame {
     /// The nebula, at a fraction of the canopy's size; scaled up bilinear.
     pub image: Option<ImageData>,
     pub stars: Vec<StarSprite>,
     pub shooting: Vec<ShootingStar>,
-    pub planets: Vec<PlanetSprite>,
     /// The waveform ribbon, one point per column.
     pub aurora: Vec<(f32, f32)>,
     /// How loud it is, 0..1: what the lamps and the aurora's glow follow.
     pub level: f32,
+    /// The eyes' own data (`docs/flopsynth-next.md` §3.2): the analyser's
+    /// bands in dBFS, low to high, and a stretch of the waveform, −1..=1,
+    /// oldest first — the instrument's sound, as `SkySound` carries it.
+    pub bands_db: Vec<f32>,
+    pub wave: Vec<f32>,
+    /// The filters' response curves, in dB per column across the log axis
+    /// the spectrum shares, to draw over the bars — each with its ink.
+    pub responses: Vec<(Vec<f32>, crate::theme::Color)>,
+    /// How many voices are sounding, of how many there could be.
+    pub voices: (usize, usize),
 }
 
 impl SkyFrame {
@@ -297,6 +306,8 @@ pub(super) fn draw_canopy(
     scene: &mut Scene,
     theme: &Theme,
     opening: Rect,
+    canopy: Rect,
+    scale: f32,
     sky: Option<&SkyFrame>,
     skin: Option<&Skin>,
 ) {
@@ -377,9 +388,6 @@ pub(super) fn draw_canopy(
     }
 
     if let Some(sky) = sky {
-        for planet in &sky.planets {
-            draw_planet(scene, theme, planet);
-        }
         for star in &sky.stars {
             let ink = mix(
                 lighten(p.accent, 0.6),
@@ -413,22 +421,20 @@ pub(super) fn draw_canopy(
             );
             fill_glow(scene, star.to, 6.0, ink, alpha / 2);
         }
-        // The aurora: the waveform as a ribbon of light, wide and faint under
-        // thin and bright, in the accent leaning to violet with the level.
+        // The aurora: the waveform as a ribbon of light across the whole
+        // opening, wide and faint, in the accent leaning to violet with the
+        // level — the sky's own weather, under the eyes.
         if sky.aurora.len() >= 2 {
             let ink = mix(p.accent, p.modulation, sky.level * 0.6);
-            let glow = (0x30 + (sky.level * 0x60 as f32) as u8).min(0xa0);
+            let glow = (0x20 + (sky.level * 0x40 as f32) as u8).min(0x70);
             stroke_polyline(scene, &sky.aurora, opening, 14.0, ink.with_alpha(glow / 3));
-            stroke_polyline(scene, &sky.aurora, opening, 5.0, ink.with_alpha(glow));
-            stroke_polyline(
-                scene,
-                &sky.aurora,
-                opening,
-                1.2,
-                lighten(ink, 0.5).with_alpha(0xd0),
-            );
+            stroke_polyline(scene, &sky.aurora, opening, 4.0, ink.with_alpha(glow));
         }
     }
+    // The eyes are there whether or not the sky is moving: a still window
+    // shows an empty scope, a silent spectrum and its lamps unlit.
+    let still = SkyFrame::default();
+    draw_eyes(scene, theme, canopy, sky.unwrap_or(&still), scale);
     // The windshield's own surface from the skin folder — scratches, grime,
     // a flare — stretched over the opening, alpha and all.
     if let Some(glass) = skin.and_then(|s| s.glass.as_ref()) {
@@ -514,68 +520,6 @@ pub(super) fn draw_canopy(
             None,
             &path,
         );
-    }
-}
-
-/// A planet: a disc lit from the upper left, a terminator into shadow, and a
-/// ring when it has one.
-fn draw_planet(scene: &mut Scene, theme: &Theme, planet: &PlanetSprite) {
-    let p = &theme.palette;
-    let ink = mix(p.accent, p.modulation, planet.ink);
-    let (cx, cy, r) = (planet.x as f64, planet.y as f64, planet.radius as f64);
-    if r < 1.0 {
-        return;
-    }
-    // The ring's far half, behind the disc.
-    if planet.ring > 0.0 {
-        let ring = Ellipse::new((cx, cy), (r * 1.9, r * 1.9 * f64::from(planet.ring)), 0.0);
-        scene.stroke(
-            &Stroke::new(r * 0.16),
-            Affine::IDENTITY,
-            lighten(ink, 0.3).with_alpha(0x70).to_peniko(),
-            None,
-            &ring,
-        );
-    }
-    fill_glow(
-        scene,
-        (planet.x, planet.y),
-        planet.radius * 1.8,
-        ink,
-        (0x28 as f32 * (0.5 + planet.lit)) as u8,
-    );
-    let day = Gradient::new_radial(Point::new(cx - r * 0.45, cy - r * 0.45), (r * 1.5) as f32)
-        .with_stops([
-            (0.0, lighten(ink, 0.55 * planet.lit + 0.1).to_peniko()),
-            (0.55, ink.to_peniko()),
-            (1.0, darken(ink, 0.75).to_peniko()),
-        ]);
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        &Brush::Gradient(day),
-        None,
-        &Circle::new((cx, cy), r),
-    );
-    // The ring's near half, over the disc: clipped to the lower half.
-    if planet.ring > 0.0 {
-        let clip = vello::kurbo::Rect::new(cx - r * 2.2, cy, cx + r * 2.2, cy + r * 2.2);
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            Affine::IDENTITY,
-            &clip,
-        );
-        let ring = Ellipse::new((cx, cy), (r * 1.9, r * 1.9 * f64::from(planet.ring)), 0.0);
-        scene.stroke(
-            &Stroke::new(r * 0.16),
-            Affine::IDENTITY,
-            lighten(ink, 0.4).with_alpha(0xa0).to_peniko(),
-            None,
-            &ring,
-        );
-        scene.pop_layer();
     }
 }
 
@@ -875,5 +819,97 @@ pub(super) fn draw_knob_ticks(scene: &mut Scene, theme: &Theme, centre: (f32, f3
             None,
             &path,
         );
+    }
+}
+
+/// The instrument's eyes (§3.2), on the sky: the oscilloscope, the
+/// spectrum with the filters' responses over it, and a lamp per voice.
+/// Each on its own dark screen so the picture reads against whatever the
+/// sky is doing behind it.
+fn draw_eyes(scene: &mut Scene, theme: &Theme, canopy: Rect, sky: &SkyFrame, scale: f32) {
+    use crate::canvas::{
+        canopy_eyes, lamp_dots, response_curve_points, spectrum_bars, wave_curve_points,
+    };
+    let p = &theme.palette;
+    let eyes = canopy_eyes(canopy, scale);
+    let screen = |scene: &mut Scene, rect: Rect| {
+        if rect.is_empty() {
+            return;
+        }
+        fill_rect_rounded(scene, rect, 3.0, darken(p.window, 0.4).with_alpha(0xb0));
+        stroke_rect_rounded(scene, rect, 3.0, 1.0, p.border.with_alpha(0x90));
+    };
+
+    // The scope: the waveform, a centre line under it.
+    screen(scene, eyes.scope);
+    if !eyes.scope.is_empty() {
+        let inner = eyes.scope.inset(4.0 * scale);
+        fill_rect(
+            scene,
+            Rect::new(
+                inner.x,
+                inner.y + inner.height / 2.0 - 0.5,
+                inner.width,
+                1.0,
+            ),
+            p.border.with_alpha(0x80),
+        );
+        if sky.wave.len() >= 2 {
+            let points = wave_curve_points(inner, &sky.wave);
+            let ink = mix(p.accent, p.modulation, sky.level * 0.4);
+            stroke_polyline(scene, &points, inner, 4.0 * scale, ink.with_alpha(0x50));
+            stroke_polyline(scene, &points, inner, 1.3 * scale, lighten(ink, 0.5));
+        }
+    }
+
+    // The spectrum: a bar per band on a log axis, the filters' responses
+    // over them in their inks, so the curve and what it does are one picture.
+    screen(scene, eyes.spectrum);
+    if !eyes.spectrum.is_empty() {
+        let inner = eyes.spectrum.inset(4.0 * scale);
+        for bar in spectrum_bars(inner, &sky.bands_db) {
+            if bar.height > 0.0 {
+                fill_rect_vertical(
+                    scene,
+                    bar,
+                    0.0,
+                    lighten(p.accent, 0.4),
+                    p.accent.with_alpha(0x70),
+                );
+            }
+        }
+        for (db, ink) in &sky.responses {
+            let points = response_curve_points(inner, db);
+            stroke_polyline(scene, &points, inner, 1.5 * scale, ink.with_alpha(0xd0));
+        }
+    }
+
+    // The lamps: one per voice of the polyphony, the sounding ones lit —
+    // the "n voices" read-out made visible.
+    screen(scene, eyes.lamps);
+    if !eyes.lamps.is_empty() {
+        let (sounding, polyphony) = sky.voices;
+        let lit = lighten(mix(p.accent, p.modulation, sky.level * 0.5), 0.3);
+        for (index, dot) in lamp_dots(eyes.lamps.inset(4.0 * scale), polyphony, scale)
+            .into_iter()
+            .enumerate()
+        {
+            let on = index < sounding;
+            if on {
+                fill_glow(
+                    scene,
+                    (dot.x + dot.width / 2.0, dot.y + dot.height / 2.0),
+                    dot.width * 2.5,
+                    lit,
+                    0x60,
+                );
+            }
+            fill_rect_rounded(
+                scene,
+                dot,
+                dot.width / 2.0,
+                if on { lit } else { p.border.with_alpha(0x70) },
+            );
+        }
     }
 }

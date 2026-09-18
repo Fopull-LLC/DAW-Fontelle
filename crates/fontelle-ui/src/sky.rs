@@ -50,6 +50,12 @@ pub struct SkySound {
     pub wave: Vec<f32>,
 }
 
+/// The most the nebula is shaded at (`docs/flopsynth-next.md` §3.2): a
+/// quarter of the canopy's size, capped here so a wider window is not a
+/// dearer sky. The renderer scales it up bilinear; `tests/sky.rs` holds a
+/// frame at this size to a few milliseconds.
+pub const SKY_IMAGE_MAX: (u32, u32) = (240, 60);
+
 /// The colours the sky is shaded in, from the theme.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkyPalette {
@@ -115,20 +121,6 @@ pub struct ShootingStar {
     pub to: (f32, f32),
     /// 1 when thrown, fading to 0.
     pub life: f32,
-}
-
-/// A planet: a soft disc with a ring, drifting.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PlanetSprite {
-    pub x: f32,
-    pub y: f32,
-    pub radius: f32,
-    /// Its ring's tilt, as the ratio of the ring's height to its width.
-    pub ring: f32,
-    /// How lit its day side is, 0..1.
-    pub lit: f32,
-    /// Which cloud ink it is coloured in, 0..1 between the two.
-    pub ink: f32,
 }
 
 /// How many bands the sky averages its groups over. The analyser's ninety-six
@@ -502,30 +494,6 @@ impl SkyState {
                 }
             })
             .collect()
-    }
-
-    /// The planets, drifting through `rect`.
-    pub fn planets(&self, rect: Rect) -> Vec<PlanetSprite> {
-        if rect.is_empty() {
-            return Vec::new();
-        }
-        let t = self.time;
-        let bass = self.groups[0];
-        [
-            (0.82, 0.62, 0.11, 0.35, 0.0, 0.0),
-            (0.16, 0.30, 0.06, 0.0, 1.0, 2.1),
-            (0.55, 0.18, 0.035, 0.22, 0.5, 4.2),
-        ]
-        .iter()
-        .map(|(x, y, r, ring, ink, phase)| PlanetSprite {
-            x: rect.x + rect.width * (x + 0.02 * (t * 0.07 + phase).sin()),
-            y: rect.y + rect.height * (y + 0.03 * (t * 0.05 + phase).cos()),
-            radius: rect.height * r * (1.0 + bass * 0.08),
-            ring: *ring,
-            lit: 0.45 + self.level * 0.5,
-            ink: *ink,
-        })
-        .collect()
     }
 
     /// The aurora: the waveform as a ribbon across the lower half of

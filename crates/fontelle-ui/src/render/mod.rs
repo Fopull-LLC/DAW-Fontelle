@@ -8656,7 +8656,15 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
         (l.canopy.bottom() - ground.y - 2.0).max(0.0),
     );
     bridge::draw_hull(scene, theme, ground, opening.bottom() + 4.0, chrome.skin);
-    bridge::draw_canopy(scene, theme, opening, chrome.sky, chrome.skin);
+    bridge::draw_canopy(
+        scene,
+        theme,
+        opening,
+        l.canopy,
+        chrome.view.scale,
+        chrome.sky,
+        chrome.skin,
+    );
     draw_flopsynth_chrome(scene, theme, labels, chrome);
     if chrome.view.page == crate::canvas::FlopsynthPage::Presets {
         draw_flop_presets(scene, theme, labels, chrome);
@@ -8913,7 +8921,7 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
 /// ramps (§8.1 rule 2), so a route's source badge and its oscillator share a
 /// colour without a new token; the filters the accent; everything that
 /// *moves* something the modulation violet.
-fn card_ink(name: &str, p: &crate::theme::Palette) -> Color {
+pub fn card_ink(name: &str, p: &crate::theme::Palette) -> Color {
     match name {
         "OSC A" => p.accent,
         "OSC B" => p.playhead,

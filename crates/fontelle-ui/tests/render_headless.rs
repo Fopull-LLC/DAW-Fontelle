@@ -3286,12 +3286,26 @@ fn shoot_flopsynth() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLa
     shoot_flopsynth_in(Theme::dark_default(), "flopsynth")
 }
 
+fn shoot_flopsynth_sky(
+    sky: Option<fontelle_ui::render::SkyFrame>,
+) -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLayout, u32)> {
+    shoot_flopsynth_full(Theme::dark_default(), "flopsynth-sky", sky)
+}
+
 /// [`shoot_flopsynth`] in a theme of the caller's choosing. The theme handed
 /// back is the one the **window was painted in**, which for this window is
 /// its own (`Theme::for_bridge`) whatever the studio's.
 fn shoot_flopsynth_in(
     theme: Theme,
     name: &str,
+) -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLayout, u32)> {
+    shoot_flopsynth_full(theme, name, None)
+}
+
+fn shoot_flopsynth_full(
+    theme: Theme,
+    name: &str,
+    sky: Option<fontelle_ui::render::SkyFrame>,
 ) -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLayout, u32)> {
     use fontelle_types::ParamAddress;
     use fontelle_ui::canvas::{
@@ -3444,7 +3458,7 @@ fn shoot_flopsynth_in(
             hover_at: (f32::MIN, f32::MIN),
             tooltip: None,
             searching: false,
-            sky: None,
+            sky: sky.as_ref(),
             skin: None,
         }),
         Some(&preset),
@@ -3488,6 +3502,84 @@ fn contrast_in(pixels: &[u8], width: u32, rect: fontelle_ui::layout::Rect) -> f3
         }
     }
     (hi + 0.05) / (lo + 0.05)
+}
+
+/// §3.2, Ty's decision §9.1: the canopy is the instrument's eyes. Shot with
+/// a synthetic analyser frame — a sine in the scope, one loud band in the
+/// spectrum, three of eight voices sounding — and read back by pixel: the
+/// scope has ink where the wave is and none on its empty line, the loud
+/// band's column has ink and a silent one none, and the lamps are lit
+/// where the voices are.
+#[test]
+fn the_canopy_draws_the_scope_the_spectrum_and_the_lamps() {
+    use fontelle_ui::canvas::{canopy_eyes, lamp_dots, spectrum_bars};
+    let Some((pixels, _theme, l, width)) = shoot_flopsynth_with_sky() else {
+        return;
+    };
+    let at = |x: u32, y: u32| {
+        let i = ((y * width + x) * 4) as usize;
+        Color::rgb(pixels[i], pixels[i + 1], pixels[i + 2])
+    };
+    let eyes = canopy_eyes(l.canopy, 1.0);
+    let bright = |c: Color| luminance(c) > 0.08;
+    // The scope: the wave is a full-scale sine, so a column a quarter of
+    // the way across has ink near the top of the screen.
+    let inner = eyes.scope.inset(4.0);
+    let x = (inner.x + inner.width * 0.25) as u32;
+    let lit = (inner.y as u32..inner.bottom() as u32)
+        .filter(|y| bright(at(x, *y)))
+        .count();
+    assert!(lit >= 2, "no wave in the scope at column {x}");
+    // The spectrum: band 20 is loud, band 80 silent.
+    let sinner = eyes.spectrum.inset(4.0);
+    let bars = spectrum_bars(sinner, &synthetic_bands());
+    let loud = bars[20];
+    let quiet = bars[80];
+    let y = (loud.y + loud.height / 2.0) as u32;
+    assert!(
+        bright(at((loud.x + loud.width / 2.0) as u32, y)),
+        "the loud band draws no bar"
+    );
+    let y = (sinner.bottom() - 6.0) as u32;
+    assert!(
+        !bright(at((quiet.x + quiet.width / 2.0) as u32, y)),
+        "a silent band draws a bar"
+    );
+    // The lamps: three of eight lit.
+    let dots = lamp_dots(eyes.lamps.inset(4.0), 8, 1.0);
+    let centre = |d: fontelle_ui::layout::Rect| {
+        ((d.x + d.width / 2.0) as u32, (d.y + d.height / 2.0) as u32)
+    };
+    let (x, y) = centre(dots[0]);
+    assert!(bright(at(x, y)), "the first lamp is out");
+    let (x, y) = centre(dots[7]);
+    assert!(
+        !bright(at(x, y)),
+        "the last lamp is lit with three voices sounding"
+    );
+}
+
+fn synthetic_bands() -> Vec<f32> {
+    (0..96)
+        .map(|i| match i {
+            18..=22 => -6.0,
+            _ => -90.0,
+        })
+        .collect()
+}
+
+/// [`shoot_flopsynth`] with a sky frame carrying a synthetic sound.
+fn shoot_flopsynth_with_sky() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::FlopsynthLayout, u32)>
+{
+    shoot_flopsynth_sky(Some(fontelle_ui::render::SkyFrame {
+        wave: (0..256)
+            .map(|i| (i as f32 / 256.0 * std::f32::consts::TAU * 2.0).sin())
+            .collect(),
+        bands_db: synthetic_bands(),
+        voices: (3, 8),
+        level: 0.8,
+        ..Default::default()
+    }))
 }
 
 /// `docs/flopsynth-next.md` §1.4(4), Ty's decision §9.2(a): Flopsynth's

@@ -1097,6 +1097,10 @@ pub struct WindowApp {
     /// This frame of it, drawn — built in `draw_editor` from the state and
     /// the canopy's size, so the picture and the layout agree.
     sky_frame: Option<crate::render::SkyFrame>,
+    /// The nebula as last shaded, handed out again while the sky is still.
+    sky_image: Option<vello::peniko::ImageData>,
+    /// The instrument's sound as last heard — the eyes draw from it.
+    last_sound: crate::sky::SkySound,
     /// Textures for the bridge, read once from the skin folder (`skin.rs`).
     skin: crate::skin::Skin,
     /// A source badge being carried to a knob (§8.4): which source, and where
@@ -1753,6 +1757,8 @@ impl WindowApp {
             flop_searching: false,
             sky: crate::sky::SkyState::new(0x5eed),
             sky_frame: None,
+            sky_image: None,
+            last_sound: Default::default(),
             skin: crate::skin::Skin::find(),
             flop_assign: None,
             flop_slot: None,
@@ -2720,6 +2726,7 @@ impl WindowApp {
                 .and_then(|doc| doc.instrument_sound())
                 .unwrap_or_default();
             self.sky.tick(&sound, dt);
+            self.last_sound = sound;
             // And the voice count, which the view was built with and which
             // moves between revisions: a note let go should read as silence
             // without waiting for the next edit.
@@ -5016,7 +5023,8 @@ impl WindowApp {
             // channel that is one has both views, and the picture of the
             // signal path is the one worth showing.
             EditorKind::Instrument if self.flopsynth.is_some() => {
-                self.sky_frame = Some(self.sky_frame_for(self.flopsynth_layout.canopy));
+                let canopy = self.flopsynth_layout.canopy;
+                self.sky_frame = Some(self.sky_frame_for(canopy));
                 let Some(view) = self.flopsynth.as_ref() else {
                     return;
                 };
@@ -10753,7 +10761,7 @@ impl WindowApp {
     /// by the renderer; the sprites are placed in the canopy's own pixels.
     /// The sky's picture is the whole opening, from the top of the window
     /// to the canopy's foot, which is what `draw_flopsynth` clips it to.
-    fn sky_frame_for(&self, canopy: crate::layout::Rect) -> crate::render::SkyFrame {
+    fn sky_frame_for(&mut self, canopy: crate::layout::Rect) -> crate::render::SkyFrame {
         let margin = self.options.theme.metrics.panel_margin;
         let above = crate::canvas::TAB_HEIGHT + crate::canvas::CARD_GAP;
         let opening = crate::layout::Rect::new(
@@ -10765,20 +10773,71 @@ impl WindowApp {
         // The bridge's own palette, dark under both themes (`Theme::for_bridge`):
         // the sky is shaded here, before the renderer sees a theme at all.
         let palette = crate::sky::SkyPalette::for_theme(&self.options.theme.for_bridge().palette);
-        let width = (opening.width / 4.0).ceil().max(1.0) as u32;
-        let height = (opening.height / 4.0).ceil().max(1.0) as u32;
+        // A quarter of the opening, capped (§3.2): a wider window is not a
+        // dearer sky. `tests/sky.rs` holds a frame at the cap to a few
+        // milliseconds.
+        let (max_w, max_h) = crate::sky::SKY_IMAGE_MAX;
+        let width = ((opening.width / 4.0).ceil().max(1.0) as u32).min(max_w);
+        let height = ((opening.height / 4.0).ceil().max(1.0) as u32).min(max_h);
+        // And shaded only while the sky is moving: a quiet sky is the frame
+        // it was, handed out again.
         let image = if opening.is_empty() {
             None
+        } else if self.sky.is_alive() || self.sky_image.is_none() {
+            let image =
+                crate::render::SkyFrame::image_of(&self.sky.render(width, height, &palette));
+            self.sky_image = image.clone();
+            image
         } else {
-            crate::render::SkyFrame::image_of(&self.sky.render(width, height, &palette))
+            self.sky_image.clone()
         };
+        // The filters' responses, in their inks, for the spectrum to wear.
+        let responses = self
+            .flopsynth
+            .as_ref()
+            .map(|view| {
+                view.cards
+                    .iter()
+                    .filter(|card| card.group.name.starts_with("Filter"))
+                    .filter_map(|card| match &card.picture {
+                        crate::canvas::FlopsynthPicture::Response { points, .. } => Some((
+                            points.clone(),
+                            crate::render::card_ink(
+                                &card.group.name,
+                                &self.options.theme.for_bridge().palette,
+                            ),
+                        )),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let polyphony = self
+            .flopsynth
+            .as_ref()
+            .and_then(|view| {
+                view.cards.iter().find_map(|card| {
+                    card.group
+                        .params
+                        .iter()
+                        .find(|param| param.address.as_str() == "patch/voice/polyphony")
+                        .and_then(|param| param.display.trim().parse::<usize>().ok())
+                })
+            })
+            .unwrap_or(32);
         crate::render::SkyFrame {
             image,
             stars: self.sky.stars(opening),
             shooting: self.sky.shooting(opening),
-            planets: self.sky.planets(opening),
             aurora: self.sky.aurora(opening),
             level: self.sky.level(),
+            bands_db: self.last_sound.bands_db.clone(),
+            wave: self.last_sound.wave.clone(),
+            responses,
+            voices: (
+                self.flopsynth.as_ref().map_or(0, |view| view.voices),
+                polyphony.clamp(1, 64),
+            ),
         }
     }
 

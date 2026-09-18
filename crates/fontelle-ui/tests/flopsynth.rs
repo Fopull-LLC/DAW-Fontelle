@@ -2187,3 +2187,74 @@ fn the_kind_chooser_sits_on_the_nameplate() {
         })
     );
 }
+
+// ------------------------------------------------------- the canopy's eyes
+//
+// `docs/flopsynth-next.md` §3.2, Ty's decision §9.1: the canopy is the
+// instrument's eyes — the oscilloscope, the spectrum with the filters'
+// responses over it, the voice lamps — with the sky behind and the planets
+// gone. The geometry is pure; the renderer draws into it.
+
+#[test]
+fn the_canopy_holds_a_scope_a_spectrum_and_the_lamps_left_to_right() {
+    use fontelle_ui::canvas::{canopy_eyes, lamp_dots, spectrum_bars};
+    let canopy = Rect::new(8.0, 64.0, 1164.0, 120.0);
+    let eyes = canopy_eyes(canopy, 1.0);
+    for (name, rect) in [
+        ("scope", eyes.scope),
+        ("spectrum", eyes.spectrum),
+        ("lamps", eyes.lamps),
+    ] {
+        assert!(!rect.is_empty(), "{name} has no room");
+        assert!(
+            rect.x >= canopy.x
+                && rect.right() <= canopy.right() + 0.01
+                && rect.y >= canopy.y
+                && rect.bottom() <= canopy.bottom() + 0.01,
+            "{name} is outside the canopy: {rect:?}"
+        );
+    }
+    assert!(eyes.scope.right() <= eyes.spectrum.x && eyes.spectrum.right() <= eyes.lamps.x);
+    assert!(
+        eyes.spectrum.width > eyes.scope.width * 0.8,
+        "the spectrum is the wide one"
+    );
+    // Scaled, the same picture at the scale.
+    let big = canopy_eyes(Rect::new(8.0, 64.0, 1746.0, 180.0), 1.5);
+    assert!((big.lamps.width - eyes.lamps.width * 1.5).abs() < 0.5);
+
+    // The spectrum: one bar per band, across the width, taller the louder,
+    // nothing at the floor.
+    let bands: Vec<f32> = (0..96)
+        .map(|i| {
+            if i == 10 {
+                -6.0
+            } else if i == 50 {
+                -30.0
+            } else {
+                -90.0
+            }
+        })
+        .collect();
+    let bars = spectrum_bars(eyes.spectrum, &bands);
+    assert_eq!(bars.len(), 96);
+    assert!(bars[10].height > bars[50].height && bars[50].height > 0.0);
+    assert!(bars[0].height < 0.01, "sixty decibels down is the floor");
+    assert!(
+        (bars[10].bottom() - eyes.spectrum.bottom()).abs() < 0.01,
+        "bars stand on the floor"
+    );
+    assert!(bars[95].right() <= eyes.spectrum.right() + 0.01);
+    assert!(bars[1].x >= bars[0].right() - 0.01, "left to right");
+
+    // The lamps: one per voice of the polyphony, the first `sounding` lit.
+    let dots = lamp_dots(eyes.lamps, 32, 1.0);
+    assert_eq!(dots.len(), 32);
+    assert!(
+        dots.iter()
+            .all(|d| eyes.lamps.contains(d.x + 0.5, d.y + 0.5))
+    );
+    assert!(dots[1].x > dots[0].x, "along a row");
+    let taller = lamp_dots(eyes.lamps, 8, 1.0);
+    assert_eq!(taller.len(), 8);
+}

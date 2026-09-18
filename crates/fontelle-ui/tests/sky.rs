@@ -233,3 +233,33 @@ fn the_sky_says_when_it_is_alive() {
     }
     assert!(!sky.is_alive());
 }
+
+/// §3.2's cost cap: the nebula is shaded on the CPU at the size the
+/// window caps it to (`SKY_IMAGE_MAX`), and a frame of it has to be cheap
+/// enough to give every frame while the instrument sounds — a few
+/// milliseconds on this machine, asserted loosely so a loaded machine does
+/// not fail the build over a scheduling hiccup.
+#[test]
+fn a_frame_of_the_nebula_at_its_cap_is_cheap() {
+    use fontelle_ui::sky::{SKY_IMAGE_MAX, SkyPalette, SkySound, SkyState};
+    let mut sky = SkyState::new(7);
+    let sound = SkySound {
+        bands_db: vec![-12.0; 96],
+        wave: vec![0.0; 256],
+    };
+    sky.tick(&sound, 0.016);
+    let palette = SkyPalette::for_theme(&fontelle_ui::theme::Theme::dark_default().palette);
+    let (w, h) = SKY_IMAGE_MAX;
+    // Warm once, then time five.
+    let _ = sky.render(w, h, &palette);
+    let started = std::time::Instant::now();
+    for _ in 0..5 {
+        let image = sky.render(w, h, &palette);
+        assert_eq!(image.width, w);
+    }
+    let each = started.elapsed() / 5;
+    assert!(
+        each < std::time::Duration::from_millis(12),
+        "a {w}×{h} frame of sky took {each:?}"
+    );
+}
