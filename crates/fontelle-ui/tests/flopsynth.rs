@@ -18,20 +18,22 @@
 //! drawing has nothing left to get wrong but colours (§8.1 rule 10).
 
 use fontelle_ui::canvas::{
-    ADD_EFFECT, CANOPY_MAX, CANOPY_MIN, CARD_GAP, CARD_HEADER, CELL_FLOOR, EnvNode, FLOP_CELL_H,
+    ADD_EFFECT, CANOPY_HEIGHT, CARD_GAP, CARD_HEADER, EnvNode, FLOP_CELL_H, FLOP_CELL_HALF,
     FLOP_CELL_W, FlopsynthCard, FlopsynthHit, FlopsynthPage, FlopsynthPicture, FlopsynthRoute,
-    FlopsynthView, InstrumentGroup, InstrumentParam, MatrixHit, ParamKind, PresetBrowse,
-    PresetChoice, PresetShelf, PresetsHit, RING_GAP, badge_at, cell_span, env_curve_points,
-    env_node_at, env_node_drag, filter_xy_at, flop_knob_rect, flopsynth_hit, flopsynth_layout,
+    FlopsynthView, InstrumentGroup, InstrumentParam, KnobSize, MatrixHit, ParamKind, PresetBrowse,
+    PresetChoice, PresetShelf, PresetsHit, RING_GAP, SCALES, badge_at, cell_anatomy, cell_span,
+    env_curve_points, env_node_at, env_node_drag, filter_xy_at, flopsynth_hit, flopsynth_layout,
     flopsynth_tab_at, lfo_curve_points, matrix_depth_at, matrix_hit, preset_page_rows,
     preset_shelves, presets_hit, ring_depth, ring_hit, wave_position_at,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
 
-/// The window §8.8 sizes Flopsynth at, minus the chrome around the panel.
-const BODY: Rect = Rect::new(0.0, 0.0, 1180.0, 700.0);
-/// And the smallest it is allowed to get.
+/// A body the fixtures fit: the design width, and the design height's
+/// worth of room for three one-row bands under the canopy.
+const BODY: Rect = Rect::new(0.0, 0.0, 1180.0, 840.0);
+/// And one smaller than the page — which the window refuses to be, and the
+/// layout still answers for.
 const SMALL: Rect = Rect::new(0.0, 0.0, 980.0, 580.0);
 
 fn knob(address: &str, label: &str, value: f32) -> InstrumentParam {
@@ -70,6 +72,7 @@ fn a_view() -> FlopsynthView {
                 aside: false,
                 columns: 0,
                 removable: false,
+                sizes: Vec::new(),
                 picture: FlopsynthPicture::Wave {
                     points: (0..128).map(|i| (i as f32 / 128.0).sin()).collect(),
                     position: 0.3,
@@ -82,6 +85,7 @@ fn a_view() -> FlopsynthView {
                 aside: false,
                 columns: 0,
                 removable: false,
+                sizes: Vec::new(),
                 picture: FlopsynthPicture::Wave {
                     points: vec![0.0; 128],
                     position: 0.0,
@@ -94,6 +98,7 @@ fn a_view() -> FlopsynthView {
                 aside: false,
                 columns: 0,
                 removable: false,
+                sizes: Vec::new(),
                 picture: FlopsynthPicture::None,
             },
             FlopsynthCard {
@@ -109,6 +114,7 @@ fn a_view() -> FlopsynthView {
                 aside: false,
                 columns: 0,
                 removable: false,
+                sizes: Vec::new(),
                 picture: FlopsynthPicture::Response {
                     points: vec![0.0; 96],
                     cutoff: 0.8,
@@ -130,6 +136,7 @@ fn a_view() -> FlopsynthView {
                 aside: false,
                 columns: 0,
                 removable: false,
+                sizes: Vec::new(),
                 picture: FlopsynthPicture::Envelope {
                     attack: 0.1,
                     decay: 0.3,
@@ -147,6 +154,7 @@ fn a_view() -> FlopsynthView {
                 aside: false,
                 columns: 0,
                 removable: false,
+                sizes: Vec::new(),
                 picture: FlopsynthPicture::Lfo {
                     points: vec![0.0; 64],
                     phase: 0.25,
@@ -409,31 +417,22 @@ fn the_lfo_cycle_is_drawn_from_the_shape_it_plays() {
 /// The window does not scroll (§8.1 rule 7): what does not fit is on another
 /// page. So a body too small for the cards has to *shrink them* rather than
 /// run off the bottom.
+/// Nothing shrinks (§3.1). The shrink cascade of v0.9.0 — air, then the
+/// pictures, then every cell to a floor — is gone: a body too small for the
+/// page is a window the layout's caller refuses to open, and a layout asked
+/// for one anyway keeps every cell and picture at its scale, running off
+/// the bottom rather than lying about the knobs.
 #[test]
-fn a_small_body_loses_air_and_then_picture_rather_than_overflowing() {
+fn a_small_body_does_not_shrink_the_cells_or_the_pictures() {
     let view = a_view();
     let big = flopsynth_layout(BODY, &metrics(), &view);
     let small = flopsynth_layout(SMALL, &metrics(), &view);
-    let bottom = |l: &fontelle_ui::canvas::FlopsynthLayout| {
-        l.cards.iter().map(|c| c.frame.bottom()).fold(0.0, f32::max)
-    };
-    assert!(
-        bottom(&small) <= SMALL.bottom() + 0.01,
-        "the cards run off the bottom at the minimum size: {} past {}",
-        bottom(&small),
-        SMALL.bottom()
-    );
-    // Air first, then the pictures — the controls keep their size longest.
+    let cell = |l: &fontelle_ui::canvas::FlopsynthLayout| l.cards[0].cells[0].1;
+    assert!((cell(&small).height - cell(&big).height).abs() < 0.01);
+    assert!((cell(&small).width - cell(&big).width).abs() < 0.01);
     let picture = |l: &fontelle_ui::canvas::FlopsynthLayout| l.cards[0].picture.height;
-    assert!(
-        picture(&small) <= picture(&big),
-        "the picture shrinks before the controls do"
-    );
-    let cell = |l: &fontelle_ui::canvas::FlopsynthLayout| l.cards[0].cells[0].1.height;
-    assert!(
-        (cell(&small) - cell(&big)).abs() < 0.01,
-        "a control's cell is the same size at both, so the knobs stay usable"
-    );
+    assert!((picture(&small) - picture(&big)).abs() < 0.01);
+    assert!((small.canopy.height - big.canopy.height).abs() < 0.01);
 }
 
 #[test]
@@ -553,14 +552,14 @@ fn the_ring_is_outside_the_knob_and_not_inside_it() {
     // *turned*: the depth and the value are two controls in one place, and
     // the one you get is the one you aimed at.
     let cell = Rect::new(0.0, 0.0, FLOP_CELL_W, FLOP_CELL_H);
-    let knob = flop_knob_rect(cell);
+    let knob = cell_anatomy(cell, KnobSize::Medium, &ParamKind::Knob, 1.0).control;
     let middle = (knob.x + knob.width / 2.0, knob.y + knob.height / 2.0);
-    assert!(!ring_hit(cell, middle.0, middle.1), "the middle turns it");
+    assert!(!ring_hit(knob, middle.0, middle.1), "the middle turns it");
     // Just outside the groove, level with the spindle.
     let outside = middle.0 + knob.width / 2.0 + RING_GAP;
-    assert!(ring_hit(cell, outside, middle.1), "the ring is a band");
+    assert!(ring_hit(knob, outside, middle.1), "the ring is a band");
     // And well outside it is the cell's own air, which is nothing.
-    assert!(!ring_hit(cell, cell.right() + 20.0, middle.1));
+    assert!(!ring_hit(knob, cell.right() + 20.0, middle.1));
 }
 
 #[test]
@@ -734,6 +733,9 @@ fn every_route_gets_a_row_with_something_to_press() {
 fn a_matrix_with_more_rows_than_room_scrolls_rather_than_running_off() {
     let theme = Theme::dark_default();
     let mut view = a_view_on(FlopsynthPage::Modulation);
+    // One card over the matrix, so the page has room for a good many rows
+    // and not for forty.
+    view.cards.truncate(1);
     view.routes = (0..40)
         .map(|i| FlopsynthRoute {
             source: format!("LFO {}", i % 4 + 1),
@@ -958,7 +960,23 @@ fn card(
         aside,
         columns,
         removable: name.starts_with("FX "),
+        sizes: Vec::new(),
     }
+}
+
+/// `card`, with a knob size per control: `L`, `M` or `S` for each, in
+/// order — the way the host declares them (§3.1).
+fn sized(mut card: FlopsynthCard, sizes: &str) -> FlopsynthCard {
+    card.sizes = sizes
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| match c {
+            'L' => KnobSize::Large,
+            'S' => KnobSize::Small,
+            _ => KnobSize::Medium,
+        })
+        .collect();
+    card
 }
 
 /// An oscillator's seventeen controls, with the table chooser first — whose
@@ -1028,9 +1046,12 @@ fn env_params(index: usize) -> Vec<InstrumentParam> {
 /// the channel and the voice first because that is where the parameter list
 /// starts. The bands say where they go; the order they are listed in does not.
 ///
-/// Three bands: the sources; the filters with the channel's own two knobs at
-/// the end of the row, which is where the sound goes out; and the two
-/// envelopes with the voice and the macros beside them.
+/// Two bands since Ty's call of 2026-09-18 (`docs/flopsynth-next.md` §3.5,
+/// with the envelopes off the page): the sources, with the sub and the
+/// noise set aside; and the filters with the channel's two knobs, the voice
+/// and the macros. The envelopes live in the strip's inspector. Sizes as
+/// §3.5 lists them: one Large knob per card, the continuous ones Medium,
+/// the fine adjustments Small.
 fn synth_page() -> FlopsynthView {
     let wave = || FlopsynthPicture::Wave {
         points: vec![0.0; 128],
@@ -1041,83 +1062,81 @@ fn synth_page() -> FlopsynthView {
         cutoff: 0.5,
         resonance: 0.2,
     };
-    let envelope = || FlopsynthPicture::Envelope {
-        attack: 0.1,
-        decay: 0.3,
-        sustain: 0.8,
-        release: 0.4,
-    };
+    // table pos level pan warp amount modfrom unison detune blend width
+    // phase random semis fine key route
+    const OSC: &str = "M L M S M M M M M S S S M S S M M";
+    // on model shape slope cutoff res drive keytrk character
+    const FILTER: &str = "M M M M L M M S S";
     FlopsynthView {
         title: "Init".to_string(),
         cards: vec![
-            card(
-                "Channel",
-                1,
-                false,
-                2,
-                FlopsynthPicture::None,
-                vec![
-                    knob("mixer/gain", "volume", 0.8),
-                    knob("mixer/pan", "pan", 0.5),
-                ],
+            // The channel's own two knobs ride on the Voice card: the aside
+            // column stands beside both bands, and five cards did not fit
+            // the room it leaves.
+            sized(
+                card(
+                    "Voice",
+                    1,
+                    false,
+                    3,
+                    FlopsynthPicture::None,
+                    vec![
+                        chooser("patch/voice/mode", "mode", &["Poly", "Mono", "Legato"]),
+                        knob("patch/voice/polyphony", "voices", 0.5),
+                        knob("patch/voice/glide", "glide", 0.0),
+                        knob("patch/voice/bend_range", "bend", 0.1),
+                        knob("patch/output", "output", 0.7),
+                        knob("mixer/gain", "volume", 0.8),
+                        knob("mixer/pan", "pan", 0.5),
+                    ],
+                ),
+                "M M M S M M M",
             ),
-            card(
-                "Voice",
-                2,
-                false,
-                3,
-                FlopsynthPicture::None,
-                vec![
-                    chooser("patch/voice/mode", "mode", &["Poly", "Mono", "Legato"]),
-                    knob("patch/voice/polyphony", "voices", 0.5),
-                    knob("patch/voice/glide", "glide", 0.0),
-                    knob("patch/voice/bend_range", "bend", 0.1),
-                    knob("patch/output", "output", 0.7),
-                ],
+            sized(card("OSC A", 0, false, 5, wave(), osc_params(0)), OSC),
+            sized(card("OSC B", 0, false, 5, wave(), osc_params(1)), OSC),
+            sized(card("OSC C", 0, false, 5, wave(), osc_params(2)), OSC),
+            sized(
+                card("SUB", 0, true, 4, wave(), osc_params(3)),
+                "M S M S M S M S S S S S M S S M M",
             ),
-            card("OSC A", 0, false, 6, wave(), osc_params(0)),
-            card("OSC B", 0, false, 6, wave(), osc_params(1)),
-            card("OSC C", 0, false, 6, wave(), osc_params(2)),
-            card("SUB", 0, true, 3, wave(), osc_params(3)),
-            card(
-                "NOISE",
-                0,
-                true,
-                3,
-                FlopsynthPicture::None,
-                vec![
-                    knob("patch/layer[4]/synth/noise_colour", "colour", 0.2),
-                    knob("patch/layer[4]/gain", "level", 0.0),
-                    knob("patch/layer[4]/pan", "pan", 0.5),
-                    knob("patch/layer[4]/synth/semitones", "semis", 0.5),
-                    knob("patch/layer[4]/tune", "fine", 0.5),
-                    switch("patch/layer[4]/synth/key_track", "key"),
-                    chooser(
-                        "patch/layer[4]/synth/route",
-                        "route",
-                        &["F1", "F2", "Bypass"],
-                    ),
-                ],
+            sized(
+                card(
+                    "NOISE",
+                    0,
+                    true,
+                    4,
+                    FlopsynthPicture::None,
+                    vec![
+                        knob("patch/layer[4]/synth/noise_colour", "colour", 0.2),
+                        knob("patch/layer[4]/gain", "level", 0.0),
+                        knob("patch/layer[4]/pan", "pan", 0.5),
+                        knob("patch/layer[4]/synth/semitones", "semis", 0.5),
+                        knob("patch/layer[4]/tune", "fine", 0.5),
+                        switch("patch/layer[4]/synth/key_track", "key"),
+                        chooser(
+                            "patch/layer[4]/synth/route",
+                            "route",
+                            &["F1", "F2", "Bypass"],
+                        ),
+                    ],
+                ),
+                "M M S S S M M",
             ),
-            card("Filter 1", 1, false, 5, response(), filter_params(0)),
-            card("Filter 2", 1, false, 5, response(), filter_params(1)),
-            card("Filter 3", 1, false, 5, response(), filter_params(2)),
-            card("ENV 1 \u{b7} amp", 2, false, 5, envelope(), env_params(0)),
-            card(
-                "ENV 2 \u{b7} filter",
-                2,
-                false,
-                5,
-                envelope(),
-                env_params(1),
+            sized(
+                card("Filter 1", 1, false, 4, response(), filter_params(0)),
+                FILTER,
+            ),
+            sized(
+                card("Filter 2", 1, false, 4, response(), filter_params(1)),
+                FILTER,
             ),
             card(
                 "Macros",
-                2,
+                1,
                 false,
                 4,
                 FlopsynthPicture::None,
-                (0..4)
+                (0..8)
                     .map(|i| {
                         knob(
                             &format!("patch/macro[{i}]"),
@@ -1203,13 +1222,156 @@ fn the_whole_synth_page_fits_the_window_it_opens_at() {
     let body = real_body(fontelle_ui::layout::FLOPSYNTH_SIZE);
     let layout = assert_fits(body, &view);
     // And at the size that opens, the controls are their design size: the
-    // page was sized to fit, and shrinking would mean it was not.
+    // page was sized to fit, and nothing shrinks.
     let cell = layout.cards[2].cells[1].1;
     assert!(
         (cell.width - FLOP_CELL_W).abs() < 0.01 && (cell.height - FLOP_CELL_H).abs() < 0.01,
         "a control at the default size is {}x{}, not {FLOP_CELL_W}x{FLOP_CELL_H}",
         cell.width,
         cell.height
+    );
+}
+
+/// §3.2: the window opens at `FLOPSYNTH_SIZE` times its scale, and at every
+/// scale the page fits it with every cell, picture and the canopy at the
+/// design size times the scale — the scale is the only thing that sizes
+/// anything.
+#[test]
+fn the_whole_synth_page_fits_at_every_scale() {
+    for scale in SCALES {
+        let mut view = synth_page();
+        view.scale = scale;
+        let (w, h) = fontelle_ui::layout::flopsynth_window_size(scale);
+        let body = real_body((w, h));
+        let layout = assert_fits(body, &view);
+        let cell = layout.cards[2].cells[1].1;
+        assert!(
+            (cell.width - FLOP_CELL_W * scale).abs() < 0.01
+                && (cell.height - FLOP_CELL_H * scale).abs() < 0.01,
+            "at {scale}: a cell is {}x{}",
+            cell.width,
+            cell.height
+        );
+        assert!(
+            (layout.canopy.height - CANOPY_HEIGHT * scale).abs() < 0.01,
+            "at {scale}: the canopy is {}",
+            layout.canopy.height
+        );
+        let picture = layout.cards[2].picture.height;
+        assert!(
+            (picture - fontelle_ui::canvas::PICTURE_HEIGHT * scale).abs() < 0.01,
+            "at {scale}: the picture is {picture}"
+        );
+        assert!(
+            !layout.scale_chip.is_empty()
+                && flopsynth_hit(
+                    &layout,
+                    layout.scale_chip.x + layout.scale_chip.width / 2.0,
+                    layout.scale_chip.y + layout.scale_chip.height / 2.0
+                ) == Some(FlopsynthHit::Scale),
+            "at {scale}: the scale chooser is on the strip and can be pressed"
+        );
+    }
+}
+
+/// A Small knob, a chooser and a switch take **half a cell** and stack two
+/// to a column; the Large and Medium knobs take a whole one and come
+/// **first**, whatever order the card lists them in (§3.1; `wanted`'s two
+/// passes). So the knob a player reaches for is the first thing on the card
+/// and a seventeen-control oscillator is three rows tall.
+#[test]
+fn half_cells_stack_two_to_a_column_and_the_whole_cells_come_first() {
+    let view = FlopsynthView {
+        cards: vec![sized(
+            card(
+                "Test",
+                0,
+                false,
+                3,
+                FlopsynthPicture::None,
+                vec![
+                    chooser("patch/a", "mode", &["Poly", "Mono"]),
+                    knob("patch/b", "fine", 0.5),
+                    knob("patch/c", "cutoff", 0.5),
+                    switch("patch/d", "key"),
+                    knob("patch/e", "res", 0.5),
+                    knob("patch/f", "pan", 0.5),
+                ],
+            ),
+            "M S L M M S",
+        )],
+        page: FlopsynthPage::Synth,
+        ..FlopsynthView::default()
+    };
+    let layout = flopsynth_layout(BODY, &metrics(), &view);
+    let cells = &layout.cards[0].cells;
+    let cell = |param: usize| {
+        cells
+            .iter()
+            .find(|(p, _)| *p == param)
+            .map(|(_, c)| *c)
+            .unwrap()
+    };
+    // The two whole cells first, on the first row, left to right.
+    let (cutoff, res) = (cell(2), cell(4));
+    assert!((cutoff.height - FLOP_CELL_H).abs() < 0.01 && (res.height - FLOP_CELL_H).abs() < 0.01);
+    assert!(cutoff.x < res.x && (cutoff.y - res.y).abs() < 0.01);
+    assert!(
+        cutoff.x < cell(0).x || cutoff.y < cell(0).y,
+        "the Large knob is before the chooser"
+    );
+    // The four halves: the first two stacked in the row's third column, the
+    // next two along the top of the next row.
+    let (mode, fine, key, pan) = (cell(0), cell(1), cell(3), cell(5));
+    for half in [mode, fine, key, pan] {
+        assert!(
+            (half.height - FLOP_CELL_HALF).abs() < 0.01,
+            "{half:?} is not a half cell"
+        );
+    }
+    assert!(
+        (mode.x - fine.x).abs() < 0.01 && (fine.y - mode.bottom()).abs() < 0.01,
+        "{mode:?} over {fine:?}"
+    );
+    assert!(
+        (mode.x - res.right()).abs() < 0.01 && (mode.y - res.y).abs() < 0.01,
+        "in the column after the last whole cell"
+    );
+    assert!((key.x - layout.cards[0].frame.x - fontelle_ui::canvas::CARD_PAD).abs() < 0.01);
+    // Reading order: the top tier across the row before the bottom, so pan
+    // is beside key, not under it.
+    assert!(
+        (key.y - cutoff.bottom()).abs() < 0.01,
+        "{key:?} under {cutoff:?}"
+    );
+    assert!(
+        (pan.y - key.y).abs() < 0.01 && (pan.x - key.right()).abs() < 0.01,
+        "{pan:?} beside {key:?}"
+    );
+    // Two rows, so the card is two cells tall under its header.
+    assert!(
+        (layout.cards[0].frame.height
+            - (CARD_HEADER + fontelle_ui::canvas::CARD_PAD * 2.0 + 2.0 * FLOP_CELL_H))
+            .abs()
+            < 0.01
+    );
+    // And the anatomy of a half knob puts the caption across the top and the
+    // knob at the left with its read-out beside it, where a whole cell
+    // stacks the three bands.
+    let small = cell_anatomy(fine, KnobSize::Small, &ParamKind::Knob, 1.0);
+    assert!(small.caption.bottom() <= small.control.y + 0.01);
+    assert!(small.control.right() <= small.readout.x + 0.01);
+    assert!(
+        (small.caption.width - fine.width).abs() < 0.01,
+        "the caption has the whole width"
+    );
+    assert!((small.control.width - fontelle_ui::canvas::KNOB_SMALL).abs() < 0.01);
+    let large = cell_anatomy(cutoff, KnobSize::Large, &ParamKind::Knob, 1.0);
+    assert!((large.control.width - fontelle_ui::canvas::KNOB_LARGE).abs() < 0.01);
+    assert!(large.caption.bottom() <= large.control.y && large.control.bottom() <= large.readout.y);
+    assert!(
+        cutoff.contains(large.control.x, large.control.y)
+            && cutoff.contains(large.control.right() - 0.1, large.control.bottom() - 0.1)
     );
 }
 
@@ -1227,25 +1389,20 @@ fn the_cards_are_placed_by_band_whatever_order_they_are_listed_in() {
         "the oscillators are above the filters"
     );
     assert!(
-        at("Filter 1").bottom() <= at("ENV 1 \u{b7} amp").y + 0.01,
-        "the filters are above the envelopes"
-    );
-    assert!(
-        at("Channel").y >= at("Filter 1").y - 0.01
-            && at("Voice").y >= at("ENV 1 \u{b7} amp").y - 0.01,
-        "the channel and the voice are in the later bands, not the first"
+        at("Voice").y >= at("Filter 1").y - 0.01 && at("Macros").y >= at("Filter 1").y - 0.01,
+        "the voice and the macros are in the second band, not the first"
     );
     // Within a band, the listed order holds.
     assert!(at("OSC A").x < at("OSC B").x && at("OSC B").x < at("OSC C").x);
-    assert!(at("Filter 1").x < at("Filter 2").x && at("Filter 2").x < at("Filter 3").x);
+    assert!(at("Voice").x < at("Filter 1").x && at("Filter 1").x < at("Filter 2").x);
 }
 
 #[test]
 fn aside_cards_stack_down_the_right_edge_beside_the_bands() {
     // The sub and the noise are sources too, but they are slim and the three
     // oscillators are not: set aside in a column, they stand beside the
-    // oscillators *and* the filters, and the page is three bands tall rather
-    // than four.
+    // oscillators *and* the filters, and the page is two bands tall rather
+    // than three.
     let view = synth_page();
     let body = real_body(fontelle_ui::layout::FLOPSYNTH_SIZE);
     let layout = assert_fits(body, &view);
@@ -1270,18 +1427,20 @@ fn aside_cards_stack_down_the_right_edge_beside_the_bands() {
         (sub.y - at("OSC A").y).abs() < 0.01,
         "the column starts level with the first band"
     );
-    // The bands wrap in the room beside the column while it is there.
+    // The second band keeps clear of the column while it is beside it.
     assert!(
-        at("Filter 3").right() <= sub.x + 0.01,
-        "the filters keep clear of the column beside them"
+        at("Macros").right() <= sub.x + 0.01,
+        "the second band keeps clear of the column beside it"
     );
 }
 
 #[test]
 fn a_card_declares_its_own_width_in_columns() {
     // Sized by what it *is*, not by a count: the oscillator's seventeen
-    // controls go six across so three oscillators share a row; the same
-    // seventeen on the sub go three across so it can stand aside.
+    // controls go five across so three oscillators share a row beside the
+    // aside column; the same seventeen on the sub go four across so it can
+    // stand aside. Counted in **whole** cells on the first row — the halves
+    // in the top tier share its y.
     let view = synth_page();
     let layout = assert_fits(real_body(fontelle_ui::layout::FLOPSYNTH_SIZE), &view);
     let across = |name: &str| {
@@ -1291,28 +1450,31 @@ fn a_card_declares_its_own_width_in_columns() {
             .position(|c| c.group.name == name)
             .unwrap();
         let cells = &layout.cards[index].cells;
-        let first_y = cells[1].1.y;
-        cells
+        let whole: Vec<Rect> = cells
             .iter()
-            .filter(|(_, cell)| (cell.y - first_y).abs() < 0.01)
+            .map(|(_, c)| *c)
+            .filter(|c| c.height >= FLOP_CELL_H - 0.01)
+            .collect();
+        let first_y = whole.iter().map(|c| c.y).fold(f32::MAX, f32::min);
+        whole
+            .iter()
+            .filter(|c| (c.y - first_y).abs() < 0.01)
             .count()
     };
-    assert_eq!(
-        across("OSC A"),
-        5,
-        "six cells across, one of them the double table chooser"
-    );
+    // Whole cells on the first row: the oscillator's Large and four Mediums
+    // fill its five columns; the sub has two Mediums and the rest is halves.
+    assert_eq!(across("OSC A"), 5, "five whole cells across");
     assert_eq!(
         across("SUB"),
-        2,
-        "three cells across, one of them the double table chooser"
+        1,
+        "the sub's level; everything else on it is halves"
     );
     assert_eq!(
         across("Filter 1"),
-        4,
-        "five cells across, one of them the double model chooser — \"Formant\" is 44 px"
+        3,
+        "cutoff, res and drive — the fourth column is halves"
     );
-    assert_eq!(across("Channel"), 2);
+    assert_eq!(across("Voice"), 3);
 }
 
 #[test]
@@ -1333,15 +1495,17 @@ fn a_chooser_with_long_names_gets_a_double_cell() {
     let view = synth_page();
     let layout = assert_fits(real_body(fontelle_ui::layout::FLOPSYNTH_SIZE), &view);
     let osc = &layout.cards[2].cells;
+    let table = osc.iter().find(|(p, _)| *p == 0).map(|(_, c)| *c).unwrap();
+    let pos = osc.iter().find(|(p, _)| *p == 1).map(|(_, c)| *c).unwrap();
     assert!(
-        (osc[0].1.width - osc[1].1.width * 2.0).abs() < 0.01,
+        (table.width - pos.width * 2.0).abs() < 0.01,
         "the table's cell is {} wide and a knob's is {}",
-        osc[0].1.width,
-        osc[1].1.width
+        table.width,
+        pos.width
     );
     assert!(
-        (osc[0].1.y - osc[1].1.y).abs() < 0.01,
-        "the double cell shares its row with the next control"
+        (table.height - FLOP_CELL_HALF).abs() < 0.01,
+        "and a chooser's cell is a half, whatever its width"
     );
 }
 
@@ -1356,36 +1520,44 @@ fn a_chooser_with_long_names_gets_a_double_cell() {
 fn a_chooser_spans_two_cells_when_its_widest_option_measures_too_wide_for_one() {
     use fontelle_ui::canvas::{CHIP_TEXT_ROOM, cell_span_measured};
     let route = chooser(
-        "patch/layer[0]/sample/loop",
-        "loop",
-        &["Once", "Loop", "Bounce", "Reverse", "Grains"],
+        "patch/layer[0]/synth/warp_mode",
+        "warp",
+        &["Off", "Bend", "Mirror", "Sync", "Quantise", "FM", "RM"],
     );
-    // The real widths at the small size: "Reverse" is 40.7 px, "Bypass"
-    // 36.1, "Grains" 33.5; the chip's room in a 52 px cell holds the last
+    // The real widths at the small size: "Quantise" is 47 px, "Reverse"
+    // 40.7, "Bypass" 36.1; the chip's room in a 56 px cell holds the last
     // two and not the first.
     let real = |text: &str| -> f32 {
         match text {
+            "Quantise" => 47.0,
             "Reverse" => 40.7,
             "Bypass" => 36.1,
-            "Grains" => 33.5,
-            "Bounce" => 34.0,
-            "loop" => 22.0,
+            "Mirror" => 34.0,
+            "warp" => 24.0,
             _ => 12.0,
         }
     };
     let room = std::hint::black_box(CHIP_TEXT_ROOM);
     assert!(
-        (36.1..40.7).contains(&room),
-        "the room is {room}: Bypass must fit and Reverse must not"
+        (40.7..47.0).contains(&room),
+        "the room is {room}: Reverse must fit and Quantise must not"
     );
-    assert_eq!(cell_span_measured(&route, &real), 2, "Reverse does not fit");
-    let bypass = chooser("patch/layer[0]/route", "route", &["F1", "Bypass"]);
+    assert_eq!(
+        cell_span_measured(&route, &real),
+        2,
+        "Quantise does not fit"
+    );
+    let bypass = chooser(
+        "patch/layer[0]/route",
+        "route",
+        &["F1", "Bypass", "Reverse"],
+    );
     assert_eq!(
         cell_span_measured(&bypass, &real),
         1,
         "Bypass fits — it read \"Bypas\""
     );
-    let narrow = |text: &str| -> f32 { if text == "loop" { 22.0 } else { 10.0 } };
+    let narrow = |text: &str| -> f32 { if text == "warp" { 24.0 } else { 10.0 } };
     assert_eq!(
         cell_span_measured(&route, &narrow),
         1,
@@ -1404,7 +1576,7 @@ fn a_chooser_spans_two_cells_when_its_widest_option_measures_too_wide_for_one() 
     assert_eq!(cell_span_measured(&knob, &narrow), 1);
 
     // And the layout takes the measure: the same page laid out with the two
-    // faces puts the route chooser in a double cell under one and a single
+    // faces puts the warp chooser in a double cell under one and a single
     // under the other.
     let mut view = a_view();
     view.cards[0].group.params.push(route.clone());
@@ -1424,73 +1596,19 @@ fn a_chooser_spans_two_cells_when_its_widest_option_measures_too_wide_for_one() 
     assert!((cell_of(&single).width - FLOP_CELL_W).abs() < 0.01);
 }
 
-/// At the smallest size the window may be dragged to, every cell is its
-/// design size — because the captions and values were designed for that
-/// cell and a smaller one clips them ("20.00 kH", "Hardne:macro 3" at the
-/// old 980×620 minimum: `docs/flopsynth-next.md` §1.4(3)). The layout has no
-/// text to measure; what it can promise is the cell the text was drawn for.
-/// The pictures may still be at their floor here — a picture has no caption.
+/// The smallest the window may be is the page at its scale — there is no
+/// size under it at which the text still fits, because nothing shrinks
+/// (`docs/flopsynth-next.md` §3.2). At 100 % that is the size it opens at.
 #[test]
-fn at_the_minimum_size_every_cell_is_its_design_size() {
-    let view = synth_page();
-    let body = real_body(fontelle_ui::layout::FLOPSYNTH_MINIMUM);
-    let layout = assert_fits(body, &view);
-    for (index, card) in layout.cards.iter().enumerate() {
-        for (param, cell) in &card.cells {
-            let control = &view.cards[index].group.params[*param];
-            if fontelle_ui::canvas::is_nameplate_control(control) {
-                continue;
-            }
-            let span = cell_span(control) as f32;
-            assert!(
-                (cell.width - FLOP_CELL_W * span).abs() < 0.01
-                    && (cell.height - FLOP_CELL_H).abs() < 0.01,
-                "{}'s {} is {}x{} at the minimum size, not {}x{}",
-                view.cards[index].group.name,
-                control.label,
-                cell.width,
-                cell.height,
-                FLOP_CELL_W * span,
-                FLOP_CELL_H
-            );
-        }
-    }
-}
-
-#[test]
-fn a_full_page_in_a_small_window_shrinks_its_cells_rather_than_overflowing() {
-    // §8.8: below the default size the cards lose their air, then their
-    // pictures, and — this is the new step — then the controls shrink
-    // together, down to a floor. A window at its minimum has every control on
-    // it, smaller, rather than a page with its bottom band missing.
-    //
-    // The window refuses a size this small now (the test above says why);
-    // the layout asked anyway still answers with every control on the page.
-    let view = synth_page();
-    let body = real_body((980, 620));
-    let layout = assert_fits(body, &view);
-    let cell = layout.cards[2].cells[1].1;
-    assert!(
-        cell.width < FLOP_CELL_W && cell.height < FLOP_CELL_H,
-        "the cells did not shrink at the minimum size: {}x{}",
-        cell.width,
-        cell.height
+fn the_window_refuses_to_be_smaller_than_the_page_at_its_scale() {
+    assert_eq!(
+        fontelle_ui::layout::flopsynth_window_size(1.0),
+        fontelle_ui::layout::FLOPSYNTH_SIZE
     );
-    assert!(
-        cell.width >= FLOP_CELL_W * CELL_FLOOR - 0.01
-            && cell.height >= FLOP_CELL_H * CELL_FLOOR - 0.01,
-        "the cells shrank past the floor: {}x{}",
-        cell.width,
-        cell.height
-    );
-    // The knob shrinks with its cell, and is still somewhere inside it.
-    let knob = flop_knob_rect(cell);
-    assert!(
-        knob.width < 24.0 && knob.width > 12.0,
-        "the knob is {} wide",
-        knob.width
-    );
-    assert!(cell.contains(knob.x + 1.0, knob.y + 1.0));
+    let (w, h) = fontelle_ui::layout::flopsynth_window_size(0.75);
+    assert!(w < fontelle_ui::layout::FLOPSYNTH_SIZE.0 && h < fontelle_ui::layout::FLOPSYNTH_SIZE.1);
+    let (w, h) = fontelle_ui::layout::flopsynth_window_size(1.5);
+    assert!(w > fontelle_ui::layout::FLOPSYNTH_SIZE.0 && h > fontelle_ui::layout::FLOPSYNTH_SIZE.1);
 }
 
 #[test]
@@ -1950,8 +2068,8 @@ fn the_canopy_is_under_the_tabs_and_over_every_card() {
         let layout = assert_fits(body, &view);
         let canopy = layout.canopy;
         assert!(
-            canopy.height >= CANOPY_MIN - 0.01,
-            "{:?}: the canopy is a slit at least: {canopy:?}",
+            (canopy.height - CANOPY_HEIGHT).abs() < 0.01,
+            "{:?}: the canopy is the same height on every page: {canopy:?}",
             view.page
         );
         let tabs_bottom = layout
@@ -1983,40 +2101,22 @@ fn the_canopy_is_under_the_tabs_and_over_every_card() {
     assert!((cell.width - FLOP_CELL_W).abs() < 0.01);
 }
 
-/// A taller window is more sky, not more air between the consoles — up to a
-/// limit, past which the room goes back to being air.
+/// A taller window is more air under the consoles, not a taller sky: the
+/// canopy is the instrument's eyes (§3.2) and the same picture whatever the
+/// window's height — so the scope and the spectrum are always where a
+/// player left them.
 #[test]
-fn a_taller_window_gives_the_room_to_the_sky() {
+fn a_taller_window_keeps_the_canopy_the_same_height() {
     let view = synth_page();
     let short = flopsynth_layout(real_body((1180, 840)), &metrics(), &view);
     let tall = flopsynth_layout(real_body((1180, 1000)), &metrics(), &view);
-    assert!(
-        tall.canopy.height > short.canopy.height + 100.0,
-        "{} against {}",
-        tall.canopy.height,
-        short.canopy.height
-    );
-    assert!(tall.canopy.height <= CANOPY_MAX + 0.01);
-    let huge = flopsynth_layout(real_body((1180, 1400)), &metrics(), &view);
-    assert!(
-        (huge.canopy.height - CANOPY_MAX).abs() < 0.01,
-        "and no more than the most"
-    );
-}
-
-/// In a window too small for both, the sky gives before the controls: the
-/// consoles still fit at their floor and the canopy is whatever is left,
-/// which may be nothing.
-#[test]
-fn the_sky_gives_before_the_controls_do() {
-    let view = synth_page();
-    let layout = assert_fits(SMALL, &view);
-    assert!(
-        layout.canopy.height < CANOPY_MIN,
-        "the canopy gave: {}",
-        layout.canopy.height
-    );
-    assert!(layout.canopy.height >= 0.0);
+    assert!((tall.canopy.height - short.canopy.height).abs() < 0.01);
+    assert!((tall.canopy.height - CANOPY_HEIGHT).abs() < 0.01);
+    // The Presets page too — it used to give the canopy nothing.
+    let mut presets = synth_page();
+    presets.page = FlopsynthPage::Presets;
+    let layout = flopsynth_layout(real_body((1180, 840)), &metrics(), &presets);
+    assert!((layout.canopy.height - CANOPY_HEIGHT).abs() < 0.01);
 }
 
 // --------------------------------------------------------- the nameplate ---

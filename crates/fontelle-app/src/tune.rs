@@ -145,6 +145,7 @@ pub fn describe(
                 aside,
                 columns,
                 removable: false,
+                sizes: Vec::new(),
             }
         })
         .collect();
@@ -186,6 +187,7 @@ pub fn describe(
         aside,
         columns,
         removable: false,
+        sizes: Vec::new(),
     });
 
     // The viewport's axis: the range's own two frequencies, so a note the

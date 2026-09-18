@@ -38,31 +38,104 @@ pub const CARD_HEADER: f32 = 18.0;
 pub const CARD_PAD: f32 = 6.0;
 /// Between one card and the next.
 pub const CARD_GAP: f32 = 8.0;
-/// One control's cell inside a card, at the size the window opens at.
+/// One control's cell inside a card, at the size the window opens at
+/// (`docs/flopsynth-next.md` §3.1, principle 11: three sizes of everything).
 ///
-/// Smaller than the generic grid's 92 × 76: that cell is right for a panel of
-/// nine controls and far too coarse for a page of a hundred and thirty. The
-/// knob is drawn at [`FLOP_KNOB`] inside it, with the caption above and the
-/// read-out below, both at the small label size (`text::SMALL_LABEL`).
+/// A **full** cell holds a Large or Medium knob with its caption above and
+/// its read-out below; a **half** cell — [`FLOP_CELL_HALF`] tall, two to a
+/// column — holds a Small knob, a chooser or a switch, which is what lets a
+/// card with seventeen controls stay three rows tall with 44-pixel knobs
+/// in it. The layout stacks halves two to a column and places the full
+/// cells first (`wanted`), so the knob a player reaches for first is the
+/// first thing on the card.
 ///
-/// **Design sizes.** The layout shrinks every cell together when the page
-/// would not fit ([`CELL_FLOOR`]), so what a card is drawn at is read off its
-/// cells and never off these.
-pub const FLOP_CELL_W: f32 = 52.0;
-pub const FLOP_CELL_H: f32 = 54.0;
-/// The knob itself, inside its cell at the design size.
-pub const FLOP_KNOB: f32 = 24.0;
-/// How tall a card's picture is when there is room for it, and the floor it
-/// shrinks to before anything else gives (§8.8).
-pub const PICTURE_HEIGHT: f32 = 48.0;
+/// **Design sizes.** Multiplied by the window's scale
+/// (`FlopsynthView::scale`) and by nothing else: the shrink cascade of
+/// v0.9.0 is gone, and a window too small for the page at its scale is one
+/// the window refuses (`layout::flopsynth_window_size`). What a card is
+/// drawn at is read off its cells, never off these.
+pub const FLOP_CELL_W: f32 = 56.0;
+pub const FLOP_CELL_H: f32 = 72.0;
+pub const FLOP_CELL_HALF: f32 = 36.0;
+/// The three knobs, at the design size (§3.1). Large is forty rather than
+/// §3.1's forty-four: with a caption over it, a read-out under it and the
+/// modulation ring clear of both, forty is what a 72-pixel cell holds
+/// (`cell_anatomy`).
+pub const KNOB_LARGE: f32 = 40.0;
+pub const KNOB_MEDIUM: f32 = 32.0;
+pub const KNOB_SMALL: f32 = 20.0;
+/// How tall a card's picture is. Sixty rather than §3.1's seventy-two,
+/// because the fit decided: two bands of cards, the canopy and the strip at
+/// 1180×840 leave sixty (`the_whole_synth_page_fits_at_every_scale`).
+pub const PICTURE_HEIGHT: f32 = 60.0;
+/// The canopy — the instrument's eyes (§3.2) — on every page, at the
+/// design size. Fixed: a taller window is more air under the consoles, not
+/// a taller sky, so the scope and the spectrum are always the same picture.
+pub const CANOPY_HEIGHT: f32 = 120.0;
+/// The scales the window offers (§3.2). One of these multiplies every
+/// design size above; the window opens at `FLOPSYNTH_SIZE` times it.
+pub const SCALES: [f32; 4] = [0.75, 1.0, 1.25, 1.5];
+
+/// How big a knob is drawn, declared per control by the card
+/// (`FlopsynthCard::sizes`) — a fact about what the control *is*: the one
+/// knob per card a player reaches for first is Large, everything continuous
+/// is Medium, and the fine adjustments (fine, phase, pan of a sub) are
+/// Small and take half a cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KnobSize {
+    Large,
+    #[default]
+    Medium,
+    Small,
+}
+
+impl KnobSize {
+    pub fn pixels(self) -> f32 {
+        match self {
+            Self::Large => KNOB_LARGE,
+            Self::Medium => KNOB_MEDIUM,
+            Self::Small => KNOB_SMALL,
+        }
+    }
+}
+
+/// The grid a window's cards are laid out on: the cell, whether it has a
+/// half, the picture and its floor. Two windows share the card machinery
+/// — Flopsynth's and the corrector's console (`docs/tune-plan.md` §7.2) —
+/// and the corrector keeps the old grid and its shrink cascade: it was
+/// measured at those sizes and nothing in the plan for the synth's window
+/// is about it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Grid {
+    pub cell_w: f32,
+    pub cell_h: f32,
+    /// A half cell's height, or `None` for a grid where every control takes
+    /// a whole cell.
+    pub half_h: Option<f32>,
+    pub picture: f32,
+}
+
+/// Flopsynth's window.
+pub const FLOP_GRID: Grid = Grid {
+    cell_w: FLOP_CELL_W,
+    cell_h: FLOP_CELL_H,
+    half_h: Some(FLOP_CELL_HALF),
+    picture: PICTURE_HEIGHT,
+};
+
+/// The corrector's console: the grid the window had before §3.1, whole
+/// cells only, shrunk by [`fit_cards`] when the page will not fit.
+pub const TUNE_GRID: Grid = Grid {
+    cell_w: 52.0,
+    cell_h: 54.0,
+    half_h: None,
+    picture: 48.0,
+};
+/// The corrector's floors (`fit_cards`): the picture gives to its soft
+/// floor first, then every cell together down to [`CELL_FLOOR`], then the
+/// picture to [`PICTURE_FLOOR`].
 pub const PICTURE_FLOOR: f32 = 26.0;
-/// The picture gives this much before the cells start to, and the rest only
-/// after the cells have reached their own floor: a page of knobs you can still
-/// turn with pictures a little smaller reads better than the other way round.
 const PICTURE_SOFT_FLOOR: f32 = 36.0;
-/// The least a cell shrinks to, as a share of its design size, before the
-/// page is allowed to run off the bottom. Below this the captions no longer
-/// fit their cells, and a window that small is not one anybody is using.
 pub const CELL_FLOOR: f32 = 0.8;
 
 /// What a card draws above its controls.
@@ -202,17 +275,13 @@ pub const MATRIX_ROW: f32 = 22.0;
 pub const MATRIX_ROWS_LEAST: usize = 3;
 /// How tall the tab strip is.
 pub const TAB_HEIGHT: f32 = 22.0;
-/// The least and the most of the window the canopy takes.
-///
-/// The least is a slit a sky can still be seen through; the most is what a
-/// window taller than the consoles need gives up to it rather than to air
-/// between the cards. The cards shrink for the least (`fit_cards`, in its
-/// own order) and never for more.
-pub const CANOPY_MIN: f32 = 84.0;
-pub const CANOPY_MAX: f32 = 240.0;
 /// And how wide one tab is. Fixed, so the strip does not shuffle when a page's
 /// name changes length — `editor_tabs`' rule.
 pub const TAB_WIDTH: f32 = 96.0;
+/// The scale chooser's chip on the tab strip, and how far it stands in from
+/// the right edge — room for the voice read-out beside it.
+pub const SCALE_CHIP_W: f32 = 52.0;
+const SCALE_CHIP_RIGHT: f32 = 92.0;
 /// One source badge.
 pub const BADGE_W: f32 = 74.0;
 pub const BADGE_H: f32 = 20.0;
@@ -268,6 +337,31 @@ pub struct FlopsynthCard {
     /// Whether the card can be taken off the window — an effect slot can,
     /// and nothing else can. Draws the ✕ in its header.
     pub removable: bool,
+    /// How big each control's knob is, index for index with the group's
+    /// params; a control past the end is Medium. Declared by whoever builds
+    /// the view, like the band and the columns, because which knob a player
+    /// reaches for first is a fact about the instrument (§3.1).
+    pub sizes: Vec<KnobSize>,
+}
+
+impl FlopsynthCard {
+    /// The size of control `index`.
+    pub fn size_of(&self, index: usize) -> KnobSize {
+        self.sizes.get(index).copied().unwrap_or_default()
+    }
+
+    /// Whether control `index` takes half a cell: a Small knob, a chooser
+    /// or a switch. A chooser's chip and a switch's pill are shorter than
+    /// any knob, so they stack two to a column whatever the card says.
+    pub fn is_half(&self, index: usize) -> bool {
+        match self.group.params.get(index) {
+            Some(param) => {
+                matches!(param.kind, ParamKind::Choice(_) | ParamKind::Switch)
+                    || self.size_of(index) == KnobSize::Small
+            }
+            None => false,
+        }
+    }
 }
 
 /// Everything Flopsynth's window shows.
@@ -312,6 +406,10 @@ pub struct FlopsynthView {
     /// window has rows, and the Grand Piano's nineteen do not fit the size
     /// the window opens at.
     pub matrix_scroll: f32,
+    /// The window's scale (§3.2): one of [`SCALES`], multiplying every
+    /// design size. Window state, read off the settings by whoever builds
+    /// the view.
+    pub scale: f32,
     /// Whether the chain has room for another effect (§8.5) — what draws the
     /// `+ effect` button on the Effects page. The host knows the limit; the
     /// window only needs to know whether it has been reached.
@@ -330,6 +428,7 @@ impl Default for FlopsynthView {
             bank: Vec::new(),
             browse: PresetBrowse::default(),
             matrix_scroll: 0.0,
+            scale: 1.0,
             fx_room: false,
         }
     }
@@ -361,9 +460,10 @@ pub struct FlopsynthLayout {
     pub tabs: Vec<(FlopsynthPage, Rect)>,
     /// The **canopy**: the bridge's window onto the sky, between the tab
     /// strip and the consoles. On every page, because a bridge always has
-    /// its window; as tall as the cards leave it, within
-    /// [`CANOPY_MIN`]..[`CANOPY_MAX`].
+    /// its window; [`CANOPY_HEIGHT`] at the window's scale.
     pub canopy: Rect,
+    /// The scale chooser's chip, at the right end of the tab strip (§3.2).
+    pub scale_chip: Rect,
     pub cards: Vec<CardLayout>,
     /// The Modulation page's source badges, one per `FlopsynthView::sources`.
     /// Empty on every other page.
@@ -400,6 +500,7 @@ impl Default for FlopsynthLayout {
             whole: Rect::ZERO,
             tabs: Vec::new(),
             canopy: Rect::ZERO,
+            scale_chip: Rect::ZERO,
             cards: Vec::new(),
             badges: Vec::new(),
             matrix: Rect::ZERO,
@@ -426,6 +527,8 @@ pub enum FlopsynthHit {
     Remove { card: usize },
     /// The Effects page's `+ effect` button.
     AddEffect,
+    /// The scale chooser on the tab strip.
+    Scale,
 }
 
 /// What the `+ effect` button says.
@@ -463,13 +566,20 @@ pub const NAMEPLATE_CHIP_W: f32 = 66.0;
 /// within [`WIDE_CARD_ROWS`], up to [`MAX_COLUMNS`]. The rack of §3.6 is the
 /// design answer; this is what keeps the page honest until it lands.
 fn columns_for(card: &FlopsynthCard, measure: Measure<'_>) -> usize {
-    let cells: usize = card
-        .group
-        .params
-        .iter()
-        .filter(|param| !is_nameplate_control(param))
-        .map(|param| cell_span_measured(param, measure))
-        .sum();
+    let (mut full, mut half) = (0usize, 0usize);
+    for (index, param) in card.group.params.iter().enumerate() {
+        if is_nameplate_control(param) {
+            continue;
+        }
+        let span = cell_span_measured(param, measure);
+        if card.is_half(index) {
+            half += span;
+        } else {
+            full += span;
+        }
+    }
+    // Two halves to a column.
+    let cells = full + half.div_ceil(2);
     if cells <= WIDE_CARD_CELLS {
         cells.clamp(1, 5)
     } else {
@@ -480,9 +590,9 @@ fn columns_for(card: &FlopsynthCard, measure: Measure<'_>) -> usize {
 /// Past this many cells a count-sized card widens rather than deepens, and
 /// this is how deep it may go — see [`columns_for`].
 const WIDE_CARD_CELLS: usize = 25;
-const WIDE_CARD_ROWS: usize = 6;
-/// The widest a card can be: sixteen cells is 844 pixels, which the least
-/// window still holds.
+const WIDE_CARD_ROWS: usize = 4;
+/// The widest a card can be: sixteen cells is 908 pixels, which the window
+/// holds beside its margins.
 const MAX_COLUMNS: usize = 16;
 
 /// How wide a string is, in pixels, at the size the captions are drawn.
@@ -604,99 +714,59 @@ pub fn flopsynth_layout_with(
         };
     }
     let _ = metrics;
+    // Every design size below is multiplied by this and by nothing else.
+    let scale = if view.scale.is_finite() && view.scale > 0.0 {
+        view.scale
+    } else {
+        1.0
+    };
+    let gap = CARD_GAP * scale;
 
     // The tab strip, along the top, and everything else in what is left. The
     // strip is chrome: a card drawn across a tab is a tab that cannot be
     // pressed, so the cards start below it and never at the body's own top.
+    let tab_h = TAB_HEIGHT * scale;
+    let tab_w = TAB_WIDTH * scale;
     let tabs: Vec<(FlopsynthPage, Rect)> = FlopsynthPage::ALL
         .iter()
         .enumerate()
         .map(|(index, page)| {
-            let x = body.x + index as f32 * (TAB_WIDTH + 2.0);
+            let x = body.x + index as f32 * (tab_w + 2.0);
             (
                 *page,
-                Rect::new(x, body.y, TAB_WIDTH, TAB_HEIGHT).intersection(&body),
+                Rect::new(x, body.y, tab_w, tab_h).intersection(&body),
             )
         })
         .collect();
+    // The scale chooser, at the strip's right end, short of the voice
+    // read-out the renderer puts in the corner.
+    let chip_w = SCALE_CHIP_W * scale;
+    let scale_chip = Rect::new(
+        body.right() - SCALE_CHIP_RIGHT * scale - chip_w,
+        body.y,
+        chip_w,
+        tab_h,
+    )
+    .intersection(&body);
     let mut body = Rect::new(
         body.x,
-        body.y + TAB_HEIGHT + CARD_GAP,
+        body.y + tab_h + gap,
         body.width,
-        (body.height - TAB_HEIGHT - CARD_GAP).max(0.0),
+        (body.height - tab_h - gap).max(0.0),
     );
 
-    // The Modulation page's two extra pieces — the badge row across the top
-    // and the matrix along the bottom — measured **before the canopy is
-    // sized**, because the canopy takes what the page leaves and they are on
-    // the page. The first build measured the cards alone, and on the Grand
-    // Piano's eleven routes the matrix was drawn under ENV 3 and ENV 4 with
-    // its first two rows hidden (`docs/flopsynth-next.md` §1.4(2)).
-    let (badge_rows, badges_used, matrix_wanted) = match view.page {
-        FlopsynthPage::Modulation => {
-            let per_row = ((body.width + CARD_GAP) / (BADGE_W + CARD_GAP)).max(1.0) as usize;
-            let rows = view.sources.len().div_ceil(per_row.max(1));
-            let used = match rows {
-                0 => 0.0,
-                rows => rows as f32 * (BADGE_H + 2.0) + CARD_GAP,
-            };
-            let matrix =
-                CARD_HEADER + CARD_PAD * 2.0 + (view.routes.len().max(1) as f32) * MATRIX_ROW;
-            (per_row, used, matrix + CARD_GAP)
-        }
-        _ => (1, 0.0, 0.0),
-    };
-    let extras = badges_used + matrix_wanted;
-
-    // The canopy, under the tabs and over everything else: the least of the
-    // window it can have, or whatever the cards at their full size leave —
-    // a taller window is more sky, not more air between consoles. The
-    // Presets page keeps its list and gives the canopy the least.
-    let wanted = match view.page {
-        FlopsynthPage::Presets => 0.0,
-        _ => {
-            let natural = place(body, &view.cards, PICTURE_HEIGHT, 1.0, measure);
-            natural
-                .iter()
-                .map(|c| c.frame.bottom())
-                .fold(body.y, f32::max)
-                - body.y
-                + extras
-        }
-    };
-    // The sky gives before the controls do: in a window too small for both
-    // the consoles at their floor and the least canopy, the canopy is what
-    // shrinks, down to nothing.
-    let cards_floor = match view.page {
-        FlopsynthPage::Presets => 0.0,
-        _ => {
-            let floor = place(body, &view.cards, PICTURE_FLOOR, CELL_FLOOR, measure);
-            floor
-                .iter()
-                .map(|c| c.frame.bottom())
-                .fold(body.y, f32::max)
-                - body.y
-        }
-    };
-    // The least the page can be: the cards at their floor, the badges, and
-    // the matrix showing [`MATRIX_ROWS_LEAST`] rows — it scrolls for the
-    // rest.
-    let matrix_least = if matrix_wanted > 0.0 {
-        (CARD_HEADER + CARD_PAD * 2.0 + MATRIX_ROWS_LEAST as f32 * MATRIX_ROW + CARD_GAP)
-            .min(matrix_wanted)
-    } else {
-        0.0
-    };
-    let at_floor = cards_floor + badges_used + matrix_least;
-    let canopy_height = (body.height - wanted - CARD_GAP)
-        .clamp(CANOPY_MIN, CANOPY_MAX)
-        .min((body.height - at_floor - CARD_GAP).max(0.0));
+    // The canopy, under the tabs and over everything else, the same height
+    // on every page (§3.2): the instrument's eyes are the same picture
+    // whatever is being edited under them. It used to take what the cards
+    // left, which on the Presets page was nothing and on the Modulation
+    // page a slit.
+    let canopy_height = (CANOPY_HEIGHT * scale).min(body.height);
     let canopy = Rect::new(body.x, body.y, body.width, canopy_height).intersection(&body);
     body = Rect::new(
         body.x,
-        body.y + canopy_height + CARD_GAP,
+        body.y + canopy_height + gap,
         body.width,
-        (body.height - canopy_height - CARD_GAP).max(0.0),
+        (body.height - canopy_height - gap).max(0.0),
     );
 
     // The Presets page is the bank and nothing else: whatever cards the host
@@ -707,6 +777,7 @@ pub fn flopsynth_layout_with(
             whole,
             tabs,
             canopy,
+            scale_chip,
             cards: empty_cards(view),
             presets: presets_layout(body, view),
             ..Default::default()
@@ -718,7 +789,8 @@ pub fn flopsynth_layout_with(
     // body *before* the cards are placed, so the cards cannot run under them.
     let (badges, matrix) = match view.page {
         FlopsynthPage::Modulation => {
-            let per_row = badge_rows;
+            let per_row = ((body.width + CARD_GAP) / (BADGE_W + CARD_GAP)).max(1.0) as usize;
+            let rows = view.sources.len().div_ceil(per_row.max(1));
             let badges: Vec<Rect> = view
                 .sources
                 .iter()
@@ -734,31 +806,32 @@ pub fn flopsynth_layout_with(
                     .intersection(&body)
                 })
                 .collect();
+            let used = match rows {
+                0 => 0.0,
+                rows => rows as f32 * (BADGE_H + 2.0) + gap,
+            };
             body = Rect::new(
                 body.x,
-                body.y + badges_used,
+                body.y + used,
                 body.width,
-                (body.height - badges_used).max(0.0),
+                (body.height - used).max(0.0),
             );
 
             // The matrix takes the room its rows need — a matrix with two
             // routes in it should not take a third of the window — up to
-            // what the cards **at their full size** leave it, and never less
-            // than [`MATRIX_ROWS_LEAST`] rows. It scrolls for the rest. It
-            // used to take four tenths of the body whatever the cards
-            // needed, and the cards shrank to their floor to make room: at
-            // the size the window opens at, ENV 3 and ENV 4's captions read
-            // "release a shaped shaper shape" (§1.4(8)). A card's captions
-            // cannot scroll; a list can.
-            let wanted = matrix_wanted - CARD_GAP;
-            let natural = place(body, &view.cards, PICTURE_HEIGHT, 1.0, measure)
+            // what the cards leave it, and never less than
+            // [`MATRIX_ROWS_LEAST`] rows. It scrolls for the rest: a card's
+            // captions cannot scroll, a list can (§1.4(8)).
+            let wanted =
+                CARD_HEADER + CARD_PAD * 2.0 + (view.routes.len().max(1) as f32) * MATRIX_ROW;
+            let least = CARD_HEADER + CARD_PAD * 2.0 + MATRIX_ROWS_LEAST as f32 * MATRIX_ROW;
+            let natural = place(body, &view.cards, FLOP_GRID, scale, measure)
                 .iter()
                 .map(|c| c.frame.bottom())
                 .fold(body.y, f32::max)
                 - body.y;
-            let least = (matrix_least - CARD_GAP).max(0.0);
             let height = wanted
-                .min((body.height - natural - CARD_GAP).max(least))
+                .min((body.height - natural - gap).max(least.min(wanted)))
                 .min(body.height);
             let matrix =
                 Rect::new(body.x, body.bottom() - height, body.width, height).intersection(&body);
@@ -766,7 +839,7 @@ pub fn flopsynth_layout_with(
                 body.x,
                 body.y,
                 body.width,
-                (body.height - height - CARD_GAP).max(0.0),
+                (body.height - height - gap).max(0.0),
             );
             (badges, matrix)
         }
@@ -780,6 +853,7 @@ pub fn flopsynth_layout_with(
             whole,
             tabs,
             canopy,
+            scale_chip,
             cards: empty_cards(view),
             badges,
             matrix,
@@ -791,14 +865,12 @@ pub fn flopsynth_layout_with(
         };
     }
 
-    // Place, and if the result is taller than the body give something up and
-    // go again — in the order the doc comment states. A further pass would be
-    // a scrollbar, and this window does not have one.
-    let cards = fit_cards(body, &view.cards, measure);
+    // Placed once, at the window's scale. Nothing shrinks: a page that would
+    // not fit is a window smaller than the page's size at its scale, which
+    // the window refuses (`layout::flopsynth_window_size`).
+    let cards = place(body, &view.cards, FLOP_GRID, scale, measure);
     // The matrix was given the least it needs before the cards were placed;
-    // now that they are, it takes everything under them. Pinned to the
-    // bottom with the cards at the top, the page had a dead band across its
-    // middle and a matrix two rows tall.
+    // now that they are, it takes everything under them.
     let matrix = if matrix.is_empty() {
         matrix
     } else {
@@ -806,7 +878,7 @@ pub fn flopsynth_layout_with(
             .iter()
             .map(|c| c.frame.bottom())
             .fold(body.y, f32::max);
-        let top = (cards_bottom + CARD_GAP).min(matrix.y);
+        let top = (cards_bottom + gap).min(matrix.y);
         Rect::new(
             matrix.x,
             top,
@@ -822,6 +894,7 @@ pub fn flopsynth_layout_with(
         whole,
         tabs,
         canopy,
+        scale_chip,
         cards,
         badges,
         matrix,
@@ -833,20 +906,25 @@ pub fn flopsynth_layout_with(
     }
 }
 
-/// Places `cards` in `body`, giving something up and going again until they
-/// fit — the air first, then the pictures to their soft floor, then every cell
-/// together down to [`CELL_FLOOR`], and last the pictures to [`PICTURE_FLOOR`].
+/// Places `cards` in `body` on the corrector's grid, giving something up and
+/// going again until they fit — the air first, then the pictures to their
+/// soft floor, then every cell together down to [`CELL_FLOOR`], and last the
+/// pictures to [`PICTURE_FLOOR`].
 ///
-/// Its own function so a **second** window can be built out of the same
-/// cards: `docs/tune-plan.md` §7.2 says the corrector's console uses this
-/// grid, this shrink order and these floors, and two copies of that would be
-/// two windows that stopped agreeing about what a knob is.
+/// The corrector's console (`docs/tune-plan.md` §7.2) is the one window
+/// still laid out this way: it was measured at [`TUNE_GRID`] and shrinks
+/// rather than refuses. Flopsynth's window places once at its scale and
+/// never shrinks (`flopsynth_layout_with`).
 pub fn fit_cards(body: Rect, cards: &[FlopsynthCard], measure: Measure<'_>) -> Vec<CardLayout> {
-    let mut picture_height = PICTURE_HEIGHT;
+    let mut picture_height = TUNE_GRID.picture;
     let mut scale = 1.0f32;
     let mut placed;
     loop {
-        placed = place(body, cards, picture_height, scale, measure);
+        let grid = Grid {
+            picture: picture_height / scale,
+            ..TUNE_GRID
+        };
+        placed = place(body, cards, grid, scale, measure);
         let bottom = placed.iter().map(|c| c.frame.bottom()).fold(0.0, f32::max);
         if bottom <= body.bottom() + 0.01 {
             break;
@@ -898,8 +976,25 @@ struct Wanted {
     removable: bool,
 }
 
-fn wanted(card: &FlopsynthCard, picture_height: f32, scale: f32, measure: Measure<'_>) -> Wanted {
-    let (cell_w, cell_h) = (FLOP_CELL_W * scale, FLOP_CELL_H * scale);
+/// Lays the cards out as the signal flows — the bands top to bottom, each
+/// band left to right — with the aside cards in a column down the right.
+///
+/// **The window does not scroll** (§8.1 rule 7) and **nothing shrinks**
+/// (§3.1): what does not fit is on another page, and a window too small for
+/// a page at its scale is a window that is not opened.
+///
+/// Inside a card the cells go in **two passes**. The full-height controls —
+/// Large and Medium knobs — flow first, left to right, wrapping; then the
+/// half-height ones (Small knobs, choosers, switches) fill the half-cells,
+/// two to a column, in reading order — the top half of every free column
+/// on a row, then the bottom half — taking the first slot that fits. So the
+/// knob a player reaches for first is the first thing on the card, and a
+/// seventeen-control oscillator is three rows with a 44-pixel knob in it.
+/// A grid with no half (`TUNE_GRID`) is one pass, in listing order.
+fn wanted(card: &FlopsynthCard, grid: Grid, scale: f32, measure: Measure<'_>) -> Wanted {
+    let (cell_w, cell_h) = (grid.cell_w * scale, grid.cell_h * scale);
+    let pad = CARD_PAD * scale;
+    let header = CARD_HEADER * scale;
     let columns = match card.columns {
         0 => columns_for(card, measure),
         n => n,
@@ -908,36 +1003,54 @@ fn wanted(card: &FlopsynthCard, picture_height: f32, scale: f32, measure: Measur
     let picture = if card.picture.is_none() {
         0.0
     } else {
-        picture_height + CARD_PAD
+        grid.picture * scale + pad
     };
-    let top = CARD_HEADER + CARD_PAD + picture;
+    let top = header + pad + picture;
+    let width = pad * 2.0 + columns as f32 * cell_w;
 
-    // The cells flow across the rows, and a double cell that would not fit
-    // at the end of a row starts the next one rather than hanging off the
-    // card. The card's **kind** chooser is not in the flow at all: it sits
-    // on the nameplate, at the right end of the header — see
-    // [`is_nameplate_control`].
     let mut cells = Vec::with_capacity(card.group.params.len());
-    let (mut column, mut row) = (0usize, 0usize);
-    let width = CARD_PAD * 2.0 + columns as f32 * cell_w;
+    // Which columns of which row are taken, and by what: `Full` both
+    // halves, `Top`/`Bottom` one. Grown as rows are needed.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Slot {
+        Free,
+        Top,
+        Bottom,
+        Full,
+    }
+    let mut rows: Vec<Vec<Slot>> = Vec::new();
+    let new_row = |rows: &mut Vec<Vec<Slot>>| rows.push(vec![Slot::Free; columns]);
+
+    // The card's **kind** chooser is not in the flow at all: it sits on
+    // the nameplate, at the right end of the header — see
+    // [`is_nameplate_control`].
     for (index, param) in card.group.params.iter().enumerate() {
         if is_nameplate_control(param) {
-            let chip_w = (NAMEPLATE_CHIP_W * scale).min(width - CARD_PAD * 2.0);
-            cells.push((
-                index,
-                Rect::new(width - CARD_PAD - chip_w, 0.0, chip_w, CARD_HEADER),
-            ));
+            let chip_w = (NAMEPLATE_CHIP_W * scale).min(width - pad * 2.0);
+            cells.push((index, Rect::new(width - pad - chip_w, 0.0, chip_w, header)));
+        }
+    }
+
+    // Pass one: the full cells.
+    let (mut column, mut row) = (0usize, 0usize);
+    new_row(&mut rows);
+    for (index, param) in card.group.params.iter().enumerate() {
+        if is_nameplate_control(param) || (grid.half_h.is_some() && card.is_half(index)) {
             continue;
         }
         let span = cell_span_measured(param, measure).min(columns);
         if column + span > columns {
             column = 0;
             row += 1;
+            new_row(&mut rows);
+        }
+        for slot in &mut rows[row][column..column + span] {
+            *slot = Slot::Full;
         }
         cells.push((
             index,
             Rect::new(
-                CARD_PAD + column as f32 * cell_w,
+                pad + column as f32 * cell_w,
                 top + row as f32 * cell_h,
                 cell_w * span as f32,
                 cell_h,
@@ -945,35 +1058,86 @@ fn wanted(card: &FlopsynthCard, picture_height: f32, scale: f32, measure: Measur
         ));
         column += span;
     }
-    let rows = if card.group.params.iter().all(is_nameplate_control) {
+
+    // Pass two: the half cells, into the first slot that fits — the top
+    // half of a row's free columns before the bottom half, rows in order.
+    if let Some(half) = grid.half_h {
+        let half_h = half * scale;
+        for (index, param) in card.group.params.iter().enumerate() {
+            if is_nameplate_control(param) || !card.is_half(index) {
+                continue;
+            }
+            let span = cell_span_measured(param, measure).min(columns);
+            let slot_for = |rows: &[Vec<Slot>]| {
+                rows.iter().enumerate().find_map(|(r, slots)| {
+                    [Slot::Top, Slot::Bottom].into_iter().find_map(|tier| {
+                        (0..=columns.saturating_sub(span))
+                            .find(|c| {
+                                (*c..*c + span).all(|k| {
+                                    slots[k] == Slot::Free
+                                        || (tier == Slot::Bottom && slots[k] == Slot::Top)
+                                        || (tier == Slot::Top && slots[k] == Slot::Bottom)
+                                })
+                            })
+                            .map(|c| (r, tier, c))
+                    })
+                })
+            };
+            let (r, tier, c) = loop {
+                if let Some(found) = slot_for(&rows) {
+                    break found;
+                }
+                new_row(&mut rows);
+            };
+            for slot in &mut rows[r][c..c + span] {
+                *slot = match (*slot, tier) {
+                    (Slot::Free, t) => t,
+                    _ => Slot::Full,
+                };
+            }
+            let y = top + r as f32 * cell_h + if tier == Slot::Bottom { half_h } else { 0.0 };
+            cells.push((
+                index,
+                Rect::new(pad + c as f32 * cell_w, y, cell_w * span as f32, half_h),
+            ));
+        }
+    }
+
+    // Every row is a whole cell tall, so a card is as tall as its rows —
+    // except a card with nothing but its nameplate, which is its header.
+    let used_rows = if rows
+        .iter()
+        .all(|slots| slots.iter().all(|s| *s == Slot::Free))
+    {
         0
     } else {
-        row + 1
+        rows.len()
     };
     Wanted {
         width,
-        height: top + rows as f32 * cell_h + CARD_PAD,
+        height: top + used_rows as f32 * cell_h + pad,
         cells,
         picture: if card.picture.is_none() {
             0.0
         } else {
-            picture_height
+            grid.picture * scale
         },
         removable: card.removable,
     }
 }
 
 /// Puts a wanted card at `(x, y)`.
-fn placed(frame_x: f32, frame_y: f32, width: f32, want: &Wanted) -> CardLayout {
+fn placed(frame_x: f32, frame_y: f32, width: f32, want: &Wanted, scale: f32) -> CardLayout {
+    let (header_h, pad, remove_size) = (CARD_HEADER * scale, CARD_PAD * scale, REMOVE_SIZE * scale);
     let frame = Rect::new(frame_x, frame_y, width, want.height);
-    let header = Rect::new(frame.x, frame.y, frame.width, CARD_HEADER);
+    let header = Rect::new(frame.x, frame.y, frame.width, header_h);
     let picture = if want.picture <= 0.0 {
         Rect::ZERO
     } else {
         Rect::new(
-            frame.x + CARD_PAD,
-            frame.y + CARD_HEADER + CARD_PAD,
-            (frame.width - CARD_PAD * 2.0).max(0.0),
+            frame.x + pad,
+            frame.y + header_h + pad,
+            (frame.width - pad * 2.0).max(0.0),
             want.picture,
         )
     };
@@ -989,10 +1153,10 @@ fn placed(frame_x: f32, frame_y: f32, width: f32, want: &Wanted) -> CardLayout {
         .collect();
     let remove = if want.removable {
         Rect::new(
-            header.right() - CARD_PAD - REMOVE_SIZE,
-            header.y + (header.height - REMOVE_SIZE) / 2.0,
-            REMOVE_SIZE,
-            REMOVE_SIZE,
+            header.right() - pad - remove_size,
+            header.y + (header.height - remove_size) / 2.0,
+            remove_size,
+            remove_size,
         )
         .intersection(&header)
     } else {
@@ -1010,13 +1174,14 @@ fn placed(frame_x: f32, frame_y: f32, width: f32, want: &Wanted) -> CardLayout {
 fn place(
     body: Rect,
     cards_in: &[FlopsynthCard],
-    picture_height: f32,
+    grid: Grid,
     scale: f32,
     measure: Measure<'_>,
 ) -> Vec<CardLayout> {
+    let gap = CARD_GAP * scale;
     let wants: Vec<Wanted> = cards_in
         .iter()
-        .map(|card| wanted(card, picture_height, scale, measure))
+        .map(|card| wanted(card, grid, scale, measure))
         .collect();
     let mut cards: Vec<Option<CardLayout>> = vec![None; cards_in.len()];
 
@@ -1035,16 +1200,22 @@ fn place(
         let mut y = body.y;
         for index in &aside {
             let want = &wants[*index];
-            cards[*index] = Some(placed(body.right() - aside_width, y, aside_width, want));
-            y += want.height + CARD_GAP;
-            aside_bottom = y - CARD_GAP;
+            cards[*index] = Some(placed(
+                body.right() - aside_width,
+                y,
+                aside_width,
+                want,
+                scale,
+            ));
+            y += want.height + gap;
+            aside_bottom = y - gap;
         }
     }
     // The room the bands have at a given height: short of the column while
     // the column is beside them, the whole body below it.
     let right_at = |y: f32| {
         if !aside.is_empty() && y < aside_bottom - 0.01 {
-            body.right() - aside_width - CARD_GAP
+            body.right() - aside_width - gap
         } else {
             body.right()
         }
@@ -1069,7 +1240,7 @@ fn place(
             band = card.row;
             if x > body.x {
                 x = body.x;
-                y += row_height + CARD_GAP;
+                y += row_height + gap;
                 row_height = 0.0;
             }
         }
@@ -1077,13 +1248,13 @@ fn place(
         // card of a row, or a card wider than the panel would loop for ever.
         if x > body.x && x + want.width > right_at(y) + 0.01 {
             x = body.x;
-            y += row_height + CARD_GAP;
+            y += row_height + gap;
             row_height = 0.0;
         }
         let width = want.width.min((right_at(y) - x).max(0.0)).min(body.width);
-        cards[index] = Some(placed(x, y, width, want));
+        cards[index] = Some(placed(x, y, width, want, scale));
         row_height = row_height.max(want.height);
-        x += width + CARD_GAP;
+        x += width + gap;
     }
 
     cards
@@ -1249,6 +1420,9 @@ pub fn flopsynth_hit(layout: &FlopsynthLayout, x: f32, y: f32) -> Option<Flopsyn
     if !layout.add_effect.is_empty() && layout.add_effect.contains(x, y) {
         return Some(FlopsynthHit::AddEffect);
     }
+    if !layout.scale_chip.is_empty() && layout.scale_chip.contains(x, y) {
+        return Some(FlopsynthHit::Scale);
+    }
     for (card, placed) in layout.cards.iter().enumerate() {
         for (param, cell) in &placed.cells {
             if cell.contains(x, y) {
@@ -1296,6 +1470,112 @@ pub fn flop_knob_rect(cell: Rect) -> Rect {
 }
 
 // ------------------------------------------------------------- gestures ---
+
+/// Where a cell's three parts go — the caption, the control, the read-out
+/// — for a control of `size` and `kind` in `cell`, at `scale`.
+///
+/// A **full** cell is the three bands top to bottom, the knob at its size
+/// in the middle. A **half** cell (`FLOP_CELL_HALF` tall) holds a Small
+/// knob on the left with its caption and read-out stacked beside it, or a
+/// chooser's chip and a switch's pill under their caption with no read-out
+/// (the chip carries its value; the pill says on or off). The renderer
+/// draws from these rectangles and the hit tests read them, so the knob
+/// under the pointer is the knob that is drawn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellAnatomy {
+    pub caption: Rect,
+    pub control: Rect,
+    /// Empty when the cell has no read-out of its own.
+    pub readout: Rect,
+}
+
+pub fn cell_anatomy(cell: Rect, size: KnobSize, kind: &ParamKind, scale: f32) -> CellAnatomy {
+    if cell.is_empty() {
+        return CellAnatomy {
+            caption: Rect::ZERO,
+            control: Rect::ZERO,
+            readout: Rect::ZERO,
+        };
+    }
+    let text_h = CELL_TEXT_H * scale;
+    let half = cell.height < FLOP_CELL_H * scale - 0.5;
+    match (half, kind) {
+        // A chooser or a switch, in a half cell: the caption, then the chip
+        // or pill filling what is left.
+        (true, ParamKind::Choice(_) | ParamKind::Switch) => CellAnatomy {
+            caption: Rect::new(cell.x, cell.y, cell.width, text_h),
+            control: Rect::new(
+                cell.x,
+                cell.y + text_h,
+                cell.width,
+                (cell.height - text_h - 2.0 * scale).max(0.0),
+            ),
+            readout: Rect::ZERO,
+        },
+        // A Small knob: the caption across the top — "character" and "loop
+        // out" are Small knobs' captions and fit nothing narrower — then the
+        // knob at the left with its read-out beside it, right-aligned, and
+        // allowed a couple of pixels past the cell's edge: "centre" is
+        // thirty-three pixels and the room beside a twenty-pixel knob is
+        // thirty-one.
+        (true, _) => {
+            let knob = KNOB_SMALL * scale;
+            let inset = 3.0 * scale;
+            let control = Rect::new(
+                cell.x + inset,
+                cell.y + text_h + (cell.height - text_h - knob) / 2.0,
+                knob,
+                knob,
+            );
+            let words_x = control.right() + scale;
+            CellAnatomy {
+                caption: Rect::new(cell.x, cell.y + scale, cell.width, text_h),
+                control,
+                readout: Rect::new(
+                    words_x,
+                    control.y,
+                    (cell.right() + 2.0 * scale - words_x).max(0.0),
+                    knob,
+                ),
+            }
+        }
+        // A chooser or a switch that was given a whole cell (a grid with no
+        // halves): the caption and the control in the top half of it.
+        (false, ParamKind::Choice(_) | ParamKind::Switch) => {
+            let control_h = (FLOP_CELL_HALF * scale - text_h - 2.0 * scale).max(0.0);
+            CellAnatomy {
+                caption: Rect::new(cell.x, cell.y + 2.0 * scale, cell.width, text_h),
+                control: Rect::new(cell.x, cell.y + text_h + 4.0 * scale, cell.width, control_h),
+                readout: Rect::ZERO,
+            }
+        }
+        // A whole cell, the three bands: the knob at its size, centred in
+        // the room between the caption and the read-out — and never nearer
+        // the caption than the **modulation ring** needs: a bipolar arc grows
+        // from straight up, and a knob tight under its caption had its arc
+        // striking through the word naming it.
+        (false, _) => {
+            let knob = (size.pixels() * scale).min(cell.width - 4.0 * scale);
+            let caption = Rect::new(cell.x, cell.y + scale, cell.width, text_h);
+            let readout = Rect::new(cell.x, cell.bottom() - text_h - scale, cell.width, text_h);
+            let room = readout.y - caption.bottom();
+            CellAnatomy {
+                caption,
+                control: Rect::new(
+                    cell.x + (cell.width - knob) / 2.0,
+                    caption.bottom() + ((room - knob) / 2.0).max(RING_GAP + RING_BAND),
+                    knob,
+                    knob,
+                ),
+                readout,
+            }
+        }
+    }
+}
+
+/// One line of caption or read-out, at the design size: the small label's
+/// line.
+pub const CELL_TEXT_H: f32 = 12.0;
 
 /// The position a drag across a wave picture lands on, 0..=1.
 ///
@@ -1588,16 +1868,28 @@ pub const RING_GAP: f32 = 2.0;
 /// How wide the band is.
 pub const RING_BAND: f32 = 4.0;
 
+/// The ring's gap from the groove and its band, for a knob of this size: a
+/// Small knob in a half cell has no room for the full ring — it would strike
+/// through the caption over it and the cell under it — so it wears a thin
+/// one close in.
+pub fn ring_band(knob: Rect) -> (f32, f32) {
+    if knob.width < KNOB_MEDIUM - 0.5 {
+        (1.0, 3.0)
+    } else {
+        (RING_GAP, RING_BAND)
+    }
+}
+
 /// Whether `(x, y)` is on this control's modulation ring.
-pub fn ring_hit(cell: Rect, x: f32, y: f32) -> bool {
-    let knob = flop_knob_rect(cell);
+pub fn ring_hit(knob: Rect, x: f32, y: f32) -> bool {
     if knob.is_empty() {
         return false;
     }
+    let (gap, band) = ring_band(knob);
     let (cx, cy) = (knob.x + knob.width / 2.0, knob.y + knob.height / 2.0);
     let distance = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
-    let inner = knob.width / 2.0 + RING_GAP;
-    (inner..=inner + RING_BAND).contains(&distance)
+    let inner = knob.width / 2.0 + gap;
+    (inner..=inner + band).contains(&distance)
 }
 
 /// The depth a drag of `dy` pixels from `from` lands on, −1..=1.

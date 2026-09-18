@@ -22,6 +22,7 @@
 use fontelle_core::Patch;
 use fontelle_ui::canvas::{
     FlopsynthCard, FlopsynthPage, FlopsynthPicture, FlopsynthRoute, FlopsynthView, InstrumentGroup,
+    InstrumentParam, KnobSize,
 };
 
 /// How many points a wave picture is drawn from.
@@ -75,7 +76,10 @@ fn sound_peaks(samples: &[f32]) -> Vec<(f32, f32)> {
 /// sound and a synth page without an amp envelope is not one.
 fn page_of(name: &str) -> FlopsynthPage {
     match name {
-        "ENV 1 \u{b7} amp" | "ENV 2 \u{b7} filter" => FlopsynthPage::Synth,
+        // Every envelope is off the Synth page since 2026-09-18 (Ty's call
+        // on `docs/flopsynth-next.md` §3.5): the page is two bands of
+        // consoles over the mod strip, and the envelopes are edited in the
+        // strip's inspector — here on the Modulation page until it lands.
         n if n.starts_with("LFO") || n.starts_with("ENV") => FlopsynthPage::Modulation,
         n if n.starts_with("Modulation") => FlopsynthPage::Modulation,
         n if n.starts_with("FX ") => FlopsynthPage::Effects,
@@ -92,32 +96,78 @@ fn page_of(name: &str) -> FlopsynthPage {
 /// the reason `FlopsynthCard::row` gives — this is the layer that knows what
 /// each card *is*, and the shape of the page is a fact about that.
 ///
-/// The Synth page is three bands: the sources, with the sub and the noise set
-/// aside so the three oscillators can be six cells wide; the filters, with
-/// the channel's own two knobs ending the row, which is where the sound goes
-/// out; and the two envelopes with the voice and the macros beside them.
+/// The Synth page is two bands (§3.5, with the envelopes off it): the
+/// sources, with the sub and the noise set aside so the three oscillators
+/// can be five cells wide beside them; and the filters with the channel's
+/// own two knobs, the voice and the macros. The widths are the fit's at
+/// 1180×840 on the 56×72 grid: three oscillators at five and the aside at
+/// four fill the width to twelve pixels, and two filters at four with the
+/// three small cards leave a hundred over.
 fn shape_of(name: &str) -> (usize, bool, usize) {
     match name {
         // The sources, across the top.
-        "OSC A" | "OSC B" | "OSC C" => (0, false, 6),
-        "SUB" | "NOISE" => (0, true, 3),
-        // What they go through, and the way out.
-        n if n.starts_with("Filter") => (1, false, 5),
-        "Channel" => (1, false, 2),
-        // What moves those.
-        "ENV 1 \u{b7} amp" | "ENV 2 \u{b7} filter" => (2, false, 5),
-        "Voice" => (2, false, 3),
-        "Macros" => (2, false, 4),
-        // The Modulation page's own bands: the LFOs, then the two spare
-        // envelopes.
-        n if n.starts_with("LFO") => (0, false, 5),
-        n if n.starts_with("ENV") => (1, false, 5),
+        "OSC A" | "OSC B" | "OSC C" => (0, false, 5),
+        "SUB" | "NOISE" => (0, true, 4),
+        // What they go through, the way out, and what shapes the voice.
+        n if n.starts_with("Filter") => (1, false, 4),
+        "Voice" => (1, false, 3),
+        "Macros" => (1, false, 4),
+        // The Modulation page's own bands: the LFOs, then the envelopes —
+        // four across, so four of each fit a row.
+        n if n.starts_with("LFO") => (0, false, 4),
+        n if n.starts_with("ENV") => (1, false, 4),
         // The matrix and the chain, each on its own band so a long list of
         // routes does not push a chorus onto the same line. An effect's card
         // is as wide as its count says.
         n if n.starts_with("Modulation") => (4, false, 0),
         _ => (5, false, 0),
     }
+}
+
+/// How big each control's knob is (`docs/flopsynth-next.md` §3.1, §3.5),
+/// read off the card's name and the control's caption — the layer that
+/// knows what a control *is* says how big it is drawn. One Large knob per
+/// card: the one a player reaches for first — an oscillator's position,
+/// start or brightness, a filter's cutoff, an envelope's decay, an LFO's
+/// rate. The continuous controls Medium. The fine adjustments — pan, fine,
+/// semis, width, blend, phase, a filter's key tracking, an envelope's
+/// shapes — Small, which is half a cell. The sub and the noise are set
+/// aside and small, so nothing on them is Large.
+fn knob_sizes(name: &str, params: &[InstrumentParam]) -> Vec<KnobSize> {
+    let large: &[&str] = match name {
+        n if n.starts_with("OSC") => &["pos", "start", "bright"],
+        n if n.starts_with("Filter") => &["cutoff"],
+        n if n.starts_with("ENV") => &["decay"],
+        n if n.starts_with("LFO") => &["rate"],
+        _ => &[],
+    };
+    let small: &[&str] = match name {
+        n if n.starts_with("OSC") || n == "SUB" => &[
+            "pan", "fine", "semis", "width", "blend", "phase", "pos", "ring", "loop in",
+            "loop out", "grain", "spray",
+        ],
+        "NOISE" => &["pan", "fine", "semis"],
+        n if n.starts_with("Filter") => &["key trk", "character"],
+        n if n.starts_with("ENV") => &["a shape", "d shape", "r shape"],
+        n if n.starts_with("LFO") => &["delay", "fade", "phase", "smooth"],
+        "Voice" => &["bend"],
+        _ => &[],
+    };
+    params
+        .iter()
+        .map(|param| {
+            let label = param.label.as_str();
+            // The sub's position is small: it is set aside. An oscillator's
+            // is the knob the card is about.
+            if name != "SUB" && large.contains(&label) {
+                KnobSize::Large
+            } else if small.contains(&label) {
+                KnobSize::Small
+            } else {
+                KnobSize::Medium
+            }
+        })
+        .collect()
 }
 
 /// Which of the patch's layers a card of this name is, if it is an
@@ -408,7 +458,20 @@ pub fn describe(
         voices,
         lfo_phases: phases,
     } = heard;
-    let view = crate::instrument::describe_flopsynth(title, patch, gain_db, pan);
+    let mut view = crate::instrument::describe_flopsynth(title, patch, gain_db, pan);
+    // The channel's two knobs ride on the Voice card in this window: the
+    // aside column stands beside both bands, and five cards in the second
+    // did not fit the room it leaves (`fontelle-ui/tests/flopsynth.rs`,
+    // `synth_page`). The panel's own list keeps its Channel group — the
+    // addresses are the same wherever the knobs are drawn.
+    if let Some(channel) = view.groups.iter().position(|g| g.name == "Channel") {
+        let channel = view.groups.remove(channel);
+        if let Some(voice) = view.groups.iter_mut().find(|g| g.name == "Voice") {
+            voice.params.extend(channel.params);
+        } else {
+            view.groups.push(channel);
+        }
+    }
     let sources: Vec<String> = match page {
         FlopsynthPage::Modulation => fontelle_core::flopsynth::sources(patch)
             .into_iter()
@@ -441,6 +504,7 @@ pub fn describe(
                     // the window — see `Session::remove_patch_effect`.
                     removable: group.name.starts_with("FX "),
                     picture: picture_for(&group.name, patch, &phases),
+                    sizes: knob_sizes(&group.name, &group.params),
                     group,
                 }
             })
@@ -455,6 +519,7 @@ pub fn describe(
         },
         browse: Default::default(),
         matrix_scroll: 0.0,
+        scale: 1.0,
         fx_room: page == FlopsynthPage::Effects && patch.fx.len() < fontelle_core::MAX_PATCH_FX,
     }
 }

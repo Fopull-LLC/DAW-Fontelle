@@ -521,6 +521,9 @@ enum MenuTarget {
     /// Flopsynth's `+ effect` list (`docs/flopsynth-plan.md` §8.5): which
     /// kind to put on the end of the instrument's own chain.
     AddPatchEffect,
+    /// Flopsynth's scale chooser (`docs/flopsynth-next.md` §3.2): one of
+    /// `canvas::SCALES`.
+    FlopScale,
     /// A sound for one of Flopsynth's oscillators — the Import tab's audio
     /// folder, listed — for the card at `card` whose layer is `layer`.
     /// Opened by the right button on an oscillator's picture, and by the
@@ -594,7 +597,9 @@ impl MenuTarget {
             | Self::PresetSaveName(editor)
             | Self::PresetCategory(editor)
             | Self::PresetNewCategory(editor) => Some(*editor),
-            Self::AddPatchEffect | Self::LoadSound { .. } => Some(EditorKind::Instrument),
+            Self::AddPatchEffect | Self::FlopScale | Self::LoadSound { .. } => {
+                Some(EditorKind::Instrument)
+            }
             // The mixer is in the main window, so its menus are too.
             Self::TrackMenu(_)
             | Self::TrackPresetMenu(_)
@@ -3993,16 +3998,24 @@ impl WindowApp {
         // the same reason and by the same rule: what opens is decided by what
         // is in the slot, not by the editor's kind. See `layout::TUNE_SIZE`.
         let tune = kind == EditorKind::Effect && self.tune.is_some();
-        let (w, h) = match (flopsynth, tune) {
-            (true, _) => crate::layout::FLOPSYNTH_SIZE,
+        // Flopsynth's window opens at its design size times its scale, and
+        // refuses to be smaller: nothing on it shrinks (§3.1), so there is
+        // no smaller size at which the page still fits.
+        let flop_size = self
+            .flopsynth
+            .as_ref()
+            .map(|view| crate::layout::flopsynth_window_size(view.scale));
+        let (w, h) = match (flop_size, tune) {
+            (Some(size), _) => size,
             (_, true) => crate::layout::TUNE_SIZE,
             _ => kind.default_size(),
         };
-        let (min_w, min_h) = match (flopsynth, tune) {
-            (true, _) => crate::layout::FLOPSYNTH_MINIMUM,
+        let (min_w, min_h) = match (flop_size, tune) {
+            (Some(size), _) => size,
             (_, true) => crate::layout::TUNE_MINIMUM,
             _ => kind.minimum_size(),
         };
+        let _ = flopsynth;
         let attributes = Window::default_attributes()
             .with_title(self.editor_title(kind))
             .with_inner_size(winit::dpi::LogicalSize::new(w, h))
@@ -5469,6 +5482,12 @@ impl WindowApp {
         if let Some(view) = &self.flopsynth {
             let voices = crate::render::voice_count_label(view.voices);
             want(&mut self.labels, &mut self.text, &voices);
+            // The scale chooser's chip, at the small size it is drawn at.
+            self.labels.ensure_small(
+                &crate::render::scale_label(view.scale),
+                &font,
+                &mut self.text,
+            );
         }
         // The Modulation page's badges and matrix rows, which are the source
         // and destination names the host worked out.
@@ -8142,6 +8161,18 @@ impl WindowApp {
             self.after_flop_structure();
             return;
         }
+        // The scale chooser on the tab strip (§3.2).
+        if let Some(crate::canvas::FlopsynthHit::Scale) = hit {
+            let chip = self.flopsynth_layout.scale_chip;
+            let bounds = self
+                .editors
+                .iter()
+                .find(|e| e.kind == EditorKind::Instrument)
+                .map(|e| e.panel.frame)
+                .unwrap_or(self.layout.window);
+            self.open_menu(MenuTarget::FlopScale, chip.x, chip.bottom(), bounds);
+            return;
+        }
         // An effect card's header is its handle: a drag reorders the chain.
         // Only an effect's — the header of an oscillator is its name.
         if let Some(crate::canvas::FlopsynthHit::Header { card }) = hit {
@@ -8164,8 +8195,8 @@ impl WindowApp {
         // The modulation ring sits **outside** the knob's groove, so a press
         // that lands on it is a depth and not a value — see `ring_hit`, which
         // is where that band is defined.
-        if let Some(cell) = self.flop_cell(which)
-            && crate::canvas::ring_hit(cell, x, y)
+        if let Some(knob) = self.flop_knob_rect(which)
+            && crate::canvas::ring_hit(knob, x, y)
             && let Some((depth, _)) = self.route_depth(which)
         {
             self.flop_ring = Some((which, y, depth));
@@ -8404,6 +8435,19 @@ impl WindowApp {
             .map(|(_, cell)| *cell)
     }
 
+    /// Where a control's knob is drawn — `cell_anatomy`'s answer, which is
+    /// the renderer's too, so the ring a press lands on is the ring drawn.
+    fn flop_knob_rect(&self, which: (usize, usize)) -> Option<crate::layout::Rect> {
+        let cell = self.flop_cell(which)?;
+        let view = self.flopsynth.as_ref()?;
+        let card = view.cards.get(which.0)?;
+        let param = card.group.params.get(which.1)?;
+        Some(
+            crate::canvas::cell_anatomy(cell, card.size_of(which.1), &param.kind, view.scale)
+                .control,
+        )
+    }
+
     /// The depth of the newest route to this control, if anything modulates
     /// it.
     ///
@@ -8629,6 +8673,30 @@ impl WindowApp {
         }
         self.tree.invalidate(PANEL);
         self.redraw_editors();
+    }
+
+    /// Chooses the window's scale (§3.2): a setting on the host, and the
+    /// window sized to the page at it — the design size times the scale,
+    /// which is also the least it may be dragged to. The view is rebuilt
+    /// on the next refresh with the scale on it, and the layout follows.
+    fn set_flopsynth_scale(&mut self, scale: f32) {
+        if let Some(doc) = self.options.document.as_mut() {
+            doc.set_flopsynth_scale(scale);
+        }
+        if let Some(view) = &mut self.flopsynth {
+            view.scale = scale;
+        }
+        let (w, h) = crate::layout::flopsynth_window_size(scale);
+        if let Some(editor) = self
+            .editors
+            .iter()
+            .find(|e| e.kind == EditorKind::Instrument)
+        {
+            let size = winit::dpi::LogicalSize::new(w, h);
+            editor.window.set_min_inner_size(Some(size));
+            let _ = editor.window.request_inner_size(size);
+        }
+        self.after_flop_structure();
     }
 
     fn drop_flop_slot(&mut self) {
@@ -11518,6 +11586,19 @@ impl WindowApp {
                 }
                 entries
             }
+            MenuTarget::FlopScale => {
+                let current = self.flopsynth.as_ref().map_or(1.0, |view| view.scale);
+                let mut entries = vec![MenuEntry::disabled("Window scale")];
+                for scale in crate::canvas::SCALES {
+                    let label = crate::render::scale_label(scale);
+                    entries.push(if (scale - current).abs() < 0.001 {
+                        MenuEntry::disabled(label)
+                    } else {
+                        MenuEntry::new(label)
+                    });
+                }
+                entries
+            }
             MenuTarget::LoadSound { card, .. } => {
                 let name = self
                     .flopsynth
@@ -12340,6 +12421,14 @@ impl WindowApp {
                     doc.add_patch_effect(kind);
                 }
                 self.after_flop_structure();
+            }
+            (MenuTarget::FlopScale, index) => {
+                let scale = index
+                    .checked_sub(1)
+                    .and_then(|which| crate::canvas::SCALES.get(which).copied());
+                if let Some(scale) = scale {
+                    self.set_flopsynth_scale(scale);
+                }
             }
             // ---- the mixer strip's own menu -------------------------
             (MenuTarget::TrackMenu(strip), index) => {

@@ -8240,6 +8240,35 @@ fn draw_flopsynth_chrome(
             },
         );
     }
+    // The scale chooser (§3.2): a chip on the strip reading the scale, lit
+    // under the pointer like a tab.
+    if !l.scale_chip.is_empty() {
+        let chip = l.scale_chip.inset(2.0);
+        let lit = chip.contains(chrome.hover_at.0, chrome.hover_at.1);
+        fill_rect_rounded(
+            scene,
+            chip,
+            m.corner_radius,
+            if lit { p.panel_header } else { p.panel },
+        );
+        stroke_rect_rounded(
+            scene,
+            chip,
+            m.corner_radius,
+            1.0,
+            if lit { p.accent } else { p.border },
+        );
+        if let Some(text) = labels.get_small(&scale_label(chrome.view.scale)) {
+            draw_text_clipped(
+                scene,
+                text,
+                chip,
+                chip.x + ((chip.width - text.width) / 2.0).max(1.0),
+                chip.y + (chip.height - text.height) / 2.0,
+                if lit { p.text } else { p.text_muted },
+            );
+        }
+    }
 
     // The source badges. Violet, because they are the thing the violet arcs
     // come from — one ink for one idea (§8.1 rule 6).
@@ -8395,6 +8424,13 @@ pub fn voice_count_label(voices: usize) -> String {
     }
 }
 
+/// What the scale chooser reads: "100 %". A function, for
+/// [`voice_count_label`]'s reason — shaped ahead and drawn under one
+/// spelling.
+pub fn scale_label(scale: f32) -> String {
+    format!("{} %", (scale * 100.0).round() as i32)
+}
+
 /// The matrix panel's heading, and what it says when it is empty.
 pub const MATRIX_HEADING: &str = "Modulation matrix";
 pub const NO_ROUTES: &str = "no routes \u{2014} drag a source onto a knob";
@@ -8410,14 +8446,14 @@ pub const NO_ROUTES: &str = "no routes \u{2014} drag a source onto a knob";
 /// and the caption sits in its first fourteen, so a ring that went over the
 /// top struck through the word naming the knob it belonged to. A bipolar depth
 /// grows from straight up, which is the middle of that sweep.
-fn draw_modulation_ring(scene: &mut Scene, theme: &Theme, cell: Rect, depth: f32, lit: bool) {
+fn draw_modulation_ring(scene: &mut Scene, theme: &Theme, knob: Rect, depth: f32, lit: bool) {
     use vello::kurbo::{BezPath, Stroke};
 
-    let knob = crate::canvas::flop_knob_rect(cell);
     if knob.is_empty() {
         return;
     }
-    let radius = knob.width / 2.0 + crate::canvas::RING_GAP + crate::canvas::RING_BAND / 2.0;
+    let (gap, band) = crate::canvas::ring_band(knob);
+    let radius = knob.width / 2.0 + gap + band / 2.0;
     let (cx, cy) = (knob.x + knob.width / 2.0, knob.y + knob.height / 2.0);
     // `draw_knob`'s own angles, so the two are one control: `t` runs 0..1 over
     // the sweep and `0.5` is straight up.
@@ -8631,22 +8667,32 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
                 .map(|(_, depth)| *depth);
             let takes =
                 chrome.assigning.is_some() && chrome.destinations.contains(&(index, *param_index));
-            if depth.is_some() || takes {
-                draw_modulation_ring(scene, theme, *cell, depth.unwrap_or(0.0), takes);
-            }
 
-            // The caption above, the control between, the read-out below —
-            // the same three-band cell the general grid uses, at the small
-            // size. A chooser carries its value inside its chip and has no
-            // read-out under it.
-            let control = crate::canvas::flop_knob_rect(*cell);
-            let caption = Rect::new(cell.x, cell.y, cell.width, control.y - cell.y);
-            let readout = Rect::new(
-                cell.x,
-                control.bottom(),
-                cell.width,
-                (cell.bottom() - control.bottom()).max(0.0),
+            // The caption, the control and the read-out, where
+            // `cell_anatomy` puts them for this control's size and kind
+            // (§3.1): the three bands of a whole cell, or a Small knob with
+            // its words beside it, or a chip or pill under its caption in a
+            // half cell. The hit tests read the same rectangles.
+            let anatomy = crate::canvas::cell_anatomy(
+                *cell,
+                card.size_of(*param_index),
+                &param.kind,
+                chrome.view.scale,
             );
+            let (caption, control, readout) = (anatomy.caption, anatomy.control, anatomy.readout);
+            let half = cell.height < crate::canvas::FLOP_CELL_H * chrome.view.scale - 0.5;
+            if (depth.is_some() || takes) && matches!(param.kind, ParamKind::Knob) {
+                draw_modulation_ring(scene, theme, control, depth.unwrap_or(0.0), takes);
+            }
+            // A whole cell centres its read-out; a half knob's sits beside
+            // the knob, against the cell's right edge.
+            let words_x = |band: Rect, width: f32| {
+                if half && matches!(param.kind, ParamKind::Knob) {
+                    (band.right() - width).max(band.x)
+                } else {
+                    band.x + ((band.width - width) / 2.0).max(1.0)
+                }
+            };
             if let Some(label) = labels.get_small(&param.label) {
                 draw_text_clipped(
                     scene,
@@ -8674,21 +8720,31 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
                             scene,
                             label,
                             readout,
-                            readout.x + ((readout.width - label.width) / 2.0).max(1.0),
+                            words_x(readout, label.width),
                             readout.y + (readout.height - label.height) / 2.0,
                             if hot { p.accent } else { p.text },
                         );
                     }
                 }
                 ParamKind::Switch => {
-                    draw_flop_switch(scene, theme, control, cell.width, param.value >= 0.5, lit);
+                    // The pill at the left of its band and the word beside
+                    // it (§3.3: the caption on the pill, not under it).
+                    let pill_w = (control.width * 0.55).clamp(18.0, 34.0);
+                    let pill = Rect::new(control.x + 2.0, control.y, pill_w, control.height);
+                    draw_flop_switch(scene, theme, pill, pill_w + 12.0, param.value >= 0.5, lit);
                     if let Some(label) = labels.get_small(&param.display) {
+                        let word = Rect::new(
+                            pill.right() + 4.0,
+                            control.y,
+                            (control.right() - pill.right() - 4.0).max(0.0),
+                            control.height,
+                        );
                         draw_text_clipped(
                             scene,
                             label,
-                            readout,
-                            readout.x + ((readout.width - label.width) / 2.0).max(1.0),
-                            readout.y + (readout.height - label.height) / 2.0,
+                            word,
+                            word.x,
+                            word.y + (word.height - label.height) / 2.0,
                             p.text,
                         );
                     }
@@ -8696,9 +8752,9 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
                 ParamKind::Choice(_) => {
                     let inset = crate::canvas::CHIP_INSET;
                     let chip = Rect::new(
-                        cell.x + inset,
+                        control.x + inset,
                         control.y,
-                        cell.width - inset * 2.0,
+                        control.width - inset * 2.0,
                         control.height,
                     );
                     draw_flop_chip(scene, theme, labels, chip, &param.display, lit);

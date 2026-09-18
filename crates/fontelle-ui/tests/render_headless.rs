@@ -3321,6 +3321,7 @@ fn shoot_flopsynth_in(
                 aside: false,
                 columns: 0,
                 removable: false,
+                sizes: Vec::new(),
                 group: InstrumentGroup {
                     name: "OSC A".to_string(),
                     params: vec![knob("pos", 0.3), knob("level", 0.7)],
@@ -3338,6 +3339,7 @@ fn shoot_flopsynth_in(
                 aside: false,
                 columns: 0,
                 removable: false,
+                sizes: Vec::new(),
                 group: InstrumentGroup {
                     name: "Filter 1".to_string(),
                     params: vec![knob("cutoff", 0.6), knob("res", 0.2)],
@@ -3734,6 +3736,7 @@ fn shoot_tune() -> Option<TuneShot> {
             aside: false,
             columns,
             removable: false,
+            sizes: Vec::new(),
         };
     let choice = |name: &str, at: usize, options: &[&str]| InstrumentParam {
         address: ParamAddress::new(format!("mixer/track[0]/insert[0]/{name}")),

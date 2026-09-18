@@ -1834,6 +1834,16 @@ pub trait StudioHost: DocumentHost {
         Vec::new()
     }
 
+    /// Flopsynth's window scale (`docs/flopsynth-next.md` §3.2), one of
+    /// `canvas::SCALES`. The view carries it (`FlopsynthView::scale`) and
+    /// the window opens at `layout::flopsynth_window_size` of it.
+    fn flopsynth_scale(&self) -> f32 {
+        1.0
+    }
+    /// Chooses the scale — kept as a setting. A scale the window does not
+    /// offer changes nothing.
+    fn set_flopsynth_scale(&mut self, _scale: f32) {}
+
     /// Puts an effect of `kind` on the end of the selected instrument's own
     /// chain. Refused, quietly, when the chain is full.
     fn add_patch_effect(&mut self, _kind: fontelle_types::EffectKind) {}

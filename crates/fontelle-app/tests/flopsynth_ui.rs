@@ -338,7 +338,11 @@ fn a_flopsynth_channel_offers_its_own_window_and_nothing_else_does() {
     };
     assert_eq!(band("OSC A"), band("OSC C"), "the oscillators share a band");
     assert!(band("Filter 1") > band("OSC A"));
-    assert!(band("Macros") > band("Filter 1"));
+    assert_eq!(
+        band("Macros"),
+        band("Filter 1"),
+        "two bands since the envelopes left the page"
+    );
 
     // The LFOs are on the page that is about modulation (§8.4), not on the one
     // about making the sound — which is what the page split is for.
@@ -381,10 +385,15 @@ fn a_flopsynth_channel_offers_its_own_window_and_nothing_else_does() {
         picture("Filter 1"),
         FlopsynthPicture::Response { .. }
     ));
-    assert!(matches!(
-        picture("ENV 1 \u{b7} amp"),
-        FlopsynthPicture::Envelope { .. }
-    ));
+    // The envelopes are on the Modulation page since the Synth page became
+    // two bands, and the picture is the same picture.
+    let env = modulation
+        .cards
+        .iter()
+        .find(|c| c.group.name == "ENV 1 \u{b7} amp")
+        .map(|c| c.picture.clone())
+        .expect("the Modulation page draws the envelopes");
+    assert!(matches!(env, FlopsynthPicture::Envelope { .. }));
     // The LFO's picture is on its own page, and it is the same picture.
     let lfo = modulation
         .cards
@@ -579,7 +588,7 @@ fn the_synth_page_declares_each_cards_shape() {
             .unwrap_or_else(|| panic!("no card called {name}"))
     };
     for osc in ["OSC A", "OSC B", "OSC C"] {
-        assert_eq!(card(osc).columns, 6, "{osc} is six cells across");
+        assert_eq!(card(osc).columns, 5, "{osc} is five cells across");
         assert!(!card(osc).aside);
     }
     for slim in ["SUB", "NOISE"] {
@@ -587,15 +596,14 @@ fn the_synth_page_declares_each_cards_shape() {
             card(slim).aside,
             "{slim} stands aside, in a column of its own"
         );
-        assert_eq!(card(slim).columns, 3);
+        assert_eq!(card(slim).columns, 4);
         assert_eq!(
             card(slim).row,
             card("OSC A").row,
             "and is a source, so it is in their band"
         );
     }
-    // However many filters the patch has — the Init patch has two of the
-    // three slots — each is five across, in the second band.
+    // Both filters four across, in the second band.
     let filters: Vec<_> = view
         .cards
         .iter()
@@ -603,20 +611,16 @@ fn the_synth_page_declares_each_cards_shape() {
         .collect();
     assert!(!filters.is_empty());
     for filter in filters {
-        assert_eq!(filter.columns, 5);
+        assert_eq!(filter.columns, 4);
         assert!(!filter.aside);
     }
-    assert_eq!(card("ENV 1 \u{b7} amp").columns, 5);
     assert_eq!(card("Voice").columns, 3);
     assert_eq!(card("Macros").columns, 4);
-    assert_eq!(card("Channel").columns, 2);
-    // The channel's two knobs end the filters' row — where the sound goes out
-    // — and the voice and the macros stand beside the envelopes.
-    assert_eq!(card("Channel").row, card("Filter 1").row);
-    assert_eq!(card("Voice").row, card("ENV 1 \u{b7} amp").row);
-    assert_eq!(card("Macros").row, card("ENV 1 \u{b7} amp").row);
+    // The voice (with the channel's two knobs) and the macros share the
+    // filters' band: two bands, the envelopes off the page.
+    assert_eq!(card("Voice").row, card("Filter 1").row);
+    assert_eq!(card("Macros").row, card("Filter 1").row);
     assert!(card("Filter 1").row > card("OSC A").row);
-    assert!(card("ENV 1 \u{b7} amp").row > card("Filter 1").row);
     // And the whole page fits the window it opens at — the layout's own test
     // holds this with a fixture; this holds it with the real view.
     let theme = fontelle_ui::theme::Theme::dark_default();
@@ -1045,7 +1049,7 @@ fn at_the_minimum_size_the_grand_pianos_synth_page_keeps_every_cell_whole() {
             .map(|l| l.width)
             .unwrap_or_else(|| fontelle_ui::canvas::estimated_width(s))
     };
-    let (w, h) = fontelle_ui::layout::FLOPSYNTH_MINIMUM;
+    let (w, h) = fontelle_ui::layout::flopsynth_window_size(1.0);
     let body = fontelle_ui::layout::editor_window_layout(w as f32, h as f32, &theme.metrics).body;
     let layout = fontelle_ui::canvas::flopsynth_layout_with(body, &theme.metrics, &view, &measure);
     for (index, placed) in layout.cards.iter().enumerate() {
@@ -1059,8 +1063,13 @@ fn at_the_minimum_size_the_grand_pianos_synth_page_keeps_every_cell_whole() {
             if is_nameplate_control(control) {
                 continue;
             }
+            let expected = if view.cards[index].is_half(*param) {
+                fontelle_ui::canvas::FLOP_CELL_HALF
+            } else {
+                FLOP_CELL_H
+            };
             assert!(
-                cell.width >= FLOP_CELL_W - 0.01 && (cell.height - FLOP_CELL_H).abs() < 0.01,
+                cell.width >= FLOP_CELL_W - 0.01 && (cell.height - expected).abs() < 0.01,
                 "{}'s {} is {}x{} at {w}x{h}",
                 view.cards[index].group.name,
                 control.label,
@@ -1069,4 +1078,139 @@ fn at_the_minimum_size_the_grand_pianos_synth_page_keeps_every_cell_whole() {
             );
         }
     }
+}
+
+/// §3.1 and §3.5: every card declares a knob size per control — exactly one
+/// Large per oscillator, filter and envelope (the knob a player reaches for
+/// first: position or start or bright, cutoff, decay), the fine adjustments
+/// Small, the rest Medium — and the two pages are composed as Ty decided on
+/// 2026-09-18: the envelopes are off the Synth page, which is the sources
+/// over the filters, the channel, the voice and the macros.
+#[test]
+fn every_card_declares_its_knob_sizes_and_the_synth_page_is_two_bands() {
+    use fontelle_ui::canvas::{FlopsynthPage, KnobSize};
+    let session = common::a_session_for(fontelle_app::blank_project(8, 120.0, SR));
+    let view = session
+        .flopsynth(FlopsynthPage::Synth)
+        .expect("Flopsynth's window");
+    let card = |name: &str| {
+        view.cards
+            .iter()
+            .find(|c| c.group.name == name)
+            .unwrap_or_else(|| panic!("no card called {name}"))
+    };
+    let large_of = |name: &str| -> Vec<String> {
+        let c = card(name);
+        c.group
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| c.size_of(*i) == KnobSize::Large)
+            .map(|(_, p)| p.label.clone())
+            .collect()
+    };
+    for c in &view.cards {
+        assert_eq!(
+            c.sizes.len(),
+            c.group.params.len(),
+            "{} declares a size for every control",
+            c.group.name
+        );
+    }
+    // The Grand Piano: two sampled oscillators, one string.
+    assert_eq!(large_of("OSC A"), ["start"]);
+    assert_eq!(large_of("OSC C"), ["bright"]);
+    assert_eq!(large_of("Filter 1"), ["cutoff"]);
+    assert!(
+        large_of("SUB").is_empty(),
+        "the sub is set aside, nothing on it is Large"
+    );
+    let small = |name: &str, label: &str| {
+        let c = card(name);
+        let i = c
+            .group
+            .params
+            .iter()
+            .position(|p| p.label == label)
+            .unwrap();
+        c.size_of(i) == KnobSize::Small
+    };
+    for label in ["pan", "semis", "fine", "width", "blend"] {
+        assert!(small("OSC A", label), "{label} is a fine adjustment");
+    }
+    assert!(small("Filter 1", "key trk"));
+    assert!(!small("OSC A", "level") && !small("OSC A", "unison"));
+
+    // Two bands: sources in 0, everything else in 1, nothing further.
+    for c in &view.cards {
+        let expected = match c.group.name.as_str() {
+            "OSC A" | "OSC B" | "OSC C" | "SUB" | "NOISE" => 0,
+            _ => 1,
+        };
+        assert_eq!(c.row, expected, "{} is in band {}", c.group.name, c.row);
+        assert!(
+            !c.group.name.starts_with("ENV"),
+            "{} is on the Synth page",
+            c.group.name
+        );
+    }
+    assert_eq!(card("OSC A").columns, 5);
+    assert_eq!(card("SUB").columns, 4);
+    assert!(card("SUB").aside && card("NOISE").aside);
+    assert_eq!(card("Filter 1").columns, 4);
+    // The channel's two knobs ride on the Voice card: five cards did not
+    // fit the second band beside the aside column.
+    assert!(view.cards.iter().all(|c| c.group.name != "Channel"));
+    let voice = card("Voice");
+    assert!(voice.group.params.iter().any(|p| p.label == "volume"));
+    assert!(voice.group.params.iter().any(|p| p.label == "pan"));
+    // And the envelopes are on the Modulation page, with the LFOs, until
+    // the inspector takes them.
+    let modulation = session.flopsynth(FlopsynthPage::Modulation).unwrap();
+    assert!(
+        modulation
+            .cards
+            .iter()
+            .any(|c| c.group.name == "ENV 1 \u{b7} amp")
+    );
+    assert_eq!(large_of("Macros").len(), 0);
+    let env = modulation
+        .cards
+        .iter()
+        .find(|c| c.group.name == "ENV 1 \u{b7} amp")
+        .unwrap();
+    let decay = env
+        .group
+        .params
+        .iter()
+        .position(|p| p.label == "decay")
+        .unwrap();
+    assert_eq!(env.size_of(decay), KnobSize::Large);
+}
+
+/// §3.2: the scale is a setting — chosen once, kept — and the view carries
+/// it so the layout multiplies by it. A scale the window does not offer is
+/// refused rather than written.
+#[test]
+fn the_scale_is_a_setting_the_view_carries() {
+    use fontelle_ui::canvas::FlopsynthPage;
+    let dir = std::env::temp_dir().join(format!("fontelle-scale-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut session = common::a_session_for(fontelle_app::blank_project(8, 120.0, SR))
+        .with_settings_path(dir.join("settings.json"));
+    assert_eq!(session.flopsynth_scale(), 1.0);
+    assert_eq!(session.flopsynth(FlopsynthPage::Synth).unwrap().scale, 1.0);
+    session.set_flopsynth_scale(1.25);
+    assert_eq!(session.flopsynth_scale(), 1.25);
+    assert_eq!(session.flopsynth(FlopsynthPage::Synth).unwrap().scale, 1.25);
+    let (saved, error) = fontelle_app::settings::Settings::load_from(&dir.join("settings.json"));
+    assert!(error.is_none());
+    assert_eq!(saved.flopsynth_scale_percent, 125, "kept for next time");
+    session.set_flopsynth_scale(3.0);
+    assert_eq!(
+        session.flopsynth_scale(),
+        1.25,
+        "not a scale the window offers"
+    );
+    std::fs::remove_dir_all(&dir).ok();
 }

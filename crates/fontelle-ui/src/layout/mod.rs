@@ -663,23 +663,26 @@ impl EditorKind {
 /// is the experiment's number, for him to keep or send back.
 pub const FLOPSYNTH_SIZE: (u32, u32) = (1180, 840);
 
-/// And the smallest it may be dragged to.
+/// The size Flopsynth's window opens at — and the smallest it may be — at
+/// `scale`, one of `canvas::SCALES` (`docs/flopsynth-next.md` §3.2).
 ///
-/// **The size at which no cell shrinks.** It was 980×620 — the point at which
-/// the cards had given up their air, their pictures and a fifth of every
-/// cell — and at that size the captions and values, designed for a 52-pixel
-/// cell, were cut: "20.00 kH", "Hardne:macro 3"
-/// (`docs/flopsynth-next.md` §1.4(3)). The layout cannot measure text; what
-/// it can promise is the cell the text was drawn for, so the floor is where
-/// the shrink cascade stops touching cells — the design width, at which the
-/// three oscillators and the aside column exactly fill a row, and the
-/// height at which the Grand Piano's Synth page fits with its pictures at
-/// their floor and the canopy at its least (measured by
-/// `tests/flopsynth_ui.rs`; ten short of the design height since the
-/// choosers began to be measured rather than counted). The scale chooser of
-/// `docs/flopsynth-next.md` §3.2 is what will make a smaller window
-/// possible.
-pub const FLOPSYNTH_MINIMUM: (u32, u32) = (1180, 830);
+/// The design size times the scale, and nothing under it: the shrink
+/// cascade is gone, so there is no smaller size at which the page still
+/// fits. A player who wants a smaller window chooses a smaller scale, and
+/// the window sizes itself to it. A larger window than this is air under
+/// the consoles.
+pub fn flopsynth_window_size(scale: f32) -> (u32, u32) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let (w, h) = FLOPSYNTH_SIZE;
+    (
+        (w as f32 * scale).round() as u32,
+        (h as f32 * scale).round() as u32,
+    )
+}
 
 /// What the pitch corrector's console opens at (`docs/tune-plan.md` §7.2).
 ///

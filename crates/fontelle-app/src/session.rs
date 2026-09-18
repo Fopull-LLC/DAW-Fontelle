@@ -7271,6 +7271,14 @@ impl StudioHost for Session {
         Session::move_patch_effect(self, from, to);
     }
 
+    fn flopsynth_scale(&self) -> f32 {
+        Session::flopsynth_scale(self)
+    }
+
+    fn set_flopsynth_scale(&mut self, scale: f32) {
+        Session::set_flopsynth_scale(self, scale);
+    }
+
     fn instrument(&self) -> Option<InstrumentView> {
         let channel_id = self.selected_channel_id()?;
         let channel = self.project.channels.get(channel_id)?;
@@ -7412,6 +7420,7 @@ impl StudioHost for Session {
             },
             bank,
         );
+        view.scale = self.flopsynth_scale();
         // The ring §12.2 asks for. Built once for the whole window rather than
         // one question per knob, since answering it walks every clip.
         let automated = fontelle_model::automated_targets(&self.project);
@@ -9927,6 +9936,36 @@ impl Session {
         let slot = patch.fx.remove(from);
         patch.fx.insert(to, slot);
         self.store_patch_structural(channel, patch);
+    }
+
+    /// Flopsynth's window scale, one of `canvas::SCALES` — a setting, so a
+    /// person who chose 75 % for a small screen chose it for good
+    /// (`docs/flopsynth-next.md` §3.2). A file holding a number the window
+    /// does not offer reads as 100 % rather than as a window nobody can use.
+    pub fn flopsynth_scale(&self) -> f32 {
+        let scale = f32::from(self.settings.flopsynth_scale_percent) / 100.0;
+        if fontelle_ui::canvas::SCALES
+            .iter()
+            .any(|offered| (offered - scale).abs() < 0.001)
+        {
+            scale
+        } else {
+            1.0
+        }
+    }
+
+    pub fn set_flopsynth_scale(&mut self, scale: f32) {
+        if !fontelle_ui::canvas::SCALES
+            .iter()
+            .any(|offered| (offered - scale).abs() < 0.001)
+        {
+            return;
+        }
+        self.settings.flopsynth_scale_percent = (scale * 100.0).round() as u16;
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+        self.touch();
     }
 
     pub fn mod_sources(&self) -> Vec<String> {

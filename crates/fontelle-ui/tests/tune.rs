@@ -61,6 +61,7 @@ fn a_card(name: &str, count: usize, row: usize, columns: usize) -> FlopsynthCard
         aside: false,
         columns,
         removable: false,
+        sizes: Vec::new(),
     }
 }
 

@@ -158,10 +158,26 @@ pub struct Settings {
     /// (`docs/vst-plan.md` §4.2).
     #[serde(default)]
     pub extensions_offered: bool,
+    /// Flopsynth's window scale (`docs/flopsynth-next.md` §3.2), in
+    /// percent: one of the window's `SCALES`, multiplying every design size,
+    /// and the size the window opens at. A setting rather than window state
+    /// because a person who chose 75 % for a small screen chose it for every
+    /// session. A whole number so the file reads `125` and the struct stays
+    /// `Eq`; skipped at 100 so a file that never chose says nothing.
+    #[serde(default = "hundred", skip_serializing_if = "is_hundred")]
+    pub flopsynth_scale_percent: u16,
 }
 
 fn yes() -> bool {
     true
+}
+
+fn hundred() -> u16 {
+    100
+}
+
+fn is_hundred(percent: &u16) -> bool {
+    *percent == 100
 }
 
 impl Default for Settings {
@@ -182,6 +198,7 @@ impl Default for Settings {
             recent_projects: Vec::new(),
             check_for_updates: true,
             extensions_offered: false,
+            flopsynth_scale_percent: 100,
         }
     }
 }
