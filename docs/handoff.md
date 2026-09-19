@@ -16,6 +16,29 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-19 (Flopsynth II, Phase 1).** The window's bones are
+built — `PROGRESS.md`'s top entry, ten commits. Things to know: (0) the
+window's own state that shapes the view is `FlopsynthShowing` (the
+inspected source, the effect slot) handed to `flopsynth_showing`; a new
+one goes there, not on the page; (1) a card in the drawer is `row ==
+INSPECTOR_ROW` and the layout widens it to the drawer — the host never
+sizes it; (2) `FlopsynthLayout::body` is the *page* between the canopy
+and the strip, not what the cards were placed in — a layout whose body is
+empty draws no window; (3) the table's edits are **by row** through
+`StudioHost::set_route_*`/`move_route`/`remove_route_row`, each one undo
+via `edit_matrix`; `remove_route(address, n)` still exists for the knob's
+menu; (4) `Lfo` is not `Copy` — `LfoState::advance_block` takes `LfoLive`
+beside the config; (5) `motion.rs` eases are pure; anything that moves
+holds the animator through `sync_flop_motion`, and must draw a frame
+*after* it stops; (6) the machine can reboot mid-session: `/tmp` goes,
+and with it the scratchpad's `drive.py`/`pages.sh` and the nested
+`Xwayland :99` — rebuild them from the memory note; (7) an effect's
+picture is `FlopsynthPicture::Curve` from `effect_picture` in
+`fontelle-app/src/flopsynth.rs` — add a kind's picture there, from the
+numbers the effect plays. Open: `ModDest::FxParam` and the voice reading
+the drawn shape and the loop are Phase 3; the bench numbers are in
+PROGRESS.
+
 **Updated 2026-09-17, late (Flopsynth II, Phase 0).** The ten defects of
 `docs/flopsynth-next.md` §1.4 are closed, one commit each —
 `PROGRESS.md`'s top entry. Things to know: (0) the bridge is painted in

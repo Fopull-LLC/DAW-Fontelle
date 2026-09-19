@@ -9279,6 +9279,11 @@ impl WindowApp {
                 self.tree.redraw_mut().end_animating();
             }
             self.flop_motion_animating = moving;
+            // One frame more when it stops, drawn at the value arrived at:
+            // the last frame while moving was a step short of it, and a
+            // page that faded to 95 % and stayed there was a blank page
+            // (2026-09-19, the phase's page grabs).
+            self.redraw_editor(EditorKind::Instrument);
         }
         if moving {
             self.redraw_editor(EditorKind::Instrument);

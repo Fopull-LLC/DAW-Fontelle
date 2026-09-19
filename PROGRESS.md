@@ -19,8 +19,89 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-09-18 — Flopsynth II, Phase 1 in progress (steps 1–3 of
-§7 done; 4–10 to come).** Ty's call on the fit: the §3.1 sizes do not
+**As of 2026-09-19 — Flopsynth II, Phase 1 (`docs/flopsynth-next.md`
+§7), the window's bones: done, not released.** Ten steps, each tests-first
+and looked at on `Xwayland :99` in both themes (the synth window keeps its
+own dark palette under the light one — Ty's §9.2 (a), Phase 0's (4));
+one commit per step (`f3d66bf` … `837d1ff`). Ty's call on the fit stands:
+the Synth page is two bands over the strip and the envelopes and LFOs are
+on no page — the strip's inspector edits them. Steps 1–3 are in the entry
+below this one; the rest:
+
+- **(4) The canopy is the instrument's eyes** (`ddcd54b`): scope, spectrum
+  with the filters' responses over it, a lamp per voice, the sky behind at
+  a capped cost (`SKY_IMAGE_MAX`, the nebula cached while quiet). The
+  planets went. `render_headless.rs` reads a synthetic analyser frame back
+  by pixel; `tests/sky.rs` bounds a frame.
+- **(5) A ring per route, in its source's ink** (`2c5b142`): five family
+  inks (theme v8 with migration), bands stacked from the groove, each an
+  arc from the knob's value out by the depth, a live dot where the source
+  is. `ring_hit_index` says which band a press is on; the ring drags its
+  route's depth.
+- **(6) The strip, the inspector, the Matrix page** (`41cd02b`): a badge
+  per source on every page — its family's ink, its own picture, a hairline
+  reading its level, `badge_caption` cutting "Brightness" to "Bright…" —
+  a click opens the source in the inspector (a drawer over the page's
+  foot, the top of the Matrix page), a drag routes it. The Modulation page
+  is the **Matrix** page: the table with grip, source, destination, depth
+  (in the source's ink, live dot), via, curve, invert, on/off, ✕; heads
+  that sort; `+` adds. Every edit goes to the host **by row** and is one
+  undo (`mod_matrix_table.rs`). `ModRoute.bypass`, absent from the file
+  unless set. **Found:** the table's ✕ had never removed anything — it
+  asked for a route to the depth control's *address*, which is not a
+  destination. And the first click on a badge on the Matrix page was a
+  blank window: the layout handed back what was left of the body after
+  the drawer and the table had taken it, which was nothing, and a window
+  whose body is nothing draws nothing (`page_body`).
+- **(7) The editors** (`166e922`): the envelope's picture bends each
+  shaped stage by its shape with a handle at the stage's middle that
+  bends it (the shape knob, on the picture), the hold is a plateau, the
+  loop a shaded span — `EnvelopeConfig.loop_stages`, chosen on the card,
+  read by Phase 3. An LFO can be **drawn**: `Lfo.shape`
+  (`fontelle_types::LfoShape`, ≤64 points, tension per segment, smooth or
+  step, a grid), `value(phase)` the one function the picture and the voice
+  read; DRAW on the card begins from the wave, points drag, segments bend,
+  double-click adds, Alt-click removes, the right button offers ten
+  factory shapes with pictures. The picture is held to
+  `fontelle_dsp::shape_progress` and to `LfoShape::value` by
+  `the_editors_pictures_are_the_dsps_own_curves`. `Lfo` is `Clone`, not
+  `Copy`: the voice hands `LfoLive { depth, phase }` beside the config
+  rather than copying it, so the audio thread copies no shape.
+- **(8) The Effects page is a rack** (`89a4667`): a column of slots —
+  grip, on/off, name, wet/dry, a level meter off the node's `VoiceMeter`
+  (the block's peak after each slot) — `+ effect` under them, the selected
+  slot's card alone beside the column with the effect's own picture: the
+  delay's taps, the reverb's tail, the distortion's transfer curve through
+  `fontelle_fx::distortion_curve_at`, the EQ's response with a dot per
+  band, the compressor's gain curve, the limiter's ceiling, the
+  bitcrusher's stairs. **Eight slots** (`MAX_PATCH_FX`). The card's
+  header no longer drags; the grip does. Effect captions in capitals.
+- **(9) Motion** (`837d1ff`): `motion.rs` — an ease is arithmetic on a
+  clock the window hands in, and the registry's "still moving" is all the
+  animator count is told. Arcs ease to a value that arrived from anything
+  but the pointer, the page fades in, the value bubble rises, a ring's
+  band pulses with its source. Seven frames in sixteen idle seconds; a
+  page switch adds eight. **Found by the phase's page grabs:** the last
+  frame while moving is a step short of the value, and nothing asked for
+  one more — the Effects and Presets pages faded to 95 % and stayed blank
+  until the pointer moved. `sync_flop_motion` draws one frame more when
+  the motion stops.
+- **Bench (§6), `cargo bench -p fontelle-core --bench flopsynth`, load
+  ~1:** Init 0.56 %, Supersaw 1.37 %, Grand Piano 1.22 % per voice (10
+  voices 12.2 %), Choir Ahh ×16 26.2 % — at Phase 0's baseline (0.58 /
+  1.41 / 1.23 / 27.6); a run under load average 4 read 20 % higher, which
+  was the load. The per-revision cost is flat: the arc easing looks each
+  knob up by address without cloning, `mod_marks.rs` holds the marks.
+- **Not built, by design:** `ModDest::FxParam` (Phase 3), the arp (a
+  design note after Phase 4, then stop), the drawn shape and the loop in
+  the voice (Phase 3 reads them), effect presets per slot.
+- **Learned on `:99`:** the machine rebooted mid-phase; `/tmp` is cleared,
+  the driver and the nested server have to be rebuilt from the memory
+  note. A grab still lags a frame, and a page that only moves for 120 ms
+  needs a frame *after* the motion to be seen at all.
+
+**As of 2026-09-18 — Flopsynth II, Phase 1, steps 1–3 of §7 (history;
+the entry above is the phase).** Ty's call on the fit: the §3.1 sizes do not
 hold three bands at 1180×840, so the Synth page is two bands and the
 envelopes go to the strip's inspector (the Modulation page until it
 lands). Built so far, each tests-first and looked at on `:99`: the grid
