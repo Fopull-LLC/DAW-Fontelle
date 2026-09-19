@@ -73,6 +73,17 @@ use crate::transport::{
 };
 use crate::widget::{Sleep, WidgetId, WidgetTree, autosave_due, sleep_budget};
 
+/// What can be on its way on the synth window (`motion.rs`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum FlopMotion {
+    /// A knob's arc, by the control's address.
+    Arc(fontelle_types::ParamAddress),
+    /// The page, fading in.
+    Page,
+    /// The value bubble over the hovered knob, rising.
+    Bubble,
+}
+
 /// What a held mouse button is in the middle of doing.
 ///
 /// One value rather than a `bool` plus a guess. The old shape — "a button is
@@ -1150,6 +1161,15 @@ pub struct WindowApp {
     /// The effect slot whose card the Effects page shows (§3.6); `None` is
     /// the first. Window state, like the inspector.
     flop_fx_slot: Option<usize>,
+    /// What is on its way on the synth window (`motion.rs`, §3.1 principle
+    /// 13): an arc easing to a value set by anything but the pointer, the
+    /// page fading in, the value bubble rising.
+    flop_motion: crate::motion::Motions<FlopMotion>,
+    /// The value each knob was last drawn at, by address, so a change that
+    /// arrived from a preset, a lane or a ring starts its ease from there.
+    flop_shown: HashMap<fontelle_types::ParamAddress, f32>,
+    /// Whether the motion holds an animator on the tree.
+    flop_motion_animating: bool,
     /// An effect card being carried by its header: the card, and the effect
     /// card under the pointer — where it would land if let go now. The
     /// `FlopsynthHit::Header` this answers was returned by the hit test and
@@ -1821,6 +1841,9 @@ impl WindowApp {
             flop_shape: None,
             flop_inspector: None,
             flop_fx_slot: None,
+            flop_motion: crate::motion::Motions::new(),
+            flop_shown: HashMap::new(),
+            flop_motion_animating: false,
             flop_slot: None,
             flop_focus: None,
             flop_clipboard: None,
@@ -2821,6 +2844,10 @@ impl WindowApp {
             }
             if self.sky.is_alive() {
                 self.redraw_editor(EditorKind::Instrument);
+            }
+            // And while something on the window is on its way (`motion.rs`).
+            if self.flop_motion_animating {
+                self.sync_flop_motion(std::time::Instant::now());
             }
         }
 
@@ -4847,12 +4874,25 @@ impl WindowApp {
         match kind {
             EditorKind::Instrument if self.flopsynth.is_some() => {
                 let hit = crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y);
-                self.hover_card = match hit {
+                let over = match hit {
                     Some(crate::canvas::FlopsynthHit::Control { card, param }) => {
                         Some((card, param))
                     }
                     _ => None,
                 };
+                // The value bubble rises over a knob newly under the pointer.
+                if over != self.hover_card && over.is_some() {
+                    let now = std::time::Instant::now();
+                    self.flop_motion.begin(
+                        FlopMotion::Bubble,
+                        0.0,
+                        1.0,
+                        now,
+                        crate::motion::BUBBLE,
+                    );
+                    self.sync_flop_motion(now);
+                }
+                self.hover_card = over;
                 // The tip for what is under the pointer (§3.3), with the
                 // studio's dwell — and none while a button is held, for the
                 // studio's reason: a box under a drag is in the drag's way.
@@ -5150,6 +5190,15 @@ impl WindowApp {
                     searching: self.flop_searching,
                     sky: self.sky_frame.as_ref(),
                     skin: Some(&self.skin),
+                    arc_values: self.flop_arc_values(std::time::Instant::now()),
+                    page_alpha: self
+                        .flop_motion
+                        .value(FlopMotion::Page, std::time::Instant::now())
+                        .unwrap_or(1.0),
+                    bubble_alpha: self
+                        .flop_motion
+                        .value(FlopMotion::Bubble, std::time::Instant::now())
+                        .unwrap_or(1.0),
                 })
             }
             EditorKind::Instrument => {
@@ -5634,6 +5683,53 @@ impl WindowApp {
         self.tree.invalidate(BROWSER);
         self.tree.invalidate(PANEL);
         self.tree.invalidate(TIMELINE);
+        self.ease_flop_arcs();
+    }
+
+    /// A knob whose value arrived from anywhere but the pointer — a
+    /// preset, a lane, a ring, a typed number — eases to it (§3.1
+    /// principle 13). The one being dragged follows the hand. Called once
+    /// the view has been rebuilt, after the document is let go of.
+    fn ease_flop_arcs(&mut self) {
+        let now = std::time::Instant::now();
+        let dragging = self
+            .flop_knob
+            .and_then(|(which, _, _)| self.flop_param(which).map(|p| p.address.clone()));
+        let Some(view) = self.flopsynth.as_ref() else {
+            return;
+        };
+        let mut begun = Vec::new();
+        for card in &view.cards {
+            for param in &card.group.params {
+                if !matches!(param.kind, ParamKind::Knob) {
+                    continue;
+                }
+                // Looked up without cloning: this runs once per revision,
+                // and a drag with snap off is a revision per pointer move.
+                match self.flop_shown.get_mut(&param.address) {
+                    Some(was) if (*was - param.value).abs() > 1e-4 => {
+                        if dragging.as_ref() != Some(&param.address) {
+                            begun.push((param.address.clone(), *was, param.value));
+                        }
+                        *was = param.value;
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.flop_shown.insert(param.address.clone(), param.value);
+                    }
+                }
+            }
+        }
+        for (address, was, value) in begun {
+            self.flop_motion.begin(
+                FlopMotion::Arc(address),
+                was,
+                value,
+                now,
+                crate::motion::ARC,
+            );
+        }
+        self.sync_flop_motion(now);
     }
 
     /// Shapes everything the next frame will want to draw.
@@ -9154,6 +9250,11 @@ impl WindowApp {
             return;
         }
         self.flop_page = page;
+        // The new page fades in (§3.1 principle 13).
+        let now = std::time::Instant::now();
+        self.flop_motion
+            .begin(FlopMotion::Page, 0.0, 1.0, now, crate::motion::PAGE);
+        self.sync_flop_motion(now);
         // Leaving (or arriving at) the Presets page hands the keyboard back —
         // the search box has to be clicked to take it.
         self.flop_searching = false;
@@ -9162,6 +9263,49 @@ impl WindowApp {
         self.studio_revision = u64::MAX;
         self.refresh_studio();
         self.redraw_editors();
+    }
+
+    /// Holds an animator on the tree while anything on the synth window is
+    /// on its way, and gives it back when it has arrived — so the loop
+    /// draws at frame rate for the eighty milliseconds an arc takes and
+    /// sleeps again after (§16.3).
+    fn sync_flop_motion(&mut self, now: std::time::Instant) {
+        self.flop_motion.prune(now);
+        let moving = self.flop_motion.is_moving(now);
+        if moving != self.flop_motion_animating {
+            if moving {
+                self.tree.redraw_mut().begin_animating();
+            } else {
+                self.tree.redraw_mut().end_animating();
+            }
+            self.flop_motion_animating = moving;
+        }
+        if moving {
+            self.redraw_editor(EditorKind::Instrument);
+        }
+    }
+
+    /// Where each moving arc is now, for the renderer: `(card, param)` to
+    /// the value to draw the arc at.
+    fn flop_arc_values(&self, now: std::time::Instant) -> Vec<((usize, usize), f32)> {
+        let Some(view) = self.flopsynth.as_ref() else {
+            return Vec::new();
+        };
+        if self.flop_motion.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for (card_index, card) in view.cards.iter().enumerate() {
+            for (param_index, param) in card.group.params.iter().enumerate() {
+                if let Some(value) = self
+                    .flop_motion
+                    .value(FlopMotion::Arc(param.address.clone()), now)
+                {
+                    out.push(((card_index, param_index), value));
+                }
+            }
+        }
+        out
     }
 
     /// Opens the inspector on a source, or closes it (`None`). The view is
@@ -16525,7 +16669,7 @@ impl WindowApp {
         // engine's polling rate, which is a slideshow.
         if self.is_editor_open(EditorKind::Instrument)
             && self.flopsynth.is_some()
-            && self.sky.is_alive()
+            && (self.sky.is_alive() || self.flop_motion_animating)
         {
             wake = Some(wake.map_or(now + SKY_FRAME, |w| w.min(now + SKY_FRAME)));
         }

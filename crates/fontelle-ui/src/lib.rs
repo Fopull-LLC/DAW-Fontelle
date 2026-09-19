@@ -26,6 +26,7 @@ pub mod document;
 pub mod file_drag;
 pub mod icon;
 pub mod layout;
+pub mod motion;
 pub mod pointer;
 pub mod render;
 pub mod skin;

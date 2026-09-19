@@ -7810,6 +7810,12 @@ pub struct FlopsynthChrome<'a> {
     /// Textures dropped into the skin folder (`skin.rs`); every surface is
     /// procedural without them.
     pub skin: Option<&'a crate::skin::Skin>,
+    /// Motion (`motion.rs`, §3.1 principle 13): the arcs on their way, as
+    /// `(card, param)` to the value to draw the arc at; how far the page
+    /// has faded in; how far the value bubble has risen. All 1 when still.
+    pub arc_values: Vec<((usize, usize), f32)>,
+    pub page_alpha: f32,
+    pub bubble_alpha: f32,
 }
 
 /// What the Presets page's search box says.
@@ -9024,10 +9030,21 @@ fn draw_modulation_rings(
             &arc(radius, 0.0, 1.0),
         );
         let (from, to) = crate::canvas::ring_range(value, ring.depth, ring.family.bipolar());
+        // The band pulses in step with its source (§3.1 principle 13): a
+        // little brighter and a little thicker as the source rises, so a
+        // moving ring reads as moving before the dot is looked for.
+        let pulse = values
+            .get(ring.source)
+            .map_or(0.0, |v| v.abs().clamp(0.0, 1.0));
+        let band_ink = if pulse > 0.0 {
+            lighten(ink, 0.35 * pulse)
+        } else {
+            ink
+        };
         scene.stroke(
-            &Stroke::new(f64::from(thick.max(1.0))),
+            &Stroke::new(f64::from(thick.max(1.0) + 0.8 * pulse)),
             vello::kurbo::Affine::IDENTITY,
-            ink.to_peniko(),
+            band_ink.to_peniko(),
             None,
             &arc(radius, from, to),
         );
@@ -9095,15 +9112,29 @@ fn draw_flopsynth_overlays(
         .control;
         let bubble = crate::canvas::hover_bubble_rect(knob, (text.width, text.height), l.whole);
         if !bubble.is_empty() {
-            fill_rect_rounded(scene, bubble, m.corner_radius, p.border);
-            fill_rect_rounded(scene, bubble.inset(1.0), m.corner_radius, p.panel_header);
+            // Rising: faded in, and lifted a few pixels into place.
+            let rise = chrome.bubble_alpha.clamp(0.0, 1.0);
+            let alpha = (rise * 255.0) as u8;
+            let bubble = Rect::new(
+                bubble.x,
+                bubble.y + (1.0 - rise) * 4.0,
+                bubble.width,
+                bubble.height,
+            );
+            fill_rect_rounded(scene, bubble, m.corner_radius, p.border.with_alpha(alpha));
+            fill_rect_rounded(
+                scene,
+                bubble.inset(1.0),
+                m.corner_radius,
+                p.panel_header.with_alpha(alpha),
+            );
             draw_text_clipped(
                 scene,
                 text,
                 bubble,
                 bubble.x + (bubble.width - text.width) / 2.0,
                 bubble.y + (bubble.height - text.height) / 2.0,
-                p.text,
+                p.text.with_alpha(alpha),
             );
         }
     }
@@ -9125,13 +9156,11 @@ fn draw_flopsynth_overlays(
 }
 
 fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &FlopsynthChrome<'_>) {
-    let p = &theme.palette;
     let m = &theme.metrics;
     let l = &chrome.layout;
     if l.body.is_empty() {
         return;
     }
-    let t = bridge_type(chrome.view.scale);
 
     // The bridge (`bridge.rs`): the hull first, the ground under everything,
     // then the canopy — the window onto the sky — with the page tabs floating
@@ -9163,6 +9192,42 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
         chrome.skin,
     );
     draw_flopsynth_chrome(scene, theme, labels, chrome);
+    // The page fades in (§3.1 principle 13): everything under the canopy
+    // and above the strip drawn through a layer at the fade's alpha —
+    // only while it fades, because a layer is a copy of the window.
+    let fading = chrome.page_alpha < 0.999;
+    if fading {
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            chrome.page_alpha.clamp(0.0, 1.0),
+            Affine::IDENTITY,
+            &KRect::new(
+                l.body.x as f64,
+                l.body.y as f64,
+                l.body.right() as f64,
+                l.body.bottom() as f64,
+            ),
+        );
+    }
+    draw_flopsynth_page(scene, theme, labels, chrome);
+    if fading {
+        scene.pop_layer();
+    }
+}
+
+/// What is on the page itself — between the canopy and the strip — which
+/// is what fades in when the page changes.
+fn draw_flopsynth_page(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &FlopsynthChrome<'_>,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let l = &chrome.layout;
+    let t = bridge_type(chrome.view.scale);
     if chrome.view.page == crate::canvas::FlopsynthPage::Presets {
         draw_flop_presets(scene, theme, labels, chrome);
         return;
@@ -9550,11 +9615,17 @@ fn draw_flop_card(
             }
             match &param.kind {
                 ParamKind::Knob => {
+                    // The arc on its way, when it is (§3.1 principle 13).
+                    let arc = chrome
+                        .arc_values
+                        .iter()
+                        .find(|(which, _)| *which == (index, *param_index))
+                        .map_or(param.value, |(_, value)| *value);
                     draw_flop_knob(
                         scene,
                         theme,
                         control,
-                        param.value,
+                        arc,
                         hot,
                         lit,
                         param.automated,
