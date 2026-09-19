@@ -18,6 +18,7 @@ mod interpolation;
 mod meter;
 mod modal;
 mod oscillator;
+mod oversample;
 mod pitch;
 mod psola;
 mod spectrum;
@@ -35,6 +36,9 @@ pub use interpolation::{Interpolation, interpolate};
 pub use meter::PeakRmsMeter;
 pub use modal::{MAX_MODES, ModalBank, ModalMode};
 pub use oscillator::{OscKind, Oscillator};
+pub use oversample::{
+    Decimator, Interpolator, MAX_OVERSAMPLE, OVERSAMPLE_TAPS, Oversampling, oversample_kernel,
+};
 pub use pitch::{
     DEFAULT_TRACKING_THRESHOLD, PitchFrame, PitchTracker, RELAXED_TRACKING_THRESHOLD,
     STRICT_TRACKING_THRESHOLD, cents_to_hz, hz_to_cents,

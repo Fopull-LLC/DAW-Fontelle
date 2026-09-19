@@ -16,6 +16,25 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-19, later (Flopsynth II, Phase 2).** Oversampling is
+in — `PROGRESS.md`'s top entry. Things to know: (0) `Oversampling` lives
+in `fontelle-dsp/src/oversample.rs` with the two polyphase filters; the
+kernel tables are literals that `tests/oversample.rs` re-derives — change
+the formula and the test says so; (1) the oscillator's `quality` is
+resolved from `Patch.oversampling` **in the voice** (`voice.rs`, where
+the matrix's four knobs are applied); the oscillator never sees the
+patch; (2) **Off is a separate branch**, not the oversampled path at a
+factor of one — keep it that way, `synth_alias.rs` holds it bit for bit;
+(3) the alias measure is "off the note's grid, 30 Hz–20 kHz, against on
+it"; a plain table read at Off floors it at −33 dB (the linear read's
+images), so a case that wants more than that has to oversample; (4) a
+hard stair gains 6 dB a doubling however it is read — do not chase 20 dB
+on Quantise with the decimator; (5) 4× costs 5 % on a supersaw and §6
+said 3.5: off by default is the plan's own answer, and the number is in
+PROGRESS; (6) `SampleData` carries the interpolation — a caller building
+one says which kernel. Open: the speed-aware mip level for the warps
+(Phase 4), and everything Phase 3 owns.
+
 **Updated 2026-09-19 (Flopsynth II, Phase 1).** The window's bones are
 built — `PROGRESS.md`'s top entry, ten commits. Things to know: (0) the
 window's own state that shapes the view is `FlopsynthShowing` (the

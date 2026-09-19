@@ -15,7 +15,8 @@
 //! holds one property of one mode that the modes before it lack.
 
 use fontelle_dsp::{
-    SampleData, SampleLoop, SampleSettings, SynthInput, SynthOsc, SynthSource, SynthState,
+    Interpolation, SampleData, SampleLoop, SampleSettings, SynthInput, SynthOsc, SynthSource,
+    SynthState,
 };
 
 const SR: f32 = 48_000.0;
@@ -50,6 +51,7 @@ fn data(samples: &[f32], root_hz: f32) -> SampleData<'_> {
         samples,
         sample_rate: SR,
         root_hz,
+        interpolation: Interpolation::Normal,
     }
 }
 

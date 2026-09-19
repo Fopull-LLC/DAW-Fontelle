@@ -180,6 +180,8 @@ fn knob_sizes(name: &str, params: &[InstrumentParam]) -> Vec<KnobSize> {
         "lfo/phase",
         "lfo/smooth",
         "voice/bend_range",
+        "synth/quality",
+        "/oversampling",
     ];
     let aside = name == "SUB" || name == "NOISE";
     params
@@ -633,6 +635,8 @@ fn response_points(filter: &fontelle_core::FilterSlot) -> Vec<f32> {
         // response, because what it does depends on how loud the signal is.
         drive: 0.0,
         character: filter.character,
+        // Nor the oversampling, which changes what folds and not the curve.
+        oversampling: fontelle_dsp::Oversampling::Off,
     };
     if !filter.enabled {
         // A switched-off filter is a wire, and the picture says so rather than

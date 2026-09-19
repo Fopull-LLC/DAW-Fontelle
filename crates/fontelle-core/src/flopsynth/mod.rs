@@ -24,8 +24,8 @@
 //! the patch that could disagree with what is actually there.
 
 use fontelle_dsp::{
-    EnvelopeConfig, EnvelopeCurve, FilterModel, FilterRoute, FilterSlope, SvfMode, SynthOsc,
-    SynthSource, WavetableId,
+    EnvelopeConfig, EnvelopeCurve, FilterModel, FilterRoute, FilterSlope, Oversampling, SvfMode,
+    SynthOsc, SynthSource, WavetableId,
 };
 use fontelle_types::{LfoWave, NoteDivision};
 
@@ -228,6 +228,7 @@ pub fn flopsynth_init() -> Patch {
     Patch {
         wavetables: Vec::new(),
         samples: Vec::new(),
+        oversampling: Oversampling::Off,
         layers: vec![
             synth_layer(osc_a, -12.0),
             synth_layer(osc_b, SILENT_DB),
@@ -318,6 +319,7 @@ pub fn addresses(patch: &Patch) -> Vec<String> {
         "patch/voice/bend_range".to_string(),
         "patch/output".to_string(),
         "patch/quality".to_string(),
+        "patch/oversampling".to_string(),
     ];
 
     for (index, layer) in patch.layers.iter().enumerate() {
@@ -374,6 +376,11 @@ pub fn addresses(patch: &Patch) -> Vec<String> {
         out.push(format!("patch/layer[{index}]/synth/semitones"));
         out.push(format!("patch/layer[{index}]/synth/key_track"));
         out.push(format!("patch/layer[{index}]/synth/route"));
+        // Last, so nothing above it moved when it arrived (§4.1). The
+        // noise has no read to oversample.
+        if !noise {
+            out.push(format!("patch/layer[{index}]/synth/quality"));
+        }
     }
 
     for index in 0..patch.filters.len() {

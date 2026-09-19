@@ -269,6 +269,81 @@ fn the_noise_card_draws_only_what_noise_has() {
     }
 }
 
+/// Oversampling (`docs/flopsynth-next.md` §4.1): one chooser on the Voice
+/// card for the patch, one at the end of every oscillator that reads
+/// something, none on the noise — and both are Small, three short words.
+#[test]
+fn the_oversampling_is_a_chooser_on_the_voice_card_and_on_every_oscillator() {
+    use fontelle_ui::canvas::{FlopsynthPage, KnobSize, ParamKind};
+    let session = a_flopsynth();
+    let view = session.instrument().expect("a panel");
+    let voice = group(&view, "Voice");
+    let over = voice
+        .params
+        .iter()
+        .find(|p| p.address.as_str() == "patch/oversampling")
+        .expect("the Voice card carries the patch's oversampling");
+    assert_eq!(over.label, "oversample");
+    assert_eq!(over.display, "Off");
+    assert_eq!(
+        over.kind,
+        ParamKind::Choice(vec!["Off".into(), "2\u{d7}".into(), "4\u{d7}".into()])
+    );
+    // Last on the card: the addresses are in the panel's order, and the new
+    // one came after everything that was there (ground rule 5).
+    assert_eq!(
+        voice.params.last().unwrap().address.as_str(),
+        "patch/oversampling"
+    );
+
+    for (name, layer) in [("OSC A", 0), ("OSC B", 1), ("OSC C", 2), ("SUB", 3)] {
+        let card = group(&view, name);
+        let last = card.params.last().unwrap();
+        assert_eq!(
+            last.address.as_str(),
+            format!("patch/layer[{layer}]/synth/quality"),
+            "{name}'s quality is its last control"
+        );
+        assert_eq!(last.label, "quality");
+        assert_eq!(last.display, "Off");
+    }
+    let noise = group(&view, "NOISE");
+    assert!(
+        !noise
+            .params
+            .iter()
+            .any(|p| p.address.as_str().ends_with("synth/quality")),
+        "the noise has no read to oversample"
+    );
+
+    // Small on the window, and captioned.
+    let window = session.flopsynth(FlopsynthPage::Synth).unwrap();
+    for name in ["OSC A", "Voice"] {
+        let card = window.cards.iter().find(|c| c.group.name == name).unwrap();
+        let (index, param) = card
+            .group
+            .params
+            .iter()
+            .enumerate()
+            .find(|(_, p)| {
+                let address = p.address.as_str();
+                address == "patch/oversampling" || address.ends_with("synth/quality")
+            })
+            .unwrap();
+        assert_eq!(card.size_of(index), KnobSize::Small, "{name}'s chooser");
+        assert_eq!(
+            param.label,
+            if name == "Voice" {
+                "OVERSAMP"
+            } else {
+                "QUALITY"
+            }
+        );
+    }
+    // And the Synth page still fits with the two of them on it.
+    assert_page_fits(&session, FlopsynthPage::Synth);
+}
+
 /// A preset with effects on it grows the cards for them, built from the
 /// effect's own `ParamSpec` list — so a patch effect's knobs are automatable
 /// the day they exist.

@@ -42,6 +42,7 @@ pub const CAPTIONS: &[(&str, &str)] = &[
     ("octave", "OCTAVE"),
     ("tune", "TUNE"),
     ("quality", "QUALITY"),
+    ("oversample", "OVERSAMP"),
     // A recording.
     ("loop", "LOOP"),
     ("loop in", "LOOP IN"),

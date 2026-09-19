@@ -21,7 +21,9 @@
 //! frequency is what it is.
 
 use crate::filter::MIN_Q;
-use crate::{SvfCoeffs, SvfFilter, SvfMode, vowel_at};
+use crate::{
+    Decimator, Interpolator, MAX_OVERSAMPLE, Oversampling, SvfCoeffs, SvfFilter, SvfMode, vowel_at,
+};
 
 /// How steep the clean filter is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -123,6 +125,13 @@ pub struct SynthFilterSettings {
     pub drive: f32,
     /// Per model. See [`FilterModel::character_label`].
     pub character: f32,
+    /// How many times over the session's rate the **ladder** runs — its
+    /// drive and the `tanh` in its loop are the two nonlinearities a voice
+    /// has after the oscillators, and both alias (`docs/flopsynth-next.md`
+    /// §4.1). The patch's own setting, handed down by the voice. The other
+    /// three models ignore it: `Clean` at drive 0 is linear, and running a
+    /// linear filter four times over is cost for nothing.
+    pub oversampling: Oversampling,
 }
 
 impl Default for SynthFilterSettings {
@@ -135,6 +144,7 @@ impl Default for SynthFilterSettings {
             resonance: 0.707,
             drive: 0.0,
             character: 0.0,
+            oversampling: Oversampling::Off,
         }
     }
 }
@@ -169,6 +179,10 @@ pub struct SynthFilter {
     /// holds both halves — that the cache is used, and that it is never
     /// stale.
     cached: Option<Cached>,
+    /// The ladder's way up to and back down from an oversampled rate — see
+    /// [`SynthFilterSettings::oversampling`]. Untouched at `Off`.
+    up: Interpolator,
+    down: Decimator,
 }
 
 /// What one set of settings works out to, kept until they move.
@@ -199,6 +213,8 @@ impl Default for SynthFilter {
             comb_write: 0,
             comb_damp: 0.0,
             cached: None,
+            up: Interpolator::default(),
+            down: Decimator::default(),
         }
     }
 }
@@ -225,6 +241,8 @@ impl SynthFilter {
         self.comb = [0.0; COMB_LEN];
         self.comb_write = 0;
         self.comb_damp = 0.0;
+        self.up = Interpolator::default();
+        self.down = Decimator::default();
     }
 
     /// One sample through the slot.
@@ -233,6 +251,21 @@ impl SynthFilter {
     /// Cheap enough to call per sample with the settings changing under it,
     /// which is what the ramped cutoff of §3.3 does.
     pub fn process(&mut self, input: f32, config: &SynthFilterSettings, sample_rate: f32) -> f32 {
+        let factor = config.oversampling.factor();
+        if config.model == FilterModel::Ladder && factor > 1 {
+            // Up, through the drive and the ladder at the higher rate, and
+            // back down: the harmonics the two `tanh`s make past the
+            // session's Nyquist have room up there, and the decimator takes
+            // them out rather than letting them fold. The sub-samples are on
+            // the stack; the two filters are the state.
+            let over = sample_rate * factor as f32;
+            let mut block = [0.0f32; MAX_OVERSAMPLE];
+            self.up.interpolate(input, config.oversampling, &mut block);
+            for sub in block.iter_mut().take(factor) {
+                *sub = self.ladder(drive(*sub, config.drive), config, over);
+            }
+            return self.down.decimate(&block[..factor], config.oversampling);
+        }
         let input = drive(input, config.drive);
         match config.model {
             FilterModel::Clean => self.clean(input, config, sample_rate),

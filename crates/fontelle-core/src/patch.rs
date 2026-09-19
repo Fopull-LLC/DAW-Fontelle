@@ -447,6 +447,13 @@ pub struct Patch {
     /// [`fontelle_dsp::SynthSource::Sample`] — see [`UserSample`]. Empty for
     /// every factory preset.
     pub samples: Vec<UserSample>,
+    /// How many times over the session's rate the oscillators render and
+    /// the ladder runs (`docs/flopsynth-next.md` §4.1). The patch's one
+    /// answer: every oscillator at [`fontelle_dsp::Oversampling::Off`]
+    /// takes it, and one with its own keeps its own. `Off` for every patch
+    /// written before it existed, which is the whole bank, and left out of
+    /// the file at `Off` so none of them is rewritten to say so.
+    pub oversampling: fontelle_dsp::Oversampling,
 }
 
 /// The **blank instrument**: three oscillators, an amplitude envelope with a
@@ -554,6 +561,7 @@ impl Patch {
             output_db: 0.0,
             wavetables: Vec::new(),
             samples: Vec::new(),
+            oversampling: fontelle_dsp::Oversampling::Off,
         }
     }
 }
@@ -580,6 +588,7 @@ impl Default for Patch {
             output_db: 0.0,
             wavetables: Vec::new(),
             samples: Vec::new(),
+            oversampling: fontelle_dsp::Oversampling::Off,
         }
     }
 }

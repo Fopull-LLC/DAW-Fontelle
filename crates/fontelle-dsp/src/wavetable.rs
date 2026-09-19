@@ -191,6 +191,40 @@ impl Wavetable {
         Self { frames, levels }
     }
 
+    /// [`read`](Self::read) with a **four-point** interpolation between the
+    /// table's samples instead of the two-point one.
+    ///
+    /// For an oversampled oscillator (`docs/flopsynth-next.md` §4.1). A
+    /// linear read's images sit at multiples of the table's own rate, and
+    /// the level chosen for four times the session's rate has enough
+    /// harmonics that the top one's first image lands past the oversampled
+    /// Nyquist and folds into the band — a saw at C7 read linearly at 4×
+    /// measured 44 dB of alias against signal, with the sub-sample rendering
+    /// and the decimator both doing their jobs (2026-09-19). The cubic's
+    /// images are twenty-odd decibels further down, which is what moves the
+    /// floor out of the way. At `Off` the linear read stays: it is the sound
+    /// every preset was voiced through, and a sample-exact one.
+    pub fn read_smooth(&self, position: f32, phase: f32, level: usize) -> f32 {
+        let level = level.min(WAVETABLE_LEVELS - 1);
+        let phase = phase.rem_euclid(1.0);
+        if self.frames == 1 {
+            return read_level_smooth(self.level(0, level), phase);
+        }
+        let across = position.clamp(0.0, 1.0) * (self.frames - 1) as f32;
+        let low = across.floor() as usize;
+        let high = (low + 1).min(self.frames - 1);
+        let blend = across - low as f32;
+        if blend <= 0.0 {
+            return read_level_smooth(self.level(low, level), phase);
+        }
+        if blend >= 1.0 {
+            return read_level_smooth(self.level(high, level), phase);
+        }
+        let a = read_level_smooth(self.level(low, level), phase);
+        let b = read_level_smooth(self.level(high, level), phase);
+        a + (b - a) * blend
+    }
+
     /// One named frame, without the blend — what a picture of "frame 3" is,
     /// and what `read` falls back to when the position sits on one.
     pub fn read_frame(&self, frame: usize, phase: f32, level: usize) -> f32 {
@@ -204,14 +238,41 @@ impl Wavetable {
 
 /// Linear interpolation within one frame. The table wraps, so the sample after
 /// the last is the first — a cycle has no end.
+///
+/// Every level is [`WAVETABLE_LEN`] shifted down, so its length is a power
+/// of two and the wrap is a mask: a remainder by a length the compiler
+/// cannot see is a division, and a supersaw is twenty-one of these a
+/// sample, four times over when oversampled.
 fn read_level(samples: &[f32], phase: f32) -> f32 {
     let n = samples.len();
+    debug_assert!(n.is_power_of_two());
+    let mask = n - 1;
     let x = phase * n as f32;
-    let i = x as usize % n;
+    let i = x as usize & mask;
     let frac = x - x.floor();
     let a = samples[i];
-    let b = samples[(i + 1) % n];
+    let b = samples[(i + 1) & mask];
     a + (b - a) * frac
+}
+
+/// Four-point Hermite (Catmull-Rom) interpolation within one frame, wrapping
+/// the same way — see [`Wavetable::read_smooth`]. The same polynomial
+/// `crate::interpolate` uses at `Normal`.
+fn read_level_smooth(samples: &[f32], phase: f32) -> f32 {
+    let n = samples.len();
+    debug_assert!(n.is_power_of_two());
+    let mask = n - 1;
+    let x = phase * n as f32;
+    let i = x as usize & mask;
+    let t = x - x.floor();
+    let y0 = samples[(i + n - 1) & mask];
+    let y1 = samples[i];
+    let y2 = samples[(i + 1) & mask];
+    let y3 = samples[(i + 2) & mask];
+    let c1 = 0.5 * (y2 - y0);
+    let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+    let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+    ((c3 * t + c2) * t + c1) * t + y1
 }
 
 /// Which table an oscillator reads.

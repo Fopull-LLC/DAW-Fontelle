@@ -79,7 +79,14 @@ fn voices(c: &mut Criterion) {
     // of a core. Few samples, because each one is a second of work.
     group.sample_size(10);
 
-    let cases: [(&str, Patch, usize); 5] = [
+    // The same voice at 4× (`docs/flopsynth-next.md` §6: ≤3.5 % against
+    // ≤1.4 % at Off): every oscillator four times over, and the ladder if it
+    // had one.
+    let mut supersaw_2x = named("Supersaw");
+    supersaw_2x.oversampling = fontelle_dsp::Oversampling::X2;
+    let mut supersaw_4x = named("Supersaw");
+    supersaw_4x.oversampling = fontelle_dsp::Oversampling::X4;
+    let cases: [(&str, Patch, usize); 7] = [
         (
             "init/1 voice",
             fontelle_core::flopsynth::flopsynth_init(),
@@ -88,6 +95,8 @@ fn voices(c: &mut Criterion) {
         // Three oscillators of seven-voice unison through two filters: the
         // heaviest single voice the bank has, and the one §10 budgets at 1.2 %.
         ("supersaw/1 voice", named("Supersaw"), 1),
+        ("supersaw/2x", supersaw_2x, 1),
+        ("supersaw/4x", supersaw_4x, 1),
         // The formant filter, and sixteen of them — the chord case.
         ("choir ahh/16 voices", named("Choir Ahh"), 16),
         // Two strings of sixty-four partials, three unison voices each: the

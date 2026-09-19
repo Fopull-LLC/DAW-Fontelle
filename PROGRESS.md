@@ -19,6 +19,91 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-19 — Flopsynth II, Phase 2 (`docs/flopsynth-next.md`
+§4.1, §7), clean at the top: done, not released.** Oversampling for the
+things a mip pyramid cannot help, tests-first, looked at on `Xwayland
+:99` in both themes, one commit. Off by default and absent from every
+file until set — no preset moved.
+
+- **The seam** (`fontelle-dsp/src/oversample.rs`): `Oversampling { Off,
+  X2, X4 }`, a polyphase FIR `Decimator` (N in, one out) and
+  `Interpolator` (one in, N out), sixteen taps a branch, a
+  Hamming-windowed sinc with its −6 dB at 0.45 of the session's rate. The
+  plan sketched twelve taps; twelve drooped a decibel at 18 kHz, sixteen
+  holds it to half of one with everything that would fold below 16 kHz
+  under −58 dB. The tables are literals; `tests/oversample.rs` re-derives
+  them from the formula, and holds the passband and the stopband by tone.
+  State per channel is the sixteen accumulators, so `SynthState` and
+  `SynthFilter` stay `Copy`.
+- **The oscillator** (`SynthOsc.quality`, serde-skipped at Off): renders
+  `factor` sub-samples at `factor` times the rate into a stack buffer and
+  decimates; the FM modulator is ramped across the sub-samples rather
+  than held. **Off is the branch there always was**, sample for sample
+  (`synth_alias.rs::off_is_bit_for_bit…`). Oversampled, the table read is
+  the four-point Hermite (`Wavetable::read_smooth`) — found by measuring:
+  with the linear read, a saw at C7 at 4× still had 44 dB of alias
+  against signal, because the level chosen for four times the rate keeps
+  enough harmonics that the top one's first image lands past the
+  oversampled Nyquist and folds. The cubic's images are twenty decibels
+  further down.
+- **The ladder** (`SynthFilterSettings.oversampling`): up through the
+  interpolator, drive and the loop's `tanh` at the higher rate, back
+  down. The other three models ignore it — a clean SVF at drive 0 is
+  linear, and running it four times over is cost for nothing
+  (`a_clean_filter_ignores_the_oversampling`).
+- **The patch** (`Patch.oversampling`, `patch/oversampling`, the
+  *OVERSAMP* chooser on the Voice card): what every oscillator without
+  its own runs at, and the ladder. An oscillator's own
+  `patch/layer[i]/synth/quality` (*QUALITY*, last on each card, none on
+  the noise) wins when it is not Off. Resolved in the voice before the
+  note; the oscillator never sees the patch. Held end to end by
+  `fontelle-core/tests/oversampling.rs` (the file, the addresses, the
+  voice, the ladder) and `flopsynth_ui.rs` (the cards, the sizes, the
+  fit).
+- **Sample interpolation follows quality**: `SampleData.interpolation`
+  is the layer's pin or the session's, the same as a sampled layer's
+  read — it was `Interpolation::Normal` whatever the setting, so a bounce
+  at High read a synth's recording no better than playback did.
+  `Interpolation::Ultra` was a `todo!()` in `interpolate`, reachable from
+  the `patch/quality` chooser on every soundfont's window — a panic on
+  the audio thread one menu away. It reads the High kernel now; its 2×
+  half is a property of a stream, which is what `Oversampling` is.
+- **The alias file** (`fontelle-dsp/tests/synth_alias.rs`; alias = what
+  is off the note's grid between 30 Hz and 20 kHz, against what is on
+  it): Off must read no worse than the day the file was written, 4× at
+  least 20 dB better. **Sync 8× on C7: −18.5 → −45.1 → −61.6 dB** (Off,
+  2×, 4×). **FM at two cycles on C7, both halves oversampled: −29.0 →
+  −76.1 → −82.1** (a modulator left at Off feeds the carrier its own
+  alias, so the setting is the patch's by default). **The ladder at drive
+  24 dB, a sine in: −36.2 → −53.7 → −71.9.** **Quantise at four steps on
+  C6: −18.4 → −25.1 → −31.2** — held at ten decibels, not twenty: a stair's
+  edges are steps, and the part of their spectrum past the *oversampled*
+  Nyquist folds at the render where no decimator can reach it, six
+  decibels a doubling on a sine as on a saw. The rest is a band-limited
+  step at each edge, which is warp work (§4.3). Sample read +19 st at 15
+  kHz: Draft −35.5, Normal −48.8, High −63.9.
+- **Bench (§6), load 0.7:** Init 0.54 %, Supersaw **1.28 % at Off, 2.83 %
+  at 2×, 5.05 % at 4×**, Grand Piano 1.24 % per voice (10 voices 12.5 %),
+  Choir Ahh ×16 26.3 %. Off is *under* Phase 1's 1.37 %: the table's
+  wrap is a mask now (every level is a power of two, and a remainder by a
+  length the compiler cannot see was a division, twenty-one a sample on
+  a supersaw), and `2^(semitones/12)` is cached per oscillator (three
+  `powf`s a sample for an `i8`). **4× is over §6's 3.5 % line**, by the
+  plan's own rule: the oscillators are two thirds of the voice, 4× is
+  four renders, the cubic read is a third again, and the decimation is
+  64 multiply-adds a channel. Ships off by default, which §6 says is the
+  answer; 2× is inside the line. Per-revision cost unchanged
+  (`mod_marks.rs`; a 300-motion cutoff drag with `FONTELLE_TRACE_FRAME=1`
+  has no `arrange edit` over the threshold).
+- **Found and left (Phase 4's):** the warps that speed the read up —
+  Bend at 4×, Mirror at 2×, FM on a table with harmonics — read a table
+  band-limited for the *unwarped* note, so their products fold at either
+  rate (measured 6 dB a doubling, like the stair). Choosing the level for
+  the warp's top speed would fix it and change the harmonic content at
+  Off, which is a preset's sound; it goes with the warp modes.
+- **Looked at:** the two choosers on the Synth page in both themes, the
+  menu, a pick landing (*4×* on the chip); every page grabbed.
+
 **As of 2026-09-19 — Flopsynth II, Phase 1 (`docs/flopsynth-next.md`
 §7), the window's bones: done, not released.** Ten steps, each tests-first
 and looked at on `Xwayland :99` in both themes (the synth window keeps its

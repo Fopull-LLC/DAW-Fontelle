@@ -21,6 +21,7 @@ fn settings(model: FilterModel, cutoff: f32) -> SynthFilterSettings {
         resonance: 0.707,
         drive: 0.0,
         character: 0.0,
+        oversampling: fontelle_dsp::Oversampling::Off,
     }
 }
 
@@ -428,6 +429,7 @@ fn a_filter_follows_its_cutoff_the_sample_after_it_moves() {
         resonance: 0.7,
         drive: 0.0,
         character: 0.0,
+        oversampling: fontelle_dsp::Oversampling::Off,
     };
     let high = SynthFilterSettings {
         cutoff_hz: 12_000.0,
@@ -459,6 +461,7 @@ fn the_same_settings_give_the_same_answer_however_many_times_they_are_asked() {
         resonance: 1.4,
         drive: 0.0,
         character: 0.0,
+        oversampling: fontelle_dsp::Oversampling::Off,
     };
     let other = SynthFilterSettings {
         cutoff_hz: 4_000.0,

@@ -39,11 +39,14 @@ fn sinc_kernel(x: f32) -> f32 {
 /// Reads a fractional sample position from `buffer` using `mode`. `position` is in
 /// samples; the fractional part drives the interpolation kernel.
 ///
-/// `Ultra` is not implemented. Its "16-point sinc + 2x oversample" (TDD §7.6)
-/// is not expressible here: oversampling is a property of a *stream* of output
-/// samples, so it needs a stateful resampler rather than a point-interpolator
-/// like this one. Calling `interpolate` with it panics on purpose rather than
-/// silently falling back to a cheaper kernel.
+/// `Ultra` reads the `High` kernel. Its "2x oversample" (TDD §7.6) is a
+/// property of a *stream* of output samples, which a point read cannot
+/// have; the stream's half is [`crate::Oversampling`], which a Flopsynth
+/// oscillator applies around its whole read. This used to be a `todo!()`,
+/// on the argument that falling back silently was worse than panicking —
+/// and it was reachable from the `patch/quality` chooser on every
+/// soundfont's window, so the argument was a panic on the audio thread
+/// one menu away (`docs/flopsynth-next.md` §4.1, 2026-09-19).
 pub fn interpolate(buffer: &[f32], position: f64, mode: Interpolation) -> f32 {
     if buffer.is_empty() {
         return 0.0;
@@ -80,7 +83,7 @@ pub fn interpolate(buffer: &[f32], position: f64, mode: Interpolation) -> f32 {
 
             ((c3 * t + c2) * t + c1) * t + c0
         }
-        Interpolation::High => {
+        Interpolation::High | Interpolation::Ultra => {
             // 8-point Blackman-windowed sinc. Taps run from 3 samples behind
             // the read position to 4 ahead, so the window's half-width is
             // exactly SINC_HALF_WIDTH and the outermost tap lands on the
@@ -109,9 +112,6 @@ pub fn interpolate(buffer: &[f32], position: f64, mode: Interpolation) -> f32 {
             } else {
                 sum
             }
-        }
-        Interpolation::Ultra => {
-            todo!("16-point sinc + 2x oversample needs a stateful resampler (TDD §7.6)")
         }
     }
 }

@@ -12,6 +12,7 @@
 //! naming a parameter a later build dropped still opens.
 
 use fontelle_core::Patch;
+use fontelle_dsp::Oversampling;
 use fontelle_types::ParamAddress;
 use fontelle_ui::canvas::{InstrumentGroup, InstrumentParam, InstrumentView, ParamKind};
 
@@ -336,6 +337,23 @@ pub fn describe(title: &str, patch: &Patch, gain_db: f32, pan: f32) -> Instrumen
 
 // --------------------------------------------------------------- helpers ---
 
+/// A chooser over [`Oversampling::ALL`] — the patch's, or one oscillator's.
+fn oversampling_param(address: &str, label: &str, at: Oversampling) -> InstrumentParam {
+    let index = Oversampling::ALL.iter().position(|q| *q == at).unwrap_or(0);
+    param(
+        address,
+        label,
+        choice_value(index, Oversampling::ALL.len()),
+        at.label().to_string(),
+        ParamKind::Choice(
+            Oversampling::ALL
+                .iter()
+                .map(|q| q.label().to_string())
+                .collect(),
+        ),
+    )
+}
+
 fn param(
     address: &str,
     label: &str,
@@ -616,6 +634,10 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                 format!("{:+.1} dB", patch.output_db),
                 ParamKind::Knob,
             ),
+            // The patch's oversampling (`docs/flopsynth-next.md` §4.1):
+            // what every oscillator without its own runs at, and the
+            // ladder.
+            oversampling_param("patch/oversampling", "oversample", patch.oversampling),
         ],
     });
 
@@ -966,6 +988,15 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                     .collect(),
             ),
         ));
+        // Last, so nothing above it moved when it arrived. The noise has no
+        // read to oversample.
+        if !noise {
+            params.push(oversampling_param(
+                &format!("patch/layer[{index}]/synth/quality"),
+                "quality",
+                osc.quality,
+            ));
+        }
 
         groups.push(InstrumentGroup {
             name: role.label().to_string(),

@@ -13,7 +13,9 @@
 //! starts it later — and that the stack's unison, which is the reason it is
 //! an oscillator rather than a sampler, still works on it.
 
-use fontelle_dsp::{SampleData, SampleLoop, SynthInput, SynthOsc, SynthSource, SynthState, Unison};
+use fontelle_dsp::{
+    Interpolation, SampleData, SampleLoop, SynthInput, SynthOsc, SynthSource, SynthState, Unison,
+};
 
 const SR: f32 = 48_000.0;
 
@@ -65,6 +67,7 @@ fn a_sample_asked_for_its_own_pitch_plays_as_recorded() {
         samples: &sound,
         sample_rate: SR,
         root_hz: 440.0,
+        interpolation: Interpolation::Normal,
     };
     let out = render(&osc(), &data, 440.0, 24_000);
     let measured = zero_crossings_per_second(&out);
@@ -91,6 +94,7 @@ fn an_octave_up_plays_twice_as_fast() {
         samples: &sound,
         sample_rate: SR,
         root_hz: 440.0,
+        interpolation: Interpolation::Normal,
     };
     let out = render(&osc(), &data, 880.0, 12_000);
     let measured = zero_crossings_per_second(&out);
@@ -109,6 +113,7 @@ fn a_recording_at_another_rate_is_pitched_by_its_own_rate() {
         samples: &sound,
         sample_rate: 24_000.0,
         root_hz: 220.0,
+        interpolation: Interpolation::Normal,
     };
     let out = render(&osc(), &data, 220.0, 24_000);
     let measured = zero_crossings_per_second(&out);
@@ -126,6 +131,7 @@ fn a_one_shot_ends_when_the_recording_does() {
         samples: &sound,
         sample_rate: SR,
         root_hz: 440.0,
+        interpolation: Interpolation::Normal,
     };
     let out = render(&osc(), &data, 440.0, 24_000);
     let during = rms(&out[..10_000]);
@@ -144,6 +150,7 @@ fn a_looped_sample_keeps_going() {
         samples: &sound,
         sample_rate: SR,
         root_hz: 440.0,
+        interpolation: Interpolation::Normal,
     };
     let mut looped = osc();
     looped.sample.loop_mode = SampleLoop::Forward;
@@ -175,6 +182,7 @@ fn the_position_knob_is_where_the_note_starts() {
         samples: &sound,
         sample_rate: SR,
         root_hz: 440.0,
+        interpolation: Interpolation::Normal,
     };
     let from_the_top = render(&osc(), &data, 440.0, 4_000);
     assert!(
@@ -198,6 +206,7 @@ fn one_unison_voice_is_the_plain_read() {
         samples: &sound,
         sample_rate: SR,
         root_hz: 330.0,
+        interpolation: Interpolation::Normal,
     };
     let plain = osc();
     let mut one = plain;
@@ -225,6 +234,7 @@ fn a_detuned_stack_beats() {
         samples: &sound,
         sample_rate: SR,
         root_hz: 220.0,
+        interpolation: Interpolation::Normal,
     };
     let mut stack = osc();
     stack.unison = Unison {
@@ -252,7 +262,91 @@ fn an_empty_recording_is_silence() {
         samples: &[],
         sample_rate: SR,
         root_hz: 440.0,
+        interpolation: Interpolation::Normal,
     };
     let out = render(&osc(), &data, 440.0, 1_000);
     assert!(out.iter().all(|s| *s == 0.0));
+}
+
+/// Off-grid energy over on-grid energy, in dB, between 30 Hz and 20 kHz —
+/// the measure `tests/synth_alias.rs` uses.
+fn alias_db(samples: &[f32], f0: f32) -> f32 {
+    let n = samples.len();
+    let mut re: Vec<f32> = samples
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let t = std::f32::consts::TAU * i as f32 / n as f32;
+            let w =
+                0.35875 - 0.48829 * t.cos() + 0.14128 * (2.0 * t).cos() - 0.01168 * (3.0 * t).cos();
+            s * w
+        })
+        .collect();
+    let mut im = vec![0.0f32; n];
+    fontelle_dsp::fft_in_place(&mut re, &mut im);
+    let bin_hz = SR / n as f32;
+    let f0_bins = f0 / bin_hz;
+    let top = (20_000.0 / bin_hz) as usize;
+    let (mut signal, mut alias) = (0.0f64, 0.0f64);
+    for k in 8..top {
+        let power = f64::from(re[k] * re[k] + im[k] * im[k]);
+        let nearest = (k as f32 / f0_bins).round() * f0_bins;
+        if (k as f32 - nearest).abs() <= 4.0 {
+            signal += power;
+        } else {
+            alias += power;
+        }
+    }
+    10.0 * (alias / signal.max(1e-30)).log10() as f32
+}
+
+/// The recording read `interpolation`-wise, +19 semitones up from a sine at
+/// its root: every read between two frames is an estimate, and the better
+/// kernel's estimate is the cleaner one (`docs/flopsynth-next.md` §4.1,
+/// "sample interpolation follows quality").
+fn transposed_alias(interpolation: Interpolation) -> f32 {
+    const FRAMES: usize = 16_384;
+    // A high root — ten frames to the cycle — so the read between frames
+    // is an estimate worth the name: at 440 Hz every kernel reads a sine
+    // within 78 dB and there is nothing to tell them apart by. Nineteen
+    // semitones over it puts the note at 15 kHz, on the transform's grid.
+    let ratio = 2f32.powf(19.0 / 12.0);
+    let note = ((5_000.0 * ratio) * FRAMES as f32 / SR).round() * SR / FRAMES as f32;
+    let root = note / ratio;
+    let sound = recording(root, 2.0, SR);
+    let data = SampleData {
+        samples: &sound,
+        sample_rate: SR,
+        root_hz: root,
+        interpolation,
+    };
+    alias_db(&render(&osc(), &data, note, FRAMES), note)
+}
+
+#[test]
+fn the_read_follows_the_interpolation_it_is_handed() {
+    let draft = transposed_alias(Interpolation::Draft);
+    let normal = transposed_alias(Interpolation::Normal);
+    let high = transposed_alias(Interpolation::High);
+    assert!(
+        high <= normal - 12.0,
+        "High reads {high:.1} dB of alias against Normal's {normal:.1}: the kernel is not followed"
+    );
+    assert!(
+        normal <= draft - 6.0,
+        "Normal {normal:.1} against Draft {draft:.1}"
+    );
+}
+
+/// `Ultra` is the top of the same chooser (`patch/quality`), and until now a
+/// read at it was a `todo!()` — a panic on the audio thread, reachable from
+/// a menu. It reads at least as well as `High`.
+#[test]
+fn ultra_reads_at_least_as_cleanly_as_high_and_does_not_panic() {
+    let high = transposed_alias(Interpolation::High);
+    let ultra = transposed_alias(Interpolation::Ultra);
+    assert!(
+        ultra <= high + 0.5,
+        "Ultra {ultra:.1} against High {high:.1}"
+    );
 }

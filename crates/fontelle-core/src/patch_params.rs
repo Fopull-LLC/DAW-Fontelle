@@ -33,7 +33,7 @@
 
 use fontelle_dsp::{
     EnvStage, FilterModel, FilterRoute, FilterSlope, GRAIN_MAX_MS, GRAIN_MIN_MS, Interpolation,
-    MAX_UNISON, OscKind, SampleLoop, SvfMode, SynthSource, WarpMode, WavetableId,
+    MAX_UNISON, OscKind, Oversampling, SampleLoop, SvfMode, SynthSource, WarpMode, WavetableId,
 };
 use fontelle_types::{LfoWave, NoteDivision};
 
@@ -172,6 +172,10 @@ pub fn set(patch: &mut Patch, address: &str, value: f32) -> bool {
         }
         "patch/output" => {
             patch.output_db = lerp(value, OUTPUT_MIN_DB, OUTPUT_MAX_DB);
+            true
+        }
+        "patch/oversampling" => {
+            patch.oversampling = Oversampling::ALL[choice_index(value, Oversampling::ALL.len())];
             true
         }
         "patch/quality" => {
@@ -431,6 +435,9 @@ fn set_synth(osc: &mut fontelle_dsp::SynthOsc, field: &str, value: f32, zones: u
         "route" => {
             osc.filter_route = FilterRoute::ALL[choice_index(value, FilterRoute::ALL.len())];
         }
+        "quality" => {
+            osc.quality = Oversampling::ALL[choice_index(value, Oversampling::ALL.len())];
+        }
         "unison/voices" => {
             osc.unison.voices = lerp(value, 1.0, MAX_UNISON as f32).round() as u8;
         }
@@ -582,6 +589,12 @@ pub fn value(patch: &Patch, address: &str) -> Option<f32> {
             BEND_MAX_SEMITONES,
         )),
         "patch/output" => Some(unlerp(patch.output_db, OUTPUT_MIN_DB, OUTPUT_MAX_DB)),
+        "patch/oversampling" => {
+            let at = Oversampling::ALL
+                .iter()
+                .position(|q| *q == patch.oversampling)?;
+            Some(choice_value(at, Oversampling::ALL.len()))
+        }
         "patch/quality" => {
             // Every layer carries the same one — see `set`. The first is the
             // patch's answer, and a patch with no layers has none.
@@ -830,6 +843,10 @@ fn synth_value(osc: &fontelle_dsp::SynthOsc, field: &str, zones: usize) -> Optio
                 .iter()
                 .position(|r| *r == osc.filter_route)?;
             Some(choice_value(at, FilterRoute::ALL.len()))
+        }
+        "quality" => {
+            let at = Oversampling::ALL.iter().position(|q| *q == osc.quality)?;
+            Some(choice_value(at, Oversampling::ALL.len()))
         }
         "unison/voices" => Some(unlerp(f32::from(osc.unison.voices), 1.0, MAX_UNISON as f32)),
         "unison/detune" => Some(unlerp(

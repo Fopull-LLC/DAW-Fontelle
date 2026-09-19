@@ -14,7 +14,7 @@ use crate::mod_matrix::ModMatrix;
 use crate::patch::{FilterSlot, Layer, Lfo, MACRO_COUNT, Macro, Patch, PatchFx, Source, ZoneId};
 use crate::playback::PlaybackConfig;
 use crate::voice::VoiceConfig;
-use fontelle_dsp::{EnvelopeConfig, OscKind};
+use fontelle_dsp::{EnvelopeConfig, OscKind, Oversampling};
 
 /// The revision of the patch format this build writes.
 ///
@@ -293,6 +293,10 @@ struct StoredPatch {
     /// recordings existed are not all rewritten to say so.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     samples: Vec<StoredSample>,
+    /// `#[serde(default)]` and left out at `Off`, for the same reason again
+    /// (`docs/flopsynth-next.md` §4.1, ground rule 7).
+    #[serde(default, skip_serializing_if = "Oversampling::is_off")]
+    oversampling: Oversampling,
 }
 
 impl Patch {
@@ -341,6 +345,7 @@ impl Patch {
             output_db: self.output_db,
             wavetables: self.wavetables.iter().map(StoredWavetable::of).collect(),
             samples: self.samples.iter().map(StoredSample::of).collect(),
+            oversampling: self.oversampling,
         };
 
         Ok(PatchData {
@@ -442,6 +447,7 @@ impl Patch {
                     .into_iter()
                     .map(StoredSample::into_sample)
                     .collect(),
+                oversampling: stored.oversampling,
             },
             unresolved,
         })

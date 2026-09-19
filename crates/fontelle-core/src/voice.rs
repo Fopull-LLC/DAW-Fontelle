@@ -1439,6 +1439,12 @@ impl Voice {
                     // the patch is what the document holds and a route is not
                     // an edit to it.
                     let mut osc = *osc;
+                    // The patch's oversampling, unless this oscillator has
+                    // its own: one answer, resolved here rather than in
+                    // the oscillator, which never sees the patch.
+                    if osc.quality.is_off() {
+                        osc.quality = patch.oversampling;
+                    }
                     osc.position = (osc.position
                         + layer_mod(crate::mod_matrix::ModDest::OscPosition))
                     .clamp(0.0, 1.0);
@@ -1480,6 +1486,9 @@ impl Voice {
                                     samples: &zone.samples,
                                     sample_rate: zone.sample_rate as f32,
                                     root_hz: zone.root_hz(),
+                                    // The layer's pin or the session's,
+                                    // the same as a sampled layer's read.
+                                    interpolation: layer.playback.interpolation.unwrap_or(quality),
                                 })
                             }),
                         fontelle_dsp::SynthSource::Noise | fontelle_dsp::SynthSource::String => {
@@ -1564,6 +1573,7 @@ impl Voice {
                     + patch.mod_matrix.evaluate(character_dest, &sources)
                         * character_dest.full_scale())
                 .clamp(0.0, 1.0),
+                oversampling: patch.oversampling,
             };
         }
         let enabled = [patch.filters[0].enabled, patch.filters[1].enabled];

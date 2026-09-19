@@ -32,7 +32,8 @@
 //! neither of the other two can be (see [`StringModel`]).
 
 use crate::{
-    Interpolation, WAVETABLE_LEVELS, Wavetable, WavetableId, interpolate, wavetable_level_for,
+    Decimator, Interpolation, MAX_OVERSAMPLE, Oversampling, WAVETABLE_LEVELS, Wavetable,
+    WavetableId, interpolate, wavetable_level_for,
 };
 
 /// The most voices one oscillator's unison stack may have.
@@ -380,6 +381,11 @@ pub struct SampleData<'a> {
     /// The pitch it was recorded at. A note at this pitch plays the
     /// recording as it is.
     pub root_hz: f32,
+    /// The kernel every read between two frames uses: the session's, or
+    /// the layer's pin (`patch/quality`). It was `Normal` whatever the
+    /// setting until `docs/flopsynth-next.md` §4.1, which is why a bounce
+    /// at `High` read a synth's recording no better than playback did.
+    pub interpolation: Interpolation,
 }
 
 /// What an oscillator reads this sample: nothing, a table, or a recording.
@@ -464,6 +470,13 @@ pub struct SynthOsc {
     /// the same reasons.
     #[serde(default, skip_serializing_if = "StringModel::is_default")]
     pub string: StringModel,
+    /// How many times over the session's rate this oscillator renders — see
+    /// [`crate::Oversampling`]. `Off` follows the patch's own setting (the
+    /// voice resolves that before the note); anything else is this
+    /// oscillator's own answer. Left out of the file when it is `Off`, for
+    /// the reason `sample` is.
+    #[serde(default, skip_serializing_if = "Oversampling::is_off")]
+    pub quality: Oversampling,
 }
 
 impl Default for SynthOsc {
@@ -483,6 +496,7 @@ impl Default for SynthOsc {
             noise_colour: 0.0,
             sample: SampleSettings::default(),
             string: StringModel::default(),
+            quality: Oversampling::Off,
         }
     }
 }
@@ -562,6 +576,18 @@ pub struct SynthState {
     grain_clock: u32,
     /// A **string** source's partials.
     string: StringState,
+    /// `2^(semitones/12)` for the semitones it was last asked about — see
+    /// [`base_hz`](Self::base_hz).
+    semitone_ratio: (i8, f32),
+    /// The way back down from an oversampled render, one per channel — see
+    /// [`crate::Decimator`]. Untouched at `Off`.
+    decimators: [Decimator; 2],
+    /// The modulator's sample from the frame before, so an oversampled FM
+    /// read can ramp towards this frame's rather than step to it: a
+    /// modulator held for four sub-samples is a modulator with images at
+    /// the session's rate, and FM by those is more of what oversampling is
+    /// here to take out.
+    last_modulator: f32,
 }
 
 /// The per-voice half of a string: its partials as rotating phasors.
@@ -663,6 +689,9 @@ impl Default for SynthState {
             grains: [Grain::default(); GRAINS],
             grain_clock: 0,
             string: StringState::default(),
+            semitone_ratio: (0, 1.0),
+            decimators: [Decimator::default(); 2],
+            last_modulator: 0.0,
         }
     }
 }
@@ -682,6 +711,8 @@ impl SynthState {
         self.master_phase = osc.phase.rem_euclid(1.0);
         self.noise_pole = 0.0;
         self.last = 0.0;
+        self.decimators = [Decimator::default(); 2];
+        self.last_modulator = 0.0;
         self.heads_placed = false;
         // A string is struck on its first sample, not here: the strike's
         // brightness is the *modulated* position, which `reset` does not
@@ -707,6 +738,19 @@ impl SynthState {
                 osc.phase.rem_euclid(1.0)
             };
         }
+    }
+
+    /// [`SynthOsc::frequency`], with the `powf` paid once per change of
+    /// semitones rather than once per sample: the ratio is a function of an
+    /// `i8`, and it was three transcendentals a sample on a three-oscillator
+    /// patch — twelve at 4× — for a number that never moved. The same
+    /// `powf`, so the answer is the same to the bit.
+    fn base_hz(&mut self, osc: &SynthOsc, note_hz: f32) -> f32 {
+        if self.semitone_ratio.0 != osc.semitones {
+            self.semitone_ratio = (osc.semitones, 2f32.powf(f32::from(osc.semitones) / 12.0));
+        }
+        let base = if osc.key_track { note_hz } else { OSC_FIXED_HZ };
+        base * self.semitone_ratio.1
     }
 
     /// The sample this oscillator produced last — what a layer naming it as an
@@ -758,7 +802,50 @@ impl SynthState {
         if sample_rate <= 0.0 {
             return (0.0, 0.0);
         }
-        let out = match (osc.source, input) {
+        let factor = osc.quality.factor();
+        let out = if factor <= 1 {
+            // **Off is the path there always was**, not the oversampled one
+            // at a factor of one: `tests/synth_alias.rs` holds that a patch
+            // that never asked reads sample for sample what it did.
+            self.render_one(osc, input, note_hz, sample_rate, modulator)
+        } else {
+            // The same render, `factor` times at `factor` times the rate,
+            // then the way back down. The sub-samples live on the stack;
+            // the decimators are the state (`docs/flopsynth-next.md` §4.1).
+            let over = sample_rate * factor as f32;
+            let from = self.last_modulator;
+            let mut left = [0.0f32; MAX_OVERSAMPLE];
+            let mut right = [0.0f32; MAX_OVERSAMPLE];
+            for sub in 0..factor {
+                let ramped = from + (modulator - from) * (sub + 1) as f32 / factor as f32;
+                let pair = self.render_one(osc, input, note_hz, over, ramped);
+                left[sub] = pair.0;
+                right[sub] = pair.1;
+            }
+            (
+                self.decimators[0].decimate(&left[..factor], osc.quality),
+                self.decimators[1].decimate(&right[..factor], osc.quality),
+            )
+        };
+        self.last_modulator = modulator;
+        // The modulator reads the *mono* sum, because FM by one side of a
+        // panned stack is not a thing anybody means.
+        self.last = (out.0 + out.1) * 0.5;
+        out
+    }
+
+    /// One stereo sample pair at `sample_rate`, whatever that rate is: the
+    /// session's from [`next_sample_from`](Self::next_sample_from) at `Off`,
+    /// a multiple of it when oversampling.
+    fn render_one(
+        &mut self,
+        osc: &SynthOsc,
+        input: SynthInput<'_>,
+        note_hz: f32,
+        sample_rate: f32,
+        modulator: f32,
+    ) -> (f32, f32) {
+        match (osc.source, input) {
             (SynthSource::Noise, _) => {
                 let mono = self.noise(osc);
                 (mono, mono)
@@ -775,11 +862,7 @@ impl SynthState {
             (SynthSource::String, _) => self.string_voices(osc, note_hz, sample_rate),
             // A layer whose input has not been resolved renders silence.
             _ => (0.0, 0.0),
-        };
-        // The modulator reads the *mono* sum, because FM by one side of a
-        // panned stack is not a thing anybody means.
-        self.last = (out.0 + out.1) * 0.5;
-        out
+        }
     }
 
     fn noise(&mut self, osc: &SynthOsc) -> f32 {
@@ -811,7 +894,7 @@ impl SynthState {
         sample_rate: f32,
         modulator: f32,
     ) -> (f32, f32) {
-        let base_hz = osc.frequency(note_hz).clamp(0.0, sample_rate * 0.5);
+        let base_hz = self.base_hz(osc, note_hz).clamp(0.0, sample_rate * 0.5);
         let voices = usize::from(osc.unison.voices.clamp(1, MAX_UNISON as u8));
         let blend = osc.unison.blend.clamp(0.0, 1.0);
         let width = osc.unison.width.clamp(0.0, 1.0);
@@ -831,6 +914,9 @@ impl SynthState {
         // note would alias every one of them.
         let level =
             wavetable_level_for(base_hz * sync_ratio, sample_rate).min(WAVETABLE_LEVELS - 1);
+        // Oversampled, the read between the table's samples is the cubic —
+        // see `Wavetable::read_smooth` for the measurement behind it.
+        let smooth = !osc.quality.is_off();
 
         // Read the master where it is, advance it after: a voice's phase is
         // the one it had at the start of the sample, and the two have to move
@@ -864,7 +950,11 @@ impl SynthState {
 
             let phase = &mut self.phases[voice];
             let read_at = warp_phase(osc, *phase, amount, modulator);
-            let mut sample = table.read(osc.position.clamp(0.0, 1.0), read_at, level);
+            let mut sample = if smooth {
+                table.read_smooth(osc.position.clamp(0.0, 1.0), read_at, level)
+            } else {
+                table.read(osc.position.clamp(0.0, 1.0), read_at, level)
+            };
             if osc.warp == WarpMode::Rm {
                 // Dry at amount 0, fully ring-modulated at 1 — a continuum,
                 // like every other warp.
@@ -912,7 +1002,7 @@ impl SynthState {
         if len == 0 || data.root_hz <= 0.0 || data.sample_rate <= 0.0 {
             return (0.0, 0.0);
         }
-        let base_hz = osc.frequency(note_hz).max(0.0);
+        let base_hz = self.base_hz(osc, note_hz).max(0.0);
         let voices = usize::from(osc.unison.voices.clamp(1, MAX_UNISON as u8));
         let blend = osc.unison.blend.clamp(0.0, 1.0);
         let width = osc.unison.width.clamp(0.0, 1.0);
@@ -1015,12 +1105,12 @@ impl SynthState {
                 continue;
             }
             let at = (*head + fm).clamp(0.0, last);
-            let mut sample = interpolate(data.samples, at, Interpolation::Normal);
+            let mut sample = interpolate(data.samples, at, data.interpolation);
             if looping && fade > 0.0 && *head > loop_end - fade {
                 // Into the seam: blend towards where the loop restarts.
                 let t = ((*head - (loop_end - fade)) / fade).clamp(0.0, 1.0) as f32;
                 let wrapped = (at - loop_len).clamp(0.0, last);
-                let ahead = interpolate(data.samples, wrapped, Interpolation::Normal);
+                let ahead = interpolate(data.samples, wrapped, data.interpolation);
                 sample += (ahead - sample) * t;
             }
             sample *= rm;
@@ -1111,7 +1201,7 @@ impl SynthState {
                 if !(0.0..=last).contains(&at) {
                     continue;
                 }
-                let sample = interpolate(data.samples, at, Interpolation::Normal) * window * rm;
+                let sample = interpolate(data.samples, at, data.interpolation) * window * rm;
                 let (gl, gr) = stack.gains[voice];
                 left += sample * gl;
                 right += sample * gr;
@@ -1158,7 +1248,7 @@ impl SynthState {
     /// A **string** source: the stack's strings, each a bank of partials
     /// rotating and decaying.
     fn string_voices(&mut self, osc: &SynthOsc, note_hz: f32, sample_rate: f32) -> (f32, f32) {
-        let base_hz = osc.frequency(note_hz).clamp(0.0, sample_rate * 0.5);
+        let base_hz = self.base_hz(osc, note_hz).clamp(0.0, sample_rate * 0.5);
         if base_hz <= 0.0 {
             return (0.0, 0.0);
         }
