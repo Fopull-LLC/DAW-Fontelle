@@ -225,6 +225,164 @@ fn oscillator_of(patch: &Patch, name: &str) -> Option<usize> {
 }
 
 /// The picture a card of this name gets, if any.
+/// An effect's picture (`docs/flopsynth-next.md` §3.6), from the numbers
+/// the effect plays: the delay's taps, the reverb's tail, the distortion's
+/// transfer curve through the effect's own `curve_at`, the EQ's response
+/// with a dot per band, the compressor's gain curve. The kinds with no
+/// shape to draw — a chorus, the utility — have none.
+fn effect_picture(config: &fontelle_types::EffectConfig) -> FlopsynthPicture {
+    use fontelle_types::EffectConfig;
+    const STEPS: usize = 96;
+    match config {
+        EffectConfig::Delay(delay) => {
+            // The taps across a two-second window, each `feedback` of the
+            // one before, until they are too quiet to draw.
+            let time_s = if delay.sync {
+                delay.division.beats() * 0.5
+            } else {
+                delay.time_ms / 1000.0
+            }
+            .max(0.005);
+            let window = 2.0f32;
+            let feedback = delay.feedback.clamp(0.0, 0.98);
+            let mut marks = Vec::new();
+            let mut level = 1.0f32;
+            let mut at = time_s;
+            while at <= window && level > 0.04 && marks.len() < 32 {
+                marks.push((at / window, level));
+                level *= feedback;
+                at += time_s;
+            }
+            FlopsynthPicture::Curve {
+                points: Vec::new(),
+                marks,
+                midline: false,
+            }
+        }
+        EffectConfig::Reverb(reverb) => {
+            // RT60 across a window a little longer than the tail.
+            let decay = reverb.decay_s.max(0.05);
+            let window = decay * 1.2;
+            let points = (0..STEPS)
+                .map(|i| {
+                    let t = window * i as f32 / (STEPS - 1) as f32;
+                    10f32.powf(-3.0 * t / decay)
+                })
+                .collect();
+            FlopsynthPicture::Curve {
+                points,
+                marks: Vec::new(),
+                midline: false,
+            }
+        }
+        EffectConfig::Distortion(dist) => {
+            let drive = 10f32.powf(dist.drive_db.clamp(0.0, 60.0) / 20.0);
+            let points = (0..STEPS)
+                .map(|i| {
+                    let x = i as f32 / (STEPS - 1) as f32 * 2.0 - 1.0;
+                    let y = fontelle_fx::distortion_curve_at(
+                        x * drive,
+                        dist.curve,
+                        dist.shape.clamp(0.0, 1.0),
+                        dist.bias.clamp(-1.0, 1.0),
+                    );
+                    (y.clamp(-1.0, 1.0) + 1.0) / 2.0
+                })
+                .collect();
+            FlopsynthPicture::Curve {
+                points,
+                marks: Vec::new(),
+                midline: true,
+            }
+        }
+        EffectConfig::Bitcrush(crush) => {
+            let steps = 2f32.powf(crush.bits.clamp(1.0, 16.0));
+            let points = (0..STEPS)
+                .map(|i| {
+                    let x = i as f32 / (STEPS - 1) as f32 * 2.0 - 1.0;
+                    let y = (x * steps / 2.0).round() / (steps / 2.0);
+                    (y.clamp(-1.0, 1.0) + 1.0) / 2.0
+                })
+                .collect();
+            FlopsynthPicture::Curve {
+                points,
+                marks: Vec::new(),
+                midline: true,
+            }
+        }
+        EffectConfig::Eq(eq) => {
+            // ±24 dB across 20 Hz to 20 kHz, log; a dot per band that is on.
+            let (lo, hi, span_db) = (20f32, 20_000f32, 24f32);
+            let hz_at = |t: f32| lo * (hi / lo).powf(t);
+            let points = (0..STEPS)
+                .map(|i| {
+                    let hz = hz_at(i as f32 / (STEPS - 1) as f32);
+                    let db = eq.response_db(hz, fontelle_types::BandChannel::Stereo);
+                    ((db / span_db).clamp(-1.0, 1.0) + 1.0) / 2.0
+                })
+                .collect();
+            let marks = eq
+                .bands
+                .iter()
+                .filter(|band| band.enabled)
+                .map(|band| {
+                    let t = (band.freq_hz.max(lo) / lo).ln() / (hi / lo).ln();
+                    let db = eq.response_db(band.freq_hz, fontelle_types::BandChannel::Stereo);
+                    (
+                        t.clamp(0.0, 1.0),
+                        ((db / span_db).clamp(-1.0, 1.0) + 1.0) / 2.0,
+                    )
+                })
+                .collect();
+            FlopsynthPicture::Curve {
+                points,
+                marks,
+                midline: true,
+            }
+        }
+        EffectConfig::Compressor(comp) => {
+            // Output against input over −60..0 dB: the compressor's own
+            // transfer, its knee included.
+            let ratio = comp.ratio.max(1.0);
+            let knee = comp.knee_db.max(0.0);
+            let points = (0..STEPS)
+                .map(|i| {
+                    let level = -60.0 + 60.0 * i as f32 / (STEPS - 1) as f32;
+                    let over = level - comp.threshold_db;
+                    let reduction = if knee > 0.0 && over > -knee / 2.0 && over < knee / 2.0 {
+                        let x = over + knee / 2.0;
+                        -(1.0 / ratio - 1.0).abs() * x * x / (2.0 * knee)
+                    } else if over > 0.0 {
+                        -over * (1.0 - 1.0 / ratio)
+                    } else {
+                        0.0
+                    };
+                    ((level + reduction + comp.makeup_db + 60.0) / 60.0).clamp(0.0, 1.0)
+                })
+                .collect();
+            FlopsynthPicture::Curve {
+                points,
+                marks: Vec::new(),
+                midline: false,
+            }
+        }
+        EffectConfig::Limiter(limiter) => {
+            let points = (0..STEPS)
+                .map(|i| {
+                    let level = -60.0 + 60.0 * i as f32 / (STEPS - 1) as f32;
+                    ((level.min(limiter.ceiling_db) + 60.0) / 60.0).clamp(0.0, 1.0)
+                })
+                .collect();
+            FlopsynthPicture::Curve {
+                points,
+                marks: Vec::new(),
+                midline: false,
+            }
+        }
+        _ => FlopsynthPicture::None,
+    }
+}
+
 fn picture_for(name: &str, patch: &Patch, phases: &[f32]) -> FlopsynthPicture {
     use fontelle_core::Source;
     use fontelle_core::flopsynth::layer_role;
@@ -396,6 +554,17 @@ fn picture_for(name: &str, patch: &Patch, phases: &[f32]) -> FlopsynthPicture {
         };
     }
 
+    // An effect slot's card (§3.6): the effect's own picture.
+    if let Some(index) = name
+        .strip_prefix("FX ")
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|n| n.parse::<usize>().ok())
+        .and_then(|n| n.checked_sub(1))
+        && let Some(slot) = patch.fx.get(index)
+    {
+        return effect_picture(&slot.config);
+    }
+
     FlopsynthPicture::None
 }
 
@@ -490,6 +659,9 @@ fn response_points(filter: &fontelle_core::FilterSlot) -> Vec<f32> {
 pub struct Heard {
     pub voices: usize,
     pub lfo_phases: Vec<f32>,
+    /// What each effect slot put out this block (§3.6), for the rack's
+    /// meters; short or empty reads as silence.
+    pub fx_levels: Vec<f32>,
 }
 
 /// Everything Flopsynth's window shows, for this patch and this page.
@@ -515,11 +687,13 @@ pub fn describe(
     page: FlopsynthPage,
     heard: Heard,
     bank: Vec<fontelle_ui::canvas::PresetChoice>,
-    inspector: Option<usize>,
+    showing: fontelle_ui::canvas::FlopsynthShowing,
 ) -> FlopsynthView {
+    let inspector = showing.inspector;
     let Heard {
         voices,
         lfo_phases: phases,
+        fx_levels,
     } = heard;
     let mut view = crate::instrument::describe_flopsynth(title, patch, gain_db, pan);
     // The channel's two knobs ride on the Voice card in this window: the
@@ -536,10 +710,10 @@ pub fn describe(
         }
     }
     // The captions: the words this window draws over its controls
-    // (`crate::captions`), in capitals. The macros keep their names and the
-    // effect cards their effect's captions.
+    // (`crate::captions`), in capitals. The macros keep their names; an
+    // effect card's are its effect's own, set in capitals like the rest.
     for group in &mut view.groups {
-        if group.name == "Macros" || group.name.starts_with("FX ") {
+        if group.name == "Macros" {
             continue;
         }
         for param in &mut group.params {
@@ -620,6 +794,35 @@ pub fn describe(
         .collect();
     let inspector = inspected_card.as_ref().and(inspector);
     cards.extend(inspected_card);
+
+    // The Effects page (§3.6): the rack, and the selected slot's card
+    // alone beside it — the first when none is chosen, the last for a
+    // choice past the end.
+    let (rack, fx_slot) = if page == FlopsynthPage::Effects {
+        let rack: Vec<fontelle_ui::canvas::FxRackSlot> = patch
+            .fx
+            .iter()
+            .enumerate()
+            .map(|(index, slot)| fontelle_ui::canvas::FxRackSlot {
+                name: format!("FX {} \u{b7} {}", index + 1, slot.config.kind().label()),
+                enabled: slot.enabled,
+                mix: slot.config.mix().clamp(0.0, 1.0),
+                level: fx_levels.get(index).copied().unwrap_or(0.0),
+            })
+            .collect();
+        let fx_slot = if rack.is_empty() {
+            None
+        } else {
+            Some(showing.fx_slot.unwrap_or(0).min(rack.len() - 1))
+        };
+        if let Some(slot) = fx_slot {
+            let wanted = format!("FX {} \u{b7}", slot + 1);
+            cards.retain(|card| !card.removable || card.group.name.starts_with(&wanted));
+        }
+        (rack, fx_slot)
+    } else {
+        (Vec::new(), None)
+    };
     FlopsynthView {
         title: view.title,
         cards,
@@ -641,6 +844,8 @@ pub fn describe(
         scale: 1.0,
         thumbnails: chooser_thumbnails(patch, page),
         fx_room: page == FlopsynthPage::Effects && patch.fx.len() < fontelle_core::MAX_PATCH_FX,
+        rack,
+        fx_slot,
     }
 }
 

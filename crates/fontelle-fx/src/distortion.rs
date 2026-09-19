@@ -428,7 +428,11 @@ fn reference_gain(curve: DistortionCurve, shape: f32, bias: f32, drive: f32) -> 
 /// output taken back out so that zero still goes through as zero and a reset
 /// effect is still silent. The DC blocker takes out the rest — the offset
 /// the *signal's* asymmetry leaves.
-fn curve_at(sample: f32, curve: DistortionCurve, shape: f32, bias: f32) -> f32 {
+///
+/// Public for the picture on the slot's card (`docs/flopsynth-next.md`
+/// §3.6): the transfer curve drawn is the one the effect plays, sampled
+/// through this one function.
+pub fn curve_at(sample: f32, curve: DistortionCurve, shape: f32, bias: f32) -> f32 {
     if bias == 0.0 {
         shape_of(sample, curve, shape)
     } else {

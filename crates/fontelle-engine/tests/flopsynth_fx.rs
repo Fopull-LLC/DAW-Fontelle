@@ -406,3 +406,83 @@ fn a_full_chord_through_a_chain_stays_inside_full_scale() {
     );
     assert!(loudest > 0.05, "and it has to sound: {loudest}");
 }
+
+/// §3.6: eight slots, and a level meter per slot — the peak of the block
+/// after that slot ran, on the node's `VoiceMeter` beside the voice count,
+/// so the rack's rows can show what each slot is putting out. A slot after
+/// the last one filled, and a bypassed slot, read nothing.
+#[test]
+fn the_chain_holds_eight_slots_and_meters_each_one() {
+    use fontelle_engine::VoiceMeter;
+    assert_eq!(fontelle_core::MAX_PATCH_FX, 8);
+    let mut patch = a_patch();
+    patch.fx = vec![
+        slot(EffectConfig::Filter(FilterConfig::default())),
+        PatchFx {
+            config: EffectConfig::Delay(DelayConfig::default()),
+            enabled: false,
+        },
+    ];
+    let store = Arc::new(SampleStore::new());
+    let meter = Arc::new(VoiceMeter::new());
+    let mut node = SamplerNode::new(Sampler::new(patch), store).with_meter(meter.clone());
+    node.prepare(&PrepareContext {
+        sample_rate: SR,
+        max_block_size: BLOCK as u32,
+    });
+    let levels = meter.fx_levels();
+    assert_eq!(levels.len(), fontelle_core::MAX_PATCH_FX);
+    assert!(
+        levels.iter().all(|l| *l == 0.0),
+        "silent before anything sounds"
+    );
+    // A note through the chain: the filter's slot reads its output's peak,
+    // the bypassed delay reads nothing, and the six empty slots nothing.
+    for block in 0..8 {
+        let mut left = vec![0.0f32; BLOCK];
+        let mut right = vec![0.0f32; BLOCK];
+        let events = if block == 0 {
+            vec![TimedEvent {
+                sample: 0,
+                target: NodeId::default(),
+                payload: EventPayload::NoteOn {
+                    key: 60,
+                    velocity: 100,
+                    pan: 0,
+                    fine_pitch: 0,
+                    release: 0,
+                    mod_x: 0,
+                    mod_y: 0,
+                    voice_context: 0,
+                },
+            }]
+        } else {
+            Vec::new()
+        };
+        let (l, r) = (&mut left[..], &mut right[..]);
+        let mut outputs: [&mut [f32]; 2] = [l, r];
+        let at = (block * BLOCK) as i64;
+        let mut ctx = ProcessContext {
+            inputs: &[],
+            outputs: &mut outputs,
+            all_events: &events,
+            live_events: &[],
+            audio: &[],
+            node: NodeId::default(),
+            transport: TransportSnapshot {
+                state: TransportState::Playing,
+                position_sample: at,
+                bpm: 120.0,
+            },
+            sample_range: at..at + BLOCK as i64,
+        };
+        node.process(&mut ctx);
+    }
+    let levels = meter.fx_levels();
+    assert!(
+        levels[0] > 0.01,
+        "the filter's slot is sounding: {levels:?}"
+    );
+    assert_eq!(levels[1], 0.0, "a bypassed slot reads nothing");
+    assert!(levels[2..].iter().all(|l| *l == 0.0));
+}

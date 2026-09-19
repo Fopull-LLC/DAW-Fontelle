@@ -8129,6 +8129,55 @@ fn draw_flopsynth_picture(
                 }
             }
         }
+        FlopsynthPicture::Curve {
+            points,
+            marks,
+            midline,
+        } => {
+            if *midline {
+                fill_rect(
+                    scene,
+                    Rect::new(inner.x, inner.y + inner.height * 0.5, inner.width, 1.0),
+                    p.border,
+                );
+            }
+            if !points.is_empty() {
+                let curve: Vec<(f32, f32)> = points
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        (
+                            inner.x + inner.width * i as f32 / (points.len() - 1).max(1) as f32,
+                            inner.bottom() - inner.height * v.clamp(0.0, 1.0),
+                        )
+                    })
+                    .collect();
+                fill_under_polyline(scene, &curve, inner, ink.with_alpha(0x22));
+                glow_polyline(scene, &curve, inner, ink);
+                for (x, h) in marks {
+                    let px = inner.x + inner.width * x.clamp(0.0, 1.0);
+                    let py = inner.bottom() - inner.height * h.clamp(0.0, 1.0);
+                    fill_rect_rounded(
+                        scene,
+                        Rect::new(px - 3.0, py - 3.0, 6.0, 6.0),
+                        3.0,
+                        p.playhead,
+                    );
+                }
+            } else {
+                // Bars: a delay's taps, later and quieter.
+                for (x, h) in marks {
+                    let px = inner.x + inner.width * x.clamp(0.0, 1.0);
+                    let bar_h = inner.height * h.clamp(0.0, 1.0);
+                    fill_rect_rounded(
+                        scene,
+                        Rect::new(px - 2.0, inner.bottom() - bar_h, 4.0, bar_h),
+                        2.0,
+                        ink,
+                    );
+                }
+            }
+        }
         FlopsynthPicture::LfoShape { shape, phase } => {
             use crate::canvas::{lfo_shape_curve_points, lfo_shape_point_at};
             // The grid the points snap to, faint, and the middle line.
@@ -9118,6 +9167,130 @@ fn draw_flopsynth(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Fl
         draw_flop_presets(scene, theme, labels, chrome);
         return;
     }
+    // The rack (§3.6): a row per slot down the left, the selected one lit
+    // in the effects' ink, each with its grip, its on/off, its name, its
+    // wet/dry and a meter along its foot. A carried row is dimmed, with a
+    // rule where it would land.
+    if !l.rack.is_empty() {
+        let ink = p.meter;
+        let carried = chrome.carrying_slot.map(|(slot, _)| slot);
+        for (index, row) in l.rack.iter().enumerate() {
+            let Some(slot) = chrome.view.rack.get(index) else {
+                continue;
+            };
+            if row.frame.is_empty() {
+                continue;
+            }
+            let selected = chrome.view.fx_slot == Some(index);
+            let lit = row.frame.contains(chrome.hover_at.0, chrome.hover_at.1);
+            fill_rect_rounded(
+                scene,
+                row.frame,
+                m.corner_radius,
+                if selected {
+                    mix(p.panel, ink, 0.25)
+                } else if lit {
+                    mix(p.panel, ink, 0.08)
+                } else {
+                    p.panel.with_alpha(0xe0)
+                },
+            );
+            stroke_rect_rounded(
+                scene,
+                row.frame,
+                m.corner_radius,
+                if selected { 1.5 } else { 1.0 },
+                if selected { ink } else { p.border },
+            );
+            let dim = carried == Some(index) || !slot.enabled;
+            let text_ink = if dim { p.text_muted } else { p.text };
+            // The grip: three dots.
+            let cx = row.grip.x + row.grip.width / 2.0;
+            let cy = row.grip.y + row.grip.height / 2.0;
+            for dy in [-4.0, 0.0, 4.0] {
+                fill_rect_rounded(
+                    scene,
+                    Rect::new(cx - 1.0, cy + dy - 1.0, 2.0, 2.0),
+                    1.0,
+                    p.text_muted,
+                );
+            }
+            let power_lit = row.power.contains(chrome.hover_at.0, chrome.hover_at.1);
+            draw_flop_switch(
+                scene,
+                theme,
+                row.power,
+                row.power.width + 12.0,
+                slot.enabled,
+                power_lit,
+            );
+            if let Some(text) = labels.get_styled(&slot.name, t.value) {
+                draw_text_clipped(
+                    scene,
+                    text,
+                    row.name,
+                    row.name.x + 2.0,
+                    row.name.y + (row.name.height - text.height) / 2.0,
+                    text_ink,
+                );
+            }
+            // The wet/dry: a groove with a bar from the left, dry to wet.
+            if !row.mix.is_empty() {
+                fill_rect_rounded(scene, row.mix, 2.0, p.window);
+                let wet = Rect::new(
+                    row.mix.x,
+                    row.mix.y,
+                    row.mix.width * slot.mix.clamp(0.0, 1.0),
+                    row.mix.height,
+                );
+                fill_rect_rounded(
+                    scene,
+                    wet,
+                    2.0,
+                    if dim { ink.with_alpha(0x60) } else { ink },
+                );
+            }
+            // The meter: what the slot put out this block, on a groove.
+            if !row.meter.is_empty() {
+                fill_rect_rounded(scene, row.meter, 1.0, p.window);
+                let level = slot.level.clamp(0.0, 1.0);
+                if level > 0.0 {
+                    let bar = Rect::new(
+                        row.meter.x,
+                        row.meter.y,
+                        row.meter.width * level,
+                        row.meter.height,
+                    );
+                    fill_rect_rounded(
+                        scene,
+                        bar,
+                        1.0,
+                        if level > 0.98 { p.meter_peak } else { p.meter },
+                    );
+                }
+            }
+            if carried == Some(index) {
+                fill_rect_rounded(scene, row.frame, m.corner_radius, p.window.with_alpha(0x90));
+            }
+        }
+        if let Some((_, Some(landing))) = chrome.carrying_slot {
+            let y = l
+                .rack
+                .get(landing)
+                .map(|row| row.frame.y - 2.0)
+                .or_else(|| l.rack.last().map(|row| row.frame.bottom() + 2.0));
+            if let Some(y) = y
+                && let Some(first) = l.rack.first()
+            {
+                fill_rect(
+                    scene,
+                    Rect::new(first.frame.x, y - 1.0, first.frame.width, 2.0),
+                    p.accent,
+                );
+            }
+        }
+    }
+
     // The `+ effect` button (§8.5): a chip in the accent, because it is the
     // one thing on a bare Effects page and has to read as the thing to press.
     if !l.add_effect.is_empty() {

@@ -103,9 +103,26 @@ pub struct VoiceMeter {
     /// picture. Four, which is `fontelle_core::MAX_LFOS`; a mismatch would be
     /// a compile error at the store below.
     lfo_phases: [std::sync::atomic::AtomicU32; fontelle_core::MAX_LFOS],
+    /// The peak of the block after each effect slot ran
+    /// (`docs/flopsynth-next.md` §3.6) — the rack's level meters. Zero for
+    /// a slot that is empty or bypassed.
+    fx_levels: [std::sync::atomic::AtomicU32; fontelle_core::MAX_PATCH_FX],
 }
 
 impl VoiceMeter {
+    /// What each effect slot put out this block, as a peak in 0..=1-ish.
+    pub fn fx_levels(&self) -> [f32; fontelle_core::MAX_PATCH_FX] {
+        std::array::from_fn(|index| {
+            f32::from_bits(self.fx_levels[index].load(std::sync::atomic::Ordering::Relaxed))
+        })
+    }
+
+    pub fn set_fx_level(&self, slot: usize, level: f32) {
+        if let Some(cell) = self.fx_levels.get(slot) {
+            cell.store(level.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -355,6 +372,9 @@ impl AudioNode for SamplerNode {
                     continue;
                 };
                 if !slot.enabled {
+                    if let Some(meter) = &self.meter {
+                        meter.set_fx_level(index, 0.0);
+                    }
                     continue;
                 }
                 let config = slot.config;
@@ -388,6 +408,23 @@ impl AudioNode for SamplerNode {
                         }
                     }
                 }
+                // The slot's meter (§3.6): the block's peak after it ran.
+                // One pass over the block per slot, the cost a track's peak
+                // meter already pays.
+                if let Some(meter) = &self.meter {
+                    let peak = rendered[..channels]
+                        .iter()
+                        .flat_map(|channel| channel[..frames].iter())
+                        .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+                    meter.set_fx_level(index, peak);
+                }
+            }
+        }
+        // And nothing for the slots past the chain's end, so a slot taken
+        // off does not leave its last level on the rack.
+        if let Some(meter) = &self.meter {
+            for index in self.fx.len()..fontelle_core::MAX_PATCH_FX {
+                meter.set_fx_level(index, 0.0);
             }
         }
 

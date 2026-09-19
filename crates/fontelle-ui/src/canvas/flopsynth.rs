@@ -162,6 +162,15 @@ pub enum FlopsynthPicture {
     /// An envelope, as its four normalised stages — drawn on a square-root
     /// time axis so a 5 ms attack and a 2 s release are both visible.
     Envelope(EnvelopePicture),
+    /// An effect's picture (§3.6), as a curve across the width — `points`
+    /// in 0..=1 from the floor, or none — and `marks` as `(x, height)` in
+    /// 0..=1: a delay's taps as bars, an EQ's bands as dots on the curve.
+    /// `midline` draws the line halfway up, for a curve about zero.
+    Curve {
+        points: Vec<f32>,
+        marks: Vec<(f32, f32)>,
+        midline: bool,
+    },
     /// A **drawn** LFO shape (§3.4): the shape itself, edited on the
     /// picture, and where the newest voice is in its cycle.
     LfoShape {
@@ -538,7 +547,59 @@ pub struct FlopsynthView {
     /// `+ effect` button on the Effects page. The host knows the limit; the
     /// window only needs to know whether it has been reached.
     pub fx_room: bool,
+    /// The rack (§3.6): one row per effect slot, in the chain's order. On
+    /// the Effects page.
+    pub rack: Vec<FxRackSlot>,
+    /// Which slot's card the page shows — window state, like the page; the
+    /// host puts that slot's card, and only that, in `cards`.
+    pub fx_slot: Option<usize>,
 }
+
+/// What the window chooses to show beyond the page: the source open in the
+/// inspector (§3.4) and the effect slot whose card the Effects page has
+/// (§3.6). Window state, handed to the host to build the view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FlopsynthShowing {
+    pub inspector: Option<usize>,
+    pub fx_slot: Option<usize>,
+}
+
+/// One row of the rack (§3.6): the slot's name, whether it is on, its
+/// wet/dry, and what it put out this block.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FxRackSlot {
+    pub name: String,
+    pub enabled: bool,
+    pub mix: f32,
+    pub level: f32,
+}
+
+/// Where one rack row's parts are: the grip to drag it by, the on/off
+/// pill, the name (a press on it selects the slot), the wet/dry slider and
+/// the level meter along its foot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FxRackRow {
+    pub frame: Rect,
+    pub grip: Rect,
+    pub power: Rect,
+    pub name: Rect,
+    pub mix: Rect,
+    pub meter: Rect,
+}
+
+/// What a press on the rack landed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FxRackHit {
+    Select(usize),
+    Power(usize),
+    Mix(usize),
+    Grip(usize),
+}
+
+/// The rack's column, and one row of it, at scale 1.
+pub const FX_RACK_W: f32 = 236.0;
+pub const FX_RACK_ROW: f32 = 44.0;
+const FX_RACK_GAP: f32 = 4.0;
 
 impl Default for FlopsynthView {
     fn default() -> Self {
@@ -560,6 +621,8 @@ impl Default for FlopsynthView {
             inspector: None,
             thumbnails: Vec::new(),
             fx_room: false,
+            rack: Vec::new(),
+            fx_slot: None,
         }
     }
 }
@@ -633,10 +696,13 @@ pub struct FlopsynthLayout {
     pub matrix_scrollbar: Rect,
     /// The Presets page (§8.6). Empty on every other page.
     pub presets: PresetsLayout,
-    /// The Effects page's `+ effect` button (§8.5): after the last card, or
-    /// first on the page when there is none. Empty on every other page, and
-    /// when the chain is full.
+    /// The Effects page's `+ effect` button (§8.5): under the rack's last
+    /// row, or first in the column when there is none. Empty on every other
+    /// page, and when the chain is full.
     pub add_effect: Rect,
+    /// The rack's rows (§3.6), one per `FlopsynthView::rack`, down the left
+    /// of the Effects page.
+    pub rack: Vec<FxRackRow>,
 }
 
 impl Default for FlopsynthLayout {
@@ -662,6 +728,7 @@ impl Default for FlopsynthLayout {
             matrix_scrollbar: Rect::ZERO,
             presets: PresetsLayout::default(),
             add_effect: Rect::ZERO,
+            rack: Vec::new(),
         }
     }
 }
@@ -1065,6 +1132,42 @@ pub fn flopsynth_layout_with(
         };
     }
 
+    // The Effects page's rack (§3.6): a column down the left with a row per
+    // slot and the `+ effect` under them, taken out of the body before the
+    // selected slot's card is placed beside it.
+    let (rack, add_effect_row) = if view.page == FlopsynthPage::Effects {
+        let column = Rect::new(
+            body.x,
+            body.y,
+            (FX_RACK_W * scale).min(body.width),
+            body.height,
+        );
+        let rows = fx_rack_rows(column, view.rack.len(), scale);
+        let next_y = rows
+            .last()
+            .map_or(column.y, |row| row.frame.bottom() + FX_RACK_GAP * scale);
+        let add = if view.fx_room {
+            Rect::new(
+                column.x,
+                next_y,
+                (ADD_EFFECT_W * scale).min(column.width),
+                ADD_EFFECT_H * scale,
+            )
+            .intersection(&column)
+        } else {
+            Rect::ZERO
+        };
+        body = Rect::new(
+            body.x + column.width + gap,
+            body.y,
+            (body.width - column.width - gap).max(0.0),
+            body.height,
+        );
+        (rows, add)
+    } else {
+        (Vec::new(), Rect::ZERO)
+    };
+
     // The Modulation page's matrix, along the bottom of what is left. Taken
     // out of the body *before* the cards are placed, so the cards cannot
     // run under it.
@@ -1125,7 +1228,8 @@ pub fn flopsynth_layout_with(
             matrix_header,
             matrix_max_scroll,
             matrix_scrollbar,
-            add_effect: add_effect_button(body, view, &[]),
+            add_effect: add_effect_row,
+            rack,
             ..Default::default()
         };
     }
@@ -1133,6 +1237,22 @@ pub fn flopsynth_layout_with(
     // Placed once, at the window's scale. Nothing shrinks: a page that would
     // not fit is a window smaller than the page's size at its scale, which
     // the window refuses (`layout::flopsynth_window_size`).
+    // The Effects page's one card — the selected slot's — takes the whole
+    // of what the rack leaves: its picture is the effect's, and wants the
+    // width.
+    let page_cards: Vec<FlopsynthCard> = if view.page == FlopsynthPage::Effects {
+        let pad = CARD_PAD * scale;
+        let columns = ((body.width - pad * 2.0) / (FLOP_GRID.cell_w * scale)).floor() as usize;
+        page_cards
+            .into_iter()
+            .map(|mut card| {
+                card.columns = columns.max(1);
+                card
+            })
+            .collect()
+    } else {
+        page_cards
+    };
     let cards = place(body, &page_cards, FLOP_GRID, scale, measure);
     // The matrix was given the least it needs before the cards were placed;
     // now that they are, it takes everything under them.
@@ -1153,7 +1273,6 @@ pub fn flopsynth_layout_with(
     };
     let (routes, matrix_header, matrix_max_scroll, matrix_scrollbar) =
         matrix_rows(matrix, view.routes.len(), view.matrix_scroll, scale);
-    let add_effect = add_effect_button(body, view, &cards);
     FlopsynthLayout {
         body: page_body,
         whole,
@@ -1171,7 +1290,8 @@ pub fn flopsynth_layout_with(
         matrix_max_scroll,
         matrix_scrollbar,
         presets: PresetsLayout::default(),
-        add_effect,
+        add_effect: add_effect_row,
+        rack,
     }
 }
 
@@ -1211,27 +1331,120 @@ pub fn fit_cards(body: Rect, cards: &[FlopsynthCard], measure: Measure<'_>) -> V
     placed
 }
 
-/// Where the `+ effect` button goes: after the last card on the row it ends,
-/// or on a row of its own when that would run off the right, or first on
-/// the page when there is no card. Nowhere on any other page, and nowhere
-/// when the chain is full.
-fn add_effect_button(body: Rect, view: &FlopsynthView, cards: &[CardLayout]) -> Rect {
-    if view.page != FlopsynthPage::Effects || !view.fx_room || body.is_empty() {
-        return Rect::ZERO;
+/// The rack's rows (§3.6), down `column` from its top: each a row of
+/// [`FX_RACK_ROW`], with the grip at the left, the on/off pill, the name across
+/// the middle, the wet/dry at the right, and the meter along the foot.
+fn fx_rack_rows(column: Rect, count: usize, scale: f32) -> Vec<FxRackRow> {
+    if column.is_empty() {
+        return Vec::new();
     }
-    let last = cards.iter().filter(|c| !c.frame.is_empty()).max_by(|a, b| {
-        (a.frame.y, a.frame.x)
-            .partial_cmp(&(b.frame.y, b.frame.x))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let (x, y) = match last {
-        None => (body.x, body.y),
-        Some(card) if card.frame.right() + CARD_GAP + ADD_EFFECT_W <= body.right() + 0.01 => {
-            (card.frame.right() + CARD_GAP, card.frame.y)
+    let row_h = FX_RACK_ROW * scale;
+    let gap = FX_RACK_GAP * scale;
+    (0..count)
+        .map(|index| {
+            let frame = Rect::new(
+                column.x,
+                column.y + index as f32 * (row_h + gap),
+                column.width,
+                row_h,
+            )
+            .intersection(&column);
+            if frame.is_empty() {
+                return FxRackRow {
+                    frame,
+                    grip: Rect::ZERO,
+                    power: Rect::ZERO,
+                    name: Rect::ZERO,
+                    mix: Rect::ZERO,
+                    meter: Rect::ZERO,
+                };
+            }
+            let pad = 4.0 * scale;
+            let meter_h = 3.0 * scale;
+            let top_h = (frame.height - pad * 2.0 - meter_h - 2.0 * scale).max(0.0);
+            let band = Rect::new(frame.x + pad, frame.y + pad, frame.width - pad * 2.0, top_h);
+            let grip = Rect::new(band.x, band.y, 10.0 * scale, band.height);
+            let power = Rect::new(
+                grip.right() + pad,
+                band.y + 4.0 * scale,
+                26.0 * scale,
+                (band.height - 8.0 * scale).max(0.0),
+            );
+            let mix_w = 56.0 * scale;
+            let mix = Rect::new(
+                band.right() - mix_w,
+                band.y + 6.0 * scale,
+                mix_w,
+                (band.height - 12.0 * scale).max(0.0),
+            );
+            let name = Rect::new(
+                power.right() + pad,
+                band.y,
+                (mix.x - pad - power.right() - pad).max(0.0),
+                band.height,
+            );
+            let meter = Rect::new(band.x, band.bottom() + 2.0 * scale, band.width, meter_h);
+            FxRackRow {
+                frame,
+                grip,
+                power,
+                name,
+                mix,
+                meter,
+            }
+        })
+        .collect()
+}
+
+/// What is under `(x, y)` on the rack: a row's grip, pill, wet/dry — or
+/// the row itself, which selects its slot.
+pub fn fx_rack_hit(layout: &FlopsynthLayout, x: f32, y: f32) -> Option<FxRackHit> {
+    let inside = |rect: Rect| !rect.is_empty() && rect.contains(x, y);
+    for (index, row) in layout.rack.iter().enumerate() {
+        if !inside(row.frame) {
+            continue;
         }
-        Some(card) => (body.x, card.frame.bottom() + CARD_GAP),
-    };
-    Rect::new(x, y, ADD_EFFECT_W, ADD_EFFECT_H).intersection(&body)
+        return Some(if inside(row.grip) {
+            FxRackHit::Grip(index)
+        } else if inside(row.power) {
+            FxRackHit::Power(index)
+        } else if inside(row.mix) {
+            FxRackHit::Mix(index)
+        } else {
+            FxRackHit::Select(index)
+        });
+    }
+    None
+}
+
+/// Where a row dragged by its grip would land if let go with the pointer
+/// at `y`: the row under it, one past the last below them, `None` outside
+/// the column.
+pub fn fx_rack_landing(layout: &FlopsynthLayout, y: f32) -> Option<usize> {
+    let first = layout.rack.first()?;
+    let top = first.frame.y - FX_RACK_GAP;
+    let bottom = layout
+        .rack
+        .last()
+        .map_or(first.frame.bottom(), |row| row.frame.bottom())
+        + FX_RACK_ROW;
+    if y < top || y > bottom {
+        return None;
+    }
+    for (index, row) in layout.rack.iter().enumerate() {
+        if y <= row.frame.bottom() {
+            return Some(index);
+        }
+    }
+    Some(layout.rack.len())
+}
+
+/// The wet/dry a press at `x` on a row's slider means, 0..=1.
+pub fn fx_rack_mix_at(slider: Rect, x: f32) -> f32 {
+    if slider.width <= 0.0 {
+        return 0.0;
+    }
+    ((x - slider.x) / slider.width).clamp(0.0, 1.0)
 }
 
 /// What one card wants, before anything is placed: its width and height, and
@@ -1823,23 +2036,6 @@ pub fn flopsynth_tab_at(layout: &FlopsynthLayout, x: f32, y: f32) -> Option<Flop
         .iter()
         .find(|(_, rect)| !rect.is_empty() && rect.contains(x, y))
         .map(|(page, _)| *page)
-}
-
-/// Which **effect** card is under `(x, y)` — where a slot dragged by its
-/// header lands (§8.5). A card that cannot be taken off the chain is not a
-/// slot, so an oscillator answers `None` and a drag let go over it is called
-/// off.
-pub fn effect_card_at(
-    layout: &FlopsynthLayout,
-    view: &FlopsynthView,
-    x: f32,
-    y: f32,
-) -> Option<usize> {
-    layout.cards.iter().enumerate().position(|(index, placed)| {
-        view.cards.get(index).is_some_and(|card| card.removable)
-            && !placed.frame.is_empty()
-            && placed.frame.contains(x, y)
-    })
 }
 
 /// Which source badge is under `(x, y)` — where a drag-to-assign starts.

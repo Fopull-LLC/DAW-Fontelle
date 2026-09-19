@@ -1901,17 +1901,31 @@ fn the_matrix_takes_the_room_under_the_cards() {
 
 // ======================================================== the Effects page
 //
-// §8.5: the chain after the voice, one card per slot — and a way to put a
-// slot there. The first build drew the cards a preset came with and nothing
-// else, so the Init patch's Effects page was an empty sky with no word on it.
+// §3.6: a **rack**, not a grid — the slots in a column down the left, each
+// with its on/off, its wet/dry and its level meter, the `+ effect` under
+// them, and the selected slot's card with its picture filling the right.
+// The first build drew the cards a preset came with and nothing else, so
+// the Init patch's Effects page was an empty sky with no word on it.
 
-fn fx_view(cards: usize, room: bool) -> FlopsynthView {
+fn fx_view(slots: usize, room: bool) -> FlopsynthView {
+    use fontelle_ui::canvas::FxRackSlot;
     let mut view = a_view_on(FlopsynthPage::Effects);
-    view.cards = (0..cards)
+    view.rack = (0..slots)
+        .map(|i| FxRackSlot {
+            name: format!("FX {} \u{b7} Chorus", i + 1),
+            enabled: i != 1,
+            mix: 0.5,
+            level: 0.3,
+        })
+        .collect();
+    view.fx_slot = (slots > 0).then_some(0);
+    // The host puts the selected slot's card, and only that, in the view.
+    view.cards = view
+        .fx_slot
         .map(|i| {
             card(
                 &format!("FX {} \u{b7} Chorus", i + 1),
-                5,
+                0,
                 false,
                 0,
                 FlopsynthPicture::None,
@@ -1923,23 +1937,69 @@ fn fx_view(cards: usize, room: bool) -> FlopsynthView {
                 ],
             )
         })
+        .into_iter()
         .collect();
     view.fx_room = room;
     view
 }
 
 #[test]
-fn the_effects_page_offers_an_effect_after_its_cards_until_the_chain_is_full() {
-    let layout = flopsynth_layout(BODY, &metrics(), &fx_view(1, true));
+fn the_effects_page_is_a_rack_of_slots_beside_the_selected_slots_card() {
+    use fontelle_ui::canvas::{FX_RACK_W, FxRackHit, fx_rack_hit, fx_rack_landing};
+    let view = fx_view(3, true);
+    let layout = flopsynth_layout(BODY, &metrics(), &view);
+    assert_eq!(layout.rack.len(), 3);
+    let column_right = BODY.x + FX_RACK_W;
+    let mut bottom = layout.canopy.bottom();
+    for (index, row) in layout.rack.iter().enumerate() {
+        assert!(!row.frame.is_empty(), "slot {index} has no row");
+        assert!(
+            row.frame.right() <= column_right + 0.01,
+            "in the column: {:?}",
+            row.frame
+        );
+        assert!(
+            row.frame.y >= bottom - 0.01,
+            "rows run down: {:?}",
+            row.frame
+        );
+        bottom = row.frame.bottom();
+        let mut right = row.frame.x - 0.01;
+        for (name, rect, hit) in [
+            ("grip", row.grip, FxRackHit::Grip(index)),
+            ("power", row.power, FxRackHit::Power(index)),
+            ("name", row.name, FxRackHit::Select(index)),
+            ("mix", row.mix, FxRackHit::Mix(index)),
+        ] {
+            assert!(!rect.is_empty(), "slot {index}: no {name}");
+            assert!(
+                row.frame.contains(rect.x + 1.0, rect.y + 1.0),
+                "slot {index}: {name} is outside its row"
+            );
+            assert!(
+                rect.x >= right - 0.01,
+                "slot {index}: {name} overlaps what is before it"
+            );
+            right = rect.right();
+            assert_eq!(
+                fx_rack_hit(
+                    &layout,
+                    rect.x + rect.width / 2.0,
+                    rect.y + rect.height / 2.0
+                ),
+                Some(hit),
+                "slot {index}: {name}"
+            );
+        }
+        assert!(!row.meter.is_empty() && row.frame.contains(row.meter.x + 1.0, row.meter.y + 1.0));
+    }
+    // The `+ effect` under the last row, still in the column.
     let button = layout.add_effect;
-    assert!(!button.is_empty(), "the page offers an effect");
-    let card = layout.cards[0].frame;
+    assert!(!button.is_empty());
     assert!(
-        button.x >= card.right() - 0.01 || button.y >= card.bottom() - 0.01,
-        "the button comes after the card: {button:?} vs {card:?}"
+        button.y >= bottom - 0.01 && button.right() <= column_right + 0.01,
+        "{button:?}"
     );
-    assert!(!button.intersects(&card));
-    assert!(button.right() <= BODY.right() + 0.01 && button.bottom() <= BODY.bottom() + 0.01);
     assert_eq!(
         flopsynth_hit(
             &layout,
@@ -1948,22 +2008,49 @@ fn the_effects_page_offers_an_effect_after_its_cards_until_the_chain_is_full() {
         ),
         Some(FlopsynthHit::AddEffect)
     );
+    // The selected slot's card fills the right of the column, its whole
+    // height, with room for a picture.
+    assert_eq!(layout.cards.len(), 1);
+    let card = layout.cards[0].frame;
+    assert!(
+        card.x >= column_right + CARD_GAP - 0.01,
+        "beside the rack: {card:?}"
+    );
+    assert!(card.right() <= BODY.right() + 0.01);
+    assert!(card.width >= 600.0, "{card:?}");
+    assert!(layout.cards[0].cells.len() == 4);
+    // Where a dragged row lands.
+    assert_eq!(
+        fx_rack_landing(&layout, layout.rack[1].frame.y + 2.0),
+        Some(1)
+    );
+    assert_eq!(
+        fx_rack_landing(&layout, layout.rack[2].frame.bottom() + 6.0),
+        Some(3)
+    );
+    assert_eq!(fx_rack_landing(&layout, layout.canopy.y), None);
 
     // A full chain has nothing to offer, and says so by offering nothing.
-    let full = flopsynth_layout(BODY, &metrics(), &fx_view(4, false));
+    let full = flopsynth_layout(BODY, &metrics(), &fx_view(8, false));
+    assert_eq!(full.rack.len(), 8);
     assert!(full.add_effect.is_empty());
+    assert!(
+        full.rack
+            .iter()
+            .all(|r| !r.frame.is_empty() && r.frame.bottom() <= full.strip.y + 0.01),
+        "eight rows fit above the strip"
+    );
 
-    // No effects at all: the button is the first thing on the page.
+    // No effects at all: the button is the first thing in the column, and
+    // there is no card.
     let empty = flopsynth_layout(BODY, &metrics(), &fx_view(0, true));
     assert!(!empty.add_effect.is_empty());
-    assert!(
-        empty.add_effect.y < empty.canopy.bottom() + CARD_GAP + 1.0,
-        "the button is at the top when the page is bare — under the canopy"
-    );
+    assert!(empty.add_effect.y < empty.canopy.bottom() + CARD_GAP + 1.0);
+    assert!(empty.cards.is_empty() && empty.rack.is_empty());
 
     // And nothing of this on the Synth page.
     let synth = flopsynth_layout(BODY, &metrics(), &a_view());
-    assert!(synth.add_effect.is_empty());
+    assert!(synth.add_effect.is_empty() && synth.rack.is_empty());
     let _ = ADD_EFFECT;
 }
 
@@ -1998,50 +2085,6 @@ fn an_effect_card_can_be_removed_and_a_source_card_cannot() {
     assert!(
         synth.cards.iter().all(|c| c.remove.is_empty()),
         "an oscillator cannot be removed"
-    );
-}
-
-/// A drag by an effect card's header lands on another effect card — the
-/// one under the pointer — and nowhere else (`docs/flopsynth-next.md`
-/// §1.4(5): `FlopsynthHit::Header` was returned by the hit test and matched
-/// by nothing, a dead affordance since the first build).
-#[test]
-fn a_dragged_effect_header_lands_on_the_effect_card_under_the_pointer() {
-    let view = fx_view(3, true);
-    let layout = flopsynth_layout(BODY, &metrics(), &view);
-    for (index, placed) in layout.cards.iter().enumerate() {
-        let (cx, cy) = (
-            placed.frame.x + placed.frame.width / 2.0,
-            placed.frame.y + placed.frame.height / 2.0,
-        );
-        assert_eq!(
-            fontelle_ui::canvas::effect_card_at(&layout, &view, cx, cy),
-            Some(index),
-            "the middle of card {index} is card {index}"
-        );
-    }
-    assert_eq!(
-        fontelle_ui::canvas::effect_card_at(
-            &layout,
-            &view,
-            BODY.right() - 1.0,
-            BODY.bottom() - 1.0
-        ),
-        None,
-        "the hull is nobody's"
-    );
-    // An oscillator is not a slot: on the Synth page nothing takes the drop.
-    let synth = a_view();
-    let synth_layout = flopsynth_layout(BODY, &metrics(), &synth);
-    let osc = synth_layout.cards[0].frame;
-    assert_eq!(
-        fontelle_ui::canvas::effect_card_at(
-            &synth_layout,
-            &synth,
-            osc.x + osc.width / 2.0,
-            osc.y + osc.height / 2.0
-        ),
-        None
     );
 }
 

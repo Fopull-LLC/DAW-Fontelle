@@ -297,6 +297,7 @@ pub fn flopsynth_tip(hit: FlopsynthHit, cards: &[FlopsynthCard]) -> Option<Strin
                  right-click for shapes"
                     .to_string()
             }
+            FlopsynthPicture::Curve { .. } => "What the effect does".to_string(),
             FlopsynthPicture::None => return None,
         },
         FlopsynthHit::Header { card } => {

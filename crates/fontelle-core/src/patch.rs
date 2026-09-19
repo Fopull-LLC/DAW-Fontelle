@@ -232,10 +232,11 @@ pub struct PatchFx {
 
 /// The most effects one patch may carry.
 ///
-/// Four, and a limit rather than an open list, because the chain runs inside
-/// the instrument's node on every block whether or not a note is sounding —
-/// see §2.2's argument about the tail keeping the graph awake.
-pub const MAX_PATCH_FX: usize = 4;
+/// Eight (`docs/flopsynth-next.md` §3.6; four until 2026-09-19), and a limit
+/// rather than an open list, because the chain runs inside the instrument's
+/// node on every block whether or not a note is sounding — see §2.2's
+/// argument about the tail keeping the graph awake.
+pub const MAX_PATCH_FX: usize = 8;
 
 /// One of a patch's four macro knobs.
 ///

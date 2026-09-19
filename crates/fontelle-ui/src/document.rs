@@ -1668,7 +1668,25 @@ pub trait StudioHost: DocumentHost {
     fn flopsynth_inspecting(
         &self,
         page: crate::canvas::FlopsynthPage,
-        _inspector: Option<usize>,
+        inspector: Option<usize>,
+    ) -> Option<crate::canvas::FlopsynthView> {
+        self.flopsynth_showing(
+            page,
+            crate::canvas::FlopsynthShowing {
+                inspector,
+                fx_slot: None,
+            },
+        )
+    }
+
+    /// [`flopsynth`](Self::flopsynth), with everything the window chooses
+    /// to show: the inspected source, and which effect slot's card the
+    /// Effects page has (§3.6; `None` is the first). The host builds that
+    /// slot's card, and only that, into the view beside the rack.
+    fn flopsynth_showing(
+        &self,
+        page: crate::canvas::FlopsynthPage,
+        _showing: crate::canvas::FlopsynthShowing,
     ) -> Option<crate::canvas::FlopsynthView> {
         self.flopsynth(page)
     }

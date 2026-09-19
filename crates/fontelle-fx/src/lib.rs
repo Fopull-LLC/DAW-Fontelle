@@ -30,7 +30,7 @@ pub use bitcrush::Bitcrush;
 pub use chorus::Chorus;
 pub use compressor::Compressor;
 pub use delay::Delay;
-pub use distortion::Distortion;
+pub use distortion::{Distortion, curve_at as distortion_curve_at};
 pub use eq::ParametricEq;
 pub use filter::Filter;
 pub use gate::Gate;

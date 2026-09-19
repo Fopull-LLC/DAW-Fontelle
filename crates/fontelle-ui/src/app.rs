@@ -120,6 +120,8 @@ enum Drag {
     /// A matrix row carried by its grip (§3.4). Which row, and where it
     /// would land, are in `flop_route`.
     FlopRoute,
+    /// A rack row's wet/dry slider (§3.6), by slot.
+    FlopRackMix(usize),
     /// A point of a drawn LFO shape, or the tension of one of its segments
     /// (§3.4). Which, and where it started, are in `flop_shape`.
     FlopShape,
@@ -1145,6 +1147,9 @@ pub struct WindowApp {
     /// The source open in the strip's inspector (§3.4), if one is — window
     /// state, like the page; the host builds its card into the view.
     flop_inspector: Option<usize>,
+    /// The effect slot whose card the Effects page shows (§3.6); `None` is
+    /// the first. Window state, like the inspector.
+    flop_fx_slot: Option<usize>,
     /// An effect card being carried by its header: the card, and the effect
     /// card under the pointer — where it would land if let go now. The
     /// `FlopsynthHit::Header` this answers was returned by the hit test and
@@ -1815,6 +1820,7 @@ impl WindowApp {
             flop_route: None,
             flop_shape: None,
             flop_inspector: None,
+            flop_fx_slot: None,
             flop_slot: None,
             flop_focus: None,
             flop_clipboard: None,
@@ -2956,6 +2962,7 @@ impl WindowApp {
             | Drag::AudioRow(_)
             | Drag::FlopWave(_)
             | Drag::FlopMatrix(_)
+            | Drag::FlopRackMix(_)
             | Drag::SettingSlider(_) => Some(Pointer::ResizeX),
             Drag::FlopAssign | Drag::FlopSlot | Drag::FlopRoute | Drag::FlopShape => {
                 Some(Pointer::Grabbing)
@@ -3316,6 +3323,11 @@ impl WindowApp {
     /// Flopsynth's window's tip to draw **now** — `None` until the pointer
     /// has sat still long enough.
     fn due_flop_tip(&self) -> Option<&str> {
+        // None while a menu is open: the tip for the button a menu was
+        // opened from sat over the menu's first rows (2026-09-19).
+        if self.menu.is_some() {
+            return None;
+        }
         let tip = self.flop_tip.as_deref()?;
         (self.flop_tip_since.elapsed() >= crate::tooltip::TOOLTIP_DELAY).then_some(tip)
     }
@@ -3603,6 +3615,7 @@ impl ApplicationHandler for WindowApp {
                         | Drag::FlopShape
                         | Drag::FlopRing
                         | Drag::FlopMatrix(_)
+                        | Drag::FlopRackMix(_)
                         | Drag::Fader(_)
                         | Drag::Pan(_)
                         | Drag::Tempo
@@ -5439,7 +5452,13 @@ impl WindowApp {
         self.lanes = doc.lanes();
         self.clips = doc.clips();
         self.instrument = doc.instrument();
-        self.flopsynth = doc.flopsynth_inspecting(self.flop_page, self.flop_inspector);
+        self.flopsynth = doc.flopsynth_showing(
+            self.flop_page,
+            crate::canvas::FlopsynthShowing {
+                inspector: self.flop_inspector,
+                fx_slot: self.flop_fx_slot,
+            },
+        );
         if let Some(view) = &mut self.flopsynth {
             view.browse = self.flop_browse.clone();
             view.matrix_scroll = self.flop_matrix_scroll;
@@ -5752,6 +5771,9 @@ impl WindowApp {
                 if let Some(via) = &route.via {
                     styled(&mut self.labels, &mut self.text, via, t.value);
                 }
+            }
+            for slot in &view.rack {
+                styled(&mut self.labels, &mut self.text, &slot.name, t.value);
             }
             if view.page == crate::canvas::FlopsynthPage::Modulation {
                 for head in crate::canvas::MATRIX_HEADS {
@@ -6885,13 +6907,12 @@ impl WindowApp {
             Drag::FlopShape => self.drag_flop_shape(x, y),
             Drag::FlopRing => self.drag_flop_ring(y),
             Drag::FlopMatrix(index) => self.drag_flop_matrix(index, x),
+            Drag::FlopRackMix(slot) => self.drag_flop_rack_mix(slot, x),
             // The badge follows the pointer, and the knobs light up behind it.
             // The card under the pointer is worked out every move so the
             // header it would land on can light before it is let go.
             Drag::FlopSlot => {
-                let target = self.flopsynth.as_ref().and_then(|view| {
-                    crate::canvas::effect_card_at(&self.flopsynth_layout, view, x, y)
-                });
+                let target = crate::canvas::fx_rack_landing(&self.flopsynth_layout, y);
                 if let Some((_, landing)) = &mut self.flop_slot
                     && *landing != target
                 {
@@ -8439,6 +8460,10 @@ impl WindowApp {
             self.press_flop_matrix(hit, x);
             return;
         }
+        if let Some(hit) = crate::canvas::fx_rack_hit(&self.flopsynth_layout, x, y) {
+            self.press_fx_rack(hit, x);
+            return;
+        }
         let hit = crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y);
         // A picture is dragged, not turned (§8.7). Checked before the control
         // branch below because a picture is never *also* a control — the hit
@@ -8490,19 +8515,9 @@ impl WindowApp {
             self.open_menu(MenuTarget::FlopScale, chip.x, chip.bottom(), bounds);
             return;
         }
-        // An effect card's header is its handle: a drag reorders the chain.
-        // Only an effect's — the header of an oscillator is its name.
-        if let Some(crate::canvas::FlopsynthHit::Header { card }) = hit {
-            let removable = self
-                .flopsynth
-                .as_ref()
-                .and_then(|view| view.cards.get(card))
-                .is_some_and(|c| c.removable);
-            if removable {
-                self.flop_slot = Some((card, Some(card)));
-                self.drag = Drag::FlopSlot;
-                self.tree.invalidate(PANEL);
-            }
+        // A card's header is its name; the rack's grip is a slot's handle
+        // (§3.6), pressed above.
+        if let Some(crate::canvas::FlopsynthHit::Header { .. }) = hit {
             return;
         }
         let Some(crate::canvas::FlopsynthHit::Control { card, param }) = hit else {
@@ -9003,7 +9018,9 @@ impl WindowApp {
             }
             // A wave's picture is a read-out: its shape is a chooser and its
             // rate is a knob, and there is nothing in the drawing to aim at.
-            FlopsynthPicture::Lfo { .. } | FlopsynthPicture::None => {}
+            FlopsynthPicture::Lfo { .. }
+            | FlopsynthPicture::Curve { .. }
+            | FlopsynthPicture::None => {}
         }
         self.tree.invalidate(PANEL);
     }
@@ -9352,28 +9369,74 @@ impl WindowApp {
         self.after_flop_structure();
     }
 
+    /// A slot let go: on another row of the rack it moves there — before
+    /// the row it was dropped on, last for a drop under them all — and
+    /// anywhere else the drag is called off.
     fn drop_flop_slot(&mut self) {
-        let Some((card, landing)) = self.flop_slot.take() else {
+        let Some((from, landing)) = self.flop_slot.take() else {
             return;
         };
-        let moved = match (
-            self.flop_fx_slot(card),
-            landing.and_then(|c| self.flop_fx_slot(c)),
-        ) {
-            (Some(from), Some(to)) if from != to => {
-                if let Some(doc) = self.options.document.as_mut() {
-                    doc.move_patch_effect(from, to);
-                }
-                true
-            }
-            _ => false,
+        let to = match landing {
+            Some(to) if to != from && to != from + 1 => Some(if to > from { to - 1 } else { to }),
+            _ => None,
         };
-        if moved {
+        if let Some(to) = to {
+            if let Some(doc) = self.options.document.as_mut() {
+                doc.move_patch_effect(from, to);
+            }
+            self.flop_fx_slot = Some(to);
             self.after_flop_structure();
         } else {
             self.tree.invalidate(PANEL);
             self.redraw_editors();
         }
+    }
+
+    /// A press on the rack (§3.6): the name selects the slot, the pill
+    /// switches it, the wet/dry starts a drag, the grip carries the row.
+    fn press_fx_rack(&mut self, hit: crate::canvas::FxRackHit, x: f32) {
+        use crate::canvas::FxRackHit;
+        match hit {
+            FxRackHit::Select(slot) => {
+                if self.flop_fx_slot != Some(slot) {
+                    self.flop_fx_slot = Some(slot);
+                    self.studio_revision = u64::MAX;
+                    self.refresh_studio();
+                    self.tree.invalidate(PANEL);
+                    self.redraw_editors();
+                }
+            }
+            FxRackHit::Power(slot) => {
+                let on = self
+                    .flopsynth
+                    .as_ref()
+                    .and_then(|view| view.rack.get(slot))
+                    .is_some_and(|row| row.enabled);
+                let address =
+                    fontelle_types::ParamAddress::new(format!("patch/fx[{slot}]/enabled"));
+                self.set_param(&address, if on { 0.0 } else { 1.0 });
+                if let Some(doc) = &mut self.options.document {
+                    doc.end_gesture();
+                }
+            }
+            FxRackHit::Mix(slot) => {
+                self.drag = Drag::FlopRackMix(slot);
+                self.drag_flop_rack_mix(slot, x);
+            }
+            FxRackHit::Grip(slot) => {
+                self.flop_slot = Some((slot, Some(slot)));
+                self.drag = Drag::FlopSlot;
+                self.tree.invalidate(PANEL);
+            }
+        }
+    }
+
+    fn drag_flop_rack_mix(&mut self, slot: usize, x: f32) {
+        let Some(row) = self.flopsynth_layout.rack.get(slot).copied() else {
+            return;
+        };
+        let address = fontelle_types::ParamAddress::new(format!("patch/fx[{slot}]/mix"));
+        self.set_param(&address, crate::canvas::fx_rack_mix_at(row.mix, x));
     }
 
     /// After a route is added or removed: the matrix changed shape, so the

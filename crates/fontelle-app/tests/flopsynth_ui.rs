@@ -750,16 +750,155 @@ fn an_effect_is_added_to_the_patch_from_the_window_and_taken_off_again() {
         session.add_patch_effect(EffectKind::Reverb);
     }
     let full = session.flopsynth(FlopsynthPage::Effects).unwrap();
-    assert_eq!(full.cards.len(), fontelle_core::MAX_PATCH_FX);
+    assert_eq!(full.rack.len(), fontelle_core::MAX_PATCH_FX);
     assert!(!full.fx_room);
     session.add_patch_effect(EffectKind::Delay);
     assert_eq!(
         session
             .flopsynth(FlopsynthPage::Effects)
             .unwrap()
-            .cards
+            .rack
             .len(),
         fontelle_core::MAX_PATCH_FX
+    );
+}
+
+/// §3.6: the Effects page is a rack — a row per slot with its name, its
+/// on/off, its wet/dry and its level — beside the **selected** slot's card,
+/// and only that one, with the effect's own picture on it: the delay's
+/// taps, the reverb's tail, the distortion's transfer curve, the EQ's
+/// response, the compressor's gain curve.
+#[test]
+fn the_effects_page_is_a_rack_beside_the_selected_slots_card_with_its_picture() {
+    use fontelle_types::EffectKind;
+    use fontelle_ui::canvas::{FlopsynthPage, FlopsynthPicture, FlopsynthShowing};
+    let mut session = a_flopsynth();
+    for kind in [
+        EffectKind::Chorus,
+        EffectKind::Delay,
+        EffectKind::Reverb,
+        EffectKind::Distortion,
+        EffectKind::Eq,
+        EffectKind::Compressor,
+    ] {
+        session.add_patch_effect(kind);
+    }
+    let view = session.flopsynth(FlopsynthPage::Effects).unwrap();
+    assert_eq!(view.rack.len(), 6);
+    assert_eq!(view.rack[1].name, "FX 2 \u{b7} Delay");
+    assert!(view.rack.iter().all(|row| row.enabled));
+    let patch = session.selected_patch().unwrap();
+    for (row, slot) in view.rack.iter().zip(&patch.fx) {
+        assert!((row.mix - slot.config.mix()).abs() < 1e-6);
+        assert_eq!(row.level, 0.0, "nothing is sounding");
+    }
+    // Nothing chosen: the first slot's card, and only that.
+    assert_eq!(view.fx_slot, Some(0));
+    assert_eq!(view.cards.len(), 1);
+    assert_eq!(view.cards[0].group.name, "FX 1 \u{b7} Chorus");
+    // Each slot's card, with its picture.
+    let card_of = |session: &fontelle_app::Session, slot: usize| {
+        let view = session
+            .flopsynth_showing(
+                FlopsynthPage::Effects,
+                FlopsynthShowing {
+                    inspector: None,
+                    fx_slot: Some(slot),
+                },
+            )
+            .unwrap();
+        assert_eq!(view.fx_slot, Some(slot));
+        assert_eq!(view.cards.len(), 1);
+        view.cards[0].clone()
+    };
+    let delay = card_of(&session, 1);
+    let FlopsynthPicture::Curve { marks, points, .. } = &delay.picture else {
+        panic!("the delay's taps: {:?}", delay.picture);
+    };
+    assert!(marks.len() >= 2 && points.is_empty(), "taps, not a curve");
+    assert!(
+        marks.windows(2).all(|w| w[0].0 < w[1].0 && w[0].1 > w[1].1),
+        "later and quieter: {marks:?}"
+    );
+    let reverb = card_of(&session, 2);
+    let FlopsynthPicture::Curve { points, .. } = &reverb.picture else {
+        panic!("the reverb's tail");
+    };
+    assert!(points.len() >= 32 && points[0] > 0.9 && points[points.len() - 1] < 0.1);
+    assert!(points.windows(2).all(|w| w[0] >= w[1]), "a tail falls");
+    let distortion = card_of(&session, 3);
+    let FlopsynthPicture::Curve { points, .. } = &distortion.picture else {
+        panic!("the distortion's transfer curve");
+    };
+    assert!(points.len() >= 32 && points.iter().all(|p| (0.0..=1.0).contains(p)));
+    assert!(
+        points[0] < 0.5 && points[points.len() - 1] > 0.5,
+        "in below, out above"
+    );
+    let eq = card_of(&session, 4);
+    let FlopsynthPicture::Curve { points, marks, .. } = &eq.picture else {
+        panic!("the EQ's response");
+    };
+    let bands_on = patch.fx[4].config.specs().len();
+    let _ = bands_on;
+    assert!(points.len() >= 32, "a response");
+    assert!(
+        points.iter().all(|p| (p - 0.5).abs() < 1e-3),
+        "flat, with every band off"
+    );
+    assert!(marks.is_empty(), "a dot per band that is on — none yet");
+    // A compressor at its default ratio of 1 is a wire; at 4:1 the top of
+    // its curve is held down.
+    let compressor = card_of(&session, 5);
+    let FlopsynthPicture::Curve { points, .. } = &compressor.picture else {
+        panic!("the compressor's gain curve");
+    };
+    assert!(points.len() >= 32);
+    assert!(
+        (points[points.len() - 1] - 1.0).abs() < 1e-3,
+        "a wire at 1:1"
+    );
+    let ratio = compressor
+        .group
+        .params
+        .iter()
+        .find(|p| p.address.as_str().ends_with("/ratio"))
+        .expect("the ratio")
+        .address
+        .clone();
+    session.set_instrument_param(&ratio, 0.5);
+    let compressor = card_of(&session, 5);
+    let FlopsynthPicture::Curve { points, .. } = &compressor.picture else {
+        panic!("the compressor's gain curve");
+    };
+    assert!(
+        points[points.len() - 1] < 0.95,
+        "the top is held down: {}",
+        points[points.len() - 1]
+    );
+    assert!(
+        points.windows(2).all(|w| w[0] <= w[1] + 1e-6),
+        "and it never falls"
+    );
+    // A slot past the end shows the last.
+    let last = session
+        .flopsynth_showing(
+            FlopsynthPage::Effects,
+            FlopsynthShowing {
+                inspector: None,
+                fx_slot: Some(99),
+            },
+        )
+        .unwrap();
+    assert_eq!(last.fx_slot, Some(5));
+    // And the slot's card still carries the chain's controls, addressed
+    // as ever, so a lane on `patch/fx[1]/mix` is unchanged.
+    assert!(
+        delay
+            .group
+            .params
+            .iter()
+            .any(|p| p.address.as_str() == "patch/fx[1]/mix")
     );
 }
 
@@ -774,13 +913,14 @@ fn an_effect_slot_is_moved_along_the_chain_and_it_is_one_undo() {
     for kind in [EffectKind::Chorus, EffectKind::Delay, EffectKind::Reverb] {
         session.add_patch_effect(kind);
     }
+    // The rack's rows are the chain, in order (§3.6).
     let names = |session: &fontelle_app::Session| -> Vec<String> {
         session
             .flopsynth(FlopsynthPage::Effects)
             .unwrap()
-            .cards
+            .rack
             .iter()
-            .map(|c| c.group.name.clone())
+            .map(|row| row.name.clone())
             .collect()
     };
     assert_eq!(
@@ -915,8 +1055,24 @@ fn assert_page_fits_inspecting(
     page: fontelle_ui::canvas::FlopsynthPage,
     inspector: Option<usize>,
 ) {
+    assert_page_fits_showing(
+        session,
+        page,
+        fontelle_ui::canvas::FlopsynthShowing {
+            inspector,
+            fx_slot: None,
+        },
+    );
+}
+
+fn assert_page_fits_showing(
+    session: &fontelle_app::Session,
+    page: fontelle_ui::canvas::FlopsynthPage,
+    showing: fontelle_ui::canvas::FlopsynthShowing,
+) {
+    let inspector = showing.inspector;
     let view = session
-        .flopsynth_inspecting(page, inspector)
+        .flopsynth_showing(page, showing)
         .expect("Flopsynth's window");
     let theme = fontelle_ui::theme::Theme::dark_default();
     let (w, h) = fontelle_ui::layout::FLOPSYNTH_SIZE;
@@ -1085,8 +1241,20 @@ fn the_effects_page_fits_the_window_with_four_slots() {
     let view = session
         .flopsynth(fontelle_ui::canvas::FlopsynthPage::Effects)
         .expect("Flopsynth's window");
-    assert_eq!(view.cards.len(), 4, "four slots, four cards");
+    assert_eq!(view.rack.len(), 4, "four slots, four rows");
+    assert_eq!(view.cards.len(), 1, "and the selected slot's card");
     assert_page_fits(&session, fontelle_ui::canvas::FlopsynthPage::Effects);
+    // Each slot's card fits, the EQ's sixteen-odd controls included.
+    for slot in 0..4 {
+        assert_page_fits_showing(
+            &session,
+            fontelle_ui::canvas::FlopsynthPage::Effects,
+            fontelle_ui::canvas::FlopsynthShowing {
+                inspector: None,
+                fx_slot: Some(slot),
+            },
+        );
+    }
 }
 
 /// At the smallest size the window may be dragged to, the Synth page of the

@@ -7593,13 +7593,27 @@ impl StudioHost for Session {
         &self,
         page: fontelle_ui::canvas::FlopsynthPage,
     ) -> Option<fontelle_ui::canvas::FlopsynthView> {
-        self.flopsynth_inspecting(page, None)
+        self.flopsynth_showing(page, Default::default())
     }
 
     fn flopsynth_inspecting(
         &self,
         page: fontelle_ui::canvas::FlopsynthPage,
         inspector: Option<usize>,
+    ) -> Option<fontelle_ui::canvas::FlopsynthView> {
+        self.flopsynth_showing(
+            page,
+            fontelle_ui::canvas::FlopsynthShowing {
+                inspector,
+                fx_slot: None,
+            },
+        )
+    }
+
+    fn flopsynth_showing(
+        &self,
+        page: fontelle_ui::canvas::FlopsynthPage,
+        showing: fontelle_ui::canvas::FlopsynthShowing,
     ) -> Option<fontelle_ui::canvas::FlopsynthView> {
         let channel_id = self.selected_channel_id()?;
         let channel = self.project.channels.get(channel_id)?;
@@ -7628,9 +7642,10 @@ impl StudioHost for Session {
             crate::flopsynth::Heard {
                 voices: Session::voice_count(self),
                 lfo_phases: Session::lfo_phases(self).to_vec(),
+                fx_levels: Session::fx_levels(self).to_vec(),
             },
             bank,
-            inspector,
+            showing,
         );
         view.scale = self.flopsynth_scale();
         // The ring §12.2 asks for. Built once for the whole window rather than
@@ -10771,6 +10786,16 @@ impl Session {
         self.selected_channel_id()
             .and_then(|id| self.voice_meters.get(&id))
             .map_or([0.0; fontelle_core::MAX_LFOS], |meter| meter.lfo_phases())
+    }
+
+    /// What each of the selected channel's effect slots put out this block
+    /// (§3.6), for the rack's meters.
+    pub fn fx_levels(&self) -> [f32; fontelle_core::MAX_PATCH_FX] {
+        self.selected_channel_id()
+            .and_then(|id| self.voice_meters.get(&id))
+            .map_or([0.0; fontelle_core::MAX_PATCH_FX], |meter| {
+                meter.fx_levels()
+            })
     }
 }
 
