@@ -403,6 +403,7 @@ pub fn addresses(patch: &Patch) -> Vec<String> {
             "attack_shape",
             "decay_shape",
             "release_shape",
+            "loop",
         ] {
             out.push(format!("patch/env[{index}]/{field}"));
         }
@@ -410,7 +411,19 @@ pub fn addresses(patch: &Patch) -> Vec<String> {
 
     for index in 0..patch.lfos.len() {
         for field in [
-            "wave", "rate", "sync", "division", "depth", "delay", "fade", "phase", "mode", "smooth",
+            "wave",
+            "rate",
+            "sync",
+            "division",
+            "depth",
+            "delay",
+            "fade",
+            "phase",
+            "mode",
+            "smooth",
+            "draw",
+            "grid",
+            "shape_mode",
         ] {
             out.push(format!("patch/lfo[{index}]/{field}"));
         }

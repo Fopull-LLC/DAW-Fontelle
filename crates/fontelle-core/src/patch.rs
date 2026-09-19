@@ -93,7 +93,9 @@ impl LfoMode {
 }
 
 /// A named LFO instance. Depth/rate are mod-matrix destinations (TDD §7.5).
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+// `Clone` and not `Copy` since the shape: a `Vec` of points. The voice
+// borrows its LFOs (`LfoState::advance_block`) rather than copying them.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Lfo {
     pub rate_hz: f32,
     pub depth: f32,
@@ -134,6 +136,13 @@ pub struct Lfo {
     /// glide and takes the corner off a square.
     #[serde(default)]
     pub smooth: f32,
+    /// A drawn shape (`docs/flopsynth-next.md` §3.4), played in place of
+    /// [`wave`](Self::wave) when there is one. The wave keeps its meaning:
+    /// a patch written before the field reads with no shape and plays its
+    /// wave, and a patch with no shape writes what it always wrote. The
+    /// voice reads it in Phase 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<fontelle_types::LfoShape>,
 }
 
 fn default_division() -> fontelle_types::NoteDivision {
@@ -202,6 +211,7 @@ impl Default for Lfo {
             phase: 0.0,
             mode: LfoMode::Retrigger,
             smooth: 0.0,
+            shape: None,
         }
     }
 }

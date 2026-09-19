@@ -528,7 +528,7 @@ fn imports_the_vibrato_lfo_and_its_route_to_pitch() {
 
     // LFO 1 is the vibrato LFO; LFO 0 is the modulation LFO. Both always
     // exist, because SF2 gives every zone both.
-    let lfo = patch.lfos[1];
+    let lfo = &patch.lfos[1];
     let expected_hz = 8.176 * 2f32.powf(600.0 / 1200.0);
     assert!(
         (lfo.rate_hz - expected_hz).abs() < expected_hz * 0.001,

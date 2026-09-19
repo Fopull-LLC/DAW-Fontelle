@@ -1115,6 +1115,22 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                 shape("attack_shape", "a shape", env.attack_shape),
                 shape("decay_shape", "d shape", env.decay_shape),
                 shape("release_shape", "r shape", env.release_shape),
+                // The loop (`docs/flopsynth-next.md` §3.4): a pair of
+                // stages, or off.
+                {
+                    use fontelle_core::patch_params::ENV_LOOPS;
+                    let at = ENV_LOOPS
+                        .iter()
+                        .position(|(stages, _)| *stages == env.loop_stages)
+                        .unwrap_or(0);
+                    param(
+                        &format!("patch/env[{index}]/loop"),
+                        "loop",
+                        choice_value(at, ENV_LOOPS.len()),
+                        ENV_LOOPS[at].1.to_string(),
+                        ParamKind::Choice(ENV_LOOPS.iter().map(|(_, n)| n.to_string()).collect()),
+                    )
+                },
             ],
         });
     }
@@ -1224,6 +1240,51 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                     format!("{:.0}%", lfo.smooth.clamp(0.0, 1.0) * 100.0),
                     ParamKind::Knob,
                 ),
+                // The shape editor's own (`docs/flopsynth-next.md` §3.4):
+                // whether a drawn shape plays, the grid it snaps to, and
+                // whether it is read smooth or as steps.
+                param(
+                    &format!("patch/lfo[{index}]/draw"),
+                    "draw",
+                    bool_value(lfo.shape.is_some()),
+                    on_off(lfo.shape.is_some()),
+                    ParamKind::Switch,
+                ),
+                {
+                    use fontelle_core::patch_params::LFO_GRIDS;
+                    let grid = lfo.shape.as_ref().map_or(8, |shape| shape.grid);
+                    let at = LFO_GRIDS.iter().position(|g| *g == grid).unwrap_or(0);
+                    let names: Vec<String> = LFO_GRIDS
+                        .iter()
+                        .map(|g| {
+                            if *g == 0 {
+                                "off".to_string()
+                            } else {
+                                g.to_string()
+                            }
+                        })
+                        .collect();
+                    param(
+                        &format!("patch/lfo[{index}]/grid"),
+                        "grid",
+                        choice_value(at, LFO_GRIDS.len()),
+                        names[at].clone(),
+                        ParamKind::Choice(names),
+                    )
+                },
+                {
+                    let step = lfo
+                        .shape
+                        .as_ref()
+                        .is_some_and(|shape| shape.mode == fontelle_types::LfoShapeMode::Step);
+                    param(
+                        &format!("patch/lfo[{index}]/shape_mode"),
+                        "read",
+                        bool_value(step),
+                        if step { "step" } else { "smooth" }.to_string(),
+                        ParamKind::Choice(vec!["smooth".to_string(), "step".to_string()]),
+                    )
+                },
             ],
         });
     }

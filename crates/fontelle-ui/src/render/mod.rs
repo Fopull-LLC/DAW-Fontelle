@@ -8069,25 +8069,121 @@ fn draw_flopsynth_picture(
                 p.playhead,
             );
         }
-        FlopsynthPicture::Envelope {
-            attack,
-            decay,
-            sustain,
-            release,
-        } => {
+        FlopsynthPicture::Envelope(pic) => {
+            use crate::canvas::{EnvNode, env_loop_span, env_node_position};
+            // The loop, shaded under the shape: the span of the stages it
+            // names, with a rule at each end.
+            if let Some((from, to)) = env_loop_span(inner, pic)
+                && to > from
+            {
+                fill_rect(
+                    scene,
+                    Rect::new(from, inner.y, to - from, inner.height),
+                    ink.with_alpha(0x22),
+                );
+                for x in [from, to] {
+                    fill_rect(
+                        scene,
+                        Rect::new(x - 0.5, inner.y, 1.0, inner.height),
+                        ink.with_alpha(0xa0),
+                    );
+                }
+            }
             // In the card's ink — the envelope family's (§3.3), the same
             // its badge and its rings wear.
-            let points = env_curve_points(inner, *attack, *decay, *sustain, *release);
+            let points = env_curve_points(inner, pic);
             fill_under_polyline(scene, &points, inner, ink.with_alpha(0x2a));
             glow_polyline(scene, &points, inner, ink);
-            // A node at each corner, so the shape reads as four stages rather
-            // than as one line.
-            for (x, y) in points.iter().skip(1).take(points.len().saturating_sub(2)) {
+            // A node at each corner, so the shape reads as its stages rather
+            // than as one line; a hollow one at the middle of each shaped
+            // stage, which is the bend's handle (§3.4).
+            for node in [
+                EnvNode::Attack,
+                EnvNode::Hold,
+                EnvNode::Decay,
+                EnvNode::Sustain,
+                EnvNode::Release,
+            ] {
+                if let Some((x, y)) = env_node_position(inner, pic, node) {
+                    fill_rect_rounded(
+                        scene,
+                        Rect::new(x - 2.0, y - 2.0, 4.0, 4.0),
+                        2.0,
+                        p.playhead,
+                    );
+                }
+            }
+            for node in [
+                EnvNode::AttackBend,
+                EnvNode::DecayBend,
+                EnvNode::ReleaseBend,
+            ] {
+                if let Some((x, y)) = env_node_position(inner, pic, node) {
+                    stroke_rect_rounded(
+                        scene,
+                        Rect::new(x - 3.0, y - 3.0, 6.0, 6.0),
+                        3.0,
+                        1.2,
+                        p.playhead,
+                    );
+                }
+            }
+        }
+        FlopsynthPicture::LfoShape { shape, phase } => {
+            use crate::canvas::{lfo_shape_curve_points, lfo_shape_point_at};
+            // The grid the points snap to, faint, and the middle line.
+            if shape.grid > 1 {
+                for i in 1..shape.grid {
+                    let x = inner.x + inner.width * i as f32 / shape.grid as f32;
+                    fill_rect(
+                        scene,
+                        Rect::new(x - 0.5, inner.y, 1.0, inner.height),
+                        p.border.with_alpha(0x60),
+                    );
+                }
+            }
+            fill_rect(
+                scene,
+                Rect::new(inner.x, inner.y + inner.height * 0.5, inner.width, 1.0),
+                p.border,
+            );
+            let curve = lfo_shape_curve_points(inner, shape);
+            fill_under_polyline(scene, &curve, inner, ink.with_alpha(0x1c));
+            glow_polyline(scene, &curve, inner, ink);
+            // The points as handles; the tension handle at each segment's
+            // middle, hollow, on the curve.
+            for (index, point) in shape.points.iter().enumerate() {
+                let (x, y) = lfo_shape_point_at(inner, point);
                 fill_rect_rounded(
                     scene,
-                    Rect::new(x - 2.0, y - 2.0, 4.0, 4.0),
-                    2.0,
+                    Rect::new(x - 3.0, y - 3.0, 6.0, 6.0),
+                    3.0,
                     p.playhead,
+                );
+                let next = shape.points.get(index + 1);
+                let next_x = next.map_or(1.0, |n| n.x);
+                if next_x - point.x > 0.04 {
+                    let mid = (point.x + next_x) / 2.0;
+                    let mx = inner.x + inner.width * mid;
+                    let my =
+                        inner.y + inner.height * (0.5 - shape.value(mid).clamp(-1.0, 1.0) * 0.5);
+                    stroke_rect_rounded(
+                        scene,
+                        Rect::new(mx - 2.5, my - 2.5, 5.0, 5.0),
+                        2.5,
+                        1.0,
+                        p.playhead.with_alpha(0xb0),
+                    );
+                }
+            }
+            if !curve.is_empty() {
+                let at = (phase.clamp(0.0, 1.0) * (curve.len() - 1) as f32).round() as usize;
+                let (x, y) = curve[at.min(curve.len() - 1)];
+                fill_rect_rounded(
+                    scene,
+                    Rect::new(x - 2.5, y - 2.5, 5.0, 5.0),
+                    2.5,
+                    lighten(ink, 0.5),
                 );
             }
         }

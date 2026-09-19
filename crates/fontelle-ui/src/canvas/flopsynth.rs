@@ -161,11 +161,12 @@ pub enum FlopsynthPicture {
     },
     /// An envelope, as its four normalised stages — drawn on a square-root
     /// time axis so a 5 ms attack and a 2 s release are both visible.
-    Envelope {
-        attack: f32,
-        decay: f32,
-        sustain: f32,
-        release: f32,
+    Envelope(EnvelopePicture),
+    /// A **drawn** LFO shape (§3.4): the shape itself, edited on the
+    /// picture, and where the newest voice is in its cycle.
+    LfoShape {
+        shape: fontelle_types::LfoShape,
+        phase: f32,
     },
     /// A **recording** — a sample source's sound, whole: its shape as one
     /// `(low, high)` pair per column, in −1..=1, where the note starts in it
@@ -347,6 +348,8 @@ const MATRIX_ADD_W: f32 = 22.0;
 pub const NO_VIA: &str = "none";
 /// What the `+` on the table's header says.
 pub const ADD_ROUTE: &str = "+";
+/// The shapes menu's last row: a drawing begun again from the LFO's wave.
+pub const FROM_WAVE: &str = "Start over from the wave";
 /// The column heads.
 pub const MATRIX_HEADS: [&str; 7] = [
     "SOURCE",
@@ -381,6 +384,9 @@ pub const STRIP_HEIGHT: f32 = 56.0;
 /// A card in the inspector (§3.4) says so with this row, and the layout
 /// places it in the drawer over the page rather than in a band.
 pub const INSPECTOR_ROW: usize = usize::MAX;
+/// How tall the drawer's card's picture is: twice a console's, so the
+/// envelope's handles and a drawn shape's points can be aimed at.
+pub const INSPECTOR_PICTURE: f32 = 120.0;
 
 /// One box of the block diagram: a heading, a picture, and its controls.
 #[derive(Debug, Clone, PartialEq)]
@@ -1263,8 +1269,12 @@ fn wanted(card: &FlopsynthCard, grid: Grid, scale: f32, measure: Measure<'_>) ->
         n => n,
     }
     .max(1);
+    // The drawer's card gets a tall picture (§3.4): an editor, not a
+    // read-out — the envelope's handles and the shape's points want room.
     let picture = if card.picture.is_none() {
         0.0
+    } else if card.row == INSPECTOR_ROW {
+        INSPECTOR_PICTURE * scale + pad
     } else {
         grid.picture * scale + pad
     };
@@ -1382,6 +1392,8 @@ fn wanted(card: &FlopsynthCard, grid: Grid, scale: f32, measure: Measure<'_>) ->
         cells,
         picture: if card.picture.is_none() {
             0.0
+        } else if card.row == INSPECTOR_ROW {
+            INSPECTOR_PICTURE * scale
         } else {
             grid.picture * scale
         },
@@ -2203,51 +2215,6 @@ pub fn filter_xy_at(picture: Rect, x: f32, y: f32) -> (f32, f32) {
     (cutoff, resonance)
 }
 
-/// The polyline of an envelope, in the picture's own pixels.
-///
-/// # The time axis is a square root
-///
-/// An envelope's stages span three orders of magnitude — a 5 ms attack and a
-/// 2 s release are both ordinary — and on a linear axis the attack is less
-/// than one pixel wide. A square root gives the short stages room without
-/// making the long ones useless, which is what makes the curve something you
-/// can aim at.
-///
-/// `y` grows downward, so the top of the rectangle is full level.
-pub fn env_curve_points(
-    rect: Rect,
-    attack: f32,
-    decay: f32,
-    sustain: f32,
-    release: f32,
-) -> Vec<(f32, f32)> {
-    if rect.is_empty() {
-        return Vec::new();
-    }
-    let level = |v: f32| rect.bottom() - rect.height * v.clamp(0.0, 1.0);
-    // The sustain is drawn as a stage of its own so the shape reads as an
-    // envelope rather than as three lines: a fixed share of the width, which
-    // is what every synthesiser's envelope display does.
-    const SUSTAIN_SHARE: f32 = 0.22;
-    let span = |v: f32| v.clamp(0.0, 1.0).sqrt();
-    let (a, d, r) = (span(attack), span(decay), span(release));
-    let total = (a + d + r).max(1e-4);
-    let usable = rect.width * (1.0 - SUSTAIN_SHARE);
-    let width = |v: f32| usable * v / total;
-
-    let mut x = rect.x;
-    let mut points = vec![(x, level(0.0))];
-    x += width(a);
-    points.push((x, level(1.0)));
-    x += width(d);
-    points.push((x, level(sustain)));
-    x += rect.width * SUSTAIN_SHARE;
-    points.push((x, level(sustain)));
-    x += width(r);
-    points.push((x.min(rect.right()), level(0.0)));
-    points
-}
-
 /// One cycle of an LFO's shape, in the picture's own pixels.
 ///
 /// Drawn from [`LfoWave::value`] — the **same function the voice plays** — so
@@ -2358,29 +2325,206 @@ pub fn response_curve_points(rect: Rect, db: &[f32]) -> Vec<(f32, f32)> {
 
 // ------------------------------------------------- the envelope's nodes ---
 
-/// One corner of the envelope curve, as a thing to drag.
+/// An envelope's picture (§3.4): its stages as the normalised values the
+/// knobs carry, the bend of each of the three shaped stages (−1..=1, 0
+/// straight), and the loop as a pair of stage numbers — delay 0, attack 1,
+/// hold 2, decay 3, sustain 4, release 5, the order `EnvStage` has.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct EnvelopePicture {
+    pub delay: f32,
+    pub attack: f32,
+    pub hold: f32,
+    pub decay: f32,
+    pub sustain: f32,
+    pub release: f32,
+    pub attack_shape: f32,
+    pub decay_shape: f32,
+    pub release_shape: f32,
+    pub loop_stages: Option<(u8, u8)>,
+}
+
+/// Where an envelope's seven corners fall on its picture: the note-on, and
+/// the end of each stage. A stage of no length has its end where it began.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnvCorners {
+    pub start: (f32, f32),
+    pub delay_end: (f32, f32),
+    pub attack_end: (f32, f32),
+    pub hold_end: (f32, f32),
+    pub decay_end: (f32, f32),
+    pub sustain_end: (f32, f32),
+    pub release_end: (f32, f32),
+}
+
+impl EnvCorners {
+    /// The corner a stage number starts at, and the one it ends at.
+    fn stage_span(&self, stage: u8) -> ((f32, f32), (f32, f32)) {
+        let ends = [
+            self.start,
+            self.delay_end,
+            self.attack_end,
+            self.hold_end,
+            self.decay_end,
+            self.sustain_end,
+            self.release_end,
+        ];
+        let at = (stage as usize).min(5);
+        (ends[at], ends[at + 1])
+    }
+}
+
+/// How much of the picture's width the sustain plateau takes: the sustain
+/// is drawn as a stage of its own so the shape reads as an envelope rather
+/// than as three lines, which is what every synthesiser's display does.
+const SUSTAIN_SHARE: f32 = 0.22;
+
+/// The corners of an envelope's picture.
 ///
-/// Four rather than five: the first point is where the note started, and an
-/// attack that began late is not an envelope any synthesiser has.
+/// # The time axis is a square root
+///
+/// An envelope's stages span three orders of magnitude — a 5 ms attack and a
+/// 2 s release are both ordinary — and on a linear axis the attack is less
+/// than one pixel wide. A square root gives the short stages room without
+/// making the long ones useless, which is what makes the curve something you
+/// can aim at.
+///
+/// `y` grows downward, so the top of the rectangle is full level.
+pub fn env_corners(rect: Rect, pic: &EnvelopePicture) -> EnvCorners {
+    let level = |v: f32| rect.bottom() - rect.height * v.clamp(0.0, 1.0);
+    let span = |v: f32| v.clamp(0.0, 1.0).sqrt();
+    let (dl, a, h, d, r) = (
+        span(pic.delay),
+        span(pic.attack),
+        span(pic.hold),
+        span(pic.decay),
+        span(pic.release),
+    );
+    let total = (dl + a + h + d + r).max(1e-4);
+    let usable = rect.width * (1.0 - SUSTAIN_SHARE);
+    let width = |v: f32| usable * v / total;
+    let mut x = rect.x;
+    let start = (x, level(0.0));
+    x += width(dl);
+    let delay_end = (x, level(0.0));
+    x += width(a);
+    let attack_end = (x, level(1.0));
+    x += width(h);
+    let hold_end = (x, level(1.0));
+    x += width(d);
+    let decay_end = (x, level(pic.sustain));
+    x += rect.width * SUSTAIN_SHARE;
+    let sustain_end = (x, level(pic.sustain));
+    x += width(r);
+    let release_end = (x.min(rect.right()), level(0.0));
+    EnvCorners {
+        start,
+        delay_end,
+        attack_end,
+        hold_end,
+        decay_end,
+        sustain_end,
+        release_end,
+    }
+}
+
+/// Bends a stage's progress by its shape, the way the generator does
+/// (`fontelle_dsp::shape_progress`, written here again because this crate
+/// does not see that one — `fontelle-app`'s tests hold the two together):
+/// an identity at 0, and at 0 and 1 whatever the shape.
+fn env_bend(t: f32, shape: f32) -> f32 {
+    let shape = shape.clamp(-1.0, 1.0);
+    if shape == 0.0 {
+        return t;
+    }
+    t.clamp(0.0, 1.0).powf(2f32.powf(2.0 * shape))
+}
+
+/// How many points a bent stage is drawn with.
+const BEND_STEPS: usize = 16;
+
+/// The polyline of an envelope, in the picture's own pixels: its corners,
+/// with a bent stage drawn as a curve between its two. A stage of no
+/// length adds no corner, so a plain envelope is the five points it has
+/// always been.
+pub fn env_curve_points(rect: Rect, pic: &EnvelopePicture) -> Vec<(f32, f32)> {
+    if rect.is_empty() {
+        return Vec::new();
+    }
+    let c = env_corners(rect, pic);
+    let mut points = vec![c.start];
+    let mut push = |point: (f32, f32)| {
+        if points.last().is_none_or(|last| *last != point) {
+            points.push(point);
+        }
+    };
+    let mut stage = |from: (f32, f32), to: (f32, f32), shape: f32| {
+        if shape != 0.0 && to.0 - from.0 > 1.0 {
+            for i in 1..BEND_STEPS {
+                let t = i as f32 / BEND_STEPS as f32;
+                let bent = env_bend(t, shape);
+                push((
+                    from.0 + (to.0 - from.0) * t,
+                    from.1 + (to.1 - from.1) * bent,
+                ));
+            }
+        }
+        push(to);
+    };
+    stage(c.start, c.delay_end, 0.0);
+    stage(c.delay_end, c.attack_end, pic.attack_shape);
+    stage(c.attack_end, c.hold_end, 0.0);
+    stage(c.hold_end, c.decay_end, pic.decay_shape);
+    stage(c.decay_end, c.sustain_end, 0.0);
+    stage(c.sustain_end, c.release_end, pic.release_shape);
+    points
+}
+
+/// The loop's span across the picture, as two `x`s: from the start of the
+/// first stage it names to the end of the second. `None` for no loop.
+pub fn env_loop_span(rect: Rect, pic: &EnvelopePicture) -> Option<(f32, f32)> {
+    let (from, to) = pic.loop_stages?;
+    let c = env_corners(rect, pic);
+    let (start, _) = c.stage_span(from);
+    let (_, end) = c.stage_span(to.max(from));
+    Some((start.0, end.0))
+}
+
+/// A handle on an envelope's picture (§3.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnvNode {
     Attack,
+    /// The end of the plateau; a handle only when there is one.
+    Hold,
     Decay,
     /// The one node that moves **up and down**: the others are times and this
     /// is a level.
     Sustain,
     Release,
+    /// The middle of a shaped stage: dragged up and down, it bends the
+    /// stage — the shape knob, on the picture.
+    AttackBend,
+    DecayBend,
+    ReleaseBend,
 }
 
 impl EnvNode {
-    /// Which stage of the patch this node is, as the address's tail.
+    /// Which control of the patch this node moves, as the address's tail.
     pub fn stage(self) -> &'static str {
         match self {
             Self::Attack => "attack",
+            Self::Hold => "hold",
             Self::Decay => "decay",
             Self::Sustain => "sustain",
             Self::Release => "release",
+            Self::AttackBend => "attack_shape",
+            Self::DecayBend => "decay_shape",
+            Self::ReleaseBend => "release_shape",
         }
+    }
+
+    /// Whether this handle is a bend rather than a corner.
+    pub fn is_bend(self) -> bool {
+        matches!(self, Self::AttackBend | Self::DecayBend | Self::ReleaseBend)
     }
 }
 
@@ -2390,34 +2534,52 @@ impl EnvNode {
 /// same argument the EQ's handles make, and the radius they use.
 pub const NODE_GRAB: f32 = 7.0;
 
+/// Where a handle is on the picture, or `None` for one the picture does
+/// not show: a hold of no length, a bend on a stage too short to bend.
+pub fn env_node_position(rect: Rect, pic: &EnvelopePicture, node: EnvNode) -> Option<(f32, f32)> {
+    let c = env_corners(rect, pic);
+    let bend = |from: (f32, f32), to: (f32, f32), shape: f32| {
+        if to.0 - from.0 < 8.0 {
+            return None;
+        }
+        let t = env_bend(0.5, shape);
+        Some((from.0 + (to.0 - from.0) * 0.5, from.1 + (to.1 - from.1) * t))
+    };
+    match node {
+        EnvNode::Attack => Some(c.attack_end),
+        EnvNode::Hold => (c.hold_end.0 - c.attack_end.0 > 0.5).then_some(c.hold_end),
+        EnvNode::Decay => Some(c.decay_end),
+        EnvNode::Sustain => Some(c.sustain_end),
+        EnvNode::Release => Some(c.release_end),
+        EnvNode::AttackBend => bend(c.delay_end, c.attack_end, pic.attack_shape),
+        EnvNode::DecayBend => bend(c.hold_end, c.decay_end, pic.decay_shape),
+        EnvNode::ReleaseBend => bend(c.sustain_end, c.release_end, pic.release_shape),
+    }
+}
+
 /// Which node is under `(x, y)`, if any.
 ///
-/// Read off [`env_curve_points`] rather than computed a second way. Two
+/// Read off [`env_node_position`] rather than computed a second way. Two
 /// answers to "where is the decay node" is exactly the defect that leaves a
 /// handle you can see and cannot grab, and it is invisible until somebody
-/// tries.
-pub fn env_node_at(
-    rect: Rect,
-    attack: f32,
-    decay: f32,
-    sustain: f32,
-    release: f32,
-    x: f32,
-    y: f32,
-) -> Option<EnvNode> {
-    let points = env_curve_points(rect, attack, decay, sustain, release);
-    // Skipping point 0, which is the note-on and not a handle. The sustain's
-    // handle is the *end* of its plateau (point 3), because that is the corner
-    // the release leaves from and the one the eye reads as the level.
-    let nodes = [
-        (EnvNode::Attack, points.get(1)),
-        (EnvNode::Decay, points.get(2)),
-        (EnvNode::Sustain, points.get(3)),
-        (EnvNode::Release, points.get(4)),
+/// tries. The corners come before the bends, so a bend handle that has
+/// slid onto a corner does not take the corner's press.
+pub fn env_node_at(rect: Rect, pic: &EnvelopePicture, x: f32, y: f32) -> Option<EnvNode> {
+    const NODES: [EnvNode; 8] = [
+        EnvNode::Attack,
+        EnvNode::Decay,
+        EnvNode::Sustain,
+        EnvNode::Release,
+        EnvNode::Hold,
+        EnvNode::AttackBend,
+        EnvNode::DecayBend,
+        EnvNode::ReleaseBend,
     ];
     let mut best: Option<(f32, EnvNode)> = None;
-    for (node, at) in nodes {
-        let Some((px, py)) = at else { continue };
+    for node in NODES {
+        let Some((px, py)) = env_node_position(rect, pic, node) else {
+            continue;
+        };
         let distance = ((px - x).powi(2) + (py - y).powi(2)).sqrt();
         if distance <= NODE_GRAB && best.is_none_or(|(near, _)| distance < near) {
             best = Some((distance, node));
@@ -2428,21 +2590,23 @@ pub fn env_node_at(
 
 /// Where a node lands after a drag of `(dx, dy)` pixels from `from`.
 ///
-/// The three time stages move **sideways** and the sustain moves **up**,
-/// because that is what each one is; a node that answered to both would be
-/// two controls under one finger. The gain is the picture's own size, so a
-/// drag across the whole picture is the whole range — the rule every drag in
-/// this program follows.
+/// The time stages move **sideways** and the sustain moves **up**, because
+/// that is what each one is; a node that answered to both would be two
+/// controls under one finger. A bend moves up and down too — up is a lower
+/// shape, the curve rising toward the straight line and past it — and hands
+/// back the shape's *normalised* value, the one its knob carries. The gain
+/// is the picture's own size, so a drag across the whole picture is the
+/// whole range — the rule every drag in this program follows.
 pub fn env_node_drag(rect: Rect, node: EnvNode, from: f32, dx: f32, dy: f32) -> f32 {
     let moved = match node {
-        EnvNode::Sustain => {
+        EnvNode::Sustain | EnvNode::AttackBend | EnvNode::DecayBend | EnvNode::ReleaseBend => {
             let span = rect.height.max(1.0);
             -dy / span
         }
         _ => {
             // Across the *usable* part, which is what the stages share — see
-            // `env_curve_points`' sustain plateau.
-            let span = (rect.width * 0.78).max(1.0);
+            // `env_corners`' sustain plateau.
+            let span = (rect.width * (1.0 - SUSTAIN_SHARE)).max(1.0);
             dx / span
         }
     };
@@ -2451,9 +2615,129 @@ pub fn env_node_drag(rect: Rect, node: EnvNode, from: f32, dx: f32, dy: f32) -> 
     // tenth of a second, which is what makes both aimable.
     let value = match node {
         EnvNode::Sustain => from + moved,
+        // Up is *less* shape: the sag under the line straightens.
+        EnvNode::AttackBend | EnvNode::DecayBend | EnvNode::ReleaseBend => from - moved,
         _ => (from.clamp(0.0, 1.0).sqrt() + moved).max(0.0).powi(2),
     };
     value.clamp(0.0, 1.0)
+}
+
+// ------------------------------------------------- the LFO's shape editor
+
+/// What a press on a drawn LFO shape landed on: a point, or the segment
+/// after one — the segment from the last point closes the cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LfoShapeHit {
+    Point(usize),
+    Segment(usize),
+}
+
+/// A shape's curve across its picture, read off the shape's own `value` —
+/// the function the voice plays — so the picture and the sound are one
+/// thing.
+pub fn lfo_shape_curve_points(rect: Rect, shape: &fontelle_types::LfoShape) -> Vec<(f32, f32)> {
+    if rect.is_empty() {
+        return Vec::new();
+    }
+    const STEPS: usize = 128;
+    (0..=STEPS)
+        .map(|i| {
+            let t = i as f32 / STEPS as f32;
+            let value = shape.value(t.min(0.999_99));
+            (
+                rect.x + rect.width * t,
+                rect.y + rect.height * (0.5 - value.clamp(-1.0, 1.0) * 0.5),
+            )
+        })
+        .collect()
+}
+
+/// Where a point of the shape is on its picture.
+pub fn lfo_shape_point_at(rect: Rect, point: &fontelle_types::LfoPoint) -> (f32, f32) {
+    (
+        rect.x + rect.width * point.x.clamp(0.0, 1.0),
+        rect.y + rect.height * (0.5 - point.y.clamp(-1.0, 1.0) * 0.5),
+    )
+}
+
+/// What is under `(x, y)` on a shape's picture: the nearest point within
+/// reach, else the segment the pointer's phase is in, else nothing
+/// outside the picture.
+pub fn lfo_shape_hit(
+    rect: Rect,
+    shape: &fontelle_types::LfoShape,
+    x: f32,
+    y: f32,
+) -> Option<LfoShapeHit> {
+    if rect.is_empty() || !rect.contains(x, y) {
+        return None;
+    }
+    let mut best: Option<(f32, usize)> = None;
+    for (index, point) in shape.points.iter().enumerate() {
+        let (px, py) = lfo_shape_point_at(rect, point);
+        let distance = ((px - x).powi(2) + (py - y).powi(2)).sqrt();
+        if distance <= NODE_GRAB && best.is_none_or(|(near, _)| distance < near) {
+            best = Some((distance, index));
+        }
+    }
+    if let Some((_, index)) = best {
+        return Some(LfoShapeHit::Point(index));
+    }
+    let phase = ((x - rect.x) / rect.width).clamp(0.0, 1.0);
+    let after = shape
+        .points
+        .iter()
+        .position(|p| p.x > phase)
+        .unwrap_or(shape.points.len());
+    Some(LfoShapeHit::Segment(after.saturating_sub(1)))
+}
+
+/// Where a dragged point lands, in the shape's own units: the pointer's
+/// place, snapped to the grid in `x`, kept between its neighbours, and the
+/// first point kept at the cycle's start.
+pub fn lfo_point_drag(
+    rect: Rect,
+    shape: &fontelle_types::LfoShape,
+    index: usize,
+    x: f32,
+    y: f32,
+) -> (f32, f32) {
+    let level = (0.5 - (y - rect.y) / rect.height.max(1.0)) * 2.0;
+    let level = level.clamp(-1.0, 1.0);
+    if index == 0 {
+        return (0.0, level);
+    }
+    let phase = snapped(
+        ((x - rect.x) / rect.width.max(1.0)).clamp(0.0, 1.0),
+        shape.grid,
+    );
+    let low = shape.points.get(index - 1).map_or(0.0, |p| p.x);
+    let high = shape.points.get(index + 1).map_or(1.0, |p| p.x);
+    (phase.clamp(low, high), level)
+}
+
+/// The tension a segment has after a drag of `dy` pixels from `from`: up
+/// is negative (fast off the mark), a full height the whole range.
+pub fn lfo_tension_drag(rect: Rect, from: f32, dy: f32) -> f32 {
+    (from + dy / rect.height.max(1.0) * 2.0).clamp(-1.0, 1.0)
+}
+
+/// Where a new point goes for a press at `(x, y)`: snapped like a drag.
+pub fn lfo_point_add(rect: Rect, shape: &fontelle_types::LfoShape, x: f32, y: f32) -> (f32, f32) {
+    let level = ((0.5 - (y - rect.y) / rect.height.max(1.0)) * 2.0).clamp(-1.0, 1.0);
+    let phase = snapped(
+        ((x - rect.x) / rect.width.max(1.0)).clamp(0.0, 1.0),
+        shape.grid,
+    );
+    (phase, level)
+}
+
+fn snapped(phase: f32, grid: u8) -> f32 {
+    if grid == 0 {
+        return phase;
+    }
+    let grid = grid as f32;
+    ((phase * grid).round() / grid).clamp(0.0, 1.0)
 }
 
 // ------------------------------------------------- the modulation ring ---

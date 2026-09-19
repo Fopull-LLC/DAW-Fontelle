@@ -21,6 +21,14 @@ use fontelle_types::LfoWave;
 
 use crate::patch::{Lfo, LfoMode};
 
+/// An LFO's depth and phase as the voice plays them this block: the
+/// config's, moved by whatever the matrix routes to them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LfoLive {
+    pub depth: f32,
+    pub phase: f32,
+}
+
 /// One LFO's per-voice memory. `Copy`, fixed-size, allocation-free.
 #[derive(Debug, Clone, Copy)]
 pub struct LfoState {
@@ -105,9 +113,19 @@ impl LfoState {
     /// the fade. `clock_phase` is where a [`LfoMode::Free`] LFO is — computed
     /// from the transport by the caller, because the voice does not have one
     /// and the sampler does.
+    ///
+    /// `live` is the depth and the phase **after the matrix**: the two of
+    /// the LFO's own settings a route can move, handed over beside the
+    /// config rather than written into a copy of it — an `Lfo` carries a
+    /// drawn shape now, and a copy of one on the audio thread would be an
+    /// allocation (INVARIANT 1).
+    // Eight: the config, the two live values, and five facts about the
+    // block. The first two are one thing to the caller and two here.
+    #[allow(clippy::too_many_arguments)]
     pub fn advance_block(
         &mut self,
         lfo: &Lfo,
+        live: LfoLive,
         rate_hz: f32,
         sample_rate: f32,
         frames: usize,
@@ -123,7 +141,7 @@ impl LfoState {
         if lfo.mode == LfoMode::Free
             && let Some(clock) = clock_phase
         {
-            self.phase = (clock + lfo.phase).rem_euclid(1.0);
+            self.phase = (clock + live.phase).rem_euclid(1.0);
         }
 
         let raw = self.value_at_phase(lfo.wave);
@@ -174,7 +192,7 @@ impl LfoState {
             }
         }
 
-        value * lfo.depth * level
+        value * live.depth * level
     }
 
     fn value_at_phase(&mut self, wave: LfoWave) -> f32 {

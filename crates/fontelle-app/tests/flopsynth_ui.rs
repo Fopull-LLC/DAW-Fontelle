@@ -18,7 +18,7 @@
 
 mod common;
 
-use fontelle_types::InstrumentKind;
+use fontelle_types::{InstrumentKind, ParamAddress};
 use fontelle_ui::canvas::ParamKind;
 use fontelle_ui::document::{DocumentHost, StudioHost};
 
@@ -1378,7 +1378,6 @@ fn every_caption_on_the_window_is_a_word_from_the_caption_file() {
 /// takes an option's name.
 #[test]
 fn a_knob_has_a_preset_value_a_default_and_takes_a_typed_value() {
-    use fontelle_types::ParamAddress;
     use fontelle_ui::canvas::{FlopsynthPage, Typed};
     let mut session = common::a_session_for(fontelle_app::blank_project(8, 120.0, SR));
     let cutoff = ParamAddress::new("patch/filter[0]/cutoff");
@@ -1518,7 +1517,6 @@ fn a_knob_has_a_preset_value_a_default_and_takes_a_typed_value() {
 /// them. A chooser of words (the voice mode) carries none.
 #[test]
 fn the_table_and_the_lfo_wave_choosers_carry_a_thumbnail_per_option() {
-    use fontelle_types::ParamAddress;
     use fontelle_ui::canvas::FlopsynthPage;
     let session = a_flopsynth();
     let synth = session.flopsynth(FlopsynthPage::Synth).unwrap();
@@ -1683,4 +1681,156 @@ fn every_page_fits_with_every_source_open_in_the_inspector() {
             assert_page_fits_inspecting(&session, page, Some(index));
         }
     }
+}
+
+/// §3.4's editors, on the cards the inspector shows: an envelope's card
+/// carries its LOOP chooser, and an LFO's its DRAW switch, GRID chooser
+/// and READ chooser — the parameters `patch_params` gained for them —
+/// captioned from the file like every other control.
+#[test]
+fn the_envelope_card_has_a_loop_and_the_lfo_card_a_draw_switch_a_grid_and_a_read() {
+    use fontelle_ui::canvas::{FlopsynthPage, ParamKind};
+    let session = a_flopsynth();
+    let sources = session.mod_sources();
+    let env = sources.iter().position(|s| s == "ENV 1").unwrap();
+    let view = session
+        .flopsynth_inspecting(FlopsynthPage::Synth, Some(env))
+        .unwrap();
+    let card = view
+        .cards
+        .iter()
+        .find(|c| c.group.name.starts_with("ENV 1"))
+        .expect("the envelope's card");
+    let find = |card: &fontelle_ui::canvas::FlopsynthCard, tail: &str| {
+        card.group
+            .params
+            .iter()
+            .find(|p| p.address.as_str().ends_with(tail))
+            .cloned()
+            .unwrap_or_else(|| panic!("no {tail} on {}", card.group.name))
+    };
+    let loop_ = find(card, "/loop");
+    assert_eq!(loop_.label, "LOOP");
+    assert!(
+        matches!(&loop_.kind, ParamKind::Choice(options) if options.len() >= 4 && options[0] == "off")
+    );
+    assert_eq!(loop_.display, "off");
+
+    let lfo = sources.iter().position(|s| s == "LFO 1").unwrap();
+    let view = session
+        .flopsynth_inspecting(FlopsynthPage::Synth, Some(lfo))
+        .unwrap();
+    let card = view
+        .cards
+        .iter()
+        .find(|c| c.group.name == "LFO 1")
+        .expect("the LFO's card");
+    let draw = find(card, "/draw");
+    assert_eq!(draw.label, "DRAW");
+    assert!(matches!(draw.kind, ParamKind::Switch));
+    assert_eq!(draw.display, "off");
+    let grid = find(card, "/grid");
+    assert_eq!(grid.label, "GRID");
+    assert!(
+        matches!(&grid.kind, ParamKind::Choice(options) if options.contains(&"16".to_string()) && options[0] == "off")
+    );
+    let read = find(card, "/shape_mode");
+    assert_eq!(read.label, "READ");
+    assert!(matches!(&read.kind, ParamKind::Choice(options) if options == &["smooth", "step"]));
+    // And every card still declares a size per control.
+    assert_eq!(card.sizes.len(), card.group.params.len());
+}
+
+/// §7 step 7: the picture is held to the DSP by a test that renders both.
+/// An envelope's bent attack on the card's picture follows
+/// `fontelle_dsp::shape_progress`, the bend the generator plays; a drawn
+/// LFO shape's picture follows `LfoShape::value`, which the voice will
+/// read. Both through the host, from a real patch.
+#[test]
+fn the_editors_pictures_are_the_dsps_own_curves() {
+    use fontelle_ui::canvas::{
+        FlopsynthPage, FlopsynthPicture, env_corners, env_curve_points, lfo_shape_curve_points,
+    };
+    let mut session = a_flopsynth();
+    let sources = session.mod_sources();
+    let env = sources.iter().position(|s| s == "ENV 1").unwrap();
+    // A bent attack, through the knob it has always had.
+    let shape = ParamAddress::new("patch/env[0]/attack_shape");
+    session.set_instrument_param(&shape, 0.9);
+    session.set_instrument_param(&ParamAddress::new("patch/env[0]/attack"), 0.5);
+    let bend = session.selected_patch().unwrap().envelopes[0].attack_shape;
+    assert!(bend > 0.5, "{bend}");
+    let view = session
+        .flopsynth_inspecting(FlopsynthPage::Synth, Some(env))
+        .unwrap();
+    let card = view
+        .cards
+        .iter()
+        .find(|c| c.group.name.starts_with("ENV 1"))
+        .unwrap();
+    let FlopsynthPicture::Envelope(pic) = &card.picture else {
+        panic!("an envelope's picture");
+    };
+    assert!((pic.attack_shape - bend).abs() < 1e-6);
+    let rect = fontelle_ui::layout::Rect::new(0.0, 0.0, 600.0, 120.0);
+    let corners = env_corners(rect, pic);
+    let points = env_curve_points(rect, pic);
+    // Every drawn point of the attack is on the generator's curve.
+    let (x0, x1) = (corners.delay_end.0, corners.attack_end.0);
+    for (x, y) in points
+        .iter()
+        .filter(|(x, _)| *x > x0 + 0.5 && *x < x1 - 0.5)
+    {
+        let t = (x - x0) / (x1 - x0);
+        let level = fontelle_dsp::shape_progress(t, bend);
+        let expected = rect.bottom() - rect.height * level;
+        assert!((y - expected).abs() < 0.5, "at {t}: {y} vs {expected}");
+    }
+
+    // A drawn shape: DRAW on, then a factory shape written through the
+    // host, and the picture is that shape's own value.
+    let lfo = sources.iter().position(|s| s == "LFO 1").unwrap();
+    session.set_instrument_param(&ParamAddress::new("patch/lfo[0]/draw"), 1.0);
+    let (_, bounce) = fontelle_types::LfoShape::presets()
+        .into_iter()
+        .find(|(name, _)| *name == "Bounce")
+        .unwrap();
+    session.set_lfo_shape(0, bounce.clone());
+    session.end_gesture();
+    let view = session
+        .flopsynth_inspecting(FlopsynthPage::Synth, Some(lfo))
+        .unwrap();
+    let card = view.cards.iter().find(|c| c.group.name == "LFO 1").unwrap();
+    let FlopsynthPicture::LfoShape { shape, .. } = &card.picture else {
+        panic!("a drawn shape's picture, not {:?}", card.picture);
+    };
+    assert_eq!(*shape, bounce);
+    for (x, y) in lfo_shape_curve_points(rect, shape) {
+        let phase = (x / rect.width).min(0.999_99);
+        let expected = rect.y + rect.height * (0.5 - bounce.value(phase) * 0.5);
+        assert!((y - expected).abs() < 0.6, "at {phase}: {y} vs {expected}");
+    }
+    // And the badge's thumbnail is the drawn shape too.
+    let thumb = &view.source_shapes[lfo];
+    assert!((thumb[0] - bounce.value(0.0)).abs() < 1e-5);
+    // The shape's wave, sampled, is what the shapes menu starts over from;
+    // a drag's writes coalesce into one undo, broken by the release.
+    let from_wave = session.lfo_wave_shape(0).unwrap();
+    assert_eq!(
+        from_wave.points.len(),
+        fontelle_core::patch_params::DRAWN_POINTS
+    );
+    let depth = session.undo_depth();
+    let mut moved = bounce.clone();
+    moved.points[1].y = 0.5;
+    session.set_lfo_shape(0, moved.clone());
+    moved.points[1].y = 0.2;
+    session.set_lfo_shape(0, moved.clone());
+    session.end_gesture();
+    assert_eq!(session.undo_depth(), depth + 1, "one drag, one undo");
+    session.undo();
+    assert_eq!(
+        session.selected_patch().unwrap().lfos[0].shape,
+        Some(bounce)
+    );
 }

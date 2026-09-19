@@ -137,12 +137,13 @@ fn a_view() -> FlopsynthView {
                 columns: 0,
                 removable: false,
                 sizes: Vec::new(),
-                picture: FlopsynthPicture::Envelope {
+                picture: FlopsynthPicture::Envelope(fontelle_ui::canvas::EnvelopePicture {
                     attack: 0.1,
                     decay: 0.3,
                     sustain: 0.8,
                     release: 0.4,
-                },
+                    ..Default::default()
+                }),
             },
             FlopsynthCard {
                 oscillator: None,
@@ -362,7 +363,16 @@ fn dragging_the_filter_response_moves_cutoff_and_resonance() {
 #[test]
 fn the_envelope_curve_starts_at_nothing_peaks_holds_and_falls() {
     let rect = Rect::new(0.0, 0.0, 200.0, 80.0);
-    let points = env_curve_points(rect, 0.1, 0.3, 0.6, 0.4);
+    let pic = |attack: f32, decay: f32, sustain: f32, release: f32| {
+        fontelle_ui::canvas::EnvelopePicture {
+            attack,
+            decay,
+            sustain,
+            release,
+            ..Default::default()
+        }
+    };
+    let points = env_curve_points(rect, &pic(0.1, 0.3, 0.6, 0.4));
     assert!(points.len() >= 4, "a curve needs points");
     for (x, y) in &points {
         assert!(
@@ -382,7 +392,7 @@ fn the_envelope_curve_starts_at_nothing_peaks_holds_and_falls() {
     );
 
     // The square-root axis: a very short attack still has width to see.
-    let quick = env_curve_points(rect, 0.005, 0.3, 0.6, 0.4);
+    let quick = env_curve_points(rect, &pic(0.005, 0.3, 0.6, 0.4));
     let attack_ends = quick
         .iter()
         .position(|(_, y)| (*y - rect.y).abs() < 0.51)
@@ -459,6 +469,21 @@ fn a_picture() -> Rect {
     Rect::new(100.0, 200.0, 180.0, 54.0)
 }
 
+fn an_envelope(
+    attack: f32,
+    decay: f32,
+    sustain: f32,
+    release: f32,
+) -> fontelle_ui::canvas::EnvelopePicture {
+    fontelle_ui::canvas::EnvelopePicture {
+        attack,
+        decay,
+        sustain,
+        release,
+        ..Default::default()
+    }
+}
+
 #[test]
 fn an_envelope_node_is_where_its_corner_is() {
     // The four nodes are the four corners of the drawn curve, so a person
@@ -466,8 +491,8 @@ fn an_envelope_node_is_where_its_corner_is() {
     // computed a second way — two answers to "where is the decay node" is
     // exactly the defect that makes a handle you cannot grab.
     let picture = a_picture();
-    let (attack, decay, sustain, release) = (0.3, 0.4, 0.6, 0.5);
-    let points = env_curve_points(picture, attack, decay, sustain, release);
+    let pic = an_envelope(0.3, 0.4, 0.6, 0.5);
+    let points = env_curve_points(picture, &pic);
     for (node, at) in [
         (EnvNode::Attack, points[1]),
         (EnvNode::Decay, points[2]),
@@ -475,7 +500,7 @@ fn an_envelope_node_is_where_its_corner_is() {
         (EnvNode::Release, points[4]),
     ] {
         assert_eq!(
-            env_node_at(picture, attack, decay, sustain, release, at.0, at.1),
+            env_node_at(picture, &pic, at.0, at.1),
             Some(node),
             "at {at:?}"
         );
@@ -487,11 +512,9 @@ fn the_first_point_of_an_envelope_is_not_a_node() {
     // It is where the note started, which is not a thing to move: an attack
     // that began late is not an envelope any synthesiser has.
     let picture = a_picture();
-    let points = env_curve_points(picture, 0.3, 0.4, 0.6, 0.5);
-    assert_eq!(
-        env_node_at(picture, 0.3, 0.4, 0.6, 0.5, points[0].0, points[0].1),
-        None
-    );
+    let pic = an_envelope(0.3, 0.4, 0.6, 0.5);
+    let points = env_curve_points(picture, &pic);
+    assert_eq!(env_node_at(picture, &pic, points[0].0, points[0].1), None);
 }
 
 #[test]
@@ -500,10 +523,7 @@ fn a_press_in_the_open_part_of_an_envelope_hits_nothing() {
     assert_eq!(
         env_node_at(
             picture,
-            0.3,
-            0.4,
-            0.6,
-            0.5,
+            &an_envelope(0.3, 0.4, 0.6, 0.5),
             picture.x + picture.width * 0.5,
             picture.y + 2.0
         ),
@@ -836,11 +856,14 @@ fn the_matrix_scrolls_before_a_card_shrinks() {
     let mut view = a_view_on(FlopsynthPage::Modulation);
     // Two cards with two rows of cells each, and a matrix that wants more
     // than the page has.
-    let envelope = || FlopsynthPicture::Envelope {
-        attack: 0.1,
-        decay: 0.3,
-        sustain: 0.8,
-        release: 0.4,
+    let envelope = || {
+        FlopsynthPicture::Envelope(fontelle_ui::canvas::EnvelopePicture {
+            attack: 0.1,
+            decay: 0.3,
+            sustain: 0.8,
+            release: 0.4,
+            ..Default::default()
+        })
     };
     view.cards = vec![
         card("ENV 3", 1, false, 5, envelope(), env_params(3)),
@@ -2781,4 +2804,228 @@ fn a_row_dragged_by_its_grip_lands_on_the_row_under_the_pointer() {
     assert_eq!(route_landing(&layout, row(0).y - 2.0), Some(0));
     assert_eq!(route_landing(&layout, layout.matrix.y - 10.0), None);
     assert_eq!(route_landing(&layout, layout.matrix.bottom() + 10.0), None);
+}
+
+// ------------------------------------------------- the editors (§3.4, step 7)
+
+/// The envelope editor: each bent stage is drawn bent, the hold is a
+/// plateau at the top, the loop is a span across the stages it names, and
+/// every corner and every bend is a handle.
+#[test]
+fn an_envelope_picture_bends_holds_and_loops_and_its_bends_are_handles() {
+    use fontelle_ui::canvas::{EnvelopePicture, env_corners, env_loop_span, env_node_position};
+    let rect = Rect::new(100.0, 200.0, 400.0, 100.0);
+    let straight = EnvelopePicture {
+        attack: 0.3,
+        decay: 0.4,
+        sustain: 0.6,
+        release: 0.5,
+        ..Default::default()
+    };
+    // No hold, no bends: the five corners, as ever.
+    let points = env_curve_points(rect, &straight);
+    assert_eq!(points.len(), 5);
+    let corners = env_corners(rect, &straight);
+    assert_eq!(corners.start, points[0]);
+    assert_eq!(corners.attack_end, points[1]);
+    assert_eq!(corners.hold_end, corners.attack_end, "no hold, no plateau");
+    assert_eq!(corners.decay_end, points[2]);
+    assert_eq!(corners.sustain_end, points[3]);
+    assert_eq!(corners.release_end, points[4]);
+    assert_eq!(env_loop_span(rect, &straight), None);
+
+    // A hold: a plateau at the top between the attack's end and the decay's
+    // start, and a handle at its end.
+    let held = EnvelopePicture {
+        hold: 0.3,
+        ..straight.clone()
+    };
+    let corners = env_corners(rect, &held);
+    assert!(
+        corners.hold_end.0 > corners.attack_end.0 + 5.0,
+        "the plateau has width"
+    );
+    assert!(
+        (corners.hold_end.1 - corners.attack_end.1).abs() < 0.01,
+        "and is flat"
+    );
+    assert!((corners.hold_end.1 - rect.y).abs() < 0.51, "at the top");
+    let at = env_node_position(rect, &held, EnvNode::Hold).unwrap();
+    assert_eq!(env_node_at(rect, &held, at.0, at.1), Some(EnvNode::Hold));
+
+    // A bend: the attack drawn with a positive shape sags under the straight
+    // line — slow to leave, then fast — and the handle sits on the curve at
+    // the stage's middle, where a drag upward straightens it.
+    let bent = EnvelopePicture {
+        attack_shape: 0.8,
+        ..straight.clone()
+    };
+    let points = env_curve_points(rect, &bent);
+    assert!(points.len() > 5, "a bent stage is drawn as a curve");
+    let corners = env_corners(rect, &bent);
+    let mid_x = (corners.start.0 + corners.attack_end.0) / 2.0;
+    let on_curve = points
+        .iter()
+        .min_by(|a, b| (a.0 - mid_x).abs().total_cmp(&(b.0 - mid_x).abs()))
+        .unwrap();
+    let straight_y = (corners.start.1 + corners.attack_end.1) / 2.0;
+    assert!(
+        on_curve.1 > straight_y + 5.0,
+        "sags: {} vs {straight_y}",
+        on_curve.1
+    );
+    let handle = env_node_position(rect, &bent, EnvNode::AttackBend).unwrap();
+    assert!((handle.0 - mid_x).abs() < 2.0 && (handle.1 - on_curve.1).abs() < 3.0);
+    assert_eq!(
+        env_node_at(rect, &bent, handle.0, handle.1),
+        Some(EnvNode::AttackBend)
+    );
+    // The corners still win where they are.
+    assert_eq!(
+        env_node_at(rect, &bent, corners.attack_end.0, corners.attack_end.1),
+        Some(EnvNode::Attack)
+    );
+    // Dragging a bend: up is a lower shape (the curve rises toward the
+    // straight line and past it), a full height is the whole range, and it
+    // is the shape's normalised value the picture's control takes.
+    let from = (0.8f32 + 1.0) / 2.0;
+    let up = env_node_drag(rect, EnvNode::AttackBend, from, 0.0, -rect.height / 4.0);
+    assert!((up - (from - 0.25)).abs() < 1e-4, "{up}");
+    assert_eq!(
+        env_node_drag(rect, EnvNode::DecayBend, 0.5, 0.0, 10_000.0),
+        1.0,
+        "down is all the way bent"
+    );
+    assert_eq!(EnvNode::AttackBend.stage(), "attack_shape");
+    assert_eq!(EnvNode::Hold.stage(), "hold");
+
+    // The loop: a span from the start of the first stage it names to the
+    // end of the second. Stages are numbered as `EnvStage` is: delay 0,
+    // attack 1, hold 2, decay 3, sustain 4, release 5.
+    let looped = EnvelopePicture {
+        loop_stages: Some((1, 3)),
+        ..held.clone()
+    };
+    let corners = env_corners(rect, &looped);
+    let (from, to) = env_loop_span(rect, &looped).expect("a loop");
+    assert!(
+        (from - corners.start.0).abs() < 0.01,
+        "from the attack's start"
+    );
+    assert!(
+        (to - corners.decay_end.0).abs() < 0.01,
+        "to the decay's end"
+    );
+}
+
+/// The LFO's shape editor: the curve is read off the shape's own `value`
+/// — the function the voice will play — its points are handles, a drag
+/// snaps to the grid, the middle of a segment is its tension, and a
+/// double-click's place is a point.
+#[test]
+fn an_lfo_shape_is_drawn_from_its_own_value_and_edited_by_its_handles() {
+    use fontelle_types::{LfoPoint, LfoShape, LfoShapeMode};
+    use fontelle_ui::canvas::{
+        LfoShapeHit, lfo_point_add, lfo_point_drag, lfo_shape_curve_points, lfo_shape_hit,
+        lfo_shape_point_at, lfo_tension_drag,
+    };
+    let rect = Rect::new(100.0, 200.0, 400.0, 100.0);
+    let pt = |x: f32, y: f32| LfoPoint { x, y, tension: 0.0 };
+    let shape = LfoShape {
+        points: vec![pt(0.0, -1.0), pt(0.5, 1.0), pt(0.75, 0.0)],
+        grid: 4,
+        mode: LfoShapeMode::Smooth,
+    };
+    let curve = lfo_shape_curve_points(rect, &shape);
+    assert!(curve.len() >= 64);
+    for (x, y) in &curve {
+        let phase = (x - rect.x) / rect.width;
+        let expected = rect.y + rect.height * (1.0 - (shape.value(phase) + 1.0) / 2.0);
+        assert!((y - expected).abs() < 0.6, "at {phase}: {y} vs {expected}");
+    }
+    // The points, where the picture puts them.
+    let at = |i: usize| lfo_shape_point_at(rect, &shape.points[i]);
+    assert!((at(1).0 - (rect.x + rect.width * 0.5)).abs() < 0.01);
+    assert!((at(1).1 - rect.y).abs() < 0.01, "y = 1 is the top");
+    assert_eq!(
+        lfo_shape_hit(rect, &shape, at(1).0 + 2.0, at(1).1 + 2.0),
+        Some(LfoShapeHit::Point(1))
+    );
+    // Between two points is the segment before the second.
+    let mid = ((at(0).0 + at(1).0) / 2.0, (at(0).1 + at(1).1) / 2.0);
+    assert_eq!(
+        lfo_shape_hit(rect, &shape, mid.0, mid.1),
+        Some(LfoShapeHit::Segment(0))
+    );
+    // Past the last point is the segment that closes the cycle.
+    assert_eq!(
+        lfo_shape_hit(
+            rect,
+            &shape,
+            rect.x + rect.width * 0.9,
+            rect.y + rect.height / 2.0
+        ),
+        Some(LfoShapeHit::Segment(2))
+    );
+    assert_eq!(lfo_shape_hit(rect, &shape, rect.x - 20.0, rect.y), None);
+    // A point dragged lands where the pointer is, snapped to the grid in x
+    // and clamped to the picture; the first point keeps its x, a point
+    // cannot pass its neighbours.
+    let (x, y) = lfo_point_drag(
+        rect,
+        &shape,
+        1,
+        rect.x + rect.width * 0.28,
+        rect.y + rect.height * 0.25,
+    );
+    assert!((x - 0.25).abs() < 1e-4, "snapped: {x}");
+    assert!((y - 0.5).abs() < 1e-4, "{y}");
+    let (x, _) = lfo_point_drag(rect, &shape, 0, rect.x + 100.0, rect.y);
+    assert_eq!(x, 0.0, "the first point is the cycle's start");
+    let (x, _) = lfo_point_drag(rect, &shape, 1, rect.x + rect.width * 0.9, rect.y);
+    assert!(x <= 0.75, "not past the next point: {x}");
+    let free = LfoShape {
+        grid: 0,
+        ..shape.clone()
+    };
+    let (x, _) = lfo_point_drag(rect, &free, 1, rect.x + rect.width * 0.28, rect.y);
+    assert!((x - 0.28).abs() < 1e-4, "no grid, no snap: {x}");
+    // A tension drag: up bends the segment toward its end sooner (negative
+    // tension), a full height is the whole range.
+    assert!((lfo_tension_drag(rect, 0.0, -rect.height / 4.0) - (-0.5)).abs() < 1e-4);
+    assert_eq!(lfo_tension_drag(rect, 0.0, 10_000.0), 1.0);
+    // A point added at the pointer, snapped like a dragged one.
+    let (x, y) = lfo_point_add(rect, &shape, rect.x + rect.width * 0.6, rect.bottom());
+    assert!((x - 0.5).abs() < 1e-4 || (x - 0.75).abs() < 1e-4, "{x}");
+    assert!((y + 1.0).abs() < 1e-4);
+}
+
+/// The inspected card's picture is tall: an editor, not a read-out.
+#[test]
+fn the_inspected_cards_picture_is_tall_enough_to_edit_in() {
+    use fontelle_ui::canvas::INSPECTOR_ROW;
+    let body = real_body(fontelle_ui::layout::FLOPSYNTH_SIZE);
+    let mut view = synth_page();
+    view.sources = twenty_one_sources();
+    view.cards.push(sized(
+        card(
+            "LFO 1",
+            INSPECTOR_ROW,
+            false,
+            8,
+            FlopsynthPicture::Lfo {
+                points: vec![0.0; 64],
+                phase: 0.0,
+            },
+            vec![knob("patch/lfo[0]/rate", "RATE", 0.5)],
+        ),
+        "L",
+    ));
+    view.inspector = Some(4);
+    let index = view.cards.len() - 1;
+    let layout = flopsynth_layout(body, &metrics(), &view);
+    let picture = layout.cards[index].picture;
+    assert!(picture.height >= 110.0, "{picture:?}");
+    assert!(picture.width >= 1000.0, "{picture:?}");
+    assert!(layout.inspector.bottom() <= layout.strip.y + 0.01);
 }

@@ -27,7 +27,8 @@ mod wavetable;
 
 pub use drum::{DECAY_SPAN_DB, DrumBody, DrumModel, DrumSynth, DrumVoice};
 pub use envelope::{
-    DECIBEL_SPAN_DB, EnvelopeConfig, EnvelopeCurve, EnvelopeGenerator, EnvelopeStage,
+    DECIBEL_SPAN_DB, EnvStage, EnvelopeConfig, EnvelopeCurve, EnvelopeGenerator, EnvelopeStage,
+    shape_progress,
 };
 pub use filter::{DcBlocker, SvfCoeffs, SvfFilter, SvfMode};
 pub use interpolation::{Interpolation, interpolate};

@@ -283,12 +283,20 @@ pub fn flopsynth_tip(hit: FlopsynthHit, cards: &[FlopsynthCard]) -> Option<Strin
             FlopsynthPicture::Response { .. } => {
                 "Drag to set the cutoff and the resonance".to_string()
             }
-            FlopsynthPicture::Envelope { .. } => "Drag a corner to shape the envelope".to_string(),
+            FlopsynthPicture::Envelope(_) => {
+                "Drag a corner to shape the envelope \u{b7} drag a stage's middle to bend it"
+                    .to_string()
+            }
             FlopsynthPicture::Sound { .. } => {
                 "Drag sideways to move the start \u{b7} right-click for a sound".to_string()
             }
             FlopsynthPicture::Partials { .. } => "The string's partials".to_string(),
-            FlopsynthPicture::Lfo { .. } => "The LFO's cycle".to_string(),
+            FlopsynthPicture::Lfo { .. } => "The LFO's cycle \u{b7} DRAW to edit it".to_string(),
+            FlopsynthPicture::LfoShape { .. } => {
+                "Drag a point \u{b7} drag between points to bend \u{b7} double-click to add \u{b7} \
+                 right-click for shapes"
+                    .to_string()
+            }
             FlopsynthPicture::None => return None,
         },
         FlopsynthHit::Header { card } => {

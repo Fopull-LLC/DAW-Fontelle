@@ -346,12 +346,27 @@ fn picture_for(name: &str, patch: &Patch, phases: &[f32]) -> FlopsynthPicture {
     if let Some(index) = envelope_of(name)
         && let Some(env) = patch.envelopes.get(index)
     {
-        return FlopsynthPicture::Envelope {
-            attack: fontelle_core::patch_params::unlerp_stage(env.attack_s),
-            decay: fontelle_core::patch_params::unlerp_stage(env.decay_s),
-            sustain: env.sustain_level.clamp(0.0, 1.0),
-            release: fontelle_core::patch_params::unlerp_stage(env.release_s),
+        use fontelle_core::patch_params::unlerp_stage;
+        // The loop as stage numbers, in `EnvStage`'s order — the picture
+        // is the window's and knows no `EnvStage`.
+        let stage = |stage: fontelle_dsp::EnvStage| -> u8 {
+            fontelle_dsp::EnvStage::ALL
+                .iter()
+                .position(|s| *s == stage)
+                .unwrap_or(0) as u8
         };
+        return FlopsynthPicture::Envelope(fontelle_ui::canvas::EnvelopePicture {
+            delay: unlerp_stage(env.delay_s),
+            attack: unlerp_stage(env.attack_s),
+            hold: unlerp_stage(env.hold_s),
+            decay: unlerp_stage(env.decay_s),
+            sustain: env.sustain_level.clamp(0.0, 1.0),
+            release: unlerp_stage(env.release_s),
+            attack_shape: env.attack_shape,
+            decay_shape: env.decay_shape,
+            release_shape: env.release_shape,
+            loop_stages: env.loop_stages.map(|(from, to)| (stage(from), stage(to))),
+        });
     }
 
     if let Some(index) = name
@@ -360,6 +375,13 @@ fn picture_for(name: &str, patch: &Patch, phases: &[f32]) -> FlopsynthPicture {
         .and_then(|n| n.checked_sub(1))
         && let Some(lfo) = patch.lfos.get(index)
     {
+        // A drawn shape is edited on its picture (§3.4); a wave is read.
+        if let Some(shape) = &lfo.shape {
+            return FlopsynthPicture::LfoShape {
+                shape: shape.clone(),
+                phase: (phases.get(index).copied().unwrap_or(0.0) - lfo.phase).rem_euclid(1.0),
+            };
+        }
         return FlopsynthPicture::Lfo {
             points: (0..64)
                 .map(|i| {
@@ -662,9 +684,16 @@ fn source_shape(patch: &Patch, source: fontelle_core::ModSource) -> Vec<f32> {
                 })
                 .collect()
         }
+        // The drawn shape when there is one, else the wave: the badge
+        // shows what plays.
         ModSource::Lfo(i) => match patch.lfos.get(usize::from(i)) {
             Some(lfo) => (0..THUMB_POINTS)
-                .map(|n| lfo.wave.value(n as f32 / THUMB_POINTS as f32))
+                .map(|n| {
+                    let phase = n as f32 / THUMB_POINTS as f32;
+                    lfo.shape
+                        .as_ref()
+                        .map_or_else(|| lfo.wave.value(phase), |shape| shape.value(phase))
+                })
                 .collect(),
             None => Vec::new(),
         },

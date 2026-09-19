@@ -87,6 +87,48 @@ pub struct EnvelopeConfig {
     pub decay_shape: f32,
     #[serde(default)]
     pub release_shape: f32,
+    /// A loop (`docs/flopsynth-next.md` §3.4): while the note is held the
+    /// envelope runs from the end of the second stage back to the start of
+    /// the first. Kept with the editor that draws it; the generator reads
+    /// it in Phase 3. Absent from the file unless set, so every envelope
+    /// ever written reads as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_stages: Option<(EnvStage, EnvStage)>,
+}
+
+/// An envelope's six stages, in their order — what a loop's two ends name.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum EnvStage {
+    Delay,
+    Attack,
+    Hold,
+    Decay,
+    Sustain,
+    Release,
+}
+
+impl EnvStage {
+    pub const ALL: [Self; 6] = [
+        Self::Delay,
+        Self::Attack,
+        Self::Hold,
+        Self::Decay,
+        Self::Sustain,
+        Self::Release,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Delay => "delay",
+            Self::Attack => "attack",
+            Self::Hold => "hold",
+            Self::Decay => "decay",
+            Self::Sustain => "sustain",
+            Self::Release => "release",
+        }
+    }
 }
 
 impl Default for EnvelopeConfig {
@@ -105,6 +147,7 @@ impl Default for EnvelopeConfig {
             attack_shape: 0.0,
             decay_shape: 0.0,
             release_shape: 0.0,
+            loop_stages: None,
         }
     }
 }

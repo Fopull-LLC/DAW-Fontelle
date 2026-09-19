@@ -120,6 +120,9 @@ enum Drag {
     /// A matrix row carried by its grip (§3.4). Which row, and where it
     /// would land, are in `flop_route`.
     FlopRoute,
+    /// A point of a drawn LFO shape, or the tension of one of its segments
+    /// (§3.4). Which, and where it started, are in `flop_shape`.
+    FlopShape,
     /// A matrix row's depth slider.
     FlopMatrix(usize),
     /// The seam between the grid and the lane, which resizes the lane.
@@ -548,6 +551,11 @@ enum MenuTarget {
         name: String,
         macros_only: bool,
     },
+    /// The factory shapes for a drawn LFO (§3.4), with their pictures, for
+    /// the card at `card`; the last row starts over from the LFO's wave.
+    LfoShapes {
+        card: usize,
+    },
     /// The table's choosers (§3.4), by row: a source, a destination, a via
     /// (none first), a curve.
     RouteSource(usize),
@@ -642,6 +650,7 @@ impl MenuTarget {
             | Self::FlopScale
             | Self::FlopKnob { .. }
             | Self::ModulateFrom { .. }
+            | Self::LfoShapes { .. }
             | Self::RouteSource(_)
             | Self::RouteDestination(_)
             | Self::RouteVia(_)
@@ -1146,6 +1155,10 @@ pub struct WindowApp {
     /// if let go now (`canvas::route_landing`) — a rule drawn between the
     /// rows there.
     flop_route: Option<(usize, Option<usize>)>,
+    /// A drawn LFO shape being edited on its picture: the card, what was
+    /// pressed, where, and the tension the segment had — a point follows
+    /// the pointer, a segment's tension follows how far it has moved.
+    flop_shape: Option<(usize, crate::canvas::LfoShapeHit, (f32, f32), f32)>,
     /// The control the arrow keys nudge (§3.3): the last one pressed. The
     /// focus spine's answer for this window.
     flop_focus: Option<(usize, usize)>,
@@ -1800,6 +1813,7 @@ impl WindowApp {
             flop_assign: None,
             flop_badge_pressed: (0.0, 0.0),
             flop_route: None,
+            flop_shape: None,
             flop_inspector: None,
             flop_slot: None,
             flop_focus: None,
@@ -2943,7 +2957,9 @@ impl WindowApp {
             | Drag::FlopWave(_)
             | Drag::FlopMatrix(_)
             | Drag::SettingSlider(_) => Some(Pointer::ResizeX),
-            Drag::FlopAssign | Drag::FlopSlot | Drag::FlopRoute => Some(Pointer::Grabbing),
+            Drag::FlopAssign | Drag::FlopSlot | Drag::FlopRoute | Drag::FlopShape => {
+                Some(Pointer::Grabbing)
+            }
             // A response is dragged in both axes at once, like a band handle.
             Drag::FlopResponse(_) => Some(Pointer::Grabbing),
             // A band handle goes wherever the pointer does, in both axes.
@@ -3584,6 +3600,7 @@ impl ApplicationHandler for WindowApp {
                         | Drag::FlopWave(_)
                         | Drag::FlopResponse(_)
                         | Drag::FlopEnvNode
+                        | Drag::FlopShape
                         | Drag::FlopRing
                         | Drag::FlopMatrix(_)
                         | Drag::Fader(_)
@@ -4826,7 +4843,11 @@ impl WindowApp {
                 // The tip for what is under the pointer (§3.3), with the
                 // studio's dwell — and none while a button is held, for the
                 // studio's reason: a box under a drag is in the drag's way.
+                // And none while a menu is open: the tip for the picture a
+                // menu was opened from sat over the menu's rows (2026-09-19,
+                // the shapes menu).
                 let tip = match (self.drag, hit, self.flopsynth.as_ref()) {
+                    _ if self.menu.is_some() => None,
                     (Drag::None, Some(hit), Some(view)) => {
                         crate::canvas::flopsynth_tip(hit, &view.cards)
                     }
@@ -6861,6 +6882,7 @@ impl WindowApp {
             Drag::FlopWave(card) => self.drag_flop_wave(card, x),
             Drag::FlopResponse(card) => self.drag_flop_response(card, x, y),
             Drag::FlopEnvNode => self.drag_flop_env_node(x, y),
+            Drag::FlopShape => self.drag_flop_shape(x, y),
             Drag::FlopRing => self.drag_flop_ring(y),
             Drag::FlopMatrix(index) => self.drag_flop_matrix(index, x),
             // The badge follows the pointer, and the knobs light up behind it.
@@ -7620,6 +7642,7 @@ impl WindowApp {
         self.flop_assign = None;
         self.flop_slot = None;
         self.flop_route = None;
+        self.flop_shape = None;
         self.flop_node = None;
         self.flop_ring = None;
         // A band or point drag coalesces into one history entry while it
@@ -8914,31 +8937,139 @@ impl WindowApp {
                 self.drag = Drag::FlopResponse(card);
                 self.drag_flop_response(card, x, y);
             }
-            FlopsynthPicture::Envelope {
-                attack,
-                decay,
-                sustain,
-                release,
-            } => {
-                let Some(node) =
-                    crate::canvas::env_node_at(picture, attack, decay, sustain, release, x, y)
-                else {
+            FlopsynthPicture::Envelope(pic) => {
+                use crate::canvas::EnvNode;
+                let Some(node) = crate::canvas::env_node_at(picture, &pic, x, y) else {
                     return;
                 };
+                // What the node's control reads now — a bend's knob carries
+                // the shape normalised, so the drag starts from that.
                 let from = match node {
-                    crate::canvas::EnvNode::Attack => attack,
-                    crate::canvas::EnvNode::Decay => decay,
-                    crate::canvas::EnvNode::Sustain => sustain,
-                    crate::canvas::EnvNode::Release => release,
+                    EnvNode::Attack => pic.attack,
+                    EnvNode::Hold => pic.hold,
+                    EnvNode::Decay => pic.decay,
+                    EnvNode::Sustain => pic.sustain,
+                    EnvNode::Release => pic.release,
+                    EnvNode::AttackBend => (pic.attack_shape + 1.0) / 2.0,
+                    EnvNode::DecayBend => (pic.decay_shape + 1.0) / 2.0,
+                    EnvNode::ReleaseBend => (pic.release_shape + 1.0) / 2.0,
                 };
                 self.flop_node = Some((card, node, (x, y), from));
                 self.drag = Drag::FlopEnvNode;
             }
-            // An LFO's picture is a read-out: its shape is a chooser and its
+            // A drawn shape (§3.4): a point is dragged, the segment between
+            // two is bent, a double-click adds a point, an Alt-click takes
+            // one out.
+            FlopsynthPicture::LfoShape { shape, .. } => {
+                use crate::canvas::LfoShapeHit;
+                let Some(hit) = crate::canvas::lfo_shape_hit(picture, &shape, x, y) else {
+                    return;
+                };
+                let doubled = self.double_click.press(
+                    x,
+                    y,
+                    self.input_clock.stamp(std::time::Instant::now()),
+                );
+                let alt = self.modifiers.alt_key();
+                match hit {
+                    LfoShapeHit::Point(index) if alt => {
+                        let mut edited = shape.clone();
+                        if edited.remove_point(index) {
+                            self.write_flop_shape(card, edited);
+                            self.end_flop_shape_gesture();
+                        }
+                        return;
+                    }
+                    LfoShapeHit::Segment(_) if doubled => {
+                        let (px, py) = crate::canvas::lfo_point_add(picture, &shape, x, y);
+                        let mut edited = shape.clone();
+                        if edited.add_point(px, py) {
+                            self.write_flop_shape(card, edited);
+                            self.end_flop_shape_gesture();
+                        }
+                        return;
+                    }
+                    LfoShapeHit::Point(_) => {
+                        self.flop_shape = Some((card, hit, (x, y), 0.0));
+                        self.drag = Drag::FlopShape;
+                        self.drag_flop_shape(x, y);
+                    }
+                    LfoShapeHit::Segment(index) => {
+                        let tension = shape.points.get(index).map_or(0.0, |p| p.tension);
+                        self.flop_shape = Some((card, hit, (x, y), tension));
+                        self.drag = Drag::FlopShape;
+                    }
+                }
+            }
+            // A wave's picture is a read-out: its shape is a chooser and its
             // rate is a knob, and there is nothing in the drawing to aim at.
             FlopsynthPicture::Lfo { .. } | FlopsynthPicture::None => {}
         }
         self.tree.invalidate(PANEL);
+    }
+
+    /// Which LFO a card edits, off its controls' addresses.
+    fn flop_card_lfo(&self, card: usize) -> Option<usize> {
+        let view = self.flopsynth.as_ref()?;
+        let address = view.cards.get(card)?.group.params.first()?.address.as_str();
+        let rest = address.strip_prefix("patch/lfo[")?;
+        let end = rest.find(']')?;
+        rest[..end].parse().ok()
+    }
+
+    /// Writes a drawn shape to the card's LFO, and shows it.
+    fn write_flop_shape(&mut self, card: usize, shape: fontelle_types::LfoShape) {
+        let Some(lfo) = self.flop_card_lfo(card) else {
+            return;
+        };
+        if let Some(doc) = self.options.document.as_mut() {
+            doc.set_lfo_shape(lfo, shape);
+        }
+        self.tree.invalidate(PANEL);
+        self.redraw_editors();
+    }
+
+    fn end_flop_shape_gesture(&mut self) {
+        if let Some(doc) = self.options.document.as_mut() {
+            doc.end_gesture();
+        }
+    }
+
+    fn drag_flop_shape(&mut self, x: f32, y: f32) {
+        use crate::canvas::LfoShapeHit;
+        let Some((card, hit, from, tension)) = self.flop_shape else {
+            return;
+        };
+        let Some(picture) = self.flopsynth_layout.cards.get(card).map(|c| c.picture) else {
+            return;
+        };
+        let Some(crate::canvas::FlopsynthPicture::LfoShape { shape, .. }) = self
+            .flopsynth
+            .as_ref()
+            .and_then(|view| view.cards.get(card))
+            .map(|card| card.picture.clone())
+        else {
+            return;
+        };
+        let mut edited = shape.clone();
+        match hit {
+            LfoShapeHit::Point(index) => {
+                let (px, py) = crate::canvas::lfo_point_drag(picture, &shape, index, x, y);
+                if let Some(point) = edited.points.get_mut(index) {
+                    point.x = px;
+                    point.y = py;
+                }
+            }
+            LfoShapeHit::Segment(index) => {
+                let bent = crate::canvas::lfo_tension_drag(picture, tension, y - from.1);
+                if let Some(point) = edited.points.get_mut(index) {
+                    point.tension = bent;
+                }
+            }
+        }
+        if edited != shape {
+            self.write_flop_shape(card, edited);
+        }
     }
 
     /// Writes the control a picture gesture moves, by the tail of its address.
@@ -9262,8 +9393,27 @@ impl WindowApp {
     /// kind of thing and a second one would be a second thing to keep in step.
     fn press_flopsynth_menu(&mut self, x: f32, y: f32) {
         let hit = crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y);
-        // The right button on an oscillator's picture: a sound for it.
+        // The right button on an oscillator's picture: a sound for it. On
+        // a drawn LFO shape's: the factory shapes (§3.4).
         if let Some(crate::canvas::FlopsynthHit::Picture { card }) = hit {
+            let drawn = self
+                .flopsynth
+                .as_ref()
+                .and_then(|view| view.cards.get(card))
+                .is_some_and(|c| {
+                    matches!(c.picture, crate::canvas::FlopsynthPicture::LfoShape { .. })
+                });
+            if drawn {
+                let bounds = self
+                    .editors
+                    .iter()
+                    .find(|e| e.kind == EditorKind::Instrument)
+                    .map(|editor| editor.panel.body)
+                    .unwrap_or(self.flopsynth_layout.body);
+                self.open_menu(MenuTarget::LfoShapes { card }, x, y, bounds);
+                self.redraw_editor(EditorKind::Instrument);
+                return;
+            }
             self.open_load_sound_menu(card, x, y);
             return;
         }
@@ -12347,6 +12497,17 @@ impl WindowApp {
                 .into_iter()
                 .map(|(entry, _)| entry)
                 .collect(),
+            MenuTarget::LfoShapes { .. } => {
+                let mut entries = vec![MenuEntry::disabled("Shapes")];
+                for (name, shape) in fontelle_types::LfoShape::presets() {
+                    let picture: Vec<f32> = (0..32).map(|i| shape.value(i as f32 / 32.0)).collect();
+                    entries.push(MenuEntry::new(name).with_thumbnail(picture));
+                }
+                let mut from_wave = MenuEntry::new(crate::canvas::FROM_WAVE);
+                from_wave.separator = true;
+                entries.push(from_wave);
+                entries
+            }
             // The table's choosers: the view's own lists, the row's current
             // choice ticked, the sources with their pictures.
             MenuTarget::RouteSource(row) | MenuTarget::RouteVia(row) => {
@@ -13308,6 +13469,26 @@ impl WindowApp {
                     .map(|(_, item)| *item);
                 if let Some(item) = item {
                     self.choose_flop_knob_menu(&address, &name, item);
+                }
+            }
+            (MenuTarget::LfoShapes { card }, index) => {
+                let card = *card;
+                let presets = fontelle_types::LfoShape::presets();
+                // Row 0 is the heading; the presets follow; the last row is
+                // the wave, sampled afresh.
+                let chosen = match index.checked_sub(1) {
+                    Some(at) if at < presets.len() => Some(presets[at].1.clone()),
+                    Some(at) if at == presets.len() => self.flop_card_lfo(card).and_then(|lfo| {
+                        self.options
+                            .document
+                            .as_ref()
+                            .and_then(|doc| doc.lfo_wave_shape(lfo))
+                    }),
+                    _ => None,
+                };
+                if let Some(shape) = chosen {
+                    self.write_flop_shape(card, shape);
+                    self.end_flop_shape_gesture();
                 }
             }
             (MenuTarget::RouteSource(row), index) => {

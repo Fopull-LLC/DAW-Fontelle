@@ -633,7 +633,7 @@ impl Default for ZoneModulation {
                 curve: EnvelopeCurve::Linear,
                 ..Default::default()
             },
-            lfos: [idle_lfo; 2],
+            lfos: [idle_lfo.clone(), idle_lfo],
             mod_lfo_to_pitch_cents: 0.0,
             vib_lfo_to_pitch_cents: 0.0,
             mod_env_to_pitch_cents: 0.0,

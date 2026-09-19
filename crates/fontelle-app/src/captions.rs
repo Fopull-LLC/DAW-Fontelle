@@ -78,6 +78,7 @@ pub const CAPTIONS: &[(&str, &str)] = &[
     ("a shape", "A CURVE"),
     ("d shape", "D CURVE"),
     ("r shape", "R CURVE"),
+    ("loop", "LOOP"),
     // The LFOs.
     ("wave", "WAVE"),
     ("sync", "SYNC"),
@@ -87,6 +88,10 @@ pub const CAPTIONS: &[(&str, &str)] = &[
     ("depth", "DEPTH"),
     ("fade", "FADE"),
     ("smooth", "SMOOTH"),
+    // The shape editor's (§3.4).
+    ("draw", "DRAW"),
+    ("grid", "GRID"),
+    ("read", "READ"),
     // The voice, and the channel's two knobs beside it.
     ("voices", "VOICES"),
     ("glide", "GLIDE"),

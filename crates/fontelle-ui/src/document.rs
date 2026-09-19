@@ -1897,6 +1897,18 @@ pub trait StudioHost: DocumentHost {
     /// Removes the route at `index` of [`routes_to`](Self::routes_to).
     fn remove_route(&mut self, _address: &fontelle_types::ParamAddress, _index: usize) {}
 
+    /// Writes LFO `lfo`'s drawn shape (`docs/flopsynth-next.md` §3.4) —
+    /// a point dragged, a segment bent, a point added or taken out, a
+    /// factory shape chosen. Coalesced like a knob drag until
+    /// [`end_gesture`](DocumentHost::end_gesture).
+    fn set_lfo_shape(&mut self, _lfo: usize, _shape: fontelle_types::LfoShape) {}
+
+    /// LFO `lfo`'s wave, sampled as a shape to draw on — what the shapes
+    /// menu's last row starts over from.
+    fn lfo_wave_shape(&self, _lfo: usize) -> Option<fontelle_types::LfoShape> {
+        None
+    }
+
     // --- the Matrix page's table (`docs/flopsynth-next.md` §3.4) ---
     //
     // Every one of these names a row by its **position in the whole

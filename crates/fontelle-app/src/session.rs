@@ -7202,6 +7202,34 @@ impl StudioHost for Session {
         Session::remove_route(self, address, index);
     }
 
+    fn set_lfo_shape(&mut self, lfo: usize, shape: fontelle_types::LfoShape) {
+        let Some(channel) = self.selected_channel_id() else {
+            return;
+        };
+        let Some(mut patch) = self.matrix_patch() else {
+            return;
+        };
+        let Some(slot) = patch.lfos.get_mut(lfo) else {
+            return;
+        };
+        if slot.shape.as_ref() == Some(&shape) {
+            return;
+        }
+        slot.shape = Some(shape);
+        // Coalesced, like a knob drag: one undo for one drag of a point,
+        // broken by the release's `end_gesture`.
+        self.store_patch(channel, patch);
+    }
+
+    fn lfo_wave_shape(&self, lfo: usize) -> Option<fontelle_types::LfoShape> {
+        let patch = self.matrix_patch()?;
+        let slot = patch.lfos.get(lfo)?;
+        Some(fontelle_types::LfoShape::from_wave(
+            slot.wave,
+            fontelle_core::patch_params::DRAWN_POINTS,
+        ))
+    }
+
     fn set_route_source(&mut self, row: usize, source: usize) {
         self.edit_route(row, |patch, route| {
             let (source, _) = fontelle_core::flopsynth::sources(patch)

@@ -20,7 +20,7 @@ mod wavetable_set;
 pub use drum_kit::{
     DrumKitStyle, DrumSlot, GM_DRUM_MAP, GmSlot, KIT_HEADROOM_DB, drum_kit, drum_slots,
 };
-pub use lfo::{LfoState, free_phase};
+pub use lfo::{LfoLive, LfoState, free_phase};
 pub use mod_matrix::{Curve, ModDest, ModMatrix, ModRoute, ModSource};
 pub use patch::{
     FilterSlot, Layer, Lfo, LfoMode, MACRO_COUNT, MAX_PATCH_FX, Macro, Patch, PatchFx, SILENT_DB,

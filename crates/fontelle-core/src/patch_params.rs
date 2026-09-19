@@ -32,12 +32,12 @@
 //!   split as a `&str` and everything else is a field write (INVARIANT 1).
 
 use fontelle_dsp::{
-    FilterModel, FilterRoute, FilterSlope, GRAIN_MAX_MS, GRAIN_MIN_MS, Interpolation, MAX_UNISON,
-    OscKind, SampleLoop, SvfMode, SynthSource, WarpMode, WavetableId,
+    EnvStage, FilterModel, FilterRoute, FilterSlope, GRAIN_MAX_MS, GRAIN_MIN_MS, Interpolation,
+    MAX_UNISON, OscKind, SampleLoop, SvfMode, SynthSource, WarpMode, WavetableId,
 };
 use fontelle_types::{LfoWave, NoteDivision};
 
-use crate::patch::{LfoMode, MACRO_COUNT, Patch, Source};
+use crate::patch::{Lfo, LfoMode, MACRO_COUNT, Patch, Source};
 use crate::playback::PlaybackConfig;
 
 /// The loudest and quietest a level goes, in dB. Shared by a channel's own
@@ -250,6 +250,24 @@ fn set_lfo(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool {
         "phase" => lfo.phase = value,
         "mode" => lfo.mode = LfoMode::ALL[choice_index(value, LfoMode::ALL.len())],
         "smooth" => lfo.smooth = value,
+        // The editor's own (`docs/flopsynth-next.md` §3.4): whether a drawn
+        // shape plays in place of the wave, the grid it snaps to, and
+        // whether it is read smooth or as steps.
+        "draw" => {
+            if value >= 0.5 {
+                drawn(lfo);
+            } else {
+                lfo.shape = None;
+            }
+        }
+        "grid" => drawn(lfo).grid = LFO_GRIDS[choice_index(value, LFO_GRIDS.len())],
+        "shape_mode" => {
+            drawn(lfo).mode = if value >= 0.5 {
+                fontelle_types::LfoShapeMode::Step
+            } else {
+                fontelle_types::LfoShapeMode::Smooth
+            }
+        }
         _ => return false,
     }
     true
@@ -308,6 +326,7 @@ fn set_envelope(patch: &mut Patch, index: usize, field: &str, value: f32) -> boo
         "attack_shape" => env.attack_shape = value * 2.0 - 1.0,
         "decay_shape" => env.decay_shape = value * 2.0 - 1.0,
         "release_shape" => env.release_shape = value * 2.0 - 1.0,
+        "loop" => env.loop_stages = ENV_LOOPS[choice_index(value, ENV_LOOPS.len())].0,
         _ => return false,
     }
     true
@@ -497,6 +516,45 @@ pub const STRING_DECAY_MAX_S: f32 = 20.0;
 /// that could be later than layer 0.
 pub const MODULATOR_CHOICES: usize = 5;
 
+/// An envelope's loop, as the chooser offers it (`docs/flopsynth-next.md`
+/// §3.4): off, or a pair of stages the envelope runs between while the
+/// note is held. The pairs a person reaches for — attack to decay for a
+/// rhythmic swell, on to the sustain for a slow one, decay alone for a
+/// tremble on the held level — rather than every pair there is.
+pub const ENV_LOOPS: [(Option<(EnvStage, EnvStage)>, &str); 5] = [
+    (None, "off"),
+    (
+        Some((EnvStage::Attack, EnvStage::Decay)),
+        "attack\u{2013}decay",
+    ),
+    (
+        Some((EnvStage::Attack, EnvStage::Sustain)),
+        "attack\u{2013}sustain",
+    ),
+    (
+        Some((EnvStage::Decay, EnvStage::Sustain)),
+        "decay\u{2013}sustain",
+    ),
+    (Some((EnvStage::Hold, EnvStage::Decay)), "hold\u{2013}decay"),
+];
+
+/// The grids a drawn LFO shape snaps to: divisions of the cycle a musician
+/// counts in, and off.
+pub const LFO_GRIDS: [u8; 10] = [0, 2, 3, 4, 6, 8, 12, 16, 32, 64];
+
+/// How many points a shape begun from a wave has: enough to hold a sine's
+/// curve, few enough to drag one by one.
+pub const DRAWN_POINTS: usize = 16;
+
+/// The shape an LFO's grid, mode and points are edited on — begun from the
+/// wave when there is none yet, because a grid chosen is a drawing begun.
+fn drawn(lfo: &mut Lfo) -> &mut fontelle_types::LfoShape {
+    if lfo.shape.is_none() {
+        lfo.shape = Some(fontelle_types::LfoShape::from_wave(lfo.wave, DRAWN_POINTS));
+    }
+    lfo.shape.as_mut().expect("just made")
+}
+
 // -------------------------------------------------------------- the read ---
 
 /// What `address` is worth right now, normalised — the other half of [`set`].
@@ -568,6 +626,13 @@ pub fn value(patch: &Patch, address: &str) -> Option<f32> {
                     "attack_shape" => Some((env.attack_shape.clamp(-1.0, 1.0) + 1.0) / 2.0),
                     "decay_shape" => Some((env.decay_shape.clamp(-1.0, 1.0) + 1.0) / 2.0),
                     "release_shape" => Some((env.release_shape.clamp(-1.0, 1.0) + 1.0) / 2.0),
+                    "loop" => {
+                        let at = ENV_LOOPS
+                            .iter()
+                            .position(|(stages, _)| *stages == env.loop_stages)
+                            .unwrap_or(0);
+                        Some(choice_value(at, ENV_LOOPS.len()))
+                    }
                     _ => None,
                 };
             }
@@ -601,6 +666,17 @@ pub fn value(patch: &Patch, address: &str) -> Option<f32> {
                         Some(choice_value(at, LfoMode::ALL.len()))
                     }
                     "smooth" => Some(lfo.smooth.clamp(0.0, 1.0)),
+                    "draw" => Some(bool_value(lfo.shape.is_some())),
+                    "grid" => {
+                        let grid = lfo.shape.as_ref().map_or(8, |shape| shape.grid);
+                        let at = LFO_GRIDS.iter().position(|g| *g == grid).unwrap_or(0);
+                        Some(choice_value(at, LFO_GRIDS.len()))
+                    }
+                    "shape_mode" => {
+                        Some(bool_value(lfo.shape.as_ref().is_some_and(|shape| {
+                            shape.mode == fontelle_types::LfoShapeMode::Step
+                        })))
+                    }
                     _ => None,
                 };
             }

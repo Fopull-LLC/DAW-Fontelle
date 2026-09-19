@@ -1246,16 +1246,17 @@ impl Voice {
                     patch.mod_matrix.evaluate(rate_dest, &for_lfo) * rate_dest.full_scale() * 3.0;
                 let depth_dest = crate::mod_matrix::ModDest::LfoDepth(index_u8);
                 let phase_dest = crate::mod_matrix::ModDest::LfoPhase(index_u8);
-                let lfo = crate::patch::Lfo {
+                // The depth and the phase after the matrix, beside the
+                // config rather than in a copy of it: an `Lfo` carries a
+                // drawn shape, and copying one here would allocate.
+                let live = crate::lfo::LfoLive {
                     depth: (lfo.depth
                         + patch.mod_matrix.evaluate(depth_dest, &for_lfo)
                             * depth_dest.full_scale())
                     .clamp(0.0, 1.0),
                     phase: lfo.phase
                         + patch.mod_matrix.evaluate(phase_dest, &for_lfo) * phase_dest.full_scale(),
-                    ..*lfo
                 };
-                let lfo = &lfo;
                 let rate =
                     crate::lfo::LfoState::rate_hz(lfo, performance.clock.bpm) * 2f32.powf(octaves);
                 // A free-running LFO's phase is a fact about the transport,
@@ -1267,6 +1268,7 @@ impl Voice {
                 });
                 lfo_values[index] = self.lfos[index].advance_block(
                     lfo,
+                    live,
                     rate,
                     sample_rate,
                     frames,
