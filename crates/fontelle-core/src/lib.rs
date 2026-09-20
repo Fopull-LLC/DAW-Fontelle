@@ -33,8 +33,8 @@ pub use playback::{LoopMode, PlaybackConfig};
 pub use sampler::{PrepareContext, Sampler, SamplerContext};
 pub use streaming::{AudioBuffer, AudioStore, SampleBuffer, SampleStore};
 pub use voice::{
-    DEFAULT_BEND_RANGE_SEMITONES, FILTER_STEP, MAX_LFOS, NoteTrigger, OSC_ROOT_HZ, Performance,
-    RenderClock, RetriggerMode, StealPolicy, UnisonConfig, Voice, VoiceConfig, VoicePool,
-    velocity_to_gain,
+    DEFAULT_BEND_RANGE_SEMITONES, FILTER_STEP, MAX_LFOS, MAX_MOD_ENVELOPES, NoteTrigger,
+    OSC_ROOT_HZ, Performance, RenderClock, RetriggerMode, StealPolicy, UnisonConfig, Voice,
+    VoiceConfig, VoicePool, velocity_to_gain,
 };
 pub use wavetable_set::WavetableSet;

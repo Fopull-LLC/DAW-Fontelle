@@ -279,8 +279,14 @@ struct StoredPatch {
     /// named macros and no trim — reads back identically.
     #[serde(default)]
     fx: Vec<PatchFx>,
+    /// A list rather than the patch's array: four macros were written from
+    /// the day macros existed until 2026-09-20 and eight since, and a list
+    /// reads either. Written **four long unless a later one is set** —
+    /// `stored_macros` — so no row of the bank is rewritten for slots it
+    /// does not use (`docs/flopsynth-next.md` §0, rule 7); read padded to
+    /// [`MACRO_COUNT`] and cut there (`macros_from_stored`).
     #[serde(default)]
-    macros: [Macro; MACRO_COUNT],
+    macros: Vec<Macro>,
     #[serde(default)]
     output_db: f32,
     /// The patch's own tables. `#[serde(default)]`, so every preset written
@@ -297,6 +303,36 @@ struct StoredPatch {
     /// (`docs/flopsynth-next.md` §4.1, ground rule 7).
     #[serde(default, skip_serializing_if = "Oversampling::is_off")]
     oversampling: Oversampling,
+}
+
+/// How many macros, LFOs and envelopes the file carried before there were
+/// eight, eight and six — what a patch with nothing past them still writes.
+const SLOTS_ALWAYS_WRITTEN: usize = 4;
+
+/// `all` without its trailing at-rest entries past the first
+/// [`SLOTS_ALWAYS_WRITTEN`]: how the LFOs, the envelopes and the macros go
+/// into the file, so a row written with four stays at four until a fifth is
+/// touched (`docs/flopsynth-next.md` §0, rule 7), and reads back full
+/// through `Patch::fill_modulator_slots`.
+fn trimmed<T: Clone + PartialEq>(all: &[T], at_rest: &T) -> Vec<T> {
+    let last_set = all.iter().rposition(|x| x != at_rest).map_or(0, |i| i + 1);
+    all[..last_set.max(SLOTS_ALWAYS_WRITTEN).min(all.len())].to_vec()
+}
+
+/// The macros as the file holds them: the first four always, and past
+/// those only up to the last one that is not at rest.
+fn stored_macros(macros: &[Macro; MACRO_COUNT]) -> Vec<Macro> {
+    trimmed(macros, &Macro::default())
+}
+
+/// The file's list as the patch's array: padded with macros at rest, and
+/// cut at [`MACRO_COUNT`] — a file from a build with more has no ninth
+/// knob here to land on.
+fn macros_from_stored(mut stored: Vec<Macro>) -> [Macro; MACRO_COUNT] {
+    stored.resize_with(MACRO_COUNT, Macro::default);
+    stored
+        .try_into()
+        .unwrap_or_else(|_| unreachable!("resized to MACRO_COUNT"))
 }
 
 impl Patch {
@@ -336,12 +372,12 @@ impl Patch {
                 })
                 .collect(),
             filters: self.filters,
-            envelopes: self.envelopes.clone(),
-            lfos: self.lfos.clone(),
+            envelopes: trimmed(&self.envelopes, &crate::patch::envelope_at_rest()),
+            lfos: trimmed(&self.lfos, &Lfo::default()),
             mod_matrix: self.mod_matrix.clone(),
             voice_config: self.voice_config,
             fx: self.fx.clone(),
-            macros: self.macros.clone(),
+            macros: stored_macros(&self.macros),
             output_db: self.output_db,
             wavetables: self.wavetables.iter().map(StoredWavetable::of).collect(),
             samples: self.samples.iter().map(StoredSample::of).collect(),
@@ -426,31 +462,33 @@ impl Patch {
             });
         }
 
-        Ok(LoadedPatch {
-            patch: Patch {
-                layers,
-                filters: stored.filters,
-                envelopes: stored.envelopes,
-                lfos: stored.lfos,
-                mod_matrix: stored.mod_matrix,
-                voice_config: stored.voice_config,
-                fx: stored.fx,
-                macros: stored.macros,
-                output_db: stored.output_db,
-                wavetables: stored
-                    .wavetables
-                    .into_iter()
-                    .map(StoredWavetable::into_table)
-                    .collect(),
-                samples: stored
-                    .samples
-                    .into_iter()
-                    .map(StoredSample::into_sample)
-                    .collect(),
-                oversampling: stored.oversampling,
-            },
-            unresolved,
-        })
+        let mut patch = Patch {
+            layers,
+            filters: stored.filters,
+            envelopes: stored.envelopes,
+            lfos: stored.lfos,
+            mod_matrix: stored.mod_matrix,
+            voice_config: stored.voice_config,
+            fx: stored.fx,
+            macros: macros_from_stored(stored.macros),
+            output_db: stored.output_db,
+            wavetables: stored
+                .wavetables
+                .into_iter()
+                .map(StoredWavetable::into_table)
+                .collect(),
+            samples: stored
+                .samples
+                .into_iter()
+                .map(StoredSample::into_sample)
+                .collect(),
+            oversampling: stored.oversampling,
+        };
+        // A Flopsynth row gets every slot the strip shows, whatever the
+        // file carried — see `fill_modulator_slots`; the writer above trims
+        // them back, so the file does not move.
+        patch.fill_modulator_slots();
+        Ok(LoadedPatch { patch, unresolved })
     }
 }
 

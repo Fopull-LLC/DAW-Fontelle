@@ -232,7 +232,7 @@ fn an_address_this_build_does_not_know_changes_nothing_and_is_not_an_error() {
         "patch/layer[9]/synth/position",
         0.5
     ));
-    assert!(!patch_params::set(&mut patch, "patch/macro[7]", 0.5));
+    assert!(!patch_params::set(&mut patch, "patch/macro[8]", 0.5));
     assert!(patch_params::value(&patch, "patch/layer[0]/synth/warble").is_none());
     assert_eq!(patch, before);
 }

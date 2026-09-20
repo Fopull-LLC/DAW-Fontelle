@@ -184,7 +184,7 @@ fn a_macros_caption_is_its_name() {
     // Straight off the Init patch, a macro nobody has named is still a knob.
     let view = session.instrument().expect("a panel");
     let macros = group(&view, "Macros");
-    assert_eq!(macros.params.len(), 4);
+    assert_eq!(macros.params.len(), fontelle_core::MACRO_COUNT);
     assert_eq!(macros.params[0].label, "macro 1");
 
     // And a preset that names them says so on the panel.
@@ -1861,10 +1861,17 @@ fn every_page_carries_the_sources_and_the_inspected_sources_card() {
         assert!(view.cards.iter().all(|c| c.row != INSPECTOR_ROW));
     }
     // Inspecting LFO 2 on the Synth page: its card comes along, marked.
+    let lfo_2 = session
+        .flopsynth(FlopsynthPage::Synth)
+        .expect("Flopsynth's window")
+        .sources
+        .iter()
+        .position(|s| s == "LFO 2")
+        .expect("LFO 2 is a source");
     let synth = session
-        .flopsynth_inspecting(FlopsynthPage::Synth, Some(5))
+        .flopsynth_inspecting(FlopsynthPage::Synth, Some(lfo_2))
         .expect("Flopsynth's window");
-    assert_eq!(synth.inspector, Some(5));
+    assert_eq!(synth.inspector, Some(lfo_2));
     let inspected: Vec<&str> = synth
         .cards
         .iter()
@@ -1887,8 +1894,12 @@ fn every_page_carries_the_sources_and_the_inspected_sources_card() {
             .iter()
             .any(|c| c.row == INSPECTOR_ROW && c.group.name.starts_with("ENV 1"))
     );
+    // The first macro is the first source after the last LFO, whatever the
+    // Grand Piano calls it.
+    let sources = session.mod_sources();
+    let m1 = sources.iter().rposition(|s| s.starts_with("LFO ")).unwrap() + 1;
     let macros = session
-        .flopsynth_inspecting(FlopsynthPage::Synth, Some(8))
+        .flopsynth_inspecting(FlopsynthPage::Synth, Some(m1))
         .unwrap();
     assert!(
         macros

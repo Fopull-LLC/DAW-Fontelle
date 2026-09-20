@@ -164,14 +164,16 @@ pub const MAX_LAYERS: usize = 16;
 ///
 /// A fixed array, like the layers, because a voice's cost has to be knowable
 /// before it sounds (INVARIANT 6) and note-on must not allocate (INVARIANT 1).
-/// Three is one more than any SF2 file can ask for, which defines exactly one
-/// modulation envelope.
-pub const MAX_MOD_ENVELOPES: usize = 3;
+/// Five beside the amp — six envelopes, Ty's §9.6 of
+/// `docs/flopsynth-next.md` (three until 2026-09-20; an SF2 file defines
+/// exactly one). Only the ones a route reads are advanced, so an unused slot
+/// costs its bytes and nothing else.
+pub const MAX_MOD_ENVELOPES: usize = 5;
 
 /// LFOs per voice, for the same reason. SF2 defines two (vibrato and
-/// modulation); four leaves room for a patch built in Fontelle rather than
-/// imported.
-pub const MAX_LFOS: usize = 4;
+/// modulation); eight is Serum's count and the plan's (§4.2; four until
+/// 2026-09-20), and the strip holds them.
+pub const MAX_LFOS: usize = 8;
 
 /// How often, in samples, the filter coefficients are rebuilt along the
 /// within-block cutoff ramp (`docs/flopsynth-plan.md` §3.3).

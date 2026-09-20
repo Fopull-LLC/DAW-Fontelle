@@ -238,7 +238,7 @@ pub struct PatchFx {
 /// argument about the tail keeping the graph awake.
 pub const MAX_PATCH_FX: usize = 8;
 
-/// One of a patch's four macro knobs.
+/// One of a patch's eight macro knobs.
 ///
 /// A macro is a **source and nothing else**: its whole meaning is the routes
 /// that read it, which is what makes a preset's "Brightness" one knob rather
@@ -260,8 +260,10 @@ impl Default for Macro {
     }
 }
 
-/// How many macros a patch has. Four, matching the window's row.
-pub const MACRO_COUNT: usize = 4;
+/// How many macros a patch has. Eight (`docs/flopsynth-next.md` §4.2, Ty's
+/// §9.6; four until 2026-09-20). The file keeps writing four until a fifth
+/// is touched — see `patch_format::StoredPatch::macros`.
+pub const MACRO_COUNT: usize = 8;
 
 /// One table a patch carries itself, built from a sound rather than from a
 /// recipe (`docs/flopsynth-plan.md` §3.2's "no files" is about the *bank*).
@@ -589,6 +591,52 @@ impl Default for Patch {
             wavetables: Vec::new(),
             samples: Vec::new(),
             oversampling: fontelle_dsp::Oversampling::Off,
+        }
+    }
+}
+
+/// A modulation envelope nobody has touched: the shape the Init's filter
+/// envelope has — a short attack, a decay to nothing, and the bends an ear
+/// expects — so a slot opened for the first time is an envelope and not a
+/// flat line at one.
+///
+/// A fixed value on purpose: the file writes a trailing envelope only when
+/// it differs from this (`patch_format`), which is what keeps a row of the
+/// bank on disk at the four it was written with.
+pub fn envelope_at_rest() -> EnvelopeConfig {
+    EnvelopeConfig {
+        attack_s: 0.002,
+        decay_s: 0.3,
+        sustain_level: 0.0,
+        release_s: 0.2,
+        curve: fontelle_dsp::EnvelopeCurve::Linear,
+        decay_shape: -0.6,
+        release_shape: -0.6,
+        ..Default::default()
+    }
+}
+
+impl Patch {
+    /// Gives a Flopsynth patch every modulator slot the strip shows
+    /// (`docs/flopsynth-next.md` §4.2, Ty's §9.6): eight LFOs and six
+    /// envelopes, the ones past what the patch carried at rest.
+    ///
+    /// **The slots are the instrument's, not the patch's** — a Serum patch
+    /// does not "have" three LFOs — and a route to the seventh has to be
+    /// something a person can make on any patch, not only on one whose
+    /// author left room. Called when a patch is read from a file and when
+    /// the Init is built; a patch that is not Flopsynth's (an import) keeps
+    /// what it has, because its LFOs are a fact about the file it came from.
+    pub fn fill_modulator_slots(&mut self) {
+        if !crate::flopsynth::is_flopsynth(self) {
+            return;
+        }
+        if self.lfos.len() < crate::voice::MAX_LFOS {
+            self.lfos.resize(crate::voice::MAX_LFOS, Lfo::default());
+        }
+        let envelopes = crate::voice::MAX_MOD_ENVELOPES + 1;
+        if self.envelopes.len() < envelopes {
+            self.envelopes.resize(envelopes, envelope_at_rest());
         }
     }
 }

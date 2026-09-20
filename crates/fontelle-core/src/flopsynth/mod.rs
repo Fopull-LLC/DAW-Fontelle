@@ -214,18 +214,10 @@ pub fn flopsynth_init() -> Patch {
         release_shape: -0.6,
         ..Default::default()
     };
-    let filter_env = EnvelopeConfig {
-        attack_s: 0.002,
-        decay_s: 0.3,
-        sustain_level: 0.0,
-        release_s: 0.2,
-        curve: EnvelopeCurve::Linear,
-        decay_shape: -0.6,
-        release_shape: -0.6,
-        ..Default::default()
-    };
+    // The filter envelope, and the shape every further slot opens with.
+    let filter_env = crate::patch::envelope_at_rest();
 
-    Patch {
+    let mut patch = Patch {
         wavetables: Vec::new(),
         samples: Vec::new(),
         oversampling: Oversampling::Off,
@@ -254,6 +246,9 @@ pub fn flopsynth_init() -> Patch {
                 ..Default::default()
             },
         ],
+        // Four of each here, as the bank's rows were written; the rest of
+        // the six envelopes and eight LFOs (§4.2) are filled below by
+        // `fill_modulator_slots`, the same as a row read from disk gets.
         envelopes: vec![amp, filter_env, filter_env, filter_env],
         lfos: vec![
             Lfo {
@@ -298,7 +293,9 @@ pub fn flopsynth_init() -> Patch {
         fx: Vec::new(),
         macros: Default::default(),
         output_db: 0.0,
-    }
+    };
+    patch.fill_modulator_slots();
+    patch
 }
 
 /// Every address on a Flopsynth patch's window, in the order the panel offers
@@ -591,11 +588,11 @@ pub fn dest_for_address(patch: &Patch, address: &str) -> Option<ModDest> {
 /// badge row shows them.
 pub fn sources(patch: &Patch) -> Vec<(ModSource, String)> {
     let mut out = Vec::new();
-    for index in 0..patch.envelopes.len().min(4) {
+    for index in 0..patch.envelopes.len().min(crate::MAX_MOD_ENVELOPES + 1) {
         let Ok(i) = u8::try_from(index) else { continue };
         out.push((ModSource::Envelope(i), format!("ENV {}", index + 1)));
     }
-    for index in 0..patch.lfos.len().min(4) {
+    for index in 0..patch.lfos.len().min(crate::MAX_LFOS) {
         let Ok(i) = u8::try_from(index) else { continue };
         out.push((ModSource::Lfo(i), format!("LFO {}", index + 1)));
     }
