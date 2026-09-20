@@ -45,7 +45,8 @@ pub use pitch::{
 };
 pub use psola::{GrainEngine, MAX_GRAIN_MS, MIN_GRAIN_MS, PsolaShifter};
 pub use spectrum::{
-    SPECTRUM_FLOOR_DB, SPECTRUM_SIZE, SpectrumAnalyser, bin_width_hz, fft_in_place,
+    SPECTRUM_FLOOR_DB, SPECTRUM_SIZE, SpectralFrame, SpectralFrames, SpectrumAnalyser,
+    analyse_spectral, bin_width_hz, fft_in_place,
 };
 pub use synth_filter::{
     COMB_LEN, FilterModel, FilterSlope, SynthFilter, SynthFilterSettings, clean_coeffs,
@@ -53,8 +54,10 @@ pub use synth_filter::{
 };
 pub use synth_osc::{
     FilterRoute, GRAIN_MAX_MS, GRAIN_MIN_MS, GRAINS, MAX_PARTIALS, MAX_UNISON, OSC_FIXED_HZ,
-    STRING_UNISON, SampleData, SampleLoop, SampleSettings, StringModel, StringPartials, SynthInput,
-    SynthOsc, SynthSource, SynthState, Unison, WarpMode, string_partials,
+    REMAP_POINTS, STRING_UNISON, SampleData, SampleLoop, SampleSettings, StringModel,
+    StringPartials, SynthInput, SynthOsc, SynthSource, SynthState, Unison, UnisonMode,
+    UnisonSpread, WarpMode, remap_line, string_partials, unison_offset_cents,
+    unison_offset_cents_in,
 };
 pub use wavetable::{
     MAX_USER_FRAMES, VOWEL_FORMANTS, WAVETABLE_LEN, WAVETABLE_LEVELS, Wavetable, WavetableBank,

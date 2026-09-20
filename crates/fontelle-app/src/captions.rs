@@ -95,6 +95,9 @@ pub const CAPTIONS: &[(&str, &str)] = &[
     ("read", "READ"),
     // The §4.2 generators: a sequencer's step count.
     ("steps", "STEPS"),
+    // The stack's mode and spread (§4.3).
+    ("stack", "STACK"),
+    ("spread", "SPREAD"),
     // The voice, and the channel's two knobs beside it. The glide's mode
     // and shape (§4.6) and the velocity curve (§4.2).
     ("voices", "VOICES"),

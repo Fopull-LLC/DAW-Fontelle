@@ -78,6 +78,14 @@ pub enum SynthSource {
     /// oscillator's `position` is the strike's brightness;
     /// [`SynthOsc::string`] is the string itself.
     String,
+    /// One of the patch's own recordings, **analysed** into frames of
+    /// partials and played through the string's bank of phasors
+    /// (`docs/flopsynth-next.md` §4.3) — `Patch::samples` by index, like
+    /// [`Sample`](Self::Sample). The oscillator's `position` is where in
+    /// the recording it starts, the frames then run at the recording's own
+    /// pace; [`WarpMode::Freeze`] holds them, [`WarpMode::Stretch`] spreads
+    /// the partials, [`WarpMode::Shift`] moves the formant.
+    Spectral(u8),
 }
 
 impl Default for SynthSource {
@@ -111,10 +119,38 @@ pub enum WarpMode {
     Fm,
     /// Multiplies by the modulator layer's sample.
     Rm,
+    /// [`SynthSource::Spectral`]: spreads the partials — at full, each
+    /// sits twice as far from the fundamental as it did.
+    Stretch,
+    /// [`SynthSource::Spectral`]: moves the spectral envelope up, an
+    /// octave at full — each partial wears the level of the one at half
+    /// its number.
+    Shift,
+    /// [`SynthSource::Spectral`]: slows the frames, to a stop at full — the
+    /// frame under the position, held.
+    Freeze,
+    /// Casio's phase distortion: the phase runs fast to a knee and slow
+    /// after it, which pulls a sine towards a resonant saw.
+    PhaseDistortion,
+    /// The cycle read faster and held at its end, so the pitch stays and
+    /// the spectrum moves up — a formant.
+    Formant,
+    /// The second half of the cycle inverted, blended in: a sine becomes a
+    /// rectified shape, which is even harmonics.
+    Flip,
+    /// The two halves of the cycle bent apart — the first one way, the
+    /// second the other — which is a lopsided wave, even harmonics.
+    Asym,
+    /// Phase modulation by white noise rather than by a layer: the line
+    /// at the note becomes a band round it.
+    FmNoise,
+    /// The phase read through a drawn curve ([`SynthOsc::remap`]), blended
+    /// in by the amount.
+    Remap,
 }
 
 impl WarpMode {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 16] = [
         Self::Off,
         Self::Bend,
         Self::Sync,
@@ -122,6 +158,15 @@ impl WarpMode {
         Self::Quantise,
         Self::Fm,
         Self::Rm,
+        Self::Stretch,
+        Self::Shift,
+        Self::Freeze,
+        Self::PhaseDistortion,
+        Self::Formant,
+        Self::Flip,
+        Self::Asym,
+        Self::FmNoise,
+        Self::Remap,
     ];
 
     pub fn label(self) -> &'static str {
@@ -133,13 +178,34 @@ impl WarpMode {
             Self::Quantise => "Quantise",
             Self::Fm => "FM",
             Self::Rm => "RM",
+            Self::Stretch => "Stretch",
+            Self::Shift => "Shift",
+            Self::Freeze => "Freeze",
+            Self::PhaseDistortion => "PD",
+            Self::Formant => "Formant",
+            Self::Flip => "Flip",
+            Self::Asym => "Asym",
+            Self::FmNoise => "FM noise",
+            Self::Remap => "Remap",
         }
+    }
+
+    /// Whether this warp is one of the spectral source's — a wire on a
+    /// table, which has no partials to spread.
+    pub fn is_spectral(self) -> bool {
+        matches!(self, Self::Stretch | Self::Shift | Self::Freeze)
     }
 
     /// Whether this warp reads another layer, and therefore whether the panel
     /// offers the modulator chooser at all.
     pub fn needs_a_modulator(self) -> bool {
         matches!(self, Self::Fm | Self::Rm)
+    }
+
+    /// Whether this warp reads the oscillator's drawn curve
+    /// ([`SynthOsc::remap`]), and the card its editor.
+    pub fn reads_a_curve(self) -> bool {
+        matches!(self, Self::Remap)
     }
 }
 
@@ -160,6 +226,15 @@ pub struct Unison {
     /// How far the side voices are panned out from the centre, in alternating
     /// pairs. The centre voice is always centred.
     pub width: f32,
+    /// What the side voices are tuned to beside their detune
+    /// (`docs/flopsynth-next.md` §4.3). `Classic` — the stack every patch
+    /// had — is left out of the file.
+    #[serde(default, skip_serializing_if = "UnisonMode::is_classic")]
+    pub mode: UnisonMode,
+    /// How the inner pairs are placed between the centre and the knob.
+    /// `Power` is what every stack was, and is left out of the file.
+    #[serde(default, skip_serializing_if = "UnisonSpread::is_power")]
+    pub spread: UnisonSpread,
 }
 
 impl Default for Unison {
@@ -169,6 +244,165 @@ impl Default for Unison {
             detune_cents: 15.0,
             blend: 1.0,
             width: 0.5,
+            mode: UnisonMode::Classic,
+            spread: UnisonSpread::Power,
+        }
+    }
+}
+
+/// What a stack's side voices are tuned to, on top of their detune.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum UnisonMode {
+    /// Every voice at the note, detuned: the supersaw.
+    #[default]
+    Classic,
+    /// Every other pair an octave up.
+    Octave,
+    /// Every other pair a fifth up.
+    Fifth,
+    /// The voices cycle through a chord's intervals — [`Self::CHORDS`] by
+    /// index — the first voice on the note.
+    Chord(u8),
+    /// The classic stack twice as wide: the knob's detune is the stack's
+    /// middle rather than its edge.
+    Wide,
+}
+
+impl UnisonMode {
+    /// One of each, in the chooser's order; the chord at its first.
+    pub const ALL: [Self; 5] = [
+        Self::Classic,
+        Self::Octave,
+        Self::Fifth,
+        Self::Chord(0),
+        Self::Wide,
+    ];
+
+    /// The chords a [`Chord`](Self::Chord) stack cycles through, each as
+    /// semitones up from the note.
+    pub const CHORDS: [(&'static str, &'static [u8]); 6] = [
+        ("major", &[0, 4, 7, 12]),
+        ("minor", &[0, 3, 7, 12]),
+        ("sus4", &[0, 5, 7, 12]),
+        ("7th", &[0, 4, 7, 10]),
+        ("min7", &[0, 3, 7, 10]),
+        ("octaves", &[0, 12, 24]),
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Octave => "octave",
+            Self::Fifth => "fifth",
+            Self::Chord(_) => "chord",
+            Self::Wide => "wide",
+        }
+    }
+
+    pub fn is_classic(&self) -> bool {
+        *self == Self::Classic
+    }
+
+    /// Which of [`ALL`](Self::ALL) this is, whatever its chord.
+    pub fn index(self) -> usize {
+        match self {
+            Self::Classic => 0,
+            Self::Octave => 1,
+            Self::Fifth => 2,
+            Self::Chord(_) => 3,
+            Self::Wide => 4,
+        }
+    }
+}
+
+/// How a stack's inner pairs are placed between the centre and the knob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum UnisonSpread {
+    /// Evenly.
+    Linear,
+    /// Fanned out — `(step / outermost)^0.8`, which keeps eight voices from
+    /// piling up in the middle. What every stack was.
+    #[default]
+    Power,
+    /// Bunched in — the inner pairs at a fraction of the knob that falls
+    /// faster than a harmonic series, so a wide stack keeps a thick centre.
+    Harmonic,
+}
+
+impl UnisonSpread {
+    pub const ALL: [Self; 3] = [Self::Linear, Self::Power, Self::Harmonic];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::Power => "power",
+            Self::Harmonic => "harmonic",
+        }
+    }
+
+    pub fn is_power(&self) -> bool {
+        *self == Self::Power
+    }
+}
+
+/// Where voice `index` of a stack of `count` sits, in cents from the note,
+/// under `spread` with the knob at `detune`: the centre at nought, the
+/// pairs alternating either side, the outermost at the knob.
+pub fn unison_offset_cents(index: usize, count: usize, detune: f32, spread: UnisonSpread) -> f32 {
+    if index == 0 || count < 2 {
+        return 0.0;
+    }
+    let side = if index.is_multiple_of(2) { 1.0 } else { -1.0 };
+    let step = index.div_ceil(2) as f32;
+    let outermost = (count / 2).max(1) as f32;
+    let fraction = match spread {
+        UnisonSpread::Linear => step / outermost,
+        UnisonSpread::Power => (step / outermost).powf(0.8),
+        // 1 / (outermost − step + 1)^1.5: the outermost at 1, the next
+        // well under a half, the next under a fifth — a thick centre.
+        UnisonSpread::Harmonic => 1.0 / (outermost - step + 1.0).powf(1.5),
+    };
+    side * detune * fraction
+}
+
+/// [`unison_offset_cents`] with the mode's interval on top: an octave or a
+/// fifth on every other pair, a chord's interval by voice, twice the
+/// spread for wide.
+pub fn unison_offset_cents_in(
+    mode: UnisonMode,
+    index: usize,
+    count: usize,
+    detune: f32,
+    spread: UnisonSpread,
+) -> f32 {
+    let detuned = unison_offset_cents(index, count, detune, spread);
+    if index == 0 {
+        return 0.0;
+    }
+    match mode {
+        UnisonMode::Classic => detuned,
+        UnisonMode::Wide => detuned * 2.0,
+        // Pairs: voices 1 and 2 are the first pair, 3 and 4 the second —
+        // every other pair up.
+        UnisonMode::Octave => {
+            detuned
+                + if index.div_ceil(2) % 2 == 1 {
+                    1200.0
+                } else {
+                    0.0
+                }
+        }
+        UnisonMode::Fifth => {
+            detuned
+                + if index.div_ceil(2) % 2 == 1 {
+                    700.0
+                } else {
+                    0.0
+                }
+        }
+        UnisonMode::Chord(which) => {
+            let (_, intervals) = UnisonMode::CHORDS[usize::from(which) % UnisonMode::CHORDS.len()];
+            detuned + f32::from(intervals[index % intervals.len()]) * 100.0
         }
     }
 }
@@ -386,6 +620,14 @@ pub struct SampleData<'a> {
     /// setting until `docs/flopsynth-next.md` §4.1, which is why a bounce
     /// at `High` read a synth's recording no better than playback did.
     pub interpolation: Interpolation,
+    /// The zone's own trim, linear — an SFZ's `volume` (`docs/flopsynth-next.md`
+    /// §4.3). One for a zone with none.
+    pub gain: f32,
+    /// The zone's own loop — its first and its **last** frame, inclusive —
+    /// when the file gave it one. Read when the oscillator's loop is on and
+    /// its two points are at their whole travel: the loop the recording
+    /// asks for, unless somebody drew one.
+    pub loop_frames: Option<(u32, u32)>,
 }
 
 /// What an oscillator reads this sample: nothing, a table, or a recording.
@@ -398,6 +640,8 @@ pub enum SynthInput<'a> {
     None,
     Table(&'a Wavetable),
     Sample(SampleData<'a>),
+    /// A recording's analysis, for [`SynthSource::Spectral`].
+    Spectral(&'a crate::SpectralFrames),
 }
 
 /// The most partials a string source rings.
@@ -477,6 +721,25 @@ pub struct SynthOsc {
     /// the reason `sample` is.
     #[serde(default, skip_serializing_if = "Oversampling::is_off")]
     pub quality: Oversampling,
+    /// [`WarpMode::Remap`]'s curve: the read phase at each of
+    /// [`REMAP_POINTS`] evenly spaced input phases, 0..=1, read between
+    /// them. The straight line — what it is until drawn — is left out of
+    /// the file.
+    #[serde(default = "remap_line", skip_serializing_if = "is_remap_line")]
+    pub remap: [f32; REMAP_POINTS],
+}
+
+/// How many points a remap curve has. Thirty-two, which serde's arrays
+/// take as they are; a curve wants no more than an LFO's shape does.
+pub const REMAP_POINTS: usize = 32;
+
+/// The straight line: every point at its own phase.
+pub fn remap_line() -> [f32; REMAP_POINTS] {
+    std::array::from_fn(|i| i as f32 / (REMAP_POINTS - 1) as f32)
+}
+
+fn is_remap_line(curve: &[f32; REMAP_POINTS]) -> bool {
+    *curve == remap_line()
 }
 
 impl Default for SynthOsc {
@@ -497,6 +760,7 @@ impl Default for SynthOsc {
             sample: SampleSettings::default(),
             string: StringModel::default(),
             quality: Oversampling::Off,
+            remap: remap_line(),
         }
     }
 }
@@ -576,6 +840,8 @@ pub struct SynthState {
     grain_clock: u32,
     /// A **string** source's partials.
     string: StringState,
+    /// The spectral source's per-voice state — see [`SpectralState`].
+    spectral: SpectralState,
     /// `2^(semitones/12)` for the semitones it was last asked about — see
     /// [`base_hz`](Self::base_hz).
     semitone_ratio: (i8, f32),
@@ -615,7 +881,19 @@ struct StringState {
     /// The per-sample decay of each partial. One set for the stack: a few
     /// cents of detune moves a partial's loss by nothing anybody hears.
     decay: [f32; MAX_PARTIALS],
+    /// Samples until the key is next compared — see [`RETUNE_EVERY`].
+    until_retune: u16,
 }
+
+/// How often, in samples, a string asks whether its note has moved.
+///
+/// The voice ramps a layer's pitch per sample now (`docs/flopsynth-next.md`
+/// §4.2, phase 3), so under a vibrato the note moves *every* sample, and
+/// a bank that retuned whenever it moved — sixty-four sines and cosines a
+/// voice — spent more on retuning than on ringing. Sixty-four samples is
+/// 1.3 ms: a bend still follows, and the worst case is one sine and cosine
+/// a sample a voice.
+const RETUNE_EVERY: u16 = 64;
 
 impl Default for StringState {
     fn default() -> Self {
@@ -624,6 +902,7 @@ impl Default for StringState {
             key: None,
             count: 0,
             ringing: 0,
+            until_retune: 0,
             x: [[0.0; MAX_PARTIALS]; STRING_UNISON],
             y: [[0.0; MAX_PARTIALS]; STRING_UNISON],
             cos: [[1.0; MAX_PARTIALS]; STRING_UNISON],
@@ -646,6 +925,52 @@ struct StringKey {
     voices: usize,
     detune_cents: f32,
     sample_rate: f32,
+}
+
+/// The spectral source in flight (`docs/flopsynth-next.md` §4.3): the
+/// string's bank of phasors, driven by a recording's frames rather than
+/// struck once and left to ring.
+///
+/// Each partial is a unit phasor (`x`, `y`) rotated by its own angle, and
+/// the output is the sum of `amp × y`. The frame under `position` sets
+/// the amplitudes and the ratios; both are re-read every [`RETUNE_EVERY`]
+/// samples (sixty-four sines and cosines a voice, at 750 Hz, is one a
+/// sample) and the amplitudes ramped across the samples between, so a
+/// scan through the frames is a crossfade and not a stair.
+#[derive(Debug, Clone, Copy)]
+struct SpectralState {
+    /// Where in the frames the note is, 0..1.
+    position: f32,
+    /// Samples until the frame is next read.
+    until_tick: u16,
+    /// How many partials play — the frames' count.
+    count: usize,
+    x: [[f32; MAX_PARTIALS]; STRING_UNISON],
+    y: [[f32; MAX_PARTIALS]; STRING_UNISON],
+    cos: [[f32; MAX_PARTIALS]; STRING_UNISON],
+    sin: [[f32; MAX_PARTIALS]; STRING_UNISON],
+    /// Each partial's level now, and how much it moves a sample towards
+    /// the frame's.
+    amp: [f32; MAX_PARTIALS],
+    ramp: [f32; MAX_PARTIALS],
+    started: bool,
+}
+
+impl Default for SpectralState {
+    fn default() -> Self {
+        Self {
+            position: 0.0,
+            until_tick: 0,
+            count: 0,
+            x: [[1.0; MAX_PARTIALS]; STRING_UNISON],
+            y: [[0.0; MAX_PARTIALS]; STRING_UNISON],
+            cos: [[1.0; MAX_PARTIALS]; STRING_UNISON],
+            sin: [[0.0; MAX_PARTIALS]; STRING_UNISON],
+            amp: [0.0; MAX_PARTIALS],
+            ramp: [0.0; MAX_PARTIALS],
+            started: false,
+        }
+    }
 }
 
 /// What one set of unison settings works out to, per voice.
@@ -682,6 +1007,8 @@ struct UnisonKey {
     detune_cents: f32,
     blend: f32,
     width: f32,
+    mode: UnisonMode,
+    spread: UnisonSpread,
 }
 
 impl Default for SynthState {
@@ -700,6 +1027,7 @@ impl Default for SynthState {
             grains: [Grain::default(); GRAINS],
             grain_clock: 0,
             string: StringState::default(),
+            spectral: SpectralState::default(),
             semitone_ratio: (0, 1.0),
             decimators: [Decimator::default(); 2],
             last_modulator: 0.0,
@@ -730,6 +1058,7 @@ impl SynthState {
         // have. Marking it unstruck is what makes the next sample the strike.
         self.string.struck = false;
         self.string.key = None;
+        self.spectral = SpectralState::default();
         for (index, phase) in self.phases.iter_mut().enumerate() {
             // The **centre voice keeps its start phase** even in a
             // random-phase stack, which is §3.1's exception and not an
@@ -871,6 +1200,9 @@ impl SynthState {
                 self.sample_voices(osc, data, note_hz, sample_rate, modulator)
             }
             (SynthSource::String, _) => self.string_voices(osc, note_hz, sample_rate),
+            (SynthSource::Spectral(_), SynthInput::Spectral(frames)) => {
+                self.spectral_voices(osc, frames, note_hz, sample_rate)
+            }
             // A layer whose input has not been resolved renders silence.
             _ => (0.0, 0.0),
         }
@@ -950,12 +1282,27 @@ impl SynthState {
             detune_cents: osc.unison.detune_cents,
             blend,
             width,
+            mode: osc.unison.mode,
+            spread: osc.unison.spread,
         });
 
         let (mut left, mut right) = (0.0f32, 0.0f32);
         for voice in 0..voices {
             let step = stack.step(voice, base_hz, sync_ratio, sample_rate);
 
+            // FM from noise: a fresh draw per voice per sample, in place
+            // of the layer's sample; seeded from the note, so the same
+            // note is the same noise twice.
+            let modulator = if osc.warp == WarpMode::FmNoise {
+                let mut x = self.rng;
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                self.rng = x;
+                (x >> 8) as f32 / 8_388_608.0 - 1.0
+            } else {
+                modulator
+            };
             let phase = &mut self.phases[voice];
             let read_at = warp_phase(osc, *phase, amount, modulator);
             let mut sample = if smooth {
@@ -967,6 +1314,11 @@ impl SynthState {
                 // Dry at amount 0, fully ring-modulated at 1 — a continuum,
                 // like every other warp.
                 sample *= 1.0 - amount + amount * modulator;
+            }
+            if osc.warp == WarpMode::Flip && *phase >= 0.5 {
+                // The second half inverted, blended in: at full it is
+                // upside down, at nought it is itself.
+                sample *= 1.0 - 2.0 * amount;
             }
 
             *phase += step;
@@ -1020,6 +1372,8 @@ impl SynthState {
             detune_cents: osc.unison.detune_cents,
             blend,
             width,
+            mode: osc.unison.mode,
+            spread: osc.unison.spread,
         });
         let len_f = len as f64;
         let last = (len - 1) as f64;
@@ -1068,8 +1422,21 @@ impl SynthState {
             self.heads_placed = true;
         }
         // The loop, in frames. A loop end at or before its start is none.
-        let loop_start = f64::from(osc.sample.loop_start.clamp(0.0, 1.0)) * len_f;
-        let loop_end = f64::from(osc.sample.loop_end.clamp(0.0, 1.0)) * len_f;
+        // The zone's own loop (an SFZ's) is read when the oscillator's two
+        // points are at their whole travel — the loop the recording asks
+        // for, unless somebody drew one.
+        let whole = osc.sample.loop_start <= 0.0 && osc.sample.loop_end >= 1.0;
+        let (loop_start, loop_end) = match data.loop_frames {
+            // The zone's last frame is inclusive; the loop's end here is
+            // the frame after it.
+            Some((from, to)) if whole => {
+                (f64::from(from).min(last), (f64::from(to) + 1.0).min(len_f))
+            }
+            _ => (
+                f64::from(osc.sample.loop_start.clamp(0.0, 1.0)) * len_f,
+                f64::from(osc.sample.loop_end.clamp(0.0, 1.0)) * len_f,
+            ),
+        };
         let loop_len = loop_end - loop_start;
         let has_loop = loop_len >= 2.0;
         let looping = mode == SampleLoop::Forward && has_loop;
@@ -1119,7 +1486,7 @@ impl SynthState {
                 let ahead = interpolate(data.samples, wrapped, data.interpolation);
                 sample += (ahead - sample) * t;
             }
-            sample *= rm;
+            sample *= rm * data.gain;
             let step = f64::from(stack.step(voice, base_hz, 1.0, sample_rate)) * frames_per_cycle;
             *head += if *backwards { -step } else { step };
             let (gl, gr) = stack.gains[voice];
@@ -1212,7 +1579,8 @@ impl SynthState {
                 if !(0.0..=last).contains(&at) {
                     continue;
                 }
-                let sample = interpolate(data.samples, at, data.interpolation) * window * rm;
+                let sample =
+                    interpolate(data.samples, at, data.interpolation) * window * rm * data.gain;
                 let (gl, gr) = stack.gains[voice];
                 left += sample * gl;
                 right += sample * gr;
@@ -1271,6 +1639,8 @@ impl SynthState {
             detune_cents: osc.unison.detune_cents,
             blend,
             width,
+            mode: osc.unison.mode,
+            spread: osc.unison.spread,
         });
         let key = StringKey {
             hz_q: (base_hz * 50.0) as u32,
@@ -1281,10 +1651,16 @@ impl SynthState {
             detune_cents: osc.unison.detune_cents,
             sample_rate,
         };
-        if self.string.key != Some(key) {
-            self.tune_string(osc, &stack, base_hz, voices, sample_rate);
-            self.string.key = Some(key);
+        // Asked every `RETUNE_EVERY` samples, and at once for a note that
+        // has never been tuned.
+        if self.string.until_retune == 0 || self.string.key.is_none() {
+            if self.string.key != Some(key) {
+                self.tune_string(osc, &stack, base_hz, voices, sample_rate);
+                self.string.key = Some(key);
+            }
+            self.string.until_retune = RETUNE_EVERY;
         }
+        self.string.until_retune -= 1;
         if !self.string.struck {
             self.strike_string(osc, base_hz, voices, sample_rate);
             self.string.struck = true;
@@ -1317,6 +1693,118 @@ impl SynthState {
                 }
             }
             let sum: f32 = acc.iter().sum();
+            let (gl, gr) = stack.gains[voice];
+            left += sum * gl;
+            right += sum * gr;
+        }
+        (left * stack.loudness, right * stack.loudness)
+    }
+
+    /// The spectral source's sample: see [`SpectralState`].
+    fn spectral_voices(
+        &mut self,
+        osc: &SynthOsc,
+        frames: &crate::SpectralFrames,
+        note_hz: f32,
+        sample_rate: f32,
+    ) -> (f32, f32) {
+        let base_hz = self.base_hz(osc, note_hz).clamp(0.0, sample_rate * 0.5);
+        if base_hz <= 0.0 || frames.frames.is_empty() {
+            return (0.0, 0.0);
+        }
+        let voices = usize::from(osc.unison.voices.clamp(1, STRING_UNISON as u8));
+        let stack = self.unison_constants(UnisonKey {
+            voices,
+            detune_cents: osc.unison.detune_cents,
+            blend: osc.unison.blend.clamp(0.0, 1.0),
+            width: osc.unison.width.clamp(0.0, 1.0),
+            mode: osc.unison.mode,
+            spread: osc.unison.spread,
+        });
+        let amount = osc.warp_amount.clamp(0.0, 1.0);
+        let state = &mut self.spectral;
+        if !state.started {
+            // The note starts where the position knob says; from there the
+            // frames run at the recording's pace, or slower under Freeze.
+            state.position = osc.position.clamp(0.0, 1.0);
+            state.started = true;
+            state.until_tick = 0;
+            state.count = frames.count.min(MAX_PARTIALS);
+            // Every phasor at rest and every level at nothing, so the first
+            // tick ramps the note in rather than stepping it on.
+            state.x = [[1.0; MAX_PARTIALS]; STRING_UNISON];
+            state.y = [[0.0; MAX_PARTIALS]; STRING_UNISON];
+            state.amp = [0.0; MAX_PARTIALS];
+        }
+        if state.until_tick == 0 {
+            state.until_tick = RETUNE_EVERY;
+            let frame = frames.at(state.position);
+            let nyquist = sample_rate * 0.45;
+            for n in 0..state.count {
+                // Stretch: the partial's distance from the fundamental,
+                // spread by up to twice.
+                let ratio = match osc.warp {
+                    WarpMode::Stretch => 1.0 + (frame.ratio[n] - 1.0) * (1.0 + amount),
+                    _ => frame.ratio[n],
+                };
+                // Shift: the level read from the partial at `n / (1 + a)`,
+                // between the two it falls between — the envelope moved up.
+                let level = match osc.warp {
+                    WarpMode::Shift => {
+                        let at = (n as f32 + 1.0) / (1.0 + amount) - 1.0;
+                        let below = at.floor();
+                        let t = at - below;
+                        let read = |i: f32| -> f32 {
+                            if i < 0.0 {
+                                0.0
+                            } else {
+                                frame.amp.get(i as usize).copied().unwrap_or(0.0)
+                            }
+                        };
+                        read(below) + (read(below + 1.0) - read(below)) * t
+                    }
+                    _ => frame.amp[n],
+                };
+                let hz = ratio * base_hz;
+                // A partial past Nyquist is silence, not an alias.
+                let level = if hz >= nyquist { 0.0 } else { level };
+                state.ramp[n] = (level - state.amp[n]) / RETUNE_EVERY as f32;
+                for voice in 0..voices {
+                    let detune = if stack.ratios[0] > 0.0 {
+                        stack.ratios[voice] / stack.ratios[0]
+                    } else {
+                        1.0
+                    };
+                    let angle = std::f32::consts::TAU * hz * detune / sample_rate;
+                    state.cos[voice][n] = angle.cos();
+                    state.sin[voice][n] = angle.sin();
+                }
+            }
+            // The frames advance at the recording's pace, held by Freeze.
+            let speed = match osc.warp {
+                WarpMode::Freeze => 1.0 - amount,
+                _ => 1.0,
+            };
+            let span_s = frames.hop_s * frames.frames.len().saturating_sub(1).max(1) as f32;
+            state.position =
+                (state.position + speed * RETUNE_EVERY as f32 / sample_rate / span_s).min(1.0);
+        }
+        state.until_tick -= 1;
+
+        let count = state.count;
+        let (mut left, mut right) = (0.0f32, 0.0f32);
+        for n in 0..count {
+            state.amp[n] += state.ramp[n];
+        }
+        for voice in 0..voices {
+            let mut sum = 0.0f32;
+            for n in 0..count {
+                let (ox, oy) = (state.x[voice][n], state.y[voice][n]);
+                sum += state.amp[n] * oy;
+                let (c, s) = (state.cos[voice][n], state.sin[voice][n]);
+                state.x[voice][n] = ox * c - oy * s;
+                state.y[voice][n] = ox * s + oy * c;
+            }
             let (gl, gr) = stack.gains[voice];
             left += sum * gl;
             right += sum * gr;
@@ -1412,7 +1900,8 @@ impl SynthState {
         let mut ratios = [0.0f32; MAX_UNISON];
         let mut gains = [(0.0f32, 0.0f32); MAX_UNISON];
         for voice in 0..key.voices.min(MAX_UNISON) {
-            let cents = detune_of(voice, key.voices, key.detune_cents);
+            let cents =
+                unison_offset_cents_in(key.mode, voice, key.voices, key.detune_cents, key.spread);
             ratios[voice] = 2f32.powf(cents / 1200.0);
 
             // The centre voice is voice 0 and is always at full level and
@@ -1539,26 +2028,58 @@ fn pan_gains(pan: f32) -> (f32, f32) {
     (angle.cos(), angle.sin())
 }
 
-/// Where unison voice `index` of `count` sits, in cents.
-///
-/// `detune` is the **outermost** voice's offset. The exponent bends the inner
-/// voices slightly outward so that eight voices do not pile up around the
-/// centre, which is what makes a wide stack sound wide rather than merely
-/// thick.
-fn detune_of(index: usize, count: usize, detune: f32) -> f32 {
-    if index == 0 || count < 2 {
-        return 0.0;
-    }
-    let side = if index.is_multiple_of(2) { 1.0 } else { -1.0 };
-    let step = index.div_ceil(2) as f32;
-    let outermost = (count / 2).max(1) as f32;
-    side * detune * (step / outermost).powf(0.8)
-}
-
 /// The read phase, after the warp that is not a multiply.
 fn warp_phase(osc: &SynthOsc, phase: f32, amount: f32, modulator: f32) -> f32 {
     match osc.warp {
-        WarpMode::Off | WarpMode::Sync | WarpMode::Rm => phase,
+        // The spectral warps are a wire on a table: there are no partials
+        // to spread, and a wire is what every warp is at nothing. Flip's
+        // work is on the sample, after the read.
+        WarpMode::Off
+        | WarpMode::Sync
+        | WarpMode::Rm
+        | WarpMode::Stretch
+        | WarpMode::Shift
+        | WarpMode::Freeze
+        | WarpMode::Flip => phase,
+        // Casio's: two straight lines, the first from nought to the top
+        // by the knee at `0.5 − 0.5·amount`, the second flat after it —
+        // so the whole cycle is read early and the end of it held. At
+        // nought the knee is at the middle and the two lines are one.
+        WarpMode::PhaseDistortion => {
+            let knee = (0.5 - 0.5 * amount).max(0.02);
+            if phase < knee {
+                phase / knee * 0.5
+            } else {
+                0.5 + (phase - knee) / (1.0 - knee) * 0.5
+            }
+        }
+        // The cycle read `1 + 3·amount` times faster and the end of it
+        // held: the period stays the note's, the spectrum moves up.
+        WarpMode::Formant => (phase * (1.0 + 3.0 * amount)).min(1.0 - f32::EPSILON),
+        // The first half bent one way — `t^(2^k)` — and the second the
+        // other, mirror-wise: a lopsided cycle.
+        WarpMode::Asym => {
+            if amount <= 0.0 {
+                return phase;
+            }
+            let exponent = 2f32.powf(amount * 2.0);
+            if phase < 0.5 {
+                (phase * 2.0).max(0.0).powf(exponent) * 0.5
+            } else {
+                1.0 - (2.0 - phase * 2.0).max(0.0).powf(exponent) * 0.5
+            }
+        }
+        // The modulator is a fresh noise draw (see the read loop): the
+        // same phase modulation as FM, an index up to a quarter cycle.
+        WarpMode::FmNoise => (phase + modulator * amount * 0.25).rem_euclid(1.0),
+        // The drawn curve, read between its points, blended in.
+        WarpMode::Remap => {
+            let at = phase.clamp(0.0, 1.0) * (REMAP_POINTS - 1) as f32;
+            let index = (at.floor() as usize).min(REMAP_POINTS - 2);
+            let t = at - index as f32;
+            let curved = osc.remap[index] + (osc.remap[index + 1] - osc.remap[index]) * t;
+            phase + (curved.clamp(0.0, 1.0) - phase) * amount
+        }
         // `t^(2^(±k))`: the amount's two halves bend it either way, and the
         // middle is the identity.
         WarpMode::Bend => {

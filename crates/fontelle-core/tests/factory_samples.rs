@@ -131,6 +131,9 @@ fn a_users_own_recording_is_still_carried_whole() {
             key_range: (0, 127),
             sample_rate: 48_000,
             samples: (0..48_000).map(|i| (i as f32 * 0.01).sin() * 0.5).collect(),
+            vel_range: (0, 127),
+            gain_db: 0.0,
+            loop_frames: None,
         }],
     }];
     let data = patch.to_data(&Default::default()).unwrap();

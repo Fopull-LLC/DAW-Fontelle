@@ -322,7 +322,7 @@ impl Hovering {
     /// would be a mark the drop does not honour.
     fn carried(&self) -> crate::canvas::Carried {
         match self.paths.first() {
-            Some(path) if fontelle_types::FolderKind::Audio.accepts(path) => {
+            Some(path) if fontelle_types::FolderKind::Audio.accepts_as_sound(path) => {
                 crate::canvas::Carried::Audio
             }
             _ => crate::canvas::Carried::File,

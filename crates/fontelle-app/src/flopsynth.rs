@@ -517,6 +517,36 @@ fn picture_for(name: &str, patch: &Patch, phases: &[f32]) -> FlopsynthPicture {
                     name: "drop a sound here".to_string(),
                 },
             },
+            // A spectral read (§4.3): the partials of the frame under the
+            // position, off the same analysis the voice plays — bars where
+            // the string's are, so a stretched recording reads as stretched.
+            // Nothing dropped yet: the recording's own empty picture.
+            fontelle_dsp::SynthSource::Spectral(at) => match patch
+                .samples
+                .get(at as usize)
+                .and_then(|sample| sample.zone_for(60))
+            {
+                Some(zone) => {
+                    let frames = fontelle_core::spectral_analysis(zone);
+                    let frame = frames.at(osc.position.clamp(0.0, 1.0));
+                    let loudest = frame.amp[..frames.count]
+                        .iter()
+                        .fold(0.0f32, |a, b| a.max(*b))
+                        .max(1e-9);
+                    FlopsynthPicture::Partials {
+                        bars: (0..frames.count.min(PARTIALS_DRAWN))
+                            .map(|n| (frame.ratio[n], frame.amp[n] / loudest))
+                            .collect(),
+                        harmonics: PARTIALS_DRAWN,
+                    }
+                }
+                None => FlopsynthPicture::Sound {
+                    peaks: Vec::new(),
+                    start: osc.position.clamp(0.0, 1.0),
+                    loop_region: None,
+                    name: "drop a sound here".to_string(),
+                },
+            },
             // A string: its partials, off the same function the voice rings
             // them from, so the stretch the picture shows is the stretch
             // the note has.

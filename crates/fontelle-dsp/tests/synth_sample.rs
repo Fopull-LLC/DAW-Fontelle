@@ -15,6 +15,7 @@
 
 use fontelle_dsp::{
     Interpolation, SampleData, SampleLoop, SynthInput, SynthOsc, SynthSource, SynthState, Unison,
+    UnisonMode, UnisonSpread,
 };
 
 const SR: f32 = 48_000.0;
@@ -68,6 +69,8 @@ fn a_sample_asked_for_its_own_pitch_plays_as_recorded() {
         sample_rate: SR,
         root_hz: 440.0,
         interpolation: Interpolation::Normal,
+        gain: 1.0,
+        loop_frames: None,
     };
     let out = render(&osc(), &data, 440.0, 24_000);
     let measured = zero_crossings_per_second(&out);
@@ -95,6 +98,8 @@ fn an_octave_up_plays_twice_as_fast() {
         sample_rate: SR,
         root_hz: 440.0,
         interpolation: Interpolation::Normal,
+        gain: 1.0,
+        loop_frames: None,
     };
     let out = render(&osc(), &data, 880.0, 12_000);
     let measured = zero_crossings_per_second(&out);
@@ -114,6 +119,8 @@ fn a_recording_at_another_rate_is_pitched_by_its_own_rate() {
         sample_rate: 24_000.0,
         root_hz: 220.0,
         interpolation: Interpolation::Normal,
+        gain: 1.0,
+        loop_frames: None,
     };
     let out = render(&osc(), &data, 220.0, 24_000);
     let measured = zero_crossings_per_second(&out);
@@ -132,6 +139,8 @@ fn a_one_shot_ends_when_the_recording_does() {
         sample_rate: SR,
         root_hz: 440.0,
         interpolation: Interpolation::Normal,
+        gain: 1.0,
+        loop_frames: None,
     };
     let out = render(&osc(), &data, 440.0, 24_000);
     let during = rms(&out[..10_000]);
@@ -151,6 +160,8 @@ fn a_looped_sample_keeps_going() {
         sample_rate: SR,
         root_hz: 440.0,
         interpolation: Interpolation::Normal,
+        gain: 1.0,
+        loop_frames: None,
     };
     let mut looped = osc();
     looped.sample.loop_mode = SampleLoop::Forward;
@@ -183,6 +194,8 @@ fn the_position_knob_is_where_the_note_starts() {
         sample_rate: SR,
         root_hz: 440.0,
         interpolation: Interpolation::Normal,
+        gain: 1.0,
+        loop_frames: None,
     };
     let from_the_top = render(&osc(), &data, 440.0, 4_000);
     assert!(
@@ -207,6 +220,8 @@ fn one_unison_voice_is_the_plain_read() {
         sample_rate: SR,
         root_hz: 330.0,
         interpolation: Interpolation::Normal,
+        gain: 1.0,
+        loop_frames: None,
     };
     let plain = osc();
     let mut one = plain;
@@ -215,6 +230,8 @@ fn one_unison_voice_is_the_plain_read() {
         detune_cents: 50.0,
         blend: 0.0,
         width: 1.0,
+        mode: UnisonMode::Classic,
+        spread: UnisonSpread::Power,
     };
     let a = render(&plain, &data, 330.0, 8_000);
     let b = render(&one, &data, 330.0, 8_000);
@@ -235,6 +252,8 @@ fn a_detuned_stack_beats() {
         sample_rate: SR,
         root_hz: 220.0,
         interpolation: Interpolation::Normal,
+        gain: 1.0,
+        loop_frames: None,
     };
     let mut stack = osc();
     stack.unison = Unison {
@@ -242,6 +261,8 @@ fn a_detuned_stack_beats() {
         detune_cents: 8.0,
         blend: 1.0,
         width: 0.0,
+        mode: UnisonMode::Classic,
+        spread: UnisonSpread::Power,
     };
     let out = render(&stack, &data, 220.0, 96_000);
     // RMS over 50 ms windows: a beat at ~1 Hz swings it.
@@ -263,6 +284,8 @@ fn an_empty_recording_is_silence() {
         sample_rate: SR,
         root_hz: 440.0,
         interpolation: Interpolation::Normal,
+        gain: 1.0,
+        loop_frames: None,
     };
     let out = render(&osc(), &data, 440.0, 1_000);
     assert!(out.iter().all(|s| *s == 0.0));
@@ -319,6 +342,8 @@ fn transposed_alias(interpolation: Interpolation) -> f32 {
         sample_rate: SR,
         root_hz: root,
         interpolation,
+        gain: 1.0,
+        loop_frames: None,
     };
     alias_db(&render(&osc(), &data, note, FRAMES), note)
 }

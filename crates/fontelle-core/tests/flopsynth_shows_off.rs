@@ -60,11 +60,14 @@ fn every_wavetable_is_played_by_something() {
 #[test]
 fn every_warp_mode_is_shown_off() {
     // Seven modes, and `Quantise` — the one warp that is a *reduction*, and
-    // the whole of the synth's digital grit — was in nothing.
+    // the whole of the synth's digital grit — was in nothing. The spectral
+    // warps of phase 4 (`docs/flopsynth-next.md` §4.3) get their line with
+    // the *Spectral* shelf (§5.3, phase 6); until then no row can use them,
+    // there being no spectral row.
     let bank = bank();
     let unused: Vec<&str> = WarpMode::ALL
         .iter()
-        .filter(|mode| **mode != WarpMode::Off)
+        .filter(|mode| **mode != WarpMode::Off && !mode.is_spectral())
         .filter(|mode| {
             !bank.iter().any(|(_, patch)| {
                 oscs(patch).any(|osc| osc.warp == **mode && osc.warp_amount > 0.0)

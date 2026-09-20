@@ -52,6 +52,8 @@ fn data(samples: &[f32], root_hz: f32) -> SampleData<'_> {
         sample_rate: SR,
         root_hz,
         interpolation: Interpolation::Normal,
+        gain: 1.0,
+        loop_frames: None,
     }
 }
 

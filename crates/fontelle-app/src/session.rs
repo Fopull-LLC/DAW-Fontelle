@@ -4026,6 +4026,9 @@ impl Session {
                 key_range: (0, 127),
                 sample_rate: decoded.sample_rate,
                 samples: samples.into(),
+                vel_range: (0, 127),
+                gain_db: 0.0,
+                loop_frames: None,
             });
         }
         if zones.is_empty() {
@@ -4180,6 +4183,9 @@ impl Session {
     /// is the table it was exported as. One drop, one rule; the chip says
     /// which before the button comes up.
     pub fn load_sound(&mut self, layer: usize, path: &Path) -> Result<String, String> {
+        if fontelle_types::is_multisample_path(path) {
+            return self.load_multisample(layer, path);
+        }
         if !path.is_dir()
             && let Ok(decoded) = fontelle_assets::import_audio(path)
             && crate::sampling::looks_like_wavetable(decoded.frames)
@@ -4187,6 +4193,32 @@ impl Session {
             return self.load_wavetable(layer, path);
         }
         self.load_sample(layer, path)
+    }
+
+    /// An `.sfz` onto an oscillator (`docs/flopsynth-next.md` §4.3): the
+    /// file's regions as the zones of one recording, velocity layers and
+    /// all, through `fontelle_assets::import_sfz`.
+    pub fn load_multisample(&mut self, layer: usize, path: &Path) -> Result<String, String> {
+        let Some(channel) = self.selected_channel_id() else {
+            return Err("no channel is selected".to_string());
+        };
+        let Some(patch) = self.selected_patch() else {
+            return Err("this channel has no instrument to drop a sound into".to_string());
+        };
+        match patch.layers.get(layer).map(|l| &l.source) {
+            Some(fontelle_core::Source::Synth(osc))
+                if matches!(osc.source, fontelle_dsp::SynthSource::Noise) =>
+            {
+                return Err(
+                    "the noise layer plays noise; drop the sound on an oscillator".to_string(),
+                );
+            }
+            Some(fontelle_core::Source::Synth(_)) => {}
+            _ => return Err("that is not one of this instrument's oscillators".to_string()),
+        }
+        let sample = fontelle_assets::import_sfz(path).map_err(|e| e.to_string())?;
+        let count = sample.zones.len();
+        self.install_sample(channel, patch, layer, sample, count)
     }
 
     /// [`store_patch`](Self::store_patch) for a change to the patch's

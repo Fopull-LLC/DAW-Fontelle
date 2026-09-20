@@ -116,6 +116,9 @@ impl FactorySampleSet {
                     key_range: (0, 127),
                     sample_rate,
                     samples: Arc::from(samples),
+                    vel_range: (0, 127),
+                    gain_db: 0.0,
+                    loop_frames: None,
                 })
             })
             .collect();
@@ -144,6 +147,9 @@ impl FactorySampleSet {
                     key_range: (slot.key, slot.key),
                     sample_rate,
                     samples: Arc::from(samples),
+                    vel_range: (0, 127),
+                    gain_db: 0.0,
+                    loop_frames: None,
                 })
             })
             .collect()

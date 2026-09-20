@@ -43,6 +43,14 @@ impl FolderKind {
         }
     }
 
+    /// Whether `path` is a sound this folder would list **or** a
+    /// multisample (`.sfz`) — what a drop on an oscillator takes. The
+    /// listing itself is [`accepts`](Self::accepts): an SFZ is a text file
+    /// naming sounds, not a sound, and the audio bank cannot play one.
+    pub fn accepts_as_sound(self, path: &Path) -> bool {
+        self.accepts(path) || (self == Self::Audio && is_multisample_path(path))
+    }
+
     /// Whether `path` is a file this folder is for. Extension only, and
     /// case-insensitively, because the alternative is opening every file in
     /// the folder to find out.
@@ -95,4 +103,12 @@ impl FolderKind {
             Self::Audio => Self::Midi,
         }
     }
+}
+
+/// Whether `path` is an SFZ multisample (`docs/flopsynth-next.md` §4.3):
+/// by extension, because that is all a drop carries.
+pub fn is_multisample_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("sfz"))
 }

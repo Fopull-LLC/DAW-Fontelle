@@ -21,6 +21,10 @@ use fontelle_ui::document::StudioHost;
 
 use common::SR;
 
+/// The kind chooser's positions, normalised: four kinds since phase 4.
+const SAMPLE_KIND: f32 = 1.0 / 3.0;
+const STRING_KIND: f32 = 2.0 / 3.0;
+
 fn a_flopsynth() -> fontelle_app::Session {
     let mut session = common::a_session_for(common::a_project_with_a_clip(8, 120.0, SR));
     session.set_channel_kind(0, InstrumentKind::Osc3);
@@ -80,7 +84,7 @@ fn a_table_card_has_a_kind_chooser_a_table_and_a_frame() {
         .unwrap();
     assert_eq!(kind.display, "Table");
     assert!(
-        matches!(&kind.kind, ParamKind::Choice(options) if options == &["Table", "Sample", "String"])
+        matches!(&kind.kind, ParamKind::Choice(options) if options == &["Table", "Sample", "String", "Spectral"])
     );
     assert!(matches!(osc.picture, FlopsynthPicture::Wave { .. }));
     // The kind chooser comes first: it decides what the rest of the card is.
@@ -172,7 +176,7 @@ fn a_sample_card_has_its_loop_and_start_and_draws_the_recording() {
     // Another oscillator switched to Sample plays the patch's first
     // recording until one is dropped on it: layering the same sound twice
     // with different settings is the point of having three oscillators.
-    set(&mut session, "patch/layer[2]/synth/kind", 0.5);
+    set(&mut session, "patch/layer[2]/synth/kind", SAMPLE_KIND);
     match card(&session, "OSC C").picture {
         FlopsynthPicture::Sound { name, .. } => assert_eq!(name, "Rhodes A4"),
         other => panic!("{other:?}"),
@@ -187,7 +191,7 @@ fn a_sample_card_has_its_loop_and_start_and_draws_the_recording() {
     // A sample oscillator on a patch with nothing dropped yet says so rather
     // than drawing nothing.
     let mut fresh = a_flopsynth();
-    set(&mut fresh, "patch/layer[2]/synth/kind", 0.5);
+    set(&mut fresh, "patch/layer[2]/synth/kind", SAMPLE_KIND);
     match card(&fresh, "OSC C").picture {
         FlopsynthPicture::Sound { peaks, name, .. } => {
             assert!(peaks.is_empty());
@@ -203,7 +207,7 @@ fn a_sample_card_has_its_loop_and_start_and_draws_the_recording() {
 #[test]
 fn a_string_card_has_its_string_and_draws_the_partials() {
     let mut session = a_flopsynth();
-    set(&mut session, "patch/layer[0]/synth/kind", 1.0);
+    set(&mut session, "patch/layer[0]/synth/kind", STRING_KIND);
     let patch = session.selected_patch().unwrap();
     assert!(matches!(
         &patch.layers[0].source,
@@ -297,7 +301,7 @@ fn a_dropped_wavetables_card_has_a_position_not_a_colour() {
 #[test]
 fn every_control_on_every_kind_of_card_is_readable() {
     let mut session = a_flopsynth();
-    for kind in [0.0f32, 0.5, 1.0] {
+    for kind in [0.0f32, SAMPLE_KIND, STRING_KIND, 1.0] {
         set(&mut session, "patch/layer[0]/synth/kind", kind);
         let patch = session.selected_patch().unwrap();
         let addresses = fontelle_core::flopsynth::addresses(&patch);

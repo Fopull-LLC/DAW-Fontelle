@@ -330,6 +330,25 @@ impl UserSample {
                     .min_by_key(|zone| (i16::from(zone.root_key) - i16::from(key)).unsigned_abs())
             })
     }
+
+    /// The zone that plays `key` at `velocity`: the one whose key window
+    /// **and** velocity window hold it, else the one whose key window does
+    /// (a folder's zones cover every velocity), else the nearest root.
+    pub fn zone_for_note(&self, key: u8, velocity: u8) -> Option<&SampleZone> {
+        self.zones
+            .iter()
+            .find(|zone| zone.covers(key, velocity))
+            .or_else(|| {
+                self.zones
+                    .iter()
+                    .find(|zone| zone.key_range.0 <= key && key <= zone.key_range.1)
+            })
+            .or_else(|| {
+                self.zones
+                    .iter()
+                    .min_by_key(|zone| (i16::from(zone.root_key) - i16::from(key)).unsigned_abs())
+            })
+    }
 }
 
 /// The keys each of `roots` serves: the whole keyboard, split halfway between
@@ -377,6 +396,31 @@ pub struct SampleZone {
     pub sample_rate: u32,
     /// Mono, −1..=1.
     pub samples: std::sync::Arc<[f32]>,
+    /// The velocities this zone plays, inclusive — an SFZ's `lovel`/`hivel`
+    /// (`docs/flopsynth-next.md` §4.3), the whole range for a zone from a
+    /// folder or the bank. Two zones over one key with windows that meet
+    /// are a soft and a hard recording; see [`UserSample::zone_for_note`].
+    pub vel_range: (u8, u8),
+    /// A trim on this zone alone, in decibels — an SFZ's `volume`. Nought
+    /// for a zone with none.
+    pub gain_db: f32,
+    /// The zone's own loop, in frames of `samples` — the first and the
+    /// **last**, inclusive, as an SFZ writes `loop_start`/`loop_end` under
+    /// `loop_continuous` — when the file gave it one. Read
+    /// when the oscillator's loop is on and its points are at their whole
+    /// travel: the loop the recording asks for, unless somebody has drawn
+    /// one.
+    pub loop_frames: Option<(u32, u32)>,
+}
+
+impl SampleZone {
+    /// Whether `key` at `velocity` is inside this zone's windows.
+    pub fn covers(&self, key: u8, velocity: u8) -> bool {
+        self.key_range.0 <= key
+            && key <= self.key_range.1
+            && self.vel_range.0 <= velocity
+            && velocity <= self.vel_range.1
+    }
 }
 
 impl SampleZone {

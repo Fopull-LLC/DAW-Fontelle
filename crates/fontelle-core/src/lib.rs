@@ -38,4 +38,4 @@ pub use voice::{
     NoteTrigger, OSC_ROOT_HZ, Performance, RenderClock, RetriggerMode, StealPolicy, UnisonConfig,
     VelocityCurve, Voice, VoiceConfig, VoicePool, velocity_gain, velocity_to_gain,
 };
-pub use wavetable_set::WavetableSet;
+pub use wavetable_set::{WavetableSet, spectral_analysis};

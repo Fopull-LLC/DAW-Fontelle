@@ -15,7 +15,9 @@
 //! a stiff string puts them, they decay the way a damped one does, the hammer
 //! lands where the strike knob says, and a harder strike is a brighter one.
 
-use fontelle_dsp::{SynthInput, SynthOsc, SynthSource, SynthState, Unison};
+use fontelle_dsp::{
+    SynthInput, SynthOsc, SynthSource, SynthState, Unison, UnisonMode, UnisonSpread,
+};
 
 const SR: f32 = 48_000.0;
 
@@ -242,6 +244,8 @@ fn a_unison_of_strings_beats_like_a_trichord() {
         detune_cents: 6.0,
         blend: 1.0,
         width: 0.0,
+        mode: UnisonMode::Classic,
+        spread: UnisonSpread::Power,
     };
     let out = render(&s, 220.0, 96_000);
     let windows: Vec<f32> = out[4_800..].chunks(2_400).map(rms).collect();

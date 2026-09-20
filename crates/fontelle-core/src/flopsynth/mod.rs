@@ -373,6 +373,11 @@ pub fn addresses(patch: &Patch) -> Vec<String> {
                         out.push(format!("patch/layer[{index}]/synth/string/{field}"));
                     }
                 }
+                // A spectral read of a recording: the zone is the one
+                // choice it shares with a plain read.
+                SynthSource::Spectral(_) => {
+                    out.push(format!("patch/layer[{index}]/synth/sample/zone"));
+                }
                 SynthSource::Noise => {}
             }
             out.push(format!("patch/layer[{index}]/synth/position"));
@@ -383,6 +388,8 @@ pub fn addresses(patch: &Patch) -> Vec<String> {
             out.push(format!("patch/layer[{index}]/synth/unison/detune"));
             out.push(format!("patch/layer[{index}]/synth/unison/blend"));
             out.push(format!("patch/layer[{index}]/synth/unison/width"));
+            out.push(format!("patch/layer[{index}]/synth/unison/mode"));
+            out.push(format!("patch/layer[{index}]/synth/unison/spread"));
             out.push(format!("patch/layer[{index}]/synth/phase"));
             out.push(format!("patch/layer[{index}]/synth/random_phase"));
         }
@@ -505,7 +512,7 @@ pub fn destinations(patch: &Patch) -> Vec<(ModDest, String)> {
             // Named for what the knob *is* on this kind of source, so a
             // route reads "OSC A bright" on a string rather than "position".
             let position = match osc.source {
-                SynthSource::Sample(_) => "start",
+                SynthSource::Sample(_) | SynthSource::Spectral(_) => "start",
                 SynthSource::String => "bright",
                 _ => "position",
             };
@@ -627,6 +634,8 @@ pub fn dest_address(dest: ModDest) -> Option<String> {
         ModDest::LfoRate(i) => format!("patch/lfo[{i}]/rate"),
         ModDest::LfoDepth(i) => format!("patch/lfo[{i}]/depth"),
         ModDest::LfoPhase(i) => format!("patch/lfo[{i}]/phase"),
+        // The glide knob: a route to the time rings the knob (§4.6).
+        ModDest::GlideTime => "patch/voice/glide".to_string(),
         // The rest belong to a sampler's layer or to the voice as a whole, and
         // have no knob on this panel.
         _ => return None,

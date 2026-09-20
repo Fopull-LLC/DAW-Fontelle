@@ -178,3 +178,160 @@ pub fn fft_in_place(re: &mut [f32], im: &mut [f32]) {
         len <<= 1;
     }
 }
+
+// --- The spectral source's analysis (`docs/flopsynth-next.md` §4.3) -------
+
+/// One frame of a spectral analysis: the partials a recording had at one
+/// moment, each as a ratio to the recording's fundamental and a level
+/// (a full-scale sine reads about 1.0). Sixty-four, like the string's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpectralFrame {
+    pub ratio: [f32; crate::MAX_PARTIALS],
+    pub amp: [f32; crate::MAX_PARTIALS],
+}
+
+impl Default for SpectralFrame {
+    fn default() -> Self {
+        Self {
+            ratio: std::array::from_fn(|n| (n + 1) as f32),
+            amp: [0.0; crate::MAX_PARTIALS],
+        }
+    }
+}
+
+/// A recording as frames of partials, `hop_s` apart — what
+/// [`SynthSource::Spectral`](crate::SynthSource::Spectral) plays through
+/// the string's bank of phasors.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpectralFrames {
+    pub hop_s: f32,
+    /// How many partials sat under Nyquist for the recording's fundamental.
+    pub count: usize,
+    pub frames: Vec<SpectralFrame>,
+}
+
+impl SpectralFrames {
+    /// The frame at `position` of the way through, the two nearest mixed
+    /// by where between them it falls — so a scan across the frames is a
+    /// crossfade rather than a stair.
+    pub fn at(&self, position: f32) -> SpectralFrame {
+        let Some(last) = self.frames.len().checked_sub(1) else {
+            return SpectralFrame::default();
+        };
+        let at = position.clamp(0.0, 1.0) * last as f32;
+        let index = (at.floor() as usize).min(last);
+        let next = (index + 1).min(last);
+        let t = at - index as f32;
+        let (a, b) = (&self.frames[index], &self.frames[next]);
+        let mut out = *a;
+        for n in 0..crate::MAX_PARTIALS {
+            out.ratio[n] = a.ratio[n] + (b.ratio[n] - a.ratio[n]) * t;
+            out.amp[n] = a.amp[n] + (b.amp[n] - a.amp[n]) * t;
+        }
+        out
+    }
+}
+
+/// Analyses `samples` at `sample_rate`, a recording of a note at
+/// `root_hz`, into [`SpectralFrames`]: a Hann-windowed transform every ten
+/// milliseconds, and in each the strongest line within half a harmonic of
+/// each multiple of the root — its frequency from the phase the bin turned
+/// through since the last frame (the vocoder's estimate, exact for a
+/// steady line; a parabola over the three bins round the peak for the
+/// first frame, which has no last), its level from the peak's magnitude.
+///
+/// Harmonic buckets rather than free peak-picking, because the source
+/// plays a *note*: partial `n` is whatever the recording had near `n`
+/// times its root, which keeps a stiff string's stretch (the bucket is
+/// wide enough) and puts every frame's partials in the same slots, so a
+/// scan across frames moves each phasor a little rather than reassigning
+/// them. The window is 4096 samples for a root under 200 Hz (the bass's
+/// buckets are narrow) and 2048 above.
+pub fn analyse_spectral(samples: &[f32], sample_rate: f32, root_hz: f32) -> SpectralFrames {
+    let hop_s = 0.01;
+    let root = root_hz.max(20.0);
+    let window = if root < 200.0 { 4096 } else { 2048 };
+    let hop = ((hop_s * sample_rate) as usize).max(1);
+    let count = ((sample_rate * 0.5 / root).floor() as usize).clamp(1, crate::MAX_PARTIALS);
+    let hann: Vec<f32> = (0..window)
+        .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / window as f32).cos())
+        .collect();
+    let window_sum: f32 = hann.iter().sum();
+    let bin_hz = sample_rate / window as f32;
+    let mut frames = Vec::new();
+    let mut re = vec![0.0f32; window];
+    let mut im = vec![0.0f32; window];
+    // The last frame's phase per bin, for the vocoder's estimate.
+    let mut last_phase: Vec<f32> = Vec::new();
+    let mut phase = vec![0.0f32; window / 2];
+    let mut start = 0usize;
+    // The last frame is the one that starts inside the recording, so a
+    // short recording still has at least one.
+    while start < samples.len().max(1) {
+        for (i, (r, w)) in re.iter_mut().zip(&hann).enumerate() {
+            *r = samples.get(start + i).copied().unwrap_or(0.0) * w;
+        }
+        im.fill(0.0);
+        fft_in_place(&mut re, &mut im);
+        let magnitude = |k: usize| (re[k] * re[k] + im[k] * im[k]).sqrt();
+        for (k, p) in phase.iter_mut().enumerate() {
+            *p = im[k].atan2(re[k]);
+        }
+        let mut frame = SpectralFrame::default();
+        for n in 1..=count {
+            let centre = n as f32 * root;
+            let low = ((centre - 0.5 * root) / bin_hz).ceil().max(1.0) as usize;
+            let high = (((centre + 0.5 * root) / bin_hz).floor() as usize).min(window / 2 - 2);
+            if low > high {
+                continue;
+            }
+            let mut best = low;
+            let mut best_magnitude = 0.0;
+            for k in low..=high {
+                let m = magnitude(k);
+                if m > best_magnitude {
+                    best_magnitude = m;
+                    best = k;
+                }
+            }
+            let (a, b, c) = (
+                magnitude(best - 1).max(1e-12).ln(),
+                best_magnitude.max(1e-12).ln(),
+                magnitude(best + 1).max(1e-12).ln(),
+            );
+            let denominator = a - 2.0 * b + c;
+            let parabola = if denominator.abs() > 1e-9 {
+                (0.5 * (a - c) / denominator).clamp(-0.5, 0.5)
+            } else {
+                0.0
+            };
+            // The bin's phase advanced `2π k hop / window` if the line sat
+            // exactly on it; what it advanced beyond that, over the hop,
+            // is how far off the bin the line really is.
+            let offset = match last_phase.get(best) {
+                Some(previous) => {
+                    let expected = std::f32::consts::TAU * best as f32 * hop as f32 / window as f32;
+                    let turned = phase[best] - previous - expected;
+                    let wrapped =
+                        turned - std::f32::consts::TAU * (turned / std::f32::consts::TAU).round();
+                    let bins = wrapped * window as f32 / (std::f32::consts::TAU * hop as f32);
+                    if bins.abs() <= 0.6 { bins } else { parabola }
+                }
+                None => parabola,
+            };
+            let hz = (best as f32 + offset) * bin_hz;
+            frame.ratio[n - 1] = hz / root;
+            // A sine at amplitude A under a window of sum S reads S·A/2.
+            frame.amp[n - 1] = best_magnitude * 2.0 / window_sum;
+        }
+        frames.push(frame);
+        last_phase.clear();
+        last_phase.extend_from_slice(&phase);
+        start += hop;
+    }
+    SpectralFrames {
+        hop_s,
+        count,
+        frames,
+    }
+}

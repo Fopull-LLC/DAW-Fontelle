@@ -444,3 +444,39 @@ fn a_cards_menu_offers_the_banks_own_grand() {
     assert_eq!(source_of(&patch, 0), fontelle_dsp::SynthSource::Sample(0));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// An `.sfz` dropped on an oscillator lands as a multisample with its
+/// velocity layers (`docs/flopsynth-next.md` §4.3): `load_sound` reads it
+/// through `fontelle_assets::import_sfz`, and a drop knows it is a sound.
+#[test]
+fn an_sfz_dropped_on_an_oscillator_is_a_multisample_with_velocity_layers() {
+    let dir = scratch("sfz");
+    let mut session = a_session(&dir);
+    a_tone(&dir, "soft", 261.63, 0.3);
+    a_tone(&dir, "hard", 261.63, 0.3);
+    let sfz = dir.join("Keys.sfz");
+    std::fs::write(
+        &sfz,
+        "<region> sample=soft.wav key=60 lovel=0 hivel=90\n\
+         <region> sample=hard.wav key=60 lovel=91 hivel=127 volume=-2\n",
+    )
+    .expect("writable");
+    assert!(fontelle_types::is_multisample_path(&sfz));
+    let said = session.load_sound(0, &sfz).expect("loads");
+    assert!(said.contains("Keys") && said.contains('2'), "{said}");
+    let patch = patch_of(&session);
+    assert_eq!(patch.samples.len(), 1);
+    let zones = &patch.samples[0].zones;
+    assert_eq!(zones.len(), 2);
+    assert_eq!(zones[0].vel_range, (0, 90));
+    assert_eq!(zones[1].vel_range, (91, 127));
+    assert_eq!(zones[1].name, "hard");
+    assert!((zones[1].gain_db - -2.0).abs() < 1e-6);
+    assert!(matches!(
+        patch.layers[0].source,
+        fontelle_core::Source::Synth(fontelle_dsp::SynthOsc {
+            source: fontelle_dsp::SynthSource::Sample(0),
+            ..
+        })
+    ));
+}

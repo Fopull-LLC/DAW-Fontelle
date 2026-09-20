@@ -184,6 +184,26 @@ struct StoredZone {
     sample_rate: u32,
     /// Little-endian `i16`, base64.
     samples: String,
+    /// The SFZ fields (`docs/flopsynth-next.md` §4.3), each left out at
+    /// its rest so a zone from a folder writes what it wrote.
+    #[serde(default = "whole_velocity", skip_serializing_if = "is_whole_velocity")]
+    vel_range: (u8, u8),
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    gain_db: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    loop_frames: Option<(u32, u32)>,
+}
+
+fn whole_velocity() -> (u8, u8) {
+    (0, 127)
+}
+
+fn is_whole_velocity(range: &(u8, u8)) -> bool {
+    *range == (0, 127)
+}
+
+fn is_zero_f32(value: &f32) -> bool {
+    *value == 0.0
 }
 
 impl StoredSample {
@@ -208,6 +228,9 @@ impl StoredSample {
                     key_range: zone.key_range,
                     sample_rate: zone.sample_rate,
                     samples: encode_pcm16(&zone.samples),
+                    vel_range: zone.vel_range,
+                    gain_db: zone.gain_db,
+                    loop_frames: zone.loop_frames,
                 })
                 .collect(),
         }
@@ -241,6 +264,9 @@ impl StoredSample {
                     key_range: zone.key_range,
                     sample_rate: zone.sample_rate,
                     samples: decode_pcm16(&zone.samples).into(),
+                    vel_range: zone.vel_range,
+                    gain_db: zone.gain_db,
+                    loop_frames: zone.loop_frames,
                 })
                 .collect(),
         }

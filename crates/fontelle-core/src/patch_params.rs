@@ -33,7 +33,8 @@
 
 use fontelle_dsp::{
     EnvStage, FilterModel, FilterRoute, FilterSlope, GRAIN_MAX_MS, GRAIN_MIN_MS, Interpolation,
-    MAX_UNISON, OscKind, Oversampling, SampleLoop, SvfMode, SynthSource, WarpMode, WavetableId,
+    MAX_UNISON, OscKind, Oversampling, SampleLoop, SvfMode, SynthSource, UnisonMode, UnisonSpread,
+    WarpMode, WavetableId,
 };
 use fontelle_types::{LfoWave, NoteDivision};
 
@@ -558,6 +559,15 @@ fn set_synth(osc: &mut fontelle_dsp::SynthOsc, field: &str, value: f32, zones: u
         "unison/detune" => osc.unison.detune_cents = lerp(value, 0.0, UNISON_DETUNE_MAX_CENTS),
         "unison/blend" => osc.unison.blend = value,
         "unison/width" => osc.unison.width = value,
+        // The stack's mode (§4.3): the four plain ones, then each chord
+        // as a position of its own — one chooser rather than two.
+        "unison/mode" => {
+            let choices = UNISON_MODES.len();
+            osc.unison.mode = UNISON_MODES[choice_index(value, choices)].0;
+        }
+        "unison/spread" => {
+            osc.unison.spread = UnisonSpread::ALL[choice_index(value, UnisonSpread::ALL.len())];
+        }
         "noise_colour" => osc.noise_colour = value,
         // Which of the three kinds of source this oscillator is (table,
         // recording, string). Refused on the noise layer for `table`'s
@@ -575,6 +585,9 @@ fn set_synth(osc: &mut fontelle_dsp::SynthOsc, field: &str, value: f32, zones: u
                 },
                 1 => match osc.source {
                     SynthSource::Sample(_) => osc.source,
+                    // A spectral read of a recording becomes a plain one of
+                    // the same recording, and back.
+                    SynthSource::Spectral(at) => SynthSource::Sample(at),
                     _ => {
                         // The position becomes the start, and a table's
                         // frame carried over would start every note partway
@@ -583,7 +596,15 @@ fn set_synth(osc: &mut fontelle_dsp::SynthOsc, field: &str, value: f32, zones: u
                         SynthSource::Sample(0)
                     }
                 },
-                _ => SynthSource::String,
+                2 => SynthSource::String,
+                _ => match osc.source {
+                    SynthSource::Spectral(_) => osc.source,
+                    SynthSource::Sample(at) => SynthSource::Spectral(at),
+                    _ => {
+                        osc.position = 0.0;
+                        SynthSource::Spectral(0)
+                    }
+                },
             };
         }
         "sample/loop" => {
@@ -611,9 +632,27 @@ fn set_synth(osc: &mut fontelle_dsp::SynthOsc, field: &str, value: f32, zones: u
     true
 }
 
-/// The three kinds of source an oscillator can be, in the order the `kind`
-/// chooser offers them — and their names.
-pub const SOURCE_KINDS: [&str; 3] = ["Table", "Sample", "String"];
+/// The unison chooser's positions (`docs/flopsynth-next.md` §4.3): the
+/// four plain modes, then each chord as a position of its own, so the
+/// card grows one chooser rather than two.
+pub const UNISON_MODES: [(UnisonMode, &str); 10] = [
+    (UnisonMode::Classic, "classic"),
+    (UnisonMode::Octave, "octave"),
+    (UnisonMode::Fifth, "fifth"),
+    (UnisonMode::Wide, "wide"),
+    (UnisonMode::Chord(0), "major"),
+    (UnisonMode::Chord(1), "minor"),
+    (UnisonMode::Chord(2), "sus4"),
+    (UnisonMode::Chord(3), "7th"),
+    (UnisonMode::Chord(4), "min7"),
+    (UnisonMode::Chord(5), "octaves"),
+];
+
+/// The four kinds of source an oscillator can be, in the order the `kind`
+/// chooser offers them — and their names. Spectral last, appended in phase
+/// 4 (`docs/flopsynth-next.md` §4.3), so the three positions before it
+/// keep their meaning.
+pub const SOURCE_KINDS: [&str; 4] = ["Table", "Sample", "String", "Spectral"];
 
 /// Which position of [`SOURCE_KINDS`] a source is.
 pub fn source_kind(source: SynthSource) -> usize {
@@ -621,6 +660,7 @@ pub fn source_kind(source: SynthSource) -> usize {
         SynthSource::Table(_) | SynthSource::User(_) | SynthSource::Noise => 0,
         SynthSource::Sample(_) => 1,
         SynthSource::String => 2,
+        SynthSource::Spectral(_) => 3,
     }
 }
 
@@ -1000,6 +1040,7 @@ fn synth_value(osc: &fontelle_dsp::SynthOsc, field: &str, zones: usize) -> Optio
             // `Patch::wavetables` instead.
             SynthSource::User(_)
             | SynthSource::Sample(_)
+            | SynthSource::Spectral(_)
             | SynthSource::String
             | SynthSource::Noise => None,
         },
@@ -1040,6 +1081,18 @@ fn synth_value(osc: &fontelle_dsp::SynthOsc, field: &str, zones: usize) -> Optio
         )),
         "unison/blend" => Some(osc.unison.blend.clamp(0.0, 1.0)),
         "unison/width" => Some(osc.unison.width.clamp(0.0, 1.0)),
+        "unison/mode" => {
+            let at = UNISON_MODES
+                .iter()
+                .position(|(m, _)| *m == osc.unison.mode)?;
+            Some(choice_value(at, UNISON_MODES.len()))
+        }
+        "unison/spread" => {
+            let at = UnisonSpread::ALL
+                .iter()
+                .position(|s| *s == osc.unison.spread)?;
+            Some(choice_value(at, UnisonSpread::ALL.len()))
+        }
         "noise_colour" => Some(osc.noise_colour.clamp(0.0, 1.0)),
         _ => None,
     }

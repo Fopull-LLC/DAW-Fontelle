@@ -7,7 +7,8 @@
 //! phase is random between notes and repeatable within a test.
 
 use fontelle_dsp::{
-    FilterRoute, SynthOsc, SynthSource, SynthState, Unison, WarpMode, WavetableBank, WavetableId,
+    FilterRoute, SynthOsc, SynthSource, SynthState, Unison, UnisonMode, UnisonSpread, WarpMode,
+    WavetableBank, WavetableId,
 };
 
 const SR: f32 = 48_000.0;
@@ -33,6 +34,7 @@ fn render_seeded(config: &SynthOsc, freq: f32, frames: usize, seed: u32) -> Vec<
         // the string have suites of their own.
         SynthSource::User(_)
         | SynthSource::Sample(_)
+        | SynthSource::Spectral(_)
         | SynthSource::String
         | SynthSource::Noise => None,
     };
@@ -107,6 +109,8 @@ fn one_unison_voice_is_the_plain_oscillator() {
         detune_cents: 100.0,
         blend: 0.0,
         width: 1.0,
+        mode: UnisonMode::Classic,
+        spread: UnisonSpread::Power,
     };
     let a = render(&plain, 220.0, 4_096);
     let b = render(&detuned, 220.0, 4_096);
@@ -128,6 +132,8 @@ fn seven_unison_voices_are_seven_lines_around_the_fundamental() {
         detune_cents: 40.0,
         blend: 1.0,
         width: 0.0,
+        mode: UnisonMode::Classic,
+        spread: UnisonSpread::Power,
     };
     let f0 = 220.0;
     let at = |samples: &[f32], cents: f32| energy_at(samples, f0 * 2f32.powf(cents / 1200.0));
@@ -180,6 +186,8 @@ fn blend_at_zero_is_the_centre_voice_alone() {
         detune_cents: 30.0,
         blend: 0.0,
         width: 0.0,
+        mode: UnisonMode::Classic,
+        spread: UnisonSpread::Power,
     };
     let mut alone = stack;
     alone.unison.voices = 1;
@@ -258,9 +266,12 @@ fn every_warp_at_full_is_apart_from_the_others() {
         (centroid.ln(), crest.ln())
     };
 
+    // The spectral warps are a wire on a table (`WarpMode::is_spectral`):
+    // their own test is `fontelle-dsp/tests/synth_spectral.rs`. Remap with
+    // no curve drawn is a wire too, by design; its test is below.
     let described: Vec<(WarpMode, (f32, f32))> = WarpMode::ALL
         .iter()
-        .filter(|m| **m != WarpMode::Off)
+        .filter(|m| **m != WarpMode::Off && !m.is_spectral() && !m.reads_a_curve())
         .map(|m| (*m, describe(*m)))
         .collect();
     let plain = describe(WarpMode::Off);
@@ -279,6 +290,26 @@ fn every_warp_at_full_is_apart_from_the_others() {
                 "{a_mode:?} and {b_mode:?} are the same warp ({apart})"
             );
         }
+    }
+}
+
+/// The spectral source's three warps have no partials to work on in a
+/// table, and are a wire there at any amount rather than a surprise.
+#[test]
+fn the_spectral_warps_are_a_wire_on_a_table() {
+    let plain = render(&osc(WavetableId::Saw), 220.0, 4_096);
+    for mode in WarpMode::ALL.iter().filter(|m| m.is_spectral()) {
+        let mut warped = osc(WavetableId::Saw);
+        warped.warp = *mode;
+        warped.warp_amount = 1.0;
+        let samples = render(&warped, 220.0, 4_096);
+        assert!(
+            plain
+                .iter()
+                .zip(&samples)
+                .all(|(x, y)| (x - y).abs() < 1e-5),
+            "{mode:?} on a table is a wire"
+        );
     }
 }
 
@@ -410,6 +441,8 @@ fn a_random_start_phase_scatters_the_stack_and_repeats_without_it() {
         detune_cents: 20.0,
         blend: 1.0,
         width: 0.0,
+        mode: UnisonMode::Classic,
+        spread: UnisonSpread::Power,
     };
     let a = render_seeded(&fixed, 220.0, 8, 1);
     let b = render_seeded(&fixed, 220.0, 8, 99);
@@ -454,6 +487,8 @@ fn the_centre_voice_of_a_random_stack_still_starts_where_it_was_told() {
         detune_cents: 20.0,
         blend: 0.0,
         width: 0.0,
+        mode: UnisonMode::Classic,
+        spread: UnisonSpread::Power,
     };
     let mut single = stack;
     single.unison.voices = 1;
@@ -517,6 +552,8 @@ fn width_spreads_the_side_voices_and_leaves_one_voice_centred() {
         detune_cents: 25.0,
         blend: 1.0,
         width: 1.0,
+        mode: UnisonMode::Classic,
+        spread: UnisonSpread::Power,
     };
     let mut narrow = wide;
     narrow.unison.width = 0.0;
@@ -571,6 +608,8 @@ fn a_stack_follows_its_detune_the_sample_after_it_moves() {
             detune_cents: 2.0,
             blend: 1.0,
             width: 1.0,
+            mode: UnisonMode::Classic,
+            spread: UnisonSpread::Power,
         },
         ..SynthOsc::default()
     };
@@ -600,6 +639,8 @@ fn two_stacks_at_the_same_settings_are_the_same_stack() {
             detune_cents: 14.0,
             blend: 0.8,
             width: 0.6,
+            mode: UnisonMode::Classic,
+            spread: UnisonSpread::Power,
         },
         ..SynthOsc::default()
     };
@@ -626,4 +667,314 @@ fn two_stacks_at_the_same_settings_are_the_same_stack() {
             "sample {i}: {a:?} against {b:?}"
         );
     }
+}
+
+// --- The table warps of phase 4 (`docs/flopsynth-next.md` §4.3) ---------
+
+/// The harmonic content of a note at 220 Hz: the energy at the first
+/// sixteen harmonics, the fundamental first.
+fn harmonics(osc: &SynthOsc) -> [f32; 16] {
+    let samples = render(osc, 220.0, 8_192);
+    std::array::from_fn(|n| energy_at(&samples, 220.0 * (n + 1) as f32))
+}
+
+/// A spectral centroid over the harmonic grid, in harmonic numbers.
+fn centroid(h: &[f32; 16]) -> f32 {
+    let total: f32 = h.iter().sum();
+    h.iter()
+        .enumerate()
+        .map(|(n, e)| (n + 1) as f32 * e / total.max(1e-9))
+        .sum()
+}
+
+#[test]
+fn the_phase_distortion_warp_adds_harmonics_to_a_sine() {
+    // Casio's: the phase runs fast to a knee and slow after it, which on
+    // a sine folds it towards a resonant saw — odd harmonics first.
+    let mut pd = osc(WavetableId::Sine);
+    pd.warp = WarpMode::PhaseDistortion;
+    pd.warp_amount = 0.8;
+    let h = harmonics(&pd);
+    let plain = harmonics(&osc(WavetableId::Sine));
+    assert!(h[0] > plain[0] * 0.5, "the fundamental stays: {h:?}");
+    assert!(
+        h[2] > plain[2] * 20.0 && h[2] > h[0] * 0.05,
+        "a third harmonic appears: {h:?}"
+    );
+    assert!(
+        centroid(&h) > centroid(&plain) * 1.5,
+        "and the sine is brighter for it: {:.2} from {:.2}",
+        centroid(&h),
+        centroid(&plain)
+    );
+}
+
+#[test]
+fn the_formant_warp_keeps_the_pitch_and_moves_the_centroid_up() {
+    // The cycle is read faster and held at its end, so the note's period
+    // — and its fundamental — stay and the spectrum moves up.
+    let mut formant = osc(WavetableId::Saw);
+    formant.warp = WarpMode::Formant;
+    formant.warp_amount = 0.6;
+    let samples = render(&formant, 220.0, 8_192);
+    let f0 = energy_at(&samples, 220.0);
+    let below = energy_at(&samples, 220.0 / 2.0);
+    assert!(
+        f0 > below * 20.0,
+        "the pitch is the note's: {f0} against {below} an octave under"
+    );
+    let h = harmonics(&formant);
+    let plain = harmonics(&osc(WavetableId::Saw));
+    // The formant sits where the cycle is read to: harmonics three to
+    // eight carry more of the note, against its fundamental, than a saw's.
+    let upper = |h: &[f32; 16]| h[2..8].iter().sum::<f32>() / h[0].max(1e-9);
+    assert!(
+        upper(&h) > upper(&plain) * 1.3,
+        "the upper harmonics grew against the fundamental: {:.2} from {:.2}",
+        upper(&h),
+        upper(&plain)
+    );
+}
+
+#[test]
+fn the_flip_warp_adds_even_harmonics_to_a_sine() {
+    // The second half of the cycle inverted: a sine becomes a rectified
+    // shape, which is even harmonics.
+    let mut flip = osc(WavetableId::Sine);
+    flip.warp = WarpMode::Flip;
+    flip.warp_amount = 1.0;
+    let h = harmonics(&flip);
+    let plain = harmonics(&osc(WavetableId::Sine));
+    assert!(
+        h[1] > plain[1] * 20.0 && h[1] > h[0] * 0.2,
+        "a second harmonic appears: {h:?}"
+    );
+    assert!(h[1] > h[2], "even before odd: {h:?}");
+}
+
+#[test]
+fn the_asym_warp_bends_the_two_halves_apart() {
+    // The first half of the cycle bent one way and the second the other:
+    // on a sine that is a lopsided wave, which is even harmonics, and
+    // unlike Bend — which bends the whole cycle one way — its second
+    // harmonic outweighs its third.
+    let mut asym = osc(WavetableId::Sine);
+    asym.warp = WarpMode::Asym;
+    asym.warp_amount = 0.8;
+    let h = harmonics(&asym);
+    let plain = harmonics(&osc(WavetableId::Sine));
+    assert!(h[1] > plain[1] * 20.0, "a second harmonic appears: {h:?}");
+    let mut bend = osc(WavetableId::Sine);
+    bend.warp = WarpMode::Bend;
+    bend.warp_amount = 0.8;
+    let b = harmonics(&bend);
+    assert!(
+        (h[1] / h[2]) > (b[1] / b[2]),
+        "asym is more even than bend: {:.2} against {:.2}",
+        h[1] / h[2],
+        b[1] / b[2]
+    );
+}
+
+#[test]
+fn the_fm_noise_warp_spreads_the_line_into_a_band() {
+    // FM from noise rather than from a layer: the line at the note
+    // becomes a band round it, energy off the harmonic grid.
+    let mut noisy = osc(WavetableId::Sine);
+    noisy.warp = WarpMode::FmNoise;
+    noisy.warp_amount = 0.5;
+    let samples = render(&noisy, 220.0, 8_192);
+    let plain = render(&osc(WavetableId::Sine), 220.0, 8_192);
+    let off_grid = |s: &[f32]| energy_at(s, 220.0 * 1.5) + energy_at(s, 220.0 * 0.6);
+    assert!(
+        off_grid(&samples) > off_grid(&plain) * 20.0,
+        "energy between the harmonics: {} from {}",
+        off_grid(&samples),
+        off_grid(&plain)
+    );
+    // And the same noise twice: seeded from the note.
+    let again = render(&noisy, 220.0, 8_192);
+    assert_eq!(samples, again);
+}
+
+#[test]
+fn the_remap_warp_reads_the_phase_through_a_drawn_curve() {
+    // A straight-line curve is a wire; a curve that is Bend's power law at
+    // full is Bend at full, sample for sample.
+    let mut remap = osc(WavetableId::Saw);
+    remap.warp = WarpMode::Remap;
+    remap.warp_amount = 1.0;
+    let plain = render(&osc(WavetableId::Saw), 220.0, 4_096);
+    let through = render(&remap, 220.0, 4_096);
+    assert!(
+        plain
+            .iter()
+            .zip(&through)
+            .all(|(x, y)| (x - y).abs() < 2e-3),
+        "the identity curve is a wire"
+    );
+    let mut bend = osc(WavetableId::Saw);
+    bend.warp = WarpMode::Bend;
+    bend.warp_amount = 1.0;
+    let bent = render(&bend, 220.0, 4_096);
+    // Bend at full is `t^4`; the curve's points are that law.
+    remap.remap = std::array::from_fn(|i| {
+        let t = i as f32 / (fontelle_dsp::REMAP_POINTS - 1) as f32;
+        t.powi(4)
+    });
+    let curved = render(&remap, 220.0, 4_096);
+    let error = bent
+        .iter()
+        .zip(&curved)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max);
+    assert!(error < 0.05, "the curve plays as bend does: worst {error}");
+    // Half the amount is halfway between the curve and the line.
+    remap.warp_amount = 0.5;
+    let half = render(&remap, 220.0, 4_096);
+    let toward = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f32>();
+    assert!(
+        toward(&half, &plain) < toward(&curved, &plain)
+            && toward(&half, &curved) < toward(&plain, &curved)
+    );
+    // The curve is absent from the file while it is the line.
+    let text = serde_json::to_string(&osc(WavetableId::Saw)).unwrap();
+    assert!(!text.contains("remap"), "{text}");
+    let text = serde_json::to_string(&remap).unwrap();
+    assert!(text.contains("remap"));
+    let back: SynthOsc = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, remap);
+}
+
+// --- Unison modes and spreads (`docs/flopsynth-next.md` §4.3) -----------
+
+use fontelle_dsp::{unison_offset_cents, unison_offset_cents_in};
+
+/// The line at `cents` from `f0` in a stack against the same in a single
+/// voice: how much a stack put there.
+fn stack_line(unison: Unison, cents: f32) -> (f32, f32) {
+    let f0 = 220.0;
+    let mut wide = osc(WavetableId::Sine);
+    wide.unison = unison;
+    let stack = render(&wide, f0, 32_768);
+    let mut single = wide;
+    single.unison.voices = 1;
+    let one = render(&single, f0, 32_768);
+    let hz = f0 * 2f32.powf(cents / 1200.0);
+    (energy_at(&stack, hz), energy_at(&one, hz))
+}
+
+#[test]
+fn the_octave_and_fifth_modes_put_the_side_voices_an_interval_up() {
+    for (mode, cents) in [(UnisonMode::Octave, 1200.0), (UnisonMode::Fifth, 700.0)] {
+        let unison = Unison {
+            voices: 3,
+            detune_cents: 0.0,
+            blend: 1.0,
+            width: 0.0,
+            mode,
+            spread: UnisonSpread::Power,
+        };
+        let (with, without) = stack_line(unison, cents);
+        assert!(
+            with > without * 20.0,
+            "{mode:?}: a voice at {cents} cents: {with} against {without}"
+        );
+        // And the centre is still the note.
+        let (centre, _) = stack_line(unison, 0.0);
+        assert!(
+            centre > with * 0.5,
+            "{mode:?} keeps the centre: {centre} against {with}"
+        );
+    }
+}
+
+#[test]
+fn a_chord_mode_plays_the_chords_intervals() {
+    // A major chord over four voices: the note, its third, its fifth and
+    // its octave.
+    let unison = Unison {
+        voices: 4,
+        detune_cents: 0.0,
+        blend: 1.0,
+        width: 0.0,
+        mode: UnisonMode::Chord(0),
+        spread: UnisonSpread::Power,
+    };
+    for cents in [400.0, 700.0, 1200.0] {
+        let (with, without) = stack_line(unison, cents);
+        assert!(
+            with > without * 20.0,
+            "major has a voice at {cents}: {with}"
+        );
+    }
+    let (minor_third, _) = stack_line(unison, 300.0);
+    let (major_third, _) = stack_line(unison, 400.0);
+    assert!(
+        minor_third < major_third * 0.2,
+        "and none at the minor third"
+    );
+    // Minor: the third moves down.
+    let mut minor = unison;
+    minor.mode = UnisonMode::Chord(1);
+    let (third, _) = stack_line(minor, 300.0);
+    assert!(
+        third > major_third * 0.5,
+        "minor has its third at 300: {third}"
+    );
+    assert!(UnisonMode::CHORDS.len() >= 4, "a few chords to choose from");
+    for (index, (name, intervals)) in UnisonMode::CHORDS.iter().enumerate() {
+        assert!(!name.is_empty() && !intervals.is_empty(), "chord {index}");
+        assert_eq!(intervals[0], 0, "{name} starts on the note");
+    }
+}
+
+#[test]
+fn the_spreads_place_the_inner_voices_by_three_laws() {
+    // Seven voices, a hundred cents: the outermost pair is at the knob
+    // under every law; the inner two pairs sit where the law says.
+    let outer = |spread: UnisonSpread| unison_offset_cents(6, 7, 100.0, spread);
+    for spread in UnisonSpread::ALL {
+        assert!(
+            (outer(spread) - 100.0).abs() < 1e-3,
+            "{spread:?} ends at the knob"
+        );
+        assert_eq!(
+            unison_offset_cents(0, 7, 100.0, spread),
+            0.0,
+            "{spread:?}: the centre"
+        );
+        // Pairs: odd indices go one way, even the other.
+        assert!(unison_offset_cents(1, 7, 100.0, spread) < 0.0);
+        assert!(unison_offset_cents(2, 7, 100.0, spread) > 0.0);
+    }
+    let inner = |spread: UnisonSpread| {
+        (
+            unison_offset_cents(2, 7, 100.0, spread),
+            unison_offset_cents(4, 7, 100.0, spread),
+        )
+    };
+    let (l1, l2) = inner(UnisonSpread::Linear);
+    assert!(
+        (l1 - 33.3).abs() < 0.5 && (l2 - 66.7).abs() < 0.5,
+        "linear: {l1} {l2}"
+    );
+    let (p1, p2) = inner(UnisonSpread::Power);
+    assert!(p1 > l1 && p2 > l2, "power fans out: {p1} {p2}");
+    let (h1, h2) = inner(UnisonSpread::Harmonic);
+    assert!(h1 < l1 && h2 < l2, "harmonic bunches in: {h1} {h2}");
+    // Power is what every stack was, so a preset's stack is its stack.
+    assert_eq!(UnisonSpread::default(), UnisonSpread::Power);
+    assert_eq!(UnisonMode::default(), UnisonMode::Classic);
+    // Wide: the same pairs, twice as far out — the knob's detune is the
+    // stack's middle rather than its edge.
+    assert!(
+        (unison_offset_cents(6, 7, 100.0, UnisonSpread::Power) * 2.0
+            - unison_offset_cents_in(UnisonMode::Wide, 6, 7, 100.0, UnisonSpread::Power))
+        .abs()
+            < 1e-3
+    );
+    // The mode and the spread are absent from the file at their defaults.
+    let text = serde_json::to_string(&Unison::default()).unwrap();
+    assert!(!text.contains("mode") && !text.contains("spread"), "{text}");
 }

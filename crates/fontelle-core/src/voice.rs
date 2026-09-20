@@ -960,6 +960,8 @@ pub struct Voice {
     /// the event that started the note.
     velocity_norm: f32,
     key_norm: f32,
+    /// And the velocity as it was, for a zone's velocity window.
+    velocity: u8,
     /// §16.5's fine pitch as semitones, captured at note-on. Added to the
     /// note's interval alongside the glide, and for the same reason: it moves
     /// the *sound* and leaves `key` — the note's identity, which a note-off
@@ -1067,6 +1069,7 @@ impl Voice {
             note_pan: 0.0,
             velocity_norm: 0.0,
             key_norm: 0.0,
+            velocity: 0,
             note_detune: 0.0,
             note_release_scale: 1.0,
             mod_x_norm: 0.0,
@@ -1243,6 +1246,7 @@ impl Voice {
         self.note_pan = pan.clamp(-1.0, 1.0);
         self.velocity_norm = velocity as f32 / 127.0;
         self.key_norm = key as f32 / 127.0;
+        self.velocity = velocity;
         // Cents to semitones: the document stores cents because that is the
         // unit a musician tunes in, and every other tuning on the pitch path
         // is cents too, so nothing has to be converted twice.
@@ -2453,7 +2457,7 @@ impl Voice {
                             .get_sample(at as usize)
                             .and_then(|sample| match osc.sample.zone {
                                 Some(locked) => sample.zones.get(usize::from(locked)),
-                                None => sample.zone_for(self.key),
+                                None => sample.zone_for_note(self.key, self.velocity),
                             })
                             .map_or(SynthInput::None, |zone| {
                                 SynthInput::Sample(fontelle_dsp::SampleData {
@@ -2463,8 +2467,29 @@ impl Voice {
                                     // The layer's pin or the session's,
                                     // the same as a sampled layer's read.
                                     interpolation: layer.playback.interpolation.unwrap_or(quality),
+                                    gain: 10f32.powf(zone.gain_db / 20.0),
+                                    loop_frames: zone.loop_frames,
                                 })
                             }),
+                        // The same zone choice as a plain read, and the
+                        // zone's analysis in place of its audio.
+                        fontelle_dsp::SynthSource::Spectral(at) => tables
+                            .get_sample(at as usize)
+                            .and_then(|sample| {
+                                let zone = match osc.sample.zone {
+                                    Some(locked) => usize::from(locked),
+                                    None => {
+                                        let serving =
+                                            sample.zone_for_note(self.key, self.velocity)?;
+                                        sample
+                                            .zones
+                                            .iter()
+                                            .position(|z| std::ptr::eq(z, serving))?
+                                    }
+                                };
+                                tables.get_spectral(at as usize, zone)
+                            })
+                            .map_or(SynthInput::None, SynthInput::Spectral),
                         fontelle_dsp::SynthSource::Noise | fontelle_dsp::SynthSource::String => {
                             SynthInput::None
                         }

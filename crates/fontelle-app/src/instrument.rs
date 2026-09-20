@@ -708,7 +708,7 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
         // a table, where a recording starts, how hard a string is struck.
         // Same address, same route, different word — see `SynthOsc::position`.
         let position_caption = match osc.source {
-            SynthSource::Sample(_) => "start",
+            SynthSource::Sample(_) | SynthSource::Spectral(_) => "start",
             SynthSource::String => "bright",
             _ => "pos",
         };
@@ -867,6 +867,30 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                     ));
                 }
             }
+            // A spectral read (§4.3): the zone chooser, as a plain read has
+            // it; the rest is the position and the warp.
+            SynthSource::Spectral(sample_at) => {
+                if let Some(sample) = patch.samples.get(usize::from(sample_at))
+                    && sample.zones.len() > 1
+                {
+                    let choices = 1 + sample.zones.len();
+                    let chosen = osc
+                        .sample
+                        .zone
+                        .map_or(0, |z| usize::from(z) + 1)
+                        .min(choices - 1);
+                    let names: Vec<String> = std::iter::once("any".to_string())
+                        .chain(sample.zones.iter().map(|zone| zone.label()))
+                        .collect();
+                    params.push(param(
+                        &format!("patch/layer[{index}]/synth/sample/zone"),
+                        "zone",
+                        choice_value(chosen, choices),
+                        names[chosen].clone(),
+                        ParamKind::Choice(names),
+                    ));
+                }
+            }
             SynthSource::String => {
                 let string = &osc.string;
                 params.push(param(
@@ -984,6 +1008,37 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                 format!("{:.0}%", osc.unison.width.clamp(0.0, 1.0) * 100.0),
                 ParamKind::Knob,
             ));
+            // The stack's mode and spread (§4.3), two choosers.
+            {
+                use fontelle_core::patch_params::UNISON_MODES;
+                let at = UNISON_MODES
+                    .iter()
+                    .position(|(m, _)| *m == osc.unison.mode)
+                    .unwrap_or(0);
+                params.push(param(
+                    &format!("patch/layer[{index}]/synth/unison/mode"),
+                    "stack",
+                    choice_value(at, UNISON_MODES.len()),
+                    UNISON_MODES[at].1.to_string(),
+                    ParamKind::Choice(UNISON_MODES.iter().map(|(_, n)| n.to_string()).collect()),
+                ));
+                let at = fontelle_dsp::UnisonSpread::ALL
+                    .iter()
+                    .position(|s| *s == osc.unison.spread)
+                    .unwrap_or(0);
+                params.push(param(
+                    &format!("patch/layer[{index}]/synth/unison/spread"),
+                    "spread",
+                    choice_value(at, fontelle_dsp::UnisonSpread::ALL.len()),
+                    osc.unison.spread.label().to_string(),
+                    ParamKind::Choice(
+                        fontelle_dsp::UnisonSpread::ALL
+                            .iter()
+                            .map(|s| s.label().to_string())
+                            .collect(),
+                    ),
+                ));
+            }
         }
         if has_phase {
             params.push(param(

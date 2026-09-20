@@ -48,6 +48,36 @@ pub struct WavetableSet {
     /// the ones a layer names, cloned here, which is a handful of `Arc`s
     /// (see `SampleZone::samples`) and no audio.
     samples: Vec<Option<crate::UserSample>>,
+    /// The analyses of the recordings a spectral layer names
+    /// (`docs/flopsynth-next.md` §4.3), `Patch::samples` in order and
+    /// each zone in order — `None` for a recording no spectral layer reads.
+    /// From [`spectral_analysis`], which is a process-wide cache, so a
+    /// zone is analysed once however many patches or rebuilds read it.
+    spectral: Vec<Option<Vec<Arc<fontelle_dsp::SpectralFrames>>>>,
+}
+
+/// The analysis of one recording, cached process-wide by the recording's
+/// own `Arc` — the audio never changes under it, and analysing a
+/// five-second zone is a few hundred transforms, which a graph rebuild
+/// (§6: a preset load in a frame) cannot afford twice.
+pub fn spectral_analysis(zone: &crate::SampleZone) -> Arc<fontelle_dsp::SpectralFrames> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<HashMap<usize, Arc<fontelle_dsp::SpectralFrames>>>> =
+        Mutex::new(None);
+    let key = Arc::as_ptr(&zone.samples) as *const f32 as usize;
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some(frames) = cache.get(&key) {
+        return Arc::clone(frames);
+    }
+    let frames = Arc::new(fontelle_dsp::analyse_spectral(
+        &zone.samples,
+        zone.sample_rate as f32,
+        zone.root_hz(),
+    ));
+    cache.insert(key, Arc::clone(&frames));
+    frames
 }
 
 impl WavetableSet {
@@ -57,6 +87,7 @@ impl WavetableSet {
         entries: Vec::new(),
         user: Vec::new(),
         samples: Vec::new(),
+        spectral: Vec::new(),
     };
 
     pub fn new() -> Self {
@@ -71,6 +102,8 @@ impl WavetableSet {
         self.user.resize(patch.wavetables.len(), None);
         self.samples.clear();
         self.samples.resize(patch.samples.len(), None);
+        self.spectral.clear();
+        self.spectral.resize(patch.samples.len(), None);
         for layer in &patch.layers {
             let Source::Synth(osc) = &layer.source else {
                 continue;
@@ -111,9 +144,38 @@ impl WavetableSet {
                         *slot = Some(sample.clone());
                     }
                 }
+                // A spectral read: the recording's zones, and each one's
+                // analysis from the cache.
+                fontelle_dsp::SynthSource::Spectral(at) => {
+                    let at = at as usize;
+                    if let (Some(slot), Some(sample)) =
+                        (self.samples.get_mut(at), patch.samples.get(at))
+                        && slot.is_none()
+                    {
+                        *slot = Some(sample.clone());
+                    }
+                    if let (Some(slot), Some(sample)) =
+                        (self.spectral.get_mut(at), patch.samples.get(at))
+                        && slot.is_none()
+                    {
+                        *slot = Some(sample.zones.iter().map(spectral_analysis).collect());
+                    }
+                }
                 fontelle_dsp::SynthSource::Noise | fontelle_dsp::SynthSource::String => {}
             }
         }
+    }
+
+    /// The analysis of zone `zone` of the patch's recording `index`, or
+    /// `None` if this set was not built for a spectral layer naming it.
+    ///
+    /// RT-safe: two indices and a pointer.
+    pub fn get_spectral(&self, index: usize, zone: usize) -> Option<&fontelle_dsp::SpectralFrames> {
+        self.spectral
+            .get(index)?
+            .as_ref()?
+            .get(zone)
+            .map(Arc::as_ref)
     }
 
     /// One of the **patch's own** recordings, or `None` if this set was not

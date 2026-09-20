@@ -39,6 +39,9 @@ fn a_recording() -> UserSample {
             key_range: (0, 127),
             sample_rate: SR as u32,
             samples: tone(440.0, 1.0),
+            vel_range: (0, 127),
+            gain_db: 0.0,
+            loop_frames: None,
         }],
     }
 }
@@ -108,6 +111,9 @@ fn a_key_plays_the_zone_that_covers_it_or_the_nearest_root() {
                 key_range: (40, 54),
                 sample_rate: SR as u32,
                 samples: tone(130.8, 0.1),
+                vel_range: (0, 127),
+                gain_db: 0.0,
+                loop_frames: None,
             },
             SampleZone {
                 name: "High".to_string(),
@@ -116,6 +122,9 @@ fn a_key_plays_the_zone_that_covers_it_or_the_nearest_root() {
                 key_range: (66, 78),
                 sample_rate: SR as u32,
                 samples: tone(523.3, 0.1),
+                vel_range: (0, 127),
+                gain_db: 0.0,
+                loop_frames: None,
             },
         ],
     };
@@ -508,6 +517,9 @@ fn a_locked_zone_plays_for_every_key() {
                 key_range: (0, 60),
                 sample_rate: SR as u32,
                 samples: tone(130.8, 1.0),
+                vel_range: (0, 127),
+                gain_db: 0.0,
+                loop_frames: None,
             },
             // Recorded an octave *above* its root on purpose, so that what
             // it plays for a key is unmistakably this zone and not the
@@ -519,6 +531,9 @@ fn a_locked_zone_plays_for_every_key() {
                 key_range: (61, 127),
                 sample_rate: SR as u32,
                 samples: tone(1_046.5, 1.0),
+                vel_range: (0, 127),
+                gain_db: 0.0,
+                loop_frames: None,
             },
         ],
     });
@@ -567,6 +582,9 @@ fn the_zone_address_is_a_chooser_over_the_recordings_zones() {
         key_range: (0, 127),
         sample_rate: SR as u32,
         samples: tone(261.6, 0.1),
+        vel_range: (0, 127),
+        gain_db: 0.0,
+        loop_frames: None,
     });
     let address = "patch/layer[0]/synth/sample/zone";
     // Three positions: any, the first zone, the second.
@@ -586,4 +604,69 @@ fn the_zone_address_is_a_chooser_over_the_recordings_zones() {
         panic!()
     };
     assert_eq!(osc.sample.zone, None);
+}
+
+// --- The spectral read (`docs/flopsynth-next.md` §4.3, phase 4) --------
+
+/// An oscillator reading a recording **spectrally** plays it at the note
+/// — the same recording, analysed once (`spectral_analysis` is a cache)
+/// and resynthesised through the string's bank — and the kind chooser
+/// turns a plain read into a spectral one of the same recording, keeping
+/// the zone.
+#[test]
+fn an_oscillator_reading_a_recording_spectrally_plays_it_at_the_note() {
+    use fontelle_core::patch_params::{SOURCE_KINDS, set, value};
+    let mut patch = a_patch_playing_its_own_recording();
+    // The chooser's last position is Spectral; from a plain read it keeps
+    // the recording.
+    let spectral = SOURCE_KINDS.iter().position(|k| *k == "Spectral").unwrap() as f32
+        / (SOURCE_KINDS.len() - 1) as f32;
+    assert!(set(&mut patch, "patch/layer[0]/synth/kind", spectral));
+    let Source::Synth(osc) = &patch.layers[0].source else {
+        unreachable!()
+    };
+    assert_eq!(osc.source, SynthSource::Spectral(0));
+    assert_eq!(value(&patch, "patch/layer[0]/synth/kind"), Some(spectral));
+    let addresses = flopsynth::addresses(&patch);
+    assert!(
+        addresses
+            .iter()
+            .any(|a| a == "patch/layer[0]/synth/position")
+    );
+    assert!(
+        addresses
+            .iter()
+            .any(|a| a == "patch/layer[0]/synth/warp_mode")
+    );
+
+    let out = render(patch.clone(), 69, 24_000);
+    let peak = out.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+    assert!(peak > 0.01, "a spectral read is audible, not {peak}");
+    let measured = zero_crossings_per_second(&out[4_800..]);
+    assert!(
+        (measured - 440.0).abs() < 3.0,
+        "at its root key it plays as recorded: {measured} Hz"
+    );
+    let out = render(patch.clone(), 81, 24_000);
+    let measured = zero_crossings_per_second(&out[4_800..]);
+    assert!(
+        (measured - 880.0).abs() < 6.0,
+        "an octave up it plays an octave up: {measured} Hz"
+    );
+    // The set carries the analysis, once: the same `Arc` twice.
+    let mut set_a = WavetableSet::new();
+    set_a.resolve(&patch);
+    let first = set_a.get_spectral(0, 0).expect("the analysis") as *const _;
+    let mut set_b = WavetableSet::new();
+    set_b.resolve(&patch);
+    let second = set_b.get_spectral(0, 0).expect("the analysis") as *const _;
+    assert!(std::ptr::eq(first, second), "analysed once, shared after");
+    // And back to a plain read of the same recording.
+    let sample = SOURCE_KINDS.iter().position(|k| *k == "Sample").unwrap() as f32
+        / (SOURCE_KINDS.len() - 1) as f32;
+    assert!(set(&mut patch, "patch/layer[0]/synth/kind", sample));
+    let Source::Synth(osc) = &patch.layers[0].source else {
+        unreachable!()
+    };
+    assert_eq!(osc.source, SynthSource::Sample(0));
 }
