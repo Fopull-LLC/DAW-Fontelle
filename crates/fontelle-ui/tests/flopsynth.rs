@@ -2683,18 +2683,41 @@ fn a_badge_caption_is_shortened_with_an_ellipsis_to_fit_its_badge() {
     let measure = |s: &str| s.chars().count() as f32 * 6.0;
     let badge = fontelle_ui::layout::Rect::new(0.0, 0.0, BADGE_W, 44.0);
     let room = badge_anatomy(badge, 1.0).name.width;
-    assert_eq!(badge_caption("ENV 1", room, &measure), "ENV 1");
+    assert_eq!(badge_caption("ENV 1", "", room, &measure), "ENV 1");
     assert_eq!(
-        badge_caption("Brightness", room, &measure),
+        badge_caption("Brightness", "", room, &measure),
         "Bright\u{2026}"
     );
     // Trailing spaces go before the ellipsis, and a name that fits is
     // itself, whatever the room.
     assert_eq!(
-        badge_caption("Note X Y Z", 42.0, &measure),
+        badge_caption("Note X Y Z", "", 42.0, &measure),
         "Note X\u{2026}"
     );
-    assert_eq!(badge_caption("M1", 5.0, &measure), "M\u{2026}");
+    assert_eq!(badge_caption("M1", "", 5.0, &measure), "M\u{2026}");
+}
+
+/// Thirty-seven sources on a 1180-pixel strip is thirty pixels a badge
+/// (phase 3: eight LFOs, six envelopes, eight macros and five generators),
+/// and "LFO 1" cut to "LF…" says nothing. So a badge has a **short name**
+/// beside its long one, and the caption is the long one when it fits, the
+/// short one when that does, and an ellipsis of the short one last.
+#[test]
+fn a_badge_falls_back_to_its_short_name_before_an_ellipsis() {
+    use fontelle_ui::canvas::badge_caption;
+    let measure = |s: &str| s.chars().count() as f32 * 6.0;
+    assert_eq!(badge_caption("LFO 1", "L1", 40.0, &measure), "LFO 1");
+    assert_eq!(badge_caption("LFO 1", "L1", 24.0, &measure), "L1");
+    assert_eq!(badge_caption("Brightness", "BRI", 24.0, &measure), "BRI");
+    assert_eq!(
+        badge_caption("Brightness", "BRI", 12.0, &measure),
+        "B\u{2026}"
+    );
+    // No short name: the ellipsis as before.
+    assert_eq!(
+        badge_caption("Brightness", "", 24.0, &measure),
+        "Bri\u{2026}"
+    );
 }
 
 // ------------------------------------------------------ the full table (§3.4)

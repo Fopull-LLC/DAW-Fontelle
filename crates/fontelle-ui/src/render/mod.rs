@@ -8537,7 +8537,12 @@ fn draw_flopsynth_chrome(
                 .get_styled(s, t.caption)
                 .map_or(f32::MAX, |l| l.width)
         };
-        let caption = crate::canvas::badge_caption(name, anatomy.name.width, &measure);
+        let short = chrome
+            .view
+            .source_short
+            .get(index)
+            .map_or("", String::as_str);
+        let caption = crate::canvas::badge_caption(name, short, anatomy.name.width, &measure);
         if let Some(text) = labels.get_styled(&caption, t.caption) {
             draw_text_clipped(
                 scene,

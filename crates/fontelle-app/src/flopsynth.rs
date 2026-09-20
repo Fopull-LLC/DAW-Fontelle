@@ -63,6 +63,45 @@ fn sound_peaks(samples: &[f32]) -> Vec<(f32, f32)> {
         .collect()
 }
 
+/// A source's short name for a narrow badge (`FlopsynthView::source_short`):
+/// the envelopes, LFOs and sequencers by letter and number, a named macro
+/// by its first three letters, the rest by a word of three.
+pub(crate) fn source_short(source: fontelle_core::ModSource, label: &str) -> String {
+    use fontelle_core::ModSource;
+    match source {
+        ModSource::Envelope(i) => format!("E{}", i + 1),
+        ModSource::Lfo(i) => format!("L{}", i + 1),
+        ModSource::StepSeq(i) => format!("S{}", i + 1),
+        ModSource::Chaos => "CHS".to_string(),
+        ModSource::RandomWalk => "WLK".to_string(),
+        ModSource::EnvelopeFollower => "FLW".to_string(),
+        ModSource::Macro(i) => {
+            if label == format!("M{}", i + 1) {
+                label.to_string()
+            } else {
+                label
+                    .chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .take(3)
+                    .collect::<String>()
+                    .to_uppercase()
+            }
+        }
+        ModSource::Velocity => "VEL".to_string(),
+        ModSource::Key => "KEY".to_string(),
+        ModSource::Aftertouch => "AT".to_string(),
+        ModSource::ModWheel => "MW".to_string(),
+        ModSource::PitchBend => "PB".to_string(),
+        ModSource::Random => "RND".to_string(),
+        ModSource::NoteOnCounter => "CNT".to_string(),
+        ModSource::NoteModX => "X".to_string(),
+        ModSource::NoteModY => "Y".to_string(),
+    }
+}
+
+/// Whether the Voice card draws the velocity curve — see `picture_for`.
+const VOICE_PICTURE: bool = false;
+
 /// Which of the five inks a source's ring wears (`docs/flopsynth-next.md`
 /// §3.3) — the window may not see a `ModSource` (INVARIANT 4), so the
 /// host names the family.
@@ -575,7 +614,15 @@ fn picture_for(name: &str, patch: &Patch, phases: &[f32]) -> FlopsynthPicture {
     // The Voice card (§3.5): the velocity curve, the gain over velocity as
     // `velocity_gain` plays it, with the four custom points as marks — a
     // mark dragged sets its point.
-    if name == "Voice" {
+    //
+    // **Not drawn at 1180×840.** With eleven controls at three cells wide
+    // the card is four rows, and a picture on top of them runs 48 px into
+    // the strip (`at_the_minimum_size…` holds it out). §9.5 leaves the
+    // window's design size to Ty — 1240×860 would take it — so the curve
+    // is a chooser here and the picture waits on that call; the points
+    // stay addressable (`patch/voice/velocity_point[n]`) for a lane and a
+    // typed value.
+    if name == "Voice" && VOICE_PICTURE {
         use fontelle_core::{VelocityCurve, velocity_gain};
         let curve = patch.voice_config.velocity_curve;
         let points = (0..128).map(|v| velocity_gain(v as u8, curve)).collect();
@@ -806,6 +853,10 @@ pub fn describe(
         .iter()
         .map(|(source, _)| source_family(*source))
         .collect();
+    let source_short = source_list
+        .iter()
+        .map(|(source, label)| source_short(*source, label))
+        .collect();
     let (routes, destinations, curves) = match page {
         FlopsynthPage::Modulation => (
             route_rows(patch),
@@ -908,6 +959,7 @@ pub fn describe(
         sources,
         source_shapes,
         source_families,
+        source_short,
         destinations,
         curves,
         inspector,

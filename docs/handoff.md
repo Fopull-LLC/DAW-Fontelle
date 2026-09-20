@@ -16,6 +16,35 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-20 (Flopsynth II, Phase 3).** Modulation and voice are
+in — `PROGRESS.md`'s top entry. Things to know: (0) **modulation runs at
+step rate** (`voice::MOD_STEP`, eight samples): the sources are read at
+the top of each step, the moving routes summed in one `accumulate` pass,
+the layers' gain/pitch/pan/position ramped across the step from
+`Voice::live` — anything new a route can reach goes in `ModSums::add`
+and, if it ramps, `LayerLive`; a source that moves within a block says
+so in `ModSource::moves_within_a_block` or it is summed once a block;
+(1) **the gates set the clock** (`sampler.set_clock` per block in
+`flopsynth_presets.rs` and the three examples) — a render that does not
+freezes every free-running LFO and sequencer at phase 0, which is how the
+bank was voiced wrong for a year; (2) **the engine is block-size
+independent now** — the old first-block cutoff ramp from the unmodulated
+corner is gone, and a row whose sound depended on it says so in its
+recipe (Slap's 3 ms attack, Noise Comparator's smoothing); (3) the
+modulator slots are the instrument's: `Patch::fill_modulator_slots` on
+read and `patch_format::trimmed` on write, floor four — a new per-patch
+list of slots wants the same pair or the bank rewrites; (4) the LFO's
+smoothing exponent is `frames/512`; (5) `ModDest::FxParam` is evaluated
+in the *node* (`Sampler::fx_modulation`), not the voice, and
+`dest_address_in(patch, dest)` is the address function to call when an FX
+destination might be in the list; (6) `GlideMode` serialises as the old
+bool plus a flag (`GlideFlags`, `#[serde(flatten)]`) — do not add a
+`glide_mode` key; (7) a generator's state lives on the voice and is
+reset in `trigger_note` and `reset` both; (8) the Grand Piano is exempt
+from the peak gate by name, with the number — if it moves, the test
+says by how much. Open: the Voice card's velocity picture (§9.5, Ty's),
+the rows re-voiced (Ty's ear), Phase 4.
+
 **Updated 2026-09-19, later (Flopsynth II, Phase 2).** Oversampling is
 in — `PROGRESS.md`'s top entry. Things to know: (0) `Oversampling` lives
 in `fontelle-dsp/src/oversample.rs` with the two polyphase filters; the

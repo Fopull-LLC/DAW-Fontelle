@@ -535,6 +535,9 @@ pub struct FlopsynthView {
     /// strip's badges (§3.4): an envelope's curve, an LFO's cycle, a macro's
     /// value as one sample; empty for a source with no picture.
     pub source_shapes: Vec<Vec<f32>>,
+    /// A short name per source, index for index with `sources`, for a badge
+    /// too narrow for the whole one — see [`badge_caption`].
+    pub source_short: Vec<String>,
     /// Which family each source is, index for index with `sources` — the
     /// ink its badge and its rings wear (§3.3). The host's to say: the
     /// window never sees a `ModSource` (INVARIANT 4), and a name is not a
@@ -626,6 +629,7 @@ impl Default for FlopsynthView {
             scale: 1.0,
             source_shapes: Vec::new(),
             source_families: Vec::new(),
+            source_short: Vec::new(),
             destinations: Vec::new(),
             curves: Vec::new(),
             inspector: None,
@@ -1998,14 +2002,22 @@ pub fn badge_anatomy(badge: Rect, scale: f32) -> BadgeAnatomy {
 }
 
 /// A source's name as its badge says it: whole if it fits the name band,
-/// else cut to what does with an ellipsis — "Bright…" for a macro called
-/// Brightness. The window shapes each candidate it tries (the measure is
+/// else its short name (`FlopsynthView::source_short` — "L1" for LFO 1,
+/// "BRI" for Brightness) if that does, else cut to what fits with an
+/// ellipsis. The window shapes each candidate it tries (the measure is
 /// the shaper's), so the renderer, asking the same question of the same
 /// labels, gets the same answer.
-pub fn badge_caption(name: &str, room: f32, measure: Measure<'_>) -> String {
+///
+/// The short name came with phase 3: thirty-seven sources on the strip
+/// at 1180 px is thirty pixels a badge, and "LF…" said nothing.
+pub fn badge_caption(name: &str, short: &str, room: f32, measure: Measure<'_>) -> String {
     if measure(name) <= room {
         return name.to_string();
     }
+    if !short.is_empty() && measure(short) <= room {
+        return short.to_string();
+    }
+    let name = if short.is_empty() { name } else { short };
     let chars: Vec<char> = name.chars().collect();
     for n in (1..chars.len()).rev() {
         let head: String = chars[..n].iter().collect();

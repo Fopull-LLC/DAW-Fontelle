@@ -5853,15 +5853,16 @@ impl WindowApp {
                 .first()
                 .map(|badge| crate::canvas::badge_anatomy(*badge, view.scale).name.width)
                 .unwrap_or(crate::canvas::BADGE_W * view.scale);
-            for name in &view.sources {
+            for (index, name) in view.sources.iter().enumerate() {
                 want(&mut self.labels, &mut self.text, name);
+                let short = view.source_short.get(index).map_or("", String::as_str);
                 let labels = std::cell::RefCell::new((&mut self.labels, &mut self.text));
                 let measure = |s: &str| -> f32 {
                     let (labels, text) = &mut *labels.borrow_mut();
                     labels.ensure_styled(s, &font, t.caption, text);
                     labels.get_styled(s, t.caption).map_or(0.0, |l| l.width)
                 };
-                let _ = crate::canvas::badge_caption(name, name_room, &measure);
+                let _ = crate::canvas::badge_caption(name, short, name_room, &measure);
             }
             // The table's chips read in the value style; its heads as
             // captions; `+ route` and "none" with them.

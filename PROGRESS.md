@@ -19,6 +19,112 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-20 — Flopsynth II, Phase 3 (`docs/flopsynth-next.md`
+§4.2, §4.6, §7): modulation and voice: done, not released.** Five
+commits, each tests-first, looked at on `Xwayland :99`; the bench
+unchanged. Stealing was Phase 0's; everything else §4.2 and §4.6 name is
+in, and one thing they did not.
+
+- **The counts** (`7f382b1`): `MAX_LFOS` 8, `MAX_MOD_ENVELOPES` 5 (six
+  with the amp), `MACRO_COUNT` 8. **The slots are the instrument's, not
+  the patch's**: a Flopsynth row read from disk is filled to the full
+  counts with modulators at rest (`Patch::fill_modulator_slots`,
+  `envelope_at_rest`), and the writer trims trailing at-rest LFOs,
+  envelopes and macros back past the first four — so none of the 583
+  preset files moved (`export-factory-presets`: 0 written). The Init is
+  built the same way. `tests/mod_counts.rs`.
+- **The rate** (`9c29518`): the block is walked in `MOD_STEP` (eight
+  sample) steps — at each the mod envelopes and LFOs are read and
+  advanced, the routes whose source moves are summed in one pass
+  (`ModMatrix::accumulate`; the still ones once a block), and a layer's
+  gain, pitch, pan and position are ramped across the step from where
+  the last one left them (`LayerLive` on the voice). Cutoff, resonance,
+  drive and character are set per step, the rhythm they were rebuilt at.
+  `tests/mod_rate.rs`: a 20 Hz LFO on pitch is sidebands, not a comb
+  (the image 375 Hz under the note was −47 dB; under −92 now); a 5 ms
+  envelope on a gain is heard (it read −0.1 dB — the peak fell between
+  two block reads); a macro step ramps over the step. **Three things the
+  rate uncovered**, each fixed at the root: the unison cache keyed on the
+  note's frequency (eight `powf` a sample on a supersaw once pitch
+  ramped — it holds ratios now); the LFO smoothing coefficient was
+  `(smooth·0.995)^(32/frames)`, a time constant that depended on the
+  block size (it is `^(frames/512)`, the sound the knob had at 128); and
+  **the gates rendered 512-frame blocks and never set the clock** — the
+  old render read a source at the block's start and ramped the cutoff
+  from the *unmodulated* corner over the first block, so a filter
+  envelope, a noise burst or a velocity route arrived 10 ms late in the
+  gate and 2.7 ms late in the studio, and a free-running LFO sat at phase
+  0 in the gate, so rows were trimmed against a sweep parked at its
+  bottom (Morph Drone's `.out(138.4)`; Sidechain Feel at **+9.7 dBFS** in
+  the studio). The gate and the three examples set the clock now, the
+  engine is block-size independent (512 = 128 for every row, measured),
+  and the rows the change or the clock moved were re-voiced through
+  `preset_probe`: trims on 27 rows, and a named change with its reason on
+  Xylophone, Banjo, Prepared, Slap, Muted, Noise Comparator, Whale, Krell,
+  Bell Lead, Retro Lead, Talk Bass, SID Bass, Synth Brass, Sync Ramp and
+  Vactrol Bongo (the recipes say why, each). **The Grand Piano is exempted
+  from the peak gate by name** with its measured 2.32 on a four-note ff
+  chord — it always peaked there in the studio (the hammer's burst, +32
+  dB for its first 10 ms), and it is Ty's to voice or leave; its two
+  tests read the hammer where the studio plays it (0–20 ms) and a 51 dB
+  pp–ff span. Also: *Env n sustain* (`EnvelopeStageLevel(_, 4)`) was
+  offered by the Matrix page and read by nothing; it is applied.
+- **Shapes, the loop, LFO on LFO** (`016ee44`): the voice plays
+  `Lfo.shape` in place of the wave — the same `LfoShape::value` the
+  editor draws. `EnvelopeConfig::loop_stages` is read: while held, the
+  end of the second stage returns to the start of the first, the attack
+  ramping from the level it is at (a click at 10 Hz otherwise); a loop to
+  the sustain holds the plateau for the decay's length. An LFO on another
+  LFO's rate is FM — the walk keeps what the matrix routed to the LFOs
+  from one step to the next, so any LFO drives any other a step behind
+  and a pair pointing at each other is two coupled oscillators.
+  `tests/mod_shapes.rs`, `fontelle-dsp/tests/envelope_loop.rs`.
+- **Four sources, `FxParam`, velocity, glide** (`cc61953`):
+  `fontelle-core/src/mod_sources.rs` — `Chaos` (a Lorenz attractor with
+  a rate), `RandomWalk` (a target every 1/rate s and a one-pole to it),
+  `EnvelopeFollower` (the voice's own level, 5 ms up / 50 down),
+  `StepSeq(0|1)` (sixteen steps, a length, synced off the clock or free
+  from the note — state, not events, Ty's §9.3). On the strip after the
+  LFOs; a sequencer's inspector card is its steps as bars, dragged
+  (`FlopsynthPicture::Steps`, `step_at`), Chaos and Walk a trace and
+  their knobs; the follower has nothing to edit. `ModDest::FxParam(slot,
+  index)`: a route to an effect's own parameter — the chain runs once
+  for the instrument, so `Sampler::fx_modulation` reads the macros, the
+  wheels and the **newest** voice's sources and the node moves a copy of
+  the config per block (`dest_address_in` takes the patch, which an FX
+  address needs). `VoiceConfig.velocity_curve {Linear, Square, Soft,
+  Hard, Custom(4)}`; a layer's window fades over `PlaybackConfig.vel_fade`
+  velocities at each edge (`vel_low/vel_high/vel_fade` addresses).
+  `GlideMode {Notes, Legato, Always}` replaces `glide_legato_only`,
+  flattened into the file as the old bool plus `glide_always` when set —
+  no row moves, the switch's address reads what it read; `Always` is
+  portamento in a poly patch. `GlideCurve {Linear, Exponential, Fast,
+  Slow}` bends the fraction of the time. `ModDest::GlideTime` is read at
+  the note from the per-note sources. `tests/mod_sources.rs`,
+  `tests/velocity.rs`, `tests/glide.rs`, `flopsynth_fx.rs`.
+- **The strip at thirty-seven** (this commit): 37 sources at 1180 px is
+  30 px a badge and "LF…" said nothing, so every source has a short name
+  (`FlopsynthView::source_short`: E1, L8, S2, CHS, WLK, FLW, BRI, M5,
+  VEL, MW, PB, RND, CNT, X, Y) and `badge_caption` falls back to it
+  before the ellipsis. The Voice card has the glide's mode and shape and
+  the velocity curve as choosers; **its picture (the velocity curve with
+  the four points to drag) is built and held back** — eleven controls at
+  three cells wide are four rows, and a picture over them runs 48 px
+  into the strip; `at_the_minimum_size…` holds cards above the strip now
+  (it held them inside the window, which let the overlap through). That
+  is §9.5's call — 1240×860 takes it — and Ty's; the test is `#[ignore]`d
+  with the reason and the points are addressable meanwhile.
+- **Bench (§6):** Init 0.55 %, Supersaw 1.28 % / 2.83 % / 4.97 %, Grand
+  Piano 1.21 % (10: 12.1 %), Choir Ahh ×16 26.4 % — Phase 2's numbers,
+  within noise; the per-step walk is under the measure.
+- **Looked at:** the Synth page with the strip, the SEQ 1 card with a
+  drag across four steps, the Chaos and Walk cards, the Matrix page with
+  the inspector open, the source chooser (all 37, with thumbnails) and
+  the destination chooser's tail (Amp, Glide time, FX 1's six).
+- **Open for Ty:** the rows above, by ear (`--play-flopsynth <name>`);
+  the Grand Piano's ff peak; the hammer's timing (`grand_piano.rs` says
+  what the recipe would want if it is meant 10 ms in); and §9.5.
+
 **As of 2026-09-19 — Flopsynth II, Phase 2 (`docs/flopsynth-next.md`
 §4.1, §7), clean at the top: done, not released.** Oversampling for the
 things a mip pyramid cannot help, tests-first, looked at on `Xwayland
