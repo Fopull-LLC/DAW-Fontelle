@@ -78,10 +78,20 @@ fn the_panel_has_a_card_for_every_part_of_the_synth() {
             "ENV 2 \u{b7} filter",
             "ENV 3",
             "ENV 4",
+            "ENV 5",
+            "ENV 6",
             "LFO 1",
             "LFO 2",
             "LFO 3",
             "LFO 4",
+            "LFO 5",
+            "LFO 6",
+            "LFO 7",
+            "LFO 8",
+            "SEQ 1",
+            "SEQ 2",
+            "Chaos",
+            "Walk",
             "Macros",
             "Modulation (1)",
         ],
@@ -1894,10 +1904,10 @@ fn every_page_carries_the_sources_and_the_inspected_sources_card() {
             .iter()
             .any(|c| c.row == INSPECTOR_ROW && c.group.name.starts_with("ENV 1"))
     );
-    // The first macro is the first source after the last LFO, whatever the
-    // Grand Piano calls it.
+    // The first macro is the first source after the follower, whatever
+    // the Grand Piano calls it.
     let sources = session.mod_sources();
-    let m1 = sources.iter().rposition(|s| s.starts_with("LFO ")).unwrap() + 1;
+    let m1 = sources.iter().position(|s| s == "Follow").unwrap() + 1;
     let macros = session
         .flopsynth_inspecting(FlopsynthPage::Synth, Some(m1))
         .unwrap();
@@ -2087,4 +2097,165 @@ fn the_editors_pictures_are_the_dsps_own_curves() {
         session.selected_patch().unwrap().lfos[0].shape,
         Some(bounce)
     );
+}
+
+/// The generators of `docs/flopsynth-next.md` §4.2 are on the strip with
+/// the LFOs — two sequencers, the chaos, the walk, the follower — each
+/// with the ink of its family and a thumbnail of what it does, and each
+/// but the follower opens an editor in the inspector: a sequencer's is its
+/// sixteen steps as bars, dragged; the chaos's and the walk's a trace and
+/// their knobs.
+#[test]
+fn the_generators_are_on_the_strip_and_edited_in_the_inspector() {
+    use fontelle_ui::canvas::{FlopsynthPage, FlopsynthPicture, INSPECTOR_ROW};
+    use fontelle_ui::document::SourceFamily;
+    let mut session = a_flopsynth();
+    session.set_instrument_param(&ParamAddress::new("patch/seq[0]/step[2]"), 1.0);
+    session.set_instrument_param(&ParamAddress::new("patch/seq[0]/length"), 0.4);
+    let view = session.flopsynth(FlopsynthPage::Synth).expect("a window");
+    let at = |name: &str| {
+        view.sources
+            .iter()
+            .position(|s| s == name)
+            .unwrap_or_else(|| panic!("no {name} on the strip: {:?}", view.sources))
+    };
+    // After the last LFO, before the note sources.
+    let last_lfo = view
+        .sources
+        .iter()
+        .rposition(|s| s.starts_with("LFO "))
+        .unwrap();
+    assert_eq!(at("SEQ 1"), last_lfo + 1);
+    assert_eq!(at("SEQ 2"), last_lfo + 2);
+    assert_eq!(at("Chaos"), last_lfo + 3);
+    assert_eq!(at("Walk"), last_lfo + 4);
+    assert_eq!(at("Follow"), last_lfo + 5);
+    for name in ["SEQ 1", "SEQ 2", "Chaos", "Walk"] {
+        assert_eq!(view.source_families[at(name)], SourceFamily::Lfo, "{name}");
+        assert!(
+            view.source_shapes[at(name)].len() >= 16,
+            "{name} has a picture on its badge"
+        );
+    }
+    assert_eq!(view.source_families[at("Follow")], SourceFamily::Envelope);
+    // The sequencer's thumbnail is its steps: step 2 up, the rest at rest,
+    // over the seven that play.
+    let seq = &view.source_shapes[at("SEQ 1")];
+    let point_of = |step: usize| step * seq.len() / 7 + 1;
+    assert!(seq[point_of(2)] > 0.9, "step 2 is up: {seq:?}");
+    assert!(seq[point_of(1)].abs() < 0.1, "step 1 is at rest: {seq:?}");
+
+    // The inspector: a sequencer's card is its steps and its clock.
+    let inspecting = |source: &str| {
+        session
+            .flopsynth_inspecting(FlopsynthPage::Synth, Some(at(source)))
+            .expect("a window")
+            .cards
+            .into_iter()
+            .find(|c| c.row == INSPECTOR_ROW)
+    };
+    let seq = inspecting("SEQ 1").expect("a card for the sequencer");
+    assert_eq!(seq.group.name, "SEQ 1");
+    let FlopsynthPicture::Steps {
+        sequencer,
+        steps,
+        length,
+        ..
+    } = &seq.picture
+    else {
+        panic!("a sequencer's picture is its steps: {:?}", seq.picture);
+    };
+    assert_eq!(*sequencer, 0);
+    assert_eq!(steps.len(), 16);
+    assert_eq!(*length, 7);
+    assert!((steps[2] - 1.0).abs() < 1e-6 && steps[1].abs() < 1e-6);
+    let addresses: Vec<&str> = seq
+        .group
+        .params
+        .iter()
+        .map(|p| p.address.as_str())
+        .collect();
+    for tail in ["length", "sync", "rate", "division", "smooth"] {
+        assert!(
+            addresses.contains(&format!("patch/seq[0]/{tail}").as_str()),
+            "no {tail}: {addresses:?}"
+        );
+    }
+    assert!(
+        !addresses.iter().any(|a| a.contains("step[")),
+        "the steps are the picture, not sixteen knobs"
+    );
+    let chaos = inspecting("Chaos").expect("a card for the chaos");
+    assert!(matches!(chaos.picture, FlopsynthPicture::Curve { .. }));
+    assert_eq!(chaos.group.params.len(), 1);
+    let walk = inspecting("Walk").expect("a card for the walk");
+    assert!(matches!(walk.picture, FlopsynthPicture::Curve { .. }));
+    assert_eq!(walk.group.params.len(), 2);
+    assert!(
+        inspecting("Follow").is_none(),
+        "the follower has nothing to edit"
+    );
+    // And none of them is on a page: the strip is where they live.
+    for page in FlopsynthPage::ALL {
+        let view = session.flopsynth(page).unwrap();
+        assert!(
+            !view
+                .cards
+                .iter()
+                .any(|c| ["SEQ 1", "SEQ 2", "Chaos", "Walk"].contains(&c.group.name.as_str())),
+            "{page:?} carries a generator's card"
+        );
+    }
+}
+
+/// The Voice card's picture is the velocity curve (§3.5, §4.2): the gain
+/// over velocity, with the four custom points as marks — the curve the
+/// voice plays, read off `velocity_gain` so the picture cannot lie.
+#[test]
+fn the_voice_card_draws_the_velocity_curve() {
+    use fontelle_core::{VelocityCurve, velocity_gain};
+    use fontelle_ui::canvas::{FlopsynthPage, FlopsynthPicture};
+    let mut session = a_flopsynth();
+    let picture = |session: &fontelle_app::Session| {
+        session
+            .flopsynth(FlopsynthPage::Synth)
+            .unwrap()
+            .cards
+            .into_iter()
+            .find(|c| c.group.name == "Voice")
+            .expect("a Voice card")
+            .picture
+    };
+    let FlopsynthPicture::Curve { points, marks, .. } = picture(&session) else {
+        panic!("the Voice card's picture is a curve");
+    };
+    assert!(points.len() >= 32);
+    let at = |v: u8| points[(usize::from(v) * (points.len() - 1)) / 127];
+    assert!((at(127) - 1.0).abs() < 0.02 && at(0) < 0.02);
+    assert!(
+        (at(64) - velocity_gain(64, VelocityCurve::Square)).abs() < 0.03,
+        "the square: {}",
+        at(64)
+    );
+    assert_eq!(marks.len(), 4, "the four points, wherever the curve is");
+    assert!((marks[3].0 - 1.0).abs() < 1e-6 && (marks[1].0 - 64.0 / 127.0).abs() < 0.01);
+    // Choose linear: the middle rises to a half.
+    session.set_instrument_param(&ParamAddress::new("patch/voice/velocity_curve"), 0.0);
+    let FlopsynthPicture::Curve { points, .. } = picture(&session) else {
+        unreachable!()
+    };
+    let at = |v: u8| points[(usize::from(v) * (points.len() - 1)) / 127];
+    assert!((at(64) - 0.504).abs() < 0.03, "linear: {}", at(64));
+    // A point dragged: the curve is custom and passes through it.
+    session.set_instrument_param(&ParamAddress::new("patch/voice/velocity_point[1]"), 0.9);
+    let FlopsynthPicture::Curve { points, marks, .. } = picture(&session) else {
+        unreachable!()
+    };
+    let at = |v: u8| points[(usize::from(v) * (points.len() - 1)) / 127];
+    assert!(
+        (at(64) - 0.9).abs() < 0.03,
+        "custom through 0.9: {}",
+        at(64)
+    );
+    assert!((marks[1].1 - 0.9).abs() < 1e-6);
 }

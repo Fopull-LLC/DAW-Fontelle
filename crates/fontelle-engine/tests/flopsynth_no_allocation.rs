@@ -117,7 +117,31 @@ fn the_heaviest_patch() -> fontelle_core::Patch {
         route(ModSource::Velocity, ModDest::FilterDrive(0), 0.5),
         route(ModSource::Envelope(2), ModDest::OscUnisonBlend(0), 0.3),
         route(ModSource::Envelope(3), ModDest::LfoPhase(0), 0.2),
+        // The §4.2 generators, every one read, so their state is under the
+        // guard too: the attractor's sub-steps, the walk's draws, the
+        // follower's feed and a synced and a free sequencer.
+        route(ModSource::Chaos, ModDest::OscPosition(1), 0.3),
+        route(ModSource::RandomWalk, ModDest::LayerPan(2), 0.5),
+        route(ModSource::EnvelopeFollower, ModDest::FilterCutoff(1), 0.3),
+        route(ModSource::StepSeq(0), ModDest::LayerPitch(0), 0.05),
+        route(ModSource::StepSeq(1), ModDest::OscWarp(2), 0.4),
+        // And LFOs on LFOs, and a drawn shape, and a looping envelope.
+        route(ModSource::Lfo(0), ModDest::LfoRate(1), 0.3),
+        route(ModSource::Lfo(7), ModDest::Amp, 0.1),
+        route(ModSource::Envelope(5), ModDest::FilterResonance(0), 0.2),
     ]);
+    patch.sequencers[0].sync = true;
+    patch.sequencers[1].sync = false;
+    patch.sequencers[1].rate_hz = 7.0;
+    patch.sequencers[1].smooth = 0.3;
+    patch.lfos[7].shape = Some(fontelle_types::LfoShape::from_wave(
+        fontelle_types::LfoWave::Triangle,
+        16,
+    ));
+    patch.envelopes[5].loop_stages = Some((
+        fontelle_dsp::EnvStage::Attack,
+        fontelle_dsp::EnvStage::Decay,
+    ));
     patch.macros[0].value = 0.5;
 
     // And the chain, full.

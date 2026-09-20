@@ -30,6 +30,17 @@ pub enum ModSource {
     /// matters for the saved format: serde names variants, so no existing
     /// patch file can name this and none of them changes meaning.
     Macro(u8),
+    /// A Lorenz attractor per voice (`crate::mod_sources::Chaos`), −1..=1.
+    /// Appended after the variants above, like every source since the
+    /// first five, for the file's sake.
+    Chaos,
+    /// Smoothed noise per voice (`crate::mod_sources::RandomWalk`), −1..=1.
+    RandomWalk,
+    /// The voice's own level, 0..=1 (`crate::mod_sources::FollowerState`).
+    EnvelopeFollower,
+    /// One of the patch's two step sequencers
+    /// (`crate::mod_sources::StepSequencer`), −1..=1.
+    StepSeq(u8),
 }
 
 impl ModSource {
@@ -44,7 +55,25 @@ impl ModSource {
     /// moved"), so a preset of key and velocity routes pays nothing for
     /// the rate.
     pub fn moves_within_a_block(self) -> bool {
-        matches!(self, Self::Envelope(_) | Self::Lfo(_))
+        matches!(
+            self,
+            Self::Envelope(_)
+                | Self::Lfo(_)
+                | Self::Chaos
+                | Self::RandomWalk
+                | Self::EnvelopeFollower
+                | Self::StepSeq(_)
+        )
+    }
+
+    /// Whether the source swings both ways. An LFO, the bend, the chaos,
+    /// the walk and a sequencer's steps do; an envelope, a macro, a
+    /// velocity, the follower push one way from nothing.
+    pub fn is_bipolar(self) -> bool {
+        matches!(
+            self,
+            Self::Lfo(_) | Self::PitchBend | Self::Chaos | Self::RandomWalk | Self::StepSeq(_)
+        )
     }
 }
 
@@ -82,6 +111,18 @@ pub enum ModDest {
     /// than five — which is the difference between a preset a person can
     /// read and one they cannot.
     Amp,
+    /// One of the chain's effects' own parameters (`docs/flopsynth-next.md`
+    /// §4.2): the slot, and the parameter's index in that effect's
+    /// `specs()`. Instrument-wide — the chain runs once for every voice —
+    /// so it reads the macros, the wheels and the **newest** voice's
+    /// sources, the way the LFO pictures do. Full depth is the parameter's
+    /// whole travel. Appended, for the file's sake.
+    FxParam(u8, u8),
+    /// The glide time of the note about to start (§4.6), in **seconds**
+    /// added to the patch's: read once, at the note, from the per-note
+    /// sources — a soft note slides slowly, a hard one snaps. Full depth
+    /// is the glide knob's whole range.
+    GlideTime,
 }
 
 /// How a route reshapes its source before applying depth.
@@ -195,6 +236,8 @@ impl ModDest {
             // the bottom of its swing and not so much that an ordinary depth
             // sits in the bottom of the dial.
             Self::Amp => 24.0,
+            // The glide knob's own range, in seconds.
+            Self::GlideTime => crate::patch_params::GLIDE_MAX_S,
             // Position, warp, blend, drive and character are all whole-knob
             // parameters: full depth is the whole of their travel.
             _ => 1.0,

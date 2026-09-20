@@ -39,6 +39,7 @@ use fontelle_types::{LfoWave, NoteDivision};
 
 use crate::patch::{Lfo, LfoMode, MACRO_COUNT, Patch, Source};
 use crate::playback::PlaybackConfig;
+use crate::voice::{GlideCurve, GlideMode, VelocityCurve};
 
 /// The loudest and quietest a level goes, in dB. Shared by a channel's own
 /// fader and by a layer's, so the two dials mean the same thing.
@@ -158,8 +159,35 @@ pub fn set(patch: &mut Patch, address: &str, value: f32) -> bool {
             patch.voice_config.glide_time_s = lerp(value, 0.0, GLIDE_MAX_S);
             true
         }
+        // The switch keeps its two values (INVARIANT 7): on is legato,
+        // off is between notes. `Always` is the chooser's, below.
         "patch/voice/legato" => {
-            patch.voice_config.glide_legato_only = value >= 0.5;
+            patch.voice_config.glide_mode = if value >= 0.5 {
+                GlideMode::Legato
+            } else {
+                GlideMode::Notes
+            };
+            true
+        }
+        "patch/voice/glide_mode" => {
+            patch.voice_config.glide_mode =
+                GlideMode::ALL[choice_index(value, GlideMode::ALL.len())];
+            true
+        }
+        "patch/voice/glide_curve" => {
+            patch.voice_config.glide_curve =
+                GlideCurve::ALL[choice_index(value, GlideCurve::ALL.len())];
+            true
+        }
+        "patch/voice/velocity_curve" => {
+            let chosen = VelocityCurve::ALL[choice_index(value, VelocityCurve::ALL.len())];
+            // Choosing custom keeps the points that were drawn.
+            patch.voice_config.velocity_curve = match (chosen, patch.voice_config.velocity_curve) {
+                (VelocityCurve::Custom(_), VelocityCurve::Custom(points)) => {
+                    VelocityCurve::Custom(points)
+                }
+                (other, _) => other,
+            };
             true
         }
         "patch/voice/mode" => {
@@ -205,6 +233,46 @@ pub fn set(patch: &mut Patch, address: &str, value: f32) -> bool {
             if let Some((index, field)) = indexed(address, "patch/lfo[") {
                 return set_lfo(patch, index, field, value);
             }
+            if let Some((index, field)) = indexed(address, "patch/seq[") {
+                return set_sequencer(patch, index, field, value);
+            }
+            // A custom velocity curve's four points. Setting one makes the
+            // curve custom, from the points it had or the linear ones.
+            if let Some(rest) = address.strip_prefix("patch/voice/velocity_point[")
+                && let Some(number) = rest.strip_suffix(']')
+                && let Ok(point) = number.parse::<usize>()
+                && point < 4
+            {
+                let mut points = match patch.voice_config.velocity_curve {
+                    VelocityCurve::Custom(points) => points,
+                    _ => [0.25, 0.5, 0.75, 1.0],
+                };
+                points[point] = value.clamp(0.0, 1.0);
+                patch.voice_config.velocity_curve = VelocityCurve::Custom(points);
+                return true;
+            }
+            if let Some(field) = address.strip_prefix("patch/chaos/") {
+                return match field {
+                    "rate" => {
+                        patch.chaos.rate_hz = lerp_log(value, CHAOS_MIN_HZ, CHAOS_MAX_HZ);
+                        true
+                    }
+                    _ => false,
+                };
+            }
+            if let Some(field) = address.strip_prefix("patch/walk/") {
+                return match field {
+                    "rate" => {
+                        patch.walk.rate_hz = lerp_log(value, LFO_MIN_HZ, LFO_MAX_HZ);
+                        true
+                    }
+                    "smooth" => {
+                        patch.walk.smooth = value.clamp(0.0, 1.0);
+                        true
+                    }
+                    _ => false,
+                };
+            }
             if let Some((index, field)) = indexed(address, "patch/mod[") {
                 if field != "depth" {
                     return false;
@@ -232,6 +300,39 @@ pub fn set(patch: &mut Patch, address: &str, value: f32) -> bool {
             false
         }
     }
+}
+
+/// The chaos source's rate: from a drift over a minute to a buzz.
+pub const CHAOS_MIN_HZ: f32 = 0.02;
+pub const CHAOS_MAX_HZ: f32 = 50.0;
+
+/// A step sequencer's controls (`docs/flopsynth-next.md` §4.2): the
+/// sixteen steps by index, each bipolar over the dial like a route's
+/// depth, the length, and the same rate/sync/division/smooth an LFO has.
+fn set_sequencer(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool {
+    use crate::mod_sources::SEQ_STEPS;
+    let Some(seq) = patch.sequencers.get_mut(index) else {
+        return false;
+    };
+    if let Some(rest) = field.strip_prefix("step[")
+        && let Some(number) = rest.strip_suffix(']')
+        && let Ok(step) = number.parse::<usize>()
+        && step < SEQ_STEPS
+    {
+        seq.steps[step] = value.clamp(0.0, 1.0) * 2.0 - 1.0;
+        return true;
+    }
+    match field {
+        "length" => seq.length = (choice_index(value, SEQ_STEPS) + 1) as u8,
+        "rate" => seq.rate_hz = lerp_log(value, LFO_MIN_HZ, LFO_MAX_HZ),
+        "sync" => seq.sync = value >= 0.5,
+        "division" => {
+            seq.division = NoteDivision::ALL[choice_index(value, NoteDivision::ALL.len())];
+        }
+        "smooth" => seq.smooth = value.clamp(0.0, 1.0),
+        _ => return false,
+    }
+    true
 }
 
 fn set_lfo(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool {
@@ -358,6 +459,19 @@ fn set_layer(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool {
     match field {
         "gain" => layer.gain_db = lerp(value, GAIN_MIN_DB, GAIN_MAX_DB),
         "pan" => layer.pan = value * 2.0 - 1.0,
+        // The velocity window (`docs/flopsynth-next.md` §4.2): its two
+        // edges, kept in order, and the fade inside each.
+        "vel_low" => {
+            let low = (value.clamp(0.0, 1.0) * 127.0).round() as u8;
+            layer.vel_range.0 = low;
+            layer.vel_range.1 = layer.vel_range.1.max(low);
+        }
+        "vel_high" => {
+            let high = (value.clamp(0.0, 1.0) * 127.0).round() as u8;
+            layer.vel_range.1 = high;
+            layer.vel_range.0 = layer.vel_range.0.min(high);
+        }
+        "vel_fade" => layer.playback.vel_fade = (value.clamp(0.0, 1.0) * 127.0).round() as u8,
         // The three below are an oscillator's, and they are refused on a
         // sampled layer rather than silently writing a root key and a tuning
         // that would transpose somebody's piano.
@@ -576,7 +690,25 @@ pub fn value(patch: &Patch, address: &str) -> Option<f32> {
             MAX_POLYPHONY,
         )),
         "patch/voice/glide" => Some(unlerp(patch.voice_config.glide_time_s, 0.0, GLIDE_MAX_S)),
-        "patch/voice/legato" => Some(bool_value(patch.voice_config.glide_legato_only)),
+        "patch/voice/legato" => Some(bool_value(
+            patch.voice_config.glide_mode == GlideMode::Legato,
+        )),
+        "patch/voice/glide_mode" => {
+            let at = GlideMode::ALL
+                .iter()
+                .position(|m| *m == patch.voice_config.glide_mode)?;
+            Some(choice_value(at, GlideMode::ALL.len()))
+        }
+        "patch/voice/glide_curve" => {
+            let at = GlideCurve::ALL
+                .iter()
+                .position(|c| *c == patch.voice_config.glide_curve)?;
+            Some(choice_value(at, GlideCurve::ALL.len()))
+        }
+        "patch/voice/velocity_curve" => Some(choice_value(
+            patch.voice_config.velocity_curve.index(),
+            VelocityCurve::ALL.len(),
+        )),
         "patch/voice/mode" => {
             let at = VOICE_MODES
                 .iter()
@@ -646,6 +778,55 @@ pub fn value(patch: &Patch, address: &str) -> Option<f32> {
                             .unwrap_or(0);
                         Some(choice_value(at, ENV_LOOPS.len()))
                     }
+                    _ => None,
+                };
+            }
+            if let Some(rest) = address.strip_prefix("patch/voice/velocity_point[")
+                && let Some(number) = rest.strip_suffix(']')
+                && let Ok(point) = number.parse::<usize>()
+                && point < 4
+            {
+                return Some(match patch.voice_config.velocity_curve {
+                    VelocityCurve::Custom(points) => points[point].clamp(0.0, 1.0),
+                    // What the drawn points would be, read off the curve.
+                    curve => crate::voice::velocity_gain([32u8, 64, 96, 127][point], curve),
+                });
+            }
+            if let Some((index, field)) = indexed(address, "patch/seq[") {
+                use crate::mod_sources::SEQ_STEPS;
+                let seq = patch.sequencers.get(index)?;
+                if let Some(rest) = field.strip_prefix("step[")
+                    && let Some(number) = rest.strip_suffix(']')
+                    && let Ok(step) = number.parse::<usize>()
+                    && step < SEQ_STEPS
+                {
+                    return Some((seq.steps[step].clamp(-1.0, 1.0) + 1.0) / 2.0);
+                }
+                return match field {
+                    "length" => Some(choice_value(
+                        usize::from(seq.length.clamp(1, SEQ_STEPS as u8)) - 1,
+                        SEQ_STEPS,
+                    )),
+                    "rate" => Some(unlerp_log(seq.rate_hz, LFO_MIN_HZ, LFO_MAX_HZ)),
+                    "sync" => Some(bool_value(seq.sync)),
+                    "division" => {
+                        let at = NoteDivision::ALL.iter().position(|d| *d == seq.division)?;
+                        Some(choice_value(at, NoteDivision::ALL.len()))
+                    }
+                    "smooth" => Some(seq.smooth.clamp(0.0, 1.0)),
+                    _ => None,
+                };
+            }
+            if let Some(field) = address.strip_prefix("patch/chaos/") {
+                return match field {
+                    "rate" => Some(unlerp_log(patch.chaos.rate_hz, CHAOS_MIN_HZ, CHAOS_MAX_HZ)),
+                    _ => None,
+                };
+            }
+            if let Some(field) = address.strip_prefix("patch/walk/") {
+                return match field {
+                    "rate" => Some(unlerp_log(patch.walk.rate_hz, LFO_MIN_HZ, LFO_MAX_HZ)),
+                    "smooth" => Some(patch.walk.smooth.clamp(0.0, 1.0)),
                     _ => None,
                 };
             }
@@ -725,6 +906,9 @@ pub fn value(patch: &Patch, address: &str) -> Option<f32> {
                 return match field {
                     "gain" => Some(unlerp(layer.gain_db, GAIN_MIN_DB, GAIN_MAX_DB)),
                     "pan" => Some((layer.pan.clamp(-1.0, 1.0) + 1.0) / 2.0),
+                    "vel_low" => Some(f32::from(layer.vel_range.0) / 127.0),
+                    "vel_high" => Some(f32::from(layer.vel_range.1) / 127.0),
+                    "vel_fade" => Some(f32::from(layer.playback.vel_fade) / 127.0),
                     "shape" => match layer.source {
                         crate::patch::Source::Oscillator(kind) => {
                             let at = SHAPES.iter().position(|(k, _)| *k == kind)?;

@@ -78,8 +78,8 @@ pub use flopsynth::{
     lfo_shape_curve_points, lfo_shape_hit, lfo_shape_point_at, lfo_tension_drag, matrix_depth_at,
     matrix_hit, picture_control, preset_about, preset_page_rows, preset_shelves, presets_hit,
     response_curve_points, ring_band, ring_bands, ring_depth, ring_dot, ring_hit, ring_hit_index,
-    ring_live, ring_range, route_landing, sound_outline_points, spectrum_bars, wave_curve_points,
-    wave_position_at,
+    ring_live, ring_range, route_landing, sound_outline_points, spectrum_bars, step_at, step_bars,
+    wave_curve_points, wave_position_at,
 };
 pub use gestures::{
     BADGE_CLICK_SLOP, BadgeGesture, FlopKnobMenu, FlopKnobMenuItem, NUDGE, NUDGE_FINE, Precision,

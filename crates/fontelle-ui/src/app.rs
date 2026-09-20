@@ -115,6 +115,11 @@ enum Drag {
     /// two answer different numbers of controls — a wave moves the position
     /// and a response moves the corner *and* the resonance.
     FlopWave(usize),
+    /// A sequencer's steps (§4.2), set under the pointer.
+    FlopSteps(usize),
+    /// The Voice card's velocity curve (§4.2): the nearest custom point
+    /// takes the pointer's height.
+    FlopVelocity(usize),
     FlopResponse(usize),
     /// One corner of an envelope. Which one, and where the drag started, are
     /// in `flop_node` — the same arrangement `flop_knob` has, and for the same
@@ -2994,8 +2999,11 @@ impl WindowApp {
             Drag::FlopAssign | Drag::FlopSlot | Drag::FlopRoute | Drag::FlopShape => {
                 Some(Pointer::Grabbing)
             }
-            // A response is dragged in both axes at once, like a band handle.
-            Drag::FlopResponse(_) => Some(Pointer::Grabbing),
+            // A response is dragged in both axes at once, like a band handle;
+            // a sequencer's steps are set by height as the pointer crosses.
+            Drag::FlopResponse(_) | Drag::FlopSteps(_) | Drag::FlopVelocity(_) => {
+                Some(Pointer::Grabbing)
+            }
             // A band handle goes wherever the pointer does, in both axes.
             Drag::EqHandle(_) => Some(Pointer::Grabbing),
             Drag::TimelineSelect | Drag::RollSelect => Some(Pointer::ResizeX),
@@ -3637,6 +3645,8 @@ impl ApplicationHandler for WindowApp {
                     Drag::Knob
                         | Drag::FlopKnob
                         | Drag::FlopWave(_)
+                        | Drag::FlopSteps(_)
+                        | Drag::FlopVelocity(_)
                         | Drag::FlopResponse(_)
                         | Drag::FlopEnvNode
                         | Drag::FlopShape
@@ -6998,6 +7008,8 @@ impl WindowApp {
             Drag::Knob => self.drag_knob(y),
             Drag::FlopKnob => self.drag_flop_knob(y),
             Drag::FlopWave(card) => self.drag_flop_wave(card, x),
+            Drag::FlopSteps(card) => self.drag_flop_steps(card, x, y),
+            Drag::FlopVelocity(card) => self.drag_flop_velocity(card, x, y),
             Drag::FlopResponse(card) => self.drag_flop_response(card, x, y),
             Drag::FlopEnvNode => self.drag_flop_env_node(x, y),
             Drag::FlopShape => self.drag_flop_shape(x, y),
@@ -9112,6 +9124,20 @@ impl WindowApp {
                     }
                 }
             }
+            // A sequencer's steps (§4.2): the bar under the pointer takes
+            // the pointer's height, and keeps taking it as the drag goes.
+            FlopsynthPicture::Steps { .. } => {
+                self.drag = Drag::FlopSteps(card);
+                self.drag_flop_steps(card, x, y);
+            }
+            // The Voice card's curve is the velocity curve (§4.2), and its
+            // marks are the four custom points: a drag on one sets it.
+            FlopsynthPicture::Curve { marks, .. } if self.flop_card_is(card, "Voice") => {
+                if !marks.is_empty() {
+                    self.drag = Drag::FlopVelocity(card);
+                    self.drag_flop_velocity(card, x, y);
+                }
+            }
             // A wave's picture is a read-out: its shape is a chooser and its
             // rate is a knob, and there is nothing in the drawing to aim at.
             FlopsynthPicture::Lfo { .. }
@@ -9207,6 +9233,68 @@ impl WindowApp {
         };
         let position = crate::canvas::wave_position_at(picture, x);
         self.set_flop_picture_param(card, "position", position);
+    }
+
+    /// A drag over a sequencer's steps: the step under the pointer takes
+    /// the pointer's height, through its own address — the same wire a
+    /// knob or a lane on it uses, so the edit is undone and automated like
+    /// any other.
+    fn drag_flop_steps(&mut self, card: usize, x: f32, y: f32) {
+        use crate::canvas::FlopsynthPicture;
+        let Some(picture) = self.flopsynth_layout.cards.get(card).map(|c| c.picture) else {
+            return;
+        };
+        let Some(FlopsynthPicture::Steps {
+            sequencer, length, ..
+        }) = self
+            .flopsynth
+            .as_ref()
+            .and_then(|view| view.cards.get(card))
+            .map(|card| &card.picture)
+        else {
+            return;
+        };
+        let Some((index, value)) = crate::canvas::step_at(picture, *length, x, y) else {
+            return;
+        };
+        let address =
+            fontelle_types::ParamAddress::new(format!("patch/seq[{sequencer}]/step[{index}]"));
+        self.set_param(&address, (value + 1.0) * 0.5);
+    }
+
+    /// Whether card `card` of the window is the one called `name`.
+    fn flop_card_is(&self, card: usize, name: &str) -> bool {
+        self.flopsynth
+            .as_ref()
+            .and_then(|view| view.cards.get(card))
+            .is_some_and(|card| card.group.name == name)
+    }
+
+    /// A drag over the Voice card's velocity curve: the custom point
+    /// nearest the pointer's velocity takes the pointer's height, through
+    /// `patch/voice/velocity_point[n]` — which makes the curve custom.
+    fn drag_flop_velocity(&mut self, card: usize, x: f32, y: f32) {
+        let Some(picture) = self.flopsynth_layout.cards.get(card).map(|c| c.picture) else {
+            return;
+        };
+        if picture.width <= 0.0 || picture.height <= 0.0 {
+            return;
+        }
+        let velocity = ((x - picture.x) / picture.width).clamp(0.0, 1.0);
+        // The points sit at 32, 64, 96 and 127: the nearest by velocity.
+        let point = [32.0f32, 64.0, 96.0, 127.0]
+            .iter()
+            .enumerate()
+            .min_by(|a, b| {
+                (a.1 / 127.0 - velocity)
+                    .abs()
+                    .total_cmp(&(b.1 / 127.0 - velocity).abs())
+            })
+            .map_or(3, |(i, _)| i);
+        let level = 1.0 - ((y - picture.y) / picture.height).clamp(0.0, 1.0);
+        let address =
+            fontelle_types::ParamAddress::new(format!("patch/voice/velocity_point[{point}]"));
+        self.set_param(&address, level);
     }
 
     fn drag_flop_response(&mut self, card: usize, x: f32, y: f32) {

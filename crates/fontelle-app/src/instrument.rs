@@ -129,8 +129,8 @@ pub fn describe(title: &str, patch: &Patch, gain_db: f32, pan: f32) -> Instrumen
             param(
                 "patch/voice/legato",
                 "legato",
-                bool_value(voice.glide_legato_only),
-                on_off(voice.glide_legato_only),
+                bool_value(voice.glide_mode == fontelle_core::GlideMode::Legato),
+                on_off(voice.glide_mode == fontelle_core::GlideMode::Legato),
                 ParamKind::Switch,
             ),
             {
@@ -620,6 +620,61 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                 seconds(voice.glide_time_s),
                 ParamKind::Knob,
             ),
+            // The glide's mode and shape (§4.6) and the velocity curve
+            // (§4.2), each a chooser; the curve is the card's picture.
+            {
+                use fontelle_core::GlideMode;
+                let at = GlideMode::ALL
+                    .iter()
+                    .position(|m| *m == voice.glide_mode)
+                    .unwrap_or(0);
+                param(
+                    "patch/voice/glide_mode",
+                    "when",
+                    choice_value(at, GlideMode::ALL.len()),
+                    voice.glide_mode.label().to_string(),
+                    ParamKind::Choice(
+                        GlideMode::ALL
+                            .iter()
+                            .map(|m| m.label().to_string())
+                            .collect(),
+                    ),
+                )
+            },
+            {
+                use fontelle_core::GlideCurve;
+                let at = GlideCurve::ALL
+                    .iter()
+                    .position(|c| *c == voice.glide_curve)
+                    .unwrap_or(0);
+                param(
+                    "patch/voice/glide_curve",
+                    "shape",
+                    choice_value(at, GlideCurve::ALL.len()),
+                    voice.glide_curve.label().to_string(),
+                    ParamKind::Choice(
+                        GlideCurve::ALL
+                            .iter()
+                            .map(|c| c.label().to_string())
+                            .collect(),
+                    ),
+                )
+            },
+            {
+                use fontelle_core::VelocityCurve;
+                param(
+                    "patch/voice/velocity_curve",
+                    "velocity",
+                    choice_value(voice.velocity_curve.index(), VelocityCurve::ALL.len()),
+                    voice.velocity_curve.label().to_string(),
+                    ParamKind::Choice(
+                        VelocityCurve::ALL
+                            .iter()
+                            .map(|c| c.label().to_string())
+                            .collect(),
+                    ),
+                )
+            },
             param(
                 "patch/voice/bend_range",
                 "bend",
@@ -1104,7 +1159,12 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
     }
 
     // --- Four envelopes ------------------------------------------------
-    for (index, env) in patch.envelopes.iter().enumerate().take(4) {
+    for (index, env) in patch
+        .envelopes
+        .iter()
+        .enumerate()
+        .take(fontelle_core::MAX_MOD_ENVELOPES + 1)
+    {
         let shape = |field: &str, label: &str, value: f32| {
             param(
                 &format!("patch/env[{index}]/{field}"),
@@ -1166,8 +1226,8 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
         });
     }
 
-    // --- Four LFOs -----------------------------------------------------
-    for (index, lfo) in patch.lfos.iter().enumerate().take(4) {
+    // --- The LFOs, eight since phase 3 --------------------------------
+    for (index, lfo) in patch.lfos.iter().enumerate().take(fontelle_core::MAX_LFOS) {
         let wave = LfoWave::ALL
             .iter()
             .position(|w| *w == lfo.wave)
@@ -1316,6 +1376,102 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                         ParamKind::Choice(vec!["smooth".to_string(), "step".to_string()]),
                     )
                 },
+            ],
+        });
+    }
+
+    // --- The §4.2 generators: two sequencers, the chaos, the walk -------
+    //
+    // Each edited in the inspector like an LFO. A sequencer's sixteen steps
+    // are its picture, dragged, not sixteen knobs — the `step[n]` addresses
+    // are in `flopsynth::addresses` for automation and the drag, and only
+    // the clock and the length are controls here.
+    for (index, seq) in patch.sequencers.iter().enumerate() {
+        use fontelle_core::mod_sources::SEQ_STEPS;
+        let division = NoteDivision::ALL
+            .iter()
+            .position(|d| *d == seq.division)
+            .unwrap_or(0);
+        let length = usize::from(seq.length.clamp(1, SEQ_STEPS as u8));
+        groups.push(InstrumentGroup {
+            name: format!("SEQ {}", index + 1),
+            params: vec![
+                param(
+                    &format!("patch/seq[{index}]/length"),
+                    "steps",
+                    choice_value(length - 1, SEQ_STEPS),
+                    length.to_string(),
+                    ParamKind::Choice((1..=SEQ_STEPS).map(|n| n.to_string()).collect()),
+                ),
+                param(
+                    &format!("patch/seq[{index}]/sync"),
+                    "sync",
+                    bool_value(seq.sync),
+                    on_off(seq.sync),
+                    ParamKind::Switch,
+                ),
+                param(
+                    &format!("patch/seq[{index}]/rate"),
+                    "rate",
+                    unlerp_log(seq.rate_hz, LFO_MIN_HZ, LFO_MAX_HZ),
+                    if seq.sync {
+                        "(synced)".to_string()
+                    } else {
+                        format!("{:.2} Hz", seq.rate_hz)
+                    },
+                    ParamKind::Knob,
+                ),
+                param(
+                    &format!("patch/seq[{index}]/division"),
+                    "division",
+                    choice_value(division, NoteDivision::ALL.len()),
+                    seq.division.label().to_string(),
+                    ParamKind::Choice(
+                        NoteDivision::ALL
+                            .iter()
+                            .map(|d| d.label().to_string())
+                            .collect(),
+                    ),
+                ),
+                param(
+                    &format!("patch/seq[{index}]/smooth"),
+                    "smooth",
+                    seq.smooth.clamp(0.0, 1.0),
+                    format!("{:.0}%", seq.smooth.clamp(0.0, 1.0) * 100.0),
+                    ParamKind::Knob,
+                ),
+            ],
+        });
+    }
+    {
+        use fontelle_core::patch_params::{CHAOS_MAX_HZ, CHAOS_MIN_HZ};
+        groups.push(InstrumentGroup {
+            name: "Chaos".to_string(),
+            params: vec![param(
+                "patch/chaos/rate",
+                "rate",
+                unlerp_log(patch.chaos.rate_hz, CHAOS_MIN_HZ, CHAOS_MAX_HZ),
+                format!("{:.2} Hz", patch.chaos.rate_hz),
+                ParamKind::Knob,
+            )],
+        });
+        groups.push(InstrumentGroup {
+            name: "Walk".to_string(),
+            params: vec![
+                param(
+                    "patch/walk/rate",
+                    "rate",
+                    unlerp_log(patch.walk.rate_hz, LFO_MIN_HZ, LFO_MAX_HZ),
+                    format!("{:.2} Hz", patch.walk.rate_hz),
+                    ParamKind::Knob,
+                ),
+                param(
+                    "patch/walk/smooth",
+                    "smooth",
+                    patch.walk.smooth.clamp(0.0, 1.0),
+                    format!("{:.0}%", patch.walk.smooth.clamp(0.0, 1.0) * 100.0),
+                    ParamKind::Knob,
+                ),
             ],
         });
     }

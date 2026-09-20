@@ -300,3 +300,183 @@ fn a_patch_with_no_glide_time_jumps_the_way_it_always_did() {
         "with no glide the second note is at its own pitch immediately"
     );
 }
+
+// --- Phase 3 (`docs/flopsynth-next.md` §4.6): the mode, the curve, and a
+// --- per-note glide time.
+
+use fontelle_core::{Curve, GlideCurve, GlideMode, ModDest, ModRoute, ModSource};
+
+/// Where a mono note is between its start and its target, as a fraction of
+/// the octave, `frames` into the glide.
+fn glide_progress(patch: Patch, store: &SampleStore, frames: usize) -> f32 {
+    glide_progress_after(patch, store, frames, false)
+}
+
+/// As [`glide_progress`], letting go of the first note before the second
+/// when `release_first` — so a poly patch has one voice to measure.
+fn glide_progress_after(
+    patch: Patch,
+    store: &SampleStore,
+    frames: usize,
+    release_first: bool,
+) -> f32 {
+    let mut sampler = Sampler::new(patch);
+    sampler.prepare(&PrepareContext {
+        sample_rate: SR,
+        max_block_size: 128,
+    });
+    sampler.trigger(NoteTrigger::new(60, 100));
+    let root = period(&render(&mut sampler, store, 2048));
+    if release_first {
+        sampler.note_off(60, 0);
+        render(&mut sampler, store, 128);
+    }
+    sampler.trigger(NoteTrigger::new(72, 100));
+    if frames > 0 {
+        render(&mut sampler, store, frames);
+    }
+    let now = period(&render(&mut sampler, store, 512));
+    // Period halves over the octave; progress in semitones over twelve.
+    (root / now).log2()
+}
+
+/// The glide's shape (§4.6): linear is a straight line in semitones, fast
+/// covers most of the way early, slow late, and exponential is the
+/// capacitor's curve — quick off the mark and asymptotic at the end.
+#[test]
+fn the_glide_curve_shapes_the_way_there() {
+    let mut store = SampleStore::new();
+    let base = {
+        let mut patch = ramp_patch(&mut store);
+        patch.voice_config.retrigger = RetriggerMode::Mono;
+        patch.voice_config.glide_time_s = 0.2;
+        patch
+    };
+    let halfway = (0.1 * SR) as usize;
+    let with = |curve: GlideCurve, frames: usize| {
+        let mut patch = base.clone();
+        patch.voice_config.glide_curve = curve;
+        glide_progress(patch, &store, frames)
+    };
+    let linear = with(GlideCurve::Linear, halfway);
+    assert!(
+        (0.4..=0.6).contains(&linear),
+        "linear is halfway at half time: {linear:.2}"
+    );
+    let fast = with(GlideCurve::Fast, halfway);
+    assert!(
+        fast > 0.68,
+        "fast is most of the way at half time: {fast:.2}"
+    );
+    let slow = with(GlideCurve::Slow, halfway);
+    assert!(
+        slow < 0.32,
+        "slow has hardly started at half time: {slow:.2}"
+    );
+    let exponential = with(GlideCurve::Exponential, halfway);
+    assert!(
+        exponential > 0.85,
+        "exponential is nearly there at half time: {exponential:.2}"
+    );
+    // And every one of them arrives.
+    for curve in GlideCurve::ALL {
+        let landed = with(curve, (0.3 * SR) as usize);
+        assert!(
+            (landed - 1.0).abs() < 0.06,
+            "{curve:?} arrives: {landed:.2}"
+        );
+    }
+    assert_eq!(GlideCurve::default(), GlideCurve::Linear);
+}
+
+/// The mode (§4.6): `Always` is portamento in a poly patch — every note
+/// starts where the last one was — which the old bool could not say; the
+/// bool's address keeps reading the same two values it did.
+#[test]
+fn glide_always_is_portamento_in_a_poly_patch() {
+    use fontelle_core::patch_params::{set, value};
+    let mut store = SampleStore::new();
+    let mut patch = ramp_patch(&mut store);
+    patch.voice_config.retrigger = RetriggerMode::Poly;
+    patch.voice_config.glide_time_s = 0.2;
+    // Poly and the old modes: a second note jumps to its own pitch.
+    for mode in [GlideMode::Notes, GlideMode::Legato] {
+        patch.voice_config.glide_mode = mode;
+        let progress = glide_progress_after(patch.clone(), &store, 0, true);
+        assert!(
+            progress > 0.9,
+            "{mode:?} in poly does not glide: {progress:.2}"
+        );
+    }
+    // Always: it slides from the note before, even in poly — and the
+    // first voice is still sounding underneath, released or not.
+    patch.voice_config.glide_mode = GlideMode::Always;
+    let progress = glide_progress_after(patch.clone(), &store, 0, true);
+    assert!(
+        progress < 0.3,
+        "always glides in poly: {progress:.2} of the way at the start"
+    );
+    let landed = glide_progress_after(patch.clone(), &store, (0.3 * SR) as usize, true);
+    assert!((landed - 1.0).abs() < 0.06, "and arrives: {landed:.2}");
+
+    // The addresses: the old switch reads the same two values, the mode
+    // chooser is new, and the two agree.
+    assert_eq!(value(&patch, "patch/voice/legato"), Some(0.0));
+    assert!(set(&mut patch, "patch/voice/legato", 1.0));
+    assert_eq!(patch.voice_config.glide_mode, GlideMode::Legato);
+    assert_eq!(value(&patch, "patch/voice/glide_mode"), Some(0.5));
+    assert!(set(&mut patch, "patch/voice/glide_mode", 1.0));
+    assert_eq!(patch.voice_config.glide_mode, GlideMode::Always);
+    assert_eq!(value(&patch, "patch/voice/legato"), Some(0.0));
+    assert!(set(&mut patch, "patch/voice/glide_mode", 0.0));
+    assert_eq!(patch.voice_config.glide_mode, GlideMode::Notes);
+    assert!(set(&mut patch, "patch/voice/glide_curve", 1.0));
+    assert_eq!(patch.voice_config.glide_curve, GlideCurve::Slow);
+    // The file: a patch written with the bool reads with the mode, and a
+    // patch at the old modes writes what it wrote.
+    let data = patch.to_data(&Default::default()).unwrap();
+    let text = data.body.to_string();
+    assert!(text.contains("\"glide_legato_only\":false"), "{text}");
+    assert!(!text.contains("glide_always"), "{text}");
+    patch.voice_config.glide_mode = GlideMode::Always;
+    let data = patch.to_data(&Default::default()).unwrap();
+    let back = Patch::from_data(&data, |_| None).unwrap().patch;
+    assert_eq!(back.voice_config.glide_mode, GlideMode::Always);
+    assert_eq!(back.voice_config.glide_curve, GlideCurve::Slow);
+}
+
+/// A per-note glide time (§4.6): `ModDest::GlideTime` is read when the
+/// note starts, from the per-note sources — a soft note slides slowly, a
+/// hard one snaps.
+#[test]
+fn the_glide_time_is_a_destination_read_at_the_note() {
+    let mut store = SampleStore::new();
+    let mut patch = ramp_patch(&mut store);
+    patch.voice_config.retrigger = RetriggerMode::Mono;
+    patch.voice_config.glide_time_s = 0.0;
+    // Velocity adds up to two seconds: at velocity 127 the glide is two
+    // seconds long, at 100 about a second and a half.
+    patch.mod_matrix.routes.push(ModRoute {
+        source: ModSource::Velocity,
+        destination: ModDest::GlideTime,
+        depth: 1.0,
+        curve: Curve::Linear,
+        via: None,
+        invert: false,
+        bypass: false,
+    });
+    let progress = glide_progress(patch.clone(), &store, (0.2 * SR) as usize);
+    assert!(
+        (0.05..=0.25).contains(&progress),
+        "a fifth of a second into a second and a half: {progress:.2}"
+    );
+    // Without the route there is no glide time and the note jumps.
+    patch.mod_matrix.routes.clear();
+    let progress = glide_progress(patch, &store, 0);
+    assert!(progress > 0.9, "{progress:.2}");
+    assert!(
+        fontelle_core::flopsynth::destinations(&fontelle_core::flopsynth::flopsynth_init())
+            .iter()
+            .any(|(d, _)| *d == ModDest::GlideTime)
+    );
+}

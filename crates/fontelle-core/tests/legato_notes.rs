@@ -282,7 +282,11 @@ fn ramp_patch(store: &mut SampleStore, legato_only: bool) -> Patch {
     patch.layers[0].playback.loop_end = (CYCLE * cycles) as f64;
     patch.layers[0].playback.end_offset = (CYCLE * cycles) as f64;
     patch.voice_config.glide_time_s = 0.25;
-    patch.voice_config.glide_legato_only = legato_only;
+    patch.voice_config.glide_mode = if legato_only {
+        fontelle_core::GlideMode::Legato
+    } else {
+        fontelle_core::GlideMode::Notes
+    };
     patch
 }
 

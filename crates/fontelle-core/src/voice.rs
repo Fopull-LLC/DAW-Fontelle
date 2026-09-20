@@ -22,13 +22,196 @@ pub enum RetriggerMode {
     Legato,
 }
 
+/// How a note's velocity becomes a gain (`docs/flopsynth-next.md` §4.2).
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub enum VelocityCurve {
+    /// The gain is the velocity.
+    Linear,
+    /// The velocity squared — SF2's default modulator, and every patch's
+    /// until this existed: velocity 64 lands twelve decibels down.
+    #[default]
+    Square,
+    /// The square root: louder low down, for a pad played gently.
+    Soft,
+    /// The cube: quieter until the key is really hit.
+    Hard,
+    /// The gains at velocities 32, 64, 96 and 127, straight lines between
+    /// them and up from nought.
+    Custom([f32; 4]),
+}
+
+impl VelocityCurve {
+    /// One of each, in the chooser's order; the custom one at its default
+    /// points, which are the linear curve's.
+    pub const ALL: [Self; 5] = [
+        Self::Linear,
+        Self::Square,
+        Self::Soft,
+        Self::Hard,
+        Self::Custom([0.25, 0.5, 0.75, 1.0]),
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::Square => "square",
+            Self::Soft => "soft",
+            Self::Hard => "hard",
+            Self::Custom(_) => "custom",
+        }
+    }
+
+    /// Which of [`ALL`](Self::ALL) this is, whatever its points.
+    pub fn index(self) -> usize {
+        match self {
+            Self::Linear => 0,
+            Self::Square => 1,
+            Self::Soft => 2,
+            Self::Hard => 3,
+            Self::Custom(_) => 4,
+        }
+    }
+}
+
+/// The shape of a glide from one pitch to the next (§4.6): how the way
+/// there is spent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum GlideCurve {
+    /// A straight line in semitones — what every glide was.
+    #[default]
+    Linear,
+    /// The capacitor's curve: quick off the mark and asymptotic at the
+    /// end, which is what a portamento knob on an analogue synth does.
+    Exponential,
+    /// Most of the way early, then easing in.
+    Fast,
+    /// Hardly moving at first, then arriving in a rush.
+    Slow,
+}
+
+impl GlideCurve {
+    pub const ALL: [Self; 4] = [Self::Linear, Self::Exponential, Self::Fast, Self::Slow];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::Exponential => "expo",
+            Self::Fast => "fast",
+            Self::Slow => "slow",
+        }
+    }
+
+    /// How far along the glide is at `t` of its time, 0..=1 — an identity
+    /// at both ends whatever the shape, so a glide starts where it starts
+    /// and lands where it lands.
+    pub fn progress(self, t: f32) -> f32 {
+        let t = t.clamp(0.0, 1.0);
+        match self {
+            Self::Linear => t,
+            // 1 − 2^(−8t), scaled so t = 1 is exactly there: eight halvings
+            // is the knee a portamento pot has.
+            Self::Exponential => (1.0 - (-8.0 * t).exp2()) / (1.0 - (-8.0f32).exp2()),
+            Self::Fast => 1.0 - (1.0 - t) * (1.0 - t),
+            Self::Slow => t * t,
+        }
+    }
+}
+
+/// When a note glides from the one before it (§4.6).
+///
+/// `Notes` and `Legato` are the two positions the `glide_legato_only`
+/// switch had, and the switch's address still reads and writes them;
+/// `Always` is the third — portamento in a poly patch, Serum's *always*
+/// mode — which the switch could not say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GlideMode {
+    /// Between the notes of a mono line, overlapping or not.
+    #[default]
+    Notes,
+    /// Between notes that overlap only — how every mono synth with a
+    /// legato switch behaves.
+    Legato,
+    /// Every note, in every mode: a poly chord slides in from wherever the
+    /// last note was.
+    Always,
+}
+
+impl GlideMode {
+    pub const ALL: [Self; 3] = [Self::Notes, Self::Legato, Self::Always];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Notes => "notes",
+            Self::Legato => "legato",
+            Self::Always => "always",
+        }
+    }
+}
+
+/// How the mode is written: the switch every file has, and a second flag
+/// for the third position, left out when it is off — so a patch at either
+/// old position writes what it always wrote.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct GlideFlags {
+    #[serde(default)]
+    glide_legato_only: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    glide_always: bool,
+}
+
+impl From<GlideFlags> for GlideMode {
+    fn from(flags: GlideFlags) -> Self {
+        if flags.glide_always {
+            Self::Always
+        } else if flags.glide_legato_only {
+            Self::Legato
+        } else {
+            Self::Notes
+        }
+    }
+}
+
+impl From<GlideMode> for GlideFlags {
+    fn from(mode: GlideMode) -> Self {
+        Self {
+            glide_legato_only: mode == GlideMode::Legato,
+            glide_always: mode == GlideMode::Always,
+        }
+    }
+}
+
+impl serde::Serialize for GlideMode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        GlideFlags::from(*self).serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for GlideMode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        GlideFlags::deserialize(deserializer).map(Self::from)
+    }
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VoiceConfig {
     /// 1..=256.
     pub polyphony: u16,
     pub steal_policy: StealPolicy,
     pub glide_time_s: f32,
-    pub glide_legato_only: bool,
+    /// Flattened into the file as `glide_legato_only` and, for `Always`,
+    /// `glide_always` — see [`GlideMode`].
+    #[serde(flatten)]
+    pub glide_mode: GlideMode,
+    /// Absent from the file at `Linear`, which is every glide there was.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub glide_curve: GlideCurve,
+    /// Absent from the file at `Square`, which is every patch there was.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub velocity_curve: VelocityCurve,
     pub unison: UnisonConfig,
     pub retrigger: RetriggerMode,
     /// How far a full pitch bend goes, in semitones either way.
@@ -117,7 +300,9 @@ impl Default for VoiceConfig {
             polyphony: 64,
             steal_policy: StealPolicy::Oldest,
             glide_time_s: 0.0,
-            glide_legato_only: false,
+            glide_mode: GlideMode::Notes,
+            glide_curve: GlideCurve::Linear,
+            velocity_curve: VelocityCurve::Square,
             unison: UnisonConfig {
                 voices: 1,
                 detune_cents: 0.0,
@@ -145,12 +330,38 @@ impl Default for VoiceConfig {
 /// so a file that *overrides* this default is not honoured yet. Every file
 /// that doesn't (the overwhelming majority) is now correct. See `PROGRESS.md`.
 pub fn velocity_to_gain(velocity: u8) -> f32 {
+    velocity_gain(velocity, VelocityCurve::Square)
+}
+
+/// The gain a note-on velocity contributes through `curve`
+/// (`docs/flopsynth-next.md` §4.2) — [`velocity_to_gain`] is the square.
+pub fn velocity_gain(velocity: u8, curve: VelocityCurve) -> f32 {
     // Velocity 0 is a note-off in MIDI, never a very quiet note.
     if velocity == 0 {
         return 0.0;
     }
     let normalised = velocity as f32 / 127.0;
-    normalised * normalised
+    match curve {
+        VelocityCurve::Linear => normalised,
+        VelocityCurve::Square => normalised * normalised,
+        VelocityCurve::Soft => normalised.sqrt(),
+        VelocityCurve::Hard => normalised * normalised * normalised,
+        VelocityCurve::Custom(points) => {
+            // The points sit at 32, 64, 96 and 127, with nought at nought.
+            let knots = [0.0f32, 32.0, 64.0, 96.0, 127.0];
+            let levels = [0.0, points[0], points[1], points[2], points[3]];
+            let v = f32::from(velocity);
+            let mut gain = points[3];
+            for pair in 0..4 {
+                if v <= knots[pair + 1] {
+                    let t = (v - knots[pair]) / (knots[pair + 1] - knots[pair]);
+                    gain = levels[pair] + (levels[pair + 1] - levels[pair]) * t;
+                    break;
+                }
+            }
+            gain.clamp(0.0, 1.0)
+        }
+    }
 }
 
 /// TDD §7.2: "up to 16" layers. A fixed array, not a `Vec` — per-layer playback
@@ -194,28 +405,43 @@ pub const FILTER_STEP: usize = 8;
 /// the cost of resolving per sample.
 pub const MOD_STEP: usize = FILTER_STEP;
 
-/// Which envelopes and LFOs at least one route reads, as `(envelopes, lfos)`.
+/// Which of the sources that turn every step at least one route reads.
 /// Index 0 of `envelopes` is the amp envelope, which is advanced regardless
 /// because it drives the amp stage; the flag is there so the indices line up
 /// with `ModSource::Envelope`.
 ///
 /// `via` counts as much as `source` does: a route whose depth is scaled by an
 /// LFO needs that LFO turning even though it is not the thing being shaped.
-fn sources_in_use(
-    matrix: &crate::mod_matrix::ModMatrix,
-) -> ([bool; MAX_MOD_ENVELOPES + 1], [bool; MAX_LFOS]) {
-    let mut envelopes = [false; MAX_MOD_ENVELOPES + 1];
-    let mut lfos = [false; MAX_LFOS];
+#[derive(Clone, Copy, Default)]
+struct InUse {
+    envelopes: [bool; MAX_MOD_ENVELOPES + 1],
+    lfos: [bool; MAX_LFOS],
+    chaos: bool,
+    walk: bool,
+    follower: bool,
+    sequencers: [bool; 2],
+}
+
+fn sources_in_use(matrix: &crate::mod_matrix::ModMatrix) -> InUse {
+    let mut used = InUse::default();
     for route in &matrix.routes {
         for source in [Some(route.source), route.via].into_iter().flatten() {
             match source {
                 crate::mod_matrix::ModSource::Envelope(index) => {
-                    if let Some(slot) = envelopes.get_mut(index as usize) {
+                    if let Some(slot) = used.envelopes.get_mut(index as usize) {
                         *slot = true;
                     }
                 }
                 crate::mod_matrix::ModSource::Lfo(index) => {
-                    if let Some(slot) = lfos.get_mut(index as usize) {
+                    if let Some(slot) = used.lfos.get_mut(index as usize) {
+                        *slot = true;
+                    }
+                }
+                crate::mod_matrix::ModSource::Chaos => used.chaos = true,
+                crate::mod_matrix::ModSource::RandomWalk => used.walk = true,
+                crate::mod_matrix::ModSource::EnvelopeFollower => used.follower = true,
+                crate::mod_matrix::ModSource::StepSeq(index) => {
+                    if let Some(slot) = used.sequencers.get_mut(index as usize) {
                         *slot = true;
                     }
                 }
@@ -223,7 +449,7 @@ fn sources_in_use(
             }
         }
     }
-    (envelopes, lfos)
+    used
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -267,6 +493,10 @@ struct LayerPlayback {
     /// sharing one would make a voice's output depend on which other voices
     /// rendered before it.
     synth: fontelle_dsp::SynthState,
+    /// How much of the layer its velocity window lets through, 0..=1: one
+    /// inside the window past its fades, less within `vel_fade` of an
+    /// edge. Fixed for the note, like the velocity's own gain.
+    window_gain: f32,
     /// Whether the hit still has to be fired.
     ///
     /// A drum's envelope coefficients depend on the **sample rate**, which
@@ -286,6 +516,7 @@ impl Default for LayerPlayback {
             osc: fontelle_dsp::Oscillator::new(),
             drum: fontelle_dsp::DrumSynth::new(),
             synth: fontelle_dsp::SynthState::new(),
+            window_gain: 1.0,
             drum_pending: false,
         }
     }
@@ -513,13 +744,16 @@ impl ModSums {
             }
             // The stages are `modulated_stages`'; the sample-loop points
             // are not destinations the voice reads (TDD §7.5's minimum
-            // set names them, and nothing has wanted them yet).
+            // set names them, and nothing has wanted them yet); an
+            // effect's parameter is the node's (`Sampler::fx_modulation`).
             ModDest::EnvelopeStageTime(..)
             | ModDest::EnvelopeStageLevel(..)
             | ModDest::SampleStartOffset(_)
             | ModDest::LoopStart(_)
             | ModDest::LoopLength(_)
-            | ModDest::UnisonDetune => {}
+            | ModDest::UnisonDetune
+            | ModDest::FxParam(..)
+            | ModDest::GlideTime => {}
         }
     }
 }
@@ -771,8 +1005,16 @@ pub struct Voice {
     /// [`Voice::glide_to`].
     glide_semitones: f32,
     glide_target: f32,
-    /// Semitones per second. Zero is "already there".
-    glide_rate: f32,
+    /// Where the glide set off from, how long it has, and how far into
+    /// that it is — the curve (§4.6) is a function of the fraction. A
+    /// total of nought is "already there".
+    glide_from: f32,
+    glide_total_s: f32,
+    glide_elapsed_s: f32,
+    glide_curve: GlideCurve,
+    /// The patch's velocity curve as the note found it, for a legato
+    /// take-over to read the new velocity through.
+    velocity_curve: VelocityCurve,
     /// Where each layer slot's ramped values are — see [`LayerLive`] —
     /// and the voice-wide amp gain's, carried from block to block so a
     /// step ramps from where the last one ended.
@@ -788,6 +1030,26 @@ pub struct Voice {
     /// What the matrix routed to the LFOs at the last step's walk, read
     /// when they next turn — see [`LfoSums`].
     lfo_sums: LfoSums,
+    /// The §4.2 generators, per voice (`crate::mod_sources`): the
+    /// attractor, the walk, the follower of this voice's own level, and
+    /// the two sequencers — and each one's value at the top of the step.
+    chaos: crate::mod_sources::ChaosState,
+    walk: crate::mod_sources::WalkState,
+    follower: crate::mod_sources::FollowerState,
+    sequencers: [crate::mod_sources::SeqState; 2],
+    generator_values: GeneratorValues,
+    /// The loudest sample this voice put out in the step just rendered —
+    /// what the follower is fed at the next.
+    step_peak: f32,
+}
+
+/// The generators' values at the top of a step, for the matrix.
+#[derive(Clone, Copy, Default)]
+struct GeneratorValues {
+    chaos: f32,
+    walk: f32,
+    follower: f32,
+    sequencers: [f32; 2],
 }
 
 impl Voice {
@@ -817,12 +1079,22 @@ impl Voice {
             age_samples: 0,
             glide_semitones: 0.0,
             glide_target: 0.0,
-            glide_rate: 0.0,
+            glide_from: 0.0,
+            glide_total_s: 0.0,
+            glide_elapsed_s: 0.0,
+            glide_curve: GlideCurve::Linear,
+            velocity_curve: VelocityCurve::Square,
             live: [LayerLive::default(); MAX_LAYERS],
             amp_live: 1.0,
             live_fresh: true,
             lfo_values: [0.0; MAX_LFOS],
             lfo_sums: LfoSums::default(),
+            chaos: Default::default(),
+            walk: Default::default(),
+            follower: Default::default(),
+            sequencers: Default::default(),
+            generator_values: GeneratorValues::default(),
+            step_peak: 0.0,
         }
     }
 
@@ -861,6 +1133,45 @@ impl Voice {
     }
 
     /// Where each of this voice's LFOs is in its cycle, 0..1.
+    /// What this voice's own sources read right now — the per-note numbers
+    /// and the modulators at the top of the last step. For the chain's
+    /// destinations (`ModDest::FxParam`), which read the newest voice; the
+    /// macros and the wheels are the sampler's and read nought here.
+    pub fn source_value(&self, source: crate::mod_matrix::ModSource) -> f32 {
+        use crate::mod_matrix::ModSource;
+        match source {
+            ModSource::Envelope(0) => self.amp_env.level(),
+            ModSource::Envelope(index) => self
+                .mod_envs
+                .get(usize::from(index) - 1)
+                .map_or(0.0, |env| env.level()),
+            ModSource::Lfo(index) => self
+                .lfo_values
+                .get(usize::from(index))
+                .copied()
+                .unwrap_or(0.0),
+            ModSource::Velocity => self.velocity_norm,
+            ModSource::Key => self.key_norm,
+            ModSource::NoteModX => self.mod_x_norm,
+            ModSource::NoteModY => self.mod_y_norm,
+            ModSource::Random => self.random,
+            ModSource::NoteOnCounter => self.note_counter,
+            ModSource::Chaos => self.generator_values.chaos,
+            ModSource::RandomWalk => self.generator_values.walk,
+            ModSource::EnvelopeFollower => self.generator_values.follower,
+            ModSource::StepSeq(index) => self
+                .generator_values
+                .sequencers
+                .get(usize::from(index))
+                .copied()
+                .unwrap_or(0.0),
+            ModSource::Aftertouch
+            | ModSource::ModWheel
+            | ModSource::PitchBend
+            | ModSource::Macro(_) => 0.0,
+        }
+    }
+
     pub fn lfo_phases(&self) -> [f32; MAX_LFOS] {
         std::array::from_fn(|index| self.lfos[index].phase())
     }
@@ -927,7 +1238,8 @@ impl Voice {
         self.origin = origin;
         self.key = key;
         self.voice_context = voice_context;
-        self.velocity_gain = velocity_to_gain(velocity);
+        self.velocity_curve = patch.voice_config.velocity_curve;
+        self.velocity_gain = velocity_gain(velocity, patch.voice_config.velocity_curve);
         self.note_pan = pan.clamp(-1.0, 1.0);
         self.velocity_norm = velocity as f32 / 127.0;
         self.key_norm = key as f32 / 127.0;
@@ -974,6 +1286,16 @@ impl Voice {
         self.live_fresh = true;
         self.lfo_values = [0.0; MAX_LFOS];
         self.lfo_sums = LfoSums::default();
+        // The generators start over with the note, seeded from it like the
+        // LFOs: two notes are two orbits and two walks.
+        self.chaos.reset(seed.wrapping_add(0x6a09_e667));
+        self.walk.reset(seed.wrapping_add(0xbb67_ae85));
+        self.follower.reset();
+        for sequencer in &mut self.sequencers {
+            sequencer.reset();
+        }
+        self.generator_values = GeneratorValues::default();
+        self.step_peak = 0.0;
         // A bipolar value, so a route to pitch is as likely to go down as up.
         let mut x = seed.wrapping_mul(0x2545_f491) | 1;
         x ^= x << 13;
@@ -989,7 +1311,10 @@ impl Voice {
         // only the sampler knows what was sounding before.
         self.glide_semitones = 0.0;
         self.glide_target = 0.0;
-        self.glide_rate = 0.0;
+        self.glide_from = 0.0;
+        self.glide_total_s = 0.0;
+        self.glide_elapsed_s = 0.0;
+        self.glide_curve = patch.voice_config.glide_curve;
 
         // Every slot cleared first: what a voice plays is decided entirely by
         // this note, and a slot left over from the last one is a zone that
@@ -1032,6 +1357,20 @@ impl Voice {
                         state.reset(osc, seed.wrapping_add(index as u32 * 0x85eb));
                     }
                     state
+                },
+                // The window's fade (§4.2): within `vel_fade` velocities of
+                // either edge the layer comes in over the fade rather than
+                // switching on, which is how two recordings cross over.
+                window_gain: {
+                    let fade = f32::from(layer.playback.vel_fade);
+                    if fade <= 0.0 {
+                        1.0
+                    } else {
+                        let v = f32::from(velocity);
+                        let from_low = (v - f32::from(layer.vel_range.0)) / fade;
+                        let from_high = (f32::from(layer.vel_range.1) - v) / fade;
+                        from_low.min(from_high).clamp(0.0, 1.0)
+                    }
                 },
                 // Fired on the first sample rendered — see `drum_pending`.
                 // A hat retriggered sixteen times a bar starts over each time
@@ -1079,6 +1418,12 @@ impl Voice {
         self.live_fresh = true;
         self.lfo_values = [0.0; MAX_LFOS];
         self.lfo_sums = LfoSums::default();
+        self.chaos = Default::default();
+        self.walk = Default::default();
+        self.follower.reset();
+        self.sequencers = Default::default();
+        self.generator_values = GeneratorValues::default();
+        self.step_peak = 0.0;
     }
 
     /// Moves this voice onto a new note **without restarting it** — legato.
@@ -1105,7 +1450,7 @@ impl Voice {
         self.key = note.key;
         self.voice_context = note.voice_context;
         self.origin = note.origin;
-        self.velocity_gain = velocity_to_gain(note.velocity);
+        self.velocity_gain = velocity_gain(note.velocity, self.velocity_curve_hint());
         self.velocity_norm = note.velocity as f32 / 127.0;
         self.key_norm = note.key as f32 / 127.0;
         self.note_pan = note.pan.clamp(-1.0, 1.0);
@@ -1181,10 +1526,18 @@ impl Voice {
         let distance = (self.glide_target - self.glide_semitones).abs();
         if seconds <= 0.0 || distance <= f32::EPSILON {
             self.glide_semitones = self.glide_target;
-            self.glide_rate = 0.0;
+            self.glide_total_s = 0.0;
             return;
         }
-        self.glide_rate = distance / seconds;
+        self.glide_from = self.glide_semitones;
+        self.glide_total_s = seconds;
+        self.glide_elapsed_s = 0.0;
+    }
+
+    /// The curve a glide started under: the patch's, taken at the note.
+    /// A legato take-over keeps the voice's, which is the same patch's.
+    fn velocity_curve_hint(&self) -> VelocityCurve {
+        self.velocity_curve
     }
 
     /// Steps the glide on by one block.
@@ -1196,17 +1549,21 @@ impl Voice {
     /// pitch modulation in this voice that did, and making all of it
     /// per-sample is a change to the render loop rather than to this feature.
     fn advance_glide(&mut self, frames: usize, sample_rate: f32) {
-        if self.glide_rate <= 0.0 || sample_rate <= 0.0 {
+        if self.glide_total_s <= 0.0 || sample_rate <= 0.0 {
             return;
         }
-        let step = self.glide_rate * frames as f32 / sample_rate;
-        let remaining = self.glide_target - self.glide_semitones;
-        if remaining.abs() <= step {
+        self.glide_elapsed_s += frames as f32 / sample_rate;
+        if self.glide_elapsed_s >= self.glide_total_s {
             self.glide_semitones = self.glide_target;
-            self.glide_rate = 0.0;
+            self.glide_total_s = 0.0;
             return;
         }
-        self.glide_semitones += step * remaining.signum();
+        // The curve (§4.6) bends the fraction of the time, not the pitch:
+        // every shape starts where it started and lands where it lands.
+        let t = self
+            .glide_curve
+            .progress(self.glide_elapsed_s / self.glide_total_s);
+        self.glide_semitones = self.glide_from + (self.glide_target - self.glide_from) * t;
     }
 
     /// Voice stealing always ramps out over a short release rather than cutting
@@ -1369,7 +1726,8 @@ impl Voice {
         // The amp envelope is still advanced per sample, because it is a
         // gain rather than a control value and a stepped one is audible as
         // a buzz on fast attacks.
-        let (env_used, lfo_used) = sources_in_use(&patch.mod_matrix);
+        let used = sources_in_use(&patch.mod_matrix);
+        let (env_used, lfo_used) = (used.envelopes, used.lfos);
 
         // Everything a source can be **except an envelope or an LFO**: the
         // numbers that hold for the whole block.
@@ -1399,7 +1757,12 @@ impl Voice {
             crate::mod_matrix::ModSource::Macro(index) => {
                 macro_values.get(index as usize).copied().unwrap_or(0.0)
             }
-            crate::mod_matrix::ModSource::Envelope(_) | crate::mod_matrix::ModSource::Lfo(_) => 0.0,
+            crate::mod_matrix::ModSource::Envelope(_)
+            | crate::mod_matrix::ModSource::Lfo(_)
+            | crate::mod_matrix::ModSource::Chaos
+            | crate::mod_matrix::ModSource::RandomWalk
+            | crate::mod_matrix::ModSource::EnvelopeFollower
+            | crate::mod_matrix::ModSource::StepSeq(_) => 0.0,
         };
         // The amp envelope's stages, modulated. Read from the sources above
         // — key, velocity, the wheels, the macros — rather than from the LFOs
@@ -1576,12 +1939,49 @@ impl Voice {
                 );
             }
 
+            // The generators (`crate::mod_sources`), each only when a route
+            // reads it: the attractor and the walk turn on their own, the
+            // follower is fed the last step's peak, and a sequencer reads
+            // the clock when synced.
+            let step_seconds = n as f32 / sample_rate;
+            if used.chaos {
+                self.generator_values.chaos = self.chaos.advance(patch.chaos.rate_hz, step_seconds);
+            }
+            if used.walk {
+                self.generator_values.walk = self.walk.advance(&patch.walk, step_seconds);
+            }
+            if used.follower {
+                self.generator_values.follower =
+                    self.follower.advance(self.step_peak, step_seconds);
+            }
+            for index in 0..2 {
+                if used.sequencers[index] {
+                    let clock = (performance.clock.position_sample + at as u64) as f64
+                        / f64::from(sample_rate);
+                    self.generator_values.sequencers[index] = self.sequencers[index].advance(
+                        &patch.sequencers[index],
+                        performance.clock.bpm,
+                        step_seconds,
+                        Some(clock),
+                    );
+                }
+            }
+            let generators = self.generator_values;
+
             // The mod matrix's full view of this voice at this step: the
-            // block's numbers, plus the two kinds this step has just read.
+            // block's numbers, plus the kinds this step has just read.
             // Bound to locals rather than reaching through `self`, so the
             // closure holds no borrow of the voice.
             let lfo_values = self.lfo_values;
             let sources = move |source: crate::mod_matrix::ModSource| match source {
+                crate::mod_matrix::ModSource::Chaos => generators.chaos,
+                crate::mod_matrix::ModSource::RandomWalk => generators.walk,
+                crate::mod_matrix::ModSource::EnvelopeFollower => generators.follower,
+                crate::mod_matrix::ModSource::StepSeq(index) => generators
+                    .sequencers
+                    .get(usize::from(index))
+                    .copied()
+                    .unwrap_or(0.0),
                 // Envelope 0 is the amp envelope. It drives the amp stage
                 // directly, and is readable here as well because "louder
                 // means brighter" is a route a patch legitimately wants and
@@ -1633,7 +2033,9 @@ impl Voice {
                 // Gain modulation is in decibels, so a tremolo is symmetric
                 // in loudness rather than lopsided the way a linear one
                 // would be.
-                let gain = 10f32.powf((prep.base.gain_db + m.gain_db) / 20.0) * self.velocity_gain;
+                let gain = 10f32.powf((prep.base.gain_db + m.gain_db) / 20.0)
+                    * self.velocity_gain
+                    * self.layers[slot].window_gain;
                 let pan = if stereo {
                     // Three pans, and they add: the zone's own placement
                     // inside the instrument, the note's placement inside the
@@ -1721,6 +2123,7 @@ impl Voice {
             self.live_fresh = false;
 
             // --- the samples ---------------------------------------------
+            let mut step_peak = 0.0f32;
             for frame in at..at + n {
                 let env = self.amp_env.advance(&amp_env_config, sample_rate);
                 self.amp_live += amp_ramp;
@@ -1904,7 +2307,13 @@ impl Voice {
                 if let Some(right) = right.as_deref_mut() {
                     right[frame] += mixed.1 * gain;
                 }
+                if used.follower {
+                    // The louder side, after the amp: the level a listener
+                    // would put a meter on.
+                    step_peak = step_peak.max((mixed.0 * gain).abs().max((mixed.1 * gain).abs()));
+                }
             }
+            self.step_peak = step_peak;
             at += n;
         }
 

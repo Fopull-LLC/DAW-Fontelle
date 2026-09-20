@@ -10419,7 +10419,7 @@ impl Session {
         fontelle_core::flopsynth::destinations(&patch)
             .into_iter()
             .filter_map(|(dest, _)| {
-                let address = fontelle_core::flopsynth::dest_address(dest)?;
+                let address = fontelle_core::flopsynth::dest_address_in(&patch, dest)?;
                 // The routes are oldest first, so the last one to this
                 // destination is the newest — the one `routes_to(..).last()`
                 // names, and the one whose depth the ring shows.

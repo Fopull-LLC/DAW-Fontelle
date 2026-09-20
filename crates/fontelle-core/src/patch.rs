@@ -456,6 +456,14 @@ pub struct Patch {
     /// written before it existed, which is the whole bank, and left out of
     /// the file at `Off` so none of them is rewritten to say so.
     pub oversampling: fontelle_dsp::Oversampling,
+    /// The chaos source's settings (`docs/flopsynth-next.md` §4.2). At
+    /// rest — and out of the file — until its knob moves; every patch
+    /// written before it reads with it at rest.
+    pub chaos: crate::mod_sources::Chaos,
+    /// The random walk's, the same way.
+    pub walk: crate::mod_sources::RandomWalk,
+    /// The two step sequencers', the same way.
+    pub sequencers: [crate::mod_sources::StepSequencer; 2],
 }
 
 /// The **blank instrument**: three oscillators, an amplitude envelope with a
@@ -564,6 +572,9 @@ impl Patch {
             wavetables: Vec::new(),
             samples: Vec::new(),
             oversampling: fontelle_dsp::Oversampling::Off,
+            chaos: Default::default(),
+            walk: Default::default(),
+            sequencers: Default::default(),
         }
     }
 }
@@ -591,6 +602,9 @@ impl Default for Patch {
             wavetables: Vec::new(),
             samples: Vec::new(),
             oversampling: fontelle_dsp::Oversampling::Off,
+            chaos: Default::default(),
+            walk: Default::default(),
+            sequencers: Default::default(),
         }
     }
 }

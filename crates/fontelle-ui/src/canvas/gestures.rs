@@ -297,7 +297,13 @@ pub fn flopsynth_tip(hit: FlopsynthHit, cards: &[FlopsynthCard]) -> Option<Strin
                  right-click for shapes"
                     .to_string()
             }
+            FlopsynthPicture::Curve { .. } if cards.get(card)?.group.name == "Voice" => {
+                "The velocity curve \u{b7} drag a point to draw your own".to_string()
+            }
             FlopsynthPicture::Curve { .. } => "What the effect does".to_string(),
+            FlopsynthPicture::Steps { .. } => {
+                "Drag to set a step \u{b7} up is plus, down is minus".to_string()
+            }
             FlopsynthPicture::None => return None,
         },
         FlopsynthHit::Header { card } => {

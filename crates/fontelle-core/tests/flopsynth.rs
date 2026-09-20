@@ -528,7 +528,7 @@ fn every_destination_names_the_control_it_moves() {
     let patch = flopsynth::flopsynth_init();
     let addresses = flopsynth::addresses(&patch);
     for (dest, label) in flopsynth::destinations(&patch) {
-        let Some(address) = flopsynth::dest_address(dest) else {
+        let Some(address) = flopsynth::dest_address_in(&patch, dest) else {
             // A destination with no knob of its own is allowed — the amp is
             // the level the envelope already owns — but it has to be a
             // deliberate `None` rather than a wrong string.
@@ -552,7 +552,7 @@ fn a_control_that_nothing_can_modulate_has_no_destination() {
     let has = |address: &str| {
         destinations
             .iter()
-            .any(|(dest, _)| flopsynth::dest_address(*dest).as_deref() == Some(address))
+            .any(|(dest, _)| flopsynth::dest_address_in(&patch, *dest).as_deref() == Some(address))
     };
     assert!(has("patch/filter[0]/cutoff"));
     assert!(!has("patch/output"));

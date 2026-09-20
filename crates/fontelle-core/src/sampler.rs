@@ -23,6 +23,9 @@ pub struct Sampler {
     /// The wheels: what the hand playing this instrument is doing right now.
     /// See [`crate::Performance`], and the three setters below.
     performance: crate::Performance,
+    /// The key of the last note started, for `GlideMode::Always` to set
+    /// off from; `None` until one has.
+    last_key: Option<f32>,
     /// The wavetables this patch's layers name, resolved in
     /// [`prepare`](Sampler::prepare).
     ///
@@ -44,6 +47,7 @@ impl Sampler {
             pan: 0.0,
             gain: 1.0,
             performance: crate::Performance::default(),
+            last_key: None,
             tables: crate::WavetableSet::new(),
         };
         // The tables the patch names, before it is ever rendered: a channel
@@ -236,6 +240,11 @@ impl Sampler {
         // something. The pool cannot grow on this thread (INVARIANT 1), so
         // this moves a limit inside it — see `VoicePool::set_limit`.
         self.voices.set_limit(usize::from(config.polyphony));
+        // The glide time this note gets: the knob's, plus whatever the
+        // matrix routes to `ModDest::GlideTime` from the per-note sources
+        // (§4.6) — read once, here, because the glide is set when the
+        // note starts and the note's velocity and key are known here.
+        let glide_time_s = (config.glide_time_s + self.note_glide_modulation(&note)).max(0.0);
         // **Mono and legato**, which `RetriggerMode` has named since the patch
         // format was written and nothing read. One voice per context: a note
         // arriving while one is sounding takes it over rather than stacking on
@@ -248,7 +257,7 @@ impl Sampler {
             .iter_active_mut()
             .find(|v| v.voice_context() == note.voice_context)
         {
-            // **`glide_legato_only`**: portamento between notes that overlap
+            // **`GlideMode::Legato`**: portamento between notes that overlap
             // and not between notes that merely follow one another, which is
             // how every mono synth with a legato switch on it behaves and what
             // all twenty-one of Flopsynth's `mono` presets ask for. Read here
@@ -258,10 +267,10 @@ impl Sampler {
             // Read *before* the take-over, because both branches below make
             // the voice held again.
             let was_held = voice.is_held();
-            let glide_s = if config.glide_legato_only && !was_held {
+            let glide_s = if config.glide_mode == crate::GlideMode::Legato && !was_held {
                 0.0
             } else {
-                config.glide_time_s
+                glide_time_s
             };
             match config.retrigger {
                 // Legato keeps the envelope and the sample position; mono
@@ -279,12 +288,56 @@ impl Sampler {
         }
 
         // Poly, or nothing sounding to glide from. **Portamento does not
-        // apply here on purpose**: in a poly patch it would mean every note of
-        // a chord sliding from whichever one happened to be last, which is not
-        // a statement anybody makes musically.
+        // apply here by default**: in a poly patch it would mean every note
+        // of a chord sliding from whichever one happened to be last, which
+        // is not a statement anybody makes musically — unless the patch says
+        // `GlideMode::Always` (§4.6, Serum's *always*), in which case that
+        // is exactly the statement: the new note sets off from wherever the
+        // last note started was, released or not.
+        let from = (config.glide_mode == crate::GlideMode::Always && glide_time_s > 0.0)
+            .then_some(self.last_key)
+            .flatten();
+        self.last_key = Some(f32::from(note.key));
         if let Some(voice) = self.voices.allocate(config.steal_policy) {
             voice.trigger_note(&self.patch, note);
+            if let Some(from) = from {
+                voice.glide_from(from - f32::from(note.key), glide_time_s);
+            }
         }
+    }
+
+    /// What the matrix adds to the glide time of a note about to start,
+    /// in seconds, from the sources a note carries — velocity, key, its X
+    /// and Y — and the macros and the wheels. The modulators that turn are
+    /// not read: the note has no envelope yet.
+    fn note_glide_modulation(&self, note: &crate::NoteTrigger) -> f32 {
+        let dest = crate::mod_matrix::ModDest::GlideTime;
+        if !self
+            .patch
+            .mod_matrix
+            .routes
+            .iter()
+            .any(|route| route.destination == dest)
+        {
+            return 0.0;
+        }
+        let performance = self.performance;
+        let patch = &self.patch;
+        let sources = |source: crate::mod_matrix::ModSource| match source {
+            crate::mod_matrix::ModSource::Velocity => f32::from(note.velocity) / 127.0,
+            crate::mod_matrix::ModSource::Key => f32::from(note.key) / 127.0,
+            crate::mod_matrix::ModSource::NoteModX => f32::from(note.mod_x.min(127)) / 127.0,
+            crate::mod_matrix::ModSource::NoteModY => f32::from(note.mod_y.min(127)) / 127.0,
+            crate::mod_matrix::ModSource::ModWheel => performance.mod_wheel.clamp(0.0, 1.0),
+            crate::mod_matrix::ModSource::PitchBend => performance.pitch_bend.clamp(-1.0, 1.0),
+            crate::mod_matrix::ModSource::Aftertouch => performance.aftertouch.clamp(0.0, 1.0),
+            crate::mod_matrix::ModSource::Macro(index) => patch
+                .macros
+                .get(usize::from(index))
+                .map_or(0.0, |m| m.value.clamp(0.0, 1.0)),
+            _ => 0.0,
+        };
+        patch.mod_matrix.evaluate(dest, &sources) * dest.full_scale()
     }
 
     pub fn note_off(&mut self, key: u8, voice_context: u32) {
@@ -321,6 +374,58 @@ impl Sampler {
     /// because this may be asked on the audio thread.
     pub fn sounding_keys(&self) -> impl Iterator<Item = u8> + '_ {
         self.voices.iter_active().map(|voice| voice.key())
+    }
+
+    /// How far the matrix moves parameter `index` of effect slot `slot`
+    /// right now, in the parameter's normalised travel
+    /// (`ModDest::FxParam`, `docs/flopsynth-next.md` §4.2).
+    ///
+    /// The chain runs once for the whole instrument, so its sources are
+    /// the instrument-wide ones — the macros, the wheels, the pressure —
+    /// and, for a route from an envelope, an LFO or a generator, the
+    /// **newest** voice's, which is the one somebody just played (the
+    /// rule the LFO pictures follow). With no voice sounding those read
+    /// nought, so a macro on a delay's feedback still holds after the
+    /// last note. Nought when no route names the parameter, which is a
+    /// walk of the routes and nothing else. RT-safe.
+    pub fn fx_modulation(&self, slot: u8, index: u8) -> f32 {
+        let dest = crate::mod_matrix::ModDest::FxParam(slot, index);
+        if !self
+            .patch
+            .mod_matrix
+            .routes
+            .iter()
+            .any(|route| route.destination == dest)
+        {
+            return 0.0;
+        }
+        let newest = self
+            .voices
+            .iter_active()
+            .min_by_key(|voice| voice.age_samples());
+        let performance = self.performance;
+        let patch = &self.patch;
+        let sources = |source: crate::mod_matrix::ModSource| match source {
+            crate::mod_matrix::ModSource::ModWheel => performance.mod_wheel.clamp(0.0, 1.0),
+            crate::mod_matrix::ModSource::PitchBend => performance.pitch_bend.clamp(-1.0, 1.0),
+            crate::mod_matrix::ModSource::Aftertouch => performance.aftertouch.clamp(0.0, 1.0),
+            crate::mod_matrix::ModSource::Macro(index) => patch
+                .macros
+                .get(usize::from(index))
+                .map_or(0.0, |m| m.value.clamp(0.0, 1.0)),
+            other => newest.map_or(0.0, |voice| voice.source_value(other)),
+        };
+        patch.mod_matrix.evaluate(dest, &sources) * dest.full_scale()
+    }
+
+    /// Whether any route reaches the chain at all — so a node with none
+    /// pays nothing per block for the question.
+    pub fn modulates_fx(&self) -> bool {
+        self.patch
+            .mod_matrix
+            .routes
+            .iter()
+            .any(|route| matches!(route.destination, crate::mod_matrix::ModDest::FxParam(..)))
     }
 
     /// Where the **newest** voice's LFOs are in their cycles, 0..1 each.

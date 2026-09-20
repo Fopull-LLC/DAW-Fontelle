@@ -3072,3 +3072,37 @@ fn the_inspected_cards_picture_is_tall_enough_to_edit_in() {
     assert!(picture.width >= 1000.0, "{picture:?}");
     assert!(layout.inspector.bottom() <= layout.strip.y + 0.01);
 }
+
+/// A sequencer's steps (`docs/flopsynth-next.md` §4.2) are bars across the
+/// picture, one per step that plays: the bar's index is read off `x`, the
+/// value off `y` — full scale at the top, −1 at the bottom, 0 at the
+/// middle line — and the bars the drawing uses are the ones the press
+/// aims at.
+#[test]
+fn a_sequencers_steps_are_bars_read_off_the_picture() {
+    use fontelle_ui::canvas::{step_at, step_bars};
+    let rect = Rect::new(100.0, 50.0, 160.0, 80.0);
+    let steps = vec![0.0, 0.5, -1.0, 1.0, 0.25, 0.0, 0.0, 0.0];
+    let bars = step_bars(rect, &steps, 4);
+    assert_eq!(bars.len(), 4, "only the steps that play are drawn");
+    // Left to right, each a quarter of the width less a gap.
+    for (i, bar) in bars.iter().enumerate() {
+        assert!(bar.x >= rect.x + i as f32 * 40.0 - 0.01);
+        assert!(bar.right() <= rect.x + (i + 1) as f32 * 40.0 + 0.01);
+        assert!(bar.width > 30.0);
+    }
+    // A step at 0 is a hairline at the middle; +1 fills the top half,
+    // −1 the bottom half.
+    let middle = rect.y + rect.height * 0.5;
+    assert!((bars[0].y - middle).abs() < 2.0 && bars[0].height <= 2.0);
+    assert!((bars[3].y - rect.y).abs() < 0.01 && (bars[3].bottom() - middle).abs() < 0.01);
+    assert!((bars[2].y - middle).abs() < 0.01 && (bars[2].bottom() - rect.bottom()).abs() < 0.01);
+    // A press: the third quarter is step 2, the top is +1, the bottom −1.
+    assert_eq!(step_at(rect, 4, 190.0, 50.0), Some((2, 1.0)));
+    assert_eq!(step_at(rect, 4, 110.0, 130.0), Some((0, -1.0)));
+    let (index, value) = step_at(rect, 4, 250.0, 90.0).unwrap();
+    assert_eq!(index, 3);
+    assert!(value.abs() < 0.01, "the middle line is zero: {value}");
+    assert_eq!(step_at(rect, 4, 99.0, 90.0), None, "outside is nothing");
+    assert_eq!(step_at(rect, 0, 150.0, 90.0), None);
+}

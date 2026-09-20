@@ -30,6 +30,16 @@ pub struct PlaybackConfig {
     /// legitimate character choice in a sampler, so a pinned layer is never
     /// silently upgraded for a bounce.
     pub interpolation: Option<Interpolation>,
+    /// How many velocities inside each end of the layer's window the layer
+    /// fades over (`docs/flopsynth-next.md` §4.2): at the edge it is
+    /// silent, this far in it is whole. Nought — no fade, the switch every
+    /// zone had — is left out of the file.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub vel_fade: u8,
+}
+
+fn is_zero_u8(value: &u8) -> bool {
+    *value == 0
 }
 
 impl Default for PlaybackConfig {
@@ -43,6 +53,7 @@ impl Default for PlaybackConfig {
             loop_crossfade_ms: 5.0,
             reverse: false,
             interpolation: None,
+            vel_fade: 0,
         }
     }
 }

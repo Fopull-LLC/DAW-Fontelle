@@ -210,6 +210,16 @@ pub enum FlopsynthPicture {
     /// retriggered per note — a chord has four of each at four offsets, and
     /// the newest is the one somebody just played.
     Lfo { points: Vec<f32>, phase: f32 },
+    /// A step sequencer's steps (§4.2): one bar per step, each −1..=1,
+    /// the first `length` of them playing, and which one the newest voice
+    /// is on. Edited on the picture — a drag sets the step under the
+    /// pointer — through `patch/seq[sequencer]/step[n]`.
+    Steps {
+        sequencer: usize,
+        steps: Vec<f32>,
+        length: usize,
+        playhead: Option<usize>,
+    },
 }
 
 impl FlopsynthPicture {
@@ -2394,6 +2404,49 @@ pub fn wave_position_at(picture: Rect, x: f32) -> f32 {
         return 0.0;
     }
     ((x - picture.x) / picture.width).clamp(0.0, 1.0)
+}
+
+/// A sequencer's bars: one per step that plays, left to right across the
+/// picture, each from the middle line to its value — up for a positive
+/// step, down for a negative one, a hairline at nought.
+pub fn step_bars(rect: Rect, steps: &[f32], length: usize) -> Vec<Rect> {
+    let length = length.min(steps.len());
+    if length == 0 || rect.width <= 0.0 {
+        return Vec::new();
+    }
+    let slot = rect.width / length as f32;
+    let gap = (slot * 0.15).clamp(1.0, 4.0);
+    let middle = rect.y + rect.height * 0.5;
+    steps[..length]
+        .iter()
+        .enumerate()
+        .map(|(i, value)| {
+            let x = rect.x + slot * i as f32 + gap * 0.5;
+            let height = rect.height * 0.5 * value.clamp(-1.0, 1.0).abs();
+            let (top, height) = if *value >= 0.0 {
+                (middle - height, height.max(1.0))
+            } else {
+                (middle, height)
+            };
+            Rect::new(x, top, slot - gap, height)
+        })
+        .collect()
+}
+
+/// Which step a point on a sequencer's picture is over, and the value that
+/// height means: +1 at the top, −1 at the bottom, 0 on the middle line.
+/// `None` off the picture or with nothing playing.
+pub fn step_at(rect: Rect, length: usize, x: f32, y: f32) -> Option<(usize, f32)> {
+    let inside = x >= rect.x && x <= rect.right() && y >= rect.y && y <= rect.bottom();
+    if length == 0 || rect.width <= 0.0 || rect.height <= 0.0 || !inside {
+        return None;
+    }
+    let index = (((x - rect.x) / rect.width) * length as f32) as usize;
+    let value = 1.0 - 2.0 * ((y - rect.y) / rect.height).clamp(0.0, 1.0);
+    // Snapped to nought within a few percent of the line, so a step meant
+    // to rest rests.
+    let value = if value.abs() < 0.04 { 0.0 } else { value };
+    Some((index.min(length - 1), value))
 }
 
 /// The cutoff and resonance a drag on a filter's response lands on, both

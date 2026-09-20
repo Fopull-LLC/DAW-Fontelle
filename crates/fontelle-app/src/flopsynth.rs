@@ -72,8 +72,13 @@ pub(crate) fn source_family(
     use fontelle_core::ModSource;
     use fontelle_ui::document::SourceFamily;
     match source {
-        ModSource::Envelope(_) => SourceFamily::Envelope,
-        ModSource::Lfo(_) => SourceFamily::Lfo,
+        // The generators of §4.2 wear the LFOs' ink — they turn on their
+        // own and swing both ways, as an LFO does — and the follower the
+        // envelopes', being a level.
+        ModSource::Envelope(_) | ModSource::EnvelopeFollower => SourceFamily::Envelope,
+        ModSource::Lfo(_) | ModSource::Chaos | ModSource::RandomWalk | ModSource::StepSeq(_) => {
+            SourceFamily::Lfo
+        }
         ModSource::Macro(_) => SourceFamily::Macro,
         ModSource::Aftertouch | ModSource::ModWheel | ModSource::PitchBend => {
             SourceFamily::Performance
@@ -100,6 +105,8 @@ fn page_of(name: &str) -> Option<FlopsynthPage> {
         // inspector and the table, and an envelope or an LFO is edited in
         // the inspector — click its badge on the strip.
         n if n.starts_with("LFO") || n.starts_with("ENV") => return None,
+        // The §4.2 generators, the same: on the strip, edited in the drawer.
+        n if n.starts_with("SEQ ") || n == "Chaos" || n == "Walk" => return None,
         n if n.starts_with("Modulation") => FlopsynthPage::Modulation,
         n if n.starts_with("FX ") => FlopsynthPage::Effects,
         _ => FlopsynthPage::Synth,
@@ -135,6 +142,7 @@ fn shape_of(name: &str) -> (usize, bool, usize) {
         // four across, so four of each fit a row.
         n if n.starts_with("LFO") => (0, false, 4),
         n if n.starts_with("ENV") => (1, false, 4),
+        n if n.starts_with("SEQ ") || n == "Chaos" || n == "Walk" => (0, false, 4),
         // The matrix and the chain, each on its own band so a long list of
         // routes does not push a chorus onto the same line. An effect's card
         // is as wide as its count says.
@@ -157,7 +165,15 @@ fn shape_of(name: &str) -> (usize, bool, usize) {
 /// the noise are set aside and small, so nothing on them is Large and the
 /// sub's position is Small too.
 fn knob_sizes(name: &str, params: &[InstrumentParam]) -> Vec<KnobSize> {
-    const LARGE: &[&str] = &["synth/position", "filter/cutoff", "env/decay", "lfo/rate"];
+    const LARGE: &[&str] = &[
+        "synth/position",
+        "filter/cutoff",
+        "env/decay",
+        "lfo/rate",
+        "seq/rate",
+        "chaos/rate",
+        "walk/rate",
+    ];
     const SMALL: &[&str] = &[
         "/pan",
         "/tune",
@@ -556,6 +572,61 @@ fn picture_for(name: &str, patch: &Patch, phases: &[f32]) -> FlopsynthPicture {
         };
     }
 
+    // The Voice card (§3.5): the velocity curve, the gain over velocity as
+    // `velocity_gain` plays it, with the four custom points as marks — a
+    // mark dragged sets its point.
+    if name == "Voice" {
+        use fontelle_core::{VelocityCurve, velocity_gain};
+        let curve = patch.voice_config.velocity_curve;
+        let points = (0..128).map(|v| velocity_gain(v as u8, curve)).collect();
+        let marks = [32u8, 64, 96, 127]
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let level = match curve {
+                    VelocityCurve::Custom(points) => points[i],
+                    other => velocity_gain(*v, other),
+                };
+                (f32::from(*v) / 127.0, level.clamp(0.0, 1.0))
+            })
+            .collect();
+        return FlopsynthPicture::Curve {
+            points,
+            marks,
+            midline: false,
+        };
+    }
+
+    // The §4.2 generators' cards: a sequencer's steps, dragged; the
+    // attractor's and the walk's traces, read.
+    if let Some(index) = name
+        .strip_prefix("SEQ ")
+        .and_then(|n| n.parse::<usize>().ok())
+        .and_then(|n| n.checked_sub(1))
+        && let Some(seq) = patch.sequencers.get(index)
+    {
+        return FlopsynthPicture::Steps {
+            sequencer: index,
+            steps: seq.steps.to_vec(),
+            length: usize::from(seq.length.clamp(1, 16)),
+            playhead: None,
+        };
+    }
+    if name == "Chaos" {
+        return FlopsynthPicture::Curve {
+            points: chaos_trace(patch.chaos.rate_hz, 128),
+            marks: Vec::new(),
+            midline: true,
+        };
+    }
+    if name == "Walk" {
+        return FlopsynthPicture::Curve {
+            points: walk_trace(&patch.walk, 128),
+            marks: Vec::new(),
+            midline: true,
+        };
+    }
+
     // An effect slot's card (§3.6): the effect's own picture.
     if let Some(index) = name
         .strip_prefix("FX ")
@@ -753,6 +824,9 @@ pub fn describe(
             fontelle_core::ModSource::Envelope(i) => Some(format!("ENV {}", i + 1)),
             fontelle_core::ModSource::Lfo(i) => Some(format!("LFO {}", i + 1)),
             fontelle_core::ModSource::Macro(_) => Some("Macros".to_string()),
+            fontelle_core::ModSource::StepSeq(i) => Some(format!("SEQ {}", i + 1)),
+            fontelle_core::ModSource::Chaos => Some("Chaos".to_string()),
+            fontelle_core::ModSource::RandomWalk => Some("Walk".to_string()),
             _ => None,
         });
     let inspected_card = inspected_group.as_ref().and_then(|name| {
@@ -910,8 +984,50 @@ fn source_shape(patch: &Patch, source: fontelle_core::ModSource) -> Vec<f32> {
             Some(m) => vec![m.value * 2.0 - 1.0; 2],
             None => Vec::new(),
         },
+        // The §4.2 generators: a sequencer's steps as a stair over the
+        // ones that play; the attractor's and the walk's traces, as the
+        // inspector draws them.
+        ModSource::StepSeq(i) => match patch.sequencers.get(usize::from(i)) {
+            Some(seq) => {
+                let length = usize::from(seq.length.clamp(1, 16));
+                (0..THUMB_POINTS)
+                    .map(|n| seq.steps[n * length / THUMB_POINTS].clamp(-1.0, 1.0))
+                    .collect()
+            }
+            None => Vec::new(),
+        },
+        ModSource::Chaos => chaos_trace(patch.chaos.rate_hz, THUMB_POINTS)
+            .into_iter()
+            .map(|v| v * 2.0 - 1.0)
+            .collect(),
+        ModSource::RandomWalk => walk_trace(&patch.walk, THUMB_POINTS)
+            .into_iter()
+            .map(|v| v * 2.0 - 1.0)
+            .collect(),
         _ => Vec::new(),
     }
+}
+
+/// Two seconds of the attractor at `rate_hz`, as `count` points in 0..=1:
+/// the same generator the voice runs, from a fixed seed, so the picture is
+/// what a note would do rather than a drawing of one.
+fn chaos_trace(rate_hz: f32, count: usize) -> Vec<f32> {
+    let mut state = fontelle_core::mod_sources::ChaosState::default();
+    state.reset(7);
+    let seconds = 2.0 / count as f32;
+    (0..count)
+        .map(|_| (state.advance(rate_hz, seconds) + 1.0) * 0.5)
+        .collect()
+}
+
+/// Two seconds of the walk, the same way.
+fn walk_trace(config: &fontelle_core::mod_sources::RandomWalk, count: usize) -> Vec<f32> {
+    let mut state = fontelle_core::mod_sources::WalkState::default();
+    state.reset(7);
+    let seconds = 2.0 / count as f32;
+    (0..count)
+        .map(|_| (state.advance(config, seconds) + 1.0) * 0.5)
+        .collect()
 }
 
 /// The pictures for the choosers whose options are shapes (§3.3): every

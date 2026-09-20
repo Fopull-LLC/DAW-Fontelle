@@ -719,7 +719,7 @@ impl Build {
     fn mono(mut self, glide_s: f32) -> Self {
         self.patch.voice_config.retrigger = crate::voice::RetriggerMode::Legato;
         self.patch.voice_config.glide_time_s = glide_s;
-        self.patch.voice_config.glide_legato_only = true;
+        self.patch.voice_config.glide_mode = crate::voice::GlideMode::Legato;
         self
     }
 
@@ -731,7 +731,7 @@ impl Build {
     fn mono_retrig(mut self, glide_s: f32) -> Self {
         self.patch.voice_config.retrigger = crate::voice::RetriggerMode::Mono;
         self.patch.voice_config.glide_time_s = glide_s;
-        self.patch.voice_config.glide_legato_only = true;
+        self.patch.voice_config.glide_mode = crate::voice::GlideMode::Legato;
         self
     }
 

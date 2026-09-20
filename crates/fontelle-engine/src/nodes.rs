@@ -367,6 +367,9 @@ impl AudioNode for SamplerNode {
         // heard in the same block it arrives.
         if !self.fx.is_empty() {
             let bpm = ctx.transport.bpm;
+            // Whether the matrix reaches the chain at all (`ModDest::FxParam`,
+            // `docs/flopsynth-next.md` §4.2), asked once a block.
+            let modulated = self.sampler.modulates_fx();
             for index in 0..self.fx.len() {
                 let Some(slot) = self.sampler.patch().fx.get(index) else {
                     continue;
@@ -377,7 +380,25 @@ impl AudioNode for SamplerNode {
                     }
                     continue;
                 }
-                let config = slot.config;
+                let mut config = slot.config;
+                // A route to one of this effect's knobs moves a **copy** of
+                // the config, the way a route to a cutoff moves a copy of
+                // the filter's: the patch is what the document holds, and
+                // the knob stays where it was set. Resolved per block, like
+                // the chain runs.
+                if modulated && let Ok(slot_index) = u8::try_from(index) {
+                    for (param, spec) in slot.config.specs().iter().enumerate() {
+                        let Ok(param_index) = u8::try_from(param) else {
+                            break;
+                        };
+                        let amount = self.sampler.fx_modulation(slot_index, param_index);
+                        if amount != 0.0
+                            && let Some(base) = config.normalised(spec.id)
+                        {
+                            config.set_normalised(spec.id, (base + amount).clamp(0.0, 1.0));
+                        }
+                    }
+                }
                 let mix = config.mix().clamp(0.0, 1.0);
                 // Taken only when the mix asks for it: a fully wet slot must
                 // cost exactly what it did before this control existed.

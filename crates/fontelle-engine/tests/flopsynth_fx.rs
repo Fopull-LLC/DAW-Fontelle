@@ -486,3 +486,67 @@ fn the_chain_holds_eight_slots_and_meters_each_one() {
     assert_eq!(levels[1], 0.0, "a bypassed slot reads nothing");
     assert!(levels[2..].iter().all(|l| *l == 0.0));
 }
+
+/// `ModDest::FxParam` (`docs/flopsynth-next.md` §4.2): a route to one of an
+/// effect's own parameters, by slot and by the parameter's index in the
+/// effect's spec. A macro on the delay's feedback changes the tail — the
+/// instrument-wide sources reach the chain — and the destination has a
+/// name in the window and an address on the wire.
+#[test]
+fn a_macro_on_the_delays_feedback_changes_the_tail() {
+    use fontelle_core::{Curve, ModDest, ModRoute, ModSource};
+    let mut patch = a_patch();
+    let mut delay = DelayConfig::new();
+    delay.time_ms = 120.0;
+    delay.sync = false;
+    delay.feedback = 0.0;
+    delay.mix = 0.5;
+    patch.fx.push(slot(EffectConfig::Delay(delay)));
+    let feedback = EffectConfig::Delay(delay)
+        .specs()
+        .iter()
+        .position(|spec| spec.id == "feedback")
+        .expect("the delay has a feedback") as u8;
+    // The destination is offered, named, and addressed to the slot's knob.
+    let destinations = flopsynth::destinations(&patch);
+    let (dest, label) = destinations
+        .iter()
+        .find(|(d, _)| *d == ModDest::FxParam(0, feedback))
+        .expect("the delay's feedback is a destination");
+    assert!(
+        label.to_lowercase().contains("feedback") && label.contains("FX 1"),
+        "{label}"
+    );
+    assert_eq!(
+        flopsynth::dest_address_in(&patch, *dest).as_deref(),
+        Some("patch/fx[0]/feedback")
+    );
+    // Macro 1 all the way up, routed at 0.8: the feedback goes from nought
+    // to 80 %, and the tail from one repeat to many.
+    patch.mod_matrix.routes.push(ModRoute {
+        source: ModSource::Macro(0),
+        destination: ModDest::FxParam(0, feedback),
+        depth: 0.8,
+        curve: Curve::Linear,
+        via: None,
+        invert: false,
+        bypass: false,
+    });
+    let quiet = render(patch.clone(), &[(0, true), (8, false)], 200);
+    patch.macros[0].value = 1.0;
+    let ringing = render(patch.clone(), &[(0, true), (8, false)], 200);
+    // Half a second in: three repeats at 120 ms have gone by, and with no
+    // feedback there is nothing left.
+    let late = |out: &[f32]| rms(&out[(SR * 0.45) as usize..(SR * 0.53) as usize]);
+    assert!(
+        late(&ringing) > late(&quiet) * 10.0,
+        "the macro feeds the delay back: {} against {}",
+        late(&ringing),
+        late(&quiet)
+    );
+    // The patch's own knob is not moved by the route: it is a modulation.
+    let EffectConfig::Delay(stored) = patch.fx[0].config else {
+        unreachable!()
+    };
+    assert_eq!(stored.feedback, 0.0);
+}

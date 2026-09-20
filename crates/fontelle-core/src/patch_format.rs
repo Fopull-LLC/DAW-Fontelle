@@ -303,6 +303,18 @@ struct StoredPatch {
     /// (`docs/flopsynth-next.md` §4.1, ground rule 7).
     #[serde(default, skip_serializing_if = "Oversampling::is_off")]
     oversampling: Oversampling,
+    /// The §4.2 sources' settings, each `#[serde(default)]` and left out
+    /// at rest, for the same reason again.
+    #[serde(default, skip_serializing_if = "is_default")]
+    chaos: crate::mod_sources::Chaos,
+    #[serde(default, skip_serializing_if = "is_default")]
+    walk: crate::mod_sources::RandomWalk,
+    #[serde(default, skip_serializing_if = "is_default")]
+    sequencers: [crate::mod_sources::StepSequencer; 2],
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 /// How many macros, LFOs and envelopes the file carried before there were
@@ -382,6 +394,9 @@ impl Patch {
             wavetables: self.wavetables.iter().map(StoredWavetable::of).collect(),
             samples: self.samples.iter().map(StoredSample::of).collect(),
             oversampling: self.oversampling,
+            chaos: self.chaos,
+            walk: self.walk,
+            sequencers: self.sequencers,
         };
 
         Ok(PatchData {
@@ -483,6 +498,9 @@ impl Patch {
                 .map(StoredSample::into_sample)
                 .collect(),
             oversampling: stored.oversampling,
+            chaos: stored.chaos,
+            walk: stored.walk,
+            sequencers: stored.sequencers,
         };
         // A Flopsynth row gets every slot the strip shows, whatever the
         // file carried — see `fill_modulator_slots`; the writer above trims
@@ -654,6 +672,7 @@ mod tests {
                         loop_crossfade_ms: 12.5,
                         reverse: true,
                         interpolation: Some(Interpolation::High),
+                        vel_fade: 0,
                     },
                     gain_db: -4.25,
                     pan: -0.75,
@@ -717,7 +736,9 @@ mod tests {
                 polyphony: 33,
                 steal_policy: StealPolicy::Quietest,
                 glide_time_s: 0.05,
-                glide_legato_only: true,
+                glide_mode: crate::voice::GlideMode::Legato,
+                glide_curve: crate::voice::GlideCurve::Fast,
+                velocity_curve: crate::voice::VelocityCurve::Soft,
                 unison: UnisonConfig {
                     voices: 3,
                     detune_cents: 9.0,

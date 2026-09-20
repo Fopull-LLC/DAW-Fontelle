@@ -8,6 +8,7 @@ pub mod factory_samples;
 pub mod flopsynth;
 mod lfo;
 mod mod_matrix;
+pub mod mod_sources;
 mod patch;
 mod patch_format;
 pub mod patch_params;
@@ -33,8 +34,8 @@ pub use playback::{LoopMode, PlaybackConfig};
 pub use sampler::{PrepareContext, Sampler, SamplerContext};
 pub use streaming::{AudioBuffer, AudioStore, SampleBuffer, SampleStore};
 pub use voice::{
-    DEFAULT_BEND_RANGE_SEMITONES, FILTER_STEP, MAX_LFOS, MAX_MOD_ENVELOPES, NoteTrigger,
-    OSC_ROOT_HZ, Performance, RenderClock, RetriggerMode, StealPolicy, UnisonConfig, Voice,
-    VoiceConfig, VoicePool, velocity_to_gain,
+    DEFAULT_BEND_RANGE_SEMITONES, FILTER_STEP, GlideCurve, GlideMode, MAX_LFOS, MAX_MOD_ENVELOPES,
+    NoteTrigger, OSC_ROOT_HZ, Performance, RenderClock, RetriggerMode, StealPolicy, UnisonConfig,
+    VelocityCurve, Voice, VoiceConfig, VoicePool, velocity_gain, velocity_to_gain,
 };
 pub use wavetable_set::WavetableSet;

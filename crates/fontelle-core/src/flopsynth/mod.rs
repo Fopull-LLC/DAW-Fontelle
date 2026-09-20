@@ -293,6 +293,9 @@ pub fn flopsynth_init() -> Patch {
         fx: Vec::new(),
         macros: Default::default(),
         output_db: 0.0,
+        chaos: Default::default(),
+        walk: Default::default(),
+        sequencers: Default::default(),
     };
     patch.fill_modulator_slots();
     patch
@@ -314,6 +317,15 @@ pub fn addresses(patch: &Patch) -> Vec<String> {
         "patch/voice/legato".to_string(),
         "patch/voice/mode".to_string(),
         "patch/voice/bend_range".to_string(),
+        // Phase 3 (§4.2, §4.6): the glide's mode and shape, and the
+        // velocity curve with its four drawn points.
+        "patch/voice/glide_mode".to_string(),
+        "patch/voice/glide_curve".to_string(),
+        "patch/voice/velocity_curve".to_string(),
+        "patch/voice/velocity_point[0]".to_string(),
+        "patch/voice/velocity_point[1]".to_string(),
+        "patch/voice/velocity_point[2]".to_string(),
+        "patch/voice/velocity_point[3]".to_string(),
         "patch/output".to_string(),
         "patch/quality".to_string(),
         "patch/oversampling".to_string(),
@@ -322,6 +334,10 @@ pub fn addresses(patch: &Patch) -> Vec<String> {
     for (index, layer) in patch.layers.iter().enumerate() {
         out.push(format!("patch/layer[{index}]/gain"));
         out.push(format!("patch/layer[{index}]/pan"));
+        // The velocity window and its fade (§4.2).
+        out.push(format!("patch/layer[{index}]/vel_low"));
+        out.push(format!("patch/layer[{index}]/vel_high"));
+        out.push(format!("patch/layer[{index}]/vel_fade"));
         // The **layer's** fine tune, which every kind of layer has: a
         // Flopsynth oscillator transposes in whole semitones with
         // `synth/semitones` and detunes in cents with this, the same as any
@@ -433,6 +449,20 @@ pub fn addresses(patch: &Patch) -> Vec<String> {
         }
     }
 
+    // The generators of §4.2: the two sequencers' steps and clocks, the
+    // attractor's rate, the walk's rate and smoothing.
+    for index in 0..patch.sequencers.len() {
+        for step in 0..crate::mod_sources::SEQ_STEPS {
+            out.push(format!("patch/seq[{index}]/step[{step}]"));
+        }
+        for field in ["length", "rate", "sync", "division", "smooth"] {
+            out.push(format!("patch/seq[{index}]/{field}"));
+        }
+    }
+    out.push("patch/chaos/rate".to_string());
+    out.push("patch/walk/rate".to_string());
+    out.push("patch/walk/smooth".to_string());
+
     for index in 0..MACRO_COUNT {
         out.push(format!("patch/macro[{index}]"));
     }
@@ -529,7 +559,38 @@ pub fn destinations(patch: &Patch) -> Vec<(ModDest, String)> {
         out.push((ModDest::LfoPhase(i), format!("LFO {name} phase")));
     }
     out.push((ModDest::Amp, "Amp".to_string()));
+    out.push((ModDest::GlideTime, "Glide time".to_string()));
+    // The chain's own knobs (§4.2): every parameter of every slot, by the
+    // slot and the parameter's place in the effect's spec.
+    for (slot, fx) in patch.fx.iter().enumerate() {
+        let Ok(s) = u8::try_from(slot) else { continue };
+        for (index, spec) in fx.config.specs().iter().enumerate() {
+            let Ok(i) = u8::try_from(index) else { continue };
+            out.push((
+                ModDest::FxParam(s, i),
+                format!("FX {} {}", slot + 1, spec.name.to_lowercase()),
+            ));
+        }
+    }
     out
+}
+
+/// [`dest_address`] with the patch to hand, which is what an effect's
+/// parameter needs: `ModDest::FxParam` names a slot and an index, and the
+/// address's tail is the parameter's id in that slot's effect.
+pub fn dest_address_in(patch: &Patch, dest: ModDest) -> Option<String> {
+    match dest {
+        ModDest::FxParam(slot, index) => {
+            let spec = patch
+                .fx
+                .get(usize::from(slot))?
+                .config
+                .specs()
+                .get(usize::from(index))?;
+            Some(format!("patch/fx[{slot}]/{}", spec.id))
+        }
+        other => dest_address(other),
+    }
 }
 
 /// Which control on the panel a destination moves, as its §4 address.
@@ -580,7 +641,7 @@ pub fn dest_address(dest: ModDest) -> Option<String> {
 pub fn dest_for_address(patch: &Patch, address: &str) -> Option<ModDest> {
     destinations(patch)
         .into_iter()
-        .find(|(dest, _)| dest_address(*dest).as_deref() == Some(address))
+        .find(|(dest, _)| dest_address_in(patch, *dest).as_deref() == Some(address))
         .map(|(dest, _)| dest)
 }
 
@@ -596,6 +657,14 @@ pub fn sources(patch: &Patch) -> Vec<(ModSource, String)> {
         let Ok(i) = u8::try_from(index) else { continue };
         out.push((ModSource::Lfo(i), format!("LFO {}", index + 1)));
     }
+    // The generators of §4.2, after the LFOs they stand beside.
+    out.extend([
+        (ModSource::StepSeq(0), "SEQ 1".to_string()),
+        (ModSource::StepSeq(1), "SEQ 2".to_string()),
+        (ModSource::Chaos, "Chaos".to_string()),
+        (ModSource::RandomWalk, "Walk".to_string()),
+        (ModSource::EnvelopeFollower, "Follow".to_string()),
+    ]);
     for index in 0..MACRO_COUNT {
         let name = patch.macros[index].name.clone();
         let label = if name.is_empty() {

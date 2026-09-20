@@ -8344,6 +8344,29 @@ fn draw_flopsynth_picture(
                 );
             }
         }
+        FlopsynthPicture::Steps {
+            steps,
+            length,
+            playhead,
+            ..
+        } => {
+            use crate::canvas::step_bars;
+            fill_rect(
+                scene,
+                Rect::new(inner.x, inner.y + inner.height * 0.5, inner.width, 1.0),
+                p.border,
+            );
+            for (index, bar) in step_bars(inner, steps, *length).iter().enumerate() {
+                // The step the newest voice is on is lit; the rest wear the
+                // source's ink.
+                let colour = if *playhead == Some(index) {
+                    p.playhead
+                } else {
+                    ink
+                };
+                fill_rect_rounded(scene, *bar, 2.0, colour);
+            }
+        }
         FlopsynthPicture::Lfo { points, phase } => {
             fill_rect(
                 scene,

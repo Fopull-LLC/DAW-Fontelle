@@ -93,10 +93,15 @@ pub const CAPTIONS: &[(&str, &str)] = &[
     ("draw", "DRAW"),
     ("grid", "GRID"),
     ("read", "READ"),
-    // The voice, and the channel's two knobs beside it.
+    // The §4.2 generators: a sequencer's step count.
+    ("steps", "STEPS"),
+    // The voice, and the channel's two knobs beside it. The glide's mode
+    // and shape (§4.6) and the velocity curve (§4.2).
     ("voices", "VOICES"),
     ("glide", "GLIDE"),
     ("legato", "LEGATO"),
+    ("when", "GLIDE ON"),
+    ("velocity", "VELOCITY"),
     ("bend", "BEND"),
     ("output", "OUTPUT"),
     ("volume", "VOLUME"),
