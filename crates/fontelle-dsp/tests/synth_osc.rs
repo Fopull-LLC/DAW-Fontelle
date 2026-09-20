@@ -978,3 +978,104 @@ fn the_spreads_place_the_inner_voices_by_three_laws() {
     let text = serde_json::to_string(&Unison::default()).unwrap();
     assert!(!text.contains("mode") && !text.contains("spread"), "{text}");
 }
+
+// --- Noise kinds (`docs/flopsynth-next.md` §4.3) -------------------------
+
+use fontelle_dsp::NoiseKind;
+
+/// The spectral slope of a noise in dB an octave, over four octaves, on
+/// bands of twenty-four bins each — a bin of noise is a random variable.
+fn noise_slope(kind: NoiseKind, colour: f32, seed: u32) -> f32 {
+    let config = SynthOsc {
+        source: SynthSource::Noise,
+        noise: kind,
+        noise_colour: colour,
+        ..SynthOsc::default()
+    };
+    let samples = render_seeded(&config, 440.0, 65_536, seed);
+    let band = |centre: f32| {
+        let count = 24;
+        (0..count)
+            .map(|i| energy_at(&samples, centre * (0.75 + 0.5 * i as f32 / count as f32)))
+            .sum::<f32>()
+            / count as f32
+    };
+    20.0 * (band(4_000.0).max(1e-9) / band(250.0).max(1e-9)).log10() / 4.0
+}
+
+#[test]
+fn the_noise_kinds_have_their_own_slopes() {
+    assert_eq!(NoiseKind::default(), NoiseKind::White);
+    let white = noise_slope(NoiseKind::White, 0.0, 7);
+    let pink = noise_slope(NoiseKind::Pink, 0.0, 7);
+    let brown = noise_slope(NoiseKind::Brown, 0.0, 7);
+    let blue = noise_slope(NoiseKind::Blue, 0.0, 7);
+    assert!(white.abs() < 1.5, "white is flat: {white:.1} dB/oct");
+    assert!(
+        (pink - -3.0).abs() < 1.5,
+        "pink falls three: {pink:.1} dB/oct"
+    );
+    assert!(
+        (brown - -6.0).abs() < 1.5,
+        "brown falls six: {brown:.1} dB/oct"
+    );
+    assert!(
+        (blue - 3.0).abs() < 1.5,
+        "blue rises three: {blue:.1} dB/oct"
+    );
+    // The colour knob is a tilt on top of whichever kind: pink at full
+    // colour falls further than pink at none.
+    let tilted = noise_slope(NoiseKind::Pink, 1.0, 7);
+    assert!(
+        tilted < pink - 2.0,
+        "the tilt is on top: {tilted:.1} against {pink:.1}"
+    );
+    // And the file leaves the kind out at white.
+    let text = serde_json::to_string(&SynthOsc::default()).unwrap();
+    assert!(!text.contains("\"noise\""), "{text}");
+}
+
+#[test]
+fn crackle_is_sparse_and_vinyl_has_its_rumble() {
+    let render_kind = |kind: NoiseKind| {
+        let config = SynthOsc {
+            source: SynthSource::Noise,
+            noise: kind,
+            ..SynthOsc::default()
+        };
+        render_seeded(&config, 440.0, 48_000, 3)
+    };
+    let crackle = render_kind(NoiseKind::Crackle);
+    let quiet = crackle.iter().filter(|s| s.abs() < 1e-4).count() as f32 / crackle.len() as f32;
+    assert!(
+        quiet > 0.9,
+        "crackle is mostly nothing: {quiet:.2} of it is quiet"
+    );
+    let peak = crackle.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+    assert!(peak > 0.3, "and the pops are pops: {peak}");
+    let pops = crackle
+        .windows(2)
+        .filter(|w| w[0].abs() < 1e-4 && w[1].abs() > 0.05)
+        .count();
+    assert!(
+        (20..=400).contains(&pops),
+        "a few dozen pops a second: {pops}"
+    );
+    let vinyl = render_kind(NoiseKind::Vinyl);
+    let rumble = |s: &[f32]| {
+        (0..8)
+            .map(|i| energy_at(s, 30.0 + 10.0 * i as f32))
+            .sum::<f32>()
+    };
+    assert!(
+        rumble(&vinyl) > rumble(&crackle) * 4.0,
+        "vinyl rumbles under its crackle: {} against {}",
+        rumble(&vinyl),
+        rumble(&crackle)
+    );
+    let vinyl_pops = vinyl
+        .windows(2)
+        .filter(|w| (w[1] - w[0]).abs() > 0.1)
+        .count();
+    assert!(vinyl_pops > 10, "and crackles: {vinyl_pops}");
+}

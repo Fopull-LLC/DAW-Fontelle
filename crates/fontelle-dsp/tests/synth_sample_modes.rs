@@ -363,3 +363,50 @@ fn the_new_knobs_default_and_stay_out_of_an_unchanged_file() {
         "an oscillator on the default settings writes no sample block: {text}"
     );
 }
+
+/// `NoiseKind::Sample` (`docs/flopsynth-next.md` §4.3): a noise layer
+/// reading a recording at the recording's own rate, whatever the note —
+/// the kits' hats and rides as noise. Two notes an octave apart read the
+/// same samples; the colour knob tilts it like any noise; it loops.
+#[test]
+fn a_sample_noise_reads_the_recording_at_its_own_rate_whatever_the_note() {
+    use fontelle_dsp::NoiseKind;
+    // A recording that is a ramp, so a read at the wrong rate shows as a
+    // different period.
+    let cycle = 480usize;
+    let ramp: Vec<f32> = (0..cycle * 40)
+        .map(|i| (i % cycle) as f32 / cycle as f32 * 2.0 - 1.0)
+        .collect();
+    let config = SynthOsc {
+        source: SynthSource::Noise,
+        noise: NoiseKind::Sample(0),
+        noise_colour: 0.0,
+        ..SynthOsc::default()
+    };
+    let play = |note_hz: f32| {
+        let mut state = SynthState::new();
+        state.reset(&config, 1);
+        render_into(&mut state, &config, &data(&ramp, 440.0), note_hz, cycle * 4)
+    };
+    let low = play(220.0);
+    let high = play(880.0);
+    assert!(
+        low.iter().zip(&high).all(|(a, b)| (a - b).abs() < 1e-5),
+        "the note does not change the read"
+    );
+    // The ramp comes out at its own period: one cycle every 480 samples.
+    let rises = low.windows(2).filter(|w| w[1] < w[0] - 1.0).count();
+    assert_eq!(
+        rises, 3,
+        "three wraps in four cycles less the first: {rises}"
+    );
+    // And past the recording's end it goes round again.
+    let mut state = SynthState::new();
+    state.reset(&config, 1);
+    let long = render_into(&mut state, &config, &data(&ramp, 440.0), 440.0, cycle * 44);
+    let tail = &long[cycle * 42..];
+    assert!(
+        tail.iter().any(|s| s.abs() > 0.5),
+        "it loops rather than running out"
+    );
+}

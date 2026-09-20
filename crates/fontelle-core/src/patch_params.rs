@@ -33,8 +33,8 @@
 
 use fontelle_dsp::{
     EnvStage, FilterModel, FilterRoute, FilterSlope, GRAIN_MAX_MS, GRAIN_MIN_MS, Interpolation,
-    MAX_UNISON, OscKind, Oversampling, SampleLoop, SvfMode, SynthSource, UnisonMode, UnisonSpread,
-    WarpMode, WavetableId,
+    MAX_UNISON, NoiseKind, OscKind, Oversampling, SampleLoop, SvfMode, SynthSource, UnisonMode,
+    UnisonSpread, WarpMode, WavetableId,
 };
 use fontelle_types::{LfoWave, NoteDivision};
 
@@ -550,6 +550,22 @@ fn set_synth(osc: &mut fontelle_dsp::SynthOsc, field: &str, value: f32, zones: u
         "route" => {
             osc.filter_route = FilterRoute::ALL[choice_index(value, FilterRoute::ALL.len())];
         }
+        // The sub's sugar (§4.3): three new addresses writing the fields the
+        // raw ones write — a shape over four tables, an octave over the
+        // semitones, a switch over the route.
+        "sub_shape" => {
+            osc.source = SynthSource::Table(SUB_SHAPES[choice_index(value, SUB_SHAPES.len())].0);
+        }
+        "octave" => {
+            osc.semitones = SUB_OCTAVES[choice_index(value, SUB_OCTAVES.len())].0;
+        }
+        "direct" => {
+            osc.filter_route = if value >= 0.5 {
+                FilterRoute::Bypass
+            } else {
+                FilterRoute::F1
+            };
+        }
         "quality" => {
             osc.quality = Oversampling::ALL[choice_index(value, Oversampling::ALL.len())];
         }
@@ -569,6 +585,14 @@ fn set_synth(osc: &mut fontelle_dsp::SynthOsc, field: &str, value: f32, zones: u
             osc.unison.spread = UnisonSpread::ALL[choice_index(value, UnisonSpread::ALL.len())];
         }
         "noise_colour" => osc.noise_colour = value,
+        // Which noise (§4.3); the recording keeps whichever index it had.
+        "noise" => {
+            let chosen = NoiseKind::ALL[choice_index(value, NoiseKind::ALL.len())];
+            osc.noise = match (chosen, osc.noise) {
+                (NoiseKind::Sample(_), NoiseKind::Sample(at)) => NoiseKind::Sample(at),
+                (other, _) => other,
+            };
+        }
         // Which of the three kinds of source this oscillator is (table,
         // recording, string). Refused on the noise layer for `table`'s
         // reason. Switching to a table lands on the saw, and to a recording
@@ -631,6 +655,17 @@ fn set_synth(osc: &mut fontelle_dsp::SynthOsc, field: &str, value: f32, zones: u
     }
     true
 }
+
+/// The sub's shapes (§4.3): four of the bank's tables, by a word.
+pub const SUB_SHAPES: [(WavetableId, &str); 4] = [
+    (WavetableId::SubSine, "sine"),
+    (WavetableId::SubTri, "tri"),
+    (WavetableId::SubSquare, "square"),
+    (WavetableId::Saw, "saw"),
+];
+
+/// And its octaves: two down, one down, none.
+pub const SUB_OCTAVES: [(i8, &str); 3] = [(-24, "-2"), (-12, "-1"), (0, "0")];
 
 /// The unison chooser's positions (`docs/flopsynth-next.md` §4.3): the
 /// four plain modes, then each chord as a position of its own, so the
@@ -1069,6 +1104,25 @@ fn synth_value(osc: &fontelle_dsp::SynthOsc, field: &str, zones: usize) -> Optio
                 .position(|r| *r == osc.filter_route)?;
             Some(choice_value(at, FilterRoute::ALL.len()))
         }
+        "sub_shape" => {
+            let at = match osc.source {
+                SynthSource::Table(id) => SUB_SHAPES.iter().position(|(t, _)| *t == id)?,
+                _ => return None,
+            };
+            Some(choice_value(at, SUB_SHAPES.len()))
+        }
+        "octave" => {
+            // The nearest octave to wherever the semitones are.
+            let at = SUB_OCTAVES
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, (st, _))| {
+                    (i16::from(*st) - i16::from(osc.semitones)).unsigned_abs()
+                })
+                .map(|(i, _)| i)?;
+            Some(choice_value(at, SUB_OCTAVES.len()))
+        }
+        "direct" => Some(bool_value(osc.filter_route == FilterRoute::Bypass)),
         "quality" => {
             let at = Oversampling::ALL.iter().position(|q| *q == osc.quality)?;
             Some(choice_value(at, Oversampling::ALL.len()))
@@ -1094,6 +1148,7 @@ fn synth_value(osc: &fontelle_dsp::SynthOsc, field: &str, zones: usize) -> Optio
             Some(choice_value(at, UnisonSpread::ALL.len()))
         }
         "noise_colour" => Some(osc.noise_colour.clamp(0.0, 1.0)),
+        "noise" => Some(choice_value(osc.noise.index(), NoiseKind::ALL.len())),
         _ => None,
     }
 }

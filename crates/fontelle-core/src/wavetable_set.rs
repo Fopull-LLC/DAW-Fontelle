@@ -161,7 +161,19 @@ impl WavetableSet {
                         *slot = Some(sample.zones.iter().map(spectral_analysis).collect());
                     }
                 }
-                fontelle_dsp::SynthSource::Noise | fontelle_dsp::SynthSource::String => {}
+                // A noise reading a recording (§4.3) needs its zones too.
+                fontelle_dsp::SynthSource::Noise => {
+                    if let fontelle_dsp::NoiseKind::Sample(at) = osc.noise
+                        && let (Some(slot), Some(sample)) = (
+                            self.samples.get_mut(usize::from(at)),
+                            patch.samples.get(usize::from(at)),
+                        )
+                        && slot.is_none()
+                    {
+                        *slot = Some(sample.clone());
+                    }
+                }
+                fontelle_dsp::SynthSource::String => {}
             }
         }
     }

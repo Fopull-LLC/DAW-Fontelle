@@ -2490,9 +2490,31 @@ impl Voice {
                                 tables.get_spectral(at as usize, zone)
                             })
                             .map_or(SynthInput::None, SynthInput::Spectral),
-                        fontelle_dsp::SynthSource::Noise | fontelle_dsp::SynthSource::String => {
-                            SynthInput::None
-                        }
+                        // A noise reading a recording (§4.3): the zone, as a
+                        // plain read finds it.
+                        fontelle_dsp::SynthSource::Noise => match osc.noise {
+                            fontelle_dsp::NoiseKind::Sample(at) => tables
+                                .get_sample(usize::from(at))
+                                .and_then(|sample| match osc.sample.zone {
+                                    Some(locked) => sample.zones.get(usize::from(locked)),
+                                    None => sample.zone_for_note(self.key, self.velocity),
+                                })
+                                .map_or(SynthInput::None, |zone| {
+                                    SynthInput::Sample(fontelle_dsp::SampleData {
+                                        samples: &zone.samples,
+                                        sample_rate: zone.sample_rate as f32,
+                                        root_hz: zone.root_hz(),
+                                        interpolation: layer
+                                            .playback
+                                            .interpolation
+                                            .unwrap_or(quality),
+                                        gain: 10f32.powf(zone.gain_db / 20.0),
+                                        loop_frames: zone.loop_frames,
+                                    })
+                                }),
+                            _ => SynthInput::None,
+                        },
+                        fontelle_dsp::SynthSource::String => SynthInput::None,
                     };
                     PreparedSource::Synth { osc, input }
                 }

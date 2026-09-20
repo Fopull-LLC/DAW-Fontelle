@@ -429,3 +429,58 @@ fn a_grain_card_swaps_the_loop_points_for_grain_and_spray_and_a_kit_lists_its_hi
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The SUB card's sugar (`docs/flopsynth-next.md` §4.3): a shape chooser
+/// over the four sub tables, an octave chooser over the semitones, and a
+/// direct-out switch over the route — three new addresses writing the
+/// fields the raw ones write, drawn in their place on the sub's card.
+#[test]
+fn the_sub_card_has_a_shape_an_octave_and_a_direct_out() {
+    use fontelle_dsp::{FilterRoute, SynthSource, WavetableId};
+    let mut session = a_flopsynth();
+    let sub = card(&session, "SUB");
+    let drawn = captions(&sub);
+    for tail in ["sub_shape", "octave", "direct"] {
+        assert!(
+            has(&drawn, &format!("patch/layer[3]/synth/{tail}")),
+            "no {tail}: {drawn:?}"
+        );
+    }
+    for tail in ["table", "semitones", "route"] {
+        assert!(
+            !has(&drawn, &format!("patch/layer[3]/synth/{tail}")),
+            "{tail} is drawn twice"
+        );
+    }
+    assert_eq!(
+        caption_of(&drawn, "patch/layer[3]/synth/sub_shape"),
+        "SHAPE"
+    );
+    assert_eq!(caption_of(&drawn, "patch/layer[3]/synth/octave"), "OCTAVE");
+    assert_eq!(caption_of(&drawn, "patch/layer[3]/synth/direct"), "DIRECT");
+    // Square, an octave down, direct out.
+    set(&mut session, "patch/layer[3]/synth/sub_shape", 2.0 / 3.0);
+    set(&mut session, "patch/layer[3]/synth/octave", 0.5);
+    set(&mut session, "patch/layer[3]/synth/direct", 1.0);
+    let patch = session.selected_patch().unwrap();
+    let fontelle_core::Source::Synth(osc) = &patch.layers[3].source else {
+        panic!("a synth layer");
+    };
+    assert_eq!(osc.source, SynthSource::Table(WavetableId::SubSquare));
+    assert_eq!(osc.semitones, -12);
+    assert_eq!(osc.filter_route, FilterRoute::Bypass);
+    // Direct off puts the sub back through the first filter.
+    set(&mut session, "patch/layer[3]/synth/direct", 0.0);
+    let patch = session.selected_patch().unwrap();
+    let fontelle_core::Source::Synth(osc) = &patch.layers[3].source else {
+        panic!("a synth layer");
+    };
+    assert_eq!(osc.filter_route, FilterRoute::F1);
+    // The raw addresses still answer, for the lanes that name them.
+    use fontelle_core::patch_params::value;
+    assert!(value(&patch, "patch/layer[3]/synth/semitones").is_some());
+    assert!(value(&patch, "patch/layer[3]/synth/route").is_some());
+    // And the full oscillators are as they were.
+    let a = captions(&card(&session, "OSC A"));
+    assert!(has(&a, "patch/layer[0]/synth/table") && !has(&a, "patch/layer[0]/synth/sub_shape"));
+}

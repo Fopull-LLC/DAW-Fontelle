@@ -94,6 +94,71 @@ impl Default for SynthSource {
     }
 }
 
+/// What a [`SynthSource::Noise`] layer makes (`docs/flopsynth-next.md`
+/// §4.3). The colour knob's tilt sits on top of every one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum NoiseKind {
+    #[default]
+    White,
+    /// −3 dB an octave: Paul Kellet's three-pole approximation.
+    Pink,
+    /// −6 dB an octave: white, integrated with a leak.
+    Brown,
+    /// +3 dB an octave: white, differenced and mixed back.
+    Blue,
+    /// Sparse pops: a few dozen a second, each a decaying tick.
+    Crackle,
+    /// Crackle over a low rumble — a record's surface.
+    Vinyl,
+    /// One of the patch's recordings — `Patch::samples` by index, the zone
+    /// the oscillator's [`SampleSettings::zone`] locks or the one for the
+    /// key — read at the recording's own rate whatever the note, round
+    /// and round: a kit's hats and rides as noise.
+    Sample(u8),
+}
+
+impl NoiseKind {
+    /// One of each, in the chooser's order; the recording at its first.
+    pub const ALL: [Self; 7] = [
+        Self::White,
+        Self::Pink,
+        Self::Brown,
+        Self::Blue,
+        Self::Crackle,
+        Self::Vinyl,
+        Self::Sample(0),
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::White => "white",
+            Self::Pink => "pink",
+            Self::Brown => "brown",
+            Self::Blue => "blue",
+            Self::Crackle => "crackle",
+            Self::Vinyl => "vinyl",
+            Self::Sample(_) => "sample",
+        }
+    }
+
+    pub fn is_white(&self) -> bool {
+        *self == Self::White
+    }
+
+    /// Which of [`ALL`](Self::ALL) this is, whatever its recording.
+    pub fn index(self) -> usize {
+        match self {
+            Self::White => 0,
+            Self::Pink => 1,
+            Self::Brown => 2,
+            Self::Blue => 3,
+            Self::Crackle => 4,
+            Self::Vinyl => 5,
+            Self::Sample(_) => 6,
+        }
+    }
+}
+
 /// How the table read is bent. Each is a **continuum** under
 /// [`SynthOsc::warp_amount`] and each is a wire at zero (catalogue rule 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -701,8 +766,13 @@ pub struct SynthOsc {
     /// drone or a fixed noise band.
     pub key_track: bool,
     pub filter_route: FilterRoute,
-    /// [`SynthSource::Noise`] only: 0 white, 0.5 pink-ish, 1 brown.
+    /// [`SynthSource::Noise`] only: 0 white, 0.5 pink-ish, 1 brown — a
+    /// tilt on top of whichever [`noise`](Self::noise) kind plays.
     pub noise_colour: f32,
+    /// [`SynthSource::Noise`] only: which noise (`docs/flopsynth-next.md`
+    /// §4.3). White, the noise every patch had, is left out of the file.
+    #[serde(default, skip_serializing_if = "NoiseKind::is_white")]
+    pub noise: NoiseKind,
     /// [`SynthSource::Sample`] only: how the recording is read. Defaulted on
     /// the stored side, so every patch written before recordings existed
     /// reads as one that plays its sample once — and **left out** when it
@@ -757,6 +827,7 @@ impl Default for SynthOsc {
             key_track: true,
             filter_route: FilterRoute::F1,
             noise_colour: 0.0,
+            noise: NoiseKind::White,
             sample: SampleSettings::default(),
             string: StringModel::default(),
             quality: Oversampling::Off,
@@ -842,6 +913,10 @@ pub struct SynthState {
     string: StringState,
     /// The spectral source's per-voice state — see [`SpectralState`].
     spectral: SpectralState,
+    /// The noise kinds' memories: pink's three poles, brown's integrator,
+    /// blue's last draw, a pop's level and the rumble's pole, and where a
+    /// sample noise is in its recording.
+    noise_state: NoiseState,
     /// `2^(semitones/12)` for the semitones it was last asked about — see
     /// [`base_hz`](Self::base_hz).
     semitone_ratio: (i8, f32),
@@ -925,6 +1000,87 @@ struct StringKey {
     voices: usize,
     detune_cents: f32,
     sample_rate: f32,
+}
+
+/// The noise kinds' memories — see [`NoiseKind`].
+#[derive(Debug, Clone, Copy, Default)]
+struct NoiseState {
+    /// Pink's three poles (Paul Kellet's economy filter).
+    pink: [f32; 3],
+    /// Brown's leaky integrator.
+    brown: f32,
+    /// Blue's last pink value, to difference against.
+    last: f32,
+    /// A crackle's current pop, decaying.
+    pop: f32,
+    /// Vinyl's rumble: a one-pole on the draw, and its second pole.
+    rumble: [f32; 2],
+    /// A sample noise's read head, in frames.
+    head: f64,
+}
+
+/// Kellet's economy pink: three one-poles at spread rates, summed — within a
+/// fraction of a decibel of −3 dB an octave across the band. Pink's own
+/// stage, and the one blue differences.
+fn pink(p: &mut [f32; 3], draw: f32) -> f32 {
+    p[0] = 0.997_65 * p[0] + draw * 0.099_046;
+    p[1] = 0.963 * p[1] + draw * 0.296_513;
+    p[2] = 0.57 * p[2] + draw * 1.052_665;
+    (p[0] + p[1] + p[2] + draw * 0.184_8) * 0.25
+}
+
+impl NoiseState {
+    /// `draw` — white noise in −1..=1 — shaped into `kind`.
+    fn shape(&mut self, kind: NoiseKind, draw: f32) -> f32 {
+        match kind {
+            NoiseKind::White | NoiseKind::Sample(_) => draw,
+            NoiseKind::Pink => pink(&mut self.pink, draw),
+            // A leak of a thousandth keeps it off the rails; the gain puts
+            // it near white's level.
+            NoiseKind::Brown => {
+                self.brown = (self.brown + draw * 0.02).clamp(-1.0, 1.0) * 0.999;
+                self.brown * 3.5
+            }
+            // Pink, differenced: −3 dB an octave and +6 make +3 — blue is
+            // the derivative of pink. The gain lands the top of the band
+            // near white's level.
+            NoiseKind::Blue => {
+                let pink = pink(&mut self.pink, draw);
+                let differenced = pink - self.last;
+                self.last = pink;
+                differenced * 4.0
+            }
+            // A pop when the draw lands in a sliver of its range — about a
+            // hundred a second at 48 kHz — each a tick decaying over a few
+            // samples, at a random level and sign.
+            NoiseKind::Crackle => {
+                if draw.abs() > 0.998 {
+                    self.pop = draw.signum() * (0.3 + 0.7 * ((draw.abs() - 0.998) * 500.0));
+                }
+                let out = self.pop;
+                self.pop *= 0.6;
+                if self.pop.abs() < 1e-4 {
+                    self.pop = 0.0;
+                }
+                out
+            }
+            // A record: the crackle, sparser, over a rumble — the draw
+            // through two poles at a few tens of hertz.
+            NoiseKind::Vinyl => {
+                if draw.abs() > 0.9992 {
+                    self.pop = draw.signum() * (0.2 + 0.6 * ((draw.abs() - 0.9992) * 1250.0));
+                }
+                let pop = self.pop;
+                self.pop *= 0.6;
+                if self.pop.abs() < 1e-4 {
+                    self.pop = 0.0;
+                }
+                self.rumble[0] += (draw - self.rumble[0]) * 0.004;
+                self.rumble[1] += (self.rumble[0] - self.rumble[1]) * 0.004;
+                pop + self.rumble[1] * 40.0
+            }
+        }
+    }
 }
 
 /// The spectral source in flight (`docs/flopsynth-next.md` §4.3): the
@@ -1028,6 +1184,7 @@ impl Default for SynthState {
             grain_clock: 0,
             string: StringState::default(),
             spectral: SpectralState::default(),
+            noise_state: NoiseState::default(),
             semitone_ratio: (0, 1.0),
             decimators: [Decimator::default(); 2],
             last_modulator: 0.0,
@@ -1059,6 +1216,7 @@ impl SynthState {
         self.string.struck = false;
         self.string.key = None;
         self.spectral = SpectralState::default();
+        self.noise_state = NoiseState::default();
         for (index, phase) in self.phases.iter_mut().enumerate() {
             // The **centre voice keeps its start phase** even in a
             // random-phase stack, which is §3.1's exception and not an
@@ -1186,6 +1344,15 @@ impl SynthState {
         modulator: f32,
     ) -> (f32, f32) {
         match (osc.source, input) {
+            // A sample noise reads its recording; every other kind makes
+            // its own. A sample noise with no recording resolved is silent.
+            (SynthSource::Noise, SynthInput::Sample(data))
+                if matches!(osc.noise, NoiseKind::Sample(_)) =>
+            {
+                let mono = self.sample_noise(osc, data);
+                (mono, mono)
+            }
+            (SynthSource::Noise, _) if matches!(osc.noise, NoiseKind::Sample(_)) => (0.0, 0.0),
             (SynthSource::Noise, _) => {
                 let mono = self.noise(osc);
                 (mono, mono)
@@ -1214,7 +1381,8 @@ impl SynthState {
         x ^= x >> 17;
         x ^= x << 5;
         self.rng = x;
-        let white = (x >> 8) as f32 / 8_388_608.0 - 1.0;
+        let draw = (x >> 8) as f32 / 8_388_608.0 - 1.0;
+        let white = self.noise_state.shape(osc.noise, draw);
         let colour = osc.noise_colour.clamp(0.0, 1.0);
         if colour <= 0.0 {
             return white;
@@ -1225,6 +1393,27 @@ impl SynthState {
         // turning the colour up is not also turning the noise down.
         let coefficient = colour.powf(0.6) * 0.995;
         self.noise_pole += (white - self.noise_pole) * (1.0 - coefficient);
+        let make_up = (1.0 + coefficient) / (1.0 - coefficient).max(1e-4).sqrt();
+        (self.noise_pole * make_up * 0.35).clamp(-4.0, 4.0)
+    }
+
+    /// A [`NoiseKind::Sample`] read: the recording at its own rate, round
+    /// and round, through the colour's tilt.
+    fn sample_noise(&mut self, osc: &SynthOsc, data: SampleData<'_>) -> f32 {
+        let len = data.samples.len();
+        if len == 0 {
+            return 0.0;
+        }
+        let at = self.noise_state.head;
+        let sample = interpolate(data.samples, at, data.interpolation) * data.gain;
+        let next = at + 1.0;
+        self.noise_state.head = if next >= (len - 1) as f64 { 0.0 } else { next };
+        let colour = osc.noise_colour.clamp(0.0, 1.0);
+        if colour <= 0.0 {
+            return sample;
+        }
+        let coefficient = colour.powf(0.6) * 0.995;
+        self.noise_pole += (sample - self.noise_pole) * (1.0 - coefficient);
         let make_up = (1.0 + coefficient) / (1.0 - coefficient).max(1e-4).sqrt();
         (self.noise_pole * make_up * 0.35).clamp(-4.0, 4.0)
     }

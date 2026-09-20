@@ -53,8 +53,8 @@ pub use synth_filter::{
     key_tracked_cutoff, response_db,
 };
 pub use synth_osc::{
-    FilterRoute, GRAIN_MAX_MS, GRAIN_MIN_MS, GRAINS, MAX_PARTIALS, MAX_UNISON, OSC_FIXED_HZ,
-    REMAP_POINTS, STRING_UNISON, SampleData, SampleLoop, SampleSettings, StringModel,
+    FilterRoute, GRAIN_MAX_MS, GRAIN_MIN_MS, GRAINS, MAX_PARTIALS, MAX_UNISON, NoiseKind,
+    OSC_FIXED_HZ, REMAP_POINTS, STRING_UNISON, SampleData, SampleLoop, SampleSettings, StringModel,
     StringPartials, SynthInput, SynthOsc, SynthSource, SynthState, Unison, UnisonMode,
     UnisonSpread, WarpMode, remap_line, string_partials, unison_offset_cents,
     unison_offset_cents_in,

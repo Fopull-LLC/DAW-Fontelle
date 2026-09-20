@@ -573,7 +573,7 @@ pub fn elide_label(name: &str) -> String {
 /// which is what `realise`'s `param_nodes` map reads — so a knob on this panel
 /// and a lane that can reach it are one list by construction (handoff §4).
 pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) -> InstrumentView {
-    use fontelle_core::flopsynth::layer_role;
+    use fontelle_core::flopsynth::{LayerRole, layer_role};
     use fontelle_core::patch_params::{
         BEND_MAX_SEMITONES, LFO_MAX_HZ, LFO_MIN_HZ, LFO_TIME_MAX_S, MODULATOR_CHOICES,
         OUTPUT_MAX_DB, OUTPUT_MIN_DB, SEMITONE_RANGE, UNISON_DETUNE_MAX_CENTS, VOICE_MODES,
@@ -704,6 +704,13 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
         let role = layer_role(index);
         let mut params = Vec::new();
         let noise = matches!(osc.source, SynthSource::Noise);
+        // The sub's sugar (§4.3): its card says shape / octave / direct
+        // where the others say table / semis / route — the shape only while
+        // its table is one of the four the chooser can name.
+        let sugared = role == LayerRole::Sub;
+        let sub_shape = sugared
+            .then(|| fontelle_core::flopsynth::sub_shape_of(osc))
+            .flatten();
         // What the position knob *is* on this kind of source: the frame of
         // a table, where a recording starts, how hard a string is struck.
         // Same address, same route, different word — see `SynthOsc::position`.
@@ -725,6 +732,41 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                 },
                 ParamKind::Knob,
             ));
+            // Which noise (§4.3), and the zone for a recording read as one.
+            use fontelle_dsp::NoiseKind;
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/noise"),
+                "type",
+                choice_value(osc.noise.index(), NoiseKind::ALL.len()),
+                osc.noise.label().to_string(),
+                ParamKind::Choice(
+                    NoiseKind::ALL
+                        .iter()
+                        .map(|k| k.label().to_string())
+                        .collect(),
+                ),
+            ));
+            if let NoiseKind::Sample(sample_at) = osc.noise
+                && let Some(sample) = patch.samples.get(usize::from(sample_at))
+                && sample.zones.len() > 1
+            {
+                let choices = 1 + sample.zones.len();
+                let chosen = osc
+                    .sample
+                    .zone
+                    .map_or(0, |z| usize::from(z) + 1)
+                    .min(choices - 1);
+                let names: Vec<String> = std::iter::once("any".to_string())
+                    .chain(sample.zones.iter().map(|zone| zone.label()))
+                    .collect();
+                params.push(param(
+                    &format!("patch/layer[{index}]/synth/sample/zone"),
+                    "zone",
+                    choice_value(chosen, choices),
+                    names[chosen].clone(),
+                    ParamKind::Choice(names),
+                ));
+            }
         } else {
             // The kind first: it decides what the rest of the card is.
             let kind = source_kind(osc.source);
@@ -735,7 +777,17 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                 SOURCE_KINDS[kind].to_string(),
                 ParamKind::Choice(SOURCE_KINDS.iter().map(|k| k.to_string()).collect()),
             ));
-            if let SynthSource::Table(table) = osc.source {
+            if let Some(at) = sub_shape {
+                // The sub's shape (§4.3), in the table chooser's place.
+                use fontelle_core::patch_params::SUB_SHAPES;
+                params.push(param(
+                    &format!("patch/layer[{index}]/synth/sub_shape"),
+                    "shape",
+                    choice_value(at, SUB_SHAPES.len()),
+                    SUB_SHAPES[at].1.to_string(),
+                    ParamKind::Choice(SUB_SHAPES.iter().map(|(_, n)| n.to_string()).collect()),
+                ));
+            } else if let SynthSource::Table(table) = osc.source {
                 let at = WavetableId::ALL
                     .iter()
                     .position(|t| *t == table)
@@ -1057,13 +1109,32 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
             ));
         }
 
-        params.push(param(
-            &format!("patch/layer[{index}]/synth/semitones"),
-            "semis",
-            unlerp(f32::from(osc.semitones), -SEMITONE_RANGE, SEMITONE_RANGE),
-            format!("{:+} st", osc.semitones),
-            ParamKind::Knob,
-        ));
+        if sugared {
+            // The sub's octave (§4.3), in the semitones' place.
+            use fontelle_core::patch_params::SUB_OCTAVES;
+            let at = SUB_OCTAVES
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, (st, _))| {
+                    (i16::from(*st) - i16::from(osc.semitones)).unsigned_abs()
+                })
+                .map_or(2, |(i, _)| i);
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/octave"),
+                "octave",
+                choice_value(at, SUB_OCTAVES.len()),
+                SUB_OCTAVES[at].1.to_string(),
+                ParamKind::Choice(SUB_OCTAVES.iter().map(|(_, n)| n.to_string()).collect()),
+            ));
+        } else {
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/semitones"),
+                "semis",
+                unlerp(f32::from(osc.semitones), -SEMITONE_RANGE, SEMITONE_RANGE),
+                format!("{:+} st", osc.semitones),
+                ParamKind::Knob,
+            ));
+        }
         params.push(param(
             &format!("patch/layer[{index}]/tune"),
             "fine",
@@ -1086,18 +1157,31 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
             .iter()
             .position(|r| *r == osc.filter_route)
             .unwrap_or(0);
-        params.push(param(
-            &format!("patch/layer[{index}]/synth/route"),
-            "route",
-            choice_value(route, FilterRoute::ALL.len()),
-            osc.filter_route.label().to_string(),
-            ParamKind::Choice(
-                FilterRoute::ALL
-                    .iter()
-                    .map(|r| r.label().to_string())
-                    .collect(),
-            ),
-        ));
+        if sugared {
+            // The sub's direct out (§4.3), in the route's place: round the
+            // filters, the trap the bank kept meeting.
+            let direct = osc.filter_route == FilterRoute::Bypass;
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/direct"),
+                "direct",
+                bool_value(direct),
+                on_off(direct),
+                ParamKind::Switch,
+            ));
+        } else {
+            params.push(param(
+                &format!("patch/layer[{index}]/synth/route"),
+                "route",
+                choice_value(route, FilterRoute::ALL.len()),
+                osc.filter_route.label().to_string(),
+                ParamKind::Choice(
+                    FilterRoute::ALL
+                        .iter()
+                        .map(|r| r.label().to_string())
+                        .collect(),
+                ),
+            ));
+        }
         // Last, so nothing above it moved when it arrived. The noise has no
         // read to oversample.
         if !noise {

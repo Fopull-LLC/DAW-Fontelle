@@ -90,6 +90,19 @@ pub fn layer_role(index: usize) -> LayerRole {
     ROLES.get(index).copied().unwrap_or(LayerRole::Extra)
 }
 
+/// Which of the sub's four shapes (`patch_params::SUB_SHAPES`) this
+/// oscillator's table is, if it is one of them — the position the SUB
+/// card's shape chooser sits at, and `None` for the card to fall back to
+/// the full table chooser.
+pub fn sub_shape_of(osc: &SynthOsc) -> Option<usize> {
+    match osc.source {
+        SynthSource::Table(id) => crate::patch_params::SUB_SHAPES
+            .iter()
+            .position(|(t, _)| *t == id),
+        _ => None,
+    }
+}
+
 /// Whether this patch is one Flopsynth's window should be drawn for.
 ///
 /// **Any** `Source::Synth` layer, not five of them in the right order: a patch
@@ -353,6 +366,12 @@ pub fn addresses(patch: &Patch) -> Vec<String> {
         let noise = matches!(osc.source, SynthSource::Noise);
         if noise {
             out.push(format!("patch/layer[{index}]/synth/noise_colour"));
+            // Which noise (§4.3), and for a recording read as noise, which
+            // of its zones.
+            out.push(format!("patch/layer[{index}]/synth/noise"));
+            if matches!(osc.noise, fontelle_dsp::NoiseKind::Sample(_)) {
+                out.push(format!("patch/layer[{index}]/synth/sample/zone"));
+            }
         } else {
             // What kind of source it is, then the controls that kind has: a
             // table's chooser, a recording's loop, a string's string. The
@@ -396,6 +415,17 @@ pub fn addresses(patch: &Patch) -> Vec<String> {
         out.push(format!("patch/layer[{index}]/synth/semitones"));
         out.push(format!("patch/layer[{index}]/synth/key_track"));
         out.push(format!("patch/layer[{index}]/synth/route"));
+        // The sub's sugar (§4.3): a shape, an octave and a direct-out over
+        // the table, the semitones and the route. The shape only while the
+        // table is one of its four — Chip Bass puts a NES triangle there,
+        // and a chooser of four words has no word for that.
+        if layer_role(index) == LayerRole::Sub {
+            if sub_shape_of(osc).is_some() {
+                out.push(format!("patch/layer[{index}]/synth/sub_shape"));
+            }
+            out.push(format!("patch/layer[{index}]/synth/octave"));
+            out.push(format!("patch/layer[{index}]/synth/direct"));
+        }
         // Last, so nothing above it moved when it arrived (§4.1). The
         // noise has no read to oversample.
         if !noise {

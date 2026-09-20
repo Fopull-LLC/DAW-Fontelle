@@ -39,6 +39,7 @@ pub const CAPTIONS: &[(&str, &str)] = &[
     ("fine", "FINE"),
     ("key", "KEY TRK"),
     ("route", "ROUTE"),
+    ("direct", "DIRECT"),
     ("octave", "OCTAVE"),
     ("tune", "TUNE"),
     ("quality", "QUALITY"),
@@ -95,9 +96,10 @@ pub const CAPTIONS: &[(&str, &str)] = &[
     ("read", "READ"),
     // The §4.2 generators: a sequencer's step count.
     ("steps", "STEPS"),
-    // The stack's mode and spread (§4.3).
+    // The stack's mode and spread, and the noise's kind (§4.3).
     ("stack", "STACK"),
     ("spread", "SPREAD"),
+    ("type", "TYPE"),
     // The voice, and the channel's two knobs beside it. The glide's mode
     // and shape (§4.6) and the velocity curve (§4.2).
     ("voices", "VOICES"),
