@@ -60,6 +60,12 @@ fn the_init_patch_carries_every_slot() {
 /// `SynthFilter`s are 105 of them. What the counts add is the part this
 /// phase owns, and it is under a kilobyte; the whole is held at what it
 /// measures so the next thing that doubles it is noticed.
+///
+/// It was noticed: Phase 4's spectral source brought its own bank of
+/// phasors beside the string's, 4 KB a slot that could never both be in
+/// use, and the voice went to 186 KB. They share one bank now
+/// (`PhasorBank`), and the voice is 122 KB with the six filter models and
+/// the noise kinds in it.
 #[test]
 fn the_counts_add_under_a_kilobyte_to_the_voice() {
     let modulators = MAX_LFOS * std::mem::size_of::<fontelle_core::LfoState>()

@@ -49,8 +49,9 @@ pub use spectrum::{
     analyse_spectral, bin_width_hz, fft_in_place,
 };
 pub use synth_filter::{
-    COMB_LEN, FilterModel, FilterSlope, SynthFilter, SynthFilterSettings, clean_coeffs,
-    key_tracked_cutoff, response_db,
+    COMB_LEN, FilterModel, FilterSlope, PHASER_MAX_STAGES, PHASER_MIN_STAGES, SynthFilter,
+    SynthFilterSettings, VOWEL_FORMANTS_SUNG, clean_coeffs, key_tracked_cutoff, phaser_stages,
+    response_db, sung_vowel_at,
 };
 pub use synth_osc::{
     FilterRoute, GRAIN_MAX_MS, GRAIN_MIN_MS, GRAINS, MAX_PARTIALS, MAX_UNISON, NoiseKind,

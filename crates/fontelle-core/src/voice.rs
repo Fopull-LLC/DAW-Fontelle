@@ -1365,14 +1365,27 @@ impl Voice {
                 // The window's fade (§4.2): within `vel_fade` velocities of
                 // either edge the layer comes in over the fade rather than
                 // switching on, which is how two recordings cross over.
+                // **Not at the keyboard's own ends**: a window that reaches
+                // 127 has nothing above it to cross into, and a fade there
+                // made the loudest note the silent one — `tests/velocity.rs`
+                // found it, on a window of 60..127 played at 127.
                 window_gain: {
                     let fade = f32::from(layer.playback.vel_fade);
                     if fade <= 0.0 {
                         1.0
                     } else {
                         let v = f32::from(velocity);
-                        let from_low = (v - f32::from(layer.vel_range.0)) / fade;
-                        let from_high = (f32::from(layer.vel_range.1) - v) / fade;
+                        let (low, high) = layer.vel_range;
+                        let from_low = if low <= 1 {
+                            1.0
+                        } else {
+                            (v - f32::from(low)) / fade
+                        };
+                        let from_high = if high >= 127 {
+                            1.0
+                        } else {
+                            (f32::from(high) - v) / fade
+                        };
                         from_low.min(from_high).clamp(0.0, 1.0)
                     }
                 },
@@ -1827,6 +1840,16 @@ impl Voice {
                 *flag = true;
             }
         }
+        // A layer driving a filter's cutoff (§4.4) is a modulator by the
+        // same rule.
+        for slot in &patch.filters {
+            if let Some(which) = slot.fm_from
+                && slot.fm_amount > 0.0
+                && let Some(flag) = is_modulator.get_mut(usize::from(which))
+            {
+                *flag = true;
+            }
+        }
 
         // The two filter slots' settings for the block: everything but
         // what the matrix moves, which is set per step below.
@@ -1852,6 +1875,20 @@ impl Voice {
         });
         let enabled = [patch.filters[0].enabled, patch.filters[1].enabled];
         let mut live_filters = settings;
+        // Filter FM (§4.4): which layer's sample swings each slot's cutoff,
+        // and by how many octaves at full swing. `None` costs nothing
+        // per sample; a slot being driven rebuilds its coefficients every
+        // sample, which is the cost of asking for it.
+        let filter_fm: [Option<(usize, f32)>; 2] = std::array::from_fn(|index| {
+            let slot = patch.filters[index];
+            match slot.fm_from {
+                Some(layer) if slot.fm_amount > 0.0 && usize::from(layer) < MAX_LAYERS => Some((
+                    usize::from(layer),
+                    slot.fm_amount.clamp(0.0, 1.0) * crate::patch::FILTER_FM_OCTAVES,
+                )),
+                _ => None,
+            }
+        });
 
         // Split once, outside the loop: `out[0]` and `out[1]` are distinct
         // slices, and taking both mutably per sample would be a reborrow the
@@ -2273,6 +2310,20 @@ impl Voice {
                 // buses -> Filter1 / Filter2 -> Amp (TDD §7.4). The filters
                 // sit ahead of the amp stage and operate on this voice's own
                 // mixed sample rather than on the shared output buffer.
+                //
+                // Filter FM reads the modulator layer's sample from the same
+                // pre-level tap the oscillators' FM reads, and moves this
+                // sample's cutoff by it — on a copy, so the stepped value
+                // the matrix set is still there next sample.
+                let mut fm_settings = live_filters;
+                for (index, fm) in filter_fm.iter().enumerate() {
+                    if let Some((layer, octaves)) = fm {
+                        let swing = layer_out[*layer].clamp(-1.0, 1.0) * octaves;
+                        fm_settings[index].cutoff_hz =
+                            live_filters[index].cutoff_hz * 2f32.powf(swing);
+                    }
+                }
+                let live_filters = &fm_settings;
                 let mut mixed = dry;
                 if enabled[0] {
                     mixed.0 += self.filters[0][0].process(to_f1.0, &live_filters[0], sample_rate);

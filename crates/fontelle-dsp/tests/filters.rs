@@ -376,6 +376,40 @@ fn the_drawn_response_matches_the_filter_it_describes() {
             c.character = 0.75;
             c
         }),
+        // Phase 4's six (`tests/synth_filter.rs`). The ring modulator is
+        // not here: it has no magnitude response, and what it draws is
+        // argued at `response_db`.
+        // The same resonance as the ladder above: past it the peak drives
+        // the loop's `tanh`, which no magnitude picture can carry.
+        ("diode", {
+            let mut c = settings(FilterModel::Diode, 700.0);
+            c.resonance = 0.5;
+            c
+        }),
+        ("sallen", {
+            let mut c = settings(FilterModel::Sallen, 1_100.0);
+            c.resonance = 0.5;
+            c
+        }),
+        ("phaser", {
+            let mut c = settings(FilterModel::Phaser, 1_000.0);
+            c.resonance = 0.4;
+            c.character = 0.5;
+            c
+        }),
+        ("vowel /o/", {
+            let mut c = settings(FilterModel::Vowel, 1_000.0);
+            c.resonance = 0.4;
+            c.character = 0.75;
+            c
+        }),
+        ("dual bandpass", {
+            let mut c = settings(FilterModel::Dual, 1_000.0);
+            c.mode = fontelle_dsp::SvfMode::Bandpass;
+            c.resonance = 3.0;
+            c.character = 0.4;
+            c
+        }),
     ];
 
     for (name, config) in cases {

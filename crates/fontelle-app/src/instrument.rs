@@ -1232,14 +1232,21 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                         .collect(),
                 ),
             ),
-            param(
+        ];
+        // The shape and the slope are the SVF's: a model with one shape of
+        // its own does not get a chooser that does nothing (§4.4 — the
+        // same rule the character knob has always followed).
+        if filter.model.reads_mode() {
+            params.push(param(
                 &format!("patch/filter[{index}]/mode"),
                 "shape",
                 choice_value(mode, FILTER_MODES.len()),
                 FILTER_MODES[mode].1.to_string(),
                 ParamKind::Choice(FILTER_MODES.iter().map(|(_, n)| n.to_string()).collect()),
-            ),
-            param(
+            ));
+        }
+        if filter.model == FilterModel::Clean {
+            params.push(param(
                 &format!("patch/filter[{index}]/slope"),
                 "slope",
                 choice_value(slope, FilterSlope::ALL.len()),
@@ -1250,7 +1257,9 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                         .map(|s| s.label().to_string())
                         .collect(),
                 ),
-            ),
+            ));
+        }
+        params.extend([
             param(
                 &format!("patch/filter[{index}]/cutoff"),
                 "cutoff",
@@ -1279,7 +1288,7 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                 format!("{:.0}%", filter.key_track.clamp(0.0, 1.0) * 100.0),
                 ParamKind::Knob,
             ),
-        ];
+        ]);
         // The character knob's caption is the *model's* — and a model that has
         // no use for it does not get a knob that does nothing.
         if let Some(caption) = filter.model.character_label() {
@@ -1288,6 +1297,33 @@ pub fn describe_flopsynth(title: &str, patch: &Patch, gain_db: f32, pan: f32) ->
                 caption,
                 filter.character.clamp(0.0, 1.0),
                 format!("{:.0}%", filter.character.clamp(0.0, 1.0) * 100.0),
+                ParamKind::Knob,
+            ));
+        }
+        // Filter FM (§4.4): which layer swings the cutoff, and how far.
+        {
+            use fontelle_core::patch_params::FILTER_FM_CHOICES;
+            let choices: Vec<String> = std::iter::once("none".to_string())
+                .chain((0..FILTER_FM_CHOICES - 1).map(|i| layer_role(i).label().to_string()))
+                .collect();
+            let at = filter
+                .fm_from
+                .map_or(0, |m| (usize::from(m) + 1).min(choices.len() - 1));
+            params.push(param(
+                &format!("patch/filter[{index}]/fm_from"),
+                "fm from",
+                choice_value(at, FILTER_FM_CHOICES),
+                choices[at].clone(),
+                ParamKind::Choice(choices),
+            ));
+            params.push(param(
+                &format!("patch/filter[{index}]/fm"),
+                "fm",
+                filter.fm_amount.clamp(0.0, 1.0),
+                format!(
+                    "{:.1} oct",
+                    filter.fm_amount.clamp(0.0, 1.0) * fontelle_core::FILTER_FM_OCTAVES
+                ),
                 ParamKind::Knob,
             ));
         }

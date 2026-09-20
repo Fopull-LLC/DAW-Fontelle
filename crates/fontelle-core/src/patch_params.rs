@@ -411,6 +411,12 @@ fn set_filter(patch: &mut Patch, index: usize, field: &str, value: f32) -> bool 
         "drive" => filter.drive = value,
         "key_track" => filter.key_track = value,
         "character" => filter.character = value,
+        // Position 0 is "none"; the rest are the layers in order.
+        "fm_from" => {
+            let index = choice_index(value, FILTER_FM_CHOICES);
+            filter.fm_from = (index > 0).then(|| (index - 1) as u8);
+        }
+        "fm" => filter.fm_amount = value.clamp(0.0, 1.0),
         _ => return false,
     }
     true
@@ -712,6 +718,10 @@ pub const STRING_DECAY_MAX_S: f32 = 20.0;
 /// that could be later than layer 0.
 pub const MODULATOR_CHOICES: usize = 5;
 
+/// And the filter FM chooser's: "none", plus the five layers — a filter sits
+/// after all of them, so any one can drive it.
+pub const FILTER_FM_CHOICES: usize = 6;
+
 /// An envelope's loop, as the chooser offers it (`docs/flopsynth-next.md`
 /// §3.4): off, or a pair of stages the envelope runs between while the
 /// note is held. The pairs a person reaches for — attack to decay for a
@@ -831,6 +841,14 @@ pub fn value(patch: &Patch, address: &str) -> Option<f32> {
                     "drive" => Some(filter.drive.clamp(0.0, 1.0)),
                     "key_track" => Some(filter.key_track.clamp(0.0, 1.0)),
                     "character" => Some(filter.character.clamp(0.0, 1.0)),
+                    "fm_from" => Some(choice_value(
+                        filter
+                            .fm_from
+                            .map_or(0, |m| usize::from(m) + 1)
+                            .min(FILTER_FM_CHOICES - 1),
+                        FILTER_FM_CHOICES,
+                    )),
+                    "fm" => Some(filter.fm_amount.clamp(0.0, 1.0)),
                     _ => None,
                 };
             }

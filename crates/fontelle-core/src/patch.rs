@@ -172,6 +172,27 @@ pub struct FilterSlot {
     /// Per model — see [`FilterModel::character_label`].
     #[serde(default)]
     pub character: f32,
+    /// Filter FM (`docs/flopsynth-next.md` §4.4): the layer whose
+    /// oscillator moves this cutoff at audio rate, read **before that
+    /// layer's level knob** — the same tap the oscillators' own FM reads,
+    /// for the same reason: an operator nobody hears is the usual setup.
+    /// `None` is the filter it always was, and writes nothing (§0 rule 7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fm_from: Option<u8>,
+    /// How far: 0..1 → 0..[`FILTER_FM_OCTAVES`] octaves either way at the
+    /// modulator's full swing.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub fm_amount: f32,
+}
+
+/// The cutoff's swing at full filter FM, in octaves each way. Four is a
+/// corner at 1 kHz thrown between 62 Hz and 16 kHz, which is as far as
+/// anybody's ever wanted, and the clamp in the filter takes what is past
+/// Nyquist.
+pub const FILTER_FM_OCTAVES: f32 = 4.0;
+
+fn is_zero(value: &f32) -> bool {
+    *value == 0.0
 }
 
 impl Default for FilterSlot {
@@ -190,6 +211,8 @@ impl Default for FilterSlot {
             drive: 0.0,
             key_track: 0.0,
             character: 0.0,
+            fm_from: None,
+            fm_amount: 0.0,
         }
     }
 }

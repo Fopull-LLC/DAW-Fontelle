@@ -911,6 +911,9 @@ pub struct SynthState {
     grain_clock: u32,
     /// A **string** source's partials.
     string: StringState,
+    /// The bank of phasors the string and the spectral source **share** —
+    /// see [`PhasorBank`].
+    bank: PhasorBank,
     /// The spectral source's per-voice state — see [`SpectralState`].
     spectral: SpectralState,
     /// The noise kinds' memories: pink's three poles, brown's integrator,
@@ -931,12 +934,42 @@ pub struct SynthState {
     last_modulator: f32,
 }
 
-/// The per-voice half of a string: its partials as rotating phasors.
+/// A bank of rotating phasors: sixty-four partials for each of four stack
+/// voices, each a complex number (`x`, `y`) turned by its own angle
+/// (`cos`, `sin`) every sample.
 ///
-/// Structure-of-arrays on purpose — `x`, `y`, the cosine and the sine each a
-/// flat run — so the sample loop is one vectorisable pass. Each partial is a
-/// complex number rotated by its own angle and shrunk by its own decay every
-/// sample: four multiplies and two adds, no transcendental in the loop.
+/// Structure-of-arrays on purpose — each a flat run — so the sample loop
+/// is one vectorisable pass: four multiplies and two adds, no
+/// transcendental in the loop.
+///
+/// **One bank, two sources.** The string rings it and the spectral source
+/// drives it, and an oscillator is one or the other: two banks were four
+/// kilobytes a slot that could never both be in use, and sixteen slots of
+/// that put a voice past its budget (`tests/mod_counts.rs`). Each source
+/// writes the whole bank when it starts, so which one last used it does
+/// not matter; a note whose *source* is changed under it mid-way gets
+/// whatever the other left, for the rest of that note.
+#[derive(Debug, Clone, Copy)]
+struct PhasorBank {
+    x: [[f32; MAX_PARTIALS]; STRING_UNISON],
+    y: [[f32; MAX_PARTIALS]; STRING_UNISON],
+    cos: [[f32; MAX_PARTIALS]; STRING_UNISON],
+    sin: [[f32; MAX_PARTIALS]; STRING_UNISON],
+}
+
+impl Default for PhasorBank {
+    fn default() -> Self {
+        Self {
+            x: [[0.0; MAX_PARTIALS]; STRING_UNISON],
+            y: [[0.0; MAX_PARTIALS]; STRING_UNISON],
+            cos: [[1.0; MAX_PARTIALS]; STRING_UNISON],
+            sin: [[0.0; MAX_PARTIALS]; STRING_UNISON],
+        }
+    }
+}
+
+/// The per-voice half of a string: its partials as rotating phasors, in
+/// the shared [`PhasorBank`], and what it knows about them.
 #[derive(Debug, Clone, Copy)]
 struct StringState {
     /// Whether the partials have been set ringing for this note.
@@ -949,10 +982,6 @@ struct StringState {
     /// the top ones to nothing, and a partial at −72 dB of the loudest is
     /// not worth six multiplies a sample for the rest of the note.
     ringing: usize,
-    x: [[f32; MAX_PARTIALS]; STRING_UNISON],
-    y: [[f32; MAX_PARTIALS]; STRING_UNISON],
-    cos: [[f32; MAX_PARTIALS]; STRING_UNISON],
-    sin: [[f32; MAX_PARTIALS]; STRING_UNISON],
     /// The per-sample decay of each partial. One set for the stack: a few
     /// cents of detune moves a partial's loss by nothing anybody hears.
     decay: [f32; MAX_PARTIALS],
@@ -978,10 +1007,6 @@ impl Default for StringState {
             count: 0,
             ringing: 0,
             until_retune: 0,
-            x: [[0.0; MAX_PARTIALS]; STRING_UNISON],
-            y: [[0.0; MAX_PARTIALS]; STRING_UNISON],
-            cos: [[1.0; MAX_PARTIALS]; STRING_UNISON],
-            sin: [[0.0; MAX_PARTIALS]; STRING_UNISON],
             decay: [0.0; MAX_PARTIALS],
         }
     }
@@ -1084,8 +1109,8 @@ impl NoiseState {
 }
 
 /// The spectral source in flight (`docs/flopsynth-next.md` §4.3): the
-/// string's bank of phasors, driven by a recording's frames rather than
-/// struck once and left to ring.
+/// string's bank of phasors ([`PhasorBank`], shared), driven by a
+/// recording's frames rather than struck once and left to ring.
 ///
 /// Each partial is a unit phasor (`x`, `y`) rotated by its own angle, and
 /// the output is the sum of `amp × y`. The frame under `position` sets
@@ -1101,10 +1126,6 @@ struct SpectralState {
     until_tick: u16,
     /// How many partials play — the frames' count.
     count: usize,
-    x: [[f32; MAX_PARTIALS]; STRING_UNISON],
-    y: [[f32; MAX_PARTIALS]; STRING_UNISON],
-    cos: [[f32; MAX_PARTIALS]; STRING_UNISON],
-    sin: [[f32; MAX_PARTIALS]; STRING_UNISON],
     /// Each partial's level now, and how much it moves a sample towards
     /// the frame's.
     amp: [f32; MAX_PARTIALS],
@@ -1118,10 +1139,6 @@ impl Default for SpectralState {
             position: 0.0,
             until_tick: 0,
             count: 0,
-            x: [[1.0; MAX_PARTIALS]; STRING_UNISON],
-            y: [[0.0; MAX_PARTIALS]; STRING_UNISON],
-            cos: [[1.0; MAX_PARTIALS]; STRING_UNISON],
-            sin: [[0.0; MAX_PARTIALS]; STRING_UNISON],
             amp: [0.0; MAX_PARTIALS],
             ramp: [0.0; MAX_PARTIALS],
             started: false,
@@ -1183,6 +1200,7 @@ impl Default for SynthState {
             grains: [Grain::default(); GRAINS],
             grain_clock: 0,
             string: StringState::default(),
+            bank: PhasorBank::default(),
             spectral: SpectralState::default(),
             noise_state: NoiseState::default(),
             semitone_ratio: (0, 1.0),
@@ -1858,10 +1876,10 @@ impl SynthState {
         let count = self.string.ringing;
         let (mut left, mut right) = (0.0f32, 0.0f32);
         for voice in 0..voices {
-            let (x, _) = self.string.x[voice][..count].as_chunks_mut::<LANES>();
-            let (y, _) = self.string.y[voice][..count].as_chunks_mut::<LANES>();
-            let (cos, _) = self.string.cos[voice][..count].as_chunks::<LANES>();
-            let (sin, _) = self.string.sin[voice][..count].as_chunks::<LANES>();
+            let (x, _) = self.bank.x[voice][..count].as_chunks_mut::<LANES>();
+            let (y, _) = self.bank.y[voice][..count].as_chunks_mut::<LANES>();
+            let (cos, _) = self.bank.cos[voice][..count].as_chunks::<LANES>();
+            let (sin, _) = self.bank.sin[voice][..count].as_chunks::<LANES>();
             let (decay, _) = self.string.decay[..count].as_chunks::<LANES>();
             // Eight partials at a time into eight running sums, and the
             // sums added at the end: a single `sum +=` across the loop is a
@@ -1911,7 +1929,7 @@ impl SynthState {
             spread: osc.unison.spread,
         });
         let amount = osc.warp_amount.clamp(0.0, 1.0);
-        let state = &mut self.spectral;
+        let (state, bank) = (&mut self.spectral, &mut self.bank);
         if !state.started {
             // The note starts where the position knob says; from there the
             // frames run at the recording's pace, or slower under Freeze.
@@ -1921,8 +1939,8 @@ impl SynthState {
             state.count = frames.count.min(MAX_PARTIALS);
             // Every phasor at rest and every level at nothing, so the first
             // tick ramps the note in rather than stepping it on.
-            state.x = [[1.0; MAX_PARTIALS]; STRING_UNISON];
-            state.y = [[0.0; MAX_PARTIALS]; STRING_UNISON];
+            bank.x = [[1.0; MAX_PARTIALS]; STRING_UNISON];
+            bank.y = [[0.0; MAX_PARTIALS]; STRING_UNISON];
             state.amp = [0.0; MAX_PARTIALS];
         }
         if state.until_tick == 0 {
@@ -1965,8 +1983,8 @@ impl SynthState {
                         1.0
                     };
                     let angle = std::f32::consts::TAU * hz * detune / sample_rate;
-                    state.cos[voice][n] = angle.cos();
-                    state.sin[voice][n] = angle.sin();
+                    bank.cos[voice][n] = angle.cos();
+                    bank.sin[voice][n] = angle.sin();
                 }
             }
             // The frames advance at the recording's pace, held by Freeze.
@@ -1988,11 +2006,11 @@ impl SynthState {
         for voice in 0..voices {
             let mut sum = 0.0f32;
             for n in 0..count {
-                let (ox, oy) = (state.x[voice][n], state.y[voice][n]);
+                let (ox, oy) = (bank.x[voice][n], bank.y[voice][n]);
                 sum += state.amp[n] * oy;
-                let (c, s) = (state.cos[voice][n], state.sin[voice][n]);
-                state.x[voice][n] = ox * c - oy * s;
-                state.y[voice][n] = ox * s + oy * c;
+                let (c, s) = (bank.cos[voice][n], bank.sin[voice][n]);
+                bank.x[voice][n] = ox * c - oy * s;
+                bank.y[voice][n] = ox * s + oy * c;
             }
             let (gl, gr) = stack.gains[voice];
             left += sum * gl;
@@ -2036,8 +2054,8 @@ impl SynthState {
                     1.0
                 };
                 let angle = std::f32::consts::TAU * hz * detune / sample_rate;
-                self.string.cos[voice][n] = angle.cos();
-                self.string.sin[voice][n] = angle.sin();
+                self.bank.cos[voice][n] = angle.cos();
+                self.bank.sin[voice][n] = angle.sin();
             }
         }
         self.string.count = partials.count;
@@ -2069,12 +2087,12 @@ impl SynthState {
             for i in 0..MAX_PARTIALS {
                 // At rest with a velocity: displacement zero, so the note
                 // starts from nothing rather than from a step.
-                self.string.x[voice][i] = if i < partials.count {
+                self.bank.x[voice][i] = if i < partials.count {
                     partials.amp[i]
                 } else {
                     0.0
                 };
-                self.string.y[voice][i] = 0.0;
+                self.bank.y[voice][i] = 0.0;
             }
         }
     }

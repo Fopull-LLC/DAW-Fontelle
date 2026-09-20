@@ -484,3 +484,64 @@ fn the_sub_card_has_a_shape_an_octave_and_a_direct_out() {
     let a = captions(&card(&session, "OSC A"));
     assert!(has(&a, "patch/layer[0]/synth/table") && !has(&a, "patch/layer[0]/synth/sub_shape"));
 }
+
+/// The filter card (§4.4): ten models in the chooser, the shape and slope
+/// choosers drawn only for the models that read them, and the FM pair —
+/// which layer, how far — on every card.
+#[test]
+fn a_filter_card_hides_what_its_model_ignores_and_offers_filter_fm() {
+    use fontelle_dsp::FilterModel;
+    let mut session = a_flopsynth();
+    let drawn = captions(&card(&session, "Filter 1"));
+    // Init's filter 1 is Clean: shape and slope are its.
+    assert!(has(&drawn, "patch/filter[0]/mode"));
+    assert!(has(&drawn, "patch/filter[0]/slope"));
+    assert!(has(&drawn, "patch/filter[0]/fm_from"));
+    assert!(has(&drawn, "patch/filter[0]/fm"));
+    assert_eq!(caption_of(&drawn, "patch/filter[0]/fm_from"), "FM FROM");
+    assert_eq!(caption_of(&drawn, "patch/filter[0]/fm"), "FM");
+    let model = card(&session, "Filter 1")
+        .group
+        .params
+        .iter()
+        .find(|p| p.address.as_str() == "patch/filter[0]/model")
+        .expect("a model chooser")
+        .clone();
+    let ParamKind::Choice(names) = &model.kind else {
+        panic!("the model is a chooser");
+    };
+    assert_eq!(names.len(), FilterModel::ALL.len());
+    assert_eq!(names[9], "Dual");
+    // A ladder has one shape, so no shape chooser and no slope.
+    let ladder = 1.0 / (FilterModel::ALL.len() - 1) as f32;
+    set(&mut session, "patch/filter[0]/model", ladder);
+    let drawn = captions(&card(&session, "Filter 1"));
+    assert!(!has(&drawn, "patch/filter[0]/mode"), "{drawn:?}");
+    assert!(!has(&drawn, "patch/filter[0]/slope"), "{drawn:?}");
+    // Dual reads the shape (both its halves are that shape) but has no
+    // slope.
+    set(&mut session, "patch/filter[0]/model", 1.0);
+    let drawn = captions(&card(&session, "Filter 1"));
+    assert!(has(&drawn, "patch/filter[0]/mode"));
+    assert!(!has(&drawn, "patch/filter[0]/slope"));
+    assert_eq!(caption_of(&drawn, "patch/filter[0]/character"), "SPREAD");
+    // The FM chooser names the layers, none first.
+    let from = card(&session, "Filter 1")
+        .group
+        .params
+        .iter()
+        .find(|p| p.address.as_str() == "patch/filter[0]/fm_from")
+        .expect("an fm chooser")
+        .clone();
+    let ParamKind::Choice(names) = &from.kind else {
+        panic!("fm from is a chooser");
+    };
+    assert_eq!(names[0], "none");
+    assert_eq!(names[1], "OSC A");
+    assert_eq!(names.len(), fontelle_core::patch_params::FILTER_FM_CHOICES);
+    set(&mut session, "patch/filter[0]/fm_from", 1.0 / 5.0);
+    assert_eq!(
+        session.selected_patch().unwrap().filters[0].fm_from,
+        Some(0)
+    );
+}

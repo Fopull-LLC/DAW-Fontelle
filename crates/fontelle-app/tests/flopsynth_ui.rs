@@ -135,8 +135,7 @@ fn every_control_on_the_panel_can_be_automated() {
 
 #[test]
 fn every_control_reads_back_what_the_panel_writes() {
-    let mut session = a_flopsynth();
-    let controls: Vec<(fontelle_types::ParamAddress, ParamKind)> = session
+    let controls: Vec<(fontelle_types::ParamAddress, ParamKind)> = a_flopsynth()
         .instrument()
         .expect("a panel")
         .groups
@@ -147,6 +146,11 @@ fn every_control_reads_back_what_the_panel_writes() {
         .collect();
 
     for (address, kind) in controls {
+        // Each on the Init patch afresh: a chooser written at the top of
+        // its travel changes what the card draws (a Dual filter has no
+        // slope), and a control that a *previous* write took off the
+        // panel is not one that failed to read back.
+        let mut session = a_flopsynth();
         session.set_instrument_param(&address, 1.0);
         let view = session.instrument().expect("a panel");
         let control = view
@@ -230,9 +234,9 @@ fn the_filter_character_knob_is_named_by_its_model_and_hidden_without_one() {
         "a Clean filter has no character, so it must not draw the knob"
     );
 
-    // Ladder is the second of the four models.
+    // Ladder is the second of the ten models.
     let model = fontelle_types::ParamAddress::new("patch/filter[0]/model");
-    session.set_instrument_param(&model, 1.0 / 3.0);
+    session.set_instrument_param(&model, 1.0 / 9.0);
     let view = session.instrument().expect("a panel");
     let character = group(&view, "Filter 1")
         .params

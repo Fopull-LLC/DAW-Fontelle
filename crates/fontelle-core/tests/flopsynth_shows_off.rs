@@ -63,11 +63,21 @@ fn every_warp_mode_is_shown_off() {
     // the whole of the synth's digital grit — was in nothing. The spectral
     // warps of phase 4 (`docs/flopsynth-next.md` §4.3) get their line with
     // the *Spectral* shelf (§5.3, phase 6); until then no row can use them,
-    // there being no spectral row.
+    // there being no spectral row. The six table warps phase 4 added are
+    // phase 6's too: the bank grows in one commit with the tags gate
+    // (§9.7), and a row voiced without the gate would be voiced twice.
+    let phase_six = [
+        WarpMode::PhaseDistortion,
+        WarpMode::Formant,
+        WarpMode::Flip,
+        WarpMode::Asym,
+        WarpMode::FmNoise,
+        WarpMode::Remap,
+    ];
     let bank = bank();
     let unused: Vec<&str> = WarpMode::ALL
         .iter()
-        .filter(|mode| **mode != WarpMode::Off && !mode.is_spectral())
+        .filter(|mode| **mode != WarpMode::Off && !mode.is_spectral() && !phase_six.contains(mode))
         .filter(|mode| {
             !bank.iter().any(|(_, patch)| {
                 oscs(patch).any(|osc| osc.warp == **mode && osc.warp_amount > 0.0)

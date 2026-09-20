@@ -309,11 +309,12 @@ fn each_kind_of_source_lists_its_own_addresses() {
 fn the_new_addresses_write_and_read_back() {
     use fontelle_core::patch_params;
     let mut patch = flopsynth::flopsynth_init();
-    // The kind chooser: three positions, table, sample, string.
+    // The kind chooser: table, sample, string, spectral — sample the
+    // second of four.
     assert!(patch_params::set(
         &mut patch,
         "patch/layer[0]/synth/kind",
-        0.5
+        1.0 / 3.0
     ));
     assert!(matches!(
         patch.layers[0].source,
@@ -369,7 +370,7 @@ fn the_new_addresses_write_and_read_back() {
         ("patch/layer[0]/synth/sample/grain", 0.5),
         ("patch/layer[0]/synth/sample/spray", 0.4),
         ("patch/layer[0]/synth/sample/zone", 0.0),
-        ("patch/layer[0]/synth/kind", 0.5),
+        ("patch/layer[0]/synth/kind", 1.0 / 3.0),
     ] {
         let read = patch_params::value(&patch, address).expect(address);
         assert!(
@@ -378,10 +379,11 @@ fn the_new_addresses_write_and_read_back() {
         );
     }
 
+    // String, the third of four.
     assert!(patch_params::set(
         &mut patch,
         "patch/layer[0]/synth/kind",
-        1.0
+        2.0 / 3.0
     ));
     assert!(matches!(
         patch.layers[0].source,
