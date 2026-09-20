@@ -176,6 +176,29 @@ pub struct EnvelopeGenerator {
     /// Captured on `note_off` so an early release ramps down from wherever the
     /// envelope actually was, not from full scale.
     release_start_level: f32,
+    /// Where the attack starts from: zero on a note, and the level the
+    /// envelope was at when a loop returned to it — the amp envelope loops
+    /// too, and a drop to nothing at every turn would be a click at the
+    /// loop's rate.
+    attack_from: f32,
+    /// Whether the key is still down — what a loop is a fact about
+    /// (`EnvelopeConfig::loop_stages`): a released note runs out through its
+    /// release whether or not it was looping.
+    held: bool,
+}
+
+impl EnvStage {
+    /// The generator's stage this one names.
+    fn running(self) -> EnvelopeStage {
+        match self {
+            Self::Delay => EnvelopeStage::Delay,
+            Self::Attack => EnvelopeStage::Attack,
+            Self::Hold => EnvelopeStage::Hold,
+            Self::Decay => EnvelopeStage::Decay,
+            Self::Sustain => EnvelopeStage::Sustain,
+            Self::Release => EnvelopeStage::Release,
+        }
+    }
 }
 
 impl EnvelopeGenerator {
@@ -190,12 +213,15 @@ impl EnvelopeGenerator {
         // read before the first `advance`. Left alone, the last note's final
         // level would be what a modulation destination saw for one block.
         self.level = 0.0;
+        self.attack_from = 0.0;
+        self.held = true;
     }
 
     pub fn note_off(&mut self) {
         self.release_start_level = self.level;
         self.stage = Some(EnvelopeStage::Release);
         self.time_in_stage = 0.0;
+        self.held = false;
     }
 
     /// The level the last `advance` produced, without advancing.
@@ -261,6 +287,14 @@ impl EnvelopeGenerator {
 
         let dt = 1.0 / sample_rate;
 
+        // The loop (`EnvelopeConfig::loop_stages`), while the key is held:
+        // reaching the end of its second stage goes back to the start of
+        // its first. A loop that ends on the sustain holds the plateau for
+        // as long as the decay took to reach it — a sustain has no end of
+        // its own, and a breathing swell wants one — and returns.
+        let looping = if self.held { config.loop_stages } else { None };
+        let sustain_ends = looping.is_some_and(|(_, to)| to == EnvStage::Sustain);
+
         let duration = loop {
             match stage {
                 EnvelopeStage::Idle => {
@@ -268,7 +302,7 @@ impl EnvelopeGenerator {
                     self.level = 0.0;
                     return 0.0;
                 }
-                EnvelopeStage::Sustain => {
+                EnvelopeStage::Sustain if !sustain_ends => {
                     self.stage = Some(stage);
                     self.level = config.sustain_level;
                     return self.level;
@@ -276,7 +310,11 @@ impl EnvelopeGenerator {
                 _ => {}
             }
 
-            let duration = self.stage_duration(stage, config);
+            let duration = if stage == EnvelopeStage::Sustain {
+                config.decay_s.max(0.0)
+            } else {
+                self.stage_duration(stage, config)
+            };
 
             // Half-a-sample tolerance: accumulating `dt` in f32 drifts either
             // side of an exact target, and a strict `<` here would make the
@@ -286,13 +324,21 @@ impl EnvelopeGenerator {
             }
 
             self.time_in_stage -= duration.max(0.0);
-            stage = match stage {
-                EnvelopeStage::Delay => EnvelopeStage::Attack,
-                EnvelopeStage::Attack => EnvelopeStage::Hold,
-                EnvelopeStage::Hold => EnvelopeStage::Decay,
-                EnvelopeStage::Decay => EnvelopeStage::Sustain,
-                EnvelopeStage::Release => EnvelopeStage::Idle,
-                other => other,
+            stage = match looping {
+                Some((from, to)) if to.running() == stage => {
+                    // Round again, from where the level is: the attack
+                    // ramps from here rather than from nothing.
+                    self.attack_from = self.level;
+                    from.running()
+                }
+                _ => match stage {
+                    EnvelopeStage::Delay => EnvelopeStage::Attack,
+                    EnvelopeStage::Attack => EnvelopeStage::Hold,
+                    EnvelopeStage::Hold => EnvelopeStage::Decay,
+                    EnvelopeStage::Decay => EnvelopeStage::Sustain,
+                    EnvelopeStage::Release => EnvelopeStage::Idle,
+                    other => other,
+                },
             };
         };
 
@@ -303,9 +349,15 @@ impl EnvelopeGenerator {
         };
 
         self.level = match stage {
-            EnvelopeStage::Delay => 0.0,
-            EnvelopeStage::Attack => shape_progress(t, config.attack_shape),
+            // A loop's delay holds the level it returned with; a note's is
+            // silence, which is what `attack_from` is then.
+            EnvelopeStage::Delay => self.attack_from,
+            EnvelopeStage::Attack => {
+                self.attack_from + (1.0 - self.attack_from) * shape_progress(t, config.attack_shape)
+            }
             EnvelopeStage::Hold => 1.0,
+            // Only inside a loop that ends on it — see `sustain_ends`.
+            EnvelopeStage::Sustain => config.sustain_level,
             EnvelopeStage::Decay => {
                 // The shape bends the *progress*, so it composes with the
                 // curve rather than replacing it: a decibel decay with a shape
@@ -331,7 +383,7 @@ impl EnvelopeGenerator {
                     }
                 }
             }
-            EnvelopeStage::Sustain | EnvelopeStage::Idle => unreachable!("handled above"),
+            EnvelopeStage::Idle => unreachable!("handled above"),
         };
 
         self.stage = Some(stage);

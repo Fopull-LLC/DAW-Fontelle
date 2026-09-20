@@ -144,7 +144,15 @@ impl LfoState {
             self.phase = (clock + live.phase).rem_euclid(1.0);
         }
 
-        let raw = self.value_at_phase(lfo.wave);
+        // A drawn shape plays in place of the wave when there is one
+        // (`docs/flopsynth-next.md` §3.4, read since phase 3): the same
+        // `LfoShape::value` the editor draws, so the picture and the voice
+        // cannot disagree. Sixty-four points at most, walked once a step,
+        // which is nothing beside the table read the step pays for.
+        let raw = match &lfo.shape {
+            Some(shape) => shape.value(self.phase),
+            None => self.value_at_phase(lfo.wave),
+        };
 
         // The delay holds the LFO at rest; the fade brings the depth in after
         // it. Both are why a vibrato on an acoustic imitation arrives late
