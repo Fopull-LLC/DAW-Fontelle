@@ -62,6 +62,12 @@ fn render_chord(
             released = true;
         }
         let frames = 512.min(total - done);
+        // The transport moves, as it does under the engine and in the gate:
+        // a free-running LFO reads its phase off the clock.
+        sampler.set_clock(fontelle_core::RenderClock {
+            bpm: 120.0,
+            position_sample: done as u64,
+        });
         let mut left = vec![0.0f32; frames];
         let mut right = vec![0.0f32; frames];
         sampler.render(&store, &mut [&mut left[..], &mut right[..]]);

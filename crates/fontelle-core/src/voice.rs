@@ -185,6 +185,15 @@ pub const MAX_LFOS: usize = 8;
 /// once anyway.
 pub const FILTER_STEP: usize = 8;
 
+/// How often, in samples, the modulation sources are read and the
+/// destinations resolved (`docs/flopsynth-next.md` §4.2): the mod
+/// envelopes and the LFOs advance this often, the matrix's moving routes
+/// are summed this often, and a layer's gain, pitch, pan and position are
+/// ramped across the step. The cutoff's rhythm, and for the same reason:
+/// 6 kHz at 48 kHz is above anything a modulator moves, and an eighth of
+/// the cost of resolving per sample.
+pub const MOD_STEP: usize = FILTER_STEP;
+
 /// Which envelopes and LFOs at least one route reads, as `(envelopes, lfos)`.
 /// Index 0 of `envelopes` is the amp envelope, which is advanced regardless
 /// because it drives the amp stage; the flag is there so the indices line up
@@ -294,20 +303,19 @@ enum PreparedSource<'a> {
     /// PCM straight out of the `SampleStore` — no copy, no allocation.
     Sample {
         data: &'a [f32],
-        step: f64,
+        /// The recording's rate over the session's: what the pitch ratio
+        /// is multiplied by to make the step through the buffer.
+        rate_ratio: f32,
         loop_end: f64,
         loop_len: f64,
         looping: bool,
         end_offset: f64,
         interpolation: fontelle_dsp::Interpolation,
     },
-    /// A shape and the pitch to run it at. **It never ends**: an oscillator
+    /// A shape, run at the note's pitch. **It never ends**: an oscillator
     /// has no last sample to run off, so the note lasts exactly as long as its
     /// amplitude envelope says.
-    Oscillator {
-        kind: fontelle_dsp::OscKind,
-        freq_hz: f32,
-    },
+    Oscillator { kind: fontelle_dsp::OscKind },
     /// One drum hit. **It ends itself**, which is what makes it different
     /// from both of the others: a hit's length is its own `decay_s` and the
     /// patch's amp envelope is held open behind it (see
@@ -319,7 +327,9 @@ enum PreparedSource<'a> {
     /// the prepared array's lifetime to the patch for no gain.
     Drum(fontelle_dsp::DrumVoice),
     /// One Flopsynth oscillator, with the table `Sampler::prepare` resolved
-    /// for it and the note's own pitch.
+    /// for it. The copy of the patch's description is what the matrix
+    /// moves, per step: the patch is what the document holds and a route
+    /// is not an edit to it.
     ///
     /// The table is borrowed rather than owned because it is a megabyte and
     /// the `Arc` that holds it is the sampler's — resolving one *here* would
@@ -330,8 +340,188 @@ enum PreparedSource<'a> {
         /// The table or the recording — or nothing, for a noise, a string,
         /// or a source naming something the patch does not carry.
         input: fontelle_dsp::SynthInput<'a>,
-        note_hz: f32,
     },
+}
+
+/// What a layer is before the matrix moves it: the note's interval, the
+/// zone's level and pan, and an oscillator's four modulated knobs.
+///
+/// Resolved once a block; the matrix's sums are added to these at every
+/// step (`MOD_STEP`) and the result ramped across the step's samples.
+#[derive(Clone, Copy, Default)]
+struct LayerBase {
+    /// From the note's key to the zone's root, plus the glide, the bend,
+    /// the note's fine pitch and the zone's own tuning — everything on the
+    /// pitch path but the matrix.
+    semitones: f32,
+    gain_db: f32,
+    pan: f32,
+    position: f32,
+    warp: f32,
+    detune: f32,
+    blend: f32,
+}
+
+/// The ramped values one layer slot is at **right now**: what the sample
+/// loop reads, moved a step's worth per sample towards where the matrix put
+/// them at the top of the step. Kept on the voice from one block to the
+/// next, so the first step of a block ramps from where the last block left
+/// off rather than jumping there.
+#[derive(Clone, Copy, Default)]
+struct LayerLive {
+    /// Linear, with the velocity folded in.
+    gain: f32,
+    /// This layer's place in the stereo field, already through the pan law.
+    /// `(1.0, 0.0)` on a mono render: nothing goes to a channel that isn't
+    /// there, and the one that is carries the layer unattenuated.
+    pan: (f32, f32),
+    /// Over the zone's root.
+    pitch_ratio: f32,
+    /// A table oscillator's read position, 0..1.
+    position: f32,
+}
+
+/// What the matrix moves on one layer slot, summed, in each destination's
+/// own unit — cents, decibels, and knob travel for the rest.
+#[derive(Clone, Copy, Default)]
+struct LayerMods {
+    pitch_cents: f32,
+    gain_db: f32,
+    pan: f32,
+    position: f32,
+    warp: f32,
+    detune: f32,
+    blend: f32,
+}
+
+/// What the matrix moves on the LFOs: octaves of rate over three, depth,
+/// and phase, per LFO. Kept on the voice from one step to the next, because
+/// an LFO's rate for a step is decided before the LFO turns and the walk
+/// that decides it comes after — see the step loop in `render_performing`.
+#[derive(Clone, Copy, Default)]
+struct LfoSums {
+    rate: [f32; MAX_LFOS],
+    depth: [f32; MAX_LFOS],
+    phase: [f32; MAX_LFOS],
+}
+
+/// Every destination the matrix reaches on a voice, summed for one step,
+/// each in its own unit. Filled by `ModMatrix::accumulate` through
+/// [`ModSums::add`]; the layer sums are by **slot**, which is what the
+/// sample loop is indexed by.
+#[derive(Clone, Copy, Default)]
+struct ModSums {
+    layer: [LayerMods; MAX_LAYERS],
+    cutoff_cents: [f32; 2],
+    resonance: [f32; 2],
+    drive: [f32; 2],
+    character: [f32; 2],
+    amp_db: f32,
+    lfo: LfoSums,
+}
+
+/// No slot plays this patch layer — `slot_of`'s empty entry.
+const NO_SLOT: u8 = u8::MAX;
+
+impl ModSums {
+    /// Adds `amount` — already in `dest`'s unit — where `dest` is kept.
+    /// `slot_of` maps a patch layer's index to the slot playing it. The
+    /// envelopes' stages are not here: they are resolved once a block from
+    /// the still sources (`modulated_stages`), because a duration wobbled
+    /// by the thing it is timing has no right answer.
+    fn add(&mut self, dest: crate::mod_matrix::ModDest, amount: f32, slot_of: &[u8; 256]) {
+        use crate::mod_matrix::ModDest;
+        fn layer<'s>(
+            sums: &'s mut ModSums,
+            slot_of: &[u8; 256],
+            index: u8,
+        ) -> Option<&'s mut LayerMods> {
+            let slot = slot_of[usize::from(index)];
+            (slot != NO_SLOT).then(|| &mut sums.layer[usize::from(slot)])
+        }
+        match dest {
+            ModDest::LayerPitch(i) => {
+                if let Some(l) = layer(self, slot_of, i) {
+                    l.pitch_cents += amount;
+                }
+            }
+            ModDest::LayerGain(i) => {
+                if let Some(l) = layer(self, slot_of, i) {
+                    l.gain_db += amount;
+                }
+            }
+            ModDest::LayerPan(i) => {
+                if let Some(l) = layer(self, slot_of, i) {
+                    l.pan += amount;
+                }
+            }
+            ModDest::OscPosition(i) => {
+                if let Some(l) = layer(self, slot_of, i) {
+                    l.position += amount;
+                }
+            }
+            ModDest::OscWarp(i) => {
+                if let Some(l) = layer(self, slot_of, i) {
+                    l.warp += amount;
+                }
+            }
+            ModDest::OscUnisonDetune(i) => {
+                if let Some(l) = layer(self, slot_of, i) {
+                    l.detune += amount;
+                }
+            }
+            ModDest::OscUnisonBlend(i) => {
+                if let Some(l) = layer(self, slot_of, i) {
+                    l.blend += amount;
+                }
+            }
+            ModDest::FilterCutoff(i) => {
+                if let Some(c) = self.cutoff_cents.get_mut(usize::from(i)) {
+                    *c += amount;
+                }
+            }
+            ModDest::FilterResonance(i) => {
+                if let Some(r) = self.resonance.get_mut(usize::from(i)) {
+                    *r += amount;
+                }
+            }
+            ModDest::FilterDrive(i) => {
+                if let Some(d) = self.drive.get_mut(usize::from(i)) {
+                    *d += amount;
+                }
+            }
+            ModDest::FilterCharacter(i) => {
+                if let Some(c) = self.character.get_mut(usize::from(i)) {
+                    *c += amount;
+                }
+            }
+            ModDest::Amp => self.amp_db += amount,
+            ModDest::LfoRate(i) => {
+                if let Some(r) = self.lfo.rate.get_mut(usize::from(i)) {
+                    *r += amount;
+                }
+            }
+            ModDest::LfoDepth(i) => {
+                if let Some(d) = self.lfo.depth.get_mut(usize::from(i)) {
+                    *d += amount;
+                }
+            }
+            ModDest::LfoPhase(i) => {
+                if let Some(p) = self.lfo.phase.get_mut(usize::from(i)) {
+                    *p += amount;
+                }
+            }
+            // The stages are `modulated_stages`'; the sample-loop points
+            // are not destinations the voice reads (TDD §7.5's minimum
+            // set names them, and nothing has wanted them yet).
+            ModDest::EnvelopeStageTime(..)
+            | ModDest::EnvelopeStageLevel(..)
+            | ModDest::SampleStartOffset(_)
+            | ModDest::LoopStart(_)
+            | ModDest::LoopLength(_)
+            | ModDest::UnisonDetune => {}
+        }
+    }
 }
 
 /// One layer's per-render constants, resolved once before the sample loop in
@@ -339,11 +529,8 @@ enum PreparedSource<'a> {
 #[derive(Clone, Copy)]
 struct PreparedLayer<'a> {
     source: PreparedSource<'a>,
-    gain: f32,
-    /// This layer's place in the stereo field, already through the pan law.
-    /// `(1.0, 0.0)` on a mono render: nothing goes to a channel that isn't
-    /// there, and the one that is carries the layer unattenuated.
-    pan_gain: (f32, f32),
+    /// What the matrix's sums are added to, every step.
+    base: LayerBase,
     /// Which of the four filter buses this layer is summed into. Every source
     /// but `Synth` is `Serial`, which is what the two filters have always
     /// done — so nothing that existed before this changes.
@@ -586,14 +773,21 @@ pub struct Voice {
     glide_target: f32,
     /// Semitones per second. Zero is "already there".
     glide_rate: f32,
-    /// The cutoff modulation, in cents, that the **previous** block ended at
-    /// — one per filter slot.
-    ///
-    /// Modulation is resolved per block, and a corner that jumped once a block
-    /// is an audible zipper under any LFO faster than a few hertz. So the
-    /// corner is ramped from here to this block's value across the block, and
-    /// this is the only thing that has to be remembered to do it.
-    filter_cents: [f32; 2],
+    /// Where each layer slot's ramped values are — see [`LayerLive`] —
+    /// and the voice-wide amp gain's, carried from block to block so a
+    /// step ramps from where the last one ended.
+    live: [LayerLive; MAX_LAYERS],
+    amp_live: f32,
+    /// Whether `live` is the last note's: set at note-on, so the first step
+    /// of a fresh note starts at its values rather than ramping from a
+    /// note that has ended.
+    live_fresh: bool,
+    /// Each LFO's value at the top of the current step, for the matrix —
+    /// and, between blocks, the last step's.
+    lfo_values: [f32; MAX_LFOS],
+    /// What the matrix routed to the LFOs at the last step's walk, read
+    /// when they next turn — see [`LfoSums`].
+    lfo_sums: LfoSums,
 }
 
 impl Voice {
@@ -624,7 +818,11 @@ impl Voice {
             glide_semitones: 0.0,
             glide_target: 0.0,
             glide_rate: 0.0,
-            filter_cents: [0.0; 2],
+            live: [LayerLive::default(); MAX_LAYERS],
+            amp_live: 1.0,
+            live_fresh: true,
+            lfo_values: [0.0; MAX_LFOS],
+            lfo_sums: LfoSums::default(),
         }
     }
 
@@ -771,6 +969,11 @@ impl Voice {
         for lfo in self.lfos.iter_mut().skip(patch.lfos.len().min(MAX_LFOS)) {
             *lfo = crate::lfo::LfoState::new();
         }
+        // The ramps start over: a new note starts at its own gain and
+        // pitch, not on the way there from the last note's.
+        self.live_fresh = true;
+        self.lfo_values = [0.0; MAX_LFOS];
+        self.lfo_sums = LfoSums::default();
         // A bipolar value, so a route to pitch is as likely to go down as up.
         let mut x = seed.wrapping_mul(0x2545_f491) | 1;
         x ^= x << 13;
@@ -873,6 +1076,9 @@ impl Voice {
         self.random = 0.0;
         self.note_counter = 0.0;
         self.age_samples = 0;
+        self.live_fresh = true;
+        self.lfo_values = [0.0; MAX_LFOS];
+        self.lfo_sums = LfoSums::default();
     }
 
     /// Moves this voice onto a new note **without restarting it** — legato.
@@ -1136,35 +1342,37 @@ impl Voice {
             ..amp_env_config
         };
 
-        // Modulation runs at block rate: every source is sampled once here and
-        // held for the whole block, and every destination is resolved from it
-        // before the sample loop. At the engine's 128-frame blocks that is a
-        // 375 Hz control rate — the same order as every hardware sampler ever
-        // shipped, and cheap enough that a filter envelope costs a handful of
-        // operations per block rather than per sample.
+        // Modulation runs at **step rate** (`docs/flopsynth-next.md` §4.2):
+        // the block is walked in `MOD_STEP`-sample steps, and at the top of
+        // each the mod envelopes and the LFOs are read and advanced, the
+        // routes whose source moves are summed, and every destination is
+        // resolved. The layer's gain, pitch, pan and position are then
+        // ramped across the step, sample by sample, from where the last
+        // step left them.
         //
-        // The amp envelope is the exception: it advances per sample, because
-        // it is a gain rather than a control value and a stepped one is
-        // audible as a buzz on fast attacks. The **cutoff** is the second
-        // exception, and it is ramped rather than advanced — see below.
-        let mut env_levels = [0.0f32; MAX_MOD_ENVELOPES];
-        let mut lfo_values = [0.0f32; MAX_LFOS];
-        // Only the sources some route actually names are advanced. An SF2
-        // import gives every patch a modulation envelope and two LFOs whether
-        // it uses them or not, and one unread envelope is a stage advance per
-        // sample per voice — the same order as the amp envelope, for nothing.
+        // It ran at block rate until 2026-09-20 — every source sampled once
+        // a block and held. At the engine's 128-frame blocks that is 375 Hz,
+        // which is fine for a filter sweep and wrong for two things a synth
+        // is used for: a 20 Hz LFO on pitch held in 128-sample steps is a
+        // stair, and a stair on pitch is a comb of sidebands at multiples
+        // of 375 Hz round the note (`tests/mod_rate.rs` measured it at
+        // −40 dB); and a 5 ms envelope read at 0, 2.7 and 5.3 ms never
+        // reaches its peak, so the gate is not heard at all. Eight samples
+        // is 6 kHz at 48 kHz, the rhythm the cutoff already kept.
+        //
+        // The routes whose sources do **not** move within a block — key,
+        // velocity, the wheels, the macros — are summed once, here, and the
+        // per-step walk is over the rest only: a preset of key and velocity
+        // routes pays nothing for the rate (§4.2's "walk only the routes
+        // whose source moved").
+        //
+        // The amp envelope is still advanced per sample, because it is a
+        // gain rather than a control value and a stepped one is audible as
+        // a buzz on fast attacks.
         let (env_used, lfo_used) = sources_in_use(&patch.mod_matrix);
 
-        // Everything a source can be **except an LFO**, bound before the LFOs
-        // are advanced because an LFO is a destination too — its rate, depth
-        // and phase can be modulated, and that has to be resolved before it
-        // turns.
-        //
-        // An LFO modulating *another* LFO reads zero here, deliberately: the
-        // two would have to be ordered, and there is no order that is right
-        // for a pair pointing at each other. A macro, an envelope, velocity or
-        // a wheel on an LFO's rate — which is what every preset that wants
-        // this actually asks for — all work.
+        // Everything a source can be **except an envelope or an LFO**: the
+        // numbers that hold for the whole block.
         let (wheel, bend, pressure) = (
             performance.mod_wheel.clamp(0.0, 1.0),
             performance.pitch_bend.clamp(-1.0, 1.0),
@@ -1173,12 +1381,11 @@ impl Voice {
         let (velocity_norm, key_norm) = (self.velocity_norm, self.key_norm);
         let (mod_x_norm, mod_y_norm) = (self.mod_x_norm, self.mod_y_norm);
         let (random, note_counter) = (self.random, self.note_counter);
-        // Four numbers copied out of the patch, so the closure does not borrow
-        // it: the *name* of a macro is touched off the RT thread only, and the
-        // value is all the audio path ever reads.
+        // Eight numbers copied out of the patch, so the closure does not
+        // borrow it: the *name* of a macro is touched off the RT thread only,
+        // and the value is all the audio path ever reads.
         let macro_values: [f32; crate::patch::MACRO_COUNT] =
             std::array::from_fn(|i| patch.macros[i].value.clamp(0.0, 1.0));
-        let amp_level = self.amp_env.level();
         let scalar = move |source: crate::mod_matrix::ModSource| match source {
             crate::mod_matrix::ModSource::Velocity => velocity_norm,
             crate::mod_matrix::ModSource::Key => key_norm,
@@ -1192,114 +1399,50 @@ impl Voice {
             crate::mod_matrix::ModSource::Macro(index) => {
                 macro_values.get(index as usize).copied().unwrap_or(0.0)
             }
-            crate::mod_matrix::ModSource::Envelope(0) => amp_level,
             crate::mod_matrix::ModSource::Envelope(_) | crate::mod_matrix::ModSource::Lfo(_) => 0.0,
         };
-        // The amp envelope's stage times, modulated. Read from the sources
-        // above — key, velocity, the wheels, the macros — rather than from
-        // the LFOs and the other envelopes, because a duration wobbled by
-        // the thing it is timing has no right answer. A piano's decay
-        // following the key is what this is for.
-        let amp_env_config = stage_times(amp_env_config, 0, &patch.mod_matrix, &scalar);
+        // The amp envelope's stages, modulated. Read from the sources above
+        // — key, velocity, the wheels, the macros — rather than from the LFOs
+        // and the other envelopes, because a duration wobbled by the thing
+        // it is timing has no right answer. A piano's decay following the
+        // key is what this is for.
+        let amp_env_config = modulated_stages(amp_env_config, 0, &patch.mod_matrix, &scalar);
+        // And the mod envelopes' stages, the same way, once a block.
+        let mut env_configs = [fontelle_dsp::EnvelopeConfig::default(); MAX_MOD_ENVELOPES];
+        for (index, config) in patch
+            .envelopes
+            .iter()
+            .skip(1)
+            .take(MAX_MOD_ENVELOPES)
+            .enumerate()
         {
-            for (index, config) in patch
-                .envelopes
-                .iter()
-                .skip(1)
-                .take(MAX_MOD_ENVELOPES)
-                .enumerate()
-            {
-                if !env_used[index + 1] {
-                    continue;
-                }
-                let env = &mut self.mod_envs[index];
-                // Read before advancing: the value a destination uses this
-                // block is the one at its start, not its end.
-                env_levels[index] = env.level();
-                // Its stage times, modulated the same way the amp envelope's
-                // are — from the per-note and performance sources only.
-                let config = stage_times(*config, (index + 1) as u8, &patch.mod_matrix, &scalar);
-                for _ in 0..frames {
-                    env.advance(&config, sample_rate);
-                }
-            }
-            for (index, lfo) in patch.lfos.iter().take(MAX_LFOS).enumerate() {
-                if !lfo_used[index] {
-                    continue;
-                }
-                // An LFO is a destination as well as a source. Rate is
-                // modulated in **octaves** rather than hertz, so "wobble
-                // faster" means the same thing at 1/16 as at 1/2 — three
-                // octaves either way at full depth, which is the span between
-                // a slow sweep and a growl.
-                let index_u8 = index as u8;
-                // The mod envelopes have already been read this block, so an
-                // envelope on an LFO's rate works; only another LFO reads
-                // zero.
-                let for_lfo = |source: crate::mod_matrix::ModSource| match source {
-                    crate::mod_matrix::ModSource::Envelope(0) => amp_level,
-                    crate::mod_matrix::ModSource::Envelope(at) => {
-                        env_levels.get(at as usize - 1).copied().unwrap_or(0.0)
-                    }
-                    other => scalar(other),
-                };
-                let rate_dest = crate::mod_matrix::ModDest::LfoRate(index_u8);
-                let octaves =
-                    patch.mod_matrix.evaluate(rate_dest, &for_lfo) * rate_dest.full_scale() * 3.0;
-                let depth_dest = crate::mod_matrix::ModDest::LfoDepth(index_u8);
-                let phase_dest = crate::mod_matrix::ModDest::LfoPhase(index_u8);
-                // The depth and the phase after the matrix, beside the
-                // config rather than in a copy of it: an `Lfo` carries a
-                // drawn shape, and copying one here would allocate.
-                let live = crate::lfo::LfoLive {
-                    depth: (lfo.depth
-                        + patch.mod_matrix.evaluate(depth_dest, &for_lfo)
-                            * depth_dest.full_scale())
-                    .clamp(0.0, 1.0),
-                    phase: lfo.phase
-                        + patch.mod_matrix.evaluate(phase_dest, &for_lfo) * phase_dest.full_scale(),
-                };
-                let rate =
-                    crate::lfo::LfoState::rate_hz(lfo, performance.clock.bpm) * 2f32.powf(octaves);
-                // A free-running LFO's phase is a fact about the transport,
-                // so it is worked out from the clock rather than accumulated:
-                // every voice reads the same number and the same bar sounds
-                // the same every time it plays.
-                let clock_phase = (lfo.mode == crate::patch::LfoMode::Free).then(|| {
-                    crate::lfo::free_phase(performance.clock.position_sample, sample_rate, rate)
-                });
-                lfo_values[index] = self.lfos[index].advance_block(
-                    lfo,
-                    live,
-                    rate,
-                    sample_rate,
-                    frames,
-                    self.age_samples,
-                    clock_phase,
-                );
+            if env_used[index + 1] {
+                env_configs[index] =
+                    modulated_stages(*config, (index + 1) as u8, &patch.mod_matrix, &scalar);
             }
         }
 
-        // The mod matrix's full view of this voice: the scalar sources above,
-        // plus the two whose values this block has just worked out.
-        //
-        // Bound to locals rather than reaching through `self`, so the closure
-        // holds no borrow of the voice and the sample loop below is free to
-        // take `self.layers` mutably.
-        let sources = move |source: crate::mod_matrix::ModSource| match source {
-            // Envelope 0 is the amp envelope. It drives the amp stage
-            // directly, and is readable here as well because "louder means
-            // brighter" is a route a patch legitimately wants and there is no
-            // reason to make it add a second envelope to get it.
-            crate::mod_matrix::ModSource::Envelope(0) => amp_level,
-            crate::mod_matrix::ModSource::Envelope(index) => {
-                env_levels.get(index as usize - 1).copied().unwrap_or(0.0)
+        // Which **slot** plays each patch layer, for the walk: a `ModDest`
+        // names a patch layer with a `u8`, so a patch with more than 256
+        // zones has no way to address the ones past that. They get no
+        // per-layer modulation rather than being aliased onto layer 0's
+        // routes, which is the failure that would be impossible to see.
+        let mut slot_of = [NO_SLOT; 256];
+        for (slot, playback) in self.layers.iter().enumerate() {
+            if playback.active
+                && let Ok(index) = u8::try_from(playback.layer)
+            {
+                slot_of[usize::from(index)] = slot as u8;
             }
-            crate::mod_matrix::ModSource::Lfo(index) => {
-                lfo_values.get(index as usize).copied().unwrap_or(0.0)
-            }
-            other => scalar(other),
-        };
+        }
+
+        // The still routes, summed once for the block.
+        let mut still = ModSums::default();
+        patch
+            .mod_matrix
+            .accumulate(false, &scalar, &mut |dest, amount| {
+                still.add(dest, amount, &slot_of)
+            });
 
         // Which layers some *other* layer reads as its modulator.
         //
@@ -1318,16 +1461,487 @@ impl Voice {
             }
         }
 
-        // Per-layer constants resolved once, not once per sample: a fixed-size
-        // stack array (INVARIANT 1 — no `Vec`, nothing heap-touching).
+        // The two filter slots' settings for the block: everything but
+        // what the matrix moves, which is set per step below.
+        let settings: [fontelle_dsp::SynthFilterSettings; 2] = std::array::from_fn(|index| {
+            let slot = patch.filters[index];
+            fontelle_dsp::SynthFilterSettings {
+                model: slot.model,
+                mode: slot.mode,
+                slope: slot.slope,
+                // Key tracking is applied here rather than stored, so one
+                // patch sounds the same at every pitch without the document
+                // carrying a different cutoff per note.
+                cutoff_hz: fontelle_dsp::key_tracked_cutoff(
+                    slot.cutoff_hz,
+                    self.key,
+                    slot.key_track,
+                ),
+                resonance: slot.resonance,
+                drive: slot.drive,
+                character: slot.character,
+                oversampling: patch.oversampling,
+            }
+        });
+        let enabled = [patch.filters[0].enabled, patch.filters[1].enabled];
+        let mut live_filters = settings;
+
+        // Split once, outside the loop: `out[0]` and `out[1]` are distinct
+        // slices, and taking both mutably per sample would be a reborrow the
+        // compiler can't see through.
+        let (left, rest) = out.split_at_mut(1);
+        let left = &mut *left[0];
+        let mut right = rest.first_mut();
+
+        // Per-layer constants resolved once a block, not once per sample: a
+        // fixed-size stack array (INVARIANT 1 — no `Vec`, nothing
+        // heap-touching). Built at the first step, once that step's sums
+        // are known, because whether a layer is at the floor is decided
+        // then.
         let mut prepared: [Option<PreparedLayer<'_>>; MAX_LAYERS] = [None; MAX_LAYERS];
+        // Every layer's sample this frame, indexed by **patch layer index**,
+        // so an oscillator naming a later layer as its FM or RM modulator can
+        // find it. Fixed-size and on the stack, like everything else here.
+        let mut layer_out = [0.0f32; MAX_LAYERS];
+        // The per-sample increments of the ramped values, per slot, and of
+        // the amp; the values themselves live on the voice, so a step ramps
+        // from wherever the last one — in this block or the one before —
+        // left off.
+        let mut ramp = [LayerLive::default(); MAX_LAYERS];
+
+        let mut at = 0usize;
+        while at < frames {
+            let n = MOD_STEP.min(frames - at);
+            let inverse_n = 1.0 / n as f32;
+
+            // --- the sources, at the top of the step -------------------
+            // The mod envelopes: read before advancing, so the value a
+            // destination uses this step is the one at its start, not its
+            // end. Only the ones some route names are advanced (an SF2
+            // import gives every patch a modulation envelope whether it
+            // uses it or not).
+            let mut env_levels = [0.0f32; MAX_MOD_ENVELOPES];
+            for index in 0..MAX_MOD_ENVELOPES {
+                if !env_used[index + 1] || index >= patch.envelopes.len().saturating_sub(1) {
+                    continue;
+                }
+                let env = &mut self.mod_envs[index];
+                env_levels[index] = env.level();
+                for _ in 0..n {
+                    env.advance(&env_configs[index], sample_rate);
+                }
+            }
+            let amp_level = self.amp_env.level();
+            // The LFOs, in order, each with its rate, depth and phase moved
+            // by whatever the matrix routed to them **at the last step** —
+            // the sums are kept on the voice from one walk to the next, so
+            // an envelope or another LFO on an LFO's rate works, one step
+            // (an eighth of a millisecond) behind. That is what lets a pair
+            // of LFOs point at each other: two coupled oscillators, rather
+            // than an order to get wrong.
+            for (index, lfo) in patch.lfos.iter().take(MAX_LFOS).enumerate() {
+                if !lfo_used[index] {
+                    continue;
+                }
+                // Rate is modulated in **octaves** rather than hertz, so
+                // "wobble faster" means the same thing at 1/16 as at 1/2 —
+                // three octaves either way at full depth, which is the span
+                // between a slow sweep and a growl.
+                let octaves = self.lfo_sums.rate[index] * 3.0;
+                let live = crate::lfo::LfoLive {
+                    depth: (lfo.depth + self.lfo_sums.depth[index]).clamp(0.0, 1.0),
+                    phase: lfo.phase + self.lfo_sums.phase[index],
+                };
+                let rate =
+                    crate::lfo::LfoState::rate_hz(lfo, performance.clock.bpm) * 2f32.powf(octaves);
+                // A free-running LFO's phase is a fact about the transport,
+                // so it is worked out from the clock rather than accumulated:
+                // every voice reads the same number and the same bar sounds
+                // the same every time it plays.
+                let clock_phase = (lfo.mode == crate::patch::LfoMode::Free).then(|| {
+                    crate::lfo::free_phase(
+                        performance.clock.position_sample + at as u64,
+                        sample_rate,
+                        rate,
+                    )
+                });
+                self.lfo_values[index] = self.lfos[index].advance_block(
+                    lfo,
+                    live,
+                    rate,
+                    sample_rate,
+                    n,
+                    self.age_samples + at as u64,
+                    clock_phase,
+                );
+            }
+
+            // The mod matrix's full view of this voice at this step: the
+            // block's numbers, plus the two kinds this step has just read.
+            // Bound to locals rather than reaching through `self`, so the
+            // closure holds no borrow of the voice.
+            let lfo_values = self.lfo_values;
+            let sources = move |source: crate::mod_matrix::ModSource| match source {
+                // Envelope 0 is the amp envelope. It drives the amp stage
+                // directly, and is readable here as well because "louder
+                // means brighter" is a route a patch legitimately wants and
+                // there is no reason to make it add a second envelope to get
+                // it.
+                crate::mod_matrix::ModSource::Envelope(0) => amp_level,
+                crate::mod_matrix::ModSource::Envelope(index) => {
+                    env_levels.get(index as usize - 1).copied().unwrap_or(0.0)
+                }
+                crate::mod_matrix::ModSource::Lfo(index) => {
+                    lfo_values.get(index as usize).copied().unwrap_or(0.0)
+                }
+                other => scalar(other),
+            };
+            // The moving routes, on top of the still ones.
+            let mut sums = still;
+            patch
+                .mod_matrix
+                .accumulate(true, &sources, &mut |dest, amount| {
+                    sums.add(dest, amount, &slot_of)
+                });
+            self.lfo_sums = sums.lfo;
+
+            // --- the layers, at the first step ---------------------------
+            if at == 0 {
+                self.prepare_layers(
+                    patch,
+                    store,
+                    tables,
+                    sample_rate,
+                    quality,
+                    bend,
+                    &sums,
+                    &is_modulator,
+                    &mut prepared,
+                );
+            }
+
+            // --- the destinations, and the ramps to them -----------------
+            for (slot, prep) in prepared.iter().enumerate() {
+                let Some(prep) = prep else {
+                    continue;
+                };
+                let m = sums.layer[slot];
+                // Pitch modulation is in cents, like the tuning it adds to,
+                // so a route means the same interval wherever the note sits.
+                let semitones = prep.base.semitones + m.pitch_cents / 100.0;
+                let pitch_ratio = 2f32.powf(semitones / 12.0);
+                // Gain modulation is in decibels, so a tremolo is symmetric
+                // in loudness rather than lopsided the way a linear one
+                // would be.
+                let gain = 10f32.powf((prep.base.gain_db + m.gain_db) / 20.0) * self.velocity_gain;
+                let pan = if stereo {
+                    // Three pans, and they add: the zone's own placement
+                    // inside the instrument, the note's placement inside the
+                    // part, and the part's placement in the mix. Any other
+                    // reading throws one of them away — see
+                    // `render_with_pan`'s docs.
+                    fontelle_types::PanLaw::Minus3Db
+                        .gains(prep.base.pan + self.note_pan + channel_pan + m.pan)
+                } else {
+                    (1.0, 0.0)
+                };
+                let position = (prep.base.position + m.position).clamp(0.0, 1.0);
+                let target = LayerLive {
+                    gain,
+                    pan,
+                    pitch_ratio,
+                    position,
+                };
+                let from = if self.live_fresh {
+                    target
+                } else {
+                    self.live[slot]
+                };
+                self.live[slot] = from;
+                ramp[slot] = LayerLive {
+                    gain: (target.gain - from.gain) * inverse_n,
+                    pan: (
+                        (target.pan.0 - from.pan.0) * inverse_n,
+                        (target.pan.1 - from.pan.1) * inverse_n,
+                    ),
+                    pitch_ratio: (target.pitch_ratio - from.pitch_ratio) * inverse_n,
+                    position: (target.position - from.position) * inverse_n,
+                };
+            }
+            // The rest of what the matrix moves on an oscillator, held for
+            // the step: how hard its warp is applied, and its stack's
+            // detune and blend.
+            for (slot, prep) in prepared.iter_mut().enumerate() {
+                let Some(PreparedLayer {
+                    source: PreparedSource::Synth { osc, .. },
+                    base,
+                    ..
+                }) = prep
+                else {
+                    continue;
+                };
+                let m = sums.layer[slot];
+                osc.warp_amount = (base.warp + m.warp).clamp(0.0, 1.0);
+                osc.unison.detune_cents = (base.detune + m.detune).max(0.0);
+                osc.unison.blend = (base.blend + m.blend).clamp(0.0, 1.0);
+            }
+            // The filters: cutoff modulation is in cents, so it scales the
+            // corner rather than shifting it — an octave down means the
+            // same thing at 200 Hz as at 8 kHz, which a linear offset would
+            // not. Set per step, which is the rhythm the coefficients were
+            // already rebuilt at (`FILTER_STEP`); the SVF's zero-delay
+            // topology is what makes moving it this often safe.
+            for index in 0..2 {
+                live_filters[index].cutoff_hz =
+                    settings[index].cutoff_hz * 2f32.powf(sums.cutoff_cents[index] / 1200.0);
+                live_filters[index].resonance = settings[index].resonance + sums.resonance[index];
+                if index == 0 && at == 0 && std::env::var("FONTELLE_DEBUG_CUTOFF").is_ok() {
+                    eprintln!(
+                        "NEW cutoff {} cents {} lfo {:?}",
+                        live_filters[0].cutoff_hz, sums.cutoff_cents[0], self.lfo_values
+                    );
+                }
+                live_filters[index].drive =
+                    (settings[index].drive + sums.drive[index]).clamp(0.0, 1.0);
+                live_filters[index].character =
+                    (settings[index].character + sums.character[index]).clamp(0.0, 1.0);
+            }
+            // The voice-wide gain the matrix can move, in decibels — one
+            // route for a tremolo rather than one per layer.
+            let amp_ramp = {
+                let target = 10f32.powf(sums.amp_db / 20.0);
+                let from = if self.live_fresh {
+                    target
+                } else {
+                    self.amp_live
+                };
+                self.amp_live = from;
+                (target - from) * inverse_n
+            };
+            self.live_fresh = false;
+
+            // --- the samples ---------------------------------------------
+            for frame in at..at + n {
+                let env = self.amp_env.advance(&amp_env_config, sample_rate);
+                self.amp_live += amp_ramp;
+
+                // Four buses, summed before the filters: to F1, to F2, to
+                // F1→F2, and around both. Per layer, which is what lets a sub
+                // bypass a closed low-pass while the saw above it is being
+                // swept.
+                let mut to_f1 = (0.0f32, 0.0f32);
+                let mut to_f2 = (0.0f32, 0.0f32);
+                let mut to_serial = (0.0f32, 0.0f32);
+                let mut dry = (0.0f32, 0.0f32);
+
+                // **Last to first.** An oscillator's FM or RM modulator is
+                // always a *later* layer (the panel refuses anything else),
+                // so walking backwards means the modulator's sample for this
+                // frame already exists by the time the layer that reads it
+                // is evaluated — with no second pass and no one-sample delay.
+                for index in (0..MAX_LAYERS).rev() {
+                    let Some(prep) = prepared[index].as_mut() else {
+                        continue;
+                    };
+                    let slot = &mut self.layers[index];
+                    if !slot.active {
+                        continue;
+                    }
+                    // This sample's ramped values.
+                    let live = &mut self.live[index];
+                    let step = ramp[index];
+                    live.gain += step.gain;
+                    live.pan.0 += step.pan.0;
+                    live.pan.1 += step.pan.1;
+                    live.pitch_ratio += step.pitch_ratio;
+                    live.position += step.position;
+
+                    let (mut sample_l, mut sample_r) = match &mut prep.source {
+                        PreparedSource::Sample {
+                            data,
+                            rate_ratio,
+                            loop_end,
+                            loop_len,
+                            looping,
+                            end_offset,
+                            interpolation,
+                        } => {
+                            if *looping {
+                                // `while`, not `if`: one subtraction isn't
+                                // enough when the playback step exceeds the
+                                // loop length, which real extreme upward
+                                // transposition of a short loop does.
+                                while slot.position >= *loop_end {
+                                    slot.position -= *loop_len;
+                                }
+                            } else if slot.position >= *end_offset {
+                                slot.active = false;
+                                continue;
+                            }
+                            let sample =
+                                fontelle_dsp::interpolate(data, slot.position, *interpolation);
+                            slot.position += f64::from(live.pitch_ratio * *rate_ratio);
+                            (sample, sample)
+                        }
+                        // No end to run off and no buffer to walk: the phase
+                        // is the whole of its position, and it advances
+                        // itself. The note's own pitch is read off the same
+                        // ratio a sample is transposed by: at the default
+                        // root of middle C a note plays itself, a higher root
+                        // plays it lower, and every tuning on the pitch path
+                        // is already in there. Above Nyquist there is no
+                        // waveform left to draw, only aliases folding back
+                        // down.
+                        PreparedSource::Oscillator { kind } => {
+                            let freq_hz =
+                                (OSC_ROOT_HZ * live.pitch_ratio).clamp(0.0, sample_rate * 0.5);
+                            let sample = slot.osc.next_sample(*kind, freq_hz, sample_rate);
+                            (sample, sample)
+                        }
+                        // The hit ends itself. Marking the slot inactive when
+                        // it does is what stops a finished drum costing a
+                        // `tanh` and a filter per sample for the rest of the
+                        // note.
+                        PreparedSource::Drum(voice) => {
+                            if slot.drum_pending {
+                                slot.drum.trigger(voice, sample_rate);
+                                slot.drum_pending = false;
+                            }
+                            if slot.drum.is_done() {
+                                slot.active = false;
+                                continue;
+                            }
+                            let sample = slot.drum.next_sample(voice, sample_rate);
+                            (sample, sample)
+                        }
+                        PreparedSource::Synth { osc, input } => {
+                            // The modulator's sample from *this* frame,
+                            // already computed because the walk is backwards.
+                            // A layer naming a modulator that is not there
+                            // reads zero, which makes an FM knob with nothing
+                            // to modulate a silent knob rather than a broken
+                            // one.
+                            let modulator = osc
+                                .modulator
+                                .map(|m| layer_out.get(usize::from(m)).copied().unwrap_or(0.0))
+                                .unwrap_or(0.0);
+                            osc.position = live.position;
+                            slot.synth.next_sample_from(
+                                osc,
+                                *input,
+                                OSC_ROOT_HZ * live.pitch_ratio,
+                                sample_rate,
+                                modulator,
+                            )
+                        }
+                    };
+                    // **Before the level knob**, and before the pan.
+                    //
+                    // A modulator's level is how much of it you *hear*; the
+                    // warp amount is how hard it modulates. Reading the
+                    // post-gain sample would fold the two into one knob and
+                    // — worse — make a modulator turned down to silence stop
+                    // modulating, which is exactly the setup a dedicated FM
+                    // operator wants ("FM Growl" and "EP Tine" are both an
+                    // oscillator nobody hears). Before the pan for the same
+                    // kind of reason: FM by one side of a panned stack is
+                    // not a thing anybody means.
+                    if prep.layer_index < MAX_LAYERS {
+                        layer_out[prep.layer_index] = (sample_l + sample_r) * 0.5;
+                    }
+                    sample_l *= live.gain;
+                    sample_r *= live.gain;
+
+                    let placed = (sample_l * live.pan.0, sample_r * live.pan.1);
+                    let bus = match prep.route {
+                        fontelle_dsp::FilterRoute::F1 => &mut to_f1,
+                        fontelle_dsp::FilterRoute::F2 => &mut to_f2,
+                        fontelle_dsp::FilterRoute::Serial => &mut to_serial,
+                        fontelle_dsp::FilterRoute::Bypass => &mut dry,
+                    };
+                    bus.0 += placed.0;
+                    bus.1 += placed.1;
+                }
+
+                // buses -> Filter1 / Filter2 -> Amp (TDD §7.4). The filters
+                // sit ahead of the amp stage and operate on this voice's own
+                // mixed sample rather than on the shared output buffer.
+                let mut mixed = dry;
+                if enabled[0] {
+                    mixed.0 += self.filters[0][0].process(to_f1.0, &live_filters[0], sample_rate);
+                    if right.is_some() {
+                        mixed.1 +=
+                            self.filters[0][1].process(to_f1.1, &live_filters[0], sample_rate);
+                    }
+                } else {
+                    mixed.0 += to_f1.0;
+                    mixed.1 += to_f1.1;
+                }
+                // The serial path through its **own** copy of filter 1 — see
+                // `Voice::filters`, which is where the third slot is argued.
+                let mut serial = to_serial;
+                if enabled[0] {
+                    serial.0 = self.filters[2][0].process(serial.0, &live_filters[0], sample_rate);
+                    if right.is_some() {
+                        serial.1 =
+                            self.filters[2][1].process(serial.1, &live_filters[0], sample_rate);
+                    }
+                }
+                let into_f2 = (to_f2.0 + serial.0, to_f2.1 + serial.1);
+                if enabled[1] {
+                    mixed.0 += self.filters[1][0].process(into_f2.0, &live_filters[1], sample_rate);
+                    if right.is_some() {
+                        mixed.1 +=
+                            self.filters[1][1].process(into_f2.1, &live_filters[1], sample_rate);
+                    }
+                } else {
+                    mixed.0 += into_f2.0;
+                    mixed.1 += into_f2.1;
+                }
+
+                let gain = env * self.amp_live;
+                left[frame] += mixed.0 * gain;
+                if let Some(right) = right.as_deref_mut() {
+                    right[frame] += mixed.1 * gain;
+                }
+            }
+            at += n;
+        }
+
+        self.age_samples += frames as u64;
+        self.advance_glide(frames, sample_rate);
+
+        let any_layer_active = self.layers.iter().any(|s| s.active);
+        if !self.amp_env.is_active() || !any_layer_active {
+            self.active = false;
+        }
+    }
+
+    /// Resolves every active slot's layer into what the sample loop reads —
+    /// the source, the base the matrix moves, the bus — once a block.
+    ///
+    /// `sums` is the first step's, because whether a layer is at the floor
+    /// is decided here from the gain the matrix has put on it.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_layers<'a>(
+        &self,
+        patch: &'a crate::Patch,
+        store: &'a crate::SampleStore,
+        tables: &'a crate::WavetableSet,
+        sample_rate: f32,
+        quality: fontelle_dsp::Interpolation,
+        bend: f32,
+        sums: &ModSums,
+        is_modulator: &[bool; MAX_LAYERS],
+        prepared: &mut [Option<PreparedLayer<'a>>; MAX_LAYERS],
+    ) {
         for (prepared_index, slot) in self.layers.iter().enumerate() {
             if !slot.active {
                 continue;
             }
             // The slot names its zone; `prepared` is indexed by *slot*, while
-            // every `ModDest` below is addressed by the zone's own index,
-            // because that is what a saved mod route names.
+            // every `ModDest` is addressed by the zone's own index, because
+            // that is what a saved mod route names.
             let index = usize::from(slot.layer);
             let Some(layer) = patch.layers.get(index) else {
                 continue;
@@ -1349,37 +1963,7 @@ impl Voice {
                 },
                 None => None,
             };
-
-            // `ModDest` names a layer with a `u8`, so a patch with more than
-            // 256 zones has no way to address the ones past that. They get no
-            // per-layer modulation rather than being aliased onto layer 0's
-            // routes, which is the failure that would be impossible to see.
-            let dest_index = u8::try_from(index).ok();
-            let layer_mod = |make: fn(u8) -> crate::mod_matrix::ModDest| {
-                dest_index.map_or(0.0, |i| {
-                    let dest = make(i);
-                    patch.mod_matrix.evaluate(dest, &sources) * dest.full_scale()
-                })
-            };
-
-            // Pitch modulation is in cents, like the tuning it adds to, so a
-            // route means the same interval wherever the note sits.
-            let pitch_cents = layer_mod(crate::mod_matrix::ModDest::LayerPitch);
-            // The glide adds to the note's own interval rather than moving
-            // the key: the key is the note's *identity*, and a note-off names
-            // it (see `glide_to`). The bend adds the same way, and a patch
-            // that also *routes* the bend gets both, which is what a route is
-            // for.
-            let semitones = (self.key as f32 - layer.root_key as f32)
-                + self.glide_semitones
-                + bend * patch.voice_config.bend_range_semitones
-                + self.note_detune
-                + (layer.fine_tune_cents + pitch_cents) / 100.0;
-            let pitch_ratio = 2f32.powf(semitones / 12.0);
-
-            // Gain modulation is in decibels, so a tremolo is symmetric in
-            // loudness rather than lopsided the way a linear one would be.
-            let gain_db = layer_mod(crate::mod_matrix::ModDest::LayerGain);
+            let mods = sums.layer[prepared_index];
 
             // **A layer at the floor is off**, which is what `SILENT_DB` means
             // everywhere else in this program — `Sampler::set_gain_db` reads
@@ -1388,58 +1972,45 @@ impl Voice {
             // patch is five layers with one of them up).
             //
             // Skipping it here is the difference between a Flopsynth voice
-            // costing one oscillator and costing five: everything below —
-            // the table read, the unison stack, the pan, the filter feed — is
-            // per sample. The one exception is above: a layer somebody
-            // modulates with is rendered whatever its level.
+            // costing one oscillator and costing five: everything in the
+            // sample loop — the table read, the unison stack, the pan, the
+            // filter feed — is per sample. The one exception is above: a
+            // layer somebody modulates with is rendered whatever its level.
             //
-            // Resolved per block like every other modulation, so a route that
-            // brings a layer up brings it back on the next block, which is
-            // the control rate everything else here runs at.
-            if layer.gain_db + gain_db <= crate::SILENT_DB
+            // Resolved per block like the rest of this, so a route that
+            // brings a layer up brings it back on the next block.
+            if layer.gain_db + mods.gain_db <= crate::SILENT_DB
                 && !is_modulator[index.min(MAX_LAYERS - 1)]
             {
                 continue;
             }
 
-            let pan_gain = if stereo {
-                // Three pans, and they add: the zone's own placement inside
-                // the instrument, the note's placement inside the part, and
-                // the part's placement in the mix. Any other reading throws
-                // one of them away — see `render_with_pan`'s docs.
-                let pan = layer.pan
-                    + self.note_pan
-                    + channel_pan
-                    + layer_mod(crate::mod_matrix::ModDest::LayerPan);
-                fontelle_types::PanLaw::Minus3Db.gains(pan)
-            } else {
-                (1.0, 0.0)
+            // The glide adds to the note's own interval rather than moving
+            // the key: the key is the note's *identity*, and a note-off names
+            // it (see `glide_to`). The bend adds the same way, and a patch
+            // that also *routes* the bend gets both, which is what a route is
+            // for.
+            let mut base = LayerBase {
+                semitones: (self.key as f32 - layer.root_key as f32)
+                    + self.glide_semitones
+                    + bend * patch.voice_config.bend_range_semitones
+                    + self.note_detune
+                    + layer.fine_tune_cents / 100.0,
+                gain_db: layer.gain_db,
+                pan: layer.pan,
+                ..LayerBase::default()
             };
 
             let mut route = fontelle_dsp::FilterRoute::Serial;
             let source = match (&layer.source, buffer) {
                 (crate::patch::Source::Oscillator(kind), _) => {
-                    // The note's own pitch, read off the same `semitones` a
-                    // sample is transposed by: at the default root of middle C
-                    // a note plays itself, a higher root plays it lower, and
-                    // every tuning on the pitch path is already in there.
-                    let freq_hz = OSC_ROOT_HZ * pitch_ratio;
-                    PreparedSource::Oscillator {
-                        kind: *kind,
-                        // Above Nyquist there is no waveform left to draw,
-                        // only aliases folding back down.
-                        freq_hz: freq_hz.clamp(0.0, sample_rate * 0.5),
-                    }
+                    PreparedSource::Oscillator { kind: *kind }
                 }
                 // Before the buffer arm: a drum names no file, so `buffer`
                 // is `None` for one and it would otherwise fall through to
                 // the `continue` at the bottom and render silence.
                 (crate::patch::Source::Drum(voice), _) => PreparedSource::Drum(*voice),
                 (crate::patch::Source::Synth(osc), _) => {
-                    // The four knobs the matrix can move on an oscillator,
-                    // resolved into a **copy** of the patch's description:
-                    // the patch is what the document holds and a route is not
-                    // an edit to it.
                     let mut osc = *osc;
                     // The patch's oversampling, unless this oscillator has
                     // its own: one answer, resolved here rather than in
@@ -1447,18 +2018,10 @@ impl Voice {
                     if osc.quality.is_off() {
                         osc.quality = patch.oversampling;
                     }
-                    osc.position = (osc.position
-                        + layer_mod(crate::mod_matrix::ModDest::OscPosition))
-                    .clamp(0.0, 1.0);
-                    osc.warp_amount = (osc.warp_amount
-                        + layer_mod(crate::mod_matrix::ModDest::OscWarp))
-                    .clamp(0.0, 1.0);
-                    osc.unison.detune_cents = (osc.unison.detune_cents
-                        + layer_mod(crate::mod_matrix::ModDest::OscUnisonDetune))
-                    .max(0.0);
-                    osc.unison.blend = (osc.unison.blend
-                        + layer_mod(crate::mod_matrix::ModDest::OscUnisonBlend))
-                    .clamp(0.0, 1.0);
+                    base.position = osc.position;
+                    base.warp = osc.warp_amount;
+                    base.detune = osc.unison.detune_cents;
+                    base.blend = osc.unison.blend;
                     route = osc.filter_route;
                     let input = match osc.source {
                         fontelle_dsp::SynthSource::Table(id) => {
@@ -1497,23 +2060,18 @@ impl Voice {
                             SynthInput::None
                         }
                     };
-                    PreparedSource::Synth {
-                        osc,
-                        input,
-                        note_hz: OSC_ROOT_HZ * pitch_ratio,
-                    }
+                    PreparedSource::Synth { osc, input }
                 }
                 (_, Some(buffer)) => {
-                    let rate_ratio = buffer.sample_rate as f32 / sample_rate;
                     let loop_len = layer.playback.loop_end - layer.playback.loop_start;
                     PreparedSource::Sample {
                         data: &buffer.data,
-                        step: (pitch_ratio * rate_ratio) as f64,
+                        rate_ratio: buffer.sample_rate as f32 / sample_rate,
                         loop_end: layer.playback.loop_end,
                         loop_len,
-                        // `loop_len > 0.0` also guards the wrap loop below
-                        // against spinning forever on a degenerate
-                        // zero-length loop.
+                        // `loop_len > 0.0` also guards the wrap loop in the
+                        // sample loop against spinning forever on a
+                        // degenerate zero-length loop.
                         looping: matches!(layer.playback.loop_mode, crate::LoopMode::Forward)
                             && loop_len > 0.0,
                         end_offset: layer.playback.end_offset,
@@ -1525,254 +2083,10 @@ impl Voice {
 
             prepared[prepared_index] = Some(PreparedLayer {
                 source,
-                gain: 10f32.powf((layer.gain_db + gain_db) / 20.0) * self.velocity_gain,
-                pan_gain,
+                base,
                 route,
                 layer_index: index,
             });
-        }
-
-        // --- the two filter slots, and the ramp that keeps them quiet -------
-        //
-        // Cutoff is resolved per block like everything else, but **applied**
-        // as a ramp from the previous block's value to this one's, rebuilt
-        // every `FILTER_STEP` samples along the way. With an LFO on cutoff at
-        // the engine's 375 Hz block rate, a corner that jumped once a block
-        // would be an audible zipper; the SVF's zero-delay topology is what
-        // makes moving it this often safe.
-        let mut settings: [fontelle_dsp::SynthFilterSettings; 2] = Default::default();
-        let mut target_cents = [0.0f32; 2];
-        for index in 0..2 {
-            let slot = patch.filters[index];
-            let dest = crate::mod_matrix::ModDest::FilterCutoff(index as u8);
-            // Cutoff modulation is in cents, so it scales the corner rather
-            // than shifting it — an octave down means the same thing at
-            // 200 Hz as at 8 kHz, which a linear offset would not.
-            let cents = patch.mod_matrix.evaluate(dest, &sources) * dest.full_scale();
-            target_cents[index] = cents;
-            let q_dest = crate::mod_matrix::ModDest::FilterResonance(index as u8);
-            let resonance =
-                slot.resonance + patch.mod_matrix.evaluate(q_dest, &sources) * q_dest.full_scale();
-            let drive_dest = crate::mod_matrix::ModDest::FilterDrive(index as u8);
-            let character_dest = crate::mod_matrix::ModDest::FilterCharacter(index as u8);
-            settings[index] = fontelle_dsp::SynthFilterSettings {
-                model: slot.model,
-                mode: slot.mode,
-                slope: slot.slope,
-                // Key tracking is applied here rather than stored, so one
-                // patch sounds the same at every pitch without the document
-                // carrying a different cutoff per note.
-                cutoff_hz: fontelle_dsp::key_tracked_cutoff(
-                    slot.cutoff_hz,
-                    self.key,
-                    slot.key_track,
-                ),
-                resonance,
-                drive: (slot.drive
-                    + patch.mod_matrix.evaluate(drive_dest, &sources) * drive_dest.full_scale())
-                .clamp(0.0, 1.0),
-                character: (slot.character
-                    + patch.mod_matrix.evaluate(character_dest, &sources)
-                        * character_dest.full_scale())
-                .clamp(0.0, 1.0),
-                oversampling: patch.oversampling,
-            };
-        }
-        let enabled = [patch.filters[0].enabled, patch.filters[1].enabled];
-        let from_cents = self.filter_cents;
-        self.filter_cents = target_cents;
-
-        // The voice-wide gain the matrix can move, in decibels — one route
-        // for a tremolo rather than one per layer.
-        let amp_dest = crate::mod_matrix::ModDest::Amp;
-        let amp_db = patch.mod_matrix.evaluate(amp_dest, &sources) * amp_dest.full_scale();
-        let amp_gain = 10f32.powf(amp_db / 20.0);
-
-        // Split once, outside the loop: `out[0]` and `out[1]` are distinct
-        // slices, and taking both mutably per sample would be a reborrow the
-        // compiler can't see through.
-        let (left, rest) = out.split_at_mut(1);
-        let left = &mut *left[0];
-        let mut right = rest.first_mut();
-
-        // Every layer's sample this frame, indexed by **patch layer index**,
-        // so an oscillator naming a later layer as its FM or RM modulator can
-        // find it. Fixed-size and on the stack, like everything else here.
-        let mut layer_out = [0.0f32; MAX_LAYERS];
-        let mut live: [fontelle_dsp::SynthFilterSettings; 2] = settings;
-
-        for frame in 0..frames {
-            let env = self.amp_env.advance(&amp_env_config, sample_rate);
-
-            // The cutoff ramp, rebuilt every `FILTER_STEP` samples.
-            if frame % FILTER_STEP == 0 {
-                let t = frame as f32 / frames.max(1) as f32;
-                for index in 0..2 {
-                    let cents = from_cents[index] + (target_cents[index] - from_cents[index]) * t;
-                    live[index].cutoff_hz = settings[index].cutoff_hz * 2f32.powf(cents / 1200.0);
-                }
-            }
-
-            // Four buses, summed before the filters: to F1, to F2, to F1→F2,
-            // and around both. Per layer, which is what lets a sub bypass a
-            // closed low-pass while the saw above it is being swept.
-            let mut to_f1 = (0.0f32, 0.0f32);
-            let mut to_f2 = (0.0f32, 0.0f32);
-            let mut to_serial = (0.0f32, 0.0f32);
-            let mut dry = (0.0f32, 0.0f32);
-
-            // **Last to first.** An oscillator's FM or RM modulator is always
-            // a *later* layer (the panel refuses anything else), so walking
-            // backwards means the modulator's sample for this frame already
-            // exists by the time the layer that reads it is evaluated — with
-            // no second pass and no one-sample delay.
-            for index in (0..MAX_LAYERS).rev() {
-                let Some(prep) = prepared[index] else {
-                    continue;
-                };
-                let slot = &mut self.layers[index];
-                if !slot.active {
-                    continue;
-                }
-
-                let (mut sample_l, mut sample_r) = match prep.source {
-                    PreparedSource::Sample {
-                        data,
-                        step,
-                        loop_end,
-                        loop_len,
-                        looping,
-                        end_offset,
-                        interpolation,
-                    } => {
-                        if looping {
-                            // `while`, not `if`: one subtraction isn't enough
-                            // when the playback step exceeds the loop length,
-                            // which real extreme upward transposition of a
-                            // short loop does.
-                            while slot.position >= loop_end {
-                                slot.position -= loop_len;
-                            }
-                        } else if slot.position >= end_offset {
-                            slot.active = false;
-                            continue;
-                        }
-                        let sample = fontelle_dsp::interpolate(data, slot.position, interpolation);
-                        slot.position += step;
-                        (sample, sample)
-                    }
-                    // No end to run off and no buffer to walk: the phase is
-                    // the whole of its position, and it advances itself.
-                    PreparedSource::Oscillator { kind, freq_hz } => {
-                        let sample = slot.osc.next_sample(kind, freq_hz, sample_rate);
-                        (sample, sample)
-                    }
-                    // The hit ends itself. Marking the slot inactive when it
-                    // does is what stops a finished drum costing a `tanh` and
-                    // a filter per sample for the rest of the note.
-                    PreparedSource::Drum(voice) => {
-                        if slot.drum_pending {
-                            slot.drum.trigger(&voice, sample_rate);
-                            slot.drum_pending = false;
-                        }
-                        if slot.drum.is_done() {
-                            slot.active = false;
-                            continue;
-                        }
-                        let sample = slot.drum.next_sample(&voice, sample_rate);
-                        (sample, sample)
-                    }
-                    PreparedSource::Synth {
-                        osc,
-                        input,
-                        note_hz,
-                    } => {
-                        // The modulator's sample from *this* frame, already
-                        // computed because the walk is backwards. A layer
-                        // naming a modulator that is not there reads zero,
-                        // which makes an FM knob with nothing to modulate a
-                        // silent knob rather than a broken one.
-                        let modulator = osc
-                            .modulator
-                            .map(|m| layer_out.get(usize::from(m)).copied().unwrap_or(0.0))
-                            .unwrap_or(0.0);
-                        slot.synth
-                            .next_sample_from(&osc, input, note_hz, sample_rate, modulator)
-                    }
-                };
-                // **Before the level knob**, and before the pan.
-                //
-                // A modulator's level is how much of it you *hear*; the warp
-                // amount is how hard it modulates. Reading the post-gain
-                // sample would fold the two into one knob and — worse — make a
-                // modulator turned down to silence stop modulating, which is
-                // exactly the setup a dedicated FM operator wants ("FM Growl"
-                // and "EP Tine" are both an oscillator nobody hears). Before
-                // the pan for the same kind of reason: FM by one side of a
-                // panned stack is not a thing anybody means.
-                if prep.layer_index < MAX_LAYERS {
-                    layer_out[prep.layer_index] = (sample_l + sample_r) * 0.5;
-                }
-                sample_l *= prep.gain;
-                sample_r *= prep.gain;
-
-                let placed = (sample_l * prep.pan_gain.0, sample_r * prep.pan_gain.1);
-                let bus = match prep.route {
-                    fontelle_dsp::FilterRoute::F1 => &mut to_f1,
-                    fontelle_dsp::FilterRoute::F2 => &mut to_f2,
-                    fontelle_dsp::FilterRoute::Serial => &mut to_serial,
-                    fontelle_dsp::FilterRoute::Bypass => &mut dry,
-                };
-                bus.0 += placed.0;
-                bus.1 += placed.1;
-            }
-
-            // buses -> Filter1 / Filter2 -> Amp (TDD §7.4). The filters sit
-            // ahead of the amp stage and operate on this voice's own mixed
-            // sample rather than on the shared output buffer.
-            let mut mixed = dry;
-            if enabled[0] {
-                mixed.0 += self.filters[0][0].process(to_f1.0, &live[0], sample_rate);
-                if right.is_some() {
-                    mixed.1 += self.filters[0][1].process(to_f1.1, &live[0], sample_rate);
-                }
-            } else {
-                mixed.0 += to_f1.0;
-                mixed.1 += to_f1.1;
-            }
-            // The serial path through its **own** copy of filter 1 — see
-            // `Voice::filters`, which is where the third slot is argued.
-            let mut serial = to_serial;
-            if enabled[0] {
-                serial.0 = self.filters[2][0].process(serial.0, &live[0], sample_rate);
-                if right.is_some() {
-                    serial.1 = self.filters[2][1].process(serial.1, &live[0], sample_rate);
-                }
-            }
-            let into_f2 = (to_f2.0 + serial.0, to_f2.1 + serial.1);
-            if enabled[1] {
-                mixed.0 += self.filters[1][0].process(into_f2.0, &live[1], sample_rate);
-                if right.is_some() {
-                    mixed.1 += self.filters[1][1].process(into_f2.1, &live[1], sample_rate);
-                }
-            } else {
-                mixed.0 += into_f2.0;
-                mixed.1 += into_f2.1;
-            }
-
-            let gain = env * amp_gain;
-            left[frame] += mixed.0 * gain;
-            if let Some(right) = right.as_deref_mut() {
-                right[frame] += mixed.1 * gain;
-            }
-        }
-
-        self.age_samples += frames as u64;
-        self.advance_glide(frames, sample_rate);
-
-        let any_layer_active = self.layers.iter().any(|s| s.active);
-        if !self.amp_env.is_active() || !any_layer_active {
-            self.active = false;
         }
     }
 }
@@ -1961,7 +2275,7 @@ impl VoicePool {
 /// Called once per block per envelope, which is what makes reading it from
 /// the block-rate sources rather than per sample the right cost: four
 /// evaluations over a matrix of a dozen routes, beside a filter.
-fn stage_times(
+fn modulated_stages(
     config: fontelle_dsp::EnvelopeConfig,
     envelope: u8,
     matrix: &crate::mod_matrix::ModMatrix,
@@ -1976,10 +2290,17 @@ fn stage_times(
             seconds * 2f32.powf(octaves * dest.full_scale())
         }
     };
+    // The sustain is a level, not a time: the whole of its travel at full
+    // depth, added. The window has offered *Env n sustain* since the Matrix
+    // page existed and nothing read it until 2026-09-20 — a route that
+    // lied, which is the one thing a picture may not do.
+    let sustain_dest = crate::mod_matrix::ModDest::EnvelopeStageLevel(envelope, 4);
+    let sustain = matrix.evaluate(sustain_dest, sources) * sustain_dest.full_scale();
     fontelle_dsp::EnvelopeConfig {
         attack_s: scale(1, config.attack_s),
         hold_s: scale(2, config.hold_s),
         decay_s: scale(3, config.decay_s),
+        sustain_level: (config.sustain_level + sustain).clamp(0.0, 1.0),
         release_s: scale(5, config.release_s),
         ..config
     }

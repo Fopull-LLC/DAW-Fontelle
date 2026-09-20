@@ -977,11 +977,18 @@ mod tests {
 
         sampler.set_pan(1.0);
         sampler.render(&store, &mut [&mut left[..], &mut right[..]]);
+        // By the end of the block: the pan arrives over a modulation step
+        // (`voice::MOD_STEP`) rather than between two samples.
         assert!(
-            left[0].abs() < 1e-5 && (right[0] - 1.0).abs() < 1e-5,
+            left[63].abs() < 1e-5 && (right[63] - 1.0).abs() < 1e-5,
             "the held note must move with the channel pan, got {} / {}",
-            left[0],
-            right[0]
+            left[63],
+            right[63]
+        );
+        assert!(
+            left[0] > 0.5 && left[0] < centred,
+            "and it is on its way in the first sample: {}",
+            left[0]
         );
     }
 

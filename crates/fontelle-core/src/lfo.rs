@@ -164,8 +164,15 @@ impl LfoState {
         let smooth = lfo.smooth.clamp(0.0, 1.0);
         let value = if smooth > 0.0 {
             // A one-pole whose time constant grows with the knob, worked out
-            // per block because that is the rate this runs at.
-            let coefficient = (smooth * 0.995).powf(1.0 / (frames.max(1) as f32 / 32.0));
+            // per call because that is the rate this runs at. The exponent
+            // is `frames / 512`, which is what the knob sounded like at the
+            // engine's 128-frame blocks (`(smooth·0.995)^(1/4)` a block)
+            // from the day it existed: the voice calls this every eight
+            // samples now (`voice::MOD_STEP`), and the old `32 / frames`
+            // made the time constant a property of the block size — the
+            // bank's presets were voiced at 128 and the gate rendered at
+            // 512, and neither heard the same knob.
+            let coefficient = (smooth * 0.995).powf(frames.max(1) as f32 / 512.0);
             self.smoothed += (raw - self.smoothed) * (1.0 - coefficient);
             self.smoothed
         } else {

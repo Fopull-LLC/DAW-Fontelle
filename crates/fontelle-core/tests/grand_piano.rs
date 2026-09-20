@@ -311,9 +311,14 @@ fn velocity_crossfades_the_soft_recording_into_the_hard_one() {
     }
     // From the lightest touch a sequencer sends to the hardest: a real
     // piano's pp to ff is thirty-odd decibels, a sampled library's forty.
+    // Fifty-one here, and it always was in the studio: the top of it is
+    // the hammer's burst, +32 dB over the string for its first ten
+    // milliseconds at a fortissimo, which this file's 512-frame blocks
+    // read a block late until modulation ran at step rate (see the hammer
+    // test below).
     let span = levels[levels.len() - 1] - levels[0];
     assert!(
-        (28.0..=50.0).contains(&span),
+        (28.0..=52.0).contains(&span),
         "a piano's pp to ff is thirty-odd decibels, not {span:.1}: {levels:?}"
     );
 }
@@ -524,14 +529,24 @@ fn the_keyboard_lies_left_to_right_across_the_stereo_field() {
 }
 
 /// The hammer is felt on a hard strike: the noise layer is in the strike
-/// of a fortissimo — the recording's hammer lands ten to forty
-/// milliseconds in; its first ten are the room before it — and nowhere
-/// after, and there is less of it in a soft touch.
+/// of a fortissimo and nowhere after, and there is less of it in a soft
+/// touch.
+///
+/// The window is the first twenty milliseconds. It was 10–30 ms, on the
+/// reading that the recording's hammer lands ten to forty milliseconds in
+/// and the noise should sit with it — but the burst the recipe writes has
+/// no delay (envelope 2: no delay, a 10 ms hold, 30 ms down), and the
+/// studio has always played it from the first sample; the old window saw
+/// it there only because this file renders 512-frame blocks and, until
+/// modulation ran at step rate (`docs/flopsynth-next.md` §4.2), a source
+/// was read at the block's start — the burst arrived a block, ten
+/// milliseconds, late. If it is meant ten milliseconds in, the recipe
+/// wants `delay_s: 0.01` on envelope 2; that is a voicing call and Ty's.
 #[test]
 fn the_hammer_is_felt_on_a_hard_strike_and_not_after_it() {
     let with = render(grand_piano(), 60, 120, 0.4);
     let muted = render(without(NOISE), 60, 120, 0.4);
-    let strike = level_db(&with, 0.01, 0.03) - level_db(&muted, 0.01, 0.03);
+    let strike = level_db(&with, 0.0, 0.02) - level_db(&muted, 0.0, 0.02);
     let later = level_db(&with, 0.1, 0.2) - level_db(&muted, 0.1, 0.2);
     assert!(
         strike > 1.0,
@@ -543,7 +558,7 @@ fn the_hammer_is_felt_on_a_hard_strike_and_not_after_it() {
     );
     let soft_with = render(grand_piano(), 60, 30, 0.4);
     let soft_without = render(without(NOISE), 60, 30, 0.4);
-    let soft = level_db(&soft_with, 0.01, 0.03) - level_db(&soft_without, 0.01, 0.03);
+    let soft = level_db(&soft_with, 0.0, 0.02) - level_db(&soft_without, 0.0, 0.02);
     assert!(
         soft < strike - 1.0,
         "a soft touch has less hammer in it: {soft:+.2} against {strike:+.2} dB"

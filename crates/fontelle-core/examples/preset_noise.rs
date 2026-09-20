@@ -29,6 +29,12 @@ fn render(patch: Patch, key: u8, frames: usize) -> Vec<f32> {
     let mut out = Vec::with_capacity(frames);
     while out.len() < frames {
         let n = 512.min(frames - out.len());
+        // The transport moves, as the gate's does: a free-running LFO
+        // reads its phase off the clock.
+        sampler.set_clock(fontelle_core::RenderClock {
+            bpm: 120.0,
+            position_sample: out.len() as u64,
+        });
         let mut l = vec![0.0f32; n];
         let mut r = vec![0.0f32; n];
         sampler.render(&store, &mut [&mut l[..], &mut r[..]]);

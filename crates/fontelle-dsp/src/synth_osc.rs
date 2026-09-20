@@ -649,16 +649,30 @@ struct StringKey {
 }
 
 /// What one set of unison settings works out to, per voice.
+///
+/// **Not the pitch.** The cache held each voice's phase step until
+/// 2026-09-20, keyed on the note's frequency as well — and once the voice
+/// ramped its pitch per sample (`docs/flopsynth-next.md` §4.2), a vibrato
+/// rebuilt it every sample: eight `powf`s a sample on a supersaw. So it
+/// holds each voice's *ratio* to the centre, which is a function of the
+/// stack alone, and [`step`](Self::step) is a multiply.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct UnisonCache {
     /// Everything the constants below were computed from.
     key: UnisonKey,
-    /// Each voice's phase step, and its gain into each channel.
-    steps: [f32; MAX_UNISON],
+    /// Each voice's pitch over the centre's, and its gain into each channel.
+    ratios: [f32; MAX_UNISON],
     gains: [(f32, f32); MAX_UNISON],
     /// What the stack is divided by so that turning unison up makes a stack
     /// rather than making it louder.
     loudness: f32,
+}
+
+impl UnisonCache {
+    /// `voice`'s phase step per sample at `base_hz`, times `sync_ratio`.
+    fn step(&self, voice: usize, base_hz: f32, sync_ratio: f32, sample_rate: f32) -> f32 {
+        base_hz * self.ratios[voice] * sync_ratio / sample_rate
+    }
 }
 
 /// The settings a [`UnisonCache`] is only good for.
@@ -668,9 +682,6 @@ struct UnisonKey {
     detune_cents: f32,
     blend: f32,
     width: f32,
-    base_hz: f32,
-    sync_ratio: f32,
-    sample_rate: f32,
 }
 
 impl Default for SynthState {
@@ -939,14 +950,11 @@ impl SynthState {
             detune_cents: osc.unison.detune_cents,
             blend,
             width,
-            base_hz,
-            sync_ratio,
-            sample_rate,
         });
 
         let (mut left, mut right) = (0.0f32, 0.0f32);
         for voice in 0..voices {
-            let step = stack.steps[voice];
+            let step = stack.step(voice, base_hz, sync_ratio, sample_rate);
 
             let phase = &mut self.phases[voice];
             let read_at = warp_phase(osc, *phase, amount, modulator);
@@ -1012,9 +1020,6 @@ impl SynthState {
             detune_cents: osc.unison.detune_cents,
             blend,
             width,
-            base_hz,
-            sync_ratio: 1.0,
-            sample_rate,
         });
         let len_f = len as f64;
         let last = (len - 1) as f64;
@@ -1041,6 +1046,7 @@ impl SynthState {
                 osc,
                 data,
                 &stack,
+                base_hz,
                 voices,
                 frames_per_cycle,
                 fm,
@@ -1114,7 +1120,7 @@ impl SynthState {
                 sample += (ahead - sample) * t;
             }
             sample *= rm;
-            let step = f64::from(stack.steps[voice]) * frames_per_cycle;
+            let step = f64::from(stack.step(voice, base_hz, 1.0, sample_rate)) * frames_per_cycle;
             *head += if *backwards { -step } else { step };
             let (gl, gr) = stack.gains[voice];
             left += sample * gl;
@@ -1149,6 +1155,7 @@ impl SynthState {
         osc: &SynthOsc,
         data: SampleData<'_>,
         stack: &UnisonCache,
+        base_hz: f32,
         voices: usize,
         frames_per_cycle: f64,
         fm: f64,
@@ -1163,7 +1170,7 @@ impl SynthState {
         // The centre voice's frames per output sample: what the phase
         // alignment is worked out against. The side voices drift from it by
         // their detune, a few frames over a grain, which is the chorus.
-        let rate = f64::from(stack.steps[0]) * frames_per_cycle;
+        let rate = f64::from(stack.step(0, base_hz, 1.0, sample_rate)) * frames_per_cycle;
         if !self.heads_placed {
             self.grain_clock = 0;
             for index in 0..GRAINS {
@@ -1194,7 +1201,11 @@ impl SynthState {
             let window = 0.5 - 0.5 * (std::f32::consts::TAU * t).cos();
             let age = f64::from(grain.age);
             for voice in 0..voices {
-                let at = grain.start + age * f64::from(stack.steps[voice]) * frames_per_cycle + fm;
+                let at = grain.start
+                    + age
+                        * f64::from(stack.step(voice, base_hz, 1.0, sample_rate))
+                        * frames_per_cycle
+                    + fm;
                 // A grain that runs off either end of the recording reads
                 // nothing there, rather than holding the last frame as a
                 // level: the recording's end is silence, not a value.
@@ -1260,9 +1271,6 @@ impl SynthState {
             detune_cents: osc.unison.detune_cents,
             blend,
             width,
-            base_hz,
-            sync_ratio: 1.0,
-            sample_rate,
         });
         let key = StringKey {
             hz_q: (base_hz * 50.0) as u32,
@@ -1345,8 +1353,8 @@ impl SynthState {
                 // The stack's detune, as the ratio of this voice's step to
                 // the centre's — every partial of a detuned string moves
                 // together.
-                let detune = if stack.steps[0] > 0.0 {
-                    stack.steps[voice] / stack.steps[0]
+                let detune = if stack.ratios[0] > 0.0 {
+                    stack.ratios[voice] / stack.ratios[0]
                 } else {
                     1.0
                 };
@@ -1401,12 +1409,11 @@ impl SynthState {
         {
             return *cache;
         }
-        let mut steps = [0.0f32; MAX_UNISON];
+        let mut ratios = [0.0f32; MAX_UNISON];
         let mut gains = [(0.0f32, 0.0f32); MAX_UNISON];
         for voice in 0..key.voices.min(MAX_UNISON) {
             let cents = detune_of(voice, key.voices, key.detune_cents);
-            let hz = key.base_hz * 2f32.powf(cents / 1200.0);
-            steps[voice] = hz * key.sync_ratio / key.sample_rate;
+            ratios[voice] = 2f32.powf(cents / 1200.0);
 
             // The centre voice is voice 0 and is always at full level and
             // centred; the sides carry the blend and the width.
@@ -1429,7 +1436,7 @@ impl SynthState {
         let loudness = (1.0 + (key.voices - 1) as f32 * key.blend * key.blend).sqrt();
         let cache = UnisonCache {
             key,
-            steps,
+            ratios,
             gains,
             loudness: 1.0 / loudness,
         };

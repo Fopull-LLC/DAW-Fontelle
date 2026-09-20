@@ -32,6 +32,22 @@ pub enum ModSource {
     Macro(u8),
 }
 
+impl ModSource {
+    /// Whether this source can change **within a block**.
+    ///
+    /// The envelopes and the LFOs turn every modulation step
+    /// (`crate::voice::MOD_STEP`); everything else — a note's velocity and
+    /// key, the wheels, the macros, the random draw — is a number for the
+    /// whole block, read once. The voice walks the matrix per step for the
+    /// routes whose source or `via` moves and once a block for the rest
+    /// (`docs/flopsynth-next.md` §4.2's "walk only the routes whose source
+    /// moved"), so a preset of key and velocity routes pays nothing for
+    /// the rate.
+    pub fn moves_within_a_block(self) -> bool {
+        matches!(self, Self::Envelope(_) | Self::Lfo(_))
+    }
+}
+
 /// Any continuous patch parameter, addressed by stable ID (TDD §7.5). Minimum set:
 /// layer pitch/gain/pan, sample start offset, loop start/length, filter cutoff and
 /// resonance, every envelope stage time/level, every LFO rate/depth, unison detune.
@@ -187,6 +203,43 @@ impl ModDest {
 }
 
 impl ModMatrix {
+    /// Walks every live route once and hands `sink` each one's contribution
+    /// **in the destination's own unit** — `depth · source · via`, shaped,
+    /// times [`ModDest::full_scale`] — for `sink` to sum wherever it keeps
+    /// that destination.
+    ///
+    /// The per-step counterpart of [`evaluate`](Self::evaluate): one pass
+    /// over the routes for every destination at once, rather than one pass
+    /// per destination asked. `moving` picks the routes whose source or
+    /// `via` [moves within a block](ModSource::moves_within_a_block) (`true`)
+    /// or the rest (`false`), so a voice can sum the still ones once a block
+    /// and the moving ones every step.
+    pub fn accumulate(
+        &self,
+        moving: bool,
+        source_values: &dyn Fn(ModSource) -> f32,
+        sink: &mut dyn FnMut(ModDest, f32),
+    ) {
+        for route in &self.routes {
+            if route.bypass {
+                continue;
+            }
+            let route_moves = route.source.moves_within_a_block()
+                || route.via.is_some_and(ModSource::moves_within_a_block);
+            if route_moves != moving {
+                continue;
+            }
+            let value = source_values(route.source);
+            let value = if route.invert { 1.0 - value } else { value };
+            let shaped = route.curve.apply(value);
+            let via = route.via.map_or(1.0, source_values);
+            let amount = shaped * route.depth * via;
+            if amount != 0.0 {
+                sink(route.destination, amount * route.destination.full_scale());
+            }
+        }
+    }
+
     /// Sums every route targeting `dest` into a single modulation value for this
     /// voice's current source values. Called once per block per destination that
     /// has at least one route — never allocates (INVARIANT 1).
