@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Hyper"
+  },
+  "name": "pad",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Hyper": {
+        "voices": 3,
+        "detune_cents": 15.0,
+        "spread": 0.9,
+        "window_ms": 45.0,
+        "mix": 0.5
+      }
+    }
+  }
+}

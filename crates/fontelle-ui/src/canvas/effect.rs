@@ -737,6 +737,13 @@ fn display_of(spec: &fontelle_types::ParamSpec, value: f32) -> String {
             return (*name).to_string();
         }
     }
+    // A stepped count — voices, stages — is a whole number, and reads as
+    // one: "6", the word its chooser shows, rather than "6.00".
+    if matches!(spec.taper, fontelle_types::Taper::Stepped(_))
+        && spec.unit == fontelle_types::Unit::None
+    {
+        return format!("{value:.0}");
+    }
     format_value(value, spec.unit)
 }
 

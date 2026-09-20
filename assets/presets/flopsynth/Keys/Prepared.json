@@ -403,7 +403,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.3499999940395355,
+              "depth": 0.30000001192092896,
               "destination": {
                 "LayerGain": 4
               },

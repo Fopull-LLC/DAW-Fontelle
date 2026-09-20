@@ -430,7 +430,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.699999988079071,
+              "depth": 0.30000001192092896,
               "destination": {
                 "FilterCutoff": 0
               },

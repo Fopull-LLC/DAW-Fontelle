@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Width"
+  },
+  "name": "sides up",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Width": {
+        "width": 1.0,
+        "mono_below_hz": 20.0,
+        "mid_db": -6.0,
+        "side_db": 4.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

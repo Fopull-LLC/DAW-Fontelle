@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Shifter"
+  },
+  "name": "slow drift",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Shifter": {
+        "shift_hz": 0.0,
+        "fine_hz": 0.2,
+        "direction": "Up",
+        "feedback": 0.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

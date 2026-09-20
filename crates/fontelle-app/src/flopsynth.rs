@@ -436,6 +436,123 @@ fn effect_picture(config: &fontelle_types::EffectConfig) -> FlopsynthPicture {
                 midline: false,
             }
         }
+        // The seven of §4.5.
+        EffectConfig::Fold(fold) => {
+            let points = (0..STEPS)
+                .map(|i| {
+                    let x = i as f32 / (STEPS - 1) as f32 * 2.0 - 1.0;
+                    let y = fontelle_fx::fold_curve_at(x, fold);
+                    (y.clamp(-1.0, 1.0) + 1.0) / 2.0
+                })
+                .collect();
+            FlopsynthPicture::Curve {
+                points,
+                marks: Vec::new(),
+                midline: true,
+            }
+        }
+        EffectConfig::Phaser(phaser) => {
+            // The comb the chain makes with the dry signal at the sweep's
+            // middle, across 20 Hz to 20 kHz: `(1 + C)/2` for
+            // `C = Aᴺ/(1 − k·Aᴺ)`, each all-pass `(1 − jw)/(1 + jw)` —
+            // the same form `fontelle-dsp`'s phaser model draws.
+            let (lo, hi) = (20f32, 20_000f32);
+            let stages = phaser.stages.clamp(2, 12) as f32;
+            let k = phaser.feedback.clamp(-0.9, 0.9);
+            let centre = phaser.centre_hz.max(lo);
+            let points = (0..STEPS)
+                .map(|i| {
+                    let hz = lo * (hi / lo).powf(i as f32 / (STEPS - 1) as f32);
+                    let phase = -2.0 * (hz / centre).atan() * stages;
+                    let (ar, ai) = (phase.cos(), phase.sin());
+                    let (dr, di) = (1.0 - k * ar, -k * ai);
+                    let d = (dr * dr + di * di).max(1e-9);
+                    let (cr, ci) = ((ar * dr + ai * di) / d, (ai * dr - ar * di) / d);
+                    let (yr, yi) = ((1.0 + cr) * 0.5, ci * 0.5);
+                    ((yr * yr + yi * yi).sqrt() / (1.0 / (1.0 - k.abs()))).clamp(0.0, 1.0)
+                })
+                .collect();
+            FlopsynthPicture::Curve {
+                points,
+                marks: Vec::new(),
+                midline: false,
+            }
+        }
+        EffectConfig::Flanger(flanger) => {
+            // The comb of the centre delay with the dry signal, over the
+            // first sixteen teeth: `|(1 + z⁻ᴰ)/2| / |1 − f·z⁻ᴰ|`.
+            let f = flanger.feedback.clamp(-0.95, 0.95);
+            let points = (0..STEPS)
+                .map(|i| {
+                    // In turns of the delay: eight cycles across the picture.
+                    let turns = i as f32 / (STEPS - 1) as f32 * 8.0;
+                    let theta = -std::f32::consts::TAU * turns;
+                    let (zr, zi) = (theta.cos(), theta.sin());
+                    let feed = ((1.0 + zr) * 0.5).hypot(zi * 0.5);
+                    let loop_gain = (1.0 - f * zr).hypot(f * zi).max(1e-6);
+                    (feed / loop_gain * (1.0 - f.abs())).clamp(0.0, 1.0)
+                })
+                .collect();
+            FlopsynthPicture::Curve {
+                points,
+                marks: Vec::new(),
+                midline: false,
+            }
+        }
+        EffectConfig::Multiband(multiband) => {
+            // Each band's drive across the band, log, with a mark at each
+            // crossover.
+            let (lo, hi) = (20f32, 20_000f32);
+            let t_of = |hz: f32| (hz.clamp(lo, hi) / lo).ln() / (hi / lo).ln();
+            let points = (0..STEPS)
+                .map(|i| {
+                    let hz = lo * (hi / lo).powf(i as f32 / (STEPS - 1) as f32);
+                    let drive = if hz < multiband.low_hz {
+                        multiband.low_drive_db
+                    } else if hz < multiband.high_hz {
+                        multiband.mid_drive_db
+                    } else {
+                        multiband.high_drive_db
+                    };
+                    (drive / 40.0).clamp(0.0, 1.0)
+                })
+                .collect();
+            let marks = vec![
+                (
+                    t_of(multiband.low_hz),
+                    (multiband.low_drive_db / 40.0).clamp(0.0, 1.0),
+                ),
+                (
+                    t_of(multiband.high_hz),
+                    (multiband.high_drive_db / 40.0).clamp(0.0, 1.0),
+                ),
+            ];
+            FlopsynthPicture::Curve {
+                points,
+                marks,
+                midline: false,
+            }
+        }
+        EffectConfig::Hyper(hyper) => {
+            // A mark per copy at its detune, −100..100 cents across.
+            let voices = hyper.voices.clamp(1, 4) as usize;
+            let marks = (0..voices)
+                .map(|voice| {
+                    let across = if voices > 1 {
+                        voice as f32 / (voices - 1) as f32 * 2.0 - 1.0
+                    } else {
+                        1.0
+                    };
+                    let cents = across * hyper.detune_cents.clamp(0.0, 100.0);
+                    ((cents + 100.0) / 200.0, 1.0)
+                })
+                .collect();
+            FlopsynthPicture::Curve {
+                points: Vec::new(),
+                marks,
+                midline: true,
+            }
+        }
         _ => FlopsynthPicture::None,
     }
 }

@@ -975,3 +975,467 @@ impl UtilityConfig {
         config
     }
 }
+
+// ------------------------------------------- the seven of Flopsynth II §4.5
+//
+// Banks for the phaser, the flanger, the wavefolder, the frequency
+// shifter, hyper, the multiband distortion and width, from the day they
+// exist — `docs/flopsynth-next.md` §4.5. The same rules as the eight above:
+// a preset is a constructor, named by the job, held inside its knobs'
+// ranges by `tests/effect_presets.rs`.
+
+use crate::effect_next::{
+    FlangerConfig, FoldConfig, HyperConfig, MultibandConfig, PhaserConfig, ShiftDirection,
+    ShifterConfig, WidthConfig,
+};
+
+/// The phaser's bank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum PhaserPreset {
+    /// The pedal: four stages, a slow sweep, some feedback.
+    Classic,
+    /// Two stages, no feedback, barely moving: a slow shimmer on a pad.
+    SlowPad,
+    /// Twelve stages, deep and fed back: the whoosh.
+    Jet,
+    /// Fast and shallow on a keyboard: the vibe unit.
+    Vibe,
+    /// One sweep a bar, on the clock.
+    SyncedBar,
+    /// Negative feedback, the hollow comb, wide across the image.
+    HollowWide,
+    /// Twelve stages fixed high with no sweep: a static comb to sit a
+    /// sound in.
+    Comb,
+}
+
+impl PhaserPreset {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::SlowPad => "slow pad",
+            Self::Jet => "jet",
+            Self::Vibe => "vibe",
+            Self::SyncedBar => "synced bar",
+            Self::HollowWide => "hollow wide",
+            Self::Comb => "comb",
+        }
+    }
+
+    pub const ALL: [Self; 7] = [
+        Self::Classic,
+        Self::SlowPad,
+        Self::Jet,
+        Self::Vibe,
+        Self::SyncedBar,
+        Self::HollowWide,
+        Self::Comb,
+    ];
+}
+
+impl PhaserConfig {
+    pub fn from_preset(preset: PhaserPreset) -> Self {
+        use PhaserPreset::*;
+        // (stages, centre, depth, rate, sync, feedback, spread, mix)
+        let (stages, centre_hz, depth, rate_hz, sync, feedback, spread, mix) = match preset {
+            Classic => (4, 800.0, 0.6, 0.4, false, 0.4, 0.5, 0.5),
+            SlowPad => (2, 1_200.0, 0.4, 0.08, false, 0.0, 0.8, 0.5),
+            Jet => (12, 1_000.0, 1.0, 0.2, false, 0.85, 0.5, 0.5),
+            Vibe => (4, 1_500.0, 0.3, 4.5, false, 0.2, 0.0, 0.5),
+            SyncedBar => (6, 800.0, 0.7, 0.5, true, 0.3, 0.5, 0.5),
+            HollowWide => (8, 600.0, 0.6, 0.3, false, -0.7, 1.0, 0.5),
+            Comb => (12, 2_500.0, 0.0, 0.1, false, 0.6, 0.0, 0.5),
+        };
+        Self {
+            stages,
+            centre_hz,
+            depth,
+            rate_hz,
+            sync,
+            division: NoteDivision::Whole,
+            feedback,
+            spread,
+            mix,
+        }
+    }
+}
+
+/// The flanger's bank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum FlangerPreset {
+    /// The pedal.
+    Classic,
+    /// The tape flange: through zero, slow, full wet.
+    TapeThroughZero,
+    /// Negative feedback as deep as it goes: the hollow jet.
+    HollowJet,
+    /// Fast and shallow: a metallic shimmer.
+    Metallic,
+    /// One sweep a bar, on the clock.
+    SyncedBar,
+    /// A long centre, barely moving, wide: nearly a chorus.
+    Wide,
+    /// No sweep, high feedback: a comb tuned by the delay knob.
+    Resonator,
+}
+
+impl FlangerPreset {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::TapeThroughZero => "tape through zero",
+            Self::HollowJet => "hollow jet",
+            Self::Metallic => "metallic",
+            Self::SyncedBar => "synced bar",
+            Self::Wide => "wide",
+            Self::Resonator => "resonator",
+        }
+    }
+
+    pub const ALL: [Self; 7] = [
+        Self::Classic,
+        Self::TapeThroughZero,
+        Self::HollowJet,
+        Self::Metallic,
+        Self::SyncedBar,
+        Self::Wide,
+        Self::Resonator,
+    ];
+}
+
+impl FlangerConfig {
+    pub fn from_preset(preset: FlangerPreset) -> Self {
+        use FlangerPreset::*;
+        // (delay, depth, through_zero, rate, sync, feedback, spread, mix)
+        let (delay_ms, depth, through_zero, rate_hz, sync, feedback, spread, mix) = match preset {
+            Classic => (1.2, 0.8, false, 0.35, false, 0.6, 0.6, 0.5),
+            TapeThroughZero => (2.0, 1.0, true, 0.15, false, 0.0, 0.3, 1.0),
+            HollowJet => (0.8, 1.0, false, 0.12, false, -0.9, 0.5, 0.5),
+            Metallic => (0.3, 0.3, false, 3.0, false, 0.7, 0.0, 0.5),
+            SyncedBar => (1.5, 0.8, false, 0.5, true, 0.4, 0.5, 0.5),
+            Wide => (6.0, 0.2, false, 0.2, false, 0.1, 1.0, 0.5),
+            Resonator => (2.2, 0.0, false, 0.1, false, 0.9, 0.0, 0.6),
+        };
+        Self {
+            delay_ms,
+            depth,
+            through_zero,
+            rate_hz,
+            sync,
+            division: NoteDivision::Whole,
+            feedback,
+            spread,
+            mix,
+        }
+    }
+}
+
+/// The wavefolder's bank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum FoldPreset {
+    /// A little fold, soft corner: warmth with an edge.
+    Gentle,
+    /// The West Coast sound: a lot of fold, a crease of a corner.
+    WestCoast,
+    /// Biased hard, so the even harmonics come: a tube's kind of grit.
+    Asymmetric,
+    /// Everything: the buzz.
+    Buzz,
+    /// The soft corner all the way, driven: a sine's fold, round.
+    Round,
+    /// Parallel: driven hard, mostly dry.
+    Parallel,
+}
+
+impl FoldPreset {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Gentle => "gentle",
+            Self::WestCoast => "west coast",
+            Self::Asymmetric => "asymmetric",
+            Self::Buzz => "buzz",
+            Self::Round => "round",
+            Self::Parallel => "parallel",
+        }
+    }
+
+    pub const ALL: [Self; 6] = [
+        Self::Gentle,
+        Self::WestCoast,
+        Self::Asymmetric,
+        Self::Buzz,
+        Self::Round,
+        Self::Parallel,
+    ];
+}
+
+impl FoldConfig {
+    pub fn from_preset(preset: FoldPreset) -> Self {
+        use FoldPreset::*;
+        // (drive, symmetry, smooth, output, mix)
+        let (drive_db, symmetry, smooth, output_db, mix) = match preset {
+            Gentle => (6.0, 0.0, 0.7, -2.0, 1.0),
+            WestCoast => (18.0, 0.1, 0.1, -6.0, 1.0),
+            Asymmetric => (14.0, 0.6, 0.4, -4.0, 1.0),
+            Buzz => (32.0, 0.2, 0.0, -9.0, 1.0),
+            Round => (16.0, 0.0, 1.0, -4.0, 1.0),
+            Parallel => (24.0, 0.3, 0.3, -6.0, 0.35),
+        };
+        Self {
+            drive_db,
+            symmetry,
+            smooth,
+            output_db,
+            mix,
+        }
+    }
+}
+
+/// The frequency shifter's bank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ShifterPreset {
+    /// A few hertz up with feedback: the climbing barber-pole.
+    BarberPoleUp,
+    /// The same, falling.
+    BarberPoleDown,
+    /// A small shift, dry underneath: a detune that never lines up.
+    Detune,
+    /// Both sidebands, a few hundred hertz: the ring modulator.
+    RingMod,
+    /// A kilohertz down: the metallic wreck.
+    Wreck,
+    /// A fifth of a hertz, fully wet: the slowest phasing there is.
+    SlowDrift,
+}
+
+impl ShifterPreset {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::BarberPoleUp => "barber-pole up",
+            Self::BarberPoleDown => "barber-pole down",
+            Self::Detune => "detune",
+            Self::RingMod => "ring mod",
+            Self::Wreck => "wreck",
+            Self::SlowDrift => "slow drift",
+        }
+    }
+
+    pub const ALL: [Self; 6] = [
+        Self::BarberPoleUp,
+        Self::BarberPoleDown,
+        Self::Detune,
+        Self::RingMod,
+        Self::Wreck,
+        Self::SlowDrift,
+    ];
+}
+
+impl ShifterConfig {
+    pub fn from_preset(preset: ShifterPreset) -> Self {
+        use ShiftDirection::{Both, Down, Up};
+        use ShifterPreset::*;
+        // (shift, fine, direction, feedback, mix)
+        let (shift_hz, fine_hz, direction, feedback, mix) = match preset {
+            BarberPoleUp => (0.0, 4.0, Up, 0.8, 0.6),
+            BarberPoleDown => (0.0, 4.0, Down, 0.8, 0.6),
+            Detune => (0.0, 3.0, Up, 0.0, 0.5),
+            RingMod => (300.0, 0.0, Both, 0.0, 1.0),
+            Wreck => (-1_000.0, 0.0, Up, 0.3, 1.0),
+            SlowDrift => (0.0, 0.2, Up, 0.0, 1.0),
+        };
+        Self {
+            shift_hz,
+            fine_hz,
+            direction,
+            feedback,
+            mix,
+        }
+    }
+}
+
+/// Hyper's bank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum HyperPreset {
+    /// Two copies a little apart: a doubled take.
+    Double,
+    /// Four copies wide: the supersaw on anything.
+    Supersaw,
+    /// Four copies, a lot of detune, mostly wet: the hyperpop wash.
+    Hyperpop,
+    /// Two copies barely apart, mono: thickness with no image.
+    Thicken,
+    /// A short window: tight on a drum.
+    Tight,
+    /// A long window, three copies: smooth on a pad.
+    Pad,
+}
+
+impl HyperPreset {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Double => "double",
+            Self::Supersaw => "supersaw",
+            Self::Hyperpop => "hyperpop",
+            Self::Thicken => "thicken",
+            Self::Tight => "tight",
+            Self::Pad => "pad",
+        }
+    }
+
+    pub const ALL: [Self; 6] = [
+        Self::Double,
+        Self::Supersaw,
+        Self::Hyperpop,
+        Self::Thicken,
+        Self::Tight,
+        Self::Pad,
+    ];
+}
+
+impl HyperConfig {
+    pub fn from_preset(preset: HyperPreset) -> Self {
+        use HyperPreset::*;
+        // (voices, detune, spread, window, mix)
+        let (voices, detune_cents, spread, window_ms, mix) = match preset {
+            Double => (2, 10.0, 0.6, 20.0, 0.5),
+            Supersaw => (4, 25.0, 1.0, 20.0, 0.6),
+            Hyperpop => (4, 45.0, 1.0, 30.0, 0.8),
+            Thicken => (2, 6.0, 0.0, 20.0, 0.5),
+            Tight => (2, 12.0, 0.5, 6.0, 0.5),
+            Pad => (3, 15.0, 0.9, 45.0, 0.5),
+        };
+        Self {
+            voices,
+            detune_cents,
+            spread,
+            window_ms,
+            mix,
+        }
+    }
+}
+
+/// The multiband distortion's bank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum MultibandPreset {
+    /// The bass driven, the top left alone: weight without fizz.
+    BassWeight,
+    /// The top driven alone: air and grit on a vocal or a hat.
+    TopSizzle,
+    /// The mids driven: a guitar's honk.
+    MidHonk,
+    /// All three, a little each: the glue distortion.
+    Glue,
+    /// The low band clean, everything above it crushed: the bass kept.
+    KeepTheLow,
+    /// Everything driven hard: the wall.
+    Wall,
+}
+
+impl MultibandPreset {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::BassWeight => "bass weight",
+            Self::TopSizzle => "top sizzle",
+            Self::MidHonk => "mid honk",
+            Self::Glue => "glue",
+            Self::KeepTheLow => "keep the low",
+            Self::Wall => "wall",
+        }
+    }
+
+    pub const ALL: [Self; 6] = [
+        Self::BassWeight,
+        Self::TopSizzle,
+        Self::MidHonk,
+        Self::Glue,
+        Self::KeepTheLow,
+        Self::Wall,
+    ];
+}
+
+impl MultibandConfig {
+    pub fn from_preset(preset: MultibandPreset) -> Self {
+        use MultibandPreset::*;
+        // (low, high, low_drive, mid_drive, high_drive, output, mix)
+        let (low_hz, high_hz, low_drive_db, mid_drive_db, high_drive_db, output_db, mix) =
+            match preset {
+                BassWeight => (150.0, 3_000.0, 18.0, 0.0, 0.0, -3.0, 1.0),
+                TopSizzle => (200.0, 4_000.0, 0.0, 0.0, 20.0, -2.0, 1.0),
+                MidHonk => (300.0, 2_500.0, 0.0, 22.0, 0.0, -4.0, 1.0),
+                Glue => (200.0, 3_000.0, 6.0, 6.0, 6.0, -2.0, 1.0),
+                KeepTheLow => (120.0, 2_000.0, 0.0, 24.0, 24.0, -6.0, 1.0),
+                Wall => (200.0, 3_000.0, 30.0, 30.0, 30.0, -10.0, 1.0),
+            };
+        Self {
+            low_hz,
+            high_hz,
+            low_drive_db,
+            mid_drive_db,
+            high_drive_db,
+            output_db,
+            mix,
+        }
+    }
+}
+
+/// Width's bank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum WidthPreset {
+    /// A little wider, with the bass kept in the middle.
+    Wider,
+    /// As wide as it goes.
+    Widest,
+    /// Narrower: a sound pulled towards the middle.
+    Narrow,
+    /// Mono.
+    Mono,
+    /// The bass in the middle and nothing else touched: the mastering
+    /// safety.
+    BassMono,
+    /// The middle down and the sides up: a karaoke-ish scoop.
+    SidesUp,
+}
+
+impl WidthPreset {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Wider => "wider",
+            Self::Widest => "widest",
+            Self::Narrow => "narrow",
+            Self::Mono => "mono",
+            Self::BassMono => "bass mono",
+            Self::SidesUp => "sides up",
+        }
+    }
+
+    pub const ALL: [Self; 6] = [
+        Self::Wider,
+        Self::Widest,
+        Self::Narrow,
+        Self::Mono,
+        Self::BassMono,
+        Self::SidesUp,
+    ];
+}
+
+impl WidthConfig {
+    pub fn from_preset(preset: WidthPreset) -> Self {
+        use WidthPreset::*;
+        // (width, mono_below, mid, side, mix)
+        let (width, mono_below_hz, mid_db, side_db, mix) = match preset {
+            Wider => (1.4, 120.0, 0.0, 0.0, 1.0),
+            Widest => (2.0, 150.0, 0.0, 0.0, 1.0),
+            Narrow => (0.5, 20.0, 0.0, 0.0, 1.0),
+            Mono => (0.0, 20.0, 0.0, 0.0, 1.0),
+            BassMono => (1.0, 120.0, 0.0, 0.0, 1.0),
+            SidesUp => (1.0, 20.0, -6.0, 4.0, 1.0),
+        };
+        Self {
+            width,
+            mono_below_hz,
+            mid_db,
+            side_db,
+            mix,
+        }
+    }
+}

@@ -12,6 +12,13 @@
 //! audio thread rebuilding anything underneath the sound, and it is the split
 //! the limiter already had before there was a chain to put it in.
 
+use crate::effect_next::{
+    FLANGER_PARAMS, FLANGER_SECTIONS, FOLD_PARAMS, FOLD_SECTIONS, FlangerConfig, FoldConfig,
+    HYPER_PARAMS, HYPER_SECTIONS, HyperConfig, MULTIBAND_PARAMS, MULTIBAND_SECTIONS,
+    MultibandConfig, PHASER_PARAMS, PHASER_SECTIONS, PhaserConfig, SHIFTER_PARAMS,
+    SHIFTER_SECTIONS, ShifterConfig, WIDTH_PARAMS, WIDTH_SECTIONS, WidthConfig,
+};
+
 /// Which effect an insert slot holds.
 ///
 /// A closed enum rather than a plugin registry: v1's effects are the ones in
@@ -34,6 +41,15 @@ pub enum EffectKind {
     Delay,
     Reverb,
     Tune,
+    // The seven of Flopsynth II (`docs/flopsynth-next.md` §4.5), configs in
+    // `effect_next.rs`.
+    Phaser,
+    Flanger,
+    Fold,
+    Shifter,
+    Hyper,
+    Multiband,
+    Width,
 }
 
 impl EffectKind {
@@ -53,6 +69,13 @@ impl EffectKind {
             Self::Delay => "Delay",
             Self::Reverb => "Reverb",
             Self::Tune => "Tune",
+            Self::Phaser => "Phaser",
+            Self::Flanger => "Flanger",
+            Self::Fold => "Fold",
+            Self::Shifter => "Shifter",
+            Self::Hyper => "Hyper",
+            Self::Multiband => "Multiband",
+            Self::Width => "Width",
         }
     }
 
@@ -70,7 +93,10 @@ impl EffectKind {
     /// it: the constructor's default, the spec table's, and anything later
     /// that wants to group the menu.
     pub fn is_time_based(self) -> bool {
-        matches!(self, Self::Chorus | Self::Delay | Self::Reverb)
+        matches!(
+            self,
+            Self::Chorus | Self::Delay | Self::Reverb | Self::Phaser | Self::Flanger | Self::Hyper
+        )
     }
 
     /// Whether this effect has a **detector** — something that listens to a
@@ -110,8 +136,9 @@ impl EffectKind {
     ///
     /// The plumbing tool first, then the processors, then the two that sit
     /// under the track.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 20] = [
         Self::Utility,
+        Self::Width,
         Self::Eq,
         Self::Filter,
         Self::Compressor,
@@ -120,13 +147,19 @@ impl EffectKind {
         Self::Limiter,
         Self::Gate,
         Self::Distortion,
+        Self::Multiband,
+        Self::Fold,
         Self::Bitcrush,
         Self::Soften,
+        Self::Shifter,
         // The corrector sits with the processors and after them, because it
         // is the newest and INVARIANT 7 says a menu's order may move but a
         // preset folder's name may not.
         Self::Tune,
         Self::Chorus,
+        Self::Flanger,
+        Self::Phaser,
+        Self::Hyper,
         Self::Delay,
         Self::Reverb,
     ];
@@ -153,6 +186,13 @@ pub enum EffectConfig {
     Delay(DelayConfig),
     Reverb(ReverbConfig),
     Tune(TuneConfig),
+    Phaser(PhaserConfig),
+    Flanger(FlangerConfig),
+    Fold(FoldConfig),
+    Shifter(ShifterConfig),
+    Hyper(HyperConfig),
+    Multiband(MultibandConfig),
+    Width(WidthConfig),
 }
 
 impl EffectConfig {
@@ -179,6 +219,13 @@ impl EffectConfig {
             Self::Delay(_) => DELAY_PARAMS.as_slice(),
             Self::Reverb(_) => REVERB_PARAMS.as_slice(),
             Self::Tune(_) => TUNE_PARAMS.as_slice(),
+            Self::Phaser(_) => PHASER_PARAMS.as_slice(),
+            Self::Flanger(_) => FLANGER_PARAMS.as_slice(),
+            Self::Fold(_) => FOLD_PARAMS.as_slice(),
+            Self::Shifter(_) => SHIFTER_PARAMS.as_slice(),
+            Self::Hyper(_) => HYPER_PARAMS.as_slice(),
+            Self::Multiband(_) => MULTIBAND_PARAMS.as_slice(),
+            Self::Width(_) => WIDTH_PARAMS.as_slice(),
         }
     }
 
@@ -206,6 +253,13 @@ impl EffectConfig {
             Self::Delay(_) => DELAY_SECTIONS.as_slice(),
             Self::Reverb(_) => REVERB_SECTIONS.as_slice(),
             Self::Tune(_) => TUNE_SECTIONS.as_slice(),
+            Self::Phaser(_) => PHASER_SECTIONS.as_slice(),
+            Self::Flanger(_) => FLANGER_SECTIONS.as_slice(),
+            Self::Fold(_) => FOLD_SECTIONS.as_slice(),
+            Self::Shifter(_) => SHIFTER_SECTIONS.as_slice(),
+            Self::Hyper(_) => HYPER_SECTIONS.as_slice(),
+            Self::Multiband(_) => MULTIBAND_SECTIONS.as_slice(),
+            Self::Width(_) => WIDTH_SECTIONS.as_slice(),
         }
     }
 
@@ -247,6 +301,13 @@ impl EffectConfig {
             Self::Delay(delay) => delay.get(id),
             Self::Reverb(reverb) => reverb.get(id),
             Self::Tune(tune) => tune.get(id),
+            Self::Phaser(phaser) => phaser.get(id),
+            Self::Flanger(flanger) => flanger.get(id),
+            Self::Fold(fold) => fold.get(id),
+            Self::Shifter(shifter) => shifter.get(id),
+            Self::Hyper(hyper) => hyper.get(id),
+            Self::Multiband(multiband) => multiband.get(id),
+            Self::Width(width) => width.get(id),
         }
     }
 
@@ -270,6 +331,13 @@ impl EffectConfig {
             Self::Delay(delay) => delay.set(id, value),
             Self::Reverb(reverb) => reverb.set(id, value),
             Self::Tune(tune) => tune.set(id, value),
+            Self::Phaser(phaser) => phaser.set(id, value),
+            Self::Flanger(flanger) => flanger.set(id, value),
+            Self::Fold(fold) => fold.set(id, value),
+            Self::Shifter(shifter) => shifter.set(id, value),
+            Self::Hyper(hyper) => hyper.set(id, value),
+            Self::Multiband(multiband) => multiband.set(id, value),
+            Self::Width(width) => width.set(id, value),
         }
     }
 
@@ -299,6 +367,13 @@ impl EffectConfig {
             Self::Delay(_) => EffectKind::Delay,
             Self::Reverb(_) => EffectKind::Reverb,
             Self::Tune(_) => EffectKind::Tune,
+            Self::Phaser(_) => EffectKind::Phaser,
+            Self::Flanger(_) => EffectKind::Flanger,
+            Self::Fold(_) => EffectKind::Fold,
+            Self::Shifter(_) => EffectKind::Shifter,
+            Self::Hyper(_) => EffectKind::Hyper,
+            Self::Multiband(_) => EffectKind::Multiband,
+            Self::Width(_) => EffectKind::Width,
         }
     }
 
@@ -324,6 +399,13 @@ impl EffectConfig {
             Self::Delay(delay) => delay.mix,
             Self::Reverb(reverb) => reverb.mix,
             Self::Tune(tune) => tune.mix,
+            Self::Phaser(phaser) => phaser.mix,
+            Self::Flanger(flanger) => flanger.mix,
+            Self::Fold(fold) => fold.mix,
+            Self::Shifter(shifter) => shifter.mix,
+            Self::Hyper(hyper) => hyper.mix,
+            Self::Multiband(multiband) => multiband.mix,
+            Self::Width(width) => width.mix,
         }
     }
 
@@ -384,6 +466,13 @@ impl EffectConfig {
             EffectKind::Delay => Self::Delay(DelayConfig::new()),
             EffectKind::Reverb => Self::Reverb(ReverbConfig::new()),
             EffectKind::Tune => Self::Tune(TuneConfig::new()),
+            EffectKind::Phaser => Self::Phaser(PhaserConfig::new()),
+            EffectKind::Flanger => Self::Flanger(FlangerConfig::new()),
+            EffectKind::Fold => Self::Fold(FoldConfig::new()),
+            EffectKind::Shifter => Self::Shifter(ShifterConfig::new()),
+            EffectKind::Hyper => Self::Hyper(HyperConfig::new()),
+            EffectKind::Multiband => Self::Multiband(MultibandConfig::new()),
+            EffectKind::Width => Self::Width(WidthConfig::new()),
         }
     }
 }
@@ -551,7 +640,7 @@ static UTILITY_SECTIONS: [crate::ParamSection; 4] = [
 
 /// An off/on switch, drawn as one and automated as one — see
 /// [`crate::Unit::Switch`].
-const fn switch_param(id: &'static str, name: &'static str) -> crate::ParamSpec {
+pub(crate) const fn switch_param(id: &'static str, name: &'static str) -> crate::ParamSpec {
     crate::ParamSpec {
         id,
         name,
@@ -737,7 +826,7 @@ static EQ_PARAMS: [crate::ParamSpec; 49] = with_mix(&EQ_BAND_PARAMS, ALL_WET);
 /// A `const fn` rather than a `Vec` built at startup, because the ids in a
 /// spec are `&'static str` by INVARIANT 7 and the table is a `static` every
 /// effect reads on the audio thread.
-const fn with_mix<const N: usize, const M: usize>(
+pub(crate) const fn with_mix<const N: usize, const M: usize>(
     params: &[crate::ParamSpec; N],
     default_mix: f32,
 ) -> [crate::ParamSpec; M] {
@@ -2671,7 +2760,11 @@ static DISTORTION_SECTIONS: [crate::ParamSection; 3] = [
 ];
 
 /// A 0–100 % knob at `default`, for the amounts.
-const fn percent_param(id: &'static str, name: &'static str, default: f32) -> crate::ParamSpec {
+pub(crate) const fn percent_param(
+    id: &'static str,
+    name: &'static str,
+    default: f32,
+) -> crate::ParamSpec {
     crate::ParamSpec {
         id,
         name,
@@ -3853,7 +3946,7 @@ impl NoteDivision {
 
 /// The chooser's positions, in `NoteDivision::ALL`'s order — written out for
 /// the reason [`BAND_TYPES`] is.
-static DIVISIONS: [&str; 14] = [
+pub(crate) static DIVISIONS: [&str; 14] = [
     "1/1", "1/2.", "1/2", "1/4.", "1/2T", "1/4", "1/8.", "1/4T", "1/8", "1/16.", "1/8T", "1/16",
     "1/16T", "1/32",
 ];

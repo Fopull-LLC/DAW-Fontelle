@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Phaser"
+  },
+  "name": "comb",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Phaser": {
+        "stages": 12,
+        "centre_hz": 2500.0,
+        "depth": 0.0,
+        "rate_hz": 0.1,
+        "sync": false,
+        "division": "Whole",
+        "feedback": 0.6,
+        "spread": 0.0,
+        "mix": 0.5
+      }
+    }
+  }
+}

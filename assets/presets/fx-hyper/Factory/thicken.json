@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Hyper"
+  },
+  "name": "thicken",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Hyper": {
+        "voices": 2,
+        "detune_cents": 6.0,
+        "spread": 0.0,
+        "window_ms": 20.0,
+        "mix": 0.5
+      }
+    }
+  }
+}

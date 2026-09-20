@@ -463,7 +463,7 @@
             }
           ]
         },
-        "output_db": 4.599999904632568,
+        "output_db": 0.6000000238418579,
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

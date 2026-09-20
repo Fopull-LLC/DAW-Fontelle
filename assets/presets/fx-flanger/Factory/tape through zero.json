@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Flanger"
+  },
+  "name": "tape through zero",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Flanger": {
+        "delay_ms": 2.0,
+        "depth": 1.0,
+        "through_zero": true,
+        "rate_hz": 0.15,
+        "sync": false,
+        "division": "Whole",
+        "feedback": 0.0,
+        "spread": 0.3,
+        "mix": 1.0
+      }
+    }
+  }
+}

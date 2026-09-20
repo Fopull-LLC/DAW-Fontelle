@@ -29,9 +29,12 @@
 use fontelle_types::{
     BitcrushConfig, BitcrushPreset, ChorusConfig, ChorusPreset, CompressorConfig, CompressorPreset,
     DelayConfig, DelayPreset, DeviceKind, DistortionConfig, DistortionPreset, EffectConfig,
-    EqConfig, EqPreset, FilterConfig, FilterPreset, GateConfig, GatePreset, InstrumentKind,
-    LimiterConfig, LimiterPreset, Preset, PresetPayload, ReverbConfig, ReverbPreset, SoftenConfig,
+    EqConfig, EqPreset, FilterConfig, FilterPreset, FlangerConfig, FlangerPreset, FoldConfig,
+    FoldPreset, GateConfig, GatePreset, HyperConfig, HyperPreset, InstrumentKind, LimiterConfig,
+    LimiterPreset, MultibandConfig, MultibandPreset, PhaserConfig, PhaserPreset, Preset,
+    PresetPayload, ReverbConfig, ReverbPreset, ShifterConfig, ShifterPreset, SoftenConfig,
     SoftenPreset, TrackChain, TrackPreset, TuneConfig, TunePreset, UtilityConfig, UtilityPreset,
+    WidthConfig, WidthPreset,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -154,6 +157,50 @@ fn effect_presets() -> Vec<Preset> {
         out.push(effect_preset(
             preset.label(),
             EffectConfig::Utility(UtilityConfig::from_preset(preset)),
+        ));
+    }
+    // The seven of `docs/flopsynth-next.md` §4.5, with banks from the day
+    // they exist.
+    for preset in PhaserPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Phaser(PhaserConfig::from_preset(preset)),
+        ));
+    }
+    for preset in FlangerPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Flanger(FlangerConfig::from_preset(preset)),
+        ));
+    }
+    for preset in FoldPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Fold(FoldConfig::from_preset(preset)),
+        ));
+    }
+    for preset in ShifterPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Shifter(ShifterConfig::from_preset(preset)),
+        ));
+    }
+    for preset in HyperPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Hyper(HyperConfig::from_preset(preset)),
+        ));
+    }
+    for preset in MultibandPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Multiband(MultibandConfig::from_preset(preset)),
+        ));
+    }
+    for preset in WidthPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Width(WidthConfig::from_preset(preset)),
         ));
     }
     // The sixteen **track** chains — a whole mixer strip rather than one

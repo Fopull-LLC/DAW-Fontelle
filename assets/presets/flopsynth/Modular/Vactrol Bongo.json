@@ -14,11 +14,11 @@
             "attack_s": 0.0010000000474974513,
             "attack_shape": 0.0,
             "curve": "Linear",
-            "decay_s": 0.17000000178813934,
+            "decay_s": 0.2199999988079071,
             "decay_shape": -0.6000000238418579,
             "delay_s": 0.0,
             "hold_s": 0.0,
-            "release_s": 0.05950000137090683,
+            "release_s": 0.07699999958276749,
             "release_shape": -0.6000000238418579,
             "sustain_level": 0.0
           },

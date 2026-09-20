@@ -243,3 +243,115 @@ fn the_utility_has_a_bank() {
         .collect();
     a_family_of_presets(EffectKind::Utility, &configs, 8);
 }
+
+// ------------------------------------------- the seven of Flopsynth II §4.5
+//
+// Phaser, flanger, wavefolder, frequency shifter, hyper, multiband
+// distortion and width (`docs/flopsynth-next.md` §4.5). Each ships a bank
+// from the day it exists, held to the same rules as the eight above.
+
+macro_rules! bank_of {
+    ($preset:ident, $config:ident, $variant:ident) => {
+        fontelle_types::$preset::ALL
+            .iter()
+            .map(|p| {
+                (
+                    p.label().to_string(),
+                    EffectConfig::$variant(fontelle_types::$config::from_preset(*p)),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+}
+
+#[test]
+fn the_phaser_has_a_bank() {
+    let configs = bank_of!(PhaserPreset, PhaserConfig, Phaser);
+    a_family_of_presets(EffectKind::Phaser, &configs, 6);
+    // Both ends of the stage count, and a synced one.
+    let stages: Vec<u32> = configs
+        .iter()
+        .filter_map(|(_, c)| match c {
+            EffectConfig::Phaser(p) => Some(p.stages),
+            _ => None,
+        })
+        .collect();
+    assert!(stages.iter().any(|s| *s <= 4) && stages.iter().any(|s| *s >= 10));
+    assert!(
+        configs
+            .iter()
+            .any(|(_, c)| matches!(c, EffectConfig::Phaser(p) if p.sync))
+    );
+}
+
+#[test]
+fn the_flanger_has_a_bank() {
+    let configs = bank_of!(FlangerPreset, FlangerConfig, Flanger);
+    a_family_of_presets(EffectKind::Flanger, &configs, 6);
+    // The hollow one (negative feedback) and the through-zero one.
+    assert!(
+        configs
+            .iter()
+            .any(|(_, c)| matches!(c, EffectConfig::Flanger(f) if f.feedback < -0.5))
+    );
+    assert!(
+        configs
+            .iter()
+            .any(|(_, c)| matches!(c, EffectConfig::Flanger(f) if f.through_zero))
+    );
+}
+
+#[test]
+fn the_fold_has_a_bank() {
+    let configs = bank_of!(FoldPreset, FoldConfig, Fold);
+    a_family_of_presets(EffectKind::Fold, &configs, 6);
+    assert!(
+        configs
+            .iter()
+            .any(|(_, c)| matches!(c, EffectConfig::Fold(f) if f.symmetry.abs() > 0.3))
+    );
+}
+
+#[test]
+fn the_shifter_has_a_bank() {
+    let configs = bank_of!(ShifterPreset, ShifterConfig, Shifter);
+    a_family_of_presets(EffectKind::Shifter, &configs, 6);
+    // A barber-pole (feedback with a small shift) and a down one.
+    assert!(
+        configs
+            .iter()
+            .any(|(_, c)| matches!(c, EffectConfig::Shifter(s) if s.feedback > 0.5))
+    );
+    assert!(configs.iter().any(|(_, c)| matches!(c, EffectConfig::Shifter(s) if s.direction == fontelle_types::ShiftDirection::Down)));
+}
+
+#[test]
+fn the_hyper_has_a_bank() {
+    let configs = bank_of!(HyperPreset, HyperConfig, Hyper);
+    a_family_of_presets(EffectKind::Hyper, &configs, 6);
+    assert!(
+        configs
+            .iter()
+            .any(|(_, c)| matches!(c, EffectConfig::Hyper(h) if h.voices == 4))
+    );
+}
+
+#[test]
+fn the_multiband_has_a_bank() {
+    let configs = bank_of!(MultibandPreset, MultibandConfig, Multiband);
+    a_family_of_presets(EffectKind::Multiband, &configs, 6);
+    // One that drives the low band alone, and one the top alone.
+    assert!(configs.iter().any(|(_, c)| matches!(c, EffectConfig::Multiband(m) if m.low_drive_db > 6.0 && m.high_drive_db < 1.0)));
+    assert!(configs.iter().any(|(_, c)| matches!(c, EffectConfig::Multiband(m) if m.high_drive_db > 6.0 && m.low_drive_db < 1.0)));
+}
+
+#[test]
+fn the_width_has_a_bank() {
+    let configs = bank_of!(WidthPreset, WidthConfig, Width);
+    a_family_of_presets(EffectKind::Width, &configs, 6);
+    assert!(
+        configs
+            .iter()
+            .any(|(_, c)| matches!(c, EffectConfig::Width(w) if w.mono_below_hz > 60.0))
+    );
+}

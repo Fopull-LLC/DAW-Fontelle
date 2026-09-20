@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Phaser"
+  },
+  "name": "slow pad",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Phaser": {
+        "stages": 2,
+        "centre_hz": 1200.0,
+        "depth": 0.4,
+        "rate_hz": 0.08,
+        "sync": false,
+        "division": "Whole",
+        "feedback": 0.0,
+        "spread": 0.8,
+        "mix": 0.5
+      }
+    }
+  }
+}

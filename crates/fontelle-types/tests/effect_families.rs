@@ -1532,3 +1532,205 @@ fn the_latency_a_config_reports_matches_the_table_in_the_plan() {
     let config = TuneConfig::new();
     assert_eq!(config.latency_samples(96_000.0), 2 * 960 + 64);
 }
+
+// ------------------------------------------- the seven of Flopsynth II §4.5
+
+/// The seven kinds `docs/flopsynth-next.md` §4.5 adds are in the menu, and
+/// the three that put copies *under* the track open half wet, like the
+/// chorus and for its reason.
+#[test]
+fn the_seven_new_kinds_are_listed_and_the_modulated_ones_open_part_dry() {
+    for kind in [
+        EffectKind::Phaser,
+        EffectKind::Flanger,
+        EffectKind::Fold,
+        EffectKind::Shifter,
+        EffectKind::Hyper,
+        EffectKind::Multiband,
+        EffectKind::Width,
+    ] {
+        assert!(
+            EffectKind::ALL.contains(&kind),
+            "{kind:?} is not in the menu"
+        );
+        assert!(!kind.label().is_empty());
+        assert!(!kind.takes_key() && !kind.takes_notes());
+    }
+    for kind in [EffectKind::Phaser, EffectKind::Flanger, EffectKind::Hyper] {
+        assert!(kind.is_time_based(), "{kind:?} puts copies under the track");
+    }
+    for kind in [
+        EffectKind::Fold,
+        EffectKind::Shifter,
+        EffectKind::Multiband,
+        EffectKind::Width,
+    ] {
+        assert!(!kind.is_time_based(), "{kind:?} replaces the signal");
+    }
+}
+
+#[test]
+fn the_phaser_is_sweep_then_rate_then_output() {
+    let config = EffectConfig::new(EffectKind::Phaser);
+    let names: Vec<&str> = config.sections().iter().map(|s| s.name).collect();
+    assert_eq!(names, ["Sweep", "Rate", "Output"]);
+    let ids: Vec<&str> = config.specs().iter().map(|spec| spec.id).collect();
+    assert_eq!(
+        ids,
+        [
+            "stages", "centre", "depth", //
+            "rate", "sync", "division", //
+            "feedback", "spread", "mix",
+        ]
+    );
+    let stages = spec_of(&config, "stages");
+    assert_eq!((stages.min, stages.max), (2.0, 12.0));
+    assert!(matches!(stages.taper, Taper::Stepped(_)));
+    let centre = spec_of(&config, "centre");
+    assert_eq!(
+        (centre.unit, centre.taper),
+        (Unit::Hertz, Taper::Logarithmic)
+    );
+    // Signed feedback, like the chorus's.
+    let feedback = spec_of(&config, "feedback");
+    assert!(feedback.min < 0.0 && feedback.max > 0.0);
+    // Sync takes the rate from the song.
+    let mut synced = fontelle_types::PhaserConfig::new();
+    synced.sync = true;
+    synced.division = fontelle_types::NoteDivision::Whole;
+    let at_120 = synced.effective_rate_hz(120.0);
+    assert!(
+        (at_120 - 0.5).abs() < 1e-3,
+        "a whole note at 120 is 0.5 Hz: {at_120}"
+    );
+}
+
+#[test]
+fn the_flanger_is_sweep_then_rate_then_output() {
+    let config = EffectConfig::new(EffectKind::Flanger);
+    let names: Vec<&str> = config.sections().iter().map(|s| s.name).collect();
+    assert_eq!(names, ["Sweep", "Rate", "Output"]);
+    let ids: Vec<&str> = config.specs().iter().map(|spec| spec.id).collect();
+    assert_eq!(
+        ids,
+        [
+            "delay",
+            "depth",
+            "through_zero", //
+            "rate",
+            "sync",
+            "division", //
+            "feedback",
+            "spread",
+            "mix",
+        ]
+    );
+    let delay = spec_of(&config, "delay");
+    assert_eq!(delay.unit, Unit::Milliseconds);
+    assert!(
+        delay.min <= 0.1 && delay.max >= 10.0,
+        "0.1 to 10 ms: {delay:?}"
+    );
+    assert_eq!(spec_of(&config, "through_zero").unit, Unit::Switch);
+}
+
+#[test]
+fn the_fold_the_shifter_the_hyper_and_the_width_are_one_grid_each() {
+    for (kind, ids) in [
+        (
+            EffectKind::Fold,
+            vec!["drive", "symmetry", "smooth", "output", "mix"],
+        ),
+        (
+            EffectKind::Shifter,
+            vec!["shift", "fine", "direction", "feedback", "mix"],
+        ),
+        (
+            EffectKind::Hyper,
+            vec!["voices", "detune", "spread", "window", "mix"],
+        ),
+        (
+            EffectKind::Width,
+            vec!["width", "mono_below", "mid", "side", "mix"],
+        ),
+    ] {
+        let config = EffectConfig::new(kind);
+        assert_eq!(config.sections().len(), 1, "{kind:?}");
+        let got: Vec<&str> = config.specs().iter().map(|spec| spec.id).collect();
+        assert_eq!(got, ids, "{kind:?}");
+    }
+    let shifter = EffectConfig::new(EffectKind::Shifter);
+    let shift = spec_of(&shifter, "shift");
+    assert_eq!(
+        (shift.min, shift.max, shift.unit),
+        (-5_000.0, 5_000.0, Unit::Hertz)
+    );
+    let direction = spec_of(&shifter, "direction");
+    assert_eq!(direction.positions, ["up", "down", "both"]);
+    let width = EffectConfig::new(EffectKind::Width);
+    let w = spec_of(&width, "width");
+    assert_eq!((w.min, w.max, w.unit), (0.0, 200.0, Unit::Percent));
+    let hyper = EffectConfig::new(EffectKind::Hyper);
+    let voices = spec_of(&hyper, "voices");
+    assert_eq!((voices.min, voices.max), (1.0, 4.0));
+}
+
+#[test]
+fn the_multiband_is_bands_then_drive_then_output() {
+    let config = EffectConfig::new(EffectKind::Multiband);
+    let names: Vec<&str> = config.sections().iter().map(|s| s.name).collect();
+    assert_eq!(names, ["Bands", "Drive", "Output"]);
+    let ids: Vec<&str> = config.specs().iter().map(|spec| spec.id).collect();
+    assert_eq!(
+        ids,
+        [
+            "low",
+            "high", //
+            "low_drive",
+            "mid_drive",
+            "high_drive", //
+            "output",
+            "mix",
+        ]
+    );
+    for id in ["low_drive", "mid_drive", "high_drive"] {
+        let spec = spec_of(&config, id);
+        assert_eq!(
+            (spec.min, spec.unit, spec.default),
+            (0.0, Unit::Decibels, 0.0)
+        );
+    }
+}
+
+/// Every one of the seven opens as something a person can hear through:
+/// the processors as a wire in their own controls, the modulated ones at
+/// the chorus's half.
+#[test]
+fn a_fresh_one_of_the_seven_round_trips_through_json() {
+    for kind in [
+        EffectKind::Phaser,
+        EffectKind::Flanger,
+        EffectKind::Fold,
+        EffectKind::Shifter,
+        EffectKind::Hyper,
+        EffectKind::Multiband,
+        EffectKind::Width,
+    ] {
+        let config = EffectConfig::new(kind);
+        let text = serde_json::to_string(&config).unwrap();
+        let back: EffectConfig = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, config, "{kind:?}");
+        // And every parameter reads back what it was set to.
+        let mut moved = config;
+        for spec in config.specs() {
+            moved.set(spec.id, spec.max);
+            let got = moved.get(spec.id).unwrap();
+            assert!(
+                (got - spec.max).abs() < 1e-3,
+                "{kind:?} {}: set {} read {got}",
+                spec.id,
+                spec.max
+            );
+        }
+    }
+}

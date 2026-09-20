@@ -847,6 +847,13 @@ enum EffectState {
     Delay(fontelle_fx::Delay),
     Reverb(fontelle_fx::FdnReverb),
     Tune(fontelle_fx::Tune),
+    Phaser(fontelle_fx::Phaser),
+    Flanger(fontelle_fx::Flanger),
+    Fold(fontelle_fx::Fold),
+    Shifter(fontelle_fx::Shifter),
+    Hyper(fontelle_fx::Hyper),
+    Multiband(fontelle_fx::Multiband),
+    Width(fontelle_fx::Width),
 }
 
 impl EffectState {
@@ -893,6 +900,21 @@ impl EffectState {
                 EffectState::Reverb(fontelle_fx::FdnReverb::new())
             }
             fontelle_types::EffectConfig::Tune(_) => EffectState::Tune(fontelle_fx::Tune::new()),
+            fontelle_types::EffectConfig::Phaser(_) => {
+                EffectState::Phaser(fontelle_fx::Phaser::new())
+            }
+            fontelle_types::EffectConfig::Flanger(_) => {
+                EffectState::Flanger(fontelle_fx::Flanger::new())
+            }
+            fontelle_types::EffectConfig::Fold(_) => EffectState::Fold(fontelle_fx::Fold::new()),
+            fontelle_types::EffectConfig::Shifter(_) => {
+                EffectState::Shifter(fontelle_fx::Shifter::new())
+            }
+            fontelle_types::EffectConfig::Hyper(_) => EffectState::Hyper(fontelle_fx::Hyper::new()),
+            fontelle_types::EffectConfig::Multiband(_) => {
+                EffectState::Multiband(fontelle_fx::Multiband::new())
+            }
+            fontelle_types::EffectConfig::Width(_) => EffectState::Width(fontelle_fx::Width::new()),
         }
     }
 
@@ -924,6 +946,13 @@ impl EffectState {
             Self::Chorus(chorus) => chorus.prepare(sample_rate),
             Self::Delay(delay) => delay.prepare(sample_rate),
             Self::Reverb(reverb) => reverb.prepare(sample_rate),
+            Self::Phaser(phaser) => phaser.prepare(sample_rate),
+            Self::Flanger(flanger) => flanger.prepare(sample_rate),
+            Self::Fold(fold) => fold.prepare(sample_rate),
+            Self::Shifter(shifter) => shifter.prepare(sample_rate),
+            Self::Hyper(hyper) => hyper.prepare(sample_rate),
+            Self::Multiband(multiband) => multiband.prepare(sample_rate),
+            Self::Width(width) => width.prepare(sample_rate),
         }
     }
 
@@ -988,6 +1017,30 @@ impl EffectState {
             (Self::Reverb(reverb), fontelle_types::EffectConfig::Reverb(config)) => {
                 reverb.process(outputs, config);
             }
+            // The seven of `docs/flopsynth-next.md` §4.5. The three that
+            // put copies under the track write the copies alone, like the
+            // chorus.
+            (Self::Phaser(phaser), fontelle_types::EffectConfig::Phaser(config)) => {
+                phaser.process(outputs, config, bpm);
+            }
+            (Self::Flanger(flanger), fontelle_types::EffectConfig::Flanger(config)) => {
+                flanger.process(outputs, config, bpm);
+            }
+            (Self::Fold(fold), fontelle_types::EffectConfig::Fold(config)) => {
+                fold.process(outputs, config);
+            }
+            (Self::Shifter(shifter), fontelle_types::EffectConfig::Shifter(config)) => {
+                shifter.process(outputs, config);
+            }
+            (Self::Hyper(hyper), fontelle_types::EffectConfig::Hyper(config)) => {
+                hyper.process(outputs, config);
+            }
+            (Self::Multiband(multiband), fontelle_types::EffectConfig::Multiband(config)) => {
+                multiband.process(outputs, config);
+            }
+            (Self::Width(width), fontelle_types::EffectConfig::Width(config)) => {
+                width.process(outputs, config);
+            }
             // A config of a different kind than the state cannot arrive: the
             // chain rebuilds the graph when a slot's *kind* changes, and only
             // tunes it in place when parameters move.
@@ -1015,6 +1068,13 @@ impl EffectState {
             Self::Delay(delay) => delay.reset(),
             Self::Reverb(reverb) => reverb.reset(),
             Self::Tune(tune) => tune.reset(),
+            Self::Phaser(phaser) => phaser.reset(),
+            Self::Flanger(flanger) => flanger.reset(),
+            Self::Fold(fold) => fold.reset(),
+            Self::Shifter(shifter) => shifter.reset(),
+            Self::Hyper(hyper) => hyper.reset(),
+            Self::Multiband(multiband) => multiband.reset(),
+            Self::Width(width) => width.reset(),
         }
     }
 }

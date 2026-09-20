@@ -106,6 +106,13 @@ impl DeviceKind {
                     EffectKind::Delay => "delay",
                     EffectKind::Reverb => "reverb",
                     EffectKind::Tune => "tune",
+                    EffectKind::Phaser => "phaser",
+                    EffectKind::Flanger => "flanger",
+                    EffectKind::Fold => "fold",
+                    EffectKind::Shifter => "shifter",
+                    EffectKind::Hyper => "hyper",
+                    EffectKind::Multiband => "multiband",
+                    EffectKind::Width => "width",
                 }
             ),
             // A plugin id is a reverse-domain name or a URI and may carry

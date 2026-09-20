@@ -1,0 +1,21 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Multiband"
+  },
+  "name": "top sizzle",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Multiband": {
+        "low_hz": 200.0,
+        "high_hz": 4000.0,
+        "low_drive_db": 0.0,
+        "mid_drive_db": 0.0,
+        "high_drive_db": 20.0,
+        "output_db": -2.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Multiband"
+  },
+  "name": "keep the low",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Multiband": {
+        "low_hz": 120.0,
+        "high_hz": 2000.0,
+        "low_drive_db": 0.0,
+        "mid_drive_db": 24.0,
+        "high_drive_db": 24.0,
+        "output_db": -6.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

@@ -62,7 +62,7 @@
         "filters": [
           {
             "character": 0.4000000059604645,
-            "cutoff_hz": 4500.0,
+            "cutoff_hz": 6500.0,
             "drive": 0.0,
             "enabled": true,
             "key_track": 0.0,
@@ -200,7 +200,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -26.0,
+            "gain_db": -18.0,
             "key_range": [
               0,
               127

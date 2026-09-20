@@ -437,7 +437,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.4000000059604645,
+              "depth": 0.20000000298023224,
               "destination": {
                 "LayerGain": 4
               },
@@ -449,7 +449,7 @@
             }
           ]
         },
-        "output_db": 8.699999809265137,
+        "output_db": 5.599999904632568,
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

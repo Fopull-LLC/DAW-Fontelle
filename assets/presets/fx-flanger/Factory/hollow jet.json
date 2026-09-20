@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Flanger"
+  },
+  "name": "hollow jet",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Flanger": {
+        "delay_ms": 0.8,
+        "depth": 1.0,
+        "through_zero": false,
+        "rate_hz": 0.12,
+        "sync": false,
+        "division": "Whole",
+        "feedback": -0.9,
+        "spread": 0.5,
+        "mix": 0.5
+      }
+    }
+  }
+}

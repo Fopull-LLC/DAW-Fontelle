@@ -119,7 +119,7 @@
         "layers": [
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -6.799999237060547,
+            "gain_db": -17.0,
             "key_range": [
               0,
               127
@@ -166,7 +166,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -13.799999237060547,
+            "gain_db": -24.0,
             "key_range": [
               0,
               127
@@ -503,7 +503,7 @@
             }
           ]
         },
-        "output_db": 12.0,
+        "output_db": -9.5,
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

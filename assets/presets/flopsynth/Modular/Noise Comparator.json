@@ -344,7 +344,7 @@
             "mode": "Retrigger",
             "phase": 0.0,
             "rate_hz": 15.0,
-            "smooth": 0.0,
+            "smooth": 0.10000000149011612,
             "sync": false,
             "wave": "SampleHold"
           },

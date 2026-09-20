@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Shifter"
+  },
+  "name": "ring mod",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Shifter": {
+        "shift_hz": 300.0,
+        "fine_hz": 0.0,
+        "direction": "Both",
+        "feedback": 0.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

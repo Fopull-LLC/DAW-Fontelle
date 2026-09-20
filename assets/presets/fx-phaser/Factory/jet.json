@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Phaser"
+  },
+  "name": "jet",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Phaser": {
+        "stages": 12,
+        "centre_hz": 1000.0,
+        "depth": 1.0,
+        "rate_hz": 0.2,
+        "sync": false,
+        "division": "Whole",
+        "feedback": 0.85,
+        "spread": 0.5,
+        "mix": 0.5
+      }
+    }
+  }
+}

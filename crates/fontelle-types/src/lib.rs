@@ -16,6 +16,7 @@ mod asset;
 mod audio_clip;
 mod base64;
 mod effect;
+mod effect_next;
 mod effect_presets;
 mod event;
 mod favorite;
@@ -51,9 +52,16 @@ pub use effect::{
     TuneFrame, TuneMode, TunePreset, TuneRange, TuneScale, UTILITY_DC_OFF_HZ, UTILITY_MONO_OFF_HZ,
     UtilityConfig, VibratoShape, cents_of_hz, hz_of_cents,
 };
+pub use effect_next::{
+    FlangerConfig, FoldConfig, HyperConfig, MAX_FLANGER_DELAY_MS, MAX_HYPER_VOICES,
+    MAX_HYPER_WINDOW_MS, MAX_PHASER_STAGES, MAX_SHIFT_HZ, MIN_FLANGER_DELAY_MS,
+    MIN_HYPER_WINDOW_MS, MIN_PHASER_STAGES, MultibandConfig, PHASER_SWEEP_OCTAVES, PhaserConfig,
+    ShiftDirection, ShifterConfig, WIDTH_MONO_OFF_HZ, WidthConfig,
+};
 pub use effect_presets::{
-    ChorusPreset, CompressorPreset, DelayPreset, EqPreset, FilterPreset, GatePreset, LimiterPreset,
-    ReverbPreset, UtilityPreset,
+    ChorusPreset, CompressorPreset, DelayPreset, EqPreset, FilterPreset, FlangerPreset, FoldPreset,
+    GatePreset, HyperPreset, LimiterPreset, MultibandPreset, PhaserPreset, ReverbPreset,
+    ShifterPreset, UtilityPreset, WidthPreset,
 };
 pub use event::{CompiledTimeline, DEFAULT_BPM, EventPayload, EventSink, TimedEvent, VoiceOrigin};
 pub use favorite::Favorite;

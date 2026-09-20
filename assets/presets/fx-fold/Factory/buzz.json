@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Fold"
+  },
+  "name": "buzz",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Fold": {
+        "drive_db": 32.0,
+        "symmetry": 0.2,
+        "smooth": 0.0,
+        "output_db": -9.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

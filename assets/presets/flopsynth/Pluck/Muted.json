@@ -23,7 +23,7 @@
             "sustain_level": 0.0
           },
           {
-            "attack_s": 0.0,
+            "attack_s": 0.003000000026077032,
             "attack_shape": 0.0,
             "curve": "Linear",
             "decay_s": 0.05000000074505806,

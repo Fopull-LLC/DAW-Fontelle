@@ -62,7 +62,7 @@
         "filters": [
           {
             "character": 0.0,
-            "cutoff_hz": 800.0,
+            "cutoff_hz": 500.0,
             "drive": 0.0,
             "enabled": true,
             "key_track": 0.0,

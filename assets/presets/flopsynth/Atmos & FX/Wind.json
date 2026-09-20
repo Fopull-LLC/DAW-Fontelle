@@ -289,7 +289,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": 2.5,
+            "gain_db": -5.600000381469727,
             "key_range": [
               0,
               127

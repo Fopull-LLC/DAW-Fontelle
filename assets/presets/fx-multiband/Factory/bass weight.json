@@ -1,0 +1,21 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Multiband"
+  },
+  "name": "bass weight",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Multiband": {
+        "low_hz": 150.0,
+        "high_hz": 3000.0,
+        "low_drive_db": 18.0,
+        "mid_drive_db": 0.0,
+        "high_drive_db": 0.0,
+        "output_db": -3.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

@@ -114,7 +114,7 @@
         "layers": [
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -0.7999992370605469,
+            "gain_db": -8.0,
             "key_range": [
               0,
               127
@@ -302,7 +302,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -0.7999992370605469,
+            "gain_db": -8.0,
             "key_range": [
               0,
               127
@@ -349,7 +349,7 @@
         "lfos": [
           {
             "delay_s": 0.0,
-            "depth": 1.0,
+            "depth": 0.3499999940395355,
             "division": "Quarter",
             "fade_s": 0.0,
             "mode": "Free",
@@ -357,7 +357,7 @@
             "rate_hz": 0.10999999940395355,
             "smooth": 0.0,
             "sync": false,
-            "wave": "Triangle"
+            "wave": "Sine"
           },
           {
             "delay_s": 0.0,
@@ -497,22 +497,10 @@
                 "Lfo": 0
               },
               "via": null
-            },
-            {
-              "curve": "Linear",
-              "depth": 0.5,
-              "destination": {
-                "FilterCutoff": 0
-              },
-              "invert": false,
-              "source": {
-                "Lfo": 0
-              },
-              "via": null
             }
           ]
         },
-        "output_db": 12.0,
+        "output_db": -1.7999999523162842,
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

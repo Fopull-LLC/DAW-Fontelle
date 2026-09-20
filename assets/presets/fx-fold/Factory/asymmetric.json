@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Fold"
+  },
+  "name": "asymmetric",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Fold": {
+        "drive_db": 14.0,
+        "symmetry": 0.6,
+        "smooth": 0.4,
+        "output_db": -4.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

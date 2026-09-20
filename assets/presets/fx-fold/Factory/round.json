@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Fold"
+  },
+  "name": "round",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Fold": {
+        "drive_db": 16.0,
+        "symmetry": 0.0,
+        "smooth": 1.0,
+        "output_db": -4.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Shifter"
+  },
+  "name": "barber-pole up",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Shifter": {
+        "shift_hz": 0.0,
+        "fine_hz": 4.0,
+        "direction": "Up",
+        "feedback": 0.8,
+        "mix": 0.6
+      }
+    }
+  }
+}

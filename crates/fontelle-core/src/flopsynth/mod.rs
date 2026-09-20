@@ -116,7 +116,7 @@ pub fn sub_shape_of(osc: &SynthOsc) -> Option<usize> {
 /// node, and an instrument with latency is the one case the graph does not
 /// line up — so the gate, which looks ahead, is not here. The order is the
 /// plan's: what a synth preset reaches for first, first.
-pub const PATCH_FX_KINDS: [fontelle_types::EffectKind; 8] = [
+pub const PATCH_FX_KINDS: [fontelle_types::EffectKind; 15] = [
     fontelle_types::EffectKind::Chorus,
     fontelle_types::EffectKind::Delay,
     fontelle_types::EffectKind::Reverb,
@@ -125,6 +125,14 @@ pub const PATCH_FX_KINDS: [fontelle_types::EffectKind; 8] = [
     fontelle_types::EffectKind::Distortion,
     fontelle_types::EffectKind::Bitcrush,
     fontelle_types::EffectKind::Compressor,
+    // The seven of `docs/flopsynth-next.md` §4.5, all zero-latency.
+    fontelle_types::EffectKind::Phaser,
+    fontelle_types::EffectKind::Flanger,
+    fontelle_types::EffectKind::Fold,
+    fontelle_types::EffectKind::Shifter,
+    fontelle_types::EffectKind::Hyper,
+    fontelle_types::EffectKind::Multiband,
+    fontelle_types::EffectKind::Width,
 ];
 
 pub fn is_flopsynth(patch: &Patch) -> bool {

@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Phaser"
+  },
+  "name": "vibe",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Phaser": {
+        "stages": 4,
+        "centre_hz": 1500.0,
+        "depth": 0.3,
+        "rate_hz": 4.5,
+        "sync": false,
+        "division": "Whole",
+        "feedback": 0.2,
+        "spread": 0.0,
+        "mix": 0.5
+      }
+    }
+  }
+}

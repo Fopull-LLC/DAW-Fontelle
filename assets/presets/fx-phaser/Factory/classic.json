@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Phaser"
+  },
+  "name": "classic",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Phaser": {
+        "stages": 4,
+        "centre_hz": 800.0,
+        "depth": 0.6,
+        "rate_hz": 0.4,
+        "sync": false,
+        "division": "Whole",
+        "feedback": 0.4,
+        "spread": 0.5,
+        "mix": 0.5
+      }
+    }
+  }
+}

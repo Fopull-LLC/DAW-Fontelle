@@ -1,0 +1,21 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Multiband"
+  },
+  "name": "mid honk",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Multiband": {
+        "low_hz": 300.0,
+        "high_hz": 2500.0,
+        "low_drive_db": 0.0,
+        "mid_drive_db": 22.0,
+        "high_drive_db": 0.0,
+        "output_db": -4.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

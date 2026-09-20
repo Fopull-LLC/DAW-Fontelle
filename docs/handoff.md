@@ -16,6 +16,35 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-20, later (Flopsynth II, Phase 4).** Sources, filters
+and effects are in but for the wavetable editor — `PROGRESS.md`'s top
+entry. Things to know: (0) the string and the spectral source **share
+one bank of phasors** (`PhasorBank` on `SynthState`) — each writes the
+whole bank when it starts; a third source that wants sixty-four
+rotating partials uses it too, or the voice goes past its 128 KB
+(`mod_counts.rs` says the number); (1) a new filter model is a variant
+appended to `FilterModel::ALL`, a `character_label`, a `process` arm, a
+closed-form arm in `response_db` **held against the sound by
+`filters.rs`'s drawn-response case**, and a line in
+`synth_filter.rs`'s distinctness and NaN tests; `reads_mode` says
+whether the card draws the shape chooser; (2) a self-oscillating loop's
+margin past unity is a pitch: measure it (`self_oscillation_hz`) before
+choosing one; (3) a new effect kind is the catalogue's §5 recipe plus
+three things it did not list: a bank of at least six in
+`effect_presets.rs` **and** the export tool's loop (`cargo xtask
+export-factory-presets`; `preset_bank.rs` and `effect_editor.rs` check
+the files, not the recipes), a slug in `preset.rs`, and — if it belongs
+in a patch's chain — a row in `PATCH_FX_KINDS` and a picture arm in
+`flopsynth.rs::effect_picture`; (4) the engine's generic tests run a
+440 Hz tone through every kind at its defaults and want more than a
+fifth of it back in the last half — a default that notches the tone at
+that moment of its sweep fails, which is why the phaser opens at 0.2 Hz;
+(5) `fontelle-fx/tests/common/mod.rs` is the shared measure for the
+seven; a level is RMS × √2, not the peak, above a few kilohertz; (6)
+the sub's sugar is three addresses over the same fields — never a
+second field. Open: the wavetable editor (§4.3), the mip level for the
+warps, Phase 5 (MPE), Phase 6 (the bank's rows for all of this).
+
 **Updated 2026-09-20 (Flopsynth II, Phase 3).** Modulation and voice are
 in — `PROGRESS.md`'s top entry. Things to know: (0) **modulation runs at
 step rate** (`voice::MOD_STEP`, eight samples): the sources are read at

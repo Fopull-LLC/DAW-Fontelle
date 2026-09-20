@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Flanger"
+  },
+  "name": "classic",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Flanger": {
+        "delay_ms": 1.2,
+        "depth": 0.8,
+        "through_zero": false,
+        "rate_hz": 0.35,
+        "sync": false,
+        "division": "Whole",
+        "feedback": 0.6,
+        "spread": 0.6,
+        "mix": 0.5
+      }
+    }
+  }
+}

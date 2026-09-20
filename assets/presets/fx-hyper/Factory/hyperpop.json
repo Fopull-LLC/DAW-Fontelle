@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Hyper"
+  },
+  "name": "hyperpop",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Hyper": {
+        "voices": 4,
+        "detune_cents": 45.0,
+        "spread": 1.0,
+        "window_ms": 30.0,
+        "mix": 0.8
+      }
+    }
+  }
+}

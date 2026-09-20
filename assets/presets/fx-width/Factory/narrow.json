@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Width"
+  },
+  "name": "narrow",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Width": {
+        "width": 0.5,
+        "mono_below_hz": 20.0,
+        "mid_db": 0.0,
+        "side_db": 0.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

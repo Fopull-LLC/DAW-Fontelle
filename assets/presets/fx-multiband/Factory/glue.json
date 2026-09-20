@@ -1,0 +1,21 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Multiband"
+  },
+  "name": "glue",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Multiband": {
+        "low_hz": 200.0,
+        "high_hz": 3000.0,
+        "low_drive_db": 6.0,
+        "mid_drive_db": 6.0,
+        "high_drive_db": 6.0,
+        "output_db": -2.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

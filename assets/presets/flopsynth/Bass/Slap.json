@@ -23,7 +23,7 @@
             "sustain_level": 0.11999999731779099
           },
           {
-            "attack_s": 0.0,
+            "attack_s": 0.003000000026077032,
             "attack_shape": 0.0,
             "curve": "Linear",
             "decay_s": 0.054999999701976776,
@@ -68,7 +68,7 @@
             "key_track": 0.0,
             "mode": "Lowpass",
             "model": "Ladder",
-            "resonance": 0.7799999713897705,
+            "resonance": 0.6000000238418579,
             "slope": "Db24"
           },
           {
@@ -413,7 +413,7 @@
           "routes": [
             {
               "curve": "Linear",
-              "depth": 0.8999999761581421,
+              "depth": 0.699999988079071,
               "destination": {
                 "FilterCutoff": 0
               },
@@ -459,7 +459,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.4000000059604645,
+              "depth": 0.2199999988079071,
               "destination": {
                 "LayerGain": 4
               },
@@ -471,7 +471,7 @@
             }
           ]
         },
-        "output_db": 0.6000000238418579,
+        "output_db": -0.8999999761581421,
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

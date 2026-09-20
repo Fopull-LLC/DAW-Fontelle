@@ -109,7 +109,7 @@
         "layers": [
           {
             "fine_tune_cents": 0.0,
-            "gain_db": 9.700000762939453,
+            "gain_db": 5.5,
             "key_range": [
               0,
               127

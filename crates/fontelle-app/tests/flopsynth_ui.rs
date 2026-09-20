@@ -2305,3 +2305,106 @@ fn every_source_has_a_short_name_for_a_narrow_badge() {
         assert!(!short.is_empty() && short.chars().count() <= 3, "{short}");
     }
 }
+
+/// The seven of §4.5 in a patch's chain: each takes a slot and draws a
+/// card, and the five with a shape to draw have a picture — the folder's
+/// transfer curve, the phaser's and the flanger's combs at the sweep's
+/// middle, the multiband's three drives across the band, hyper's copies
+/// as marks at their detunes. The shifter and width have nothing a
+/// picture could say.
+#[test]
+fn the_seven_new_effects_take_a_slot_and_draw_their_pictures() {
+    use fontelle_types::EffectKind;
+    use fontelle_ui::canvas::{FlopsynthPage, FlopsynthPicture, FlopsynthShowing};
+    let kinds = [
+        EffectKind::Fold,
+        EffectKind::Phaser,
+        EffectKind::Flanger,
+        EffectKind::Multiband,
+        EffectKind::Hyper,
+        EffectKind::Shifter,
+        EffectKind::Width,
+    ];
+    let mut session = a_flopsynth();
+    for kind in kinds {
+        assert!(
+            fontelle_core::flopsynth::PATCH_FX_KINDS.contains(&kind),
+            "{kind:?} is not offered to a patch"
+        );
+        session.add_patch_effect(kind);
+    }
+    let patch = session.selected_patch().unwrap();
+    assert_eq!(patch.fx.len(), kinds.len());
+    let card_of = |slot: usize| {
+        let view = session
+            .flopsynth_showing(
+                FlopsynthPage::Effects,
+                FlopsynthShowing {
+                    inspector: None,
+                    fx_slot: Some(slot),
+                },
+            )
+            .unwrap();
+        assert_eq!(view.cards.len(), 1);
+        view.cards[0].clone()
+    };
+    for (slot, kind) in kinds.iter().enumerate() {
+        let card = card_of(slot);
+        assert_eq!(
+            card.group.name,
+            format!("FX {} \u{b7} {}", slot + 1, kind.label())
+        );
+        assert!(!card.group.params.is_empty(), "{kind:?} draws no controls");
+    }
+    // The folder at rest is a wire: a diagonal. Driven, it folds — the
+    // curve comes back down past full scale.
+    let fold = card_of(0);
+    let FlopsynthPicture::Curve {
+        points, midline, ..
+    } = &fold.picture
+    else {
+        panic!("the folder's transfer curve: {:?}", fold.picture);
+    };
+    assert!(*midline && points.len() >= 32);
+    assert!(
+        points[0] < 0.1 && points[points.len() - 1] > 0.9,
+        "a wire: {points:?}"
+    );
+    let phaser = card_of(1);
+    let FlopsynthPicture::Curve { points, .. } = &phaser.picture else {
+        panic!("the phaser's comb: {:?}", phaser.picture);
+    };
+    let (low, high) = points
+        .iter()
+        .fold((1.0f32, 0.0f32), |(l, h), p| (l.min(*p), h.max(*p)));
+    assert!(
+        low < 0.2 && high > 0.8,
+        "notches and peaks: {low} .. {high}"
+    );
+    let flanger = card_of(2);
+    let FlopsynthPicture::Curve { points, .. } = &flanger.picture else {
+        panic!("the flanger's comb: {:?}", flanger.picture);
+    };
+    let (low, high) = points
+        .iter()
+        .fold((1.0f32, 0.0f32), |(l, h), p| (l.min(*p), h.max(*p)));
+    assert!(
+        low < 0.2 && high > 0.8,
+        "notches and peaks: {low} .. {high}"
+    );
+    let multiband = card_of(3);
+    let FlopsynthPicture::Curve { points, marks, .. } = &multiband.picture else {
+        panic!("the multiband's bands: {:?}", multiband.picture);
+    };
+    assert!(
+        points.len() >= 32 && marks.len() == 2,
+        "three bands, two crossovers"
+    );
+    let hyper = card_of(4);
+    let FlopsynthPicture::Curve { marks, .. } = &hyper.picture else {
+        panic!("hyper's copies: {:?}", hyper.picture);
+    };
+    assert_eq!(marks.len(), 2, "a mark per copy");
+    assert!(matches!(card_of(5).picture, FlopsynthPicture::None));
+    assert!(matches!(card_of(6).picture, FlopsynthPicture::None));
+}

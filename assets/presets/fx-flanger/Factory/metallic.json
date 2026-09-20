@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Flanger"
+  },
+  "name": "metallic",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Flanger": {
+        "delay_ms": 0.3,
+        "depth": 0.3,
+        "through_zero": false,
+        "rate_hz": 3.0,
+        "sync": false,
+        "division": "Whole",
+        "feedback": 0.7,
+        "spread": 0.0,
+        "mix": 0.5
+      }
+    }
+  }
+}

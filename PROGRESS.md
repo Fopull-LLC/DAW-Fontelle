@@ -19,6 +19,104 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-20, later — Flopsynth II, Phase 4 (`docs/flopsynth-next.md`
+§4.3–4.5, §7): sources, filters, effects — done but for the wavetable
+editor, not released.** Four commits, each tests-first, looked at on
+`Xwayland :99`; the voice's size held. The bank's rows for the new
+things are Phase 6's, with the tags gate (§9.7).
+
+- **The spectral source, SFZ, six table warps, unison modes**
+  (`5d6b771`): `SynthSource::Spectral(zone)` — a recording analysed
+  once into frames of sixty-four partials every ten milliseconds
+  (`fontelle-dsp/src/spectrum.rs`, `analyse_spectral`, a phase-vocoder
+  frequency per partial: the bucket alone read a sine 1.4 cents flat)
+  and played through the string's bank of phasors; position scans the
+  frames, `Stretch` spreads the partials, `Shift` moves the envelope
+  (partial *n* wears the level of *n/(1+a)*), `Freeze` holds one. The
+  analysis is cached process-wide (`wavetable_set::spectral_analysis`).
+  SFZ (`fontelle-assets/src/sfz_import.rs`): `<region>`, `sample`,
+  `lokey/hikey/pitch_keycenter`, `lovel/hivel`, `loop_mode/loop_start/
+  loop_end` (inclusive, as the file has it; the dsp adds one), `tune`,
+  `volume` → `UserSample` zones with the velocity range they lacked; a
+  dropped `.sfz` lands as a multisample (`Session::load_multisample`).
+  `WarpMode` gains `PhaseDistortion`, `Formant`, `Flip`, `Asym`,
+  `FmNoise`, `Remap` (a 32-point curve on `SynthOsc.remap`; no editor
+  yet — see open), each measured in `synth_osc.rs` by what it does to the
+  spectrum. `UnisonMode {Classic, Octave, Fifth, Chord(n), Wide}` and
+  `UnisonSpread {Linear, Power, Harmonic}` behind one ten-position
+  chooser (`UNISON_MODES`); `MAX_UNISON` stays eight so `unison/voices`
+  keeps its meaning. `tests/synth_spectral.rs`, `sfz_import.rs`.
+- **Noise kinds, the sub's sugar** (`25bf483`): `NoiseKind {White, Pink,
+  Brown, Blue, Crackle, Vinyl, Sample(zone)}` on the noise layer, the
+  colour knob the tilt on top (blue is pink differenced; a sample is a
+  recording read at the note's rate with no pitch). The SUB card says
+  *shape* (four tables), *octave* (−2/−1/0) and *direct* (round the
+  filters) where the others say table/semis/route — sugar over the same
+  fields (`sub_shape`, `octave`, `direct` addresses), the shape only
+  while the table is one of the four (Chip Bass puts a NES triangle
+  there; `flopsynth::sub_shape_of`).
+- **Six filter models, filter FM** (`eff3d52`): `FilterModel` gains
+  `Diode` (the 303's ladder: an input high-pass that rises with the
+  resonance — outside the loop, so the pitch it rings at is the cutoff —
+  and a clip that squashes the negative half harder, the even
+  harmonics), `Sallen` (the MS-20's two poles with the clipper in the
+  loop; **a three per cent margin** past self-oscillation rather than the
+  ladder's twelve, because with two poles the clipped harmonics come
+  round barely attenuated and the limit cycle sits flat by an amount that
+  grows with the margin — four cents at ten, a third at three), `Phaser`
+  (four to twelve all-passes; the same chain the bus effect runs),
+  `Vowel` (five formants from Csound's tenor table, each with its own
+  bandwidth — the bass table's /i/ has F2 thirty decibels down, true of a
+  bass and useless in a filter; cutoff is the throat), `Ring` (the input
+  times a sine at the cutoff; the one model with no magnitude response —
+  it draws the dry level), `Dual` (two SVFs a spread apart, averaged, so
+  no spread *is* the clean 12 dB). Every one drawn in closed form beside
+  the model and held to the sound (`filters.rs`); the three that ring
+  held to their cutoff within two cents (`synth_filter.rs`); the card
+  hides the shape and slope choosers for the models that ignore them.
+  `FilterSlot.fm_from/fm_amount`: a layer's sample, read before its
+  level knob like oscillator FM, swings the cutoff by up to four octaves
+  per sample (`tests/filter_fm.rs`). **The voice went to 186 KB** — the
+  spectral source had brought its own bank of phasors beside the
+  string's, 4 KB a slot that could never both be in use; they share one
+  (`PhasorBank`) and it is 122 KB with everything in. And a window
+  reaching velocity 127 no longer fades its loudest note out.
+- **Seven effect kinds** (this commit): `Phaser`, `Flanger` (with
+  through-zero: a fixed copy at the centre beside the swept one),
+  `Fold` (a wavefolder with symmetry and a corner), `Shifter` (a Bode
+  frequency shifter on Niemitalo's Hilbert pair — which path carries the
+  sample of delay, and which sign is which sideband, were **measured**:
+  on the wrong path a sideband is rejected by eighteen decibels instead
+  of fifty), `Hyper` (unison as an effect: each copy a delay line read at
+  a steady rate other than one, two heads crossfaded), `Multiband` (three
+  bands on two Linkwitz–Riley crossovers, the low band through the high
+  crossover's all-pass so the three sum flat — the first draft's "mid is
+  what is left" was 130 % of the signal an octave under the low corner),
+  `Width` (M/S with the bass kept in the middle and a gain each half).
+  Configs in `fontelle-types/src/effect_next.rs`, DSP in `fontelle-fx`
+  with a test file each, a bank of six or seven each
+  (`effect_presets.rs`, exported to `assets/presets/fx-*`), all in
+  `PATCH_FX_KINDS`, and the five with a shape draw a picture on the
+  Effects page. The three that put copies under the track open half wet
+  (`is_time_based`); the phaser's default rate is 0.2 Hz because a
+  phaser sitting on the note when it was added reads as an effect that
+  silences the track. Also: the bank's files re-exported — Phase 3's
+  re-voicings had been committed in the recipes and never in the files
+  (44 rows, values only); a stepped count reads as a whole number.
+- **Looked at:** the Synth page with the sub's sugar and the filters'
+  FM row, the model chooser (ten), Filter 1 as a Diode with its picture
+  and *BITE*, the Effects page's `+ effect` list (fifteen) and a phaser's
+  card with its comb.
+- **Open:** the **wavetable editor** (§4.3: draw, harmonic bars,
+  formula, FFT of a drop, morph, frames, export — nothing built; the
+  `Remap` warp reads a curve no card can yet edit); the speed-aware mip
+  level for the warps (Phase 2's note); rows for the new sources, warps,
+  filters and effects — Phase 6, with the tags gate, so
+  `flopsynth_shows_off.rs` excludes the six table warps by name until
+  then; an *Import SFZ…* entry (there is no file dialog; drops are the
+  path). For Ty: everything Phase 3 left, and by ear the new models
+  (`--play-flopsynth` a row, set Filter 1 to each).
+
 **As of 2026-09-20 — Flopsynth II, Phase 3 (`docs/flopsynth-next.md`
 §4.2, §4.6, §7): modulation and voice: done, not released.** Five
 commits, each tests-first, looked at on `Xwayland :99`; the bench

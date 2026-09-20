@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Fold"
+  },
+  "name": "parallel",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Fold": {
+        "drive_db": 24.0,
+        "symmetry": 0.3,
+        "smooth": 0.3,
+        "output_db": -6.0,
+        "mix": 0.35
+      }
+    }
+  }
+}

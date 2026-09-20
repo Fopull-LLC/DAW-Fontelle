@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Hyper"
+  },
+  "name": "double",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Hyper": {
+        "voices": 2,
+        "detune_cents": 10.0,
+        "spread": 0.6,
+        "window_ms": 20.0,
+        "mix": 0.5
+      }
+    }
+  }
+}

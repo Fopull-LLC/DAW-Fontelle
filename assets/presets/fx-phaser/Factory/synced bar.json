@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Phaser"
+  },
+  "name": "synced bar",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Phaser": {
+        "stages": 6,
+        "centre_hz": 800.0,
+        "depth": 0.7,
+        "rate_hz": 0.5,
+        "sync": true,
+        "division": "Whole",
+        "feedback": 0.3,
+        "spread": 0.5,
+        "mix": 0.5
+      }
+    }
+  }
+}

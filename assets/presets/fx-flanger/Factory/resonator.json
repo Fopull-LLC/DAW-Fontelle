@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Flanger"
+  },
+  "name": "resonator",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Flanger": {
+        "delay_ms": 2.2,
+        "depth": 0.0,
+        "through_zero": false,
+        "rate_hz": 0.1,
+        "sync": false,
+        "division": "Whole",
+        "feedback": 0.9,
+        "spread": 0.0,
+        "mix": 0.6
+      }
+    }
+  }
+}
