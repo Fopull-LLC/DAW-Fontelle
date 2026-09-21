@@ -80,6 +80,19 @@ impl LiveTarget {
 pub struct LiveKeys {
     /// Keys 0..64 and 64..128.
     halves: [AtomicU64; 2],
+    /// How many notes the settings have dropped, and the last one's reason
+    /// — packed as `count << 16 | reason << 8 | value`, one word so a frame
+    /// reads the pair together. See [`Ignored`].
+    ignored: AtomicU64,
+}
+
+/// Why a played note went nowhere: the settings' channel filter (with the
+/// channel it arrived on, 0-based) or their velocity window (with its
+/// velocity). What the window says instead of nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ignored {
+    Channel(u8),
+    Velocity(u8),
 }
 
 impl LiveKeys {
@@ -104,6 +117,34 @@ impl LiveKeys {
     pub fn is_down(&self, key: u8) -> bool {
         let (half, bit) = Self::at(key);
         self.halves[half].load(Ordering::Relaxed) & bit != 0
+    }
+
+    /// Counts a note the settings dropped, with why. Notes only: a note-off
+    /// or a controller that goes nowhere is not a note nobody heard.
+    pub fn ignore(&self, why: Ignored) {
+        let (reason, value) = match why {
+            Ignored::Channel(channel) => (1u64, u64::from(channel)),
+            Ignored::Velocity(velocity) => (2u64, u64::from(velocity)),
+        };
+        let count = (self.ignored.load(Ordering::Relaxed) >> 16) + 1;
+        self.ignored
+            .store((count << 16) | (reason << 8) | value, Ordering::Relaxed);
+    }
+
+    /// How many notes the settings have dropped, and why the last one was —
+    /// `None` until one has been.
+    pub fn ignored(&self) -> Option<(u64, Ignored)> {
+        let word = self.ignored.load(Ordering::Relaxed);
+        let count = word >> 16;
+        if count == 0 {
+            return None;
+        }
+        let value = (word & 0xff) as u8;
+        let why = match (word >> 8) & 0xff {
+            1 => Ignored::Channel(value),
+            _ => Ignored::Velocity(value),
+        };
+        Some((count, why))
     }
 
     /// Every key that is down, as one bit each — what a frame draws from.
@@ -289,6 +330,17 @@ impl MidiRouter {
         if let Some(only) = self.mapping.channel_filter
             && message_channel(&message) != only
         {
+            // Said, not swallowed: a keyboard on the wrong channel is the
+            // one the settings are hiding, and "it isn't working" is what
+            // that reads as from the other side.
+            if let MidiMessage::NoteOn {
+                channel, velocity, ..
+            } = message
+                && velocity > 0
+                && let Some(lit) = &self.lit
+            {
+                lit.ignore(Ignored::Channel(channel));
+            }
             return 0;
         }
 
@@ -303,7 +355,10 @@ impl MidiRouter {
                     // Outside the device's velocity window: not this device's
                     // note. Nothing is recorded as held, so the matching
                     // note-off is dropped too rather than releasing a voice
-                    // that was never started.
+                    // that was never started. Counted, so the window can say.
+                    if let Some(lit) = &self.lit {
+                        lit.ignore(Ignored::Velocity(velocity));
+                    }
                     return 0;
                 }
                 let Some(out_key) = self.map_key(key) else {

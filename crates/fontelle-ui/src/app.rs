@@ -2926,6 +2926,18 @@ impl WindowApp {
             self.live_keys = live_keys;
             self.tree.invalidate(PANEL);
         }
+        // And a note the settings dropped, said on the status line: a
+        // keyboard filtered to silence by a channel filter or a velocity
+        // window is *"my midi keyboard isn't working"* until something says
+        // which setting is doing it.
+        // A toast rather than the browser's status slot, which is a column
+        // wide and clipped the sentence at "was".
+        if let Some(doc) = &mut self.options.document
+            && let Some(notice) = doc.live_input_notice()
+        {
+            self.show_toast(notice, false);
+            self.shape_labels();
+        }
 
         // Whether anything on screen will change without the user doing
         // something: a rolling transport moves the playhead, and a meter above
@@ -6804,6 +6816,17 @@ impl WindowApp {
         // not, which is what Enter would have done too.
         if self.tempo_entry.is_some() {
             self.end_tempo_entry(true);
+        }
+        // And a focused settings row gives the arrows back when the press is
+        // anywhere but the browser. It held them across the whole window:
+        // a row clicked in Settings, then arrow keys used on the roll, and
+        // every press stepped the row instead — which is how a settings file
+        // came to hold a MIDI channel filter of 16 and a velocity window of
+        // 50–125, and a keyboard that "stopped working". The press on the
+        // browser that *sets* the focus comes after this.
+        if self.settings_focus.is_some() && !self.layout.browser.frame.contains(x, y) {
+            self.settings_focus = None;
+            self.tree.invalidate(BROWSER);
         }
 
         // The transport bar first: it is the only thing above the panels.

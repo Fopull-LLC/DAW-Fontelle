@@ -229,3 +229,45 @@ fn a_router_with_no_shared_cell_behaves_exactly_as_it_did_before() {
     r.handle(&[NOTE_OFF, 60, 0], &mut out);
     assert_eq!(out.notes(), vec![("on", 60, 100), ("off", 60, 0)]);
 }
+
+// ------------------------------------------------- saying what was dropped ---
+
+/// A note the settings filtered out is **counted, with why**, on the
+/// same shared cell the key lights live in — so the window can say "your
+/// keyboard's note on channel 1 was ignored: the channel filter is set to
+/// 16" rather than nothing. *"my midi keyboard isn't working"* was a
+/// settings file with `channel_filter: 15` and a velocity window of
+/// 50–125 in it; the keyboard was working, and silently filtered.
+#[test]
+fn a_filtered_note_is_counted_with_the_reason() {
+    use fontelle_midi::{Ignored, LiveKeys};
+    let keys = Arc::new(LiveKeys::default());
+    let live = Arc::new(LiveMapping::new(InputSettings {
+        channel_filter: Some(15),
+        velocity_range: (50, 125),
+        ..InputSettings::default()
+    }));
+    let mut r = MidiRouter::new(node(), 0, DeviceMapping::default())
+        .following_input(Arc::clone(&live))
+        .watching_keys(Arc::clone(&keys));
+    let mut out = Recorder::default();
+    assert_eq!(keys.ignored(), None, "nothing dropped yet");
+
+    // Channel 1 (index 0) under a filter for channel 16.
+    r.handle(&[NOTE_ON, 60, 100], &mut out);
+    assert_eq!(
+        keys.ignored(),
+        Some((1, Ignored::Channel(0))),
+        "one note, dropped by the channel filter"
+    );
+    // On the kept channel but under the velocity window.
+    r.handle(&[NOTE_ON | 15, 60, 20], &mut out);
+    assert_eq!(keys.ignored(), Some((2, Ignored::Velocity(20))));
+    // A note that gets through changes nothing.
+    r.handle(&[NOTE_ON | 15, 60, 100], &mut out);
+    assert_eq!(keys.ignored(), Some((2, Ignored::Velocity(20))));
+    assert_eq!(out.notes(), vec![("on", 60, 100)]);
+    // Note-offs and controllers are not notes nobody heard: not counted.
+    r.handle(&[NOTE_OFF, 60, 0], &mut out);
+    assert_eq!(keys.ignored(), Some((2, Ignored::Velocity(20))));
+}

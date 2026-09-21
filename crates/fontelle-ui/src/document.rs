@@ -1836,6 +1836,14 @@ pub trait StudioHost: DocumentHost {
         Err("this studio cannot preview".to_string())
     }
 
+    /// A word about a played note that went nowhere, once per note the
+    /// settings dropped: which setting, and what to change. `None` while
+    /// nothing new has been dropped. The window reads it beside the live
+    /// keys and puts it on the status line.
+    fn live_input_notice(&mut self) -> Option<String> {
+        None
+    }
+
     /// Writes every preset the user made for `device` as one pack file,
     /// asking where (§5). What it did, or why not.
     fn export_pack(&mut self, _device: crate::canvas::PresetDevice) -> Result<String, String> {

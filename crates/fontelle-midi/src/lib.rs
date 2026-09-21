@@ -15,4 +15,4 @@ pub use device::{DeviceKey, HotplugReport, MidiError, MidiHub, RouteTo, availabl
 pub use learn::{CcKey, LearnMode, MidiLearnTable, TakeoverMode};
 pub use mapping::{DeviceMapping, InputSettings, LiveMapping, MappingTable, VelocityCurve};
 pub use message::{MidiMessage, decode};
-pub use router::{LiveKeys, LiveTarget, MidiRouter};
+pub use router::{Ignored, LiveKeys, LiveTarget, MidiRouter};

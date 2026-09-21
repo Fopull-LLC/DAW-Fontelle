@@ -257,6 +257,9 @@ pub struct Session {
     /// (TDD §14.1). `None` on every offline path, which has no keyboard to
     /// light — see [`Session::with_live_keys`].
     live_keys: Option<std::sync::Arc<fontelle_midi::LiveKeys>>,
+    /// How many dropped notes the status line has already been told about
+    /// (`live_input_notice`).
+    ignored_notes_said: u64,
     /// The metronome the running graph is playing through. Kept across a
     /// rebuild — choosing a soundfont with the click on must not turn it off.
     metronome: Option<std::sync::Arc<fontelle_engine::Metronome>>,
@@ -1091,6 +1094,7 @@ impl Session {
             live_target: None,
             live_input: None,
             live_keys: None,
+            ignored_notes_said: 0,
             metronome: None,
             master_meter: None,
             capture: None,
@@ -1877,6 +1881,12 @@ impl Session {
     pub fn with_live_keys(mut self, keys: std::sync::Arc<fontelle_midi::LiveKeys>) -> Self {
         self.live_keys = Some(keys);
         self
+    }
+
+    /// The MIDI-input settings, whole — onto the keyboard and into the file.
+    pub fn set_midi_input(&mut self, input: crate::settings::MidiInputSettings) {
+        self.settings.midi_input = input;
+        self.write_input_settings();
     }
 
     /// Puts what the settings file says onto the shared cell, so a keyboard
@@ -7504,6 +7514,11 @@ impl StudioHost for Session {
         // graph to empty it would cost a rebuild on every click away from the
         // browser, and a silent node costs nothing.
         self.previewing = false;
+        // The keyboard's aim too: it followed the listen (`publish_live_target`
+        // reads `audition_target`, which the rebuild aimed at the preview
+        // voice) and stayed there until the next rebuild, playing whatever
+        // was last listened to.
+        self.publish_live_target();
     }
 
     fn audition_off(&mut self, key: u8) {
@@ -7768,6 +7783,29 @@ impl StudioHost for Session {
         self.previewing = true;
         self.rebuild_graph();
         Ok(())
+    }
+
+    fn live_input_notice(&mut self) -> Option<String> {
+        let (count, why) = self.live_keys.as_ref()?.ignored()?;
+        if count == self.ignored_notes_said {
+            return None;
+        }
+        self.ignored_notes_said = count;
+        let input = &self.settings.midi_input;
+        // Short, for a toast's width: which setting, its value, and where.
+        Some(match why {
+            fontelle_midi::Ignored::Channel(channel) => format!(
+                "channel {} note ignored \u{2014} MIDI channel filter is {} (Settings)",
+                u32::from(channel) + 1,
+                input
+                    .channel_filter
+                    .map_or("all".to_string(), |c| c.to_string())
+            ),
+            fontelle_midi::Ignored::Velocity(velocity) => format!(
+                "velocity {velocity} note ignored \u{2014} velocity window is {}\u{2013}{} (Settings)",
+                input.velocity_min, input.velocity_max
+            ),
+        })
     }
 
     fn export_pack(&mut self, device: fontelle_ui::canvas::PresetDevice) -> Result<String, String> {

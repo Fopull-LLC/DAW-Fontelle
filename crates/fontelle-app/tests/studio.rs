@@ -1831,6 +1831,50 @@ fn the_keys_a_player_is_holding_reach_the_window() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A note the settings filtered out is **said**, once, in the words of
+/// the setting that dropped it — *"my midi keyboard isn't working"* was a
+/// settings file with the channel filter on 16 and a velocity window of
+/// 50–125, and a keyboard that was working. Written for the status line:
+/// the channel as a player counts it (1–16), the window's numbers, and
+/// where to change them.
+#[test]
+fn a_note_the_settings_dropped_is_said_once_with_why() {
+    use fontelle_midi::Ignored;
+    let dir = a_bank("live-ignored");
+    let (session, _source) = studio(&dir);
+    let keys = std::sync::Arc::new(fontelle_midi::LiveKeys::default());
+    let mut session = session.with_live_keys(std::sync::Arc::clone(&keys));
+    session.set_midi_input(fontelle_app::settings::MidiInputSettings {
+        channel_filter: Some(16),
+        velocity_min: 50,
+        velocity_max: 125,
+        ..Default::default()
+    });
+
+    assert_eq!(session.live_input_notice(), None, "nothing dropped");
+    keys.ignore(Ignored::Channel(0));
+    let said = session.live_input_notice().expect("said");
+    assert!(said.contains("channel 1"), "{said}");
+    assert!(
+        said.contains("16"),
+        "the filter's channel, as a player counts: {said}"
+    );
+    assert!(said.contains("Settings"), "where to change it: {said}");
+    assert!(
+        said.chars().count() <= 64,
+        "short enough for a toast: {said}"
+    );
+    assert_eq!(session.live_input_notice(), None, "said once");
+
+    keys.ignore(Ignored::Velocity(30));
+    let said = session.live_input_notice().expect("said");
+    assert!(
+        said.contains("30") && said.contains("50") && said.contains("125"),
+        "{said}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn a_studio_with_no_keys_attached_lights_nothing() {
     // Every offline path builds a `Session` without one, and a headless

@@ -131,3 +131,40 @@ fn a_row_has_sounds_like_of_its_own() {
             .is_empty()
     );
 }
+
+/// The keyboard follows the listen and then comes **back**: while a row is
+/// being auditioned a plugged-in keyboard plays it too — try it on the
+/// keys before loading — and ending the preview aims the keyboard at the
+/// channel again. It used to stay on the preview voice until the next
+/// graph rebuild, playing whatever was last listened to.
+#[test]
+fn the_keyboard_follows_the_audition_and_comes_back_to_the_channel() {
+    let session = a_session();
+    let target = std::sync::Arc::new(fontelle_midi::LiveTarget::new(
+        fontelle_types::NodeId::default(),
+    ));
+    let mut session = session.with_live_target(std::sync::Arc::clone(&target));
+    let channel_node = session.audition_target();
+    assert_eq!(
+        target.get(),
+        channel_node,
+        "the keyboard starts on the channel"
+    );
+
+    let choir = row_of(&session, "Choir Ahh");
+    StudioHost::audition_preset(&mut session, PresetDevice::Instrument, choir)
+        .expect("the row auditions");
+    assert_eq!(
+        target.get(),
+        session.audition_target(),
+        "while listening, the keyboard plays the listen"
+    );
+    assert_ne!(target.get(), channel_node);
+
+    session.end_preview();
+    assert_eq!(
+        target.get(),
+        channel_node,
+        "and comes back to the channel when the listen ends"
+    );
+}
