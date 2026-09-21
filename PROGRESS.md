@@ -19,6 +19,75 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-20, late night — Flopsynth II, Phase 6 (`docs/flopsynth-next.md`
+§5, §7) closed: the browser's audition, the header's A/B, Init,
+Randomise and Mutate, packs, the inspector's thumbnail, the real search
+field; not released.** Four more commits, tests-first.
+
+- **The audition and the selection** (`18ae780`, §5.2): a Presets row
+  **selects and auditions on one click** — C3 at velocity 100 through
+  the preview voice, the soundfont browser's own path, nothing written
+  — and **loads on a double-click or Enter**, so a loaded preset's edits
+  are never lost to a stray click. The arrows walk the list as laid out
+  (through a search's hits too: type "pad", down, down, Enter), heard as
+  they go, scrolling the least that keeps the selection in sight
+  (`preset_step`, `presets_scroll_to`). The About column is the
+  **inspector** for the selected row — its own words, its own *sounds
+  like*, and how to load it — and the loaded preset's otherwise; the
+  list outlines the loaded row and washes the selected one.
+  `StudioHost::audition_preset` / `preset_sounds_like`;
+  `PresetBrowse.selected`. **Left out on purpose:** the plan's *hover
+  400 ms auditions* — a note that sounds while the pointer crosses the
+  list on its way to a star is Ty's to want, not mine to assume; the
+  click gives the same listen.
+- **A/B, Init, Randomise, Mutate** (`7f5f89c`, §3.2, §5): five chips on
+  the tab strip between the tabs and the scale chooser (`HeaderChip`).
+  The A/B pair is **the channel's, in the document** (`Channel.ab`:
+  which slot plays and the other's patch, omitted from the file while
+  fresh, dropped by a preset load) so a switch is a command undone the
+  way it was done with the chip following — window state would have
+  left the chip pointing the wrong way after an undo. The first switch
+  copies A into B; Ctrl-click copies this slot over the other
+  (`SwitchChannelAb`, `CopyChannelAb`; `tests/ab_slots.rs`). Init puts
+  the Init patch on with no preset name and the rack row called Init,
+  one entry. Randomise moves every knob up to a fifth of its travel at
+  random, Mutate a twentieth — **never** a source, a chooser, a switch,
+  the Voice card or the tuning (a layer a fifth up is a different
+  instrument), so what comes out is a variation of the same one; one
+  undo (`tests/flopsynth_header.rs`). Not built from §3.2: the
+  compare-to-loaded toggle (A/B with a copy-before-edit is that) and the
+  patch-scoped undo/redo pair (the document's undo is one stack).
+- **Packs and the thumbnail** (`9c58654`, §5): *Export pack…* / *Import
+  pack…* under a `⋯` chip at the right end of the search row (rows at
+  the shelf column's foot cost the last three shelves their place at
+  840 high). A pack is **one JSON file** naming itself and holding the
+  user's presets whole — the plan said a zip; a JSON pack needs no
+  archive crate, opens with the same code a preset file does, and is as
+  shareable; a zip can come later if Ty wants the extension. Factory
+  rows are refused (every build has them); a name already taken is
+  skipped rather than written over (`PresetBank::export_pack` /
+  `import_pack`, `tests/preset_packs.rs`); `desktop::choose_open_file`
+  joins the save picker. The preview index now keeps each row's
+  **envelope** beside its vector (an index from before is filled in
+  once, ~40 s in release), and the About column draws it under the
+  name: the ten-band shape as faint bars, the envelope mirrored over
+  them (`PresetThumbnail`, `StudioHost::preset_thumbnail`).
+- **The search field** (`ece970c`, §5): the box takes the shared text
+  keyboard (`canvas::text_key`) — caret, Home/End, Ctrl-words,
+  select-all, copy, cut, paste. The caret is still drawn at the end of
+  the text, as the browser's is.
+- **Looked at** on `:99`: the click/double-click/Enter/arrows path, the
+  inspector for a selected row, the five chips (B lit after a switch, A
+  restoring the Grand, Init renaming the bar), a randomise moving the
+  knobs, the `⋯` menu, the thumbnail for Blue Air (top-heavy bars, a
+  slow attack), and "abd, Left, c, Home, Delete" reading "bcd". One
+  double-click on `:99` read as two singles the first time and never
+  again — the nested X's lag, not the clock (`DoubleClick` charges busy
+  stretches; `audition_preset` is 5 ms).
+- **Still open from §5/§7:** the shelves as shelves (*Spectral*, *Drawn*,
+  *MPE*); the rows by ear; hover audition (Ty's call); a visible
+  mid-text caret in the two search boxes.
+
 **As of 2026-09-20, night — Flopsynth II, Phase 6 (`docs/flopsynth-next.md`
 §5, §7): the bank and the browser — the words, sounds like, the rows;
 not released.** Two commits, tests-first; the bank at 409.

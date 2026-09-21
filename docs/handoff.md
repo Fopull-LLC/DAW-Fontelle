@@ -16,6 +16,27 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-20, late night (Flopsynth II, Phase 6 closed).** The
+audition, A/B, Init, Randomise/Mutate, packs, the thumbnail and the real
+search field are in — `PROGRESS.md`'s top entry. Things to know: (0) a
+Presets row **auditions on one click and loads on two** (or Enter); a
+test that wants a load calls `apply_preset`, the window's single click
+is `audition_preset` + the audition state machine; (1) the A/B pair is
+**document state** (`Channel.ab`, `serde(skip_serializing_if =
+is_fresh)`) — every `Channel {}` literal in the tree gained
+`ab: Default::default()`, and a load (`ApplyPreset`) resets the pair
+through `DeviceState::Channel`; (2) `PreviewIndex::has` is false for a
+row **without peaks**, so an old `previews.json` re-renders once — a
+test that seeds the index goes through `insert` (which stores a
+one-column envelope) and is not re-rendered; (3) `randomise_patch` walks
+`describe_flopsynth`'s knobs and skips `patch/voice/*` and the tuning
+addresses (`/semitones`, `/tune`, `/octave`); a new continuous address
+that should not be randomised wants a line there; (4) the header chips
+are laid out until they would touch the scale chooser and then stop —
+a narrower design width loses *Mutate* first; (5) the pack is JSON, not
+a zip (why: `PROGRESS.md`). Open: hover audition (Ty's call), the
+shelves as shelves, the rows by ear, a mid-text caret.
+
 **Updated 2026-09-20, night (Flopsynth II, Phase 6).** The words, sounds
 like and twenty-one rows are in — `PROGRESS.md`'s top entry. Things to
 know: (0) a row's tags are **derived** (`presets::tags_of`) plus what the
