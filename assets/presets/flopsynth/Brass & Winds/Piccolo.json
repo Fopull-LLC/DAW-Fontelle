@@ -5,6 +5,19 @@
   },
   "name": "Piccolo",
   "category": "Brass & Winds",
+  "tags": [
+    "brass",
+    "winds",
+    "table",
+    "noise",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "rhythmic"
+  ],
+  "notes": "A brass or wind sound built from two tables and a noise layer; reach for Breath, then Vibrato.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

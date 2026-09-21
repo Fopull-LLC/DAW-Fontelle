@@ -5,6 +5,17 @@
   },
   "name": "Sub Boom",
   "category": "Cinematic",
+  "tags": [
+    "cinematic",
+    "table",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A cinematic sound built from two tables; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

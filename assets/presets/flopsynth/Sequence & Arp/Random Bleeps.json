@@ -5,6 +5,18 @@
   },
   "name": "Random Bleeps",
   "category": "Sequence & Arp",
+  "tags": [
+    "sequence",
+    "arp",
+    "rhythmic",
+    "table",
+    "poly",
+    "lfo",
+    "velocity",
+    "delay"
+  ],
+  "notes": "A sequence built from a table; reach for Rate, then Range.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

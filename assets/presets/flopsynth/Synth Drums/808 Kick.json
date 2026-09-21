@@ -5,6 +5,15 @@
   },
   "name": "808 Kick",
   "category": "Synth Drums",
+  "tags": [
+    "drums",
+    "table",
+    "poly",
+    "velocity",
+    "distorted"
+  ],
+  "notes": "A drum built from a table; reach for Tune, then Click.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

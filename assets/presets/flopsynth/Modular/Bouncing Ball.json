@@ -5,6 +5,18 @@
   },
   "name": "Bouncing Ball",
   "category": "Modular",
+  "tags": [
+    "modular",
+    "table",
+    "poly",
+    "filtered",
+    "ladder",
+    "lfo",
+    "velocity",
+    "rhythmic"
+  ],
+  "notes": "A modular patch built from a table; reach for Bounce, then Fall.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

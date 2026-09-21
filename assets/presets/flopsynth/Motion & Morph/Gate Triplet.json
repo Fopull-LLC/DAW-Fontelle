@@ -5,6 +5,21 @@
   },
   "name": "Gate Triplet",
   "category": "Motion & Morph",
+  "tags": [
+    "motion",
+    "morph",
+    "evolving",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "rhythmic",
+    "reverb"
+  ],
+  "notes": "A moving sound built from a table; reach for Gate, then Tone.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

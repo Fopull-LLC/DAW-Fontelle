@@ -5,6 +5,22 @@
   },
   "name": "Complex Osc",
   "category": "Modular",
+  "tags": [
+    "modular",
+    "table",
+    "unison",
+    "warped",
+    "fm",
+    "mono",
+    "filtered",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic",
+    "reverb"
+  ],
+  "notes": "A modular patch built from a table; reach for Brightness, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

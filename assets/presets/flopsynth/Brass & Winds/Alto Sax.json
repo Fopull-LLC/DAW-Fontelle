@@ -5,6 +5,23 @@
   },
   "name": "Alto Sax",
   "category": "Brass & Winds",
+  "tags": [
+    "brass",
+    "winds",
+    "table",
+    "noise",
+    "mono",
+    "glide",
+    "filtered",
+    "formant",
+    "ladder",
+    "lfo",
+    "velocity",
+    "rhythmic",
+    "reverb"
+  ],
+  "notes": "A brass or wind sound built from a table and a noise layer; reach for Brightness, then Breath.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

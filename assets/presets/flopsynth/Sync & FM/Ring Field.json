@@ -5,6 +5,23 @@
   },
   "name": "Ring Field",
   "category": "Sync & FM",
+  "tags": [
+    "sync",
+    "fm",
+    "table",
+    "unison",
+    "warped",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "wheel",
+    "rhythmic",
+    "chorus",
+    "reverb"
+  ],
+  "notes": "A sync or FM sound built from a table; reach for Brightness, then Motion.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

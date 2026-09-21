@@ -5,6 +5,17 @@
   },
   "name": "Combo",
   "category": "Organ",
+  "tags": [
+    "organ",
+    "table",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "rhythmic"
+  ],
+  "notes": "An organ built from three tables; reach for Leslie, then Drawbars.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

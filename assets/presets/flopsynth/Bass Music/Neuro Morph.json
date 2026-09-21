@@ -5,6 +5,21 @@
   },
   "name": "Neuro Morph",
   "category": "Bass Music",
+  "tags": [
+    "bass music",
+    "bass",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "distorted"
+  ],
+  "notes": "A bass-music sound built from three tables; reach for Rate, then Morph.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,18 @@
   },
   "name": "Tack Piano",
   "category": "Sampled Keys",
+  "tags": [
+    "sampled",
+    "keys",
+    "sample",
+    "noise",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity"
+  ],
+  "notes": "A sampled keyboard built from a recording and a noise layer; reach for Drive, then Tack.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

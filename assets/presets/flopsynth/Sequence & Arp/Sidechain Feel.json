@@ -5,6 +5,22 @@
   },
   "name": "Sidechain Feel",
   "category": "Sequence & Arp",
+  "tags": [
+    "sequence",
+    "arp",
+    "rhythmic",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "wheel",
+    "chorus",
+    "reverb"
+  ],
+  "notes": "A sequence built from two tables; reach for Brightness, then Motion.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

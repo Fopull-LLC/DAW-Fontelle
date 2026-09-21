@@ -8823,16 +8823,34 @@ impl WindowApp {
         self.redraw_editors();
     }
 
-    /// The About column's lines: the loaded preset, described.
+    /// The About column's lines: the loaded preset, described — with its
+    /// own phrase and tags when the bank knows it (§5.1).
     fn flop_about(&self) -> Vec<String> {
         let Some(view) = &self.flopsynth else {
             return Vec::new();
         };
-        crate::canvas::preset_about(
-            &self.preset_view[0],
-            self.flopsynth_layout.presets.rows.len(),
-            view.bank.len(),
-        )
+        let bar = &self.preset_view[0];
+        let loaded = bar.name.as_ref().and_then(|name| {
+            view.bank
+                .iter()
+                .find(|preset| preset.name == *name && Some(preset.origin) == bar.origin)
+        });
+        let (showing, total) = (self.flopsynth_layout.presets.rows.len(), view.bank.len());
+        // The column's width in characters, at the body face's average
+        // advance: prose wrapped a little short rather than clipped.
+        let width_chars =
+            ((self.flopsynth_layout.presets.about.width - 24.0) / 6.8).max(12.0) as usize;
+        match loaded {
+            Some(preset) => crate::canvas::preset_about_for(
+                bar,
+                preset,
+                &view.sounds_like,
+                width_chars,
+                showing,
+                total,
+            ),
+            None => crate::canvas::preset_about(bar, showing, total),
+        }
     }
 
     /// A key while the Presets page is showing: it types into the search.

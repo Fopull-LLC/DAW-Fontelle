@@ -5,6 +5,20 @@
   },
   "name": "Glass Harp",
   "category": "Bells & Mallets",
+  "tags": [
+    "bells",
+    "mallets",
+    "table",
+    "unison",
+    "noise",
+    "poly",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "reverb"
+  ],
+  "notes": "A bell or mallet sound built from two tables and a noise layer; reach for Strike, then Shimmer.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

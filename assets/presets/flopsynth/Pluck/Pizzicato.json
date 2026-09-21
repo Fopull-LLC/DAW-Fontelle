@@ -5,6 +5,16 @@
   },
   "name": "Pizzicato",
   "category": "Pluck",
+  "tags": [
+    "pluck",
+    "sample",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A pluck built from a recording; reach for Tone, then Length.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

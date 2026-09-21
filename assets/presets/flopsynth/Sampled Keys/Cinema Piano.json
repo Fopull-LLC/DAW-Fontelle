@@ -5,6 +5,19 @@
   },
   "name": "Cinema Piano",
   "category": "Sampled Keys",
+  "tags": [
+    "sampled",
+    "keys",
+    "sample",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A sampled keyboard built from a table and two recordings; reach for Pad, then Brightness.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

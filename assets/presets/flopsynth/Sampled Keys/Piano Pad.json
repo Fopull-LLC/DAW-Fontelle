@@ -5,6 +5,21 @@
   },
   "name": "Piano Pad",
   "category": "Sampled Keys",
+  "tags": [
+    "sampled",
+    "keys",
+    "sample",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "chorus",
+    "reverb"
+  ],
+  "notes": "A sampled keyboard built from two recordings; reach for Brightness, then Fifth.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

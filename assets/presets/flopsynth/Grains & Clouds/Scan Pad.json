@@ -5,6 +5,21 @@
   },
   "name": "Scan Pad",
   "category": "Grains & Clouds",
+  "tags": [
+    "grains",
+    "clouds",
+    "sample",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "chorus",
+    "reverb"
+  ],
+  "notes": "A cloud built from a recording; reach for Tide, then Brightness.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,18 @@
   },
   "name": "Farfisa",
   "category": "Organ",
+  "tags": [
+    "organ",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "rhythmic"
+  ],
+  "notes": "An organ built from a table; reach for Leslie, then Drawbars.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

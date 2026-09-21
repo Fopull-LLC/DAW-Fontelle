@@ -5,6 +5,20 @@
   },
   "name": "Vinyl Bells",
   "category": "Lo-Fi & Tape",
+  "tags": [
+    "lo-fi",
+    "tape",
+    "table",
+    "noise",
+    "poly",
+    "filtered",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "crushed"
+  ],
+  "notes": "A lo-fi sound built from a table and a noise layer; reach for Strike, then Shimmer.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

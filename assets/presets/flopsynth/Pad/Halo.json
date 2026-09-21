@@ -5,6 +5,23 @@
   },
   "name": "Halo",
   "category": "Pad",
+  "tags": [
+    "pad",
+    "table",
+    "unison",
+    "warped",
+    "fm",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "wheel",
+    "rhythmic",
+    "chorus",
+    "reverb"
+  ],
+  "notes": "A pad built from two tables; reach for Brightness, then Motion.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

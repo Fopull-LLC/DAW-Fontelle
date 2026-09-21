@@ -5,6 +5,19 @@
   },
   "name": "Conga Choir",
   "category": "Kits & Hits",
+  "tags": [
+    "kit",
+    "hits",
+    "drums",
+    "sample",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A kit built from a recording; reach for Section, then Skin.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

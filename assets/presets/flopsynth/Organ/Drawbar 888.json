@@ -5,6 +5,20 @@
   },
   "name": "Drawbar 888",
   "category": "Organ",
+  "tags": [
+    "organ",
+    "table",
+    "noise",
+    "poly",
+    "filtered",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "distorted",
+    "reverb"
+  ],
+  "notes": "An organ built from a table and a noise layer; reach for Leslie, then Drawbars.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

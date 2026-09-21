@@ -5,6 +5,18 @@
   },
   "name": "Sub Square Bass",
   "category": "Bass Music",
+  "tags": [
+    "bass music",
+    "bass",
+    "table",
+    "poly",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic"
+  ],
+  "notes": "A bass-music sound built from a table; reach for Trill rate, then Trill depth.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

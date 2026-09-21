@@ -5,6 +5,15 @@
   },
   "name": "Clav",
   "category": "Keys",
+  "tags": [
+    "keys",
+    "table",
+    "poly",
+    "filtered",
+    "velocity"
+  ],
+  "notes": "A keyboard built from a table; reach for Tone, then Width.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

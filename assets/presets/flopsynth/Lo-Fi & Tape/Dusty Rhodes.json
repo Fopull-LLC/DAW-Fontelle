@@ -5,6 +5,22 @@
   },
   "name": "Dusty Rhodes",
   "category": "Lo-Fi & Tape",
+  "tags": [
+    "lo-fi",
+    "tape",
+    "table",
+    "warped",
+    "fm",
+    "noise",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "lfo",
+    "distorted"
+  ],
+  "notes": "A lo-fi sound built from a table and a noise layer; reach for Bite, then Tremolo.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

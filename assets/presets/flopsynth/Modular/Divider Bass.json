@@ -5,6 +5,18 @@
   },
   "name": "Divider Bass",
   "category": "Modular",
+  "tags": [
+    "modular",
+    "table",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "lfo",
+    "rhythmic"
+  ],
+  "notes": "A modular patch built from three tables; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,18 @@
   },
   "name": "Signal",
   "category": "Cinematic",
+  "tags": [
+    "cinematic",
+    "table",
+    "poly",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "delay",
+    "reverb"
+  ],
+  "notes": "A cinematic sound built from a table; reach for Strike, then Shimmer.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,19 @@
   },
   "name": "Synth Brass",
   "category": "Brass & Winds",
+  "tags": [
+    "brass",
+    "winds",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "chorus"
+  ],
+  "notes": "A brass or wind sound built from three tables; reach for Brightness, then Drive.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

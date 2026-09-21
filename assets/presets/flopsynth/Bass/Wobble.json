@@ -5,6 +5,19 @@
   },
   "name": "Wobble",
   "category": "Bass",
+  "tags": [
+    "bass",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "lfo",
+    "rhythmic"
+  ],
+  "notes": "A bass built from two tables; reach for Cutoff, then Wobble rate.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

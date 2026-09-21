@@ -5,6 +5,21 @@
   },
   "name": "Even Lead",
   "category": "Sync & FM",
+  "tags": [
+    "sync",
+    "fm",
+    "table",
+    "unison",
+    "mono",
+    "filtered",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic",
+    "delay"
+  ],
+  "notes": "A sync or FM sound built from two tables; reach for Brightness, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

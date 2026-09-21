@@ -5,6 +5,19 @@
   },
   "name": "Poly Keys",
   "category": "Keys",
+  "tags": [
+    "keys",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "ladder",
+    "lfo",
+    "velocity",
+    "chorus"
+  ],
+  "notes": "A keyboard built from two tables; reach for Brightness, then Width.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

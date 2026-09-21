@@ -5,6 +5,21 @@
   },
   "name": "Stage Pad",
   "category": "Expressive",
+  "tags": [
+    "expressive",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "wheel",
+    "rhythmic",
+    "chorus",
+    "reverb"
+  ],
+  "notes": "An expressive sound built from two tables; reach for Brightness, then Motion.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

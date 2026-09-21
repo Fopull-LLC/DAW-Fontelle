@@ -5,6 +5,22 @@
   },
   "name": "Robot Voice",
   "category": "Choir & Vocal",
+  "tags": [
+    "choir",
+    "vocal",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "formant",
+    "comb",
+    "lfo",
+    "velocity",
+    "rhythmic",
+    "crushed"
+  ],
+  "notes": "A voice built from a table; reach for Step rate, then Metal.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,15 @@
   },
   "name": "Marimba",
   "category": "Pluck",
+  "tags": [
+    "pluck",
+    "table",
+    "poly",
+    "filtered",
+    "velocity"
+  ],
+  "notes": "A pluck built from two tables; reach for Mallet, then Tone.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

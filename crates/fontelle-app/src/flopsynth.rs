@@ -1213,6 +1213,7 @@ pub fn describe(
         inspector,
         routes,
         voices,
+        sounds_like: Vec::new(),
         bank: match page {
             FlopsynthPage::Presets => bank,
             _ => Vec::new(),

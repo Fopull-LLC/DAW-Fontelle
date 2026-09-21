@@ -5,6 +5,20 @@
   },
   "name": "Bend Warp",
   "category": "Expressive",
+  "tags": [
+    "expressive",
+    "table",
+    "warped",
+    "noise",
+    "poly",
+    "filtered",
+    "comb",
+    "lfo",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "An expressive sound built from a table and a noise layer; reach for Tone, then Speed.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

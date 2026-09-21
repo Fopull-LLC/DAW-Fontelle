@@ -5,6 +5,19 @@
   },
   "name": "Clarinet",
   "category": "Brass & Winds",
+  "tags": [
+    "brass",
+    "winds",
+    "table",
+    "mono",
+    "glide",
+    "filtered",
+    "velocity",
+    "lfo",
+    "rhythmic"
+  ],
+  "notes": "A brass or wind sound built from a table; reach for Tone, then Vibrato.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

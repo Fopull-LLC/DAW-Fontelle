@@ -5,6 +5,18 @@
   },
   "name": "Kora",
   "category": "World",
+  "tags": [
+    "world",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity",
+    "delay",
+    "reverb"
+  ],
+  "notes": "A world instrument built from a table; reach for Tone, then Bite.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

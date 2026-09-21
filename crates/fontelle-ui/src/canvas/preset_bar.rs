@@ -333,6 +333,11 @@ pub struct PresetChoice {
     pub category: String,
     pub origin: PresetOrigin,
     pub favourite: bool,
+    /// Its tags (§5.1), for the search and the About column; empty on a
+    /// preset that has none.
+    pub tags: Vec<String>,
+    /// Its showcase phrase: what it is for and which macro to reach for.
+    pub notes: String,
 }
 
 /// What a row of the drop-down means.

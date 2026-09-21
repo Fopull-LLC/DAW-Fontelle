@@ -5,6 +5,19 @@
   },
   "name": "Morph Keys",
   "category": "Motion & Morph",
+  "tags": [
+    "motion",
+    "morph",
+    "evolving",
+    "table",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A moving sound built from a table; reach for Morph, then Tone.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

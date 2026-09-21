@@ -5,6 +5,19 @@
   },
   "name": "Quantise Blip",
   "category": "Sync & FM",
+  "tags": [
+    "sync",
+    "fm",
+    "table",
+    "warped",
+    "poly",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic"
+  ],
+  "notes": "A sync or FM sound built from a table; reach for Trill rate, then Trill depth.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,19 @@
   },
   "name": "Crunch Kit",
   "category": "Kits & Hits",
+  "tags": [
+    "kit",
+    "hits",
+    "drums",
+    "sample",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "crushed"
+  ],
+  "notes": "A kit built from a recording; reach for Crunch, then Tone.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

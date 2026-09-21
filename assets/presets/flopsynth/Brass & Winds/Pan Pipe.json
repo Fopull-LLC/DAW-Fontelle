@@ -5,6 +5,18 @@
   },
   "name": "Pan Pipe",
   "category": "Brass & Winds",
+  "tags": [
+    "brass",
+    "winds",
+    "table",
+    "noise",
+    "poly",
+    "filtered",
+    "velocity",
+    "delay"
+  ],
+  "notes": "A brass or wind sound built from a table and a noise layer; reach for Chiff, then Air.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,19 @@
   },
   "name": "Bass Sequence",
   "category": "Sequence & Arp",
+  "tags": [
+    "sequence",
+    "arp",
+    "rhythmic",
+    "table",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "lfo"
+  ],
+  "notes": "A sequence built from two tables; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

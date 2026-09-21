@@ -5,6 +5,21 @@
   },
   "name": "Pianotron",
   "category": "Sampled Keys",
+  "tags": [
+    "sampled",
+    "keys",
+    "sample",
+    "unison",
+    "noise",
+    "poly",
+    "filtered",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "crushed"
+  ],
+  "notes": "A sampled keyboard built from two recordings and a noise layer; reach for Wow, then Hiss.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

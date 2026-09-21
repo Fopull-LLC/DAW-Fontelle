@@ -5,6 +5,19 @@
   },
   "name": "Arp Bells",
   "category": "Sequence & Arp",
+  "tags": [
+    "sequence",
+    "arp",
+    "rhythmic",
+    "table",
+    "poly",
+    "velocity",
+    "lfo",
+    "delay",
+    "reverb"
+  ],
+  "notes": "A sequence built from a table; reach for Strike, then Shimmer.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -178,10 +178,278 @@ impl FlopsynthCategory {
 }
 
 /// One row of the bank.
+///
+/// `tags` and `notes` are the row's **own** words (§5.1); what a browser
+/// sees is [`tags_of`] and [`notes_of`], which add what can be derived
+/// from the patch — most rows write nothing here and are tagged and
+/// captioned by what they are.
 pub struct FactoryPreset {
     pub category: FlopsynthCategory,
     pub name: &'static str,
     pub build: fn() -> Patch,
+    /// Words of the row's own, from `flopsynth::TAGS`, beside the derived.
+    pub tags: &'static [&'static str],
+    /// The row's own showcase phrase; empty, and [`notes_of`] writes one.
+    pub notes: &'static str,
+}
+
+/// The row's tags (§5.1): its shelf's words, its sources', what it does,
+/// and any the row wrote — each from `flopsynth::TAGS`, each once.
+pub fn tags_of(row: &FactoryPreset, patch: &Patch) -> Vec<String> {
+    let mut tags: Vec<&'static str> = Vec::new();
+    let mut add = |tag: &'static str| {
+        if !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    };
+    for tag in shelf_tags(row.category) {
+        add(tag);
+    }
+    for tag in derived_tags(patch) {
+        add(tag);
+    }
+    for tag in row.tags {
+        add(tag);
+    }
+    tags.into_iter().map(str::to_string).collect()
+}
+
+/// The row's showcase phrase (§5.1): its own, or one sentence built from
+/// what it is and the macros it names — the first two, which every row
+/// has (`every_preset_names_two_macros_and_routes_velocity`).
+pub fn notes_of(row: &FactoryPreset, patch: &Patch) -> String {
+    if !row.notes.is_empty() {
+        return row.notes.to_string();
+    }
+    let named: Vec<&str> = patch
+        .macros
+        .iter()
+        .filter(|m| !m.name.is_empty())
+        .map(|m| m.name.as_str())
+        .collect();
+    let reach = match named.as_slice() {
+        [] => ".".to_string(),
+        [one] => format!("; reach for {one}."),
+        [one, two, ..] => format!("; reach for {one}, then {two}."),
+    };
+    let what = describe_sources(patch);
+    let noun = shelf_noun(row.category);
+    format!("{noun} built {what}{reach}")
+}
+
+/// What one of the shelf's rows is, with its article: "A bass", "An organ".
+fn shelf_noun(category: FlopsynthCategory) -> &'static str {
+    use FlopsynthCategory::*;
+    match category {
+        Bass => "A bass",
+        Lead => "A lead",
+        Pad => "A pad",
+        Keys => "A keyboard",
+        Pluck => "A pluck",
+        Strings => "A string sound",
+        BrassAndWinds => "A brass or wind sound",
+        ChoirAndVocal => "A voice",
+        Organ => "An organ",
+        BellsAndMallets => "A bell or mallet sound",
+        ChipAndRetro => "A chip sound",
+        SequenceAndArp => "A sequence",
+        AtmosAndFx => "An atmosphere",
+        SynthDrums => "A drum",
+        SyncAndFm => "A sync or FM sound",
+        MotionAndMorph => "A moving sound",
+        BassMusic => "A bass-music sound",
+        Expressive => "An expressive sound",
+        World => "A world instrument",
+        Cinematic => "A cinematic sound",
+        LoFiAndTape => "A lo-fi sound",
+        Modular => "A modular patch",
+        SampledKeys => "A sampled keyboard",
+        GrainsAndClouds => "A cloud",
+        KitsAndHits => "A kit",
+        GrowlsAndScreams => "A growl",
+    }
+}
+
+/// The shelf's own words.
+fn shelf_tags(category: FlopsynthCategory) -> &'static [&'static str] {
+    use FlopsynthCategory::*;
+    match category {
+        Bass => &["bass"],
+        Lead => &["lead"],
+        Pad => &["pad"],
+        Keys => &["keys"],
+        Pluck => &["pluck"],
+        Strings => &["strings"],
+        BrassAndWinds => &["brass", "winds"],
+        ChoirAndVocal => &["choir", "vocal"],
+        Organ => &["organ"],
+        BellsAndMallets => &["bells", "mallets"],
+        ChipAndRetro => &["chip", "retro"],
+        SequenceAndArp => &["sequence", "arp", "rhythmic"],
+        AtmosAndFx => &["atmos", "fx"],
+        SynthDrums => &["drums"],
+        SyncAndFm => &["sync", "fm"],
+        MotionAndMorph => &["motion", "morph", "evolving"],
+        BassMusic => &["bass music", "bass"],
+        Expressive => &["expressive"],
+        World => &["world"],
+        Cinematic => &["cinematic"],
+        LoFiAndTape => &["lo-fi", "tape"],
+        Modular => &["modular"],
+        SampledKeys => &["sampled", "keys"],
+        GrainsAndClouds => &["grains", "clouds"],
+        KitsAndHits => &["kit", "hits", "drums"],
+        GrowlsAndScreams => &["growl", "scream", "bass music"],
+    }
+}
+
+/// What the patch is, read off it: its sources, its stack, its voice, its
+/// filters, its movement, its chain.
+fn derived_tags(patch: &Patch) -> Vec<&'static str> {
+    use fontelle_dsp::{FilterModel, SynthSource};
+    let mut tags = Vec::new();
+    let mut add = |tag: &'static str| {
+        if !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    };
+    let audible = |layer: &crate::patch::Layer| layer.gain_db > crate::SILENT_DB;
+    for layer in patch.layers.iter().filter(|l| audible(l)) {
+        let Source::Synth(osc) = &layer.source else {
+            continue;
+        };
+        match osc.source {
+            SynthSource::Table(_) => add("table"),
+            SynthSource::User(_) => add("drawn"),
+            SynthSource::Sample(_) => add("sample"),
+            SynthSource::String => add("string"),
+            SynthSource::Spectral(_) => add("spectral"),
+            SynthSource::Noise => add("noise"),
+        }
+        if osc.unison.voices > 1 {
+            add("unison");
+        }
+        if osc.warp != fontelle_dsp::WarpMode::Off && osc.warp_amount > 0.0 {
+            add("warped");
+        }
+        if osc.modulator.is_some() {
+            add("fm");
+        }
+    }
+    match patch.voice_config.retrigger {
+        crate::voice::RetriggerMode::Legato => add("mono"),
+        _ => add("poly"),
+    }
+    if patch.voice_config.glide_time_s > 0.0 {
+        add("glide");
+    }
+    for slot in patch.filters.iter().filter(|f| f.enabled) {
+        add("filtered");
+        match slot.model {
+            FilterModel::Ladder => add("ladder"),
+            FilterModel::Formant => add("formant"),
+            FilterModel::Comb => add("comb"),
+            FilterModel::Diode => add("diode"),
+            FilterModel::Vowel => add("vowel"),
+            FilterModel::Ring => add("ring"),
+            _ => {}
+        }
+    }
+    for route in &patch.mod_matrix.routes {
+        let sources = [Some(route.source), route.via].into_iter().flatten();
+        for source in sources {
+            match source {
+                ModSource::Lfo(_) => add("lfo"),
+                ModSource::Chaos => add("chaos"),
+                ModSource::RandomWalk => add("walk"),
+                ModSource::StepSeq(_) => add("stepped"),
+                ModSource::Velocity => add("velocity"),
+                ModSource::Aftertouch => add("aftertouch"),
+                ModSource::ModWheel => add("wheel"),
+                _ => {}
+            }
+        }
+    }
+    if patch.lfos.iter().any(|lfo| lfo.sync)
+        && patch
+            .mod_matrix
+            .routes
+            .iter()
+            .any(|r| matches!(r.source, ModSource::Lfo(_)))
+    {
+        add("rhythmic");
+    }
+    for slot in patch.fx.iter().filter(|s| s.enabled) {
+        use fontelle_types::EffectKind::*;
+        match slot.config.kind() {
+            Chorus => add("chorus"),
+            Delay => add("delay"),
+            Reverb => add("reverb"),
+            Distortion | Multiband => add("distorted"),
+            Bitcrush => add("crushed"),
+            Phaser => add("phaser"),
+            Flanger => add("flanger"),
+            Fold => add("folded"),
+            Shifter => add("shifted"),
+            Hyper => add("hyper"),
+            Width => add("wide"),
+            _ => {}
+        }
+    }
+    // Its length: a sound that stops within a third of a second is short,
+    // one that rings past four seconds after the key is let go is long.
+    let amp = &patch.envelopes[0];
+    if amp.sustain_level <= 0.0 && amp.decay_s + amp.release_s < 0.35 {
+        add("short");
+    } else if amp.release_s >= 4.0 {
+        add("long");
+    }
+    tags
+}
+
+/// The sources, as words: "of two tables and a string".
+fn describe_sources(patch: &Patch) -> String {
+    use fontelle_dsp::SynthSource;
+    let mut counts = [0usize; 6];
+    for layer in patch.layers.iter().filter(|l| l.gain_db > crate::SILENT_DB) {
+        let Source::Synth(osc) = &layer.source else {
+            continue;
+        };
+        let which = match osc.source {
+            SynthSource::Table(_) => 0,
+            SynthSource::User(_) => 1,
+            SynthSource::Sample(_) => 2,
+            SynthSource::String => 3,
+            SynthSource::Spectral(_) => 4,
+            SynthSource::Noise => 5,
+        };
+        counts[which] += 1;
+    }
+    let words = [
+        ("table", "tables"),
+        ("drawn table", "drawn tables"),
+        ("recording", "recordings"),
+        ("string", "strings"),
+        ("spectral source", "spectral sources"),
+        ("noise layer", "noise layers"),
+    ];
+    let parts: Vec<String> = counts
+        .iter()
+        .zip(words)
+        .filter(|(n, _)| **n > 0)
+        .map(|(n, (one, many))| match n {
+            1 => format!("a {one}"),
+            2 => format!("two {many}"),
+            3 => format!("three {many}"),
+            4 => format!("four {many}"),
+            _ => format!("{n} {many}"),
+        })
+        .collect();
+    match parts.as_slice() {
+        [] => "from nothing sounding".to_string(),
+        [one] => format!("from {one}"),
+        [head @ .., last] => format!("from {} and {last}", head.join(", ")),
+    }
 }
 
 // ---------------------------------------------------------- the builder ---
@@ -1319,7 +1587,7 @@ fn hit(set: FactorySampleSet, name: &str) -> Build {
 }
 
 macro_rules! bank {
-    ($($category:ident : $name:literal => $build:expr,)*) => {
+    ($($category:ident : $name:literal $([$($tag:literal),* $(,)?])? $(= $notes:literal)? => $build:expr,)*) => {
         /// Every factory preset, in the order the browser lists them.
         ///
         /// The count and the categories are held by
@@ -1333,6 +1601,8 @@ macro_rules! bank {
                 category: FlopsynthCategory::$category,
                 name: $name,
                 build: || { let b: Build = $build; b.done() },
+                tags: &[$($($tag,)*)?],
+                notes: { let notes: &str = ""; $(let notes = $notes;)? notes },
             },)*
         ];
     };

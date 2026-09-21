@@ -197,7 +197,10 @@ mod tests {
         assert!(!looks_like_wavetable(8_191));
         assert!(!looks_like_wavetable(24_000));
         assert!(!looks_like_wavetable(0));
-        assert!(!looks_like_wavetable(2_048 * 65), "more than a table holds");
+        assert!(
+            !looks_like_wavetable(2_048 * (fontelle_dsp::MAX_USER_FRAMES + 1)),
+            "more than a table holds"
+        );
     }
 
     #[test]

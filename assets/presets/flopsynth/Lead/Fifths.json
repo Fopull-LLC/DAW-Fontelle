@@ -5,6 +5,21 @@
   },
   "name": "Fifths",
   "category": "Lead",
+  "tags": [
+    "lead",
+    "table",
+    "unison",
+    "mono",
+    "glide",
+    "filtered",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic",
+    "chorus"
+  ],
+  "notes": "A lead built from three tables; reach for Brightness, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

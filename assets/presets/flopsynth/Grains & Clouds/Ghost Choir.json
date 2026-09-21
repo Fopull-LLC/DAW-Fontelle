@@ -5,6 +5,22 @@
   },
   "name": "Ghost Choir",
   "category": "Grains & Clouds",
+  "tags": [
+    "grains",
+    "clouds",
+    "sample",
+    "unison",
+    "poly",
+    "filtered",
+    "formant",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "chorus",
+    "reverb"
+  ],
+  "notes": "A cloud built from a recording; reach for Vowel, then Sway.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,18 @@
   },
   "name": "Glass Grains",
   "category": "Grains & Clouds",
+  "tags": [
+    "grains",
+    "clouds",
+    "sample",
+    "poly",
+    "filtered",
+    "velocity",
+    "delay",
+    "reverb"
+  ],
+  "notes": "A cloud built from a recording; reach for Where, then Thin.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

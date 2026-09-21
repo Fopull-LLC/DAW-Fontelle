@@ -5,6 +5,19 @@
   },
   "name": "Bassoon",
   "category": "Brass & Winds",
+  "tags": [
+    "brass",
+    "winds",
+    "table",
+    "mono",
+    "glide",
+    "filtered",
+    "lfo",
+    "velocity",
+    "rhythmic"
+  ],
+  "notes": "A brass or wind sound built from a table; reach for Tone, then Vibrato.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

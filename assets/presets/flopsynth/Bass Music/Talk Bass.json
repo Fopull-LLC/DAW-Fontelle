@@ -5,6 +5,21 @@
   },
   "name": "Talk Bass",
   "category": "Bass Music",
+  "tags": [
+    "bass music",
+    "bass",
+    "table",
+    "poly",
+    "filtered",
+    "formant",
+    "velocity",
+    "lfo",
+    "wheel",
+    "rhythmic",
+    "short"
+  ],
+  "notes": "A bass-music sound built from three tables; reach for Vowel, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -14,6 +14,7 @@ mod patch;
 mod patch_format;
 pub mod patch_params;
 mod playback;
+pub mod preview;
 mod sampler;
 mod streaming;
 mod voice;

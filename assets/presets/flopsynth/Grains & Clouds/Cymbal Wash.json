@@ -5,6 +5,17 @@
   },
   "name": "Cymbal Wash",
   "category": "Grains & Clouds",
+  "tags": [
+    "grains",
+    "clouds",
+    "sample",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A cloud built from a recording; reach for Where, then Shimmer.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

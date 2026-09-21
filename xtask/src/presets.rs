@@ -247,12 +247,20 @@ fn drum_kits() -> Result<Vec<Preset>, String> {
 fn flopsynth() -> Result<Vec<Preset>, String> {
     let mut out = Vec::new();
     for row in fontelle_core::flopsynth::presets::FACTORY {
-        out.push(Preset::new(
-            DeviceKind::Instrument(InstrumentKind::Flopsynth),
-            row.name,
-            row.category.label(),
-            PresetPayload::Patch(patch_data(&(row.build)())?),
-        ));
+        let patch = (row.build)();
+        // The words (§5.1): the tags the row derives and wrote, and its
+        // showcase phrase — into the file, where the browser reads them.
+        let tags = fontelle_core::flopsynth::presets::tags_of(row, &patch);
+        let notes = fontelle_core::flopsynth::presets::notes_of(row, &patch);
+        out.push(
+            Preset::new(
+                DeviceKind::Instrument(InstrumentKind::Flopsynth),
+                row.name,
+                row.category.label(),
+                PresetPayload::Patch(patch_data(&patch)?),
+            )
+            .with_words(tags, notes, "Fontelle"),
+        );
     }
     Ok(out)
 }

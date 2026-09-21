@@ -5,6 +5,20 @@
   },
   "name": "Talk Lead",
   "category": "Lead",
+  "tags": [
+    "lead",
+    "table",
+    "unison",
+    "mono",
+    "glide",
+    "filtered",
+    "formant",
+    "lfo",
+    "wheel",
+    "velocity"
+  ],
+  "notes": "A lead built from a table; reach for Vowel, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

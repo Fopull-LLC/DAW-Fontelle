@@ -5,6 +5,17 @@
   },
   "name": "808 Kit",
   "category": "Kits & Hits",
+  "tags": [
+    "kit",
+    "hits",
+    "drums",
+    "sample",
+    "poly",
+    "velocity",
+    "distorted"
+  ],
+  "notes": "A kit built from a recording; reach for Ring, then Spread.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,18 @@
   },
   "name": "Whale",
   "category": "Cinematic",
+  "tags": [
+    "cinematic",
+    "table",
+    "noise",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A cinematic sound built from a table and a noise layer; reach for Tone, then Speed.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

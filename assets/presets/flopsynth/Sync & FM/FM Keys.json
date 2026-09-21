@@ -5,6 +5,17 @@
   },
   "name": "FM Keys",
   "category": "Sync & FM",
+  "tags": [
+    "sync",
+    "fm",
+    "table",
+    "warped",
+    "poly",
+    "velocity",
+    "lfo"
+  ],
+  "notes": "A sync or FM sound built from a table; reach for Bite, then Tremolo.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

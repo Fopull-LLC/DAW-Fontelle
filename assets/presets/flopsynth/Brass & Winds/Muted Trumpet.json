@@ -5,6 +5,17 @@
   },
   "name": "Muted Trumpet",
   "category": "Brass & Winds",
+  "tags": [
+    "brass",
+    "winds",
+    "table",
+    "mono",
+    "glide",
+    "filtered",
+    "velocity"
+  ],
+  "notes": "A brass or wind sound built from a table; reach for Brightness, then Drive.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

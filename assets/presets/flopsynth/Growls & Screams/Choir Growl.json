@@ -5,6 +5,21 @@
   },
   "name": "Choir Growl",
   "category": "Growls & Screams",
+  "tags": [
+    "growl",
+    "scream",
+    "bass music",
+    "table",
+    "warped",
+    "fm",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "distorted"
+  ],
+  "notes": "A growl built from two tables; reach for Tear, then Vowel.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

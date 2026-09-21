@@ -5,6 +5,23 @@
   },
   "name": "Metal Throat",
   "category": "Growls & Screams",
+  "tags": [
+    "growl",
+    "scream",
+    "bass music",
+    "table",
+    "warped",
+    "fm",
+    "poly",
+    "filtered",
+    "formant",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "distorted"
+  ],
+  "notes": "A growl built from two tables; reach for Metal, then Vowel.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,19 @@
   },
   "name": "Clav Wah",
   "category": "Keys",
+  "tags": [
+    "keys",
+    "table",
+    "poly",
+    "filtered",
+    "ladder",
+    "lfo",
+    "velocity",
+    "rhythmic",
+    "distorted"
+  ],
+  "notes": "A keyboard built from a table; reach for Wah rate, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

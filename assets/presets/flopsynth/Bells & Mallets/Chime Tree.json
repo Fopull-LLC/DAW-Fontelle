@@ -5,6 +5,18 @@
   },
   "name": "Chime Tree",
   "category": "Bells & Mallets",
+  "tags": [
+    "bells",
+    "mallets",
+    "table",
+    "unison",
+    "poly",
+    "velocity",
+    "lfo",
+    "reverb"
+  ],
+  "notes": "A bell or mallet sound built from a table; reach for Strike, then Shimmer.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

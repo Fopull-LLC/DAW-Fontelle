@@ -5,6 +5,19 @@
   },
   "name": "SID Bass",
   "category": "Chip & Retro",
+  "tags": [
+    "chip",
+    "retro",
+    "table",
+    "poly",
+    "filtered",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic"
+  ],
+  "notes": "A chip sound built from a table; reach for Trill rate, then Trill depth.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

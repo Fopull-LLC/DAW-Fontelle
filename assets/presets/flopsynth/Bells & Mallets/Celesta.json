@@ -5,6 +5,18 @@
   },
   "name": "Celesta",
   "category": "Bells & Mallets",
+  "tags": [
+    "bells",
+    "mallets",
+    "sample",
+    "table",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A bell or mallet sound built from a table and a recording; reach for Shimmer, then Length.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

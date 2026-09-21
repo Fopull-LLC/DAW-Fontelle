@@ -5,6 +5,17 @@
   },
   "name": "Air Tension",
   "category": "Cinematic",
+  "tags": [
+    "cinematic",
+    "noise",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A cinematic sound built from a noise layer; reach for Tone, then Speed.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

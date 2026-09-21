@@ -5,6 +5,18 @@
   },
   "name": "Ping Filter",
   "category": "Modular",
+  "tags": [
+    "modular",
+    "noise",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "reverb",
+    "short"
+  ],
+  "notes": "A modular patch built from a noise layer; reach for Ring, then Pitch.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

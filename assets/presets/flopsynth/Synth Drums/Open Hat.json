@@ -5,6 +5,15 @@
   },
   "name": "Open Hat",
   "category": "Synth Drums",
+  "tags": [
+    "drums",
+    "noise",
+    "poly",
+    "filtered",
+    "velocity"
+  ],
+  "notes": "A drum built from a noise layer; reach for Tone, then Level.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

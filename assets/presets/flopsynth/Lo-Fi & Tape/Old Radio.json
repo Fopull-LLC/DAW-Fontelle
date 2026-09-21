@@ -5,6 +5,23 @@
   },
   "name": "Old Radio",
   "category": "Lo-Fi & Tape",
+  "tags": [
+    "lo-fi",
+    "tape",
+    "table",
+    "unison",
+    "noise",
+    "mono",
+    "glide",
+    "filtered",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic",
+    "crushed"
+  ],
+  "notes": "A lo-fi sound built from a table and a noise layer; reach for Brightness, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

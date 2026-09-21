@@ -5,6 +5,17 @@
   },
   "name": "Metallic",
   "category": "Bass",
+  "tags": [
+    "bass",
+    "table",
+    "warped",
+    "fm",
+    "poly",
+    "filtered",
+    "velocity"
+  ],
+  "notes": "A bass built from a table; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

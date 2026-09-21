@@ -5,6 +5,17 @@
   },
   "name": "Bounce Piano",
   "category": "Grains & Clouds",
+  "tags": [
+    "grains",
+    "clouds",
+    "sample",
+    "poly",
+    "filtered",
+    "velocity",
+    "delay"
+  ],
+  "notes": "A cloud built from a recording; reach for Skip, then Brightness.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,16 @@
   },
   "name": "Pluck Bass",
   "category": "Bass",
+  "tags": [
+    "bass",
+    "table",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity"
+  ],
+  "notes": "A bass built from two tables; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

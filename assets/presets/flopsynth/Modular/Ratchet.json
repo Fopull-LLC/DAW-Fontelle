@@ -5,6 +5,19 @@
   },
   "name": "Ratchet",
   "category": "Modular",
+  "tags": [
+    "modular",
+    "table",
+    "poly",
+    "filtered",
+    "ladder",
+    "lfo",
+    "velocity",
+    "rhythmic",
+    "delay"
+  ],
+  "notes": "A modular patch built from a table; reach for Rate, then Tone.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

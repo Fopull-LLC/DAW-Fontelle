@@ -5,6 +5,18 @@
   },
   "name": "Reese",
   "category": "Bass",
+  "tags": [
+    "bass",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "chorus"
+  ],
+  "notes": "A bass built from three tables; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

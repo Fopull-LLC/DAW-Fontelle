@@ -5,6 +5,19 @@
   },
   "name": "Didgeridoo",
   "category": "World",
+  "tags": [
+    "world",
+    "table",
+    "mono",
+    "glide",
+    "filtered",
+    "ladder",
+    "velocity",
+    "lfo",
+    "rhythmic"
+  ],
+  "notes": "A world instrument built from two tables; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

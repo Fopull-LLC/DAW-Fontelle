@@ -5,6 +5,19 @@
   },
   "name": "Noise Rhythm",
   "category": "Sequence & Arp",
+  "tags": [
+    "sequence",
+    "arp",
+    "rhythmic",
+    "noise",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "delay"
+  ],
+  "notes": "A sequence built from a noise layer; reach for Rate, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

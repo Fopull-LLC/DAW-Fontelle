@@ -5,6 +5,19 @@
   },
   "name": "Space Drone",
   "category": "Atmos & FX",
+  "tags": [
+    "atmos",
+    "fx",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "An atmosphere built from two tables; reach for Tone, then Drift.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

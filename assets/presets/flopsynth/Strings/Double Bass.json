@@ -5,6 +5,20 @@
   },
   "name": "Double Bass",
   "category": "Strings",
+  "tags": [
+    "strings",
+    "table",
+    "mono",
+    "glide",
+    "filtered",
+    "formant",
+    "lfo",
+    "velocity",
+    "wheel",
+    "rhythmic"
+  ],
+  "notes": "A string sound built from a table; reach for Brightness, then Vibrato.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,20 @@
   },
   "name": "Whistle",
   "category": "Lead",
+  "tags": [
+    "lead",
+    "table",
+    "noise",
+    "mono",
+    "glide",
+    "filtered",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic"
+  ],
+  "notes": "A lead built from a table and a noise layer; reach for Brightness, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

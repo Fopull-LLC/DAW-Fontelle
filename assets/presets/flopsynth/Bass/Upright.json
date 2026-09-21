@@ -5,6 +5,18 @@
   },
   "name": "Upright",
   "category": "Bass",
+  "tags": [
+    "bass",
+    "table",
+    "noise",
+    "mono",
+    "glide",
+    "filtered",
+    "comb",
+    "velocity"
+  ],
+  "notes": "A bass built from three tables and a noise layer; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

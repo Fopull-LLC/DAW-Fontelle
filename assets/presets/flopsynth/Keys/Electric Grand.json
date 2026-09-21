@@ -5,6 +5,19 @@
   },
   "name": "Electric Grand",
   "category": "Keys",
+  "tags": [
+    "keys",
+    "sample",
+    "unison",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "chorus",
+    "reverb"
+  ],
+  "notes": "A keyboard built from a recording; reach for Brightness, then Pickup.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

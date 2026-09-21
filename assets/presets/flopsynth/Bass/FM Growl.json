@@ -5,6 +5,20 @@
   },
   "name": "FM Growl",
   "category": "Bass",
+  "tags": [
+    "bass",
+    "table",
+    "warped",
+    "fm",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "lfo",
+    "rhythmic"
+  ],
+  "notes": "A bass built from two tables; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,22 @@
   },
   "name": "Wub",
   "category": "Growls & Screams",
+  "tags": [
+    "growl",
+    "scream",
+    "bass music",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "distorted"
+  ],
+  "notes": "A growl built from two tables; reach for Rate, then Bark.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

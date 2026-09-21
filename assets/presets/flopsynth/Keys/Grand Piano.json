@@ -5,6 +5,18 @@
   },
   "name": "Grand Piano",
   "category": "Keys",
+  "tags": [
+    "keys",
+    "sample",
+    "string",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A keyboard built from two recordings and a string; reach for Brightness, then Hardness.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

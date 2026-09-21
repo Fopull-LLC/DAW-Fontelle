@@ -5,6 +5,22 @@
   },
   "name": "Erhu",
   "category": "World",
+  "tags": [
+    "world",
+    "table",
+    "unison",
+    "mono",
+    "glide",
+    "filtered",
+    "lfo",
+    "wheel",
+    "velocity",
+    "aftertouch",
+    "rhythmic",
+    "reverb"
+  ],
+  "notes": "A world instrument built from a table; reach for Brightness, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

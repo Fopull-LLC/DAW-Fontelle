@@ -5,6 +5,16 @@
   },
   "name": "Zap",
   "category": "Synth Drums",
+  "tags": [
+    "drums",
+    "table",
+    "poly",
+    "filtered",
+    "velocity",
+    "short"
+  ],
+  "notes": "A drum built from a table; reach for Tune, then Click.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

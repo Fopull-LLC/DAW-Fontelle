@@ -5,6 +5,19 @@
   },
   "name": "Tremolo Keys",
   "category": "Sequence & Arp",
+  "tags": [
+    "sequence",
+    "arp",
+    "rhythmic",
+    "table",
+    "warped",
+    "fm",
+    "poly",
+    "velocity",
+    "lfo"
+  ],
+  "notes": "A sequence built from a table; reach for Bite, then Tremolo.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

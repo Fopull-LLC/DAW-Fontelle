@@ -15,6 +15,7 @@ mod keymap;
 mod library;
 mod plugins;
 pub mod preset_bank;
+pub mod preview_index;
 mod projects;
 mod realise;
 pub mod sampling;

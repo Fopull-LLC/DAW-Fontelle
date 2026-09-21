@@ -5,6 +5,19 @@
   },
   "name": "Broken Chorus",
   "category": "Lo-Fi & Tape",
+  "tags": [
+    "lo-fi",
+    "tape",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity",
+    "chorus",
+    "crushed"
+  ],
+  "notes": "A lo-fi sound built from a table; reach for Tone, then Bite.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

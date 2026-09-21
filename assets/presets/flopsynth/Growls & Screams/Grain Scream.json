@@ -5,6 +5,23 @@
   },
   "name": "Grain Scream",
   "category": "Growls & Screams",
+  "tags": [
+    "growl",
+    "scream",
+    "bass music",
+    "sample",
+    "warped",
+    "fm",
+    "mono",
+    "glide",
+    "filtered",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "distorted"
+  ],
+  "notes": "A growl built from a recording; reach for Scream, then Rate.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

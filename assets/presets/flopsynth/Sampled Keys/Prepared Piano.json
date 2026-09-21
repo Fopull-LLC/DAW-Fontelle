@@ -5,6 +5,19 @@
   },
   "name": "Prepared Piano",
   "category": "Sampled Keys",
+  "tags": [
+    "sampled",
+    "keys",
+    "sample",
+    "warped",
+    "fm",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A sampled keyboard built from a recording; reach for Bolt, then Where.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

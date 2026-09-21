@@ -5,6 +5,16 @@
   },
   "name": "Harpsi",
   "category": "Keys",
+  "tags": [
+    "keys",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity"
+  ],
+  "notes": "A keyboard built from two tables; reach for Tone, then Bite.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,17 @@
   },
   "name": "Bongo Drone",
   "category": "Grains & Clouds",
+  "tags": [
+    "grains",
+    "clouds",
+    "sample",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A cloud built from a recording; reach for Where, then Brightness.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

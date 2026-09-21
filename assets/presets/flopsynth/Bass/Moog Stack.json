@@ -5,6 +5,17 @@
   },
   "name": "Moog Stack",
   "category": "Bass",
+  "tags": [
+    "bass",
+    "table",
+    "mono",
+    "glide",
+    "filtered",
+    "ladder",
+    "velocity"
+  ],
+  "notes": "A bass built from four tables; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,20 @@
   },
   "name": "Warble Bass",
   "category": "Lo-Fi & Tape",
+  "tags": [
+    "lo-fi",
+    "tape",
+    "table",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "crushed"
+  ],
+  "notes": "A lo-fi sound built from two tables; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

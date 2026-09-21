@@ -5,6 +5,18 @@
   },
   "name": "Hat Arp",
   "category": "Kits & Hits",
+  "tags": [
+    "kit",
+    "hits",
+    "drums",
+    "sample",
+    "poly",
+    "filtered",
+    "velocity",
+    "delay"
+  ],
+  "notes": "A kit built from a recording; reach for Thin, then Side.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,21 @@
   },
   "name": "Triplet Wobble",
   "category": "Bass Music",
+  "tags": [
+    "bass music",
+    "bass",
+    "table",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "lfo",
+    "wheel",
+    "rhythmic",
+    "distorted"
+  ],
+  "notes": "A bass-music sound built from two tables; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

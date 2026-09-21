@@ -5,6 +5,18 @@
   },
   "name": "Pulse Train",
   "category": "Sequence & Arp",
+  "tags": [
+    "sequence",
+    "arp",
+    "rhythmic",
+    "table",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity"
+  ],
+  "notes": "A sequence built from a table; reach for Gate rate, then Sweep rate.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

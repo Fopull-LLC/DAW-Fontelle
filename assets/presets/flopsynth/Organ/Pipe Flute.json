@@ -5,6 +5,19 @@
   },
   "name": "Pipe Flute",
   "category": "Organ",
+  "tags": [
+    "organ",
+    "table",
+    "noise",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "rhythmic",
+    "reverb"
+  ],
+  "notes": "An organ built from two tables and a noise layer; reach for Leslie, then Drawbars.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

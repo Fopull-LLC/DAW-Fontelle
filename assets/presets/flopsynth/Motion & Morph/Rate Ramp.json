@@ -5,6 +5,20 @@
   },
   "name": "Rate Ramp",
   "category": "Motion & Morph",
+  "tags": [
+    "motion",
+    "morph",
+    "evolving",
+    "table",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "rhythmic",
+    "delay"
+  ],
+  "notes": "A moving sound built from a table; reach for Speed, then Depth.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

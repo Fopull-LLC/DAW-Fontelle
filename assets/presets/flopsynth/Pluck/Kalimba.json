@@ -5,6 +5,17 @@
   },
   "name": "Kalimba",
   "category": "Pluck",
+  "tags": [
+    "pluck",
+    "table",
+    "warped",
+    "fm",
+    "poly",
+    "filtered",
+    "velocity"
+  ],
+  "notes": "A pluck built from a table; reach for Bite, then Tone.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

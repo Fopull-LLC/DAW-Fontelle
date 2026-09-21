@@ -5,6 +5,18 @@
   },
   "name": "EP Soft",
   "category": "Keys",
+  "tags": [
+    "keys",
+    "table",
+    "warped",
+    "fm",
+    "poly",
+    "filtered",
+    "velocity",
+    "lfo"
+  ],
+  "notes": "A keyboard built from a table; reach for Bite, then Tremolo.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

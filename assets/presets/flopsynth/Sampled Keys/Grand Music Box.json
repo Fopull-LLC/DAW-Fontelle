@@ -5,6 +5,18 @@
   },
   "name": "Grand Music Box",
   "category": "Sampled Keys",
+  "tags": [
+    "sampled",
+    "keys",
+    "sample",
+    "poly",
+    "filtered",
+    "velocity",
+    "delay",
+    "reverb"
+  ],
+  "notes": "A sampled keyboard built from two recordings; reach for Body, then Length.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

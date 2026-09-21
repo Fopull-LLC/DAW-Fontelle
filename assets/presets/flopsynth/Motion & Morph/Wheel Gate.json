@@ -5,6 +5,22 @@
   },
   "name": "Wheel Gate",
   "category": "Motion & Morph",
+  "tags": [
+    "motion",
+    "morph",
+    "evolving",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "ladder",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic"
+  ],
+  "notes": "A moving sound built from a table; reach for Rate, then Tone.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

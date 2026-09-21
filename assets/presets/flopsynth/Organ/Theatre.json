@@ -5,6 +5,16 @@
   },
   "name": "Theatre",
   "category": "Organ",
+  "tags": [
+    "organ",
+    "table",
+    "poly",
+    "lfo",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "An organ built from three tables; reach for Leslie, then Drawbars.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

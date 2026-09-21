@@ -5,6 +5,18 @@
   },
   "name": "Steel Drum",
   "category": "Bells & Mallets",
+  "tags": [
+    "bells",
+    "mallets",
+    "table",
+    "warped",
+    "poly",
+    "velocity",
+    "lfo",
+    "rhythmic"
+  ],
+  "notes": "A bell or mallet sound built from three tables; reach for Strike, then Shimmer.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

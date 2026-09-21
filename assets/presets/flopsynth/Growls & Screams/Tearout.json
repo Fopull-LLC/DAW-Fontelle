@@ -5,6 +5,22 @@
   },
   "name": "Tearout",
   "category": "Growls & Screams",
+  "tags": [
+    "growl",
+    "scream",
+    "bass music",
+    "table",
+    "warped",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "distorted"
+  ],
+  "notes": "A growl built from three tables; reach for Rate, then Fifth.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,19 @@
   },
   "name": "Oboe",
   "category": "Brass & Winds",
+  "tags": [
+    "brass",
+    "winds",
+    "table",
+    "poly",
+    "filtered",
+    "formant",
+    "lfo",
+    "velocity",
+    "rhythmic"
+  ],
+  "notes": "A brass or wind sound built from a table; reach for Reed, then Vibrato.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

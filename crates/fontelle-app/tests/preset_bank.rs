@@ -441,3 +441,32 @@ fn every_factory_preset_belongs_to_a_device_the_program_still_has() {
         );
     }
 }
+
+/// The bank reads a preset's words (§5.1) with its index, so the browser
+/// can search the tags and show the phrase without opening the file again
+/// — and every factory synth row has them, from the rewrite Ty's §9.7
+/// asked for.
+#[test]
+fn every_factory_synth_preset_carries_its_tags_and_its_phrase() {
+    use fontelle_types::{DeviceKind, InstrumentKind};
+    let bank = PresetBank::new(None);
+    let rows = bank.for_device(&DeviceKind::Instrument(InstrumentKind::Flopsynth));
+    assert!(rows.len() >= 380);
+    for entry in &rows {
+        assert!(entry.tags.len() >= 3, "{}: {:?}", entry.name, entry.tags);
+        assert!(!entry.notes.is_empty(), "{}", entry.name);
+        for tag in &entry.tags {
+            assert!(
+                fontelle_core::flopsynth::TAGS.contains(&tag.as_str()),
+                "{}: {tag}",
+                entry.name
+            );
+        }
+    }
+    let grand = rows
+        .iter()
+        .find(|e| e.name == "Grand Piano")
+        .expect("the grand");
+    assert!(grand.tags.iter().any(|t| t == "sample"));
+    assert!(grand.notes.contains("reach for"), "{}", grand.notes);
+}

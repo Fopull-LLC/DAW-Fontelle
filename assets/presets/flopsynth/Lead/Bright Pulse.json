@@ -5,6 +5,18 @@
   },
   "name": "Bright Pulse",
   "category": "Lead",
+  "tags": [
+    "lead",
+    "table",
+    "mono",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic",
+    "delay"
+  ],
+  "notes": "A lead built from a table; reach for Brightness, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

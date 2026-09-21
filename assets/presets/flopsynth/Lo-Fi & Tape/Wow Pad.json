@@ -5,6 +5,22 @@
   },
   "name": "Wow Pad",
   "category": "Lo-Fi & Tape",
+  "tags": [
+    "lo-fi",
+    "tape",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "wheel",
+    "rhythmic",
+    "chorus",
+    "reverb"
+  ],
+  "notes": "A lo-fi sound built from two tables; reach for Brightness, then Motion.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

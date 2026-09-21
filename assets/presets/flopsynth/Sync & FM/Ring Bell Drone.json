@@ -5,6 +5,20 @@
   },
   "name": "Ring Bell Drone",
   "category": "Sync & FM",
+  "tags": [
+    "sync",
+    "fm",
+    "table",
+    "warped",
+    "noise",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A sync or FM sound built from a table and a noise layer; reach for Tone, then Speed.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

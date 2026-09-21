@@ -27,6 +27,9 @@ fn every_payload_kind_round_trips_through_a_file() {
             device: DeviceKind::Instrument(InstrumentKind::Osc3),
             name: "Init Lead".to_string(),
             category: "Lead".to_string(),
+            tags: Vec::new(),
+            notes: String::new(),
+            author: String::new(),
             payload: PresetPayload::Patch(a_patch()),
         },
         Preset {
@@ -34,6 +37,9 @@ fn every_payload_kind_round_trips_through_a_file() {
             device: DeviceKind::Effect(EffectKind::Distortion),
             name: "Fuzz".to_string(),
             category: "Drive".to_string(),
+            tags: Vec::new(),
+            notes: String::new(),
+            author: String::new(),
             payload: PresetPayload::Effect(EffectConfig::new(EffectKind::Distortion)),
         },
         Preset {
@@ -41,6 +47,9 @@ fn every_payload_kind_round_trips_through_a_file() {
             device: DeviceKind::Plugin(PluginKey::clap("com.u-he.diva")),
             name: "Big Brass".to_string(),
             category: "Brass".to_string(),
+            tags: Vec::new(),
+            notes: String::new(),
+            author: String::new(),
             payload: PresetPayload::Plugin(PluginState::new(
                 PluginKey::clap("com.u-he.diva"),
                 "Diva",
@@ -66,6 +75,9 @@ fn a_payload_that_does_not_match_its_device_is_refused() {
         device: DeviceKind::Instrument(InstrumentKind::Osc3),
         name: "Confused".to_string(),
         category: "Lead".to_string(),
+        tags: Vec::new(),
+        notes: String::new(),
+        author: String::new(),
         payload: PresetPayload::Effect(EffectConfig::new(EffectKind::Reverb)),
     };
     assert!(
@@ -78,6 +90,9 @@ fn a_payload_that_does_not_match_its_device_is_refused() {
         device: DeviceKind::Effect(EffectKind::Delay),
         name: "Hall".to_string(),
         category: "Space".to_string(),
+        tags: Vec::new(),
+        notes: String::new(),
+        author: String::new(),
         payload: PresetPayload::Effect(EffectConfig::new(EffectKind::Reverb)),
     };
     assert!(
@@ -90,6 +105,9 @@ fn a_payload_that_does_not_match_its_device_is_refused() {
         device: DeviceKind::Effect(EffectKind::Reverb),
         name: "Hall".to_string(),
         category: "Space".to_string(),
+        tags: Vec::new(),
+        notes: String::new(),
+        author: String::new(),
         payload: PresetPayload::Effect(EffectConfig::new(EffectKind::Reverb)),
     };
     assert!(right.is_consistent());
@@ -193,6 +211,9 @@ fn a_file_from_a_newer_build_is_refused_as_such() {
         device: DeviceKind::Instrument(InstrumentKind::Osc3),
         name: "Today".to_string(),
         category: "Lead".to_string(),
+        tags: Vec::new(),
+        notes: String::new(),
+        author: String::new(),
         payload: PresetPayload::Patch(a_patch()),
     };
     assert!(!ours.is_from_the_future());

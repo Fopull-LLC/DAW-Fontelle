@@ -5,6 +5,18 @@
   },
   "name": "Pizz Section",
   "category": "Strings",
+  "tags": [
+    "strings",
+    "sample",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity",
+    "chorus",
+    "reverb"
+  ],
+  "notes": "A string sound built from a recording; reach for Tone, then Section.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

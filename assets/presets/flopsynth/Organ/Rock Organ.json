@@ -5,6 +5,21 @@
   },
   "name": "Rock Organ",
   "category": "Organ",
+  "tags": [
+    "organ",
+    "table",
+    "noise",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "distorted",
+    "reverb"
+  ],
+  "notes": "An organ built from two tables and a noise layer; reach for Leslie, then Drawbars.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,21 @@
   },
   "name": "Wander Pad",
   "category": "Modular",
+  "tags": [
+    "modular",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "wheel",
+    "rhythmic",
+    "chorus",
+    "reverb"
+  ],
+  "notes": "A modular patch built from two tables; reach for Brightness, then Motion.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,21 @@
   },
   "name": "Solo Trumpet",
   "category": "Brass & Winds",
+  "tags": [
+    "brass",
+    "winds",
+    "table",
+    "mono",
+    "glide",
+    "filtered",
+    "formant",
+    "velocity",
+    "lfo",
+    "wheel",
+    "rhythmic"
+  ],
+  "notes": "A brass or wind sound built from a table; reach for Brightness, then Drive.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

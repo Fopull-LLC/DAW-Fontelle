@@ -5,6 +5,20 @@
   },
   "name": "Aftertouch Swell",
   "category": "Expressive",
+  "tags": [
+    "expressive",
+    "table",
+    "unison",
+    "noise",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "aftertouch",
+    "reverb"
+  ],
+  "notes": "An expressive sound built from a table and a noise layer; reach for Tone, then Speed.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,18 @@
   },
   "name": "Sitar",
   "category": "Pluck",
+  "tags": [
+    "pluck",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "comb",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A pluck built from two tables; reach for Tone, then Bite.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

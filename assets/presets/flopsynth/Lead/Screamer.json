@@ -5,6 +5,23 @@
   },
   "name": "Screamer",
   "category": "Lead",
+  "tags": [
+    "lead",
+    "table",
+    "unison",
+    "mono",
+    "glide",
+    "filtered",
+    "ladder",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic",
+    "distorted",
+    "delay"
+  ],
+  "notes": "A lead built from a table; reach for Brightness, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

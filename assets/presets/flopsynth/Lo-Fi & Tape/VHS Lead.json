@@ -5,6 +5,23 @@
   },
   "name": "VHS Lead",
   "category": "Lo-Fi & Tape",
+  "tags": [
+    "lo-fi",
+    "tape",
+    "table",
+    "unison",
+    "mono",
+    "glide",
+    "filtered",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic",
+    "crushed",
+    "chorus"
+  ],
+  "notes": "A lo-fi sound built from a table; reach for Brightness, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

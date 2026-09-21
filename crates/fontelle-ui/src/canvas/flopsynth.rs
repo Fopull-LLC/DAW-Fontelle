@@ -536,6 +536,10 @@ pub struct FlopsynthView {
     /// every other page, because a hundred and twenty-eight rows built for a
     /// page that is not showing is work nobody sees.
     pub bank: Vec<PresetChoice>,
+    /// The presets that sound most like the loaded one (§5.2), nearest
+    /// first; empty until the bank's previews are in, and on every page but
+    /// the Presets page.
+    pub sounds_like: Vec<String>,
     /// How the Presets page is being looked at: which shelf, what has been
     /// typed, how far it is scrolled. Window state, set by the window.
     pub browse: PresetBrowse,
@@ -690,6 +694,7 @@ impl Default for FlopsynthView {
             routes: Vec::new(),
             voices: 0,
             bank: Vec::new(),
+            sounds_like: Vec::new(),
             browse: PresetBrowse::default(),
             matrix_scroll: 0.0,
             scale: 1.0,
@@ -3324,9 +3329,20 @@ pub fn preset_page_rows(bank: &[PresetChoice], shelf: &PresetShelf, query: &str)
             PresetShelf::Category(name) => preset.category == *name,
             PresetShelf::Mine => preset.origin == fontelle_types::PresetOrigin::User,
         })
-        .filter(|(_, preset)| super::menu_matches(&preset.name, query))
+        .filter(|(_, preset)| preset_matches(preset, query))
         .map(|(index, _)| index)
         .collect()
+}
+
+/// Whether a preset answers a search (§5.1): every word of the query is
+/// in its name or is the start of one of its tags. "bass unison" is the
+/// basses with a stack; "choir" is the choirs by name and by tag alike.
+pub fn preset_matches(preset: &PresetChoice, query: &str) -> bool {
+    let name = preset.name.to_lowercase();
+    query.split_whitespace().all(|word| {
+        let word = word.to_lowercase();
+        name.contains(&word) || preset.tags.iter().any(|tag| tag.starts_with(&word))
+    })
 }
 
 /// Where the Presets page's pieces are.
@@ -3519,6 +3535,54 @@ pub fn presets_hit(layout: &FlopsynthLayout, x: f32, y: f32) -> Option<PresetsHi
 /// Generated rather than stored, so it is never stale — and short, because a
 /// column of prose beside a list is a column nobody reads.
 pub fn preset_about(bar: &super::PresetBarView, showing: usize, total: usize) -> Vec<String> {
+    about_lines(bar, None, &[], usize::MAX, showing, total)
+}
+
+/// [`preset_about`], with the loaded preset's own words (§5.1): its
+/// showcase phrase as a line, its tags as one line joined by dots, and
+/// what it sounds like (§5.2) — the nearest by sound, one a line.
+pub fn preset_about_for(
+    bar: &super::PresetBarView,
+    preset: &PresetChoice,
+    sounds_like: &[String],
+    width_chars: usize,
+    showing: usize,
+    total: usize,
+) -> Vec<String> {
+    about_lines(bar, Some(preset), sounds_like, width_chars, showing, total)
+}
+
+/// `text` broken into lines of at most `width` characters, at the spaces;
+/// a word longer than the width stands on a line of its own. The About
+/// column's prose is a few words a line, and a line that ran off the
+/// column was clipped mid-word.
+pub fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(8);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+fn about_lines(
+    bar: &super::PresetBarView,
+    preset: Option<&PresetChoice>,
+    sounds_like: &[String],
+    width_chars: usize,
+    showing: usize,
+    total: usize,
+) -> Vec<String> {
     let mut lines = vec![super::preset_bar_name(bar)];
     if !bar.category.is_empty() {
         lines.push(bar.category.clone());
@@ -3533,6 +3597,25 @@ pub fn preset_about(bar: &super::PresetBarView, showing: usize, total: usize) ->
     }
     if bar.dirty {
         lines.push("edited since it was loaded".to_string());
+    }
+    // Then its words (§5.1) and what it sounds like (§5.2), each under a
+    // blank line.
+    if let Some(preset) = preset {
+        if !preset.notes.trim().is_empty() {
+            lines.push(String::new());
+            lines.extend(wrap_words(preset.notes.trim(), width_chars));
+        }
+        if !preset.tags.is_empty() {
+            lines.push(String::new());
+            lines.extend(wrap_words(&preset.tags.join(" \u{b7} "), width_chars));
+        }
+    }
+    if !sounds_like.is_empty() {
+        lines.push(String::new());
+        lines.push("sounds like".to_string());
+        for name in sounds_like {
+            lines.push(format!("  {name}"));
+        }
     }
     lines.push(String::new());
     lines.push(match (showing, total) {

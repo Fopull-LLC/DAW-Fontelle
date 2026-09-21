@@ -5,6 +5,20 @@
   },
   "name": "Trombone",
   "category": "Brass & Winds",
+  "tags": [
+    "brass",
+    "winds",
+    "table",
+    "unison",
+    "mono",
+    "glide",
+    "filtered",
+    "ladder",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A brass or wind sound built from two tables; reach for Brightness, then Drive.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -45,6 +45,10 @@ pub struct PresetEntry {
     pub name: String,
     pub category: String,
     pub origin: PresetOrigin,
+    /// The file's words (§5.1), read with the index so the browser can
+    /// search them without opening every file again.
+    pub tags: Vec<String>,
+    pub notes: String,
     /// Where it came from: a file for a user preset, and the path it was
     /// embedded under for a factory one. Never opened for a factory entry —
     /// it is an identity, and the one the browser's "reveal in folder" row is
@@ -298,6 +302,8 @@ impl PresetBank {
                         name: preset.name.clone(),
                         category: preset.category.clone(),
                         origin: PresetOrigin::Factory,
+                        tags: preset.tags.clone(),
+                        notes: preset.notes.clone(),
                         path: path.clone(),
                     });
                     self.factory.insert(path, preset);
@@ -404,6 +410,8 @@ fn walk(
                 name: preset.name,
                 category: preset.category,
                 origin: PresetOrigin::User,
+                tags: preset.tags,
+                notes: preset.notes,
                 path,
             }),
             Err(why) => unreadable.push((path, why)),

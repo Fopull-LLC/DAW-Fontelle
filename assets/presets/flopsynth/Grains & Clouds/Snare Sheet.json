@@ -5,6 +5,19 @@
   },
   "name": "Snare Sheet",
   "category": "Grains & Clouds",
+  "tags": [
+    "grains",
+    "clouds",
+    "sample",
+    "poly",
+    "filtered",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "reverb"
+  ],
+  "notes": "A cloud built from a recording; reach for Sweep, then Whistle.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

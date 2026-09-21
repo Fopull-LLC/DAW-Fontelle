@@ -5,6 +5,22 @@
   },
   "name": "Drift Choir",
   "category": "Expressive",
+  "tags": [
+    "expressive",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "wheel",
+    "rhythmic",
+    "chorus",
+    "reverb",
+    "long"
+  ],
+  "notes": "An expressive sound built from two tables; reach for Brightness, then Motion.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,18 @@
   },
   "name": "Modelled Piano",
   "category": "Keys",
+  "tags": [
+    "keys",
+    "string",
+    "unison",
+    "noise",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A keyboard built from two strings and a noise layer; reach for Brightness, then Hammer.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

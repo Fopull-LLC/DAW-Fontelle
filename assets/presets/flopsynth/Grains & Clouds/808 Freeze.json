@@ -5,6 +5,17 @@
   },
   "name": "808 Freeze",
   "category": "Grains & Clouds",
+  "tags": [
+    "grains",
+    "clouds",
+    "sample",
+    "mono",
+    "glide",
+    "filtered",
+    "velocity"
+  ],
+  "notes": "A cloud built from a recording; reach for Where, then Brightness.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

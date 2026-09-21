@@ -5,6 +5,17 @@
   },
   "name": "Toy Piano",
   "category": "Keys",
+  "tags": [
+    "keys",
+    "table",
+    "poly",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "reverb"
+  ],
+  "notes": "A keyboard built from two tables; reach for Strike, then Shimmer.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

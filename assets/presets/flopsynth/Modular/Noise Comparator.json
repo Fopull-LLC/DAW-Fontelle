@@ -5,6 +5,18 @@
   },
   "name": "Noise Comparator",
   "category": "Modular",
+  "tags": [
+    "modular",
+    "noise",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "rhythmic",
+    "delay"
+  ],
+  "notes": "A modular patch built from a noise layer; reach for Rate, then Edge.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

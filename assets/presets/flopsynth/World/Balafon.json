@@ -5,6 +5,18 @@
   },
   "name": "Balafon",
   "category": "World",
+  "tags": [
+    "world",
+    "table",
+    "poly",
+    "filtered",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "reverb"
+  ],
+  "notes": "A world instrument built from a table; reach for Strike, then Shimmer.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

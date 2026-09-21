@@ -5,6 +5,18 @@
   },
   "name": "Static",
   "category": "Atmos & FX",
+  "tags": [
+    "atmos",
+    "fx",
+    "noise",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "crushed"
+  ],
+  "notes": "An atmosphere built from a noise layer; reach for Crackle, then Tune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

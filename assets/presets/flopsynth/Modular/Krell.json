@@ -5,6 +5,17 @@
   },
   "name": "Krell",
   "category": "Modular",
+  "tags": [
+    "modular",
+    "table",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A modular patch built from a table; reach for Colour, then Length.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,19 @@
   },
   "name": "Riser",
   "category": "Atmos & FX",
+  "tags": [
+    "atmos",
+    "fx",
+    "table",
+    "unison",
+    "noise",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "An atmosphere built from a table and a noise layer; reach for Tone, then Spread.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,21 @@
   },
   "name": "Motion Keys",
   "category": "Sequence & Arp",
+  "tags": [
+    "sequence",
+    "arp",
+    "rhythmic",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "ladder",
+    "lfo",
+    "velocity",
+    "chorus"
+  ],
+  "notes": "A sequence built from two tables; reach for Pulse rate, then Tone.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

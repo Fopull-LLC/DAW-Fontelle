@@ -5,6 +5,19 @@
   },
   "name": "Brass Pad",
   "category": "Pad",
+  "tags": [
+    "pad",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "chorus",
+    "reverb"
+  ],
+  "notes": "A pad built from three tables; reach for Brightness, then Drive.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

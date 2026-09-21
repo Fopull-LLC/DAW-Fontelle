@@ -236,6 +236,8 @@ fn a_choice(name: &str, category: &str, origin: PresetOrigin) -> PresetChoice {
         category: category.to_string(),
         origin,
         favourite: false,
+        tags: Vec::new(),
+        notes: String::new(),
     }
 }
 

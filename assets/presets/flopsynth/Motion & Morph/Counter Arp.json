@@ -5,6 +5,19 @@
   },
   "name": "Counter Arp",
   "category": "Motion & Morph",
+  "tags": [
+    "motion",
+    "morph",
+    "evolving",
+    "table",
+    "poly",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic"
+  ],
+  "notes": "A moving sound built from a table; reach for Trill rate, then Trill depth.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

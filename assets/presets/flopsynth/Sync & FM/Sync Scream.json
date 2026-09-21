@@ -5,6 +5,22 @@
   },
   "name": "Sync Scream",
   "category": "Sync & FM",
+  "tags": [
+    "sync",
+    "fm",
+    "table",
+    "unison",
+    "warped",
+    "mono",
+    "filtered",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic",
+    "delay"
+  ],
+  "notes": "A sync or FM sound built from a table; reach for Brightness, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

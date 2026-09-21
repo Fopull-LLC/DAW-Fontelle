@@ -5,6 +5,18 @@
   },
   "name": "Tom Melody",
   "category": "Kits & Hits",
+  "tags": [
+    "kit",
+    "hits",
+    "drums",
+    "sample",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A kit built from a recording; reach for Skin, then Ring.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

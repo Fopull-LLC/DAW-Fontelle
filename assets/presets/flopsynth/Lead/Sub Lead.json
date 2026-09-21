@@ -5,6 +5,20 @@
   },
   "name": "Sub Lead",
   "category": "Lead",
+  "tags": [
+    "lead",
+    "table",
+    "mono",
+    "glide",
+    "filtered",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic",
+    "distorted"
+  ],
+  "notes": "A lead built from two tables; reach for Brightness, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

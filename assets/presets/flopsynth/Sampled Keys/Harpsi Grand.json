@@ -5,6 +5,17 @@
   },
   "name": "Harpsi Grand",
   "category": "Sampled Keys",
+  "tags": [
+    "sampled",
+    "keys",
+    "sample",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A sampled keyboard built from two recordings; reach for Four Foot, then Thin.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

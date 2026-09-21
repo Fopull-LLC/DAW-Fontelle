@@ -5,6 +5,17 @@
   },
   "name": "FM Kit",
   "category": "Kits & Hits",
+  "tags": [
+    "kit",
+    "hits",
+    "drums",
+    "sample",
+    "fm",
+    "poly",
+    "velocity"
+  ],
+  "notes": "A kit built from a recording; reach for Metal, then Length.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

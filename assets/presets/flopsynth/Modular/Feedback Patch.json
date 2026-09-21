@@ -5,6 +5,19 @@
   },
   "name": "Feedback Patch",
   "category": "Modular",
+  "tags": [
+    "modular",
+    "noise",
+    "poly",
+    "filtered",
+    "ladder",
+    "lfo",
+    "velocity",
+    "rhythmic",
+    "reverb"
+  ],
+  "notes": "A modular patch built from a noise layer; reach for Pitch, then Sing.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,18 @@
   },
   "name": "Burst",
   "category": "Modular",
+  "tags": [
+    "modular",
+    "table",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "rhythmic",
+    "delay"
+  ],
+  "notes": "A modular patch built from a table; reach for Rate, then Length.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

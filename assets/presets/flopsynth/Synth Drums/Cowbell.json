@@ -5,6 +5,15 @@
   },
   "name": "Cowbell",
   "category": "Synth Drums",
+  "tags": [
+    "drums",
+    "table",
+    "poly",
+    "filtered",
+    "velocity"
+  ],
+  "notes": "A drum built from two tables; reach for Tune, then Tone.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

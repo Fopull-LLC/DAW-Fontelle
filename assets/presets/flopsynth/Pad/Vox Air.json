@@ -5,6 +5,23 @@
   },
   "name": "Vox Air",
   "category": "Pad",
+  "tags": [
+    "pad",
+    "table",
+    "unison",
+    "noise",
+    "poly",
+    "filtered",
+    "formant",
+    "lfo",
+    "velocity",
+    "wheel",
+    "rhythmic",
+    "chorus",
+    "reverb"
+  ],
+  "notes": "A pad built from two tables and a noise layer; reach for Vowel, then Air.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

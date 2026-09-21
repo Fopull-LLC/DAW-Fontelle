@@ -5,6 +5,18 @@
   },
   "name": "Chip Organ",
   "category": "Chip & Retro",
+  "tags": [
+    "chip",
+    "retro",
+    "table",
+    "poly",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic"
+  ],
+  "notes": "A chip sound built from three tables; reach for Trill rate, then Trill depth.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

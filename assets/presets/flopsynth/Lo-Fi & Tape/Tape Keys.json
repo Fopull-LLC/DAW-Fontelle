@@ -5,6 +5,21 @@
   },
   "name": "Tape Keys",
   "category": "Lo-Fi & Tape",
+  "tags": [
+    "lo-fi",
+    "tape",
+    "table",
+    "warped",
+    "fm",
+    "poly",
+    "filtered",
+    "velocity",
+    "lfo",
+    "crushed",
+    "chorus"
+  ],
+  "notes": "A lo-fi sound built from a table; reach for Bite, then Tremolo.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

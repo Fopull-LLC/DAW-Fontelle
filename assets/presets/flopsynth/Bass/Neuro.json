@@ -5,6 +5,23 @@
   },
   "name": "Neuro",
   "category": "Bass",
+  "tags": [
+    "bass",
+    "table",
+    "unison",
+    "warped",
+    "fm",
+    "poly",
+    "filtered",
+    "comb",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "distorted",
+    "chorus"
+  ],
+  "notes": "A bass built from three tables; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

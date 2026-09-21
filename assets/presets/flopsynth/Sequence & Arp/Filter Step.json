@@ -5,6 +5,20 @@
   },
   "name": "Filter Step",
   "category": "Sequence & Arp",
+  "tags": [
+    "sequence",
+    "arp",
+    "rhythmic",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "ladder",
+    "lfo",
+    "velocity"
+  ],
+  "notes": "A sequence built from a table; reach for Step rate, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

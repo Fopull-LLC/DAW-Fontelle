@@ -5,6 +5,19 @@
   },
   "name": "Gamelan",
   "category": "World",
+  "tags": [
+    "world",
+    "table",
+    "warped",
+    "fm",
+    "poly",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "reverb"
+  ],
+  "notes": "A world instrument built from a table; reach for Strike, then Shimmer.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

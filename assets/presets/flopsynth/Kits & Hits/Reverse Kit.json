@@ -5,6 +5,17 @@
   },
   "name": "Reverse Kit",
   "category": "Kits & Hits",
+  "tags": [
+    "kit",
+    "hits",
+    "drums",
+    "sample",
+    "poly",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A kit built from a recording; reach for Skip, then Spread.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

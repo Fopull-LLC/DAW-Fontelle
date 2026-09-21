@@ -5,6 +5,16 @@
   },
   "name": "Digital Keys",
   "category": "Keys",
+  "tags": [
+    "keys",
+    "table",
+    "poly",
+    "filtered",
+    "velocity",
+    "chorus"
+  ],
+  "notes": "A keyboard built from a table; reach for Tone, then Wave.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

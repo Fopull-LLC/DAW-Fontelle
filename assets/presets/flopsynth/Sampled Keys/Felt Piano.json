@@ -5,6 +5,18 @@
   },
   "name": "Felt Piano",
   "category": "Sampled Keys",
+  "tags": [
+    "sampled",
+    "keys",
+    "sample",
+    "noise",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A sampled keyboard built from a recording and a noise layer; reach for Blanket, then Thud.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

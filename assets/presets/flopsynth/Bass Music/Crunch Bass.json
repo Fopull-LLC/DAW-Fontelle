@@ -5,6 +5,18 @@
   },
   "name": "Crunch Bass",
   "category": "Bass Music",
+  "tags": [
+    "bass music",
+    "bass",
+    "table",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "short"
+  ],
+  "notes": "A bass-music sound built from three tables; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

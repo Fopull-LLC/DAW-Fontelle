@@ -5,6 +5,18 @@
   },
   "name": "Drift Rhodes",
   "category": "Expressive",
+  "tags": [
+    "expressive",
+    "table",
+    "warped",
+    "fm",
+    "poly",
+    "velocity",
+    "lfo",
+    "chorus"
+  ],
+  "notes": "An expressive sound built from a table; reach for Bite, then Tremolo.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

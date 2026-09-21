@@ -5,6 +5,17 @@
   },
   "name": "Distorted",
   "category": "Bass",
+  "tags": [
+    "bass",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity",
+    "distorted"
+  ],
+  "notes": "A bass built from two tables; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,18 @@
   },
   "name": "Acid",
   "category": "Bass",
+  "tags": [
+    "bass",
+    "table",
+    "mono",
+    "glide",
+    "filtered",
+    "ladder",
+    "velocity",
+    "distorted"
+  ],
+  "notes": "A bass built from two tables; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

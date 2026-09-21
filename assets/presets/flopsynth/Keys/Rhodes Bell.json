@@ -5,6 +5,19 @@
   },
   "name": "Rhodes Bell",
   "category": "Keys",
+  "tags": [
+    "keys",
+    "table",
+    "warped",
+    "fm",
+    "poly",
+    "velocity",
+    "lfo",
+    "delay",
+    "reverb"
+  ],
+  "notes": "A keyboard built from a table; reach for Bite, then Tremolo.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

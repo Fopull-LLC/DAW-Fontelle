@@ -5,6 +5,22 @@
   },
   "name": "Pulse Bed",
   "category": "Cinematic",
+  "tags": [
+    "cinematic",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "wheel",
+    "rhythmic",
+    "chorus",
+    "reverb",
+    "delay"
+  ],
+  "notes": "A cinematic sound built from two tables; reach for Brightness, then Motion.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

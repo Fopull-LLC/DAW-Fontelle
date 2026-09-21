@@ -5,6 +5,21 @@
   },
   "name": "Fretless",
   "category": "Bass",
+  "tags": [
+    "bass",
+    "table",
+    "mono",
+    "glide",
+    "filtered",
+    "comb",
+    "velocity",
+    "lfo",
+    "wheel",
+    "rhythmic",
+    "reverb"
+  ],
+  "notes": "A bass built from three tables; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,21 @@
   },
   "name": "FM Stack",
   "category": "Sync & FM",
+  "tags": [
+    "sync",
+    "fm",
+    "table",
+    "unison",
+    "warped",
+    "mono",
+    "filtered",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic"
+  ],
+  "notes": "A sync or FM sound built from a table; reach for Ratio, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

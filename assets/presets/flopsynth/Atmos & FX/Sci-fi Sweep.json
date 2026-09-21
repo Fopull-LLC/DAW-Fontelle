@@ -5,6 +5,19 @@
   },
   "name": "Sci-fi Sweep",
   "category": "Atmos & FX",
+  "tags": [
+    "atmos",
+    "fx",
+    "table",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "rhythmic",
+    "delay"
+  ],
+  "notes": "An atmosphere built from a table; reach for Sweep rate, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

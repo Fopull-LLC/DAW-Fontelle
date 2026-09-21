@@ -76,10 +76,10 @@ pub use flopsynth::{
     flopsynth_layout_with, flopsynth_tab_at, fx_rack_hit, fx_rack_landing, fx_rack_mix_at,
     is_nameplate_control, lamp_dots, lfo_curve_points, lfo_point_add, lfo_point_drag,
     lfo_shape_curve_points, lfo_shape_hit, lfo_shape_point_at, lfo_tension_drag, matrix_depth_at,
-    matrix_hit, picture_control, preset_about, preset_page_rows, preset_shelves, presets_hit,
-    response_curve_points, ring_band, ring_bands, ring_depth, ring_dot, ring_hit, ring_hit_index,
-    ring_live, ring_range, route_landing, sound_outline_points, spectrum_bars, step_at, step_bars,
-    wave_curve_points, wave_position_at,
+    matrix_hit, picture_control, preset_about, preset_about_for, preset_matches, preset_page_rows,
+    preset_shelves, presets_hit, response_curve_points, ring_band, ring_bands, ring_depth,
+    ring_dot, ring_hit, ring_hit_index, ring_live, ring_range, route_landing, sound_outline_points,
+    spectrum_bars, step_at, step_bars, wave_curve_points, wave_position_at, wrap_words,
 };
 pub use flopsynth::{
     WAVE_ACTIONS, bar_at, draw_point, harmonic_bars, wave_edit_action, wave_edit_address,

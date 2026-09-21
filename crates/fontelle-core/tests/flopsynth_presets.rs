@@ -285,91 +285,15 @@ fn every_preset_sits_within_three_db_of_the_banks_median() {
 /// must differ on at least two things and an effect is only one of them.
 #[test]
 fn every_pair_in_a_category_is_audibly_apart() {
-    /// The four axes: how long it rings, where its energy sits, how peaky it
-    /// is, and what its attack does. All in log units so that "apart by 0.35"
-    /// means the same thing on each.
-    fn describe(samples: &[f32]) -> [f32; 4] {
-        let peak_level = peak(samples).max(1e-9);
-        // t30: how long after its **loudest moment** the envelope takes to
-        // fall 30 dB.
-        //
-        // From the loudest moment and not from the start, because half this
-        // bank has a slow attack: a choir's first ten milliseconds are already
-        // 30 dB below its peak, so searching from zero reports every pad as
-        // decaying instantly and throws the axis away.
-        let envelope: Vec<f32> = samples.chunks(480).map(rms).collect();
-        let loudest_at = envelope
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        let floor = peak_level * 0.0316;
-        let t30 = envelope[loudest_at..]
-            .iter()
-            .position(|level| *level < floor)
-            .unwrap_or(envelope.len() - loudest_at) as f32
-            * 0.01;
-
-        let mut weighted = 0.0f32;
-        let mut total = 0.0f32;
-        let mut hz = 60.0f32;
-        while hz < 14_000.0 {
-            let e = energy_at(samples, hz);
-            weighted += hz.ln() * e;
-            total += e;
-            hz *= 1.2;
-        }
-        let centroid = if total > 1e-9 { weighted / total } else { 0.0 };
-
-        let level = rms(samples).max(1e-9);
-        let crest = (peak_level / level).ln();
-
-        // Spectral flux over the first 300 ms — the attack's character, which
-        // is the axis that tells a pluck from a pad when the two happen to
-        // have the same brightness.
-        let attack = &samples[..samples.len().min((SR * 0.3) as usize)];
-        let flux = attack
-            .chunks(480)
-            .map(rms)
-            .collect::<Vec<_>>()
-            .windows(2)
-            .map(|w| (w[1] - w[0]).abs())
-            .sum::<f32>()
-            / level;
-
-        [t30.max(1e-3).ln(), centroid, crest, (flux + 1.0).ln()]
-    }
-
-    /// Ten log-spaced bands, normalised to sum to one — a sound's **shape**
-    /// rather than its mean.
-    ///
-    /// The fifth axis, and the one that does most of the work. A spectral
-    /// centroid is a *mean*, and two vowels are unmistakably different to an
-    /// ear while having almost the same one: /a/ and /u/ move energy between
-    /// bands without moving where its middle sits. Measured, before this
-    /// existed: "Choir Ahh" and "Choir Ooh" read as 0.26 apart on the four
-    /// scalar axes and 1.4 apart on this one.
-    ///
-    /// The distance is the total variation between two profiles — nought for
-    /// two identical spectra, two for two that share no band at all.
-    fn profile(samples: &[f32]) -> [f32; 10] {
-        let mut bands = [0.0f32; 10];
-        for (index, band) in bands.iter_mut().enumerate() {
-            let lo = 60.0 * (14_000.0f32 / 60.0).powf(index as f32 / 10.0);
-            let hi = 60.0 * (14_000.0f32 / 60.0).powf((index + 1) as f32 / 10.0);
-            let mut hz = lo;
-            while hz < hi {
-                *band += energy_at(samples, hz);
-                hz *= 1.08;
-            }
-        }
-        let total: f32 = bands.iter().sum::<f32>().max(1e-9);
-        for band in &mut bands {
-            *band /= total;
-        }
-        bands
-    }
+    // The axes are the crate's (`fontelle_core::preview::sound_vector`):
+    // four scalars in log units — how long it rings, where its energy sits,
+    // how peaky it is, what its attack does — and a ten-band spectral shape
+    // whose distance is a total variation, the axis that tells two vowels
+    // apart when their centroids coincide (measured, before it existed:
+    // "Choir Ahh" and "Choir Ooh" read as 0.26 apart on the scalars and 1.4
+    // on the shape). Lifted into the crate for §5.2's *sounds like*, so what
+    // this gate calls alike the browser calls near.
+    use fontelle_core::preview::sound_vector;
 
     const APART: f32 = 0.35;
     #[allow(clippy::type_complexity)]
@@ -383,7 +307,10 @@ fn every_pair_in_a_category_is_audibly_apart() {
         by_category
             .entry(row.category.label())
             .or_default()
-            .push((row.name, (describe(&out), profile(&out))));
+            .push((row.name, {
+                let vector = sound_vector(&out);
+                (vector.scalar, vector.shape)
+            }));
     }
 
     let mut same: Vec<String> = Vec::new();
@@ -519,4 +446,93 @@ fn every_preset_offers_only_addresses_that_work() {
             );
         }
     }
+}
+
+// ------------------------------------------------- tags and notes (§5.1)
+//
+// `docs/flopsynth-next.md` §5.1, Ty's §9.7: every row carries at least
+// three tags from one controlled vocabulary and a showcase phrase — one
+// sentence saying what it is for and which macro to reach for. The tags a
+// row does not write are **derived** from what it is (its category, its
+// sources, what it does), so a browser can find "every bass with unison"
+// without anybody having typed *unison* three hundred times; a row can
+// add words of its own for what cannot be derived.
+
+#[test]
+fn every_preset_has_three_tags_from_the_vocabulary_and_a_showcase_phrase() {
+    use fontelle_core::flopsynth::{TAGS, presets};
+    let mut wrong: Vec<String> = Vec::new();
+    for row in FACTORY {
+        let patch = (row.build)();
+        let tags = presets::tags_of(row, &patch);
+        if tags.len() < 3 {
+            wrong.push(format!("  {}: {} tags ({tags:?})", row.name, tags.len()));
+        }
+        for tag in &tags {
+            if !TAGS.contains(&tag.as_str()) {
+                wrong.push(format!(
+                    "  {}: \"{tag}\" is not in the vocabulary",
+                    row.name
+                ));
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for tag in &tags {
+            if !seen.insert(tag.clone()) {
+                wrong.push(format!("  {}: \"{tag}\" twice", row.name));
+            }
+        }
+        let notes = presets::notes_of(row, &patch);
+        if notes.trim().is_empty() {
+            wrong.push(format!("  {}: no showcase phrase", row.name));
+            continue;
+        }
+        // The phrase names a macro the row has — the one to reach for.
+        let names_a_macro = patch
+            .macros
+            .iter()
+            .filter(|m| !m.name.is_empty())
+            .any(|m| notes.contains(&m.name));
+        if !names_a_macro {
+            wrong.push(format!("  {}: \"{notes}\" names no macro", row.name));
+        }
+        if !notes.ends_with('.') {
+            wrong.push(format!("  {}: \"{notes}\" is not a sentence", row.name));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    // The vocabulary is words, lower case, no two alike.
+    let mut seen = std::collections::BTreeSet::new();
+    for tag in TAGS {
+        assert!(!tag.is_empty() && *tag == tag.to_lowercase(), "{tag}");
+        assert!(seen.insert(*tag), "{tag} twice in the vocabulary");
+    }
+    assert!(
+        TAGS.len() >= 30,
+        "a vocabulary worth browsing: {}",
+        TAGS.len()
+    );
+}
+
+/// The derived tags say true things: a row with a unison stack is tagged
+/// *unison*, one that reads a recording *sample*, a monophonic one *mono*.
+#[test]
+fn derived_tags_say_what_the_row_is() {
+    use fontelle_core::flopsynth::presets;
+    let find = |name: &str| FACTORY.iter().find(|r| r.name == name).unwrap();
+    let supersaw = find("Supersaw");
+    let tags = presets::tags_of(supersaw, &(supersaw.build)());
+    assert!(tags.iter().any(|t| t == "lead"), "{tags:?}");
+    assert!(tags.iter().any(|t| t == "unison"), "{tags:?}");
+    assert!(tags.iter().any(|t| t == "table"), "{tags:?}");
+    let grand = find("Grand Piano");
+    let tags = presets::tags_of(grand, &(grand.build)());
+    assert!(tags.iter().any(|t| t == "sample"), "{tags:?}");
+    assert!(tags.iter().any(|t| t == "keys"), "{tags:?}");
+    // The phrase reaches for a macro by name.
+    let notes = presets::notes_of(grand, &(grand.build)());
+    assert!(
+        notes.contains("Brightness") || notes.contains("Hardness"),
+        "{notes}"
+    );
 }

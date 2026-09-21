@@ -5,6 +5,22 @@
   },
   "name": "Talk Grains",
   "category": "Growls & Screams",
+  "tags": [
+    "growl",
+    "scream",
+    "bass music",
+    "sample",
+    "mono",
+    "glide",
+    "filtered",
+    "formant",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "distorted"
+  ],
+  "notes": "A growl built from a recording; reach for Vowel, then Talk.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

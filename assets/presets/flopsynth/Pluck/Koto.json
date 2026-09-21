@@ -5,6 +5,16 @@
   },
   "name": "Koto",
   "category": "Pluck",
+  "tags": [
+    "pluck",
+    "table",
+    "poly",
+    "filtered",
+    "comb",
+    "velocity"
+  ],
+  "notes": "A pluck built from a table; reach for Tone, then Bite.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,17 @@
   },
   "name": "Accordion",
   "category": "Keys",
+  "tags": [
+    "keys",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A keyboard built from two tables; reach for Musette, then Tone.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

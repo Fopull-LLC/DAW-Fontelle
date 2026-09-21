@@ -5,6 +5,21 @@
   },
   "name": "Metal Scrape",
   "category": "Atmos & FX",
+  "tags": [
+    "atmos",
+    "fx",
+    "table",
+    "warped",
+    "fm",
+    "noise",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "An atmosphere built from a table and a noise layer; reach for Tone, then Speed.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,16 @@
   },
   "name": "Melodica",
   "category": "Keys",
+  "tags": [
+    "keys",
+    "table",
+    "noise",
+    "poly",
+    "filtered",
+    "velocity"
+  ],
+  "notes": "A keyboard built from a table and a noise layer; reach for Breath, then Tone.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,18 @@
   },
   "name": "Whisper",
   "category": "Choir & Vocal",
+  "tags": [
+    "choir",
+    "vocal",
+    "noise",
+    "poly",
+    "filtered",
+    "formant",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A voice built from a noise layer; reach for Vowel, then Focus.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

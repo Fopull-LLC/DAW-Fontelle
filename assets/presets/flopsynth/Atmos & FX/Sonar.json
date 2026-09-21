@@ -5,6 +5,17 @@
   },
   "name": "Sonar",
   "category": "Atmos & FX",
+  "tags": [
+    "atmos",
+    "fx",
+    "table",
+    "poly",
+    "velocity",
+    "delay",
+    "reverb"
+  ],
+  "notes": "An atmosphere built from a table; reach for Pitch, then Level.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

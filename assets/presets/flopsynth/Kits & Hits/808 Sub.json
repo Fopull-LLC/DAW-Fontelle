@@ -5,6 +5,20 @@
   },
   "name": "808 Sub",
   "category": "Kits & Hits",
+  "tags": [
+    "kit",
+    "hits",
+    "drums",
+    "sample",
+    "poly",
+    "glide",
+    "filtered",
+    "ladder",
+    "velocity",
+    "distorted"
+  ],
+  "notes": "A kit built from a recording; reach for Drive, then Brightness.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

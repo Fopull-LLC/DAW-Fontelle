@@ -5,6 +5,21 @@
   },
   "name": "Step Morph",
   "category": "Motion & Morph",
+  "tags": [
+    "motion",
+    "morph",
+    "evolving",
+    "table",
+    "poly",
+    "filtered",
+    "ladder",
+    "lfo",
+    "velocity",
+    "rhythmic",
+    "delay"
+  ],
+  "notes": "A moving sound built from a table; reach for Rate, then Morph.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

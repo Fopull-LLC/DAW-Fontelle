@@ -333,6 +333,18 @@ pub struct Session {
     /// tests wrote a soundfont folder in `/tmp` into the developer's real
     /// `~/.config/fontelle/settings.json`.
     settings_path: Option<PathBuf>,
+    /// The bank's previews (§5.2): what *sounds like* answers from, read
+    /// from beside the settings and filled by a worker the first time the
+    /// Presets page asks. `preview_jobs` is the worker's channel while it
+    /// runs; drained by `pump`, and the index saved when it is done.
+    /// Behind a `RefCell`, like the bank's cache: the view is built from
+    /// `&self`, and the first Presets page is what starts the worker.
+    preview_index: std::cell::RefCell<crate::preview_index::PreviewIndex>,
+    #[allow(clippy::type_complexity)]
+    preview_jobs: std::cell::RefCell<
+        Option<std::sync::mpsc::Receiver<(String, u64, fontelle_core::preview::SoundVector)>>,
+    >,
+    previews_started: std::cell::Cell<bool>,
     /// The last reversible settings action, kept so a toast's "Undo" can put it
     /// back: which plugin folder was removed, and from where in the list.
     settings_undo: Option<(usize, PathBuf)>,
@@ -1096,6 +1108,9 @@ impl Session {
             open_insert: None,
             settings,
             settings_path: None,
+            preview_index: std::cell::RefCell::new(crate::preview_index::PreviewIndex::default()),
+            preview_jobs: std::cell::RefCell::new(None),
+            previews_started: std::cell::Cell::new(false),
             settings_undo: None,
             settings_toast: None,
             import_bank: FileBank::default(),
@@ -7902,6 +7917,9 @@ impl StudioHost for Session {
             showing,
         );
         view.scale = self.flopsynth_scale();
+        if page == fontelle_ui::canvas::FlopsynthPage::Presets {
+            view.sounds_like = self.sounds_like_loaded();
+        }
         // The ring §12.2 asks for. Built once for the whole window rather than
         // one question per knob, since answering it walks every clip.
         let automated = fontelle_model::automated_targets(&self.project);
@@ -9567,6 +9585,7 @@ impl StudioHost for Session {
     }
 
     fn pump(&mut self) {
+        self.pump_previews();
         // **A project that names plugins is hosted on the first frame.** The
         // graph this session was handed was built with no rack (`main.rs`
         // realises before the session exists), so an LSP sampler in a
@@ -10072,6 +10091,8 @@ impl Session {
                 name: entry.name.clone(),
                 category: entry.category.clone(),
                 origin: entry.origin,
+                tags: entry.tags.clone(),
+                notes: entry.notes.clone(),
             })
             .collect()
     }
@@ -11081,4 +11102,118 @@ fn held_classes(trace: &[fontelle_types::TuneFrame]) -> u16 {
         return 0;
     }
     1 << (semitone as u16 % 12)
+}
+
+impl Session {
+    // ---------------------------------------------- sounds like (§5.2) ---
+
+    /// Where the previews are kept: beside the settings, or beside a
+    /// session's own settings path.
+    fn previews_path(&self) -> Option<PathBuf> {
+        let dir = match &self.settings_path {
+            Some(path) => path.parent().map(Path::to_path_buf),
+            None => Settings::config_dir(),
+        }?;
+        Some(crate::preview_index::PreviewIndex::path_in(&dir))
+    }
+
+    /// The factory synth rows and the user's synth presets, each with the
+    /// hash its preview is keyed by.
+    fn preview_candidates(&self) -> Vec<(String, u64, Option<fontelle_core::Patch>)> {
+        use fontelle_types::{DeviceKind, InstrumentKind, PresetPayload};
+        let device = DeviceKind::Instrument(InstrumentKind::Flopsynth);
+        self.preset_bank
+            .for_device(&device)
+            .into_iter()
+            .filter_map(|entry| {
+                let preset = self.preset_bank.load(entry).ok()?;
+                let PresetPayload::Patch(data) = &preset.payload else {
+                    return None;
+                };
+                let text = serde_json::to_string(data).ok()?;
+                let hash = crate::preview_index::PreviewIndex::hash_of(&text);
+                let patch = fontelle_core::Patch::from_data(data, |_| None)
+                    .ok()
+                    .map(|loaded| loaded.patch);
+                Some((entry.name.clone(), hash, patch))
+            })
+            .collect()
+    }
+
+    /// Starts the worker on what the index lacks, once; reads the file
+    /// first so a second launch renders nothing.
+    fn start_previews(&self) {
+        if self.previews_started.get() {
+            return;
+        }
+        self.previews_started.set(true);
+        if let Some(path) = self.previews_path() {
+            *self.preview_index.borrow_mut() = crate::preview_index::PreviewIndex::load(&path);
+        }
+        let candidates = self.preview_candidates();
+        let index = self.preview_index.borrow();
+        let jobs: Vec<crate::preview_index::PreviewJob> = candidates
+            .into_iter()
+            .filter(|(name, hash, _)| !index.has(name, *hash))
+            .filter_map(|(name, hash, patch)| patch.map(|p| (name, hash, p)))
+            .collect();
+        if !jobs.is_empty() {
+            *self.preview_jobs.borrow_mut() =
+                Some(crate::preview_index::render_in_background(jobs));
+        }
+    }
+
+    /// Takes what the worker has rendered; saves the index when the worker
+    /// is done.
+    fn pump_previews(&self) {
+        let mut done = false;
+        {
+            let jobs = self.preview_jobs.borrow();
+            let Some(receiver) = jobs.as_ref() else {
+                return;
+            };
+            let mut index = self.preview_index.borrow_mut();
+            loop {
+                match receiver.try_recv() {
+                    Ok((name, hash, vector)) => index.insert(&name, hash, vector),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        done = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if done {
+            *self.preview_jobs.borrow_mut() = None;
+            if let Some(path) = self.previews_path() {
+                let _ = self.preview_index.borrow().save(&path);
+            }
+        }
+    }
+
+    /// The five presets that sound most like the loaded one, by name —
+    /// empty until the previews are in. Starts the worker the first time
+    /// it is asked.
+    fn sounds_like_loaded(&self) -> Vec<String> {
+        self.start_previews();
+        // What the worker has sent so far, so the column fills as the bank
+        // is rendered rather than all at once at the end.
+        self.pump_previews();
+        let bar = Session::preset_bar(self, fontelle_ui::canvas::PresetDevice::Instrument);
+        let Some(name) = bar.name else {
+            return Vec::new();
+        };
+        self.preview_index.borrow().sounds_like(&name, 5)
+    }
+
+    /// The previews the session has, for a test to look at.
+    pub fn preview_index(&self) -> crate::preview_index::PreviewIndex {
+        self.preview_index.borrow().clone()
+    }
+
+    /// Whether the preview worker is still rendering.
+    pub fn previews_rendering(&self) -> bool {
+        self.preview_jobs.borrow().is_some()
+    }
 }

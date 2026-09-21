@@ -5,6 +5,18 @@
   },
   "name": "Chip Pluck",
   "category": "Pluck",
+  "tags": [
+    "pluck",
+    "table",
+    "poly",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic",
+    "short"
+  ],
+  "notes": "A pluck built from a table; reach for Trill rate, then Trill depth.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

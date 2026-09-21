@@ -5,6 +5,19 @@
   },
   "name": "Ocean",
   "category": "Atmos & FX",
+  "tags": [
+    "atmos",
+    "fx",
+    "noise",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "reverb",
+    "delay"
+  ],
+  "notes": "An atmosphere built from a noise layer; reach for Tone, then Speed.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

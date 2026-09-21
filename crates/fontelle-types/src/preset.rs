@@ -825,6 +825,17 @@ pub struct Preset {
     pub device: DeviceKind,
     pub name: String,
     pub category: String,
+    /// Words from a controlled vocabulary (`fontelle_core::flopsynth::TAGS`
+    /// for a synth), for the browser's search; empty on a file written
+    /// before they existed, and then absent from the file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// One sentence: what it is for, and which macro to reach for.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
+    /// Who made it; the program's name for a factory row.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub author: String,
     pub payload: PresetPayload,
 }
 
@@ -841,8 +852,19 @@ impl Preset {
             device,
             name: name.into(),
             category: category.into(),
+            tags: Vec::new(),
+            notes: String::new(),
+            author: String::new(),
             payload,
         }
+    }
+
+    /// The same preset with its words (§5.1).
+    pub fn with_words(mut self, tags: Vec<String>, notes: String, author: &str) -> Self {
+        self.tags = tags;
+        self.notes = notes;
+        self.author = author.to_string();
+        self
     }
 
     /// Whether the payload is the shape this device stores.

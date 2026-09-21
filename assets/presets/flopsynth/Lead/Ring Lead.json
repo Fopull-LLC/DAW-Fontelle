@@ -5,6 +5,21 @@
   },
   "name": "Ring Lead",
   "category": "Lead",
+  "tags": [
+    "lead",
+    "table",
+    "warped",
+    "fm",
+    "mono",
+    "glide",
+    "filtered",
+    "lfo",
+    "wheel",
+    "velocity",
+    "delay"
+  ],
+  "notes": "A lead built from a table; reach for Brightness, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

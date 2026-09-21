@@ -5,6 +5,24 @@
   },
   "name": "Boys Choir",
   "category": "Choir & Vocal",
+  "tags": [
+    "choir",
+    "vocal",
+    "table",
+    "unison",
+    "noise",
+    "poly",
+    "filtered",
+    "formant",
+    "lfo",
+    "velocity",
+    "wheel",
+    "rhythmic",
+    "chorus",
+    "reverb"
+  ],
+  "notes": "A voice built from two tables and a noise layer; reach for Vowel, then Air.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

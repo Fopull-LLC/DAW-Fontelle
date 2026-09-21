@@ -23,8 +23,8 @@ use fontelle_ui::canvas::{
     FlopsynthView, InstrumentGroup, InstrumentParam, KnobSize, MatrixHit, ParamKind, PresetBrowse,
     PresetChoice, PresetShelf, PresetsHit, RING_GAP, SCALES, badge_at, cell_anatomy, cell_span,
     env_curve_points, env_node_at, env_node_drag, filter_xy_at, flopsynth_hit, flopsynth_layout,
-    flopsynth_tab_at, lfo_curve_points, matrix_depth_at, matrix_hit, preset_page_rows,
-    preset_shelves, presets_hit, ring_depth, ring_hit, wave_position_at,
+    flopsynth_tab_at, lfo_curve_points, matrix_depth_at, matrix_hit, preset_about_for,
+    preset_page_rows, preset_shelves, presets_hit, ring_depth, ring_hit, wave_position_at,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
@@ -1668,18 +1668,113 @@ fn a_preset(name: &str, category: &str, favourite: bool, mine: bool) -> PresetCh
             fontelle_types::PresetOrigin::Factory
         },
         favourite,
+        tags: Vec::new(),
+        notes: String::new(),
     }
+}
+
+fn tagged(mut preset: PresetChoice, tags: &[&str], notes: &str) -> PresetChoice {
+    preset.tags = tags.iter().map(|t| t.to_string()).collect();
+    preset.notes = notes.to_string();
+    preset
 }
 
 fn a_bank() -> Vec<PresetChoice> {
     vec![
-        a_preset("Glass", "Pad", false, false),
+        tagged(
+            a_preset("Glass", "Pad", false, false),
+            &["pad", "table", "unison", "bright"],
+            "A pad built from two tables; reach for Brightness, then Motion.",
+        ),
         a_preset("Warm", "Pad", true, false),
-        a_preset("Sub Sine", "Bass", false, false),
-        a_preset("Reese", "Bass", false, false),
+        tagged(
+            a_preset("Sub Sine", "Bass", false, false),
+            &["bass", "table", "mono"],
+            "",
+        ),
+        tagged(
+            a_preset("Reese", "Bass", false, false),
+            &["bass", "table", "unison", "dark"],
+            "",
+        ),
         a_preset("Choir Ahh", "Choir & Vocal", true, false),
         a_preset("My Pad", "Pad", false, true),
     ]
+}
+
+/// The search box reads the tags as well as the name (§5.1): "unison"
+/// finds every stack whatever it is called, and a word that is both a
+/// name and a tag finds both.
+#[test]
+fn the_search_finds_a_preset_by_its_tags() {
+    let bank = a_bank();
+    let rows = preset_page_rows(&bank, &PresetShelf::All, "unison");
+    let names: Vec<&str> = rows.iter().map(|i| bank[*i].name.as_str()).collect();
+    assert_eq!(names, ["Glass", "Reese"]);
+    // Two words narrow: both must match, on the name or a tag.
+    let rows = preset_page_rows(&bank, &PresetShelf::All, "bass unison");
+    let names: Vec<&str> = rows.iter().map(|i| bank[*i].name.as_str()).collect();
+    assert_eq!(names, ["Reese"]);
+    // Within a shelf, still.
+    let rows = preset_page_rows(&bank, &PresetShelf::Category("Pad".into()), "unison");
+    assert_eq!(rows, [0]);
+    // A name matches as it always did.
+    let rows = preset_page_rows(&bank, &PresetShelf::All, "choir");
+    assert_eq!(rows, [4]);
+}
+
+/// The About column says what the loaded preset is for, in its own
+/// sentence, and wears its tags.
+#[test]
+fn the_about_column_carries_the_phrase_and_the_tags() {
+    let bar = fontelle_ui::canvas::PresetBarView {
+        name: Some("Glass".into()),
+        category: "Pad".into(),
+        origin: Some(fontelle_types::PresetOrigin::Factory),
+        dirty: false,
+        favourite: false,
+        can_save: false,
+    };
+    let bank = a_bank();
+    let like = vec!["Warm".to_string(), "Reese".to_string()];
+    let lines = preset_about_for(&bar, &bank[0], &like, 80, 3, 6);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "A pad built from two tables; reach for Brightness, then Motion."),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "pad \u{b7} table \u{b7} unison \u{b7} bright"),
+        "{lines:?}"
+    );
+    // Narrow, the prose wraps at the spaces rather than being clipped.
+    let narrow = preset_about_for(&bar, &bank[0], &like, 24, 3, 6);
+    assert!(narrow.iter().all(|l| l.chars().count() <= 24), "{narrow:?}");
+    assert!(
+        narrow.iter().any(|l| l == "A pad built from two"),
+        "{narrow:?}"
+    );
+    assert_eq!(
+        fontelle_ui::canvas::wrap_words("one two three", 7),
+        ["one two", "three"]
+    );
+    // What it sounds like, nearest first, under its own heading.
+    let at = lines
+        .iter()
+        .position(|l| l == "sounds like")
+        .expect("a heading");
+    assert_eq!(&lines[at + 1..at + 3], ["  Warm", "  Reese"]);
+    // A preset with neither says neither, and nothing sounds like nothing.
+    let lines = preset_about_for(&bar, &bank[1], &[], 80, 3, 6);
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("\u{b7}") || l == "sounds like"),
+        "{lines:?}"
+    );
 }
 
 fn presets_view(browse: PresetBrowse) -> FlopsynthView {
@@ -1738,9 +1833,10 @@ fn a_shelf_lists_its_own_presets_in_the_banks_order() {
 #[test]
 fn the_search_narrows_the_shelf_to_what_matches() {
     // The menu's own rule: a plain substring, ignoring case, anywhere in the
-    // name — and on top of whatever shelf is chosen, not instead of it.
+    // name — and on top of whatever shelf is chosen, not instead of it. Since
+    // §5.1 a tag counts too: "pad" is My Pad by name and Glass by tag.
     let bank = a_bank();
-    assert_eq!(preset_page_rows(&bank, &PresetShelf::All, "pad"), [5]);
+    assert_eq!(preset_page_rows(&bank, &PresetShelf::All, "pad"), [0, 5]);
     assert_eq!(preset_page_rows(&bank, &PresetShelf::All, "S"), [0, 2, 3]);
     assert_eq!(
         preset_page_rows(&bank, &PresetShelf::Category("Bass".into()), "sub"),

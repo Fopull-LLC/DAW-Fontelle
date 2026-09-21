@@ -5,6 +5,18 @@
   },
   "name": "Bowed Grand",
   "category": "Sampled Keys",
+  "tags": [
+    "sampled",
+    "keys",
+    "sample",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A sampled keyboard built from a recording; reach for Brightness, then Swell.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,18 @@
   },
   "name": "Wide Stab",
   "category": "Expressive",
+  "tags": [
+    "expressive",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb",
+    "short"
+  ],
+  "notes": "An expressive sound built from a table; reach for Tone, then Bite.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

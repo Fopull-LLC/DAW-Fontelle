@@ -5,6 +5,18 @@
   },
   "name": "Reverse Grand",
   "category": "Grains & Clouds",
+  "tags": [
+    "grains",
+    "clouds",
+    "sample",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A cloud built from a recording; reach for Skip, then Thin.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

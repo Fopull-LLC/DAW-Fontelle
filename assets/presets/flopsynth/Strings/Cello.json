@@ -5,6 +5,21 @@
   },
   "name": "Cello",
   "category": "Strings",
+  "tags": [
+    "strings",
+    "table",
+    "unison",
+    "mono",
+    "glide",
+    "filtered",
+    "formant",
+    "lfo",
+    "velocity",
+    "wheel",
+    "rhythmic"
+  ],
+  "notes": "A string sound built from two tables; reach for Brightness, then Vibrato.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

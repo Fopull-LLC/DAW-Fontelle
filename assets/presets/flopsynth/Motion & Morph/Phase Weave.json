@@ -5,6 +5,22 @@
   },
   "name": "Phase Weave",
   "category": "Motion & Morph",
+  "tags": [
+    "motion",
+    "morph",
+    "evolving",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "ladder",
+    "lfo",
+    "velocity",
+    "rhythmic",
+    "delay"
+  ],
+  "notes": "A moving sound built from a table; reach for Weave, then Focus.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

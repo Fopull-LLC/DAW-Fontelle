@@ -5,6 +5,16 @@
   },
   "name": "Synth Piano",
   "category": "Keys",
+  "tags": [
+    "keys",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity"
+  ],
+  "notes": "A keyboard built from two tables; reach for Brightness, then Bell.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

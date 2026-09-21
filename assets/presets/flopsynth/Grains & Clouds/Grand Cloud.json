@@ -5,6 +5,19 @@
   },
   "name": "Grand Cloud",
   "category": "Grains & Clouds",
+  "tags": [
+    "grains",
+    "clouds",
+    "sample",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity",
+    "chorus",
+    "reverb"
+  ],
+  "notes": "A cloud built from a recording; reach for Where, then Brightness.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

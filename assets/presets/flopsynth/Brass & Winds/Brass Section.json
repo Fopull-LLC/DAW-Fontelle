@@ -5,6 +5,20 @@
   },
   "name": "Brass Section",
   "category": "Brass & Winds",
+  "tags": [
+    "brass",
+    "winds",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "chorus",
+    "reverb"
+  ],
+  "notes": "A brass or wind sound built from two tables; reach for Brightness, then Drive.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

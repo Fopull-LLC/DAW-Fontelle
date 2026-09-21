@@ -5,6 +5,21 @@
   },
   "name": "Touch Lead",
   "category": "Expressive",
+  "tags": [
+    "expressive",
+    "table",
+    "unison",
+    "mono",
+    "glide",
+    "filtered",
+    "lfo",
+    "wheel",
+    "velocity",
+    "aftertouch",
+    "rhythmic"
+  ],
+  "notes": "An expressive sound built from a table; reach for Brightness, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,15 @@
   },
   "name": "Warm Round",
   "category": "Bass",
+  "tags": [
+    "bass",
+    "table",
+    "poly",
+    "filtered",
+    "velocity"
+  ],
+  "notes": "A bass built from three tables; reach for Cutoff, then Resonance.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

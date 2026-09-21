@@ -5,6 +5,22 @@
   },
   "name": "Bell Lead",
   "category": "Lead",
+  "tags": [
+    "lead",
+    "table",
+    "warped",
+    "fm",
+    "mono",
+    "glide",
+    "filtered",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic",
+    "delay"
+  ],
+  "notes": "A lead built from a table; reach for Brightness, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

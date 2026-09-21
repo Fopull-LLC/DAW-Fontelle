@@ -5,6 +5,18 @@
   },
   "name": "Toy Grand",
   "category": "Sampled Keys",
+  "tags": [
+    "sampled",
+    "keys",
+    "sample",
+    "fm",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A sampled keyboard built from a recording; reach for Bell, then Length.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

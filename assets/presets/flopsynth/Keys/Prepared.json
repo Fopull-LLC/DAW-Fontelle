@@ -5,6 +5,18 @@
   },
   "name": "Prepared",
   "category": "Keys",
+  "tags": [
+    "keys",
+    "table",
+    "warped",
+    "fm",
+    "noise",
+    "poly",
+    "filtered",
+    "velocity"
+  ],
+  "notes": "A keyboard built from a table and a noise layer; reach for Metal, then Tone.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

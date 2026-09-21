@@ -5,6 +5,22 @@
   },
   "name": "Hoover",
   "category": "Lead",
+  "tags": [
+    "lead",
+    "table",
+    "unison",
+    "mono",
+    "glide",
+    "filtered",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic",
+    "chorus",
+    "delay"
+  ],
+  "notes": "A lead built from two tables; reach for Brightness, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,19 @@
   },
   "name": "Crystal",
   "category": "Bells & Mallets",
+  "tags": [
+    "bells",
+    "mallets",
+    "table",
+    "poly",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "delay",
+    "reverb"
+  ],
+  "notes": "A bell or mallet sound built from two tables; reach for Strike, then Shimmer.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,21 @@
   },
   "name": "Chip Pad",
   "category": "Chip & Retro",
+  "tags": [
+    "chip",
+    "retro",
+    "table",
+    "unison",
+    "poly",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic",
+    "crushed",
+    "reverb"
+  ],
+  "notes": "A chip sound built from two tables; reach for Trill rate, then Trill depth.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

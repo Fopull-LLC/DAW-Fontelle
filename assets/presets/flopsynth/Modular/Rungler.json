@@ -5,6 +5,18 @@
   },
   "name": "Rungler",
   "category": "Modular",
+  "tags": [
+    "modular",
+    "table",
+    "poly",
+    "filtered",
+    "ladder",
+    "lfo",
+    "velocity",
+    "delay"
+  ],
+  "notes": "A modular patch built from two tables; reach for Chaos, then Rate.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

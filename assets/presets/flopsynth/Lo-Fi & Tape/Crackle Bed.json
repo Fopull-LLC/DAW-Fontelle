@@ -5,6 +5,19 @@
   },
   "name": "Crackle Bed",
   "category": "Lo-Fi & Tape",
+  "tags": [
+    "lo-fi",
+    "tape",
+    "noise",
+    "poly",
+    "filtered",
+    "lfo",
+    "velocity",
+    "reverb",
+    "crushed"
+  ],
+  "notes": "A lo-fi sound built from a noise layer; reach for Tone, then Speed.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

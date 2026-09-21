@@ -5,6 +5,18 @@
   },
   "name": "Trigger Echo",
   "category": "Modular",
+  "tags": [
+    "modular",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity",
+    "delay",
+    "short"
+  ],
+  "notes": "A modular patch built from a table; reach for Tone, then Bite.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

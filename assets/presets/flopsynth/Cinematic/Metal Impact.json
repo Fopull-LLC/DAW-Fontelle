@@ -5,6 +5,19 @@
   },
   "name": "Metal Impact",
   "category": "Cinematic",
+  "tags": [
+    "cinematic",
+    "table",
+    "unison",
+    "warped",
+    "fm",
+    "poly",
+    "filtered",
+    "velocity",
+    "reverb"
+  ],
+  "notes": "A cinematic sound built from a table; reach for Tone, then Bite.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

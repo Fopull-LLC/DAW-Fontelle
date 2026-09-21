@@ -5,6 +5,21 @@
   },
   "name": "Muffled Keys",
   "category": "Lo-Fi & Tape",
+  "tags": [
+    "lo-fi",
+    "tape",
+    "table",
+    "warped",
+    "fm",
+    "poly",
+    "filtered",
+    "ladder",
+    "velocity",
+    "lfo",
+    "reverb"
+  ],
+  "notes": "A lo-fi sound built from a table; reach for Bite, then Tremolo.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

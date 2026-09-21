@@ -5,6 +5,16 @@
   },
   "name": "Touch Pluck",
   "category": "Expressive",
+  "tags": [
+    "expressive",
+    "table",
+    "unison",
+    "poly",
+    "filtered",
+    "velocity"
+  ],
+  "notes": "An expressive sound built from a table; reach for Tone, then Bite.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

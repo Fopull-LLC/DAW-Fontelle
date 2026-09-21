@@ -5,6 +5,24 @@
   },
   "name": "Kick Roar",
   "category": "Growls & Screams",
+  "tags": [
+    "growl",
+    "scream",
+    "bass music",
+    "sample",
+    "warped",
+    "fm",
+    "mono",
+    "glide",
+    "filtered",
+    "ladder",
+    "velocity",
+    "lfo",
+    "rhythmic",
+    "distorted"
+  ],
+  "notes": "A growl built from a recording; reach for Teeth, then Wobble.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,

@@ -5,6 +5,22 @@
   },
   "name": "Duduk",
   "category": "World",
+  "tags": [
+    "world",
+    "table",
+    "unison",
+    "noise",
+    "mono",
+    "glide",
+    "filtered",
+    "lfo",
+    "wheel",
+    "velocity",
+    "rhythmic",
+    "reverb"
+  ],
+  "notes": "A world instrument built from a table and a noise layer; reach for Brightness, then Detune.",
+  "author": "Fontelle",
   "payload": {
     "patch": {
       "format_version": 1,
