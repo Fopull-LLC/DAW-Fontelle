@@ -7809,6 +7809,9 @@ pub struct FlopsynthChrome<'a> {
     pub destinations: Vec<(usize, usize)>,
     /// The Presets page's About column, line by line (`canvas::preset_about`).
     pub about: Vec<String>,
+    /// The bank row the channel's preset is, outlined in the list; the
+    /// selected row (`browse.selected`) is washed, and the two can differ.
+    pub loaded: Option<usize>,
     /// Where the pointer is, for the rows of the Presets page that light up
     /// under it — the shelves and the presets, which the hit test already
     /// names and the renderer only has to ask about.
@@ -10244,12 +10247,6 @@ fn draw_flop_presets(
             );
         }
     }
-    let current = view.bank.iter().position(|preset| {
-        chrome
-            .about
-            .first()
-            .is_some_and(|name| name.trim_end_matches('*') == preset.name)
-    });
     for (which, rect) in &page.rows {
         if rect.is_empty() {
             continue;
@@ -10257,7 +10254,8 @@ fn draw_flop_presets(
         let Some(preset) = view.bank.get(*which) else {
             continue;
         };
-        let loaded = current == Some(*which);
+        let loaded = chrome.loaded == Some(*which);
+        let selected = view.browse.selected == Some(*which);
         if preset.favourite {
             fill_rect_rounded(
                 scene,
@@ -10266,10 +10264,23 @@ fn draw_flop_presets(
                 p.accent.with_alpha(FAVORITE_WASH),
             );
         }
+        // The selection is the shelf column's wash and bar — the row being
+        // listened to and described; the loaded preset keeps its outline,
+        // so a row can be both and a glance tells which is which.
+        if selected {
+            fill_rect_rounded(scene, *rect, m.corner_radius, p.accent.with_alpha(0x40));
+            fill_rect(
+                scene,
+                Rect::new(rect.x, rect.y + 3.0, 2.0, rect.height - 6.0),
+                p.accent,
+            );
+        } else if !loaded
+            && matches!(hover, Some(PresetsHit::Row(w) | PresetsHit::Star(w)) if w == *which)
+        {
+            fill_rect_rounded(scene, *rect, m.corner_radius, p.text.with_alpha(0x10));
+        }
         if loaded {
             stroke_rect_rounded(scene, *rect, m.corner_radius, 1.0, p.accent);
-        } else if matches!(hover, Some(PresetsHit::Row(w) | PresetsHit::Star(w)) if w == *which) {
-            fill_rect_rounded(scene, *rect, m.corner_radius, p.text.with_alpha(0x10));
         }
         let star = Rect::new(
             rect.right() - crate::canvas::STAR_WIDTH,

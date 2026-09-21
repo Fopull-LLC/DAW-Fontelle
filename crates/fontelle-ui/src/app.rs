@@ -4773,6 +4773,14 @@ impl WindowApp {
             {
                 self.flop_search_key(event)
             }
+            // Without the box, the arrows still walk the list and Enter still
+            // loads (§5.2); every other key falls through as before.
+            EditorKind::Instrument
+                if self.flopsynth.is_some()
+                    && self.flop_page == crate::canvas::FlopsynthPage::Presets =>
+            {
+                self.flop_presets_key(event)
+            }
             // The arrows nudge the focused knob (§3.3): up and right more,
             // down and left less, a hundredth a press and a thousandth with
             // Shift. The arrows are the fixed family the keymap leaves
@@ -5213,6 +5221,7 @@ impl WindowApp {
                     carrying_route: self.flop_route,
                     destinations: self.flop_destinations.clone(),
                     about: self.flop_about(),
+                    loaded: self.flop_loaded_row(),
                     hover_at: self.cursor,
                     tooltip: self.due_flop_tip().and_then(|tip| {
                         let text = self.labels.get(tip)?;
@@ -8500,6 +8509,12 @@ impl WindowApp {
     /// After anything that loads, saves or stars a preset: the document moved,
     /// the bar has to be read again, and both windows redraw.
     fn after_preset_change(&mut self) {
+        // What was being listened to is now, or is no longer, the point: a
+        // load makes the loaded preset the inspector's subject again.
+        self.flop_browse.selected = None;
+        if let Some(view) = &mut self.flopsynth {
+            view.browse.selected = None;
+        }
         self.studio_revision = u64::MAX;
         self.refresh_studio();
         self.refresh_title();
@@ -8760,11 +8775,22 @@ impl WindowApp {
 
     /// A press on the Presets page (§8.6).
     ///
-    /// A row is `ApplyPreset` — the same command the bar's drop-down sends —
-    /// and a star is the favourite the bar's star is: the page invents no
-    /// mechanism, it is a second view over the bank.
+    /// A row **selects and auditions** on one click and loads on two
+    /// (`docs/flopsynth-next.md` §5.2): a click is a listen through the
+    /// preview voice, the way a soundfont row's is, and the load is the
+    /// bar's own `ApplyPreset` — so a loaded preset's edits are never lost
+    /// to a stray click, and the page invents no mechanism of its own. A
+    /// star is the favourite the bar's star is.
     fn press_flop_presets(&mut self, hit: crate::canvas::PresetsHit) {
         use crate::canvas::{PresetDevice, PresetsHit};
+        // The double-click clock is read for a row only: a shelf pressed
+        // twice is not two of anything.
+        let doubled = matches!(hit, PresetsHit::Row(_))
+            && self.double_click.press(
+                self.cursor.0,
+                self.cursor.1,
+                self.input_clock.stamp(std::time::Instant::now()),
+            );
         match hit {
             PresetsHit::Shelf(index) => {
                 let shelf = self
@@ -8786,19 +8812,110 @@ impl WindowApp {
                 self.flop_searching = true;
                 self.tree.invalidate(PANEL);
             }
-            PresetsHit::Row(which) => {
-                if let Some(doc) = self.options.document.as_mut() {
-                    doc.apply_preset(PresetDevice::Instrument, which);
-                }
-                self.after_preset_change();
-            }
+            PresetsHit::Row(which) if doubled => self.load_flop_row(which),
+            PresetsHit::Row(which) => self.select_flop_row(which, true),
             PresetsHit::Star(which) => {
                 if let Some(doc) = self.options.document.as_mut() {
                     doc.toggle_preset_star(PresetDevice::Instrument, which);
                 }
+                // A star is not a load: what was selected stays selected.
+                let selected = self.flop_browse.selected;
                 self.after_preset_change();
+                self.set_flop_selected(selected);
             }
         }
+    }
+
+    /// Loads bank row `which` onto the channel — the double-click, and
+    /// Enter on a selection. One undo entry, the bar's own.
+    fn load_flop_row(&mut self, which: usize) {
+        self.end_preview();
+        if let Some(doc) = self.options.document.as_mut() {
+            doc.apply_preset(crate::canvas::PresetDevice::Instrument, which);
+        }
+        self.after_preset_change();
+    }
+
+    /// Selects bank row `which` — the inspector describes it, Enter loads
+    /// it — and, when `hear`, auditions it: C3 at velocity 100 through
+    /// the preview voice for §5.2's second and a half, nothing written.
+    fn select_flop_row(&mut self, which: usize, hear: bool) {
+        self.set_flop_selected(Some(which));
+        if !hear {
+            return;
+        }
+        let aimed = match self.options.document.as_mut() {
+            Some(doc) => doc.audition_preset(crate::canvas::PresetDevice::Instrument, which),
+            None => return,
+        };
+        if let Err(e) = aimed {
+            self.status = e;
+            return;
+        }
+        // Through the same state machine every other audition uses, so this
+        // note-on has a note-off coming like all the rest — and a walk down
+        // the list with the arrows ends one note before it starts the next.
+        let key = self.preview_key();
+        let actions = self.audition.start(
+            key,
+            100,
+            0,
+            std::time::Duration::from_millis(1500),
+            std::time::Instant::now(),
+        );
+        self.send_audition(actions);
+        // Let go at once — a key has no button to come up, and the hold is
+        // the floor the note sounds out. A click's release comes again with
+        // the button, which is harmless: a scheduled release is rescheduled.
+        self.audition.release(std::time::Instant::now());
+    }
+
+    /// Changes which row is selected, and scrolls the list the least that
+    /// keeps it in sight.
+    fn set_flop_selected(&mut self, selected: Option<usize>) {
+        let mut browse = self.flop_browse.clone();
+        browse.selected = selected;
+        if let Some(which) = selected {
+            browse.scroll = crate::canvas::presets_scroll_to(
+                &self.flopsynth_layout.presets,
+                which,
+                browse.scroll,
+            );
+        }
+        if browse != self.flop_browse {
+            self.set_flop_browse(browse);
+        }
+        self.redraw_editors();
+    }
+
+    /// The arrows on the Presets page: a step down or up the list as it
+    /// is laid out, heard as it goes. Enter loads the selection.
+    fn flop_presets_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        let delta = match &event.logical_key {
+            Key::Named(NamedKey::ArrowDown) => 1,
+            Key::Named(NamedKey::ArrowUp) => -1,
+            Key::Named(NamedKey::Enter) => {
+                let Some(which) = self.flop_browse.selected else {
+                    return false;
+                };
+                self.load_flop_row(which);
+                return true;
+            }
+            _ => return false,
+        };
+        let rows: Vec<usize> = self
+            .flopsynth_layout
+            .presets
+            .rows
+            .iter()
+            .map(|(which, _)| *which)
+            .collect();
+        let Some(next) = crate::canvas::preset_step(&rows, self.flop_browse.selected, delta) else {
+            return true;
+        };
+        self.select_flop_row(next, true);
+        true
     }
 
     /// Changes how the Presets page is looked at, and lays it out again.
@@ -8823,24 +8940,40 @@ impl WindowApp {
         self.redraw_editors();
     }
 
-    /// The About column's lines: the loaded preset, described — with its
-    /// own phrase and tags when the bank knows it (§5.1).
+    /// The bank row the channel's preset is, if the bank has it.
+    fn flop_loaded_row(&self) -> Option<usize> {
+        let view = self.flopsynth.as_ref()?;
+        let bar = &self.preset_view[0];
+        let name = bar.name.as_ref()?;
+        view.bank
+            .iter()
+            .position(|preset| preset.name == *name && Some(preset.origin) == bar.origin)
+    }
+
+    /// The About column's lines: the **selected** row when there is one
+    /// that is not the loaded preset — §5.2's inspector, describing what
+    /// is being listened to — else the loaded preset, with its own phrase
+    /// and tags when the bank knows it (§5.1).
     fn flop_about(&self) -> Vec<String> {
         let Some(view) = &self.flopsynth else {
             return Vec::new();
         };
         let bar = &self.preset_view[0];
-        let loaded = bar.name.as_ref().and_then(|name| {
-            view.bank
-                .iter()
-                .find(|preset| preset.name == *name && Some(preset.origin) == bar.origin)
-        });
+        let loaded = self.flop_loaded_row();
         let (showing, total) = (self.flopsynth_layout.presets.rows.len(), view.bank.len());
         // The column's width in characters, at the body face's average
         // advance: prose wrapped a little short rather than clipped.
         let width_chars =
             ((self.flopsynth_layout.presets.about.width - 24.0) / 6.8).max(12.0) as usize;
-        match loaded {
+        if let Some(selected) = self.flop_browse.selected.filter(|s| Some(*s) != loaded)
+            && let Some(preset) = view.bank.get(selected)
+        {
+            let like = self.options.document.as_ref().map_or_else(Vec::new, |doc| {
+                doc.preset_sounds_like(crate::canvas::PresetDevice::Instrument, selected)
+            });
+            return crate::canvas::preset_about_row(preset, &like, width_chars, showing, total);
+        }
+        match loaded.and_then(|which| view.bank.get(which)) {
             Some(preset) => crate::canvas::preset_about_for(
                 bar,
                 preset,
@@ -8866,6 +8999,17 @@ impl WindowApp {
             // does in the browser's search — and because `editor_own_key` only
             // reaches here while the box is focused, it does not also close the
             // window on the same press.
+            // Enter on a selection loads it — type "pad", walk down, Enter —
+            // and otherwise only gives the keyboard back. The arrows walk the
+            // hits while the box keeps the keyboard, so the query can be
+            // narrowed again without a click.
+            Key::Named(NamedKey::ArrowDown | NamedKey::ArrowUp) => {
+                return self.flop_presets_key(event);
+            }
+            Key::Named(NamedKey::Enter) if self.flop_browse.selected.is_some() => {
+                self.flop_searching = false;
+                return self.flop_presets_key(event);
+            }
             Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
                 self.flop_searching = false;
                 if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {

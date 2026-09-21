@@ -3294,6 +3294,50 @@ pub struct PresetBrowse {
     /// How far down the list is scrolled, in pixels. Clamped by the layout,
     /// which is the only thing that knows how long the list came out.
     pub scroll: f32,
+    /// The row a click or the arrows chose, by its place in the bank — the
+    /// one being *listened to* and described, which is not the loaded one
+    /// (§5.2: a single click auditions, a double-click loads). `None` until
+    /// something is chosen, and again once the loaded preset changes.
+    pub selected: Option<usize>,
+}
+
+/// The row the arrows land on from `selected`, walking `rows` — the list
+/// as it is laid out, by place in the bank — one step `delta` at a time
+/// and stopping at the ends. From nothing, down takes the first row and
+/// up the last; a selection the list no longer shows (the shelf changed
+/// under it) starts over the same way.
+pub fn preset_step(rows: &[usize], selected: Option<usize>, delta: i32) -> Option<usize> {
+    if rows.is_empty() {
+        return None;
+    }
+    let last = rows.len() - 1;
+    let slot = match selected.and_then(|which| rows.iter().position(|w| *w == which)) {
+        Some(slot) => (slot as i64 + delta as i64).clamp(0, last as i64) as usize,
+        None if delta < 0 => last,
+        None => 0,
+    };
+    Some(rows[slot])
+}
+
+/// The scroll that shows bank row `which` whole, moved the least from
+/// `scroll`: unchanged when it is already in sight, else the row brought
+/// to whichever edge it is beyond. So the arrows never walk the selection
+/// out of view, and the list does not jump when there was no need.
+pub fn presets_scroll_to(page: &PresetsLayout, which: usize, scroll: f32) -> f32 {
+    let Some(slot) = page.rows.iter().position(|(w, _)| *w == which) else {
+        return scroll;
+    };
+    let room = (page.list.height - LIST_PAD * 2.0).max(0.0);
+    let top = slot as f32 * PRESET_ROW;
+    let bottom = top + PRESET_ROW;
+    let wanted = if top < scroll {
+        top
+    } else if bottom > scroll + room {
+        bottom - room
+    } else {
+        scroll
+    };
+    wanted.clamp(0.0, page.max_scroll())
 }
 
 /// The shelves a bank has, in the order the column lists them.
@@ -3550,6 +3594,32 @@ pub fn preset_about_for(
     total: usize,
 ) -> Vec<String> {
     about_lines(bar, Some(preset), sounds_like, width_chars, showing, total)
+}
+
+/// The About column for a row that is **selected but not loaded** (§5.2's
+/// inspector): the row described as itself — its name, category and
+/// origin are its own, it cannot have been edited — and, last, how to
+/// load it, because a single click no longer does and the column is
+/// where the eye goes to ask why.
+pub fn preset_about_row(
+    preset: &PresetChoice,
+    sounds_like: &[String],
+    width_chars: usize,
+    showing: usize,
+    total: usize,
+) -> Vec<String> {
+    let bar = super::PresetBarView {
+        name: Some(preset.name.clone()),
+        category: preset.category.clone(),
+        origin: Some(preset.origin),
+        dirty: false,
+        favourite: preset.favourite,
+        can_save: false,
+    };
+    let mut lines = about_lines(&bar, Some(preset), sounds_like, width_chars, showing, total);
+    lines.push(String::new());
+    lines.extend(wrap_words("double-click or Enter to load", width_chars));
+    lines
 }
 
 /// `text` broken into lines of at most `width` characters, at the spaces;

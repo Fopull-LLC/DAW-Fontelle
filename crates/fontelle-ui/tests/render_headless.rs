@@ -3482,6 +3482,7 @@ fn shoot_flopsynth_view(
             carrying_route: None,
             destinations: vec![(1, 0), (1, 1)],
             about: Vec::new(),
+            loaded: None,
             hover_at: (f32::MIN, f32::MIN),
             tooltip: None,
             searching: false,

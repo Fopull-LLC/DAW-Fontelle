@@ -7642,6 +7642,51 @@ impl StudioHost for Session {
         Session::apply_preset(self, device, index);
     }
 
+    fn audition_preset(
+        &mut self,
+        device: fontelle_ui::canvas::PresetDevice,
+        index: usize,
+    ) -> Result<(), String> {
+        let kind = self
+            .preset_device(device)
+            .ok_or("there is no device here to hear a preset on")?;
+        let entry = self
+            .preset_bank
+            .for_device(&kind)
+            .into_iter()
+            .nth(index)
+            .ok_or("that preset is not in the bank")?
+            .clone();
+        let preset = self.preset_bank.load(&entry)?;
+        let fontelle_types::PresetPayload::Patch(data) = preset.payload else {
+            return Err(format!("{} is not an instrument", preset.name));
+        };
+        let loaded = fontelle_core::Patch::from_data(&data, |file| self.library.resolve(file))
+            .map_err(|e| format!("{}: {e}", preset.name))?;
+        // The soundfont browser's path (`preview_preset`): the patch goes
+        // into the spare sampler and the live path is aimed at it. **Nothing
+        // is written to the document.**
+        self.preview_patch = Some(loaded.patch);
+        self.previewing = true;
+        self.rebuild_graph();
+        Ok(())
+    }
+
+    fn preset_sounds_like(
+        &self,
+        device: fontelle_ui::canvas::PresetDevice,
+        index: usize,
+    ) -> Vec<String> {
+        let Some(kind) = self.preset_device(device) else {
+            return Vec::new();
+        };
+        let Some(entry) = self.preset_bank.for_device(&kind).into_iter().nth(index) else {
+            return Vec::new();
+        };
+        self.pump_previews();
+        self.preview_index.borrow().sounds_like(&entry.name, 5)
+    }
+
     fn step_preset(&mut self, device: fontelle_ui::canvas::PresetDevice, delta: i32) {
         Session::step_preset(self, device, delta);
     }

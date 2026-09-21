@@ -1777,6 +1777,97 @@ fn the_about_column_carries_the_phrase_and_the_tags() {
     );
 }
 
+/// A row that is selected but not loaded is described as itself (§5.2's
+/// inspector): its own name, category and origin rather than the bar's,
+/// its words, what it sounds like — and how to load it, since a single
+/// click no longer does.
+#[test]
+fn the_about_column_describes_a_selected_row_as_itself() {
+    let bank = a_bank();
+    let like = vec!["Warm".to_string()];
+    let lines = fontelle_ui::canvas::preset_about_row(&bank[4], &like, 80, 3, 6);
+    assert_eq!(lines[0], "Choir Ahh");
+    assert_eq!(lines[1], "Choir & Vocal");
+    assert!(lines.iter().any(|l| l == "factory preset"), "{lines:?}");
+    assert!(lines.iter().any(|l| l == "\u{2605} favourite"), "{lines:?}");
+    assert!(
+        !lines.iter().any(|l| l.contains("edited")),
+        "a row that is not loaded cannot have been edited: {lines:?}"
+    );
+    assert!(lines.iter().any(|l| l == "  Warm"), "{lines:?}");
+    assert!(
+        lines.iter().any(|l| l.contains("double-click")),
+        "it says how to load: {lines:?}"
+    );
+    // A user's own row says so.
+    let lines = fontelle_ui::canvas::preset_about_row(&bank[5], &[], 80, 3, 6);
+    assert!(lines.iter().any(|l| l == "your preset"), "{lines:?}");
+}
+
+/// The arrows walk the list in the order it is laid out — the shelf's
+/// order, through a search's hits — and stop at its ends; with nothing
+/// selected, down takes the first row and up the last.
+#[test]
+fn the_arrows_walk_the_laid_out_rows() {
+    use fontelle_ui::canvas::preset_step;
+    let rows = [0usize, 3, 4];
+    assert_eq!(preset_step(&rows, None, 1), Some(0));
+    assert_eq!(preset_step(&rows, None, -1), Some(4));
+    assert_eq!(preset_step(&rows, Some(0), 1), Some(3));
+    assert_eq!(preset_step(&rows, Some(3), 1), Some(4));
+    assert_eq!(preset_step(&rows, Some(4), 1), Some(4), "the end holds");
+    assert_eq!(preset_step(&rows, Some(0), -1), Some(0), "so does the top");
+    // A selection the list no longer shows — a shelf change — starts over.
+    assert_eq!(preset_step(&rows, Some(2), 1), Some(0));
+    assert_eq!(preset_step(&[], None, 1), None);
+}
+
+/// Walking past the edge of the list scrolls it, by the least that shows
+/// the row whole — so the selection never leaves sight, and the list does
+/// not jump when the row was already in view.
+#[test]
+fn the_list_scrolls_to_keep_the_selection_in_sight() {
+    use fontelle_ui::canvas::{PresetShelf, presets_scroll_to};
+    let mut bank = Vec::new();
+    for n in 0..128 {
+        bank.push(a_preset(&format!("P{n}"), "Pad", false, false));
+    }
+    let view = FlopsynthView {
+        page: FlopsynthPage::Presets,
+        bank,
+        browse: PresetBrowse {
+            shelf: PresetShelf::All,
+            query: String::new(),
+            scroll: 0.0,
+            selected: None,
+        },
+        ..FlopsynthView::default()
+    };
+    let layout = flopsynth_layout(BODY, &metrics(), &view);
+    let page = &layout.presets;
+    assert!(
+        page.rows[127].1.is_empty(),
+        "the last row starts out of sight"
+    );
+    // A row already showing asks for no scroll at all.
+    assert_eq!(presets_scroll_to(page, 0, 0.0), 0.0);
+    // The last row: scrolled to by the least that shows it whole.
+    let scroll = presets_scroll_to(page, 127, 0.0);
+    assert!(scroll > 0.0);
+    let mut shown = view.clone();
+    shown.browse.scroll = scroll;
+    let layout = flopsynth_layout(BODY, &metrics(), &shown);
+    let last = layout.presets.rows[127].1;
+    assert!(!last.is_empty(), "the last row shows at {scroll}");
+    assert!(
+        (last.bottom() - (layout.presets.list.bottom() - 4.0)).abs() < 0.51,
+        "and sits at the bottom edge, not past it: {last:?} in {:?}",
+        layout.presets.list
+    );
+    // From there, the first row is scrolled back to the top.
+    assert_eq!(presets_scroll_to(&layout.presets, 0, scroll), 0.0);
+}
+
 fn presets_view(browse: PresetBrowse) -> FlopsynthView {
     FlopsynthView {
         page: FlopsynthPage::Presets,
@@ -1952,6 +2043,7 @@ fn choosing_a_shelf_and_typing_change_which_rows_are_laid_out() {
         shelf: PresetShelf::Category("Bass".into()),
         query: "re".into(),
         scroll: 0.0,
+        selected: None,
     });
     let layout = flopsynth_layout(BODY, &metrics(), &view);
     let which: Vec<usize> = layout.presets.rows.iter().map(|(w, _)| *w).collect();

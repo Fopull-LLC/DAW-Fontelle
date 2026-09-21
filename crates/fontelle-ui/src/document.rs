@@ -1822,6 +1822,31 @@ pub trait StudioHost: DocumentHost {
     /// One undo entry.
     fn apply_preset(&mut self, _device: crate::canvas::PresetDevice, _index: usize) {}
 
+    /// Puts the preset at `index` into the **preview voice** and aims the
+    /// live path at it, so the next [`audition_on`](Self::audition_on) is
+    /// that preset rather than the channel's — the Presets page's audition
+    /// (`docs/flopsynth-next.md` §5.2). Nothing is written to the document:
+    /// a listen is not a load, which is what lets a single click be a
+    /// listen and keeps a loaded preset's edits from a stray one.
+    fn audition_preset(
+        &mut self,
+        _device: crate::canvas::PresetDevice,
+        _index: usize,
+    ) -> Result<(), String> {
+        Err("this studio cannot preview".to_string())
+    }
+
+    /// The presets that sound most like the one at `index`, by name,
+    /// nearest first — what the inspector lists under a selected row.
+    /// Empty until the previews are in, and for a row that is not there.
+    fn preset_sounds_like(
+        &self,
+        _device: crate::canvas::PresetDevice,
+        _index: usize,
+    ) -> Vec<String> {
+        Vec::new()
+    }
+
     /// The previous or next preset in this device's bank, wrapping.
     fn step_preset(&mut self, _device: crate::canvas::PresetDevice, _delta: i32) {}
 
