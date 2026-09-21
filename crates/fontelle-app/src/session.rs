@@ -342,7 +342,7 @@ pub struct Session {
     preview_index: std::cell::RefCell<crate::preview_index::PreviewIndex>,
     #[allow(clippy::type_complexity)]
     preview_jobs: std::cell::RefCell<
-        Option<std::sync::mpsc::Receiver<(String, u64, fontelle_core::preview::SoundVector)>>,
+        Option<std::sync::mpsc::Receiver<(String, u64, fontelle_core::preview::Preview)>>,
     >,
     previews_started: std::cell::Cell<bool>,
     /// The last reversible settings action, kept so a toast's "Undo" can put it
@@ -4141,6 +4141,88 @@ impl Session {
         self.export_wavetable_to(layer, &path)
     }
 
+    // --- packs (`docs/flopsynth-next.md` §5) ---
+
+    /// Writes every preset the user made for `device` as one pack file at
+    /// `path` — what to hand to somebody.
+    pub fn export_pack_to(&self, device: PresetDevice, path: &Path) -> Result<String, String> {
+        let kind = self
+            .preset_device(device)
+            .ok_or("there is no device here to pack presets for")?;
+        let mine: Vec<crate::preset_bank::PresetEntry> = self
+            .preset_bank
+            .for_device(&kind)
+            .into_iter()
+            .filter(|entry| entry.origin == fontelle_types::PresetOrigin::User)
+            .cloned()
+            .collect();
+        if mine.is_empty() {
+            return Err(format!(
+                "you have no {} presets of your own to pack",
+                kind.label()
+            ));
+        }
+        let count = self.preset_bank.export_pack(&mine, path)?;
+        Ok(format!(
+            "packed {count} preset{} into {}",
+            if count == 1 { "" } else { "s" },
+            path.display()
+        ))
+    }
+
+    /// Reads a pack into the user's bank; a name already taken is skipped.
+    pub fn import_pack_from(&mut self, path: &Path) -> Result<String, String> {
+        let (imported, skipped) = self.preset_bank.import_pack(path)?;
+        self.touch();
+        Ok(match (imported, skipped) {
+            (n, 0) => format!("imported {n} preset{}", if n == 1 { "" } else { "s" }),
+            (0, s) => format!("nothing imported: {s} already in your bank"),
+            (n, s) => format!("imported {n}, skipped {s} already in your bank"),
+        })
+    }
+
+    /// [`export_pack_to`](Self::export_pack_to), asking where.
+    pub fn export_pack(&mut self, device: PresetDevice) -> Result<String, String> {
+        let kind = self
+            .preset_device(device)
+            .ok_or("there is no device here to pack presets for")?;
+        let default_name = format!("{} presets.fontelle-pack.json", kind.label());
+        let start = self.settings.projects_dir.clone();
+        let path = match crate::desktop::choose_save_file(
+            "Export preset pack",
+            &default_name,
+            start.as_deref(),
+        ) {
+            Ok(Some(path)) => path,
+            Ok(None) => return Ok("export cancelled".to_string()),
+            Err(_) => self
+                .settings
+                .projects_dir
+                .clone()
+                .ok_or_else(|| {
+                    "no file picker on this machine, and no projects folder to write into"
+                        .to_string()
+                })?
+                .join(&default_name),
+        };
+        self.export_pack_to(device, &path)
+    }
+
+    /// [`import_pack_from`](Self::import_pack_from), asking which.
+    pub fn import_pack(&mut self) -> Result<String, String> {
+        let start = self.settings.projects_dir.clone();
+        let path = match crate::desktop::choose_open_file(
+            "Import preset pack",
+            start.as_deref(),
+            "*.json",
+        ) {
+            Ok(Some(path)) => path,
+            Ok(None) => return Ok("import cancelled".to_string()),
+            Err(why) => return Err(why),
+        };
+        self.import_pack_from(&path)
+    }
+
     /// Loads a sound onto one of Flopsynth's oscillators as the **recording**
     /// it plays — the whole sound, pitched across the keyboard — or a
     /// **folder** of sounds as one recording per file.
@@ -7688,6 +7770,14 @@ impl StudioHost for Session {
         Ok(())
     }
 
+    fn export_pack(&mut self, device: fontelle_ui::canvas::PresetDevice) -> Result<String, String> {
+        Session::export_pack(self, device)
+    }
+
+    fn import_pack(&mut self) -> Result<String, String> {
+        Session::import_pack(self)
+    }
+
     fn ab_slot(&self) -> usize {
         self.selected_channel_id()
             .and_then(|id| self.project.channels.get(id))
@@ -7804,6 +7894,17 @@ impl StudioHost for Session {
         self.random_state = seed;
         self.store_patch_structural(channel, patch);
         self.touch();
+    }
+
+    fn preset_thumbnail(
+        &self,
+        device: fontelle_ui::canvas::PresetDevice,
+        index: usize,
+    ) -> Option<fontelle_ui::canvas::PresetThumbnail> {
+        let kind = self.preset_device(device)?;
+        let entry = self.preset_bank.for_device(&kind).into_iter().nth(index)?;
+        self.pump_previews();
+        self.thumbnail_of(&entry.name)
     }
 
     fn preset_sounds_like(
@@ -8099,6 +8200,8 @@ impl StudioHost for Session {
         view.on_b = channel.ab.on_b;
         if page == fontelle_ui::canvas::FlopsynthPage::Presets {
             view.sounds_like = self.sounds_like_loaded();
+            let bar = Session::preset_bar(self, fontelle_ui::canvas::PresetDevice::Instrument);
+            view.thumbnail = bar.name.as_deref().and_then(|name| self.thumbnail_of(name));
         }
         // The ring §12.2 asks for. Built once for the whole window rather than
         // one question per knob, since answering it walks every clip.
@@ -11355,7 +11458,9 @@ impl Session {
             let mut index = self.preview_index.borrow_mut();
             loop {
                 match receiver.try_recv() {
-                    Ok((name, hash, vector)) => index.insert(&name, hash, vector),
+                    Ok((name, hash, preview)) => {
+                        index.insert_with_peaks(&name, hash, preview.vector, preview.peaks)
+                    }
                     Err(std::sync::mpsc::TryRecvError::Empty) => break,
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         done = true;
@@ -11385,6 +11490,15 @@ impl Session {
             return Vec::new();
         };
         self.preview_index.borrow().sounds_like(&name, 5)
+    }
+
+    /// `name`'s thumbnail from the index, in the window's shape.
+    fn thumbnail_of(&self, name: &str) -> Option<fontelle_ui::canvas::PresetThumbnail> {
+        let (peaks, shape) = self.preview_index.borrow().thumbnail(name)?;
+        Some(fontelle_ui::canvas::PresetThumbnail {
+            peaks,
+            bands: shape.to_vec(),
+        })
     }
 
     /// The previews the session has, for a test to look at.

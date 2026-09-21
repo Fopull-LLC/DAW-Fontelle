@@ -20,6 +20,11 @@ pub struct IndexedPreview {
     pub name: String,
     pub hash: u64,
     pub vector: SoundVector,
+    /// The preview note's envelope, `Preview::COLUMNS` columns in 0..1 —
+    /// the inspector's thumbnail (§5.2). Empty in a file written before
+    /// it was kept, which `has` reads as not indexed.
+    #[serde(default)]
+    pub peaks: Vec<f32>,
 }
 
 /// The previews the bank has, by preset name.
@@ -62,21 +67,44 @@ impl PreviewIndex {
         hash
     }
 
-    /// Whether `name` is indexed from a file hashing to `hash`.
+    /// Whether `name` is indexed from a file hashing to `hash` — with its
+    /// envelope, so an index from before the thumbnail is filled in once.
     pub fn has(&self, name: &str, hash: u64) -> bool {
         self.entries
             .iter()
-            .any(|entry| entry.name == name && entry.hash == hash)
+            .any(|entry| entry.name == name && entry.hash == hash && !entry.peaks.is_empty())
     }
 
-    /// Records `name`'s vector, replacing an older one.
+    /// Records `name`'s vector, replacing an older one. For a test's
+    /// seeding; the worker goes through [`insert_with_peaks`](Self::insert_with_peaks).
     pub fn insert(&mut self, name: &str, hash: u64, vector: SoundVector) {
+        self.insert_with_peaks(name, hash, vector, vec![1.0]);
+    }
+
+    /// Records `name`'s vector and envelope, replacing an older one.
+    pub fn insert_with_peaks(
+        &mut self,
+        name: &str,
+        hash: u64,
+        vector: SoundVector,
+        peaks: Vec<f32>,
+    ) {
         self.entries.retain(|entry| entry.name != name);
         self.entries.push(IndexedPreview {
             name: name.to_string(),
             hash,
             vector,
+            peaks,
         });
+    }
+
+    /// `name`'s thumbnail: its envelope and its ten-band shape. `None`
+    /// until it is rendered.
+    pub fn thumbnail(&self, name: &str) -> Option<(Vec<f32>, [f32; 10])> {
+        self.entries
+            .iter()
+            .find(|entry| entry.name == name && !entry.peaks.is_empty())
+            .map(|entry| (entry.peaks.clone(), entry.vector.shape))
     }
 
     /// The `count` presets nearest `name` by sound, nearest first — empty
@@ -110,14 +138,14 @@ pub type PreviewJob = (String, u64, fontelle_core::Patch);
 /// is done. The receiver is drained by the session's pump.
 pub fn render_in_background(
     jobs: Vec<PreviewJob>,
-) -> std::sync::mpsc::Receiver<(String, u64, SoundVector)> {
+) -> std::sync::mpsc::Receiver<(String, u64, fontelle_core::preview::Preview)> {
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("preset previews".to_string())
         .spawn(move || {
             for (name, hash, patch) in jobs {
                 let preview = fontelle_core::preview::preset_preview(&patch);
-                if sender.send((name, hash, preview.vector)).is_err() {
+                if sender.send((name, hash, preview)).is_err() {
                     break;
                 }
             }
@@ -168,5 +196,32 @@ mod tests {
         index.save(&path).unwrap();
         assert_eq!(PreviewIndex::load(&path), index);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The thumbnail (§5.2's inspector) is the preview's envelope beside
+    /// its ten-band shape. An index written before the envelope was kept
+    /// has the vector and no peaks; such a row is **missing** again, so
+    /// the worker fills it in once rather than the column staying blank.
+    #[test]
+    fn a_row_without_its_envelope_is_rendered_again_and_a_thumbnail_is_both() {
+        let mut index = PreviewIndex::default();
+        let hash = PreviewIndex::hash_of("v1");
+        index.entries.push(IndexedPreview {
+            name: "Old".to_string(),
+            hash,
+            vector: vector([0.0; 4]),
+            peaks: Vec::new(),
+        });
+        assert!(!index.has("Old", hash), "no envelope: render it again");
+        assert!(index.thumbnail("Old").is_none());
+        index.insert_with_peaks("Old", hash, vector([0.0; 4]), vec![0.2, 1.0, 0.5]);
+        assert!(index.has("Old", hash));
+        let (peaks, shape) = index.thumbnail("Old").expect("both halves");
+        assert_eq!(peaks, [0.2, 1.0, 0.5]);
+        assert_eq!(shape, [0.1; 10]);
+        // A file from before reads back with empty peaks rather than failing.
+        let text = r#"{"entries":[{"name":"X","hash":1,"vector":{"scalar":[0,0,0,0],"shape":[0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1]}}]}"#;
+        let old: PreviewIndex = serde_json::from_str(text).unwrap();
+        assert!(old.entries[0].peaks.is_empty());
     }
 }

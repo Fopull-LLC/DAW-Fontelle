@@ -33,6 +33,18 @@ use std::time::SystemTime;
 
 include!(concat!(env!("OUT_DIR"), "/factory_presets.rs"));
 
+/// What a pack file says it is.
+const PACK_FORMAT: &str = "fontelle-pack";
+
+/// A pack on disk: the presets, whole, under a name that says what the
+/// file is.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PresetPack {
+    format: String,
+    version: u32,
+    presets: Vec<Preset>,
+}
+
 /// One preset the bank knows about, without its payload.
 ///
 /// The payload is deliberately absent: a bank holds thousands of rows and a
@@ -251,6 +263,59 @@ impl PresetBank {
         std::fs::rename(&temporary, &path).map_err(|e| e.to_string())?;
         self.rescan();
         Ok(reference)
+    }
+
+    /// Writes `entries` — the user's own — as one **pack** file at `path`
+    /// (`docs/flopsynth-next.md` §5): a JSON document naming itself and
+    /// holding each preset whole, so it opens with the same code a preset
+    /// file does. Factory rows are refused: every build has them, and a
+    /// pack is for what you made. How many were written.
+    pub fn export_pack(&self, entries: &[PresetEntry], path: &Path) -> Result<usize, String> {
+        if entries.is_empty() {
+            return Err("there is nothing to pack".to_string());
+        }
+        if let Some(factory) = entries.iter().find(|e| e.origin == PresetOrigin::Factory) {
+            return Err(format!(
+                "\"{}\" is a factory preset — a pack is for your own",
+                factory.name
+            ));
+        }
+        let mut presets = Vec::with_capacity(entries.len());
+        for entry in entries {
+            presets.push(self.load(entry)?);
+        }
+        let pack = PresetPack {
+            format: PACK_FORMAT.to_string(),
+            version: 1,
+            presets,
+        };
+        let text = serde_json::to_string_pretty(&pack).map_err(|e| e.to_string())?;
+        std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(pack.presets.len())
+    }
+
+    /// Reads a pack and saves each preset into the user's folder as if it
+    /// had been saved here — **skipping** a name already taken rather than
+    /// writing over it, since a pack from somebody else must not replace
+    /// your own. `(imported, skipped)`.
+    pub fn import_pack(&mut self, path: &Path) -> Result<(usize, usize), String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let pack: PresetPack = serde_json::from_str(&text)
+            .map_err(|_| format!("{} is not a preset pack", path.display()))?;
+        if pack.format != PACK_FORMAT {
+            return Err(format!("{} is not a preset pack", path.display()));
+        }
+        let mut imported = 0;
+        let mut skipped = 0;
+        for preset in &pack.presets {
+            match self.save(preset, false) {
+                Ok(_) => imported += 1,
+                // A name in use is the one refusal that is not an error here.
+                Err(why) if why.starts_with("you already have") => skipped += 1,
+                Err(why) => return Err(why),
+            }
+        }
+        Ok((imported, skipped))
     }
 
     /// Removes a user preset's file.

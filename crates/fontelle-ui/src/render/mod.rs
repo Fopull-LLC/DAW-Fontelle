@@ -7812,6 +7812,9 @@ pub struct FlopsynthChrome<'a> {
     /// The bank row the channel's preset is, outlined in the list; the
     /// selected row (`browse.selected`) is washed, and the two can differ.
     pub loaded: Option<usize>,
+    /// The thumbnail under the About column's name (§5.2): the selected
+    /// row's, else the loaded preset's; `None` until rendered.
+    pub thumbnail: Option<crate::canvas::PresetThumbnail>,
     /// Where the pointer is, for the rows of the Presets page that light up
     /// under it — the shelves and the presets, which the hit test already
     /// names and the renderer only has to ask about.
@@ -10300,6 +10303,29 @@ fn draw_flop_presets(
             );
         }
     }
+    // The more chip (§5) at the search row's right end, drawn like the
+    // search box, lit under the pointer.
+    if !page.more.is_empty() {
+        let lit = hover == Some(PresetsHit::More);
+        fill_rect_rounded(scene, page.more, m.corner_radius, p.window.with_alpha(0xd8));
+        stroke_rect_rounded(
+            scene,
+            page.more,
+            m.corner_radius,
+            1.0,
+            if lit { p.accent } else { p.border },
+        );
+        if let Some(text) = labels.get(crate::canvas::MORE_CHIP) {
+            draw_text_clipped(
+                scene,
+                text,
+                page.more,
+                page.more.x + ((page.more.width - text.width) / 2.0).max(1.0),
+                page.more.y + (page.more.height - text.height) / 2.0,
+                if lit { p.text } else { p.text_muted },
+            );
+        }
+    }
     for (which, rect) in &page.rows {
         if rect.is_empty() {
             continue;
@@ -10447,7 +10473,85 @@ fn draw_flop_presets(
                     p.accent,
                 );
                 y += 4.0;
+                // The thumbnail (§5.2), under the name: the ten-band shape
+                // as faint bars behind, and the preview note's envelope
+                // mirrored over them in the accent — a picture of the sound
+                // before its words.
+                if let Some(thumbnail) = &chrome.thumbnail {
+                    let picture = Rect::new(
+                        page.about.x + 12.0,
+                        y + 2.0,
+                        (page.about.width - 24.0).max(0.0),
+                        THUMBNAIL_HEIGHT,
+                    );
+                    draw_preset_thumbnail(scene, theme, picture, thumbnail);
+                    y += THUMBNAIL_HEIGHT + 10.0;
+                }
             }
+        }
+    }
+}
+
+/// How tall the inspector's thumbnail is.
+const THUMBNAIL_HEIGHT: f32 = 56.0;
+
+fn draw_preset_thumbnail(
+    scene: &mut Scene,
+    theme: &Theme,
+    rect: Rect,
+    thumbnail: &crate::canvas::PresetThumbnail,
+) {
+    let p = &theme.palette;
+    if rect.is_empty() {
+        return;
+    }
+    fill_rect_rounded(scene, rect, 3.0, p.window.with_alpha(0xa0));
+    // The bands: one bar each across the width, tallest at the loudest.
+    let inner = rect.inset(3.0);
+    if !thumbnail.bands.is_empty() {
+        let top = thumbnail
+            .bands
+            .iter()
+            .cloned()
+            .fold(0.0f32, f32::max)
+            .max(1e-6);
+        let step = inner.width / thumbnail.bands.len() as f32;
+        for (i, band) in thumbnail.bands.iter().enumerate() {
+            let h = inner.height * (band / top).clamp(0.0, 1.0);
+            fill_rect(
+                scene,
+                Rect::new(
+                    inner.x + step * i as f32 + 1.0,
+                    inner.bottom() - h,
+                    step - 2.0,
+                    h,
+                ),
+                p.text_muted.with_alpha(0x30),
+            );
+        }
+    }
+    // The envelope, mirrored about the middle the way a clip is drawn.
+    if !thumbnail.peaks.is_empty() {
+        let pairs: Vec<(f32, f32)> = thumbnail.peaks.iter().map(|v| (-v, *v)).collect();
+        let (top, bottom) = crate::canvas::sound_outline_points(inner, &pairs);
+        if !top.is_empty() {
+            let mut path = BezPath::new();
+            path.move_to(Point::new(top[0].0 as f64, top[0].1 as f64));
+            for (x, y) in &top[1..] {
+                path.line_to(Point::new(*x as f64, *y as f64));
+            }
+            for (x, y) in bottom.iter().rev() {
+                path.line_to(Point::new(*x as f64, *y as f64));
+            }
+            path.close_path();
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                p.accent.with_alpha(0x70).to_peniko(),
+                None,
+                &path,
+            );
+            stroke_polyline(scene, &top, inner, 1.0, lighten(p.accent, 0.2));
         }
     }
 }

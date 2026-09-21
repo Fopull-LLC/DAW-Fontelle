@@ -585,6 +585,9 @@ pub struct FlopsynthView {
     /// first; empty until the bank's previews are in, and on every page but
     /// the Presets page.
     pub sounds_like: Vec<String>,
+    /// The loaded preset's thumbnail (§5.2's inspector), once its preview
+    /// is rendered; on the Presets page only.
+    pub thumbnail: Option<PresetThumbnail>,
     /// How the Presets page is being looked at: which shelf, what has been
     /// typed, how far it is scrolled. Window state, set by the window.
     pub browse: PresetBrowse,
@@ -747,6 +750,7 @@ impl Default for FlopsynthView {
             matrix_scroll: 0.0,
             scale: 1.0,
             on_b: false,
+            thumbnail: None,
             source_shapes: Vec::new(),
             source_families: Vec::new(),
             source_short: Vec::new(),
@@ -3363,6 +3367,15 @@ impl PresetShelf {
     }
 }
 
+/// A preset's sound as a picture (§5.2): the preview note's envelope,
+/// columns in 0..1 of its own peak, and its ten-band spectral shape
+/// summing to one — drawn in the inspector under the preset's name.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PresetThumbnail {
+    pub peaks: Vec<f32>,
+    pub bands: Vec<f32>,
+}
+
 /// How the Presets page is being looked at. Window state, not document state.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PresetBrowse {
@@ -3483,7 +3496,16 @@ pub struct PresetsLayout {
     pub about: Rect,
     /// How tall every row together is, so the scroll can be clamped.
     pub content_height: f32,
+    /// The **more** chip at the right end of the search row, whose menu
+    /// holds the pack actions (§5).
+    pub more: Rect,
 }
+
+/// What the more chip's menu offers, in order.
+pub const PACK_ACTIONS: [&str; 2] = ["Export pack\u{2026}", "Import pack\u{2026}"];
+/// What the chip itself says.
+pub const MORE_CHIP: &str = "\u{22ef}";
+const MORE_CHIP_W: f32 = 30.0;
 
 impl Default for PresetsLayout {
     /// Nothing laid out: every rectangle empty, which the renderer skips and
@@ -3497,6 +3519,7 @@ impl Default for PresetsLayout {
             rows: Vec::new(),
             about: Rect::ZERO,
             content_height: 0.0,
+            more: Rect::ZERO,
         }
     }
 }
@@ -3518,6 +3541,8 @@ pub enum PresetsHit {
     Row(usize),
     /// A preset's star, by its place in the bank.
     Star(usize),
+    /// The more chip on the search row, whose menu is the pack actions (§5).
+    More,
 }
 
 /// One row of the list or the shelf column.
@@ -3554,10 +3579,18 @@ fn presets_layout(body: Rect, view: &FlopsynthView) -> PresetsLayout {
         about.x - CARD_GAP
     };
     let panel = Rect::new(list_x, body.y, (list_right - list_x).max(0.0), body.height);
+    // The more chip takes the search row's right end; the box stops short.
+    let more = Rect::new(
+        panel.right() - LIST_PAD - MORE_CHIP_W,
+        panel.y + LIST_PAD,
+        MORE_CHIP_W,
+        SEARCH_HEIGHT,
+    )
+    .intersection(&panel);
     let search = Rect::new(
         panel.x + LIST_PAD,
         panel.y + LIST_PAD,
-        (panel.width - LIST_PAD * 2.0).max(0.0),
+        (more.x - LIST_PAD - panel.x - LIST_PAD).max(0.0),
         SEARCH_HEIGHT,
     )
     .intersection(&panel);
@@ -3620,6 +3653,7 @@ fn presets_layout(body: Rect, view: &FlopsynthView) -> PresetsLayout {
         rows,
         about,
         content_height,
+        more,
     }
 }
 
@@ -3633,6 +3667,9 @@ pub fn presets_hit(layout: &FlopsynthLayout, x: f32, y: f32) -> Option<PresetsHi
     }
     if !page.search.is_empty() && page.search.contains(x, y) {
         return Some(PresetsHit::Search);
+    }
+    if !page.more.is_empty() && page.more.contains(x, y) {
+        return Some(PresetsHit::More);
     }
     for (which, rect) in &page.rows {
         if rect.is_empty() || !rect.contains(x, y) {

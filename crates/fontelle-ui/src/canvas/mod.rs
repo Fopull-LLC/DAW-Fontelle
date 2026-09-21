@@ -68,8 +68,8 @@ pub use flopsynth::{
     INSPECTOR_ROW, KNOB_LARGE, KNOB_MEDIUM, KNOB_SMALL, KnobSize, LfoShapeHit, MATRIX_HEADS,
     MATRIX_ROW, MATRIX_ROWS_LEAST, MatrixHeader, MatrixHit, MatrixRow, Measure, NAMEPLATE_CHIP_W,
     NO_VIA, NODE_GRAB, PICTURE_FLOOR, PICTURE_HEIGHT, PRESET_ROW, PresetBrowse, PresetShelf,
-    PresetsHit, PresetsLayout, RESPONSE_BOTTOM_DB, RESPONSE_TOP_DB, RING_BAND, RING_GAP,
-    SCALE_CHIP_W, SCALES, STRIP_HEIGHT, TAB_HEIGHT, TUNE_GRID, badge_anatomy, badge_at,
+    PresetThumbnail, PresetsHit, PresetsLayout, RESPONSE_BOTTOM_DB, RESPONSE_TOP_DB, RING_BAND,
+    RING_GAP, SCALE_CHIP_W, SCALES, STRIP_HEIGHT, TAB_HEIGHT, TUNE_GRID, badge_anatomy, badge_at,
     badge_caption, badge_points, canopy_eyes, cell_anatomy, cell_span, cell_span_measured,
     control_at, env_corners, env_curve_points, env_loop_span, env_node_at, env_node_drag,
     env_node_position, estimated_width, filter_xy_at, flop_knob_rect, flopsynth_hit,
@@ -83,8 +83,8 @@ pub use flopsynth::{
     wave_curve_points, wave_position_at, wrap_words,
 };
 pub use flopsynth::{
-    WAVE_ACTIONS, bar_at, draw_point, harmonic_bars, wave_edit_action, wave_edit_address,
-    wave_tool_address, wave_tool_layer,
+    MORE_CHIP, PACK_ACTIONS, WAVE_ACTIONS, bar_at, draw_point, harmonic_bars, wave_edit_action,
+    wave_edit_address, wave_tool_address, wave_tool_layer,
 };
 pub use gestures::{
     BADGE_CLICK_SLOP, BadgeGesture, FlopKnobMenu, FlopKnobMenuItem, NUDGE, NUDGE_FINE, Precision,

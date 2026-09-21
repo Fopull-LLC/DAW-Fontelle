@@ -1946,6 +1946,43 @@ fn the_list_scrolls_to_keep_the_selection_in_sight() {
     assert_eq!(presets_scroll_to(&layout.presets, 0, scroll), 0.0);
 }
 
+/// The pack actions (§5) hang off a **more** chip at the right end of the
+/// search row — not rows at the shelf column's foot, which cost the last
+/// three shelves their place on a 840-high window. The chip is inside the
+/// list's panel, the search box stops short of it, and it can be pressed.
+#[test]
+fn the_more_chip_sits_at_the_right_end_of_the_search_row() {
+    let view = presets_view(PresetBrowse::default());
+    let layout = flopsynth_layout(BODY, &metrics(), &view);
+    let page = &layout.presets;
+    let more = page.more;
+    assert!(!more.is_empty());
+    assert!(
+        (more.y - page.search.y).abs() < 0.01 && (more.height - page.search.height).abs() < 0.01,
+        "on the search row: {more:?} beside {:?}",
+        page.search
+    );
+    assert!(
+        page.search.right() <= more.x + 0.01,
+        "the search box stops short of the chip"
+    );
+    assert!(more.right() <= page.list.right() + 0.01);
+    assert_eq!(
+        presets_hit(
+            &layout,
+            more.x + more.width / 2.0,
+            more.y + more.height / 2.0
+        ),
+        Some(PresetsHit::More)
+    );
+    // Every shelf still has its row — twenty-six on this bank's page.
+    let shelves = fontelle_ui::canvas::preset_shelves(&view.bank).len();
+    assert!(
+        page.shelves.iter().all(|(_, r)| !r.is_empty()),
+        "{shelves} shelves shown"
+    );
+}
+
 fn presets_view(browse: PresetBrowse) -> FlopsynthView {
     FlopsynthView {
         page: FlopsynthPage::Presets,

@@ -61,12 +61,34 @@ fn the_about_column_lists_what_the_loaded_preset_sounds_like() {
     let view = session.flopsynth(FlopsynthPage::Presets).expect("the page");
     assert_eq!(&view.sounds_like[..2], ["Felt Piano", "Electric Grand"]);
     assert_eq!(view.sounds_like.len(), 5);
+    // And the loaded preset's thumbnail (§5.2's inspector): the envelope the
+    // index holds, and the ten-band shape from its vector.
+    let thumbnail = view.thumbnail.as_ref().expect("the grand's thumbnail");
+    assert_eq!(thumbnail.peaks, [1.0]);
+    assert_eq!(thumbnail.bands, [0.1; 10]);
+    // A row's, for the inspector when a row is selected.
+    let felt = session
+        .preset_choices(PresetDevice::Instrument)
+        .iter()
+        .position(|p| p.name == "Felt Piano")
+        .expect("the felt");
+    assert!(
+        session
+            .preset_thumbnail(PresetDevice::Instrument, felt)
+            .is_some()
+    );
+    assert!(
+        session
+            .preset_thumbnail(PresetDevice::Instrument, 100_000)
+            .is_none()
+    );
     // Everything was indexed, so no worker was started.
     assert!(!session.previews_rendering(), "nothing left to render");
     assert_eq!(session.preview_index().entries.len(), rows.len());
     // The Synth page carries none: the column is the Presets page's.
     let view = session.flopsynth(FlopsynthPage::Synth).expect("the page");
     assert!(view.sounds_like.is_empty());
+    assert!(view.thumbnail.is_none());
 }
 
 #[test]

@@ -470,3 +470,86 @@ fn every_factory_synth_preset_carries_its_tags_and_its_phrase() {
     assert!(grand.tags.iter().any(|t| t == "sample"));
     assert!(grand.notes.contains("reach for"), "{}", grand.notes);
 }
+
+// -------------------------------------------------------------------- packs
+
+/// A **pack** (`docs/flopsynth-next.md` §5): the user's presets as one file
+/// to hand to somebody — a JSON document holding the presets whole, so it
+/// reads back with the same code a preset file does and needs no archive
+/// library to open. Importing one saves each preset into the folder as if
+/// it had been saved here, and **skips** a name already taken rather than
+/// writing over it: a pack from a friend must not replace your own.
+#[test]
+fn a_pack_carries_the_users_presets_and_reads_back_into_another_bank() {
+    let dir = scratch("pack-out");
+    let mut bank = PresetBank::new(Some(dir.clone()));
+    bank.save(&a_preset("My Pad", "Pad"), false).unwrap();
+    bank.save(&a_preset("My Bass", "Bass"), false).unwrap();
+    let device = DeviceKind::Instrument(InstrumentKind::Flopsynth);
+    let mine: Vec<_> = bank
+        .for_device(&device)
+        .into_iter()
+        .filter(|e| e.origin == PresetOrigin::User)
+        .cloned()
+        .collect();
+    assert_eq!(mine.len(), 2);
+
+    let pack = dir.join("mine.fontelle-pack.json");
+    let written = bank.export_pack(&mine, &pack).unwrap();
+    assert_eq!(written, 2);
+    assert!(pack.is_file());
+    // Legible: a JSON document that says what it is.
+    let text = std::fs::read_to_string(&pack).unwrap();
+    assert!(text.contains("\"fontelle-pack\""), "{text}");
+    assert!(text.contains("My Pad") && text.contains("My Bass"));
+
+    // Into a fresh bank: both land as the user's own, in their categories.
+    let other = scratch("pack-in");
+    let mut fresh = PresetBank::new(Some(other.clone()));
+    let (imported, skipped) = fresh.import_pack(&pack).unwrap();
+    assert_eq!((imported, skipped), (2, 0));
+    let pad = fresh
+        .find(
+            &device,
+            &PresetRef::new("My Pad", "Pad", PresetOrigin::User),
+        )
+        .expect("the pad landed");
+    assert_eq!(fresh.load(pad).unwrap(), a_preset("My Pad", "Pad"));
+    assert!(
+        other
+            .join("flopsynth")
+            .join("Bass")
+            .join("My Bass.json")
+            .is_file()
+    );
+
+    // Again: nothing written over, both skipped and said so.
+    let (imported, skipped) = fresh.import_pack(&pack).unwrap();
+    assert_eq!((imported, skipped), (0, 2));
+
+    // A file that is not a pack is refused with a reason.
+    let not = dir.join("not-a-pack.json");
+    std::fs::write(&not, "{\"marker\": 1}").unwrap();
+    assert!(fresh.import_pack(&not).is_err());
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&other);
+}
+
+#[test]
+fn a_pack_of_factory_rows_is_refused_since_every_build_has_them() {
+    let dir = scratch("pack-factory");
+    let bank = PresetBank::new(Some(dir.clone()));
+    let device = DeviceKind::Instrument(InstrumentKind::Flopsynth);
+    let factory: Vec<_> = bank
+        .for_device(&device)
+        .into_iter()
+        .take(3)
+        .cloned()
+        .collect();
+    let pack = dir.join("factory.fontelle-pack.json");
+    let result = bank.export_pack(&factory, &pack);
+    assert!(result.is_err(), "a pack is for what you made");
+    assert!(!pack.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

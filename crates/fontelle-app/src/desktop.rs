@@ -363,6 +363,77 @@ pub fn save_file_candidates(
     candidates
 }
 
+/// The command lines that ask for an **existing** file — a preset pack to
+/// import — under `title`, opening in `start`, showing files matching
+/// `filter` (`*.json`). [`save_file_candidates`]' programs, asked to open.
+pub fn open_file_candidates(
+    title: &str,
+    start: Option<&Path>,
+    filter: &str,
+) -> Vec<(&'static str, Vec<String>)> {
+    let start = start.map(|p| p.to_string_lossy().into_owned());
+
+    if cfg!(target_os = "macos") {
+        let script = match &start {
+            Some(dir) => format!(
+                "POSIX path of (choose file with prompt \"{title}\" \
+                 default location POSIX file \"{dir}\")"
+            ),
+            None => format!("POSIX path of (choose file with prompt \"{title}\")"),
+        };
+        return vec![("osascript", vec!["-e".to_string(), script])];
+    }
+
+    if cfg!(target_os = "windows") {
+        let dir = start.clone().unwrap_or_default();
+        let script = format!(
+            "Add-Type -AssemblyName System.Windows.Forms; \
+             $d = New-Object System.Windows.Forms.OpenFileDialog; \
+             $d.Title = '{title}'; \
+             $d.Filter = 'Files ({filter})|{filter}'; \
+             $d.InitialDirectory = '{dir}'; \
+             if ($d.ShowDialog() -eq 'OK') {{ $d.FileName }}"
+        );
+        return vec![(
+            "powershell",
+            vec!["-NoProfile".to_string(), "-Command".to_string(), script],
+        )];
+    }
+
+    let dir = start.unwrap_or_else(|| "~".to_string());
+    vec![
+        (
+            "kdialog",
+            vec![
+                "--title".to_string(),
+                title.to_string(),
+                "--getopenfilename".to_string(),
+                dir.clone(),
+                filter.to_string(),
+            ],
+        ),
+        (
+            "zenity",
+            vec![
+                "--file-selection".to_string(),
+                format!("--title={title}"),
+                format!("--filename={dir}/"),
+                format!("--file-filter={filter}"),
+            ],
+        ),
+    ]
+}
+
+/// Asks the user for an existing file, **blocking** until they answer —
+/// `Ok(None)` a cancel, `Err` a machine with no picker.
+pub fn choose_open_file(
+    title: &str,
+    start: Option<&Path>,
+    filter: &str,
+) -> Result<Option<PathBuf>, String> {
+    run_picker(&open_file_candidates(title, start, filter))
+}
+
 /// Asks the user where to save a new file, **blocking** until they answer.
 ///
 /// `Ok(None)` is a cancel; `Err` is a machine with no picker at all. The

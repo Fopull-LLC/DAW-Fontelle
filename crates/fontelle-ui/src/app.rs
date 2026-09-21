@@ -605,6 +605,9 @@ enum MenuTarget {
     WaveActions {
         layer: usize,
     },
+    /// The Presets page's pack actions (`canvas::PACK_ACTIONS`), dropped
+    /// under the search row's more chip.
+    PackActions,
     /// A sound for one of Flopsynth's oscillators — the Import tab's audio
     /// folder, listed — for the card at `card` whose layer is `layer`.
     /// Opened by the right button on an oscillator's picture, and by the
@@ -695,6 +698,7 @@ impl MenuTarget {
             | Self::TypeValue { .. }
             | Self::WaveFormula { .. }
             | Self::WaveActions { .. }
+            | Self::PackActions
             | Self::LoadSound { .. } => Some(EditorKind::Instrument),
             // The mixer is in the main window, so its menus are too.
             Self::TrackMenu(_)
@@ -5222,6 +5226,7 @@ impl WindowApp {
                     destinations: self.flop_destinations.clone(),
                     about: self.flop_about(),
                     loaded: self.flop_loaded_row(),
+                    thumbnail: self.flop_thumbnail(),
                     hover_at: self.cursor,
                     tooltip: self.due_flop_tip().and_then(|tip| {
                         let text = self.labels.get(tip)?;
@@ -5993,6 +5998,7 @@ impl WindowApp {
             for shelf in crate::canvas::preset_shelves(&view.bank) {
                 want(&mut self.labels, &mut self.text, &shelf.label());
             }
+            want(&mut self.labels, &mut self.text, crate::canvas::MORE_CHIP);
             // Both captions are shaped so a click that focuses the box does not
             // wait a frame for its caret: whichever the draw asks for is ready.
             let search = crate::render::search_caption(&view.browse.query);
@@ -8821,6 +8827,18 @@ impl WindowApp {
                 self.flop_searching = true;
                 self.tree.invalidate(PANEL);
             }
+            // The more chip (§5): the pack actions drop under it.
+            PresetsHit::More => {
+                let chip = self.flopsynth_layout.presets.more;
+                let bounds = self
+                    .editors
+                    .iter()
+                    .find(|e| e.kind == EditorKind::Instrument)
+                    .map(|e| e.panel.frame)
+                    .unwrap_or(self.layout.window);
+                self.dismissed = None;
+                self.open_menu(MenuTarget::PackActions, chip.x, chip.bottom(), bounds);
+            }
             PresetsHit::Row(which) if doubled => self.load_flop_row(which),
             PresetsHit::Row(which) => self.select_flop_row(which, true),
             PresetsHit::Star(which) => {
@@ -8989,6 +9007,22 @@ impl WindowApp {
         view.bank
             .iter()
             .position(|preset| preset.name == *name && Some(preset.origin) == bar.origin)
+    }
+
+    /// The inspector's thumbnail: the selected row's when one is selected
+    /// and not the loaded preset, else the loaded preset's.
+    fn flop_thumbnail(&self) -> Option<crate::canvas::PresetThumbnail> {
+        let view = self.flopsynth.as_ref()?;
+        if self.flop_page != crate::canvas::FlopsynthPage::Presets {
+            return None;
+        }
+        let loaded = self.flop_loaded_row();
+        match self.flop_browse.selected.filter(|s| Some(*s) != loaded) {
+            Some(selected) => self.options.document.as_ref().and_then(|doc| {
+                doc.preset_thumbnail(crate::canvas::PresetDevice::Instrument, selected)
+            }),
+            None => view.thumbnail.clone(),
+        }
     }
 
     /// The About column's lines: the **selected** row when there is one
@@ -13258,6 +13292,13 @@ impl WindowApp {
                 }
                 entries
             }
+            MenuTarget::PackActions => {
+                let mut entries = vec![MenuEntry::disabled("Packs")];
+                for word in crate::canvas::PACK_ACTIONS {
+                    entries.push(MenuEntry::new(word));
+                }
+                entries
+            }
             MenuTarget::TypeValue { name, .. } | MenuTarget::WaveFormula { name, .. } => {
                 crate::canvas::name_prompt_entries(name, self.menu_filter.text())
             }
@@ -14232,6 +14273,19 @@ impl WindowApp {
                     );
                     self.press_flop_action(&address, word);
                 }
+            }
+            // What happened goes to the status line; an import is new rows,
+            // which a preset change's refresh re-reads.
+            (MenuTarget::PackActions, index) => {
+                let said = match (index, self.options.document.as_mut()) {
+                    (1, Some(doc)) => doc.export_pack(crate::canvas::PresetDevice::Instrument),
+                    (2, Some(doc)) => doc.import_pack(),
+                    _ => return,
+                };
+                self.status = match said {
+                    Ok(said) | Err(said) => said,
+                };
+                self.after_preset_change();
             }
             (MenuTarget::AddPatchEffect, index) => {
                 // Row 0 is the heading, so the kinds start at 1.

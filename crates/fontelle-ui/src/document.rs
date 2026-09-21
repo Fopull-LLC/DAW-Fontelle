@@ -1836,6 +1836,18 @@ pub trait StudioHost: DocumentHost {
         Err("this studio cannot preview".to_string())
     }
 
+    /// Writes every preset the user made for `device` as one pack file,
+    /// asking where (§5). What it did, or why not.
+    fn export_pack(&mut self, _device: crate::canvas::PresetDevice) -> Result<String, String> {
+        Err("this studio cannot export packs".to_string())
+    }
+
+    /// Reads a pack into the user's bank, asking which; a name already
+    /// taken is skipped rather than written over.
+    fn import_pack(&mut self) -> Result<String, String> {
+        Err("this studio cannot import packs".to_string())
+    }
+
     // --- the synth window's header actions (`docs/flopsynth-next.md` §3.2, §5) ---
     /// Which slot of the selected channel's A/B pair is playing: 0 for A,
     /// 1 for B. Every channel starts on A.
@@ -1860,6 +1872,16 @@ pub trait StudioHost: DocumentHost {
     /// a variation in the patch's family. §5's Randomise is a fifth,
     /// Mutate a twentieth. One undo entry.
     fn randomise_patch(&mut self, _amount: f32) {}
+
+    /// The preset at `index`'s thumbnail (§5.2), once its preview is
+    /// rendered — what the inspector draws under a selected row's name.
+    fn preset_thumbnail(
+        &self,
+        _device: crate::canvas::PresetDevice,
+        _index: usize,
+    ) -> Option<crate::canvas::PresetThumbnail> {
+        None
+    }
 
     /// The presets that sound most like the one at `index`, by name,
     /// nearest first — what the inspector lists under a selected row.

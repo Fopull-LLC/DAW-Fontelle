@@ -15,8 +15,8 @@
 use std::path::{Path, PathBuf};
 
 use fontelle_app::desktop::{
-    elide_path, open_url_command, parse_picker_output, picker_candidates, reveal_command,
-    save_file_candidates,
+    elide_path, open_file_candidates, open_url_command, parse_picker_output, picker_candidates,
+    reveal_command, save_file_candidates,
 };
 
 #[test]
@@ -341,5 +341,37 @@ fn a_save_picker_says_which_title_it_is_asking_under() {
             args.iter().any(|a| a.contains(title)),
             "every save picker must carry its own title: {args:?}"
         );
+    }
+}
+
+/// The open-file picker, for a pack somebody handed over: the same
+/// programs the save picker reaches for, asked to *open* rather than to
+/// save, under their own title, with the filter the caller names so the
+/// dialog shows pack files and not everything.
+#[test]
+fn an_open_picker_exists_on_every_desktop_and_carries_its_title_and_filter() {
+    let title = "Import preset pack";
+    let candidates = open_file_candidates(title, Some(Path::new("/music")), "*.json");
+    assert!(!candidates.is_empty());
+    if !cfg!(target_os = "macos") && !cfg!(target_os = "windows") {
+        assert!(candidates.len() >= 2, "kdialog and zenity");
+    }
+    for (program, args) in &candidates {
+        assert!(
+            args.iter().any(|a| a.contains(title)),
+            "{program} must carry the title: {args:?}"
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|a| a == "--save" || a.contains("getsavefilename")),
+            "{program} is asked to open, not to save: {args:?}"
+        );
+        if !cfg!(target_os = "macos") {
+            assert!(
+                args.iter().any(|a| a.contains("*.json")),
+                "{program} shows the filter: {args:?}"
+            );
+        }
     }
 }
