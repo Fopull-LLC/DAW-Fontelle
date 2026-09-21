@@ -411,6 +411,51 @@ pub const TAB_WIDTH: f32 = 96.0;
 /// the right edge — room for the voice read-out beside it.
 pub const SCALE_CHIP_W: f32 = 52.0;
 const SCALE_CHIP_RIGHT: f32 = 92.0;
+/// The header's action chips on the tab strip (§3.2, §5): the A/B pair,
+/// Init, Randomise and Mutate — right of the tabs, left of the scale
+/// chooser, in this order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderChip {
+    SlotA,
+    SlotB,
+    Init,
+    Randomise,
+    Mutate,
+}
+
+impl HeaderChip {
+    pub const ALL: [HeaderChip; 5] = [
+        HeaderChip::SlotA,
+        HeaderChip::SlotB,
+        HeaderChip::Init,
+        HeaderChip::Randomise,
+        HeaderChip::Mutate,
+    ];
+
+    /// The word on the chip.
+    pub fn label(self) -> &'static str {
+        match self {
+            HeaderChip::SlotA => "A",
+            HeaderChip::SlotB => "B",
+            HeaderChip::Init => "Init",
+            HeaderChip::Randomise => "Rand",
+            HeaderChip::Mutate => "Mutate",
+        }
+    }
+
+    /// How wide the chip is at the design size: the slots square-ish, the
+    /// words as wide as their word.
+    fn width(self) -> f32 {
+        match self {
+            HeaderChip::SlotA | HeaderChip::SlotB => 26.0,
+            HeaderChip::Init => 40.0,
+            HeaderChip::Randomise => 44.0,
+            HeaderChip::Mutate => 54.0,
+        }
+    }
+}
+/// Between the last tab and the first chip, and between chips.
+const HEADER_CHIP_GAP: f32 = 10.0;
 /// One source badge — on the strip now (§3.4), where it carries the
 /// source's name and a thumbnail of it.
 pub const BADGE_W: f32 = 52.0;
@@ -554,6 +599,9 @@ pub struct FlopsynthView {
     /// design size. Window state, read off the settings by whoever builds
     /// the view.
     pub scale: f32,
+    /// Whether the channel is on slot B of its A/B pair (§3.2), for the
+    /// header's chips.
+    pub on_b: bool,
     /// A thumbnail per source, index for index with `sources`, for the
     /// strip's badges (§3.4): an envelope's curve, an LFO's cycle, a macro's
     /// value as one sample; empty for a source with no picture.
@@ -698,6 +746,7 @@ impl Default for FlopsynthView {
             browse: PresetBrowse::default(),
             matrix_scroll: 0.0,
             scale: 1.0,
+            on_b: false,
             source_shapes: Vec::new(),
             source_families: Vec::new(),
             source_short: Vec::new(),
@@ -753,6 +802,9 @@ pub struct FlopsynthLayout {
     pub canopy: Rect,
     /// The scale chooser's chip, at the right end of the tab strip (§3.2).
     pub scale_chip: Rect,
+    /// The header's action chips, between the tabs and the scale chooser,
+    /// in [`HeaderChip::ALL`]'s order.
+    pub header_chips: Vec<(HeaderChip, Rect)>,
     pub cards: Vec<CardLayout>,
     /// The strip across the foot of the page (§3.4), on every page.
     pub strip: Rect,
@@ -801,6 +853,7 @@ impl Default for FlopsynthLayout {
             tabs: Vec::new(),
             canopy: Rect::ZERO,
             scale_chip: Rect::ZERO,
+            header_chips: Vec::new(),
             cards: Vec::new(),
             strip: Rect::ZERO,
             badges: Vec::new(),
@@ -834,6 +887,8 @@ pub enum FlopsynthHit {
     AddEffect,
     /// The scale chooser on the tab strip.
     Scale,
+    /// One of the header's action chips (§3.2, §5).
+    Chip(HeaderChip),
     /// The inspector's ✕.
     InspectorClose,
 }
@@ -1055,6 +1110,20 @@ pub fn flopsynth_layout_with(
         tab_h,
     )
     .intersection(&body);
+    // The action chips, after the tabs, each as wide as its word; none is
+    // laid out past the scale chooser, so a narrow window loses the last
+    // rather than piling them up.
+    let mut chip_x = tabs.last().map_or(body.x, |(_, rect)| rect.right()) + HEADER_CHIP_GAP * scale;
+    let mut header_chips = Vec::with_capacity(HeaderChip::ALL.len());
+    for chip in HeaderChip::ALL {
+        let width = chip.width() * scale;
+        let rect = Rect::new(chip_x, body.y, width, tab_h).intersection(&body);
+        if rect.right() > scale_chip.x - HEADER_CHIP_GAP * scale * 0.5 {
+            break;
+        }
+        header_chips.push((chip, rect));
+        chip_x += width + HEADER_CHIP_GAP * scale * 0.5;
+    }
     let mut body = Rect::new(
         body.x,
         body.y + tab_h + gap,
@@ -1207,6 +1276,7 @@ pub fn flopsynth_layout_with(
             tabs,
             canopy,
             scale_chip,
+            header_chips,
             strip,
             badges,
             inspector,
@@ -1303,6 +1373,7 @@ pub fn flopsynth_layout_with(
             tabs,
             canopy,
             scale_chip,
+            header_chips,
             strip,
             badges,
             inspector,
@@ -1364,6 +1435,7 @@ pub fn flopsynth_layout_with(
         tabs,
         canopy,
         scale_chip,
+        header_chips,
         cards: stitch(cards, inspector_cards),
         strip,
         badges,
@@ -2224,6 +2296,11 @@ pub fn flopsynth_hit(layout: &FlopsynthLayout, x: f32, y: f32) -> Option<Flopsyn
     }
     if !layout.scale_chip.is_empty() && layout.scale_chip.contains(x, y) {
         return Some(FlopsynthHit::Scale);
+    }
+    for (chip, rect) in &layout.header_chips {
+        if !rect.is_empty() && rect.contains(x, y) {
+            return Some(FlopsynthHit::Chip(*chip));
+        }
     }
     if !layout.inspector_close.is_empty() && layout.inspector_close.contains(x, y) {
         return Some(FlopsynthHit::InspectorClose);

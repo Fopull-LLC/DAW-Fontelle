@@ -445,6 +445,9 @@ pub struct Session {
     /// What is loaded into it, if anything. Held because a graph rebuild has
     /// to put it back: the node is minted fresh every time.
     preview_patch: Option<fontelle_core::Patch>,
+    /// Where the randomiser's coin is (`randomise_patch`); zero until the
+    /// first press, which seeds it from the clock.
+    random_state: u64,
     /// Whether live notes are going to the preview voice rather than to the
     /// selected channel. Set by the browser, cleared by anything that
     /// auditions the instrument you are actually working on.
@@ -1136,6 +1139,7 @@ impl Session {
             patch_cache: None,
             preview_node: NodeId::default(),
             preview_patch: None,
+            random_state: 0,
             previewing: false,
             message: error.map(|e| e.to_string()),
             audition: None,
@@ -3457,6 +3461,18 @@ impl Session {
     /// The selected channel, if there is one.
     fn selected_channel_id(&self) -> Option<ChannelId> {
         self.channel_ids().get(self.selected).copied()
+    }
+
+    /// The randomiser's state, seeded from the clock the first time so two
+    /// launches do not deal the same variations.
+    fn random_seed(&self) -> u64 {
+        if self.random_state != 0 {
+            return self.random_state;
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        nanos | 1
     }
 
     /// The selected channel's patch, from the cache or freshly parsed.
@@ -7672,6 +7688,124 @@ impl StudioHost for Session {
         Ok(())
     }
 
+    fn ab_slot(&self) -> usize {
+        self.selected_channel_id()
+            .and_then(|id| self.project.channels.get(id))
+            .map_or(0, |channel| usize::from(channel.ab.on_b))
+    }
+
+    fn ab_switch(&mut self) {
+        let Some(channel) = self.selected_channel_id() else {
+            return;
+        };
+        if self.selected_patch().is_none() {
+            return;
+        }
+        self.history.break_gesture();
+        self.run(Box::new(fontelle_model::SwitchChannelAb::new(channel)));
+        self.history.break_gesture();
+        self.patch_cache = None;
+        self.rebuild_graph();
+        self.touch();
+    }
+
+    fn ab_copy(&mut self) {
+        let Some(channel) = self.selected_channel_id() else {
+            return;
+        };
+        if self.selected_patch().is_none() {
+            return;
+        }
+        self.history.break_gesture();
+        self.run(Box::new(fontelle_model::CopyChannelAb::new(channel)));
+        self.history.break_gesture();
+    }
+
+    fn init_patch(&mut self) {
+        let Some(channel) = self.selected_channel_id() else {
+            return;
+        };
+        let init = fontelle_core::flopsynth::flopsynth_init();
+        let data = match init.to_data(self.library.provenance()) {
+            Ok(data) => data,
+            Err(e) => {
+                self.message = Some(e.to_string());
+                return;
+            }
+        };
+        // The patch and the name in one entry: the Init patch came from no
+        // preset, so the bar says so rather than "Grand Piano*".
+        self.history.break_gesture();
+        self.run(Box::new(fontelle_model::Compound::new(
+            "Init",
+            vec![
+                Box::new(fontelle_model::SetChannelKind::new(
+                    channel,
+                    fontelle_types::InstrumentKind::Flopsynth,
+                )),
+                Box::new(fontelle_model::SetChannelPatch::new(channel, Some(data))),
+                Box::new(fontelle_model::SetPresetRef::new(
+                    fontelle_model::PresetTarget::Channel(channel),
+                    None,
+                )),
+                // And the rack row's name, the way a load renames it: a row
+                // still called "Grand Piano" over the Init patch is a lie.
+                Box::new(fontelle_model::RenameChannel::new(
+                    channel,
+                    "Init".to_string(),
+                )),
+            ],
+        )));
+        self.history.break_gesture();
+        self.channel_presets.remove(&channel);
+        self.patch_cache = None;
+        self.rebuild_graph();
+        self.touch();
+    }
+
+    fn randomise_patch(&mut self, amount: f32) {
+        let Some(channel) = self.selected_channel_id() else {
+            return;
+        };
+        let Some(mut patch) = self.selected_patch() else {
+            return;
+        };
+        if !fontelle_core::flopsynth::is_flopsynth(&patch) {
+            return;
+        }
+        // The window's own catalogue says which controls are continuous —
+        // the knobs — and the Voice card is skipped: the output level and
+        // the voice count are the instrument's plumbing, not its sound.
+        let view = crate::instrument::describe_flopsynth("", &patch, 0.0, 0.0);
+        let mut seed = self.random_seed();
+        for param in view.groups.iter().flat_map(|group| group.params.iter()) {
+            let address = param.address.as_str();
+            // Nor the tuning: a layer a fifth up is a different instrument,
+            // not a variation of this one. Unison detune stays in play.
+            let tuning = address.ends_with("/semitones")
+                || address.ends_with("/tune")
+                || address.ends_with("/octave");
+            if param.kind != fontelle_ui::canvas::ParamKind::Knob
+                || !address.starts_with("patch/")
+                || address.starts_with("patch/voice/")
+                || tuning
+            {
+                continue;
+            }
+            // xorshift64*: a coin nobody has to seed, good enough to move a
+            // knob by.
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let unit = (seed >> 11) as f32 / (1u64 << 53) as f32;
+            let value = (param.value + amount * (unit * 2.0 - 1.0)).clamp(0.0, 1.0);
+            fontelle_core::patch_params::set(&mut patch, address, value);
+        }
+        self.random_state = seed;
+        self.store_patch_structural(channel, patch);
+        self.touch();
+    }
+
     fn preset_sounds_like(
         &self,
         device: fontelle_ui::canvas::PresetDevice,
@@ -7962,6 +8096,7 @@ impl StudioHost for Session {
             showing,
         );
         view.scale = self.flopsynth_scale();
+        view.on_b = channel.ab.on_b;
         if page == fontelle_ui::canvas::FlopsynthPage::Presets {
             view.sounds_like = self.sounds_like_loaded();
         }

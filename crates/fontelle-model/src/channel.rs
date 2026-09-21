@@ -146,4 +146,34 @@ pub struct Channel {
     /// the keyboard it had.
     #[serde(default)]
     pub named_keys: bool,
+    /// The channel's **A/B pair** (`docs/flopsynth-next.md` §3.2): the
+    /// patch that is not playing, and which of the two slots is.
+    ///
+    /// In the document rather than in the window so that a switch is a
+    /// command — undone the way it was done, with the indicator following
+    /// — and omitted from the file while the pair is fresh, so a project
+    /// that never used it is written back unchanged. The other slot is
+    /// scratch: a save writes what is playing, and a preset load drops it.
+    #[serde(default, skip_serializing_if = "ChannelAb::is_fresh")]
+    pub ab: ChannelAb,
+}
+
+/// A channel's A/B pair: which slot is playing, and the other's patch.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ChannelAb {
+    /// Whether the playing patch is slot B's. Slot A otherwise, which is
+    /// where every channel starts.
+    #[serde(default)]
+    pub on_b: bool,
+    /// The slot that is not playing. `None` until the first switch, which
+    /// fills it with a copy of what was playing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other: Option<PatchData>,
+}
+
+impl ChannelAb {
+    /// On A with nothing in B: the pair as a new channel has it.
+    pub fn is_fresh(&self) -> bool {
+        !self.on_b && self.other.is_none()
+    }
 }

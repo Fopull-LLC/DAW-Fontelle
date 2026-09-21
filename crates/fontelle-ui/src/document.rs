@@ -1836,6 +1836,31 @@ pub trait StudioHost: DocumentHost {
         Err("this studio cannot preview".to_string())
     }
 
+    // --- the synth window's header actions (`docs/flopsynth-next.md` §3.2, §5) ---
+    /// Which slot of the selected channel's A/B pair is playing: 0 for A,
+    /// 1 for B. Every channel starts on A.
+    fn ab_slot(&self) -> usize {
+        0
+    }
+
+    /// Switches the selected channel to the other slot of its A/B pair —
+    /// a copy of what is playing, the first time. One undo entry.
+    fn ab_switch(&mut self) {}
+
+    /// Copies what is playing over the other slot, without switching.
+    fn ab_copy(&mut self) {}
+
+    /// Puts the Init patch on the selected channel: a fresh Flopsynth that
+    /// came from no preset. One undo entry.
+    fn init_patch(&mut self) {}
+
+    /// Moves every continuous control of the selected instrument by up to
+    /// `amount` of its travel, either way, at random — and **nothing
+    /// else**: no source, chooser or switch changes, so what comes out is
+    /// a variation in the patch's family. §5's Randomise is a fifth,
+    /// Mutate a twentieth. One undo entry.
+    fn randomise_patch(&mut self, _amount: f32) {}
+
     /// The presets that sound most like the one at `index`, by name,
     /// nearest first — what the inspector lists under a selected row.
     /// Empty until the previews are in, and for a row that is not there.

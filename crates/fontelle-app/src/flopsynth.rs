@@ -1221,6 +1221,7 @@ pub fn describe(
         browse: Default::default(),
         matrix_scroll: 0.0,
         scale: 1.0,
+        on_b: false,
         thumbnails: chooser_thumbnails(patch, page),
         fx_room: page == FlopsynthPage::Effects && patch.fx.len() < fontelle_core::MAX_PATCH_FX,
         rack,

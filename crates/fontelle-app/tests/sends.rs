@@ -122,6 +122,7 @@ impl Rig {
             muted: false,
             soloed: false,
             named_keys: false,
+            ab: Default::default(),
             gain_db: 0.0,
         });
         fontelle_app::set_channel_patch(&mut project, channel, &patch, &library)

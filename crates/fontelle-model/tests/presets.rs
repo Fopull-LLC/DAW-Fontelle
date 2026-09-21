@@ -70,6 +70,7 @@ fn a_project() -> (
         muted: false,
         soloed: false,
         named_keys: true,
+        ab: Default::default(),
         gain_db: 0.0,
     });
     (project, channel, master)

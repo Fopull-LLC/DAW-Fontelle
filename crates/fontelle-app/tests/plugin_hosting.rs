@@ -131,6 +131,7 @@ fn project_with_a_held_note() -> (Project, fontelle_types::ChannelId) {
         muted: false,
         soloed: false,
         named_keys: false,
+        ab: Default::default(),
     });
     let mut notes = Arena::default();
     notes.insert(Note {
@@ -1074,6 +1075,7 @@ fn an_empty_slot_has_no_editor_and_says_so() {
             muted: false,
             soloed: false,
             named_keys: false,
+            ab: Default::default(),
         },
     ));
     assert!(!rack.has_editor(slot));

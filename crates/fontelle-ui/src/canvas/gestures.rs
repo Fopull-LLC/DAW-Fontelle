@@ -4,7 +4,7 @@
 //! own read-out. Pure, and tested in `tests/flopsynth_gestures.rs`; the
 //! window dispatches (plan §13).
 
-use super::flopsynth::{FlopsynthCard, FlopsynthHit, FlopsynthPicture};
+use super::flopsynth::{FlopsynthCard, FlopsynthHit, FlopsynthPicture, HeaderChip};
 use super::instrument::ParamKind;
 use crate::layout::Rect;
 
@@ -328,6 +328,17 @@ pub fn flopsynth_tip(hit: FlopsynthHit, cards: &[FlopsynthCard]) -> Option<Strin
         FlopsynthHit::Remove { .. } => "Take this effect off the chain".to_string(),
         FlopsynthHit::AddEffect => "Add an effect to the end of the chain".to_string(),
         FlopsynthHit::Scale => "Window scale".to_string(),
+        FlopsynthHit::Chip(chip) => match chip {
+            HeaderChip::SlotA | HeaderChip::SlotB => {
+                "A/B: click to hear the other slot \u{b7} Ctrl-click copies this one there"
+                    .to_string()
+            }
+            HeaderChip::Init => "Start from the Init patch".to_string(),
+            HeaderChip::Randomise => {
+                "Move every knob up to a fifth, at random \u{b7} nothing else changes".to_string()
+            }
+            HeaderChip::Mutate => "A gentler randomise: up to a twentieth".to_string(),
+        },
         FlopsynthHit::InspectorClose => "Close the inspector".to_string(),
     })
 }

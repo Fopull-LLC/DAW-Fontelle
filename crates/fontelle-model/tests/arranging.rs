@@ -54,6 +54,7 @@ fn a_project() -> (Project, ChannelId, LaneId) {
         muted: false,
         soloed: false,
         named_keys: true,
+        ab: Default::default(),
         gain_db: -3.0,
     });
     let lane = project.lanes.insert(Lane {

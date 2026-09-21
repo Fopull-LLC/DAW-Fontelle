@@ -137,6 +137,7 @@ impl Rig {
             muted: false,
             soloed: false,
             named_keys: false,
+            ab: Default::default(),
             gain_db: 0.0,
         });
         fontelle_app::set_channel_patch(&mut self.project, channel, &patch, &self.library)
@@ -368,6 +369,7 @@ fn a_channel_with_no_instrument_keeps_its_place_but_nothing_answers_for_it() {
         muted: false,
         soloed: false,
         named_keys: false,
+        ab: Default::default(),
         gain_db: 0.0,
     });
     rig.hold_a_note(silent);

@@ -1304,6 +1304,84 @@ fn the_whole_synth_page_fits_at_every_scale() {
     }
 }
 
+/// The header's actions (§3.2, §5) sit on the tab strip, right of the
+/// tabs and left of the scale chooser, in the order A, B, Init, Rand,
+/// Mutate — each a chip that can be pressed and that scales with the
+/// window, like the scale chooser it stands beside.
+#[test]
+fn the_header_chips_stand_between_the_tabs_and_the_scale_chooser() {
+    use fontelle_ui::canvas::HeaderChip;
+    for scale in [1.0f32, 1.5] {
+        let mut view = a_view_on(FlopsynthPage::Synth);
+        view.scale = scale;
+        let layout = flopsynth_layout(BODY, &metrics(), &view);
+        let chips: Vec<HeaderChip> = layout.header_chips.iter().map(|(c, _)| *c).collect();
+        assert_eq!(
+            chips,
+            [
+                HeaderChip::SlotA,
+                HeaderChip::SlotB,
+                HeaderChip::Init,
+                HeaderChip::Randomise,
+                HeaderChip::Mutate,
+            ]
+        );
+        let last_tab = layout.tabs.last().map(|(_, r)| r.right()).unwrap();
+        let mut left = last_tab;
+        for (chip, rect) in &layout.header_chips {
+            assert!(!rect.is_empty(), "at {scale}: {chip:?} is laid out");
+            assert!(
+                rect.x >= left - 0.01,
+                "at {scale}: {chip:?} at {} overlaps what is left of it ({left})",
+                rect.x
+            );
+            assert!(
+                rect.right() <= layout.scale_chip.x + 0.01,
+                "at {scale}: {chip:?} runs into the scale chooser"
+            );
+            assert!(
+                (rect.height - layout.scale_chip.height).abs() < 0.01,
+                "at {scale}: a chip is as tall as the scale chooser"
+            );
+            assert_eq!(
+                flopsynth_hit(
+                    &layout,
+                    rect.x + rect.width / 2.0,
+                    rect.y + rect.height / 2.0
+                ),
+                Some(FlopsynthHit::Chip(*chip)),
+                "at {scale}: {chip:?} can be pressed"
+            );
+            left = rect.right();
+        }
+        // Wider at 150 %, like everything else.
+        if scale > 1.0 {
+            let one = flopsynth_layout(BODY, &metrics(), &a_view_on(FlopsynthPage::Synth));
+            assert!(layout.header_chips[2].1.width > one.header_chips[2].1.width * 1.4);
+        }
+    }
+    // The chips are the same on every page: the Presets page too.
+    let layout = flopsynth_layout(BODY, &metrics(), &a_view_on(FlopsynthPage::Presets));
+    assert_eq!(layout.header_chips.len(), 5);
+    // Each has a tip that says what it does.
+    for chip in [
+        HeaderChip::SlotA,
+        HeaderChip::SlotB,
+        HeaderChip::Init,
+        HeaderChip::Randomise,
+        HeaderChip::Mutate,
+    ] {
+        let tip = fontelle_ui::canvas::flopsynth_tip(FlopsynthHit::Chip(chip), &[]);
+        assert!(tip.is_some_and(|t| t.len() > 8), "{chip:?} has a tip");
+    }
+    assert!(
+        fontelle_ui::canvas::flopsynth_tip(FlopsynthHit::Chip(HeaderChip::SlotB), &[])
+            .unwrap()
+            .contains("Ctrl"),
+        "the A/B tip says how to copy"
+    );
+}
+
 /// A Small knob, a chooser and a switch take **half a cell** and stack two
 /// to a column; the Large and Medium knobs take a whole one and come
 /// **first**, whatever order the card lists them in (§3.1; `wanted`'s two

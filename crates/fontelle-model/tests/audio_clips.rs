@@ -197,6 +197,7 @@ fn editing_a_clip_that_is_not_audio_is_refused_rather_than_replacing_it() {
                 muted: false,
                 soloed: false,
                 named_keys: false,
+                ab: Default::default(),
                 gain_db: 0.0,
             }),
             notes: Default::default(),

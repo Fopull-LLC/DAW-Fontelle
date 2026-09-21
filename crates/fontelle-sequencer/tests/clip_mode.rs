@@ -85,6 +85,7 @@ impl Rig {
             muted: false,
             soloed: false,
             named_keys: false,
+            ab: Default::default(),
             gain_db: 0.0,
         });
         self.channels.insert(channel, node(node_number));

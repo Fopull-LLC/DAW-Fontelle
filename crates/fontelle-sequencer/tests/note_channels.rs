@@ -44,6 +44,7 @@ fn a_channel(name: &str) -> fontelle_model::Channel {
         muted: false,
         soloed: false,
         named_keys: false,
+        ab: Default::default(),
         gain_db: 0.0,
     }
 }

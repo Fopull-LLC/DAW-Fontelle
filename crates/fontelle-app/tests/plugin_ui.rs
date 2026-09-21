@@ -81,6 +81,7 @@ fn session() -> Session {
         muted: false,
         soloed: false,
         named_keys: false,
+        ab: Default::default(),
     });
     let mut notes = Arena::default();
     notes.insert(Note {

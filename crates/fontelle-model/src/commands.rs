@@ -183,6 +183,7 @@ impl Command for AddChannel {
             muted: false,
             soloed: false,
             named_keys: false,
+            ab: Default::default(),
             gain_db: 0.0,
         };
 
@@ -3880,6 +3881,7 @@ impl Command for ImportParts {
                 muted: false,
                 soloed: false,
                 named_keys: false,
+                ab: Default::default(),
                 gain_db: 0.0,
             };
             let channel_id = match previous {
@@ -7013,6 +7015,7 @@ enum DeviceState {
         patch_data: Option<fontelle_types::PatchData>,
         plugin: Option<fontelle_types::PluginState>,
         preset: Option<fontelle_types::PresetRef>,
+        ab: crate::ChannelAb,
     },
     Insert {
         config: fontelle_types::EffectConfig,
@@ -7108,7 +7111,11 @@ impl Command for ApplyPreset {
                     patch_data: channel.patch_data.clone(),
                     plugin: channel.plugin.clone(),
                     preset: channel.preset.clone(),
+                    ab: channel.ab.clone(),
                 };
+                // A load starts the A/B pair over: a B from before the load
+                // has nothing to do with what is playing now.
+                channel.ab = crate::ChannelAb::default();
                 match (&self.preset.device, &self.preset.payload) {
                     (DeviceKind::Instrument(kind), PresetPayload::Patch(patch)) => {
                         channel.instrument = Some(*kind);
@@ -7222,6 +7229,176 @@ impl Command for ApplyPreset {
     }
 }
 
+/// Switches a channel to the other slot of its A/B pair (`docs/
+/// flopsynth-next.md` §3.2): what is playing goes into the slot it came
+/// from, and the other slot's patch comes on — a copy of the same patch
+/// the first time, since the other slot held nothing yet.
+///
+/// Its own inverse, but for that first copy: undoing the first switch
+/// empties the other slot again rather than leaving a copy nobody made.
+pub struct SwitchChannelAb {
+    channel: ChannelId,
+    /// Whether the switch filled an empty slot, so the inverse can empty it.
+    filled: Option<bool>,
+    /// Whether this is the inverse of a switch that filled the slot.
+    empties: bool,
+}
+
+impl SwitchChannelAb {
+    pub fn new(channel: ChannelId) -> Self {
+        Self {
+            channel,
+            filled: None,
+            empties: false,
+        }
+    }
+}
+
+impl Command for SwitchChannelAb {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let channel = doc
+            .channels
+            .get_mut(self.channel)
+            .ok_or_else(|| CommandError("that channel is not there".to_string()))?;
+        let filled = channel.ab.other.is_none();
+        if self.empties {
+            // Going back over the first switch: what is playing is the copy,
+            // and the slot it came from holds the original — put that back
+            // and leave the other slot as empty as it was.
+            channel.patch_data = channel.ab.other.take();
+        } else {
+            if filled {
+                channel.ab.other = channel.patch_data.clone();
+            }
+            std::mem::swap(&mut channel.patch_data, &mut channel.ab.other);
+        }
+        channel.ab.on_b = !channel.ab.on_b;
+        self.filled.get_or_insert(filled && !self.empties);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match self.filled {
+            Some(filled) => Box::new(SwitchChannelAb {
+                channel: self.channel,
+                filled: None,
+                empties: filled,
+            }),
+            None => Box::new(NotApplied("switching A/B")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Switch A/B"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// Copies the playing patch over the other slot of a channel's A/B pair,
+/// without switching — "keep this one, and start the comparison here".
+pub struct CopyChannelAb {
+    channel: ChannelId,
+    previous: Option<Option<fontelle_types::PatchData>>,
+}
+
+impl CopyChannelAb {
+    pub fn new(channel: ChannelId) -> Self {
+        Self {
+            channel,
+            previous: None,
+        }
+    }
+}
+
+impl Command for CopyChannelAb {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let channel = doc
+            .channels
+            .get_mut(self.channel)
+            .ok_or_else(|| CommandError("that channel is not there".to_string()))?;
+        let previous = std::mem::replace(&mut channel.ab.other, channel.patch_data.clone());
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => Box::new(RestoreChannelAbOther {
+                channel: self.channel,
+                other: previous.clone(),
+            }),
+            None => Box::new(NotApplied("copying A/B")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Copy A/B"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() + 1024
+    }
+}
+
+/// [`CopyChannelAb`]'s inverse: the other slot as it was.
+struct RestoreChannelAbOther {
+    channel: ChannelId,
+    other: Option<fontelle_types::PatchData>,
+}
+
+impl Command for RestoreChannelAbOther {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let channel = doc
+            .channels
+            .get_mut(self.channel)
+            .ok_or_else(|| CommandError("that channel is not there".to_string()))?;
+        std::mem::swap(&mut channel.ab.other, &mut self.other);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        Box::new(RestoreChannelAbOther {
+            channel: self.channel,
+            other: self.other.clone(),
+        })
+    }
+
+    fn label(&self) -> &str {
+        "Copy A/B"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() + 1024
+    }
+}
+
 /// Puts a device back exactly as it was before a preset landed on it.
 ///
 /// [`ApplyPreset`]'s inverse, and not a gesture of its own: there is no way to
@@ -7242,6 +7419,7 @@ impl Command for RestoreDeviceState {
                     patch_data,
                     plugin,
                     preset,
+                    ab,
                 },
             ) => {
                 let channel = doc
@@ -7255,6 +7433,7 @@ impl Command for RestoreDeviceState {
                 std::mem::swap(&mut channel.patch_data, patch_data);
                 std::mem::swap(&mut channel.plugin, plugin);
                 std::mem::swap(&mut channel.preset, preset);
+                std::mem::swap(&mut channel.ab, ab);
                 Ok(())
             }
             (

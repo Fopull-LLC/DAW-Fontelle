@@ -5883,6 +5883,9 @@ impl WindowApp {
                 &crate::render::scale_label(view.scale),
                 t.value,
             );
+            for chip in crate::canvas::HeaderChip::ALL {
+                styled(&mut self.labels, &mut self.text, chip.label(), t.value);
+            }
             // A badge wears its name as a caption; the carried badge and
             // the matrix's rows read the plain form.
             // A badge's name band is narrower than a macro's name: the
@@ -8663,6 +8666,12 @@ impl WindowApp {
             self.set_flop_inspector(None);
             return;
         }
+        // The header's actions (§3.2, §5): each one document change, undone
+        // as one; a Ctrl-click on the A/B pair copies rather than switches.
+        if let Some(crate::canvas::FlopsynthHit::Chip(chip)) = hit {
+            self.press_header_chip(chip);
+            return;
+        }
         if let Some(crate::canvas::FlopsynthHit::Scale) = hit {
             let chip = self.flopsynth_layout.scale_chip;
             let bounds = self
@@ -8824,6 +8833,38 @@ impl WindowApp {
                 self.set_flop_selected(selected);
             }
         }
+    }
+
+    /// One of the header's action chips, pressed.
+    fn press_header_chip(&mut self, chip: crate::canvas::HeaderChip) {
+        use crate::canvas::HeaderChip;
+        let Some(doc) = self.options.document.as_mut() else {
+            return;
+        };
+        match chip {
+            HeaderChip::SlotA | HeaderChip::SlotB => {
+                let on_b = doc.ab_slot() == 1;
+                let this = matches!(chip, HeaderChip::SlotB) == on_b;
+                if self.modifiers.control_key() {
+                    // Copy this slot over the other — pressed on either chip,
+                    // since there is one other.
+                    doc.ab_copy();
+                    self.status = "copied to the other slot".to_string();
+                    return;
+                }
+                // The lit chip is the slot playing; pressing it is nothing.
+                if this {
+                    return;
+                }
+                doc.ab_switch();
+            }
+            HeaderChip::Init => doc.init_patch(),
+            HeaderChip::Randomise => doc.randomise_patch(0.2),
+            HeaderChip::Mutate => doc.randomise_patch(0.05),
+        }
+        self.end_preview();
+        self.after_preset_change();
+        self.after_flop_structure();
     }
 
     /// Loads bank row `which` onto the channel — the double-click, and

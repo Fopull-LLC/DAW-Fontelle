@@ -8527,6 +8527,59 @@ fn draw_flopsynth_chrome(
         }
     }
 
+    // The header's action chips (§3.2, §5), drawn like the scale chooser;
+    // the A/B pair's playing slot is lit in the accent, so which of the two
+    // is sounding can be read from across the room.
+    for (chip, rect) in &l.header_chips {
+        if rect.is_empty() {
+            continue;
+        }
+        let chip_rect = rect.inset(2.0);
+        let hovered = chip_rect.contains(chrome.hover_at.0, chrome.hover_at.1);
+        let playing = match chip {
+            crate::canvas::HeaderChip::SlotA => !chrome.view.on_b,
+            crate::canvas::HeaderChip::SlotB => chrome.view.on_b,
+            _ => false,
+        };
+        fill_rect_rounded(
+            scene,
+            chip_rect,
+            m.corner_radius,
+            if playing {
+                p.accent.with_alpha(0x40)
+            } else if hovered {
+                p.panel_header
+            } else {
+                p.panel
+            },
+        );
+        stroke_rect_rounded(
+            scene,
+            chip_rect,
+            m.corner_radius,
+            1.0,
+            if playing || hovered {
+                p.accent
+            } else {
+                p.border
+            },
+        );
+        if let Some(text) = labels.get_styled(chip.label(), t.value) {
+            draw_text_clipped(
+                scene,
+                text,
+                chip_rect,
+                chip_rect.x + ((chip_rect.width - text.width) / 2.0).max(1.0),
+                chip_rect.y + (chip_rect.height - text.height) / 2.0,
+                if playing || hovered {
+                    p.text
+                } else {
+                    p.text_muted
+                },
+            );
+        }
+    }
+
     // The mod strip (§3.4): a band set into the hull under every page,
     // with a badge per source on it. Each badge wears its family's ink —
     // the ink its rings are drawn in, so a ring on a knob and the badge it
