@@ -22,7 +22,7 @@
 use fontelle_core::Patch;
 use fontelle_ui::canvas::{
     FlopsynthCard, FlopsynthPage, FlopsynthPicture, FlopsynthRoute, FlopsynthView, INSPECTOR_ROW,
-    InstrumentGroup, InstrumentParam, KnobSize,
+    InstrumentGroup, InstrumentParam, KnobSize, ParamKind,
 };
 
 /// How many points a wave picture is drawn from.
@@ -557,7 +557,12 @@ fn effect_picture(config: &fontelle_types::EffectConfig) -> FlopsynthPicture {
     }
 }
 
-fn picture_for(name: &str, patch: &Patch, phases: &[f32]) -> FlopsynthPicture {
+fn picture_for(
+    name: &str,
+    patch: &Patch,
+    phases: &[f32],
+    tool: fontelle_types::WaveTool,
+) -> FlopsynthPicture {
     use fontelle_core::Source;
     use fontelle_core::flopsynth::layer_role;
 
@@ -581,10 +586,44 @@ fn picture_for(name: &str, patch: &Patch, phases: &[f32]) -> FlopsynthPicture {
             // than from a recipe.
             fontelle_dsp::SynthSource::User(at) => {
                 match patch.wavetables.get(at as usize) {
-                    Some(table) => FlopsynthPicture::Wave {
-                        points: user_wave_points(table, osc.position),
-                        position: osc.position.clamp(0.0, 1.0),
-                    },
+                    // The editor's tool decides the picture (§4.3): the
+                    // wave under the position knob, the pencil's frame, or
+                    // its bars. The pencil and the bars read the frame's
+                    // own samples rather than the built table — a table is
+                    // rebuilt on every stroke, and the picture must not be
+                    // what makes a stroke slow.
+                    Some(table) => {
+                        let frames = table.frames.max(1);
+                        let frame = ((osc.position.clamp(0.0, 1.0) * (frames - 1) as f32).round()
+                            as usize)
+                            .min(frames - 1);
+                        match tool {
+                            fontelle_types::WaveTool::Position => FlopsynthPicture::Wave {
+                                points: user_wave_points(table, osc.position),
+                                position: osc.position.clamp(0.0, 1.0),
+                            },
+                            fontelle_types::WaveTool::Draw => {
+                                let samples = table.frame(frame);
+                                let step = samples.len() / DRAW_POINTS;
+                                FlopsynthPicture::Draw {
+                                    points: (0..DRAW_POINTS)
+                                        .map(|i| samples[i * step].clamp(-1.0, 1.0))
+                                        .collect(),
+                                    frame,
+                                    frames,
+                                }
+                            }
+                            fontelle_types::WaveTool::Bars => FlopsynthPicture::Bars {
+                                amps: table
+                                    .harmonics(frame)
+                                    .iter()
+                                    .map(|(a, _)| a.clamp(0.0, 1.0))
+                                    .collect(),
+                                frame,
+                                frames,
+                            },
+                        }
+                    }
                     // Named but not carried: nothing to draw, which is what
                     // that layer sounds like too.
                     None => FlopsynthPicture::None,
@@ -870,6 +909,10 @@ fn wave_points(id: fontelle_dsp::WavetableId, position: f32) -> Vec<f32> {
 /// Built here rather than cached, like `wave_points`: this runs when the
 /// window redraws its cards, off the RT thread, and a table is a few
 /// milliseconds of arithmetic.
+/// How many points the pencil's picture draws: one per eight samples of
+/// the frame, which is more than a card is wide.
+const DRAW_POINTS: usize = fontelle_dsp::WAVETABLE_LEN / 8;
+
 fn user_wave_points(table: &fontelle_core::UserWavetable, position: f32) -> Vec<f32> {
     let built = fontelle_dsp::Wavetable::from_samples(&table.samples, table.frames);
     (0..WAVE_POINTS)
@@ -978,6 +1021,64 @@ pub fn describe(
             view.groups.push(channel);
         }
     }
+    // The wavetable editor's controls (§4.3), on the table oscillators'
+    // cards. The window's rather than the generic panel's: the tool is
+    // window state, and the actions are not parameters — nothing reads
+    // them back, so they take no `patch/` address.
+    for (index, layer) in patch.layers.iter().enumerate() {
+        let fontelle_core::Source::Synth(osc) = &layer.source else {
+            continue;
+        };
+        let role = fontelle_core::flopsynth::layer_role(index).label();
+        let Some(group) = view.groups.iter_mut().find(|g| g.name == role) else {
+            continue;
+        };
+        let mut push =
+            |address: String, name: &str, value: f32, display: String, kind: ParamKind| {
+                group.params.push(InstrumentParam {
+                    address: fontelle_types::ParamAddress::new(address),
+                    label: name.to_string(),
+                    value,
+                    display,
+                    kind,
+                    automated: false,
+                });
+            };
+        match osc.source {
+            fontelle_dsp::SynthSource::Table(_) => push(
+                fontelle_ui::canvas::wave_edit_address(index, "adopt"),
+                "adopt",
+                0.0,
+                "edit".to_string(),
+                ParamKind::Action,
+            ),
+            fontelle_dsp::SynthSource::User(at) if (at as usize) < patch.wavetables.len() => {
+                let tools = fontelle_types::WaveTool::ALL;
+                let at_tool = tools
+                    .iter()
+                    .position(|t| *t == showing.wave_tool)
+                    .unwrap_or(0);
+                push(
+                    fontelle_ui::canvas::wave_tool_address(index),
+                    "tool",
+                    fontelle_core::patch_params::choice_value(at_tool, tools.len()),
+                    tools[at_tool].label().to_string(),
+                    ParamKind::Choice(tools.iter().map(|t| t.label().to_string()).collect()),
+                );
+                // One button for the frame actions, the formula and the
+                // export (`canvas::WAVE_ACTIONS`): seven half-cells ran the
+                // noise card into the strip.
+                push(
+                    fontelle_ui::canvas::wave_edit_address(index, "menu"),
+                    "table_menu",
+                    0.0,
+                    "table\u{2026}".to_string(),
+                    ParamKind::Action,
+                );
+            }
+            _ => {}
+        }
+    }
     // The captions: the words this window draws over its controls
     // (`crate::captions`), in capitals. The macros keep their names; an
     // effect card's are its effect's own, set in capitals like the rest.
@@ -1039,7 +1140,7 @@ pub fn describe(
                 columns: 8,
                 oscillator: None,
                 removable: false,
-                picture: picture_for(&group.name, patch, &phases),
+                picture: picture_for(&group.name, patch, &phases, showing.wave_tool),
                 sizes: knob_sizes(&group.name, &group.params),
                 group: group.clone(),
             })
@@ -1062,7 +1163,7 @@ pub fn describe(
                 // An effect slot is the one card that can be taken off
                 // the window — see `Session::remove_patch_effect`.
                 removable: group.name.starts_with("FX "),
-                picture: picture_for(&group.name, patch, &phases),
+                picture: picture_for(&group.name, patch, &phases, showing.wave_tool),
                 sizes: knob_sizes(&group.name, &group.params),
                 group,
             }

@@ -16,9 +16,8 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
-**Updated 2026-09-20, later (Flopsynth II, Phase 4).** Sources, filters
-and effects are in but for the wavetable editor — `PROGRESS.md`'s top
-entry. Things to know: (0) the string and the spectral source **share
+**Updated 2026-09-20, later (Flopsynth II, Phase 4).** Sources, filters,
+effects and the wavetable editor are in — `PROGRESS.md`'s top entry. Things to know: (0) the string and the spectral source **share
 one bank of phasors** (`PhasorBank` on `SynthState`) — each writes the
 whole bank when it starts; a third source that wants sixty-four
 rotating partials uses it too, or the voice goes past its 128 KB
@@ -42,8 +41,15 @@ that moment of its sweep fails, which is why the phaser opens at 0.2 Hz;
 (5) `fontelle-fx/tests/common/mod.rs` is the shared measure for the
 seven; a level is RMS × √2, not the peak, above a few kilohertz; (6)
 the sub's sugar is three addresses over the same fields — never a
-second field. Open: the wavetable editor (§4.3), the mip level for the
-warps, Phase 5 (MPE), Phase 6 (the bank's rows for all of this).
+second field; (7) the wavetable editor's controls are the **window's**
+(`flopsynth::describe` adds them after the generic panel; a `ui/` address
+is window state the app intercepts in `set_param`, an `edit/` address is
+a `ParamKind::Action` the app dispatches in `press_flop_action`) — never
+`patch/`, which the addressability tests would demand be readable; the
+edits go through `StudioHost::edit_wavetable` and coalesce on the open
+gesture, so anything that should be its own undo breaks the gesture
+first. Open: the mip level for the warps, `Remap`'s curve, Phase 5 (MPE),
+Phase 6 (the bank's rows for all of this).
 
 **Updated 2026-09-20 (Flopsynth II, Phase 3).** Modulation and voice are
 in — `PROGRESS.md`'s top entry. Things to know: (0) **modulation runs at

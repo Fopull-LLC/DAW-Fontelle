@@ -1675,6 +1675,7 @@ pub trait StudioHost: DocumentHost {
             crate::canvas::FlopsynthShowing {
                 inspector,
                 fx_slot: None,
+                wave_tool: Default::default(),
             },
         )
     }
@@ -1920,6 +1921,45 @@ pub trait StudioHost: DocumentHost {
     /// factory shape chosen. Coalesced like a knob drag until
     /// [`end_gesture`](DocumentHost::end_gesture).
     fn set_lfo_shape(&mut self, _lfo: usize, _shape: fontelle_types::LfoShape) {}
+
+    // ------------------------------------------- the wavetable editor (§4.3)
+
+    /// Applies one edit to the table layer `layer` reads — the patch's own,
+    /// or nothing if the layer reads the bank's. Coalesced like a knob
+    /// drag: one undo for one gesture, broken by `end_gesture`.
+    fn edit_wavetable(
+        &mut self,
+        _layer: usize,
+        _edit: fontelle_types::WavetableEdit,
+    ) -> Result<(), String> {
+        Err("this instrument has no table to edit".to_string())
+    }
+
+    /// Makes the bank table layer `layer` reads the patch's own copy, named
+    /// after it, so it can be edited: the bank is recipes, and an edit
+    /// starts by taking a copy.
+    fn adopt_wavetable(&mut self, _layer: usize) -> Result<(), String> {
+        Err("this instrument has no table to adopt".to_string())
+    }
+
+    /// The frame under `layer`'s position knob replaced by `text` evaluated
+    /// over the phase (`fontelle_core::formula`). Says what is wrong with a
+    /// formula that is not one.
+    fn apply_wavetable_formula(&mut self, _layer: usize, _text: &str) -> Result<(), String> {
+        Err("this instrument has no table to edit".to_string())
+    }
+
+    /// The last formula applied to `layer`'s table, for the prompt to seed
+    /// with; empty when there was none.
+    fn wavetable_formula(&self, _layer: usize) -> String {
+        String::new()
+    }
+
+    /// Writes `layer`'s table as a WAV Serum reads, asking where through
+    /// the desktop's picker. Says where it went, or why it did not.
+    fn export_wavetable(&mut self, _layer: usize) -> Result<String, String> {
+        Err("this instrument has no table to export".to_string())
+    }
 
     /// LFO `lfo`'s wave, sampled as a shape to draw on — what the shapes
     /// menu's last row starts over from.

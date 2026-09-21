@@ -152,6 +152,23 @@ pub enum FlopsynthPicture {
     /// the position knob sits. Dragged sideways to move the position, so the
     /// picture changes under the hand.
     Wave { points: Vec<f32>, position: f32 },
+    /// The wavetable editor's pencil (§4.3): one frame of the patch's own
+    /// table, in −1..=1, drawn on — a drag lays segments from one pointer
+    /// position to the next through `WavetableEdit::Draw`. `frame` is the
+    /// one under the position knob, of `frames`.
+    Draw {
+        points: Vec<f32>,
+        frame: usize,
+        frames: usize,
+    },
+    /// The wavetable editor's harmonic bars (§4.3): the frame's first
+    /// sixty-four partials as amplitudes in 0..1, one bar each, dragged
+    /// through `WavetableEdit::Harmonic`.
+    Bars {
+        amps: Vec<f32>,
+        frame: usize,
+        frames: usize,
+    },
     /// The filter's magnitude response in dB over the EQ's log axis, plus
     /// where its corner and its resonance are, as 0..1.
     Response {
@@ -477,8 +494,10 @@ impl FlopsynthCard {
     pub fn is_half(&self, index: usize) -> bool {
         match self.group.params.get(index) {
             Some(param) => {
-                matches!(param.kind, ParamKind::Choice(_) | ParamKind::Switch)
-                    || self.size_of(index) == KnobSize::Small
+                matches!(
+                    param.kind,
+                    ParamKind::Choice(_) | ParamKind::Switch | ParamKind::Action
+                ) || self.size_of(index) == KnobSize::Small
             }
             None => false,
         }
@@ -575,7 +594,54 @@ pub struct FlopsynthView {
 pub struct FlopsynthShowing {
     pub inspector: Option<usize>,
     pub fx_slot: Option<usize>,
+    /// The wavetable editor's tool (§4.3): which picture a table's card
+    /// draws. The window's, not the patch's.
+    pub wave_tool: fontelle_types::WaveTool,
 }
+
+/// The address of the tool chooser on layer `layer`'s card — a control
+/// the window keeps for itself rather than one the patch answers.
+pub fn wave_tool_address(layer: usize) -> String {
+    format!("ui/layer[{layer}]/wave_tool")
+}
+
+/// Which layer an address of [`wave_tool_address`]'s shape names.
+pub fn wave_tool_layer(address: &str) -> Option<usize> {
+    let rest = address.strip_prefix("ui/layer[")?;
+    let end = rest.find("]/wave_tool")?;
+    if rest[end..] != *"]/wave_tool" {
+        return None;
+    }
+    rest[..end].parse().ok()
+}
+
+/// The layer and the verb of a wavetable editor action's address,
+/// `edit/layer[n]/table/<verb>`.
+pub fn wave_edit_action(address: &str) -> Option<(usize, &str)> {
+    let rest = address.strip_prefix("edit/layer[")?;
+    let end = rest.find("]/table/")?;
+    let layer = rest[..end].parse().ok()?;
+    Some((layer, &rest[end + "]/table/".len()..]))
+}
+
+/// The address of editor action `verb` on layer `layer`'s card.
+pub fn wave_edit_address(layer: usize, verb: &str) -> String {
+    format!("edit/layer[{layer}]/table/{verb}")
+}
+
+/// The editor's actions, as the card's *table…* button lists them: the
+/// verb in the address, and the word in the menu. One button rather than
+/// seven, because seven half-cells on a card that shares its column with
+/// the noise ran the noise into the strip.
+pub const WAVE_ACTIONS: [(&str, &str); 7] = [
+    ("add_frame", "Add a frame after this one"),
+    ("copy_frame", "Copy this frame"),
+    ("remove_frame", "Remove this frame"),
+    ("morph", "Morph to the last frame"),
+    ("morph_spectral", "Morph to the last frame, spectrally"),
+    ("formula", "Formula\u{2026}"),
+    ("export", "Export as WAV\u{2026}"),
+];
 
 /// One row of the rack (§3.6): the slot's name, whether it is on, its
 /// wet/dry, and what it put out this block.
@@ -2332,7 +2398,7 @@ pub fn cell_anatomy(cell: Rect, size: KnobSize, kind: &ParamKind, scale: f32) ->
     match (half, kind) {
         // A chooser or a switch, in a half cell: the caption, then the chip
         // or pill filling what is left.
-        (true, ParamKind::Choice(_) | ParamKind::Switch) => CellAnatomy {
+        (true, ParamKind::Choice(_) | ParamKind::Switch | ParamKind::Action) => CellAnatomy {
             caption: Rect::new(cell.x, cell.y, cell.width, text_h),
             control: Rect::new(
                 cell.x,
@@ -2371,7 +2437,7 @@ pub fn cell_anatomy(cell: Rect, size: KnobSize, kind: &ParamKind, scale: f32) ->
         }
         // A chooser or a switch that was given a whole cell (a grid with no
         // halves): the caption and the control in the top half of it.
-        (false, ParamKind::Choice(_) | ParamKind::Switch) => {
+        (false, ParamKind::Choice(_) | ParamKind::Switch | ParamKind::Action) => {
             let control_h = (FLOP_CELL_HALF * scale - text_h - 2.0 * scale).max(0.0);
             CellAnatomy {
                 caption: Rect::new(cell.x, cell.y + 2.0 * scale, cell.width, text_h),
@@ -2459,6 +2525,53 @@ pub fn step_at(rect: Rect, length: usize, x: f32, y: f32) -> Option<(usize, f32)
     // to rest rests.
     let value = if value.abs() < 0.04 { 0.0 } else { value };
     Some((index.min(length - 1), value))
+}
+
+/// Where a pointer over the draw picture is in the cycle: `(x, y)` with
+/// `x` across it in 0..1 and `y` in −1..1, the top being one. Clamped to
+/// the picture, so a drag that runs off it draws to the edge.
+pub fn draw_point(picture: Rect, x: f32, y: f32) -> (f32, f32) {
+    if picture.width <= 0.0 || picture.height <= 0.0 {
+        return (0.0, 0.0);
+    }
+    (
+        ((x - picture.x) / picture.width).clamp(0.0, 1.0),
+        1.0 - 2.0 * ((y - picture.y) / picture.height).clamp(0.0, 1.0),
+    )
+}
+
+/// The bars, one rectangle each, `amps` in 0..1 up from the picture's
+/// floor.
+pub fn harmonic_bars(picture: Rect, amps: &[f32]) -> Vec<Rect> {
+    if amps.is_empty() || picture.width <= 0.0 {
+        return Vec::new();
+    }
+    let slot = picture.width / amps.len() as f32;
+    let gap = (slot * 0.2).clamp(0.5, 3.0);
+    amps.iter()
+        .enumerate()
+        .map(|(i, amp)| {
+            let height = (picture.height * amp.clamp(0.0, 1.0)).max(1.0);
+            Rect::new(
+                picture.x + slot * i as f32 + gap * 0.5,
+                picture.bottom() - height,
+                (slot - gap).max(1.0),
+                height,
+            )
+        })
+        .collect()
+}
+
+/// Which of `count` bars a pointer is over, and the level its height asks
+/// for, 0..1 — the floor being nought. `None` off the picture.
+pub fn bar_at(picture: Rect, count: usize, x: f32, y: f32) -> Option<(usize, f32)> {
+    let inside = x >= picture.x && x <= picture.right() && y >= picture.y && y <= picture.bottom();
+    if count == 0 || picture.width <= 0.0 || picture.height <= 0.0 || !inside {
+        return None;
+    }
+    let index = (((x - picture.x) / picture.width) * count as f32) as usize;
+    let level = 1.0 - ((y - picture.y) / picture.height).clamp(0.0, 1.0);
+    Some((index.min(count - 1), level))
 }
 
 /// The cutoff and resonance a drag on a filter's response lands on, both

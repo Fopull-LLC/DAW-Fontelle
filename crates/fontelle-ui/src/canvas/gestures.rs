@@ -68,6 +68,8 @@ pub fn nudged(value: f32, steps: i32, precision: Precision) -> f32 {
 pub fn wheel_nudge(value: f32, notches: f32, kind: &ParamKind) -> f32 {
     match kind {
         ParamKind::Knob => (value + notches * NUDGE).clamp(0.0, 1.0),
+        // A button has nothing to nudge.
+        ParamKind::Action => value,
         ParamKind::Switch => {
             if value >= 0.5 {
                 0.0
@@ -276,10 +278,20 @@ pub fn flopsynth_tip(hit: FlopsynthHit, cards: &[FlopsynthCard]) -> Option<Strin
                         .to_string()
                 }
                 ParamKind::Switch => "Click to switch \u{b7} right-click for more".to_string(),
+                ParamKind::Action => "Click".to_string(),
             }
         }
         FlopsynthHit::Picture { card } => match cards.get(card)?.picture {
             FlopsynthPicture::Wave { .. } => "Drag sideways to move the position".to_string(),
+            FlopsynthPicture::Draw { frame, frames, .. } => {
+                format!("Draw the wave \u{b7} frame {} of {frames}", frame + 1)
+            }
+            FlopsynthPicture::Bars { frame, frames, .. } => {
+                format!(
+                    "Drag a bar to set the harmonic \u{b7} frame {} of {frames}",
+                    frame + 1
+                )
+            }
             FlopsynthPicture::Response { .. } => {
                 "Drag to set the cutoff and the resonance".to_string()
             }

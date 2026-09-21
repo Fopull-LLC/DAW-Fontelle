@@ -118,6 +118,10 @@ pub struct Session {
     /// document state: which kind of thing you are about to capture is no more
     /// part of a song than which tool is selected is.
     record_mode: fontelle_ui::transport::RecordMode,
+    /// The last formula applied to each layer's table (§4.3), for the
+    /// prompt to seed with. Window state: a formula is how a frame was
+    /// made, not what it is.
+    wavetable_formulas: HashMap<usize, String>,
     /// The audio-input ring, while a capture stream is open, and what the
     /// device opened at. `None` is a session with no microphone attached,
     /// which is nearly all of them.
@@ -1043,6 +1047,7 @@ impl Session {
             param_nodes: HashMap::new(),
             audio_nodes: HashMap::new(),
             record_mode: fontelle_ui::transport::RecordMode::default(),
+            wavetable_formulas: HashMap::new(),
             input: None,
             input_take: fontelle_engine::InputCapture::new(1),
             input_rate: 0,
@@ -3911,6 +3916,198 @@ impl Session {
         self.history.break_gesture();
         self.touch();
         Ok(format!("{name} loaded into {role}"))
+    }
+
+    // ------------------------------------------- the wavetable editor (§4.3)
+
+    /// The patch's own table layer `layer` reads, if it reads one.
+    fn own_wavetable(patch: &fontelle_core::Patch, layer: usize) -> Option<usize> {
+        match patch.layers.get(layer).map(|l| &l.source) {
+            Some(fontelle_core::Source::Synth(osc)) => match osc.source {
+                fontelle_dsp::SynthSource::User(at) if (at as usize) < patch.wavetables.len() => {
+                    Some(at as usize)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The frame under `layer`'s position knob: the table's frames spread
+    /// across the knob, the nearest one.
+    fn wavetable_frame(patch: &fontelle_core::Patch, layer: usize) -> usize {
+        let Some(at) = Self::own_wavetable(patch, layer) else {
+            return 0;
+        };
+        let frames = patch.wavetables[at].frames.max(1);
+        let position = match &patch.layers[layer].source {
+            fontelle_core::Source::Synth(osc) => osc.position.clamp(0.0, 1.0),
+            _ => 0.0,
+        };
+        ((position * (frames - 1) as f32).round() as usize).min(frames - 1)
+    }
+
+    /// Applies one edit to the table `layer` reads. Coalesced like a knob
+    /// drag: `store_patch` puts it on the open gesture, and the window's
+    /// release breaks the gesture — so a stroke of the pencil is one undo.
+    pub fn edit_wavetable(
+        &mut self,
+        layer: usize,
+        edit: fontelle_types::WavetableEdit,
+    ) -> Result<(), String> {
+        let Some(channel) = self.selected_channel_id() else {
+            return Err("no channel is selected".to_string());
+        };
+        let Some(mut patch) = self.selected_patch() else {
+            return Err("this channel has no instrument".to_string());
+        };
+        let Some(at) = Self::own_wavetable(&patch, layer) else {
+            return Err(
+                "this oscillator reads the bank's table; edit takes a copy first".to_string(),
+            );
+        };
+        patch.wavetables[at].apply(&edit)?;
+        // The frame count may have moved; the position knob is left where
+        // it is, and the frame it names follows the table.
+        self.store_patch(channel, patch);
+        self.touch();
+        Ok(())
+    }
+
+    /// Makes the bank table `layer` reads the patch's own copy — every
+    /// frame's finest level, named after the recipe — so it can be edited.
+    /// A layer already reading its own table is left alone.
+    pub fn adopt_wavetable(&mut self, layer: usize) -> Result<(), String> {
+        let Some(channel) = self.selected_channel_id() else {
+            return Err("no channel is selected".to_string());
+        };
+        let Some(mut patch) = self.selected_patch() else {
+            return Err("this channel has no instrument".to_string());
+        };
+        if Self::own_wavetable(&patch, layer).is_some() {
+            return Ok(());
+        }
+        let id = match patch.layers.get(layer).map(|l| &l.source) {
+            Some(fontelle_core::Source::Synth(osc)) => match osc.source {
+                fontelle_dsp::SynthSource::Table(id) => id,
+                _ => return Err("this oscillator is not reading a table".to_string()),
+            },
+            _ => return Err("that is not one of this instrument's oscillators".to_string()),
+        };
+        let bank = fontelle_dsp::wavetables().get(id);
+        let frames = bank.frame_count().clamp(1, fontelle_dsp::MAX_USER_FRAMES);
+        let mut samples = Vec::with_capacity(frames * fontelle_dsp::WAVETABLE_LEN);
+        for frame in 0..frames {
+            samples.extend_from_slice(bank.level(frame, 0));
+        }
+        let table = fontelle_core::UserWavetable {
+            name: id.label().to_string(),
+            frames,
+            samples,
+        };
+        let Ok(index) = u8::try_from(patch.wavetables.len()) else {
+            return Err("this instrument is already carrying as many sounds as it can".to_string());
+        };
+        patch.wavetables.push(table);
+        if let fontelle_core::Source::Synth(osc) = &mut patch.layers[layer].source {
+            osc.source = fontelle_dsp::SynthSource::User(index);
+        }
+        self.store_patch(channel, patch);
+        self.history.break_gesture();
+        self.touch();
+        Ok(())
+    }
+
+    /// The frame under `layer`'s position replaced by `text` evaluated
+    /// over the phase. The formula is remembered for the prompt.
+    pub fn apply_wavetable_formula(&mut self, layer: usize, text: &str) -> Result<(), String> {
+        let Some(patch) = self.selected_patch() else {
+            return Err("this channel has no instrument".to_string());
+        };
+        let frame = Self::wavetable_frame(&patch, layer);
+        // Its own undo step, whatever stroke was open.
+        self.history.break_gesture();
+        self.edit_wavetable(
+            layer,
+            fontelle_types::WavetableEdit::Formula {
+                frame,
+                text: text.to_string(),
+            },
+        )?;
+        self.history.break_gesture();
+        self.wavetable_formulas.insert(layer, text.to_string());
+        Ok(())
+    }
+
+    /// The last formula applied to `layer`'s table, or a sine to start
+    /// from — a prompt that opened on nothing would show the naming
+    /// prompt's "Untitled".
+    pub fn wavetable_formula(&self, layer: usize) -> String {
+        self.wavetable_formulas
+            .get(&layer)
+            .cloned()
+            .unwrap_or_else(|| "sin(x)".to_string())
+    }
+
+    /// Writes `layer`'s table to `path` as a WAV Serum reads.
+    pub fn export_wavetable_to(&self, layer: usize, path: &Path) -> Result<String, String> {
+        let Some(patch) = self.selected_patch() else {
+            return Err("this channel has no instrument".to_string());
+        };
+        let Some(at) = Self::own_wavetable(&patch, layer) else {
+            return Err(
+                "this oscillator reads the bank's table; edit takes a copy first".to_string(),
+            );
+        };
+        let table = &patch.wavetables[at];
+        std::fs::write(path, table.export_wav()).map_err(|e| e.to_string())?;
+        Ok(format!("{} written to {}", table.name, path.display()))
+    }
+
+    /// Writes `layer`'s table where the desktop's picker says.
+    pub fn export_wavetable(&mut self, layer: usize) -> Result<String, String> {
+        let Some(patch) = self.selected_patch() else {
+            return Err("this channel has no instrument".to_string());
+        };
+        let Some(at) = Self::own_wavetable(&patch, layer) else {
+            return Err(
+                "this oscillator reads the bank's table; edit takes a copy first".to_string(),
+            );
+        };
+        let default_name = format!("{}.wav", patch.wavetables[at].name.trim());
+        let start = self.settings.projects_dir.clone().or_else(|| {
+            self.bundle
+                .as_ref()
+                .and_then(|b| b.parent().map(Path::to_path_buf))
+        });
+        let path = match crate::desktop::choose_save_file(
+            "Export wavetable",
+            &default_name,
+            start.as_deref(),
+        ) {
+            Ok(Some(mut path)) => {
+                if path.extension().is_none() {
+                    path.set_extension("wav");
+                }
+                path
+            }
+            Ok(None) => return Ok("export cancelled".to_string()),
+            Err(_) => {
+                let dir = self
+                    .bundle
+                    .as_ref()
+                    .and_then(|b| b.parent())
+                    .map(Path::to_path_buf)
+                    .or_else(|| self.settings.projects_dir.clone())
+                    .ok_or_else(|| {
+                        "no folder picker on this machine, and no project folder to \
+                         write into — save this project first"
+                            .to_string()
+                    })?;
+                dir.join(&default_name)
+            }
+        };
+        self.export_wavetable_to(layer, &path)
     }
 
     /// Loads a sound onto one of Flopsynth's oscillators as the **recording**
@@ -7571,6 +7768,30 @@ impl StudioHost for Session {
         Session::load_wavetable(self, layer, path)
     }
 
+    fn edit_wavetable(
+        &mut self,
+        layer: usize,
+        edit: fontelle_types::WavetableEdit,
+    ) -> Result<(), String> {
+        Session::edit_wavetable(self, layer, edit)
+    }
+
+    fn adopt_wavetable(&mut self, layer: usize) -> Result<(), String> {
+        Session::adopt_wavetable(self, layer)
+    }
+
+    fn apply_wavetable_formula(&mut self, layer: usize, text: &str) -> Result<(), String> {
+        Session::apply_wavetable_formula(self, layer, text)
+    }
+
+    fn wavetable_formula(&self, layer: usize) -> String {
+        Session::wavetable_formula(self, layer)
+    }
+
+    fn export_wavetable(&mut self, layer: usize) -> Result<String, String> {
+        Session::export_wavetable(self, layer)
+    }
+
     fn load_sample(&mut self, layer: usize, path: &Path) -> Result<String, String> {
         Session::load_sample(self, layer, path)
     }
@@ -7638,6 +7859,7 @@ impl StudioHost for Session {
             fontelle_ui::canvas::FlopsynthShowing {
                 inspector,
                 fx_slot: None,
+                wave_tool: Default::default(),
             },
         )
     }
@@ -10309,6 +10531,8 @@ impl Session {
                 Some(at as f32 / last)
             }
             ParamKind::Switch => Some(if typed.value >= 0.5 { 1.0 } else { 0.0 }),
+            // A button has no value to type.
+            ParamKind::Action => None,
             ParamKind::Knob => {
                 let read = |value: f32| -> Option<f32> {
                     let (display, _) = self.flopsynth_display_at(&patch, address, value)?;

@@ -30,6 +30,7 @@ mod patch_data;
 mod plugin;
 mod preset;
 mod time;
+mod wavetable_edit;
 
 pub use asset::{AssetKind, AssetRef};
 pub use audio_clip::{
@@ -84,3 +85,4 @@ pub use preset::{
     TrackInsert, TrackPreset,
 };
 pub use time::{PPQN, Sample, Tick};
+pub use wavetable_edit::{WaveTool, WavetableEdit};

@@ -81,6 +81,10 @@ pub use flopsynth::{
     ring_live, ring_range, route_landing, sound_outline_points, spectrum_bars, step_at, step_bars,
     wave_curve_points, wave_position_at,
 };
+pub use flopsynth::{
+    WAVE_ACTIONS, bar_at, draw_point, harmonic_bars, wave_edit_action, wave_edit_address,
+    wave_tool_address, wave_tool_layer,
+};
 pub use gestures::{
     BADGE_CLICK_SLOP, BadgeGesture, FlopKnobMenu, FlopKnobMenuItem, NUDGE, NUDGE_FINE, Precision,
     Typed, badge_gesture, flop_knob_menu, flopsynth_tip, hover_bubble_rect, inspector_after_click,

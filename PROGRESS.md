@@ -20,8 +20,8 @@ codebase that cost real time to rediscover.
 ## Where things stand (maintained; the entries below are history)
 
 **As of 2026-09-20, later — Flopsynth II, Phase 4 (`docs/flopsynth-next.md`
-§4.3–4.5, §7): sources, filters, effects — done but for the wavetable
-editor, not released.** Four commits, each tests-first, looked at on
+§4.3–4.5, §7): sources, filters, effects, the wavetable editor — done,
+not released.** Five commits, each tests-first, looked at on
 `Xwayland :99`; the voice's size held. The bank's rows for the new
 things are Phase 6's, with the tags gate (§9.7).
 
@@ -107,15 +107,46 @@ things are Phase 6's, with the tags gate (§9.7).
   FM row, the model chooser (ten), Filter 1 as a Diode with its picture
   and *BITE*, the Effects page's `+ effect` list (fifteen) and a phaser's
   card with its comb.
-- **Open:** the **wavetable editor** (§4.3: draw, harmonic bars,
-  formula, FFT of a drop, morph, frames, export — nothing built; the
-  `Remap` warp reads a curve no card can yet edit); the speed-aware mip
-  level for the warps (Phase 2's note); rows for the new sources, warps,
-  filters and effects — Phase 6, with the tags gate, so
-  `flopsynth_shows_off.rs` excludes the six table warps by name until
-  then; an *Import SFZ…* entry (there is no file dialog; drops are the
-  path). For Ty: everything Phase 3 left, and by ear the new models
-  (`--play-flopsynth` a row, set Filter 1 to each).
+- **The wavetable editor** (this commit): on a table oscillator's card.
+  A bank table's card has *EDIT*, which **adopts** the recipe into the
+  patch as its own copy (every frame's finest level, named after it —
+  the bank is recipes, and an edit starts by taking a copy); a table of
+  the patch's own has a *TOOL* chooser (position / draw / bars — window
+  state, `FlopsynthShowing.wave_tool`) and one *ACTIONS* button whose
+  menu is the frame actions, the formula and the export
+  (`canvas::WAVE_ACTIONS`; seven half-cells ran the noise card into the
+  strip). The pencil draws segments from one pointer position to the
+  next (`WavetableEdit::Draw`, one undo a stroke); a bar takes the
+  pointer's height (`Harmonic`, an edit on the frame's own analysis so
+  the other partials stay); the formula is a small language over the
+  phase in cycles — `sin(x*3)+0.5*saw(x)`, `fontelle-core/src/formula.rs`
+  — through the name prompt, seeded with the last one; add / copy /
+  remove frames, morph to the last frame linearly or spectrally, export
+  as a 16-bit mono WAV of `frames × 2048` that Serum reads and the drop
+  reads back frame for frame. The edits are pure on `UserWavetable`
+  (`wavetable_edit.rs`; a dropped sound is laid out at the table's length
+  by the first edit), `MAX_USER_FRAMES` is 256, and a frame built from
+  partials may sit over full scale — clipping it there changed the very
+  partials just set; the table is normalised once, when played and when
+  exported. `tests/wavetable_edit.rs`, `fontelle-dsp/tests/wavetable_
+  user.rs` (a drawn square is the bank's within the mip levels),
+  `fontelle-assets/tests/wavetable_export.rs`, `fontelle-ui/tests/
+  wavetable_editor.rs`, `fontelle-app/tests/flopsynth_wavetable.rs`.
+  **Not built** from §4.3's list: the FFT of a dropped sample with a
+  chosen window (a drop *is* a table already, at 2048 a frame), and
+  `Remap`'s curve editor. Known cost: a stroke rebuilds the table's
+  pyramid per pointer motion (`WavetableSet::resolve`), which on a
+  64-frame table is felt.
+- **Looked at:** the SUB card adopted, the draw tool with a zigzag
+  drawn, the bars tool, the actions menu, the formula prompt and its
+  result.
+- **Open:** the speed-aware mip level for the warps (Phase 2's note);
+  rows for the new sources, warps, filters and effects — Phase 6, with
+  the tags gate, so `flopsynth_shows_off.rs` excludes the six table warps
+  by name until then; an *Import SFZ…* entry (`desktop::choose_save_file`
+  exists; an open-file twin would do it); `Remap`'s curve. For Ty:
+  everything Phase 3 left, and by ear the new models (`--play-flopsynth`
+  a row, set Filter 1 to each).
 
 **As of 2026-09-20 — Flopsynth II, Phase 3 (`docs/flopsynth-next.md`
 §4.2, §4.6, §7): modulation and voice: done, not released.** Five

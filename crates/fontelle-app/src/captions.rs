@@ -106,6 +106,10 @@ pub const CAPTIONS: &[(&str, &str)] = &[
     ("stack", "STACK"),
     ("spread", "SPREAD"),
     ("type", "TYPE"),
+    // The wavetable editor (§4.3): the tool, the copy, the frame actions.
+    ("tool", "TOOL"),
+    ("adopt", "EDIT"),
+    ("table_menu", "ACTIONS"),
     // The voice, and the channel's two knobs beside it. The glide's mode
     // and shape (§4.6) and the velocity curve (§4.2).
     ("voices", "VOICES"),

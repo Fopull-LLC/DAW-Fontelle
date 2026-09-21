@@ -1,282 +1,292 @@
-//! Dragging a sound into Flopsynth and playing it as a waveform.
-//!
-//! > *"i want to like with omnisphere or serum ... be able to drag audio files
-//! > into it to use those waveforms in the synthesis as im pretty sure thats
-//! > somethign you could do in them which would be a cool feature."*
-//!
-//! `fontelle-core`'s `tests/user_wavetable.rs` holds what a patch carrying its
-//! own table *is*. This is the studio's half: a file on disk becomes one, on
-//! the oscillator it was dropped on, as one undoable edit — and the sound
-//! that comes out is the file's.
+//! The wavetable editor on the card (`docs/flopsynth-next.md` §4.3): a
+//! bank table is *adopted* into the patch as its own copy; a table of the
+//! patch's own has a tool chooser (position / draw / bars), the frame
+//! actions, a formula and an export; and the tool decides which picture
+//! the card draws. The edits themselves are `fontelle-core`'s
+//! (`tests/wavetable_edit.rs`); this is the window's half through the
+//! session.
 
 mod common;
 
-use std::path::{Path, PathBuf};
-
-use fontelle_app::{RealiseOptions, SampleLibrary, Session};
-use fontelle_assets::fixtures::build_wav;
-use fontelle_engine::{graph_channel, timeline_channel};
-use fontelle_types::CompiledTimeline;
-use fontelle_ui::document::DocumentHost;
+use fontelle_dsp::{SynthSource, WAVETABLE_LEN};
+use fontelle_types::{InstrumentKind, ParamAddress, WaveTool, WavetableEdit};
+use fontelle_ui::canvas::{FlopsynthPage, FlopsynthPicture, FlopsynthShowing, ParamKind};
+use fontelle_ui::document::{DocumentHost, StudioHost};
 
 use common::SR;
 
-fn scratch(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "fontelle-wt-{name}-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::remove_dir_all(&path).ok();
-    std::fs::create_dir_all(&path).expect("creatable");
-    path
+fn a_flopsynth() -> fontelle_app::Session {
+    let mut session = common::a_session_for(common::a_project_with_a_clip(8, 120.0, SR));
+    session.set_channel_kind(0, InstrumentKind::Osc3);
+    session.set_channel_kind(0, InstrumentKind::Flopsynth);
+    session
 }
 
-/// A session whose selected channel plays Flopsynth.
-fn a_session(dir: &Path) -> Session {
-    let library = SampleLibrary::new();
-    let patch = fontelle_core::flopsynth::flopsynth_init();
-    let project = common::demo_with(&patch, &library);
-    let clip = Session::first_clip(&project).expect("the demo project has a clip");
-    let (publisher, _timeline) = timeline_channel(CompiledTimeline::empty());
-    let options = RealiseOptions {
-        sample_rate: SR,
-        block_size: fontelle_engine::BLOCK_SIZE,
-        quality: fontelle_app::PLAYBACK_QUALITY,
-    };
-    let realised = fontelle_app::realise(&project, &library, options).expect("realises");
-    let (graphs, _source) = graph_channel(realised.graph);
-    Session::new(
-        project,
-        library,
-        realised.channel_nodes,
-        publisher,
-        options,
-        clip,
-        None,
-    )
-    .with_graphs(graphs, realised.track_controls)
-    .with_param_nodes(realised.param_nodes)
-    .with_settings_path(dir.join("settings.json"))
-}
-
-/// A sound file: four cycles of a saw, which is nothing like the sine the
-/// Init patch's oscillator reads.
-fn a_sound(dir: &Path, name: &str) -> PathBuf {
-    let samples: Vec<f32> = (0..8_192)
-        .map(|i| (i % 2_048) as f32 / 1_024.0 - 1.0)
-        .collect();
-    let path = dir.join(format!("{name}.wav"));
-    std::fs::write(&path, build_wav(48_000, 1, &samples)).expect("writable");
-    path
-}
-
-fn patch_of(session: &Session) -> fontelle_core::Patch {
-    session.selected_patch().expect("the channel has a patch")
-}
-
-#[test]
-fn a_dropped_sound_becomes_a_table_on_the_oscillator_it_was_dropped_on() {
-    let dir = scratch("drop");
-    let mut session = a_session(&dir);
-    let path = a_sound(&dir, "Pad");
-
-    let said = session
-        .load_wavetable(1, &path)
-        .expect("the sound loads onto oscillator B");
-    assert!(
-        said.contains("Pad"),
-        "the studio should say what arrived: {said}"
-    );
-
-    let patch = patch_of(&session);
-    assert_eq!(patch.wavetables.len(), 1);
-    assert_eq!(patch.wavetables[0].name, "Pad");
-    // Four cycles of 2048, so four frames for the position knob to walk.
-    assert_eq!(patch.wavetables[0].frames, 4);
-    match &patch.layers[1].source {
-        fontelle_core::Source::Synth(osc) => {
-            assert_eq!(osc.source, fontelle_dsp::SynthSource::User(0));
-        }
-        other => panic!("layer 1 is {other:?}"),
+fn showing(tool: WaveTool) -> FlopsynthShowing {
+    FlopsynthShowing {
+        inspector: None,
+        fx_slot: None,
+        wave_tool: tool,
     }
-    // And nothing else moved: the other oscillators read what they read.
-    match &patch.layers[0].source {
-        fontelle_core::Source::Synth(osc) => {
-            assert!(matches!(osc.source, fontelle_dsp::SynthSource::Table(_)));
-        }
-        other => panic!("layer 0 is {other:?}"),
-    }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
-#[test]
-fn the_oscillator_it_lands_on_is_switched_on() {
-    // Every oscillator but the first is at the silence floor in the Init
-    // patch, so a sound dropped on one that is off would load and be
-    // inaudible — which reads as the drop having done nothing.
-    let dir = scratch("audible");
-    let mut session = a_session(&dir);
-    let path = a_sound(&dir, "Pad");
-    let before = patch_of(&session).layers[1].gain_db;
-    assert!(before <= fontelle_core::SILENT_DB);
-
-    session.load_wavetable(1, &path).expect("loads");
-    let after = patch_of(&session).layers[1].gain_db;
-    assert!(
-        after > fontelle_core::SILENT_DB,
-        "the oscillator is still off at {after} dB"
-    );
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn a_second_sound_on_another_oscillator_is_a_second_table() {
-    let dir = scratch("two");
-    let mut session = a_session(&dir);
+fn card(
+    session: &fontelle_app::Session,
+    tool: WaveTool,
+    name: &str,
+) -> fontelle_ui::canvas::FlopsynthCard {
     session
-        .load_wavetable(0, &a_sound(&dir, "One"))
-        .expect("loads");
-    session
-        .load_wavetable(1, &a_sound(&dir, "Two"))
-        .expect("loads");
-    let patch = patch_of(&session);
-    assert_eq!(patch.wavetables.len(), 2);
-    assert_eq!(patch.wavetables[0].name, "One");
-    assert_eq!(patch.wavetables[1].name, "Two");
-    std::fs::remove_dir_all(&dir).ok();
+        .flopsynth_showing(FlopsynthPage::Synth, showing(tool))
+        .expect("a window")
+        .cards
+        .into_iter()
+        .find(|c| c.group.name == name)
+        .unwrap_or_else(|| panic!("no {name} card"))
 }
 
-#[test]
-fn dropping_a_second_sound_on_the_same_oscillator_replaces_its_table() {
-    // Rather than growing the patch by a table nothing reads any more: a
-    // preset carries its samples, so a discarded one is dead weight in every
-    // copy of it from then on.
-    let dir = scratch("replace");
-    let mut session = a_session(&dir);
-    session
-        .load_wavetable(0, &a_sound(&dir, "One"))
-        .expect("loads");
-    session
-        .load_wavetable(0, &a_sound(&dir, "Two"))
-        .expect("loads");
-    let patch = patch_of(&session);
-    assert_eq!(patch.wavetables.len(), 1);
-    assert_eq!(patch.wavetables[0].name, "Two");
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn a_file_that_is_not_a_sound_is_refused_with_a_reason() {
-    let dir = scratch("refuse");
-    let mut session = a_session(&dir);
-    let path = dir.join("notes.txt");
-    std::fs::write(&path, b"not audio").expect("writable");
-    let said = session.load_wavetable(0, &path).expect_err("refused");
-    assert!(!said.is_empty(), "a refusal has to say why");
-    assert!(patch_of(&session).wavetables.is_empty());
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-/// One note of a patch, rendered.
-///
-/// Through the patch the **session** holds, which is the half that matters
-/// here: a patch is stored as `PatchData` and read back, so this is what says
-/// the samples survive the base64 round trip the document puts them through.
-fn render_note(patch: fontelle_core::Patch, key: u8) -> Vec<f32> {
-    use fontelle_core::{NoteTrigger, PrepareContext, SampleStore, Sampler};
-    let mut sampler = Sampler::new(patch);
-    sampler.prepare(&PrepareContext {
-        sample_rate: SR as f32,
-        max_block_size: 512,
-    });
-    sampler.trigger(NoteTrigger::new(key, 100));
-    let store = SampleStore::new();
-    let mut out = Vec::new();
-    for _ in 0..4 {
-        let mut left = vec![0.0f32; 512];
-        let mut right = vec![0.0f32; 512];
-        sampler.render(&store, &mut [&mut left[..], &mut right[..]]);
-        out.extend_from_slice(&left);
-    }
-    out
-}
-
-#[test]
-fn a_dropped_sound_is_what_the_channel_plays() {
-    // The lesson the audio-clip work paid for: a document test cannot hear.
-    let dir = scratch("audio");
-    let mut session = a_session(&dir);
-    let before = render_note(patch_of(&session), 60);
-    session
-        .load_wavetable(0, &a_sound(&dir, "Saw"))
-        .expect("loads");
-    let after = render_note(patch_of(&session), 60);
-    assert!(
-        after.iter().any(|s| s.abs() > 0.01),
-        "a dropped sound has to be audible"
-    );
-    let changed: f32 = before
+fn addresses(card: &fontelle_ui::canvas::FlopsynthCard) -> Vec<String> {
+    card.group
+        .params
         .iter()
-        .zip(&after)
-        .map(|(a, b)| (a - b).abs())
-        .sum::<f32>()
-        / before.len() as f32;
-    assert!(
-        changed > 0.01,
-        "the oscillator should sound different once a sound is dropped on it: {changed}"
-    );
-    std::fs::remove_dir_all(&dir).ok();
+        .map(|p| p.address.as_str().to_string())
+        .collect()
 }
 
-#[test]
-fn a_dropped_sound_can_be_taken_back() {
-    // One edit, undone like any other: a drop is a change to the patch and
-    // has to sit on the history with everything else.
-    let dir = scratch("undo");
-    let mut session = a_session(&dir);
-    session
-        .load_wavetable(0, &a_sound(&dir, "Pad"))
-        .expect("loads");
-    assert_eq!(patch_of(&session).wavetables.len(), 1);
-    session.undo();
-    assert!(patch_of(&session).wavetables.is_empty());
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-// ------------------------------------------------ which card is which ---
-
-/// A window can only route a drop to an oscillator if it knows which card is
-/// one. The **app** layer knows — it is the layer that sees both a `Patch`
-/// and a `FlopsynthView` — so the card says so and the window does not guess.
-#[test]
-fn every_oscillator_card_says_which_layer_it_is() {
-    use fontelle_ui::canvas::FlopsynthPage;
-
-    let patch = fontelle_core::flopsynth::flopsynth_init();
-    let view = fontelle_app::flopsynth::describe(
-        "Flopsynth",
-        &patch,
-        0.0,
-        0.0,
-        FlopsynthPage::Synth,
-        Default::default(),
-        Vec::new(),
-        Default::default(),
-    );
-    let named = |name: &str| {
-        view.cards
-            .iter()
-            .find(|card| card.group.name == name)
-            .unwrap_or_else(|| panic!("no {name} card"))
-            .oscillator
+fn osc_a(session: &fontelle_app::Session) -> fontelle_dsp::SynthOsc {
+    let patch = session.selected_patch().unwrap();
+    let fontelle_core::Source::Synth(osc) = &patch.layers[0].source else {
+        panic!("a synth layer");
     };
-    assert_eq!(named("OSC A"), Some(0));
-    assert_eq!(named("OSC B"), Some(1));
-    assert_eq!(named("OSC C"), Some(2));
-    assert_eq!(named("SUB"), Some(3));
-    assert_eq!(named("NOISE"), Some(4));
-    // And a card that is not an oscillator is not a place to drop a sound.
-    assert_eq!(named("Filter 1"), None);
-    assert_eq!(named("Voice"), None);
+    *osc
+}
+
+/// A bank table's card offers *edit*, and nothing else of the editor's:
+/// the bank is recipes, and an edit starts by taking a copy.
+#[test]
+fn a_bank_table_is_adopted_into_the_patch_before_it_is_edited() {
+    let mut session = a_flopsynth();
+    let osc = card(&session, WaveTool::Position, "OSC A");
+    let list = addresses(&osc);
+    assert!(
+        list.contains(&"edit/layer[0]/table/adopt".to_string()),
+        "{list:?}"
+    );
+    assert!(!list.iter().any(|a| a.ends_with("/menu")));
+    assert!(!list.contains(&"ui/layer[0]/wave_tool".to_string()));
+    let adopt = osc
+        .group
+        .params
+        .iter()
+        .find(|p| p.address.as_str() == "edit/layer[0]/table/adopt")
+        .unwrap();
+    assert_eq!(adopt.kind, ParamKind::Action);
+    assert_eq!(adopt.label, "EDIT");
+    // The bank's Saw, adopted: a table of the patch's own, named after it,
+    // with the recipe's frames laid out at the table's length.
+    let before = osc_a(&session);
+    let SynthSource::Table(id) = before.source else {
+        panic!("Init's OSC A is a bank table")
+    };
+    session.adopt_wavetable(0).expect("adopts");
+    let after = osc_a(&session);
+    let SynthSource::User(at) = after.source else {
+        panic!("its own table now: {:?}", after.source)
+    };
+    let patch = session.selected_patch().unwrap();
+    let table = &patch.wavetables[at as usize];
+    assert_eq!(table.name, id.label());
+    assert!(table.frames >= 1 && table.samples.len() == table.frames * WAVETABLE_LEN);
+    // And it plays the same wave: the first frame's partials are the
+    // recipe's.
+    let bank = fontelle_dsp::wavetables().get(id);
+    let read: Vec<f32> = (0..WAVETABLE_LEN)
+        .map(|i| bank.read(0.0, i as f32 / WAVETABLE_LEN as f32, 0))
+        .collect();
+    let (own, theirs) = (table.frame(0), read);
+    let apart = own
+        .iter()
+        .zip(&theirs)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(apart < 0.05, "the copy is the recipe's wave: {apart}");
+    // Undone, it is the bank's again.
+    session.undo();
+    assert!(matches!(osc_a(&session).source, SynthSource::Table(_)));
+}
+
+/// A table of the patch's own: the tool chooser and the actions, on the
+/// card, and the picture the tool asks for.
+#[test]
+fn a_tables_card_has_the_tool_the_frames_and_the_pictures() {
+    let mut session = a_flopsynth();
+    session.adopt_wavetable(0).expect("adopts");
+    let osc = card(&session, WaveTool::Position, "OSC A");
+    let list = addresses(&osc);
+    // One button for the actions; the menu under it lists the seven.
+    assert!(
+        list.contains(&"edit/layer[0]/table/menu".to_string()),
+        "{list:?}"
+    );
+    let verbs: Vec<&str> = fontelle_ui::canvas::WAVE_ACTIONS
+        .iter()
+        .map(|(verb, _)| *verb)
+        .collect();
+    assert_eq!(
+        verbs,
+        [
+            "add_frame",
+            "copy_frame",
+            "remove_frame",
+            "morph",
+            "morph_spectral",
+            "formula",
+            "export"
+        ]
+    );
+    assert!(!list.contains(&"edit/layer[0]/table/adopt".to_string()));
+    let tool = osc
+        .group
+        .params
+        .iter()
+        .find(|p| p.address.as_str() == "ui/layer[0]/wave_tool")
+        .expect("a tool chooser");
+    let ParamKind::Choice(names) = &tool.kind else {
+        panic!("a chooser")
+    };
+    assert_eq!(names, &["position", "draw", "bars"]);
+    assert_eq!(tool.value, 0.0, "at the position tool");
+    // The position tool draws the wave as ever; draw and bars draw their
+    // own pictures, each naming the frame.
+    assert!(matches!(osc.picture, FlopsynthPicture::Wave { .. }));
+    let drawn = card(&session, WaveTool::Draw, "OSC A");
+    let FlopsynthPicture::Draw {
+        points,
+        frame,
+        frames,
+    } = &drawn.picture
+    else {
+        panic!("the draw picture: {:?}", drawn.picture)
+    };
+    assert_eq!((*frame, *frames), (0, 1));
+    assert_eq!(points.len(), WAVETABLE_LEN / 8, "a point per eight samples");
+    let bars = card(&session, WaveTool::Bars, "OSC A");
+    let FlopsynthPicture::Bars {
+        amps,
+        frame,
+        frames,
+    } = &bars.picture
+    else {
+        panic!("the bars picture: {:?}", bars.picture)
+    };
+    assert_eq!((*frame, *frames), (0, 1));
+    assert_eq!(amps.len(), fontelle_core::EDIT_HARMONICS);
+    assert!(amps[0] > 0.3, "a saw's fundamental: {}", amps[0]);
+    // The chooser reads the tool it was built with.
+    let drawn_tool = drawn
+        .group
+        .params
+        .iter()
+        .find(|p| p.address.as_str() == "ui/layer[0]/wave_tool")
+        .unwrap();
+    assert!((drawn_tool.value - 0.5).abs() < 1e-6);
+}
+
+/// The frame actions go through the host as edits, one undo each, and the
+/// frame they act on is the one under the position knob.
+#[test]
+fn the_frame_actions_edit_the_frame_under_the_position() {
+    let mut session = a_flopsynth();
+    session.adopt_wavetable(0).expect("adopts");
+    let frames = |session: &fontelle_app::Session| {
+        let patch = session.selected_patch().unwrap();
+        patch.wavetables[0].frames
+    };
+    assert_eq!(frames(&session), 1);
+    session
+        .edit_wavetable(0, WavetableEdit::AddFrame { after: 0 })
+        .unwrap();
+    session.end_gesture();
+    assert_eq!(frames(&session), 2);
+    // The second frame is silent; the position at the end is on it.
+    session.set_instrument_param(&ParamAddress::new("patch/layer[0]/synth/position"), 1.0);
+    let drawn = card(&session, WaveTool::Draw, "OSC A");
+    let FlopsynthPicture::Draw {
+        frame,
+        frames: n,
+        points,
+    } = &drawn.picture
+    else {
+        panic!()
+    };
+    assert_eq!((*frame, *n), (1, 2));
+    assert!(points.iter().all(|p| *p == 0.0), "silent");
+    // Drawing on it, through the edit the picture's drag sends.
+    session
+        .edit_wavetable(
+            0,
+            WavetableEdit::Draw {
+                frame: 1,
+                from: (0.0, 1.0),
+                to: (1.0, -1.0),
+            },
+        )
+        .unwrap();
+    // The release ends the stroke's gesture, as the window's does.
+    session.end_gesture();
+    let drawn = card(&session, WaveTool::Draw, "OSC A");
+    let FlopsynthPicture::Draw { points, .. } = &drawn.picture else {
+        panic!()
+    };
+    assert!(
+        points[0] > 0.9 && points[points.len() - 1] < -0.9,
+        "a falling ramp"
+    );
+    // A formula, through the text seam the prompt uses.
+    session
+        .apply_wavetable_formula(0, "sin(x*3)")
+        .expect("a formula");
+    let bars = card(&session, WaveTool::Bars, "OSC A");
+    let FlopsynthPicture::Bars { amps, .. } = &bars.picture else {
+        panic!()
+    };
+    assert!(
+        amps[2] > 0.9 && amps[0] < 0.05,
+        "the third harmonic: {:?}",
+        &amps[..4]
+    );
+    let err = session.apply_wavetable_formula(0, "sin(x").unwrap_err();
+    assert!(!err.is_empty());
+    // Undo takes the formula back, then the draw, then the frame.
+    session.undo();
+    let drawn = card(&session, WaveTool::Draw, "OSC A");
+    let FlopsynthPicture::Draw { points, .. } = &drawn.picture else {
+        panic!()
+    };
+    assert!(points[0] > 0.9, "the ramp again");
+    session.undo();
+    session.undo();
+    assert_eq!(frames(&session), 1);
+    // The last formula is remembered for the prompt to seed with; a table
+    // that never had one starts from a sine.
+    assert_eq!(session.wavetable_formula(0), "sin(x*3)");
+    assert_eq!(session.wavetable_formula(1), "sin(x)");
+}
+
+/// The export writes the table as a WAV the drop reads back.
+#[test]
+fn export_writes_a_wav_beside_the_project() {
+    let mut session = a_flopsynth();
+    session.adopt_wavetable(0).expect("adopts");
+    let dir = std::env::temp_dir().join(format!("fontelle-wt-export-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("Saw.wav");
+    session.export_wavetable_to(0, &path).expect("exports");
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(&bytes[0..4], b"RIFF");
+    // And back in, on OSC B, frame for frame.
+    session.load_wavetable(1, &path).expect("loads");
+    let patch = session.selected_patch().unwrap();
+    assert_eq!(patch.wavetables.len(), 2);
+    assert_eq!(patch.wavetables[1].frames, patch.wavetables[0].frames);
+    std::fs::remove_dir_all(&dir).ok();
 }

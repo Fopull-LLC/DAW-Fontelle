@@ -536,11 +536,13 @@ fn build(id: WavetableId) -> Wavetable {
     }
 }
 
-/// The most frames a table built from a dropped sound may have.
+/// The most frames a table built from a dropped sound, or drawn, may have.
 ///
-/// Serum's own number, and the same reason: the position knob has to reach
-/// every frame, and a table of 256 half-megabyte pyramids is 128 MB.
-pub const MAX_USER_FRAMES: usize = 64;
+/// Serum's own number (`docs/flopsynth-next.md` §4.3): a frame's pyramid is
+/// sixteen kilobytes, so the table is four megabytes in memory and one in
+/// the file at sixteen bits. Sixty-four until Phase 4, when the editor's
+/// frames wanted the room.
+pub const MAX_USER_FRAMES: usize = 256;
 
 /// **One gain for the whole table, taken over every level**, so that sweeping
 /// the position knob does not sweep the volume and switching mip level

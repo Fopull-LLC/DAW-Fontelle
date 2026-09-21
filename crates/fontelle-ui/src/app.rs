@@ -117,6 +117,13 @@ enum Drag {
     FlopWave(usize),
     /// A sequencer's steps (§4.2), set under the pointer.
     FlopSteps(usize),
+    /// The wavetable editor's pencil (§4.3): a segment from the last
+    /// pointer position to this one, on the card's frame. Where the last
+    /// one was is `flop_pencil`.
+    FlopDraw(usize),
+    /// The editor's harmonic bars: the bar under the pointer takes its
+    /// height.
+    FlopBars(usize),
     /// The Voice card's velocity curve (§4.2): the nearest custom point
     /// takes the pointer's height.
     FlopVelocity(usize),
@@ -587,6 +594,17 @@ enum MenuTarget {
         address: fontelle_types::ParamAddress,
         name: String,
     },
+    /// The wavetable editor's formula (§4.3): a name prompt seeded with the
+    /// last one, applied to the frame under layer `layer`'s position.
+    WaveFormula {
+        layer: usize,
+        name: String,
+    },
+    /// The editor's actions (`canvas::WAVE_ACTIONS`), dropped under the
+    /// card's *table…* button.
+    WaveActions {
+        layer: usize,
+    },
     /// A sound for one of Flopsynth's oscillators — the Import tab's audio
     /// folder, listed — for the card at `card` whose layer is `layer`.
     /// Opened by the right button on an oscillator's picture, and by the
@@ -635,6 +653,7 @@ impl MenuTarget {
             Self::TrackPresetName(_) => "Track preset name",
             Self::TrackPresetNewCategory(_) => "New shelf",
             Self::TypeValue { .. } => "Value",
+            Self::WaveFormula { .. } => "Formula",
             _ => return None,
         })
     }
@@ -674,6 +693,8 @@ impl MenuTarget {
             | Self::RouteVia(_)
             | Self::RouteCurve(_)
             | Self::TypeValue { .. }
+            | Self::WaveFormula { .. }
+            | Self::WaveActions { .. }
             | Self::LoadSound { .. } => Some(EditorKind::Instrument),
             // The mixer is in the main window, so its menus are too.
             Self::TrackMenu(_)
@@ -1189,6 +1210,11 @@ pub struct WindowApp {
     /// pressed, where, and the tension the segment had — a point follows
     /// the pointer, a segment's tension follows how far it has moved.
     flop_shape: Option<(usize, crate::canvas::LfoShapeHit, (f32, f32), f32)>,
+    /// Where the wavetable editor's pencil last was, in the cycle's own
+    /// units, so the next motion draws a segment from there.
+    flop_pencil: Option<(f32, f32)>,
+    /// The wavetable editor's tool (§4.3), per window.
+    flop_wave_tool: fontelle_types::WaveTool,
     /// The control the arrow keys nudge (§3.3): the last one pressed. The
     /// focus spine's answer for this window.
     flop_focus: Option<(usize, usize)>,
@@ -1844,6 +1870,8 @@ impl WindowApp {
             flop_badge_pressed: (0.0, 0.0),
             flop_route: None,
             flop_shape: None,
+            flop_pencil: None,
+            flop_wave_tool: Default::default(),
             flop_inspector: None,
             flop_fx_slot: None,
             flop_motion: crate::motion::Motions::new(),
@@ -3001,9 +3029,11 @@ impl WindowApp {
             }
             // A response is dragged in both axes at once, like a band handle;
             // a sequencer's steps are set by height as the pointer crosses.
-            Drag::FlopResponse(_) | Drag::FlopSteps(_) | Drag::FlopVelocity(_) => {
-                Some(Pointer::Grabbing)
-            }
+            Drag::FlopResponse(_)
+            | Drag::FlopSteps(_)
+            | Drag::FlopVelocity(_)
+            | Drag::FlopDraw(_)
+            | Drag::FlopBars(_) => Some(Pointer::Grabbing),
             // A band handle goes wherever the pointer does, in both axes.
             Drag::EqHandle(_) => Some(Pointer::Grabbing),
             Drag::TimelineSelect | Drag::RollSelect => Some(Pointer::ResizeX),
@@ -3646,6 +3676,8 @@ impl ApplicationHandler for WindowApp {
                         | Drag::FlopKnob
                         | Drag::FlopWave(_)
                         | Drag::FlopSteps(_)
+                        | Drag::FlopDraw(_)
+                        | Drag::FlopBars(_)
                         | Drag::FlopVelocity(_)
                         | Drag::FlopResponse(_)
                         | Drag::FlopEnvNode
@@ -5516,6 +5548,7 @@ impl WindowApp {
             crate::canvas::FlopsynthShowing {
                 inspector: self.flop_inspector,
                 fx_slot: self.flop_fx_slot,
+                wave_tool: self.flop_wave_tool,
             },
         );
         if let Some(view) = &mut self.flopsynth {
@@ -7010,6 +7043,8 @@ impl WindowApp {
             Drag::FlopKnob => self.drag_flop_knob(y),
             Drag::FlopWave(card) => self.drag_flop_wave(card, x),
             Drag::FlopSteps(card) => self.drag_flop_steps(card, x, y),
+            Drag::FlopDraw(card) => self.drag_flop_draw(card, x, y),
+            Drag::FlopBars(card) => self.drag_flop_bars(card, x, y),
             Drag::FlopVelocity(card) => self.drag_flop_velocity(card, x, y),
             Drag::FlopResponse(card) => self.drag_flop_response(card, x, y),
             Drag::FlopEnvNode => self.drag_flop_env_node(x, y),
@@ -8712,6 +8747,7 @@ impl WindowApp {
                 self.tree.invalidate(PANEL);
             }
             ParamKind::Choice(_) => self.open_param_choice(EditorKind::Instrument, which),
+            ParamKind::Action => self.press_flop_action(&control.address, &control.label),
             ref kind => {
                 let value = next_value(kind, control.value);
                 self.set_param(&control.address, value);
@@ -9131,6 +9167,17 @@ impl WindowApp {
                 self.drag = Drag::FlopSteps(card);
                 self.drag_flop_steps(card, x, y);
             }
+            // The wavetable editor (§4.3): the pencil draws from where it
+            // is pressed; a bar takes the pointer's height.
+            FlopsynthPicture::Draw { .. } => {
+                self.flop_pencil = Some(crate::canvas::draw_point(picture, x, y));
+                self.drag = Drag::FlopDraw(card);
+                self.drag_flop_draw(card, x, y);
+            }
+            FlopsynthPicture::Bars { .. } => {
+                self.drag = Drag::FlopBars(card);
+                self.drag_flop_bars(card, x, y);
+            }
             // The Voice card's curve is the velocity curve (§4.2), and its
             // marks are the four custom points: a drag on one sets it.
             FlopsynthPicture::Curve { marks, .. } if self.flop_card_is(card, "Voice") => {
@@ -9261,6 +9308,204 @@ impl WindowApp {
         let address =
             fontelle_types::ParamAddress::new(format!("patch/seq[{sequencer}]/step[{index}]"));
         self.set_param(&address, (value + 1.0) * 0.5);
+    }
+
+    /// A drag with the wavetable editor's pencil: a segment from where the
+    /// pointer last was to where it is, on the card's frame, through the
+    /// host — one undo for the whole stroke, broken by the release.
+    fn drag_flop_draw(&mut self, card: usize, x: f32, y: f32) {
+        use crate::canvas::FlopsynthPicture;
+        let Some(picture) = self.flopsynth_layout.cards.get(card).map(|c| c.picture) else {
+            return;
+        };
+        let Some((layer, frame)) = self
+            .flopsynth
+            .as_ref()
+            .and_then(|view| view.cards.get(card))
+            .and_then(|card| match card.picture {
+                FlopsynthPicture::Draw { frame, .. } => card.oscillator.map(|l| (l, frame)),
+                _ => None,
+            })
+        else {
+            return;
+        };
+        let to = crate::canvas::draw_point(picture, x, y);
+        let from = self.flop_pencil.unwrap_or(to);
+        self.flop_pencil = Some(to);
+        if let Some(doc) = self.options.document.as_mut() {
+            let _ = doc.edit_wavetable(
+                layer,
+                fontelle_types::WavetableEdit::Draw { frame, from, to },
+            );
+        }
+        self.tree.invalidate(PANEL);
+        self.redraw_editors();
+    }
+
+    /// A drag over the editor's bars: the bar under the pointer takes the
+    /// pointer's height.
+    fn drag_flop_bars(&mut self, card: usize, x: f32, y: f32) {
+        use crate::canvas::FlopsynthPicture;
+        let Some(picture) = self.flopsynth_layout.cards.get(card).map(|c| c.picture) else {
+            return;
+        };
+        let Some((layer, frame, count)) = self
+            .flopsynth
+            .as_ref()
+            .and_then(|view| view.cards.get(card))
+            .and_then(|card| match &card.picture {
+                FlopsynthPicture::Bars { frame, amps, .. } => {
+                    card.oscillator.map(|l| (l, *frame, amps.len()))
+                }
+                _ => None,
+            })
+        else {
+            return;
+        };
+        let Some((index, amplitude)) = crate::canvas::bar_at(picture, count, x, y) else {
+            return;
+        };
+        if let Some(doc) = self.options.document.as_mut() {
+            let _ = doc.edit_wavetable(
+                layer,
+                fontelle_types::WavetableEdit::Harmonic {
+                    frame,
+                    index,
+                    amplitude,
+                },
+            );
+        }
+        self.tree.invalidate(PANEL);
+        self.redraw_editors();
+    }
+
+    /// A press on one of the wavetable editor's buttons (§4.3), by the
+    /// verb in its address: the frame actions go to the host as edits, the
+    /// formula opens its prompt, the export asks where.
+    fn press_flop_action(&mut self, address: &fontelle_types::ParamAddress, name: &str) {
+        let Some((layer, verb)) = crate::canvas::wave_edit_action(address.as_str()) else {
+            return;
+        };
+        // The frame the card is on: the picture's when it names one, else
+        // the first.
+        let (frame, frames) = self
+            .flopsynth
+            .as_ref()
+            .and_then(|view| {
+                view.cards.iter().find_map(|card| match card.picture {
+                    crate::canvas::FlopsynthPicture::Draw { frame, frames, .. }
+                    | crate::canvas::FlopsynthPicture::Bars { frame, frames, .. }
+                        if card.oscillator == Some(layer) =>
+                    {
+                        Some((frame, frames))
+                    }
+                    _ => None,
+                })
+            })
+            .unwrap_or((0, 1));
+        let frame = frame.min(frames.saturating_sub(1));
+        use fontelle_types::WavetableEdit as E;
+        let edit = match verb {
+            // The card's one button: the actions drop under it.
+            "menu" => {
+                let bounds = self
+                    .editors
+                    .iter()
+                    .find(|e| e.kind == EditorKind::Instrument)
+                    .map(|e| e.panel.frame)
+                    .unwrap_or(self.layout.window);
+                let (x, y) = self.cursor;
+                self.dismissed = None;
+                self.open_menu(MenuTarget::WaveActions { layer }, x, y, bounds);
+                return;
+            }
+            "adopt" => {
+                let result = self
+                    .options
+                    .document
+                    .as_mut()
+                    .map(|doc| doc.adopt_wavetable(layer));
+                if let Some(Err(why)) = result {
+                    self.show_toast(why, false);
+                }
+                self.after_flop_structure();
+                return;
+            }
+            "add_frame" => E::AddFrame { after: frame },
+            "copy_frame" => E::CopyFrame { frame },
+            "remove_frame" => E::RemoveFrame { frame },
+            // Morph fills towards the last frame; from the last, back to
+            // the first.
+            "morph" | "morph_spectral" => {
+                let (from, to) = if frame + 1 < frames {
+                    (frame, frames - 1)
+                } else {
+                    (0, frame)
+                };
+                E::Morph {
+                    from,
+                    to,
+                    spectral: verb == "morph_spectral",
+                }
+            }
+            "formula" => {
+                let seed = self
+                    .options
+                    .document
+                    .as_ref()
+                    .map(|doc| doc.wavetable_formula(layer))
+                    .unwrap_or_default();
+                let bounds = self
+                    .editors
+                    .iter()
+                    .find(|e| e.kind == EditorKind::Instrument)
+                    .map(|e| e.panel.frame)
+                    .unwrap_or(self.layout.window);
+                let (x, y) = self.cursor;
+                self.dismissed = None;
+                self.open_menu(
+                    MenuTarget::WaveFormula {
+                        layer,
+                        name: name.to_string(),
+                    },
+                    x,
+                    y,
+                    bounds,
+                );
+                if self.menu.is_some() {
+                    self.menu_filter.set(seed);
+                    self.menu_filter.select_all();
+                    self.relayout_menu();
+                }
+                return;
+            }
+            "export" => {
+                let result = self
+                    .options
+                    .document
+                    .as_mut()
+                    .map(|doc| doc.export_wavetable(layer));
+                match result {
+                    Some(Ok(where_to)) => self.show_toast(where_to, true),
+                    Some(Err(why)) => self.show_toast(why, false),
+                    None => {}
+                }
+                return;
+            }
+            _ => return,
+        };
+        let result = self
+            .options
+            .document
+            .as_mut()
+            .map(|doc| doc.edit_wavetable(layer, edit));
+        if let Some(Err(why)) = result {
+            self.show_toast(why, false);
+        }
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+        }
+        self.after_flop_structure();
     }
 
     /// Whether card `card` of the window is the one called `name`.
@@ -10451,6 +10696,19 @@ impl WindowApp {
     }
 
     fn set_param(&mut self, address: &fontelle_types::ParamAddress, value: f32) {
+        // The wavetable editor's tool chooser (§4.3) is the window's own:
+        // it changes which picture the card draws, and the patch never
+        // hears of it.
+        if crate::canvas::wave_tool_layer(address.as_str()).is_some() {
+            let tools = fontelle_types::WaveTool::ALL;
+            let at = crate::canvas::choice_index(
+                &ParamKind::Choice(tools.iter().map(|t| t.label().to_string()).collect()),
+                value,
+            );
+            self.flop_wave_tool = tools[at.min(tools.len() - 1)];
+            self.after_flop_structure();
+            return;
+        }
         if let Some(doc) = &mut self.options.document {
             doc.set_instrument_param(address, value);
         }
@@ -12790,7 +13048,14 @@ impl WindowApp {
                 }
                 entries
             }
-            MenuTarget::TypeValue { name, .. } => {
+            MenuTarget::WaveActions { .. } => {
+                let mut entries = vec![MenuEntry::disabled("Table")];
+                for (_, word) in crate::canvas::WAVE_ACTIONS {
+                    entries.push(MenuEntry::new(word));
+                }
+                entries
+            }
+            MenuTarget::TypeValue { name, .. } | MenuTarget::WaveFormula { name, .. } => {
                 crate::canvas::name_prompt_entries(name, self.menu_filter.text())
             }
             MenuTarget::FlopKnob { address, name } => self
@@ -13326,6 +13591,7 @@ impl WindowApp {
                     | MenuTarget::TrackPresetName(_)
                     | MenuTarget::TrackPresetNewCategory(_)
                     | MenuTarget::TypeValue { .. }
+                    | MenuTarget::WaveFormula { .. }
             )
         );
         if !naming
@@ -13752,6 +14018,18 @@ impl WindowApp {
                 }
                 self.after_flop_structure();
             }
+            (MenuTarget::WaveActions { layer }, index) => {
+                let layer = *layer;
+                if let Some((verb, word)) = index
+                    .checked_sub(1)
+                    .and_then(|which| crate::canvas::WAVE_ACTIONS.get(which))
+                {
+                    let address = fontelle_types::ParamAddress::new(
+                        crate::canvas::wave_edit_address(layer, verb),
+                    );
+                    self.press_flop_action(&address, word);
+                }
+            }
             (MenuTarget::AddPatchEffect, index) => {
                 // Row 0 is the heading, so the kinds start at 1.
                 let kind = index
@@ -13843,6 +14121,26 @@ impl WindowApp {
                 if let Some(source) = source {
                     doc.add_route(source, &address);
                     self.after_flop_structure();
+                }
+            }
+            (MenuTarget::WaveFormula { layer, .. }, _) => {
+                let layer = *layer;
+                let text = self.menu_filter.text().trim().to_string();
+                self.menu_filter.clear();
+                let result = self
+                    .options
+                    .document
+                    .as_mut()
+                    .map(|doc| doc.apply_wavetable_formula(layer, &text));
+                match result {
+                    Some(Ok(())) => {
+                        if let Some(doc) = &mut self.options.document {
+                            doc.end_gesture();
+                        }
+                        self.after_flop_structure();
+                    }
+                    Some(Err(why)) => self.show_toast(why, false),
+                    None => {}
                 }
             }
             (MenuTarget::TypeValue { address, .. }, _) => {

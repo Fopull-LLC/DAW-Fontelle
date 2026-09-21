@@ -893,6 +893,7 @@ fn the_effects_page_is_a_rack_beside_the_selected_slots_card_with_its_picture() 
                 FlopsynthShowing {
                     inspector: None,
                     fx_slot: Some(slot),
+                    wave_tool: Default::default(),
                 },
             )
             .unwrap();
@@ -976,6 +977,7 @@ fn the_effects_page_is_a_rack_beside_the_selected_slots_card_with_its_picture() 
             FlopsynthShowing {
                 inspector: None,
                 fx_slot: Some(99),
+                wave_tool: Default::default(),
             },
         )
         .unwrap();
@@ -1150,6 +1152,7 @@ fn assert_page_fits_inspecting(
         fontelle_ui::canvas::FlopsynthShowing {
             inspector,
             fx_slot: None,
+            wave_tool: Default::default(),
         },
     );
 }
@@ -1341,6 +1344,7 @@ fn the_effects_page_fits_the_window_with_four_slots() {
             fontelle_ui::canvas::FlopsynthShowing {
                 inspector: None,
                 fx_slot: Some(slot),
+                wave_tool: Default::default(),
             },
         );
     }
@@ -2342,6 +2346,7 @@ fn the_seven_new_effects_take_a_slot_and_draw_their_pictures() {
                 FlopsynthShowing {
                     inspector: None,
                     fx_slot: Some(slot),
+                    wave_tool: Default::default(),
                 },
             )
             .unwrap();

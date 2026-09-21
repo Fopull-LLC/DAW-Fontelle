@@ -6,6 +6,7 @@
 mod drum_kit;
 pub mod factory_samples;
 pub mod flopsynth;
+pub mod formula;
 mod lfo;
 mod mod_matrix;
 pub mod mod_sources;
@@ -16,6 +17,7 @@ mod playback;
 mod sampler;
 mod streaming;
 mod voice;
+mod wavetable_edit;
 mod wavetable_set;
 
 pub use drum_kit::{
@@ -39,4 +41,5 @@ pub use voice::{
     NoteTrigger, OSC_ROOT_HZ, Performance, RenderClock, RetriggerMode, StealPolicy, UnisonConfig,
     VelocityCurve, Voice, VoiceConfig, VoicePool, velocity_gain, velocity_to_gain,
 };
+pub use wavetable_edit::{EDIT_HARMONICS, WavetableEdit};
 pub use wavetable_set::{WavetableSet, spectral_analysis};

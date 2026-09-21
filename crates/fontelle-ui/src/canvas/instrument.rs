@@ -31,6 +31,10 @@ pub enum ParamKind {
     Switch,
     /// One of a fixed list, clicked to step through them.
     Choice(Vec<String>),
+    /// A button: clicked, it does the thing its address names — the
+    /// wavetable editor's *add frame*, *export* (§4.3). It has no value to
+    /// read back; its `value` is nought and its `display` is its word.
+    Action,
 }
 
 /// The two controls on this panel that belong to the **channel** rather than to
@@ -336,6 +340,8 @@ pub fn knob_value(start: f32, dy: f32, fine: bool) -> f32 {
 pub fn next_value(kind: &ParamKind, value: f32) -> f32 {
     match kind {
         ParamKind::Knob => value,
+        // A press: one, whatever it was.
+        ParamKind::Action => 1.0,
         ParamKind::Switch => {
             if value >= 0.5 {
                 0.0

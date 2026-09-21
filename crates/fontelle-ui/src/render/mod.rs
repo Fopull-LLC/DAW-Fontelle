@@ -5207,6 +5207,21 @@ fn draw_instrument(
                     );
                 }
             }
+            // A button: its word in a chip.
+            ParamKind::Action => {
+                let chip = control.inset(1.0);
+                fill_rect_rounded(scene, chip, 4.0, p.border);
+                if let Some(text) = labels.get_small(&param.display) {
+                    draw_text_clipped(
+                        scene,
+                        text,
+                        chip,
+                        chip.x + ((chip.width - text.width) / 2.0).max(1.0),
+                        chip.y + (chip.height - text.height) / 2.0,
+                        p.text,
+                    );
+                }
+            }
             ParamKind::Choice(options) => {
                 // A row of pips saying where in the list you are: a chip that
                 // only shows the current option gives no sense of how many
@@ -8044,6 +8059,36 @@ fn draw_flopsynth_picture(
                 p.playhead,
             );
         }
+        // The editor's pencil (§4.3): the frame as a line in the source's
+        // ink over a faint grid — quarters across, the zero line — so a
+        // drawn point has something to be placed against.
+        FlopsynthPicture::Draw { points, .. } => {
+            for quarter in 1..4 {
+                let x = inner.x + inner.width * quarter as f32 / 4.0;
+                fill_rect(
+                    scene,
+                    Rect::new(x - 0.5, inner.y, 1.0, inner.height),
+                    p.border,
+                );
+            }
+            fill_rect(
+                scene,
+                Rect::new(inner.x, inner.y + inner.height * 0.5, inner.width, 1.0),
+                p.border,
+            );
+            glow_polyline(scene, &wave_curve_points(inner, points), inner, ink);
+        }
+        // The editor's bars (§4.3): sixty-four partials up from the floor.
+        FlopsynthPicture::Bars { amps, .. } => {
+            fill_rect(
+                scene,
+                Rect::new(inner.x, inner.bottom() - 1.0, inner.width, 1.0),
+                p.border,
+            );
+            for bar in crate::canvas::harmonic_bars(inner, amps) {
+                fill_rect_rounded(scene, bar, 1.0, ink);
+            }
+        }
         FlopsynthPicture::Response {
             points,
             cutoff,
@@ -9711,8 +9756,75 @@ fn draw_flop_card(
                         Some(t.value),
                     );
                 }
+                // A button (§4.3, the wavetable editor's): a chip with its
+                // word centred and no chevron — a chooser opens, this does.
+                ParamKind::Action => {
+                    let inset = crate::canvas::CHIP_INSET;
+                    let chip = Rect::new(
+                        control.x + inset,
+                        control.y,
+                        control.width - inset * 2.0,
+                        control.height,
+                    );
+                    draw_flop_button(
+                        scene,
+                        theme,
+                        labels,
+                        chip,
+                        &param.display,
+                        hot || lit,
+                        Some(t.value),
+                    );
+                }
             }
         }
+    }
+}
+
+/// A button on a card: the chooser's chip without the chevron, its word
+/// centred, lit while the pointer is on it.
+fn draw_flop_button(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chip: Rect,
+    word: &str,
+    lit: bool,
+    // The bridge's value style; `None` where the words were shaped small.
+    style: Option<crate::text::TextStyle>,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    if chip.is_empty() {
+        return;
+    }
+    fill_rect_vertical(
+        scene,
+        chip,
+        m.corner_radius,
+        lighten(p.panel_header, if lit { 0.12 } else { 0.06 }),
+        mix(p.panel_header, p.window, 0.4),
+    );
+    stroke_rect_rounded(
+        scene,
+        chip,
+        m.corner_radius,
+        1.0,
+        if lit { p.accent } else { p.border },
+    );
+    let text = match style {
+        Some(style) => labels.get_styled(word, style),
+        None => labels.get_small(word),
+    };
+    if let Some(text) = text {
+        draw_text_clipped(
+            scene,
+            text,
+            chip,
+            chip.x + ((chip.width - text.width) / 2.0).max(1.0),
+            chip.y + (chip.height - text.height) / 2.0,
+            if lit { p.accent } else { p.text },
+        );
     }
 }
 
@@ -10854,6 +10966,16 @@ fn draw_tune(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &TuneChr
                         control.height,
                     );
                     draw_flop_chip(scene, theme, labels, chip, &param.display, lit, None);
+                }
+                ParamKind::Action => {
+                    let inset = crate::canvas::CHIP_INSET;
+                    let chip = Rect::new(
+                        cell.x + inset,
+                        control.y,
+                        cell.width - inset * 2.0,
+                        control.height,
+                    );
+                    draw_flop_button(scene, theme, labels, chip, &param.display, hot || lit, None);
                 }
             }
         }
