@@ -13,8 +13,8 @@
 
 use fontelle_types::PresetOrigin;
 use fontelle_ui::canvas::{
-    PresetBarHit, PresetBarView, PresetChoice, PresetMenuRow, preset_bar_hit, preset_bar_layout,
-    preset_bar_name, preset_menu,
+    PresetBarHit, PresetBarView, PresetChoice, PresetMenuRow, RANDOM_PRESET, preset_bar_hit,
+    preset_bar_layout, preset_bar_name, preset_menu, random_preset_row,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
@@ -250,12 +250,17 @@ fn the_menu_groups_presets_under_their_category() {
     ];
     let (entries, rows) = preset_menu(&choices, "");
     let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
-    // The first row is the search hint; the list is under it.
-    assert_eq!(&labels[1..], ["Pad", "Glass", "Warm", "Bass", "Sub"]);
+    // The first row is the search hint, the second the random pick; the
+    // list is under them.
+    assert_eq!(
+        &labels[1..],
+        [RANDOM_PRESET, "Pad", "Glass", "Warm", "Bass", "Sub"]
+    );
     assert_eq!(
         rows,
         [
             PresetMenuRow::Heading,
+            PresetMenuRow::Random,
             PresetMenuRow::Heading,
             PresetMenuRow::Preset(0),
             PresetMenuRow::Preset(1),
@@ -263,7 +268,46 @@ fn the_menu_groups_presets_under_their_category() {
             PresetMenuRow::Preset(2),
         ]
     );
-    assert!(!entries[1].enabled, "a heading is not a row you can press");
+    assert!(!entries[2].enabled, "a heading is not a row you can press");
+}
+
+/// *"add a random preset button to every presets dropdown in the daw so you
+/// could select a random one from all of them."* One live row at the top of
+/// every preset drop-down — the instrument's, an insert's, a track chain's,
+/// since they are one menu — that picks among the rows the menu is showing:
+/// all of them with nothing typed, the hits with a query. The pick itself
+/// is [`random_preset_row`], which only ever lands on a preset.
+#[test]
+fn the_random_row_is_live_comes_first_and_picks_only_presets() {
+    let mut choices = vec![
+        a_choice("Glass", "Pad", PresetOrigin::Factory),
+        a_choice("Sub", "Bass", PresetOrigin::Factory),
+        a_choice("Gloom", "Pad", PresetOrigin::User),
+    ];
+    choices[1].favourite = true;
+    let (entries, rows) = preset_menu(&choices, "");
+    assert_eq!(entries[1].label, RANDOM_PRESET);
+    assert!(entries[1].enabled, "it can be pressed");
+    assert_eq!(rows[1], PresetMenuRow::Random);
+    assert_eq!(entries[2].label, "Favorites", "before the favourites");
+    // Every seed lands on a preset, and enough seeds land on every preset.
+    let mut seen = std::collections::BTreeSet::new();
+    for seed in 0..64u64 {
+        let which = random_preset_row(&rows, seed).expect("a pick");
+        assert!(rows.contains(&PresetMenuRow::Preset(which)));
+        seen.insert(which);
+    }
+    assert_eq!(seen.into_iter().collect::<Vec<_>>(), [0, 1, 2]);
+    // With a query, the pick is among the hits.
+    let (_, rows) = preset_menu(&choices, "gl");
+    for seed in 0..16u64 {
+        let which = random_preset_row(&rows, seed).expect("a pick");
+        assert!(which == 0 || which == 2, "Glass or Gloom, not Sub: {which}");
+    }
+    // No presets, no row and no pick.
+    let (entries, rows) = preset_menu(&[], "");
+    assert!(!entries.iter().any(|e| e.label == RANDOM_PRESET));
+    assert_eq!(random_preset_row(&rows, 1), None);
 }
 
 #[test]
@@ -277,9 +321,9 @@ fn favourites_come_first_when_there_are_any() {
     ];
     choices[1].favourite = true;
     let (entries, rows) = preset_menu(&choices, "");
-    assert_eq!(entries[1].label, "Favorites");
-    assert_eq!(entries[2].label, "Sub");
-    assert_eq!(rows[2], PresetMenuRow::Preset(1));
+    assert_eq!(entries[2].label, "Favorites");
+    assert_eq!(entries[3].label, "Sub");
+    assert_eq!(rows[3], PresetMenuRow::Preset(1));
     assert!(
         entries
             .iter()
@@ -316,8 +360,8 @@ fn typing_into_the_drop_down_narrows_it_to_matching_presets() {
         "the first row shows what was typed: {labels:?}"
     );
     assert!(!entries[0].enabled);
-    assert_eq!(&labels[1..], ["Pad", "Glass"]);
-    assert_eq!(rows[2], PresetMenuRow::Preset(0));
+    assert_eq!(&labels[1..], [RANDOM_PRESET, "Pad", "Glass"]);
+    assert_eq!(rows[3], PresetMenuRow::Preset(0));
     assert!(
         !labels.contains(&"Bass") && !labels.contains(&"Favorites"),
         "a section with nothing left in it is not shown: {labels:?}"
@@ -326,7 +370,7 @@ fn typing_into_the_drop_down_narrows_it_to_matching_presets() {
     // Nothing typed is the whole list, with a hint on the first row.
     let (entries, _) = preset_menu(&choices, "");
     assert!(entries[0].label.contains("type to filter"));
-    assert_eq!(entries[1].label, "Favorites");
+    assert_eq!(entries[2].label, "Favorites");
 
     // Nothing matching says so rather than showing an empty menu.
     let (entries, rows) = preset_menu(&choices, "zzz");

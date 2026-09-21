@@ -351,6 +351,36 @@ pub enum PresetMenuRow {
     Heading,
     /// One preset, by its position in the `choices` the menu was built from.
     Preset(usize),
+    /// *Random preset*: one of the presets this menu is showing, chosen by
+    /// [`random_preset_row`] when it is pressed.
+    Random,
+}
+
+/// What the random row says.
+pub const RANDOM_PRESET: &str = "\u{2684} Random preset";
+
+/// A press on the random row: one of `rows`'s presets, by `seed` — the
+/// hits when the menu was narrowed, the whole bank otherwise. `None` when
+/// the menu shows no preset at all.
+pub fn random_preset_row(rows: &[PresetMenuRow], seed: u64) -> Option<usize> {
+    let presets: Vec<usize> = rows
+        .iter()
+        .filter_map(|row| match row {
+            PresetMenuRow::Preset(which) => Some(*which),
+            _ => None,
+        })
+        .collect();
+    if presets.is_empty() {
+        return None;
+    }
+    // A mix of the seed, so consecutive seeds do not walk the list in order.
+    let mut x = seed
+        .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+        .wrapping_add(0x632b_e59b_d9b4_e019);
+    x ^= x >> 29;
+    x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x ^= x >> 32;
+    Some(presets[(x % presets.len() as u64) as usize])
 }
 
 /// A mark at the right end of a row that came from the user's own bank.
@@ -401,6 +431,10 @@ pub fn preset_menu(choices: &[PresetChoice], query: &str) -> (Vec<MenuEntry>, Ve
         rows.push(PresetMenuRow::Heading);
         return (entries, rows);
     }
+    // *"a random preset button to every presets dropdown"*: one live row
+    // at the top, picking among what the menu is showing.
+    entries.push(MenuEntry::new(RANDOM_PRESET));
+    rows.push(PresetMenuRow::Random);
 
     let push = |entries: &mut Vec<MenuEntry>,
                 rows: &mut Vec<PresetMenuRow>,

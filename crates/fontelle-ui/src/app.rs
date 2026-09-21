@@ -4172,9 +4172,20 @@ impl WindowApp {
         {
             activation.activate(token, &window);
         }
+        // **Retitled**, because the window is being pointed at something
+        // new: one effect window serves every insert, and raising it for the
+        // Delay left the OS title saying "Master — Reverb" over a panel that
+        // said Delay and behaved like it. The panel names itself at draw
+        // time; the title bar and the caption the panel keeps are set here.
+        let caption = self.editor_title(kind);
+        let title = self.text.layout(&caption, &self.options.theme.font, None);
         let Some(editor) = self.editors.iter_mut().find(|e| e.kind == kind) else {
             return false;
         };
+        if editor.window.title() != caption {
+            editor.window.set_title(&caption);
+        }
+        editor.title = title;
         // **Un-minimise and un-hide first.** A window in the taskbar is not
         // behind the studio, it is *nowhere*, and every call below is a no-op
         // on one that is not mapped. This is the case that reads most like
@@ -8246,6 +8257,13 @@ impl WindowApp {
         self.eq = config;
         self.insert_view = view;
         self.tune = tune;
+        // Everything read per revision that is *about the open insert* —
+        // its preset bar, the host's note of which insert is open — is read
+        // again now, or the window opened for the Delay wears the Reverb's
+        // preset name until something else moves the document: opening a
+        // different insert moves nothing in it.
+        self.studio_revision = u64::MAX;
+        self.refresh_studio();
         self.open_editor(EditorKind::Effect);
         self.relayout_editors();
     }
@@ -8411,6 +8429,26 @@ impl WindowApp {
             _ => Vec::new(),
         };
         crate::canvas::preset_menu(&choices, self.menu_filter.text())
+    }
+
+    /// Which preset a press on row `index` of a preset menu means: the
+    /// row's own, or — on the *Random preset* row — one of the presets the
+    /// menu was showing, dealt from the clock. `None` on a heading.
+    fn pressed_preset_row(
+        &self,
+        rows: &[crate::canvas::PresetMenuRow],
+        index: usize,
+    ) -> Option<usize> {
+        match rows.get(index)? {
+            crate::canvas::PresetMenuRow::Preset(which) => Some(*which),
+            crate::canvas::PresetMenuRow::Random => {
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos() as u64);
+                crate::canvas::random_preset_row(rows, seed)
+            }
+            crate::canvas::PresetMenuRow::Heading => None,
+        }
     }
 
     /// The chain bank for one strip, as menu rows.
@@ -14508,8 +14546,8 @@ impl WindowApp {
             }
             (MenuTarget::TrackPresetMenu(strip), index) => {
                 let strip = *strip;
-                let row = self.track_preset_rows(strip).1.get(index).copied();
-                let Some(crate::canvas::PresetMenuRow::Preset(which)) = row else {
+                let rows = self.track_preset_rows(strip).1;
+                let Some(which) = self.pressed_preset_row(&rows, index) else {
                     return; // a category heading
                 };
                 if let Some(doc) = self.options.document.as_mut() {
@@ -14560,8 +14598,8 @@ impl WindowApp {
             }
             (MenuTarget::PresetMenu(kind), index) => {
                 let kind = *kind;
-                let row = self.preset_menu_rows(kind).1.get(index).copied();
-                let Some(crate::canvas::PresetMenuRow::Preset(which)) = row else {
+                let rows = self.preset_menu_rows(kind).1;
+                let Some(which) = self.pressed_preset_row(&rows, index) else {
                     // A heading. Nothing happens, and the menu has already
                     // closed — the same as pressing any other greyed row.
                     return;

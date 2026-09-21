@@ -111,8 +111,8 @@ pub use menu::{
 pub use overlays::{ConfirmLayout, TOAST_SECONDS, ToastLayout, confirm_layout, toast_layout};
 pub use preset_bar::{
     NO_PRESET, PRESET_MENU_HEADING, PresetBarHit, PresetBarLayout, PresetBarView, PresetChoice,
-    PresetDevice, PresetMenuRow, USER_MARK, preset_bar_hit, preset_bar_layout, preset_bar_name,
-    preset_menu,
+    PresetDevice, PresetMenuRow, RANDOM_PRESET, USER_MARK, preset_bar_hit, preset_bar_layout,
+    preset_bar_name, preset_menu, random_preset_row,
 };
 /// Where a zoom should land, given the grid it is zooming and where the
 /// pointer is.
