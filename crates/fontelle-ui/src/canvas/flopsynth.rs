@@ -3384,6 +3384,9 @@ pub struct PresetBrowse {
     /// How far down the list is scrolled, in pixels. Clamped by the layout,
     /// which is the only thing that knows how long the list came out.
     pub scroll: f32,
+    /// How far down the shelf column is scrolled, in pixels, for a window
+    /// too short for every shelf. Clamped by the layout like `scroll`.
+    pub shelf_scroll: f32,
     /// The row a click or the arrows chose, by its place in the bank — the
     /// one being *listened to* and described, which is not the loaded one
     /// (§5.2: a single click auditions, a double-click loads). `None` until
@@ -3531,6 +3534,13 @@ impl PresetsLayout {
     }
 }
 
+/// The furthest the shelf column scrolls: the last shelf resting on its
+/// foot, and nothing at all when every shelf fits.
+pub fn presets_shelf_max_scroll(page: &PresetsLayout) -> f32 {
+    let room = (page.column.height - LIST_PAD * 2.0).max(0.0);
+    (page.shelves.len() as f32 * PRESET_ROW - room).max(0.0)
+}
+
 /// What a press on the Presets page landed on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PresetsHit {
@@ -3602,17 +3612,31 @@ fn presets_layout(body: Rect, view: &FlopsynthView) -> PresetsLayout {
     )
     .intersection(&panel);
 
-    let shelves = preset_shelves(&view.bank)
+    // The shelves, scrolled when they outrun the column — whole rows only,
+    // the list's rule: a shelf half under the foot is one that cannot be
+    // read or pressed.
+    let all_shelves = preset_shelves(&view.bank);
+    let column_room = (column.height - LIST_PAD * 2.0).max(0.0);
+    let shelf_max_scroll = (all_shelves.len() as f32 * PRESET_ROW - column_room).max(0.0);
+    let shelf_scroll = view.browse.shelf_scroll.clamp(0.0, shelf_max_scroll);
+    let shelves = all_shelves
         .into_iter()
         .enumerate()
         .map(|(index, shelf)| {
-            let rect = Rect::new(
-                column.x + LIST_PAD,
-                column.y + LIST_PAD + index as f32 * PRESET_ROW,
-                (column.width - LIST_PAD * 2.0).max(0.0),
-                PRESET_ROW,
-            )
-            .intersection(&column);
+            let y = column.y + LIST_PAD + index as f32 * PRESET_ROW - shelf_scroll;
+            let rect = if y < column.y + LIST_PAD - 0.01
+                || y + PRESET_ROW > column.y + LIST_PAD + column_room + 0.01
+            {
+                Rect::ZERO
+            } else {
+                Rect::new(
+                    column.x + LIST_PAD,
+                    y,
+                    (column.width - LIST_PAD * 2.0).max(0.0),
+                    PRESET_ROW,
+                )
+                .intersection(&column)
+            };
             (shelf, rect)
         })
         .collect();

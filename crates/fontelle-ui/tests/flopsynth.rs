@@ -1917,6 +1917,7 @@ fn the_list_scrolls_to_keep_the_selection_in_sight() {
             shelf: PresetShelf::All,
             query: String::new(),
             scroll: 0.0,
+            shelf_scroll: 0.0,
             selected: None,
         },
         ..FlopsynthView::default()
@@ -1981,6 +1982,67 @@ fn the_more_chip_sits_at_the_right_end_of_the_search_row() {
         page.shelves.iter().all(|(_, r)| !r.is_empty()),
         "{shelves} shelves shown"
     );
+}
+
+/// The shelf column scrolls when the shelves outrun it (a short window,
+/// a bank with more categories than rows): a shelf past the foot is laid
+/// out empty until `browse.shelf_scroll` brings it up, clamped so the last
+/// shelf rests on the foot and never further.
+#[test]
+fn the_shelf_column_scrolls_when_the_shelves_outrun_it() {
+    use fontelle_ui::canvas::{PresetShelf, presets_shelf_max_scroll};
+    let mut bank = Vec::new();
+    for n in 0..40 {
+        bank.push(a_preset(
+            &format!("P{n}"),
+            &format!("Category {n:02}"),
+            false,
+            false,
+        ));
+    }
+    let view = FlopsynthView {
+        page: FlopsynthPage::Presets,
+        bank,
+        browse: PresetBrowse {
+            shelf: PresetShelf::All,
+            ..PresetBrowse::default()
+        },
+        ..FlopsynthView::default()
+    };
+    let layout = flopsynth_layout(BODY, &metrics(), &view);
+    let page = &layout.presets;
+    assert_eq!(page.shelves.len(), 41, "All and forty categories");
+    assert!(!page.shelves[0].1.is_empty());
+    assert!(
+        page.shelves[40].1.is_empty(),
+        "the last shelf is past the foot"
+    );
+    let max = presets_shelf_max_scroll(page);
+    assert!(max > 0.0);
+    let mut scrolled = view.clone();
+    scrolled.browse.shelf_scroll = max;
+    let layout = flopsynth_layout(BODY, &metrics(), &scrolled);
+    let page = &layout.presets;
+    assert!(page.shelves[0].1.is_empty(), "the first shelf has gone up");
+    let last = page.shelves[40].1;
+    assert!(!last.is_empty(), "and the last one shows");
+    assert!(
+        (last.bottom() - (page.column.bottom() - 4.0)).abs() < 0.51,
+        "resting on the foot: {last:?} in {:?}",
+        page.column
+    );
+    assert_eq!(
+        presets_hit(&layout, last.x + 10.0, last.y + last.height / 2.0),
+        Some(PresetsHit::Shelf(40))
+    );
+    // Past the end is clamped by the layout, the way the list's scroll is.
+    scrolled.browse.shelf_scroll = max + 500.0;
+    let layout = flopsynth_layout(BODY, &metrics(), &scrolled);
+    assert_eq!(layout.presets.shelves[40].1, last);
+    // A bank whose shelves fit has nothing to scroll.
+    let fits = presets_view(PresetBrowse::default());
+    let layout = flopsynth_layout(BODY, &metrics(), &fits);
+    assert_eq!(presets_shelf_max_scroll(&layout.presets), 0.0);
 }
 
 fn presets_view(browse: PresetBrowse) -> FlopsynthView {
@@ -2158,6 +2220,7 @@ fn choosing_a_shelf_and_typing_change_which_rows_are_laid_out() {
         shelf: PresetShelf::Category("Bass".into()),
         query: "re".into(),
         scroll: 0.0,
+        shelf_scroll: 0.0,
         selected: None,
     });
     let layout = flopsynth_layout(BODY, &metrics(), &view);

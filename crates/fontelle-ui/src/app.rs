@@ -9224,6 +9224,16 @@ impl WindowApp {
                 (browse.scroll - steps * crate::canvas::PRESET_ROW * MENU_WHEEL_ROWS).max(0.0);
             self.set_flop_browse(browse);
         }
+        // The shelf column too, for a window too short for every shelf.
+        let column = self.flopsynth_layout.presets.column;
+        if !column.is_empty() && column.contains(x, y) {
+            let max = crate::canvas::presets_shelf_max_scroll(&self.flopsynth_layout.presets);
+            let mut browse = self.flop_browse.clone();
+            browse.shelf_scroll = (browse.shelf_scroll
+                - steps * crate::canvas::PRESET_ROW * MENU_WHEEL_ROWS)
+                .clamp(0.0, max);
+            self.set_flop_browse(browse);
+        }
     }
 
     /// Nudges the focused control by `steps` (§3.3): a knob a hundredth a

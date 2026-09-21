@@ -78,9 +78,9 @@ pub use flopsynth::{
     lfo_point_drag, lfo_shape_curve_points, lfo_shape_hit, lfo_shape_point_at, lfo_tension_drag,
     matrix_depth_at, matrix_hit, picture_control, preset_about, preset_about_for, preset_about_row,
     preset_matches, preset_page_rows, preset_shelves, preset_step, presets_hit, presets_scroll_to,
-    response_curve_points, ring_band, ring_bands, ring_depth, ring_dot, ring_hit, ring_hit_index,
-    ring_live, ring_range, route_landing, sound_outline_points, spectrum_bars, step_at, step_bars,
-    wave_curve_points, wave_position_at, wrap_words,
+    presets_shelf_max_scroll, response_curve_points, ring_band, ring_bands, ring_depth, ring_dot,
+    ring_hit, ring_hit_index, ring_live, ring_range, route_landing, sound_outline_points,
+    spectrum_bars, step_at, step_bars, wave_curve_points, wave_position_at, wrap_words,
 };
 pub use flopsynth::{
     MORE_CHIP, PACK_ACTIONS, WAVE_ACTIONS, bar_at, draw_point, harmonic_bars, wave_edit_action,
