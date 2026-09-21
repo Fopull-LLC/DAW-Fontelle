@@ -36,8 +36,8 @@
 //!   the instrument's own room, never the mix's hall.
 
 use fontelle_dsp::{
-    EnvelopeCurve, FilterModel, FilterRoute, FilterSlope, SampleLoop, SvfMode, SynthSource,
-    WarpMode, WavetableId,
+    EnvelopeCurve, FilterModel, FilterRoute, FilterSlope, NoiseKind, SampleLoop, SvfMode,
+    SynthSource, WarpMode, WavetableId,
 };
 use fontelle_types::{
     ChorusConfig, ChorusMode, DelayConfig, DistortionConfig, DistortionCurve, EffectConfig,
@@ -350,8 +350,11 @@ fn derived_tags(patch: &Patch) -> Vec<&'static str> {
             FilterModel::Formant => add("formant"),
             FilterModel::Comb => add("comb"),
             FilterModel::Diode => add("diode"),
+            FilterModel::Sallen => add("sallen"),
+            FilterModel::Phaser => add("phaser"),
             FilterModel::Vowel => add("vowel"),
             FilterModel::Ring => add("ring"),
+            FilterModel::Dual => add("dual"),
             _ => {}
         }
     }
@@ -682,6 +685,65 @@ impl Build {
         let osc = self.osc_mut(NOISE);
         osc.noise_colour = colour;
         self.patch.layers[NOISE].gain_db = gain_db;
+        self
+    }
+
+    /// Which noise the noise layer is (§4.3): pink, brown, blue, a
+    /// crackle, a record's surface, or a recording read at the note's rate.
+    fn noise_kind(mut self, kind: NoiseKind) -> Self {
+        self.osc_mut(NOISE).noise = kind;
+        self
+    }
+
+    /// The noise layer reading one of the bank's recordings as noise
+    /// (§4.3): at the note's rate, with no pitch.
+    fn noise_sample(mut self, set: FactorySampleSet) -> Self {
+        let at = match self
+            .patch
+            .samples
+            .iter()
+            .position(|sample| sample.factory == Some(set))
+        {
+            Some(at) => at,
+            None => {
+                self.patch.samples.push(set.sample());
+                self.patch.samples.len() - 1
+            }
+        };
+        self.osc_mut(NOISE).noise = NoiseKind::Sample(at as u8);
+        self
+    }
+
+    /// A layer reading one of the bank's recordings as a **spectral**
+    /// source (§4.3): the recording's partials, resynthesised, with the
+    /// position scanning its frames.
+    fn spectral(mut self, layer: usize, gain_db: f32, set: FactorySampleSet) -> Self {
+        self = self.sampled(layer, gain_db, set);
+        let osc = self.osc_mut(layer);
+        if let SynthSource::Sample(at) = osc.source {
+            osc.source = SynthSource::Spectral(at);
+        }
+        self
+    }
+
+    /// The oscillator's drawn phase curve, for the `Remap` warp: `points`
+    /// across the cycle, each where the phase is sent, 0..1.
+    fn remap(mut self, layer: usize, points: &[f32]) -> Self {
+        let osc = self.osc_mut(layer);
+        for (i, slot) in osc.remap.iter_mut().enumerate() {
+            let at = i as f32 / (fontelle_dsp::REMAP_POINTS - 1) as f32 * (points.len() - 1) as f32;
+            let index = (at.floor() as usize).min(points.len() - 2);
+            let t = at - index as f32;
+            *slot = points[index] + (points[index + 1] - points[index]) * t;
+        }
+        self
+    }
+
+    /// Filter FM (§4.4): the cutoff of `slot` swung at audio rate by
+    /// `from`'s oscillator, read before its level knob.
+    fn filter_fm(mut self, slot: usize, from: usize, amount: f32) -> Self {
+        self.patch.filters[slot].fm_from = Some(from as u8);
+        self.patch.filters[slot].fm_amount = amount;
         self
     }
 
@@ -1116,6 +1178,100 @@ fn crush(bits: f32, rate_hz: f32, mix: f32) -> EffectConfig {
         mix,
         ..fontelle_types::BitcrushConfig::new()
     })
+}
+
+// The seven of phase 4 (§4.5), and the three of the chain's original eight
+// no row had reached for.
+
+fn phaser_fx(stages: u32, rate_hz: f32, feedback: f32, mix: f32) -> EffectConfig {
+    EffectConfig::Phaser(fontelle_types::PhaserConfig {
+        stages,
+        rate_hz,
+        feedback,
+        mix,
+        ..fontelle_types::PhaserConfig::new()
+    })
+}
+
+fn flanger_fx(delay_ms: f32, rate_hz: f32, feedback: f32, mix: f32) -> EffectConfig {
+    EffectConfig::Flanger(fontelle_types::FlangerConfig {
+        delay_ms,
+        rate_hz,
+        feedback,
+        mix,
+        ..fontelle_types::FlangerConfig::new()
+    })
+}
+
+fn fold_fx(drive_db: f32, symmetry: f32, smooth: f32, mix: f32) -> EffectConfig {
+    EffectConfig::Fold(fontelle_types::FoldConfig {
+        drive_db,
+        symmetry,
+        smooth,
+        output_db: -drive_db * 0.4,
+        mix,
+    })
+}
+
+fn shifter_fx(shift_hz: f32, feedback: f32, mix: f32) -> EffectConfig {
+    EffectConfig::Shifter(fontelle_types::ShifterConfig {
+        shift_hz,
+        feedback,
+        mix,
+        ..fontelle_types::ShifterConfig::new()
+    })
+}
+
+fn hyper_fx(voices: u32, detune_cents: f32, mix: f32) -> EffectConfig {
+    EffectConfig::Hyper(fontelle_types::HyperConfig {
+        voices,
+        detune_cents,
+        mix,
+        ..fontelle_types::HyperConfig::new()
+    })
+}
+
+fn multiband_fx(low_drive_db: f32, mid_drive_db: f32, high_drive_db: f32) -> EffectConfig {
+    EffectConfig::Multiband(fontelle_types::MultibandConfig {
+        low_drive_db,
+        mid_drive_db,
+        high_drive_db,
+        output_db: -(low_drive_db.max(mid_drive_db).max(high_drive_db)) * 0.3,
+        ..fontelle_types::MultibandConfig::new()
+    })
+}
+
+fn width_fx(width: f32, mono_below_hz: f32) -> EffectConfig {
+    EffectConfig::Width(fontelle_types::WidthConfig {
+        width,
+        mono_below_hz,
+        ..fontelle_types::WidthConfig::new()
+    })
+}
+
+/// The Filter insert as a sweep: an LFO on its cutoff.
+fn filter_fx(cutoff_hz: f32, resonance: f32, lfo_amount: f32, lfo_rate_hz: f32) -> EffectConfig {
+    EffectConfig::Filter(fontelle_types::FilterConfig {
+        cutoff_hz,
+        resonance,
+        lfo_amount,
+        lfo_rate_hz,
+        ..fontelle_types::FilterConfig::new()
+    })
+}
+
+fn comp_fx(threshold_db: f32, ratio: f32, mix: f32) -> EffectConfig {
+    EffectConfig::Compressor(fontelle_types::CompressorConfig {
+        threshold_db,
+        ratio,
+        auto_makeup: true,
+        mix,
+        ..fontelle_types::CompressorConfig::new()
+    })
+}
+
+fn eq_fx(preset: fontelle_types::EqPreset) -> EffectConfig {
+    EffectConfig::Eq(fontelle_types::EqConfig::from_preset(preset))
 }
 
 // ------------------------------------------------------------ archetypes ---
@@ -1602,7 +1758,7 @@ macro_rules! bank {
                 name: $name,
                 build: || { let b: Build = $build; b.done() },
                 tags: &[$($($tag,)*)?],
-                notes: { let notes: &str = ""; $(let notes = $notes;)? notes },
+                notes: { let _notes: &str = ""; $(let _notes = $notes;)? _notes },
             },)*
         ];
     };
@@ -6421,4 +6577,276 @@ bank! {
         .mac(0, "Scream").mac(1, "Rate")
         .fx(drive_fx(DistortionCurve::Diode, 10.0, 0.4))
         .out(10.0),
+
+    // ------------------------------------------ Flopsynth II's rows (§5.3) ---
+    // One or two rows per thing phase 4 added — the six table warps and the
+    // three spectral ones, the six filter models, the seven effects and the
+    // three of the chain's own eight no row had reached for, the noise
+    // kinds, filter FM, the spectral source — each on the shelf it belongs
+    // to rather than on a shelf of novelties, each tagged and captioned by
+    // hand. `tests/flopsynth_shows_off.rs` holds that every one is here.
+    Bass: "Acid 303" ["diode", "hard"] = "A bass through the diode ladder, the 303's: the resonance thins the bass and the loop clips one way harder than the other; reach for Cutoff, then Squelch." => bass(WavetableId::Saw, 900.0, 0.08)
+        .filter(0, FilterModel::Diode, SvfMode::Lowpass, 900.0, 0.72)
+        .character(0, 0.7)
+        .env(1, 0.0, 0.18, 0.0, 0.1)
+        .env_to_cut(0.55)
+        .mono(0.06)
+        .route(ModSource::Macro(1), ModDest::FilterResonance(0), 0.4)
+        .mac(1, "Squelch")
+        .fx(drive_fx(DistortionCurve::Tube, 6.0, 0.5))
+        .out(7.7),
+    Lead: "MS-20 Scream" ["sallen", "hard"] = "A lead through the MS-20's two poles with the clipper in the loop: play it soft and it sings, play it hard and the resonance collapses into a growl; reach for Brightness, then Clip." => lead(WavetableId::Pulse, 1_400.0, 0.04)
+        // Quiet into the filter, so the resonance sings rather than being
+        // squashed flat by a full-scale stack: the squash is the character
+        // knob's to bring in.
+        .osc(A, WavetableId::Pulse, -24.0)
+        .uni(A, 1, 0.0)
+        .filter(0, FilterModel::Sallen, SvfMode::Lowpass, 620.0, 0.95)
+        .character(0, 0.5)
+        .drive(0, 0.0)
+        .env(1, 0.0, 0.4, 0.3, 0.2)
+        .env_to_cut(0.5)
+        .lfo(1, LfoWave::Sine, 6.0)
+        .route(ModSource::Lfo(1), ModDest::FilterCutoff(0), 0.12)
+        .route(ModSource::Macro(1), ModDest::FilterCharacter(0), 0.5)
+        .mac(1, "Clip")
+        .fx(flanger_fx(1.2, 0.25, 0.55, 0.35))
+        .out(22.5),
+    Pad: "Phase Bloom" ["phaser", "evolving"] = "A pad whose filter is a phaser — twelve all-passes swept by the LFO, the notches walking through the stack; reach for Brightness, then Motion." => pad(WavetableId::Hollow, 2_000.0, 0.3, 2.5)
+        .uni(A, 3, 20.0)
+        .lfo(0, LfoWave::Sine, 0.5)
+        .filter(0, FilterModel::Phaser, SvfMode::Lowpass, 500.0, 0.75)
+        .character(0, 1.0)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.7)
+        .fx(width_fx(1.5, 120.0))
+        .out(0.0),
+    ChoirAndVocal: "Sung Vowel" ["vowel", "formant"] = "A voice through the five sung formants, the vowel sliding under the LFO and the table stretched into a formant of its own; reach for Vowel, then Throat." => choir(0.2, 0.25)
+        .filter(0, FilterModel::Vowel, SvfMode::Lowpass, 1_000.0, 0.5)
+        .character(0, 0.2)
+        .warp(A, WarpMode::Formant, 0.35)
+        .lfo(1, LfoWave::Triangle, 0.12)
+        .route(ModSource::Lfo(1), ModDest::FilterCharacter(0), 0.25)
+        .route(ModSource::Macro(0), ModDest::FilterCharacter(0), 0.6)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.25)
+        .mac(0, "Vowel").mac(1, "Throat")
+        .out(20.1),
+    BellsAndMallets: "Ring Chime" ["ring", "fm"] = "A bell through the ring-modulating filter, the strike ringing at the note times the corner, with noise in the FM for the clang; reach for Strike, then Carrier." => bell(WavetableId::Glass, 1.6)
+        .filter(0, FilterModel::Ring, SvfMode::Lowpass, 1_320.0, 0.6)
+        .filter_route(A, FilterRoute::F1)
+        .warp(A, WarpMode::FmNoise, 0.12)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.5)
+        .mac(1, "Carrier")
+        .fx(reverb(0.6, 0.3))
+        .out(13.2),
+    Pad: "Dual Peaks" ["hyper", "wide"] = "A pad through two band-passes a spread apart, four detuned copies of the whole thing laid across the field behind it; reach for Spread, then Motion." => pad(WavetableId::Hollow, 1_200.0, 0.6, 1.5)
+        .filter(0, FilterModel::Dual, SvfMode::Bandpass, 1_200.0, 0.8)
+        .character(0, 0.45)
+        .route(ModSource::Macro(0), ModDest::FilterCharacter(0), 0.5)
+        .mac(0, "Spread")
+        .fx(hyper_fx(4, 22.0, 0.45))
+        .out(18.3),
+    Pad: "Phaser Wash" ["phaser", "wide", "evolving"] = "A pad under a twelve-stage phaser and a widener — the sweep is the sound; reach for Brightness, then Sweep." => pad(WavetableId::Wide, 3_000.0, 1.0, 2.2)
+        .fx(phaser_fx(12, 0.15, 0.6, 0.5))
+        .fx(width_fx(1.8, 100.0))
+        .route(ModSource::Macro(1), ModDest::FxParam(2, 3), 0.6)
+        .mac(1, "Sweep")
+        .out(13.7),
+    Lead: "Flip Sync" ["warped", "flanger"] = "A lead whose cycle is flipped past the position — the sync-like edge of the Flip warp — through a flanger; reach for Flip, then Detune." => lead(WavetableId::Saw, 4_000.0, 0.03)
+        .warp(A, WarpMode::Flip, 0.8)
+        .uni(A, 1, 0.0)
+        .env(1, 0.0, 0.3, 0.2, 0.2)
+        .route(ModSource::Envelope(1), ModDest::OscWarp(A as u8), 0.4)
+        .route(ModSource::Macro(0), ModDest::OscWarp(A as u8), 0.6)
+        .mac(0, "Flip")
+        .fx(flanger_fx(0.5, 0.35, 0.88, 0.6))
+        .out(8.6),
+    BassMusic: "Folded Growl" ["folded", "warped", "distorted"] = "A growl bent lopsided by the Asym warp, folded past full scale and driven band by band; reach for Fold, then Cutoff." => bass(WavetableId::Grit, 900.0, 0.12)
+        .warp(A, WarpMode::Asym, 0.8)
+        .amp(0.003, 0.5, 0.3, 0.12)
+        .lfo_sync(0, LfoWave::Sine, NoteDivision::Sixteenth)
+        .route(ModSource::Lfo(0), ModDest::OscWarp(A as u8), 0.4)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.3)
+        .route(ModSource::Macro(0), ModDest::FxParam(0, 0), 0.5)
+        .mac(0, "Fold")
+        .fx(fold_fx(22.0, 0.4, 0.2, 0.85))
+        .fx(multiband_fx(4.0, 18.0, 20.0))
+        .out(4.6),
+    AtmosAndFx: "Barber Pole" ["shifted", "evolving", "long"] = "An atmosphere climbing forever: brown noise and a table through the frequency shifter with its feedback up, every partial a few hertz higher each time round; reach for Climb, then Grain." => init()
+        .osc(A, WavetableId::Hollow, -16.0)
+        .uni(A, 3, 12.0)
+        .off(B).off(C).off(SUB)
+        .noise(0.4, -20.0)
+        .noise_kind(NoiseKind::Brown)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 4_000.0, 0.3)
+        .amp(1.2, 0.0, 1.0, 3.0)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.2)
+        .route(ModSource::Macro(0), ModDest::FxParam(0, 1), 0.8)
+        .route(ModSource::Macro(1), ModDest::LayerGain(NOISE as u8), 0.2)
+        .mac(0, "Climb").mac(1, "Grain")
+        .fx(shifter_fx(0.0, 0.8, 0.7))
+        .fx(reverb(0.85, 0.4))
+        .out(0.0),
+    SyncAndFm: "Hyper Sync" ["hyper", "wide", "sync"] = "A hard-synced sweep with four hyper copies stacked behind it, the mud cut out and the bass held in the middle; reach for Sweep, then Detune." => init()
+        .osc(A, WavetableId::SyncSweep, -13.0)
+        .pos(A, 0.3)
+        .off(B).off(C)
+        .osc(SUB, WavetableId::SubSine, -20.0)
+        .semis(SUB, -12)
+        .filter_route(SUB, FilterRoute::Bypass)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 6_000.0, 0.3)
+        .amp(0.005, 0.0, 1.0, 0.25)
+        .env(1, 0.0, 0.6, 0.2, 0.2)
+        .route(ModSource::Envelope(1), ModDest::OscPosition(A as u8), 0.5)
+        .route(ModSource::Velocity, ModDest::OscPosition(A as u8), 0.2)
+        .route(ModSource::Macro(0), ModDest::OscPosition(A as u8), 0.6)
+        .route(ModSource::Macro(1), ModDest::FxParam(0, 1), 0.5)
+        .mac(0, "Sweep").mac(1, "Detune")
+        .fx(hyper_fx(4, 30.0, 0.6))
+        .fx(eq_fx(fontelle_types::EqPreset::MudCut))
+        .fx(width_fx(1.3, 150.0))
+        .out(3.0),
+    BassMusic: "Multiband Reese" ["distorted", "unison"] = "A reese with the low band clean, the mids and the top crushed on their own, a compressor holding the whole, and a swept filter on the end; reach for Grit, then Sweep." => bass(WavetableId::Reese, 3_000.0, 0.15)
+        .uni(A, 2, 22.0)
+        .route(ModSource::Macro(0), ModDest::FxParam(0, 3), 0.6)
+        .route(ModSource::Macro(1), ModDest::FxParam(2, 4), 0.6)
+        .mac(0, "Grit").mac(1, "Sweep")
+        .fx(multiband_fx(0.0, 14.0, 8.0))
+        .fx(comp_fx(-18.0, 4.0, 1.0))
+        .fx(filter_fx(900.0, 0.5, 0.7, 0.2))
+        .out(0.0),
+    Keys: "PD Piano" ["warped", "keys"] = "A keyboard on the Casio's phase distortion: a sine with its phase bent by the envelope, so the note starts bright and sits down; reach for Distortion, then Decay." => init()
+        .osc(A, WavetableId::Sine, -12.0)
+        .semis(A, 12)
+        .warp(A, WarpMode::PhaseDistortion, 1.0)
+        .osc(B, WavetableId::Sine, -22.0)
+        .semis(B, 19)
+        .warp(B, WarpMode::PhaseDistortion, 0.6)
+        .off(C).off(SUB)
+        .no_filter()
+        .amp(0.002, 0.45, 0.0, 0.25)
+        .env(1, 0.0, 0.25, 0.0, 0.3)
+        .route(ModSource::Envelope(1), ModDest::OscWarp(A as u8), 0.7)
+        .route(ModSource::Velocity, ModDest::OscWarp(A as u8), 0.35)
+        .route(ModSource::Macro(0), ModDest::OscWarp(A as u8), 0.5)
+        .route(ModSource::Macro(1), ModDest::EnvelopeStageTime(0, 2), 0.5)
+        .mac(0, "Distortion").mac(1, "Decay")
+        .fx(comp_fx(-14.0, 3.0, 1.0))
+        .fx(reverb(0.5, 0.25))
+        .out(-6.0),
+    MotionAndMorph: "Remap Morph" ["warped", "drawn", "motion"] = "A table read through a drawn phase curve — the cycle folded back on itself twice — and the curve blended in and out under the LFO; reach for Remap, then Rate." => init()
+        .osc(A, WavetableId::Pulse, -12.0)
+        .warp(A, WarpMode::Remap, 0.9)
+        .remap(A, &[0.0, 0.8, 0.1, 0.9, 0.2, 1.0])
+        .uni(A, 3, 14.0)
+        .osc(SUB, WavetableId::SubSine, -18.0)
+        .semis(SUB, -12)
+        .off(B).off(C)
+        .filter(0, FilterModel::Clean, SvfMode::Bandpass, 1_800.0, 1.5)
+        .amp(0.01, 0.0, 1.0, 0.3)
+        .lfo(0, LfoWave::Triangle, 0.6)
+        .route(ModSource::Lfo(0), ModDest::OscWarp(A as u8), 0.5)
+        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.2)
+        .route(ModSource::Macro(0), ModDest::OscWarp(A as u8), 0.6)
+        .route(ModSource::Macro(1), ModDest::LfoRate(0), 0.5)
+        .mac(0, "Remap").mac(1, "Rate")
+        .fx(ping_pong(NoteDivision::Eighth, 0.3, 0.3))
+        .out(0.0),
+    Lead: "Filter FM Lead" ["fm", "ladder"] = "A lead whose ladder's cutoff is swung at audio rate by a sine an octave up — filter FM, the growl under the note; reach for FM, then Brightness." => lead(WavetableId::Saw, 1_100.0, 0.03)
+        .filter(0, FilterModel::Ladder, SvfMode::Lowpass, 700.0, 0.6)
+        .osc(B, WavetableId::SubSine, SILENT_DB)
+        .semis(B, 12)
+        .filter_fm(0, B, 0.7)
+        .route(ModSource::Macro(0), ModDest::FilterCutoff(0), 0.4)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.3)
+        .mac(1, "Brightness")
+        .out(10.7),
+    AtmosAndFx: "Vinyl Bed" ["lo-fi", "noise", "long"] = "A record's run-out groove — the vinyl noise, a crackle laid over it, a dark table under both; reach for Crackle, then Warmth." => init()
+        .osc(A, WavetableId::Sine, -22.0)
+        .semis(A, -12)
+        .off(B).off(C).off(SUB)
+        .noise(0.25, -14.0)
+        .noise_kind(NoiseKind::Vinyl)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 3_500.0, 0.3)
+        .amp(0.5, 0.0, 1.0, 1.5)
+        .route(ModSource::Velocity, ModDest::LayerGain(NOISE as u8), 0.1)
+        .route(ModSource::Macro(0), ModDest::LayerGain(NOISE as u8), 0.15)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), -0.3)
+        .mac(0, "Crackle").mac(1, "Warmth")
+        .out(-11.1),
+    SynthDrums: "Pink Hat" ["noise", "short"] = "A hat of pink noise — the top of white taken down so it ticks rather than hisses — through a tight high-pass; reach for Decay, then Tone." => init()
+        .off(A).off(B).off(C).off(SUB)
+        .noise(0.6, -8.0)
+        .noise_kind(NoiseKind::Pink)
+        .filter_route(NOISE, FilterRoute::F1)
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 6_000.0, 0.5)
+        .amp(0.001, 0.09, 0.0, 0.05)
+        .route(ModSource::Velocity, ModDest::Amp, 0.3)
+        .route(ModSource::Macro(0), ModDest::EnvelopeStageTime(0, 2), 0.5)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.4)
+        .mac(0, "Decay").mac(1, "Tone")
+        .out(16.9),
+    SynthDrums: "Crackle Snap" ["noise", "short"] = "A snap of crackle — sparse pops, not a hiss — with a blue-noise tick over it; reach for Pops, then Tick." => init()
+        .off(A).off(B).off(C).off(SUB)
+        .noise(0.5, -6.0)
+        .noise_kind(NoiseKind::Crackle)
+        .filter_route(NOISE, FilterRoute::F1)
+        .filter(0, FilterModel::Clean, SvfMode::Bandpass, 2_500.0, 0.6)
+        .amp(0.001, 0.14, 0.0, 0.06)
+        // A light weight: four pops at 127 summed at 0.3 went past full
+        // scale.
+        .route(ModSource::Velocity, ModDest::Amp, 0.08)
+        .route(ModSource::Macro(0), ModDest::LayerGain(NOISE as u8), 0.15)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.4)
+        .mac(0, "Pops").mac(1, "Tick")
+        .out(31.6),
+    AtmosAndFx: "Blue Air" ["noise", "bright", "long"] = "Air: blue noise, all top, through a slow-opening high-pass, a sine a fifth up under it; reach for Height, then Hiss." => init()
+        .osc(A, WavetableId::Sine, -24.0)
+        .semis(A, 7)
+        .off(B).off(C).off(SUB)
+        .noise(0.8, -16.0)
+        .noise_kind(NoiseKind::Blue)
+        .filter_route(NOISE, FilterRoute::F1)
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 3_000.0, 0.3)
+        .amp(1.5, 0.0, 1.0, 2.5)
+        .lfo(0, LfoWave::Sine, 0.08)
+        .route(ModSource::Lfo(0), ModDest::FilterCutoff(0), 0.3)
+        .route(ModSource::Velocity, ModDest::LayerGain(NOISE as u8), 0.1)
+        .route(ModSource::Macro(0), ModDest::FilterCutoff(0), 0.5)
+        .route(ModSource::Macro(1), ModDest::LayerGain(NOISE as u8), 0.15)
+        .mac(0, "Height").mac(1, "Hiss")
+        .fx(reverb(0.9, 0.4))
+        .out(12.0),
+    KitsAndHits: "Kit Noise Hat" ["noise", "sample", "short"] = "The studio kit's hat read as noise — a recording at the note's rate with no pitch, so every key is the same hat with a different length; reach for Decay, then Tone." => init()
+        .off(A).off(B).off(C).off(SUB)
+        .noise(0.5, -6.0)
+        .noise_sample(FactorySampleSet::KitStudio)
+        .filter_route(NOISE, FilterRoute::F1)
+        .filter(0, FilterModel::Clean, SvfMode::Highpass, 4_000.0, 0.4)
+        .amp(0.001, 0.12, 0.0, 0.05)
+        // As the crackle: a chord of hats at 127 is four hats summed.
+        .route(ModSource::Velocity, ModDest::Amp, 0.05)
+        .route(ModSource::Macro(0), ModDest::EnvelopeStageTime(0, 2), 0.5)
+        .route(ModSource::Macro(1), ModDest::FilterCutoff(0), 0.4)
+        .mac(0, "Decay").mac(1, "Tone")
+        .out(32.8),
+    SampledKeys: "Spectral Grand" ["spectral", "sample", "evolving"] = "The grand analysed into partials and played back through the string's bank — one layer stretched, one shifted up a formant, one frozen where the hammer lands; reach for Stretch, then Freeze." => init()
+        .spectral(A, -14.0, FactorySampleSet::GrandSoft)
+        .warp(A, WarpMode::Stretch, 0.15)
+        .spectral(B, -20.0, FactorySampleSet::GrandSoft)
+        .warp(B, WarpMode::Shift, 0.3)
+        .spectral(C, -22.0, FactorySampleSet::GrandSoft)
+        .warp(C, WarpMode::Freeze, 1.0)
+        .pos(C, 0.02)
+        .off(SUB)
+        .filter_route(A, FilterRoute::F1)
+        .filter_route(B, FilterRoute::F1)
+        .filter_route(C, FilterRoute::F1)
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 8_000.0, 0.3)
+        .amp(0.01, 0.0, 1.0, 0.6)
+        .inverted(ModSource::Velocity, ModDest::Amp, 0.4)
+        .route(ModSource::Macro(0), ModDest::OscWarp(A as u8), 0.6)
+        .route(ModSource::Macro(1), ModDest::OscWarp(C as u8), -0.6)
+        .mac(0, "Stretch").mac(1, "Freeze")
+        .fx(reverb(0.6, 0.3))
+        .out(3.2),
 }

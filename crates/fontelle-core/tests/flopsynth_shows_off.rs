@@ -60,24 +60,14 @@ fn every_wavetable_is_played_by_something() {
 #[test]
 fn every_warp_mode_is_shown_off() {
     // Seven modes, and `Quantise` — the one warp that is a *reduction*, and
-    // the whole of the synth's digital grit — was in nothing. The spectral
-    // warps of phase 4 (`docs/flopsynth-next.md` §4.3) get their line with
-    // the *Spectral* shelf (§5.3, phase 6); until then no row can use them,
-    // there being no spectral row. The six table warps phase 4 added are
-    // phase 6's too: the bank grows in one commit with the tags gate
-    // (§9.7), and a row voiced without the gate would be voiced twice.
-    let phase_six = [
-        WarpMode::PhaseDistortion,
-        WarpMode::Formant,
-        WarpMode::Flip,
-        WarpMode::Asym,
-        WarpMode::FmNoise,
-        WarpMode::Remap,
-    ];
+    // the whole of the synth's digital grit — was in nothing. The six table
+    // warps and the three spectral ones of phase 4 (§4.3) got their rows in
+    // phase 6 (§5.3), with the tags gate — a spectral warp on a spectral
+    // source, which is the one kind of layer it does anything on.
     let bank = bank();
     let unused: Vec<&str> = WarpMode::ALL
         .iter()
-        .filter(|mode| **mode != WarpMode::Off && !mode.is_spectral() && !phase_six.contains(mode))
+        .filter(|mode| **mode != WarpMode::Off)
         .filter(|mode| {
             !bank.iter().any(|(_, patch)| {
                 oscs(patch).any(|osc| osc.warp == **mode && osc.warp_amount > 0.0)
@@ -270,5 +260,97 @@ fn a_kit_hit_is_an_instrument_somewhere() {
     assert!(
         count >= 3,
         "presets locked to one zone of a recording: {count}"
+    );
+}
+
+// ------------------------------------------------ phase 4's rows (§5.3) ---
+//
+// Every filter model, every effect kind a patch may hold, every noise
+// kind, filter FM, and the spectral source: each in some row, so a person
+// opening the synthesiser can find it — the same rule the sampling above
+// is held to.
+
+#[test]
+fn every_filter_model_is_shown_off() {
+    use fontelle_dsp::FilterModel;
+    let bank = bank();
+    let unused: Vec<&str> = FilterModel::ALL
+        .iter()
+        .filter(|model| {
+            !bank.iter().any(|(_, patch)| {
+                patch
+                    .filters
+                    .iter()
+                    .any(|slot| slot.enabled && slot.model == **model)
+            })
+        })
+        .map(|m| m.label())
+        .collect();
+    assert!(
+        unused.is_empty(),
+        "filter models no preset uses: {unused:?}"
+    );
+}
+
+#[test]
+fn every_effect_a_patch_may_hold_is_shown_off() {
+    use fontelle_core::flopsynth::PATCH_FX_KINDS;
+    let bank = bank();
+    let unused: Vec<&str> = PATCH_FX_KINDS
+        .iter()
+        .filter(|kind| {
+            !bank.iter().any(|(_, patch)| {
+                patch
+                    .fx
+                    .iter()
+                    .any(|slot| slot.enabled && slot.config.kind() == **kind)
+            })
+        })
+        .map(|k| k.label())
+        .collect();
+    assert!(unused.is_empty(), "effects no preset uses: {unused:?}");
+}
+
+#[test]
+fn every_noise_kind_filter_fm_and_the_spectral_source_are_shown_off() {
+    use fontelle_dsp::NoiseKind;
+    let bank = bank();
+    let noise_of = |patch: &Patch| {
+        patch
+            .layers
+            .iter()
+            .filter(|l| l.gain_db > fontelle_core::SILENT_DB)
+            .filter_map(|l| match &l.source {
+                Source::Synth(osc) if osc.source == SynthSource::Noise => Some(osc.noise),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let unused: Vec<String> = NoiseKind::ALL
+        .iter()
+        .filter(|kind| {
+            !bank.iter().any(|(_, patch)| {
+                noise_of(patch)
+                    .iter()
+                    .any(|k| std::mem::discriminant(k) == std::mem::discriminant(*kind))
+            })
+        })
+        .map(|k| format!("{k:?}"))
+        .collect();
+    assert!(unused.is_empty(), "noise kinds no preset uses: {unused:?}");
+    assert!(
+        bank.iter().any(|(_, patch)| patch
+            .filters
+            .iter()
+            .any(|slot| slot.enabled && slot.fm_from.is_some() && slot.fm_amount > 0.0)),
+        "filter FM is in no preset"
+    );
+    assert!(
+        bank.iter().any(|(_, patch)| patch
+            .layers
+            .iter()
+            .filter(|l| l.gain_db > fontelle_core::SILENT_DB)
+            .any(|l| matches!(&l.source, Source::Synth(osc) if matches!(osc.source, SynthSource::Spectral(_))))),
+        "the spectral source is in no preset"
     );
 }

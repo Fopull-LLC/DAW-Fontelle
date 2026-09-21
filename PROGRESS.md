@@ -19,6 +19,65 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-20, night — Flopsynth II, Phase 6 (`docs/flopsynth-next.md`
+§5, §7): the bank and the browser — the words, sounds like, the rows;
+not released.** Two commits, tests-first; the bank at 409.
+
+- **The words** (`d737142`, §5.1, Ty's §9.7): `Preset.tags`, `.notes`,
+  `.author`, absent from a file that has none. Every factory synth row is
+  tagged from one controlled vocabulary (`flopsynth::TAGS`, eighty-odd
+  words) — its shelf's words, its sources, what it does, **derived from
+  the patch** by `presets::tags_of`, plus any the row writes in the
+  `bank!` row (`Bass: "Acid 303" ["diode", "hard"] = "…" => …`) — and
+  captioned by `notes_of` with one sentence: what it is built from and
+  which two macros to reach for, or the row's own. The gate holds three
+  tags a row from the vocabulary and a phrase that names a macro. The
+  388 files were rewritten once with their words. The macro gate stays
+  at **two named**: "all eight" is six more routes on each of 409 rows, a
+  re-voicing rather than a gate, and Ty's to want.
+- **The browser** (same commit): the Presets page's search reads the tags
+  (`preset_matches`: every word of the query in the name or at the start
+  of a tag, so "bass unison" is the basses with a stack); the About column
+  carries the phrase and the tags, wrapped to the column (`wrap_words`),
+  and **sounds like** (§5.2): `fontelle_core::preview::preset_preview`
+  renders 1.5 s of C3 through a patch into the vector the bank's pairwise
+  gate already used (lifted into the crate, so what the gate calls alike
+  the browser calls near), `PreviewIndex` keeps every row's vector in
+  `previews.json` beside the settings, filled by a worker thread the
+  first Presets page starts (forty seconds once, in release) and read
+  back on every launch after, and the five nearest are listed. Measured:
+  the Grand's nearest is the Felt Piano, then a lead and two organs — a
+  grand held six tenths reads as a sustained thing on these axes.
+- **The rows** (this commit, §5.3): twenty-one on the shelves they belong
+  to rather than on a shelf of novelties, each tagged and captioned by
+  hand, each through `preset_probe` (trims), `preset_audit` (no serial
+  route through F2; the noise rows are noise by design) and the gates:
+  Acid 303 (Diode), MS-20 Scream (Sallen — quiet into the filter so the
+  resonance sings rather than being squashed by a full-scale stack),
+  Phase Bloom (the Phaser model), Sung Vowel (Vowel, the Formant warp),
+  Ring Chime (Ring, the FM-noise warp), Dual Peaks (Dual, Hyper), Phaser
+  Wash (Phaser, Width), Flip Sync (Flip, Flanger), Folded Growl (Asym,
+  Fold, Multiband), Barber Pole (Shifter with feedback, brown noise),
+  Hyper Sync (Hyper, EQ, Width), Multiband Reese (Multiband, Comp, the
+  Filter insert), PD Piano (phase distortion), Remap Morph (Remap with a
+  drawn curve), Filter FM Lead (filter FM), Vinyl Bed (vinyl noise),
+  Pink Hat, Crackle Snap, Blue Air, Kit Noise Hat (a recording as
+  noise), Spectral Grand (three spectral layers: Stretch, Shift,
+  Freeze). `flopsynth_shows_off.rs` holds every warp, every filter model,
+  every effect a patch may hold, every noise kind, filter FM and the
+  spectral source to a row. The builder gained `noise_kind`,
+  `noise_sample`, `spectral`, `remap`, `filter_fm` and constructors for
+  the ten effects.
+- **Not built** from §5 and §7's list: the **audition** (a `PreviewNote`
+  playing the actual patch through the channel's node on hover), A/B,
+  init, randomise, packs, the inspector column, and the shelves as
+  shelves (*Spectral*, *Drawn*, *MPE* — the rows sit on the existing
+  ones; a shelf is ten rows and a gate). The preview `peaks` are
+  computed and not yet drawn.
+- **Looked at:** the Presets page with the About column's phrase, tags
+  and *sounds like*, and the search taking a tag. Not yet by ear: the
+  twenty-one rows (`--play-flopsynth <name>`).
+
 **As of 2026-09-20, later still — Flopsynth II, Phase 5 (`docs/flopsynth-next.md`
 §4.2, §9.4): MPE — done, not released.** One commit, tests-first. Per-note
 pressure, bend and slide, live, after the note has started.

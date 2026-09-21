@@ -16,6 +16,26 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-20, night (Flopsynth II, Phase 6).** The words, sounds
+like and twenty-one rows are in — `PROGRESS.md`'s top entry. Things to
+know: (0) a row's tags are **derived** (`presets::tags_of`) plus what the
+row writes; a new source kind, filter model, effect or generator wants a
+line in `derived_tags` and a word in `flopsynth::TAGS`, or the gate
+refuses the row; (1) the bank's files carry the words, so a change to
+`tags_of`/`notes_of` is a bank rewrite (`cargo xtask
+export-factory-presets`) in the same commit; (2) `previews.json` beside
+the settings is keyed by a hash of each preset's payload — a re-voiced
+row renders again on its own, and a test seeds the file rather than
+rendering (`tests/sounds_like.rs`); the worker is started by the first
+Presets page and never by a test that does not open one; (3) the
+pairwise gate and *sounds like* use one vector (`fontelle_core::preview`)
+— change the axes there and both move; (4) a new row's workflow is
+unchanged: `preset_probe --release` for the trims and the collisions,
+`preset_audit` for the serial route, the gates — and the twenty-one
+took three rounds of the probe to sit apart from their shelves. Open:
+the audition, A/B, init, randomise, packs, the inspector column, the
+preview peaks drawn, the rows by ear.
+
 **Updated 2026-09-20, later still (Flopsynth II, Phase 5).** MPE is in —
 `PROGRESS.md`'s top entry. Things to know: (0) a note's own pressure,
 bend and slide travel as `EventPayload::NoteMod`, keyed by key and
