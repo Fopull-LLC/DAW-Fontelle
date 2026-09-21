@@ -227,6 +227,72 @@ pub struct VoiceConfig {
     /// [`DEFAULT_BEND_RANGE_SEMITONES`].
     #[serde(default = "default_bend_range")]
     pub bend_range_semitones: f32,
+    /// How far a **note's own** bend goes (MPE's, `docs/flopsynth-next.md`
+    /// §4.2), in semitones either way. Forty-eight, MPE's own default for a
+    /// member channel, and separate from the wheel's: an MPE keyboard's
+    /// slide along a key spans octaves where a wheel spans a tone. Absent
+    /// from the file at its default (§0 rule 7).
+    #[serde(
+        default = "default_mpe_bend",
+        skip_serializing_if = "is_default_mpe_bend"
+    )]
+    pub mpe_bend_semitones: f32,
+}
+
+/// See [`VoiceConfig::mpe_bend_semitones`].
+pub const DEFAULT_MPE_BEND_SEMITONES: f32 = 48.0;
+
+fn default_mpe_bend() -> f32 {
+    DEFAULT_MPE_BEND_SEMITONES
+}
+
+fn is_default_mpe_bend(value: &f32) -> bool {
+    *value == DEFAULT_MPE_BEND_SEMITONES
+}
+
+/// Something about one sounding note moved after it started — the
+/// per-note half of a performance (`EventPayload::NoteMod`), as the sampler
+/// takes it. Each field `None` where the message leaves the note alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NoteMod {
+    pub pressure: Option<u8>,
+    /// The wheel's own fourteen bits, −8192..=8191, scaled by
+    /// [`VoiceConfig::mpe_bend_semitones`].
+    pub bend: Option<i16>,
+    /// MPE's timbre, CC 74: the note's `ModSource::NoteModY`.
+    pub slide: Option<u8>,
+    /// The note's `ModSource::NoteModX`, for whatever sends it.
+    pub mod_x: Option<u8>,
+}
+
+impl NoteMod {
+    pub fn pressure(value: u8) -> Self {
+        Self {
+            pressure: Some(value),
+            ..Self::default()
+        }
+    }
+
+    pub fn bend(value: i16) -> Self {
+        Self {
+            bend: Some(value),
+            ..Self::default()
+        }
+    }
+
+    pub fn slide(value: u8) -> Self {
+        Self {
+            slide: Some(value),
+            ..Self::default()
+        }
+    }
+
+    pub fn mod_x(value: u8) -> Self {
+        Self {
+            mod_x: Some(value),
+            ..Self::default()
+        }
+    }
 }
 
 /// See [`VoiceConfig::bend_range_semitones`].
@@ -311,6 +377,7 @@ impl Default for VoiceConfig {
             },
             retrigger: RetriggerMode::Poly,
             bend_range_semitones: DEFAULT_BEND_RANGE_SEMITONES,
+            mpe_bend_semitones: DEFAULT_MPE_BEND_SEMITONES,
         }
     }
 }
@@ -974,9 +1041,16 @@ pub struct Voice {
     /// says "hold it longer than that". `1.0` is `release: 0` — the patch's
     /// own, and the default every note carries.
     note_release_scale: f32,
-    /// §16.5's two free modulation values, normalised to 0..1 for the matrix.
+    /// §16.5's two free modulation values, normalised to 0..1 for the matrix
+    /// — captured at the note-on, and **live** since MPE (§4.2): a
+    /// `NoteMod` moves them.
     mod_x_norm: f32,
     mod_y_norm: f32,
+    /// The note's own pressure, 0..1, once one has arrived: read as
+    /// `ModSource::Aftertouch` in place of the channel's while it is here.
+    note_pressure: Option<f32>,
+    /// The note's own bend, −1..1 of `VoiceConfig::mpe_bend_semitones`.
+    note_bend: f32,
     amp_env: fontelle_dsp::EnvelopeGenerator,
     /// `patch.envelopes[1..]`, as modulation sources. Per voice, because two
     /// notes are at different points in their envelopes.
@@ -1074,6 +1148,8 @@ impl Voice {
             note_release_scale: 1.0,
             mod_x_norm: 0.0,
             mod_y_norm: 0.0,
+            note_pressure: None,
+            note_bend: 0.0,
             amp_env: fontelle_dsp::EnvelopeGenerator::new(),
             mod_envs: [fontelle_dsp::EnvelopeGenerator::new(); MAX_MOD_ENVELOPES],
             lfos: [crate::lfo::LfoState::new(); MAX_LFOS],
@@ -1259,6 +1335,10 @@ impl Voice {
             1.0 + (release.min(127) as f32 / 127.0) * (MAX_NOTE_RELEASE - 1.0);
         self.mod_x_norm = mod_x.min(127) as f32 / 127.0;
         self.mod_y_norm = mod_y.min(127) as f32 / 127.0;
+        // A new note starts with no pressure and no bend of its own: the
+        // channel's are read until the note's arrive.
+        self.note_pressure = None;
+        self.note_bend = 0.0;
         // A voice comes back out of the pool carrying the last note's filter
         // memory. Left alone, that discharges into the new note as a transient
         // belonging to a note that already ended — a click that only shows up
@@ -1396,6 +1476,22 @@ impl Voice {
                 drum_pending: matches!(layer.source, crate::patch::Source::Drum(_)),
             };
             slot += 1;
+        }
+    }
+
+    /// Takes a `NoteMod` (MPE, §4.2): what it names moves, the rest stays.
+    pub fn note_mod(&mut self, change: NoteMod) {
+        if let Some(pressure) = change.pressure {
+            self.note_pressure = Some(pressure.min(127) as f32 / 127.0);
+        }
+        if let Some(bend) = change.bend {
+            self.note_bend = (bend as f32 / 8_192.0).clamp(-1.0, 1.0);
+        }
+        if let Some(slide) = change.slide {
+            self.mod_y_norm = slide.min(127) as f32 / 127.0;
+        }
+        if let Some(mod_x) = change.mod_x {
+            self.mod_x_norm = mod_x.min(127) as f32 / 127.0;
         }
     }
 
@@ -1748,10 +1844,15 @@ impl Voice {
 
         // Everything a source can be **except an envelope or an LFO**: the
         // numbers that hold for the whole block.
+        // The note's own pressure where it has one (MPE), the channel's
+        // otherwise; the note's own bend adds to the channel's over its own
+        // range, below.
         let (wheel, bend, pressure) = (
             performance.mod_wheel.clamp(0.0, 1.0),
             performance.pitch_bend.clamp(-1.0, 1.0),
-            performance.aftertouch.clamp(0.0, 1.0),
+            self.note_pressure
+                .unwrap_or(performance.aftertouch)
+                .clamp(0.0, 1.0),
         );
         let (velocity_norm, key_norm) = (self.velocity_norm, self.key_norm);
         let (mod_x_norm, mod_y_norm) = (self.mod_x_norm, self.mod_y_norm);
@@ -2458,6 +2559,8 @@ impl Voice {
                 semitones: (self.key as f32 - layer.root_key as f32)
                     + self.glide_semitones
                     + bend * patch.voice_config.bend_range_semitones
+                    // The note's own bend (MPE), over its own range.
+                    + self.note_bend * patch.voice_config.mpe_bend_semitones
                     + self.note_detune
                     + layer.fine_tune_cents / 100.0,
                 gain_db: layer.gain_db,

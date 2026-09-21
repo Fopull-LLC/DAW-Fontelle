@@ -19,6 +19,47 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-20, later still — Flopsynth II, Phase 5 (`docs/flopsynth-next.md`
+§4.2, §9.4): MPE — done, not released.** One commit, tests-first. Per-note
+pressure, bend and slide, live, after the note has started.
+
+- **The event**: `EventPayload::NoteMod { key, voice_context, pressure,
+  bend, slide, mod_x }`, each `None` where the message leaves the note
+  alone; it starts no voice and ends none, orders with a slide, and with
+  nothing sounding at that key in that context does nothing. `bend` is
+  the wheel's own fourteen bits — the router does not know the
+  instrument's range.
+- **The router** (`fontelle-midi/src/router.rs`): MPE's own rule without
+  a mode switch. A bend, a channel pressure or a CC 74 on a channel this
+  router holds notes on, **other than the first**, is those notes' — one
+  `NoteMod` per note held there — where on the first channel it is the
+  channel-wide event it always was, which is what every ordinary keyboard
+  sends. A member channel holding nothing gets nothing: MPE sends the
+  bend just before the note, and a bend meant for one note not yet
+  sounding must not bend every note that is. Poly aftertouch (0xA0, which
+  the decoder dropped) is its key's on any channel. `tests/router.rs`.
+- **The voice**: a note's own pressure is read as `Aftertouch` in place
+  of the channel's while it has one (a note that never had one reads the
+  channel's, as ever); its own bend adds to the pitch over
+  `VoiceConfig.mpe_bend_semitones` (48, MPE's member default, separate
+  from the wheel's two; `patch/voice/mpe_bend`, absent from the file at
+  its default — addressable, **not on the Voice card**, which is full,
+  §9.5); a slide is the note's `NoteModY`, and `mod_x` its `NoteModX`,
+  live now rather than fixed at the note-on. `Sampler::note_mod`,
+  `fontelle-core/tests/mpe.rs`.
+- **The nodes**: `SamplerNode` hands a `NoteMod` to the sampler; a hosted
+  plugin gets it as the channel's pressure, bend and CC 74 — the router
+  turned a member channel's messages into per-note ones, and a plugin that
+  speaks no note expression still hears what it would have. Per-note
+  delivery as CLAP note expressions is not built. A take does not keep
+  a `NoteMod`: a recording is notes, and per-note expression is a lane the
+  roll cannot draw yet — the same call the wheels get.
+- **Not looked at on a keyboard**: there is no MPE controller on this
+  machine; the router's rule and the voice's reading are held by tests.
+  For Ty: play one (a Seaboard, a Linnstrument, an Osmose) at the Grand
+  Piano or a pad with a pressure route, and the range (`mpe_bend`, by
+  address until the card has room).
+
 **As of 2026-09-20, later — Flopsynth II, Phase 4 (`docs/flopsynth-next.md`
 §4.3–4.5, §7): sources, filters, effects, the wavetable editor — done,
 not released.** Five commits, each tests-first, looked at on

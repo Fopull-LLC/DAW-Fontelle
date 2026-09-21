@@ -115,6 +115,9 @@ pub const SEMITONE_RANGE: f32 = 36.0;
 /// The widest a pitch bend may be set to, in semitones. Two octaves is what a
 /// whammy patch wants and further than a keyboard sends.
 pub const BEND_MAX_SEMITONES: f32 = 24.0;
+/// And a note's own bend (MPE): four octaves, MPE's default being the
+/// whole of it.
+pub const MPE_BEND_MAX_SEMITONES: f32 = 48.0;
 
 /// A patch's output trim. Asymmetric on purpose: presets are loudness-matched
 /// *downwards* far more often than up, and the +12 is there for the quiet ones
@@ -197,6 +200,10 @@ pub fn set(patch: &mut Patch, address: &str, value: f32) -> bool {
         }
         "patch/voice/bend_range" => {
             patch.voice_config.bend_range_semitones = lerp(value, 0.0, BEND_MAX_SEMITONES);
+            true
+        }
+        "patch/voice/mpe_bend" => {
+            patch.voice_config.mpe_bend_semitones = lerp(value, 0.0, MPE_BEND_MAX_SEMITONES);
             true
         }
         "patch/output" => {
@@ -804,6 +811,11 @@ pub fn value(patch: &Patch, address: &str) -> Option<f32> {
             patch.voice_config.bend_range_semitones,
             0.0,
             BEND_MAX_SEMITONES,
+        )),
+        "patch/voice/mpe_bend" => Some(unlerp(
+            patch.voice_config.mpe_bend_semitones,
+            0.0,
+            MPE_BEND_MAX_SEMITONES,
         )),
         "patch/output" => Some(unlerp(patch.output_db, OUTPUT_MIN_DB, OUTPUT_MAX_DB)),
         "patch/oversampling" => {

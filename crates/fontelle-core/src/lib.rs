@@ -38,8 +38,8 @@ pub use sampler::{PrepareContext, Sampler, SamplerContext};
 pub use streaming::{AudioBuffer, AudioStore, SampleBuffer, SampleStore};
 pub use voice::{
     DEFAULT_BEND_RANGE_SEMITONES, FILTER_STEP, GlideCurve, GlideMode, MAX_LFOS, MAX_MOD_ENVELOPES,
-    NoteTrigger, OSC_ROOT_HZ, Performance, RenderClock, RetriggerMode, StealPolicy, UnisonConfig,
-    VelocityCurve, Voice, VoiceConfig, VoicePool, velocity_gain, velocity_to_gain,
+    NoteMod, NoteTrigger, OSC_ROOT_HZ, Performance, RenderClock, RetriggerMode, StealPolicy,
+    UnisonConfig, VelocityCurve, Voice, VoiceConfig, VoicePool, velocity_gain, velocity_to_gain,
 };
 pub use wavetable_edit::{EDIT_HARMONICS, WavetableEdit};
 pub use wavetable_set::{WavetableSet, spectral_analysis};

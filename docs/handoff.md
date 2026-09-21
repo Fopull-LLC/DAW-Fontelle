@@ -16,6 +16,21 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-20, later still (Flopsynth II, Phase 5).** MPE is in —
+`PROGRESS.md`'s top entry. Things to know: (0) a note's own pressure,
+bend and slide travel as `EventPayload::NoteMod`, keyed by key and
+context like a note-off; the router decides *what is per-note* (a
+member channel's messages) and the voice decides *what it means*; (1)
+the router's rule is channel-number based — first channel channel-wide,
+any other per-note — so a test that plays a member channel must play a
+note on it first or its wheels go nowhere; (2) the voice's `note_pressure`
+is an `Option`: `None` reads the channel's, and a note-on clears it; (3)
+`mpe_bend_semitones` is serde-skipped at 48 — a preset that wants another
+range writes it, nothing else moves; (4) `NoteMod` ranks with `NoteSlide`
+in the sequencer's order and is not captured into a take. Open: the
+Voice card has no room for the MPE range (§9.5), no MPE keyboard was
+played, CLAP note expressions.
+
 **Updated 2026-09-20, later (Flopsynth II, Phase 4).** Sources, filters,
 effects and the wavetable editor are in — `PROGRESS.md`'s top entry. Things to know: (0) the string and the spectral source **share
 one bank of phasors** (`PhasorBank` on `SynthState`) — each writes the

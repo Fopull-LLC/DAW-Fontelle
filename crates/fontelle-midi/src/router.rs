@@ -124,6 +124,9 @@ impl LiveKeys {
 /// CC 64. The one controller worth handling before the learn table exists:
 /// without it, half of playing a keyboard part is missing.
 const CC_SUSTAIN: u8 = 64;
+/// MPE's slide — the timbre dimension, CC 74 — which on a member channel
+/// is the notes' and not the channel's.
+const CC_SLIDE: u8 = 74;
 /// A controller is "on" at 64 and above. The MIDI spec is explicit about this
 /// and it is not 1: a continuous pedal sweeping through 40 is still up.
 const CC_ON_THRESHOLD: u8 = 64;
@@ -383,14 +386,99 @@ impl MidiRouter {
             // The sustain pedal above is the one controller the router keeps,
             // because holding notes is its bookkeeping and not the
             // instrument's.
+            //
+            // **Except on a member channel** (`docs/flopsynth-next.md` §4.2,
+            // MPE): a bend, a pressure or a slide (CC 74) on a channel this
+            // router holds notes on, other than the first, belongs to those
+            // notes and goes out as one `NoteMod` per note. MPE's own rule
+            // without a mode switch — an ordinary keyboard sends everything
+            // on the first channel and hears no difference, and an MPE
+            // keyboard's members are two upwards. A member channel holding
+            // nothing gets nothing: its bend was neither the channel's nor
+            // a note's.
+            MidiMessage::ControlChange {
+                channel,
+                controller: CC_SLIDE,
+                value,
+            } if self.is_member(channel) => {
+                self.note_mods(sink, channel, |key| EventPayload::NoteMod {
+                    key,
+                    voice_context: self.voice_context,
+                    pressure: None,
+                    bend: None,
+                    slide: Some(value),
+                    mod_x: None,
+                })
+            }
+            MidiMessage::ControlChange {
+                channel,
+                controller: CC_SLIDE,
+                ..
+            } if channel != 0 => 0,
             MidiMessage::ControlChange {
                 controller, value, ..
             } => self.send(sink, EventPayload::Controller { controller, value }),
+            MidiMessage::PitchBend { channel, value } if self.is_member(channel) => {
+                self.note_mods(sink, channel, |key| EventPayload::NoteMod {
+                    key,
+                    voice_context: self.voice_context,
+                    pressure: None,
+                    bend: Some(value),
+                    slide: None,
+                    mod_x: None,
+                })
+            }
+            MidiMessage::ChannelPressure { channel, value } if self.is_member(channel) => self
+                .note_mods(sink, channel, |key| EventPayload::NoteMod {
+                    key,
+                    voice_context: self.voice_context,
+                    pressure: Some(value),
+                    bend: None,
+                    slide: None,
+                    mod_x: None,
+                }),
+            // A bend on a channel other than the first with nothing held:
+            // MPE sends the bend just before the note, and a bend meant for
+            // one note that is not yet sounding must not bend every note
+            // that is.
+            MidiMessage::PitchBend { channel, .. }
+            | MidiMessage::ChannelPressure { channel, .. }
+                if channel != 0 =>
+            {
+                0
+            }
             MidiMessage::PitchBend { value, .. } => {
                 self.send(sink, EventPayload::PitchBend { value })
             }
             MidiMessage::ChannelPressure { value, .. } => {
                 self.send(sink, EventPayload::ChannelPressure { value })
+            }
+            // Poly aftertouch is its key's on any channel — for a key this
+            // router is holding; a stray one releases nothing and moves
+            // nothing.
+            MidiMessage::PolyPressure {
+                channel,
+                key,
+                value,
+            } => {
+                let Some(out_key) = self.map_key(key) else {
+                    return 0;
+                };
+                let held = self.held[channel as usize] | self.sustained[channel as usize];
+                if held & (1u128 << out_key) == 0 {
+                    return 0;
+                }
+                self.send(
+                    sink,
+                    EventPayload::NoteMod {
+                        key: out_key,
+                        voice_context: self.voice_context,
+                        pressure: Some(value),
+                        bend: None,
+                        slide: None,
+                        mod_x: None,
+                    },
+                )
             }
             // A program change still goes nowhere: nothing here takes one,
             // and an event nothing reads would look like a working feature.
@@ -461,6 +549,30 @@ impl MidiRouter {
     /// Both are fixed for the router's life. If they ever become live
     /// controls, they must be captured at note-on and reused for the matching
     /// note-off, or a change while a key is down leaves that note hanging.
+    /// Whether `channel` is an MPE member right now: not the first, and
+    /// holding notes of this router's.
+    fn is_member(&self, channel: u8) -> bool {
+        let channel = channel as usize;
+        channel != 0 && (self.held[channel] | self.sustained[channel]) != 0
+    }
+
+    /// One `NoteMod` per note held on `channel`, built by `payload`.
+    fn note_mods(
+        &self,
+        sink: &mut dyn EventSink,
+        channel: u8,
+        payload: impl Fn(u8) -> EventPayload,
+    ) -> usize {
+        let held = self.held[channel as usize] | self.sustained[channel as usize];
+        let mut sent = 0;
+        for key in 0..128u8 {
+            if held & (1u128 << key) != 0 {
+                sent += self.send(sink, payload(key));
+            }
+        }
+        sent
+    }
+
     fn map_key(&self, key: u8) -> Option<u8> {
         let remapped = *self.mapping.note_remap.get(&key).unwrap_or(&key);
         let transposed = remapped as i16 + self.mapping.transpose_semitones as i16;
@@ -504,6 +616,7 @@ fn message_channel(message: &MidiMessage) -> u8 {
         | MidiMessage::ControlChange { channel, .. }
         | MidiMessage::PitchBend { channel, .. }
         | MidiMessage::ChannelPressure { channel, .. }
+        | MidiMessage::PolyPressure { channel, .. }
         | MidiMessage::ProgramChange { channel, .. }
         | MidiMessage::AllNotesOff { channel }
         | MidiMessage::AllSoundOff { channel } => channel,

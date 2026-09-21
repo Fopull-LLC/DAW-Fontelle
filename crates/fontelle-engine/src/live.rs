@@ -230,7 +230,8 @@ fn rt_safe_copy(event: &TimedEvent) -> Option<TimedEvent> {
         fontelle_types::EventPayload::ParamValue { .. }
         | fontelle_types::EventPayload::Controller { .. }
         | fontelle_types::EventPayload::PitchBend { .. }
-        | fontelle_types::EventPayload::ChannelPressure { .. } => return None,
+        | fontelle_types::EventPayload::ChannelPressure { .. }
+        | fontelle_types::EventPayload::NoteMod { .. } => return None,
     };
     Some(TimedEvent {
         sample: event.sample,

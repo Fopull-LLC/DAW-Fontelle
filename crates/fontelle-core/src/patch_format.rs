@@ -775,6 +775,7 @@ mod tests {
                 // Not the default, so the round trip proves the field
                 // travels rather than that both ends guessed the same.
                 bend_range_semitones: 7.0,
+                mpe_bend_semitones: 24.0,
             },
             ..Default::default()
         }

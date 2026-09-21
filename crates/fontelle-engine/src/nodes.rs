@@ -284,6 +284,28 @@ impl AudioNode for SamplerNode {
                 fontelle_types::EventPayload::ChannelPressure { value } => {
                     self.sampler.set_aftertouch(f32::from(*value) / 127.0);
                 }
+                // One note's own pressure, bend, slide (MPE, §4.2): to the
+                // voice sounding that key in that context, and nowhere if
+                // there is none — like a slide.
+                fontelle_types::EventPayload::NoteMod {
+                    key,
+                    voice_context,
+                    pressure,
+                    bend,
+                    slide,
+                    mod_x,
+                } => {
+                    self.sampler.note_mod(
+                        *key,
+                        *voice_context,
+                        fontelle_core::NoteMod {
+                            pressure: *pressure,
+                            bend: *bend,
+                            slide: *slide,
+                            mod_x: *mod_x,
+                        },
+                    );
+                }
                 // A channel's own level and placement, under automation
                 // (§12.2). Block-rate, like the mixer track's and for the same
                 // reason: the last value in the block wins, which is finer

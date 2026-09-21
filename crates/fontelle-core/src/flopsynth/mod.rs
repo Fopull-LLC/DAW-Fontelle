@@ -309,6 +309,7 @@ pub fn flopsynth_init() -> Patch {
         voice_config: VoiceConfig {
             polyphony: 32,
             bend_range_semitones: 2.0,
+            mpe_bend_semitones: crate::voice::DEFAULT_MPE_BEND_SEMITONES,
             ..VoiceConfig::default()
         },
         fx: Vec::new(),
@@ -338,6 +339,7 @@ pub fn addresses(patch: &Patch) -> Vec<String> {
         "patch/voice/legato".to_string(),
         "patch/voice/mode".to_string(),
         "patch/voice/bend_range".to_string(),
+        "patch/voice/mpe_bend".to_string(),
         // Phase 3 (§4.2, §4.6): the glide's mode and shape, and the
         // velocity curve with its four drawn points.
         "patch/voice/glide_mode".to_string(),

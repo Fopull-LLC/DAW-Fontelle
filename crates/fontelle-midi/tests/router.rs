@@ -454,3 +454,158 @@ fn a_program_change_still_goes_nowhere() {
     let mut out = Recorder::default();
     assert_eq!(r.handle(&[0xC0, 5], &mut out), 0);
 }
+
+// ------------------------------------------------------- MPE (§4.2, phase 5)
+//
+// `docs/flopsynth-next.md` §4.2: per-note pressure, slide and bend, keyed by
+// the note. The rule is MPE's own without a mode switch: a bend, a pressure
+// or a CC74 on a channel that this router holds notes on — **other than the
+// first channel** — belongs to those notes; on the first channel it is the
+// channel-wide event it always was, which is what every ordinary keyboard
+// sends. Poly aftertouch belongs to its key on any channel.
+
+const BEND: u8 = 0xE0;
+const PRESSURE: u8 = 0xD0;
+const POLY_PRESSURE: u8 = 0xA0;
+const CC_SLIDE: u8 = 74;
+
+/// A note mod as the tests read it: the key, then its pressure, bend and
+/// slide.
+type Mod = (u8, Option<u8>, Option<i16>, Option<u8>);
+
+fn note_mods(out: &Recorder) -> Vec<Mod> {
+    out.events
+        .iter()
+        .filter_map(|e| match &e.payload {
+            EventPayload::NoteMod {
+                key,
+                pressure,
+                bend,
+                slide,
+                ..
+            } => Some((*key, *pressure, *bend, *slide)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_bend_on_a_member_channel_bends_the_notes_on_that_channel_alone() {
+    let mut r = router(DeviceMapping::default());
+    let mut out = Recorder::default();
+    // Two notes on channel 2, one on channel 3 — an MPE keyboard's layout.
+    r.handle(&[NOTE_ON | 1, 60, 100], &mut out);
+    r.handle(&[NOTE_ON | 1, 64, 100], &mut out);
+    r.handle(&[NOTE_ON | 2, 67, 100], &mut out);
+    // A bend on channel 2: +2048 of 8191.
+    r.handle(&[BEND | 1, 0x00, 0x50], &mut out);
+    let mods = note_mods(&out);
+    assert_eq!(mods.len(), 2, "{mods:?}");
+    assert!(mods.iter().all(|(_, _, bend, _)| *bend == Some(2_048)));
+    let keys: Vec<u8> = mods.iter().map(|(k, ..)| *k).collect();
+    assert_eq!(keys, [60, 64]);
+    // And no channel-wide bend went out for it.
+    assert!(
+        !out.events
+            .iter()
+            .any(|e| matches!(e.payload, EventPayload::PitchBend { .. })),
+        "a member channel's bend is the notes', not the channel's"
+    );
+    // The mods carry the router's context, like its notes.
+    assert!(out.events.iter().all(|e| e.target == target()));
+}
+
+#[test]
+fn on_the_first_channel_the_wheels_stay_channel_wide() {
+    let mut r = router(DeviceMapping::default());
+    let mut out = Recorder::default();
+    r.handle(&[NOTE_ON, 60, 100], &mut out);
+    r.handle(&[BEND, 0x00, 0x50], &mut out);
+    r.handle(&[PRESSURE, 90], &mut out);
+    r.handle(&[CC, CC_SLIDE, 40], &mut out);
+    assert!(note_mods(&out).is_empty());
+    assert!(
+        out.events
+            .iter()
+            .any(|e| matches!(e.payload, EventPayload::PitchBend { value: 2_048 }))
+    );
+    assert!(
+        out.events
+            .iter()
+            .any(|e| matches!(e.payload, EventPayload::ChannelPressure { value: 90 }))
+    );
+    assert!(out.events.iter().any(|e| matches!(
+        e.payload,
+        EventPayload::Controller {
+            controller: CC_SLIDE,
+            value: 40
+        }
+    )));
+}
+
+#[test]
+fn pressure_and_slide_on_a_member_channel_are_the_notes_too() {
+    let mut r = router(DeviceMapping::default());
+    let mut out = Recorder::default();
+    r.handle(&[NOTE_ON | 4, 48, 100], &mut out);
+    r.handle(&[PRESSURE | 4, 100], &mut out);
+    r.handle(&[CC | 4, CC_SLIDE, 64], &mut out);
+    let mods = note_mods(&out);
+    assert_eq!(
+        mods,
+        vec![(48, Some(100), None, None), (48, None, None, Some(64))]
+    );
+    assert!(!out.events.iter().any(|e| matches!(
+        e.payload,
+        EventPayload::ChannelPressure { .. } | EventPayload::Controller { .. }
+    )));
+    // Another controller on the member channel is still a controller.
+    r.handle(&[CC | 4, 1, 64], &mut out);
+    assert!(out.events.iter().any(|e| matches!(
+        e.payload,
+        EventPayload::Controller {
+            controller: 1,
+            value: 64
+        }
+    )));
+}
+
+#[test]
+fn a_member_channel_with_no_notes_sends_nothing_per_note() {
+    let mut r = router(DeviceMapping::default());
+    let mut out = Recorder::default();
+    // MPE sends the bend before the note; a bend with nothing to bend is
+    // kept for nothing — it is neither the channel's nor a note's.
+    r.handle(&[BEND | 1, 0x00, 0x50], &mut out);
+    assert!(out.events.is_empty(), "{:?}", out.events.len());
+    // A note-off ends the note's claim.
+    r.handle(&[NOTE_ON | 1, 60, 100], &mut out);
+    r.handle(&[NOTE_OFF | 1, 60, 0], &mut out);
+    r.handle(&[PRESSURE | 1, 100], &mut out);
+    assert!(note_mods(&out).is_empty());
+}
+
+#[test]
+fn poly_pressure_is_its_keys_on_any_channel() {
+    let mut r = router(DeviceMapping::default());
+    let mut out = Recorder::default();
+    r.handle(&[NOTE_ON, 60, 100], &mut out);
+    r.handle(&[NOTE_ON, 64, 100], &mut out);
+    r.handle(&[POLY_PRESSURE, 64, 77], &mut out);
+    assert_eq!(note_mods(&out), vec![(64, Some(77), None, None)]);
+    // For a key this router is not holding, nothing.
+    r.handle(&[POLY_PRESSURE, 72, 77], &mut out);
+    assert_eq!(note_mods(&out).len(), 1);
+}
+
+#[test]
+fn a_transposed_device_reports_the_key_it_plays() {
+    let mut r = router(DeviceMapping {
+        transpose_semitones: 12,
+        ..DeviceMapping::default()
+    });
+    let mut out = Recorder::default();
+    r.handle(&[NOTE_ON | 1, 60, 100], &mut out);
+    r.handle(&[PRESSURE | 1, 50], &mut out);
+    assert_eq!(note_mods(&out), vec![(72, Some(50), None, None)]);
+}

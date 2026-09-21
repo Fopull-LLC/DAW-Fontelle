@@ -67,6 +67,25 @@ pub enum EventPayload {
         glide_samples: u32,
         voice_context: u32,
     },
+    /// Something about **one sounding note** moved after it started
+    /// (`docs/flopsynth-next.md` §4.2, MPE): its pressure, its bend, its
+    /// slide (MPE's timbre, CC 74), or the score's two free values. Each
+    /// is `None` where this message leaves it alone. Like
+    /// [`NoteSlide`](Self::NoteSlide), it starts no voice and ends none,
+    /// and with nothing sounding at `key` in `voice_context` it does
+    /// nothing.
+    ///
+    /// `bend` is the wheel's own fourteen bits, −8192..=8191: the router
+    /// does not know the instrument's range, and a built-in scales it by
+    /// the patch's MPE range where a hosted plugin has its own.
+    NoteMod {
+        key: u8,
+        voice_context: u32,
+        pressure: Option<u8>,
+        bend: Option<i16>,
+        slide: Option<u8>,
+        mod_x: Option<u8>,
+    },
     ParamValue {
         target: ParamAddress,
         value: f64,

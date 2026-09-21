@@ -363,6 +363,15 @@ impl Sampler {
         }
     }
 
+    /// Moves something about one sounding note (MPE, §4.2): the note at
+    /// `key` in `voice_context`, held — a released note keeps what it had.
+    /// With nothing sounding there it does nothing, like a slide.
+    pub fn note_mod(&mut self, key: u8, voice_context: u32, change: crate::NoteMod) {
+        if let Some(voice) = self.voices.find_active_mut(key, voice_context) {
+            voice.note_mod(change);
+        }
+    }
+
     /// How many voices are sounding. What a test asserting "a slide is not a
     /// note-on" needs, and what a voice-count read-out would use.
     pub fn active_voices(&self) -> usize {

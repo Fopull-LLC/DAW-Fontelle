@@ -32,6 +32,12 @@ pub enum MidiMessage {
         channel: u8,
         value: u8,
     },
+    /// Polyphonic aftertouch: one key's pressure.
+    PolyPressure {
+        channel: u8,
+        key: u8,
+        value: u8,
+    },
     ProgramChange {
         channel: u8,
         program: u8,
@@ -100,7 +106,11 @@ pub fn decode(bytes: &[u8]) -> Option<MidiMessage> {
                 })
             }
         }
-        0xA0 => None, // polyphonic aftertouch: nothing consumes it yet
+        0xA0 => Some(MidiMessage::PolyPressure {
+            channel,
+            key: data1 & 0x7F,
+            value: *bytes.get(2)? & 0x7F,
+        }),
         0xB0 => {
             let value = *bytes.get(2)? & 0x7F;
             match data1 & 0x7F {

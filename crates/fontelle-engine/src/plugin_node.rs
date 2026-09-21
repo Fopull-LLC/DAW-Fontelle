@@ -319,6 +319,28 @@ impl PluginNode {
                 fontelle_types::EventPayload::ChannelPressure { value } => {
                     processor.channel_pressure(frame, *value);
                 }
+                // A note's own pressure, bend or slide (MPE, §4.2), handed
+                // to the plugin as the channel's: the router turned a
+                // member channel's messages into per-note ones, and a
+                // plugin that speaks no note expression still hears what it
+                // would have heard. Per-note delivery for CLAP note
+                // expressions is not built.
+                fontelle_types::EventPayload::NoteMod {
+                    pressure,
+                    bend,
+                    slide,
+                    ..
+                } => {
+                    if let Some(value) = pressure {
+                        processor.channel_pressure(frame, *value);
+                    }
+                    if let Some(value) = bend {
+                        processor.pitch_bend(frame, *value);
+                    }
+                    if let Some(value) = slide {
+                        processor.controller(frame, 74, *value);
+                    }
+                }
                 // A slide bends what is already sounding to its key and
                 // starts nothing — the same thing a slide does to a
                 // built-in instrument (`fontelle_core::Sampler::slide`),

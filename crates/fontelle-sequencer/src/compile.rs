@@ -473,7 +473,9 @@ fn rank(payload: &EventPayload) -> u8 {
         | EventPayload::ChannelPressure { .. } => 0,
         EventPayload::ClipStop => 1,
         EventPayload::NoteOff { .. } => 2,
-        EventPayload::NoteSlide { .. } => 3,
+        // A note's own pressure or bend moves what is sounding, like a
+        // slide, and orders with one.
+        EventPayload::NoteSlide { .. } | EventPayload::NoteMod { .. } => 3,
         EventPayload::ClipStart => 4,
         EventPayload::NoteOn { .. } => 5,
     }
