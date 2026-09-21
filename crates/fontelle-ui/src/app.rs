@@ -1166,6 +1166,11 @@ pub struct WindowApp {
     /// back, and until then the global keybinds work in here like they do in
     /// every other editor window.
     flop_searching: bool,
+    /// The Presets search box's text with its caret and selection (§5:
+    /// "a real `TextEntry`"), the same keyboard the browser's search and
+    /// the name prompts have — arrows, Home/End, a word at a time with
+    /// Ctrl, select-all, copy and paste. `browse.query` is its text.
+    flop_search_entry: crate::canvas::TextEntry,
     /// The sky through Flopsynth's canopy (`sky.rs`): what it has heard,
     /// eased, and where everything in it is. Ticked once a frame while the
     /// window is open, from the instrument's own sound.
@@ -1865,6 +1870,7 @@ impl WindowApp {
             flopsynth: None,
             flop_page: crate::canvas::FlopsynthPage::Synth,
             flop_searching: false,
+            flop_search_entry: crate::canvas::TextEntry::default(),
             sky: crate::sky::SkyState::new(0x5eed),
             sky_frame: None,
             sky_image: None,
@@ -8825,6 +8831,11 @@ impl WindowApp {
             // not land here (see `flop_searching`).
             PresetsHit::Search => {
                 self.flop_searching = true;
+                // The entry picks up whatever the query is, caret at the end.
+                if self.flop_search_entry.text() != self.flop_browse.query {
+                    self.flop_search_entry =
+                        crate::canvas::TextEntry::new(self.flop_browse.query.clone());
+                }
                 self.tree.invalidate(PANEL);
             }
             // The more chip (§5): the pack actions drop under it.
@@ -9090,23 +9101,30 @@ impl WindowApp {
                 if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
                     browse.query.clear();
                     browse.scroll = 0.0;
+                    self.flop_search_entry.clear();
                     self.set_flop_browse(browse);
                 }
                 self.tree.invalidate(PANEL);
                 return true;
             }
-            Key::Named(NamedKey::Backspace) => {
-                browse.query.pop();
-            }
-            Key::Named(NamedKey::Space) => browse.query.push(' '),
-            Key::Character(text) if !self.modifiers.control_key() => {
-                let typed: String = text.chars().filter(|c| !c.is_control()).collect();
-                if typed.is_empty() {
+            key => {
+                // The same keyboard the browser's search and the name
+                // prompts have (`canvas::text_key`). The box used to have
+                // backspace and typing only.
+                let ctrl = self.modifiers.control_key();
+                let shift = self.modifiers.shift_key();
+                let mut entry = self.flop_search_entry.clone();
+                let what =
+                    crate::canvas::text_key(&mut entry, key, ctrl, shift, &mut self.clipboard_text);
+                if what == crate::canvas::TextKey::Ignored {
                     return false;
                 }
-                browse.query.push_str(&typed);
+                self.flop_search_entry = entry;
+                if what != crate::canvas::TextKey::Edited {
+                    return true;
+                }
+                browse.query = self.flop_search_entry.text().to_string();
             }
-            _ => return false,
         }
         browse.scroll = 0.0;
         self.set_flop_browse(browse);
