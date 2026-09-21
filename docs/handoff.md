@@ -16,6 +16,18 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-21 (v0.10.0).** Four reports fixed — `PROGRESS.md`'s
+top entry. Things to know: (0) a silent exit is still `coredumpctl list`
+first; a `SIGXCPU` there is the RT budget, and `rt_budget.rs` is where
+its two halves live — a new real-time thread wants `widen_budget()` +
+`arm_current_thread()` after its promotion; (1) anything opened over
+winit's Wayland display (`Backend::from_foreign_display`) is dropped in
+`exiting()`, never with the app; (2) a settings row's arrow focus ends on
+a press outside the browser; (3) an editor window raised for a new
+subject is retitled in `raise_editor`, and `open_insert` forces a studio
+refresh — opening something moves no revision, so anything read per
+revision about "the open thing" has to be re-read by hand.
+
 **Updated 2026-09-20, late night (Flopsynth II, Phase 6 closed).** The
 audition, A/B, Init, Randomise/Mutate, packs, the thumbnail and the real
 search field are in — `PROGRESS.md`'s top entry. Things to know: (0) a

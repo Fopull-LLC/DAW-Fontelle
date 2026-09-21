@@ -19,6 +19,52 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-21 — v0.10.0: Flopsynth II shipped, and four reports from
+using it.** Ty: *"my midi keyboard not working, the program crashing, not
+being able to scroll in the presets menu … a random preset button … menus
+popping up with the wrong preset name … the mixer channel shows the wrong
+effect."* Tests-first, one commit each.
+
+- **The crashes** (`086932e`). Four core dumps from one afternoon were
+  `SIGXCPU` on the output callback: `audio_thread_priority` sets the soft
+  `RLIMIT_RTTIME` to **one block's worth** (128 frames at 48 kHz: 2.7 ms,
+  three kernel ticks at HZ=1000), and the signal's default disposition is
+  a core dump — so a callback that spent three ticks on a loop seam's
+  reset and a heavy block ended the program. Not our fault, and the old
+  `malloc_trim` story on the input thread was this too. `rt_budget.rs`
+  widens the soft limit to three quarters of rtkit's hard one and installs
+  a `SIGXCPU` handler that demotes the promoted threads to ordinary
+  scheduling (keeping `SCHED_RESET_ON_FORK`, or the kernel refuses with
+  EPERM and the demotion silently does nothing — measured); the output
+  callback promotes itself again three seconds later. Watched on this
+  machine: TS after the signal, RR after the wait, process alive. The
+  other dump was **every exit under Wayland**: `wl_proxy_destroy` in the
+  file-drop target's drop, after winit had closed the display it was
+  opened over. `exiting()` lets it and the activation go first.
+- **The keyboard** (`c197673`). The settings file held `channel_filter:
+  16` and a velocity window of 50–125 — the keyboard was working and
+  silently filtered. Three things: the router counts a dropped note with
+  why (`LiveKeys::ignore`, `Ignored`), and the window says it as a toast
+  ("channel 1 note ignored — MIDI channel filter is 16 (Settings)"); a
+  focused settings row gives the arrows back on a press outside the
+  browser — it held them across the whole window, so arrow keys used on
+  the roll stepped the row, which is how the file came to say that; and
+  `end_preview` aims the keyboard back at the channel (it followed the
+  listen and stayed on the preview voice until the next rebuild).
+  **Ty:** the file still says 16 and 50–125; set them back in Settings.
+- **The names** (`3f5e3e1`). One effect window serves every insert;
+  raising it for the Delay left the OS title on "Master — Reverb" and the
+  bar on the Reverb's preset. A raised editor is retitled and opening an
+  insert re-reads what the studio reads per revision about it.
+- **Random preset** (same commit): one live row at the top of every
+  preset drop-down — instrument, insert, track chain are one menu —
+  picking among what the menu shows.
+- **Scrolling** (`223d69a`): the Presets page's shelf column scrolls
+  when the shelves outrun it. The list, the bar's drop-down and the
+  browser's preset list all scrolled with the wheel on `:99` — if the
+  one that does not is another, it is still open: which menu?
+- Left as it was: hover audition; a mid-text caret in the search boxes.
+
 **As of 2026-09-20, late night — Flopsynth II, Phase 6 (`docs/flopsynth-next.md`
 §5, §7) closed: the browser's audition, the header's A/B, Init,
 Randomise and Mutate, packs, the inspector's thumbnail, the real search
