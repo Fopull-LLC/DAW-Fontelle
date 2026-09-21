@@ -17,6 +17,11 @@ use crate::transport::{Transport, TransportReader};
 /// below processes in chunks of at most this size regardless of what the
 /// device actually delivers per call.
 pub const BLOCK_SIZE: usize = 128;
+/// How long a callback the watchdog demoted stays on ordinary scheduling
+/// before it asks rtkit for real-time again — long enough for the overload
+/// that spent the budget to have passed.
+#[cfg(target_os = "linux")]
+const RT_REPROMOTE_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[derive(Debug)]
 pub struct DeviceError(pub String);
@@ -422,6 +427,13 @@ impl AudioDevice {
 
         let mut first_callback = true;
         let mut rt_handle = RtHandleSlot(ManuallyDrop::new(None));
+        // The watchdog's count as this thread last saw it, and when it was
+        // demoted — see `rt_budget`. A demoted callback waits out a few
+        // seconds on ordinary scheduling and then asks rtkit again.
+        #[cfg(target_os = "linux")]
+        let mut demotions_seen = crate::rt_budget::demotions();
+        #[cfg(target_os = "linux")]
+        let mut demoted_at: Option<std::time::Instant> = None;
         // The caller keeps its own clone for the stream's life, so dropping
         // this one on the audio thread at teardown is a refcount decrement and
         // never a free — but it is wrapped like everything else the closure
@@ -471,9 +483,43 @@ impl AudioDevice {
                                     sample_rate,
                                 )
                                 .ok();
+                            // The promotion leaves a budget of one block's
+                            // CPU time before SIGXCPU — a core dump by
+                            // default. Widened, and watched: an overrun is
+                            // a demotion, not an exit (`rt_budget`).
+                            #[cfg(target_os = "linux")]
+                            {
+                                crate::rt_budget::widen_budget();
+                                crate::rt_budget::arm_current_thread();
+                            }
                             first_callback = false;
                             data.fill(0.0);
                             return;
+                        }
+                        // Demoted by the watchdog: run on ordinary scheduling
+                        // for a few seconds — the overload that spent the
+                        // budget is likely still there — then ask again. The
+                        // D-Bus round trip allocates, which is why this sits
+                        // outside `with_rt_thread`, like the first promotion.
+                        #[cfg(target_os = "linux")]
+                        {
+                            let demotions = crate::rt_budget::demotions();
+                            if demotions != demotions_seen {
+                                demotions_seen = demotions;
+                                demoted_at = Some(std::time::Instant::now());
+                            }
+                            if let Some(since) = demoted_at
+                                && since.elapsed() >= RT_REPROMOTE_AFTER
+                            {
+                                demoted_at = None;
+                                *rt_handle.0 =
+                                    audio_thread_priority::promote_current_thread_to_real_time(
+                                        BLOCK_SIZE as u32,
+                                        sample_rate,
+                                    )
+                                    .ok();
+                                crate::rt_budget::widen_budget();
+                            }
                         }
                         // The tag covers exactly our own processing and no
                         // more. The backend owns this thread between

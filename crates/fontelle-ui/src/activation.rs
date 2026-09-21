@@ -99,11 +99,11 @@ mod imp {
                 return None;
             };
             // SAFETY: the pointer is the live `wl_display` winit opened for
-            // this process, and winit keeps it open for as long as it has a
-            // window — which is longer than any `Activation` lives, since
-            // one is only made from a window and dropped with the app. A
-            // foreign-display backend does not own the display and does not
-            // close it when dropped.
+            // this process, and winit keeps it open until its event loop
+            // ends — which is why the app lets go of this in `exiting`,
+            // before that (see `file_drag.rs` for the segfault the other
+            // order was). A foreign-display backend does not own the
+            // display and does not close it when dropped.
             let backend = unsafe { Backend::from_foreign_display(display.display.as_ptr().cast()) };
             let conn = Connection::from_backend(backend);
             let (globals, mut queue) = registry_queue_init::<Seen>(&conn).ok()?;

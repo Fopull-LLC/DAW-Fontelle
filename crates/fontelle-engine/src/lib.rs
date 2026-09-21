@@ -14,6 +14,8 @@ mod live;
 mod nodes;
 mod pipewire;
 mod plugin_node;
+#[cfg(target_os = "linux")]
+pub mod rt_budget;
 mod rt_guard;
 mod spectrum_tap;
 mod timeline_channel;

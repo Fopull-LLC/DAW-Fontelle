@@ -31,6 +31,8 @@ rubato = "5.0.0"
 # `pipewire.rs`. Every other platform captures through `cpal` alone.
 [target.'cfg(target_os = "linux")'.dependencies]
 alsa = "0.11.0"
+# `rt_budget`: the real-time CPU budget and the SIGXCPU watchdog.
+libc = "0.2.189"
 
 [dev-dependencies]
 fontelle-assets = { path = "../fontelle-assets" }

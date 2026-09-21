@@ -3907,6 +3907,20 @@ impl ApplicationHandler for WindowApp {
         }
     }
 
+    /// The loop is ending. The two hands this window holds on the Wayland
+    /// display — the file-drop target and the activation — are let go
+    /// **here**, while the display is still open: they were opened over
+    /// winit's own connection (`Backend::from_foreign_display`), and winit
+    /// closes that connection when `run_app` returns, which is before the
+    /// app is dropped. Dropped after it, each destroys its proxies on a
+    /// display that is gone — `SIGSEGV` in `wl_proxy_destroy`, on **every**
+    /// exit under Wayland (2026-09-21's dump, and the "crash on close" it
+    /// read as).
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.file_drag = None;
+        self.activation = None;
+    }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Whatever a click asked for, now that there is an event loop to
         // create it with. First, so an editor opened by the press that just

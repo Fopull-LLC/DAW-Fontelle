@@ -334,6 +334,13 @@ impl PipeWireInput {
                 let _rt =
                     audio_thread_priority::promote_current_thread_to_real_time(period as u32, rate)
                         .ok();
+                // A period's worth of budget before SIGXCPU, widened and
+                // watched — see `rt_budget`. This thread is not promoted
+                // again after a demotion: a capture at ordinary priority
+                // still captures, and the output callback's is the one that
+                // matters for the sound.
+                crate::rt_budget::widen_budget();
+                crate::rt_budget::arm_current_thread();
                 // Scoped so the reader's borrow of the stream ends before the
                 // stream is handed back — and handed back even when it would
                 // not read, because a close is a close wherever it fails.
@@ -368,6 +375,7 @@ impl PipeWireInput {
                         }
                     }
                 }
+                crate::rt_budget::disarm_current_thread();
                 // Handed back, not closed: see the type's own note.
                 Leftovers {
                     _pcm: pcm,

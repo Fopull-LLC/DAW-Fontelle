@@ -214,11 +214,13 @@ mod imp {
                 return None;
             };
             // SAFETY: the pointer is the live `wl_display` winit opened for
-            // this process, and winit keeps it open for as long as it has a
-            // window — which is longer than any `FileDrag` lives, since one
-            // is only made from a window and dropped with the app. A foreign-
-            // display backend does not own the display and does not close it
-            // when dropped. The same argument `activation.rs` makes.
+            // this process, and winit keeps it open until its event loop
+            // ends — which is why the app lets go of this in `exiting`,
+            // before that: dropped with the app, after `run_app` returned,
+            // it destroyed its proxies on a closed display (a segfault on
+            // every exit). A foreign-display backend does not own the
+            // display and does not close it when dropped. The same argument
+            // `activation.rs` makes.
             let backend = unsafe { Backend::from_foreign_display(display.display.as_ptr().cast()) };
             let conn = Connection::from_backend(backend);
             let (globals, queue) = registry_queue_init::<Dragging>(&conn).ok()?;
