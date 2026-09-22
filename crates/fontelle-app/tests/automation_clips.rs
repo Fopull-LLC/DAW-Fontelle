@@ -170,7 +170,7 @@ fn the_tempo_can_become_a_clip_and_it_starts_at_the_boxs_tempo() {
     // And the song still plays at 96: a flat lane changes nothing.
     let table = session.compiled().tempo;
     assert!(
-        table.iter().all(|(_, bpm)| (*bpm - 96.0).abs() < 1e-3),
+        table.iter().all(|span| (span.bpm - 96.0).abs() < 1e-3),
         "{table:?}"
     );
 }
@@ -194,7 +194,7 @@ fn drawing_on_the_tempo_lane_bends_the_song() {
 
     let table = session.compiled().tempo;
     assert!(table.len() > 4, "a ramp is many segments: {table:?}");
-    let (first, last_bpm) = (table[0].1, table[table.len() - 1].1);
+    let (first, last_bpm) = (table[0].bpm, table[table.len() - 1].bpm);
     assert!(
         (first - 120.0).abs() < 1e-3,
         "starts where the box is: {first}"

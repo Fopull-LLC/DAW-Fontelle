@@ -24,6 +24,7 @@ pub fn process_at_tempo<'a>(node: &mut dyn AudioNode, channels: &'a mut [&'a mut
             state: TransportState::Playing,
             position_sample: 0,
             bpm,
+            ..Default::default()
         },
         sample_range: 0..frames as i64,
     };

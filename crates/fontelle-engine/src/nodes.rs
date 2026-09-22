@@ -2876,6 +2876,7 @@ mod tests {
                     state: TransportState::Playing,
                     position_sample: 0,
                     bpm: fontelle_types::DEFAULT_BPM,
+                    ..Default::default()
                 },
                 sample_range: 0..64,
             };
@@ -3141,6 +3142,7 @@ mod tests {
                     state: TransportState::Playing,
                     position_sample: 0,
                     bpm: fontelle_types::DEFAULT_BPM,
+                    ..Default::default()
                 },
                 sample_range: 0..128,
             };
@@ -3171,6 +3173,7 @@ mod tests {
                     state: TransportState::Playing,
                     position_sample: 0,
                     bpm: fontelle_types::DEFAULT_BPM,
+                    ..Default::default()
                 },
                 sample_range: 0..frames as i64,
             };
@@ -3278,6 +3281,7 @@ mod tests {
                     state: TransportState::Playing,
                     position_sample: 0,
                     bpm: fontelle_types::DEFAULT_BPM,
+                    ..Default::default()
                 },
                 sample_range: 0..256,
             };
@@ -3324,6 +3328,7 @@ mod tests {
                     state: TransportState::Playing,
                     position_sample: 0,
                     bpm: fontelle_types::DEFAULT_BPM,
+                    ..Default::default()
                 },
                 sample_range: 0..256,
             };
@@ -3394,6 +3399,7 @@ mod tests {
                     state: TransportState::Playing,
                     position_sample: 0,
                     bpm: fontelle_types::DEFAULT_BPM,
+                    ..Default::default()
                 },
                 sample_range: 0..128,
             };

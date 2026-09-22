@@ -198,6 +198,7 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
         state: fontelle_engine::TransportState::Playing,
         position_sample: 0,
         bpm: fontelle_types::DEFAULT_BPM,
+        ..Default::default()
     };
     let mut cursor = 0usize;
     let mut sample = 0i64;
@@ -252,6 +253,7 @@ fn the_full_m0_chain_renders_the_demo_song_through_a_mixer_track() {
         state: fontelle_engine::TransportState::Playing,
         position_sample: 0,
         bpm: fontelle_types::DEFAULT_BPM,
+        ..Default::default()
     };
     let total = fontelle_app::project_duration_samples(&project, fontelle_types::PPQN);
     let mut cursor = 0usize;

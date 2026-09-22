@@ -1,7 +1,7 @@
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering};
 
-use fontelle_types::{AudioPlacement, CompiledTimeline, Sample, Tick, TimedEvent};
+use fontelle_types::{AudioPlacement, CompiledTimeline, PPQN, Sample, Tick, TimedEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -209,6 +209,48 @@ pub struct TransportSnapshot {
     /// Never zero — see [`CompiledTimeline::bpm_at`](fontelle_types::CompiledTimeline::bpm_at)
     /// — because what reads it divides by it.
     pub bpm: f32,
+    /// **Where the song is**, in ticks (INVARIANT 5), at `position_sample`.
+    ///
+    /// Beside the tempo rather than instead of it, because they answer
+    /// different questions and a node usually wants only one of them: the
+    /// tempo is *how long a beat lasts* and this is *which beat it is*. A
+    /// delay never needs this; anything whose pattern has to land on beat 4
+    /// of every bar needs nothing else (`docs/lapse-plan.md` §3.4).
+    ///
+    /// Read off the compiled timeline's own table, which is where the
+    /// sequencer wrote it — a node working it out from `position_sample` and
+    /// `bpm` would be integrating the tempo *here* over the whole song, and
+    /// one tempo change puts that out for the rest of the piece.
+    pub position_tick: Tick,
+    /// How far the song moves per sample from here, in ticks.
+    ///
+    /// The tempo inside a span is constant, so a node walks a block with this
+    /// rather than asking again per sample. A tempo change inside a block
+    /// lands on the next block's snapshot, which is what every tempo-reading
+    /// node in this program already assumes of `bpm`.
+    pub ticks_per_sample: f64,
+    /// How many beats there are in a bar. Never zero.
+    pub beats_per_bar: u32,
+}
+
+impl Default for TransportSnapshot {
+    /// A stopped transport at the top of a song at the default tempo.
+    ///
+    /// It exists so that the places that build one by hand — most of them
+    /// tests — can name the two or three fields they care about and let the
+    /// musical ones be musical. `beats_per_bar` of zero is a division by zero
+    /// on the audio thread.
+    fn default() -> Self {
+        Self {
+            state: TransportState::Stopped,
+            position_sample: 0,
+            bpm: fontelle_types::DEFAULT_BPM,
+            position_tick: 0,
+            ticks_per_sample: fontelle_types::DEFAULT_BPM as f64 / 60.0 * PPQN as f64
+                / fontelle_types::DEFAULT_SAMPLE_RATE,
+            beats_per_bar: fontelle_types::DEFAULT_BEATS_PER_BAR,
+        }
+    }
 }
 
 /// What the caller should do with the next chunk of the buffer it is filling.
@@ -326,6 +368,9 @@ impl TransportReader {
                 state,
                 position_sample: self.position,
                 bpm: timeline.bpm_at(self.position),
+                position_tick: timeline.tick_at(self.position),
+                ticks_per_sample: timeline.ticks_per_sample_at(self.position),
+                beats_per_bar: timeline.beats_per_bar,
             };
             if awake {
                 // Audition: run the graph over a block's worth of time without
@@ -407,6 +452,12 @@ impl TransportReader {
                 // And the tempo there, for the same reason: a delay synced to
                 // the song is asking how long a beat is *in this block*.
                 bpm: timeline.bpm_at(range.start),
+                // And where in the song that is, which is a different
+                // question (§3.4 of `docs/lapse-plan.md`) and the one a
+                // pattern locked to the bar is asking.
+                position_tick: timeline.tick_at(range.start),
+                ticks_per_sample: timeline.ticks_per_sample_at(range.start),
+                beats_per_bar: timeline.beats_per_bar,
             },
             range,
             events,
@@ -453,6 +504,7 @@ mod tests {
             index: Vec::new(),
             tempo: Vec::new(),
             audio: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -833,6 +885,7 @@ mod audition_tests {
             index: Vec::new(),
             tempo: Vec::new(),
             audio: Vec::new(),
+            ..Default::default()
         }
     }
 

@@ -107,6 +107,7 @@ fn render(patch: &fontelle_core::Patch, key: u8, seconds: f32) -> Vec<f32> {
                     state: TransportState::Playing,
                     position_sample: at,
                     bpm: 120.0,
+                    ..Default::default()
                 },
                 sample_range: at..at + BLOCK as i64,
             };

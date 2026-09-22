@@ -822,6 +822,7 @@ mod linux_only {
                             state: fontelle_engine::TransportState::Playing,
                             position_sample: at,
                             bpm: 120.0,
+                            ..Default::default()
                         },
                         at..at + block,
                     );

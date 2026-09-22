@@ -31,8 +31,8 @@ fn a_project_at_one_tempo_compiles_to_one_segment() {
 
     let timeline = compile(&project);
     assert_eq!(timeline.tempo.len(), 1, "one tempo, one segment");
-    assert_eq!(timeline.tempo[0].0, 0, "starting at the beginning");
-    assert!((timeline.tempo[0].1 - 96.0).abs() < 1e-3);
+    assert_eq!(timeline.tempo[0].start, 0, "starting at the beginning");
+    assert!((timeline.tempo[0].bpm - 96.0).abs() < 1e-3);
     assert!((timeline.bpm_at(0) - 96.0).abs() < 1e-3);
     assert!(
         (timeline.bpm_at(SR as i64 * 600) - 96.0).abs() < 1e-3,
@@ -66,7 +66,7 @@ fn a_tempo_change_lands_on_the_sample_it_happens_at() {
     assert_eq!(timeline.tempo.len(), 2);
 
     // Sixteen beats at 120 bpm is eight seconds.
-    let change_at = timeline.tempo[1].0;
+    let change_at = timeline.tempo[1].start;
     let expected = (8.0 * SR) as i64;
     assert!(
         (change_at - expected).abs() <= 1,
@@ -102,13 +102,18 @@ fn the_tempo_table_is_sorted_by_sample() {
     let timeline = compile(&project);
     assert_eq!(timeline.tempo.len(), 3);
     assert!(
-        timeline.tempo.windows(2).all(|w| w[0].0 < w[1].0),
+        timeline.tempo.windows(2).all(|w| w[0].start < w[1].start),
         "the tempo table is not sorted: {:?}",
         timeline.tempo
     );
     // And every segment is findable at its own start.
-    for (sample, bpm) in &timeline.tempo {
-        assert!((timeline.bpm_at(*sample) - bpm).abs() < 1e-3);
+    for span in &timeline.tempo {
+        assert!((timeline.bpm_at(span.start) - span.bpm).abs() < 1e-3);
+        assert_eq!(
+            timeline.tick_at(span.start),
+            span.tick,
+            "and at its own tick"
+        );
     }
 }
 

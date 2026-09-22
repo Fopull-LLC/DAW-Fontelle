@@ -112,6 +112,7 @@ impl Rig {
                         state: TransportState::Playing,
                         position_sample: at,
                         bpm: 120.0,
+                        ..Default::default()
                     },
                     sample_range: at..at + n as i64,
                 };

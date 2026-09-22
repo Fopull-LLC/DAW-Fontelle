@@ -30,6 +30,7 @@ fn timeline(events: Vec<TimedEvent>) -> CompiledTimeline {
         index: Vec::new(),
         tempo: Vec::new(),
         audio: Vec::new(),
+        ..Default::default()
     };
     timeline.events.sort_by_key(|e| e.sample);
     timeline

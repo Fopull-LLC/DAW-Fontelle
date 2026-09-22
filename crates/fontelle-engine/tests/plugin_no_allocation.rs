@@ -103,6 +103,7 @@ fn run_blocks(node: &mut PluginNode, events: &[TimedEvent]) {
                 state: TransportState::Playing,
                 position_sample: start,
                 bpm: fontelle_types::DEFAULT_BPM,
+                ..Default::default()
             },
             sample_range: start..start + BLOCK as i64,
         };
@@ -173,6 +174,7 @@ fn a_parameter_moving_every_block_does_not_allocate() {
                 state: TransportState::Playing,
                 position_sample: start,
                 bpm: fontelle_types::DEFAULT_BPM,
+                ..Default::default()
             },
             sample_range: start..start + BLOCK as i64,
         };

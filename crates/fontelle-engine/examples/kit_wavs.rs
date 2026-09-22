@@ -97,6 +97,7 @@ fn main() -> std::io::Result<()> {
                         state: TransportState::Playing,
                         position_sample: at,
                         bpm: 120.0,
+                        ..Default::default()
                     },
                     sample_range: at..at + BLOCK as i64,
                 };

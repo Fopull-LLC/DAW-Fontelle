@@ -65,7 +65,10 @@ pub use effect_presets::{
     GatePreset, HyperPreset, LimiterPreset, MultibandPreset, PhaserPreset, ReverbPreset,
     ShifterPreset, UtilityPreset, WidthPreset,
 };
-pub use event::{CompiledTimeline, DEFAULT_BPM, EventPayload, EventSink, TimedEvent, VoiceOrigin};
+pub use event::{
+    CompiledTimeline, DEFAULT_BEATS_PER_BAR, DEFAULT_BPM, DEFAULT_SAMPLE_RATE, EventPayload,
+    EventSink, TempoSpan, TimedEvent, VoiceOrigin,
+};
 pub use favorite::Favorite;
 pub use id::{
     AssetId, AudioInputId, ChannelId, ClipId, LaneId, MarkerId, MixerTrackId, NodeId, NoteId,

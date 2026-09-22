@@ -86,6 +86,7 @@ fn run(node: &mut EffectNode, timeline: &[TimedEvent], live: &[TimedEvent], me: 
             state: TransportState::Playing,
             position_sample: 0,
             bpm: 120.0,
+            ..Default::default()
         },
         sample_range: 0..BLOCK as i64,
     };

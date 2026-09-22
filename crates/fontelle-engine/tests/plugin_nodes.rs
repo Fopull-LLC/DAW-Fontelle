@@ -148,6 +148,7 @@ fn run<'a>(node: &mut dyn AudioNode, channels: &'a mut [&'a mut [f32]], events: 
             state: TransportState::Playing,
             position_sample: 0,
             bpm: 120.0,
+            ..Default::default()
         },
         sample_range: 0..frames as i64,
     };

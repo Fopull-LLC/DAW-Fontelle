@@ -19,7 +19,20 @@
 //! (samples), and `TransportSnapshot` carries the one number a node wants:
 //! the tempo **here**, at the position being rendered.
 
-use fontelle_types::{CompiledTimeline, DEFAULT_BPM, DelayConfig, MAX_DELAY_MS, NoteDivision};
+use fontelle_types::{
+    CompiledTimeline, DEFAULT_BPM, DelayConfig, MAX_DELAY_MS, NoteDivision, PPQN, Sample,
+    TempoSpan, Tick,
+};
+
+/// One stretch of a hand-built tempo table, at 48 kHz.
+fn span(start: Sample, bpm: f32, tick: Tick) -> TempoSpan {
+    TempoSpan {
+        start,
+        bpm,
+        tick,
+        ticks_per_sample: bpm as f64 / 60.0 * PPQN as f64 / 48_000.0,
+    }
+}
 
 // ------------------------------------------------------------- the divisions
 
@@ -192,7 +205,11 @@ fn a_timeline_with_no_tempo_reads_the_default_rather_than_zero() {
 #[test]
 fn a_timeline_reads_back_the_tempo_in_force_at_a_sample() {
     let mut timeline = CompiledTimeline::empty();
-    timeline.tempo = vec![(0, 120.0), (48_000, 90.0), (96_000, 140.0)];
+    timeline.tempo = vec![
+        span(0, 120.0, 0),
+        span(48_000, 90.0, PPQN * 2),
+        span(96_000, 140.0, PPQN * 5),
+    ];
 
     assert_eq!(timeline.bpm_at(0), 120.0);
     assert_eq!(timeline.bpm_at(47_999), 120.0, "up to but not including it");
@@ -207,7 +224,7 @@ fn a_sample_before_the_first_segment_reads_the_first_segment() {
     // Negative positions are reachable: the transport clamps at zero, but a
     // node doing its own arithmetic on `position_sample` need not.
     let mut timeline = CompiledTimeline::empty();
-    timeline.tempo = vec![(0, 90.0)];
+    timeline.tempo = vec![span(0, 90.0, 0)];
     assert_eq!(timeline.bpm_at(-1_000), 90.0);
 }
 

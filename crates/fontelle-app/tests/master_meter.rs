@@ -129,6 +129,7 @@ fn the_meter_the_bar_reads_survives_a_graph_rebuild() {
         state: TransportState::Playing,
         position_sample: 0,
         bpm: 120.0,
+        ..Default::default()
     };
     let empty = CompiledTimeline::empty();
     let mut cursor = 0usize;

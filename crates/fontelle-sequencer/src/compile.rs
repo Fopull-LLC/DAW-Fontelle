@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use fontelle_model::{ClipSource, Project, TempoMap};
 use fontelle_types::{
-    AudioPlacement, ChannelId, ClipId, CompiledTimeline, EventPayload, MixerTrackId, NodeId,
+    AudioPlacement, ChannelId, ClipId, CompiledTimeline, EventPayload, MixerTrackId, NodeId, PPQN,
     ParamAddress, TimedEvent,
 };
 
@@ -430,16 +430,28 @@ pub fn compile_with(
         // `events` Vec directly — only for the O(1)-seek optimisation TDD
         // §11.1 describes. M3 work.
         index: Vec::new(),
-        // The tempo, in the block contract's own units, because the audio
-        // thread cannot see a `TempoMap` (INVARIANT 4) and a node that wants
-        // to know how long a beat is has nowhere else to ask. Converting it
-        // here rather than shipping ticks is the point: this pass already owns
-        // every tick-to-sample conversion in the project.
+        // The tempo *and the position*, in the block contract's own units,
+        // because the audio thread cannot see a `TempoMap` (INVARIANT 4) and
+        // a node that wants to know how long a beat is — or which beat it is
+        // — has nowhere else to ask. Converting it here rather than shipping
+        // ticks is the point: this pass already owns every tick-to-sample
+        // conversion in the project.
+        //
+        // `ticks_per_sample` is derived from the bpm rather than from the
+        // two samples either side of the span, and that is deliberate: a span
+        // one tick long would otherwise divide by a rounded zero, and the
+        // last span has no sample after it to difference against.
         tempo: tempo
             .segments()
             .iter()
-            .map(|segment| (tempo.tick_to_sample(segment.start_tick), segment.bpm as f32))
+            .map(|segment| fontelle_types::TempoSpan {
+                start: tempo.tick_to_sample(segment.start_tick),
+                bpm: segment.bpm as f32,
+                tick: segment.start_tick,
+                ticks_per_sample: segment.bpm / 60.0 * PPQN as f64 / tempo.sample_rate_hz(),
+            })
             .collect(),
+        beats_per_bar: project.beats_per_bar.max(1),
     }
 }
 

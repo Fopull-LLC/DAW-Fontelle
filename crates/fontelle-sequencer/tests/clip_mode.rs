@@ -212,7 +212,7 @@ fn a_clip_scope_leaves_other_lanes_automation_out() {
         "one tempo, the box's: {:?}",
         scoped.tempo
     );
-    assert!((scoped.tempo[0].1 - 120.0).abs() < 1e-3);
+    assert!((scoped.tempo[0].bpm - 120.0).abs() < 1e-3);
     assert_eq!(
         scoped.events[0].sample,
         TempoMap::new(120.0, SR).tick_to_sample(BAR * 4)
@@ -268,12 +268,12 @@ fn the_tempo_table_the_audio_thread_reads_is_the_automated_one() {
         timeline.tempo.len()
     );
     assert!(
-        timeline.tempo.windows(2).all(|w| w[0].0 < w[1].0),
+        timeline.tempo.windows(2).all(|w| w[0].start < w[1].start),
         "sorted by sample: {:?}",
         timeline.tempo
     );
-    assert!((timeline.tempo[0].1 - 100.0).abs() < 1e-3);
-    let last = timeline.tempo.last().unwrap().1;
+    assert!((timeline.tempo[0].bpm - 100.0).abs() < 1e-3);
+    let last = timeline.tempo.last().unwrap().bpm;
     assert!((last - 140.0).abs() < 1.0, "ends near 140, got {last}");
 }
 

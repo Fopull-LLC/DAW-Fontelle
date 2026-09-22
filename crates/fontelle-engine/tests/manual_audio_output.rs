@@ -217,5 +217,6 @@ fn arpeggio_then_chord(root: u8) -> CompiledTimeline {
         index: Vec::new(),
         tempo: Vec::new(),
         audio: Vec::new(),
+        ..Default::default()
     }
 }

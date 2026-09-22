@@ -233,6 +233,7 @@ fn rendering_flopsynth_does_not_allocate() {
                 state: TransportState::Playing,
                 position_sample: at,
                 bpm: 128.0,
+                ..Default::default()
             },
             sample_range: at..at + BLOCK as i64,
         };
@@ -304,6 +305,7 @@ fn a_parameter_on_the_wire_does_not_allocate() {
                 state: TransportState::Playing,
                 position_sample: at,
                 bpm: 128.0,
+                ..Default::default()
             },
             sample_range: at..at + BLOCK as i64,
         };

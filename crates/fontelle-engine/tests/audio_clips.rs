@@ -137,6 +137,7 @@ impl Rig {
                         state: TransportState::Playing,
                         position_sample: at,
                         bpm: 120.0,
+                        ..Default::default()
                     },
                     sample_range: at..at + n as i64,
                 };
@@ -237,6 +238,7 @@ fn a_stopped_transport_plays_nothing() {
             state: TransportState::Stopped,
             position_sample: 0,
             bpm: 120.0,
+            ..Default::default()
         },
         sample_range: 0..32,
     };
@@ -373,6 +375,7 @@ fn a_mono_clip_is_heard_on_both_sides() {
             state: TransportState::Playing,
             position_sample: 0,
             bpm: 120.0,
+            ..Default::default()
         },
         sample_range: 0..10,
     };
@@ -401,6 +404,7 @@ fn panning_a_clip_hard_left_takes_it_out_of_the_right() {
             state: TransportState::Playing,
             position_sample: 0,
             bpm: 120.0,
+            ..Default::default()
         },
         sample_range: 0..10,
     };

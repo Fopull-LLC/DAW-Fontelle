@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::{AudioPlacement, NodeId, ParamAddress, Sample};
+use crate::{AudioPlacement, NodeId, PPQN, ParamAddress, Sample, Tick};
 
 /// One entry in a `CompiledTimeline` (TDD §11.1). Read-only from the RT thread's
 /// point of view — the whole `Vec` is built and handed over by `triple_buffer`
@@ -130,16 +130,48 @@ pub struct TimedEvent {
     pub payload: EventPayload,
 }
 
+/// One stretch of the song at one tempo, in the block contract's own units
+/// (`docs/lapse-plan.md` §3.4).
+///
+/// **Why this is four numbers and not two.** It used to be `(sample, bpm)`,
+/// and a tempo is a *period* — it says how long a beat lasts, not which beat
+/// it is. That distinction is invisible on a delay, whose repeats are
+/// relative to whatever went into it, and it is the whole thing for anything
+/// whose pattern has to land on beat 4 of every bar. A node cannot work the
+/// position out for itself either: `position_sample × bpm` integrates the
+/// tempo *here* over the whole song, so one tempo change puts it out for the
+/// rest of the piece, quietly.
+///
+/// So the sequencer, which owns every tick-to-sample conversion in the
+/// project, writes down the tick each stretch starts at and the rate inside
+/// it. Both directions are then a binary search and one multiply, with no
+/// allocation, which is what the audio thread needs (INVARIANT 1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TempoSpan {
+    /// The first sample this stretch covers.
+    pub start: Sample,
+    pub bpm: f32,
+    /// The musical position of [`start`](Self::start), in ticks (INVARIANT 5).
+    pub tick: Tick,
+    /// Ticks per sample inside this stretch — constant, because the tempo is.
+    ///
+    /// `f64` and not `f32`: this is multiplied by a sample count that reaches
+    /// into the hundreds of millions on a long song, and `f32` runs out of
+    /// mantissa for that well before the end of a piece.
+    pub ticks_per_sample: f64,
+}
+
 /// The flat, immutable, sample-timestamped output of `fontelle-sequencer`'s
 /// compilation pass (TDD §11). This is the only thing the audio RT thread ever
 /// reads of the document — it never sees clips, prefabs, or the model (INVARIANT 3).
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct CompiledTimeline {
     /// Sorted by `sample`.
     pub events: Vec<TimedEvent>,
     /// Sparse seek index, one entry per bar: `(sample, first event index at or after it)`.
     pub index: Vec<(Sample, usize)>,
-    /// The tempo in force from each sample, sorted by sample: `(sample, bpm)`.
+    /// Where the song is and how fast it is going, from each sample on,
+    /// sorted by sample. One entry per tempo change.
     ///
     /// **Why the tempo rides on the timeline.** `fontelle-engine` cannot see a
     /// `TempoMap` — that belongs to `fontelle-model`, and INVARIANT 4 runs the
@@ -154,7 +186,14 @@ pub struct CompiledTimeline {
     ///
     /// Empty on a timeline nobody compiled, which is what
     /// [`bpm_at`](Self::bpm_at)'s default is for.
-    pub tempo: Vec<(Sample, f32)>,
+    pub tempo: Vec<TempoSpan>,
+    /// How many beats there are in a bar — `Project::beats_per_bar`.
+    ///
+    /// Here for the same reason the tempo is: a node that has to put the same
+    /// thing under beat 1 of every bar cannot ask the project what a bar is.
+    /// Four on a timeline nobody compiled, because it may never be zero —
+    /// what reads it divides by it.
+    pub beats_per_bar: u32,
     /// Every audio clip in the project, placed on the song (TDD §15).
     ///
     /// Beside the events rather than among them, because it is a different
@@ -168,6 +207,21 @@ pub struct CompiledTimeline {
     /// and a second answer to "where does this clip start" is a second thing
     /// to keep in step.
     pub audio: Vec<AudioPlacement>,
+}
+
+impl Default for CompiledTimeline {
+    /// Written out rather than derived for one field:
+    /// [`beats_per_bar`](Self::beats_per_bar) of zero is a division by zero on
+    /// the audio thread, and `derive(Default)` has no way to say four.
+    fn default() -> Self {
+        Self {
+            events: Vec::new(),
+            index: Vec::new(),
+            tempo: Vec::new(),
+            beats_per_bar: DEFAULT_BEATS_PER_BAR,
+            audio: Vec::new(),
+        }
+    }
 }
 
 impl CompiledTimeline {
@@ -219,13 +273,60 @@ impl CompiledTimeline {
     /// `Default` in several places that never compile a project — and neither
     /// may answer zero, because what reads this divides by it.
     pub fn bpm_at(&self, sample: Sample) -> f32 {
-        if self.tempo.is_empty() {
-            return DEFAULT_BPM;
+        match self.span_at(sample) {
+            Some(span) => span.bpm,
+            None => DEFAULT_BPM,
         }
-        // The last segment starting at or before `sample`; the first one when
-        // `sample` is before all of them.
-        let at = self.tempo.partition_point(|(start, _)| *start <= sample);
-        self.tempo[at.saturating_sub(1)].1
+    }
+
+    /// The stretch of song `sample` falls in, or `None` on a timeline nobody
+    /// compiled.
+    ///
+    /// A span owns its own start, and a sample before the first one uses it
+    /// too — a count-in runs backwards at the opening tempo rather than
+    /// collapsing onto the downbeat, which is the rule
+    /// [`TempoMap::segment_at`](fontelle_model) already follows on the other
+    /// side of the conversion.
+    fn span_at(&self, sample: Sample) -> Option<&TempoSpan> {
+        if self.tempo.is_empty() {
+            return None;
+        }
+        let at = self.tempo.partition_point(|span| span.start <= sample);
+        self.tempo.get(at.saturating_sub(1))
+    }
+
+    /// **Where the song is** at `sample`, in ticks (INVARIANT 5).
+    ///
+    /// Binary search and one multiply: no allocation, so the audio thread can
+    /// call it every block (INVARIANT 1).
+    ///
+    /// Negative before the song starts, which is deliberate — the count-in is
+    /// at negative samples and a phase taken there must run up to the
+    /// downbeat rather than wrap around from somewhere.
+    ///
+    /// On a timeline nobody compiled, the answer is
+    /// [`DEFAULT_BPM`] at [`DEFAULT_SAMPLE_RATE`], for the reason
+    /// [`bpm_at`](Self::bpm_at) has a default at all: it is reachable, and
+    /// every answer here has to be musical rather than zero.
+    pub fn tick_at(&self, sample: Sample) -> Tick {
+        match self.span_at(sample) {
+            Some(span) => {
+                span.tick + ((sample - span.start) as f64 * span.ticks_per_sample).round() as Tick
+            }
+            None => (sample as f64 * default_ticks_per_sample()).round() as Tick,
+        }
+    }
+
+    /// How far the song moves per sample at `sample`, in ticks.
+    ///
+    /// What a node advances a phase by without asking again — the tempo
+    /// inside a span is constant, so walking a block with this is exact and
+    /// costs one multiply a sample. Never zero.
+    pub fn ticks_per_sample_at(&self, sample: Sample) -> f64 {
+        match self.span_at(sample) {
+            Some(span) => span.ticks_per_sample,
+            None => default_ticks_per_sample(),
+        }
     }
 }
 
@@ -235,6 +336,24 @@ impl CompiledTimeline {
 /// it is here rather than only there because the audio thread needs an answer
 /// for a timeline the sequencer never touched, and it must not be zero.
 pub const DEFAULT_BPM: f32 = 120.0;
+
+/// The metre a timeline with none of its own is read in.
+///
+/// Four, for `Project::beats_per_bar`'s reason, and never zero: what reads it
+/// divides by it.
+pub const DEFAULT_BEATS_PER_BAR: u32 = 4;
+
+/// The rate an *uncompiled* timeline answers position questions at.
+///
+/// A real one carries the rate per span, worked out at whatever the audio
+/// device was running at. This is only for the timeline nobody compiled,
+/// which is reachable in several places and must still answer something
+/// musical; it is the rate `Project` opens at.
+pub const DEFAULT_SAMPLE_RATE: f64 = 48_000.0;
+
+fn default_ticks_per_sample() -> f64 {
+    DEFAULT_BPM as f64 / 60.0 * PPQN as f64 / DEFAULT_SAMPLE_RATE
+}
 
 /// Where a note came from: the compiled timeline, or somebody playing.
 ///
@@ -303,6 +422,7 @@ mod tests {
             index: Vec::new(),
             tempo: Vec::new(),
             audio: Vec::new(),
+            ..Default::default()
         };
 
         assert_eq!(timeline.cursor_at(0), 0);
@@ -326,6 +446,7 @@ mod tests {
             index: Vec::new(),
             tempo: Vec::new(),
             audio: Vec::new(),
+            ..Default::default()
         };
         let mut cursor = 0;
         timeline.events_for_block(&mut cursor, 0..1_000);
@@ -356,6 +477,7 @@ mod tests {
             index: Vec::new(),
             tempo: Vec::new(),
             audio: Vec::new(),
+            ..Default::default()
         };
 
         let mut cursor = 0;
@@ -380,6 +502,7 @@ mod tests {
             index: Vec::new(),
             tempo: Vec::new(),
             audio: Vec::new(),
+            ..Default::default()
         };
         let mut cursor = 0;
 
@@ -400,6 +523,7 @@ mod tests {
             index: Vec::new(),
             tempo: Vec::new(),
             audio: Vec::new(),
+            ..Default::default()
         };
         let mut cursor = 0;
         let block = timeline.events_for_block(&mut cursor, 0..128);

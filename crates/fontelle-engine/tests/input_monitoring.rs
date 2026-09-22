@@ -84,6 +84,7 @@ fn render(node: &mut MonitorNode, frames: usize, block: usize, bed: f32) -> (Vec
                     state: TransportState::Stopped,
                     position_sample: at,
                     bpm: 120.0,
+                    ..Default::default()
                 },
                 sample_range: at..at + n as i64,
             };
@@ -160,6 +161,7 @@ fn render_fed(
                     state: TransportState::Stopped,
                     position_sample: at,
                     bpm: 120.0,
+                    ..Default::default()
                 },
                 sample_range: at..at + n as i64,
             };

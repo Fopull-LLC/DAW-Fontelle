@@ -83,6 +83,7 @@ fn render(patch: fontelle_core::Patch, notes: &[(usize, bool)], blocks: usize) -
                     state: TransportState::Playing,
                     position_sample: at,
                     bpm: 120.0,
+                    ..Default::default()
                 },
                 sample_range: at..at + BLOCK as i64,
             };
@@ -393,6 +394,7 @@ fn a_full_chord_through_a_chain_stays_inside_full_scale() {
                     state: TransportState::Playing,
                     position_sample: at,
                     bpm: 120.0,
+                    ..Default::default()
                 },
                 sample_range: at..at + BLOCK as i64,
             };
@@ -473,6 +475,7 @@ fn the_chain_holds_eight_slots_and_meters_each_one() {
                 state: TransportState::Playing,
                 position_sample: at,
                 bpm: 120.0,
+                ..Default::default()
             },
             sample_range: at..at + BLOCK as i64,
         };
