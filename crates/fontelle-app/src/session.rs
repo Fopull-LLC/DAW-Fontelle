@@ -9098,8 +9098,11 @@ impl StudioHost for Session {
             page: pages.showing(),
             pages: pages.len(),
             // The showing page only — the window can draw no other, and the
-            // rest are a copy to keep in step for nothing.
+            // rest are a copy to keep in step for nothing. What it *does*
+            // carry for the others is a line each, so the pages menu can say
+            // what they are about.
             text: pages.showing_text().to_string(),
+            captions: (0..pages.len()).map(|page| pages.caption(page)).collect(),
         })
     }
 

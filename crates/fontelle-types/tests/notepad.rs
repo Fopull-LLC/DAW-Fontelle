@@ -250,6 +250,54 @@ fn turning_past_an_end_is_refused_rather_than_clamped() {
 }
 
 #[test]
+fn a_page_is_named_by_its_first_line() {
+    // What the pages menu lists, so that turning to the chorus is one press
+    // rather than four. Derived rather than stored: a heading is how people
+    // write a lyric sheet anyway, and a name somebody has to fill in is a
+    // name most pages would never get.
+    let mut pad = NotepadPages::new();
+    pad.apply(&NotepadEdit::Write {
+        page: 0,
+        text: "  \n\nchorus\nand the room goes quiet".to_string(),
+    })
+    .unwrap();
+    assert_eq!(
+        pad.caption(0).as_deref(),
+        Some("chorus"),
+        "the first line with anything on it, trimmed"
+    );
+    // A blank page has no name rather than an invented one.
+    pad.apply(&NotepadEdit::InsertPage {
+        at: 1,
+        text: "   \n\t\n".to_string(),
+    })
+    .unwrap();
+    assert_eq!(pad.caption(1), None);
+    assert_eq!(pad.caption(9), None, "a page that is not there");
+}
+
+#[test]
+fn a_long_first_line_is_cut_at_a_character() {
+    // Cut for the menu it is drawn in, and **on a character boundary**: a
+    // lyric with an accent in it must not panic on the way into a row.
+    let mut pad = NotepadPages::new();
+    let long = "prenez garde à la marche — attention à la marche, s'il vous plaît";
+    pad.apply(&NotepadEdit::Write {
+        page: 0,
+        text: long.to_string(),
+    })
+    .unwrap();
+    let caption = pad.caption(0).expect("a name");
+    assert!(
+        caption.chars().count() <= fontelle_types::NOTEPAD_CAPTION_CHARS + 1,
+        "{caption:?} is {} characters",
+        caption.chars().count()
+    );
+    assert!(caption.ends_with('\u{2026}'), "{caption:?} says it was cut");
+    assert!(long.starts_with(caption.trim_end_matches('\u{2026}')));
+}
+
+#[test]
 fn the_words_survive_the_file() {
     let mut pad = NotepadPages::new();
     pad.apply(&NotepadEdit::Write {

@@ -17,7 +17,8 @@ use fontelle_types::{NotepadSize, NotepadTheme};
 use fontelle_ui::canvas::{
     NOTEPAD_LEADING, NotepadHit, NotepadRow, NotepadView, TextEntry, notepad_columns, notepad_hit,
     notepad_index_at, notepad_index_of, notepad_layout, notepad_line_end, notepad_line_home,
-    notepad_row_of, notepad_rows, notepad_scroll_to, notepad_step_row, notepad_text_px,
+    notepad_row_of, notepad_rows, notepad_scroll_to, notepad_scrollbar, notepad_step_row,
+    notepad_text_px,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
@@ -34,6 +35,7 @@ fn view(text: &str) -> NotepadView {
         page: 0,
         pages: 1,
         text: text.to_string(),
+        captions: vec![None],
     }
 }
 
@@ -110,6 +112,8 @@ fn the_footer_reads_left_to_right_and_the_hit_test_agrees() {
     for (rect, expected) in [
         (layout.text, NotepadHit::Page),
         (layout.previous, NotepadHit::Previous),
+        // The counter is a control too: it drops down the pages by name.
+        (layout.count, NotepadHit::Pages),
         (layout.next, NotepadHit::Next),
         (layout.add, NotepadHit::AddPage),
         (layout.remove, NotepadHit::RemovePage),
@@ -123,6 +127,48 @@ fn the_footer_reads_left_to_right_and_the_hit_test_agrees() {
         notepad_hit(&layout, -5.0, -5.0),
         NotepadHit::Nothing,
         "outside the window"
+    );
+}
+
+#[test]
+fn the_footer_has_room_to_say_how_to_leave() {
+    // The one thing about this window that would otherwise be reported as a
+    // bug: while the pad has the keyboard, Space types a space rather than
+    // playing the song. It is said in the pad's **own footer** rather than on
+    // the studio's status line, which anything else — a backup, a preset —
+    // overwrites a second later.
+    let theme = Theme::dark_default();
+    let wide = notepad_layout(
+        Rect::new(0.0, 0.0, 560.0, 540.0),
+        &theme.metrics,
+        &view(""),
+        ADVANCE,
+        20.0,
+    );
+    assert!(
+        !wide.hint.is_empty(),
+        "no room for the hint at the design size"
+    );
+    assert!(
+        wide.hint.x >= wide.remove.right(),
+        "it sits after the pages"
+    );
+    assert!(
+        wide.hint.right() <= wide.size_chip.x + 0.01,
+        "and before the chips"
+    );
+    // A window dragged narrow drops it rather than drawing it over a chip.
+    let narrow = notepad_layout(
+        Rect::new(0.0, 0.0, 300.0, 300.0),
+        &theme.metrics,
+        &view(""),
+        ADVANCE,
+        20.0,
+    );
+    assert!(
+        narrow.hint.is_empty(),
+        "{:?} should have been dropped",
+        narrow.hint
     );
 }
 
@@ -339,6 +385,40 @@ fn a_click_puts_the_caret_where_the_pointer_is() {
         ),
         4 + 3
     );
+}
+
+#[test]
+fn a_page_that_outruns_its_window_says_so() {
+    // Without it, a pad scrolled down the page looks like a pad whose first
+    // lines have been lost. The bar is the only thing in this window that is
+    // not a control: it says where you are and is never dragged.
+    let theme = Theme::dark_default();
+    let layout = notepad_layout(
+        Rect::new(0.0, 0.0, 400.0, 300.0),
+        &theme.metrics,
+        &view(""),
+        ADVANCE,
+        20.0,
+    );
+    let lines = layout.lines;
+    // Everything fits: nothing is drawn.
+    assert_eq!(notepad_scrollbar(&layout, lines, 0), None);
+    assert_eq!(notepad_scrollbar(&layout, lines - 1, 0), None);
+    // Twice the room: the thumb is half the track, at the top.
+    let top = notepad_scrollbar(&layout, lines * 2, 0).expect("a bar");
+    assert!((top.height - layout.text.height / 2.0).abs() < 1.0);
+    assert!((top.y - layout.text.y).abs() < 0.01);
+    assert!(top.width > 0.0 && top.right() <= layout.sheet.right() + 0.01);
+    // Scrolled to the bottom, it sits at the bottom and no further.
+    let bottom = notepad_scrollbar(&layout, lines * 2, lines).expect("a bar");
+    assert!(
+        (bottom.bottom() - layout.text.bottom()).abs() < 1.0,
+        "{bottom:?} against {:?}",
+        layout.text
+    );
+    // A page far longer than its window still has a thumb somebody can see.
+    let tiny = notepad_scrollbar(&layout, lines * 400, 0).expect("a bar");
+    assert!(tiny.height >= 8.0, "the thumb vanished: {tiny:?}");
 }
 
 #[test]

@@ -11271,6 +11271,13 @@ fn draw_notepad_page(scene: &mut Scene, labels: &Labels, chrome: &NotepadChrome<
         }
     }
 
+    // The mark down the edge, when the page is longer than its window. A
+    // page scrolled down with nothing to say so looks like a page whose
+    // first lines have been lost.
+    if let Some(bar) = crate::canvas::notepad_scrollbar(l, chrome.rows.len(), chrome.scroll) {
+        fill_rect_rounded(scene, bar, bar.width / 2.0, ink.faint.with_alpha(0x88));
+    }
+
     // And the caret over everything, on its on half, and never while there is
     // a selection — a caret inside a highlighted range is two answers to
     // "where does the next character go".
@@ -11378,6 +11385,24 @@ fn draw_notepad_footer(
             l.count,
             l.count.x + (l.count.width - shaped.width) / 2.0,
             l.count.y + (l.count.height - shaped.height) / 2.0,
+            ink.faint,
+        );
+    }
+
+    // While the pad has the keyboard, the one surprising thing about this
+    // window is that Space types a space rather than playing the song. Said
+    // here rather than on the studio's status line, which a backup or a
+    // preset overwrites a second later.
+    if chrome.caret.is_some()
+        && !l.hint.is_empty()
+        && let Some(shaped) = labels.get(crate::canvas::NOTEPAD_HINT)
+    {
+        draw_text_clipped(
+            scene,
+            shaped,
+            l.hint,
+            l.hint.x + (l.hint.width - shaped.width) / 2.0,
+            l.hint.y + (l.hint.height - shaped.height) / 2.0,
             ink.faint,
         );
     }

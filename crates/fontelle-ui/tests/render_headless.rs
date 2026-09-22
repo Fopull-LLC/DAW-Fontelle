@@ -5370,6 +5370,11 @@ fn shoot_notepad(
         page: 1,
         pages: 3,
         text: page.to_string(),
+        captions: vec![
+            Some("when the lights go down".to_string()),
+            Some("i can hear the tape run on".to_string()),
+            None,
+        ],
     };
 
     let (ew, eh) = fontelle_ui::layout::NOTEPAD_SIZE;

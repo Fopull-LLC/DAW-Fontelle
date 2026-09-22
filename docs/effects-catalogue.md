@@ -188,7 +188,7 @@ thing that makes somebody choose the software.
 
 | Effect | Status | Priority | The family it has to be |
 |---|---|---|---|
-| **Notepad** | **new** (2026-09-22) | P1 | A page of words on a strip: FL's *Fruity Notebook*, asked for by name. Pages you walk left and right through, a real text editor on each one (caret, selection, the word jumps, cut/copy/paste — the same `TextEntry` and the same keyboard every field in this program shares), seven themes, three text sizes. Its DSP is a wire. |
+| **Notepad** | **new** (2026-09-22) | P1 | A page of words on a strip: FL's *Fruity Notebook*, asked for by name. Pages you walk left and right through — or jump to by name from the counter's drop-down — a real text editor on each one (caret, selection, the word jumps, cut/copy/paste — the same `TextEntry` and the same keyboard every field in this program shares), seven themes, three text sizes. Its DSP is a wire. |
 
 **Why an insert at all.** Because that is where somebody wants it — beside
 the track it is about. A lyric belongs to the vocal, a signal-chain note
@@ -229,10 +229,23 @@ rather than by position, and is what the next notepad opens in —
 `Settings::notepad_theme`, the position `flopsynth_scale_percent` holds and
 for its reason.
 
-**What was left out.** No rich text, no page names, no search across pages,
-and no link between a page and the timeline (a note pinned to bar 33 is a
-*marker*, and markers exist). Each of those is a real feature and none of
-them is what was asked for: *"just a basic text editor."*
+**Navigating a pad of eight pages.** The arrows are for the page next door;
+the **counter is a drop-down** listing every page by what it is *about* —
+its first line, derived rather than stored (`NotepadPages::caption`), because
+a heading is how somebody writes a lyric sheet anyway and a name that has to
+be filled in is a name most pages would never get. The page you are on is
+greyed in that list: it is where you already are. A page longer than its
+window draws a **mark down the sheet's edge** — the one thing in this window
+that is not a control — and the footer says *"Esc gives the keyboard back"*
+while the pad has the keyboard, which is the only surprising thing about it
+(Space types a space rather than playing the song). That hint is in the pad's
+own footer rather than on the studio's status line, which a backup or a
+preset overwrites a second later.
+
+**What was left out.** No rich text, no *stored* page names, no search across
+pages, and no link between a page and the timeline (a note pinned to bar 33
+is a *marker*, and markers exist). Each of those is a real feature and none
+of them is what was asked for: *"just a basic text editor."*
 
 ---
 

@@ -154,10 +154,11 @@ pub use mixer::{
     pan_x_of, send_level_at, send_x_of_level, unity_fraction,
 };
 pub use notepad::{
-    NOTEPAD_LEADING, NotepadHit, NotepadLayout, NotepadRow, NotepadView, notepad_column_of,
-    notepad_columns, notepad_hit, notepad_index_at, notepad_index_of, notepad_layout,
-    notepad_line_end, notepad_line_home, notepad_row_of, notepad_rows, notepad_scroll_to,
-    notepad_step_page, notepad_step_row, notepad_text_px,
+    NOTEPAD_BLANK, NOTEPAD_HINT, NOTEPAD_LEADING, NotepadHit, NotepadLayout, NotepadRow,
+    NotepadView, notepad_column_of, notepad_columns, notepad_hit, notepad_index_at,
+    notepad_index_of, notepad_layout, notepad_line_end, notepad_line_home, notepad_row_of,
+    notepad_rows, notepad_scroll_to, notepad_scrollbar, notepad_step_page, notepad_step_row,
+    notepad_text_px,
 };
 pub use piano_roll::{
     Audition, DEFAULT_LANE_HEIGHT, DrawDrag, EdgeScroll, KEYBOARD_WIDTH, KeyStyle, LANE_PROPERTIES,

@@ -16,7 +16,16 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
-**Updated 2026-09-22 (the Notepad).** A twenty-first effect kind that makes
+**Updated 2026-09-22 (v0.11.0, the Notepad).** The tag carries the Notepad
+*and* the v0.10.0 chunk, whose tag was made here and never pushed — v0.9.0
+was the last release, so `origin/main` was four chunks behind until this
+push. The v0.10.0 tag is still local and should stay that way: pushing it
+now would publish an older release after a newer one. (`git tag -l` sorts
+alphabetically, which puts `v0.10.0` *before* `v0.7.0` — use
+`--sort=v:refname` before believing a tag is missing.) The pad's own notes
+follow.
+
+**The Notepad.** A twenty-first effect kind that makes
 no sound — `PROGRESS.md`'s top entry, and the whole design is
 `docs/effects-catalogue.md` §2.8. Things to know: (0) **a new effect window
 is four lists, not one** — `refresh_studio` clears `open_insert` on one and
@@ -37,7 +46,13 @@ the file — `Session::set_insert_param` is the one road every way of setting
 it takes; (5) driving this window over `Xwayland :99` is the usual
 stale-grab trap at its worst, because **the sheet has no hover state**: nudge
 over a footer chip, not over the page, or every grab is a page behind and
-typing looks lost when it is not.
+typing looks lost when it is not; (6) the pages menu is an ordinary
+`MenuTarget` (`NotepadPages`) — a variant, an `editor_window()` arm, a
+`menu_entries` arm and a press arm, and the open menu's rows are shaped
+generically, so nothing had to be added to `shape_labels` for them; (7) a
+hint that belongs to one window goes in **that window**, not on the studio's
+status line: the status line is rewritten from `take_message()` the next time
+the document moves, and a backup message ate the first version of it.
 
 **Updated 2026-09-21 (v0.10.0).** Four reports fixed — `PROGRESS.md`'s
 top entry. Things to know: (0) a silent exit is still `coredumpctl list`

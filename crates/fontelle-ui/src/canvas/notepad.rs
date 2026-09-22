@@ -51,6 +51,10 @@ pub struct NotepadView {
     pub pages: usize,
     /// What the showing page says.
     pub text: String,
+    /// What each page is **about** — its first line, or `None` for a blank
+    /// one (`NotepadPages::caption`). One short string per page, so the
+    /// pages menu can say "chorus" instead of "3".
+    pub captions: Vec<Option<String>>,
 }
 
 impl NotepadView {
@@ -59,7 +63,31 @@ impl NotepadView {
     pub fn page_label(&self) -> String {
         format!("page {} / {}", self.page + 1, self.pages.max(1))
     }
+
+    /// What one row of the pages menu says: the number, and what the page is
+    /// about when it is about anything.
+    ///
+    /// Here rather than in the window so that the menu and anything else that
+    /// lists the pages cannot word them differently.
+    pub fn page_row(&self, page: usize) -> String {
+        match self.captions.get(page).and_then(Option::as_ref) {
+            Some(caption) => format!("{}  \u{b7}  {caption}", page + 1),
+            None => format!("{}  \u{b7}  {NOTEPAD_BLANK}", page + 1),
+        }
+    }
 }
+
+/// What the footer says while the pad has the keyboard.
+///
+/// Short, because it shares a row with the page controls — and it names the
+/// way *out*, which is the only part anybody has to be told.
+pub const NOTEPAD_HINT: &str = "Esc gives the keyboard back";
+
+/// What the pages menu calls a page with nothing written on it.
+///
+/// A word rather than an empty row: a list with a gap in it reads as a list
+/// that failed to load.
+pub const NOTEPAD_BLANK: &str = "blank";
 
 /// How much taller than its text a line is drawn.
 ///
@@ -108,6 +136,10 @@ pub struct NotepadLayout {
     pub remove: Rect,
     pub size_chip: Rect,
     pub theme_chip: Rect,
+    /// Where the footer says how to give the keyboard back, in the room left
+    /// between the page controls and the chips. Empty when there is none —
+    /// a hint drawn over a control is worse than no hint.
+    pub hint: Rect,
     /// One drawn line, in pixels.
     pub line_height: f32,
     /// How wide one character is — **the window's own measurement**, kept
@@ -139,6 +171,7 @@ impl Default for NotepadLayout {
             remove: Rect::ZERO,
             size_chip: Rect::ZERO,
             theme_chip: Rect::ZERO,
+            hint: Rect::ZERO,
             line_height: 1.0,
             advance: 1.0,
             lines: 1,
@@ -146,6 +179,11 @@ impl Default for NotepadLayout {
         }
     }
 }
+
+/// The air each side of the footer's hint, and the least room worth drawing
+/// it in — under this it says nothing rather than half a word.
+const HINT_GAP: f32 = 10.0;
+const HINT_MIN: f32 = 120.0;
 
 /// How wide a footer button is. Square, so ‹ and › are the same target as +
 /// and −.
@@ -204,6 +242,13 @@ pub fn notepad_layout(
     let size_x = (theme_x - 6.0 - SIZE_CHIP).max(remove.right() + 6.0);
     let size_chip = row(size_x, SIZE_CHIP);
     let theme_chip = row(theme_x, THEME_CHIP);
+    // Whatever is left in the middle, if it is enough to read a few words in.
+    let gap = size_chip.x - HINT_GAP - (remove.right() + HINT_GAP);
+    let hint = if gap >= HINT_MIN {
+        row(remove.right() + HINT_GAP, gap)
+    } else {
+        Rect::ZERO
+    };
 
     NotepadLayout {
         body,
@@ -217,6 +262,7 @@ pub fn notepad_layout(
         remove,
         size_chip,
         theme_chip,
+        hint,
         line_height,
         advance: advance.max(1.0),
         lines,
@@ -230,6 +276,9 @@ pub enum NotepadHit {
     /// The sheet: a press puts the caret where it landed and starts typing.
     Page,
     Previous,
+    /// The page counter, which drops down the list of pages by what each one
+    /// is about — walking left and right is for the page next door.
+    Pages,
     Next,
     AddPage,
     RemovePage,
@@ -245,6 +294,7 @@ pub fn notepad_hit(layout: &NotepadLayout, x: f32, y: f32) -> NotepadHit {
     // everything else.
     for (rect, hit) in [
         (layout.previous, NotepadHit::Previous),
+        (layout.count, NotepadHit::Pages),
         (layout.next, NotepadHit::Next),
         (layout.add, NotepadHit::AddPage),
         (layout.remove, NotepadHit::RemovePage),
@@ -469,6 +519,39 @@ pub fn notepad_index_at(
         .floor()
         .max(0.0) as usize;
     notepad_index_of(text, rows, row, across)
+}
+
+/// How wide the mark down the sheet's edge is, and how far in it sits.
+const SCROLLBAR: f32 = 3.0;
+const SCROLLBAR_GAP: f32 = 3.0;
+/// The shortest the thumb is ever drawn. A page four hundred screens long
+/// would otherwise mark its position with nothing.
+const SCROLLBAR_MIN: f32 = 8.0;
+
+/// Where the mark down the right-hand edge of the sheet goes, or `None` when
+/// the whole page fits and there is nothing to say.
+///
+/// A **mark, not a control**: it says where in the page you are, and the
+/// wheel and the caret are what move it. The one thing in this window that
+/// cannot be clicked.
+pub fn notepad_scrollbar(layout: &NotepadLayout, rows: usize, scroll: usize) -> Option<Rect> {
+    if rows <= layout.lines || layout.text.is_empty() {
+        return None;
+    }
+    let track = layout.text.height;
+    let shown = layout.lines as f32 / rows as f32;
+    let height = (track * shown).max(SCROLLBAR_MIN).min(track);
+    // Against the rows that can be *scrolled past*, so the thumb reaches the
+    // bottom exactly when the last line is on screen.
+    let most = rows.saturating_sub(layout.lines).max(1) as f32;
+    let along = (scroll as f32 / most).clamp(0.0, 1.0);
+    let y = layout.text.y + along * (track - height);
+    Some(Rect::new(
+        layout.sheet.right() - SCROLLBAR_GAP - SCROLLBAR,
+        y,
+        SCROLLBAR,
+        height,
+    ))
 }
 
 /// The first row on screen, so that `caret_row` is on it — moving by the

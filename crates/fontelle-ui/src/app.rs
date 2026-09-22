@@ -549,6 +549,11 @@ enum MenuTarget {
     /// (`docs/flopsynth-plan.md` §P.7): favourites first, then the bank
     /// grouped by category.
     PresetMenu(EditorKind),
+    /// The notepad's pages, by what each one is about
+    /// (`docs/effects-catalogue.md` §2.8) — the counter in its footer drops
+    /// this down. "Left and right" is how you walk a pad; this is how you
+    /// jump to the chorus.
+    NotepadPages,
     /// "Save as…" asking what to call it.
     PresetSaveName(EditorKind),
     /// And then which category to put it in — the device's own, plus a row
@@ -682,6 +687,8 @@ impl MenuTarget {
             Self::ParamChoice { editor, .. } => Some(*editor),
             // Every one of these is opened from a bar in an editor window's
             // header, so it is that window that draws it.
+            // The pad's footer is in its own window.
+            Self::NotepadPages => Some(EditorKind::Effect),
             Self::PresetMenu(editor)
             | Self::PresetSaveName(editor)
             | Self::PresetCategory(editor)
@@ -6368,6 +6375,7 @@ impl WindowApp {
                 crate::render::NOTEPAD_NEXT,
                 crate::render::NOTEPAD_ADD,
                 crate::render::NOTEPAD_REMOVE,
+                crate::canvas::NOTEPAD_HINT,
                 crate::render::notepad_size_caption(view.size),
                 view.theme.label(),
             ] {
@@ -8577,6 +8585,15 @@ impl WindowApp {
                 self.caret_phase = 0.0;
                 self.redraw_editor(EditorKind::Effect);
             }
+            crate::canvas::NotepadHit::Pages => {
+                let bounds = self
+                    .editors
+                    .iter()
+                    .find(|editor| editor.kind == EditorKind::Effect)
+                    .map(|editor| editor.panel.frame)
+                    .unwrap_or(self.notepad_layout.body);
+                self.open_menu(MenuTarget::NotepadPages, x, y, bounds);
+            }
             crate::canvas::NotepadHit::Previous => self.turn_notepad_page(-1),
             crate::canvas::NotepadHit::Next => self.turn_notepad_page(1),
             crate::canvas::NotepadHit::AddPage => {
@@ -8631,9 +8648,16 @@ impl WindowApp {
         if wanted < 0 || wanted as usize >= view.pages {
             return;
         }
-        self.edit_notepad(fontelle_types::NotepadEdit::Show {
-            page: wanted as usize,
-        });
+        self.show_notepad_page(wanted as usize);
+    }
+
+    /// Turns to page `page`, whatever it took to choose it — the arrows, the
+    /// menu, or Ctrl and a page key.
+    fn show_notepad_page(&mut self, page: usize) {
+        if self.notepad.as_ref().is_none_or(|view| page >= view.pages) {
+            return;
+        }
+        self.edit_notepad(fontelle_types::NotepadEdit::Show { page });
     }
 
     /// The wheel over the page: scrolls it, and never edits anything — the
@@ -13920,6 +13944,20 @@ impl WindowApp {
                 crate::canvas::name_prompt_entries(purpose.title(), self.menu_filter.text())
             }
             MenuTarget::PresetMenu(kind) => self.preset_menu_rows(*kind).0,
+            // One row per page, worded by the view so that the menu and
+            // anything else that lists them cannot disagree. The page you are
+            // on is greyed: it is where you already are, and a menu that let
+            // you choose it would be a menu that did nothing.
+            MenuTarget::NotepadPages => match &self.notepad {
+                Some(view) => (0..view.pages)
+                    .map(|page| {
+                        let mut entry = MenuEntry::new(view.page_row(page));
+                        entry.enabled = page != view.page;
+                        entry
+                    })
+                    .collect(),
+                None => Vec::new(),
+            },
             MenuTarget::TrackMenu(strip) => {
                 let named = self
                     .mixer_strips
@@ -15173,6 +15211,9 @@ impl WindowApp {
                     return;
                 }
                 self.finish_track_save(&category);
+            }
+            (MenuTarget::NotepadPages, index) => {
+                self.show_notepad_page(index);
             }
             (MenuTarget::PresetMenu(kind), index) => {
                 let kind = *kind;

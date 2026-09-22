@@ -33,6 +33,12 @@ fn all_wet() -> f32 {
     1.0
 }
 
+/// How many characters of a page's first line name it in the pages menu.
+///
+/// A menu row's worth: long enough that two verses are tellable apart, short
+/// enough that the list stays a list.
+pub const NOTEPAD_CAPTION_CHARS: usize = 28;
+
 /// How a notepad is painted (`docs/effects-catalogue.md` §2.8).
 ///
 /// Seven, and they are the *presets* too: a pad has nothing to say about the
@@ -380,6 +386,30 @@ impl NotepadPages {
 
     pub fn showing_text(&self) -> &str {
         self.text(self.showing)
+    }
+
+    /// What page `page` is **about**: its first line with anything on it,
+    /// trimmed and cut to [`NOTEPAD_CAPTION_CHARS`].
+    ///
+    /// Derived rather than stored, and that is the design rather than a
+    /// shortcut: a heading is how somebody writes a lyric sheet anyway, and a
+    /// name that has to be filled in is a name most pages would never get.
+    /// `None` for a page with nothing on it — the window says what a nameless
+    /// page is called, because that is a word and words belong to it.
+    pub fn caption(&self, page: usize) -> Option<String> {
+        let line = self
+            .pages
+            .get(page)?
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())?;
+        let mut cut: String = line.chars().take(NOTEPAD_CAPTION_CHARS).collect();
+        // Cut on a **character**, never on a byte: a lyric with an accent in
+        // it must not panic on its way into a menu row.
+        if line.chars().count() > NOTEPAD_CAPTION_CHARS {
+            cut.push('\u{2026}');
+        }
+        Some(cut)
     }
 
     /// Whether this pad has anything written in it at all — what a strip's

@@ -19,7 +19,16 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-09-22 — the Notepad: an insert that makes no sound.** Ty:
+**As of 2026-09-22 — v0.11.0: the Notepad, and the release that carries it
+*and* everything v0.10.0 never published.** The v0.10.0 tag below was made on
+this machine and never pushed — nothing was ever built from it — so v0.11.0
+is the first release since v0.9.0 and contains both chunks. **Leave the
+v0.10.0 tag where it is**: pushing it later would publish an older release
+*after* this one, and what the updater takes for "latest" is not worth
+finding out by accident. Ty: *"go ahead and close any remaining gaps such as the ones
+youve mentioned and then you can release this update."*
+
+**The Notepad: an insert that makes no sound.** Ty:
 *"please make a new built in mixer track effect called Notepad. its just a
 basic text editor with pages you can go left and right between and use it
 like a normal text editor to write down lyrics for example as you record to
@@ -76,10 +85,23 @@ this project's rules. Tests-first, the whole design in
   effect window opened at 1180×840 whenever the selected channel was a
   Flopsynth. **The rule for the next effect window: grep for `self.tune` and
   answer every place it appears.**
-- Left out on purpose: rich text, page names, a search across pages, and any
-  link between a page and the timeline (a note pinned to a bar is a *marker*,
-  and markers exist). Each is a real feature; none is *"just a basic text
-  editor"*.
+- **The three gaps, closed before the tag.** (1) *Navigating a pad of eight
+  pages*: the counter is a drop-down listing every page by what it is
+  **about** — its first line, derived rather than stored, because a heading
+  is how somebody writes a lyric sheet and a name that must be filled in is
+  one most pages would never get; the page you are on is greyed. (2) A page
+  longer than its window draws a **mark down the sheet's edge**, the one
+  thing in this window that is not a control — without it a scrolled pad
+  looks like a pad whose first lines have been lost. (3) The footer says
+  *"Esc gives the keyboard back"* while the pad has the keyboard: Space
+  typing a space rather than playing the song is exactly what somebody would
+  report as a bug. That hint went in the **pad's own footer** after the
+  studio's status line was tried and a backup message overwrote it a second
+  later.
+- Left out on purpose: rich text, *stored* page names, a search across pages,
+  and any link between a page and the timeline (a note pinned to a bar is a
+  *marker*, and markers exist). Each is a real feature; none is *"just a
+  basic text editor"*.
 
 **As of 2026-09-21 — v0.10.0: Flopsynth II shipped, and four reports from
 using it.** Ty: *"my midi keyboard not working, the program crashing, not
