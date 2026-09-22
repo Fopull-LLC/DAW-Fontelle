@@ -139,6 +139,7 @@ fn render_two_tracks(lookahead_ms: f32) -> Vec<f32> {
             key: None,
             notes: None,
             notepad: None,
+            lapse: None,
         });
     }
 
@@ -253,6 +254,7 @@ fn the_graph_reports_what_it_costs() {
         key: None,
         notes: None,
         notepad: None,
+        lapse: None,
     });
     let gated = fontelle_app::realise(&project, &library, options()).expect("a graph");
     let expected = (LOOKAHEAD_MS / 1000.0 * SR as f32).round() as u32;

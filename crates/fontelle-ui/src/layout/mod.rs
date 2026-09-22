@@ -710,6 +710,14 @@ pub const TUNE_SIZE: (u32, u32) = (1120, 660);
 /// middle size, which is a verse's width, over about twenty lines.
 pub const NOTEPAD_SIZE: (u32, u32) = (560, 540);
 
+/// Lapse's window (`docs/lapse-plan.md` §7.1).
+///
+/// A canopy of memory over four lanes with a column of scene chips beside
+/// them, and nothing on it shrinks — so this is its minimum too, which is
+/// Flopsynth's rule and for Flopsynth's reason: there is no smaller size at
+/// which a drawable grid is still drawable.
+pub const LAPSE_SIZE: (u32, u32) = crate::canvas::LAPSE_SIZE;
+
 /// And the smallest it may be dragged to. Under this the viewport has given
 /// all it has, the keyboard has started to, and the last card would still be
 /// off the bottom — which is the one thing §7.2 does not allow, because there

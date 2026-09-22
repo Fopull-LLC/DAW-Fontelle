@@ -522,7 +522,12 @@ impl AudioNode for SamplerNode {
 /// corrector's is a **function of its range and its mode** — see
 /// [`max_insert_latency_samples`], which is where the difference between the
 /// two matters.
-pub fn insert_latency_samples(config: &fontelle_types::EffectConfig, sample_rate: f32) -> u32 {
+pub fn insert_latency_samples(
+    config: &fontelle_types::EffectConfig,
+    sample_rate: f32,
+    bpm: f32,
+    beats_per_bar: u32,
+) -> u32 {
     match config {
         fontelle_types::EffectConfig::Gate(gate) => {
             let ms = gate
@@ -531,6 +536,15 @@ pub fn insert_latency_samples(config: &fontelle_types::EffectConfig, sample_rate
             (ms / 1000.0 * sample_rate.max(0.0)).round() as u32
         }
         fontelle_types::EffectConfig::Tune(tune) => tune.latency_samples(sample_rate),
+        // **A latency in beats has to know how long a beat is**, which is why
+        // this function takes a tempo at all. It is the tempo at the top of
+        // the song rather than here: a latency that changed with the tempo
+        // map would be a latency nothing could compensate — the graph's delay
+        // lines are sized once, off the audio thread, and a song that slows
+        // down would have to resize them mid-block (INVARIANT 1).
+        fontelle_types::EffectConfig::Lapse(lapse) => {
+            lapse.latency_samples(bpm, beats_per_bar, sample_rate)
+        }
         // The limiter's look-ahead is fixed, so its latency is one constant
         // rather than a knob — but it is a latency all the same, and lining the
         // rest of the mix up to it is what keeps a ducked track in time.
@@ -587,9 +601,30 @@ pub fn max_insert_latency_samples(config: &fontelle_types::EffectConfig, sample_
             };
             widest.latency_samples(sample_rate)
         }
+        // The widest a Lapse can ask for: a bar at the slowest tempo the
+        // dry line has to survive. The tempo is not a rebuild here — the live
+        // channel carries a `look` change through immediately — so the line
+        // is sized for the worst case and the node reports the real one.
+        fontelle_types::EffectConfig::Lapse(lapse) => {
+            let widest = fontelle_types::LapseConfig {
+                look: fontelle_types::LapseLook::Bar,
+                ..*lapse
+            };
+            widest.latency_samples(LAPSE_SLOWEST_BPM, LAPSE_WIDEST_BAR, sample_rate)
+        }
         _ => 0,
     }
 }
+
+/// The slowest tempo a Lapse's dry line is sized for, and the longest bar.
+///
+/// Sixty at seven beats is 7 seconds of look-ahead — past anything musical,
+/// and the line is only as big as the worst case it is sized for once. A
+/// project slower than this still *plays*; its look-ahead is clamped to the
+/// line, which `max_insert_latency_samples` and the node agree about because
+/// both read these two numbers.
+const LAPSE_SLOWEST_BPM: f32 = 60.0;
+const LAPSE_WIDEST_BAR: u32 = 7;
 
 /// A fixed number of samples of nothing, on a path that arrives too early
 /// (TDD §5.5).
@@ -699,6 +734,13 @@ pub struct EffectNode {
     /// side of it — see [`EffectControls`]. `None` leaves `config` in charge,
     /// which is what an offline render wants.
     controls: Option<crate::EffectSource>,
+    /// And the same for a Lapse's **curves**, which are too big to ride on
+    /// the config's channel (`docs/lapse-plan.md` §3.3). `None` on every
+    /// other insert, and on a Lapse in an offline render, which reads the
+    /// grid the node was built with.
+    lapse_curves: Option<crate::LapseSource>,
+    /// What a Lapse's window is shown, when one is open on it.
+    lapse_tap: Option<std::sync::Arc<crate::LapseTap>>,
     /// Parameters an automation lane has taken over, by their position in
     /// [`EffectConfig::specs`], holding the last normalised value each was
     /// given.
@@ -742,6 +784,15 @@ pub struct EffectNode {
     dry_write: usize,
     /// How many frames `dry_line` holds.
     dry_capacity: usize,
+    /// The tempo and metre the last block was rendered at.
+    ///
+    /// Only one effect's latency is in *beats* (Lapse's look-ahead), and
+    /// `AudioNode::latency_samples` takes no context — so the node remembers
+    /// what it last saw. What actually compensates the graph is
+    /// `realise`'s walk over the document, which reads the project's own
+    /// tempo; this is what the node *reports*, and the dry line beneath it is
+    /// sized for the worst case either way.
+    metre: (f32, u32),
     /// What `prepare` was told, so this node can answer what it costs
     /// without being asked in the middle of a block — see
     /// [`EffectNode::configured_latency`].
@@ -794,6 +845,7 @@ pub struct EffectNode {
 pub struct HeldKeys {
     keys: [u8; MAX_HELD_KEYS],
     len: usize,
+    ons: u32,
 }
 
 /// How many keys one insert remembers being held.
@@ -801,6 +853,7 @@ pub const MAX_HELD_KEYS: usize = 16;
 
 impl HeldKeys {
     pub fn press(&mut self, key: u8) {
+        self.ons = self.ons.wrapping_add(1);
         self.release(key);
         if self.len == MAX_HELD_KEYS {
             self.keys.copy_within(1.., 0);
@@ -830,6 +883,15 @@ impl HeldKeys {
     /// The last one pressed and not let go of.
     pub fn last(&self) -> Option<u8> {
         (self.len > 0).then(|| self.keys[self.len - 1])
+    }
+
+    /// How many note-ons have arrived since this node was built.
+    ///
+    /// Lapse retriggers on one, and the same key pressed twice does not move
+    /// [`last`](Self::last) — so "a key is down" and "a note arrived" are two
+    /// questions and this answers the second.
+    pub fn ons(&self) -> u32 {
+        self.ons
     }
 
     /// Every held key's pitch class, bit 0 = C.
@@ -876,6 +938,7 @@ enum EffectState {
     Hyper(fontelle_fx::Hyper),
     Multiband(fontelle_fx::Multiband),
     Width(fontelle_fx::Width),
+    Lapse(fontelle_fx::Lapse),
     /// The notepad, which has no DSP at all and no state to keep: what it
     /// holds is words, and they never leave the document
     /// (`fontelle_types::notepad`). A variant rather than a fall-through,
@@ -943,6 +1006,7 @@ impl EffectState {
                 EffectState::Multiband(fontelle_fx::Multiband::new())
             }
             fontelle_types::EffectConfig::Width(_) => EffectState::Width(fontelle_fx::Width::new()),
+            fontelle_types::EffectConfig::Lapse(_) => EffectState::Lapse(fontelle_fx::Lapse::new()),
             fontelle_types::EffectConfig::Notepad(_) => EffectState::Notepad,
         }
     }
@@ -982,6 +1046,7 @@ impl EffectState {
             Self::Hyper(hyper) => hyper.prepare(sample_rate),
             Self::Multiband(multiband) => multiband.prepare(sample_rate),
             Self::Width(width) => width.prepare(sample_rate),
+            Self::Lapse(lapse) => lapse.prepare(sample_rate),
             // Nothing to size and nothing to clear: the signal goes past it.
             Self::Notepad => {}
         }
@@ -1074,6 +1139,11 @@ impl EffectState {
             }
             // The pad writes nothing, which is the whole of it: a block that
             // went through a notepad is the block that went in.
+            // Lapse is processed by the node rather than here: it wants the
+            // curves off its own channel and the song's position off the
+            // transport, and neither is something this dispatch carries. See
+            // `EffectNode::process`.
+            (Self::Lapse(_), fontelle_types::EffectConfig::Lapse(_)) => {}
             (Self::Notepad, fontelle_types::EffectConfig::Notepad(_)) => {}
             // A config of a different kind than the state cannot arrive: the
             // chain rebuilds the graph when a slot's *kind* changes, and only
@@ -1109,6 +1179,7 @@ impl EffectState {
             Self::Hyper(hyper) => hyper.reset(),
             Self::Multiband(multiband) => multiband.reset(),
             Self::Width(width) => width.reset(),
+            Self::Lapse(lapse) => lapse.reset(),
             Self::Notepad => {}
         }
     }
@@ -1122,7 +1193,13 @@ impl EffectNode {
             config,
             bypassed: false,
             controls: None,
+            lapse_curves: None,
+            lapse_tap: None,
             automated: [None; MAX_EFFECT_PARAMS],
+            metre: (
+                fontelle_types::DEFAULT_BPM,
+                fontelle_types::DEFAULT_BEATS_PER_BAR,
+            ),
             dry: Vec::new(),
             dry_line: Vec::new(),
             dry_write: 0,
@@ -1144,6 +1221,18 @@ impl EffectNode {
     /// The source carries the *initial* config as well as later ones, so a
     /// node with a live end reads one source of truth rather than two that
     /// agree until they do not.
+    /// Gives this node the live end of a Lapse's curves.
+    pub fn with_lapse(mut self, curves: crate::LapseSource) -> Self {
+        self.lapse_curves = Some(curves);
+        self
+    }
+
+    /// And the window's end of what it is doing.
+    pub fn with_lapse_tap(mut self, tap: std::sync::Arc<crate::LapseTap>) -> Self {
+        self.lapse_tap = Some(tap);
+        self
+    }
+
     pub fn with_controls(mut self, controls: crate::EffectSource) -> Self {
         self.controls = Some(controls);
         self
@@ -1323,7 +1412,7 @@ impl EffectNode {
         if self.bypassed {
             return 0;
         }
-        insert_latency_samples(&self.config, self.sample_rate)
+        insert_latency_samples(&self.config, self.sample_rate, self.metre.0, self.metre.1)
     }
 
     /// Picks up anything the live end has published. Called once per block —
@@ -1451,9 +1540,42 @@ impl AudioNode for EffectNode {
             last: self.held.last(),
             mask: self.held.mask(),
             bend_cents: self.bend_cents,
+            ons: self.held.ons(),
         };
-        self.state
-            .process(ctx.outputs, key, notes, &self.config, ctx.transport.bpm);
+        self.metre = (ctx.transport.bpm, ctx.transport.beats_per_bar.max(1));
+        // **Lapse is processed here**, not in `EffectState::process`. It is
+        // the only insert that reads two things that dispatch does not carry:
+        // its curves, off its own triple buffer (`lapse_channel`), and where
+        // the song *is*, off the transport. Threading both through the
+        // twenty-one other arms to reach one of them would be a wider
+        // signature for every effect in the program.
+        if let (EffectState::Lapse(lapse), fontelle_types::EffectConfig::Lapse(config)) =
+            (&mut self.state, &self.config)
+        {
+            let music = fontelle_types::MusicalTime {
+                tick: ctx.transport.position_tick as f64,
+                ticks_per_sample: ctx.transport.ticks_per_sample,
+                beats_per_bar: ctx.transport.beats_per_bar.max(1),
+                bpm: ctx.transport.bpm,
+                rolling: matches!(
+                    ctx.transport.state,
+                    crate::TransportState::Playing
+                        | crate::TransportState::Recording
+                        | crate::TransportState::Rendering
+                ),
+            };
+            let grid = match &mut self.lapse_curves {
+                Some(curves) => *curves.current(),
+                None => fontelle_types::LapseGrid::empty(),
+            };
+            lapse.process(ctx.outputs, notes, &grid, config, music);
+            if let Some(tap) = &self.lapse_tap {
+                tap.write(lapse.frame(), lapse.buckets(), lapse.newest_bucket());
+            }
+        } else {
+            self.state
+                .process(ctx.outputs, key, notes, &self.config, ctx.transport.bpm);
+        }
 
         // What the corrector did to the note, for whatever window is open on
         // it. After the effect, because the trace is what it *did*; skipped

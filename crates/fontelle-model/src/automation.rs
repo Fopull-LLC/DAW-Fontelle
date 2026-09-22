@@ -1,16 +1,7 @@
+pub use fontelle_types::CurveShape;
 use fontelle_types::{ParamAddress, PointId, Tick};
 
 use crate::arena::Arena;
-
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum CurveShape {
-    Linear,
-    Exponential,
-    Logarithmic,
-    SCurve,
-    Stepped,
-    Hold,
-}
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct AutomationPoint {
@@ -34,58 +25,6 @@ pub struct AutomationPoint {
 pub struct AutomationData {
     pub target: ParamAddress,
     pub points: Arena<PointId, AutomationPoint>,
-}
-
-impl CurveShape {
-    /// Where a segment of this shape is, `t` of the way through it.
-    ///
-    /// Every shape is an interpolation between the *same* two points, so all
-    /// of them return 0 at `t = 0` and 1 at `t = 1` — a shape that missed its
-    /// own endpoint would put a jump at every point it touched.
-    ///
-    /// `tension` is not read yet. It is in the document (§12.1) and the shapes
-    /// below are its zero position; a curve editor that can bend one is what
-    /// gives it a value to have.
-    fn eased(self, t: f64) -> f64 {
-        let t = t.clamp(0.0, 1.0);
-        match self {
-            Self::Linear => t,
-            // Slow to start, fast at the end — a fade that sounds even.
-            Self::Exponential => t * t,
-            // Its mirror.
-            Self::Logarithmic => 1.0 - (1.0 - t) * (1.0 - t),
-            // Eased at both ends. Smoothstep, which is the cheapest curve with
-            // zero slope at each end, so a sweep neither starts nor stops with
-            // a corner in it.
-            Self::SCurve => t * t * (3.0 - 2.0 * t),
-            // Neither of these interpolates at all; they are handled before
-            // this is called and are here so the match is total.
-            Self::Stepped | Self::Hold => 0.0,
-        }
-    }
-
-    /// Whether this shape ignores where the segment is *going* — the value
-    /// stays put until something else happens.
-    fn holds(self) -> bool {
-        matches!(self, Self::Stepped | Self::Hold)
-    }
-
-    /// Whether it ignores every later point as well, not just the next one.
-    ///
-    /// This is the whole difference between the two flat shapes, and the TDD
-    /// names both without saying what separates them:
-    ///
-    /// - **`Stepped`** is a staircase: hold this value until the next point,
-    ///   then jump to it. What a rhythmic lane is made of.
-    /// - **`Hold`** is a full stop: this value, for the rest of the clip,
-    ///   whatever is drawn after it. It is how a lane says "this parameter
-    ///   stops moving here" without deleting the points beyond.
-    ///
-    /// Two flat shapes that both jumped at the next point would be one shape
-    /// with two names.
-    fn freezes(self) -> bool {
-        matches!(self, Self::Hold)
-    }
 }
 
 impl AutomationData {
@@ -165,6 +104,8 @@ pub fn curve_value(sorted: &[AutomationPoint], tick: Tick) -> Option<f64> {
         return Some(from.value.clamp(0.0, 1.0));
     }
     let span = (to.tick - from.tick).max(1) as f64;
-    let t = from.curve.eased((tick - from.tick) as f64 / span);
+    let t = from
+        .curve
+        .eased((tick - from.tick) as f64 / span, from.tension);
     Some((from.value + (to.value - from.value) * t).clamp(0.0, 1.0))
 }

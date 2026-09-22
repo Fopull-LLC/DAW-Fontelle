@@ -185,6 +185,21 @@ pub struct Session {
     /// The pitch traces the corrector's windows read, kept across a rebuild
     /// for the same reason (`docs/tune-plan.md` §7.3).
     tune_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::TuneTap>>,
+    /// How the open Lapse's picture is being drawn on: which tool, what the
+    /// drawing snaps to, how far the value axis reaches.
+    ///
+    /// Window state rather than the document's — a tool is how a picture is
+    /// *looked at*, the rule `WaveTool` set — and on the session rather than
+    /// in the window because it should survive closing and reopening the
+    /// window inside one sitting.
+    lapse_tool: fontelle_ui::canvas::LapseTool,
+    lapse_snap: fontelle_ui::canvas::LapseSnap,
+    lapse_zoom: f32,
+    /// One memory picture per Lapse insert — `docs/lapse-plan.md` §7.2.
+    lapse_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::LapseTap>>,
+    /// And the writing end of each one's curves, which is what an edit
+    /// publishes down so that a drag is heard before the next rebuild.
+    lapse_controls: HashMap<(MixerTrackId, usize), fontelle_engine::LapseControls>,
     /// Every plugin somebody else wrote that this session has open (TDD §8.4).
     ///
     /// **Kept across a rebuild**, and that is the whole reason it is a field
@@ -1081,6 +1096,11 @@ impl Session {
             spectrum_taps: HashMap::new(),
             scope_taps: HashMap::new(),
             tune_taps: HashMap::new(),
+            lapse_tool: fontelle_ui::canvas::LapseTool::default(),
+            lapse_snap: fontelle_ui::canvas::LapseSnap::default(),
+            lapse_zoom: 1.0,
+            lapse_taps: HashMap::new(),
+            lapse_controls: HashMap::new(),
             plugins: crate::PluginRack::new(),
             plugins_hosted: false,
             analyser: fontelle_dsp::SpectrumAnalyser::new(),
@@ -1681,6 +1701,32 @@ impl Session {
     /// more: the master is drawn apart from the rest, and a panel that decided
     /// which one it was by index would put whichever track happened to be last
     /// in the arena in its column.
+    /// Sends one insert's curves down its own channel, from the document.
+    ///
+    /// The document stays the source of truth (INVARIANT 9) and this is what
+    /// the sound is doing right now — the same split `EffectControls` is,
+    /// and a rebuild seeds a fresh channel from the same place, so the two
+    /// cannot drift.
+    fn publish_lapse(&mut self, strip: usize, slot: usize) {
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return;
+        };
+        let Some(bank) = self
+            .project
+            .mixer
+            .tracks
+            .get(id)
+            .and_then(|track| track.inserts.get(slot))
+            .and_then(|insert| insert.lapse.as_ref())
+        else {
+            return;
+        };
+        let grid = fontelle_types::LapseGrid::from(&**bank);
+        if let Some(controls) = self.lapse_controls.get_mut(&(id, slot)) {
+            controls.publish(grid);
+        }
+    }
+
     fn mixer_track_ids(&self) -> Vec<MixerTrackId> {
         let master = self.project.mixer.master;
         let mut ids: Vec<MixerTrackId> = self
@@ -2832,6 +2878,7 @@ impl Session {
             &crate::realise::KeptTaps {
                 spectrum: self.spectrum_taps.clone(),
                 tune: self.tune_taps.clone(),
+                lapse: self.lapse_taps.clone(),
                 master: self.master_meter.clone(),
             },
             monitor.as_ref(),
@@ -2855,6 +2902,8 @@ impl Session {
                 self.spectrum_taps = realised.spectrum_taps;
                 self.scope_taps = realised.scope_taps;
                 self.tune_taps = realised.tune_taps;
+                self.lapse_taps = realised.lapse_taps;
+                self.lapse_controls = realised.lapse_controls;
                 self.send_controls = realised.send_controls;
                 self.metronome = Some(realised.metronome);
                 self.publish_metronome();
@@ -9080,6 +9129,72 @@ impl StudioHost for Session {
         Some(fontelle_ui::sky::SkySound { bands_db, wave })
     }
 
+    fn lapse_view(&self, strip: usize, slot: usize) -> Option<fontelle_ui::canvas::LapseView> {
+        let id = self.mixer_track_ids().get(strip).copied()?;
+        let track = self.project.mixer.tracks.get(id)?;
+        let insert = track.inserts.get(slot)?;
+        let fontelle_types::EffectConfig::Lapse(config) = insert.config else {
+            return None; // this slot holds something else
+        };
+        let bank = insert.lapse.as_ref()?;
+        // The scene the *knob* names, and the window draws the one that
+        // plays: a note that picked another one moves the chips too, which is
+        // how somebody playing a kit sees which scene they are on.
+        let scene = (config.scene as usize).min(bank.scenes.len().saturating_sub(1));
+        let showing = bank.scenes.get(scene)?;
+        // What the machine is doing, when anything is. An insert nobody has
+        // played yet has a tap full of zeros, which draws as an empty memory
+        // and a playhead at the top — which is what it is.
+        let live = self.lapse_taps.get(&(id, slot)).map(|tap| tap.read());
+        Some(fontelle_ui::canvas::LapseView {
+            track: track.name.clone(),
+            config,
+            scene,
+            scene_names: bank.scenes.iter().map(|s| s.name.clone()).collect(),
+            scene_used: bank.scenes.iter().map(|s| !s.is_flat()).collect(),
+            lanes: fontelle_types::LapseLaneKind::ALL
+                .iter()
+                .enumerate()
+                .map(|(index, kind)| {
+                    let lane = &showing.lanes[index];
+                    fontelle_ui::canvas::LaneView {
+                        kind: *kind,
+                        length: lane.length,
+                        on: lane.on,
+                        points: lane.points.clone(),
+                        open: lane.on,
+                    }
+                })
+                .collect(),
+            phase: live.as_ref().map_or(0.0, |v| v.frame.phase),
+            offset: live.as_ref().map_or(0.0, |v| v.frame.offset),
+            rate: live.as_ref().map_or(1.0, |v| v.frame.rate),
+            clamped: live.as_ref().is_some_and(|v| v.frame.clamped),
+            filled_seconds: live.as_ref().map_or(0.0, |v| v.frame.filled_seconds),
+            memory: live.map(|v| v.buckets).unwrap_or_default(),
+            beats_per_bar: self.project.beats_per_bar.max(1),
+            bpm: self.project.tempo_map.tempo_at(0) as f32,
+            tool: self.lapse_tool,
+            snap: self.lapse_snap,
+            zoom: self.lapse_zoom,
+        })
+    }
+
+    fn set_lapse_tool(&mut self, tool: fontelle_ui::canvas::LapseTool) {
+        self.lapse_tool = tool;
+    }
+
+    fn set_lapse_snap(&mut self, snap: fontelle_ui::canvas::LapseSnap) {
+        self.lapse_snap = snap;
+    }
+
+    fn set_lapse_zoom(&mut self, zoom: f32) {
+        // Never above one: the lane reaches one lane-length either way, and
+        // an axis with more range than the lane has is dead space at the
+        // bottom of the grid.
+        self.lapse_zoom = zoom.clamp(0.1, 1.0);
+    }
+
     fn notepad_view(&self, strip: usize, slot: usize) -> Option<fontelle_ui::canvas::NotepadView> {
         let id = self.mixer_track_ids().get(strip).copied()?;
         let track = self.project.mixer.tracks.get(id)?;
@@ -9104,6 +9219,21 @@ impl StudioHost for Session {
             text: pages.showing_text().to_string(),
             captions: (0..pages.len()).map(|page| pages.caption(page)).collect(),
         })
+    }
+
+    fn edit_lapse(&mut self, strip: usize, slot: usize, edit: fontelle_types::LapseEdit) {
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return;
+        };
+        self.run(Box::new(fontelle_model::EditLapse::new(id, slot, edit)));
+        // **And published**, which is where this differs from the notepad
+        // above: the curves do reach the audio thread, and a curve editor
+        // whose sound arrives on the next graph rebuild is one nobody can
+        // use. Once per applied edit, never per frame — realising a bank is
+        // 48 KB (`docs/lapse-plan.md` §3.3).
+        self.publish_lapse(strip, slot);
+        self.dirty = true;
+        self.touch();
     }
 
     fn edit_notepad(&mut self, strip: usize, slot: usize, edit: fontelle_types::NotepadEdit) {
@@ -10292,9 +10422,20 @@ impl Session {
             PresetDevice::Insert { strip, slot } => {
                 let track = self.mixer_track_ids().get(strip).copied()?;
                 let insert = self.project.mixer.tracks.get(track)?.inserts.get(slot)?;
-                Some(match &insert.plugin {
-                    Some(state) => PresetPayload::Plugin(state.clone()),
-                    None => PresetPayload::Effect(insert.config),
+                Some(match (&insert.plugin, &insert.lapse) {
+                    (Some(state), _) => PresetPayload::Plugin(state.clone()),
+                    // A Lapse saves its curves with its knobs: a preset for
+                    // this device with no curves in it is a preset for a wire.
+                    (None, Some(bank)) => {
+                        let fontelle_types::EffectConfig::Lapse(config) = insert.config else {
+                            return Some(PresetPayload::Effect(insert.config));
+                        };
+                        PresetPayload::Lapse(fontelle_types::LapsePreset {
+                            config,
+                            bank: (**bank).clone(),
+                        })
+                    }
+                    (None, None) => PresetPayload::Effect(insert.config),
                 })
             }
             PresetDevice::Track { strip } => Some(PresetPayload::Track(self.track_chain(strip)?)),
@@ -10322,6 +10463,7 @@ impl Session {
                     config: slot.config,
                     bypassed: slot.bypassed,
                     preset: slot.preset.clone(),
+                    lapse: None,
                 })
                 .collect(),
         })
@@ -10398,6 +10540,14 @@ impl Session {
         use fontelle_types::{DeviceKind, PresetPayload};
         match self.preset_device(device)? {
             DeviceKind::Instrument(kind) => self.starter_patch(kind).map(PresetPayload::Patch),
+            // A fresh Lapse is its knobs *and* twelve flat scenes: without
+            // the bank, the bar would call a drawn-on Lapse untouched.
+            DeviceKind::Effect(fontelle_types::EffectKind::Lapse) => {
+                Some(PresetPayload::Lapse(fontelle_types::LapsePreset {
+                    config: fontelle_types::LapseConfig::new(),
+                    bank: fontelle_types::LapseBank::new(),
+                }))
+            }
             DeviceKind::Effect(kind) => Some(PresetPayload::Effect(
                 fontelle_types::EffectConfig::new(kind),
             )),

@@ -59,6 +59,7 @@ fn main() -> std::io::Result<()> {
             last: Some(69),
             mask: 1 << 9,
             bend_cents: 0.0,
+            ons: 0,
         };
         let (corrected, trace) = run(&source, &config, notes);
         let name = preset.label().to_lowercase().replace(' ', "-");

@@ -356,7 +356,20 @@ fn every_built_in_effect_ships_a_bank_worth_opening() {
         // is not a preset. The EQ has no knob panel (its editor is the
         // curve), so its presets are held flat-or-not in
         // `fontelle-types/tests/effect_presets.rs` instead.
-        if session.insert_view(0, slot).is_some() {
+        //
+        // **Lapse moves its curves rather than its knobs**, and that is not
+        // an exception to the rule but the rule applied to the right state:
+        // its bank *is* the device. A preset of its that left the lanes flat
+        // would be the wire with a name on it, which is what this asserts.
+        if kind == fontelle_types::EffectKind::Lapse {
+            let before = session.lapse_view(0, slot).expect("a Lapse has a view");
+            session.apply_preset(device, 0);
+            let after = session.lapse_view(0, slot).expect("and still has one");
+            assert_ne!(
+                after.lanes, before.lanes,
+                "Lapse's first preset draws nothing"
+            );
+        } else if session.insert_view(0, slot).is_some() {
             let before = knobs(&session, 0, slot);
             session.apply_preset(device, 0);
             assert_ne!(

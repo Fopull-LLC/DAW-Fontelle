@@ -106,6 +106,30 @@ pub struct EffectSlot {
     /// unchanged and is written back unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notepad: Option<fontelle_types::NotepadPages>,
+    /// What this insert **draws**, when it is a Lapse
+    /// (`docs/lapse-plan.md` §3.2).
+    ///
+    /// A field beside [`notepad`](Self::notepad) for the reason that one is a
+    /// field: an `EffectConfig` is `Copy`, fixed-size and read on the audio
+    /// thread, and twelve scenes of four lanes is 48 KB. **Boxed**, so the
+    /// twenty-one other effects pay one null pointer for it rather than the
+    /// bank's whole size in every slot.
+    ///
+    /// Unlike a notepad's pages these *do* reach the engine, and they have to
+    /// reach it while somebody is dragging a point — but not from here. The
+    /// document stays the source of truth (INVARIANT 9) and a realised copy
+    /// crosses on its own triple buffer (`fontelle_engine::lapse_channel`).
+    ///
+    /// A second field rather than one `SlotState` enum holding both this and
+    /// the pad: the enum is tidier and it would rename `"notepad"` in every
+    /// project file written before it, which would lose somebody's lyrics for
+    /// a piece of neatness.
+    ///
+    /// `Some` on every Lapse from [`EffectSlot::new`] onwards. Defaulted and
+    /// omitted when empty, so every project written before this opens and is
+    /// written back unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lapse: Option<Box<fontelle_types::LapseBank>>,
     /// The preset this device was loaded from, if it was loaded from one
     /// (`docs/flopsynth-plan.md` §P.5).
     ///
@@ -135,6 +159,10 @@ impl EffectSlot {
             // use: a pad with nothing to type in is a window that looks
             // broken, and every path that makes a slot goes through this one.
             notepad: (kind == EffectKind::Notepad).then(fontelle_types::NotepadPages::new),
+            // Twelve flat scenes, here rather than on first use: a Lapse with
+            // no bank is a window with nothing to draw on, and every path
+            // that makes a slot goes through this one.
+            lapse: (kind == EffectKind::Lapse).then(|| Box::new(fontelle_types::LapseBank::new())),
             preset: None,
         }
     }
@@ -152,6 +180,7 @@ impl EffectSlot {
             key: None,
             notes: None,
             notepad: None,
+            lapse: None,
         }
     }
 

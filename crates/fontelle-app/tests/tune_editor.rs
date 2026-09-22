@@ -113,6 +113,8 @@ fn changing_the_range_rebuilds_and_the_reported_latency_moves() {
     let before = fontelle_engine::insert_latency_samples(
         &project.mixer.tracks[track].inserts[0].config,
         SR as f32,
+        120.0,
+        4,
     );
     let EffectConfig::Tune(config) = project.mixer.tracks[track].inserts[0].config else {
         unreachable!()
@@ -127,6 +129,8 @@ fn changing_the_range_rebuilds_and_the_reported_latency_moves() {
     let after = fontelle_engine::insert_latency_samples(
         &project.mixer.tracks[track].inserts[0].config,
         SR as f32,
+        120.0,
+        4,
     );
     assert_ne!(before, after, "the range is what the latency is made of");
 

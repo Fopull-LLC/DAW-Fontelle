@@ -15,6 +15,7 @@
 mod asset;
 mod audio_clip;
 mod base64;
+mod curve;
 mod effect;
 mod effect_next;
 mod effect_presets;
@@ -23,6 +24,8 @@ mod favorite;
 mod id;
 mod import;
 mod instrument;
+mod lapse;
+mod lapse_presets;
 mod lfo_shape;
 mod notepad;
 mod pan;
@@ -39,6 +42,7 @@ pub use audio_clip::{
     MAX_CLIP_SPEED, MIN_CLIP_GAIN_DB, MIN_CLIP_SPEED, bend, tension_for_midpoint,
 };
 pub use base64::{decode_base64, encode_base64};
+pub use curve::CurveShape;
 pub use effect::{
     BANDS, BUTTERWORTH_Q, BandChannel, BandType, BitcrushConfig, BitcrushPreset,
     CHORUS_TONE_OPEN_HZ, ChorusConfig, ChorusMode, CompressorConfig, Decimation, DelayConfig,
@@ -76,6 +80,13 @@ pub use id::{
 };
 pub use import::{FolderKind, is_multisample_path};
 pub use instrument::InstrumentKind;
+pub use lapse::{
+    CurvePoint, LAPSE_LANES, LAPSE_MEMORY_SECONDS, LAPSE_POINTS, LAPSE_SCENES, LapseBank,
+    LapseConfig, LapseEdit, LapseGrid, LapseLane, LapseLaneKind, LapseLength, LapseLook,
+    LapseNotes, LapsePoint, LapseQuality, LapseRate, LapseScene, LapseSync, LapseTone, MusicalTime,
+    RtLane, RtPoint, RtScene, curve_at, lane_ticks,
+};
+pub use lapse_presets::LapsePreset as LapseFactoryPreset;
 pub use lfo_shape::{LfoPoint, LfoShape, LfoShapeMode, MAX_LFO_POINTS};
 pub use notepad::{
     NOTEPAD_CAPTION_CHARS, NotepadConfig, NotepadEdit, NotepadPages, NotepadPreset, NotepadSize,
@@ -89,8 +100,8 @@ pub use param::{
 pub use patch_data::{PatchData, SampleRef};
 pub use plugin::{PluginFormat, PluginKey, PluginParamValue, PluginState};
 pub use preset::{
-    DeviceKind, PRESET_FORMAT_VERSION, Preset, PresetOrigin, PresetPayload, PresetRef, TrackChain,
-    TrackInsert, TrackPreset,
+    DeviceKind, LapsePreset, PRESET_FORMAT_VERSION, Preset, PresetOrigin, PresetPayload, PresetRef,
+    TrackChain, TrackInsert, TrackPreset,
 };
 pub use time::{PPQN, Sample, Tick};
 pub use wavetable_edit::{WaveTool, WavetableEdit};

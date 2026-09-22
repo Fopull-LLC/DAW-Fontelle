@@ -582,6 +582,7 @@ fn held(key: u8) -> NoteInput {
         last: Some(key),
         mask: 1 << (key % 12),
         bend_cents: 0.0,
+        ons: 0,
     }
 }
 
@@ -654,6 +655,7 @@ fn the_last_key_held_wins() {
         last: Some(67),
         mask: (1 << 4) | (1 << 7),
         bend_cents: 0.0,
+        ons: 0,
     };
     let landed = settled_cents(&run(&config, notes, &vowel_at(&|_| 6_000.0, 1.5)));
     assert!(
@@ -675,6 +677,7 @@ fn midi_scale_uses_the_held_classes() {
         last: Some(69),
         mask: (1 << 5) | (1 << 9),
         bend_cents: 0.0,
+        ons: 0,
     };
     let landed = settled_cents(&run(&config, notes, &four_seventy()));
     let a4 = hz_to_cents(440.0);
@@ -695,6 +698,7 @@ fn the_bend_moves_the_target_when_asked_and_not_otherwise() {
         last: Some(64),
         mask: 1 << 4,
         bend_cents: -80.0,
+        ons: 0,
     };
     let signal = vowel_at(&|_| 6_000.0, 1.5);
     let bent = settled_cents(&run(&base, notes, &signal));

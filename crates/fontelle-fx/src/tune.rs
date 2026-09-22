@@ -79,6 +79,13 @@ pub struct NoteInput {
     pub mask: u16,
     /// The channel's pitch bend, in cents.
     pub bend_cents: f32,
+    /// How many note-ons have arrived since the graph was built.
+    ///
+    /// Tune does not read it: last-note priority is a question about what is
+    /// *held*, and `last` answers it. Lapse does, because "a note arrived" is
+    /// a different question from "a key is down" — the same key pressed twice
+    /// retriggers a pattern and does not change `last`.
+    pub ons: u32,
 }
 
 impl NoteInput {

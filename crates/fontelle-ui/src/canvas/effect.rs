@@ -730,7 +730,7 @@ pub const NO_KEY: &str = "no key";
 /// A named position reads as its name — the same word the chooser above it
 /// shows, because a control whose read-out disagrees with its own chooser is a
 /// control you cannot trust.
-fn display_of(spec: &fontelle_types::ParamSpec, value: f32) -> String {
+pub fn display_of(spec: &fontelle_types::ParamSpec, value: f32) -> String {
     if !spec.positions.is_empty() {
         let at = (spec.normalise(value) * (spec.positions.len() - 1) as f32).round() as usize;
         if let Some(name) = spec.positions.get(at.min(spec.positions.len() - 1)) {

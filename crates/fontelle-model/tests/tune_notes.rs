@@ -186,11 +186,16 @@ fn a_project_with_notes_on_a_slot_round_trips_and_one_without_writes_no_field() 
 }
 
 #[test]
-fn only_the_corrector_takes_notes() {
+fn only_two_effects_take_notes() {
+    // The corrector, which is told *which note* to force, and Lapse, whose
+    // twelve scenes are picked by pitch class so a kit is playable from an
+    // octave of a keyboard (`docs/lapse-plan.md` §4.7). Two is the whole
+    // list, and an effect that answers yes without wanting a channel is a
+    // routing edge feeding nothing.
     for kind in EffectKind::ALL {
         assert_eq!(
             kind.takes_notes(),
-            kind == EffectKind::Tune,
+            matches!(kind, EffectKind::Tune | EffectKind::Lapse),
             "{kind:?} answers the wrong way about notes"
         );
     }

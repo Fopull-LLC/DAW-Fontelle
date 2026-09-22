@@ -16,6 +16,54 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-22 (Lapse, the time and volume machine).** A
+twenty-second `EffectKind` — `PROGRESS.md`'s top entry, the whole design in
+`docs/lapse-plan.md`, and §15 of that document for where the tree disagrees
+with the plan. Things to know:
+
+(0) **The song's tick is on `TransportSnapshot` now** and the tempo table's
+rows are `TempoSpan`, not `(sample, bpm)`. Anything that wants to land on a
+beat asks `CompiledTimeline::tick_at`; anything that works it out from
+`position_sample × bpm` is wrong from the first tempo change. This landed as
+its own commit (`d495627`) before any of Lapse, and it is useful without it.
+
+(1) **A new effect window is five lists.** `self.lapse` beside `self.eq`,
+`self.insert_view`, `self.tune` and `self.notepad`; grep any of them and
+answer every hit. The plan tables them in §7.7 with line numbers.
+
+(2) **Lapse is processed in `EffectNode::process`**, not in
+`EffectState::process` — it is the only insert that reads its own channel
+*and* the transport, and the dispatch carries neither. If you add an effect
+that needs either, put it there too rather than widening the signature for the
+twenty-one that do not.
+
+(3) **`insert_latency_samples` takes a tempo** (bpm, beats per bar). One
+look-ahead in this program is measured in beats. It reads the tempo at the top
+of the song and holds it: a latency that moved with the tempo map is a latency
+nothing could compensate.
+
+(4) **The curves cross on their own triple buffer** (`lapse_channel.rs`), and
+`LapseSource::current` returns a **reference** where `EffectSource::current`
+returns a value. 48 KB per block per insert is not a thing to copy.
+
+(5) **`CurveShape` lives in `fontelle-types` now** and `eased` takes a
+tension. `fontelle-model` re-exports the name, so nothing that used it moved.
+Zero tension is bit-identical to what it was — hold that, or every automation
+clip in every project changes shape.
+
+(6) **A preset's name is a file name.** `1/8 Roll` failed the export with
+"No such file or directory" naming nothing. `xtask`'s
+`every_preset_name_is_a_file_name` holds it now, for every device.
+
+(7) **Look at the window.** Three real faults were invisible to a green suite
+and obvious in the PNG: an empty console, five chips in a column too narrow
+for the word "pencil", and freeze guides at an alpha nobody could see.
+`FONTELLE_UI_DUMP=<dir> cargo test -p fontelle-ui --test render_headless lapse`
+is two seconds and it is the test that can see.
+
+(8) Nobody has played it on `:99` yet. That is Phase 5 of the plan and it is
+where the next round of reports will come from.
+
 **Updated 2026-09-22 (v0.11.0, the Notepad).** The tag carries the Notepad
 *and* the v0.10.0 chunk, whose tag was made here and never pushed — v0.9.0
 was the last release, so `origin/main` was four chunks behind until this

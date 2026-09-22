@@ -2581,6 +2581,27 @@ pub trait StudioHost: DocumentHost {
     /// happened.
     fn edit_notepad(&mut self, _strip: usize, _slot: usize, _edit: fontelle_types::NotepadEdit) {}
 
+    /// What the Lapse on this insert is, and what it is doing right now
+    /// (`docs/lapse-plan.md` §7). `None` when the slot holds something else.
+    fn lapse_view(&self, _strip: usize, _slot: usize) -> Option<crate::canvas::LapseView> {
+        None
+    }
+
+    /// One thing done to its curves. Through the history like every other
+    /// edit, and **published down the insert's own channel** as well, which
+    /// is where this differs from the notepad: a curve editor whose sound
+    /// arrives on the next graph rebuild is one nobody can use.
+    fn edit_lapse(&mut self, _strip: usize, _slot: usize, _edit: fontelle_types::LapseEdit) {}
+
+    /// Window state the app keeps for the open Lapse: which tool, what the
+    /// drawing snaps to, how far the value axis reaches. Not the document's —
+    /// a tool is how the picture is looked at, the rule `WaveTool` set.
+    fn set_lapse_tool(&mut self, _tool: crate::canvas::LapseTool) {}
+
+    fn set_lapse_snap(&mut self, _snap: crate::canvas::LapseSnap) {}
+
+    fn set_lapse_zoom(&mut self, _zoom: f32) {}
+
     fn eq_config(&self, _strip: usize, _slot: usize) -> Option<fontelle_types::EqConfig> {
         None
     }

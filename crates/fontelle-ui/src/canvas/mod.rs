@@ -9,6 +9,7 @@ mod glide;
 mod instrument;
 mod keybinds;
 mod keymap;
+mod lapse;
 mod menu;
 mod mixer;
 mod notepad;
@@ -49,10 +50,11 @@ pub use carry::{
 };
 pub use effect::{
     EQ_MAX_DB, EQ_MAX_HZ, EQ_MIN_HZ, EqField, EqHandle, EqHit, EqLayout, InsertInfo, NO_KEY,
-    SPECTRUM_BANDS, SPECTRUM_BOTTOM_DB, SPECTRUM_TOP_DB, band_home_hz, effect_params, effect_view,
-    eq_band_curve_points, eq_curve_points, eq_field_caption, eq_freq_at, eq_gain_at, eq_hit,
-    eq_layout, eq_layout_for, eq_nudge_freq, eq_nudge_gain, eq_nudge_mix, eq_nudge_q, eq_x_of_freq,
-    eq_y_of_gain, format_hz, next_band_channel, next_band_type, spectrum_band_hz, spectrum_points,
+    SPECTRUM_BANDS, SPECTRUM_BOTTOM_DB, SPECTRUM_TOP_DB, band_home_hz, display_of, effect_params,
+    effect_view, eq_band_curve_points, eq_curve_points, eq_field_caption, eq_freq_at, eq_gain_at,
+    eq_hit, eq_layout, eq_layout_for, eq_nudge_freq, eq_nudge_gain, eq_nudge_mix, eq_nudge_q,
+    eq_x_of_freq, eq_y_of_gain, format_hz, next_band_channel, next_band_type, spectrum_band_hz,
+    spectrum_points,
 };
 pub use favorites::{
     EffectRow, FAVORITES_HEADING, InstrumentRow, PickerRow, RESCAN_PLUGINS, effect_menu_rows,
@@ -145,6 +147,11 @@ pub fn zoom_anchor(grid: crate::layout::Rect, cursor: (f32, f32)) -> f32 {
 }
 
 pub use glide::{Glide, wheel_travel};
+pub use lapse::{
+    LAPSE_BEND_GRAB, LAPSE_CANOPY, LAPSE_GRAB, LAPSE_SIZE, LaneView, LapseHit, LapseLayout,
+    LapseSnap, LapseTool, LapseView, bend_sign, freeze_slope, grid_position, hold_points,
+    lapse_hit, lapse_layout, point_position, rate_caption, segment_at,
+};
 pub use mixer::{
     CHAIN_DOT, CHAIN_DOT_GAP, FADER_DETENT_PX, InsertRowLayout, MAX_FADER_DB, MAX_SEND_DB,
     MIN_FADER_DB, MIN_SEND_DB, MixerHit, MixerKey, MixerLayout, MixerStripLayout, NamePress,

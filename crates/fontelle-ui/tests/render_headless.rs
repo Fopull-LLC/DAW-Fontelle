@@ -5499,3 +5499,159 @@ fn the_notepad_draws_its_page_in_its_own_theme() {
         assert!(inked, "{}: the first line drew nothing", theme.label());
     }
 }
+
+/// Lapse's window, drawn through the real pipeline (`docs/lapse-plan.md`
+/// §7.6) — `FONTELLE_UI_DUMP=<dir>` writes it out.
+///
+/// **It is the test that can see.** Everything else about this window is
+/// geometry checked in `tests/lapse.rs`, which knows where the grid is and
+/// cannot know whether the curve landed on it.
+#[test]
+fn lapse_draws_its_memory_and_its_curves() {
+    let Some(shared) = headless() else {
+        return;
+    };
+    let theme = Theme::dark_default();
+    let mut text = TextContext::new();
+
+    // A scene worth looking at: a freeze over the second half of the bar, a
+    // gate under it, and a memory with something in it.
+    let mut lanes: Vec<fontelle_ui::canvas::LaneView> = fontelle_types::LapseLaneKind::ALL
+        .iter()
+        .map(|kind| fontelle_ui::canvas::LaneView {
+            kind: *kind,
+            length: fontelle_types::LapseLength::Bar,
+            on: kind.on_by_default(),
+            points: vec![fontelle_types::LapsePoint::new(
+                0.0,
+                kind.neutral(),
+                fontelle_types::CurveShape::Linear,
+            )],
+            open: kind.on_by_default(),
+        })
+        .collect();
+    lanes[0].points = vec![
+        fontelle_types::LapsePoint::new(0.0, 0.0, fontelle_types::CurveShape::Stepped),
+        fontelle_types::LapsePoint::new(0.5, 0.0, fontelle_types::CurveShape::Linear),
+        fontelle_types::LapsePoint::new(1.0, -0.5, fontelle_types::CurveShape::Linear),
+    ];
+    lanes[1].points = vec![
+        fontelle_types::LapsePoint::new(0.0, 1.0, fontelle_types::CurveShape::Stepped),
+        fontelle_types::LapsePoint::new(0.25, 0.3, fontelle_types::CurveShape::Stepped),
+        fontelle_types::LapsePoint::new(0.5, 1.0, fontelle_types::CurveShape::SCurve),
+        fontelle_types::LapsePoint::new(0.75, 0.0, fontelle_types::CurveShape::Stepped),
+    ];
+    let mut scene_names: Vec<String> = (0..12).map(|_| String::new()).collect();
+    scene_names[0] = "Hold".to_string();
+    scene_names[2] = "Roll".to_string();
+    let view = fontelle_ui::canvas::LapseView {
+        track: "Drums".to_string(),
+        config: fontelle_types::LapseConfig::new(),
+        scene: 0,
+        scene_names,
+        scene_used: (0..12).map(|index| index < 4).collect(),
+        lanes,
+        phase: 0.62,
+        offset: -0.12,
+        rate: 0.0,
+        clamped: false,
+        filled_seconds: 8.0,
+        // A plausible drum loop's envelope: a hit every quarter of the ring.
+        memory: (0..512)
+            .map(|index| {
+                let beat = (index % 128) as f32 / 128.0;
+                let level = (1.0 - beat * 4.0).max(0.08);
+                (level, level * 0.6)
+            })
+            .collect(),
+        beats_per_bar: 4,
+        bpm: 120.0,
+        tool: fontelle_ui::canvas::LapseTool::Hold,
+        snap: fontelle_ui::canvas::LapseSnap::Sixteenth,
+        zoom: 1.0,
+    };
+
+    let (ew, eh) = fontelle_ui::layout::LAPSE_SIZE;
+    let panel = fontelle_ui::layout::editor_window_layout(ew as f32, eh as f32, &theme.metrics);
+    let layout = fontelle_ui::canvas::lapse_layout(&view, panel.body);
+
+    // Under exactly the strings `draw_lapse` looks up — the same list
+    // `shape_labels` builds.
+    let mut labels = Labels::default();
+    for lane in &view.lanes {
+        labels.ensure(lane.kind.label(), &theme.font, &mut text);
+    }
+    for index in 0..view.scene_names.len() {
+        labels.ensure(&view.scene_label(index), &theme.font, &mut text);
+    }
+    for tool in fontelle_ui::canvas::LapseTool::ALL {
+        labels.ensure(tool.label(), &theme.font, &mut text);
+    }
+    for snap in fontelle_ui::canvas::LapseSnap::ALL {
+        labels.ensure(snap.label(), &theme.font, &mut text);
+    }
+    labels.ensure(
+        &format!(
+            "memory {:.1}s  \u{b7}  {}",
+            view.filled_seconds,
+            view.rate_caption()
+        ),
+        &theme.font,
+        &mut text,
+    );
+    let config = fontelle_types::EffectConfig::Lapse(view.config);
+    for spec in config.specs() {
+        labels.ensure(spec.name, &theme.font, &mut text);
+        let value = config.get(spec.id).unwrap_or(spec.default);
+        labels.ensure(
+            &fontelle_ui::canvas::display_of(spec, value),
+            &theme.font,
+            &mut text,
+        );
+    }
+
+    let title = text.layout("Drums — Lapse", &theme.font, None);
+    let mut scene = vello::Scene::new();
+    fontelle_ui::render::draw_editor_window(
+        &mut scene,
+        &theme,
+        &panel,
+        &labels,
+        &title,
+        &fontelle_ui::render::EditorWindowChrome::Lapse(fontelle_ui::render::LapseChrome {
+            layout: layout.clone(),
+            view: &view,
+            hover: None,
+        }),
+        None,
+        None,
+        None,
+        None,
+    );
+    let pixels = shared
+        .lock()
+        .expect("the shared renderer")
+        .render(&scene, ew, eh, theme.palette.window)
+        .expect("the scene must render");
+    dump_sized(&pixels, "lapse", ew, eh);
+
+    // The curve is drawn in the accent ink, so the time lane has some of it
+    // in the *lower* half — which is where a freeze goes and nowhere else
+    // would be.
+    let lane = layout.lanes[0];
+    let mut accent_below = 0usize;
+    for y in (lane.y + lane.height * 0.30) as u32..(lane.bottom() - 2.0) as u32 {
+        for x in (lane.x + 2.0) as u32..(lane.right() - 2.0) as u32 {
+            let at = ((y * ew + x) * 4) as usize;
+            let (r, g, b) = (pixels[at], pixels[at + 1], pixels[at + 2]);
+            // Anything appreciably brighter than the lane's own ground.
+            if r as u16 + g as u16 + b as u16 > 180 {
+                accent_below += 1;
+            }
+        }
+    }
+    assert!(
+        accent_below > 200,
+        "the freeze should be drawn across the bottom half of the time lane, found {accent_below} lit pixels"
+    );
+}

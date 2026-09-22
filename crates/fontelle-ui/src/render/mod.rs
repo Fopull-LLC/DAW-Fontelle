@@ -1447,6 +1447,7 @@ pub fn draw_editor_window(
         EditorWindowChrome::Insert(insert) => draw_instrument(scene, theme, labels, insert),
         EditorWindowChrome::AudioClip(clip) => draw_audio_editor(scene, theme, labels, clip),
         EditorWindowChrome::Notepad(notepad) => draw_notepad(scene, theme, labels, notepad),
+        EditorWindowChrome::Lapse(lapse) => draw_lapse(scene, theme, labels, lapse),
     }
 
     draw_context_menu(scene, theme, labels, menu, field);
@@ -1989,6 +1990,19 @@ pub enum EditorWindowChrome<'a> {
     /// row of page controls is not a grid of knobs, and it is painted in its
     /// own theme rather than the studio's.
     Notepad(NotepadChrome<'a>),
+    /// **Lapse**, which draws the memory and the curves over it because that
+    /// is what it is (`docs/lapse-plan.md` §7). Its own variant for the
+    /// reason the corrector's is: a canopy of waveform over four grids with a
+    /// column of scene chips beside them is not a grid of knobs.
+    Lapse(LapseChrome<'a>),
+}
+
+/// What Lapse's window draws.
+pub struct LapseChrome<'a> {
+    pub layout: crate::canvas::LapseLayout,
+    pub view: &'a crate::canvas::LapseView,
+    /// What the pointer is over.
+    pub hover: Option<crate::canvas::LapseHit>,
 }
 
 /// What the notepad's window draws.
@@ -11441,4 +11455,384 @@ pub fn notepad_size_caption(size: fontelle_types::NotepadSize) -> &'static str {
         fontelle_types::NotepadSize::Medium => "M",
         fontelle_types::NotepadSize::Large => "L",
     }
+}
+
+// ------------------------------------------------------------------- Lapse
+
+/// Lapse's window (`docs/lapse-plan.md` §7).
+///
+/// Three things, top to bottom: the **memory**, drawn as a waveform with the
+/// read head on it; the **lanes**, each a grid with its curve; and the
+/// console. The one idea it exists to teach is that *the slope is the sound*
+/// — so the time lane carries a 45° guide at every beat, which is the freeze,
+/// and the read-out says what the slope under the cursor is worth as a pitch.
+fn draw_lapse(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &LapseChrome<'_>) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let view = chrome.view;
+    let layout = &chrome.layout;
+
+    draw_lapse_canopy(scene, theme, labels, chrome);
+
+    for (index, rect) in layout.lanes.iter().enumerate() {
+        let Some(lane) = view.lanes.get(index) else {
+            continue;
+        };
+        if lane.open {
+            draw_lapse_lane(scene, theme, labels, chrome, index, *rect);
+        } else {
+            // A closed lane is one row: its name, and a dot that says it is
+            // off. It costs a row of chrome and no attention.
+            fill_rect_rounded(scene, *rect, m.corner_radius, p.panel_header);
+            draw_label(scene, labels, lane.kind.label(), *rect, m, p.text_muted);
+        }
+    }
+
+    // The aside: the scenes, then the tools, then the snap.
+    for (index, rect) in layout.scenes.iter().enumerate() {
+        let current = index == view.scene;
+        let used = view.scene_used.get(index).copied().unwrap_or(false);
+        let fill = if current {
+            p.accent.with_alpha(0x50)
+        } else if used {
+            lighten(p.panel_header, 0.06)
+        } else {
+            p.panel_header
+        };
+        fill_rect_rounded(scene, *rect, m.corner_radius, fill);
+        stroke_rect_rounded(
+            scene,
+            *rect,
+            m.corner_radius,
+            1.0,
+            if current { p.accent } else { p.border },
+        );
+        let caption = view.scene_label(index);
+        if let Some(text) = labels.get(&caption) {
+            draw_text_clipped(
+                scene,
+                text,
+                *rect,
+                rect.x + (rect.width - text.width) / 2.0,
+                rect.y + (rect.height - text.height) / 2.0,
+                if current { p.text } else { p.text_muted },
+            );
+        }
+    }
+    for (index, rect) in layout.tools.iter().enumerate() {
+        let tool = crate::canvas::LapseTool::ALL[index];
+        draw_lapse_chip(scene, theme, labels, *rect, tool.label(), tool == view.tool);
+    }
+    for (index, rect) in layout.snaps.iter().enumerate() {
+        let snap = crate::canvas::LapseSnap::ALL[index];
+        draw_lapse_chip(scene, theme, labels, *rect, snap.label(), snap == view.snap);
+    }
+
+    draw_lapse_console(scene, theme, labels, chrome);
+}
+
+/// A chip with its word centred in it.
+///
+/// `draw_flop_chip` leaves room for a chevron, which is right on a chooser
+/// and wrong on a chip that is a *choice* — the first draft used it and the
+/// tool bar drew as a row of empty boxes with arrows in them.
+fn draw_lapse_chip(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    rect: Rect,
+    word: &str,
+    lit: bool,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    if rect.is_empty() {
+        return;
+    }
+    fill_rect_rounded(
+        scene,
+        rect,
+        m.corner_radius,
+        if lit {
+            p.accent.with_alpha(0x40)
+        } else {
+            p.panel_header
+        },
+    );
+    stroke_rect_rounded(
+        scene,
+        rect,
+        m.corner_radius,
+        1.0,
+        if lit { p.accent } else { p.border },
+    );
+    if let Some(text) = labels.get(word) {
+        draw_text_clipped(
+            scene,
+            text,
+            rect,
+            rect.x + (rect.width - text.width) / 2.0,
+            rect.y + (rect.height - text.height) / 2.0,
+            if lit { p.text } else { p.text_muted },
+        );
+    }
+}
+
+/// The console: every parameter, as a caption over a knob or a chip.
+///
+/// A chooser is a **chip that steps**, not a menu: none of them has more than
+/// five positions, and a menu would be two gestures where one will do.
+fn draw_lapse_console(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &LapseChrome<'_>) {
+    let p = &theme.palette;
+    let view = chrome.view;
+    let config = fontelle_types::EffectConfig::Lapse(view.config);
+    let specs = config.specs();
+    for (index, rect) in chrome.layout.controls.iter().enumerate() {
+        let Some(spec) = specs.get(index) else {
+            continue;
+        };
+        let value = config.get(spec.id).unwrap_or(spec.default);
+        let hot = chrome.hover == Some(crate::canvas::LapseHit::Control(index));
+        // Tall enough for a descender: at fourteen the "y" of "Quality"
+        // and the "y" of "Sync" were clipped off.
+        let caption = Rect::new(rect.x, rect.y, rect.width, 17.0);
+        if let Some(text) = labels.get(spec.name) {
+            draw_text_clipped(
+                scene,
+                text,
+                caption,
+                caption.x + (caption.width - text.width) / 2.0,
+                caption.y,
+                if hot { p.text } else { p.text_muted },
+            );
+        }
+        let body = Rect::new(rect.x, rect.y + 19.0, rect.width, rect.height - 19.0);
+        match spec.taper {
+            // A chooser says which position it is on, in the position's own
+            // word — a read-out of "2.00" is a control nobody can set on
+            // purpose, which is what a compressor's detection mode looked
+            // like the first time it had a window.
+            fontelle_types::Taper::Stepped(_) if !spec.positions.is_empty() => {
+                let at = (value - spec.min).round().max(0.0) as usize;
+                let word = spec.positions.get(at).copied().unwrap_or("");
+                draw_lapse_chip(scene, theme, labels, body, word, hot);
+            }
+            _ => {
+                let knob = Rect::new(body.x + (body.width - 32.0) / 2.0, body.y, 32.0, 32.0);
+                draw_flop_knob(
+                    scene,
+                    theme,
+                    knob,
+                    spec.normalise(value),
+                    hot,
+                    false,
+                    false,
+                    None,
+                );
+                let read_out = Rect::new(rect.x, body.y + 34.0, rect.width, 16.0);
+                let caption = crate::canvas::display_of(spec, value);
+                if let Some(text) = labels.get(&caption) {
+                    draw_text_clipped(
+                        scene,
+                        text,
+                        read_out,
+                        read_out.x + (read_out.width - text.width) / 2.0,
+                        read_out.y,
+                        p.text_muted,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The memory: what the curves have to grab from.
+///
+/// Peak and RMS in two tones, oldest on the left, with the read head on it.
+/// A hold's head stops dead on the sample it froze and a reverse runs
+/// backwards over the picture, which is the thing nobody has to be told twice.
+fn draw_lapse_canopy(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &LapseChrome<'_>) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let area = chrome.layout.canopy;
+    if area.is_empty() {
+        return;
+    }
+    fill_rect_rounded(scene, area, m.corner_radius, p.window.with_alpha(0xc0));
+    stroke_rect_rounded(scene, area, m.corner_radius, 1.0, p.border);
+
+    let view = chrome.view;
+    let middle = area.y + area.height / 2.0;
+    let buckets = &view.memory;
+    if !buckets.is_empty() {
+        let step = area.width / buckets.len() as f32;
+        for (index, (peak, rms)) in buckets.iter().enumerate() {
+            let x = area.x + index as f32 * step;
+            let peak_h = (peak.clamp(0.0, 1.0) * area.height * 0.46).max(0.5);
+            let rms_h = (rms.clamp(0.0, 1.0) * area.height * 0.46).max(0.5);
+            fill_rect(
+                scene,
+                Rect::new(x, middle - peak_h, step.max(1.0), peak_h * 2.0),
+                p.accent.with_alpha(0x40),
+            );
+            fill_rect(
+                scene,
+                Rect::new(x, middle - rms_h, step.max(1.0), rms_h * 2.0),
+                p.accent.with_alpha(0x90),
+            );
+        }
+    }
+
+    // The read head, as a fraction of the memory: the offset is in
+    // lane-lengths and the memory is in seconds, so the window says where the
+    // head is relative to *now*, which is the right edge.
+    let filled = view.filled_seconds.max(0.001);
+    let back_seconds =
+        (-view.offset).max(0.0) * view.time_beats() as f32 * 60.0 / view.bpm.max(1.0);
+    let fraction = (1.0 - (back_seconds / filled)).clamp(0.0, 1.0);
+    let head_x = area.x + fraction * area.width;
+    fill_rect(
+        scene,
+        Rect::new(head_x - 1.0, area.y, 2.0, area.height),
+        p.playhead,
+    );
+
+    let caption = format!(
+        "memory {:.1}s  \u{b7}  {}",
+        view.filled_seconds,
+        if view.clamped {
+            "at the end of what it has".to_string()
+        } else {
+            view.rate_caption()
+        }
+    );
+    if let Some(text) = labels.get(&caption) {
+        draw_text_clipped(
+            scene,
+            text,
+            area,
+            area.x + m.panel_padding,
+            area.y + m.panel_padding * 0.5,
+            p.text_muted,
+        );
+    }
+}
+
+/// One lane's grid, its curve, and its handles.
+fn draw_lapse_lane(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &LapseChrome<'_>,
+    index: usize,
+    area: Rect,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let view = chrome.view;
+    let Some(lane) = view.lanes.get(index) else {
+        return;
+    };
+    fill_rect_rounded(scene, area, m.corner_radius, p.window.with_alpha(0xb0));
+    stroke_rect_rounded(scene, area, m.corner_radius, 1.0, p.border);
+
+    let beats = lane.length.beats(view.beats_per_bar) * view.config.rate.stretch();
+
+    // The beat grid, and the snap under it.
+    if let Some(per_beat) = view.snap.per_beat() {
+        let divisions = (per_beat * beats).round().max(1.0) as usize;
+        for step in 1..divisions {
+            let x = area.x + area.width * step as f32 / divisions as f32;
+            fill_rect(
+                scene,
+                Rect::new(x, area.y, 1.0, area.height),
+                p.border.with_alpha(0x30),
+            );
+        }
+    }
+    for beat in 1..beats.round().max(1.0) as usize {
+        let x = area.x + area.width * beat as f32 / beats as f32;
+        fill_rect(
+            scene,
+            Rect::new(x, area.y, 1.0, area.height),
+            p.border.with_alpha(0x80),
+        );
+    }
+
+    // The lane's own neutral line: zero offset, unity, centre.
+    let (_, zero_y) = crate::canvas::point_position(view, lane, area, 0.0, lane.kind.neutral());
+    fill_rect(
+        scene,
+        Rect::new(area.x, zero_y, area.width, 1.0),
+        p.text_muted.with_alpha(0x60),
+    );
+
+    // **The freeze guides**, on the time lane only. Faint 45° lines starting
+    // at every beat: trace one and the sound stops. This is the whole of what
+    // the window has to teach, and it is drawn rather than written down.
+    if lane.kind == fontelle_types::LapseLaneKind::Time {
+        let slope = crate::canvas::freeze_slope(view, area);
+        let beats_count = beats.round().max(1.0) as usize;
+        for beat in 0..beats_count {
+            let x0 = area.x + area.width * beat as f32 / beats as f32;
+            let run = area.width - (x0 - area.x);
+            let y1 = (zero_y + run * slope).min(area.bottom());
+            let x1 = x0 + (y1 - zero_y) / slope.max(1e-6);
+            stroke_polyline(
+                scene,
+                &[(x0, zero_y), (x1, y1)],
+                area,
+                1.0,
+                p.accent.with_alpha(0x50),
+            );
+        }
+    }
+
+    // The curve, sampled through the **same** function the audio thread
+    // reads: a picture drawn by a second evaluator is a picture that can
+    // disagree with the sound.
+    let steps = (area.width as usize).clamp(2, 512);
+    let mut points = Vec::with_capacity(steps + 1);
+    for step in 0..=steps {
+        let phase = step as f64 / steps as f64;
+        let value = fontelle_types::curve_at(&lane.points, phase, lane.kind.neutral());
+        let (x, y) = crate::canvas::point_position(view, lane, area, phase, value);
+        points.push((x, y));
+    }
+    stroke_polyline(scene, &points, area, 2.0, p.accent);
+
+    // The handles.
+    for (point_index, point) in lane.points.iter().enumerate() {
+        let (x, y) = crate::canvas::point_position(view, lane, area, point.at, point.value);
+        let hot = chrome.hover
+            == Some(crate::canvas::LapseHit::Point {
+                lane: index,
+                index: point_index,
+            });
+        let r = if hot { 5.0 } else { 3.5 };
+        fill_rect_rounded(
+            scene,
+            Rect::new(x - r, y - r, r * 2.0, r * 2.0),
+            r,
+            if hot { p.text } else { p.accent },
+        );
+    }
+
+    // The playhead, where the song is round this lane.
+    let head = area.x + view.phase.clamp(0.0, 1.0) * area.width;
+    fill_rect(
+        scene,
+        Rect::new(head, area.y, 1.0, area.height),
+        p.playhead.with_alpha(0xc0),
+    );
+
+    // And the lane's name, top left, out of the curve's way.
+    draw_label(
+        scene,
+        labels,
+        lane.kind.label(),
+        Rect::new(area.x, area.y, area.width, 18.0),
+        m,
+        p.text_muted,
+    );
 }

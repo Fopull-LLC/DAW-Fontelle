@@ -19,6 +19,85 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-22 — Lapse: two bars of memory with curves drawn over it.**
+Ty: *"a gross beat like plugin … a section for time manipulation and a
+section for volume and you can draw in patterns for these and make curves and
+stuff in the editor easily and it affects the playback correctly like gross
+beat. should have extensive presets … visual design should be similar to
+flopsynth. feel free to add onto or expand on this where you see
+opportunities to make it possibly even better than the original."* The whole
+design is `docs/lapse-plan.md`, written first and then built to, tests first,
+in the phases §12 lays out. §15 of that document is where the tree disagrees
+with the plan and why.
+
+- **The machine is one line.** `read(t) = write(t) − delay(t)`, so
+  `rate = 1 − d(delay)/dt`: a curve falling at one lane-length per lane holds
+  the sound still, half that plays it an octave down, twice that plays it
+  backwards, and a vertical drop is a stutter's repeat. Nothing else is
+  written. Every one of the sixty-four presets is two or three drawn points,
+  which is the evidence for the claim that a stutter, a freeze, a scratch, a
+  tape stop, a rewind, a trance gate and a groove template are **one machine
+  at seven settings**. It absorbs the catalogue's planned *Stutter / glitch*
+  and *Trance gate*, which are this at two settings.
+- **The song's position now reaches the audio thread** (`d495627`, its own
+  commit). Every synced effect in this program was phase-free: a node got
+  `TransportSnapshot::bpm`, and a tempo is a *period* — how long a beat lasts,
+  not which beat it is. Invisible on a delay, fatal here. The sequencer
+  compiles it, for the reason the tempo table's own comment gives, and the
+  table's rows became `TempoSpan` (sample, bpm, **tick**, ticks per sample).
+  Deriving it in the node from `position_sample × bpm` integrates the tempo
+  *here* over the whole song and is wrong from the first tempo change, quietly
+  — `a_tick_is_right_across_a_tempo_change` is that case. A synced LFO can now
+  start in phase with the bar rather than wherever the graph was last reset.
+- **The curves are not in the config**, which is `Copy` and crosses to the
+  audio thread every block; twelve scenes of four lanes is 48 KB. They sit on
+  the slot like a notepad's pages — but unlike those they *do* cross, and they
+  have to cross while somebody drags a point, so `lapse_channel.rs` is
+  `effect_channel.rs`'s sibling with one difference: `current()` hands back a
+  **reference**, because a copy per block per insert would be 19 MB/s of
+  memcpy for nothing.
+- **`CurveShape` moved down to `fontelle-types`** and grew the bend its
+  `tension` field has been waiting for since §12.1 — *"a curve editor that can
+  bend one is what gives it a value to have"*. Lapse's editor is that editor,
+  and the automation lane inherits the bend for free. Zero tension is bit for
+  bit what it was, which is what stops every clip in every project changing
+  shape.
+- **Four things the tests found**, each of which would have shipped: the
+  crossfade between the two read heads has to be **linear**, not equal-power
+  (two correlated slices under an equal-power fade sum to √2 — a stutter on a
+  sine peaked at 1.41); the jump detector's memory must **outlive the block**,
+  because a pattern's jumps land on musical boundaries and at 120 bpm those
+  are whole numbers of 128-sample blocks, so the smoothing knob did nothing at
+  all; an integer read position must **return the sample** rather than a sum
+  of kernel taps, or a wire moves the last bit at high quality; and a lane
+  asking for history that does not exist yet plays **live**, not silence,
+  except under look-ahead where the latency is a contract and silence is the
+  honest answer.
+- **Better than the thing it is modelled on**, in five places: a
+  **look-ahead** chooser that buys the *future* half of the time axis with
+  compensated latency (§4.5); **twelve scenes** switched by automation *or* by
+  an octave of a keyboard through the notes edge Tune built; **per-lane
+  lengths** (a three-beat volume lane under a four-beat time lane is a
+  twelve-beat pattern out of two simple curves) plus one automatable
+  half-time/double-time knob; two more lanes (**tone** and **pan**, off by
+  default); and the **memory drawn in the canopy** with the read head on it,
+  so you can see what you are about to grab.
+- **Seventy preset files** in ten categories (`assets/presets/fx-lapse/`):
+  Stutter, Hold, Scratch, Tape, Reverse, Gate, Groove, Fill, Creative, and six
+  twelve-scene **Kits** laid out C to B so a whole kit is playable from one
+  octave. *Groove* is the one to be proudest of — eight curves of a few
+  milliseconds of push and drag, which is a groove template for bounced audio
+  and a thing nothing in this class offers.
+- **The window is five lists, not four** (`docs/lapse-plan.md` §7.7). The
+  notepad's three-list omission cost a day; every one of the five is answered
+  and named in the plan. Looking at the PNG found three more things no test
+  could: the console was empty, five tool chips in a 196 px column drew as
+  empty boxes with arrows in them, and the freeze guides were invisible.
+- Left open: the tone and pan lanes have no controls beyond their depth knobs,
+  no scene copy-drag or rename, no point-shape menu (right-click removes one),
+  and Phase 5 — playing every preset on the nested `Xwayland :99` with a real
+  loop, which is where the next round of reports will come from.
+
 **As of 2026-09-22 — v0.11.0: the Notepad, and the release that carries it
 *and* everything v0.10.0 never published.** The v0.10.0 tag below was made on
 this machine and never pushed — nothing was ever built from it — so v0.11.0

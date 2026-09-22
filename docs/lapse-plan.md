@@ -1059,3 +1059,80 @@ Ty's (§0.8).
 6. **Sixty-four presets plus six kits** is a day and a half of voicing. If
    that is too many for the first release, the nine categories cut cleanly to
    about thirty-five, and Groove is the one to keep.
+
+---
+
+## 15. What building it changed (2026-09-22)
+
+The plan above is what was designed; this is where the tree disagrees with it
+and why. Each of these was found by writing the test or by looking at the
+window, not by thinking harder.
+
+1. **A lane's values are in natural units, not normalised 0..1** (§6 said
+   normalised). The time lane's value is in **lane-lengths** — zero is now,
+   −1 is a whole lane back — because "no offset" has to be an exact number a
+   preset cannot miss by a rounding error, and because a scale of one
+   lane-length is what makes a freeze a freeze at *any* lane length. Volume
+   is an amplitude with unity at 1; tone and pan are bipolar around 0.
+2. **A reverse is drawn short, not deep.** The time lane reaches one
+   lane-length either way, which is one freeze's worth; `dv/dp = −2` — reverse
+   at the song's own speed — is therefore half a lane falling by one
+   lane-length. Widening the range instead would have put the freeze at 26° on
+   the grid and cost the one thing about the window that teaches itself.
+3. **The zoom only magnifies.** It never reaches past one lane-length,
+   because the lane does not: a grid with range the lane cannot fill is dead
+   space where half the clicks do nothing. `a_point_round_trips_through_the_
+   hit_test` at zoom 2 is how that was found.
+4. **The crossfade is linear, not equal-power.** The two sides are the same
+   recording at two positions and are very often strongly correlated — that is
+   what a repeat *is* — and two correlated signals under an equal-power fade
+   sum to √2. `nothing_it_makes_is_louder_than_what_went_in` measured 1.41 on
+   a sine before the change: a clipped master on every stutter.
+5. **The jump detector's memory outlives the block.** A pattern's jumps land
+   on musical boundaries, and at 120 bpm a musical boundary is a whole number
+   of 128-sample blocks — so a `last_read` local to `process` missed *every*
+   jump the pattern made and the smoothing knob did nothing whatever it was
+   set to. `smoothing_takes_the_step_out_of_a_jump` is that test.
+6. **Look-ahead is a contract.** Before the song has run as long as the
+   look-ahead, the output is **silence** rather than the live signal: the
+   node's latency is what the graph compensates against, and playing live
+   there would put the track a beat ahead of every other one. The friendly
+   "play live rather than silence" rule applies only to the *curve* asking
+   for history that does not exist yet.
+7. **Lapse is processed in `EffectNode::process`**, not in
+   `EffectState::process`. It is the only insert that reads two things that
+   dispatch does not carry — its curves, off their own channel, and where the
+   song *is* — and threading both through the twenty-one other arms to reach
+   one of them would widen the signature for every effect in the program.
+8. **`insert_latency_samples` takes a tempo now.** A look-ahead measured in
+   beats has to know how long a beat is. It is the tempo at the top of the
+   song, held: a latency that moved with the tempo map is a latency nothing
+   could compensate, because the graph's delay lines are sized once and off
+   the audio thread.
+9. **The freeze guide is 45° only on a square grid.** What matters and what
+   is drawn is that it *is* the freeze slope; the lane is 933×132, so the
+   guide is a shallow diagonal. Tracing it still stops the sound, which is
+   the whole affordance. §4.3's table stands; the "45°" in §7.3 is a picture
+   of the idea rather than a measurement.
+10. **The tools are a bar under the canopy, not a column in the aside.**
+    Five chips in a 196 px column is 29 px each, which is narrower than the
+    word "pencil" — the aside drew as a row of empty boxes with arrows in
+    them. Found by looking at the PNG.
+11. **A preset's name is a file name.** `1/8 Roll` failed the export with
+    "No such file or directory" naming nothing; the rows are *Eighth Roll*
+    and friends, and `xtask`'s `every_preset_name_is_a_file_name` holds it
+    for every device.
+12. **A track chain carries a Lapse's curves**, where it does not carry a
+    notepad's words: a pad's pages are a document somebody wrote, and a
+    Lapse's curves are the effect itself.
+13. **The window's console is drawn here**, not by the generic knob panel:
+    one cell per parameter, a chooser as a chip that *steps* rather than a
+    menu, because none of them has more than five positions.
+
+Still open, in the order they are worth doing: the **Tone and Pan lanes have
+no window controls of their own** beyond their depth knobs (the lanes draw and
+edit, the filter mode is a console chip); **no scene copy-drag** between chips
+and no rename; the **point shape menu** (right-click removes a point today);
+the **memory canopy does not draw the read head's history**, only where it is
+now; and §12's Phase 5 — playing every preset on the nested `Xwayland :99`
+with a real loop, which is where the next round of defects will come from.

@@ -30,7 +30,7 @@ pub use command::{Command, CommandError, History};
 pub use commands::{
     AddAudioClip, AddAutomationPoint, AddChannel, AddClip, AddInsert, AddLane, AddMixerTrack,
     AddNotes, AddPluginInsert, AddPrefab, AddPrefabInstance, AddSend, ApplyPreset, ApplyTrackChain,
-    Compound, CopyChannelAb, DetachPrefab, DuplicateChannel, DuplicateClip, EditNotepad,
+    Compound, CopyChannelAb, DetachPrefab, DuplicateChannel, DuplicateClip, EditLapse, EditNotepad,
     FlagTarget, ImportPart, ImportParts, MIN_CLIP_LENGTH, MadePart, MakePrefabFromClip,
     MoveAutomationPoints, MoveClip, MoveInsert, MoveLane, MoveNotes, NEW_SEND_DB,
     NudgeNoteProperty, NumberTarget, PlaceAutomationPoints, PluginTarget, PresetTarget,

@@ -5363,6 +5363,17 @@ impl Command for ApplyTrackChain {
                 // preset that brought a document with it.
                 notepad: (insert.config.kind() == fontelle_types::EffectKind::Notepad)
                     .then(fontelle_types::NotepadPages::new),
+                // The curves *are* the effect, so unlike the pad's words they
+                // travel with the chain — see `TrackInsert::lapse`. A chain
+                // saved before Lapse, or one whose slot is not a Lapse, gets
+                // a fresh flat bank so the slot is still drawable.
+                lapse: match (&insert.lapse, insert.config.kind()) {
+                    (Some(bank), fontelle_types::EffectKind::Lapse) => Some(bank.clone()),
+                    (_, fontelle_types::EffectKind::Lapse) => {
+                        Some(Box::new(fontelle_types::LapseBank::new()))
+                    }
+                    _ => None,
+                },
             })
             .collect();
         self.previous.get_or_insert(previous);
@@ -5386,6 +5397,7 @@ impl Command for ApplyTrackChain {
                             config: slot.config,
                             bypassed: slot.bypassed,
                             preset: slot.preset.clone(),
+                            lapse: None,
                         })
                         .collect(),
                 },
@@ -6262,6 +6274,122 @@ impl Command for EditNotepad {
                 .undo
                 .as_ref()
                 .map_or(0, fontelle_types::NotepadEdit::memory_cost)
+    }
+}
+
+/// One thing done to a Lapse's curves (`docs/lapse-plan.md` §6).
+///
+/// One command for all of them rather than one per edit, because the inverse
+/// of each is another edit of the same shape — see
+/// [`LapseBank::apply`](fontelle_types::LapseBank::apply), which does the work
+/// and hands back the undo. `EditNotepad` above is the same shape for the same
+/// reason, and there is nothing here to keep in step with the algebra.
+///
+/// **A refused edit is not an entry.** Moving a point to where it already is,
+/// switching a lane that is already on, removing the last point of a lane:
+/// each is `None`, so the history never grows an entry that would undo to the
+/// state it is already in.
+pub struct EditLapse {
+    track: MixerTrackId,
+    index: usize,
+    edit: fontelle_types::LapseEdit,
+    /// The edit that puts it back, learnt when this one was applied.
+    undo: Option<fontelle_types::LapseEdit>,
+}
+
+impl EditLapse {
+    pub fn new(track: MixerTrackId, index: usize, edit: fontelle_types::LapseEdit) -> Self {
+        Self {
+            track,
+            index,
+            edit,
+            undo: None,
+        }
+    }
+}
+
+impl Command for EditLapse {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let track = doc
+            .mixer
+            .tracks
+            .get_mut(self.track)
+            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
+        let slot = track
+            .inserts
+            .get_mut(self.index)
+            .ok_or_else(|| CommandError(format!("no insert {}", self.index)))?;
+        let bank = slot
+            .lapse
+            .as_mut()
+            .ok_or_else(|| CommandError(format!("insert {} is not a Lapse", self.index)))?;
+        let undo = bank
+            .apply(&self.edit)
+            .ok_or_else(|| CommandError("that edit changes nothing".to_string()))?;
+        // The *first* one, so a coalesced drag undoes to before the drag
+        // rather than to its middle — `EditNotepad` keeps its first for the
+        // same reason.
+        self.undo.get_or_insert(undo);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.undo {
+            Some(undo) => Box::new(EditLapse::new(self.track, self.index, undo.clone())),
+            None => Box::new(NotApplied("drawing a curve")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        self.edit.label()
+    }
+
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<EditLapse>() else {
+            return false;
+        };
+        if next.track != self.track || next.index != self.index {
+            return false;
+        }
+        // A drag is one entry: the pointer makes an edit per motion event and
+        // undoing sixty of them one at a time is not what anybody means by
+        // "undo that drag". The window breaks the gesture on pointer-up, on a
+        // tool change, on a lane change and on a scene change — the same
+        // places the notepad breaks a run of typing.
+        let same_lane = self.edit.target().is_some() && self.edit.target() == next.edit.target();
+        let both_continuous = matches!(
+            (&self.edit, &next.edit),
+            (
+                fontelle_types::LapseEdit::MovePoint { .. },
+                fontelle_types::LapseEdit::MovePoint { .. }
+            ) | (
+                fontelle_types::LapseEdit::Draw { .. },
+                fontelle_types::LapseEdit::Draw { .. }
+            ) | (
+                fontelle_types::LapseEdit::SetTension { .. },
+                fontelle_types::LapseEdit::SetTension { .. }
+            )
+        );
+        if !(same_lane && both_continuous) {
+            return false;
+        }
+        // The latest edit, so a redo re-applies where the drag ended; the undo
+        // is left at the first, which is where it began.
+        self.edit = next.edit.clone();
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.edit.memory_cost()
+            + self
+                .undo
+                .as_ref()
+                .map_or(0, fontelle_types::LapseEdit::memory_cost)
     }
 }
 
@@ -7157,6 +7285,10 @@ enum DeviceState {
         config: fontelle_types::EffectConfig,
         plugin: Option<fontelle_types::PluginState>,
         preset: Option<fontelle_types::PresetRef>,
+        /// A Lapse's curves, which are its state as much as its knobs are —
+        /// an undo of a preset load that put the knobs back and left the
+        /// curves would put the device somewhere nobody had ever set it to.
+        lapse: Option<Box<fontelle_types::LapseBank>>,
     },
 }
 
@@ -7292,6 +7424,7 @@ impl Command for ApplyPreset {
                     config: slot.config,
                     plugin: slot.plugin.clone(),
                     preset: slot.preset.clone(),
+                    lapse: slot.lapse.clone(),
                 };
                 match (&self.preset.device, &self.preset.payload) {
                     (DeviceKind::Effect(kind), PresetPayload::Effect(config)) => {
@@ -7304,6 +7437,26 @@ impl Command for ApplyPreset {
                             )));
                         }
                         slot.config = *config;
+                    }
+                    // Lapse's state is a config *and* a bank, so its preset
+                    // carries both — `PresetPayload::Lapse` says why it is a
+                    // variant of its own rather than a field on the one
+                    // above.
+                    (
+                        DeviceKind::Effect(fontelle_types::EffectKind::Lapse),
+                        PresetPayload::Lapse(lapse),
+                    ) => {
+                        if slot.config.kind() != fontelle_types::EffectKind::Lapse {
+                            return Err(CommandError(format!(
+                                "insert {} is a {:?}, not a Lapse",
+                                index,
+                                slot.config.kind()
+                            )));
+                        }
+                        slot.config = fontelle_types::EffectConfig::Lapse(lapse.config);
+                        let mut bank = lapse.bank.clone();
+                        bank.fill();
+                        slot.lapse = Some(Box::new(bank));
                     }
                     (DeviceKind::Plugin(key), PresetPayload::Plugin(state)) => {
                         match &slot.plugin {
@@ -7578,6 +7731,7 @@ impl Command for RestoreDeviceState {
                     config,
                     plugin,
                     preset,
+                    lapse,
                 },
             ) => {
                 let slot = doc
@@ -7591,6 +7745,7 @@ impl Command for RestoreDeviceState {
                 std::mem::swap(&mut slot.config, config);
                 std::mem::swap(&mut slot.plugin, plugin);
                 std::mem::swap(&mut slot.preset, preset);
+                std::mem::swap(&mut slot.lapse, lapse);
                 Ok(())
             }
             // A target and a state of different shapes cannot be built by

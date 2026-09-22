@@ -10,6 +10,8 @@ mod graph;
 mod graph_channel;
 mod input_monitor;
 mod key_tap;
+mod lapse_channel;
+mod lapse_tap;
 mod live;
 mod nodes;
 mod pipewire;
@@ -32,6 +34,8 @@ pub use graph::{
 pub use graph_channel::{GRAPH_QUEUE_CAPACITY, GraphPublisher, GraphSource, graph_channel};
 pub use input_monitor::{InputMonitor, MonitorNode};
 pub use key_tap::{KeyTap, KeyTapNode};
+pub use lapse_channel::{LapseControls, LapseSource, lapse_channel};
+pub use lapse_tap::{LapseTap, LapseView};
 pub use live::{
     CAPTURE_CAPACITY, CaptureReader, CaptureWriter, IdleGate, LIVE_PORT_CAPACITY, LIVE_PORT_COUNT,
     LiveEventPorts, LiveEventSource, LivePort, live_capture_channel, live_event_channel,

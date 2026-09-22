@@ -108,6 +108,13 @@ enum Drag {
     FlopKnob,
     /// A knob on the pitch corrector's console.
     TuneKnob,
+    /// A knob on Lapse's console.
+    LapseKnob,
+    /// A curve being drawn on one of Lapse's lanes — a point moved, or a
+    /// stroke laid down. Which lane and which point is `lapse_drag` and
+    /// `lapse_stroke`, for the reason `flop_knob` keeps its float out of the
+    /// variant: a `Drag` is compared, and a float is not a thing to compare.
+    LapseCurve,
     /// A picture on Flopsynth's window being dragged (§8.7): the oscillator's
     /// wave sideways, the filter's response in both directions.
     ///
@@ -1301,6 +1308,21 @@ pub struct WindowApp {
     /// `tune`, `notepad` and `insert_view` is `Some`.
     notepad: Option<crate::canvas::NotepadView>,
     notepad_layout: crate::canvas::NotepadLayout,
+    /// **Lapse's window**, when the open insert is one. The fifth of the five
+    /// (`docs/lapse-plan.md` §7.7): at most one of `eq`, `insert_view`,
+    /// `tune`, `notepad` and this is `Some`.
+    lapse: Option<crate::canvas::LapseView>,
+    lapse_layout: crate::canvas::LapseLayout,
+    /// The point being dragged, and where it started: `(lane, index)`.
+    lapse_drag: Option<(usize, usize)>,
+    /// A console knob being dragged: which parameter, from what pointer
+    /// height, at what value.
+    lapse_knob: Option<(usize, f32, f32)>,
+    /// A free-hand or line drag in progress, from this phase and value.
+    lapse_stroke: Option<(usize, (f64, f64))>,
+    /// A segment being **bent**: which lane, which point carries the shape,
+    /// the pointer height it started at, and the tension it started with.
+    lapse_bend: Option<(usize, usize, f32, f32)>,
     /// The page **being edited** — the caret and the selection the document
     /// cannot hold, over a copy of the words it can.
     ///
@@ -1392,6 +1414,8 @@ pub struct WindowApp {
     hover_preset: Option<usize>,
     /// Which of the notepad's controls the pointer is over.
     hover_notepad: Option<crate::canvas::NotepadHit>,
+    /// And which of Lapse's.
+    hover_lapse: Option<crate::canvas::LapseHit>,
     /// The preset bar in each editor window's header (`docs/flopsynth-plan.md`
     /// §P.7): what it says, where it is, and what the pointer is over.
     ///
@@ -1963,6 +1987,12 @@ impl WindowApp {
             tune_layout: crate::canvas::TuneLayout::default(),
             notepad: None,
             notepad_layout: crate::canvas::NotepadLayout::default(),
+            lapse: None,
+            lapse_layout: crate::canvas::LapseLayout::default(),
+            lapse_drag: None,
+            lapse_knob: None,
+            lapse_stroke: None,
+            lapse_bend: None,
             notepad_entry: crate::canvas::TextEntry::default(),
             notepad_rows: Vec::new(),
             notepad_scroll: 0,
@@ -1988,6 +2018,7 @@ impl WindowApp {
             take_from: None,
             hover_preset: None,
             hover_notepad: None,
+            hover_lapse: None,
             preset_view: [
                 crate::canvas::PresetBarView::default(),
                 crate::canvas::PresetBarView::default(),
@@ -3065,6 +3096,9 @@ impl WindowApp {
                 None => Pointer::Grabbing,
             }),
             Drag::Roll => Some(Pointer::Grabbing),
+            // A curve is dragged in both directions at once, so neither
+            // resize cursor is the truth: a hand is.
+            Drag::LapseCurve => Some(Pointer::Grabbing),
             Drag::RollRuler | Drag::BarRuler | Drag::TimelineRuler => Some(Pointer::Grabbing),
             Drag::MenuScroll
             | Drag::LaneGrip
@@ -3075,6 +3109,7 @@ impl WindowApp {
             | Drag::FlopRing
             | Drag::InsertKnob
             | Drag::TuneKnob
+            | Drag::LapseKnob
             | Drag::AudioKnob(_)
             | Drag::Lane
             | Drag::SidebarSplit
@@ -4316,6 +4351,10 @@ impl WindowApp {
         let tune = kind == EditorKind::Effect && self.tune.is_some();
         // And the notepad is a page rather than a panel — same rule again.
         let notepad = kind == EditorKind::Effect && self.notepad.is_some();
+        // And Lapse is a canopy over four grids. **Five** now, not four: this
+        // is the list `docs/lapse-plan.md` §7.7 tables, and the notepad's own
+        // arrival taught what leaving one of them out costs.
+        let lapse = kind == EditorKind::Effect && self.lapse.is_some();
         // Flopsynth's window opens at its design size times its scale, and
         // refuses to be smaller: nothing on it shrinks (§3.1), so there is
         // no smaller size at which the page still fits.
@@ -4331,15 +4370,19 @@ impl WindowApp {
                     .map(|view| crate::layout::flopsynth_window_size(view.scale))
             })
             .flatten();
-        let (w, h) = match (flop_size, tune, notepad) {
-            (Some(size), _, _) => size,
-            (_, true, _) => crate::layout::TUNE_SIZE,
-            (_, _, true) => crate::layout::NOTEPAD_SIZE,
+        let (w, h) = match (flop_size, tune, notepad, lapse) {
+            (Some(size), _, _, _) => size,
+            (_, true, _, _) => crate::layout::TUNE_SIZE,
+            (_, _, true, _) => crate::layout::NOTEPAD_SIZE,
+            (_, _, _, true) => crate::layout::LAPSE_SIZE,
             _ => kind.default_size(),
         };
-        let (min_w, min_h) = match (flop_size, tune) {
-            (Some(size), _) => size,
-            (_, true) => crate::layout::TUNE_MINIMUM,
+        let (min_w, min_h) = match (flop_size, tune, lapse) {
+            (Some(size), _, _) => size,
+            (_, true, _) => crate::layout::TUNE_MINIMUM,
+            // Nothing on Lapse's window shrinks, so its design size is its
+            // minimum — Flopsynth's rule.
+            (_, _, true) => crate::layout::LAPSE_SIZE,
             _ => kind.minimum_size(),
         };
         let _ = flopsynth;
@@ -4541,8 +4584,16 @@ impl WindowApp {
                     // The pad's sheet, whose grid is measured rather than
                     // computed — `relayout_notepad` says why.
                     self.relayout_notepad();
+                    // Lapse's canopy and lanes, from the same body.
+                    self.lapse_layout = match &self.lapse {
+                        Some(view) => crate::canvas::lapse_layout(view, body),
+                        None => crate::canvas::LapseLayout {
+                            body,
+                            ..Default::default()
+                        },
+                    };
                     // The corrector's console, laid out from the same body.
-                    // Only one of the three effect windows is drawn, and the
+                    // Only one of the five effect windows is drawn, and the
                     // host decides which by whose view it offered.
                     self.tune_layout = match &self.tune {
                         Some(view) => crate::canvas::tune_layout(body, view),
@@ -5036,10 +5087,11 @@ impl WindowApp {
                 // did not have it.
                 MouseButton::Right => self.press_instrument_menu(x, y),
             },
-            // Which of the **three** effect windows this is: the corrector's
-            // console, the EQ's curve, or the grid of knobs every other
-            // effect gets.
+            // Which of the **five** effect windows this is: the pad's sheet,
+            // Lapse's lanes, the corrector's console, the EQ's curve, or the
+            // grid of knobs every other effect gets.
             EditorKind::Effect if self.notepad.is_some() => self.press_notepad(button, x, y),
+            EditorKind::Effect if self.lapse.is_some() => self.press_lapse(button, x, y),
             EditorKind::Effect if self.tune.is_some() => self.press_tune_editor(button, x, y),
             EditorKind::Effect if self.eq.is_none() => self.press_insert_panel(button, x, y),
             EditorKind::Effect => self.press_effect_editor(button, x, y),
@@ -5103,6 +5155,14 @@ impl WindowApp {
             }
             EditorKind::Instrument => {
                 self.hover_param = instrument_hit(&self.instrument_layout, x, y);
+            }
+            // Lapse's lanes, checked first for the same reason.
+            EditorKind::Effect if self.lapse.is_some() => {
+                self.hover_lapse = self
+                    .lapse
+                    .as_ref()
+                    .and_then(|view| crate::canvas::lapse_hit(&self.lapse_layout, view, x, y));
+                self.hover_param = None;
             }
             // The corrector's console, checked first for the reason
             // Flopsynth's is one editor over: an insert that is one has a
@@ -5430,6 +5490,19 @@ impl WindowApp {
                         .then(|| self.notepad_entry.selection())
                         .flatten(),
                     hover: self.hover_notepad,
+                })
+            }
+            // Lapse, for the same reason: an insert that is one is a canopy
+            // of memory over four grids, and a panel of its knobs alone would
+            // leave the curves nowhere to be drawn.
+            EditorKind::Effect if self.lapse.is_some() => {
+                let Some(view) = self.lapse.as_ref() else {
+                    return;
+                };
+                EditorWindowChrome::Lapse(crate::render::LapseChrome {
+                    layout: self.lapse_layout.clone(),
+                    view,
+                    hover: self.hover_lapse,
                 })
             }
             // The corrector's console, checked first for Flopsynth's reason:
@@ -5802,18 +5875,20 @@ impl WindowApp {
         // The open insert may have been removed, or its whole strip may have —
         // in which case its window closes rather than showing the effect that
         // happens to be at that index now.
-        let (eq, insert_view, tune, notepad) = match self.open_insert {
+        let (eq, insert_view, tune, notepad, lapse) = match self.open_insert {
             Some((strip, slot)) => (
                 doc.eq_config(strip, slot),
                 doc.insert_view(strip, slot),
                 doc.tune_view(strip, slot),
                 doc.notepad_view(strip, slot),
+                doc.lapse_view(strip, slot),
             ),
-            None => (None, None, None, None),
+            None => (None, None, None, None, None),
         };
         self.eq = eq;
         self.insert_view = insert_view;
         self.tune = tune;
+        self.lapse = lapse;
         // Which insert is open is the window's own fact, and the host needs
         // it: an effect preset clicked in the browser lands in the insert you
         // are looking at.
@@ -5849,6 +5924,7 @@ impl WindowApp {
             && self.insert_view.is_none()
             && self.tune.is_none()
             && self.notepad.is_none()
+            && self.lapse.is_none()
         {
             self.open_insert = None;
         }
@@ -5879,6 +5955,7 @@ impl WindowApp {
             && self.insert_view.is_none()
             && self.tune.is_none()
             && self.notepad.is_none()
+            && self.lapse.is_none()
         {
             self.close_editor(EditorKind::Effect);
         }
@@ -6414,6 +6491,42 @@ impl WindowApp {
             Some(open) => self.clip_route_label(open.data.mixer_track),
             None => String::new(),
         };
+        // **Lapse's window**, under exactly the strings `draw_lapse` looks
+        // up: the lane names, the twelve scene chips, the tools, the snap
+        // divisions, and the one caption the canopy writes.
+        if let Some(view) = self.lapse.clone() {
+            let mut captions: Vec<String> = Vec::new();
+            for lane in &view.lanes {
+                captions.push(lane.kind.label().to_string());
+            }
+            for scene in 0..view.scene_names.len() {
+                captions.push(view.scene_label(scene));
+            }
+            for tool in crate::canvas::LapseTool::ALL {
+                captions.push(tool.label().to_string());
+            }
+            for snap in crate::canvas::LapseSnap::ALL {
+                captions.push(snap.label().to_string());
+            }
+            let config = fontelle_types::EffectConfig::Lapse(view.config);
+            for spec in config.specs() {
+                captions.push(spec.name.to_string());
+                let value = config.get(spec.id).unwrap_or(spec.default);
+                captions.push(crate::canvas::display_of(spec, value));
+            }
+            captions.push(format!(
+                "memory {:.1}s  \u{b7}  {}",
+                view.filled_seconds,
+                if view.clamped {
+                    "at the end of what it has".to_string()
+                } else {
+                    view.rate_caption()
+                }
+            ));
+            for caption in captions {
+                want(&mut self.labels, &mut self.text, &caption);
+            }
+        }
         if let Some(open) = &self.audio_clip {
             // Cloned out first: `want` borrows `self.labels` and `self.text`
             // mutably, and the captions are read through `self.audio_clip`.
@@ -7322,6 +7435,8 @@ impl WindowApp {
             Drag::AudioKnob(field) => self.drag_audio_knob(field, y),
             Drag::InsertKnob => self.drag_insert_knob(y),
             Drag::TuneKnob => self.drag_tune_knob(y),
+            Drag::LapseCurve => self.drag_lapse(x, y),
+            Drag::LapseKnob => self.drag_lapse_knob(y),
             Drag::Fader(strip) => self.drag_fader(strip, y),
             Drag::EqHandle(band) => self.drag_eq(band, x, y),
             Drag::TimelineSelect => self.drag_select_timeline(x),
@@ -8068,6 +8183,13 @@ impl WindowApp {
         self.knob = None;
         self.insert_knob = None;
         self.tune_knob = None;
+        // The gesture ends here, which is what makes a drag **one** undo
+        // entry: `EditLapse::merge_with` coalesces while the drag runs and
+        // the next press starts a new run.
+        self.lapse_drag = None;
+        self.lapse_knob = None;
+        self.lapse_stroke = None;
+        self.lapse_bend = None;
         self.value_drag = None;
         self.eq_drag = None;
         self.mix_drag = None;
@@ -8539,6 +8661,311 @@ impl WindowApp {
     fn break_notepad_gesture(&mut self) {
         if let Some(doc) = &mut self.options.document {
             doc.end_gesture();
+        }
+    }
+
+    /// A press inside Lapse's window (`docs/lapse-plan.md` §7.4).
+    ///
+    /// The whole interaction is here and in [`drag_lapse`](Self::drag_lapse):
+    /// a click on empty grid adds a point, a drag on one moves it, and the
+    /// four other tools draw with the gesture rather than with a dialogue.
+    fn press_lapse(&mut self, button: MouseButton, x: f32, y: f32) {
+        let Some(view) = self.lapse.clone() else {
+            return;
+        };
+        let Some(hit) = crate::canvas::lapse_hit(&self.lapse_layout, &view, x, y) else {
+            return;
+        };
+        let Some((strip, slot)) = self.open_insert else {
+            return;
+        };
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        match hit {
+            crate::canvas::LapseHit::Scene(scene) => {
+                // Through the ordinary parameter road: the scene is a
+                // `ParamSpec`, so clicking a chip is the same edit an
+                // automation lane makes, with the same undo entry.
+                doc.set_insert_param(strip, slot, "scene", scene as f32 + 1.0);
+            }
+            crate::canvas::LapseHit::Tool(tool) => doc.set_lapse_tool(tool),
+            crate::canvas::LapseHit::Snap(snap) => doc.set_lapse_snap(snap),
+            crate::canvas::LapseHit::LaneStrip { lane } => {
+                let on = view.lanes.get(lane).is_some_and(|lane| lane.on);
+                doc.edit_lapse(
+                    strip,
+                    slot,
+                    fontelle_types::LapseEdit::SetLaneOn {
+                        scene: view.scene,
+                        lane,
+                        on: !on,
+                    },
+                );
+            }
+            crate::canvas::LapseHit::Point { lane, index } => match button {
+                // Right-click takes a point away; there is a menu of shapes
+                // to build here later, and removing one is what the gesture
+                // is for nine times in ten.
+                MouseButton::Right => {
+                    doc.edit_lapse(
+                        strip,
+                        slot,
+                        fontelle_types::LapseEdit::RemovePoint {
+                            scene: view.scene,
+                            lane,
+                            index,
+                        },
+                    );
+                }
+                MouseButton::Left => {
+                    self.lapse_drag = Some((lane, index));
+                    self.drag = Drag::LapseCurve;
+                }
+            },
+            crate::canvas::LapseHit::Grid { lane, phase, value } => {
+                if button == MouseButton::Right {
+                    return;
+                }
+                let beats = view.lanes.get(lane).map_or(4.0, |lane| {
+                    lane.length.beats(view.beats_per_bar) * view.config.rate.stretch()
+                });
+                let at = view.snap.snap(phase, beats);
+                match view.tool {
+                    crate::canvas::LapseTool::Points => {
+                        // **On the curve is a bend, off it is a new point.**
+                        // This is what gives `tension` a gesture, and with it
+                        // the automation lane its bend as well
+                        // (`docs/lapse-plan.md` §3.5).
+                        if let Some(lane_view) = view.lanes.get(lane)
+                            && let Some(rect) = self.lapse_layout.lanes.get(lane).copied()
+                            && let Some((carrier, away)) =
+                                crate::canvas::segment_at(lane_view, phase, value)
+                        {
+                            let (_, on_curve) =
+                                crate::canvas::point_position(&view, lane_view, rect, phase, value);
+                            let (_, drawn) = crate::canvas::point_position(
+                                &view,
+                                lane_view,
+                                rect,
+                                phase,
+                                value + away,
+                            );
+                            if (on_curve - drawn).abs() <= crate::canvas::LAPSE_BEND_GRAB {
+                                let tension = lane_view
+                                    .points
+                                    .get(carrier)
+                                    .map_or(0.0, |point| point.tension);
+                                self.lapse_bend = Some((lane, carrier, y, tension));
+                                self.drag = Drag::LapseCurve;
+                                return;
+                            }
+                        }
+                        doc.edit_lapse(
+                            strip,
+                            slot,
+                            fontelle_types::LapseEdit::AddPoint {
+                                scene: view.scene,
+                                lane,
+                                point: fontelle_types::LapsePoint::new(
+                                    at,
+                                    value,
+                                    fontelle_types::CurveShape::Linear,
+                                ),
+                            },
+                        );
+                        // Placed where it was clicked, and *not* carried into
+                        // a drag: the lane re-sorts on every edit, so the
+                        // index this point ends up at is not known until the
+                        // view comes back round. Pick it up again to move it.
+                        self.lapse_drag = None;
+                    }
+                    _ => {
+                        self.lapse_stroke = Some((lane, (at, value)));
+                        self.drag = Drag::LapseCurve;
+                    }
+                }
+            }
+            // The console. A chooser steps on a click — there are at most
+            // five positions on any of them, so a menu would be two gestures
+            // where one will do — and a knob takes a drag.
+            crate::canvas::LapseHit::Control(index) => {
+                let config = fontelle_types::EffectConfig::Lapse(view.config);
+                let Some(spec) = config.specs().get(index) else {
+                    return;
+                };
+                if button == MouseButton::Right {
+                    return;
+                }
+                if let fontelle_types::Taper::Stepped(steps) = spec.taper {
+                    let now = config.get(spec.id).unwrap_or(spec.default);
+                    let span = (spec.max - spec.min) / (steps.max(2) - 1) as f32;
+                    let next = if now + span > spec.max + span * 0.5 {
+                        spec.min
+                    } else {
+                        now + span
+                    };
+                    doc.set_insert_param(strip, slot, spec.id, next);
+                } else {
+                    self.lapse_knob = Some((index, y, config.get(spec.id).unwrap_or(spec.default)));
+                    self.drag = Drag::LapseKnob;
+                }
+            }
+            crate::canvas::LapseHit::Canopy => {}
+        }
+    }
+
+    /// A console knob being dragged. The throw every other knob in this
+    /// program uses, so a hand that has learnt one has learnt all of them.
+    fn drag_lapse_knob(&mut self, y: f32) {
+        let Some((index, from_y, from_value)) = self.lapse_knob else {
+            return;
+        };
+        let Some(view) = self.lapse.as_ref() else {
+            return;
+        };
+        let Some((strip, slot)) = self.open_insert else {
+            return;
+        };
+        let config = fontelle_types::EffectConfig::Lapse(view.config);
+        let Some(spec) = config.specs().get(index).copied() else {
+            return;
+        };
+        // The same throw and the same fine modifier every other knob in this
+        // program has, so a hand that has learnt one has learnt all of them.
+        let moved = crate::canvas::knob_value(
+            spec.normalise(from_value),
+            y - from_y,
+            self.modifiers.shift_key(),
+        );
+        let value = spec.denormalise(moved);
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        doc.set_insert_param(strip, slot, spec.id, value);
+    }
+
+    /// The pointer moving with a button down inside Lapse's window.
+    fn drag_lapse(&mut self, x: f32, y: f32) {
+        let Some(view) = self.lapse.clone() else {
+            return;
+        };
+        let Some((strip, slot)) = self.open_insert else {
+            return;
+        };
+        // Which lane the gesture began in — a drag that wandered into the
+        // lane below goes on editing the one it started in, which is what
+        // every other drag in this program does.
+        // A bend first: it is the one gesture that does not move a point.
+        if let Some((lane_index, carrier, from_y, from_tension)) = self.lapse_bend {
+            let Some(lane) = view.lanes.get(lane_index) else {
+                return;
+            };
+            let sign = crate::canvas::bend_sign(lane, carrier);
+            // A hundred pixels of travel is the whole bend, which is the
+            // throw a knob uses for its whole range.
+            let moved = from_tension as f64 + sign * (from_y - y) as f64 / 100.0;
+            let Some(doc) = &mut self.options.document else {
+                return;
+            };
+            doc.edit_lapse(
+                strip,
+                slot,
+                fontelle_types::LapseEdit::SetTension {
+                    scene: view.scene,
+                    lane: lane_index,
+                    index: carrier,
+                    tension: moved.clamp(-1.0, 1.0) as f32,
+                },
+            );
+            return;
+        }
+        let lane_index = match (self.lapse_drag, self.lapse_stroke) {
+            (Some((lane, _)), _) | (_, Some((lane, _))) => lane,
+            _ => return,
+        };
+        let Some(rect) = self.lapse_layout.lanes.get(lane_index).copied() else {
+            return;
+        };
+        let Some(lane) = view.lanes.get(lane_index) else {
+            return;
+        };
+        let (phase, value) = crate::canvas::grid_position(&view, lane, rect, x, y);
+        // The snap is **this lane's**, not the time lane's: a three-beat
+        // volume lane under a four-beat time lane is the whole point of
+        // per-lane lengths, and a sixteenth of one is not a sixteenth of the
+        // other.
+        let beats = lane.length.beats(view.beats_per_bar) * view.config.rate.stretch();
+        let at = view.snap.snap(phase, beats);
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        if let Some((_, index)) = self.lapse_drag {
+            doc.edit_lapse(
+                strip,
+                slot,
+                fontelle_types::LapseEdit::MovePoint {
+                    scene: view.scene,
+                    lane: lane_index,
+                    index,
+                    to: (at, value),
+                },
+            );
+            return;
+        }
+        let Some((_, from)) = self.lapse_stroke else {
+            return;
+        };
+        match view.tool {
+            // **The freeze.** Two points at exactly the slope that holds the
+            // sound still: the one-gesture tape stop, and the reason the
+            // grid draws that slope as a guide.
+            crate::canvas::LapseTool::Hold => {
+                let points = crate::canvas::hold_points(from, (at, value));
+                doc.edit_lapse(
+                    strip,
+                    slot,
+                    fontelle_types::LapseEdit::Draw {
+                        scene: view.scene,
+                        lane: lane_index,
+                        from: (points[0].at, points[0].value),
+                        to: (points[1].at, points[1].value),
+                    },
+                );
+            }
+            crate::canvas::LapseTool::Step => {
+                // A step is flat from where the pointer is to the next
+                // division, which is what "paint steps" means.
+                let next = (at + 1.0 / (view.snap.per_beat().unwrap_or(4.0) * beats)).min(1.0);
+                doc.edit_lapse(
+                    strip,
+                    slot,
+                    fontelle_types::LapseEdit::Draw {
+                        scene: view.scene,
+                        lane: lane_index,
+                        from: (at, value),
+                        to: (next, value),
+                    },
+                );
+            }
+            // Pencil and line are the same edit; what differs is where the
+            // stroke starts from — the pencil from the last point the
+            // pointer was at, the line from where the press was.
+            _ => {
+                doc.edit_lapse(
+                    strip,
+                    slot,
+                    fontelle_types::LapseEdit::Draw {
+                        scene: view.scene,
+                        lane: lane_index,
+                        from,
+                        to: (at, value),
+                    },
+                );
+                if view.tool == crate::canvas::LapseTool::Pencil {
+                    self.lapse_stroke = Some((lane_index, (at, value)));
+                }
+            }
         }
     }
 

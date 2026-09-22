@@ -39,11 +39,13 @@ fn a_chain() -> TrackChain {
                 config: EffectConfig::new(EffectKind::Compressor),
                 bypassed: false,
                 preset: Some(PresetRef::new("Vocal Glue", "Vocal", PresetOrigin::User)),
+                lapse: None,
             },
             TrackInsert {
                 config: EffectConfig::new(EffectKind::Reverb),
                 bypassed: true,
                 preset: None,
+                lapse: None,
             },
         ],
     }
