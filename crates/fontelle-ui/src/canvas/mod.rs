@@ -11,6 +11,7 @@ mod keybinds;
 mod keymap;
 mod menu;
 mod mixer;
+mod notepad;
 mod overlays;
 mod piano_roll;
 mod prefabs;
@@ -151,6 +152,12 @@ pub use mixer::{
     fader_db_at, fader_y_of_db, format_gain_db, format_mix, format_pan, format_send_db,
     insert_mix_dial, mixer_hit, mixer_key, mixer_layout, mixer_layout_for, name_press, pan_at,
     pan_x_of, send_level_at, send_x_of_level, unity_fraction,
+};
+pub use notepad::{
+    NOTEPAD_LEADING, NotepadHit, NotepadLayout, NotepadRow, NotepadView, notepad_column_of,
+    notepad_columns, notepad_hit, notepad_index_at, notepad_index_of, notepad_layout,
+    notepad_line_end, notepad_line_home, notepad_row_of, notepad_rows, notepad_scroll_to,
+    notepad_step_page, notepad_step_row, notepad_text_px,
 };
 pub use piano_roll::{
     Audition, DEFAULT_LANE_HEIGHT, DrawDrag, EdgeScroll, KEYBOARD_WIDTH, KeyStyle, LANE_PROPERTIES,

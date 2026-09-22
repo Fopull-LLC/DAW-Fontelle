@@ -310,6 +310,31 @@ impl Theme {
         }
     }
 
+    /// The theme the **notepad's** window is painted in: this theme's metrics
+    /// and font, over the pad's own inks (`docs/effects-catalogue.md` §2.8).
+    ///
+    /// Only the tokens the window's chrome actually draws with are replaced —
+    /// the ground, the panels, the rules and the two inks — so a control that
+    /// reaches for a colour nothing here names still gets the studio's.
+    pub fn for_notepad(&self, ink: &NotepadInk) -> Self {
+        let mut palette = self.palette.clone();
+        palette.window = ink.ground;
+        palette.panel = ink.paper;
+        palette.panel_header = ink.ground;
+        palette.border = ink.edge;
+        palette.text = ink.ink;
+        palette.text_muted = ink.faint;
+        palette.accent = ink.caret;
+        palette.grid_line = ink.edge;
+        Self {
+            format_version: self.format_version,
+            name: self.name.clone(),
+            palette,
+            metrics: self.metrics,
+            font: self.font.clone(),
+        }
+    }
+
     /// The default. Chosen against WCAG contrast rather than by eye — the
     /// chrome is small and dense, and a DAW is looked at for hours.
     pub fn dark_default() -> Self {
@@ -661,5 +686,109 @@ impl std::error::Error for ThemeError {
             Self::Io { source, .. } => Some(source),
             _ => None,
         }
+    }
+}
+
+// -------------------------------------------------------- the notepad's inks
+
+/// What one notepad theme is painted in (`docs/effects-catalogue.md` §2.8).
+///
+/// Six colours rather than a whole [`Palette`]: a pad is a ground, a page,
+/// words, quiet words, a caret and a rule — and a device that invented
+/// twenty-eight tokens of its own would be a second theme system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotepadInk {
+    /// Behind the sheet, out to the window's edges.
+    pub ground: Color,
+    /// The sheet itself.
+    pub paper: Color,
+    /// The words on it.
+    pub ink: Color,
+    /// The quiet ones: the footer's captions, the page counter, the rules.
+    pub faint: Color,
+    /// The caret, and the wash a selection is drawn in.
+    pub caret: Color,
+    /// The line round the sheet.
+    pub edge: Color,
+}
+
+/// The seven looks.
+///
+/// Fixed rather than derived from the studio's palette — except *studio*,
+/// which is exactly the case for somebody who wants the pad to disappear into
+/// the window around it. The other six are the terminals they are named
+/// after, and each is held to WCAG's 4.5:1 for its words by
+/// `fontelle-ui/tests/notepad.rs`: a lyric sheet is read from further away
+/// than the rest of the chrome, while its author is singing.
+pub fn notepad_ink(theme: fontelle_types::NotepadTheme, palette: &Palette) -> NotepadInk {
+    use fontelle_types::NotepadTheme as T;
+    match theme {
+        // The VT220 everybody pictures. The ground is a shade off the page so
+        // the sheet reads as a sheet rather than as the whole window.
+        T::Phosphor => NotepadInk {
+            ground: Color::rgb(0x04, 0x0a, 0x06),
+            paper: Color::rgb(0x07, 0x14, 0x0b),
+            ink: Color::rgb(0x62, 0xf5, 0x92),
+            faint: Color::rgb(0x2f, 0x7d, 0x4e),
+            caret: Color::rgb(0x9d, 0xff, 0xc2),
+            edge: Color::rgb(0x18, 0x3d, 0x28),
+        },
+        // The other CRT: amber on a warm black, which is the one people who
+        // stare at a terminal all night tend to end up on.
+        T::Amber => NotepadInk {
+            ground: Color::rgb(0x0b, 0x07, 0x02),
+            paper: Color::rgb(0x18, 0x0f, 0x04),
+            ink: Color::rgb(0xff, 0xb7, 0x4d),
+            faint: Color::rgb(0x8a, 0x5c, 0x21),
+            caret: Color::rgb(0xff, 0xd9, 0x9b),
+            edge: Color::rgb(0x45, 0x2d, 0x0e),
+        },
+        // Lights on: dark ink on warm paper. Not white — a full-brightness
+        // page beside a dark studio is a torch.
+        T::Paper => NotepadInk {
+            ground: Color::rgb(0xd8, 0xd2, 0xc4),
+            paper: Color::rgb(0xf2, 0xed, 0xe0),
+            ink: Color::rgb(0x2a, 0x26, 0x1e),
+            faint: Color::rgb(0x6d, 0x66, 0x57),
+            caret: Color::rgb(0x4a, 0x6b, 0x8a),
+            edge: Color::rgb(0xbe, 0xb6, 0xa4),
+        },
+        T::Ice => NotepadInk {
+            ground: Color::rgb(0x03, 0x08, 0x12),
+            paper: Color::rgb(0x08, 0x12, 0x20),
+            ink: Color::rgb(0x9c, 0xd4, 0xff),
+            faint: Color::rgb(0x4a, 0x74, 0x9c),
+            caret: Color::rgb(0xd6, 0xec, 0xff),
+            edge: Color::rgb(0x1b, 0x35, 0x4e),
+        },
+        T::Rose => NotepadInk {
+            ground: Color::rgb(0x0e, 0x04, 0x0d),
+            paper: Color::rgb(0x1a, 0x08, 0x18),
+            ink: Color::rgb(0xff, 0x9e, 0xd8),
+            faint: Color::rgb(0x96, 0x4e, 0x7e),
+            caret: Color::rgb(0xff, 0xd2, 0xee),
+            edge: Color::rgb(0x46, 0x1c, 0x3b),
+        },
+        // No colour at all, for somebody who wants the words and nothing
+        // else.
+        T::Slate => NotepadInk {
+            ground: Color::rgb(0x08, 0x08, 0x09),
+            paper: Color::rgb(0x13, 0x13, 0x15),
+            ink: Color::rgb(0xe4, 0xe4, 0xe7),
+            faint: Color::rgb(0x7b, 0x7b, 0x82),
+            caret: Color::rgb(0xff, 0xff, 0xff),
+            edge: Color::rgb(0x34, 0x34, 0x39),
+        },
+        // The studio's own inks, so the pad matches the window around it —
+        // and follows it into a light theme, which is the one look here that
+        // is not a fixed set of colours.
+        T::Studio => NotepadInk {
+            ground: palette.window,
+            paper: palette.panel,
+            ink: palette.text,
+            faint: palette.text_muted,
+            caret: palette.accent,
+            edge: palette.border,
+        },
     }
 }

@@ -1390,10 +1390,18 @@ pub fn draw_editor_window(
     // `Theme::for_bridge` says why — and everything drawn in its window
     // with it: the header, the preset bar, a menu, a field, the chip.
     let bridge;
+    let paper;
     let theme = match chrome {
         EditorWindowChrome::Flopsynth(_) => {
             bridge = theme.for_bridge();
             &bridge
+        }
+        // The pad's header and preset bar are painted in the pad's own theme
+        // too, so that a window in *amber* is an amber window rather than an
+        // amber page in a teal frame.
+        EditorWindowChrome::Notepad(notepad) => {
+            paper = theme.for_notepad(&notepad.ink);
+            &paper
         }
         _ => theme,
     };
@@ -1438,6 +1446,7 @@ pub fn draw_editor_window(
         EditorWindowChrome::Effect(effect) => draw_effect(scene, theme, labels, effect),
         EditorWindowChrome::Insert(insert) => draw_instrument(scene, theme, labels, insert),
         EditorWindowChrome::AudioClip(clip) => draw_audio_editor(scene, theme, labels, clip),
+        EditorWindowChrome::Notepad(notepad) => draw_notepad(scene, theme, labels, notepad),
     }
 
     draw_context_menu(scene, theme, labels, menu, field);
@@ -1974,6 +1983,41 @@ pub enum EditorWindowChrome<'a> {
     /// One audio clip's properties (TDD §15.1): its waveform, and the rows that
     /// change it.
     AudioClip(AudioEditorChrome<'a>),
+    /// **The notepad**, which draws a page of words because that is what it
+    /// is (`docs/effects-catalogue.md` §2.8). Its own variant for the reason
+    /// the EQ's and the corrector's are: a sheet of monospace text under a
+    /// row of page controls is not a grid of knobs, and it is painted in its
+    /// own theme rather than the studio's.
+    Notepad(NotepadChrome<'a>),
+}
+
+/// What the notepad's window draws.
+///
+/// Everything measured is worked out by the window and handed over: this
+/// crate's renderer is a pure function of what it is given, and the pad's
+/// grid — where the rows break, where the caret is — is arithmetic the canvas
+/// already did (`canvas::notepad`).
+pub struct NotepadChrome<'a> {
+    pub layout: crate::canvas::NotepadLayout,
+    pub view: &'a crate::canvas::NotepadView,
+    /// The palette this pad's theme is painted in.
+    pub ink: crate::theme::NotepadInk,
+    /// How the showing page's text broke into lines.
+    pub rows: &'a [crate::canvas::NotepadRow],
+    /// The first of them on screen.
+    pub scroll: usize,
+    /// How big the words are, in pixels — the size every row was shaped at.
+    pub text_px: f32,
+    /// Where the caret is, as a byte index into the page, when the pad has
+    /// the keyboard. `None` before anybody has clicked into it.
+    pub caret: Option<usize>,
+    /// Whether the caret is in its **on** half. A caret that does not blink
+    /// is easy to mistake for a character.
+    pub caret_on: bool,
+    /// The selection, as byte indices into the page.
+    pub selection: Option<(usize, usize)>,
+    /// Which control the pointer is over.
+    pub hover: Option<crate::canvas::NotepadHit>,
 }
 
 /// What the audio clip editor draws.
@@ -11147,5 +11191,229 @@ fn draw_tune(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &TuneChr
                 }
             }
         }
+    }
+}
+
+// ------------------------------------------------------------- the notepad
+
+/// The notepad's window (`docs/effects-catalogue.md` §2.8).
+///
+/// > *"should have clean ux and pretty visual design thats simplistic and
+/// > looks like a computer terminal notepad."*
+///
+/// A sheet with a rule round it, monospace text on a fixed grid, a block
+/// caret that blinks, and a footer that turns the pages. Nothing is measured
+/// here: every row was shaped by the window and every rectangle worked out by
+/// `canvas::notepad_layout`, which is what lets the whole thing be checked
+/// without a GPU.
+fn draw_notepad(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &NotepadChrome<'_>) {
+    let l = &chrome.layout;
+    let ink = &chrome.ink;
+    let m = &theme.metrics;
+    if l.body.is_empty() {
+        return;
+    }
+
+    fill_rect(scene, l.body, ink.ground);
+    // The page, with a rule round it: a terminal's screen inside its bezel,
+    // and the one thing that says "the words go here".
+    fill_rect_rounded(scene, l.sheet, m.corner_radius, ink.paper);
+    stroke_rect_rounded(scene, l.sheet, m.corner_radius, 1.0, ink.edge);
+
+    draw_notepad_page(scene, labels, chrome);
+    draw_notepad_footer(scene, theme, labels, chrome);
+}
+
+/// The words, the selection under them and the caret over them.
+fn draw_notepad_page(scene: &mut Scene, labels: &Labels, chrome: &NotepadChrome<'_>) {
+    let l = &chrome.layout;
+    let ink = &chrome.ink;
+    let text = &chrome.view.text;
+    if l.text.is_empty() {
+        return;
+    }
+    // Where a column sits, and how far down a visible row is.
+    let x_of = |column: usize| l.text.x + column as f32 * l.advance;
+    let y_of = |row: usize| l.text.y + (row - chrome.scroll) as f32 * l.line_height;
+
+    for row in chrome.scroll..(chrome.scroll + l.lines).min(chrome.rows.len()) {
+        let bounds = chrome.rows[row];
+        let line = &text[bounds.from.min(text.len())..bounds.to.min(text.len())];
+        let top = y_of(row);
+
+        // The selection first, under the text: a wash rather than an
+        // inversion, so the words keep the colour they were written in.
+        if let Some((from, to)) = chrome.selection {
+            let from = from.max(bounds.from);
+            let to = to.min(bounds.to);
+            if from < to {
+                let start = text[bounds.from..from].chars().count();
+                let width = text[from..to].chars().count();
+                let band = Rect::new(x_of(start), top, width as f32 * l.advance, l.line_height)
+                    .intersection(&l.text);
+                if !band.is_empty() {
+                    fill_rect(scene, band, ink.caret.with_alpha(0x44));
+                }
+            }
+        }
+
+        if let Some(shaped) = labels.get_mono(line, chrome.text_px) {
+            draw_text_clipped(
+                scene,
+                shaped,
+                l.text,
+                l.text.x,
+                // Centred in its own line, so the leading is split above and
+                // below rather than all falling on one side of the row.
+                top + (l.line_height - chrome.text_px) / 2.0,
+                ink.ink,
+            );
+        }
+    }
+
+    // And the caret over everything, on its on half, and never while there is
+    // a selection — a caret inside a highlighted range is two answers to
+    // "where does the next character go".
+    let Some(caret) = chrome.caret else { return };
+    if !chrome.caret_on || chrome.selection.is_some() {
+        return;
+    }
+    let row = crate::canvas::notepad_row_of(chrome.rows, caret);
+    if row < chrome.scroll || row >= chrome.scroll + l.lines {
+        return;
+    }
+    let column = crate::canvas::notepad_column_of(text, chrome.rows, caret);
+    // A **block**, at the width of one character, because that is what a
+    // terminal's cursor is — and translucent, so the letter it is sitting on
+    // is still legible under it.
+    let block = Rect::new(x_of(column), y_of(row), l.advance, l.line_height).intersection(&l.text);
+    if !block.is_empty() {
+        fill_rect(scene, block, ink.caret.with_alpha(0xaa));
+    }
+}
+
+/// The row under the sheet: which page, the two that add and take one away,
+/// and the two chips that change how the pad looks.
+fn draw_notepad_footer(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &NotepadChrome<'_>,
+) {
+    let l = &chrome.layout;
+    let ink = &chrome.ink;
+    let m = &theme.metrics;
+    let view = chrome.view;
+    if l.footer.is_empty() {
+        return;
+    }
+
+    let button = |scene: &mut Scene, rect: Rect, caption: &str, hit, lit: bool| {
+        if rect.is_empty() {
+            return;
+        }
+        let hot = chrome.hover == Some(hit);
+        fill_rect_rounded(
+            scene,
+            rect,
+            m.corner_radius,
+            if hot {
+                ink.caret.with_alpha(0x28)
+            } else {
+                ink.edge.with_alpha(0x66)
+            },
+        );
+        let Some(shaped) = labels.get(caption) else {
+            return;
+        };
+        draw_text_clipped(
+            scene,
+            shaped,
+            rect,
+            rect.x + (rect.width - shaped.width) / 2.0,
+            rect.y + (rect.height - shaped.height) / 2.0,
+            // A control that cannot do anything — the previous page on the
+            // first one — is drawn quiet rather than left out, so the footer
+            // keeps its shape as pages come and go.
+            if lit { ink.ink } else { ink.faint },
+        );
+    };
+
+    let last = view.pages.saturating_sub(1);
+    button(
+        scene,
+        l.previous,
+        NOTEPAD_PREVIOUS,
+        crate::canvas::NotepadHit::Previous,
+        view.page > 0,
+    );
+    button(
+        scene,
+        l.next,
+        NOTEPAD_NEXT,
+        crate::canvas::NotepadHit::Next,
+        view.page < last,
+    );
+    button(
+        scene,
+        l.add,
+        NOTEPAD_ADD,
+        crate::canvas::NotepadHit::AddPage,
+        true,
+    );
+    button(
+        scene,
+        l.remove,
+        NOTEPAD_REMOVE,
+        crate::canvas::NotepadHit::RemovePage,
+        view.pages > 1,
+    );
+
+    // Which page, in words rather than as a slider: there are never enough
+    // pages for a scrollbar to say anything a number does not.
+    if let Some(shaped) = labels.get(&view.page_label()) {
+        draw_text_clipped(
+            scene,
+            shaped,
+            l.count,
+            l.count.x + (l.count.width - shaped.width) / 2.0,
+            l.count.y + (l.count.height - shaped.height) / 2.0,
+            ink.faint,
+        );
+    }
+
+    button(
+        scene,
+        l.size_chip,
+        notepad_size_caption(view.size),
+        crate::canvas::NotepadHit::Size,
+        true,
+    );
+    button(
+        scene,
+        l.theme_chip,
+        view.theme.label(),
+        crate::canvas::NotepadHit::Theme,
+        true,
+    );
+}
+
+/// The footer's four buttons, as the strings the window shapes them under.
+///
+/// `const`s rather than literals at the call site, because a string drawn
+/// from one spelling and shaped from another draws as nothing at all — the
+/// rule `Labels` lives by.
+pub const NOTEPAD_PREVIOUS: &str = "\u{2039}";
+pub const NOTEPAD_NEXT: &str = "\u{203a}";
+pub const NOTEPAD_ADD: &str = "+";
+pub const NOTEPAD_REMOVE: &str = "\u{2212}";
+
+/// What the size chip says: one letter, because the chip is one letter wide
+/// and the three sizes are told apart by the page behind it.
+pub fn notepad_size_caption(size: fontelle_types::NotepadSize) -> &'static str {
+    match size {
+        fontelle_types::NotepadSize::Small => "S",
+        fontelle_types::NotepadSize::Medium => "M",
+        fontelle_types::NotepadSize::Large => "L",
     }
 }

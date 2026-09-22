@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Notepad"
+  },
+  "name": "studio",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Notepad": {
+        "theme": "Studio",
+        "size": "Medium",
+        "mix": 1.0
+      }
+    }
+  }
+}

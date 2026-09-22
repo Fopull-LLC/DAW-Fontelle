@@ -5357,6 +5357,12 @@ impl Command for ApplyTrackChain {
                 // The sidechain is re-pointed by hand, which is the same
                 // gesture it took to make in the first place.
                 notes: None,
+                // A saved chain carries the pad but not what was written on
+                // it: a track preset is a set of effects, and somebody
+                // else's lyrics arriving with their vocal chain would be a
+                // preset that brought a document with it.
+                notepad: (insert.config.kind() == fontelle_types::EffectKind::Notepad)
+                    .then(fontelle_types::NotepadPages::new),
             })
             .collect();
         self.previous.get_or_insert(previous);
@@ -5419,16 +5425,26 @@ impl Command for ApplyTrackChain {
 /// gesture.
 pub struct AddInsert {
     track: MixerTrackId,
-    kind: fontelle_types::EffectKind,
+    config: fontelle_types::EffectConfig,
     /// Where it landed, so the undo knows which one to take away.
     added: Option<usize>,
 }
 
 impl AddInsert {
     pub fn new(track: MixerTrackId, kind: fontelle_types::EffectKind) -> Self {
+        Self::with_config(track, fontelle_types::EffectConfig::new(kind))
+    }
+
+    /// The same, with the new insert **already set**.
+    ///
+    /// One command rather than an add and a write, so that adding an effect
+    /// is one history entry however it was set up. The studio uses it for the
+    /// notepad, which opens in the theme last chosen
+    /// (`docs/effects-catalogue.md` §2.8).
+    pub fn with_config(track: MixerTrackId, config: fontelle_types::EffectConfig) -> Self {
         Self {
             track,
-            kind,
+            config,
             added: None,
         }
     }
@@ -5441,7 +5457,9 @@ impl Command for AddInsert {
             .tracks
             .get_mut(self.track)
             .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        track.inserts.push(crate::EffectSlot::new(self.kind));
+        let mut slot = crate::EffectSlot::new(self.config.kind());
+        slot.config = self.config;
+        track.inserts.push(slot);
         self.added = Some(track.inserts.len() - 1);
         Ok(())
     }
@@ -6126,6 +6144,124 @@ impl Command for SetInsertMix {
 
     fn memory_cost(&self) -> usize {
         std::mem::size_of::<Self>()
+    }
+}
+
+/// One thing done to a notepad's pages (`docs/effects-catalogue.md` §2.8).
+///
+/// One command for all four edits rather than four commands, because the
+/// inverse of each of them is another edit of the same shape — see
+/// [`NotepadPages::apply`](fontelle_types::NotepadPages::apply), which does
+/// the work and hands back the undo. There is nothing here to keep in step
+/// with it.
+///
+/// **A refused edit is not an entry.** Typing the same words again, turning to
+/// the page you are on, taking away the last page: each of those is `Err`, so
+/// the history never grows an entry that would undo to the state it is already
+/// in.
+pub struct EditNotepad {
+    track: MixerTrackId,
+    index: usize,
+    edit: fontelle_types::NotepadEdit,
+    /// The edit that puts it back, learnt when this one was applied.
+    undo: Option<fontelle_types::NotepadEdit>,
+}
+
+impl EditNotepad {
+    pub fn new(track: MixerTrackId, index: usize, edit: fontelle_types::NotepadEdit) -> Self {
+        Self {
+            track,
+            index,
+            edit,
+            undo: None,
+        }
+    }
+
+    /// The page a `Write` is about, so two of them can be told apart.
+    fn written_page(&self) -> Option<usize> {
+        match &self.edit {
+            fontelle_types::NotepadEdit::Write { page, .. } => Some(*page),
+            _ => None,
+        }
+    }
+}
+
+impl Command for EditNotepad {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let track = doc
+            .mixer
+            .tracks
+            .get_mut(self.track)
+            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
+        let slot = track
+            .inserts
+            .get_mut(self.index)
+            .ok_or_else(|| CommandError(format!("no insert {}", self.index)))?;
+        let pad = slot
+            .notepad
+            .as_mut()
+            .ok_or_else(|| CommandError(format!("insert {} is not a notepad", self.index)))?;
+        let undo = pad
+            .apply(&self.edit)
+            .ok_or_else(|| CommandError("that edit changes nothing".to_string()))?;
+        // The *first* one, so a coalesced run of typing undoes to before the
+        // run rather than to its middle — `SetInsertMix` keeps its first
+        // previous value for the same reason.
+        self.undo.get_or_insert(undo);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.undo {
+            Some(undo) => Box::new(EditNotepad::new(self.track, self.index, undo.clone())),
+            None => Box::new(NotApplied("writing in a notepad")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        self.edit.label()
+    }
+
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<EditNotepad>() else {
+            return false;
+        };
+        if next.track != self.track || next.index != self.index {
+            return false;
+        }
+        match (&self.edit, &next.edit) {
+            // A run of typing on one page is one entry, until the window
+            // breaks the gesture — which it does where a person would expect
+            // a stop: a caret moved, a new line, a page turned.
+            (
+                fontelle_types::NotepadEdit::Write { .. },
+                fontelle_types::NotepadEdit::Write { .. },
+            ) if self.written_page() == next.written_page() => {}
+            // And a walk through the pages is one entry, so holding the
+            // arrow does not fill the history with page turns.
+            (
+                fontelle_types::NotepadEdit::Show { .. },
+                fontelle_types::NotepadEdit::Show { .. },
+            ) => {}
+            _ => return false,
+        }
+        // The latest edit, so a redo re-applies where the run ended; the undo
+        // is left at the first, which is where the run began.
+        self.edit = next.edit.clone();
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.edit.memory_cost()
+            + self
+                .undo
+                .as_ref()
+                .map_or(0, fontelle_types::NotepadEdit::memory_cost)
     }
 }
 

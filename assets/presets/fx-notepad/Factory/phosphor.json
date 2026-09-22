@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Notepad"
+  },
+  "name": "phosphor",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Notepad": {
+        "theme": "Phosphor",
+        "size": "Medium",
+        "mix": 1.0
+      }
+    }
+  }
+}

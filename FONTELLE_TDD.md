@@ -1427,6 +1427,7 @@ All effects live in `fontelle-fx`, are `AudioNode` implementations, and are writ
 | **Gate / expander** | Not in the original table; added 2026-09-02 as a P0 the catalogue names. Threshold, hysteresis, key high-pass, look-ahead, attack, hold, release, ratio, range. One machine for both. |
 | **Filter** | Not in the original table; added 2026-09-02. The synthesiser filter as an insert: eight shapes, cutoff, resonance, drive, a signed envelope follower and an LFO with six waves and a tempo sync. |
 | **Chorus / ensemble** | Not in the original table; added 2026-09-02. One to four voices, each at its own delay and its own point of the sweep; a chorus/ensemble chooser, spread, signed feedback, tone. |
+| **Notepad** | Not in the original table; added 2026-09-22, and the one row here that breaks the sentence above it: **it is not an `AudioNode` that does anything.** A page of words on a strip (`docs/effects-catalogue.md` §2.8) — pages, a text editor, themes — whose signal path is a wire. Its content is not in its `EffectConfig` (which is `Copy` and crosses to the audio thread) but on the slot beside it, the position a hosted plugin's state holds. |
 
 **How far each of these goes (added 2026-09-02).** This table names the effects; `docs/effects-catalogue.md`
 is the design for what each has to be able to do before it counts as done — a *family* of sounds behind

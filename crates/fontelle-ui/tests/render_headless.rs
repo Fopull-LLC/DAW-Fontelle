@@ -5340,3 +5340,157 @@ fn the_shortcuts_sheet_is_drawn_over_the_studio_with_its_headings_in_the_accent(
     // And scrolled, so the dump shows the list moving.
     let _ = shoot_keybinds(Theme::dark_default(), 300.0);
 }
+
+/// The notepad's window, drawn through the real pipeline
+/// (`docs/effects-catalogue.md` §2.8) — `FONTELLE_UI_DUMP=<dir>` writes it
+/// out.
+///
+/// One shot per theme, because a theme is the whole of what this window's
+/// design is: a look that came out unreadable would be invisible to every
+/// geometry test in `tests/notepad.rs`, which knows where the words go and
+/// not what colour they are.
+fn shoot_notepad(
+    theme_name: fontelle_types::NotepadTheme,
+) -> Option<(
+    Vec<u8>,
+    fontelle_ui::canvas::NotepadLayout,
+    fontelle_ui::theme::NotepadInk,
+    u32,
+)> {
+    let shared = headless()?;
+    let theme = Theme::dark_default();
+    let mut text = TextContext::new();
+
+    let page = "when the lights go down\nand the room goes quiet\n\n\
+                i can hear the tape run on\nlonger than it should";
+    let view = fontelle_ui::canvas::NotepadView {
+        track: "Vocal".to_string(),
+        theme: theme_name,
+        size: fontelle_types::NotepadSize::Medium,
+        page: 1,
+        pages: 3,
+        text: page.to_string(),
+    };
+
+    let (ew, eh) = fontelle_ui::layout::NOTEPAD_SIZE;
+    let panel = fontelle_ui::layout::editor_window_layout(ew as f32, eh as f32, &theme.metrics);
+    let text_px = fontelle_ui::canvas::notepad_text_px(view.size, theme.font.size);
+    let advance = text
+        .layout(
+            "0",
+            &fontelle_ui::theme::FontTokens {
+                family: "monospace".to_string(),
+                size: text_px,
+                line_height: 1.0,
+            },
+            None,
+        )
+        .width
+        .max(1.0);
+    let layout = fontelle_ui::canvas::notepad_layout(
+        panel.body,
+        &theme.metrics,
+        &view,
+        advance,
+        (text_px * fontelle_ui::canvas::NOTEPAD_LEADING).round(),
+    );
+    let rows = fontelle_ui::canvas::notepad_rows(page, layout.columns);
+    let ink = fontelle_ui::theme::notepad_ink(view.theme, &theme.palette);
+
+    // The same strings `app::shape_labels` asks for, so what this shot shows
+    // is what the window shows.
+    let mut labels = Labels::new();
+    for row in &rows {
+        labels.ensure_mono(&page[row.from..row.to], text_px, &mut text);
+    }
+    for caption in [
+        fontelle_ui::render::NOTEPAD_PREVIOUS,
+        fontelle_ui::render::NOTEPAD_NEXT,
+        fontelle_ui::render::NOTEPAD_ADD,
+        fontelle_ui::render::NOTEPAD_REMOVE,
+        fontelle_ui::render::notepad_size_caption(view.size),
+        view.theme.label(),
+    ] {
+        labels.ensure(caption, &theme.font, &mut text);
+    }
+    labels.ensure(&view.page_label(), &theme.font, &mut text);
+
+    let title = text.layout("Vocal — Notepad", &theme.font, None);
+    let mut scene = vello::Scene::new();
+    fontelle_ui::render::draw_editor_window(
+        &mut scene,
+        &theme,
+        &panel,
+        &labels,
+        &title,
+        &fontelle_ui::render::EditorWindowChrome::Notepad(fontelle_ui::render::NotepadChrome {
+            layout: layout.clone(),
+            view: &view,
+            ink,
+            rows: &rows,
+            scroll: 0,
+            text_px,
+            // Caret in the middle of the second line, as if somebody were
+            // typing: the one thing a still picture can say about a cursor.
+            caret: Some(30),
+            caret_on: true,
+            selection: None,
+            hover: None,
+        }),
+        None,
+        None,
+        None,
+        None,
+    );
+    let pixels = shared
+        .lock()
+        .expect("the shared renderer")
+        .render(&scene, ew, eh, ink.ground)
+        .expect("the scene must render");
+    dump_sized(&pixels, &format!("notepad-{}", theme_name.label()), ew, eh);
+    Some((pixels, layout, ink, ew))
+}
+
+#[test]
+fn the_notepad_draws_its_page_in_its_own_theme() {
+    for theme in fontelle_types::NotepadTheme::ALL {
+        let Some((pixels, layout, ink, width)) = shoot_notepad(theme) else {
+            return;
+        };
+        let at = |x: u32, y: u32| {
+            let i = ((y * width + x) * 4) as usize;
+            Color::rgb(pixels[i], pixels[i + 1], pixels[i + 2])
+        };
+        // **The pad is painted in its own palette, not the studio's.** The
+        // ground under the footer is the theme's, which is the whole claim
+        // `Theme::for_notepad` makes.
+        let ground = at(
+            layout.footer.x as u32 + 4,
+            layout.footer.bottom() as u32 - 3,
+        );
+        assert!(
+            near(ground, ink.ground),
+            "{}: the ground is {ground:?}, not {:?}",
+            theme.label(),
+            ink.ground
+        );
+        // The sheet is a different colour from the ground it sits on, or the
+        // page is not a page.
+        let sheet = at(
+            (layout.sheet.x + layout.sheet.width / 2.0) as u32,
+            (layout.sheet.y + layout.sheet.height - 8.0) as u32,
+        );
+        assert!(
+            !near(sheet, ink.ground) || near(sheet, ink.paper),
+            "{}: the sheet did not draw",
+            theme.label()
+        );
+        // And there are **words** on it: somewhere along the first line, a
+        // pixel that is neither the page nor the caret.
+        let first_line = (layout.text.y + layout.line_height / 2.0) as u32;
+        let inked = (0..layout.text.width as u32)
+            .step_by(2)
+            .any(|dx| !near(at(layout.text.x as u32 + dx, first_line), ink.paper));
+        assert!(inked, "{}: the first line drew nothing", theme.label());
+    }
+}

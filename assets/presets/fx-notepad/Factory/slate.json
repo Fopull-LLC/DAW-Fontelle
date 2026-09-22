@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Notepad"
+  },
+  "name": "slate",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Notepad": {
+        "theme": "Slate",
+        "size": "Medium",
+        "mix": 1.0
+      }
+    }
+  }
+}

@@ -24,6 +24,7 @@ mod id;
 mod import;
 mod instrument;
 mod lfo_shape;
+mod notepad;
 mod pan;
 mod param;
 mod patch_data;
@@ -73,6 +74,9 @@ pub use id::{
 pub use import::{FolderKind, is_multisample_path};
 pub use instrument::InstrumentKind;
 pub use lfo_shape::{LfoPoint, LfoShape, LfoShapeMode, MAX_LFO_POINTS};
+pub use notepad::{
+    NotepadConfig, NotepadEdit, NotepadPages, NotepadPreset, NotepadSize, NotepadTheme,
+};
 pub use pan::{PanLaw, pan_unit};
 pub use param::{
     ParamAddress, ParamSection, ParamSpec, ParamTarget, TEMPO_MAX_BPM, TEMPO_MIN_BPM, Taper, Unit,

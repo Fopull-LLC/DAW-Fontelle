@@ -31,10 +31,10 @@ use fontelle_types::{
     DelayConfig, DelayPreset, DeviceKind, DistortionConfig, DistortionPreset, EffectConfig,
     EqConfig, EqPreset, FilterConfig, FilterPreset, FlangerConfig, FlangerPreset, FoldConfig,
     FoldPreset, GateConfig, GatePreset, HyperConfig, HyperPreset, InstrumentKind, LimiterConfig,
-    LimiterPreset, MultibandConfig, MultibandPreset, PhaserConfig, PhaserPreset, Preset,
-    PresetPayload, ReverbConfig, ReverbPreset, ShifterConfig, ShifterPreset, SoftenConfig,
-    SoftenPreset, TrackChain, TrackPreset, TuneConfig, TunePreset, UtilityConfig, UtilityPreset,
-    WidthConfig, WidthPreset,
+    LimiterPreset, MultibandConfig, MultibandPreset, NotepadConfig, NotepadPreset, PhaserConfig,
+    PhaserPreset, Preset, PresetPayload, ReverbConfig, ReverbPreset, ShifterConfig, ShifterPreset,
+    SoftenConfig, SoftenPreset, TrackChain, TrackPreset, TuneConfig, TunePreset, UtilityConfig,
+    UtilityPreset, WidthConfig, WidthPreset,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -201,6 +201,15 @@ fn effect_presets() -> Vec<Preset> {
         out.push(effect_preset(
             preset.label(),
             EffectConfig::Width(WidthConfig::from_preset(preset)),
+        ));
+    }
+    // The notepad's bank is its **looks**: the pad has nothing to say about
+    // the sound, so a preset here is a palette, and there is one per theme
+    // (`fontelle-types/src/notepad.rs`).
+    for preset in NotepadPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Notepad(NotepadConfig::from_preset(preset)),
         ));
     }
     // The sixteen **track** chains — a whole mixer strip rather than one

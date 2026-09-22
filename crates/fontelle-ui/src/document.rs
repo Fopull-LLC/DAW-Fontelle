@@ -2551,6 +2551,36 @@ pub trait StudioHost: DocumentHost {
         Vec::new()
     }
 
+    /// **The notepad's own window**, when this insert is one
+    /// (`docs/effects-catalogue.md` §2.8).
+    ///
+    /// `None` for every other insert, exactly as
+    /// [`eq_config`](StudioHost::eq_config) and
+    /// [`tune_view`](StudioHost::tune_view) are: the four effect windows are
+    /// told apart by which of them offers a view, and an insert that is none
+    /// of the first three gets the grid of knobs.
+    ///
+    /// The **showing page only**. The others are in the document and nothing
+    /// in the window can draw them, so carrying them across would be a copy
+    /// to keep in step for nothing.
+    fn notepad_view(&self, _strip: usize, _slot: usize) -> Option<crate::canvas::NotepadView> {
+        None
+    }
+
+    /// Does one thing to a notepad's pages — a page rewritten, added, taken
+    /// away or turned to.
+    ///
+    /// One `Command` through the history like every other edit, coalescing
+    /// while somebody types: the window calls
+    /// [`end_gesture`](DocumentHost::end_gesture) where a person would expect
+    /// a stop — a caret moved by hand, a new line, a page turned — and a run
+    /// of keystrokes between two of those is one entry.
+    ///
+    /// An edit that changes nothing is refused by the document rather than
+    /// recorded, so Ctrl+Z never walks back through edits that never
+    /// happened.
+    fn edit_notepad(&mut self, _strip: usize, _slot: usize, _edit: fontelle_types::NotepadEdit) {}
+
     fn eq_config(&self, _strip: usize, _slot: usize) -> Option<fontelle_types::EqConfig> {
         None
     }

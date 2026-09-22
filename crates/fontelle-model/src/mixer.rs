@@ -90,6 +90,22 @@ pub struct EffectSlot {
     /// field existed opens and is written back unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<ChannelId>,
+    /// What this insert **says**, when it is a notepad
+    /// (`docs/effects-catalogue.md` §2.8).
+    ///
+    /// A second field rather than a variant of [`EffectConfig`], for exactly
+    /// the reason [`plugin`](Self::plugin) is one and in the same words: an
+    /// `EffectConfig` is `Copy`, fixed-size and read on the audio thread, and
+    /// a page of lyrics is none of those three. Nothing here ever crosses to
+    /// the engine — the notepad's signal path is a wire — so the words cost
+    /// the audio thread nothing at all.
+    ///
+    /// `Some` on every notepad, from [`EffectSlot::new`] onwards, and `None`
+    /// on all twenty of the effects that make a sound. Defaulted and omitted
+    /// when empty, so every project written before the notepad existed opens
+    /// unchanged and is written back unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notepad: Option<fontelle_types::NotepadPages>,
     /// The preset this device was loaded from, if it was loaded from one
     /// (`docs/flopsynth-plan.md` §P.5).
     ///
@@ -115,6 +131,10 @@ impl EffectSlot {
             bypassed: false,
             key: None,
             notes: None,
+            // A notepad opens with one empty page, here rather than on first
+            // use: a pad with nothing to type in is a window that looks
+            // broken, and every path that makes a slot goes through this one.
+            notepad: (kind == EffectKind::Notepad).then(fontelle_types::NotepadPages::new),
             preset: None,
         }
     }
@@ -131,6 +151,7 @@ impl EffectSlot {
             preset: None,
             key: None,
             notes: None,
+            notepad: None,
         }
     }
 

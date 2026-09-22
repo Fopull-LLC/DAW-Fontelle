@@ -16,6 +16,29 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-22 (the Notepad).** A twenty-first effect kind that makes
+no sound — `PROGRESS.md`'s top entry, and the whole design is
+`docs/effects-catalogue.md` §2.8. Things to know: (0) **a new effect window
+is four lists, not one** — `refresh_studio` clears `open_insert` on one and
+*closes the window* on another, and `create_editor` picks the size on a
+third; the notepad was missing from all three and the symptom was a window
+that shut itself on the first keystroke, with every edit before it silently
+going nowhere (`open_insert` was `None`). Grep `self.tune` and answer every
+hit. (1) The pad's words are **not** in its `EffectConfig` (which is `Copy`
+and crosses to the audio thread) but on the slot beside it,
+`EffectSlot::notepad`, like a hosted plugin's state; (2) the page is a
+**monospace grid** and the window measures one character to build it, so
+anything that draws or hits it counts in `NotepadLayout::advance` — never in
+`width / columns`, which is a fraction wider and puts a click one character
+short at the end of a long line; (3) `Labels` has a **mono shelf**
+(`ensure_mono` / `get_mono`) because the styled map's key carries no family;
+(4) the theme lives in the settings file **by name**, and stepping it writes
+the file — `Session::set_insert_param` is the one road every way of setting
+it takes; (5) driving this window over `Xwayland :99` is the usual
+stale-grab trap at its worst, because **the sheet has no hover state**: nudge
+over a footer chip, not over the page, or every grab is a page behind and
+typing looks lost when it is not.
+
 **Updated 2026-09-21 (v0.10.0).** Four reports fixed — `PROGRESS.md`'s
 top entry. Things to know: (0) a silent exit is still `coredumpctl list`
 first; a `SIGXCPU` there is the RT budget, and `rt_budget.rs` is where

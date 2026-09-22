@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Notepad"
+  },
+  "name": "ice",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Notepad": {
+        "theme": "Ice",
+        "size": "Medium",
+        "mix": 1.0
+      }
+    }
+  }
+}

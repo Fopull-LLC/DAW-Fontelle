@@ -166,6 +166,26 @@ pub struct Settings {
     /// `Eq`; skipped at 100 so a file that never chose says nothing.
     #[serde(default = "hundred", skip_serializing_if = "is_hundred")]
     pub flopsynth_scale_percent: u16,
+    /// The **notepad's** theme: the last one chosen, which is what a new
+    /// notepad insert opens in (`docs/effects-catalogue.md` §2.8).
+    ///
+    /// > *"it should have themes you can switch between and it should alwasy
+    /// > save your default preferred theme as your last one selected."*
+    ///
+    /// A setting rather than document state, exactly as
+    /// [`flopsynth_scale_percent`](Self::flopsynth_scale_percent) is:
+    /// somebody who chose amber chose it for every session and every project,
+    /// not for the one pad they happened to be looking at. The pad's *own*
+    /// theme stays in the project, because two pads may differ.
+    ///
+    /// Written as the theme's **name** rather than its position, so that
+    /// adding a theme in the middle of the list cannot silently change
+    /// somebody's default; a name this build does not know reads as the first
+    /// theme rather than as a file it refuses to open. Skipped when nothing
+    /// has been chosen, so a file written by somebody who never opened a
+    /// notepad says nothing about one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notepad_theme: Option<String>,
 }
 
 fn yes() -> bool {
@@ -199,6 +219,7 @@ impl Default for Settings {
             check_for_updates: true,
             extensions_offered: false,
             flopsynth_scale_percent: 100,
+            notepad_theme: None,
         }
     }
 }

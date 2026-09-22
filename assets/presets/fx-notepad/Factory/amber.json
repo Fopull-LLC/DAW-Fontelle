@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Notepad"
+  },
+  "name": "amber",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Notepad": {
+        "theme": "Amber",
+        "size": "Medium",
+        "mix": 1.0
+      }
+    }
+  }
+}

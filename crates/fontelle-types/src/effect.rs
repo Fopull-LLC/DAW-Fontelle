@@ -50,6 +50,11 @@ pub enum EffectKind {
     Hyper,
     Multiband,
     Width,
+    /// The one that makes no sound: a page of words on a strip
+    /// (`crate::notepad`). It is an insert because that is where somebody
+    /// wants it — beside the track it is about — and not because it
+    /// processes anything.
+    Notepad,
 }
 
 impl EffectKind {
@@ -76,6 +81,7 @@ impl EffectKind {
             Self::Hyper => "Hyper",
             Self::Multiband => "Multiband",
             Self::Width => "Width",
+            Self::Notepad => "Notepad",
         }
     }
 
@@ -136,7 +142,7 @@ impl EffectKind {
     ///
     /// The plumbing tool first, then the processors, then the two that sit
     /// under the track.
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::Utility,
         Self::Width,
         Self::Eq,
@@ -162,6 +168,10 @@ impl EffectKind {
         Self::Hyper,
         Self::Delay,
         Self::Reverb,
+        // Last, and on its own: it is not a processor at all, and a menu
+        // that put it among them would be a menu that lied about what the
+        // things in it do.
+        Self::Notepad,
     ];
 }
 
@@ -193,6 +203,7 @@ pub enum EffectConfig {
     Hyper(HyperConfig),
     Multiband(MultibandConfig),
     Width(WidthConfig),
+    Notepad(crate::NotepadConfig),
 }
 
 impl EffectConfig {
@@ -226,6 +237,7 @@ impl EffectConfig {
             Self::Hyper(_) => HYPER_PARAMS.as_slice(),
             Self::Multiband(_) => MULTIBAND_PARAMS.as_slice(),
             Self::Width(_) => WIDTH_PARAMS.as_slice(),
+            Self::Notepad(_) => crate::notepad::NOTEPAD_PARAMS.as_slice(),
         }
     }
 
@@ -260,6 +272,7 @@ impl EffectConfig {
             Self::Hyper(_) => HYPER_SECTIONS.as_slice(),
             Self::Multiband(_) => MULTIBAND_SECTIONS.as_slice(),
             Self::Width(_) => WIDTH_SECTIONS.as_slice(),
+            Self::Notepad(_) => crate::notepad::NOTEPAD_SECTIONS.as_slice(),
         }
     }
 
@@ -308,6 +321,7 @@ impl EffectConfig {
             Self::Hyper(hyper) => hyper.get(id),
             Self::Multiband(multiband) => multiband.get(id),
             Self::Width(width) => width.get(id),
+            Self::Notepad(notepad) => notepad.get(id),
         }
     }
 
@@ -338,6 +352,7 @@ impl EffectConfig {
             Self::Hyper(hyper) => hyper.set(id, value),
             Self::Multiband(multiband) => multiband.set(id, value),
             Self::Width(width) => width.set(id, value),
+            Self::Notepad(notepad) => notepad.set(id, value),
         }
     }
 
@@ -374,6 +389,7 @@ impl EffectConfig {
             Self::Hyper(_) => EffectKind::Hyper,
             Self::Multiband(_) => EffectKind::Multiband,
             Self::Width(_) => EffectKind::Width,
+            Self::Notepad(_) => EffectKind::Notepad,
         }
     }
 
@@ -406,6 +422,7 @@ impl EffectConfig {
             Self::Hyper(hyper) => hyper.mix,
             Self::Multiband(multiband) => multiband.mix,
             Self::Width(width) => width.mix,
+            Self::Notepad(notepad) => notepad.mix,
         }
     }
 
@@ -443,7 +460,7 @@ const fn mix_param(default: f32) -> crate::ParamSpec {
 const ALL_WET: f32 = 100.0;
 
 /// A fresh effect is the effect, not half of it.
-fn all_wet() -> f32 {
+pub(crate) fn all_wet() -> f32 {
     1.0
 }
 
@@ -473,6 +490,7 @@ impl EffectConfig {
             EffectKind::Hyper => Self::Hyper(HyperConfig::new()),
             EffectKind::Multiband => Self::Multiband(MultibandConfig::new()),
             EffectKind::Width => Self::Width(WidthConfig::new()),
+            EffectKind::Notepad => Self::Notepad(crate::NotepadConfig::new()),
         }
     }
 }

@@ -203,3 +203,28 @@ fn a_synced_delay_takes_its_time_from_the_transports_tempo() {
         "a quarter at 180 bpm should repeat at 16000, repeated at {at_180}"
     );
 }
+
+/// The notepad is a wire, sample for sample, at every setting it has.
+///
+/// The one effect in the menu that is not one: it holds words, and words are
+/// not a signal path. The generic tests above say it does not silence or
+/// explode the track; this says it does not *touch* it — a pad you cannot
+/// hear is the whole promise, and a bit of colour picked up from a theme
+/// chooser would be a defect nobody would look for.
+#[test]
+fn a_notepad_passes_the_signal_through_untouched() {
+    for theme in 0..7 {
+        let mut config = EffectConfig::new(EffectKind::Notepad);
+        config.set("theme", theme as f32);
+        config.set("size", (theme % 3) as f32);
+        let mut node = EffectNode::new(config);
+        let out = run(&mut node, 440.0);
+        let tone = sine(440.0, out.len());
+        for (index, (was, now)) in tone.iter().zip(out.iter()).enumerate() {
+            assert!(
+                (was - now).abs() < 1e-7,
+                "theme {theme} changed sample {index}: {was} became {now}"
+            );
+        }
+    }
+}

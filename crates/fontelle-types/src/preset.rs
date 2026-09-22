@@ -113,6 +113,7 @@ impl DeviceKind {
                     EffectKind::Hyper => "hyper",
                     EffectKind::Multiband => "multiband",
                     EffectKind::Width => "width",
+                    EffectKind::Notepad => "notepad",
                 }
             ),
             // A plugin id is a reverse-domain name or a URI and may carry

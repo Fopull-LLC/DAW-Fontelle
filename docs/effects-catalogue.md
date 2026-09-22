@@ -184,6 +184,56 @@ thing that makes somebody choose the software.
   its own effects chain is part of the patch — so "an LFO on a chorus" is a
   route inside one instrument rather than one insert reaching for another.
 
+### 2.8 The one that makes no sound
+
+| Effect | Status | Priority | The family it has to be |
+|---|---|---|---|
+| **Notepad** | **new** (2026-09-22) | P1 | A page of words on a strip: FL's *Fruity Notebook*, asked for by name. Pages you walk left and right through, a real text editor on each one (caret, selection, the word jumps, cut/copy/paste — the same `TextEntry` and the same keyboard every field in this program shares), seven themes, three text sizes. Its DSP is a wire. |
+
+**Why an insert at all.** Because that is where somebody wants it — beside
+the track it is about. A lyric belongs to the vocal, a signal-chain note
+belongs to the bus it describes, and a notes panel somewhere else in the
+window is a notes panel nobody opens. Being an insert also means it is saved,
+undone, copied with a track chain and found in the same menu as everything
+else, for no new machinery at all.
+
+**Where its content lives, and why not in the config.** Every other effect's
+whole state is its `EffectConfig`, which is `Copy`, fixed-size and handed to
+the audio thread every block; a page of lyrics is none of those. So the split
+is the one a hosted plugin already uses: `NotepadConfig` is the knobs (theme,
+size, and the `mix` every effect has by invariant — on this one it blends a
+signal with itself), and `EffectSlot::notepad` is the words. Nothing a pad
+holds ever crosses to the audio thread.
+
+**The edits are an algebra.** `NotepadEdit::apply` does one thing and returns
+**the inverse of what it just did**, so `EditNotepad` in `fontelle-model` has
+nothing to work out and no second copy of the rules — the shape
+`WavetableEdit` takes, for the same reason. An edit that changes nothing is
+refused rather than recorded, so Ctrl+Z never walks back through edits that
+never happened; a run of typing coalesces into one entry until the window
+breaks the gesture, which it does where a person would expect a stop — a
+caret moved by hand, a new line, a page turned, the keyboard given up.
+
+**Monospace, and why it is not only a look.** Placing a caret in proportional
+text means measuring the width of every prefix of the line under the pointer,
+and the window layer may not shape text at all (INVARIANT 2). On a fixed grid
+the window measures *one* character once a frame and the rest is arithmetic:
+column times advance, row times line height. So the terminal look and the
+honest caret are the same decision.
+
+**The themes are the bank.** Every built-in ships presets worth opening
+(rule 10, and `fontelle-app/tests/effect_editor.rs` holds it), and a device
+whose only settings are how it is painted has looks for presets: one per
+theme. The **last theme chosen is remembered in the settings file**, by name
+rather than by position, and is what the next notepad opens in —
+`Settings::notepad_theme`, the position `flopsynth_scale_percent` holds and
+for its reason.
+
+**What was left out.** No rich text, no page names, no search across pages,
+and no link between a page and the timeline (a note pinned to bar 33 is a
+*marker*, and markers exist). Each of those is a real feature and none of
+them is what was asked for: *"just a basic text editor."*
+
 ---
 
 ## 3. The reference designs, in full

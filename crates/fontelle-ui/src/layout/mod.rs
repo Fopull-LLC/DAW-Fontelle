@@ -700,6 +700,16 @@ pub fn flopsynth_window_size(scale: f32) -> (u32, u32) {
 /// it_opens_at` exists to catch, and it caught this.
 pub const TUNE_SIZE: (u32, u32) = (1120, 660);
 
+/// The size the **notepad's** window opens at
+/// (`docs/effects-catalogue.md` §2.8).
+///
+/// `TUNE_SIZE`'s reason again: the kind is `Effect` whatever is in the slot,
+/// and what a pad wants is not what a curve wants. Nearer a page than a
+/// panel — a lyric is written in short lines, and a sheet as wide as the EQ's
+/// curve would leave somebody typing across a strip. Sixty-odd columns at the
+/// middle size, which is a verse's width, over about twenty lines.
+pub const NOTEPAD_SIZE: (u32, u32) = (560, 540);
+
 /// And the smallest it may be dragged to. Under this the viewport has given
 /// all it has, the keyboard has started to, and the last card would still be
 /// off the bottom — which is the one thing §7.2 does not allow, because there

@@ -1288,6 +1288,35 @@ pub struct WindowApp {
     /// other: exactly one of `eq`, `tune` and `insert_view` is `Some`.
     tune: Option<crate::canvas::TuneView>,
     tune_layout: crate::canvas::TuneLayout,
+    /// **The notepad's window**, when the open insert is one
+    /// (`docs/effects-catalogue.md` §2.8). The fourth of the effect windows,
+    /// told apart from the other three the same way: exactly one of `eq`,
+    /// `tune`, `notepad` and `insert_view` is `Some`.
+    notepad: Option<crate::canvas::NotepadView>,
+    notepad_layout: crate::canvas::NotepadLayout,
+    /// The page **being edited** — the caret and the selection the document
+    /// cannot hold, over a copy of the words it can.
+    ///
+    /// Re-seeded from the view whenever the document says something this
+    /// window did not type: an undo, a preset, another window. A caret is
+    /// where you are looking, so it is kept as near where it was as the new
+    /// text allows rather than thrown to the end.
+    notepad_entry: crate::canvas::TextEntry,
+    /// How that page breaks into lines at the sheet's current width.
+    notepad_rows: Vec<crate::canvas::NotepadRow>,
+    /// The first line on screen.
+    notepad_scroll: usize,
+    /// The column a run of Up and Down presses is aiming for. `None` until
+    /// one starts, and cleared by anything else that moves the caret — see
+    /// [`notepad_step_row`](crate::canvas::notepad_step_row).
+    notepad_goal: Option<usize>,
+    /// Whether the pad has the keyboard.
+    ///
+    /// **Off until somebody clicks into the page**, exactly as Flopsynth's
+    /// search box is: before that, keys fall through to the studio's own
+    /// bindings, so Space still plays the song and a stray letter does not
+    /// silently end up in somebody's lyrics.
+    notepad_typing: bool,
     /// The corrector's knob being dragged: which control, where the drag
     /// started, and what it was worth then.
     tune_knob: Option<((usize, usize), f32, f32)>,
@@ -1354,6 +1383,8 @@ pub struct WindowApp {
     /// field rather than a `hover_param`, because a chip has no address —
     /// see `instrument_preset_hit`.
     hover_preset: Option<usize>,
+    /// Which of the notepad's controls the pointer is over.
+    hover_notepad: Option<crate::canvas::NotepadHit>,
     /// The preset bar in each editor window's header (`docs/flopsynth-plan.md`
     /// §P.7): what it says, where it is, and what the pointer is over.
     ///
@@ -1923,6 +1954,13 @@ impl WindowApp {
             insert_knob: None,
             tune: None,
             tune_layout: crate::canvas::TuneLayout::default(),
+            notepad: None,
+            notepad_layout: crate::canvas::NotepadLayout::default(),
+            notepad_entry: crate::canvas::TextEntry::default(),
+            notepad_rows: Vec::new(),
+            notepad_scroll: 0,
+            notepad_goal: None,
+            notepad_typing: false,
             tune_knob: None,
             eq_curve: Vec::new(),
             spectrum: Vec::new(),
@@ -1942,6 +1980,7 @@ impl WindowApp {
             count_in_until: None,
             take_from: None,
             hover_preset: None,
+            hover_notepad: None,
             preset_view: [
                 crate::canvas::PresetBarView::default(),
                 crate::canvas::PresetBarView::default(),
@@ -2743,11 +2782,16 @@ impl WindowApp {
             .is_some_and(|(target, _)| target.name_prompt().is_some());
         // An inline rename blinks too, now that its caret is drawn where it
         // is rather than at the end of the name.
-        if prompting || self.renaming.is_some() || self.tempo_entry.is_some() {
+        // The notepad's caret blinks on the same clock, in its own window.
+        let writing = self.notepad_typing && self.notepad.is_some();
+        if prompting || writing || self.renaming.is_some() || self.tempo_entry.is_some() {
             self.caret_phase += dt;
             if self.caret_phase >= CARET_BLINK_S {
                 self.caret_phase -= CARET_BLINK_S;
                 self.caret_on = !self.caret_on;
+                if writing {
+                    self.redraw_editor(EditorKind::Effect);
+                }
                 if prompting {
                     self.tree.invalidate_rect(self.menu_at.1);
                 } else if self.tempo_entry.is_some() {
@@ -4263,16 +4307,27 @@ impl WindowApp {
         // the same reason and by the same rule: what opens is decided by what
         // is in the slot, not by the editor's kind. See `layout::TUNE_SIZE`.
         let tune = kind == EditorKind::Effect && self.tune.is_some();
+        // And the notepad is a page rather than a panel — same rule again.
+        let notepad = kind == EditorKind::Effect && self.notepad.is_some();
         // Flopsynth's window opens at its design size times its scale, and
         // refuses to be smaller: nothing on it shrinks (§3.1), so there is
         // no smaller size at which the page still fits.
-        let flop_size = self
-            .flopsynth
-            .as_ref()
-            .map(|view| crate::layout::flopsynth_window_size(view.scale));
-        let (w, h) = match (flop_size, tune) {
-            (Some(size), _) => size,
-            (_, true) => crate::layout::TUNE_SIZE,
+        // **The instrument window's size, and only its.** Read without the
+        // kind, this made every *effect* window open at Flopsynth's size
+        // whenever the selected channel happened to be one — found by opening
+        // a notepad on a strip beside a Flopsynth channel, which came up at
+        // 1180×840.
+        let flop_size = (kind == EditorKind::Instrument)
+            .then(|| {
+                self.flopsynth
+                    .as_ref()
+                    .map(|view| crate::layout::flopsynth_window_size(view.scale))
+            })
+            .flatten();
+        let (w, h) = match (flop_size, tune, notepad) {
+            (Some(size), _, _) => size,
+            (_, true, _) => crate::layout::TUNE_SIZE,
+            (_, _, true) => crate::layout::NOTEPAD_SIZE,
             _ => kind.default_size(),
         };
         let (min_w, min_h) = match (flop_size, tune) {
@@ -4476,6 +4531,9 @@ impl WindowApp {
                     };
                 }
                 EditorKind::Effect => {
+                    // The pad's sheet, whose grid is measured rather than
+                    // computed — `relayout_notepad` says why.
+                    self.relayout_notepad();
                     // The corrector's console, laid out from the same body.
                     // Only one of the three effect windows is drawn, and the
                     // host decides which by whose view it offered.
@@ -4700,6 +4758,12 @@ impl WindowApp {
                         self.scroll_flopsynth_presets(x, y, steps);
                         self.scroll_flopsynth_matrix(x, y, steps);
                     }
+                    // And the notepad, whose page is the one thing in an
+                    // effect window that can outrun its room. Three lines a
+                    // notch, like every other list here.
+                    if kind == EditorKind::Effect && self.notepad.is_some() {
+                        self.scroll_notepad(steps * 3.0);
+                    }
                 }
                 self.redraw_editor(kind);
             }
@@ -4799,6 +4863,14 @@ impl WindowApp {
             // selected."* The band chip's Ctrl-click does the same thing
             // and is a chip you have to find first. Delete by default, and
             // the keymap's to change (`Context::Editor`).
+            // The notepad has the keyboard from the click in its page until
+            // Escape gives it back — Flopsynth's search box's rule, and for
+            // its reason: before that, keys fall through to the studio's own
+            // bindings, so Space still plays and a typed letter does not
+            // silently land in somebody's lyrics.
+            EditorKind::Effect if self.notepad.is_some() && self.notepad_typing => {
+                self.notepad_key(event)
+            }
             EditorKind::Effect => {
                 let action = self.action_of(event, crate::canvas::Context::Editor);
                 if action == Some(crate::canvas::Action::RemoveBand) {
@@ -4862,6 +4934,14 @@ impl WindowApp {
                     x,
                     y,
                 ),
+                // The pad says where you can type and what you can press.
+                EditorKind::Effect if self.notepad.is_some() => {
+                    match crate::canvas::notepad_hit(&self.notepad_layout, x, y) {
+                        crate::canvas::NotepadHit::Page => Pointer::Text,
+                        crate::canvas::NotepadHit::Nothing => Pointer::Default,
+                        _ => Pointer::Hand,
+                    }
+                }
                 // A band handle and a curve point are both picked up and
                 // carried, in both axes.
                 EditorKind::Effect if self.eq.is_none() => crate::pointer::instrument_pointer(
@@ -4952,6 +5032,7 @@ impl WindowApp {
             // Which of the **three** effect windows this is: the corrector's
             // console, the EQ's curve, or the grid of knobs every other
             // effect gets.
+            EditorKind::Effect if self.notepad.is_some() => self.press_notepad(button, x, y),
             EditorKind::Effect if self.tune.is_some() => self.press_tune_editor(button, x, y),
             EditorKind::Effect if self.eq.is_none() => self.press_insert_panel(button, x, y),
             EditorKind::Effect => self.press_effect_editor(button, x, y),
@@ -5317,6 +5398,32 @@ impl WindowApp {
                         hover_key: None,
                     }
                 }))
+            }
+            // The notepad, checked first among the effect windows for
+            // Flopsynth's reason: an insert that is one has a page of words,
+            // and nothing else about it is worth showing.
+            EditorKind::Effect if self.notepad.is_some() => {
+                let Some(view) = self.notepad.as_ref() else {
+                    return;
+                };
+                EditorWindowChrome::Notepad(crate::render::NotepadChrome {
+                    layout: self.notepad_layout.clone(),
+                    view,
+                    ink: crate::theme::notepad_ink(view.theme, &self.options.theme.palette),
+                    rows: &self.notepad_rows,
+                    scroll: self.notepad_scroll,
+                    text_px: crate::canvas::notepad_text_px(
+                        view.size,
+                        self.options.theme.font.size,
+                    ),
+                    caret: self.notepad_typing.then(|| self.notepad_entry.caret()),
+                    caret_on: self.caret_on,
+                    selection: self
+                        .notepad_typing
+                        .then(|| self.notepad_entry.selection())
+                        .flatten(),
+                    hover: self.hover_notepad,
+                })
             }
             // The corrector's console, checked first for Flopsynth's reason:
             // an insert that is one has a picture of the note, and that is
@@ -5688,13 +5795,14 @@ impl WindowApp {
         // The open insert may have been removed, or its whole strip may have —
         // in which case its window closes rather than showing the effect that
         // happens to be at that index now.
-        let (eq, insert_view, tune) = match self.open_insert {
+        let (eq, insert_view, tune, notepad) = match self.open_insert {
             Some((strip, slot)) => (
                 doc.eq_config(strip, slot),
                 doc.insert_view(strip, slot),
                 doc.tune_view(strip, slot),
+                doc.notepad_view(strip, slot),
             ),
-            None => (None, None, None),
+            None => (None, None, None, None),
         };
         self.eq = eq;
         self.insert_view = insert_view;
@@ -5703,6 +5811,9 @@ impl WindowApp {
         // it: an effect preset clicked in the browser lands in the insert you
         // are looking at.
         doc.note_open_insert(self.open_insert);
+        // After the host is done with, because taking the pad re-wraps its
+        // page and that reads the window rather than the document.
+        self.adopt_notepad(notepad);
         // The bar, per window. Read here with the other lists rather than once
         // a frame, because working out whether a device is dirty means
         // comparing its state against a file (§P.6) and that is not a thing to
@@ -5722,7 +5833,16 @@ impl WindowApp {
                 None => crate::canvas::PresetBarView::default(),
             };
         }
-        if self.eq.is_none() && self.insert_view.is_none() && self.tune.is_none() {
+        // The slot is gone — its effect was removed, or its whole strip was —
+        // so the window has nothing to be about. **All four** effect windows
+        // are asked, and the notepad was the fourth: left out, an open pad
+        // cleared the slot it was editing on the next refresh, and every edit
+        // it made afterwards went nowhere at all. Found by typing into one.
+        if self.eq.is_none()
+            && self.insert_view.is_none()
+            && self.tune.is_none()
+            && self.notepad.is_none()
+        {
             self.open_insert = None;
         }
 
@@ -5745,8 +5865,14 @@ impl WindowApp {
 
         // An editor whose subject has gone — the insert was deleted — closes
         // rather than showing whatever is at that index now. The window *is*
-        // the editor, so closing one is closing the other.
-        if self.eq.is_none() && self.insert_view.is_none() && self.tune.is_none() {
+        // the editor, so closing one is closing the other. **All four** are
+        // asked, as above: with the notepad left out, a pad closed its own
+        // window on the first character typed into it.
+        if self.eq.is_none()
+            && self.insert_view.is_none()
+            && self.tune.is_none()
+            && self.notepad.is_none()
+        {
             self.close_editor(EditorKind::Effect);
         }
         // And the ones still open follow whatever moved underneath them.
@@ -6218,6 +6344,36 @@ impl WindowApp {
             for name in fontelle_types::TUNE_ROOTS {
                 self.labels.ensure_small(name, &font, &mut self.text);
             }
+        }
+        // **The notepad's page**, under exactly the strings `draw_notepad`
+        // looks up: every line on screen, in the monospace shelf at the pad's
+        // own size, and the footer's seven captions. Shaped here for the
+        // reason everything else in this pass is — `draw_window` is pure, and
+        // a line nobody shaped draws as nothing at all.
+        if let Some(view) = self.notepad.clone() {
+            let text_px = crate::canvas::notepad_text_px(view.size, self.options.theme.font.size);
+            let text = self.notepad_entry.text().to_string();
+            let last =
+                (self.notepad_scroll + self.notepad_layout.lines).min(self.notepad_rows.len());
+            // Copied out first: shaping borrows the window mutably, and a row
+            // is two numbers.
+            let rows: Vec<crate::canvas::NotepadRow> =
+                self.notepad_rows[self.notepad_scroll.min(last)..last].to_vec();
+            for row in rows {
+                let line = &text[row.from.min(text.len())..row.to.min(text.len())];
+                self.labels.ensure_mono(line, text_px, &mut self.text);
+            }
+            for caption in [
+                crate::render::NOTEPAD_PREVIOUS,
+                crate::render::NOTEPAD_NEXT,
+                crate::render::NOTEPAD_ADD,
+                crate::render::NOTEPAD_REMOVE,
+                crate::render::notepad_size_caption(view.size),
+                view.theme.label(),
+            ] {
+                want(&mut self.labels, &mut self.text, caption);
+            }
+            want(&mut self.labels, &mut self.text, &view.page_label());
         }
         // Each window's preset name and category, `*` and all — two short
         // strings per window, shaped where every other caption is.
@@ -8230,25 +8386,422 @@ impl WindowApp {
         self.tree.invalidate(PANEL);
     }
 
+    // ------------------------------------------------------- the notepad
+    //
+    // `docs/effects-catalogue.md` §2.8. The window's half of the pad: the
+    // page being edited, where the caret is, and which key does what. The
+    // arithmetic — where the lines break, which row a click landed on — is
+    // `canvas::notepad`'s and is tested without a window.
+
+    /// Takes the pad the document is offering, keeping the caret where the
+    /// person left it.
+    ///
+    /// The window is normally **ahead** of this: it types into its own copy
+    /// and writes each keystroke through. But an undo, a preset or another
+    /// window can change the page underneath it, and an editor still showing
+    /// the words you took back is one that writes them again on the next
+    /// keystroke. So the text is re-seeded whenever the two differ, and the
+    /// caret is put back as near where it was as the new text allows.
+    fn adopt_notepad(&mut self, view: Option<crate::canvas::NotepadView>) {
+        let turned = match (&self.notepad, &view) {
+            (Some(was), Some(now)) => was.page != now.page,
+            _ => true,
+        };
+        if let Some(view) = &view
+            && (view.text != self.notepad_entry.text() || turned)
+        {
+            let caret = self.notepad_entry.caret().min(view.text.len());
+            self.notepad_entry = crate::canvas::TextEntry::new(view.text.clone());
+            if turned {
+                // A new page opens at its start, which is where you are about
+                // to read from.
+                self.notepad_entry.place(0, false);
+                self.notepad_scroll = 0;
+            } else {
+                self.notepad_entry.place(caret, false);
+            }
+            self.notepad_goal = None;
+        }
+        if view.is_none() {
+            self.notepad_typing = false;
+        }
+        self.notepad = view;
+        self.relayout_notepad();
+    }
+
+    /// The pad's window, laid out, its lines re-wrapped and the caret brought
+    /// back into sight.
+    ///
+    /// Called whenever any of the three change: the room (a resize), the
+    /// words (a keystroke) or the size (the chip).
+    fn relayout_notepad(&mut self) {
+        let Some(view) = self.notepad.as_ref() else {
+            self.notepad_layout = crate::canvas::NotepadLayout::default();
+            self.notepad_rows.clear();
+            return;
+        };
+        let body = self
+            .editors
+            .iter()
+            .find(|editor| editor.kind == EditorKind::Effect)
+            .map(|editor| editor.panel.body)
+            .unwrap_or(self.notepad_layout.body);
+        let text_px = crate::canvas::notepad_text_px(view.size, self.options.theme.font.size);
+        // **One character, measured once.** Everything the pad draws and
+        // every click it reads counts in this unit, so the caret and the
+        // letters cannot disagree — see `canvas::notepad`'s own note on why
+        // the page is a monospace grid.
+        let advance = self
+            .text
+            .layout(
+                "0",
+                &crate::theme::FontTokens {
+                    family: "monospace".to_string(),
+                    size: text_px,
+                    line_height: 1.0,
+                },
+                None,
+            )
+            .width
+            .max(1.0);
+        self.notepad_layout = crate::canvas::notepad_layout(
+            body,
+            &self.options.theme.metrics,
+            view,
+            advance,
+            (text_px * crate::canvas::NOTEPAD_LEADING).round(),
+        );
+        self.notepad_rows =
+            crate::canvas::notepad_rows(self.notepad_entry.text(), self.notepad_layout.columns);
+        let row = crate::canvas::notepad_row_of(&self.notepad_rows, self.notepad_entry.caret());
+        self.notepad_scroll =
+            crate::canvas::notepad_scroll_to(row, self.notepad_layout.lines, self.notepad_scroll);
+    }
+
+    /// Writes the page being edited back into the document.
+    ///
+    /// One command per keystroke, coalesced into one history entry until the
+    /// gesture is broken — which is what `break_notepad_gesture` is for.
+    fn write_notepad(&mut self) {
+        let Some((strip, slot)) = self.open_insert else {
+            return;
+        };
+        let Some(page) = self.notepad.as_ref().map(|view| view.page) else {
+            return;
+        };
+        let text = self.notepad_entry.text().to_string();
+        if let Some(doc) = &mut self.options.document {
+            doc.edit_notepad(
+                strip,
+                slot,
+                fontelle_types::NotepadEdit::Write { page, text },
+            );
+        }
+        self.after_notepad_edit();
+    }
+
+    /// One edit to the pad's pages — a page added, taken away or turned.
+    fn edit_notepad(&mut self, edit: fontelle_types::NotepadEdit) {
+        let Some((strip, slot)) = self.open_insert else {
+            return;
+        };
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+            doc.edit_notepad(strip, slot, edit);
+        }
+        self.after_notepad_edit();
+    }
+
+    /// What every edit does afterwards: re-read the studio, re-wrap the page
+    /// and redraw the window.
+    fn after_notepad_edit(&mut self) {
+        self.refresh_studio();
+        self.refresh_title();
+        self.relayout_notepad();
+        self.redraw_editor(EditorKind::Effect);
+        self.tree.invalidate(PANEL);
+    }
+
+    /// Ends the run of typing that coalesces into one undo entry.
+    ///
+    /// Where a person would expect a stop: the caret moved by hand, a new
+    /// line, a page turned, the keyboard given up. There is no timer — the
+    /// history cannot tell a slow typist from a deliberate second edit, and
+    /// only the window knows which gesture this was.
+    fn break_notepad_gesture(&mut self) {
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+        }
+    }
+
+    /// A press inside the pad's window.
+    fn press_notepad(&mut self, button: MouseButton, x: f32, y: f32) {
+        let hit = crate::canvas::notepad_hit(&self.notepad_layout, x, y);
+        let Some(view) = self.notepad.as_ref() else {
+            return;
+        };
+        let (page, pages, size, theme) = (view.page, view.pages, view.size, view.theme);
+        // The right button steps the two chips **backwards** and does nothing
+        // else: seven themes is too many to walk one way round, and there is
+        // no knob in this window for §12.4's automation menu to be about.
+        if button == MouseButton::Right {
+            match hit {
+                crate::canvas::NotepadHit::Size => {
+                    self.set_notepad_param("size", size.previous().index());
+                }
+                crate::canvas::NotepadHit::Theme => {
+                    self.set_notepad_param("theme", theme.previous().index());
+                }
+                _ => {}
+            }
+            return;
+        }
+        match hit {
+            crate::canvas::NotepadHit::Page => {
+                // The keyboard, and the caret where the pointer landed. A
+                // click is also a stop: the words typed before it are their
+                // own undo entry.
+                self.break_notepad_gesture();
+                let at = crate::canvas::notepad_index_at(
+                    &self.notepad_layout,
+                    self.notepad_entry.text(),
+                    &self.notepad_rows,
+                    self.notepad_scroll,
+                    x,
+                    y,
+                );
+                self.notepad_entry.place(at, self.modifiers.shift_key());
+                self.notepad_goal = None;
+                self.notepad_typing = true;
+                self.caret_on = true;
+                self.caret_phase = 0.0;
+                self.redraw_editor(EditorKind::Effect);
+            }
+            crate::canvas::NotepadHit::Previous => self.turn_notepad_page(-1),
+            crate::canvas::NotepadHit::Next => self.turn_notepad_page(1),
+            crate::canvas::NotepadHit::AddPage => {
+                self.edit_notepad(fontelle_types::NotepadEdit::InsertPage {
+                    at: page + 1,
+                    text: String::new(),
+                });
+            }
+            crate::canvas::NotepadHit::RemovePage => {
+                if pages > 1 {
+                    self.edit_notepad(fontelle_types::NotepadEdit::RemovePage { page });
+                } else {
+                    // The pad always keeps one, and saying so beats a button
+                    // that looks broken.
+                    self.status = "a notepad keeps one page".to_string();
+                    self.tree.invalidate(BROWSER);
+                }
+            }
+            crate::canvas::NotepadHit::Size => self.set_notepad_param("size", size.next().index()),
+            crate::canvas::NotepadHit::Theme => {
+                self.set_notepad_param("theme", theme.next().index())
+            }
+            crate::canvas::NotepadHit::Nothing => {}
+        }
+    }
+
+    /// Steps one of the pad's two choosers, through the same path every other
+    /// knob in the program takes: a parameter, by address, through the
+    /// history.
+    fn set_notepad_param(&mut self, id: &str, position: usize) {
+        let Some((strip, slot)) = self.open_insert else {
+            return;
+        };
+        let config = fontelle_types::EffectConfig::new(fontelle_types::EffectKind::Notepad);
+        let Some(spec) = config.specs().iter().find(|spec| spec.id == id) else {
+            return;
+        };
+        let value = spec.normalise(position as f32);
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+            doc.set_insert_param(strip, slot, id, value);
+        }
+        self.after_notepad_edit();
+    }
+
+    /// The page before or after this one.
+    fn turn_notepad_page(&mut self, by: isize) {
+        let Some(view) = self.notepad.as_ref() else {
+            return;
+        };
+        let wanted = view.page as isize + by;
+        if wanted < 0 || wanted as usize >= view.pages {
+            return;
+        }
+        self.edit_notepad(fontelle_types::NotepadEdit::Show {
+            page: wanted as usize,
+        });
+    }
+
+    /// The wheel over the page: scrolls it, and never edits anything — the
+    /// rule every surface in this window follows.
+    fn scroll_notepad(&mut self, by: f32) {
+        let lines = self.notepad_layout.lines;
+        let rows = self.notepad_rows.len();
+        let most = rows.saturating_sub(lines);
+        let wanted = (self.notepad_scroll as f32 - by).clamp(0.0, most as f32) as usize;
+        if wanted == self.notepad_scroll {
+            return;
+        }
+        self.notepad_scroll = wanted;
+        self.redraw_editor(EditorKind::Effect);
+    }
+
+    /// What the pad makes of a key. Whether it took it.
+    ///
+    /// Only ever asked while [`notepad_typing`](Self::notepad_typing) — the
+    /// pad has the keyboard from the click in its page until Escape gives it
+    /// back, which is what stops a letter meant for the studio landing in
+    /// somebody's lyrics.
+    fn notepad_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        let ctrl = self.modifiers.control_key();
+        let shift = self.modifiers.shift_key();
+        let rows = std::mem::take(&mut self.notepad_rows);
+        let lines = self.notepad_layout.lines;
+        // The column a run of Up and Down aims for: where the caret is now,
+        // unless a run has already started.
+        let goal = self.notepad_goal.unwrap_or_else(|| {
+            crate::canvas::notepad_column_of(
+                self.notepad_entry.text(),
+                &rows,
+                self.notepad_entry.caret(),
+            )
+        });
+        let mut edited = false;
+        // Whether this key is also a **stop**: the run of typing that
+        // coalesces into one undo entry ends here.
+        let mut stops = false;
+        let mut keeps_goal = false;
+        match &event.logical_key {
+            // Escape hands the keyboard back rather than closing the window:
+            // the window is closed by a second press, which is what every
+            // other surface here does with a search box.
+            Key::Named(NamedKey::Escape) => {
+                self.notepad_typing = false;
+                self.break_notepad_gesture();
+            }
+            // A new line is a stop as well as a character: an undo should
+            // take back the line you just wrote, not the whole verse.
+            Key::Named(NamedKey::Enter) => {
+                self.notepad_entry.insert("\n");
+                edited = true;
+                stops = true;
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                crate::canvas::notepad_step_row(&mut self.notepad_entry, &rows, -1, goal, shift);
+                keeps_goal = true;
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                crate::canvas::notepad_step_row(&mut self.notepad_entry, &rows, 1, goal, shift);
+                keeps_goal = true;
+            }
+            Key::Named(NamedKey::Home) => {
+                crate::canvas::notepad_line_home(&mut self.notepad_entry, &rows, shift)
+            }
+            Key::Named(NamedKey::End) => {
+                crate::canvas::notepad_line_end(&mut self.notepad_entry, &rows, shift)
+            }
+            // Ctrl and a page key turns the *pad's* page; on its own it is a
+            // screenful of the one you are on.
+            Key::Named(NamedKey::PageUp) if ctrl => self.turn_notepad_page(-1),
+            Key::Named(NamedKey::PageDown) if ctrl => self.turn_notepad_page(1),
+            Key::Named(NamedKey::PageUp) => {
+                crate::canvas::notepad_step_page(
+                    &mut self.notepad_entry,
+                    &rows,
+                    lines,
+                    false,
+                    goal,
+                    shift,
+                );
+                keeps_goal = true;
+            }
+            Key::Named(NamedKey::PageDown) => {
+                crate::canvas::notepad_step_page(
+                    &mut self.notepad_entry,
+                    &rows,
+                    lines,
+                    true,
+                    goal,
+                    shift,
+                );
+                keeps_goal = true;
+            }
+            // Everything else is a field's key, through the **one**
+            // implementation every typing surface in this program shares:
+            // typing, backspace, the word jumps, select-all, cut, copy and
+            // paste.
+            key => {
+                let mut clipboard = std::mem::take(&mut self.clipboard_text);
+                let what = crate::canvas::text_key(
+                    &mut self.notepad_entry,
+                    key,
+                    ctrl,
+                    shift,
+                    &mut clipboard,
+                );
+                self.clipboard_text = clipboard;
+                match what {
+                    crate::canvas::TextKey::Edited => edited = true,
+                    crate::canvas::TextKey::Moved => {}
+                    crate::canvas::TextKey::Ignored => {
+                        self.notepad_rows = rows;
+                        return false;
+                    }
+                }
+            }
+        }
+        self.notepad_rows = rows;
+        if keeps_goal {
+            self.notepad_goal = Some(goal);
+        } else {
+            self.notepad_goal = None;
+        }
+        if edited {
+            self.write_notepad();
+            // A new line is a stop as well as a character: an undo should
+            // take back the line you just wrote rather than the whole verse.
+            if stops {
+                self.break_notepad_gesture();
+            }
+        } else {
+            // A caret moved by hand ends the run of typing too, so the next
+            // keystroke starts its own undo entry.
+            self.break_notepad_gesture();
+            self.relayout_notepad();
+            self.redraw_editor(EditorKind::Effect);
+        }
+        // The caret is put back on the moment anything happens, so it is
+        // never invisible at the instant you are looking for it.
+        self.caret_on = true;
+        self.caret_phase = 0.0;
+        true
+    }
+
     /// Opens one insert in the effect tab.
     ///
     /// Switching the tab as well as selecting the slot, because clicking a
     /// three-letter row in a mixer strip means "show me this" and a click that
     /// selected something out of sight would be a click that did nothing.
     fn open_insert(&mut self, strip: usize, slot: usize) {
-        let (config, view, tune) = match &self.options.document {
-            // An EQ draws its curve, the corrector draws the note, and
-            // everything else draws the grid of knobs its own parameter list
-            // describes. Exactly one of the three is `Some` for any insert
-            // that is there.
+        let (config, view, tune, notepad) = match &self.options.document {
+            // An EQ draws its curve, the corrector draws the note, the pad
+            // draws its page, and everything else draws the grid of knobs its
+            // own parameter list describes. Exactly one of the four is `Some`
+            // for any insert that is there.
             Some(doc) => (
                 doc.eq_config(strip, slot),
                 doc.insert_view(strip, slot),
                 doc.tune_view(strip, slot),
+                doc.notepad_view(strip, slot),
             ),
-            None => (None, None, None),
+            None => (None, None, None, None),
         };
-        if config.is_none() && view.is_none() && tune.is_none() {
+        if config.is_none() && view.is_none() && tune.is_none() && notepad.is_none() {
             // The slot is empty — the chain changed under a click. Nothing to
             // open, and nothing worth saying about it.
             return;
@@ -8257,6 +8810,12 @@ impl WindowApp {
         self.eq = config;
         self.insert_view = view;
         self.tune = tune;
+        // A pad opened afresh starts with the keyboard elsewhere and the page
+        // at the top, so that opening a window never eats the next keystroke.
+        self.notepad_typing = false;
+        self.notepad_scroll = 0;
+        self.notepad_entry = crate::canvas::TextEntry::default();
+        self.adopt_notepad(notepad);
         // Everything read per revision that is *about the open insert* —
         // its preset bar, the host's note of which insert is open — is read
         // again now, or the window opened for the Delay wears the Reverb's
@@ -8275,6 +8834,15 @@ impl WindowApp {
         // built from the effect's own list and knows which effect that was.
         if let Some(view) = &self.insert_view {
             return view.title.clone();
+        }
+        // The notepad has no generic panel either, and a window that called
+        // itself "EQ" would be the same fault `raise_editor` was fixed for.
+        if let Some(view) = &self.notepad {
+            return format!(
+                "{} \u{2014} {}",
+                view.track,
+                fontelle_types::EffectKind::Notepad.label()
+            );
         }
         match self.open_insert {
             Some((strip, _)) => match self.mixer_strips.get(strip) {

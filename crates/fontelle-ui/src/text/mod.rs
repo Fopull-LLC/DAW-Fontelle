@@ -228,6 +228,16 @@ pub struct Labels {
     /// The same strings at [`SMALL_LABEL`] of the chrome's size, kept apart
     /// so that a caption and a heading spelt the same way can both be drawn.
     small: HashMap<String, Shaped>,
+    /// The notepad's lines, shaped in a **monospace** family at the pad's own
+    /// size (`canvas::notepad`), keyed by the size in tenths of a pixel.
+    ///
+    /// Its own map rather than a size on [`styled`](Self::styled), because
+    /// that map's key carries no family: a line of lyrics and a piece of
+    /// chrome spelt the same way at the same size would be one entry, and
+    /// whichever asked second would be drawn in the other's face. The pad is
+    /// the only surface here that asks for a family of its own, so it gets a
+    /// shelf of its own.
+    mono: HashMap<(String, u32), Shaped>,
     /// Strings shaped at a [`TextStyle`] of the caller's — the bridge's
     /// three sizes at its scale — keyed by the style too, so a card's name
     /// and its captions spelt alike are two shaped strings.
@@ -346,6 +356,38 @@ impl Labels {
             .map(|entry| &entry.layout)
     }
 
+    /// Shapes `text` in a monospace family at `size_px`, if it has not been
+    /// already. Asked back with [`Labels::get_mono`].
+    pub fn ensure_mono(&mut self, text: &str, size_px: f32, context: &mut TextContext) {
+        let frame = self.frame;
+        let key = (text.to_string(), mono_key(size_px));
+        if let Some(entry) = self.mono.get_mut(&key) {
+            entry.frame = frame;
+            return;
+        }
+        if self.mono.len() >= LABEL_CAP {
+            self.mono.retain(|_, entry| entry.frame == frame);
+        }
+        // `line_height` of one: the pad places its own lines on a grid, and a
+        // shaped block taller than its glyphs would push every row down by
+        // the leading twice.
+        let font = FontTokens {
+            family: "monospace".to_string(),
+            size: size_px.max(1.0),
+            line_height: 1.0,
+        };
+        let layout = context.layout(text, &font, None);
+        self.mono.insert(key, Shaped { frame, layout });
+    }
+
+    /// The monospace form of `text` at `size_px`, or `None` when nobody
+    /// shaped it.
+    pub fn get_mono(&self, text: &str, size_px: f32) -> Option<&TextLayout> {
+        self.mono
+            .get(&(text.to_string(), mono_key(size_px)))
+            .map(|entry| &entry.layout)
+    }
+
     /// The shaped form, or `None` when nobody asked for it this frame — which
     /// draws as nothing rather than as a panic.
     pub fn get(&self, text: &str) -> Option<&TextLayout> {
@@ -359,4 +401,10 @@ impl Labels {
     pub fn is_empty(&self) -> bool {
         self.shaped.is_empty()
     }
+}
+
+/// A monospace entry's size, in tenths of a pixel — the same rounding
+/// [`TextStyle`] uses, so a size is a map key rather than a float.
+fn mono_key(size_px: f32) -> u32 {
+    (size_px.max(1.0) * 10.0).round() as u32
 }

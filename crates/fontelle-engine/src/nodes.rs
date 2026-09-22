@@ -876,6 +876,12 @@ enum EffectState {
     Hyper(fontelle_fx::Hyper),
     Multiband(fontelle_fx::Multiband),
     Width(fontelle_fx::Width),
+    /// The notepad, which has no DSP at all and no state to keep: what it
+    /// holds is words, and they never leave the document
+    /// (`fontelle_types::notepad`). A variant rather than a fall-through,
+    /// so that the empty arms below read as a decision rather than as an
+    /// effect somebody forgot to wire up.
+    Notepad,
 }
 
 impl EffectState {
@@ -937,6 +943,7 @@ impl EffectState {
                 EffectState::Multiband(fontelle_fx::Multiband::new())
             }
             fontelle_types::EffectConfig::Width(_) => EffectState::Width(fontelle_fx::Width::new()),
+            fontelle_types::EffectConfig::Notepad(_) => EffectState::Notepad,
         }
     }
 
@@ -975,6 +982,8 @@ impl EffectState {
             Self::Hyper(hyper) => hyper.prepare(sample_rate),
             Self::Multiband(multiband) => multiband.prepare(sample_rate),
             Self::Width(width) => width.prepare(sample_rate),
+            // Nothing to size and nothing to clear: the signal goes past it.
+            Self::Notepad => {}
         }
     }
 
@@ -1063,6 +1072,9 @@ impl EffectState {
             (Self::Width(width), fontelle_types::EffectConfig::Width(config)) => {
                 width.process(outputs, config);
             }
+            // The pad writes nothing, which is the whole of it: a block that
+            // went through a notepad is the block that went in.
+            (Self::Notepad, fontelle_types::EffectConfig::Notepad(_)) => {}
             // A config of a different kind than the state cannot arrive: the
             // chain rebuilds the graph when a slot's *kind* changes, and only
             // tunes it in place when parameters move.
@@ -1097,6 +1109,7 @@ impl EffectState {
             Self::Hyper(hyper) => hyper.reset(),
             Self::Multiband(multiband) => multiband.reset(),
             Self::Width(width) => width.reset(),
+            Self::Notepad => {}
         }
     }
 }

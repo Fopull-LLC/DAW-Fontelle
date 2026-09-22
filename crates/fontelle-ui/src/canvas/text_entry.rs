@@ -140,6 +140,29 @@ impl TextEntry {
         true
     }
 
+    /// Puts the caret at `at`, extending the selection with `select`.
+    ///
+    /// Clamped into the string and onto a character boundary, because the
+    /// two callers that need it are handed a *position* rather than a step: a
+    /// click, which arrives as a place on screen, and a page's Up and Down,
+    /// which arrive as a row and a column
+    /// ([`notepad_step_row`](super::notepad_step_row)). Everything else moves
+    /// the caret by asking for a direction.
+    pub fn place(&mut self, at: usize, select: bool) {
+        self.begin(select);
+        let at = at.min(self.text.len());
+        // Onto the boundary at or before `at`: a caret inside a multi-byte
+        // character is a panic waiting for somebody to type an accent.
+        self.caret = if self.text.is_char_boundary(at) {
+            at
+        } else {
+            self.text[..at]
+                .char_indices()
+                .next_back()
+                .map_or(0, |(index, _)| index)
+        };
+    }
+
     /// Left by one character, or by one **word** with `word`, extending the
     /// selection with `select`.
     ///

@@ -19,6 +19,68 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-22 — the Notepad: an insert that makes no sound.** Ty:
+*"please make a new built in mixer track effect called Notepad. its just a
+basic text editor with pages you can go left and right between and use it
+like a normal text editor to write down lyrics for example as you record to
+sing them back … should have clean ux and pretty visual design thats
+simplistic and looks like a computer terminal notepad but it should have
+themes you can switch between and it should alwasy save your default
+preferred theme as your last one selected."* FL's *Fruity Notebook*, built to
+this project's rules. Tests-first, the whole design in
+`docs/effects-catalogue.md` §2.8.
+
+- **What it is.** A twenty-first `EffectKind`, last in the menu and on its
+  own there because it is not a processor: its DSP is a wire
+  (`fontelle-engine/tests/effects.rs` measures the passthrough sample for
+  sample at every theme). Pages you walk with ‹ ›, a real text editor on each
+  one — the same `TextEntry` and the same `text_key` every field in this
+  program shares, so Ctrl+A, the word jumps and cut/copy/paste came for free
+  — seven themes, three text sizes.
+- **Where the words live** (`fontelle-types/src/notepad.rs`,
+  `EffectSlot::notepad`). Not in the `EffectConfig`, and that is forced
+  rather than chosen: a config is `Copy`, fixed-size and handed to the audio
+  thread every block, and a page of lyrics is none of the three. The split is
+  the one a hosted plugin already uses. Nothing a pad holds ever crosses to
+  the audio thread.
+- **The edits are an algebra.** `NotepadEdit::apply` does one thing and hands
+  back **the inverse of what it just did**, so `EditNotepad` has no second
+  copy of the rules — `WavetableEdit`'s shape, for its reason. An edit that
+  changes nothing is refused rather than recorded; a run of typing coalesces
+  into one undo entry until the window breaks the gesture, which it does
+  where a person would expect a stop (a caret moved by hand, a new line, a
+  page turned, the keyboard given up).
+- **Monospace is not only a look.** Placing a caret in proportional text
+  means measuring every prefix of the line under the pointer, and the window
+  layer may not shape text at all (INVARIANT 2). On a fixed grid the window
+  measures *one* character once and the rest is arithmetic — column times
+  advance, row times line height — so the caret, the click and the glyphs
+  cannot disagree. `Labels` grew a **monospace shelf** (`ensure_mono`) rather
+  than a size on the styled map, whose key carries no family: a lyric and a
+  piece of chrome spelt alike at one size would otherwise be one entry, and
+  whichever asked second would be drawn in the other's face.
+- **The themes are the bank** (one preset per theme, `assets/presets/
+  fx-notepad/`), and the **last one chosen is remembered by name** in the
+  settings file — `Settings::notepad_theme`, the position
+  `flopsynth_scale_percent` holds. A name this build does not know reads as
+  the first theme rather than as a file it refuses. Each palette is held to
+  WCAG's 4.5:1 for its words by `fontelle-ui/tests/notepad.rs`: a lyric sheet
+  is read from further away than the rest of the chrome, by somebody singing.
+- **Three faults the tests could not see, all found by opening one on a
+  nested `Xwayland :99`** — the fourth effect window was missing from three
+  lists that named the other three. `refresh_studio` cleared `open_insert`
+  and then *closed the window* unless an EQ, a knob panel or a corrector was
+  showing, so a pad shut itself on the first character typed into it and
+  every edit before that went nowhere; and `create_editor` read Flopsynth's
+  window size without asking whether the window was an instrument's, so every
+  effect window opened at 1180×840 whenever the selected channel was a
+  Flopsynth. **The rule for the next effect window: grep for `self.tune` and
+  answer every place it appears.**
+- Left out on purpose: rich text, page names, a search across pages, and any
+  link between a page and the timeline (a note pinned to a bar is a *marker*,
+  and markers exist). Each is a real feature; none is *"just a basic text
+  editor"*.
+
 **As of 2026-09-21 — v0.10.0: Flopsynth II shipped, and four reports from
 using it.** Ty: *"my midi keyboard not working, the program crashing, not
 being able to scroll in the presets menu … a random preset button … menus

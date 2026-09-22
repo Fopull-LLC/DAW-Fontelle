@@ -8539,7 +8539,15 @@ impl StudioHost for Session {
         let Some(id) = self.mixer_track_ids().get(strip).copied() else {
             return;
         };
-        self.run(Box::new(fontelle_model::AddInsert::new(id, kind)));
+        // A notepad opens in the theme last chosen — the one thing about a
+        // pad that outlives the project it is in
+        // (`Settings::notepad_theme`). Written into the slot as it is made
+        // rather than afterwards, so adding one is one history entry.
+        let mut config = fontelle_types::EffectConfig::new(kind);
+        if let fontelle_types::EffectConfig::Notepad(notepad) = &mut config {
+            notepad.theme = self.preferred_notepad_theme();
+        }
+        self.run(Box::new(fontelle_model::AddInsert::with_config(id, config)));
         self.history.break_gesture();
         // A new node in the chain is the graph's *shape*, not a value in it,
         // so this one does need the rebuild that tuning a band does not.
@@ -8776,8 +8784,13 @@ impl StudioHost for Session {
             return Some(view);
         }
         let config = self.insert_config(strip, slot)?;
-        // The EQ draws itself. See the trait's docs.
-        if matches!(config, fontelle_types::EffectConfig::Eq(_)) {
+        // The EQ draws itself, and so does the notepad — a page of words is
+        // not a grid of knobs, and two panels for one insert would be two
+        // places to change it. See the trait's docs.
+        if matches!(
+            config,
+            fontelle_types::EffectConfig::Eq(_) | fontelle_types::EffectConfig::Notepad(_)
+        ) {
             return None;
         }
         let id = self.mixer_track_ids().get(strip).copied()?;
@@ -8880,6 +8893,17 @@ impl StudioHost for Session {
             && let Some(controls) = self.effect_controls.get_mut(&(id, slot))
         {
             controls.publish(config);
+        }
+        // A notepad's theme is remembered for the *next* pad
+        // (`docs/effects-catalogue.md` §2.8). Here rather than in the window
+        // because this is the one road every way of setting it takes — the
+        // chip, a preset, an automation lane — and three places to remember
+        // it would be two to forget.
+        if param == "theme"
+            && let Some(fontelle_types::EffectConfig::Notepad(notepad)) =
+                self.insert_config(strip, slot)
+        {
+            self.remember_notepad_theme(notepad.theme);
         }
         self.dirty = true;
         self.touch();
@@ -9054,6 +9078,41 @@ impl StudioHost for Session {
             .copied()
             .collect();
         Some(fontelle_ui::sky::SkySound { bands_db, wave })
+    }
+
+    fn notepad_view(&self, strip: usize, slot: usize) -> Option<fontelle_ui::canvas::NotepadView> {
+        let id = self.mixer_track_ids().get(strip).copied()?;
+        let track = self.project.mixer.tracks.get(id)?;
+        let insert = track.inserts.get(slot)?;
+        let fontelle_types::EffectConfig::Notepad(config) = insert.config else {
+            return None; // this slot holds something else
+        };
+        // A slot that says it is a notepad and carries no pages is a document
+        // somebody hand-edited; it opens on one blank page rather than on
+        // nothing.
+        let pages = insert.notepad.clone().unwrap_or_default();
+        Some(fontelle_ui::canvas::NotepadView {
+            track: track.name.clone(),
+            theme: config.theme,
+            size: config.size,
+            page: pages.showing(),
+            pages: pages.len(),
+            // The showing page only — the window can draw no other, and the
+            // rest are a copy to keep in step for nothing.
+            text: pages.showing_text().to_string(),
+        })
+    }
+
+    fn edit_notepad(&mut self, strip: usize, slot: usize, edit: fontelle_types::NotepadEdit) {
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return;
+        };
+        // Through the history like every other edit. **No graph rebuild and
+        // no publish**: nothing a notepad holds reaches the audio thread, so
+        // there is nothing on the other side to tell.
+        self.run(Box::new(fontelle_model::EditNotepad::new(id, slot, edit)));
+        self.dirty = true;
+        self.touch();
     }
 
     fn eq_config(&self, strip: usize, slot: usize) -> Option<fontelle_types::EqConfig> {
@@ -10789,6 +10848,34 @@ impl Session {
             self.message = Some(format!("could not write settings: {e}"));
         }
         self.touch();
+    }
+
+    /// The theme a new notepad opens in: the last one chosen on this
+    /// machine, or the first if nobody has chosen.
+    ///
+    /// A name this build does not know — a settings file written by a newer
+    /// Fontelle — reads as the first theme rather than as a file to refuse,
+    /// the same answer `flopsynth_scale` gives a scale the window does not
+    /// offer.
+    pub fn preferred_notepad_theme(&self) -> fontelle_types::NotepadTheme {
+        self.settings
+            .notepad_theme
+            .as_deref()
+            .and_then(fontelle_types::NotepadTheme::from_slug)
+            .unwrap_or(fontelle_types::NotepadTheme::Phosphor)
+    }
+
+    /// Keeps `theme` for the next pad. Nothing is written when it is already
+    /// what the file says — the settings are not rewritten sixty times while
+    /// an automation lane sweeps a chooser.
+    pub fn remember_notepad_theme(&mut self, theme: fontelle_types::NotepadTheme) {
+        if self.settings.notepad_theme.as_deref() == Some(theme.slug()) {
+            return;
+        }
+        self.settings.notepad_theme = Some(theme.slug().to_string());
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
     }
 
     /// The value the loaded preset has for `address`, normalised — what
