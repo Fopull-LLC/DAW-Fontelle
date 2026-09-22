@@ -11735,6 +11735,9 @@ fn draw_lapse_lane(
     };
     fill_rect_rounded(scene, area, m.corner_radius, p.window.with_alpha(0xb0));
     stroke_rect_rounded(scene, area, m.corner_radius, 1.0, p.border);
+    // Everything that plots a *value* uses the inset area, or the grid, the
+    // zero line and the curve would each be drawn against a different top.
+    let plot = crate::canvas::plot_area(area);
 
     let beats = lane.length.beats(view.beats_per_bar) * view.config.rate.stretch();
 
@@ -11742,7 +11745,7 @@ fn draw_lapse_lane(
     if let Some(per_beat) = view.snap.per_beat() {
         let divisions = (per_beat * beats).round().max(1.0) as usize;
         for step in 1..divisions {
-            let x = area.x + area.width * step as f32 / divisions as f32;
+            let x = plot.x + plot.width * step as f32 / divisions as f32;
             fill_rect(
                 scene,
                 Rect::new(x, area.y, 1.0, area.height),
@@ -11751,7 +11754,7 @@ fn draw_lapse_lane(
         }
     }
     for beat in 1..beats.round().max(1.0) as usize {
-        let x = area.x + area.width * beat as f32 / beats as f32;
+        let x = plot.x + plot.width * beat as f32 / beats as f32;
         fill_rect(
             scene,
             Rect::new(x, area.y, 1.0, area.height),
@@ -11763,7 +11766,7 @@ fn draw_lapse_lane(
     let (_, zero_y) = crate::canvas::point_position(view, lane, area, 0.0, lane.kind.neutral());
     fill_rect(
         scene,
-        Rect::new(area.x, zero_y, area.width, 1.0),
+        Rect::new(plot.x, zero_y, plot.width, 1.0),
         p.text_muted.with_alpha(0x60),
     );
 
@@ -11774,9 +11777,9 @@ fn draw_lapse_lane(
         let slope = crate::canvas::freeze_slope(view, area);
         let beats_count = beats.round().max(1.0) as usize;
         for beat in 0..beats_count {
-            let x0 = area.x + area.width * beat as f32 / beats as f32;
-            let run = area.width - (x0 - area.x);
-            let y1 = (zero_y + run * slope).min(area.bottom());
+            let x0 = plot.x + plot.width * beat as f32 / beats as f32;
+            let run = plot.width - (x0 - plot.x);
+            let y1 = (zero_y + run * slope).min(plot.bottom());
             let x1 = x0 + (y1 - zero_y) / slope.max(1e-6);
             stroke_polyline(
                 scene,
@@ -11791,7 +11794,7 @@ fn draw_lapse_lane(
     // The curve, sampled through the **same** function the audio thread
     // reads: a picture drawn by a second evaluator is a picture that can
     // disagree with the sound.
-    let steps = (area.width as usize).clamp(2, 512);
+    let steps = (plot.width as usize).clamp(2, 512);
     let mut points = Vec::with_capacity(steps + 1);
     for step in 0..=steps {
         let phase = step as f64 / steps as f64;
@@ -11819,7 +11822,7 @@ fn draw_lapse_lane(
     }
 
     // The playhead, where the song is round this lane.
-    let head = area.x + view.phase.clamp(0.0, 1.0) * area.width;
+    let head = plot.x + view.phase.clamp(0.0, 1.0) * plot.width;
     fill_rect(
         scene,
         Rect::new(head, area.y, 1.0, area.height),

@@ -61,8 +61,25 @@ for the word "pencil", and freeze guides at an alpha nobody could see.
 `FONTELLE_UI_DUMP=<dir> cargo test -p fontelle-ui --test render_headless lapse`
 is two seconds and it is the test that can see.
 
-(8) Nobody has played it on `:99` yet. That is Phase 5 of the plan and it is
-where the next round of reports will come from.
+(8) **Window state moves no revision.** `refresh_studio` returns at once when
+the document's revision has not changed, so setting a *tool* — window state,
+not the document's — left the chip unlit and, far worse, left the **next
+gesture reading the old tool out of a stale view**. `App::reread_studio`
+forgets the revision and re-reads, which is what `open_insert` already does
+(§1 above, 2026-09-21 (3)). Anything else that is window state and visible
+wants the same call.
+
+(9) On `:99`, **nudge over a tool chip** before a grab, never over a lane or
+the Tone/Pan strips: they have no hover state, nothing repaints, and the grab
+stays a frame behind. Two gestures were read as "did nothing" this way and
+both had happened — the notepad's own trap (§1 above, (5)) in a new window.
+
+(10) The value axis is **inset** inside a lane's frame: a header band at the
+top (`LANE_HEADER`, which is also the strip that switches the lane off) and
+`LANE_INSET` at the bottom. Without it a curve at an end of its range is half
+clipped by the frame and half indistinguishable from it — a *flat* lane, which
+is what every fresh Lapse has, drew as nothing at all. `plot_area` is the one
+function that knows; anything that plots a value goes through it.
 
 **Updated 2026-09-22 (v0.11.0, the Notepad).** The tag carries the Notepad
 *and* the v0.10.0 chunk, whose tag was made here and never pushed — v0.9.0

@@ -8664,6 +8664,23 @@ impl WindowApp {
         }
     }
 
+    /// Re-reads the studio although the document has not moved.
+    ///
+    /// **Window state moves no revision**, and `refresh_studio` returns at
+    /// once when the revision has not changed — so a tool or a snap set by a
+    /// chip would light a frame late *and*, far worse, the next gesture would
+    /// read the old tool out of a stale view and draw with it. Forgetting the
+    /// revision is how `open_insert` solves the same problem
+    /// (`docs/handoff.md` §1), and this is that, named.
+    ///
+    /// Found on `:99` with a trace: the press hit `Tool(Hold)` and the press
+    /// after it still said `tool=Points`.
+    fn reread_studio(&mut self) {
+        self.studio_revision = u64::MAX;
+        self.refresh_studio();
+        self.redraw_editor(EditorKind::Effect);
+    }
+
     /// A press inside Lapse's window (`docs/lapse-plan.md` §7.4).
     ///
     /// The whole interaction is here and in [`drag_lapse`](Self::drag_lapse):
@@ -8689,8 +8706,21 @@ impl WindowApp {
                 // automation lane makes, with the same undo entry.
                 doc.set_insert_param(strip, slot, "scene", scene as f32 + 1.0);
             }
-            crate::canvas::LapseHit::Tool(tool) => doc.set_lapse_tool(tool),
-            crate::canvas::LapseHit::Snap(snap) => doc.set_lapse_snap(snap),
+            // **Window state moves no revision**, so the window has to be
+            // told by hand — the rule `open_insert` already lives by
+            // (`docs/handoff.md` §1). Without it the chip lights only when
+            // something *else* dirties the document, and, far worse, the
+            // next gesture reads the tool out of a stale view and draws with
+            // the one before it. Found on `:99`: the hold tool lit a frame
+            // late and the drag after it bent a flat segment instead.
+            crate::canvas::LapseHit::Tool(tool) => {
+                doc.set_lapse_tool(tool);
+                self.reread_studio();
+            }
+            crate::canvas::LapseHit::Snap(snap) => {
+                doc.set_lapse_snap(snap);
+                self.reread_studio();
+            }
             crate::canvas::LapseHit::LaneStrip { lane } => {
                 let on = view.lanes.get(lane).is_some_and(|lane| lane.on);
                 doc.edit_lapse(
@@ -8751,7 +8781,9 @@ impl WindowApp {
                                 phase,
                                 value + away,
                             );
-                            if (on_curve - drawn).abs() <= crate::canvas::LAPSE_BEND_GRAB {
+                            if (on_curve - drawn).abs() <= crate::canvas::LAPSE_BEND_GRAB
+                                && crate::canvas::bend_reach(lane_view, carrier).0
+                            {
                                 let tension = lane_view
                                     .points
                                     .get(carrier)
@@ -8853,9 +8885,6 @@ impl WindowApp {
         let Some((strip, slot)) = self.open_insert else {
             return;
         };
-        // Which lane the gesture began in — a drag that wandered into the
-        // lane below goes on editing the one it started in, which is what
-        // every other drag in this program does.
         // A bend first: it is the one gesture that does not move a point.
         if let Some((lane_index, carrier, from_y, from_tension)) = self.lapse_bend {
             let Some(lane) = view.lanes.get(lane_index) else {
@@ -8880,6 +8909,9 @@ impl WindowApp {
             );
             return;
         }
+        // Which lane the gesture began in — a drag that wandered into the
+        // lane below goes on editing the one it started in, which is what
+        // every other drag in this program does.
         let lane_index = match (self.lapse_drag, self.lapse_stroke) {
             (Some((lane, _)), _) | (_, Some((lane, _))) => lane,
             _ => return,

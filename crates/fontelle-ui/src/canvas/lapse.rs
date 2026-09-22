@@ -428,6 +428,32 @@ pub enum LapseHit {
 /// The corner of an open lane that carries its name, and switches it off.
 pub const LANE_NAME: (f32, f32) = (72.0, 18.0);
 
+/// How far inside a lane's frame the value axis sits at the bottom, and the
+/// header band it leaves at the top.
+///
+/// **Not decoration.** A curve at an end of its range lands exactly on the
+/// frame, where half of a two-pixel stroke is clipped away and the other half
+/// is the border — so a *flat* lane, which is what every fresh Lapse has,
+/// drew as nothing at all. And a flat lane at the *top* of its range then ran
+/// straight through the lane's own name. Both were found by opening one on
+/// `:99`; the headless case could not see either, because the scene it drew
+/// had no value at an extreme.
+pub const LANE_INSET: f32 = 7.0;
+
+/// The band at the top of a lane that carries its name — and switches it off
+/// (see [`LANE_NAME`]).
+pub const LANE_HEADER: f32 = 18.0;
+
+/// The part of a lane's frame the values are plotted in.
+pub fn plot_area(rect: Rect) -> Rect {
+    Rect::new(
+        rect.x,
+        rect.y + LANE_HEADER,
+        rect.width,
+        (rect.height - LANE_HEADER - LANE_INSET).max(1.0),
+    )
+}
+
 /// How close to a point the pointer has to be to grab it, in pixels.
 pub const LAPSE_GRAB: f32 = 9.0;
 
@@ -500,20 +526,22 @@ pub fn point_position(
     at: f64,
     value: f64,
 ) -> (f32, f32) {
-    let x = rect.x + (at.clamp(0.0, 1.0) as f32) * rect.width;
-    let y = rect.y + value_to_fraction(view, lane, value) * rect.height;
+    let plot = plot_area(rect);
+    let x = plot.x + (at.clamp(0.0, 1.0) as f32) * plot.width;
+    let y = plot.y + value_to_fraction(view, lane, value) * plot.height;
     (x, y)
 }
 
 /// And the other way: where the pointer is, in the lane's own units.
 pub fn grid_position(view: &LapseView, lane: &LaneView, rect: Rect, x: f32, y: f32) -> (f64, f64) {
-    let phase = if rect.width > 0.0 {
-        ((x - rect.x) / rect.width).clamp(0.0, 1.0) as f64
+    let plot = plot_area(rect);
+    let phase = if plot.width > 0.0 {
+        ((x - plot.x) / plot.width).clamp(0.0, 1.0) as f64
     } else {
         0.0
     };
-    let fraction = if rect.height > 0.0 {
-        ((y - rect.y) / rect.height).clamp(0.0, 1.0)
+    let fraction = if plot.height > 0.0 {
+        ((y - plot.y) / plot.height).clamp(0.0, 1.0)
     } else {
         0.0
     };
@@ -569,6 +597,7 @@ fn fraction_to_value(view: &LapseView, lane: &LaneView, fraction: f32) -> f64 {
 /// One at the default zoom, which is the whole point of that default — the
 /// guide the grid draws is a true 45° line and a hold is something you trace.
 pub fn freeze_slope(view: &LapseView, rect: Rect) -> f32 {
+    let rect = plot_area(rect);
     if rect.width <= 0.0 {
         return 1.0;
     }
@@ -613,13 +642,26 @@ pub const LAPSE_BEND_GRAB: f32 = 7.0;
 /// raise the line whichever way it runs, or half the segments in a lane
 /// would bend backwards under the hand.
 pub fn bend_sign(lane: &LaneView, carrier: usize) -> f64 {
+    bend_reach(lane, carrier).1
+}
+
+/// Whether a segment has anywhere to bend *to*, and which way a drag runs.
+///
+/// A segment whose two ends are at the same value is a flat line, and
+/// `from + (to − from) · eased(t)` is that same value whatever the tension
+/// is: the gesture would dirty the document and change nothing. So a press on
+/// a flat segment adds a point instead, which is what somebody pressing on a
+/// flat lane means. Found on `:99`, where every fresh lane is flat.
+pub fn bend_reach(lane: &LaneView, carrier: usize) -> (bool, f64) {
     let Some(from) = lane.points.get(carrier) else {
-        return 1.0;
+        return (false, 1.0);
     };
     let to = lane.points.get(carrier + 1).or_else(|| lane.points.first());
     match to {
-        Some(to) if to.value < from.value => -1.0,
-        _ => 1.0,
+        Some(to) if (to.value - from.value).abs() < 1e-9 => (false, 1.0),
+        Some(to) if to.value < from.value => (true, -1.0),
+        Some(_) => (true, 1.0),
+        None => (false, 1.0),
     }
 }
 

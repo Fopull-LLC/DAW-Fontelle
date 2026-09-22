@@ -149,8 +149,8 @@ pub fn zoom_anchor(grid: crate::layout::Rect, cursor: (f32, f32)) -> f32 {
 pub use glide::{Glide, wheel_travel};
 pub use lapse::{
     LAPSE_BEND_GRAB, LAPSE_CANOPY, LAPSE_GRAB, LAPSE_SIZE, LaneView, LapseHit, LapseLayout,
-    LapseSnap, LapseTool, LapseView, bend_sign, freeze_slope, grid_position, hold_points,
-    lapse_hit, lapse_layout, point_position, rate_caption, segment_at,
+    LapseSnap, LapseTool, LapseView, bend_reach, bend_sign, freeze_slope, grid_position,
+    hold_points, lapse_hit, lapse_layout, plot_area, point_position, rate_caption, segment_at,
 };
 pub use mixer::{
     CHAIN_DOT, CHAIN_DOT_GAP, FADER_DETENT_PX, InsertRowLayout, MAX_FADER_DB, MAX_SEND_DB,

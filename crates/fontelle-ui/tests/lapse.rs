@@ -173,9 +173,12 @@ fn the_freeze_guide_is_forty_five_degrees_at_unit_zoom() {
     // a line you trace rather than a number you compute.
     let view = view();
     let layout = lapse_layout(&view, body());
-    let rect = layout.lanes[0];
-    let slope = freeze_slope(&view, rect);
+    let rect = fontelle_ui::canvas::plot_area(layout.lanes[0]);
+    let slope = freeze_slope(&view, layout.lanes[0]);
     // "45°" in the grid's own units: one lane across is one lane-length down.
+    // It is a true 45° only on a square grid, and a lane is much wider than
+    // it is tall — what matters, and what this measures, is that the guide
+    // *is* the freeze slope.
     assert!(
         (slope * rect.width / rect.height - 1.0).abs() < 1e-3,
         "the guide is not the freeze: {slope}"
@@ -186,7 +189,7 @@ fn the_freeze_guide_is_forty_five_degrees_at_unit_zoom() {
     // millisecond offsets something a hand can draw.
     let mut close = view.clone();
     close.zoom = 0.25;
-    let steep = freeze_slope(&close, rect);
+    let steep = freeze_slope(&close, layout.lanes[0]);
     assert!(
         (steep - slope * 4.0).abs() < 1e-3,
         "{steep} against {slope}"
@@ -242,14 +245,16 @@ fn the_time_axis_makes_room_for_the_future_only_when_something_looks_ahead() {
     let layout = lapse_layout(&view, body());
     let rect = layout.lanes[0];
 
-    // Off: zero is the top of the lane.
+    // Off: zero is the top of the lane's **plot**, which sits below the band
+    // that carries its name.
+    let plot = fontelle_ui::canvas::plot_area(rect);
     let (_, y) = point_position(&view, &view.lanes[0], rect, 0.0, 0.0);
-    assert!((y - rect.y).abs() < 0.5, "zero should be the top: {y}");
+    assert!((y - plot.y).abs() < 0.5, "zero should be the top: {y}");
 
     // On: the zero line slides down and a positive offset has somewhere to be.
     view.config.look = LapseLook::Beat;
     let (_, y) = point_position(&view, &view.lanes[0], rect, 0.0, 0.0);
-    assert!(y > rect.y + 4.0, "and now there is room above it: {y}");
+    assert!(y > plot.y + 4.0, "and now there is room above it: {y}");
     let (_, above) = point_position(&view, &view.lanes[0], rect, 0.0, 0.2);
     assert!(above < y, "a forward offset is above the line");
 }
@@ -285,4 +290,67 @@ fn every_tool_and_snap_has_a_word_and_a_sentence() {
     for snap in LapseSnap::ALL {
         assert!(!snap.label().is_empty());
     }
+}
+
+#[test]
+fn every_chip_hit_tests_at_its_own_centre() {
+    // The tool bar and the snap row are the two things a gesture *starts*
+    // with, and a chip that does not answer at its own middle is a chip
+    // nobody can press. Written after an afternoon on `:99` where the hold
+    // tool would not light.
+    let view = view();
+    let layout = lapse_layout(&view, body());
+    assert_eq!(layout.tools.len(), LapseTool::ALL.len());
+    assert_eq!(layout.snaps.len(), LapseSnap::ALL.len());
+    for (index, rect) in layout.tools.iter().enumerate() {
+        let hit = lapse_hit(
+            &layout,
+            &view,
+            rect.x + rect.width / 2.0,
+            rect.y + rect.height / 2.0,
+        );
+        assert_eq!(
+            hit,
+            Some(LapseHit::Tool(LapseTool::ALL[index])),
+            "tool {index} at {rect:?}"
+        );
+    }
+    for (index, rect) in layout.snaps.iter().enumerate() {
+        let hit = lapse_hit(
+            &layout,
+            &view,
+            rect.x + rect.width / 2.0,
+            rect.y + rect.height / 2.0,
+        );
+        assert_eq!(
+            hit,
+            Some(LapseHit::Snap(LapseSnap::ALL[index])),
+            "snap {index} at {rect:?}"
+        );
+    }
+    for (index, rect) in layout.scenes.iter().enumerate() {
+        let hit = lapse_hit(
+            &layout,
+            &view,
+            rect.x + rect.width / 2.0,
+            rect.y + rect.height / 2.0,
+        );
+        assert_eq!(hit, Some(LapseHit::Scene(index)), "scene {index}");
+    }
+}
+
+#[test]
+fn the_chips_are_where_the_window_draws_them() {
+    // The numbers the driver on `:99` clicks at, frozen: the hold tool's
+    // centre, and the 1/16 snap's. If the bar is ever re-laid-out these move,
+    // and this test is the note that says so.
+    let view = view();
+    let layout = lapse_layout(&view, body());
+    // In the window's *body* coordinates — the driver on `:99` clicks these
+    // plus the header's own height.
+    let hold = layout.tools[3];
+    assert!(
+        hold.contains(230.0, 129.0),
+        "the hold chip has moved: {hold:?}"
+    );
 }

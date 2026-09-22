@@ -1129,6 +1129,26 @@ window, not by thinking harder.
     one cell per parameter, a chooser as a chip that *steps* rather than a
     menu, because none of them has more than five positions.
 
+**What Phase 5 found**, on the nested `Xwayland :99` with the real binary —
+four faults, none of which had a failing test and none of which could have:
+
+14. **Window state moves no revision**, so `refresh_studio` returned at once
+    and the tool chip lit a frame late *and* the next gesture drew with the
+    tool before it. `reread_studio` forgets the revision, which is what
+    `open_insert` does. Traced: the press hit `Tool(Hold)` and the press after
+    it still said `tool=Points`.
+15. **A flat lane drew as nothing.** Value 0 on the time lane is the frame's
+    own top edge, where half a two-pixel stroke is clipped and the other half
+    is the border. The axis is inset now (`plot_area`), with a header band at
+    the top that carries the lane's name — because the first fix put the curve
+    straight through it.
+16. **A bend needs somewhere to bend to.** A press on a *flat* segment armed a
+    tension drag that could not change anything and dirtied the document
+    doing it; `bend_reach` refuses, and the press adds a point instead, which
+    is what somebody pressing on a flat lane means.
+17. **The tool chips would not fit their words** in the aside column (29 px
+    against "pencil"), so they have a bar of their own under the canopy.
+
 Still open, in the order they are worth doing: the **Tone and Pan lanes have
 no window controls of their own** beyond their depth knobs (the lanes draw and
 edit, the filter mode is a console chip); **no scene copy-drag** between chips
