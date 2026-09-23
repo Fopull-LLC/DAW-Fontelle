@@ -4943,6 +4943,18 @@ impl WindowApp {
             EditorKind::Effect if self.notepad.is_some() && self.notepad_typing => {
                 self.notepad_key(event)
             }
+            // A scene being named in DisgustingBeat's window has the keyboard
+            // until Enter or Escape — the notepad's rule above, and the same
+            // reason. **This window has its own key path**: the rename began
+            // on a right-click inside it, and without this arm every letter
+            // fell through to the studio's bindings and the chip sat there
+            // with a caret and no name. Found on `:99`; no test could have,
+            // because the rename itself was right on both sides of the gap.
+            EditorKind::Effect
+                if matches!(self.renaming, Some(MenuTarget::DisgustingBeatScene(_))) =>
+            {
+                self.rename_key(event)
+            }
             EditorKind::Effect => {
                 let action = self.action_of(event, crate::canvas::Context::Editor);
                 if action == Some(crate::canvas::Action::RemoveBand) {

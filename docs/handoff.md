@@ -91,11 +91,13 @@ which was clamped, carried in the view and never called. Nothing failed,
 because the half that was built was correct. When you add an edit, add the
 gesture in the same chunk or write down that you did not.
 
-(12) A **rename** in an editor window needs the window's own escape hatch. The
-studio's press handler ends a rename on any press; an editor window has its
-own press path and does not go through it, so `press_disgusting_beat` ends one by hand.
-A keyboard stuck in a field nobody can see is a window that has stopped
-answering.
+(12) A **rename** in an editor window needs the window's own everything. An
+editor window has its own press path *and* its own key path, and neither goes
+through the studio's: `press_disgusting_beat` ends a rename by hand the way
+the studio's press handler does, and `editor_own_key` routes the keystrokes.
+Without the second the chip sat there with a caret and took no letters —
+found on `:99`, and no test could have found it, because the rename was right
+on both sides of the gap.
 
 **Updated 2026-09-22 (v0.11.0, the Notepad).** The tag carries the Notepad
 *and* the v0.10.0 chunk, whose tag was made here and never pushed — v0.9.0

@@ -122,6 +122,11 @@ use it.
   `filled_seconds` where the canopy is always twelve seconds wide, so for the
   first seconds after a start the head sat halfway across a picture of
   nothing.
+- **And one fault only the window could show**: the rename began on a
+  right-click inside the effect window and took no letters, because an editor
+  window has its own key path and the studio's `rename_key` is not on it. The
+  chip drew its caret and sat there. Both halves of the rename were correct;
+  the gap between them was not testable from either side.
 - Left open: §12's Phase 5 in full — playing all seventy presets on the
   nested `Xwayland :99` against a real loop — and the look-ahead question in
   the plan's §14, the only one of its six that changes the sound.
