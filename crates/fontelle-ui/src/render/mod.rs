@@ -1447,7 +1447,9 @@ pub fn draw_editor_window(
         EditorWindowChrome::Insert(insert) => draw_instrument(scene, theme, labels, insert),
         EditorWindowChrome::AudioClip(clip) => draw_audio_editor(scene, theme, labels, clip),
         EditorWindowChrome::Notepad(notepad) => draw_notepad(scene, theme, labels, notepad),
-        EditorWindowChrome::Lapse(lapse) => draw_lapse(scene, theme, labels, lapse),
+        EditorWindowChrome::DisgustingBeat(disgusting_beat) => {
+            draw_disgusting_beat(scene, theme, labels, disgusting_beat)
+        }
     }
 
     draw_context_menu(scene, theme, labels, menu, field);
@@ -1990,19 +1992,22 @@ pub enum EditorWindowChrome<'a> {
     /// row of page controls is not a grid of knobs, and it is painted in its
     /// own theme rather than the studio's.
     Notepad(NotepadChrome<'a>),
-    /// **Lapse**, which draws the memory and the curves over it because that
-    /// is what it is (`docs/lapse-plan.md` §7). Its own variant for the
+    /// **DisgustingBeat**, which draws the memory and the curves over it
+    /// because that
+    /// is what it is (`docs/disgusting-beat-plan.md` §7). Its own variant for the
     /// reason the corrector's is: a canopy of waveform over four grids with a
     /// column of scene chips beside them is not a grid of knobs.
-    Lapse(LapseChrome<'a>),
+    DisgustingBeat(DisgustingBeatChrome<'a>),
 }
 
-/// What Lapse's window draws.
-pub struct LapseChrome<'a> {
-    pub layout: crate::canvas::LapseLayout,
-    pub view: &'a crate::canvas::LapseView,
+/// What DisgustingBeat's window draws.
+pub struct DisgustingBeatChrome<'a> {
+    pub layout: crate::canvas::DisgustingBeatLayout,
+    pub view: &'a crate::canvas::DisgustingBeatView,
+    /// Which scene chip is being typed into, so it can carry a caret.
+    pub renaming: Option<usize>,
     /// What the pointer is over.
-    pub hover: Option<crate::canvas::LapseHit>,
+    pub hover: Option<crate::canvas::DisgustingBeatHit>,
 }
 
 /// What the notepad's window draws.
@@ -11457,29 +11462,34 @@ pub fn notepad_size_caption(size: fontelle_types::NotepadSize) -> &'static str {
     }
 }
 
-// ------------------------------------------------------------------- Lapse
+// ----------------------------------------------------------- DisgustingBeat
 
-/// Lapse's window (`docs/lapse-plan.md` §7).
+/// DisgustingBeat's window (`docs/disgusting-beat-plan.md` §7).
 ///
 /// Three things, top to bottom: the **memory**, drawn as a waveform with the
 /// read head on it; the **lanes**, each a grid with its curve; and the
 /// console. The one idea it exists to teach is that *the slope is the sound*
 /// — so the time lane carries a 45° guide at every beat, which is the freeze,
 /// and the read-out says what the slope under the cursor is worth as a pitch.
-fn draw_lapse(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &LapseChrome<'_>) {
+fn draw_disgusting_beat(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &DisgustingBeatChrome<'_>,
+) {
     let p = &theme.palette;
     let m = &theme.metrics;
     let view = chrome.view;
     let layout = &chrome.layout;
 
-    draw_lapse_canopy(scene, theme, labels, chrome);
+    draw_disgusting_beat_canopy(scene, theme, labels, chrome);
 
     for (index, rect) in layout.lanes.iter().enumerate() {
         let Some(lane) = view.lanes.get(index) else {
             continue;
         };
         if lane.open {
-            draw_lapse_lane(scene, theme, labels, chrome, index, *rect);
+            draw_disgusting_beat_lane(scene, theme, labels, chrome, index, *rect);
         } else {
             // A closed lane is one row: its name, and a dot that says it is
             // off. It costs a row of chrome and no attention.
@@ -11507,7 +11517,19 @@ fn draw_lapse(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &LapseC
             1.0,
             if current { p.accent } else { p.border },
         );
-        let caption = view.scene_label(index);
+        let typing = chrome.renaming == Some(index);
+        let caption = if typing {
+            // The document is the buffer — every keystroke has already landed
+            // — so the chip draws the name it has and adds the caret. A name
+            // being typed that is still empty draws as a bare caret rather
+            // than as the number, which would look like nothing happened.
+            format!(
+                "{}\u{2502}",
+                view.scene_names.get(index).cloned().unwrap_or_default()
+            )
+        } else {
+            view.scene_label(index)
+        };
         if let Some(text) = labels.get(&caption) {
             draw_text_clipped(
                 scene,
@@ -11515,20 +11537,108 @@ fn draw_lapse(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &LapseC
                 *rect,
                 rect.x + (rect.width - text.width) / 2.0,
                 rect.y + (rect.height - text.height) / 2.0,
-                if current { p.text } else { p.text_muted },
+                if current || typing {
+                    p.text
+                } else {
+                    p.text_muted
+                },
             );
+        }
+        if typing {
+            stroke_rect_rounded(scene, *rect, m.corner_radius, 1.0, p.accent);
         }
     }
     for (index, rect) in layout.tools.iter().enumerate() {
-        let tool = crate::canvas::LapseTool::ALL[index];
-        draw_lapse_chip(scene, theme, labels, *rect, tool.label(), tool == view.tool);
+        let tool = crate::canvas::DisgustingBeatTool::ALL[index];
+        draw_disgusting_beat_chip(scene, theme, labels, *rect, tool.label(), tool == view.tool);
     }
     for (index, rect) in layout.snaps.iter().enumerate() {
-        let snap = crate::canvas::LapseSnap::ALL[index];
-        draw_lapse_chip(scene, theme, labels, *rect, snap.label(), snap == view.snap);
+        let snap = crate::canvas::DisgustingBeatSnap::ALL[index];
+        draw_disgusting_beat_chip(scene, theme, labels, *rect, snap.label(), snap == view.snap);
+    }
+    let reach = crate::canvas::DisgustingBeatZoom::nearest(view.zoom);
+    for (index, rect) in layout.zooms.iter().enumerate() {
+        let zoom = crate::canvas::DisgustingBeatZoom::ALL[index];
+        draw_disgusting_beat_chip(scene, theme, labels, *rect, zoom.label(), zoom == reach);
     }
 
-    draw_lapse_console(scene, theme, labels, chrome);
+    draw_disgusting_beat_console(scene, theme, labels, chrome);
+    // Last, so it is over the lane it was opened on.
+    draw_disgusting_beat_menu(scene, theme, labels, chrome);
+}
+
+/// The shape menu on a point: six shapes, and the remove that right-click
+/// used to do on its own.
+fn draw_disgusting_beat_menu(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &DisgustingBeatChrome<'_>,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let Some(menu) = chrome.view.menu else {
+        return;
+    };
+    let rows = &chrome.layout.menu;
+    let Some(first) = rows.first() else {
+        return;
+    };
+    let frame = Rect::new(
+        first.x,
+        first.y,
+        first.width,
+        first.height * rows.len() as f32,
+    );
+    // A shadow under it, because it stands over a grid it must not be read
+    // as part of.
+    fill_rect_rounded(
+        scene,
+        Rect::new(frame.x + 2.0, frame.y + 3.0, frame.width, frame.height),
+        m.corner_radius,
+        p.window.with_alpha(0x90),
+    );
+    fill_rect_rounded(scene, frame, m.corner_radius, p.panel_header);
+    stroke_rect_rounded(scene, frame, m.corner_radius, 1.0, p.accent);
+    let current = chrome
+        .view
+        .lanes
+        .get(menu.lane)
+        .and_then(|lane| lane.points.get(menu.index))
+        .map(|point| point.curve);
+    for (row, rect) in rows.iter().enumerate() {
+        let word = crate::canvas::disgusting_beat_menu_label(row);
+        let lit = crate::canvas::disgusting_beat_menu_shape(row).is_some()
+            && current == crate::canvas::disgusting_beat_menu_shape(row);
+        let hot = chrome.hover == Some(crate::canvas::DisgustingBeatHit::MenuRow(row));
+        if lit || hot {
+            fill_rect_rounded(
+                scene,
+                Rect::new(
+                    rect.x + 2.0,
+                    rect.y + 1.0,
+                    rect.width - 4.0,
+                    rect.height - 2.0,
+                ),
+                m.corner_radius,
+                if lit {
+                    p.accent.with_alpha(0x40)
+                } else {
+                    p.panel.with_alpha(0x80)
+                },
+            );
+        }
+        if let Some(text) = labels.get(word) {
+            draw_text_clipped(
+                scene,
+                text,
+                *rect,
+                rect.x + 8.0,
+                rect.y + (rect.height - text.height) / 2.0,
+                if lit || hot { p.text } else { p.text_muted },
+            );
+        }
+    }
 }
 
 /// A chip with its word centred in it.
@@ -11536,7 +11646,7 @@ fn draw_lapse(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &LapseC
 /// `draw_flop_chip` leaves room for a chevron, which is right on a chooser
 /// and wrong on a chip that is a *choice* — the first draft used it and the
 /// tool bar drew as a row of empty boxes with arrows in them.
-fn draw_lapse_chip(
+fn draw_disgusting_beat_chip(
     scene: &mut Scene,
     theme: &Theme,
     labels: &Labels,
@@ -11582,17 +11692,22 @@ fn draw_lapse_chip(
 ///
 /// A chooser is a **chip that steps**, not a menu: none of them has more than
 /// five positions, and a menu would be two gestures where one will do.
-fn draw_lapse_console(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &LapseChrome<'_>) {
+fn draw_disgusting_beat_console(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &DisgustingBeatChrome<'_>,
+) {
     let p = &theme.palette;
     let view = chrome.view;
-    let config = fontelle_types::EffectConfig::Lapse(view.config);
+    let config = fontelle_types::EffectConfig::DisgustingBeat(view.config);
     let specs = config.specs();
     for (index, rect) in chrome.layout.controls.iter().enumerate() {
         let Some(spec) = specs.get(index) else {
             continue;
         };
         let value = config.get(spec.id).unwrap_or(spec.default);
-        let hot = chrome.hover == Some(crate::canvas::LapseHit::Control(index));
+        let hot = chrome.hover == Some(crate::canvas::DisgustingBeatHit::Control(index));
         // Tall enough for a descender: at fourteen the "y" of "Quality"
         // and the "y" of "Sync" were clipped off.
         let caption = Rect::new(rect.x, rect.y, rect.width, 17.0);
@@ -11615,7 +11730,7 @@ fn draw_lapse_console(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome:
             fontelle_types::Taper::Stepped(_) if !spec.positions.is_empty() => {
                 let at = (value - spec.min).round().max(0.0) as usize;
                 let word = spec.positions.get(at).copied().unwrap_or("");
-                draw_lapse_chip(scene, theme, labels, body, word, hot);
+                draw_disgusting_beat_chip(scene, theme, labels, body, word, hot);
             }
             _ => {
                 let knob = Rect::new(body.x + (body.width - 32.0) / 2.0, body.y, 32.0, 32.0);
@@ -11651,7 +11766,12 @@ fn draw_lapse_console(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome:
 /// Peak and RMS in two tones, oldest on the left, with the read head on it.
 /// A hold's head stops dead on the sample it froze and a reverse runs
 /// backwards over the picture, which is the thing nobody has to be told twice.
-fn draw_lapse_canopy(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &LapseChrome<'_>) {
+fn draw_disgusting_beat_canopy(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &DisgustingBeatChrome<'_>,
+) {
     let p = &theme.palette;
     let m = &theme.metrics;
     let area = chrome.layout.canopy;
@@ -11683,14 +11803,58 @@ fn draw_lapse_canopy(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
         }
     }
 
-    // The read head, as a fraction of the memory: the offset is in
-    // lane-lengths and the memory is in seconds, so the window says where the
-    // head is relative to *now*, which is the right edge.
-    let filled = view.filled_seconds.max(0.001);
-    let back_seconds =
-        (-view.offset).max(0.0) * view.time_beats() as f32 * 60.0 / view.bpm.max(1.0);
-    let fraction = (1.0 - (back_seconds / filled)).clamp(0.0, 1.0);
-    let head_x = area.x + fraction * area.width;
+    // **Where it has read.** One number per bucket says how far behind the
+    // write head the read was when that bucket was written, so lighting the
+    // column it names paints the memory with the curve's own history: a
+    // freeze burns one column, a stutter burns three, a reverse burns a
+    // swath, and a wire lights everything it has played, brightest at now
+    // because a newer moment burns over an older one. The head below says
+    // where the sound is coming from *now*; this says what it has been doing,
+    // which is the picture this kind of plugin has never shown anybody.
+    let trail = &view.trail;
+    if !trail.is_empty() && !buckets.is_empty() {
+        let columns = buckets.len();
+        let step = area.width / columns as f32;
+        let mut heat = vec![0.0f32; columns];
+        // Only the part of the ring that has actually been written: a fresh
+        // insert's trail is all zeros, and drawing that would light the whole
+        // canopy over a memory holding nothing.
+        let written = ((view.filled_seconds / fontelle_types::DISGUSTING_BEAT_MEMORY_SECONDS)
+            .clamp(0.0, 1.0)
+            * columns as f32) as usize;
+        let from = columns.saturating_sub(written);
+        for (moment, behind) in trail.iter().enumerate().skip(from) {
+            let column = moment as f32 - behind.max(0.0);
+            if column < 0.0 {
+                continue;
+            }
+            let column = (column as usize).min(columns - 1);
+            // Newer moments burn brighter, so a curve that has just changed
+            // reads over the one before it.
+            let age = (moment - from) as f32 / written.max(1) as f32;
+            heat[column] = heat[column].max(age);
+        }
+        for (column, weight) in heat.iter().enumerate() {
+            if *weight <= 0.0 {
+                continue;
+            }
+            let alpha = (*weight * 110.0) as u8;
+            fill_rect(
+                scene,
+                Rect::new(
+                    area.x + column as f32 * step,
+                    area.y,
+                    step.max(1.0),
+                    area.height,
+                ),
+                p.playhead.with_alpha(alpha),
+            );
+        }
+    }
+
+    // The read head, where it is now, on the same axis the trail is drawn
+    // against (`canvas::canopy_head`).
+    let head_x = area.x + crate::canvas::canopy_head(view) * area.width;
     fill_rect(
         scene,
         Rect::new(head_x - 1.0, area.y, 2.0, area.height),
@@ -11716,14 +11880,31 @@ fn draw_lapse_canopy(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
             p.text_muted,
         );
     }
+
+    // And the one written rule the window has: what the pointer is on,
+    // beside the picture rather than in a manual.
+    if let Some(tip) = chrome
+        .hover
+        .and_then(|hit| crate::canvas::disgusting_beat_tip(view, hit))
+        && let Some(text) = labels.get(tip)
+    {
+        draw_text_clipped(
+            scene,
+            text,
+            area,
+            area.right() - m.panel_padding - text.width,
+            area.y + m.panel_padding * 0.5,
+            p.text,
+        );
+    }
 }
 
 /// One lane's grid, its curve, and its handles.
-fn draw_lapse_lane(
+fn draw_disgusting_beat_lane(
     scene: &mut Scene,
     theme: &Theme,
     labels: &Labels,
-    chrome: &LapseChrome<'_>,
+    chrome: &DisgustingBeatChrome<'_>,
     index: usize,
     area: Rect,
 ) {
@@ -11773,7 +11954,7 @@ fn draw_lapse_lane(
     // **The freeze guides**, on the time lane only. Faint 45° lines starting
     // at every beat: trace one and the sound stops. This is the whole of what
     // the window has to teach, and it is drawn rather than written down.
-    if lane.kind == fontelle_types::LapseLaneKind::Time {
+    if lane.kind == fontelle_types::DisgustingBeatLaneKind::Time {
         let slope = crate::canvas::freeze_slope(view, area);
         let beats_count = beats.round().max(1.0) as usize;
         for beat in 0..beats_count {
@@ -11808,7 +11989,7 @@ fn draw_lapse_lane(
     for (point_index, point) in lane.points.iter().enumerate() {
         let (x, y) = crate::canvas::point_position(view, lane, area, point.at, point.value);
         let hot = chrome.hover
-            == Some(crate::canvas::LapseHit::Point {
+            == Some(crate::canvas::DisgustingBeatHit::Point {
                 lane: index,
                 index: point_index,
             });
@@ -11829,7 +12010,9 @@ fn draw_lapse_lane(
         p.playhead.with_alpha(0xc0),
     );
 
-    // And the lane's name, top left, out of the curve's way.
+    // And the lane's header: its name, how long it is, and the word that
+    // puts it back to neutral. The header is the only row of a lane that is
+    // not the picture, so it is the only place these can go.
     draw_label(
         scene,
         labels,
@@ -11837,5 +12020,21 @@ fn draw_lapse_lane(
         Rect::new(area.x, area.y, area.width, 18.0),
         m,
         p.text_muted,
+    );
+    draw_disgusting_beat_chip(
+        scene,
+        theme,
+        labels,
+        crate::canvas::lane_length_rect(area),
+        lane.length.label(),
+        chrome.hover == Some(crate::canvas::DisgustingBeatHit::LaneLength { lane: index }),
+    );
+    draw_disgusting_beat_chip(
+        scene,
+        theme,
+        labels,
+        crate::canvas::lane_clear_rect(area),
+        "clear",
+        chrome.hover == Some(crate::canvas::DisgustingBeatHit::LaneClear { lane: index }),
     );
 }

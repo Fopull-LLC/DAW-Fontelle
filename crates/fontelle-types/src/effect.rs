@@ -51,10 +51,10 @@ pub enum EffectKind {
     Multiband,
     Width,
     /// Two bars of memory with curves drawn over them — the time and volume
-    /// machine (`crate::lapse`, `docs/lapse-plan.md`). It absorbs the
+    /// machine (`crate::disgusting_beat`, `docs/disgusting-beat-plan.md`). It absorbs the
     /// catalogue's planned *stutter* and *trance gate*, which are this one at
     /// two settings.
-    Lapse,
+    DisgustingBeat,
     /// The one that makes no sound: a page of words on a strip
     /// (`crate::notepad`). It is an insert because that is where somebody
     /// wants it — beside the track it is about — and not because it
@@ -86,8 +86,25 @@ impl EffectKind {
             Self::Hyper => "Hyper",
             Self::Multiband => "Multiband",
             Self::Width => "Width",
-            Self::Lapse => "Lapse",
+            // Seven characters, because a strip is 76 pixels wide and it
+            // shares them with a dial. Its own name is `full_label`.
+            Self::DisgustingBeat => "Disgust",
             Self::Notepad => "Notepad",
+        }
+    }
+
+    /// What a **menu row or a window title** calls it, where there is room
+    /// for the whole name.
+    ///
+    /// The same string as [`label`](Self::label) for every effect but one:
+    /// the abbreviations on the strip — "Comp", "Dist", "Crush" — are short
+    /// forms of a word somebody already knows, and "Disgust" is a short form
+    /// of a name they have to learn. So they learn it in the menu they pick
+    /// it from and on the window it opens, and the strip gets the stem.
+    pub fn full_label(self) -> &'static str {
+        match self {
+            Self::DisgustingBeat => "DisgustingBeat",
+            other => other.label(),
         }
     }
 
@@ -134,7 +151,7 @@ impl EffectKind {
     /// three copies of the list is two to forget. An effect that does not take
     /// notes and has a channel named on it is a routing edge feeding nothing.
     pub fn takes_notes(self) -> bool {
-        matches!(self, Self::Tune | Self::Lapse)
+        matches!(self, Self::Tune | Self::DisgustingBeat)
     }
 
     /// Every effect that can be put in an insert slot, in the order the "add"
@@ -174,7 +191,7 @@ impl EffectKind {
         Self::Hyper,
         Self::Delay,
         Self::Reverb,
-        Self::Lapse,
+        Self::DisgustingBeat,
         // Last, and on its own: it is not a processor at all, and a menu
         // that put it among them would be a menu that lied about what the
         // things in it do.
@@ -210,7 +227,7 @@ pub enum EffectConfig {
     Hyper(HyperConfig),
     Multiband(MultibandConfig),
     Width(WidthConfig),
-    Lapse(crate::LapseConfig),
+    DisgustingBeat(crate::DisgustingBeatConfig),
     Notepad(crate::NotepadConfig),
 }
 
@@ -245,7 +262,7 @@ impl EffectConfig {
             Self::Hyper(_) => HYPER_PARAMS.as_slice(),
             Self::Multiband(_) => MULTIBAND_PARAMS.as_slice(),
             Self::Width(_) => WIDTH_PARAMS.as_slice(),
-            Self::Lapse(_) => crate::lapse::LAPSE_PARAMS.as_slice(),
+            Self::DisgustingBeat(_) => crate::disgusting_beat::DISGUSTING_BEAT_PARAMS.as_slice(),
             Self::Notepad(_) => crate::notepad::NOTEPAD_PARAMS.as_slice(),
         }
     }
@@ -281,7 +298,7 @@ impl EffectConfig {
             Self::Hyper(_) => HYPER_SECTIONS.as_slice(),
             Self::Multiband(_) => MULTIBAND_SECTIONS.as_slice(),
             Self::Width(_) => WIDTH_SECTIONS.as_slice(),
-            Self::Lapse(_) => crate::lapse::LAPSE_SECTIONS.as_slice(),
+            Self::DisgustingBeat(_) => crate::disgusting_beat::DISGUSTING_BEAT_SECTIONS.as_slice(),
             Self::Notepad(_) => crate::notepad::NOTEPAD_SECTIONS.as_slice(),
         }
     }
@@ -331,7 +348,7 @@ impl EffectConfig {
             Self::Hyper(hyper) => hyper.get(id),
             Self::Multiband(multiband) => multiband.get(id),
             Self::Width(width) => width.get(id),
-            Self::Lapse(lapse) => lapse.get(id),
+            Self::DisgustingBeat(disgusting_beat) => disgusting_beat.get(id),
             Self::Notepad(notepad) => notepad.get(id),
         }
     }
@@ -363,7 +380,7 @@ impl EffectConfig {
             Self::Hyper(hyper) => hyper.set(id, value),
             Self::Multiband(multiband) => multiband.set(id, value),
             Self::Width(width) => width.set(id, value),
-            Self::Lapse(lapse) => lapse.set(id, value),
+            Self::DisgustingBeat(disgusting_beat) => disgusting_beat.set(id, value),
             Self::Notepad(notepad) => notepad.set(id, value),
         }
     }
@@ -401,7 +418,7 @@ impl EffectConfig {
             Self::Hyper(_) => EffectKind::Hyper,
             Self::Multiband(_) => EffectKind::Multiband,
             Self::Width(_) => EffectKind::Width,
-            Self::Lapse(_) => EffectKind::Lapse,
+            Self::DisgustingBeat(_) => EffectKind::DisgustingBeat,
             Self::Notepad(_) => EffectKind::Notepad,
         }
     }
@@ -435,7 +452,7 @@ impl EffectConfig {
             Self::Hyper(hyper) => hyper.mix,
             Self::Multiband(multiband) => multiband.mix,
             Self::Width(width) => width.mix,
-            Self::Lapse(lapse) => lapse.mix,
+            Self::DisgustingBeat(disgusting_beat) => disgusting_beat.mix,
             Self::Notepad(notepad) => notepad.mix,
         }
     }
@@ -504,7 +521,7 @@ impl EffectConfig {
             EffectKind::Hyper => Self::Hyper(HyperConfig::new()),
             EffectKind::Multiband => Self::Multiband(MultibandConfig::new()),
             EffectKind::Width => Self::Width(WidthConfig::new()),
-            EffectKind::Lapse => Self::Lapse(crate::LapseConfig::new()),
+            EffectKind::DisgustingBeat => Self::DisgustingBeat(crate::DisgustingBeatConfig::new()),
             EffectKind::Notepad => Self::Notepad(crate::NotepadConfig::new()),
         }
     }

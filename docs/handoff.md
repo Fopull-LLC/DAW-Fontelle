@@ -16,22 +16,23 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
-**Updated 2026-09-22 (Lapse, the time and volume machine).** A
+**Updated 2026-09-22 (DisgustingBeat, the time and volume machine).** A
 twenty-second `EffectKind` — `PROGRESS.md`'s top entry, the whole design in
-`docs/lapse-plan.md`, and §15 of that document for where the tree disagrees
-with the plan. Things to know:
+`docs/disgusting-beat-plan.md`, and §15 of that document for where the tree
+disagrees with the plan. Things to know:
 
 (0) **The song's tick is on `TransportSnapshot` now** and the tempo table's
 rows are `TempoSpan`, not `(sample, bpm)`. Anything that wants to land on a
 beat asks `CompiledTimeline::tick_at`; anything that works it out from
 `position_sample × bpm` is wrong from the first tempo change. This landed as
-its own commit (`d495627`) before any of Lapse, and it is useful without it.
+its own commit (`d495627`) before any of DisgustingBeat, and it is useful
+without it.
 
-(1) **A new effect window is five lists.** `self.lapse` beside `self.eq`,
+(1) **A new effect window is five lists.** `self.disgusting_beat` beside `self.eq`,
 `self.insert_view`, `self.tune` and `self.notepad`; grep any of them and
 answer every hit. The plan tables them in §7.7 with line numbers.
 
-(2) **Lapse is processed in `EffectNode::process`**, not in
+(2) **DisgustingBeat is processed in `EffectNode::process`**, not in
 `EffectState::process` — it is the only insert that reads its own channel
 *and* the transport, and the dispatch carries neither. If you add an effect
 that needs either, put it there too rather than widening the signature for the
@@ -42,9 +43,10 @@ look-ahead in this program is measured in beats. It reads the tempo at the top
 of the song and holds it: a latency that moved with the tempo map is a latency
 nothing could compensate.
 
-(4) **The curves cross on their own triple buffer** (`lapse_channel.rs`), and
-`LapseSource::current` returns a **reference** where `EffectSource::current`
-returns a value. 48 KB per block per insert is not a thing to copy.
+(4) **The curves cross on their own triple buffer**
+(`disgusting_beat_channel.rs`), and `DisgustingBeatSource::current` returns a
+**reference** where `EffectSource::current` returns a value. 48 KB per block
+per insert is not a thing to copy.
 
 (5) **`CurveShape` lives in `fontelle-types` now** and `eased` takes a
 tension. `fontelle-model` re-exports the name, so nothing that used it moved.
@@ -58,7 +60,7 @@ clip in every project changes shape.
 (7) **Look at the window.** Three real faults were invisible to a green suite
 and obvious in the PNG: an empty console, five chips in a column too narrow
 for the word "pencil", and freeze guides at an alpha nobody could see.
-`FONTELLE_UI_DUMP=<dir> cargo test -p fontelle-ui --test render_headless lapse`
+`FONTELLE_UI_DUMP=<dir> cargo test -p fontelle-ui --test render_headless disgusting_beat`
 is two seconds and it is the test that can see.
 
 (8) **Window state moves no revision.** `refresh_studio` returns at once when
@@ -78,8 +80,22 @@ both had happened — the notepad's own trap (§1 above, (5)) in a new window.
 top (`LANE_HEADER`, which is also the strip that switches the lane off) and
 `LANE_INSET` at the bottom. Without it a curve at an end of its range is half
 clipped by the frame and half indistinguishable from it — a *flat* lane, which
-is what every fresh Lapse has, drew as nothing at all. `plot_area` is the one
-function that knows; anything that plots a value goes through it.
+is what every fresh DisgustingBeat has, drew as nothing at all. `plot_area` is
+the one function that knows; anything that plots a value goes through it.
+
+(11) **A document edit with no gesture is invisible to every test here.** Five
+of DisgustingBeat's were: `SetLength`, `ClearLane`, `SetCurve`, `CopyScene` and
+`RenameScene` were written, undoable, covered by `fontelle-types`' tests and
+reachable from nowhere in the window — and so was `set_disgusting_beat_zoom`,
+which was clamped, carried in the view and never called. Nothing failed,
+because the half that was built was correct. When you add an edit, add the
+gesture in the same chunk or write down that you did not.
+
+(12) A **rename** in an editor window needs the window's own escape hatch. The
+studio's press handler ends a rename on any press; an editor window has its
+own press path and does not go through it, so `press_disgusting_beat` ends one by hand.
+A keyboard stuck in a field nobody can see is a window that has stopped
+answering.
 
 **Updated 2026-09-22 (v0.11.0, the Notepad).** The tag carries the Notepad
 *and* the v0.10.0 chunk, whose tag was made here and never pushed — v0.9.0

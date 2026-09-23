@@ -1,10 +1,10 @@
 //! The curve vocabulary, moved down from `fontelle-model` and given the bend
-//! its `tension` field has been waiting for (`docs/lapse-plan.md` §3.5).
+//! its `tension` field has been waiting for (`docs/disgusting-beat-plan.md` §3.5).
 //!
-//! It moved because the audio thread reads these shapes now — Lapse's lanes
-//! are drawn in them — and `fontelle-engine` may not see `fontelle-model`
-//! (INVARIANT 4). `fontelle-model` re-exports the name, so nothing above it
-//! changed.
+//! It moved because the audio thread reads these shapes now — DisgustingBeat's
+//! lanes are drawn in them — and `fontelle-engine` may not see
+//! `fontelle-model` (INVARIANT 4). `fontelle-model` re-exports the name, so
+//! nothing above it changed.
 
 use fontelle_types::CurveShape;
 

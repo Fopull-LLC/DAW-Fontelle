@@ -5364,13 +5364,14 @@ impl Command for ApplyTrackChain {
                 notepad: (insert.config.kind() == fontelle_types::EffectKind::Notepad)
                     .then(fontelle_types::NotepadPages::new),
                 // The curves *are* the effect, so unlike the pad's words they
-                // travel with the chain — see `TrackInsert::lapse`. A chain
-                // saved before Lapse, or one whose slot is not a Lapse, gets
-                // a fresh flat bank so the slot is still drawable.
-                lapse: match (&insert.lapse, insert.config.kind()) {
-                    (Some(bank), fontelle_types::EffectKind::Lapse) => Some(bank.clone()),
-                    (_, fontelle_types::EffectKind::Lapse) => {
-                        Some(Box::new(fontelle_types::LapseBank::new()))
+                // travel with the chain — see `TrackInsert::disgusting_beat`.
+                // A chain saved before DisgustingBeat, or one whose slot is
+                // not a DisgustingBeat, gets a fresh flat bank so the slot is
+                // still drawable.
+                disgusting_beat: match (&insert.disgusting_beat, insert.config.kind()) {
+                    (Some(bank), fontelle_types::EffectKind::DisgustingBeat) => Some(bank.clone()),
+                    (_, fontelle_types::EffectKind::DisgustingBeat) => {
+                        Some(Box::new(fontelle_types::DisgustingBeatBank::new()))
                     }
                     _ => None,
                 },
@@ -5397,7 +5398,7 @@ impl Command for ApplyTrackChain {
                             config: slot.config,
                             bypassed: slot.bypassed,
                             preset: slot.preset.clone(),
-                            lapse: None,
+                            disgusting_beat: None,
                         })
                         .collect(),
                 },
@@ -6277,13 +6278,15 @@ impl Command for EditNotepad {
     }
 }
 
-/// One thing done to a Lapse's curves (`docs/lapse-plan.md` §6).
+/// One thing done to a DisgustingBeat's curves
+/// (`docs/disgusting-beat-plan.md` §6).
 ///
 /// One command for all of them rather than one per edit, because the inverse
 /// of each is another edit of the same shape — see
-/// [`LapseBank::apply`](fontelle_types::LapseBank::apply), which does the work
-/// and hands back the undo. `EditNotepad` above is the same shape for the same
-/// reason, and there is nothing here to keep in step with the algebra.
+/// [`DisgustingBeatBank::apply`](fontelle_types::DisgustingBeatBank::apply),
+/// which does the work and hands back the undo. `EditNotepad` above is the
+/// same shape for the same reason, and there is nothing here to keep in step
+/// with the algebra.
 ///
 /// **A refused edit is not an entry.** Moving a point to where it already is,
 /// switching a lane that is already on, removing the last point of a lane:
@@ -6292,13 +6295,17 @@ impl Command for EditNotepad {
 pub struct EditLapse {
     track: MixerTrackId,
     index: usize,
-    edit: fontelle_types::LapseEdit,
+    edit: fontelle_types::DisgustingBeatEdit,
     /// The edit that puts it back, learnt when this one was applied.
-    undo: Option<fontelle_types::LapseEdit>,
+    undo: Option<fontelle_types::DisgustingBeatEdit>,
 }
 
 impl EditLapse {
-    pub fn new(track: MixerTrackId, index: usize, edit: fontelle_types::LapseEdit) -> Self {
+    pub fn new(
+        track: MixerTrackId,
+        index: usize,
+        edit: fontelle_types::DisgustingBeatEdit,
+    ) -> Self {
         Self {
             track,
             index,
@@ -6319,10 +6326,9 @@ impl Command for EditLapse {
             .inserts
             .get_mut(self.index)
             .ok_or_else(|| CommandError(format!("no insert {}", self.index)))?;
-        let bank = slot
-            .lapse
-            .as_mut()
-            .ok_or_else(|| CommandError(format!("insert {} is not a Lapse", self.index)))?;
+        let bank = slot.disgusting_beat.as_mut().ok_or_else(|| {
+            CommandError(format!("insert {} is not a DisgustingBeat", self.index))
+        })?;
         let undo = bank
             .apply(&self.edit)
             .ok_or_else(|| CommandError("that edit changes nothing".to_string()))?;
@@ -6360,14 +6366,14 @@ impl Command for EditLapse {
         let both_continuous = matches!(
             (&self.edit, &next.edit),
             (
-                fontelle_types::LapseEdit::MovePoint { .. },
-                fontelle_types::LapseEdit::MovePoint { .. }
+                fontelle_types::DisgustingBeatEdit::MovePoint { .. },
+                fontelle_types::DisgustingBeatEdit::MovePoint { .. }
             ) | (
-                fontelle_types::LapseEdit::Draw { .. },
-                fontelle_types::LapseEdit::Draw { .. }
+                fontelle_types::DisgustingBeatEdit::Draw { .. },
+                fontelle_types::DisgustingBeatEdit::Draw { .. }
             ) | (
-                fontelle_types::LapseEdit::SetTension { .. },
-                fontelle_types::LapseEdit::SetTension { .. }
+                fontelle_types::DisgustingBeatEdit::SetTension { .. },
+                fontelle_types::DisgustingBeatEdit::SetTension { .. }
             )
         );
         if !(same_lane && both_continuous) {
@@ -6389,7 +6395,7 @@ impl Command for EditLapse {
             + self
                 .undo
                 .as_ref()
-                .map_or(0, fontelle_types::LapseEdit::memory_cost)
+                .map_or(0, fontelle_types::DisgustingBeatEdit::memory_cost)
     }
 }
 
@@ -7285,10 +7291,10 @@ enum DeviceState {
         config: fontelle_types::EffectConfig,
         plugin: Option<fontelle_types::PluginState>,
         preset: Option<fontelle_types::PresetRef>,
-        /// A Lapse's curves, which are its state as much as its knobs are —
-        /// an undo of a preset load that put the knobs back and left the
+        /// A DisgustingBeat's curves, which are its state as much as its knobs
+        /// are — an undo of a preset load that put the knobs back and left the
         /// curves would put the device somewhere nobody had ever set it to.
-        lapse: Option<Box<fontelle_types::LapseBank>>,
+        disgusting_beat: Option<Box<fontelle_types::DisgustingBeatBank>>,
     },
 }
 
@@ -7424,7 +7430,7 @@ impl Command for ApplyPreset {
                     config: slot.config,
                     plugin: slot.plugin.clone(),
                     preset: slot.preset.clone(),
-                    lapse: slot.lapse.clone(),
+                    disgusting_beat: slot.disgusting_beat.clone(),
                 };
                 match (&self.preset.device, &self.preset.payload) {
                     (DeviceKind::Effect(kind), PresetPayload::Effect(config)) => {
@@ -7438,25 +7444,26 @@ impl Command for ApplyPreset {
                         }
                         slot.config = *config;
                     }
-                    // Lapse's state is a config *and* a bank, so its preset
-                    // carries both — `PresetPayload::Lapse` says why it is a
-                    // variant of its own rather than a field on the one
-                    // above.
+                    // DisgustingBeat's state is a config *and* a bank, so its
+                    // preset carries both — `PresetPayload::DisgustingBeat`
+                    // says why it is a variant of its own rather than a field
+                    // on the one above.
                     (
-                        DeviceKind::Effect(fontelle_types::EffectKind::Lapse),
-                        PresetPayload::Lapse(lapse),
+                        DeviceKind::Effect(fontelle_types::EffectKind::DisgustingBeat),
+                        PresetPayload::DisgustingBeat(disgusting_beat),
                     ) => {
-                        if slot.config.kind() != fontelle_types::EffectKind::Lapse {
+                        if slot.config.kind() != fontelle_types::EffectKind::DisgustingBeat {
                             return Err(CommandError(format!(
-                                "insert {} is a {:?}, not a Lapse",
+                                "insert {} is a {:?}, not a DisgustingBeat",
                                 index,
                                 slot.config.kind()
                             )));
                         }
-                        slot.config = fontelle_types::EffectConfig::Lapse(lapse.config);
-                        let mut bank = lapse.bank.clone();
+                        slot.config =
+                            fontelle_types::EffectConfig::DisgustingBeat(disgusting_beat.config);
+                        let mut bank = disgusting_beat.bank.clone();
                         bank.fill();
-                        slot.lapse = Some(Box::new(bank));
+                        slot.disgusting_beat = Some(Box::new(bank));
                     }
                     (DeviceKind::Plugin(key), PresetPayload::Plugin(state)) => {
                         match &slot.plugin {
@@ -7731,7 +7738,7 @@ impl Command for RestoreDeviceState {
                     config,
                     plugin,
                     preset,
-                    lapse,
+                    disgusting_beat,
                 },
             ) => {
                 let slot = doc
@@ -7745,7 +7752,7 @@ impl Command for RestoreDeviceState {
                 std::mem::swap(&mut slot.config, config);
                 std::mem::swap(&mut slot.plugin, plugin);
                 std::mem::swap(&mut slot.preset, preset);
-                std::mem::swap(&mut slot.lapse, lapse);
+                std::mem::swap(&mut slot.disgusting_beat, disgusting_beat);
                 Ok(())
             }
             // A target and a state of different shapes cannot be built by

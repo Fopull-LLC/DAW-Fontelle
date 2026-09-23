@@ -19,16 +19,26 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-09-22 — Lapse: two bars of memory with curves drawn over it.**
-Ty: *"a gross beat like plugin … a section for time manipulation and a
+**As of 2026-09-22 — DisgustingBeat: two bars of memory with curves drawn over
+it.** Ty: *"a gross beat like plugin … a section for time manipulation and a
 section for volume and you can draw in patterns for these and make curves and
 stuff in the editor easily and it affects the playback correctly like gross
 beat. should have extensive presets … visual design should be similar to
-flopsynth. feel free to add onto or expand on this where you see
-opportunities to make it possibly even better than the original."* The whole
-design is `docs/lapse-plan.md`, written first and then built to, tests first,
+flopsynth. feel free to add onto or expand on this where you see opportunities
+to make it possibly even better than the original."* The whole design is
+`docs/disgusting-beat-plan.md`, written first and then built to, tests first,
 in the phases §12 lays out. §15 of that document is where the tree disagrees
 with the plan and why.
+
+**The name is Ty's and it was taken on the last day it was free.** It was
+built under the working name *Lapse*; Ty chose **DisgustingBeat** before the
+version was bumped, and the document, forty-one source files and the preset
+folder were renamed mechanically the same afternoon. A slug is a folder name,
+so INVARIANT 7 makes it permanent the moment presets ship under it — which is
+why the question was asked before the release rather than after. On a mixer
+strip it says "Disgust", because a strip is 76 pixels wide and a compressor
+says "Comp"; `full_label()` is the name, and the menus and the window title
+use it.
 
 - **The machine is one line.** `read(t) = write(t) − delay(t)`, so
   `rate = 1 − d(delay)/dt`: a curve falling at one lane-length per lane holds
@@ -52,13 +62,13 @@ with the plan and why.
 - **The curves are not in the config**, which is `Copy` and crosses to the
   audio thread every block; twelve scenes of four lanes is 48 KB. They sit on
   the slot like a notepad's pages — but unlike those they *do* cross, and they
-  have to cross while somebody drags a point, so `lapse_channel.rs` is
+  have to cross while somebody drags a point, so `disgusting_beat_channel.rs` is
   `effect_channel.rs`'s sibling with one difference: `current()` hands back a
   **reference**, because a copy per block per insert would be 19 MB/s of
   memcpy for nothing.
 - **`CurveShape` moved down to `fontelle-types`** and grew the bend its
   `tension` field has been waiting for since §12.1 — *"a curve editor that can
-  bend one is what gives it a value to have"*. Lapse's editor is that editor,
+  bend one is what gives it a value to have"*. DisgustingBeat's editor is that editor,
   and the automation lane inherits the bend for free. Zero tension is bit for
   bit what it was, which is what stops every clip in every project changing
   shape.
@@ -82,21 +92,39 @@ with the plan and why.
   half-time/double-time knob; two more lanes (**tone** and **pan**, off by
   default); and the **memory drawn in the canopy** with the read head on it,
   so you can see what you are about to grab.
-- **Seventy preset files** in ten categories (`assets/presets/fx-lapse/`):
+- **Seventy preset files** in ten categories (`assets/presets/fx-disgusting-beat/`):
   Stutter, Hold, Scratch, Tape, Reverse, Gate, Groove, Fill, Creative, and six
   twelve-scene **Kits** laid out C to B so a whole kit is playable from one
   octave. *Groove* is the one to be proudest of — eight curves of a few
   milliseconds of push and drag, which is a groove template for bounced audio
   and a thing nothing in this class offers.
-- **The window is five lists, not four** (`docs/lapse-plan.md` §7.7). The
+- **The window is five lists, not four** (`docs/disgusting-beat-plan.md` §7.7). The
   notepad's three-list omission cost a day; every one of the five is answered
   and named in the plan. Looking at the PNG found three more things no test
   could: the console was empty, five tool chips in a 196 px column drew as
   empty boxes with arrows in them, and the freeze guides were invisible.
-- Left open: the tone and pan lanes have no controls beyond their depth knobs,
-  no scene copy-drag or rename, no point-shape menu (right-click removes one),
-  and Phase 5 — playing every preset on the nested `Xwayland :99` with a real
-  loop, which is where the next round of reports will come from.
+- **The window's last five gestures** (phase 6). Every one of them was a
+  document edit that already existed, was already undoable and already tested,
+  and could be reached from nowhere at all: a lane's **length** and a
+  **clear** are chips in its header; the **reach** is four chips on the tool
+  bar (`set_disgusting_beat_zoom` was clamped, carried in the view and called by
+  nothing); right-click on a point opens the **shape menu**, whose last row is
+  the remove that gesture used to do outright; a scene chip **renames** on
+  right-click and **copies** onto another on a drag. The lesson is in
+  `docs/handoff.md` (11): a half-built feature whose built half is correct
+  fails no test.
+- **The canopy shows where the head has been**, not only where it is. One
+  number per memory bucket — how far behind the write head the read was when
+  that bucket was written — and the canopy *lights the column it names*. A
+  freeze burns one column, a stutter burns three, a reverse burns a swath, and
+  the part of the memory a curve never reached stays dark. Drawing it beside
+  the head is what exposed the head's own arithmetic: it divided by
+  `filled_seconds` where the canopy is always twelve seconds wide, so for the
+  first seconds after a start the head sat halfway across a picture of
+  nothing.
+- Left open: §12's Phase 5 in full — playing all seventy presets on the
+  nested `Xwayland :99` against a real loop — and the look-ahead question in
+  the plan's §14, the only one of its six that changes the sound.
 
 **As of 2026-09-22 — v0.11.0: the Notepad, and the release that carries it
 *and* everything v0.10.0 never published.** The v0.10.0 tag below was made on

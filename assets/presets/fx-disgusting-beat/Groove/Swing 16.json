@@ -1,0 +1,750 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "DisgustingBeat"
+  },
+  "name": "Swing 16",
+  "category": "Groove",
+  "notes": "Pushes every second sixteenth late: swing, on audio.",
+  "author": "Fontelle",
+  "payload": {
+    "disgustingbeat": {
+      "config": {
+        "scene": 0,
+        "rate": "One",
+        "sync": "Song",
+        "swing": 0.0,
+        "notes": "Select",
+        "time": 1.0,
+        "smooth_ms": 12.0,
+        "quality": "Normal",
+        "look": "Off",
+        "volume": 1.0,
+        "tone": 0.0,
+        "tone_mode": "LowHigh",
+        "tone_range": 3.0,
+        "pan": 0.0,
+        "output_db": 0.0,
+        "mix": 1.0
+      },
+      "bank": {
+        "scenes": [
+          {
+            "lanes": [
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Stepped",
+                    "tension": 0.0
+                  },
+                  {
+                    "at": 0.062,
+                    "value": -0.012,
+                    "curve": "Stepped",
+                    "tension": 0.0
+                  },
+                  {
+                    "at": 0.125,
+                    "value": 0.0,
+                    "curve": "Stepped",
+                    "tension": 0.0
+                  },
+                  {
+                    "at": 0.187,
+                    "value": -0.012,
+                    "curve": "Stepped",
+                    "tension": 0.0
+                  },
+                  {
+                    "at": 0.25,
+                    "value": 0.0,
+                    "curve": "Stepped",
+                    "tension": 0.0
+                  },
+                  {
+                    "at": 0.312,
+                    "value": -0.012,
+                    "curve": "Stepped",
+                    "tension": 0.0
+                  },
+                  {
+                    "at": 0.375,
+                    "value": 0.0,
+                    "curve": "Stepped",
+                    "tension": 0.0
+                  },
+                  {
+                    "at": 0.437,
+                    "value": -0.012,
+                    "curve": "Stepped",
+                    "tension": 0.0
+                  },
+                  {
+                    "at": 0.5,
+                    "value": 0.0,
+                    "curve": "Stepped",
+                    "tension": 0.0
+                  },
+                  {
+                    "at": 0.562,
+                    "value": -0.012,
+                    "curve": "Stepped",
+                    "tension": 0.0
+                  },
+                  {
+                    "at": 0.625,
+                    "value": 0.0,
+                    "curve": "Stepped",
+                    "tension": 0.0
+                  },
+                  {
+                    "at": 0.687,
+                    "value": -0.012,
+                    "curve": "Stepped",
+                    "tension": 0.0
+                  },
+                  {
+                    "at": 0.75,
+                    "value": 0.0,
+                    "curve": "Stepped",
+                    "tension": 0.0
+                  },
+                  {
+                    "at": 0.812,
+                    "value": -0.012,
+                    "curve": "Stepped",
+                    "tension": 0.0
+                  },
+                  {
+                    "at": 0.875,
+                    "value": 0.0,
+                    "curve": "Stepped",
+                    "tension": 0.0
+                  },
+                  {
+                    "at": 0.937,
+                    "value": -0.012,
+                    "curve": "Stepped",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 1.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "lanes": [
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 1.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "lanes": [
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 1.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "lanes": [
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 1.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "lanes": [
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 1.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "lanes": [
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 1.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "lanes": [
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 1.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "lanes": [
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 1.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "lanes": [
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 1.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "lanes": [
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 1.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "lanes": [
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 1.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "lanes": [
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": true,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 1.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              },
+              {
+                "length": "Bar",
+                "on": false,
+                "points": [
+                  {
+                    "at": 0.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

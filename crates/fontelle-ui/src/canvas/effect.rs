@@ -650,7 +650,7 @@ pub fn effect_view(
         .collect();
 
     super::InstrumentView {
-        title: format!("{track_name} \u{2014} {}", config.kind().label()),
+        title: format!("{track_name} \u{2014} {}", config.kind().full_label()),
         // What the detector can be pointed at, when there is one: "no key"
         // and then every strip. The list is the window's rather than the
         // config's, because which tracks exist is not something an effect

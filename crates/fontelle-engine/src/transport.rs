@@ -215,7 +215,7 @@ pub struct TransportSnapshot {
     /// different questions and a node usually wants only one of them: the
     /// tempo is *how long a beat lasts* and this is *which beat it is*. A
     /// delay never needs this; anything whose pattern has to land on beat 4
-    /// of every bar needs nothing else (`docs/lapse-plan.md` §3.4).
+    /// of every bar needs nothing else (`docs/disgusting-beat-plan.md` §3.4).
     ///
     /// Read off the compiled timeline's own table, which is where the
     /// sequencer wrote it — a node working it out from `position_sample` and
@@ -453,7 +453,7 @@ impl TransportReader {
                 // the song is asking how long a beat is *in this block*.
                 bpm: timeline.bpm_at(range.start),
                 // And where in the song that is, which is a different
-                // question (§3.4 of `docs/lapse-plan.md`) and the one a
+                // question (§3.4 of `docs/disgusting-beat-plan.md`) and the one a
                 // pattern locked to the bar is asking.
                 position_tick: timeline.tick_at(range.start),
                 ticks_per_sample: timeline.ticks_per_sample_at(range.start),

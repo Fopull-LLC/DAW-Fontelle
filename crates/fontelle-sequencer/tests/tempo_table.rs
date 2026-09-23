@@ -1,5 +1,5 @@
 //! Where the song *is*, compiled onto the timeline the audio thread reads
-//! (`docs/lapse-plan.md` §3.4).
+//! (`docs/disgusting-beat-plan.md` §3.4).
 //!
 //! `tempo_track.rs` beside this one compiled the tempo — how long a beat is.
 //! This compiles the **position** — which beat it is. The difference is

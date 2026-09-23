@@ -5,13 +5,13 @@
 
 mod audio_input;
 mod device;
+mod disgusting_beat_channel;
+mod disgusting_beat_tap;
 mod effect_channel;
 mod graph;
 mod graph_channel;
 mod input_monitor;
 mod key_tap;
-mod lapse_channel;
-mod lapse_tap;
 mod live;
 mod nodes;
 mod pipewire;
@@ -26,6 +26,10 @@ mod tune_tap;
 
 pub use audio_input::{InputCapture, InputReader, InputWriter, input_capture_channel};
 pub use device::{AudioDevice, BLOCK_SIZE, DeviceError};
+pub use disgusting_beat_channel::{
+    DisgustingBeatControls, DisgustingBeatSource, disgusting_beat_channel,
+};
+pub use disgusting_beat_tap::{DisgustingBeatTap, DisgustingBeatView};
 pub use effect_channel::{EffectControls, EffectSource, effect_channel};
 pub use fontelle_fx::LimiterConfig;
 pub use graph::{
@@ -34,8 +38,6 @@ pub use graph::{
 pub use graph_channel::{GRAPH_QUEUE_CAPACITY, GraphPublisher, GraphSource, graph_channel};
 pub use input_monitor::{InputMonitor, MonitorNode};
 pub use key_tap::{KeyTap, KeyTapNode};
-pub use lapse_channel::{LapseControls, LapseSource, lapse_channel};
-pub use lapse_tap::{LapseTap, LapseView};
 pub use live::{
     CAPTURE_CAPACITY, CaptureReader, CaptureWriter, IdleGate, LIVE_PORT_CAPACITY, LIVE_PORT_COUNT,
     LiveEventPorts, LiveEventSource, LivePort, live_capture_channel, live_event_channel,

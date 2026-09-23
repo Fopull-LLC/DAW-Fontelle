@@ -62,7 +62,7 @@ pub fn export() -> Result<String, String> {
 fn every_preset() -> Result<Vec<Preset>, String> {
     let mut out = Vec::new();
     out.extend(effect_presets());
-    out.extend(lapse_presets());
+    out.extend(disgusting_beat_presets());
     out.extend(drum_kits()?);
     out.extend(flopsynth()?);
     Ok(out)
@@ -229,22 +229,26 @@ fn effect_presets() -> Vec<Preset> {
     out
 }
 
-/// Lapse's sixty-four rows and six kits (`docs/lapse-plan.md` §8).
+/// DisgustingBeat's sixty-four rows and six kits
+/// (`docs/disgusting-beat-plan.md` §8).
 ///
 /// The **only** effect with real categories: every other one's presets are
 /// points on one control surface, and a scratch and a sidechain pump are not
 /// that. Each row carries the sentence that says what it is for, which the
 /// browser shows.
-fn lapse_presets() -> Vec<Preset> {
-    fontelle_types::LapseFactoryPreset::ALL
+fn disgusting_beat_presets() -> Vec<Preset> {
+    fontelle_types::DisgustingBeatFactoryPreset::ALL
         .iter()
         .map(|row| {
             let (config, bank) = row.build();
             Preset::new(
-                DeviceKind::Effect(fontelle_types::EffectKind::Lapse),
+                DeviceKind::Effect(fontelle_types::EffectKind::DisgustingBeat),
                 row.name,
                 row.category,
-                PresetPayload::Lapse(fontelle_types::LapsePreset { config, bank }),
+                PresetPayload::DisgustingBeat(fontelle_types::DisgustingBeatPreset {
+                    config,
+                    bank,
+                }),
             )
             .with_words(Vec::new(), row.notes.to_string(), "Fontelle")
         })

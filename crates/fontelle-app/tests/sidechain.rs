@@ -88,7 +88,7 @@ fn ducking_compressor(project: &mut fontelle_model::Project, track: MixerTrackId
         key: None,
         notes: None,
         notepad: None,
-        lapse: None,
+        disgusting_beat: None,
     });
     node.inserts.len() - 1
 }

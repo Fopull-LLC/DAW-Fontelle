@@ -542,8 +542,8 @@ pub fn insert_latency_samples(
         // map would be a latency nothing could compensate — the graph's delay
         // lines are sized once, off the audio thread, and a song that slows
         // down would have to resize them mid-block (INVARIANT 1).
-        fontelle_types::EffectConfig::Lapse(lapse) => {
-            lapse.latency_samples(bpm, beats_per_bar, sample_rate)
+        fontelle_types::EffectConfig::DisgustingBeat(disgusting_beat) => {
+            disgusting_beat.latency_samples(bpm, beats_per_bar, sample_rate)
         }
         // The limiter's look-ahead is fixed, so its latency is one constant
         // rather than a knob — but it is a latency all the same, and lining the
@@ -601,30 +601,35 @@ pub fn max_insert_latency_samples(config: &fontelle_types::EffectConfig, sample_
             };
             widest.latency_samples(sample_rate)
         }
-        // The widest a Lapse can ask for: a bar at the slowest tempo the
-        // dry line has to survive. The tempo is not a rebuild here — the live
-        // channel carries a `look` change through immediately — so the line
-        // is sized for the worst case and the node reports the real one.
-        fontelle_types::EffectConfig::Lapse(lapse) => {
-            let widest = fontelle_types::LapseConfig {
-                look: fontelle_types::LapseLook::Bar,
-                ..*lapse
+        // The widest a DisgustingBeat can ask for: a bar at the slowest tempo
+        // the dry line has to survive. The tempo is not a rebuild here — the
+        // live channel carries a `look` change through immediately — so the
+        // line is sized for the worst case and the node reports the real one.
+        fontelle_types::EffectConfig::DisgustingBeat(disgusting_beat) => {
+            let widest = fontelle_types::DisgustingBeatConfig {
+                look: fontelle_types::DisgustingBeatLook::Bar,
+                ..*disgusting_beat
             };
-            widest.latency_samples(LAPSE_SLOWEST_BPM, LAPSE_WIDEST_BAR, sample_rate)
+            widest.latency_samples(
+                DISGUSTING_BEAT_SLOWEST_BPM,
+                DISGUSTING_BEAT_WIDEST_BAR,
+                sample_rate,
+            )
         }
         _ => 0,
     }
 }
 
-/// The slowest tempo a Lapse's dry line is sized for, and the longest bar.
+/// The slowest tempo a DisgustingBeat's dry line is sized for, and the
+/// longest bar.
 ///
 /// Sixty at seven beats is 7 seconds of look-ahead — past anything musical,
 /// and the line is only as big as the worst case it is sized for once. A
 /// project slower than this still *plays*; its look-ahead is clamped to the
 /// line, which `max_insert_latency_samples` and the node agree about because
 /// both read these two numbers.
-const LAPSE_SLOWEST_BPM: f32 = 60.0;
-const LAPSE_WIDEST_BAR: u32 = 7;
+const DISGUSTING_BEAT_SLOWEST_BPM: f32 = 60.0;
+const DISGUSTING_BEAT_WIDEST_BAR: u32 = 7;
 
 /// A fixed number of samples of nothing, on a path that arrives too early
 /// (TDD §5.5).
@@ -734,13 +739,13 @@ pub struct EffectNode {
     /// side of it — see [`EffectControls`]. `None` leaves `config` in charge,
     /// which is what an offline render wants.
     controls: Option<crate::EffectSource>,
-    /// And the same for a Lapse's **curves**, which are too big to ride on
-    /// the config's channel (`docs/lapse-plan.md` §3.3). `None` on every
-    /// other insert, and on a Lapse in an offline render, which reads the
-    /// grid the node was built with.
-    lapse_curves: Option<crate::LapseSource>,
-    /// What a Lapse's window is shown, when one is open on it.
-    lapse_tap: Option<std::sync::Arc<crate::LapseTap>>,
+    /// And the same for a DisgustingBeat's **curves**, which are too big to
+    /// ride on the config's channel (`docs/disgusting-beat-plan.md` §3.3).
+    /// `None` on every other insert, and on a DisgustingBeat in an offline
+    /// render, which reads the grid the node was built with.
+    disgusting_beat_curves: Option<crate::DisgustingBeatSource>,
+    /// What a DisgustingBeat's window is shown, when one is open on it.
+    disgusting_beat_tap: Option<std::sync::Arc<crate::DisgustingBeatTap>>,
     /// Parameters an automation lane has taken over, by their position in
     /// [`EffectConfig::specs`], holding the last normalised value each was
     /// given.
@@ -786,9 +791,9 @@ pub struct EffectNode {
     dry_capacity: usize,
     /// The tempo and metre the last block was rendered at.
     ///
-    /// Only one effect's latency is in *beats* (Lapse's look-ahead), and
-    /// `AudioNode::latency_samples` takes no context — so the node remembers
-    /// what it last saw. What actually compensates the graph is
+    /// Only one effect's latency is in *beats* (DisgustingBeat's look-ahead),
+    /// and `AudioNode::latency_samples` takes no context — so the node
+    /// remembers what it last saw. What actually compensates the graph is
     /// `realise`'s walk over the document, which reads the project's own
     /// tempo; this is what the node *reports*, and the dry line beneath it is
     /// sized for the worst case either way.
@@ -887,9 +892,9 @@ impl HeldKeys {
 
     /// How many note-ons have arrived since this node was built.
     ///
-    /// Lapse retriggers on one, and the same key pressed twice does not move
-    /// [`last`](Self::last) — so "a key is down" and "a note arrived" are two
-    /// questions and this answers the second.
+    /// DisgustingBeat retriggers on one, and the same key pressed twice does
+    /// not move [`last`](Self::last) — so "a key is down" and "a note arrived"
+    /// are two questions and this answers the second.
     pub fn ons(&self) -> u32 {
         self.ons
     }
@@ -938,7 +943,7 @@ enum EffectState {
     Hyper(fontelle_fx::Hyper),
     Multiband(fontelle_fx::Multiband),
     Width(fontelle_fx::Width),
-    Lapse(fontelle_fx::Lapse),
+    DisgustingBeat(fontelle_fx::DisgustingBeat),
     /// The notepad, which has no DSP at all and no state to keep: what it
     /// holds is words, and they never leave the document
     /// (`fontelle_types::notepad`). A variant rather than a fall-through,
@@ -1006,7 +1011,9 @@ impl EffectState {
                 EffectState::Multiband(fontelle_fx::Multiband::new())
             }
             fontelle_types::EffectConfig::Width(_) => EffectState::Width(fontelle_fx::Width::new()),
-            fontelle_types::EffectConfig::Lapse(_) => EffectState::Lapse(fontelle_fx::Lapse::new()),
+            fontelle_types::EffectConfig::DisgustingBeat(_) => {
+                EffectState::DisgustingBeat(fontelle_fx::DisgustingBeat::new())
+            }
             fontelle_types::EffectConfig::Notepad(_) => EffectState::Notepad,
         }
     }
@@ -1046,7 +1053,7 @@ impl EffectState {
             Self::Hyper(hyper) => hyper.prepare(sample_rate),
             Self::Multiband(multiband) => multiband.prepare(sample_rate),
             Self::Width(width) => width.prepare(sample_rate),
-            Self::Lapse(lapse) => lapse.prepare(sample_rate),
+            Self::DisgustingBeat(disgusting_beat) => disgusting_beat.prepare(sample_rate),
             // Nothing to size and nothing to clear: the signal goes past it.
             Self::Notepad => {}
         }
@@ -1138,12 +1145,12 @@ impl EffectState {
                 width.process(outputs, config);
             }
             // The pad writes nothing, which is the whole of it: a block that
-            // went through a notepad is the block that went in.
-            // Lapse is processed by the node rather than here: it wants the
-            // curves off its own channel and the song's position off the
-            // transport, and neither is something this dispatch carries. See
+            // went through a notepad is the block that went in. DisgustingBeat
+            // is processed by the node rather than here: it wants the curves
+            // off its own channel and the song's position off the transport,
+            // and neither is something this dispatch carries. See
             // `EffectNode::process`.
-            (Self::Lapse(_), fontelle_types::EffectConfig::Lapse(_)) => {}
+            (Self::DisgustingBeat(_), fontelle_types::EffectConfig::DisgustingBeat(_)) => {}
             (Self::Notepad, fontelle_types::EffectConfig::Notepad(_)) => {}
             // A config of a different kind than the state cannot arrive: the
             // chain rebuilds the graph when a slot's *kind* changes, and only
@@ -1179,7 +1186,7 @@ impl EffectState {
             Self::Hyper(hyper) => hyper.reset(),
             Self::Multiband(multiband) => multiband.reset(),
             Self::Width(width) => width.reset(),
-            Self::Lapse(lapse) => lapse.reset(),
+            Self::DisgustingBeat(disgusting_beat) => disgusting_beat.reset(),
             Self::Notepad => {}
         }
     }
@@ -1193,8 +1200,8 @@ impl EffectNode {
             config,
             bypassed: false,
             controls: None,
-            lapse_curves: None,
-            lapse_tap: None,
+            disgusting_beat_curves: None,
+            disgusting_beat_tap: None,
             automated: [None; MAX_EFFECT_PARAMS],
             metre: (
                 fontelle_types::DEFAULT_BPM,
@@ -1221,15 +1228,18 @@ impl EffectNode {
     /// The source carries the *initial* config as well as later ones, so a
     /// node with a live end reads one source of truth rather than two that
     /// agree until they do not.
-    /// Gives this node the live end of a Lapse's curves.
-    pub fn with_lapse(mut self, curves: crate::LapseSource) -> Self {
-        self.lapse_curves = Some(curves);
+    /// Gives this node the live end of a DisgustingBeat's curves.
+    pub fn with_disgusting_beat(mut self, curves: crate::DisgustingBeatSource) -> Self {
+        self.disgusting_beat_curves = Some(curves);
         self
     }
 
     /// And the window's end of what it is doing.
-    pub fn with_lapse_tap(mut self, tap: std::sync::Arc<crate::LapseTap>) -> Self {
-        self.lapse_tap = Some(tap);
+    pub fn with_disgusting_beat_tap(
+        mut self,
+        tap: std::sync::Arc<crate::DisgustingBeatTap>,
+    ) -> Self {
+        self.disgusting_beat_tap = Some(tap);
         self
     }
 
@@ -1543,14 +1553,17 @@ impl AudioNode for EffectNode {
             ons: self.held.ons(),
         };
         self.metre = (ctx.transport.bpm, ctx.transport.beats_per_bar.max(1));
-        // **Lapse is processed here**, not in `EffectState::process`. It is
+        // **DisgustingBeat is processed here**, not in
+        // `EffectState::process`. It is
         // the only insert that reads two things that dispatch does not carry:
-        // its curves, off its own triple buffer (`lapse_channel`), and where
+        // its curves, off its own triple buffer (`disgusting_beat_channel`), and where
         // the song *is*, off the transport. Threading both through the
         // twenty-one other arms to reach one of them would be a wider
         // signature for every effect in the program.
-        if let (EffectState::Lapse(lapse), fontelle_types::EffectConfig::Lapse(config)) =
-            (&mut self.state, &self.config)
+        if let (
+            EffectState::DisgustingBeat(disgusting_beat),
+            fontelle_types::EffectConfig::DisgustingBeat(config),
+        ) = (&mut self.state, &self.config)
         {
             let music = fontelle_types::MusicalTime {
                 tick: ctx.transport.position_tick as f64,
@@ -1564,13 +1577,18 @@ impl AudioNode for EffectNode {
                         | crate::TransportState::Rendering
                 ),
             };
-            let grid = match &mut self.lapse_curves {
+            let grid = match &mut self.disgusting_beat_curves {
                 Some(curves) => *curves.current(),
-                None => fontelle_types::LapseGrid::empty(),
+                None => fontelle_types::DisgustingBeatGrid::empty(),
             };
-            lapse.process(ctx.outputs, notes, &grid, config, music);
-            if let Some(tap) = &self.lapse_tap {
-                tap.write(lapse.frame(), lapse.buckets(), lapse.newest_bucket());
+            disgusting_beat.process(ctx.outputs, notes, &grid, config, music);
+            if let Some(tap) = &self.disgusting_beat_tap {
+                tap.write(
+                    disgusting_beat.frame(),
+                    disgusting_beat.buckets(),
+                    disgusting_beat.trail(),
+                    disgusting_beat.newest_bucket(),
+                );
             }
         } else {
             self.state

@@ -16,6 +16,8 @@ mod asset;
 mod audio_clip;
 mod base64;
 mod curve;
+mod disgusting_beat;
+mod disgusting_beat_presets;
 mod effect;
 mod effect_next;
 mod effect_presets;
@@ -24,8 +26,6 @@ mod favorite;
 mod id;
 mod import;
 mod instrument;
-mod lapse;
-mod lapse_presets;
 mod lfo_shape;
 mod notepad;
 mod pan;
@@ -43,6 +43,15 @@ pub use audio_clip::{
 };
 pub use base64::{decode_base64, encode_base64};
 pub use curve::CurveShape;
+pub use disgusting_beat::{
+    CurvePoint, DISGUSTING_BEAT_LANES, DISGUSTING_BEAT_MEMORY_SECONDS, DISGUSTING_BEAT_POINTS,
+    DISGUSTING_BEAT_SCENES, DisgustingBeatBank, DisgustingBeatConfig, DisgustingBeatEdit,
+    DisgustingBeatGrid, DisgustingBeatLane, DisgustingBeatLaneKind, DisgustingBeatLength,
+    DisgustingBeatLook, DisgustingBeatNotes, DisgustingBeatPoint, DisgustingBeatQuality,
+    DisgustingBeatRate, DisgustingBeatScene, DisgustingBeatSync, DisgustingBeatTone, MusicalTime,
+    RtLane, RtPoint, RtScene, curve_at, lane_ticks,
+};
+pub use disgusting_beat_presets::DisgustingBeatPreset as DisgustingBeatFactoryPreset;
 pub use effect::{
     BANDS, BUTTERWORTH_Q, BandChannel, BandType, BitcrushConfig, BitcrushPreset,
     CHORUS_TONE_OPEN_HZ, ChorusConfig, ChorusMode, CompressorConfig, Decimation, DelayConfig,
@@ -80,13 +89,6 @@ pub use id::{
 };
 pub use import::{FolderKind, is_multisample_path};
 pub use instrument::InstrumentKind;
-pub use lapse::{
-    CurvePoint, LAPSE_LANES, LAPSE_MEMORY_SECONDS, LAPSE_POINTS, LAPSE_SCENES, LapseBank,
-    LapseConfig, LapseEdit, LapseGrid, LapseLane, LapseLaneKind, LapseLength, LapseLook,
-    LapseNotes, LapsePoint, LapseQuality, LapseRate, LapseScene, LapseSync, LapseTone, MusicalTime,
-    RtLane, RtPoint, RtScene, curve_at, lane_ticks,
-};
-pub use lapse_presets::LapsePreset as LapseFactoryPreset;
 pub use lfo_shape::{LfoPoint, LfoShape, LfoShapeMode, MAX_LFO_POINTS};
 pub use notepad::{
     NOTEPAD_CAPTION_CHARS, NotepadConfig, NotepadEdit, NotepadPages, NotepadPreset, NotepadSize,
@@ -100,8 +102,8 @@ pub use param::{
 pub use patch_data::{PatchData, SampleRef};
 pub use plugin::{PluginFormat, PluginKey, PluginParamValue, PluginState};
 pub use preset::{
-    DeviceKind, LapsePreset, PRESET_FORMAT_VERSION, Preset, PresetOrigin, PresetPayload, PresetRef,
-    TrackChain, TrackInsert, TrackPreset,
+    DeviceKind, DisgustingBeatPreset, PRESET_FORMAT_VERSION, Preset, PresetOrigin, PresetPayload,
+    PresetRef, TrackChain, TrackInsert, TrackPreset,
 };
 pub use time::{PPQN, Sample, Tick};
 pub use wavetable_edit::{WaveTool, WavetableEdit};

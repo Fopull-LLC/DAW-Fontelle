@@ -120,7 +120,7 @@ pub fn effect_menu_rows(
         .filter(|kind| is_starred(favorites, &Favorite::Effect(*kind)))
         .map(|kind| {
             (
-                MenuEntry::new(kind.label()).starred(true),
+                MenuEntry::new(kind.full_label()).starred(true),
                 EffectRow::Builtin(kind),
             )
         })
@@ -143,7 +143,7 @@ pub fn effect_menu_rows(
         .map(|kind| {
             let lit = is_starred(favorites, &Favorite::Effect(kind));
             (
-                MenuEntry::new(kind.label()).starred(lit),
+                MenuEntry::new(kind.full_label()).starred(lit),
                 EffectRow::Builtin(kind),
             )
         })

@@ -185,21 +185,27 @@ pub struct Session {
     /// The pitch traces the corrector's windows read, kept across a rebuild
     /// for the same reason (`docs/tune-plan.md` §7.3).
     tune_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::TuneTap>>,
-    /// How the open Lapse's picture is being drawn on: which tool, what the
-    /// drawing snaps to, how far the value axis reaches.
+    /// How the open DisgustingBeat's picture is being drawn on: which tool,
+    /// what the drawing snaps to, how far the value axis reaches.
     ///
     /// Window state rather than the document's — a tool is how a picture is
     /// *looked at*, the rule `WaveTool` set — and on the session rather than
     /// in the window because it should survive closing and reopening the
     /// window inside one sitting.
-    lapse_tool: fontelle_ui::canvas::LapseTool,
-    lapse_snap: fontelle_ui::canvas::LapseSnap,
-    lapse_zoom: f32,
-    /// One memory picture per Lapse insert — `docs/lapse-plan.md` §7.2.
-    lapse_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::LapseTap>>,
+    disgusting_beat_tool: fontelle_ui::canvas::DisgustingBeatTool,
+    disgusting_beat_snap: fontelle_ui::canvas::DisgustingBeatSnap,
+    disgusting_beat_zoom: f32,
+    /// Which point has its shape menu open, if any — window state, like the
+    /// tool beside it.
+    disgusting_beat_menu: Option<fontelle_ui::canvas::DisgustingBeatMenu>,
+    /// One memory picture per DisgustingBeat insert —
+    /// `docs/disgusting-beat-plan.md` §7.2.
+    disgusting_beat_taps:
+        HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::DisgustingBeatTap>>,
     /// And the writing end of each one's curves, which is what an edit
     /// publishes down so that a drag is heard before the next rebuild.
-    lapse_controls: HashMap<(MixerTrackId, usize), fontelle_engine::LapseControls>,
+    disgusting_beat_controls:
+        HashMap<(MixerTrackId, usize), fontelle_engine::DisgustingBeatControls>,
     /// Every plugin somebody else wrote that this session has open (TDD §8.4).
     ///
     /// **Kept across a rebuild**, and that is the whole reason it is a field
@@ -1096,11 +1102,12 @@ impl Session {
             spectrum_taps: HashMap::new(),
             scope_taps: HashMap::new(),
             tune_taps: HashMap::new(),
-            lapse_tool: fontelle_ui::canvas::LapseTool::default(),
-            lapse_snap: fontelle_ui::canvas::LapseSnap::default(),
-            lapse_zoom: 1.0,
-            lapse_taps: HashMap::new(),
-            lapse_controls: HashMap::new(),
+            disgusting_beat_tool: fontelle_ui::canvas::DisgustingBeatTool::default(),
+            disgusting_beat_snap: fontelle_ui::canvas::DisgustingBeatSnap::default(),
+            disgusting_beat_zoom: 1.0,
+            disgusting_beat_menu: None,
+            disgusting_beat_taps: HashMap::new(),
+            disgusting_beat_controls: HashMap::new(),
             plugins: crate::PluginRack::new(),
             plugins_hosted: false,
             analyser: fontelle_dsp::SpectrumAnalyser::new(),
@@ -1707,7 +1714,7 @@ impl Session {
     /// the sound is doing right now — the same split `EffectControls` is,
     /// and a rebuild seeds a fresh channel from the same place, so the two
     /// cannot drift.
-    fn publish_lapse(&mut self, strip: usize, slot: usize) {
+    fn publish_disgusting_beat(&mut self, strip: usize, slot: usize) {
         let Some(id) = self.mixer_track_ids().get(strip).copied() else {
             return;
         };
@@ -1717,12 +1724,12 @@ impl Session {
             .tracks
             .get(id)
             .and_then(|track| track.inserts.get(slot))
-            .and_then(|insert| insert.lapse.as_ref())
+            .and_then(|insert| insert.disgusting_beat.as_ref())
         else {
             return;
         };
-        let grid = fontelle_types::LapseGrid::from(&**bank);
-        if let Some(controls) = self.lapse_controls.get_mut(&(id, slot)) {
+        let grid = fontelle_types::DisgustingBeatGrid::from(&**bank);
+        if let Some(controls) = self.disgusting_beat_controls.get_mut(&(id, slot)) {
             controls.publish(grid);
         }
     }
@@ -2878,7 +2885,7 @@ impl Session {
             &crate::realise::KeptTaps {
                 spectrum: self.spectrum_taps.clone(),
                 tune: self.tune_taps.clone(),
-                lapse: self.lapse_taps.clone(),
+                disgusting_beat: self.disgusting_beat_taps.clone(),
                 master: self.master_meter.clone(),
             },
             monitor.as_ref(),
@@ -2902,8 +2909,8 @@ impl Session {
                 self.spectrum_taps = realised.spectrum_taps;
                 self.scope_taps = realised.scope_taps;
                 self.tune_taps = realised.tune_taps;
-                self.lapse_taps = realised.lapse_taps;
-                self.lapse_controls = realised.lapse_controls;
+                self.disgusting_beat_taps = realised.disgusting_beat_taps;
+                self.disgusting_beat_controls = realised.disgusting_beat_controls;
                 self.send_controls = realised.send_controls;
                 self.metronome = Some(realised.metronome);
                 self.publish_metronome();
@@ -9129,14 +9136,18 @@ impl StudioHost for Session {
         Some(fontelle_ui::sky::SkySound { bands_db, wave })
     }
 
-    fn lapse_view(&self, strip: usize, slot: usize) -> Option<fontelle_ui::canvas::LapseView> {
+    fn disgusting_beat_view(
+        &self,
+        strip: usize,
+        slot: usize,
+    ) -> Option<fontelle_ui::canvas::DisgustingBeatView> {
         let id = self.mixer_track_ids().get(strip).copied()?;
         let track = self.project.mixer.tracks.get(id)?;
         let insert = track.inserts.get(slot)?;
-        let fontelle_types::EffectConfig::Lapse(config) = insert.config else {
+        let fontelle_types::EffectConfig::DisgustingBeat(config) = insert.config else {
             return None; // this slot holds something else
         };
-        let bank = insert.lapse.as_ref()?;
+        let bank = insert.disgusting_beat.as_ref()?;
         // The scene the *knob* names, and the window draws the one that
         // plays: a note that picked another one moves the chips too, which is
         // how somebody playing a kit sees which scene they are on.
@@ -9145,14 +9156,17 @@ impl StudioHost for Session {
         // What the machine is doing, when anything is. An insert nobody has
         // played yet has a tap full of zeros, which draws as an empty memory
         // and a playhead at the top — which is what it is.
-        let live = self.lapse_taps.get(&(id, slot)).map(|tap| tap.read());
-        Some(fontelle_ui::canvas::LapseView {
+        let live = self
+            .disgusting_beat_taps
+            .get(&(id, slot))
+            .map(|tap| tap.read());
+        Some(fontelle_ui::canvas::DisgustingBeatView {
             track: track.name.clone(),
             config,
             scene,
             scene_names: bank.scenes.iter().map(|s| s.name.clone()).collect(),
             scene_used: bank.scenes.iter().map(|s| !s.is_flat()).collect(),
-            lanes: fontelle_types::LapseLaneKind::ALL
+            lanes: fontelle_types::DisgustingBeatLaneKind::ALL
                 .iter()
                 .enumerate()
                 .map(|(index, kind)| {
@@ -9171,28 +9185,42 @@ impl StudioHost for Session {
             rate: live.as_ref().map_or(1.0, |v| v.frame.rate),
             clamped: live.as_ref().is_some_and(|v| v.frame.clamped),
             filled_seconds: live.as_ref().map_or(0.0, |v| v.frame.filled_seconds),
+            trail: live.as_ref().map(|v| v.trail.clone()).unwrap_or_default(),
             memory: live.map(|v| v.buckets).unwrap_or_default(),
             beats_per_bar: self.project.beats_per_bar.max(1),
             bpm: self.project.tempo_map.tempo_at(0) as f32,
-            tool: self.lapse_tool,
-            snap: self.lapse_snap,
-            zoom: self.lapse_zoom,
+            tool: self.disgusting_beat_tool,
+            snap: self.disgusting_beat_snap,
+            zoom: self.disgusting_beat_zoom,
+            // A menu on a point that is no longer there — undone, or taken
+            // away by a preset — closes itself rather than editing whatever
+            // point moved into its index.
+            menu: self.disgusting_beat_menu.filter(|menu| {
+                showing
+                    .lanes
+                    .get(menu.lane)
+                    .is_some_and(|lane| menu.index < lane.points.len())
+            }),
         })
     }
 
-    fn set_lapse_tool(&mut self, tool: fontelle_ui::canvas::LapseTool) {
-        self.lapse_tool = tool;
+    fn set_disgusting_beat_tool(&mut self, tool: fontelle_ui::canvas::DisgustingBeatTool) {
+        self.disgusting_beat_tool = tool;
     }
 
-    fn set_lapse_snap(&mut self, snap: fontelle_ui::canvas::LapseSnap) {
-        self.lapse_snap = snap;
+    fn set_disgusting_beat_snap(&mut self, snap: fontelle_ui::canvas::DisgustingBeatSnap) {
+        self.disgusting_beat_snap = snap;
     }
 
-    fn set_lapse_zoom(&mut self, zoom: f32) {
+    fn set_disgusting_beat_zoom(&mut self, zoom: f32) {
         // Never above one: the lane reaches one lane-length either way, and
         // an axis with more range than the lane has is dead space at the
         // bottom of the grid.
-        self.lapse_zoom = zoom.clamp(0.1, 1.0);
+        self.disgusting_beat_zoom = zoom.clamp(0.1, 1.0);
+    }
+
+    fn set_disgusting_beat_menu(&mut self, menu: Option<fontelle_ui::canvas::DisgustingBeatMenu>) {
+        self.disgusting_beat_menu = menu;
     }
 
     fn notepad_view(&self, strip: usize, slot: usize) -> Option<fontelle_ui::canvas::NotepadView> {
@@ -9221,7 +9249,12 @@ impl StudioHost for Session {
         })
     }
 
-    fn edit_lapse(&mut self, strip: usize, slot: usize, edit: fontelle_types::LapseEdit) {
+    fn edit_disgusting_beat(
+        &mut self,
+        strip: usize,
+        slot: usize,
+        edit: fontelle_types::DisgustingBeatEdit,
+    ) {
         let Some(id) = self.mixer_track_ids().get(strip).copied() else {
             return;
         };
@@ -9230,8 +9263,8 @@ impl StudioHost for Session {
         // above: the curves do reach the audio thread, and a curve editor
         // whose sound arrives on the next graph rebuild is one nobody can
         // use. Once per applied edit, never per frame — realising a bank is
-        // 48 KB (`docs/lapse-plan.md` §3.3).
-        self.publish_lapse(strip, slot);
+        // 48 KB (`docs/disgusting-beat-plan.md` §3.3).
+        self.publish_disgusting_beat(strip, slot);
         self.dirty = true;
         self.touch();
     }
@@ -10422,15 +10455,17 @@ impl Session {
             PresetDevice::Insert { strip, slot } => {
                 let track = self.mixer_track_ids().get(strip).copied()?;
                 let insert = self.project.mixer.tracks.get(track)?.inserts.get(slot)?;
-                Some(match (&insert.plugin, &insert.lapse) {
+                Some(match (&insert.plugin, &insert.disgusting_beat) {
                     (Some(state), _) => PresetPayload::Plugin(state.clone()),
-                    // A Lapse saves its curves with its knobs: a preset for
-                    // this device with no curves in it is a preset for a wire.
+                    // A DisgustingBeat saves its curves with its knobs: a
+                    // preset for this device with no curves in it is a preset
+                    // for a wire.
                     (None, Some(bank)) => {
-                        let fontelle_types::EffectConfig::Lapse(config) = insert.config else {
+                        let fontelle_types::EffectConfig::DisgustingBeat(config) = insert.config
+                        else {
                             return Some(PresetPayload::Effect(insert.config));
                         };
-                        PresetPayload::Lapse(fontelle_types::LapsePreset {
+                        PresetPayload::DisgustingBeat(fontelle_types::DisgustingBeatPreset {
                             config,
                             bank: (**bank).clone(),
                         })
@@ -10463,7 +10498,7 @@ impl Session {
                     config: slot.config,
                     bypassed: slot.bypassed,
                     preset: slot.preset.clone(),
-                    lapse: None,
+                    disgusting_beat: None,
                 })
                 .collect(),
         })
@@ -10540,14 +10575,15 @@ impl Session {
         use fontelle_types::{DeviceKind, PresetPayload};
         match self.preset_device(device)? {
             DeviceKind::Instrument(kind) => self.starter_patch(kind).map(PresetPayload::Patch),
-            // A fresh Lapse is its knobs *and* twelve flat scenes: without
-            // the bank, the bar would call a drawn-on Lapse untouched.
-            DeviceKind::Effect(fontelle_types::EffectKind::Lapse) => {
-                Some(PresetPayload::Lapse(fontelle_types::LapsePreset {
-                    config: fontelle_types::LapseConfig::new(),
-                    bank: fontelle_types::LapseBank::new(),
-                }))
-            }
+            // A fresh DisgustingBeat is its knobs *and* twelve flat scenes:
+            // without the bank, the bar would call a drawn-on DisgustingBeat
+            // untouched.
+            DeviceKind::Effect(fontelle_types::EffectKind::DisgustingBeat) => Some(
+                PresetPayload::DisgustingBeat(fontelle_types::DisgustingBeatPreset {
+                    config: fontelle_types::DisgustingBeatConfig::new(),
+                    bank: fontelle_types::DisgustingBeatBank::new(),
+                }),
+            ),
             DeviceKind::Effect(kind) => Some(PresetPayload::Effect(
                 fontelle_types::EffectConfig::new(kind),
             )),

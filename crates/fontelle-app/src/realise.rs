@@ -129,16 +129,19 @@ pub struct Realised {
     /// (`docs/tune-plan.md` §7.3). Only the inserts that take notes get one:
     /// a mix pays nothing for a picture nobody is looking at.
     pub tune_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::TuneTap>>,
-    /// One memory picture per Lapse insert, keyed the same way and carried
-    /// across a rebuild for the same reason (`docs/lapse-plan.md` §7.2).
-    pub lapse_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::LapseTap>>,
-    /// The writing end of every Lapse's **curves**.
+    /// One memory picture per DisgustingBeat insert, keyed the same way and
+    /// carried across a rebuild for the same reason
+    /// (`docs/disgusting-beat-plan.md` §7.2).
+    pub disgusting_beat_taps:
+        HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::DisgustingBeatTap>>,
+    /// The writing end of every DisgustingBeat's **curves**.
     ///
     /// Beside [`effect_controls`](Self::effect_controls) rather than in it,
     /// because the two carry different things at different sizes — §3.3 of
     /// the plan. Rebuilt with the graph like the controls are, and seeded
     /// from the document, so the two cannot drift.
-    pub lapse_controls: HashMap<(MixerTrackId, usize), fontelle_engine::LapseControls>,
+    pub disgusting_beat_controls:
+        HashMap<(MixerTrackId, usize), fontelle_engine::DisgustingBeatControls>,
     /// Every automatable parameter this graph has, by its stable address
     /// (INVARIANT 7), and the node that owns it.
     ///
@@ -474,8 +477,10 @@ pub struct KeptTaps {
     pub spectrum: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::SpectrumTap>>,
     /// One pitch trace per corrector insert — see [`Realised::tune_taps`].
     pub tune: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::TuneTap>>,
-    /// One memory picture per Lapse — see [`Realised::lapse_taps`].
-    pub lapse: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::LapseTap>>,
+    /// One memory picture per DisgustingBeat — see
+    /// [`Realised::disgusting_beat_taps`].
+    pub disgusting_beat:
+        HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::DisgustingBeatTap>>,
     /// The master meter the transport bar reads — see [`Realised::master`].
     /// `None` mints one, which is right for the first graph and wrong for
     /// every graph after it: the bar keeps the first, so a rebuild that
@@ -907,7 +912,7 @@ pub fn realise_hosting(
                 // The tempo at the top of the song, because a look-ahead
                 // measured in beats has to know how long a beat is and the
                 // compensation is worked out once, here, off the audio
-                // thread (`docs/lapse-plan.md` §4.5).
+                // thread (`docs/disgusting-beat-plan.md` §4.5).
                 None => fontelle_engine::insert_latency_samples(
                     &slot.config,
                     options.sample_rate as f32,
@@ -963,10 +968,14 @@ pub fn realise_hosting(
         (MixerTrackId, usize),
         std::sync::Arc<fontelle_engine::SpectrumTap>,
     > = HashMap::new();
-    let mut lapse_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::LapseTap>> =
-        HashMap::new();
-    let mut lapse_controls: HashMap<(MixerTrackId, usize), fontelle_engine::LapseControls> =
-        HashMap::new();
+    let mut disgusting_beat_taps: HashMap<
+        (MixerTrackId, usize),
+        std::sync::Arc<fontelle_engine::DisgustingBeatTap>,
+    > = HashMap::new();
+    let mut disgusting_beat_controls: HashMap<
+        (MixerTrackId, usize),
+        fontelle_engine::DisgustingBeatControls,
+    > = HashMap::new();
     let mut tune_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::TuneTap>> =
         HashMap::new();
     let mut send_controls: HashMap<(MixerTrackId, usize), std::sync::Arc<SendControls>> =
@@ -982,8 +991,8 @@ pub fn realise_hosting(
             existing_taps,
             &key_taps,
             &mut tune_taps,
-            &mut lapse_taps,
-            &mut lapse_controls,
+            &mut disgusting_beat_taps,
+            &mut disgusting_beat_controls,
             &channel_nodes,
             &mut param_nodes,
             &mut next_id,
@@ -1096,8 +1105,8 @@ pub fn realise_hosting(
         existing_taps,
         &key_taps,
         &mut tune_taps,
-        &mut lapse_taps,
-        &mut lapse_controls,
+        &mut disgusting_beat_taps,
+        &mut disgusting_beat_controls,
         &channel_nodes,
         &mut param_nodes,
         &mut next_id,
@@ -1182,8 +1191,8 @@ pub fn realise_hosting(
         param_nodes,
         spectrum_taps,
         tune_taps,
-        lapse_taps,
-        lapse_controls,
+        disgusting_beat_taps,
+        disgusting_beat_controls,
         send_controls,
         metronome,
         unresolved,
@@ -1331,8 +1340,14 @@ fn schedule_inserts(
     existing_taps: &KeptTaps,
     key_taps: &HashMap<MixerTrackId, std::sync::Arc<fontelle_engine::KeyTap>>,
     tune_taps: &mut HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::TuneTap>>,
-    lapse_taps: &mut HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::LapseTap>>,
-    lapse_controls: &mut HashMap<(MixerTrackId, usize), fontelle_engine::LapseControls>,
+    disgusting_beat_taps: &mut HashMap<
+        (MixerTrackId, usize),
+        std::sync::Arc<fontelle_engine::DisgustingBeatTap>,
+    >,
+    disgusting_beat_controls: &mut HashMap<
+        (MixerTrackId, usize),
+        fontelle_engine::DisgustingBeatControls,
+    >,
     channel_nodes: &HashMap<ChannelId, NodeId>,
     param_nodes: &mut HashMap<fontelle_types::ParamAddress, NodeId>,
     next_id: &mut u64,
@@ -1430,9 +1445,9 @@ fn schedule_inserts(
             node = node.with_notes_from(*source);
         }
         // The corrector's trace. On the *kind* rather than on `takes_notes`,
-        // which two effects answer yes to now: a Lapse listening to a channel
-        // has no pitch trace and a ring of twelve thousand atomics for a
-        // picture nobody draws is a cost with nothing behind it.
+        // which two effects answer yes to now: a DisgustingBeat listening to a
+        // channel has no pitch trace and a ring of twelve thousand atomics for
+        // a picture nobody draws is a cost with nothing behind it.
         if slot.kind() == Some(fontelle_types::EffectKind::Tune) {
             let tap = existing_taps
                 .tune
@@ -1442,23 +1457,24 @@ fn schedule_inserts(
             node = node.with_tune_tap(std::sync::Arc::clone(&tap));
             tune_taps.insert((id, index), tap);
         }
-        // A Lapse's curves and the picture of what it is doing with them.
-        if slot.kind() == Some(fontelle_types::EffectKind::Lapse) {
+        // A DisgustingBeat's curves and the picture of what it is doing
+        // with them.
+        if slot.kind() == Some(fontelle_types::EffectKind::DisgustingBeat) {
             let grid = slot
-                .lapse
+                .disgusting_beat
                 .as_ref()
-                .map(|bank| fontelle_types::LapseGrid::from(&**bank))
-                .unwrap_or_else(fontelle_types::LapseGrid::empty);
-            let (live, source) = fontelle_engine::lapse_channel(grid);
-            node = node.with_lapse(source);
-            lapse_controls.insert((id, index), live);
+                .map(|bank| fontelle_types::DisgustingBeatGrid::from(&**bank))
+                .unwrap_or_else(fontelle_types::DisgustingBeatGrid::empty);
+            let (live, source) = fontelle_engine::disgusting_beat_channel(grid);
+            node = node.with_disgusting_beat(source);
+            disgusting_beat_controls.insert((id, index), live);
             let tap = existing_taps
-                .lapse
+                .disgusting_beat
                 .get(&(id, index))
                 .map(std::sync::Arc::clone)
-                .unwrap_or_else(|| std::sync::Arc::new(fontelle_engine::LapseTap::new()));
-            node = node.with_lapse_tap(std::sync::Arc::clone(&tap));
-            lapse_taps.insert((id, index), tap);
+                .unwrap_or_else(|| std::sync::Arc::new(fontelle_engine::DisgustingBeatTap::new()));
+            node = node.with_disgusting_beat_tap(std::sync::Arc::clone(&tap));
+            disgusting_beat_taps.insert((id, index), tap);
         }
 
         // A real id, not the default: an automation event has to be addressed

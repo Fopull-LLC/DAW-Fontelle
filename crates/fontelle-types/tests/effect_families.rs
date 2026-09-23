@@ -1734,3 +1734,31 @@ fn a_fresh_one_of_the_seven_round_trips_through_json() {
         }
     }
 }
+
+#[test]
+fn an_inserts_strip_label_fits_the_strip_and_its_menu_name_is_the_product() {
+    // A mixer strip is 76 pixels wide (`canvas::mixer::STRIP_WIDTH`) and the
+    // insert row shares that with a mix dial and the chain dots, which is why
+    // a compressor says "Comp" and a distortion says "Dist". Nine characters
+    // is the longest that has ever fitted — "Multiband" — and *DisgustingBeat*
+    // is fourteen. It says "Disgust" on the strip and its own name everywhere
+    // there is room for it: a menu row and a window title are not 76 pixels.
+    for kind in EffectKind::ALL {
+        let label = kind.label();
+        assert!(
+            !label.is_empty() && label.chars().count() <= 9,
+            "{kind:?} says {label:?} on a strip, which does not fit one"
+        );
+        let full = kind.full_label();
+        assert!(
+            full.chars().count() >= label.chars().count(),
+            "{kind:?}'s menu name {full:?} is shorter than its strip label {label:?}"
+        );
+        // Every other effect has one name and uses it in both places; the
+        // abbreviation is the exception, not the rule.
+        if kind != EffectKind::DisgustingBeat {
+            assert_eq!(full, label, "{kind:?} grew a second name");
+        }
+    }
+    assert_eq!(EffectKind::DisgustingBeat.full_label(), "DisgustingBeat");
+}

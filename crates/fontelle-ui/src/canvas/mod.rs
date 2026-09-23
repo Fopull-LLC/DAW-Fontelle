@@ -2,6 +2,7 @@ mod audio_clip;
 mod automation;
 mod browser;
 mod carry;
+mod disgusting_beat;
 mod effect;
 mod favorites;
 mod flopsynth;
@@ -9,7 +10,6 @@ mod glide;
 mod instrument;
 mod keybinds;
 mod keymap;
-mod lapse;
 mod menu;
 mod mixer;
 mod notepad;
@@ -146,12 +146,17 @@ pub fn zoom_anchor(grid: crate::layout::Rect, cursor: (f32, f32)) -> f32 {
     }
 }
 
-pub use glide::{Glide, wheel_travel};
-pub use lapse::{
-    LAPSE_BEND_GRAB, LAPSE_CANOPY, LAPSE_GRAB, LAPSE_SIZE, LaneView, LapseHit, LapseLayout,
-    LapseSnap, LapseTool, LapseView, bend_reach, bend_sign, freeze_slope, grid_position,
-    hold_points, lapse_hit, lapse_layout, plot_area, point_position, rate_caption, segment_at,
+pub use disgusting_beat::{
+    DISGUSTING_BEAT_BEND_GRAB, DISGUSTING_BEAT_CANOPY, DISGUSTING_BEAT_GRAB,
+    DISGUSTING_BEAT_MENU_ROW, DISGUSTING_BEAT_MENU_ROWS, DISGUSTING_BEAT_MENU_WIDTH,
+    DISGUSTING_BEAT_SIZE, DisgustingBeatHit, DisgustingBeatLayout, DisgustingBeatMenu,
+    DisgustingBeatSnap, DisgustingBeatTool, DisgustingBeatView, DisgustingBeatZoom, LaneView,
+    bend_reach, bend_sign, canopy_head, disgusting_beat_hit, disgusting_beat_layout,
+    disgusting_beat_menu_label, disgusting_beat_menu_shape, disgusting_beat_tip, freeze_slope,
+    grid_position, hold_points, lane_clear_rect, lane_length_rect, plot_area, point_position,
+    rate_caption, segment_at,
 };
+pub use glide::{Glide, wheel_travel};
 pub use mixer::{
     CHAIN_DOT, CHAIN_DOT_GAP, FADER_DETENT_PX, InsertRowLayout, MAX_FADER_DB, MAX_SEND_DB,
     MIN_FADER_DB, MIN_SEND_DB, MixerHit, MixerKey, MixerLayout, MixerStripLayout, NamePress,

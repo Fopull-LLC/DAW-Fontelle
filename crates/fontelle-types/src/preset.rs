@@ -113,7 +113,7 @@ impl DeviceKind {
                     EffectKind::Hyper => "hyper",
                     EffectKind::Multiband => "multiband",
                     EffectKind::Width => "width",
-                    EffectKind::Lapse => "lapse",
+                    EffectKind::DisgustingBeat => "disgusting-beat",
                     EffectKind::Notepad => "notepad",
                 }
             ),
@@ -154,8 +154,8 @@ impl DeviceKind {
 pub enum PresetPayload {
     Patch(PatchData),
     Effect(EffectConfig),
-    /// **Lapse**, whose state is a config *and* the curves beside it
-    /// (`docs/lapse-plan.md` §8).
+    /// **DisgustingBeat**, whose state is a config *and* the curves beside it
+    /// (`docs/disgusting-beat-plan.md` §8).
     ///
     /// A new variant rather than a field on [`Effect`](Self::Effect), and
     /// that is forced rather than chosen: a newtype variant that grew a field
@@ -164,23 +164,23 @@ pub enum PresetPayload {
     /// and costs one `match` arm in the handful of places that read a
     /// payload. [`PRESET_FORMAT_VERSION`] does not move; nothing old becomes
     /// unreadable.
-    Lapse(LapsePreset),
+    DisgustingBeat(DisgustingBeatPreset),
     Plugin(PluginState),
     /// A mixer track's chain — see [`TrackChain`].
     Track(TrackChain),
 }
 
-/// What a Lapse preset saves: the knobs, and the twelve scenes.
+/// What a DisgustingBeat preset saves: the knobs, and the twelve scenes.
 ///
-/// The whole bank rather than the showing scene, because a Lapse preset in
-/// the wild **is** a bank — people switch scenes from automation and from a
-/// keyboard, and a preset that carried one of them would be a preset for a
-/// moment rather than for a performance. Six of the factory rows are kits
-/// that fill all twelve.
+/// The whole bank rather than the showing scene, because a DisgustingBeat
+/// preset in the wild **is** a bank — people switch scenes from automation and
+/// from a keyboard, and a preset that carried one of them would be a preset
+/// for a moment rather than for a performance. Six of the factory rows are
+/// kits that fill all twelve.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct LapsePreset {
-    pub config: crate::LapseConfig,
-    pub bank: crate::LapseBank,
+pub struct DisgustingBeatPreset {
+    pub config: crate::DisgustingBeatConfig,
+    pub bank: crate::DisgustingBeatBank,
 }
 
 /// A mixer track's chain, as a preset stores it.
@@ -227,18 +227,19 @@ pub struct TrackInsert {
     /// it, exactly as it did before the chain was saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<PresetRef>,
-    /// A Lapse's curves, when the insert is one.
+    /// A DisgustingBeat's curves, when the insert is one.
     ///
     /// **Carried, where a notepad's words are not**, and the difference is
     /// what the state *is*: a pad's pages are a document somebody wrote and a
     /// chain arriving with somebody else's lyrics would be absurd, while a
-    /// Lapse's curves are the effect itself — a chain that recalled one
+    /// DisgustingBeat's curves are the effect itself — a chain that recalled
+    /// one
     /// without them would recall a wire with a name on it.
     ///
     /// Defaulted and omitted when empty, so every chain preset written before
-    /// Lapse existed reads and is written back unchanged.
+    /// DisgustingBeat existed reads and is written back unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lapse: Option<Box<crate::LapseBank>>,
+    pub disgusting_beat: Option<Box<crate::DisgustingBeatBank>>,
 }
 
 impl TrackChain {
@@ -388,7 +389,7 @@ fn fx(kind: EffectKind, set: &[(&str, f32)]) -> TrackInsert {
         config,
         bypassed: false,
         preset: None,
-        lapse: None,
+        disgusting_beat: None,
     }
 }
 
@@ -403,7 +404,7 @@ fn tune(preset: crate::TunePreset) -> TrackInsert {
             "Factory",
             PresetOrigin::Factory,
         )),
-        lapse: None,
+        disgusting_beat: None,
     }
 }
 
@@ -456,7 +457,7 @@ fn eq(moves: Vec<(String, f32)>) -> TrackInsert {
         config,
         bypassed: false,
         preset: None,
-        lapse: None,
+        disgusting_beat: None,
     }
 }
 
@@ -920,7 +921,9 @@ impl Preset {
             (DeviceKind::Instrument(InstrumentKind::Plugin), PresetPayload::Plugin(_)) => true,
             (DeviceKind::Instrument(_), PresetPayload::Patch(_)) => true,
             (DeviceKind::Effect(kind), PresetPayload::Effect(config)) => config.kind() == *kind,
-            (DeviceKind::Effect(EffectKind::Lapse), PresetPayload::Lapse(_)) => true,
+            (DeviceKind::Effect(EffectKind::DisgustingBeat), PresetPayload::DisgustingBeat(_)) => {
+                true
+            }
             (DeviceKind::Plugin(key), PresetPayload::Plugin(state)) => state.key == *key,
             (DeviceKind::Track, PresetPayload::Track(_)) => true,
             _ => false,

@@ -5500,14 +5500,15 @@ fn the_notepad_draws_its_page_in_its_own_theme() {
     }
 }
 
-/// Lapse's window, drawn through the real pipeline (`docs/lapse-plan.md`
-/// §7.6) — `FONTELLE_UI_DUMP=<dir>` writes it out.
+/// DisgustingBeat's window, drawn through the real pipeline
+/// (`docs/disgusting-beat-plan.md` §7.6) — `FONTELLE_UI_DUMP=<dir>` writes it
+/// out.
 ///
 /// **It is the test that can see.** Everything else about this window is
-/// geometry checked in `tests/lapse.rs`, which knows where the grid is and
+/// geometry checked in `tests/disgusting_beat.rs`, which knows where the grid is and
 /// cannot know whether the curve landed on it.
 #[test]
-fn lapse_draws_its_memory_and_its_curves() {
+fn disgusting_beat_draws_its_memory_and_its_curves() {
     let Some(shared) = headless() else {
         return;
     };
@@ -5516,13 +5517,13 @@ fn lapse_draws_its_memory_and_its_curves() {
 
     // A scene worth looking at: a freeze over the second half of the bar, a
     // gate under it, and a memory with something in it.
-    let mut lanes: Vec<fontelle_ui::canvas::LaneView> = fontelle_types::LapseLaneKind::ALL
+    let mut lanes: Vec<fontelle_ui::canvas::LaneView> = fontelle_types::DisgustingBeatLaneKind::ALL
         .iter()
         .map(|kind| fontelle_ui::canvas::LaneView {
             kind: *kind,
-            length: fontelle_types::LapseLength::Bar,
+            length: fontelle_types::DisgustingBeatLength::Bar,
             on: kind.on_by_default(),
-            points: vec![fontelle_types::LapsePoint::new(
+            points: vec![fontelle_types::DisgustingBeatPoint::new(
                 0.0,
                 kind.neutral(),
                 fontelle_types::CurveShape::Linear,
@@ -5531,22 +5532,22 @@ fn lapse_draws_its_memory_and_its_curves() {
         })
         .collect();
     lanes[0].points = vec![
-        fontelle_types::LapsePoint::new(0.0, 0.0, fontelle_types::CurveShape::Stepped),
-        fontelle_types::LapsePoint::new(0.5, 0.0, fontelle_types::CurveShape::Linear),
-        fontelle_types::LapsePoint::new(1.0, -0.5, fontelle_types::CurveShape::Linear),
+        fontelle_types::DisgustingBeatPoint::new(0.0, 0.0, fontelle_types::CurveShape::Stepped),
+        fontelle_types::DisgustingBeatPoint::new(0.5, 0.0, fontelle_types::CurveShape::Linear),
+        fontelle_types::DisgustingBeatPoint::new(1.0, -0.5, fontelle_types::CurveShape::Linear),
     ];
     lanes[1].points = vec![
-        fontelle_types::LapsePoint::new(0.0, 1.0, fontelle_types::CurveShape::Stepped),
-        fontelle_types::LapsePoint::new(0.25, 0.3, fontelle_types::CurveShape::Stepped),
-        fontelle_types::LapsePoint::new(0.5, 1.0, fontelle_types::CurveShape::SCurve),
-        fontelle_types::LapsePoint::new(0.75, 0.0, fontelle_types::CurveShape::Stepped),
+        fontelle_types::DisgustingBeatPoint::new(0.0, 1.0, fontelle_types::CurveShape::Stepped),
+        fontelle_types::DisgustingBeatPoint::new(0.25, 0.3, fontelle_types::CurveShape::Stepped),
+        fontelle_types::DisgustingBeatPoint::new(0.5, 1.0, fontelle_types::CurveShape::SCurve),
+        fontelle_types::DisgustingBeatPoint::new(0.75, 0.0, fontelle_types::CurveShape::Stepped),
     ];
     let mut scene_names: Vec<String> = (0..12).map(|_| String::new()).collect();
     scene_names[0] = "Hold".to_string();
     scene_names[2] = "Roll".to_string();
-    let view = fontelle_ui::canvas::LapseView {
+    let view = fontelle_ui::canvas::DisgustingBeatView {
         track: "Drums".to_string(),
-        config: fontelle_types::LapseConfig::new(),
+        config: fontelle_types::DisgustingBeatConfig::new(),
         scene: 0,
         scene_names,
         scene_used: (0..12).map(|index| index < 4).collect(),
@@ -5564,18 +5565,38 @@ fn lapse_draws_its_memory_and_its_curves() {
                 (level, level * 0.6)
             })
             .collect(),
+        // Live until the last quarter of the ring, then a freeze: the read
+        // head walks away from the present one bucket per bucket, which is
+        // the picture the canopy paints over the memory.
+        trail: (0..512)
+            .map(|index| {
+                if index < 384 {
+                    0.0
+                } else {
+                    (index - 384) as f32
+                }
+            })
+            .collect(),
         beats_per_bar: 4,
         bpm: 120.0,
-        tool: fontelle_ui::canvas::LapseTool::Hold,
-        snap: fontelle_ui::canvas::LapseSnap::Sixteenth,
+        tool: fontelle_ui::canvas::DisgustingBeatTool::Hold,
+        snap: fontelle_ui::canvas::DisgustingBeatSnap::Sixteenth,
         zoom: 1.0,
+        // Open on the point the freeze starts at, so the dump carries the
+        // menu too: a picture of a menu is the only way to see that its rows
+        // are legible and that it sits over the lane rather than under it.
+        menu: Some(fontelle_ui::canvas::DisgustingBeatMenu {
+            lane: 0,
+            index: 1,
+            at: (420.0, 300.0),
+        }),
     };
 
-    let (ew, eh) = fontelle_ui::layout::LAPSE_SIZE;
+    let (ew, eh) = fontelle_ui::layout::DISGUSTING_BEAT_SIZE;
     let panel = fontelle_ui::layout::editor_window_layout(ew as f32, eh as f32, &theme.metrics);
-    let layout = fontelle_ui::canvas::lapse_layout(&view, panel.body);
+    let layout = fontelle_ui::canvas::disgusting_beat_layout(&view, panel.body);
 
-    // Under exactly the strings `draw_lapse` looks up — the same list
+    // Under exactly the strings `draw_disgusting_beat` looks up — the same list
     // `shape_labels` builds.
     let mut labels = Labels::default();
     for lane in &view.lanes {
@@ -5584,11 +5605,25 @@ fn lapse_draws_its_memory_and_its_curves() {
     for index in 0..view.scene_names.len() {
         labels.ensure(&view.scene_label(index), &theme.font, &mut text);
     }
-    for tool in fontelle_ui::canvas::LapseTool::ALL {
+    for tool in fontelle_ui::canvas::DisgustingBeatTool::ALL {
         labels.ensure(tool.label(), &theme.font, &mut text);
     }
-    for snap in fontelle_ui::canvas::LapseSnap::ALL {
+    for snap in fontelle_ui::canvas::DisgustingBeatSnap::ALL {
         labels.ensure(snap.label(), &theme.font, &mut text);
+    }
+    for zoom in fontelle_ui::canvas::DisgustingBeatZoom::ALL {
+        labels.ensure(zoom.label(), &theme.font, &mut text);
+    }
+    for lane in &view.lanes {
+        labels.ensure(lane.length.label(), &theme.font, &mut text);
+    }
+    labels.ensure("clear", &theme.font, &mut text);
+    for row in 0..fontelle_ui::canvas::DISGUSTING_BEAT_MENU_ROWS {
+        labels.ensure(
+            fontelle_ui::canvas::disgusting_beat_menu_label(row),
+            &theme.font,
+            &mut text,
+        );
     }
     labels.ensure(
         &format!(
@@ -5599,7 +5634,7 @@ fn lapse_draws_its_memory_and_its_curves() {
         &theme.font,
         &mut text,
     );
-    let config = fontelle_types::EffectConfig::Lapse(view.config);
+    let config = fontelle_types::EffectConfig::DisgustingBeat(view.config);
     for spec in config.specs() {
         labels.ensure(spec.name, &theme.font, &mut text);
         let value = config.get(spec.id).unwrap_or(spec.default);
@@ -5610,7 +5645,7 @@ fn lapse_draws_its_memory_and_its_curves() {
         );
     }
 
-    let title = text.layout("Drums — Lapse", &theme.font, None);
+    let title = text.layout("Drums — DisgustingBeat", &theme.font, None);
     let mut scene = vello::Scene::new();
     fontelle_ui::render::draw_editor_window(
         &mut scene,
@@ -5618,11 +5653,14 @@ fn lapse_draws_its_memory_and_its_curves() {
         &panel,
         &labels,
         &title,
-        &fontelle_ui::render::EditorWindowChrome::Lapse(fontelle_ui::render::LapseChrome {
-            layout: layout.clone(),
-            view: &view,
-            hover: None,
-        }),
+        &fontelle_ui::render::EditorWindowChrome::DisgustingBeat(
+            fontelle_ui::render::DisgustingBeatChrome {
+                layout: layout.clone(),
+                view: &view,
+                hover: None,
+                renaming: None,
+            },
+        ),
         None,
         None,
         None,
@@ -5633,7 +5671,7 @@ fn lapse_draws_its_memory_and_its_curves() {
         .expect("the shared renderer")
         .render(&scene, ew, eh, theme.palette.window)
         .expect("the scene must render");
-    dump_sized(&pixels, "lapse", ew, eh);
+    dump_sized(&pixels, "disgusting_beat", ew, eh);
 
     // The curve is drawn in the accent ink, so the time lane has some of it
     // in the *lower* half — which is where a freeze goes and nowhere else

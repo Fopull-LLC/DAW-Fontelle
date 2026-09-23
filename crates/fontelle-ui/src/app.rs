@@ -108,13 +108,18 @@ enum Drag {
     FlopKnob,
     /// A knob on the pitch corrector's console.
     TuneKnob,
-    /// A knob on Lapse's console.
-    LapseKnob,
-    /// A curve being drawn on one of Lapse's lanes — a point moved, or a
-    /// stroke laid down. Which lane and which point is `lapse_drag` and
-    /// `lapse_stroke`, for the reason `flop_knob` keeps its float out of the
-    /// variant: a `Drag` is compared, and a float is not a thing to compare.
-    LapseCurve,
+    /// A knob on DisgustingBeat's console.
+    DisgustingBeatKnob,
+    /// A scene chip carried to another chip, which copies it there. The
+    /// source is in the variant because a scene *is* a number and twelve of
+    /// them are told apart by nothing else.
+    DisgustingBeatScene(usize),
+    /// A curve being drawn on one of DisgustingBeat's lanes — a point moved,
+    /// or a stroke laid down. Which lane and which point is
+    /// `disgusting_beat_drag` and `disgusting_beat_stroke`, for the reason
+    /// `flop_knob` keeps its float out of the variant: a `Drag` is compared,
+    /// and a float is not a thing to compare.
+    DisgustingBeatCurve,
     /// A picture on Flopsynth's window being dragged (§8.7): the oscillator's
     /// wave sideways, the filter's response in both directions.
     ///
@@ -449,6 +454,10 @@ enum MenuTarget {
     Lane(usize),
     /// A prefab in the prefab list, by row (TDD §10.5).
     Prefab(usize),
+    /// One of DisgustingBeat's twelve scenes, by number. A kit is twelve
+    /// variations of one idea and the chips said "1" to "12"; naming them is
+    /// what makes a kit playable by somebody who did not build it.
+    DisgustingBeatScene(usize),
     /// One control on the instrument panel: the address the panel gave it, and
     /// what it is called.
     ///
@@ -696,6 +705,9 @@ impl MenuTarget {
             // header, so it is that window that draws it.
             // The pad's footer is in its own window.
             Self::NotepadPages => Some(EditorKind::Effect),
+            // A rename target rather than a menu, but it is typed into the
+            // effect window and that is the window that has to redraw.
+            Self::DisgustingBeatScene(_) => Some(EditorKind::Effect),
             Self::PresetMenu(editor)
             | Self::PresetSaveName(editor)
             | Self::PresetCategory(editor)
@@ -1308,21 +1320,22 @@ pub struct WindowApp {
     /// `tune`, `notepad` and `insert_view` is `Some`.
     notepad: Option<crate::canvas::NotepadView>,
     notepad_layout: crate::canvas::NotepadLayout,
-    /// **Lapse's window**, when the open insert is one. The fifth of the five
-    /// (`docs/lapse-plan.md` §7.7): at most one of `eq`, `insert_view`,
+    /// **DisgustingBeat's window**, when the open insert is one. The fifth of
+    /// the five
+    /// (`docs/disgusting-beat-plan.md` §7.7): at most one of `eq`, `insert_view`,
     /// `tune`, `notepad` and this is `Some`.
-    lapse: Option<crate::canvas::LapseView>,
-    lapse_layout: crate::canvas::LapseLayout,
+    disgusting_beat: Option<crate::canvas::DisgustingBeatView>,
+    disgusting_beat_layout: crate::canvas::DisgustingBeatLayout,
     /// The point being dragged, and where it started: `(lane, index)`.
-    lapse_drag: Option<(usize, usize)>,
+    disgusting_beat_drag: Option<(usize, usize)>,
     /// A console knob being dragged: which parameter, from what pointer
     /// height, at what value.
-    lapse_knob: Option<(usize, f32, f32)>,
+    disgusting_beat_knob: Option<(usize, f32, f32)>,
     /// A free-hand or line drag in progress, from this phase and value.
-    lapse_stroke: Option<(usize, (f64, f64))>,
+    disgusting_beat_stroke: Option<(usize, (f64, f64))>,
     /// A segment being **bent**: which lane, which point carries the shape,
     /// the pointer height it started at, and the tension it started with.
-    lapse_bend: Option<(usize, usize, f32, f32)>,
+    disgusting_beat_bend: Option<(usize, usize, f32, f32)>,
     /// The page **being edited** — the caret and the selection the document
     /// cannot hold, over a copy of the words it can.
     ///
@@ -1414,8 +1427,8 @@ pub struct WindowApp {
     hover_preset: Option<usize>,
     /// Which of the notepad's controls the pointer is over.
     hover_notepad: Option<crate::canvas::NotepadHit>,
-    /// And which of Lapse's.
-    hover_lapse: Option<crate::canvas::LapseHit>,
+    /// And which of DisgustingBeat's.
+    hover_disgusting_beat: Option<crate::canvas::DisgustingBeatHit>,
     /// The preset bar in each editor window's header (`docs/flopsynth-plan.md`
     /// §P.7): what it says, where it is, and what the pointer is over.
     ///
@@ -1987,12 +2000,12 @@ impl WindowApp {
             tune_layout: crate::canvas::TuneLayout::default(),
             notepad: None,
             notepad_layout: crate::canvas::NotepadLayout::default(),
-            lapse: None,
-            lapse_layout: crate::canvas::LapseLayout::default(),
-            lapse_drag: None,
-            lapse_knob: None,
-            lapse_stroke: None,
-            lapse_bend: None,
+            disgusting_beat: None,
+            disgusting_beat_layout: crate::canvas::DisgustingBeatLayout::default(),
+            disgusting_beat_drag: None,
+            disgusting_beat_knob: None,
+            disgusting_beat_stroke: None,
+            disgusting_beat_bend: None,
             notepad_entry: crate::canvas::TextEntry::default(),
             notepad_rows: Vec::new(),
             notepad_scroll: 0,
@@ -2018,7 +2031,7 @@ impl WindowApp {
             take_from: None,
             hover_preset: None,
             hover_notepad: None,
-            hover_lapse: None,
+            hover_disgusting_beat: None,
             preset_view: [
                 crate::canvas::PresetBarView::default(),
                 crate::canvas::PresetBarView::default(),
@@ -3098,7 +3111,7 @@ impl WindowApp {
             Drag::Roll => Some(Pointer::Grabbing),
             // A curve is dragged in both directions at once, so neither
             // resize cursor is the truth: a hand is.
-            Drag::LapseCurve => Some(Pointer::Grabbing),
+            Drag::DisgustingBeatCurve | Drag::DisgustingBeatScene(_) => Some(Pointer::Grabbing),
             Drag::RollRuler | Drag::BarRuler | Drag::TimelineRuler => Some(Pointer::Grabbing),
             Drag::MenuScroll
             | Drag::LaneGrip
@@ -3109,7 +3122,7 @@ impl WindowApp {
             | Drag::FlopRing
             | Drag::InsertKnob
             | Drag::TuneKnob
-            | Drag::LapseKnob
+            | Drag::DisgustingBeatKnob
             | Drag::AudioKnob(_)
             | Drag::Lane
             | Drag::SidebarSplit
@@ -4351,10 +4364,11 @@ impl WindowApp {
         let tune = kind == EditorKind::Effect && self.tune.is_some();
         // And the notepad is a page rather than a panel — same rule again.
         let notepad = kind == EditorKind::Effect && self.notepad.is_some();
-        // And Lapse is a canopy over four grids. **Five** now, not four: this
-        // is the list `docs/lapse-plan.md` §7.7 tables, and the notepad's own
-        // arrival taught what leaving one of them out costs.
-        let lapse = kind == EditorKind::Effect && self.lapse.is_some();
+        // And DisgustingBeat is a canopy over four grids. **Five** now, not
+        // four: this is the list `docs/disgusting-beat-plan.md` §7.7 tables,
+        // and the notepad's own arrival taught what leaving one of them out
+        // costs.
+        let disgusting_beat = kind == EditorKind::Effect && self.disgusting_beat.is_some();
         // Flopsynth's window opens at its design size times its scale, and
         // refuses to be smaller: nothing on it shrinks (§3.1), so there is
         // no smaller size at which the page still fits.
@@ -4370,19 +4384,19 @@ impl WindowApp {
                     .map(|view| crate::layout::flopsynth_window_size(view.scale))
             })
             .flatten();
-        let (w, h) = match (flop_size, tune, notepad, lapse) {
+        let (w, h) = match (flop_size, tune, notepad, disgusting_beat) {
             (Some(size), _, _, _) => size,
             (_, true, _, _) => crate::layout::TUNE_SIZE,
             (_, _, true, _) => crate::layout::NOTEPAD_SIZE,
-            (_, _, _, true) => crate::layout::LAPSE_SIZE,
+            (_, _, _, true) => crate::layout::DISGUSTING_BEAT_SIZE,
             _ => kind.default_size(),
         };
-        let (min_w, min_h) = match (flop_size, tune, lapse) {
+        let (min_w, min_h) = match (flop_size, tune, disgusting_beat) {
             (Some(size), _, _) => size,
             (_, true, _) => crate::layout::TUNE_MINIMUM,
-            // Nothing on Lapse's window shrinks, so its design size is its
-            // minimum — Flopsynth's rule.
-            (_, _, true) => crate::layout::LAPSE_SIZE,
+            // Nothing on DisgustingBeat's window shrinks, so its design size
+            // is its minimum — Flopsynth's rule.
+            (_, _, true) => crate::layout::DISGUSTING_BEAT_SIZE,
             _ => kind.minimum_size(),
         };
         let _ = flopsynth;
@@ -4584,10 +4598,10 @@ impl WindowApp {
                     // The pad's sheet, whose grid is measured rather than
                     // computed — `relayout_notepad` says why.
                     self.relayout_notepad();
-                    // Lapse's canopy and lanes, from the same body.
-                    self.lapse_layout = match &self.lapse {
-                        Some(view) => crate::canvas::lapse_layout(view, body),
-                        None => crate::canvas::LapseLayout {
+                    // DisgustingBeat's canopy and lanes, from the same body.
+                    self.disgusting_beat_layout = match &self.disgusting_beat {
+                        Some(view) => crate::canvas::disgusting_beat_layout(view, body),
+                        None => crate::canvas::DisgustingBeatLayout {
                             body,
                             ..Default::default()
                         },
@@ -5088,10 +5102,12 @@ impl WindowApp {
                 MouseButton::Right => self.press_instrument_menu(x, y),
             },
             // Which of the **five** effect windows this is: the pad's sheet,
-            // Lapse's lanes, the corrector's console, the EQ's curve, or the
-            // grid of knobs every other effect gets.
+            // DisgustingBeat's lanes, the corrector's console, the EQ's curve,
+            // or the grid of knobs every other effect gets.
             EditorKind::Effect if self.notepad.is_some() => self.press_notepad(button, x, y),
-            EditorKind::Effect if self.lapse.is_some() => self.press_lapse(button, x, y),
+            EditorKind::Effect if self.disgusting_beat.is_some() => {
+                self.press_disgusting_beat(button, x, y)
+            }
             EditorKind::Effect if self.tune.is_some() => self.press_tune_editor(button, x, y),
             EditorKind::Effect if self.eq.is_none() => self.press_insert_panel(button, x, y),
             EditorKind::Effect => self.press_effect_editor(button, x, y),
@@ -5156,12 +5172,11 @@ impl WindowApp {
             EditorKind::Instrument => {
                 self.hover_param = instrument_hit(&self.instrument_layout, x, y);
             }
-            // Lapse's lanes, checked first for the same reason.
-            EditorKind::Effect if self.lapse.is_some() => {
-                self.hover_lapse = self
-                    .lapse
-                    .as_ref()
-                    .and_then(|view| crate::canvas::lapse_hit(&self.lapse_layout, view, x, y));
+            // DisgustingBeat's lanes, checked first for the same reason.
+            EditorKind::Effect if self.disgusting_beat.is_some() => {
+                self.hover_disgusting_beat = self.disgusting_beat.as_ref().and_then(|view| {
+                    crate::canvas::disgusting_beat_hit(&self.disgusting_beat_layout, view, x, y)
+                });
                 self.hover_param = None;
             }
             // The corrector's console, checked first for the reason
@@ -5492,17 +5507,21 @@ impl WindowApp {
                     hover: self.hover_notepad,
                 })
             }
-            // Lapse, for the same reason: an insert that is one is a canopy
-            // of memory over four grids, and a panel of its knobs alone would
-            // leave the curves nowhere to be drawn.
-            EditorKind::Effect if self.lapse.is_some() => {
-                let Some(view) = self.lapse.as_ref() else {
+            // DisgustingBeat, for the same reason: an insert that is one is a
+            // canopy of memory over four grids, and a panel of its knobs alone
+            // would leave the curves nowhere to be drawn.
+            EditorKind::Effect if self.disgusting_beat.is_some() => {
+                let Some(view) = self.disgusting_beat.as_ref() else {
                     return;
                 };
-                EditorWindowChrome::Lapse(crate::render::LapseChrome {
-                    layout: self.lapse_layout.clone(),
+                EditorWindowChrome::DisgustingBeat(crate::render::DisgustingBeatChrome {
+                    renaming: match &self.renaming {
+                        Some(MenuTarget::DisgustingBeatScene(scene)) => Some(*scene),
+                        _ => None,
+                    },
+                    layout: self.disgusting_beat_layout.clone(),
                     view,
-                    hover: self.hover_lapse,
+                    hover: self.hover_disgusting_beat,
                 })
             }
             // The corrector's console, checked first for Flopsynth's reason:
@@ -5875,20 +5894,20 @@ impl WindowApp {
         // The open insert may have been removed, or its whole strip may have —
         // in which case its window closes rather than showing the effect that
         // happens to be at that index now.
-        let (eq, insert_view, tune, notepad, lapse) = match self.open_insert {
+        let (eq, insert_view, tune, notepad, disgusting_beat) = match self.open_insert {
             Some((strip, slot)) => (
                 doc.eq_config(strip, slot),
                 doc.insert_view(strip, slot),
                 doc.tune_view(strip, slot),
                 doc.notepad_view(strip, slot),
-                doc.lapse_view(strip, slot),
+                doc.disgusting_beat_view(strip, slot),
             ),
             None => (None, None, None, None, None),
         };
         self.eq = eq;
         self.insert_view = insert_view;
         self.tune = tune;
-        self.lapse = lapse;
+        self.disgusting_beat = disgusting_beat;
         // Which insert is open is the window's own fact, and the host needs
         // it: an effect preset clicked in the browser lands in the insert you
         // are looking at.
@@ -5924,7 +5943,7 @@ impl WindowApp {
             && self.insert_view.is_none()
             && self.tune.is_none()
             && self.notepad.is_none()
-            && self.lapse.is_none()
+            && self.disgusting_beat.is_none()
         {
             self.open_insert = None;
         }
@@ -5955,7 +5974,7 @@ impl WindowApp {
             && self.insert_view.is_none()
             && self.tune.is_none()
             && self.notepad.is_none()
-            && self.lapse.is_none()
+            && self.disgusting_beat.is_none()
         {
             self.close_editor(EditorKind::Effect);
         }
@@ -6491,10 +6510,11 @@ impl WindowApp {
             Some(open) => self.clip_route_label(open.data.mixer_track),
             None => String::new(),
         };
-        // **Lapse's window**, under exactly the strings `draw_lapse` looks
+        // **DisgustingBeat's window**, under exactly the strings
+        // `draw_disgusting_beat` looks
         // up: the lane names, the twelve scene chips, the tools, the snap
         // divisions, and the one caption the canopy writes.
-        if let Some(view) = self.lapse.clone() {
+        if let Some(view) = self.disgusting_beat.clone() {
             let mut captions: Vec<String> = Vec::new();
             for lane in &view.lanes {
                 captions.push(lane.kind.label().to_string());
@@ -6502,13 +6522,41 @@ impl WindowApp {
             for scene in 0..view.scene_names.len() {
                 captions.push(view.scene_label(scene));
             }
-            for tool in crate::canvas::LapseTool::ALL {
+            for tool in crate::canvas::DisgustingBeatTool::ALL {
                 captions.push(tool.label().to_string());
             }
-            for snap in crate::canvas::LapseSnap::ALL {
+            for snap in crate::canvas::DisgustingBeatSnap::ALL {
                 captions.push(snap.label().to_string());
             }
-            let config = fontelle_types::EffectConfig::Lapse(view.config);
+            for zoom in crate::canvas::DisgustingBeatZoom::ALL {
+                captions.push(zoom.label().to_string());
+            }
+            // The lane headers: how long each one is, and the word that puts
+            // it back.
+            for lane in &view.lanes {
+                captions.push(lane.length.label().to_string());
+            }
+            captions.push("clear".to_string());
+            // The sentence under the pointer, shaped the frame it is needed:
+            // one string rather than the table of every tip there is.
+            if let Some(tip) = self
+                .hover_disgusting_beat
+                .and_then(|hit| crate::canvas::disgusting_beat_tip(&view, hit))
+            {
+                captions.push(tip.to_string());
+            }
+            // Every row of the shape menu, whether one is open or not: a menu
+            // whose words are shaped on the frame it opens draws empty once.
+            for row in 0..crate::canvas::DISGUSTING_BEAT_MENU_ROWS {
+                captions.push(crate::canvas::disgusting_beat_menu_label(row).to_string());
+            }
+            if let Some(MenuTarget::DisgustingBeatScene(scene)) = &self.renaming {
+                captions.push(format!(
+                    "{}\u{2502}",
+                    view.scene_names.get(*scene).cloned().unwrap_or_default()
+                ));
+            }
+            let config = fontelle_types::EffectConfig::DisgustingBeat(view.config);
             for spec in config.specs() {
                 captions.push(spec.name.to_string());
                 let value = config.get(spec.id).unwrap_or(spec.default);
@@ -7435,8 +7483,10 @@ impl WindowApp {
             Drag::AudioKnob(field) => self.drag_audio_knob(field, y),
             Drag::InsertKnob => self.drag_insert_knob(y),
             Drag::TuneKnob => self.drag_tune_knob(y),
-            Drag::LapseCurve => self.drag_lapse(x, y),
-            Drag::LapseKnob => self.drag_lapse_knob(y),
+            Drag::DisgustingBeatCurve => self.drag_disgusting_beat(x, y),
+            Drag::DisgustingBeatKnob => self.drag_disgusting_beat_knob(y),
+            // Nothing while it is carried: the copy happens where it lands.
+            Drag::DisgustingBeatScene(_) => {}
             Drag::Fader(strip) => self.drag_fader(strip, y),
             Drag::EqHandle(band) => self.drag_eq(band, x, y),
             Drag::TimelineSelect => self.drag_select_timeline(x),
@@ -8151,6 +8201,10 @@ impl WindowApp {
             let (x, y) = self.cursor;
             self.drop_browser_row(row, x, y);
         }
+        if let Drag::DisgustingBeatScene(from) = self.drag {
+            let (x, y) = self.cursor;
+            self.drop_disgusting_beat_scene(from, x, y);
+        }
         if self.carry.take().is_some() {
             self.tree.invalidate_rect(self.layout.window);
             self.request_redraw_if_dirty();
@@ -8186,10 +8240,10 @@ impl WindowApp {
         // The gesture ends here, which is what makes a drag **one** undo
         // entry: `EditLapse::merge_with` coalesces while the drag runs and
         // the next press starts a new run.
-        self.lapse_drag = None;
-        self.lapse_knob = None;
-        self.lapse_stroke = None;
-        self.lapse_bend = None;
+        self.disgusting_beat_drag = None;
+        self.disgusting_beat_knob = None;
+        self.disgusting_beat_stroke = None;
+        self.disgusting_beat_bend = None;
         self.value_drag = None;
         self.eq_drag = None;
         self.mix_drag = None;
@@ -8681,18 +8735,43 @@ impl WindowApp {
         self.redraw_editor(EditorKind::Effect);
     }
 
-    /// A press inside Lapse's window (`docs/lapse-plan.md` §7.4).
+    /// A press inside DisgustingBeat's window
+    /// (`docs/disgusting-beat-plan.md` §7.4).
     ///
-    /// The whole interaction is here and in [`drag_lapse`](Self::drag_lapse):
+    /// The whole interaction is here and in [`drag_disgusting_beat`](Self::drag_disgusting_beat):
     /// a click on empty grid adds a point, a drag on one moves it, and the
     /// four other tools draw with the gesture rather than with a dialogue.
-    fn press_lapse(&mut self, button: MouseButton, x: f32, y: f32) {
-        let Some(view) = self.lapse.clone() else {
+    fn press_disgusting_beat(&mut self, button: MouseButton, x: f32, y: f32) {
+        let Some(view) = self.disgusting_beat.clone() else {
             return;
         };
-        let Some(hit) = crate::canvas::lapse_hit(&self.lapse_layout, &view, x, y) else {
+        let Some(hit) =
+            crate::canvas::disgusting_beat_hit(&self.disgusting_beat_layout, &view, x, y)
+        else {
             return;
         };
+        // A press anywhere in this window ends a scene rename, for the reason
+        // the studio's own press does it: a keyboard stuck in a field nobody
+        // can see is a window that has stopped answering. The studio's copy of
+        // this rule cannot help here, because an editor window has its own
+        // press path.
+        if matches!(self.renaming, Some(MenuTarget::DisgustingBeatScene(_))) {
+            self.renaming = None;
+            self.status.clear();
+            if let Some(doc) = &mut self.options.document {
+                doc.end_gesture();
+            }
+        }
+        // And a press that is not on the open menu **dismisses** it and does
+        // nothing else — the rule every menu in this program follows, and the
+        // reason a shape menu can be opened without fear.
+        if view.menu.is_some() && !matches!(hit, crate::canvas::DisgustingBeatHit::MenuRow(_)) {
+            if let Some(doc) = &mut self.options.document {
+                doc.set_disgusting_beat_menu(None);
+            }
+            self.reread_studio();
+            return;
+        }
         let Some((strip, slot)) = self.open_insert else {
             return;
         };
@@ -8700,11 +8779,24 @@ impl WindowApp {
             return;
         };
         match hit {
-            crate::canvas::LapseHit::Scene(scene) => {
+            crate::canvas::DisgustingBeatHit::Scene(scene) => {
+                if button == MouseButton::Right {
+                    // Twelve scenes called 1 to 12 is a kit nobody can play.
+                    // Right-click names one, through the same rename the rack
+                    // and the mixer use — one keyboard, one Escape.
+                    self.start_rename(MenuTarget::DisgustingBeatScene(scene));
+                    self.reread_studio();
+                    return;
+                }
                 // Through the ordinary parameter road: the scene is a
                 // `ParamSpec`, so clicking a chip is the same edit an
                 // automation lane makes, with the same undo entry.
                 doc.set_insert_param(strip, slot, "scene", scene as f32 + 1.0);
+                // And the press is also the start of a **copy**: let go over
+                // another chip and this scene is on it. Building a kit is
+                // twelve variations of one idea, and retyping one from
+                // nothing eleven times is why nobody builds one.
+                self.drag = Drag::DisgustingBeatScene(scene);
             }
             // **Window state moves no revision**, so the window has to be
             // told by hand — the rule `open_insert` already lives by
@@ -8713,47 +8805,118 @@ impl WindowApp {
             // next gesture reads the tool out of a stale view and draws with
             // the one before it. Found on `:99`: the hold tool lit a frame
             // late and the drag after it bent a flat segment instead.
-            crate::canvas::LapseHit::Tool(tool) => {
-                doc.set_lapse_tool(tool);
+            crate::canvas::DisgustingBeatHit::Tool(tool) => {
+                doc.set_disgusting_beat_tool(tool);
                 self.reread_studio();
             }
-            crate::canvas::LapseHit::Snap(snap) => {
-                doc.set_lapse_snap(snap);
+            crate::canvas::DisgustingBeatHit::Snap(snap) => {
+                doc.set_disgusting_beat_snap(snap);
                 self.reread_studio();
             }
-            crate::canvas::LapseHit::LaneStrip { lane } => {
-                let on = view.lanes.get(lane).is_some_and(|lane| lane.on);
-                doc.edit_lapse(
+            crate::canvas::DisgustingBeatHit::Zoom(zoom) => {
+                doc.set_disgusting_beat_zoom(zoom.reach());
+                self.reread_studio();
+            }
+            // A chooser is a chip that **steps**, which is the rule the
+            // console already follows: six lengths is not a menu's worth, and
+            // a right-click steps back for the one time in six it overshoots.
+            crate::canvas::DisgustingBeatHit::LaneLength { lane } => {
+                let Some(current) = view.lanes.get(lane).map(|lane| lane.length) else {
+                    return;
+                };
+                let all = fontelle_types::DisgustingBeatLength::ALL;
+                let at = all.iter().position(|l| *l == current).unwrap_or(0);
+                let next = match button {
+                    MouseButton::Right => (at + all.len() - 1) % all.len(),
+                    _ => (at + 1) % all.len(),
+                };
+                doc.edit_disgusting_beat(
                     strip,
                     slot,
-                    fontelle_types::LapseEdit::SetLaneOn {
+                    fontelle_types::DisgustingBeatEdit::SetLength {
+                        scene: view.scene,
+                        lane,
+                        length: all[next],
+                    },
+                );
+                doc.end_gesture();
+            }
+            crate::canvas::DisgustingBeatHit::LaneClear { lane } => {
+                doc.edit_disgusting_beat(
+                    strip,
+                    slot,
+                    fontelle_types::DisgustingBeatEdit::ClearLane {
+                        scene: view.scene,
+                        lane,
+                    },
+                );
+                doc.end_gesture();
+            }
+            // The shape menu, on the point it was opened over. Choosing a
+            // shape and choosing *remove* are the same gesture, because
+            // right-click removed a point before this menu existed and
+            // somebody who learned that must not lose it.
+            crate::canvas::DisgustingBeatHit::MenuRow(row) => {
+                let Some(menu) = view.menu else {
+                    return;
+                };
+                match crate::canvas::disgusting_beat_menu_shape(row) {
+                    Some(curve) => doc.edit_disgusting_beat(
+                        strip,
+                        slot,
+                        fontelle_types::DisgustingBeatEdit::SetCurve {
+                            scene: view.scene,
+                            lane: menu.lane,
+                            index: menu.index,
+                            curve,
+                        },
+                    ),
+                    None => doc.edit_disgusting_beat(
+                        strip,
+                        slot,
+                        fontelle_types::DisgustingBeatEdit::RemovePoint {
+                            scene: view.scene,
+                            lane: menu.lane,
+                            index: menu.index,
+                        },
+                    ),
+                }
+                doc.end_gesture();
+                doc.set_disgusting_beat_menu(None);
+                self.reread_studio();
+            }
+            crate::canvas::DisgustingBeatHit::LaneStrip { lane } => {
+                let on = view.lanes.get(lane).is_some_and(|lane| lane.on);
+                doc.edit_disgusting_beat(
+                    strip,
+                    slot,
+                    fontelle_types::DisgustingBeatEdit::SetLaneOn {
                         scene: view.scene,
                         lane,
                         on: !on,
                     },
                 );
             }
-            crate::canvas::LapseHit::Point { lane, index } => match button {
-                // Right-click takes a point away; there is a menu of shapes
-                // to build here later, and removing one is what the gesture
-                // is for nine times in ten.
+            crate::canvas::DisgustingBeatHit::Point { lane, index } => match button {
+                // Right-click opens the **shape** menu, whose last row is the
+                // remove this gesture used to do outright. Six shapes have
+                // been in the document since the automation lane and every
+                // preset here uses them; a hand-drawn point could only ever
+                // be linear until this menu.
                 MouseButton::Right => {
-                    doc.edit_lapse(
-                        strip,
-                        slot,
-                        fontelle_types::LapseEdit::RemovePoint {
-                            scene: view.scene,
-                            lane,
-                            index,
-                        },
-                    );
+                    doc.set_disgusting_beat_menu(Some(crate::canvas::DisgustingBeatMenu {
+                        lane,
+                        index,
+                        at: (x, y),
+                    }));
+                    self.reread_studio();
                 }
                 MouseButton::Left => {
-                    self.lapse_drag = Some((lane, index));
-                    self.drag = Drag::LapseCurve;
+                    self.disgusting_beat_drag = Some((lane, index));
+                    self.drag = Drag::DisgustingBeatCurve;
                 }
             },
-            crate::canvas::LapseHit::Grid { lane, phase, value } => {
+            crate::canvas::DisgustingBeatHit::Grid { lane, phase, value } => {
                 if button == MouseButton::Right {
                     return;
                 }
@@ -8762,13 +8925,13 @@ impl WindowApp {
                 });
                 let at = view.snap.snap(phase, beats);
                 match view.tool {
-                    crate::canvas::LapseTool::Points => {
+                    crate::canvas::DisgustingBeatTool::Points => {
                         // **On the curve is a bend, off it is a new point.**
                         // This is what gives `tension` a gesture, and with it
                         // the automation lane its bend as well
-                        // (`docs/lapse-plan.md` §3.5).
+                        // (`docs/disgusting-beat-plan.md` §3.5).
                         if let Some(lane_view) = view.lanes.get(lane)
-                            && let Some(rect) = self.lapse_layout.lanes.get(lane).copied()
+                            && let Some(rect) = self.disgusting_beat_layout.lanes.get(lane).copied()
                             && let Some((carrier, away)) =
                                 crate::canvas::segment_at(lane_view, phase, value)
                         {
@@ -8781,25 +8944,25 @@ impl WindowApp {
                                 phase,
                                 value + away,
                             );
-                            if (on_curve - drawn).abs() <= crate::canvas::LAPSE_BEND_GRAB
+                            if (on_curve - drawn).abs() <= crate::canvas::DISGUSTING_BEAT_BEND_GRAB
                                 && crate::canvas::bend_reach(lane_view, carrier).0
                             {
                                 let tension = lane_view
                                     .points
                                     .get(carrier)
                                     .map_or(0.0, |point| point.tension);
-                                self.lapse_bend = Some((lane, carrier, y, tension));
-                                self.drag = Drag::LapseCurve;
+                                self.disgusting_beat_bend = Some((lane, carrier, y, tension));
+                                self.drag = Drag::DisgustingBeatCurve;
                                 return;
                             }
                         }
-                        doc.edit_lapse(
+                        doc.edit_disgusting_beat(
                             strip,
                             slot,
-                            fontelle_types::LapseEdit::AddPoint {
+                            fontelle_types::DisgustingBeatEdit::AddPoint {
                                 scene: view.scene,
                                 lane,
-                                point: fontelle_types::LapsePoint::new(
+                                point: fontelle_types::DisgustingBeatPoint::new(
                                     at,
                                     value,
                                     fontelle_types::CurveShape::Linear,
@@ -8810,19 +8973,19 @@ impl WindowApp {
                         // a drag: the lane re-sorts on every edit, so the
                         // index this point ends up at is not known until the
                         // view comes back round. Pick it up again to move it.
-                        self.lapse_drag = None;
+                        self.disgusting_beat_drag = None;
                     }
                     _ => {
-                        self.lapse_stroke = Some((lane, (at, value)));
-                        self.drag = Drag::LapseCurve;
+                        self.disgusting_beat_stroke = Some((lane, (at, value)));
+                        self.drag = Drag::DisgustingBeatCurve;
                     }
                 }
             }
             // The console. A chooser steps on a click — there are at most
             // five positions on any of them, so a menu would be two gestures
             // where one will do — and a knob takes a drag.
-            crate::canvas::LapseHit::Control(index) => {
-                let config = fontelle_types::EffectConfig::Lapse(view.config);
+            crate::canvas::DisgustingBeatHit::Control(index) => {
+                let config = fontelle_types::EffectConfig::DisgustingBeat(view.config);
                 let Some(spec) = config.specs().get(index) else {
                     return;
                 };
@@ -8839,27 +9002,28 @@ impl WindowApp {
                     };
                     doc.set_insert_param(strip, slot, spec.id, next);
                 } else {
-                    self.lapse_knob = Some((index, y, config.get(spec.id).unwrap_or(spec.default)));
-                    self.drag = Drag::LapseKnob;
+                    self.disgusting_beat_knob =
+                        Some((index, y, config.get(spec.id).unwrap_or(spec.default)));
+                    self.drag = Drag::DisgustingBeatKnob;
                 }
             }
-            crate::canvas::LapseHit::Canopy => {}
+            crate::canvas::DisgustingBeatHit::Canopy => {}
         }
     }
 
     /// A console knob being dragged. The throw every other knob in this
     /// program uses, so a hand that has learnt one has learnt all of them.
-    fn drag_lapse_knob(&mut self, y: f32) {
-        let Some((index, from_y, from_value)) = self.lapse_knob else {
+    fn drag_disgusting_beat_knob(&mut self, y: f32) {
+        let Some((index, from_y, from_value)) = self.disgusting_beat_knob else {
             return;
         };
-        let Some(view) = self.lapse.as_ref() else {
+        let Some(view) = self.disgusting_beat.as_ref() else {
             return;
         };
         let Some((strip, slot)) = self.open_insert else {
             return;
         };
-        let config = fontelle_types::EffectConfig::Lapse(view.config);
+        let config = fontelle_types::EffectConfig::DisgustingBeat(view.config);
         let Some(spec) = config.specs().get(index).copied() else {
             return;
         };
@@ -8877,16 +9041,48 @@ impl WindowApp {
         doc.set_insert_param(strip, slot, spec.id, value);
     }
 
-    /// The pointer moving with a button down inside Lapse's window.
-    fn drag_lapse(&mut self, x: f32, y: f32) {
-        let Some(view) = self.lapse.clone() else {
+    /// A scene chip let go over another one: the whole scene is copied
+    /// there.
+    ///
+    /// Let go over the chip it came from — which is what an ordinary click
+    /// is — and nothing happens, so the gesture costs the click nothing.
+    fn drop_disgusting_beat_scene(&mut self, from: usize, x: f32, y: f32) {
+        let Some(view) = self.disgusting_beat.clone() else {
+            return;
+        };
+        let Some(crate::canvas::DisgustingBeatHit::Scene(to)) =
+            crate::canvas::disgusting_beat_hit(&self.disgusting_beat_layout, &view, x, y)
+        else {
+            return;
+        };
+        if to == from {
+            return;
+        }
+        let Some((strip, slot)) = self.open_insert else {
+            return;
+        };
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        doc.edit_disgusting_beat(
+            strip,
+            slot,
+            fontelle_types::DisgustingBeatEdit::CopyScene { from, to },
+        );
+        doc.end_gesture();
+        self.status = format!("Scene {} copied to scene {}", from + 1, to + 1);
+    }
+
+    /// The pointer moving with a button down inside DisgustingBeat's window.
+    fn drag_disgusting_beat(&mut self, x: f32, y: f32) {
+        let Some(view) = self.disgusting_beat.clone() else {
             return;
         };
         let Some((strip, slot)) = self.open_insert else {
             return;
         };
         // A bend first: it is the one gesture that does not move a point.
-        if let Some((lane_index, carrier, from_y, from_tension)) = self.lapse_bend {
+        if let Some((lane_index, carrier, from_y, from_tension)) = self.disgusting_beat_bend {
             let Some(lane) = view.lanes.get(lane_index) else {
                 return;
             };
@@ -8897,10 +9093,10 @@ impl WindowApp {
             let Some(doc) = &mut self.options.document else {
                 return;
             };
-            doc.edit_lapse(
+            doc.edit_disgusting_beat(
                 strip,
                 slot,
-                fontelle_types::LapseEdit::SetTension {
+                fontelle_types::DisgustingBeatEdit::SetTension {
                     scene: view.scene,
                     lane: lane_index,
                     index: carrier,
@@ -8912,11 +9108,11 @@ impl WindowApp {
         // Which lane the gesture began in — a drag that wandered into the
         // lane below goes on editing the one it started in, which is what
         // every other drag in this program does.
-        let lane_index = match (self.lapse_drag, self.lapse_stroke) {
+        let lane_index = match (self.disgusting_beat_drag, self.disgusting_beat_stroke) {
             (Some((lane, _)), _) | (_, Some((lane, _))) => lane,
             _ => return,
         };
-        let Some(rect) = self.lapse_layout.lanes.get(lane_index).copied() else {
+        let Some(rect) = self.disgusting_beat_layout.lanes.get(lane_index).copied() else {
             return;
         };
         let Some(lane) = view.lanes.get(lane_index) else {
@@ -8932,11 +9128,11 @@ impl WindowApp {
         let Some(doc) = &mut self.options.document else {
             return;
         };
-        if let Some((_, index)) = self.lapse_drag {
-            doc.edit_lapse(
+        if let Some((_, index)) = self.disgusting_beat_drag {
+            doc.edit_disgusting_beat(
                 strip,
                 slot,
-                fontelle_types::LapseEdit::MovePoint {
+                fontelle_types::DisgustingBeatEdit::MovePoint {
                     scene: view.scene,
                     lane: lane_index,
                     index,
@@ -8945,19 +9141,19 @@ impl WindowApp {
             );
             return;
         }
-        let Some((_, from)) = self.lapse_stroke else {
+        let Some((_, from)) = self.disgusting_beat_stroke else {
             return;
         };
         match view.tool {
             // **The freeze.** Two points at exactly the slope that holds the
             // sound still: the one-gesture tape stop, and the reason the
             // grid draws that slope as a guide.
-            crate::canvas::LapseTool::Hold => {
+            crate::canvas::DisgustingBeatTool::Hold => {
                 let points = crate::canvas::hold_points(from, (at, value));
-                doc.edit_lapse(
+                doc.edit_disgusting_beat(
                     strip,
                     slot,
-                    fontelle_types::LapseEdit::Draw {
+                    fontelle_types::DisgustingBeatEdit::Draw {
                         scene: view.scene,
                         lane: lane_index,
                         from: (points[0].at, points[0].value),
@@ -8965,14 +9161,14 @@ impl WindowApp {
                     },
                 );
             }
-            crate::canvas::LapseTool::Step => {
+            crate::canvas::DisgustingBeatTool::Step => {
                 // A step is flat from where the pointer is to the next
                 // division, which is what "paint steps" means.
                 let next = (at + 1.0 / (view.snap.per_beat().unwrap_or(4.0) * beats)).min(1.0);
-                doc.edit_lapse(
+                doc.edit_disgusting_beat(
                     strip,
                     slot,
-                    fontelle_types::LapseEdit::Draw {
+                    fontelle_types::DisgustingBeatEdit::Draw {
                         scene: view.scene,
                         lane: lane_index,
                         from: (at, value),
@@ -8984,18 +9180,18 @@ impl WindowApp {
             // stroke starts from — the pencil from the last point the
             // pointer was at, the line from where the press was.
             _ => {
-                doc.edit_lapse(
+                doc.edit_disgusting_beat(
                     strip,
                     slot,
-                    fontelle_types::LapseEdit::Draw {
+                    fontelle_types::DisgustingBeatEdit::Draw {
                         scene: view.scene,
                         lane: lane_index,
                         from,
                         to: (at, value),
                     },
                 );
-                if view.tool == crate::canvas::LapseTool::Pencil {
-                    self.lapse_stroke = Some((lane_index, (at, value)));
+                if view.tool == crate::canvas::DisgustingBeatTool::Pencil {
+                    self.disgusting_beat_stroke = Some((lane_index, (at, value)));
                 }
             }
         }
@@ -14449,7 +14645,7 @@ impl WindowApp {
             MenuTarget::AddPatchEffect => {
                 let mut entries = vec![MenuEntry::disabled("Add effect")];
                 for kind in self.patch_effect_kinds() {
-                    entries.push(MenuEntry::new(kind.label()));
+                    entries.push(MenuEntry::new(kind.full_label()));
                 }
                 entries
             }
@@ -14654,6 +14850,9 @@ impl WindowApp {
             // be able to rename super quickly"* asks for. An empty list opens
             // no menu, so this can never be a menu nobody can see.
             MenuTarget::MixerTrack(_) => Vec::new(),
+            // A rename in place, the same as a strip's: the chip is the
+            // field. An empty list opens no menu.
+            MenuTarget::DisgustingBeatScene(_) => Vec::new(),
             // Built by the host, which read the file. The window draws the
             // lines and says which one was pressed.
             MenuTarget::ImportChoice => match self
@@ -16101,6 +16300,15 @@ impl WindowApp {
                 .prefabs
                 .get(*index)
                 .map_or_else(String::new, |prefab| prefab.name.clone()),
+            // The **raw** name, not the chip's caption: a scene nobody has
+            // named draws as its number, and seeding the field with "7" would
+            // make the first keystroke of every rename a backspace.
+            Some(MenuTarget::DisgustingBeatScene(scene)) => self
+                .disgusting_beat
+                .as_ref()
+                .and_then(|view| view.scene_names.get(*scene))
+                .cloned()
+                .unwrap_or_default(),
             _ => String::new(),
         }
     }
@@ -16113,6 +16321,19 @@ impl WindowApp {
                 Some(MenuTarget::Lane(index)) => doc.rename_lane(index, &name),
                 Some(MenuTarget::MixerTrack(index)) => doc.rename_mixer_track(index, &name),
                 Some(MenuTarget::Prefab(index)) => doc.rename_prefab(index, &name),
+                // Straight into the bank, keystroke by keystroke, the way
+                // every other rename here writes: the document *is* the
+                // buffer, and `EditLapse` coalesces the run into one entry
+                // that ends on Enter.
+                Some(MenuTarget::DisgustingBeatScene(scene)) => {
+                    if let Some((strip, slot)) = self.open_insert {
+                        doc.edit_disgusting_beat(
+                            strip,
+                            slot,
+                            fontelle_types::DisgustingBeatEdit::RenameScene { scene, name },
+                        );
+                    }
+                }
                 _ => {}
             }
         }

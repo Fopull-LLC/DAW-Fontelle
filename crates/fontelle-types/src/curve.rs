@@ -1,11 +1,11 @@
 //! The shape of a segment between two drawn points.
 //!
-//! It lived in `fontelle-model` beside the automation lane until Lapse
-//! (`docs/lapse-plan.md` §3.5), and it is here now because the audio thread
-//! reads these shapes: a Lapse lane is a curve in them, evaluated per sample
-//! in `fontelle-fx`, and `fontelle-engine` may not see `fontelle-model`
-//! (INVARIANT 4). `fontelle-model` re-exports the name, so nothing that
-//! already used it changed.
+//! It lived in `fontelle-model` beside the automation lane until
+//! DisgustingBeat (`docs/disgusting-beat-plan.md` §3.5), and it is here now
+//! because the audio thread reads these shapes: a DisgustingBeat lane is a
+//! curve in them, evaluated per sample in `fontelle-fx`, and `fontelle-engine`
+//! may not see `fontelle-model` (INVARIANT 4). `fontelle-model` re-exports the
+//! name, so nothing that already used it changed.
 //!
 //! The move is also what finally gives [`AutomationPoint::tension`] a value
 //! to have. The comment beside it said so:
@@ -14,8 +14,8 @@
 //! > shapes below are its zero position; a curve editor that can bend one is
 //! > what gives it a value to have."*
 //!
-//! Lapse's lane editor is that editor, and the automation lane gets the bend
-//! for nothing because both read this function.
+//! DisgustingBeat's lane editor is that editor, and the automation lane gets
+//! the bend for nothing because both read this function.
 //!
 //! [`AutomationPoint::tension`]: fontelle_model
 

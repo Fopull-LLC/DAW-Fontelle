@@ -131,7 +131,7 @@ pub struct TimedEvent {
 }
 
 /// One stretch of the song at one tempo, in the block contract's own units
-/// (`docs/lapse-plan.md` §3.4).
+/// (`docs/disgusting-beat-plan.md` §3.4).
 ///
 /// **Why this is four numbers and not two.** It used to be `(sample, bpm)`,
 /// and a tempo is a *period* — it says how long a beat lasts, not which beat
