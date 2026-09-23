@@ -309,11 +309,28 @@ impl CompiledTimeline {
     /// [`bpm_at`](Self::bpm_at) has a default at all: it is reachable, and
     /// every answer here has to be musical rather than zero.
     pub fn tick_at(&self, sample: Sample) -> Tick {
+        self.tick_at_exact(sample).round() as Tick
+    }
+
+    /// The same question, **with its fraction**: where the song is at
+    /// `sample`, in ticks, as a real number.
+    ///
+    /// [`tick_at`](Self::tick_at) answers *which tick this is*, which is what
+    /// a grid, a marker or a quantiser wants. This answers *where in it*, and
+    /// anything deriving a **continuous** quantity from the song's position
+    /// must use it — because a rounded tick is a staircase, and at 120 bpm
+    /// and 48 kHz its treads are twenty-five samples wide.
+    ///
+    /// That is not a rounding nicety. DisgustingBeat turns this number into a
+    /// *read position* in a delay line: on a half-speed slope, twenty-five
+    /// samples of song time is a twelve-sample jump in the read position, and
+    /// the snapshot is rebuilt once a block — so the first release buzzed at
+    /// three hundred and seventy-five hertz on every diagonal anybody drew,
+    /// and the DSP that was blamed for it was exact to the last bit.
+    pub fn tick_at_exact(&self, sample: Sample) -> f64 {
         match self.span_at(sample) {
-            Some(span) => {
-                span.tick + ((sample - span.start) as f64 * span.ticks_per_sample).round() as Tick
-            }
-            None => (sample as f64 * default_ticks_per_sample()).round() as Tick,
+            Some(span) => span.tick as f64 + (sample - span.start) as f64 * span.ticks_per_sample,
+            None => sample as f64 * default_ticks_per_sample(),
         }
     }
 

@@ -646,13 +646,23 @@ impl Default for DisgustingBeat {
 /// in the ring reads silence rather than whatever the wrap landed on.
 fn read_ring(memory: &[f32], position: f64, written: u64, quality: Interpolation) -> f32 {
     let length = memory.len();
-    if length == 0 {
+    if length == 0 || written == 0 {
         return 0.0;
     }
-    let oldest = written as f64 - length as f64;
-    if position < oldest - 1.0 || position > written as f64 {
-        return 0.0;
-    }
+    // **The edges are held, not zeroed.** Every kernel here but `Draft` wants
+    // samples either side of the read position, and the ring has none past
+    // the write head — so a window with zeros in those taps puts a cliff
+    // under a cubic, and a cubic through a cliff overshoots. That was the
+    // crunch: one sample at 0.664 in a stretch of 0.625, every time a curve's
+    // read touched live at a fractional position, which is what every segment
+    // with a rate above one does on its way back to the present.
+    //
+    // Holding the edge sample is what a resampler does at the end of a
+    // buffer, and the error it makes is bounded by the signal rather than by
+    // full scale.
+    let newest = written as f64 - 1.0;
+    let oldest = (written as f64 - length as f64).max(0.0);
+    let position = position.clamp(oldest, newest);
     // `interpolate` wants a slice and a position inside it, and the ring
     // wraps — so the four (or eight) taps are gathered into a stack window
     // first. Eight is the widest kernel `Interpolation` has.
@@ -666,19 +676,12 @@ fn read_ring(memory: &[f32], position: f64, written: u64, quality: Interpolation
     // that moved
     // the last bit at `high` quality is not one.
     if fraction == 0.0 {
-        let at = base;
-        if at < oldest || at >= written as f64 {
-            return 0.0;
-        }
-        return memory[(at as i64).rem_euclid(length as i64) as usize];
+        return memory[(base as i64).rem_euclid(length as i64) as usize];
     }
     let mut window = [0.0f32; 16];
     let centre = 8usize;
     for (offset, slot) in window.iter_mut().enumerate() {
-        let at = base + offset as f64 - centre as f64;
-        if at < oldest || at >= written as f64 {
-            continue;
-        }
+        let at = (base + offset as f64 - centre as f64).clamp(oldest, newest);
         let index = (at as i64).rem_euclid(length as i64) as usize;
         *slot = memory[index];
     }

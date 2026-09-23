@@ -6,8 +6,9 @@
 
 use fontelle_types::{
     CurveShape, DISGUSTING_BEAT_LANES, DISGUSTING_BEAT_POINTS, DISGUSTING_BEAT_SCENES,
-    DisgustingBeatBank, DisgustingBeatConfig, DisgustingBeatEdit, DisgustingBeatGrid,
-    DisgustingBeatLaneKind, DisgustingBeatLength, DisgustingBeatPoint, EffectConfig, EffectKind,
+    DisgustingBeatBank, DisgustingBeatConfig, DisgustingBeatEdit, DisgustingBeatFactoryPreset,
+    DisgustingBeatGrid, DisgustingBeatLaneKind, DisgustingBeatLength, DisgustingBeatLook,
+    DisgustingBeatPoint, EffectConfig, EffectKind, curve_at,
 };
 
 fn bank() -> DisgustingBeatBank {
@@ -392,4 +393,43 @@ fn the_slug_is_fx_disgusting_beat() {
         DeviceKind::Effect(EffectKind::DisgustingBeat).slug(),
         "fx-disgusting-beat"
     );
+}
+
+#[test]
+fn no_factory_row_reads_a_future_it_has_not_got() {
+    // **A positive offset is a read of the future**, and there is none unless
+    // look-ahead is on — the machine clamps it to now, so the drawing is
+    // thrown away sample by sample and the preset is a wire that looks like a
+    // preset. *Rushed* shipped that way: four points, ten milliseconds ahead,
+    // doing nothing whatever, and no test noticed because a wire is a
+    // perfectly good-sounding thing to be.
+    //
+    // So: anything drawn above the line has to say it needs look-ahead by
+    // turning it on, and anything that does not have to stay below it.
+    for row in DisgustingBeatFactoryPreset::ALL {
+        let (config, bank) = row.build();
+        if config.look != DisgustingBeatLook::Off {
+            continue;
+        }
+        for (index, scene) in bank.scenes.iter().enumerate() {
+            let Some(lane) = scene.lane(DisgustingBeatLaneKind::Time) else {
+                continue;
+            };
+            if !lane.on || lane.points.is_empty() {
+                continue;
+            }
+            for step in 0..=512 {
+                let phase = step as f64 / 512.0;
+                let value = curve_at(&lane.points, phase, 0.0);
+                assert!(
+                    value <= 1e-9,
+                    "{} scene {} reads {value:+.3} lane-lengths ahead at phase \
+                     {phase:.3}, with look-ahead off. The clamp will eat it and \
+                     the preset will do nothing.",
+                    row.name,
+                    index + 1
+                );
+            }
+        }
+    }
 }

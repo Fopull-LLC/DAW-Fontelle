@@ -349,6 +349,51 @@ mod tests {
         }
     }
 
+    /// **A renamed preset leaves a ghost.** `export` writes files and never
+    /// removes any, so the day *Half-time* became *Half-time Feel* the bank
+    /// had both — one of them a row no recipe names any more, sitting in the
+    /// browser working perfectly and belonging to nothing. Renaming is
+    /// exactly when nobody thinks to look in the folder, so this looks.
+    #[test]
+    fn the_factory_folder_holds_nothing_the_recipes_do_not_name() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/presets");
+        let mut wanted: Vec<PathBuf> = Vec::new();
+        for preset in every_preset().unwrap() {
+            wanted.push(
+                root.join(preset.device.slug())
+                    .join(&preset.category)
+                    .join(format!("{}.json", preset.name)),
+            );
+        }
+        let mut ghosts: Vec<String> = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "json") && !wanted.contains(&path) {
+                    ghosts.push(
+                        path.strip_prefix(&root)
+                            .unwrap_or(&path)
+                            .display()
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        ghosts.sort();
+        assert!(
+            ghosts.is_empty(),
+            "these preset files belong to no recipe \u{2014} a rename left them \
+             behind and the browser still lists them:\n  {}",
+            ghosts.join("\n  ")
+        );
+    }
+
     #[test]
     fn every_generated_preset_is_a_preset_for_the_device_it_claims() {
         for preset in every_preset().unwrap() {

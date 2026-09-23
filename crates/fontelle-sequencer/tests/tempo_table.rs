@@ -152,3 +152,48 @@ fn an_uncompiled_timeline_answers_tick_zero_and_four_beats_a_bar() {
     assert_eq!(timeline.beats_per_bar, 4);
     assert!(timeline.ticks_per_sample_at(0) > 0.0);
 }
+
+#[test]
+fn a_tick_keeps_its_fraction_for_the_audio_thread() {
+    // **A whole tick is not good enough for a DSP.** At 120 bpm and 48 kHz a
+    // tick lasts 25 samples, so a rounded answer is a staircase with
+    // 25-sample treads — and a node that turns the song's position into a
+    // *read position* hears every one of them as a jump. Twenty-five samples
+    // of song time is twelve samples of read position on a half-speed slope,
+    // once per block: a buzz at the block rate, which is exactly what
+    // DisgustingBeat's first release did on every diagonal anybody drew.
+    //
+    // So there are two answers and they are different questions. `tick_at`
+    // is *which tick this is* — what a grid, a marker or a quantiser wants.
+    // `tick_at_exact` is *where in it*, and it is what anything that derives
+    // a continuous quantity from the song's position must use.
+    let project = Project::new("Fractional");
+    let timeline = compile(&project);
+    let per_sample = timeline.ticks_per_sample_at(0);
+    let samples_per_tick = 1.0 / per_sample;
+    assert!(
+        (samples_per_tick - 25.0).abs() < 1e-9,
+        "the arithmetic below assumes 25 samples a tick, got {samples_per_tick}"
+    );
+
+    // Twelve samples in, which is just under half a tick: the rounded answer
+    // is still zero and the exact one is not.
+    assert_eq!(timeline.tick_at(12), 0, "a rounded tick rounds");
+    let exact = timeline.tick_at_exact(12);
+    assert!(
+        (exact - 12.0 / 25.0).abs() < 1e-9,
+        "the exact tick lost its fraction: {exact}"
+    );
+
+    // And it is a straight line in the samples, which is the property the
+    // audio thread actually depends on: no tread anywhere, at any block
+    // boundary, for a whole bar.
+    for sample in 0..(SR as i64 * 2) {
+        let want = sample as f64 * per_sample;
+        let got = timeline.tick_at_exact(sample);
+        assert!(
+            (got - want).abs() < 1e-9,
+            "the exact tick stepped at sample {sample}: {got} against {want}"
+        );
+    }
+}

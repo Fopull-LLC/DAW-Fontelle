@@ -33,7 +33,7 @@
 use crate::curve::CurveShape;
 use crate::disgusting_beat::{
     DISGUSTING_BEAT_SCENES, DisgustingBeatBank, DisgustingBeatConfig, DisgustingBeatLaneKind,
-    DisgustingBeatLength, DisgustingBeatPoint, DisgustingBeatScene,
+    DisgustingBeatLength, DisgustingBeatLook, DisgustingBeatPoint, DisgustingBeatScene,
 };
 
 /// One factory row.
@@ -44,6 +44,15 @@ pub struct DisgustingBeatPreset {
     /// One sentence: what it is for.
     pub notes: &'static str,
     recipe: Recipe,
+    /// How far ahead this row needs to see.
+    ///
+    /// `Off` for all but two. A row drawn **above** the line is asking to
+    /// read the future, and without look-ahead the machine clamps every
+    /// sample of it to now — the drawing is thrown away and the preset is a
+    /// wire that looks like a preset. *Push* and *Rushed* shipped exactly
+    /// that way. Reading early is the one thing this effect cannot do for
+    /// free, so the rows that do it pay the beat of latency and say so.
+    look: DisgustingBeatLook,
 }
 
 /// What a row is made of. A kit fills all twelve scenes; everything else
@@ -146,7 +155,9 @@ impl DisgustingBeatPreset {
                 }
             }
         }
-        (DisgustingBeatConfig::new(), bank)
+        let mut config = DisgustingBeatConfig::new();
+        config.look = self.look;
+        (config, bank)
     }
 
     /// Whether this row fills every scene — what the browser's row says, and
@@ -185,6 +196,21 @@ const fn row(
         category,
         notes,
         recipe: Recipe::One(scene),
+        look: DisgustingBeatLook::Off,
+    }
+}
+
+/// The same, for a row that reads **ahead** of the playhead and so has to
+/// buy the future with latency. See [`DisgustingBeatPreset::look`].
+const fn row_ahead(
+    name: &'static str,
+    category: &'static str,
+    notes: &'static str,
+    scene: Scene,
+) -> DisgustingBeatPreset {
+    DisgustingBeatPreset {
+        look: DisgustingBeatLook::Beat,
+        ..row(name, category, notes, scene)
     }
 }
 
@@ -198,6 +224,24 @@ const fn kit(
         category: "Kits",
         notes,
         recipe: Recipe::Kit(scenes),
+        look: DisgustingBeatLook::Off,
+    }
+}
+
+/// A kit whose scenes include one that reads **ahead**.
+///
+/// The knobs belong to the whole kit, so look-ahead cannot be bought for one
+/// scene of twelve: if any of them reads early, all of them are read a beat
+/// late and the graph lines the track back up. The alternative is a scene
+/// that silently does nothing, which is what the Groove Kit's *push* was.
+const fn kit_ahead(
+    name: &'static str,
+    notes: &'static str,
+    scenes: &'static [Scene],
+) -> DisgustingBeatPreset {
+    DisgustingBeatPreset {
+        look: DisgustingBeatLook::Beat,
+        ..kit(name, notes, scenes)
     }
 }
 
@@ -875,10 +919,10 @@ static ROWS: &[DisgustingBeatPreset] = &[
             FLAT_VOLUME,
         ),
     ),
-    row(
+    row_ahead(
         "Push",
         "Groove",
-        "Everything a hair early. Wants a beat of look-ahead.",
+        "Everything a hair early. Costs a beat of latency, which the graph lines back up.",
         Scene::new(&[P(0, 6, Shape::L)], FLAT_VOLUME),
     ),
     row(
@@ -888,15 +932,15 @@ static ROWS: &[DisgustingBeatPreset] = &[
         Scene::new(&[P(0, -6, Shape::L)], FLAT_VOLUME),
     ),
     row(
-        "Half-time",
+        "Half-time Feel",
         "Groove",
-        "Beats 3 and 4 play beats 1 and 2 again.",
+        "Beats 3 and 4 play beats 1 and 2 again. For the speed, see Half Speed.",
         Scene::new(&[P(0, 0, Shape::S), P(500, -500, Shape::S)], FLAT_VOLUME),
     ),
     row(
-        "Double-time",
+        "Double-time Feel",
         "Groove",
-        "The first half of the bar twice, at speed.",
+        "The first half of the bar twice. For the speed, see Double Speed.",
         Scene::new(
             &[
                 P(0, -250, Shape::L),
@@ -920,10 +964,10 @@ static ROWS: &[DisgustingBeatPreset] = &[
             FLAT_VOLUME,
         ),
     ),
-    row(
+    row_ahead(
         "Rushed",
         "Groove",
-        "The backbeat early instead. Needs look-ahead.",
+        "The backbeat early and the downbeat where it was \u{2014} Laid Back mirrored.",
         Scene::new(
             &[
                 P(0, 0, Shape::S),
@@ -1093,12 +1137,17 @@ static ROWS: &[DisgustingBeatPreset] = &[
         "Drunk",
         "Creative",
         "Every beat a little off, none of them the same way.",
+        // The four offsets are what matter and only their *differences* are
+        // heard, so the whole thing sits below the line: beat three was drawn
+        // fourteen thousandths of a bar **ahead**, which is a read of a
+        // future this has not bought, and the clamp ate that beat and left
+        // the other three.
         Scene::new(
             &[
-                P(0, 0, Shape::S),
-                P(250, -22, Shape::S),
-                P(500, 14, Shape::S),
-                P(750, -34, Shape::S),
+                P(0, -14, Shape::S),
+                P(250, -36, Shape::S),
+                P(500, 0, Shape::S),
+                P(750, -48, Shape::S),
             ],
             FLAT_VOLUME,
         ),
@@ -1463,9 +1512,9 @@ static ROWS: &[DisgustingBeatPreset] = &[
             ),
         ],
     ),
-    kit(
+    kit_ahead(
         "Groove Kit",
-        "Twelve feels, from a hair early to a hard shuffle.",
+        "Twelve feels, from a hair early to a hard shuffle. A beat of latency, compensated.",
         &[
             Scene::new(FLAT_TIME, FLAT_VOLUME),
             Scene::new(&[P(0, 6, Shape::L)], FLAT_VOLUME),

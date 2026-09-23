@@ -860,3 +860,346 @@ fn the_trail_is_where_the_read_head_has_been() {
         );
     }
 }
+
+/// Where the read head was, decoded from the output of a ramp: a ramp's value
+/// *is* its own sample index, so what comes out says where it was read from.
+fn read_at(out: &[f32], sample: usize, frames: usize) -> f64 {
+    out[sample] as f64 * frames as f64
+}
+
+#[test]
+fn a_steep_segment_scrubs_instead_of_jamming_the_crossfade() {
+    // **A steep line is a scrub and has to be heard as one.** The crossfade
+    // decides there is a discontinuity when the read position moves more than
+    // half a millisecond in a sample, and a segment steep enough to do that
+    // *every* sample re-arms it every sample — which is anything past about
+    // 25x, and a point dragged a whole lane-length across one 1/32 division
+    // is 32x. Written because that looked certain to jam the fade and play
+    // the line back at normal speed; it does not, because the outgoing head
+    // is re-seated to the curve each time, so the scrub survives one sample
+    // late. This is here to keep it that way — the failure it would catch is
+    // silent, and a drawn line that does nothing is the worst kind.
+    //
+    // Drawn here: half a lane-length dropped across a sixty-fourth of it, so
+    // the read head runs backwards at thirty-one times speed.
+    let bank = bank_with(
+        DisgustingBeatLaneKind::Time,
+        DisgustingBeatLength::Bar,
+        &[
+            DisgustingBeatPoint::new(0.0, 0.0, CurveShape::Linear),
+            DisgustingBeatPoint::new(1.0 / 64.0, -0.5, CurveShape::Linear),
+        ],
+    );
+    let grid = grid_of(&bank);
+    let config = DisgustingBeatConfig::new();
+
+    let mut fx = prepared();
+    let frames = BAR_SAMPLES * 2;
+    let input = ramp(frames);
+    let out = render(&mut fx, &config, &grid, &input);
+
+    // Inside the steep stretch of the second bar, which is 1/64 of a bar =
+    // 1500 samples long. Read the head early in it and late in it.
+    let early = BAR_SAMPLES + 200;
+    let late = BAR_SAMPLES + 1300;
+    let moved = read_at(&out, late, frames) - read_at(&out, early, frames);
+    let elapsed = (late - early) as f64;
+    // Thirty-one times backwards over 1100 samples is about 34 000 samples of
+    // memory. Anything forwards at all means the fade jammed and the drawn
+    // line was thrown away.
+    assert!(
+        moved < -20.0 * elapsed,
+        "the steep segment did not scrub: the read head moved {moved:.0} samples \
+         over {elapsed:.0}, which is {:.1}x. It should be about -31x.",
+        moved / elapsed
+    );
+}
+
+#[test]
+fn a_read_that_touches_the_write_head_does_not_spike() {
+    // **The crunch.** Ty, on the first release: *"lots of crunchyness in the
+    // sounds"*. The interpolator is a four-point Hermite, so it wants two
+    // samples either side of where it is reading — and the ring only has
+    // samples up to the write head. Filling the taps past it with **zeros**
+    // puts a cliff under the kernel, and a cubic through a cliff overshoots:
+    // one sample at 0.664 in a stretch where every neighbour is 0.625, every
+    // time the read head touches live at a fractional position.
+    //
+    // Which is often. Any segment with a rate above one is a read closing on
+    // the write head, and it arrives there at whatever fraction it likes:
+    // *Double-time*, *Speed Up*, *Forward*, *Chirp* and *Time Melt* all did
+    // it twice a bar. The taps are held at the edge now, which is what every
+    // resampler does at the end of a buffer.
+    //
+    // Drawn here: a quarter of a lane-length climbed back over half of it, so
+    // the read runs at 1.5x and meets the write head exactly at the halfway
+    // point.
+    let bank = bank_with(
+        DisgustingBeatLaneKind::Time,
+        DisgustingBeatLength::Bar,
+        &[
+            DisgustingBeatPoint::new(0.0, -0.25, CurveShape::Linear),
+            DisgustingBeatPoint::new(0.5, 0.0, CurveShape::Linear),
+        ],
+    );
+    let grid = grid_of(&bank);
+    let config = DisgustingBeatConfig::new();
+    let mut fx = prepared();
+    let frames = BAR_SAMPLES * 3;
+    let input = ramp(frames);
+    let out = render(&mut fx, &config, &grid, &input);
+
+    // A ramp read at any steady rate is a straight line, so every kink in the
+    // output is the effect's own. The rate changes once a bar, which is a
+    // kink of one sample's worth of ramp; a spike is thousands of times that.
+    let tail = &out[BAR_SAMPLES..];
+    let (mut worst, mut at) = (0.0f32, 0usize);
+    for (i, w) in tail.windows(3).enumerate() {
+        let kink = (w[0] - 2.0 * w[1] + w[2]).abs();
+        if kink > worst {
+            worst = kink;
+            at = i;
+        }
+    }
+    let one_sample = 1.0 / frames as f32;
+    assert!(
+        worst < one_sample * 4.0,
+        "the read spiked at sample {at}: a kink of {worst}, where one sample \
+         of the ramp is {one_sample}. The interpolator is reading off the end \
+         of what has been written."
+    );
+}
+
+#[test]
+fn every_preset_in_the_bank_plays_without_a_click() {
+    // **The sweep.** Ty: *"please make sure it works with no issues, covering
+    // any edge cases or weird interactions."* Seventy rows, every scene of
+    // every kit, each one played for four bars — and the thing being looked
+    // for is a discontinuity nobody asked for.
+    //
+    // A **ramp** goes in, because a ramp's value is its own sample index: the
+    // output *is* the read position, and reading it back says exactly where
+    // the head was. A drawn jump then shows as the crossfade walking across
+    // over its own twelve milliseconds; anything that moves the head a
+    // thousand samples between two output samples is a click, and there is
+    // nowhere for one to hide.
+    //
+    // This found two faults and would have found both before release. The
+    // read touching the write head at a fractional position spiked on five
+    // rows twice a bar, and every peak over unity in the bank was the same
+    // fault seen from the other side.
+    use fontelle_types::DisgustingBeatFactoryPreset as Row;
+    let frames = BAR_SAMPLES * 4;
+    let input = ramp(frames);
+    let loudest = sine(1000.0, frames);
+    for row in Row::ALL {
+        let (config, mut bank) = row.build();
+        // The **time lane alone**: a gate's edge is a discontinuity by
+        // design — it is what a gate *is* — and it would drown out the thing
+        // being looked for. `a_gate_edge_is_ramped_not_stepped` is the volume
+        // lane's own guard.
+        for scene in bank.scenes.iter_mut() {
+            for kind in [
+                DisgustingBeatLaneKind::Volume,
+                DisgustingBeatLaneKind::Tone,
+                DisgustingBeatLaneKind::Pan,
+            ] {
+                if let Some(lane) = scene.lane_mut(kind) {
+                    lane.on = false;
+                }
+            }
+        }
+        let grid = grid_of(&bank);
+        let mut fx = prepared();
+        let out = render(&mut fx, &config, &grid, &input);
+        // The last two bars: the first two are the memory filling, where a
+        // curve reaching for history that does not exist yet is answered by
+        // the clamp rather than by the drawing.
+        let tail = &out[BAR_SAMPLES * 2..];
+        for (index, pair) in tail.windows(2).enumerate() {
+            let moved = (pair[1] - pair[0]).abs() * frames as f32;
+            assert!(
+                moved < 2_000.0,
+                "{} ({}) moved the read head {moved:.0} samples between two \
+                 output samples, {index} into the third bar. A jump the \
+                 crossfade covered walks across in twelve milliseconds; this \
+                 is a step, and a step is a click.",
+                row.name,
+                row.category
+            );
+        }
+
+        // And nothing it does is louder than what went in. Two copies of one
+        // sound under a fade can sum, and an interpolator reading off the end
+        // of the memory overshoots — both come out here.
+        let mut fx = prepared();
+        let out = render(&mut fx, &config, &grid, &loudest);
+        assert!(
+            peak(&out[BAR_SAMPLES..]) <= 1.001,
+            "{} peaks at {:.3} on a full-scale tone",
+            row.name,
+            peak(&out[BAR_SAMPLES..])
+        );
+    }
+}
+
+#[test]
+fn a_gate_edge_is_ramped_not_stepped() {
+    // The volume lane's own guard, and the reason the sweep above can leave
+    // the lane out: a gate's edge *is* a discontinuity, so it has to be a
+    // deliberate one. A lane stepping 1 to 0 between two samples is a jump at
+    // full scale — a click on every edge, and every preset in the *Gate*
+    // category is made of nothing else. Eight samples is 0.17 ms, still far
+    // too fast to read as a fade.
+    let bank = bank_with(
+        DisgustingBeatLaneKind::Volume,
+        DisgustingBeatLength::Bar,
+        &[
+            DisgustingBeatPoint::new(0.0, 1.0, CurveShape::Stepped),
+            DisgustingBeatPoint::new(0.5, 0.0, CurveShape::Stepped),
+        ],
+    );
+    let grid = grid_of(&bank);
+    let config = DisgustingBeatConfig::new();
+    let mut fx = prepared();
+    let input = vec![1.0f32; BAR_SAMPLES * 2];
+    let out = render(&mut fx, &config, &grid, &input);
+
+    let tail = &out[BAR_SAMPLES..];
+    let steepest = tail
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        steepest < 0.2,
+        "the gate edge is a step of {steepest}, not a ramp"
+    );
+    // And it is still a gate: all the way open and all the way shut.
+    assert!(
+        peak(&tail[..BAR_SAMPLES / 4]) > 0.99,
+        "the gate never opened"
+    );
+    assert!(
+        peak(&tail[BAR_SAMPLES * 3 / 4..]) < 0.01,
+        "the gate never shut"
+    );
+}
+
+#[test]
+fn every_drawn_scene_in_the_bank_actually_changes_the_sound() {
+    // **A preset that does nothing is the worst kind of bug**, because it has
+    // no symptom: it sounds like a wire, and a wire sounds fine. *Push* and
+    // *Rushed* were drawn above the line — reading a future that only
+    // look-ahead buys — so the clamp ate every sample of them and they
+    // shipped doing nothing whatever. One beat of *Drunk* went the same way.
+    //
+    // `no_factory_row_reads_a_future_it_has_not_got` stops that particular
+    // way of being a wire. This stops all the others: every scene anybody
+    // drew has to be audibly different from the same knobs with nothing on
+    // them.
+    use fontelle_types::DisgustingBeatFactoryPreset as Row;
+    // A **ramp**, not a tone. A steady sine is invariant under a shift of a
+    // whole number of its own periods, and a quarter bar at 120 bpm is
+    // exactly two hundred and twenty cycles of 440 Hz — so *Quarter Roll*,
+    // which replays the first quarter of the bar four times, came out of a
+    // sine bit for bit unchanged. Every sample of a ramp is different from
+    // every other one, which is the whole reason it is the probe here.
+    let input = ramp(BAR_SAMPLES * 3);
+    for row in Row::ALL {
+        let (mut config, bank) = row.build();
+        for scene in 0..bank.scenes.len() {
+            if bank.scenes[scene].is_flat() {
+                continue; // a kit's first scene is *off*, on purpose
+            }
+            config.scene = scene as u8;
+            let mut drawn = prepared();
+            let with = render(&mut drawn, &config, &grid_of(&bank), &input);
+            // The same knobs, including whatever latency they carry, with
+            // nothing drawn: anything else would measure the look-ahead.
+            let empty = fontelle_types::DisgustingBeatBank::new();
+            let mut plain = prepared();
+            let without = render(&mut plain, &config, &grid_of(&empty), &input);
+
+            // In **samples of read position**, which is the unit the drawing
+            // is in: the ramp climbs the whole way over three bars, so a
+            // difference of one part in 288 000 is one sample of offset.
+            // Amplitude would have been the wrong ruler — *Swing 16* pushes
+            // the offbeats by twenty-four milliseconds, which is a whole
+            // groove and four thousandths of a ramp.
+            let frames = input.len() as f32;
+            let moved = with
+                .iter()
+                .zip(&without)
+                .skip(BAR_SAMPLES)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max)
+                * frames;
+            assert!(
+                moved > 48.0,
+                "{} scene {} is a wire: it moves the sound by {moved:.1} samples, \
+                 which is under a millisecond",
+                row.name,
+                scene + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn a_loop_wrap_does_not_click() {
+    // The commonest thing anybody does with this: put it on a two-bar loop
+    // and hold the play button. Every wrap is a **discontinuity in the song's
+    // position** — the tick jumps backwards by the loop's length — and the
+    // offset the lane reports jumps with it. That is a jump like any other
+    // and the crossfade has to take it, or the effect clicks once a loop
+    // forever.
+    let bank = bank_with(
+        DisgustingBeatLaneKind::Time,
+        DisgustingBeatLength::Bar,
+        &[
+            DisgustingBeatPoint::new(0.0, 0.0, CurveShape::Linear),
+            DisgustingBeatPoint::new(0.5, -0.4, CurveShape::Linear),
+        ],
+    );
+    let grid = grid_of(&bank);
+    let config = DisgustingBeatConfig::new();
+    let mut fx = prepared();
+
+    const BLOCK: usize = 128;
+    let frames = BAR_SAMPLES * 4;
+    let input = ramp(frames);
+    let mut music = MusicalTime::playing(BPM, SR);
+    let mut out = Vec::with_capacity(frames);
+    let mut written = 0;
+    // Two bars, then back to the top, twice over: a loop.
+    let loop_ticks = music.ticks_per_sample * (BAR_SAMPLES * 2) as f64;
+    while written < frames {
+        let take = BLOCK.min(frames - written);
+        let mut left = input[written..written + take].to_vec();
+        let mut right = left.clone();
+        {
+            let (a, b) = (&mut left[..], &mut right[..]);
+            let mut channels: [&mut [f32]; 2] = [a, b];
+            fx.process(&mut channels, NoteInput::default(), &grid, &config, music);
+        }
+        out.extend_from_slice(&left);
+        music.tick += music.ticks_per_sample * take as f64;
+        if music.tick >= loop_ticks {
+            music.tick -= loop_ticks;
+        }
+        written += take;
+    }
+
+    // The wraps land at two bars and four; look at the whole of the second
+    // pass, which contains one.
+    let tail = &out[BAR_SAMPLES * 2 + 1..];
+    let worst = tail
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs() * frames as f32)
+        .fold(0.0f32, f32::max);
+    assert!(
+        worst < 2_000.0,
+        "the loop wrap moved the read head {worst:.0} samples between two \
+         output samples \u{2014} the crossfade did not cover it"
+    );
+}

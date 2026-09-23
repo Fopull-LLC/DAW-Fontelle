@@ -37,25 +37,25 @@
                 "points": [
                   {
                     "at": 0.0,
-                    "value": 0.0,
+                    "value": -0.014,
                     "curve": "Stepped",
                     "tension": 0.0
                   },
                   {
                     "at": 0.25,
-                    "value": -0.022,
+                    "value": -0.036,
                     "curve": "Stepped",
                     "tension": 0.0
                   },
                   {
                     "at": 0.5,
-                    "value": 0.014,
+                    "value": 0.0,
                     "curve": "Stepped",
                     "tension": 0.0
                   },
                   {
                     "at": 0.75,
-                    "value": -0.034,
+                    "value": -0.048,
                     "curve": "Stepped",
                     "tension": 0.0
                   }

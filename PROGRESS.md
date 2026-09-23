@@ -127,6 +127,43 @@ use it.
   window has its own key path and the studio's `rename_key` is not on it. The
   chip drew its caret and sat there. Both halves of the rename were correct;
   the gap between them was not testable from either side.
+**The first release crunched, and neither fault was in the DSP.** Ty: *"the
+half time one does not seem to be functioning correctly … lots of
+crunchyness … it seems the diagonal lines on time changing is causing this
+buzz crunchy sound."* Both were measured before anything was changed.
+
+- **The song's position was rounded before the effect saw it.**
+  `TransportSnapshot::position_tick` was an `i64`; at 120 bpm a tick is
+  twenty-five samples and the snapshot is rebuilt once a block, so the phase
+  snapped backwards by up to a whole tick at every boundary. On a flat curve
+  that is invisible. On a **slope** it is a jump in the read position — twelve
+  samples at half speed, three hundred and seventy-five times a second, which
+  is precisely the diagonals Ty pointed at. A clean 500 Hz tone's biggest kink
+  is 0.0043; through the old chain it was 1.31. The tick is `f64` off
+  `tick_at_exact` now, and `disgusting_beat_chain.rs` drives the real
+  `TransportReader` so the join is covered too.
+- **The interpolator read off the end of the memory.** A four-point Hermite
+  wants two samples either side and the ring has none past the write head;
+  `read_ring` filled those taps with zeros, and a cubic through that cliff
+  overshoots — one sample at 0.664 where every neighbour is 0.625. That
+  happens whenever a curve's read touches live at a fractional position,
+  which is what every segment faster than 1× does on its way back to the
+  present: five rows did it twice a bar, and it was every over-unity peak in
+  the bank. The taps are held at the edge now.
+- **Three presets did nothing at all.** *Push*, *Rushed* and one beat of
+  *Drunk* were drawn reading the future, which the clamp eats sample by
+  sample. A preset that does nothing has no symptom. The two that mean it buy
+  look-ahead and say so; *Drunk* moved below the line, since only the
+  differences between its four offsets are heard.
+- **Half-time did what it was drawn to do** — beats 3 and 4 replay beats 1 and
+  2 — which is why it "sounds the same". The name promised a speed. It is
+  *Half-time Feel* now, with *Half Speed* in Tape for the other reading.
+- Five new tests, two of them sweeps over the whole bank: no preset may move
+  the read head without a crossfade, none may pass unity, and every drawn
+  scene must audibly differ from an empty one. Both sweeps found faults on
+  their first run. Aliasing on speed-up was measured and left alone: at every
+  rate in the bank the folded images land above 20 kHz.
+
 - Left open: §12's Phase 5 in full — playing all seventy presets on the
   nested `Xwayland :99` against a real loop — and the look-ahead question in
   the plan's §14, the only one of its six that changes the sound.

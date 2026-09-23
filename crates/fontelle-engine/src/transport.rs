@@ -221,7 +221,16 @@ pub struct TransportSnapshot {
     /// sequencer wrote it — a node working it out from `position_sample` and
     /// `bpm` would be integrating the tempo *here* over the whole song, and
     /// one tempo change puts that out for the rest of the piece.
-    pub position_tick: Tick,
+    ///
+    /// **Fractional, and it has to be.** A whole tick is twenty-five samples
+    /// at 120 bpm and 48 kHz, and this is rebuilt once a block, so a rounded
+    /// answer is a staircase with treads the audio thread can hear: a node
+    /// that turns the song's position into a read position takes every tread
+    /// as a jump. DisgustingBeat's first release buzzed at the block rate on
+    /// every sloped curve for exactly this reason — see
+    /// [`CompiledTimeline::tick_at_exact`](fontelle_types::CompiledTimeline::tick_at_exact).
+    /// Anything that wants *which* tick rounds this itself.
+    pub position_tick: f64,
     /// How far the song moves per sample from here, in ticks.
     ///
     /// The tempo inside a span is constant, so a node walks a block with this
@@ -245,7 +254,7 @@ impl Default for TransportSnapshot {
             state: TransportState::Stopped,
             position_sample: 0,
             bpm: fontelle_types::DEFAULT_BPM,
-            position_tick: 0,
+            position_tick: 0.0,
             ticks_per_sample: fontelle_types::DEFAULT_BPM as f64 / 60.0 * PPQN as f64
                 / fontelle_types::DEFAULT_SAMPLE_RATE,
             beats_per_bar: fontelle_types::DEFAULT_BEATS_PER_BAR,
@@ -368,7 +377,7 @@ impl TransportReader {
                 state,
                 position_sample: self.position,
                 bpm: timeline.bpm_at(self.position),
-                position_tick: timeline.tick_at(self.position),
+                position_tick: timeline.tick_at_exact(self.position),
                 ticks_per_sample: timeline.ticks_per_sample_at(self.position),
                 beats_per_bar: timeline.beats_per_bar,
             };
@@ -455,7 +464,7 @@ impl TransportReader {
                 // And where in the song that is, which is a different
                 // question (§3.4 of `docs/disgusting-beat-plan.md`) and the one a
                 // pattern locked to the bar is asking.
-                position_tick: timeline.tick_at(range.start),
+                position_tick: timeline.tick_at_exact(range.start),
                 ticks_per_sample: timeline.ticks_per_sample_at(range.start),
                 beats_per_bar: timeline.beats_per_bar,
             },

@@ -3,9 +3,9 @@
   "device": {
     "effect": "DisgustingBeat"
   },
-  "name": "Half-time",
+  "name": "Half-time Feel",
   "category": "Groove",
-  "notes": "Beats 3 and 4 play beats 1 and 2 again.",
+  "notes": "Beats 3 and 4 play beats 1 and 2 again. For the speed, see Half Speed.",
   "author": "Fontelle",
   "payload": {
     "disgustingbeat": {

@@ -3,9 +3,9 @@
   "device": {
     "effect": "DisgustingBeat"
   },
-  "name": "Double-time",
+  "name": "Double-time Feel",
   "category": "Groove",
-  "notes": "The first half of the bar twice, at speed.",
+  "notes": "The first half of the bar twice. For the speed, see Double Speed.",
   "author": "Fontelle",
   "payload": {
     "disgustingbeat": {

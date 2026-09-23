@@ -99,6 +99,35 @@ Without the second the chip sat there with a caret and took no letters —
 found on `:99`, and no test could have found it, because the rename was right
 on both sides of the gap.
 
+(13) **A tick handed to a DSP must be fractional.** `TransportSnapshot`
+carries `position_tick: f64` from `CompiledTimeline::tick_at_exact`, and
+`tick_at` (rounded) is for grids and markers. At 120 bpm a tick is
+twenty-five samples and the snapshot is rebuilt once a block, so a rounded
+one is a staircase the audio thread can hear: DisgustingBeat turns it into a
+read position and buzzed at the block rate on every sloped curve. The DSP was
+exact the whole time. Anything deriving a *continuous* quantity from the
+song's position wants the exact one.
+
+(14) **An interpolator's taps must be held at the edge, never zeroed.** A
+four-point Hermite wants two samples either side, and a ring has none past
+the write head. Filling those taps with zeros puts a cliff under the kernel
+and a cubic through a cliff overshoots — one sample at 0.664 in a stretch of
+0.625, every time a curve's read touched live at a fractional position. Which
+is what every segment faster than 1× does on its way back to the present. See
+`read_ring`.
+
+(15) **A preset that reads ahead of the playhead is a wire.** Positive offset
+means the future, the machine clamps it to now, and the drawing is thrown
+away sample by sample — silently, because a wire sounds fine. *Push*,
+*Rushed* and one beat of *Drunk* all shipped that way. A row that means it
+pays for look-ahead (`row_ahead`, `kit_ahead`); everything else stays below
+the line. `no_factory_row_reads_a_future_it_has_not_got` holds it.
+
+(16) **A renamed preset leaves a ghost.** `xtask export-factory-presets`
+writes and never deletes, so a rename leaves the old file in the bank,
+working, belonging to no recipe and listed in the browser.
+`the_factory_folder_holds_nothing_the_recipes_do_not_name` looks for those.
+
 **Updated 2026-09-22 (v0.11.0, the Notepad).** The tag carries the Notepad
 *and* the v0.10.0 chunk, whose tag was made here and never pushed — v0.9.0
 was the last release, so `origin/main` was four chunks behind until this

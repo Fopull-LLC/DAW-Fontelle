@@ -1566,7 +1566,7 @@ impl AudioNode for EffectNode {
         ) = (&mut self.state, &self.config)
         {
             let music = fontelle_types::MusicalTime {
-                tick: ctx.transport.position_tick as f64,
+                tick: ctx.transport.position_tick,
                 ticks_per_sample: ctx.transport.ticks_per_sample,
                 beats_per_bar: ctx.transport.beats_per_bar.max(1),
                 bpm: ctx.transport.bpm,
