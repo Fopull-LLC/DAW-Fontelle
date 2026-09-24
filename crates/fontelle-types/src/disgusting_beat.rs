@@ -241,9 +241,10 @@ impl DisgustingBeatPoint {
 pub struct DisgustingBeatLane {
     pub length: DisgustingBeatLength,
     pub on: bool,
-    /// **Always at least one**, sorted by `at`, no two sharing one: an empty
-    /// lane would have to mean something and the two candidates (silence, and
-    /// the wire) are both wrong half the time.
+    /// **Always at least one**, sorted by `at`, at most two sharing one: an
+    /// empty lane would have to mean something and the two candidates
+    /// (silence, and the wire) are both wrong half the time, and a pair at
+    /// one phase is a **vertical** — see [`DisgustingBeatLane::tidy`].
     pub points: Vec<DisgustingBeatPoint>,
 }
 
@@ -261,8 +262,8 @@ impl DisgustingBeatLane {
         }
     }
 
-    /// Puts the lane back in the shape everything else assumes: sorted, no
-    /// two points at one place, at least one point, every value in range.
+    /// Puts the lane back in the shape everything else assumes: sorted, at
+    /// least one point, at most two at any one phase, every value in range.
     ///
     /// Called by the edit algebra after every change rather than trusted to
     /// each edit, because "the points are sorted" is the property the RT
@@ -277,17 +278,59 @@ impl DisgustingBeatLane {
                 point.tension = 0.0;
             }
         }
+        // **Stable**, and that is the whole of how a vertical works: a pair
+        // of points at one phase keeps the order they were put in, so the
+        // first is the value arriving and the second the value leaving.
         self.points
             .sort_by(|a, b| a.at.partial_cmp(&b.at).unwrap_or(std::cmp::Ordering::Equal));
-        // Two points at one place is how a *vertical* segment would be
-        // spelled, and it is not how this spells one — a `Stepped` point is.
-        // The later one wins, which is what dragging one onto another means.
-        self.points.dedup_by(|b, a| {
-            (b.at - a.at).abs() < 1e-9 && {
-                *a = *b;
-                true
+        // Two points at one phase is a **vertical** — the instant, drawn.
+        // (Before 2026-09-23 it was a point that ate its neighbour, and the
+        // only way to spell a jump was a `Stepped` point, which is a
+        // staircase's shape and not a thing anybody reaches for when they
+        // want silence to become a sound between two samples.)
+        //
+        // Two is all there is room for, because two is all a vertical needs
+        // and a third is a point inside a line with no width, which nothing
+        // can draw and no gesture can pick up again. The later one wins,
+        // which is what dragging a point onto a pair means.
+        let mut kept: Vec<DisgustingBeatPoint> = Vec::with_capacity(self.points.len());
+        for point in self.points.drain(..) {
+            let here = kept
+                .iter()
+                .rev()
+                .take_while(|p| (p.at - point.at).abs() < 1e-9)
+                .count();
+            match here {
+                // A pair with one value is one point: the handle underneath
+                // could never be picked up again.
+                1 if (kept[kept.len() - 1].value - point.value).abs() < 1e-9 => {
+                    let last = kept.len() - 1;
+                    kept[last] = point;
+                }
+                0 | 1 => kept.push(point),
+                _ => {
+                    let last = kept.len() - 1;
+                    kept[last] = point;
+                }
             }
-        });
+        }
+        // **A vertical needs a before and an after**, and at the edge of the
+        // lane one of those is outside it: nothing arrives at phase 0 (the
+        // lane has just come round, and what it comes round *from* is its
+        // last point) and nothing leaves phase 1. The half that can never be
+        // read goes, rather than sitting there as a handle that moves and
+        // changes nothing. The jump at the edge is already drawn — it is the
+        // seam.
+        if kept.len() > 1 && kept[0].at < 1e-9 && kept[1].at < 1e-9 {
+            kept.remove(0);
+        }
+        if kept.len() > 1
+            && kept[kept.len() - 1].at > 1.0 - 1e-9
+            && kept[kept.len() - 2].at > 1.0 - 1e-9
+        {
+            kept.pop();
+        }
+        self.points = kept;
         self.points.truncate(DISGUSTING_BEAT_POINTS);
         if self.points.is_empty() {
             self.points.push(DisgustingBeatPoint::new(
@@ -922,10 +965,33 @@ impl CurvePoint for DisgustingBeatPoint {
 /// the choice [`bpm_at`](crate::CompiledTimeline::bpm_at) already made for
 /// the same reason.
 ///
-/// The lane is a **loop**, so the segment after the last point runs round to
-/// the first one. A `Hold` point stops the lane where it sits until the loop
-/// comes round again, which falls out of that: everything after the freeze is
-/// cut off, so the wrapping segment carries the held point's own shape.
+/// # The ends, and the one seam
+///
+/// **A lane holds its ends.** Before the first point it is already at that
+/// point's value; after the last one it stays there until the lane comes
+/// round again. So the only place a lane jumps is its own edge — which is
+/// where the eye expects one, where the window draws it, and where the
+/// crossfade takes it.
+///
+/// It ran the last point back to the first instead until 2026-09-23, and on
+/// the **time** lane that was a speed-up nobody drew. A curve that has fallen
+/// must rise again somewhere to be both continuous and a loop, and the rise
+/// landed in the stretch where nothing had been drawn at all: the *hold*
+/// tool's own gesture, three quarters of a lane-length across three beats,
+/// recovered all of it over the fourth and played the memory back at four
+/// times speed once a bar.
+///
+/// > *"it is rapidly wanting to switch between downpitching or pitching it up
+/// > ridiculously even though the graph drawn just looks like its slowing
+/// > down not speeding up."* — Ty, 2026-09-23
+///
+/// A curve that *should* run smoothly across the seam still can: put a point
+/// at each edge. That is one gesture, and it is the one gesture whose absence
+/// nobody can hear.
+///
+/// A `Hold` point ends the lane where it sits, which is now the same rule
+/// said twice — it cuts the later points away and the held value carries to
+/// the edge.
 pub fn curve_at<P: CurvePoint>(points: &[P], phase: f64, neutral: f64) -> f64 {
     if points.is_empty() {
         return neutral;
@@ -942,27 +1008,24 @@ pub fn curve_at<P: CurvePoint>(points: &[P], phase: f64, neutral: f64) -> f64 {
         return points[0].value();
     }
     let phase = phase.rem_euclid(1.0);
+    // `<=` rather than `<` is what makes a **vertical** read the way it is
+    // drawn: at a pair's own phase both of them are behind the search, so the
+    // value there is the second one's — the lane has arrived and left.
     let index = points.partition_point(|p| p.at() <= phase);
-    let (from, to, from_at, to_at) = if index == 0 {
-        // Before the first point: the segment that wrapped round.
-        let last = &points[len - 1];
-        (last, &points[0], last.at() - 1.0, points[0].at())
-    } else if index == len {
-        let last = &points[len - 1];
-        (last, &points[0], last.at(), points[0].at() + 1.0)
-    } else {
-        (
-            &points[index - 1],
-            &points[index],
-            points[index - 1].at(),
-            points[index].at(),
-        )
-    };
+    if index == 0 {
+        return points[0].value();
+    }
+    if index == len {
+        return points[len - 1].value();
+    }
+    let (from, to) = (&points[index - 1], &points[index]);
     if from.curve().holds() {
         return from.value();
     }
-    let span = (to_at - from_at).max(1e-9);
-    let t = from.curve().eased((phase - from_at) / span, from.tension());
+    let span = (to.at() - from.at()).max(1e-9);
+    let t = from
+        .curve()
+        .eased((phase - from.at()) / span, from.tension());
     from.value() + (to.value() - from.value()) * t
 }
 

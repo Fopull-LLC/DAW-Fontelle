@@ -1201,6 +1201,75 @@ The window also carries **one sentence for whatever is under the pointer**
 in a manual. The parts that *are* the picture — the grid and the points on it
 — deliberately have none.
 
+## 16. The lane's ends, the vertical, and the grips (2026-09-23)
+
+Three reports from playing with it, and they turned out to be one shape:
+
+> *"i cannot make 2 points on the same x position because it will delete one
+> of them so i cant have it go from quite to immidiately audible … also im
+> noticing with time stretching it is rapidly wanting to switch between
+> downpitching or pitching it up ridiculously even though the graph drawn
+> just looks like its slowing down not speeding up."* — Ty
+
+21. **A lane holds its ends; its only seam is its own edge.** The segment
+    after the last point used to run back to the first one, and on the time
+    lane that is a **speed-up nobody drew**: a curve that has fallen must rise
+    again somewhere to be both continuous and a loop, and the rise landed in
+    the stretch where nothing had been drawn at all. The *hold* tool's own
+    gesture — the freeze across three beats — recovered three quarters of a
+    lane-length over the fourth and played the memory back at **4.05×**, two
+    octaves up, once a bar. Measured, not reasoned about
+    (`the_stretch_after_the_last_point_holds_instead_of_sprinting_back`).
+
+    Before the first point the lane is already at that point's value; after
+    the last it stays there. A curve that *should* run smoothly across the
+    seam still can — put a point at each edge — and that is one gesture,
+    where the old rule's cost was a sound nobody could find the cause of.
+    The window draws the seam as a dashed line at the right edge.
+
+    It found six factory rows short of a closing point on the way: *Double
+    Speed* and *Double-time Feel* played their second halves flat, *Wikki*
+    and two scenes of the kits left a rub half finished, and *Glitch Hold*
+    chirped at 7× for the last twentieth of the bar. *Tape Start* had been
+    running **backwards** for its last three beats.
+
+22. **Two points at one phase are a vertical.** They used to eat each other,
+    and the only way to spell an instant was a `Stepped` point — which is a
+    staircase's shape and not what a hand reaches for when it wants silence
+    to become a sound between two samples. The first of a pair is the value
+    arriving and the second the value leaving, which is what dragging one
+    point onto another means. At the lane's own edge one half is never read,
+    so it is dropped rather than left as a handle that moves and does
+    nothing; the menu's **split** row is greyed there for the same reason.
+
+23. **A bend needs a grip you can see.** The tension gesture has existed
+    since Phase 4 and was a press within seven pixels of the drawn line:
+    undiscoverable, and it also took the one press that should have added a
+    point there. Every segment that has anywhere to bend to now carries a
+    hollow grip at its middle, filled when it is bent, and a right-click on
+    one puts the segment back straight — the one thing a bend drag cannot do
+    to itself, because nothing on a lane snaps and zero is a value a hand
+    cannot find again.
+
+24. **A drag follows the point it grabbed.** The lane re-sorts after every
+    edit, so the index a drag started with named a *different* point the
+    moment the one under the hand crossed another, and the drag walked off
+    with the neighbour. `canvas::grabbed_point` finds the point that is where
+    the drag last put it, and answers `None` rather than guessing.
+
+25. **A drawing tool has no handles.** Found on `:99` driving the *hold*
+    tool's own gesture: a tape stop starts at the top left of the lane, which
+    is exactly where a flat lane's one point sits, so the press grabbed that
+    point and the drag moved it — the lane came out flat with one handle on
+    it and no freeze at all. A point is grabbed before the grid *with the
+    points tool*; with a tool that draws, the lane is a canvas.
+
+26. **The window says what the hand is on.** The console says what the
+    machine is doing now; `canvas::disgusting_beat_readout` says what the
+    thing under the pointer is worth — a point's place in the bar and how far
+    back it reads, and a segment's **speed in semitones**, because the slope
+    is the sound and "−0.5" means nothing to anybody.
+
 Still open: §12's Phase 5 in full — playing every one of the seventy presets
 on the nested `Xwayland :99` against a real loop, which is where the next
 round of defects will come from; and the **look-ahead** decision in §14,

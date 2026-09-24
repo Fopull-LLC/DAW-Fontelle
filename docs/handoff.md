@@ -128,6 +128,27 @@ writes and never deletes, so a rename leaves the old file in the bank,
 working, belonging to no recipe and listed in the browser.
 `the_factory_folder_holds_nothing_the_recipes_do_not_name` looks for those.
 
+(17) **A looping curve that is continuous everywhere has a rise in it.** This
+is arithmetic, not an opinion: a curve that falls has to climb back to where
+it started to come round again, and on a *time* lane a climb is a speed-up. A
+DisgustingBeat lane used to close the loop by running its last point back to
+its first across the gap, and the gap is where nothing was drawn — so the
+**hold** tool's own gesture, the freeze across three beats, played the memory
+at 4.05× over the fourth, once a bar, and looked like a tape stop on screen.
+A lane holds its ends now and seams at its own edge, where the crossfade
+takes it. The rule generalises: anything periodic and drawn either jumps
+somewhere or speeds up somewhere, and the jump is the one a person can see.
+
+(18) **A drawing tool must not have handles**, and a drag must follow the
+point it grabbed. Both cost a `:99` session. The hold tool's own gesture
+starts at the top left of the lane, which is exactly where a flat lane's one
+point sits, so the press grabbed that point and the drag moved it — a lane
+flat at the bottom with one handle on it and no freeze at all. And a lane
+re-sorts after every edit, so the index a drag started with names a
+*different* point the moment the one under the hand crosses another;
+`canvas::grabbed_point` re-finds it by where the drag last put it. Neither
+failed a test and neither could have: both halves were correct.
+
 **Updated 2026-09-22 (v0.11.0, the Notepad).** The tag carries the Notepad
 *and* the v0.10.0 chunk, whose tag was made here and never pushed — v0.9.0
 was the last release, so `origin/main` was four chunks behind until this

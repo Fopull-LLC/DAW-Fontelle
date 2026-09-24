@@ -933,13 +933,17 @@ fn a_read_that_touches_the_write_head_does_not_spike() {
     //
     // Drawn here: a quarter of a lane-length climbed back over half of it, so
     // the read runs at 1.5x and meets the write head exactly at the halfway
-    // point.
+    // point — and then walks back down to where it started, so the lane's own
+    // **seam** is not a jump. A jump is crossfaded, and a crossfade between
+    // two places in a ramp is a bend in it: real, wanted, and not the spike
+    // this is looking for.
     let bank = bank_with(
         DisgustingBeatLaneKind::Time,
         DisgustingBeatLength::Bar,
         &[
             DisgustingBeatPoint::new(0.0, -0.25, CurveShape::Linear),
             DisgustingBeatPoint::new(0.5, 0.0, CurveShape::Linear),
+            DisgustingBeatPoint::new(1.0, -0.25, CurveShape::Linear),
         ],
     );
     let grid = grid_of(&bank);
@@ -1201,5 +1205,59 @@ fn a_loop_wrap_does_not_click() {
         worst < 2_000.0,
         "the loop wrap moved the read head {worst:.0} samples between two \
          output samples \u{2014} the crossfade did not cover it"
+    );
+}
+
+#[test]
+fn the_stretch_after_the_last_point_holds_instead_of_sprinting_back() {
+    // > *"with time stretching it is rapidly wanting to switch between
+    // > downpitching or pitching it up ridiculously even though the graph
+    // > drawn just looks like its slowing down not speeding up."* — Ty,
+    // > 2026-09-23
+    //
+    // This is that, and it is geometry rather than DSP. Drawn below is
+    // exactly what the **hold** tool lays down for a drag from the top left
+    // to three quarters of the way across: the freeze slope, a tape stop over
+    // three beats. Nothing is drawn after it.
+    //
+    // A lane whose value runs back to its first point across the gap is a
+    // lane that *rises* wherever it has fallen, and a rise in the time lane
+    // is a speed-up: three quarters of a lane-length recovered over a quarter
+    // of a lane is `1 + 3` — two octaves up, once a bar, and never drawn by
+    // anybody. The fall was deliberate and the sprint back was arithmetic.
+    //
+    // So a lane holds its last point's value until it comes round again. The
+    // seam is at the lane's own edge, where the eye already expects one and
+    // where the crossfade takes it.
+    let bank = bank_with(
+        DisgustingBeatLaneKind::Time,
+        DisgustingBeatLength::Bar,
+        &[
+            DisgustingBeatPoint::new(0.0, 0.0, CurveShape::Linear),
+            DisgustingBeatPoint::new(0.75, -0.75, CurveShape::Linear),
+        ],
+    );
+    let grid = grid_of(&bank);
+    let config = DisgustingBeatConfig::new();
+    let mut fx = prepared();
+    let frames = BAR_SAMPLES * 2;
+    let input = ramp(frames);
+    let out = render(&mut fx, &config, &grid, &input);
+
+    // The second bar's tail, inside the stretch past the last point and clear
+    // of the crossfade at either end of it.
+    let from = BAR_SAMPLES + (BAR_SAMPLES as f64 * 0.78) as usize;
+    let to = BAR_SAMPLES + (BAR_SAMPLES as f64 * 0.97) as usize;
+    let mut worst = 0.0f64;
+    for sample in from..to {
+        let rate = read_at(&out, sample + 1, frames) - read_at(&out, sample, frames);
+        worst = worst.max(rate);
+    }
+    assert!(
+        worst < 1.01,
+        "nothing was drawn after three quarters of the bar and the memory \
+         played back at {worst:.2}x there \u{2014} {:+.1} semitones of \
+         speed-up nobody asked for",
+        12.0 * worst.max(1e-9).log2()
     );
 }

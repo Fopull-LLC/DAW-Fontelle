@@ -164,6 +164,43 @@ buzz crunchy sound."* Both were measured before anything was changed.
   their first run. Aliasing on speed-up was measured and left alone: at every
   rate in the bank the folded images land above 20 kHz.
 
+**The drawing, on 2026-09-23.** Three reports, and they turned out to be one
+shape. Ty: *"i cannot make 2 points on the same x position … so i cant have it
+go from quite to immidiately audible … also im noticing with time stretching
+it is rapidly wanting to switch between downpitching or pitching it up
+ridiculously even though the graph drawn just looks like its slowing down."*
+The plan's §16 has all of it.
+
+- **A lane holds its ends now; its only seam is its own edge.** The segment
+  after the last point used to run back to the first one, and on the time
+  lane that is a speed-up nobody drew: a curve that has fallen must rise
+  somewhere to be both continuous and a loop, and the rise landed in the
+  stretch where nothing was drawn at all. The **hold tool's own gesture** —
+  the freeze across three beats — recovered three quarters of a lane-length
+  over the fourth and played the memory back at **4.05×**, two octaves up,
+  once a bar. It found six factory rows short of a closing point on the way:
+  *Double Speed* and *Double-time Feel* played their second halves flat,
+  *Wikki* and two kit scenes left a rub half finished, *Glitch Hold* chirped
+  at 7×, and *Tape Start* had been running backwards for its last three beats.
+- **Two points at one phase are a vertical** — the instant, drawn. The first
+  is the value arriving and the second the value leaving, which is what
+  dragging one point onto another means. At the lane's own edge one half can
+  never be read, so it goes rather than sitting there as a handle that moves
+  and changes nothing.
+- **A bend has a grip you can see.** The tension gesture had been a press
+  within seven pixels of the drawn line since phase 4 — undiscoverable, and
+  it took the one press that should have added a point there. Every segment
+  that has anywhere to bend to carries a hollow grip at its middle, filled
+  when bent, and a right-click on one puts the segment straight again.
+- **Three things only the window could show**: a drag walked off with a
+  point's neighbour the moment the two crossed (the lane re-sorts, so the
+  index names a different point); a **drawing tool grabbed handles**, which
+  broke the hold tool's own gesture, because a tape stop starts at the top
+  left of the lane and that is exactly where a flat lane's one point sits;
+  and the window could not say what the hand was on. It says it now — a
+  point's place in the bar, and a segment's **speed in semitones**, because
+  the slope is the sound.
+
 - Left open: §12's Phase 5 in full — playing all seventy presets on the
   nested `Xwayland :99` against a real loop — and the look-ahead question in
   the plan's §14, the only one of its six that changes the sound.

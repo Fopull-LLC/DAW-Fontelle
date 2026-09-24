@@ -5539,8 +5539,13 @@ fn disgusting_beat_draws_its_memory_and_its_curves() {
     lanes[1].points = vec![
         fontelle_types::DisgustingBeatPoint::new(0.0, 1.0, fontelle_types::CurveShape::Stepped),
         fontelle_types::DisgustingBeatPoint::new(0.25, 0.3, fontelle_types::CurveShape::Stepped),
+        // **A vertical**: two points at one phase, silence to full between
+        // two samples. In the dump because a picture is the only way to see
+        // that the two handles do not land on top of each other and that the
+        // line between them is upright.
+        fontelle_types::DisgustingBeatPoint::new(0.5, 0.0, fontelle_types::CurveShape::Linear),
         fontelle_types::DisgustingBeatPoint::new(0.5, 1.0, fontelle_types::CurveShape::SCurve),
-        fontelle_types::DisgustingBeatPoint::new(0.75, 0.0, fontelle_types::CurveShape::Stepped),
+        fontelle_types::DisgustingBeatPoint::new(0.75, 0.0, fontelle_types::CurveShape::Linear),
     ];
     let mut scene_names: Vec<String> = (0..12).map(|_| String::new()).collect();
     scene_names[0] = "Hold".to_string();
@@ -5588,7 +5593,7 @@ fn disgusting_beat_draws_its_memory_and_its_curves() {
         menu: Some(fontelle_ui::canvas::DisgustingBeatMenu {
             lane: 0,
             index: 1,
-            at: (420.0, 300.0),
+            at: (700.0, 230.0),
         }),
     };
 
@@ -5618,6 +5623,15 @@ fn disgusting_beat_draws_its_memory_and_its_curves() {
         labels.ensure(lane.length.label(), &theme.font, &mut text);
     }
     labels.ensure("clear", &theme.font, &mut text);
+    if let Some(said) = fontelle_ui::canvas::disgusting_beat_readout(
+        &view,
+        fontelle_ui::canvas::DisgustingBeatHit::Bend {
+            lane: 1,
+            carrier: 3,
+        },
+    ) {
+        labels.ensure(&said, &theme.font, &mut text);
+    }
     for row in 0..fontelle_ui::canvas::DISGUSTING_BEAT_MENU_ROWS {
         labels.ensure(
             fontelle_ui::canvas::disgusting_beat_menu_label(row),
@@ -5657,7 +5671,13 @@ fn disgusting_beat_draws_its_memory_and_its_curves() {
             fontelle_ui::render::DisgustingBeatChrome {
                 layout: layout.clone(),
                 view: &view,
-                hover: None,
+                // Over the grip on the volume lane's last segment, so the
+                // dump carries a lit handle and the read-out it puts in the
+                // canopy.
+                hover: Some(fontelle_ui::canvas::DisgustingBeatHit::Bend {
+                    lane: 1,
+                    carrier: 3,
+                }),
                 renaming: None,
             },
         ),

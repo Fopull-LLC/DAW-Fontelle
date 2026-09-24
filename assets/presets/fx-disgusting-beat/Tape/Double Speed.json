@@ -44,12 +44,18 @@
                   {
                     "at": 0.5,
                     "value": 0.0,
-                    "curve": "Stepped",
+                    "curve": "Linear",
                     "tension": 0.0
                   },
                   {
-                    "at": 0.501,
+                    "at": 0.5,
                     "value": -0.5,
+                    "curve": "Linear",
+                    "tension": 0.0
+                  },
+                  {
+                    "at": 1.0,
+                    "value": 0.0,
                     "curve": "Linear",
                     "tension": 0.0
                   }

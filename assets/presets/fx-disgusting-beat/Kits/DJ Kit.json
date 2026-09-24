@@ -408,6 +408,12 @@
                     "value": -0.25,
                     "curve": "Linear",
                     "tension": 0.0
+                  },
+                  {
+                    "at": 1.0,
+                    "value": 0.0,
+                    "curve": "Linear",
+                    "tension": 0.0
                   }
                 ]
               },

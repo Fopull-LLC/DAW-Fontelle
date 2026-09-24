@@ -178,7 +178,7 @@ pub struct LaneView {
 /// What a drag on the grid does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DisgustingBeatTool {
-    /// Points: click to add, drag to move, drag a segment to bend it.
+    /// Points: click to add, drag to move, drag a segment's grip to bend it.
     #[default]
     Points,
     /// Free-hand.
@@ -216,7 +216,10 @@ impl DisgustingBeatTool {
     /// (`docs/flopsynth-next.md` §3.3).
     pub fn tip(self) -> &'static str {
         match self {
-            Self::Points => "Click to add a point, drag one to move it, drag a segment to bend it",
+            Self::Points => {
+                "Click to add a point, drag one to move it, drag a segment's grip to bend it. \
+                 Two points at one place is a jump"
+            }
             Self::Pencil => "Draw freehand",
             Self::Line => "Drag a straight segment",
             Self::Hold => "Drag the freeze: the sound stops where you start and waits",
@@ -530,17 +533,21 @@ pub fn disgusting_beat_layout(view: &DisgustingBeatView, body: Rect) -> Disgusti
 pub const DISGUSTING_BEAT_MENU_ROW: f32 = 22.0;
 pub const DISGUSTING_BEAT_MENU_WIDTH: f32 = 132.0;
 
-/// How many rows the shape menu has: every shape, and *remove*.
-pub const DISGUSTING_BEAT_MENU_ROWS: usize = CurveShape::ALL.len() + 1;
+/// How many rows the shape menu has: every shape, *split*, and *remove*.
+pub const DISGUSTING_BEAT_MENU_ROWS: usize = CurveShape::ALL.len() + 2;
 
 /// What a row of the shape menu says.
 ///
 /// **Remove is the last row** rather than a gesture of its own, because
 /// right-click used to remove a point outright and somebody who learned that
-/// must not lose it to a menu that took its place.
+/// must not lose it to a menu that took its place. **Split** is above it: a
+/// second point at this one's phase, which is how a lane spells an instant —
+/// silence to full between two samples — and which is otherwise drawn by
+/// clicking the grid above a point that is already there and guessing.
 pub fn disgusting_beat_menu_label(row: usize) -> &'static str {
     match CurveShape::ALL.get(row) {
         Some(shape) => shape.label(),
+        None if row == CurveShape::ALL.len() => "split",
         None => "remove",
     }
 }
@@ -548,6 +555,32 @@ pub fn disgusting_beat_menu_label(row: usize) -> &'static str {
 /// What a row of the menu does to the point it is open on.
 pub fn disgusting_beat_menu_shape(row: usize) -> Option<CurveShape> {
     CurveShape::ALL.get(row).copied()
+}
+
+/// Whether this row is the one that makes a vertical.
+pub fn disgusting_beat_menu_splits(row: usize) -> bool {
+    row == CurveShape::ALL.len()
+}
+
+/// Whether a row would do anything to the point the menu is open on.
+///
+/// Only **split** ever says no, and only at the two ends of a lane: a
+/// vertical needs a before and an after, and at phase 0 nothing arrives while
+/// at phase 1 nothing leaves, so the lane would keep one half and drop the
+/// other. The jump at the edge is already drawn — it is the seam. A row that
+/// quietly does nothing is worse than one that is plainly off.
+pub fn disgusting_beat_menu_enabled(
+    view: &DisgustingBeatView,
+    menu: DisgustingBeatMenu,
+    row: usize,
+) -> bool {
+    if !disgusting_beat_menu_splits(row) {
+        return true;
+    }
+    view.lanes
+        .get(menu.lane)
+        .and_then(|lane| lane.points.get(menu.index))
+        .is_some_and(|point| point.at > 1e-9 && point.at < 1.0 - 1e-9)
 }
 
 /// How wide a chip has to be for its word.
@@ -572,6 +605,13 @@ pub enum DisgustingBeatHit {
     Point {
         lane: usize,
         index: usize,
+    },
+    /// On the grip halfway along a segment, which bends it. The segment is
+    /// named by the point that **carries its shape**, which is the one
+    /// before it.
+    Bend {
+        lane: usize,
+        carrier: usize,
     },
     /// On the strip that opens or closes a lane.
     LaneStrip {
@@ -723,6 +763,21 @@ pub fn disgusting_beat_hit(
         if lane_clear_rect(*rect).contains(x, y) {
             return Some(DisgustingBeatHit::LaneClear { lane: index });
         }
+        // **Only the points tool has handles.** With a tool that draws, the
+        // lane is a canvas and nothing on it is a grip, which is what every
+        // drawing program does with a pencil — and what the *hold* tool
+        // needed: a tape stop starts at the top left of the lane, which is
+        // exactly where a flat lane's one point sits, so its own gesture
+        // grabbed that point and dragged it instead of laying the freeze
+        // down. Found on `:99`.
+        if view.tool != DisgustingBeatTool::Points {
+            let (phase, value) = grid_position(view, lane, *rect, x, y);
+            return Some(DisgustingBeatHit::Grid {
+                lane: index,
+                phase,
+                value,
+            });
+        }
         // A point first: the grab radius beats the grid everywhere they
         // overlap, or a point could never be picked up off its own line.
         for (point_index, point) in lane.points.iter().enumerate() {
@@ -731,6 +786,20 @@ pub fn disgusting_beat_hit(
                 return Some(DisgustingBeatHit::Point {
                     lane: index,
                     index: point_index,
+                });
+            }
+        }
+        // Then the grips on the segments. **After** the points, because a
+        // grip on a short segment can sit under one and a point has to stay
+        // pickable; before the grid, for the same reason a point is.
+        for carrier in 0..lane.points.len() {
+            let Some((bx, by)) = bend_handle(view, lane, *rect, carrier) else {
+                continue;
+            };
+            if (bx - x).hypot(by - y) <= DISGUSTING_BEAT_BEND_GRAB {
+                return Some(DisgustingBeatHit::Bend {
+                    lane: index,
+                    carrier,
                 });
             }
         }
@@ -771,15 +840,82 @@ pub fn disgusting_beat_tip(
         DisgustingBeatHit::Scene(_) => {
             "Click to play this scene, right-click to name it, drag it onto another to copy it"
         }
-        DisgustingBeatHit::MenuRow(_) => "The shape of the segment that leaves this point",
+        DisgustingBeatHit::MenuRow(row) => {
+            if disgusting_beat_menu_splits(row) {
+                "A second point here, so the lane can jump rather than slide"
+            } else {
+                "The shape of the segment that leaves this point"
+            }
+        }
         DisgustingBeatHit::Canopy => {
             "The memory the curves read from: oldest on the left, now on the right, \
              lit where the read head has been"
         }
         DisgustingBeatHit::Grid { .. }
         | DisgustingBeatHit::Point { .. }
+        | DisgustingBeatHit::Bend { .. }
         | DisgustingBeatHit::Control(_) => return None,
     })
+}
+
+/// What the thing under the pointer is **worth**, in the lane's own words.
+///
+/// The console says what the machine is doing now; this says what the hand is
+/// on, which is the number somebody drawing needs and the one the window
+/// could not say until 2026-09-23. On the time lane a segment is a **speed**,
+/// because the slope is the sound and "-0.5" means nothing to anybody:
+/// `rate = 1 + dv/dp`, and a rate is a pitch.
+///
+/// Shaped by the caller, so this crate stays free of text measuring
+/// (INVARIANT 2) — it returns the words, not a picture of them.
+pub fn disgusting_beat_readout(
+    view: &DisgustingBeatView,
+    hit: DisgustingBeatHit,
+) -> Option<String> {
+    let (lane, at, value) = match hit {
+        DisgustingBeatHit::Point { lane, index } => {
+            let lane = view.lanes.get(lane)?;
+            let point = lane.points.get(index)?;
+            (lane, point.at, point.value)
+        }
+        DisgustingBeatHit::Grid { lane, phase, value } => (view.lanes.get(lane)?, phase, value),
+        DisgustingBeatHit::Bend { lane, carrier } => {
+            let lane = view.lanes.get(lane)?;
+            let from = lane.points.get(carrier)?;
+            let to = lane.points.get(carrier + 1)?;
+            // A segment says what it **plays at**, which is the only thing
+            // about a segment anybody is choosing.
+            let slope = (to.value - from.value) / (to.at - from.at).max(1e-9);
+            return Some(match lane.kind {
+                DisgustingBeatLaneKind::Time => {
+                    format!("segment: {}", rate_caption(1.0 + slope as f32))
+                }
+                _ => format!(
+                    "segment: {:+.2} over {:.2} beats",
+                    to.value - from.value,
+                    (to.at - from.at) * lane_beats(view, lane)
+                ),
+            });
+        }
+        _ => return None,
+    };
+    let beat = at * lane_beats(view, lane) + 1.0;
+    Some(match lane.kind {
+        // Where it is, and how far back it reads — in **beats**, because a
+        // lane-length is a unit nobody has a feel for and a beat is the one
+        // everybody does.
+        DisgustingBeatLaneKind::Time => format!(
+            "beat {beat:.2}   {:+.2} beats back",
+            value * lane_beats(view, lane)
+        ),
+        DisgustingBeatLaneKind::Volume => format!("beat {beat:.2}   {:.0} %", value * 100.0),
+        _ => format!("beat {beat:.2}   {:+.0} %", value * 100.0),
+    })
+}
+
+/// How many beats one lane runs for, with the rate knob's stretch in it.
+fn lane_beats(view: &DisgustingBeatView, lane: &LaneView) -> f64 {
+    lane.length.beats(view.beats_per_bar) * view.config.rate.stretch()
 }
 
 /// Where a point sits in the lane's rectangle.
@@ -881,28 +1017,8 @@ pub fn freeze_slope(view: &DisgustingBeatView, rect: Rect) -> f32 {
     (rect.height / span) / (rect.width / 1.0)
 }
 
-/// Which segment of a lane `phase` falls in, and how far the drawn curve is
-/// from `value` there — the two numbers a *bend* gesture needs.
-///
-/// The segment is named by the point that **carries its shape**, which is the
-/// point before it; the one that wraps round is the last. `None` for a lane
-/// with nothing on it.
-pub fn segment_at(lane: &LaneView, phase: f64, value: f64) -> Option<(usize, f64)> {
-    if lane.points.is_empty() {
-        return None;
-    }
-    let index = lane.points.partition_point(|p| p.at <= phase);
-    let carrier = if index == 0 {
-        lane.points.len() - 1
-    } else {
-        index - 1
-    };
-    let drawn = fontelle_types::curve_at(&lane.points, phase, lane.kind.neutral());
-    Some((carrier, (drawn - value).abs()))
-}
-
-/// How close to the drawn curve a press has to be to bend it rather than to
-/// add a point, in pixels.
+/// How wide the grip on a segment is drawn, and how far from its centre a
+/// press still lands on it.
 pub const DISGUSTING_BEAT_BEND_GRAB: f32 = 7.0;
 
 /// Which way a bend runs on this segment.
@@ -917,21 +1033,104 @@ pub fn bend_sign(lane: &LaneView, carrier: usize) -> f64 {
 
 /// Whether a segment has anywhere to bend *to*, and which way a drag runs.
 ///
-/// A segment whose two ends are at the same value is a flat line, and
-/// `from + (to − from) · eased(t)` is that same value whatever the tension
-/// is: the gesture would dirty the document and change nothing. So a press on
-/// a flat segment adds a point instead, which is what somebody pressing on a
-/// flat lane means. Found on `:99`, where every fresh lane is flat.
+/// Three kinds of segment have nowhere to go. A segment whose two ends are at
+/// the same value is a flat line, and `from + (to − from) · eased(t)` is that
+/// same value whatever the tension is (found on `:99`, where every fresh lane
+/// is flat). A **stepped** one ignores where it is going at all. And a
+/// **vertical** — a pair of points at one phase — has no width to bend
+/// across.
+///
+/// The stretch past the last point is not a segment either, and that falls
+/// out of this: there is no `carrier + 1` to bend towards. A lane holds its
+/// last point until it comes round again, so there is nothing drawn there.
 pub fn bend_reach(lane: &LaneView, carrier: usize) -> (bool, f64) {
     let Some(from) = lane.points.get(carrier) else {
         return (false, 1.0);
     };
-    let to = lane.points.get(carrier + 1).or_else(|| lane.points.first());
-    match to {
-        Some(to) if (to.value - from.value).abs() < 1e-9 => (false, 1.0),
-        Some(to) if to.value < from.value => (true, -1.0),
-        Some(_) => (true, 1.0),
-        None => (false, 1.0),
+    let Some(to) = lane.points.get(carrier + 1) else {
+        return (false, 1.0);
+    };
+    if from.curve.holds() || (to.value - from.value).abs() < 1e-9 || (to.at - from.at).abs() < 1e-9
+    {
+        return (false, 1.0);
+    }
+    (true, if to.value < from.value { -1.0 } else { 1.0 })
+}
+
+/// Where the grip on a segment sits: halfway along it, **on the drawn line**.
+///
+/// A handle floating beside a line belongs to nothing, so this reads the
+/// curve rather than averaging the two ends — a segment already bent has its
+/// grip where the bend put it, which is also what tells you at a glance that
+/// it is bent.
+///
+/// `None` when the segment has nowhere to bend to ([`bend_reach`]).
+pub fn bend_handle(
+    view: &DisgustingBeatView,
+    lane: &LaneView,
+    rect: Rect,
+    carrier: usize,
+) -> Option<(f32, f32)> {
+    if !bend_reach(lane, carrier).0 {
+        return None;
+    }
+    let from = lane.points.get(carrier)?;
+    let to = lane.points.get(carrier + 1)?;
+    let phase = (from.at + to.at) * 0.5;
+    let value = fontelle_types::curve_at(&lane.points, phase, lane.kind.neutral());
+    Some(point_position(view, lane, rect, phase, value))
+}
+
+/// Where the **split** row puts its twin: the same phase, far enough away in
+/// value that the vertical it makes is something a hand can see and grab.
+///
+/// A quarter of what the lane is *showing*, not of what it holds. The time
+/// lane's range is a lane-length either way and the reach chooses how much of
+/// that is on the screen, so a quarter of the range is off the top at 8× —
+/// and anything above the zero line is a read of the future, which the
+/// machine clamps away when nothing is looking ahead. It goes towards
+/// whichever end has more room.
+///
+/// `None` for a point at the very start or end of the lane, where a vertical
+/// has no before or no after ([`disgusting_beat_menu_enabled`]).
+pub fn split_twin(view: &DisgustingBeatView, lane: &LaneView, index: usize) -> Option<f64> {
+    let point = lane.points.get(index)?;
+    if point.at <= 1e-9 || point.at >= 1.0 - 1e-9 {
+        return None;
+    }
+    // The two values the top and the bottom of this lane's grid stand for.
+    let (high, low) = (
+        fraction_to_value(view, lane, 0.0),
+        fraction_to_value(view, lane, 1.0),
+    );
+    let reach = (high - low) * 0.25;
+    let twin = if point.value - low > high - point.value {
+        point.value - reach
+    } else {
+        point.value + reach
+    };
+    Some(twin.clamp(low, high))
+}
+
+/// Which point a drag is holding, now that the lane has been tidied under it.
+///
+/// A lane re-sorts after every edit, so the index a drag started with names a
+/// **different point** the moment the one it is holding crosses another — and
+/// the drag then walks off with the neighbour. `target` is where the drag
+/// last put its point; the answer is the point that is there, or the index it
+/// was given when nothing has moved.
+pub fn grabbed_point(lane: &LaneView, target: (f64, f64), index: usize) -> Option<usize> {
+    let near = |point: &DisgustingBeatPoint| {
+        (point.at - target.0).abs() < 1e-6 && (point.value - target.1).abs() < 1e-6
+    };
+    match lane.points.get(index) {
+        Some(point) if near(point) => Some(index),
+        // `None` rather than a guess: the point the drag was holding is not
+        // in the lane any more — the edit that would have put it there was
+        // refused, which is what a full lane does — and moving whichever
+        // point happens to be at that index instead is a curve changing under
+        // a hand that did not ask.
+        _ => lane.points.iter().position(near),
     }
 }
 

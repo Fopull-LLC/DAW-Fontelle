@@ -151,10 +151,11 @@ pub use disgusting_beat::{
     DISGUSTING_BEAT_MENU_ROW, DISGUSTING_BEAT_MENU_ROWS, DISGUSTING_BEAT_MENU_WIDTH,
     DISGUSTING_BEAT_SIZE, DisgustingBeatHit, DisgustingBeatLayout, DisgustingBeatMenu,
     DisgustingBeatSnap, DisgustingBeatTool, DisgustingBeatView, DisgustingBeatZoom, LaneView,
-    bend_reach, bend_sign, canopy_head, disgusting_beat_hit, disgusting_beat_layout,
-    disgusting_beat_menu_label, disgusting_beat_menu_shape, disgusting_beat_tip, freeze_slope,
-    grid_position, hold_points, lane_clear_rect, lane_length_rect, plot_area, point_position,
-    rate_caption, segment_at,
+    bend_handle, bend_reach, bend_sign, canopy_head, disgusting_beat_hit, disgusting_beat_layout,
+    disgusting_beat_menu_enabled, disgusting_beat_menu_label, disgusting_beat_menu_shape,
+    disgusting_beat_menu_splits, disgusting_beat_readout, disgusting_beat_tip, freeze_slope,
+    grabbed_point, grid_position, hold_points, lane_clear_rect, lane_length_rect, plot_area,
+    point_position, rate_caption, split_twin,
 };
 pub use glide::{Glide, wheel_travel};
 pub use mixer::{

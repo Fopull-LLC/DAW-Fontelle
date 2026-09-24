@@ -171,7 +171,7 @@ fn an_edit_that_changes_nothing_is_refused() {
 }
 
 #[test]
-fn points_stay_sorted_and_no_two_share_a_place() {
+fn points_stay_sorted() {
     let mut subject = bank();
     for at in [0.75, 0.25, 0.5] {
         subject
@@ -186,26 +186,83 @@ fn points_stay_sorted_and_no_two_share_a_place() {
         .lane(DisgustingBeatLaneKind::Time)
         .unwrap();
     assert!(
-        lane.points.windows(2).all(|w| w[0].at < w[1].at),
+        lane.points.windows(2).all(|w| w[0].at <= w[1].at),
         "sorted: {:?}",
         lane.points.iter().map(|p| p.at).collect::<Vec<_>>()
     );
+}
 
-    // Dragging one onto another is the later one winning, not two points at
-    // one place — which the RT evaluator's search could not tell apart.
-    let count = lane.points.len();
-    subject
-        .apply(&DisgustingBeatEdit::MovePoint {
-            scene: 0,
-            lane: 0,
-            index: 1,
-            to: (0.5, -0.9),
-        })
-        .unwrap();
+#[test]
+fn two_points_at_one_phase_are_a_vertical() {
+    // > *"i cannot make 2 points on the same x position because it will
+    // > delete one of them so i cant have it go from quite to immidiately
+    // > audible."* — Ty, 2026-09-23
+    //
+    // A pair at one phase is the instant: the **first** is what the lane is
+    // worth arriving there, the second what it is worth leaving. Which is
+    // what dragging one point onto another has to mean, because that is what
+    // somebody is drawing when they do it.
+    let mut subject = bank();
     let lane = subject.scenes[0]
-        .lane(DisgustingBeatLaneKind::Time)
+        .lane_mut(DisgustingBeatLaneKind::Volume)
         .unwrap();
-    assert_eq!(lane.points.len(), count - 1, "two became one");
+    lane.points = vec![
+        DisgustingBeatPoint::new(0.0, 0.0, CurveShape::Linear),
+        DisgustingBeatPoint::new(0.5, 0.0, CurveShape::Linear),
+        DisgustingBeatPoint::new(0.5, 1.0, CurveShape::Linear),
+    ];
+    lane.tidy(DisgustingBeatLaneKind::Volume);
+    assert_eq!(lane.points.len(), 3, "the pair survived tidying");
+
+    let quiet = lane.value_at(0.499, DisgustingBeatLaneKind::Volume);
+    let loud = lane.value_at(0.5, DisgustingBeatLaneKind::Volume);
+    assert!(quiet < 0.01, "silent up to the instant: {quiet}");
+    assert!(loud > 0.99, "and at full the sample after it: {loud}");
+
+    // And it survives the crossing to the audio thread, which reads the same
+    // function over a fixed array.
+    let grid = DisgustingBeatGrid::from(&subject);
+    let lane = grid.lane(0, DisgustingBeatLaneKind::Volume);
+    assert!(lane.value_at(0.499, 1.0) < 0.01);
+    assert!(lane.value_at(0.5, 1.0) > 0.99);
+}
+
+#[test]
+fn a_third_point_at_one_phase_is_refused() {
+    // Two is a vertical; three is a vertical with something invisible inside
+    // it. The later one wins, which is what dragging a point onto a pair
+    // means, and the pair stays a pair however many times that happens.
+    let mut subject = bank();
+    let lane = subject.scenes[0]
+        .lane_mut(DisgustingBeatLaneKind::Volume)
+        .unwrap();
+    lane.points = vec![
+        DisgustingBeatPoint::new(0.5, 0.1, CurveShape::Linear),
+        DisgustingBeatPoint::new(0.5, 0.2, CurveShape::Linear),
+        DisgustingBeatPoint::new(0.5, 0.3, CurveShape::Linear),
+        DisgustingBeatPoint::new(0.5, 0.4, CurveShape::Linear),
+    ];
+    lane.tidy(DisgustingBeatLaneKind::Volume);
+    assert_eq!(lane.points.len(), 2);
+    assert_eq!(lane.points[0].value, 0.1, "the arrival is the first one");
+    assert_eq!(lane.points[1].value, 0.4, "and the last one wins the exit");
+}
+
+#[test]
+fn a_pair_at_one_place_is_one_point() {
+    // Two points at the same phase *and* the same value draw one dot and
+    // sound like one point. Keeping both would leave a handle nobody can
+    // pick up because it is underneath another one.
+    let mut subject = bank();
+    let lane = subject.scenes[0]
+        .lane_mut(DisgustingBeatLaneKind::Volume)
+        .unwrap();
+    lane.points = vec![
+        DisgustingBeatPoint::new(0.5, 0.25, CurveShape::Linear),
+        DisgustingBeatPoint::new(0.5, 0.25, CurveShape::Linear),
+    ];
+    lane.tidy(DisgustingBeatLaneKind::Volume);
+    assert_eq!(lane.points.len(), 1);
 }
 
 #[test]
@@ -349,9 +406,21 @@ fn the_grid_is_the_bank_the_audio_thread_can_hold() {
 }
 
 #[test]
-fn a_lane_is_a_loop() {
-    // The segment after the last point runs round to the first: a pattern
-    // that stopped at its last point would jump at the bar line.
+fn a_lane_holds_its_ends_and_seams_at_its_own_edge() {
+    // **The lane ends where the last point is.** Past it the value holds
+    // until the lane comes round again, and before the first point it is
+    // already at that point's value — so the only place a lane jumps is its
+    // own edge, which is where the eye expects one and where the crossfade
+    // takes it.
+    //
+    // It ran back to the first point instead until 2026-09-23, and on the
+    // *time* lane that was a speed-up nobody drew: a curve that has fallen
+    // has to rise again somewhere to be both continuous and a loop, and the
+    // rise landed in the stretch where nothing was drawn at all. Three
+    // quarters of a lane-length recovered over the last quarter played the
+    // memory back at four times speed, once a bar
+    // (`fontelle-fx/tests/disgusting_beat.rs`,
+    // `the_stretch_after_the_last_point_holds_instead_of_sprinting_back`).
     let mut subject = bank();
     let lane = subject.scenes[0]
         .lane_mut(DisgustingBeatLaneKind::Volume)
@@ -362,11 +431,12 @@ fn a_lane_is_a_loop() {
     ];
     let grid = DisgustingBeatGrid::from(&subject);
     let lane = grid.lane(0, DisgustingBeatLaneKind::Volume);
-    // Half way round the wrapping segment, from 0.75 back to 0.25.
-    let wrapped = lane.value_at(0.0, 1.0);
+    assert_eq!(lane.value_at(0.0, 1.0), 1.0, "before the first point");
+    assert_eq!(lane.value_at(0.1, 1.0), 1.0);
+    assert_eq!(lane.value_at(0.9, 1.0), 0.0, "after the last one");
     assert!(
-        (wrapped - 0.5).abs() < 1e-6,
-        "the wrap interpolates: {wrapped}"
+        (lane.value_at(0.5, 1.0) - 0.5).abs() < 1e-6,
+        "and the drawn segment still interpolates"
     );
 }
 
@@ -432,4 +502,36 @@ fn no_factory_row_reads_a_future_it_has_not_got() {
             }
         }
     }
+}
+
+#[test]
+fn a_pair_at_the_lanes_own_edge_keeps_only_the_half_that_sounds() {
+    // A vertical needs a *before* and an *after*, and at the edge of the lane
+    // one of those is outside it. At phase 0 nothing arrives — the lane has
+    // just come round, and what it comes round from is its last point — so
+    // the first of a pair there is never read. At phase 1 it is the other way
+    // about: nothing leaves.
+    //
+    // The half that is never read is dropped rather than kept, because a
+    // handle that can be picked up and moved and changes nothing is the worst
+    // kind of thing this window could offer. The jump at the edge is already
+    // drawn: it is the seam.
+    let mut subject = bank();
+    let lane = subject.scenes[0]
+        .lane_mut(DisgustingBeatLaneKind::Volume)
+        .unwrap();
+    lane.points = vec![
+        DisgustingBeatPoint::new(0.0, 0.2, CurveShape::Linear),
+        DisgustingBeatPoint::new(0.0, 0.8, CurveShape::Linear),
+        DisgustingBeatPoint::new(0.5, 0.5, CurveShape::Linear),
+        DisgustingBeatPoint::new(1.0, 0.1, CurveShape::Linear),
+        DisgustingBeatPoint::new(1.0, 0.9, CurveShape::Linear),
+    ];
+    lane.tidy(DisgustingBeatLaneKind::Volume);
+    let at: Vec<(f64, f64)> = lane.points.iter().map(|p| (p.at, p.value)).collect();
+    assert_eq!(
+        at,
+        vec![(0.0, 0.8), (0.5, 0.5), (1.0, 0.1)],
+        "the lane leaves phase 0 and arrives at phase 1"
+    );
 }

@@ -1326,8 +1326,13 @@ pub struct WindowApp {
     /// `tune`, `notepad` and this is `Some`.
     disgusting_beat: Option<crate::canvas::DisgustingBeatView>,
     disgusting_beat_layout: crate::canvas::DisgustingBeatLayout,
-    /// The point being dragged, and where it started: `(lane, index)`.
-    disgusting_beat_drag: Option<(usize, usize)>,
+    /// The point being dragged: which lane, where the lane last held it, and
+    /// **where the drag last put it**.
+    ///
+    /// The third is the one that matters. A lane re-sorts after every edit,
+    /// so an index alone names a different point the moment the one under the
+    /// hand crosses another — see `canvas::grabbed_point`.
+    disgusting_beat_drag: Option<(usize, usize, (f64, f64))>,
     /// A console knob being dragged: which parameter, from what pointer
     /// height, at what value.
     disgusting_beat_knob: Option<(usize, f32, f32)>,
@@ -6556,6 +6561,14 @@ impl WindowApp {
                 .and_then(|hit| crate::canvas::disgusting_beat_tip(&view, hit))
             {
                 captions.push(tip.to_string());
+            } else if let Some(said) = self
+                .hover_disgusting_beat
+                .and_then(|hit| crate::canvas::disgusting_beat_readout(&view, hit))
+            {
+                // What the hand is on, in the lane's own words. The same
+                // corner and the same rule: one string, shaped the frame it
+                // is needed.
+                captions.push(said);
             }
             // Every row of the shape menu, whether one is open or not: a menu
             // whose words are shaped on the frame it opens draws empty once.
@@ -8883,6 +8896,40 @@ impl WindowApp {
                             curve,
                         },
                     ),
+                    // **Split**: a twin at this point's phase, a quarter of
+                    // the lane's range away so the vertical it makes is
+                    // something the hand can see and grab. Towards the middle
+                    // of the range, because a point already at the top has
+                    // nowhere above it to put one.
+                    None if crate::canvas::disgusting_beat_menu_splits(row) => {
+                        if !crate::canvas::disgusting_beat_menu_enabled(&view, menu, row) {
+                            doc.set_disgusting_beat_menu(None);
+                            self.reread_studio();
+                            return;
+                        }
+                        let Some(lane) = view.lanes.get(menu.lane) else {
+                            return;
+                        };
+                        let Some(point) = lane.points.get(menu.index).copied() else {
+                            return;
+                        };
+                        let Some(twin) = crate::canvas::split_twin(&view, lane, menu.index) else {
+                            return;
+                        };
+                        doc.edit_disgusting_beat(
+                            strip,
+                            slot,
+                            fontelle_types::DisgustingBeatEdit::AddPoint {
+                                scene: view.scene,
+                                lane: menu.lane,
+                                point: fontelle_types::DisgustingBeatPoint::new(
+                                    point.at,
+                                    twin,
+                                    point.curve,
+                                ),
+                            },
+                        );
+                    }
                     None => doc.edit_disgusting_beat(
                         strip,
                         slot,
@@ -8924,10 +8971,47 @@ impl WindowApp {
                     self.reread_studio();
                 }
                 MouseButton::Left => {
-                    self.disgusting_beat_drag = Some((lane, index));
+                    let at = view
+                        .lanes
+                        .get(lane)
+                        .and_then(|lane| lane.points.get(index))
+                        .map_or((0.0, 0.0), |point| (point.at, point.value));
+                    self.disgusting_beat_drag = Some((lane, index, at));
                     self.drag = Drag::DisgustingBeatCurve;
                 }
             },
+            // **The grip on a segment**, which bends it. It was a press
+            // within seven pixels of the drawn line until 2026-09-23, which
+            // is a feature nobody was told about and also took the one press
+            // that should have added a point there. Now it is a handle you
+            // can see, and everywhere else on the grid adds a point.
+            crate::canvas::DisgustingBeatHit::Bend { lane, carrier } => {
+                let tension = view
+                    .lanes
+                    .get(lane)
+                    .and_then(|lane| lane.points.get(carrier))
+                    .map_or(0.0, |point| point.tension);
+                if button == MouseButton::Right {
+                    // And a right-click on it puts the segment back straight,
+                    // which is the one thing a bend gesture cannot do to
+                    // itself: nothing on a lane snaps, so zero is a value a
+                    // hand cannot find again.
+                    doc.edit_disgusting_beat(
+                        strip,
+                        slot,
+                        fontelle_types::DisgustingBeatEdit::SetTension {
+                            scene: view.scene,
+                            lane,
+                            index: carrier,
+                            tension: 0.0,
+                        },
+                    );
+                    doc.end_gesture();
+                    return;
+                }
+                self.disgusting_beat_bend = Some((lane, carrier, y, tension));
+                self.drag = Drag::DisgustingBeatCurve;
+            }
             crate::canvas::DisgustingBeatHit::Grid { lane, phase, value } => {
                 if button == MouseButton::Right {
                     return;
@@ -8938,36 +9022,6 @@ impl WindowApp {
                 let at = view.snap.snap(phase, beats);
                 match view.tool {
                     crate::canvas::DisgustingBeatTool::Points => {
-                        // **On the curve is a bend, off it is a new point.**
-                        // This is what gives `tension` a gesture, and with it
-                        // the automation lane its bend as well
-                        // (`docs/disgusting-beat-plan.md` §3.5).
-                        if let Some(lane_view) = view.lanes.get(lane)
-                            && let Some(rect) = self.disgusting_beat_layout.lanes.get(lane).copied()
-                            && let Some((carrier, away)) =
-                                crate::canvas::segment_at(lane_view, phase, value)
-                        {
-                            let (_, on_curve) =
-                                crate::canvas::point_position(&view, lane_view, rect, phase, value);
-                            let (_, drawn) = crate::canvas::point_position(
-                                &view,
-                                lane_view,
-                                rect,
-                                phase,
-                                value + away,
-                            );
-                            if (on_curve - drawn).abs() <= crate::canvas::DISGUSTING_BEAT_BEND_GRAB
-                                && crate::canvas::bend_reach(lane_view, carrier).0
-                            {
-                                let tension = lane_view
-                                    .points
-                                    .get(carrier)
-                                    .map_or(0.0, |point| point.tension);
-                                self.disgusting_beat_bend = Some((lane, carrier, y, tension));
-                                self.drag = Drag::DisgustingBeatCurve;
-                                return;
-                            }
-                        }
                         doc.edit_disgusting_beat(
                             strip,
                             slot,
@@ -8981,11 +9035,12 @@ impl WindowApp {
                                 ),
                             },
                         );
-                        // Placed where it was clicked, and *not* carried into
-                        // a drag: the lane re-sorts on every edit, so the
-                        // index this point ends up at is not known until the
-                        // view comes back round. Pick it up again to move it.
-                        self.disgusting_beat_drag = None;
+                        // And it is **carried into the drag**, so a click that
+                        // lands a point badly is one gesture to fix rather
+                        // than two. Where the lane put it is worked out from
+                        // where it was asked to go, which is what
+                        // `grabbed_point` is for.
+                        self.disgusting_beat_drag = Some((lane, 0, (at, value)));
                     }
                     _ => {
                         self.disgusting_beat_stroke = Some((lane, (at, value)));
@@ -9121,7 +9176,7 @@ impl WindowApp {
         // lane below goes on editing the one it started in, which is what
         // every other drag in this program does.
         let lane_index = match (self.disgusting_beat_drag, self.disgusting_beat_stroke) {
-            (Some((lane, _)), _) | (_, Some((lane, _))) => lane,
+            (Some((lane, ..)), _) | (_, Some((lane, _))) => lane,
             _ => return,
         };
         let Some(rect) = self.disgusting_beat_layout.lanes.get(lane_index).copied() else {
@@ -9140,7 +9195,16 @@ impl WindowApp {
         let Some(doc) = &mut self.options.document else {
             return;
         };
-        if let Some((_, index)) = self.disgusting_beat_drag {
+        if let Some((_, index, target)) = self.disgusting_beat_drag {
+            // **Which point is this drag holding?** The lane re-sorts after
+            // every edit, so the index it started with names a different
+            // point the moment the one under the hand crosses another — and
+            // the drag then walks off with the neighbour, dragging two points
+            // into one place. `grabbed_point` finds the one that is where
+            // this drag last put it.
+            let Some(index) = crate::canvas::grabbed_point(lane, target, index) else {
+                return;
+            };
             doc.edit_disgusting_beat(
                 strip,
                 slot,
@@ -9151,6 +9215,7 @@ impl WindowApp {
                     to: (at, value),
                 },
             );
+            self.disgusting_beat_drag = Some((lane_index, index, (at, value)));
             return;
         }
         let Some((_, from)) = self.disgusting_beat_stroke else {

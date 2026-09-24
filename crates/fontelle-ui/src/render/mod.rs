@@ -11608,9 +11608,10 @@ fn draw_disgusting_beat_menu(
         .map(|point| point.curve);
     for (row, rect) in rows.iter().enumerate() {
         let word = crate::canvas::disgusting_beat_menu_label(row);
+        let live = crate::canvas::disgusting_beat_menu_enabled(chrome.view, menu, row);
         let lit = crate::canvas::disgusting_beat_menu_shape(row).is_some()
             && current == crate::canvas::disgusting_beat_menu_shape(row);
-        let hot = chrome.hover == Some(crate::canvas::DisgustingBeatHit::MenuRow(row));
+        let hot = live && chrome.hover == Some(crate::canvas::DisgustingBeatHit::MenuRow(row));
         if lit || hot {
             fill_rect_rounded(
                 scene,
@@ -11635,7 +11636,14 @@ fn draw_disgusting_beat_menu(
                 *rect,
                 rect.x + 8.0,
                 rect.y + (rect.height - text.height) / 2.0,
-                if lit || hot { p.text } else { p.text_muted },
+                if !live {
+                    // Plainly off rather than quietly doing nothing.
+                    p.text_muted.with_alpha(0x60)
+                } else if lit || hot {
+                    p.text
+                } else {
+                    p.text_muted
+                },
             );
         }
     }
@@ -11882,11 +11890,21 @@ fn draw_disgusting_beat_canopy(
     }
 
     // And the one written rule the window has: what the pointer is on,
-    // beside the picture rather than in a manual.
-    if let Some(tip) = chrome
+    // beside the picture rather than in a manual. Over a lane there is no
+    // rule to give — the grid *is* the explanation — so what it says instead
+    // is what the thing under the hand is **worth**, which is the number
+    // somebody drawing is aiming at.
+    let said = chrome
         .hover
         .and_then(|hit| crate::canvas::disgusting_beat_tip(view, hit))
-        && let Some(text) = labels.get(tip)
+        .map(str::to_string)
+        .or_else(|| {
+            chrome
+                .hover
+                .and_then(|hit| crate::canvas::disgusting_beat_readout(view, hit))
+        });
+    if let Some(said) = said
+        && let Some(text) = labels.get(&said)
     {
         draw_text_clipped(
             scene,
@@ -11975,15 +11993,100 @@ fn draw_disgusting_beat_lane(
     // The curve, sampled through the **same** function the audio thread
     // reads: a picture drawn by a second evaluator is a picture that can
     // disagree with the sound.
+    //
+    // Sampled **at every point's own phase as well as across the lane**, and
+    // that is not tidiness: an instant — two points at one phase, or a
+    // stepped one — is a vertical, and a curve sampled only on a uniform grid
+    // draws one as whatever diagonal falls between two samples. A jump you
+    // drew has to look like a jump.
     let steps = (plot.width as usize).clamp(2, 512);
-    let mut points = Vec::with_capacity(steps + 1);
+    let mut phases: Vec<f64> = Vec::with_capacity(steps + lane.points.len() * 2 + 2);
     for step in 0..=steps {
-        let phase = step as f64 / steps as f64;
+        phases.push(step as f64 / steps as f64);
+    }
+    for point in &lane.points {
+        // Just before it (the value arriving) and at it (the value leaving).
+        phases.push((point.at - 1e-9).max(0.0));
+        phases.push(point.at);
+    }
+    phases.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mut points = Vec::with_capacity(phases.len());
+    for phase in phases {
         let value = fontelle_types::curve_at(&lane.points, phase, lane.kind.neutral());
         let (x, y) = crate::canvas::point_position(view, lane, area, phase, value);
         points.push((x, y));
     }
     stroke_polyline(scene, &points, area, 2.0, p.accent);
+
+    // **The seam**, when the lane comes round to a different value from the
+    // one it ended on. It is a real jump — the one place a lane is allowed
+    // one — and drawing it is the difference between a curve that looks
+    // finished and a curve that is hiding its loudest moment at the edge of
+    // the box.
+    let ends = fontelle_types::curve_at(&lane.points, 1.0 - 1e-9, lane.kind.neutral());
+    let begins = fontelle_types::curve_at(&lane.points, 0.0, lane.kind.neutral());
+    if (ends - begins).abs() > 1e-9 {
+        let (_, from_y) = crate::canvas::point_position(view, lane, area, 1.0, ends);
+        let (_, to_y) = crate::canvas::point_position(view, lane, area, 1.0, begins);
+        // **Dashed, and held off the frame.** A solid line on the border is
+        // the border, and a solid line anywhere is another segment — this is
+        // neither: it is the one jump a lane is allowed, and it wants to read
+        // as a seam rather than as something drawn.
+        let x = plot.right() - 4.0;
+        let (top, bottom) = (from_y.min(to_y), from_y.max(to_y));
+        let mut y = top;
+        while y < bottom {
+            let end = (y + 5.0).min(bottom);
+            stroke_polyline(
+                scene,
+                &[(x, y), (x, end)],
+                area,
+                2.0,
+                p.accent.with_alpha(0xc0),
+            );
+            y = end + 4.0;
+        }
+    }
+
+    // **The grips**, one halfway along every segment that has anywhere to
+    // bend to. Drawn hollow so a grip is never mistaken for a point, and
+    // drawn at all because a gesture nobody can see is a gesture nobody has.
+    //
+    // Only with the points tool, because only then can one be grabbed: a
+    // point is part of the curve's shape and belongs in the picture whatever
+    // the hand is holding, and a grip is a control and does not.
+    let grips = if view.tool == crate::canvas::DisgustingBeatTool::Points {
+        lane.points.len()
+    } else {
+        0
+    };
+    for carrier in 0..grips {
+        let Some((x, y)) = crate::canvas::bend_handle(view, lane, area, carrier) else {
+            continue;
+        };
+        let hot = chrome.hover
+            == Some(crate::canvas::DisgustingBeatHit::Bend {
+                lane: index,
+                carrier,
+            });
+        let bent = lane
+            .points
+            .get(carrier)
+            .is_some_and(|point| point.tension.abs() > 1e-6);
+        let r = if hot { 4.5 } else { 3.0 };
+        let colour = if hot { p.text } else { p.accent };
+        if bent || hot {
+            fill_rect_rounded(scene, Rect::new(x - r, y - r, r * 2.0, r * 2.0), r, colour);
+        } else {
+            stroke_rect_rounded(
+                scene,
+                Rect::new(x - r, y - r, r * 2.0, r * 2.0),
+                r,
+                1.5,
+                colour.with_alpha(0xa0),
+            );
+        }
+    }
 
     // The handles.
     for (point_index, point) in lane.points.iter().enumerate() {

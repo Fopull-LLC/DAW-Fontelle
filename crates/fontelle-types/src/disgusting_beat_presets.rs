@@ -17,7 +17,17 @@
 //! - half that: an octave down;
 //! - twice that (`0.0 → −1.0` across *half* the lane): **reverse** at the
 //!   song's own speed;
-//! - a `Stepped` point: a jump backwards, which is a stutter's repeat.
+//! - a `Stepped` point: a jump backwards, which is a stutter's repeat;
+//! - **two points at one phase**: the same jump, drawn — the lane arrives at
+//!   the first and leaves at the second.
+//!
+//! And a lane **holds its last point** until it comes round again, so a
+//! pattern that has to get back to where it started says so with a point at
+//! `1000`. Six rows were short one (`Double Speed` and `Double-time Feel`
+//! played their second halves flat; `Wikki` and two scenes of the kits left a
+//! rub half finished) and did not look it, because the lane ran itself back
+//! to the first point across the gap — which on the time lane is a speed-up
+//! nobody drew. See [`curve_at`](crate::curve_at).
 //!
 //! A **volume** point is the same shape with an amplitude: 1 is unity, 0 is
 //! silence, and `Stepped` is a gate's edge.
@@ -482,6 +492,7 @@ static ROWS: &[DisgustingBeatPreset] = &[
                 P(500, -200, Shape::L),
                 P(900, -600, Shape::S),
                 P(950, -300, Shape::L),
+                P(1000, -350, Shape::L),
             ],
             FLAT_VOLUME,
         ),
@@ -609,6 +620,7 @@ static ROWS: &[DisgustingBeatPreset] = &[
                 P(625, -150, Shape::L),
                 P(750, 0, Shape::L),
                 P(875, -150, Shape::L),
+                P(1000, 0, Shape::L),
             ],
             FLAT_VOLUME,
         ),
@@ -661,8 +673,9 @@ static ROWS: &[DisgustingBeatPreset] = &[
         Scene::new(
             &[
                 P(0, -500, Shape::L),
-                P(500, 0, Shape::S),
-                P(501, -500, Shape::L),
+                P(500, 0, Shape::L),
+                P(500, -500, Shape::L),
+                P(1000, 0, Shape::L),
             ],
             FLAT_VOLUME,
         ),
@@ -944,8 +957,9 @@ static ROWS: &[DisgustingBeatPreset] = &[
         Scene::new(
             &[
                 P(0, -250, Shape::L),
-                P(500, 0, Shape::S),
-                P(501, -250, Shape::L),
+                P(500, 0, Shape::L),
+                P(500, -250, Shape::L),
+                P(1000, 0, Shape::L),
             ],
             FLAT_VOLUME,
         ),
@@ -1254,6 +1268,7 @@ static ROWS: &[DisgustingBeatPreset] = &[
                     P(250, -250, Shape::L),
                     P(500, 0, Shape::L),
                     P(750, -250, Shape::L),
+                    P(1000, 0, Shape::L),
                 ],
                 FLAT_VOLUME,
             ),
@@ -1330,6 +1345,7 @@ static ROWS: &[DisgustingBeatPreset] = &[
                     P(625, -150, Shape::L),
                     P(750, 0, Shape::L),
                     P(875, -150, Shape::L),
+                    P(1000, 0, Shape::L),
                 ],
                 FLAT_VOLUME,
             ),
@@ -1599,6 +1615,7 @@ static ROWS: &[DisgustingBeatPreset] = &[
                     P(250, -250, Shape::L),
                     P(500, 0, Shape::L),
                     P(750, -250, Shape::L),
+                    P(1000, 0, Shape::L),
                 ],
                 FLAT_VOLUME,
             ),
