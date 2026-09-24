@@ -19,6 +19,10 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**Released as v0.12.0 on 2026-09-23** — DisgustingBeat and the transport tick
+under it, eight commits on top of v0.11.0. All four targets built;
+`v0.10.0` remains local and unpushed.
+
 **As of 2026-09-22 — DisgustingBeat: two bars of memory with curves drawn over
 it.** Ty: *"a gross beat like plugin … a section for time manipulation and a
 section for volume and you can draw in patterns for these and make curves and

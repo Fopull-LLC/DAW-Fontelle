@@ -149,14 +149,29 @@ re-sorts after every edit, so the index a drag started with names a
 `canvas::grabbed_point` re-finds it by where the drag last put it. Neither
 failed a test and neither could have: both halves were correct.
 
+**Released 2026-09-23: v0.12.0**, which is DisgustingBeat and the transport
+tick under it — eight commits on top of v0.11.0. Ty gave the go; the tag was
+pushed on its own (`git push origin refs/tags/v0.12.0`, never `--tags`),
+`release.yml` went green on all four targets, and `v0.10.0` is still local.
+
+**Which tags are actually published, and the trap in asking.** On origin:
+everything up to `v0.9.0`, then `v0.11.0` and `v0.12.0`. Local only:
+`v0.10.0`, which must stay that way — pushing it now would publish an older
+release after a newer one.
+
+Both `git tag -l` and `git ls-remote --tags` sort **as text**, which puts
+`v0.1.0`, `v0.1.1`, `v0.10.0`, `v0.11.0` and `v0.12.0` *above* `v0.2.0`. So
+the newest release is near the top of that list and `| tail` cuts it off —
+which is how this session concluded that v0.11.0 had never been published,
+wrote it into a release announcement, and had to take it back ten minutes
+later. Pipe through `sort -V`, or use `git tag -l --sort=v:refname`, before
+believing anything about what is released. `gh release list` is the answer
+that cannot be misread.
+
 **Updated 2026-09-22 (v0.11.0, the Notepad).** The tag carries the Notepad
 *and* the v0.10.0 chunk, whose tag was made here and never pushed — v0.9.0
-was the last release, so `origin/main` was four chunks behind until this
-push. The v0.10.0 tag is still local and should stay that way: pushing it
-now would publish an older release after a newer one. (`git tag -l` sorts
-alphabetically, which puts `v0.10.0` *before* `v0.7.0` — use
-`--sort=v:refname` before believing a tag is missing.) The pad's own notes
-follow.
+was the last release before it, so `origin/main` was four chunks behind until
+that push. The pad's own notes follow.
 
 **The Notepad.** A twenty-first effect kind that makes
 no sound — `PROGRESS.md`'s top entry, and the whole design is
