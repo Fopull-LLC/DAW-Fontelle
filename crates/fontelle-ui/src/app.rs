@@ -410,8 +410,32 @@ const MENU_WHEEL_ROWS: f32 = 3.0;
 enum NameFor {
     /// A fresh, empty project, made and opened. What is open now is left.
     NewProject,
-    /// What is open now, saved into a project of that name.
-    SaveAs,
+    /// What is open now, saved into a project of that name — and then, when
+    /// the save prompt asked for it, what the person was leaving to do.
+    SaveAs(Option<Leave>),
+}
+
+/// What somebody was doing when the save prompt stopped them: each one leaves
+/// what is open behind.
+///
+/// > *"if your project is unsaved you can close it without it asking if you
+/// > want to save first."*
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Leave {
+    /// Closing the window.
+    Quit,
+    /// Opening the Projects tab's row.
+    OpenProject(usize),
+    /// Making a new project from the browser.
+    NewProject,
+}
+
+/// An answer to the save prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SaveAnswer {
+    Save,
+    Discard,
+    Cancel,
 }
 
 impl NameFor {
@@ -419,7 +443,7 @@ impl NameFor {
     fn title(self) -> &'static str {
         match self {
             Self::NewProject => "Name the new project",
-            Self::SaveAs => "Save this project as",
+            Self::SaveAs(_) => "Save this project as",
         }
     }
 }
@@ -1137,6 +1161,18 @@ pub struct WindowApp {
     toast: Option<Toast>,
     /// The modal shown before an action that cannot be undone by a click.
     confirm: Option<Confirm>,
+    /// The prompt before leaving unsaved work: what was being left to do,
+    /// and the question as it is drawn.
+    save_prompt: Option<(Leave, String)>,
+    /// When the last save landed, while "Saved!" is still rising.
+    saved_at: Option<std::time::Instant>,
+    /// The bounce running beside the window, as it last said.
+    job: Option<crate::document::JobProgress>,
+    /// Whether the title was last drawn with its `*`, so a change is seen
+    /// whichever of the many edits made it.
+    shown_dirty: bool,
+    /// The save prompt's answer was to close: the loop ends on its next pass.
+    quit: bool,
     /// Where its rows are, inside the window's body.
     audio_layout: crate::canvas::AudioEditorLayout,
     /// The Tools panel while it is open, laid out. The same shape as
@@ -1924,6 +1960,11 @@ impl WindowApp {
             audio_knob: None,
             toast: None,
             confirm: None,
+            save_prompt: None,
+            saved_at: None,
+            job: None,
+            shown_dirty: false,
+            quit: false,
             audio_layout: crate::canvas::AudioEditorLayout {
                 waveform: crate::layout::Rect::ZERO,
                 rows: Vec::new(),
@@ -2684,6 +2725,17 @@ impl WindowApp {
                 status: &self.status,
                 toast: self.toast.as_ref().map(|t| (t.text.as_str(), t.undoable)),
                 confirm: self.confirm.as_ref().map(|c| c.question.as_str()),
+                notices: crate::render::Notices {
+                    job: self.job.as_ref().map(|j| (j.label.as_str(), j.fraction)),
+                    saved: self.saved_at.and_then(|at| {
+                        crate::canvas::saved_flash(
+                            self.layout.window,
+                            &self.options.theme.metrics,
+                            at.elapsed().as_secs_f32(),
+                        )
+                    }),
+                    save_prompt: self.save_prompt.as_ref().map(|(_, q)| q.as_str()),
+                },
                 tooltip: tooltip.as_ref().map(|(text, rect)| (text.as_str(), *rect)),
                 // Only the studio's own menus: one opened on a knob belongs
                 // to a floating editor's window and is drawn there. See
@@ -2808,6 +2860,24 @@ impl WindowApp {
     /// last note is something moving even though the transport is not.
     fn tick(&mut self) {
         self.poll_welcome();
+        self.poll_job();
+        // "Saved!" rises every frame it is up, and is gone once it has risen.
+        if let Some(at) = self.saved_at {
+            if at.elapsed().as_secs_f32() > crate::canvas::SAVED_FLASH_SECONDS {
+                self.saved_at = None;
+            }
+            self.tree.invalidate_rect(self.layout.window);
+        }
+        // The `*`, whichever of the hundred edits made the change — or the
+        // undo that took it back to what is on disk.
+        if self
+            .options
+            .document
+            .as_ref()
+            .is_some_and(|doc| doc.is_dirty() != self.shown_dirty)
+        {
+            self.refresh_title();
+        }
         // A toast fades after its few seconds are up. The modal does not: it
         // waits for an answer.
         if self
@@ -3688,7 +3758,14 @@ impl ApplicationHandler for WindowApp {
             return;
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                self.leave(Leave::Quit);
+                if self.quit {
+                    event_loop.exit();
+                } else {
+                    self.request_redraw_if_dirty();
+                }
+            }
 
             WindowEvent::Resized(size) => {
                 let Some(live) = &mut self.live else { return };
@@ -4038,6 +4115,11 @@ impl ApplicationHandler for WindowApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // The save prompt was answered with a close.
+        if self.quit {
+            event_loop.exit();
+            return;
+        }
         // Whatever a click asked for, now that there is an event loop to
         // create it with. First, so an editor opened by the press that just
         // ran is on screen this pass rather than next.
@@ -6800,6 +6882,28 @@ impl WindowApp {
                 want(&mut self.labels, &mut self.text, crate::render::UNDO);
             }
         }
+        if let Some(job) = &self.job {
+            let label = job.label.clone();
+            want(&mut self.labels, &mut self.text, &label);
+        }
+        if self.saved_at.is_some() {
+            want(
+                &mut self.labels,
+                &mut self.text,
+                crate::canvas::SAVED_FLASH_TEXT,
+            );
+        }
+        if let Some((_, question)) = &self.save_prompt {
+            let question = question.clone();
+            want(&mut self.labels, &mut self.text, &question);
+            for word in [
+                crate::canvas::SAVE_PROMPT_SAVE,
+                crate::canvas::SAVE_PROMPT_DISCARD,
+                crate::render::CONFIRM_CANCEL,
+            ] {
+                want(&mut self.labels, &mut self.text, word);
+            }
+        }
         if let Some(confirm) = &self.confirm {
             let question = confirm.question.clone();
             want(&mut self.labels, &mut self.text, &question);
@@ -7046,6 +7150,12 @@ impl WindowApp {
         // puts it down (left) or lets it go (anything else), and is spent.
         if self.held.is_some() {
             self.put_down_held(button == winit::event::MouseButton::Left, x, y);
+            return;
+        }
+        // The save prompt, likewise: nothing under it is reachable until it is
+        // answered.
+        if self.save_prompt.is_some() {
+            self.press_save_prompt(x, y);
             return;
         }
         // A confirm modal is above everything: the press is answered here and
@@ -14241,6 +14351,12 @@ impl WindowApp {
                     // A device row opens to show its presets, exactly as a
                     // soundfont row does — the same list in the same place.
                     (Some(doc), BrowserMode::Sounds | BrowserMode::Presets) => doc.open_file(index),
+                    // Opening one leaves what is open behind: asked first
+                    // when that has changes not on disk.
+                    (Some(doc), BrowserMode::Projects) if doc.is_dirty() => {
+                        self.leave(Leave::OpenProject(index));
+                        return;
+                    }
                     (Some(doc), BrowserMode::Projects) => doc.open_project(index),
                     // A folder row walks in, a file row imports. Which of
                     // those it was is the host's to know — it holds the list.
@@ -14394,7 +14510,7 @@ impl WindowApp {
             // **It asks first.** *"when i make a new project i need to be
             // prompted to name it"* — and a project whose name you chose is
             // one you can find again in a folder of them.
-            BrowserHit::NewProject => self.ask_for_a_name(NameFor::NewProject, String::new()),
+            BrowserHit::NewProject => self.leave(Leave::NewProject),
             BrowserHit::Export => self.export(),
             BrowserHit::Nothing => {}
         }
@@ -15667,12 +15783,14 @@ impl WindowApp {
                 self.menu_filter.clear();
                 let done = self.options.document.as_mut().map(|doc| match purpose {
                     NameFor::NewProject => doc.new_project_named(&name),
-                    NameFor::SaveAs => doc.save_as(&name),
+                    NameFor::SaveAs(_) => doc.save_as(&name),
                 });
+                let saved_as =
+                    matches!(purpose, NameFor::SaveAs(_)) && matches!(done, Some(Ok(())));
                 self.status = match &done {
                     Some(Ok(())) => match purpose {
                         NameFor::NewProject => "new project".to_string(),
-                        NameFor::SaveAs => "saved".to_string(),
+                        NameFor::SaveAs(_) => "saved".to_string(),
                     },
                     Some(Err(e)) => e.clone(),
                     None => String::new(),
@@ -15693,6 +15811,12 @@ impl WindowApp {
                 self.tree.invalidate(RACK);
                 self.tree.invalidate(TIMELINE);
                 self.tree.invalidate(PANEL);
+                if let (NameFor::SaveAs(then), true) = (purpose, saved_as) {
+                    self.saved_now();
+                    if let Some(what) = then {
+                        self.go(what);
+                    }
+                }
             }
             (MenuTarget::LoadSound { layer, .. }, index) => {
                 // Row 0 is the heading, so the sounds start at 1.
@@ -17865,6 +17989,17 @@ impl WindowApp {
     fn key(&mut self, event: &winit::event::KeyEvent) {
         use winit::keyboard::{Key, NamedKey};
 
+        // The save prompt has the keyboard: Enter saves, Escape stays, and
+        // nothing reaches the studio behind it.
+        if self.save_prompt.is_some() {
+            match &event.logical_key {
+                Key::Named(NamedKey::Enter) => self.answer_save_prompt(SaveAnswer::Save),
+                Key::Named(NamedKey::Escape) => self.answer_save_prompt(SaveAnswer::Cancel),
+                _ => {}
+            }
+            return;
+        }
+
         // A held browser row is let go on Escape, before anything else reads
         // the key: the chip is the nearest thing to the pointer.
         if self.held.is_some() && event.logical_key == Key::Named(NamedKey::Escape) {
@@ -18668,6 +18803,11 @@ impl WindowApp {
     }
 
     fn save(&mut self) {
+        self.save_then(None);
+    }
+
+    /// [`save`](Self::save), and then — once it is on disk — `then`.
+    fn save_then(&mut self, then: Option<Leave>) {
         // **A studio with no file asks for a name rather than refusing.**
         //
         // > *"when im not in a project yet, i currently cant save that blank
@@ -18688,24 +18828,154 @@ impl WindowApp {
                 .as_ref()
                 .map(|doc| doc.name().to_string())
                 .unwrap_or_default();
-            self.ask_for_a_name(NameFor::SaveAs, seed);
+            self.ask_for_a_name(NameFor::SaveAs(then), seed);
             return;
         }
         let Some(doc) = &mut self.options.document else {
             return;
         };
-        match doc.save() {
+        let saved = match doc.save() {
             Ok(()) => {
                 println!("Fontelle: saved");
                 self.status = "saved".to_string();
+                true
             }
             Err(e) => {
                 eprintln!("Fontelle: could not save — {e}");
                 self.status = format!("could not save — {e}");
+                false
             }
-        }
+        };
         self.tree.invalidate(BROWSER);
         self.refresh_title();
+        if saved {
+            self.saved_now();
+            if let Some(what) = then {
+                self.go(what);
+            }
+        }
+    }
+
+    /// Starts "Saved!" rising.
+    ///
+    /// > *"when i save it shows a Saved! text that appears in the top center
+    /// > and moves upwards as it fades out. this makes it obvious when your
+    /// > save works."*
+    fn saved_now(&mut self) {
+        self.saved_at = Some(std::time::Instant::now());
+        self.tree.invalidate_rect(self.layout.window);
+    }
+
+    /// Leaves what is open to do `what` — asking first, when there are
+    /// changes that are not on disk.
+    fn leave(&mut self, what: Leave) {
+        let Some(doc) = &self.options.document else {
+            self.go(what);
+            return;
+        };
+        if !doc.is_dirty() {
+            self.go(what);
+            return;
+        }
+        let name = doc.name().to_string();
+        let question = match what {
+            Leave::Quit => format!("Save changes to {name} before closing?"),
+            Leave::OpenProject(_) | Leave::NewProject => {
+                format!("Save changes to {name} first?")
+            }
+        };
+        self.menu = None;
+        self.save_prompt = Some((what, question));
+        self.tree.invalidate_rect(self.layout.window);
+    }
+
+    /// Does what the save prompt stood in front of.
+    fn go(&mut self, what: Leave) {
+        match what {
+            Leave::Quit => self.quit = true,
+            Leave::NewProject => self.ask_for_a_name(NameFor::NewProject, String::new()),
+            Leave::OpenProject(index) => {
+                if let Some(doc) = &mut self.options.document
+                    && let Err(e) = doc.open_project(index)
+                {
+                    self.status = e;
+                }
+                self.file_scroll = 0;
+                self.preset_scroll = 0;
+                self.studio_revision = u64::MAX;
+                self.refresh_studio();
+                self.refresh_title();
+                self.tree.invalidate(BROWSER);
+                self.tree.invalidate(RACK);
+                self.tree.invalidate(TIMELINE);
+                self.tree.invalidate(PANEL);
+            }
+        }
+    }
+
+    /// Answers a press while the save prompt is up: a button answers it, a
+    /// press off the card is a Cancel, and a press on the card is nothing.
+    fn press_save_prompt(&mut self, x: f32, y: f32) {
+        let l = crate::canvas::save_prompt_layout(self.layout.window, &self.options.theme.metrics);
+        let answer = if l.save.contains(x, y) {
+            SaveAnswer::Save
+        } else if l.discard.contains(x, y) {
+            SaveAnswer::Discard
+        } else if l.cancel.contains(x, y) || !l.frame.contains(x, y) {
+            SaveAnswer::Cancel
+        } else {
+            return;
+        };
+        self.answer_save_prompt(answer);
+    }
+
+    fn answer_save_prompt(&mut self, answer: SaveAnswer) {
+        let Some((what, _)) = self.save_prompt.take() else {
+            return;
+        };
+        self.tree.invalidate_rect(self.layout.window);
+        match answer {
+            SaveAnswer::Cancel => {}
+            SaveAnswer::Discard => self.go(what),
+            SaveAnswer::Save => self.save_then(Some(what)),
+        }
+    }
+
+    /// Reads how the bounce beside the window is getting on, and says so
+    /// when it ends.
+    ///
+    /// > *"right now the program freezes during actions instead of showing
+    /// > progress bars for example when exporting / rendering things."*
+    fn poll_job(&mut self) {
+        use crate::document::JobPoll;
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        match doc.poll_job() {
+            JobPoll::Idle => {
+                if self.job.take().is_some() {
+                    self.tree.invalidate_rect(self.layout.window);
+                }
+            }
+            JobPoll::Running(progress) => {
+                if self.job.as_ref() != Some(&progress) {
+                    self.job = Some(progress);
+                    self.tree.invalidate_rect(self.layout.window);
+                }
+            }
+            JobPoll::Finished(result) => {
+                self.job = None;
+                let said = match result {
+                    Ok(said) | Err(said) => said,
+                };
+                self.status = said.clone();
+                self.show_toast(said, false);
+                // A row render has just made a row.
+                self.lane_made();
+                self.tree.invalidate(BROWSER);
+                self.tree.invalidate_rect(self.layout.window);
+            }
+        }
     }
 
     /// Keeps the dirty marker in the OS title bar honest (§17, item 10's
@@ -18714,19 +18984,18 @@ impl WindowApp {
         let Some(doc) = &self.options.document else {
             return;
         };
-        let title = format!(
-            "{}{} — Fontelle",
-            doc.name(),
-            if doc.is_dirty() { " •" } else { "" }
-        );
+        // > *"should have a * next to the project name when unsaved."*
+        let caption = crate::canvas::project_caption(doc.name(), doc.is_dirty());
+        self.shown_dirty = doc.is_dirty();
+        let title = format!("{caption} — Fontelle");
         if let Some(live) = &self.live {
             live.window.set_title(&title);
         }
         // The editor panel's header says the same name. It was shaped once
         // at launch, which was right until the start menu made opening a
         // different project the first thing most launches do.
-        if doc.name() != self.options.panel_title {
-            self.options.panel_title = doc.name().to_string();
+        if caption != self.options.panel_title {
+            self.options.panel_title = caption;
             let room =
                 self.layout.panel.header.width - 2.0 * self.options.theme.metrics.panel_padding;
             self.title = self.text.layout(
@@ -18801,6 +19070,18 @@ impl WindowApp {
             wake = Some(wake.map_or(now + PLUGIN_EDITOR_FRAME, |w| {
                 w.min(now + PLUGIN_EDITOR_FRAME)
             }));
+        }
+
+        // **A bounce and "Saved!" hold the loop awake**: the one is read off
+        // another thread and the other moves on its own, and neither is an
+        // event this loop would wake for.
+        if self.job.is_some() || self.saved_at.is_some() {
+            let frame = if self.saved_at.is_some() {
+                std::time::Duration::from_millis(16)
+            } else {
+                SKY_FRAME
+            };
+            wake = Some(wake.map_or(now + frame, |w| w.min(now + frame)));
         }
 
         // A note waiting out its minimum length has to be woken for, or a

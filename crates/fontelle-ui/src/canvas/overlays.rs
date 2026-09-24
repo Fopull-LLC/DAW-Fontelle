@@ -8,7 +8,12 @@
 //! - a **confirm**: a small modal for the one kind of press that a click cannot
 //!   take back (uninstalling an extension is a re-download). It asks first.
 //!
-//! Both are pure geometry here — where the banner sits, where its Undo is,
+//! - a **save prompt**: the confirm's sibling with three answers, for leaving
+//!   a project that has changes not on disk.
+//! - **"Saved!"**, which rises out of the top of the window and fades, and the
+//!   **job card**, a progress bar for a bounce running beside the window.
+//!
+//! All are pure geometry here — where the banner sits, where its Undo is,
 //! where the dialog's two buttons are — so the window only has to draw them and
 //! ask "was this point on the Undo".
 
@@ -124,4 +129,157 @@ pub fn confirm_layout(window: Rect, metrics: &Metrics) -> ConfirmLayout {
         cancel,
         confirm,
     }
+}
+
+/// How long "Saved!" takes to rise out of sight, in seconds.
+pub const SAVED_FLASH_SECONDS: f32 = 1.2;
+
+/// The words that rise when a save lands.
+pub const SAVED_FLASH_TEXT: &str = "Saved!";
+
+/// Where "Saved!" is drawn at one moment of its rise.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SavedFlash {
+    pub center_x: f32,
+    pub center_y: f32,
+    /// 1 when it appears, 0 when it is gone.
+    pub alpha: f32,
+}
+
+/// "Saved!" `elapsed` seconds after the save, or `None` once it has gone.
+///
+/// > *"a Saved! text that appears in the top center and moves upwards as it
+/// > fades out. this makes it obvious when your save works."*
+///
+/// It starts a few rows down from the top edge — over the arrangement, not on
+/// the window's border — and climbs two rows, easing out so the start of the
+/// move is the quick part and the eye is drawn to it. The fade is eased the
+/// other way, so the word is readable for most of its life and goes at the
+/// end.
+pub fn saved_flash(window: Rect, metrics: &Metrics, elapsed: f32) -> Option<SavedFlash> {
+    if !(0.0..=SAVED_FLASH_SECONDS).contains(&elapsed) || window.is_empty() {
+        return None;
+    }
+    let row = metrics.row_height.max(1.0);
+    let t = elapsed / SAVED_FLASH_SECONDS;
+    let rise = 1.0 - (1.0 - t) * (1.0 - t);
+    let start = window.y + row * 3.5;
+    Some(SavedFlash {
+        center_x: window.x + window.width / 2.0,
+        center_y: (start - row * 2.0 * rise).max(window.y),
+        alpha: 1.0 - t * t,
+    })
+}
+
+/// The project's name as a title shows it: with a `*` after it while there
+/// are changes that are not on disk.
+pub fn project_caption(name: &str, dirty: bool) -> String {
+    if dirty {
+        format!("{name}*")
+    } else {
+        name.to_string()
+    }
+}
+
+/// The three buttons on the save prompt.
+pub const SAVE_PROMPT_SAVE: &str = "Save";
+pub const SAVE_PROMPT_DISCARD: &str = "Don't Save";
+
+/// The save-before-leaving prompt, laid out.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SavePromptLayout {
+    pub frame: Rect,
+    pub question: Rect,
+    /// Leave without saving, on the left, away from the other two.
+    pub discard: Rect,
+    /// Stay.
+    pub cancel: Rect,
+    /// Save, then leave — the weighted answer, on the right.
+    pub save: Rect,
+}
+
+/// Lays the save prompt out: [`confirm_layout`]'s card, a little wider, with
+/// its row of buttons in three.
+pub fn save_prompt_layout(window: Rect, metrics: &Metrics) -> SavePromptLayout {
+    let card = confirm_layout(window, metrics);
+    if card.frame.is_empty() {
+        return SavePromptLayout {
+            frame: Rect::ZERO,
+            question: Rect::ZERO,
+            discard: Rect::ZERO,
+            cancel: Rect::ZERO,
+            save: Rect::ZERO,
+        };
+    }
+    let pad = metrics.panel_padding.max(1.0);
+    let width = (window.width * 0.8)
+        .clamp(0.0, 440.0)
+        .min(window.width - pad * 2.0);
+    let frame = Rect::new(
+        window.x + (window.width - width) / 2.0,
+        card.frame.y,
+        width,
+        card.frame.height,
+    )
+    .intersection(&window)
+    .clamped();
+    let inner = (frame.width - pad * 2.0).max(0.0);
+    let question = Rect::new(frame.x + pad, card.question.y, inner, card.question.height)
+        .intersection(&frame)
+        .clamped();
+    let btn_w = ((inner - pad * 2.0) / 3.0).max(0.0);
+    let button = |i: f32| {
+        Rect::new(
+            frame.x + pad + (btn_w + pad) * i,
+            card.confirm.y,
+            btn_w,
+            card.confirm.height,
+        )
+        .intersection(&frame)
+        .clamped()
+    };
+    SavePromptLayout {
+        frame,
+        question,
+        discard: button(0.0),
+        cancel: button(1.0),
+        save: button(2.0),
+    }
+}
+
+/// A job's card, laid out: what is running, and how far it has got.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct JobCardLayout {
+    pub frame: Rect,
+    pub label: Rect,
+    pub bar: Rect,
+}
+
+/// Lays the job card along the bottom of `window`, directly above where a
+/// toast would sit — the finish raises one, and the two must not overlap on
+/// the frame they share.
+pub fn job_card_layout(window: Rect, metrics: &Metrics) -> JobCardLayout {
+    let toast = toast_layout(window, metrics, false).frame;
+    if window.is_empty() || toast.is_empty() {
+        return JobCardLayout {
+            frame: Rect::ZERO,
+            label: Rect::ZERO,
+            bar: Rect::ZERO,
+        };
+    }
+    let row = metrics.row_height.max(1.0);
+    let pad = metrics.panel_padding.max(1.0);
+    let height = row * 2.0 + pad * 2.0;
+    let gap = pad;
+    let frame = Rect::new(toast.x, toast.y - gap - height, toast.width, height)
+        .intersection(&window)
+        .clamped();
+    let inner = (frame.width - pad * 2.0).max(0.0);
+    let label = Rect::new(frame.x + pad, frame.y + pad, inner, row)
+        .intersection(&frame)
+        .clamped();
+    let bar = Rect::new(frame.x + pad, label.bottom(), inner, row)
+        .intersection(&frame)
+        .clamped();
+    JobCardLayout { frame, label, bar }
 }

@@ -44,6 +44,21 @@ use crate::transport::{
     Meter, TransportBarLayout, TransportHit, TransportView, meter_fill, playhead_x,
 };
 
+/// The overlays that say what happened to the document as a whole.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Notices<'a> {
+    /// A bounce running beside the window: what it is, and how far it has
+    /// got (`None` while that is not known). See
+    /// [`crate::canvas::job_card_layout`].
+    pub job: Option<(&'a str, Option<f32>)>,
+    /// "Saved!" at one moment of its rise. See [`crate::canvas::saved_flash`].
+    pub saved: Option<crate::canvas::SavedFlash>,
+    /// The save-before-leaving prompt's question, while it is up. Drawn over
+    /// everything, like the confirm. See
+    /// [`crate::canvas::save_prompt_layout`].
+    pub save_prompt: Option<&'a str>,
+}
+
 /// Everything the window draws that had to be shaped or measured first.
 ///
 /// Text shaping needs a mutable `FontSystem`, and [`draw_window`] is a pure
@@ -92,6 +107,9 @@ pub struct Chrome<'a> {
     /// A confirm modal's question, while one is up. Drawn last of all, over a
     /// scrim. See [`crate::canvas::confirm_layout`].
     pub confirm: Option<&'a str>,
+    /// Saving and long jobs: the progress card, "Saved!", and the prompt
+    /// before leaving unsaved work. See [`Notices`].
+    pub notices: Notices<'a>,
     /// The hover tip, once the pointer has sat still long enough — what it
     /// says and where it goes. `None` for the great majority of frames.
     pub tooltip: Option<(&'a str, Rect)>,
@@ -732,8 +750,17 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     if let Some((text, undoable)) = chrome.toast {
         draw_toast(scene, theme, chrome.labels, layout.window, text, undoable);
     }
+    if let Some((label, fraction)) = chrome.notices.job {
+        draw_job_card(scene, theme, chrome.labels, layout.window, label, fraction);
+    }
+    if let Some(flash) = chrome.notices.saved {
+        draw_saved_flash(scene, theme, chrome.labels, flash);
+    }
     if let Some(question) = chrome.confirm {
         draw_confirm(scene, theme, chrome.labels, layout.window, question);
+    }
+    if let Some(question) = chrome.notices.save_prompt {
+        draw_save_prompt(scene, theme, chrome.labels, layout.window, question);
     }
     // And the shortcuts sheet, which is a page rather than a prompt: over
     // the studio and its menus, under nothing.
@@ -1020,6 +1047,118 @@ fn draw_confirm(scene: &mut Scene, theme: &Theme, labels: &Labels, window: Rect,
     let buttons = [
         (l.cancel, CONFIRM_CANCEL, p.panel_header, p.text),
         (l.confirm, CONFIRM_REMOVE, p.accent, p.window),
+    ];
+    for (rect, word, fill, ink) in buttons {
+        if rect.is_empty() {
+            continue;
+        }
+        fill_rect_rounded(scene, rect, m.corner_radius, fill);
+        if let Some(shaped) = labels.get(word) {
+            draw_text_clipped(
+                scene,
+                shaped,
+                rect,
+                rect.x + (rect.width - shaped.width) / 2.0,
+                rect.y + (rect.height - shaped.height) / 2.0,
+                ink,
+            );
+        }
+    }
+}
+
+/// A bounce's card: what is running, and a bar for how far it has got.
+fn draw_job_card(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    window: Rect,
+    label: &str,
+    fraction: Option<f32>,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let l = crate::canvas::job_card_layout(window, m);
+    if l.frame.is_empty() {
+        return;
+    }
+    fill_rect_rounded(scene, l.frame, m.corner_radius, p.panel);
+    stroke_rect_rounded(scene, l.frame, m.corner_radius, 1.0, p.grid_line);
+    if let Some(shaped) = labels.get(label) {
+        draw_text_clipped(
+            scene,
+            shaped,
+            l.label,
+            l.label.x,
+            l.label.y + (l.label.height - shaped.height) / 2.0,
+            p.text,
+        );
+    }
+    draw_progress_bar(scene, theme, l.bar, fraction);
+}
+
+/// "Saved!" on a pill, both fading together as it rises.
+fn draw_saved_flash(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    flash: crate::canvas::SavedFlash,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let Some(shaped) = labels.get(crate::canvas::SAVED_FLASH_TEXT) else {
+        return;
+    };
+    let alpha = (flash.alpha.clamp(0.0, 1.0) * 255.0) as u8;
+    let pad = m.panel_padding.max(4.0);
+    let pill = Rect::new(
+        flash.center_x - shaped.width / 2.0 - pad * 1.5,
+        flash.center_y - shaped.height / 2.0 - pad * 0.5,
+        shaped.width + pad * 3.0,
+        shaped.height + pad,
+    );
+    fill_rect_rounded(scene, pill, pill.height / 2.0, p.accent.with_alpha(alpha));
+    draw_text(
+        scene,
+        shaped,
+        flash.center_x - shaped.width / 2.0,
+        flash.center_y - shaped.height / 2.0,
+        p.window.with_alpha(alpha),
+    );
+}
+
+/// The save-before-leaving prompt: [`draw_confirm`]'s scrim and card, with
+/// three answers — Don't Save, Cancel, and Save in the accent.
+fn draw_save_prompt(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    window: Rect,
+    question: &str,
+) {
+    use crate::canvas::{SAVE_PROMPT_DISCARD, SAVE_PROMPT_SAVE};
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    fill_rect(scene, window, p.window.with_alpha(190));
+    let l = crate::canvas::save_prompt_layout(window, m);
+    if l.frame.is_empty() {
+        return;
+    }
+    fill_rect_rounded(scene, l.frame, m.corner_radius, p.panel);
+    stroke_rect_rounded(scene, l.frame, m.corner_radius, 1.0, p.grid_line);
+    if let Some(shaped) = labels.get(question) {
+        draw_text_clipped(
+            scene,
+            shaped,
+            l.question,
+            l.question.x,
+            l.question.y + (l.question.height - shaped.height) / 2.0,
+            p.text,
+        );
+    }
+    let buttons = [
+        (l.discard, SAVE_PROMPT_DISCARD, p.panel_header, p.text),
+        (l.cancel, CONFIRM_CANCEL, p.panel_header, p.text),
+        (l.save, SAVE_PROMPT_SAVE, p.accent, p.window),
     ];
     for (rect, word, fill, ink) in buttons {
         if rect.is_empty() {

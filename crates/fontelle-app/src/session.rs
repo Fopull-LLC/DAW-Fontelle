@@ -39,8 +39,8 @@ use fontelle_types::{
 use fontelle_ui::canvas::{ArrangeEdit, InstrumentView, PresetDevice, RollEdit};
 use fontelle_ui::document::{
     ChannelInfo, ClipInfo, ClipKind, Created, CurvePoint, DocumentHost, ExportOptions, ExportRange,
-    ExportTail, GhostFilter, GhostNote, LaneInfo, LibraryEntry, MixerStrip, PlayMode,
-    RecentProject, StudioHost, UpdateStatus,
+    ExportTail, GhostFilter, GhostNote, JobPoll, JobProgress, LaneInfo, LibraryEntry, MixerStrip,
+    PlayMode, RecentProject, StudioHost, UpdateStatus,
 };
 
 use crate::bank::{BankFilter, BankRow, FileBank, SoundfontBank, matches_names};
@@ -56,6 +56,103 @@ const NEW_CLIP_BARS: i64 = 8;
 /// And how long a brand-new project is. The same eight: a new project is one
 /// empty channel with one clip on it, and the two should agree.
 const NEW_PROJECT_BARS: i64 = 8;
+
+/// A bounce with everything it needs from the session already taken: a graph
+/// and a timeline of its own, the stretch, and the file to write. So it can
+/// run on a thread of its own while the window goes on drawing.
+struct Bounce {
+    timeline: fontelle_types::CompiledTimeline,
+    graph: fontelle_engine::CompiledGraph,
+    /// How many frames to render, from the song's zero.
+    render_to: i64,
+    /// The first frame kept. Rendered from zero and cut, because a note that
+    /// starts before the stretch is still ringing inside it.
+    from: i64,
+    end: BounceEnd,
+    /// The fewest frames the file may hold.
+    floor: usize,
+    path: PathBuf,
+    sample_rate: u32,
+}
+
+/// Where a bounce's file ends.
+enum BounceEnd {
+    /// At the last sound after this frame, plus a breath — an export keeping
+    /// its tail.
+    Tail(i64),
+    /// At this frame.
+    At(i64),
+}
+
+/// What happens on the session's thread once a bounce's file is written.
+enum AfterBounce {
+    /// An export: say where it went.
+    Export,
+    /// A row render: import the take onto a new row under row `index`,
+    /// named after `name`. `before` is the rows there were, so the new one
+    /// can be told from them.
+    Row {
+        index: usize,
+        at: Sample,
+        name: String,
+        before: Vec<LaneId>,
+    },
+}
+
+impl Bounce {
+    /// Renders and writes the file, telling `progress` the frames done.
+    /// Returns how many samples clipped.
+    fn run(mut self, progress: &mut dyn FnMut(i64)) -> Result<usize, String> {
+        let rendered = crate::render_offline_reporting(
+            &self.timeline,
+            &mut self.graph,
+            self.render_to,
+            progress,
+        );
+        let from = self.from.max(0) as usize;
+        // Interleaved stereo, so a frame is two samples.
+        let end = match self.end {
+            BounceEnd::Tail(to) => crate::tail_end(&rendered, to as usize, self.sample_rate),
+            BounceEnd::At(to) => to.max(0) as usize,
+        }
+        .max(from + self.floor)
+        .min(rendered.len() / 2);
+        let audio =
+            &rendered[(from * 2).min(rendered.len())..(end * 2).max(from * 2).min(rendered.len())];
+        crate::write_wav16(&self.path, audio, 2, self.sample_rate)
+            .map_err(|e| format!("{}: {e}", self.path.display()))
+    }
+}
+
+/// A bounce on its thread — see [`Session::poll_job`].
+struct RunningJob {
+    label: String,
+    total: i64,
+    done: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    path: PathBuf,
+    then: AfterBounce,
+    worker: std::thread::JoinHandle<Result<usize, String>>,
+}
+
+/// `<stem>.wav` in `renders`, or `<stem> 2.wav` and so on when that is taken.
+///
+/// Bouncing twice to compare them is the ordinary thing to do, and a render
+/// that silently replaced the one you were comparing against would be the
+/// worst possible moment to find that out.
+fn free_render_path(renders: &Path, stem: &str) -> PathBuf {
+    let taken: Vec<String> = std::fs::read_dir(renders)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            Path::new(&e.file_name())
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+        })
+        .collect();
+    let stem = crate::unique_name(stem, &taken.iter().map(String::as_str).collect::<Vec<_>>());
+    renders.join(format!("{stem}.wav"))
+}
 
 /// How much silence a bounce keeps past the last note, so its release is not
 /// cut off mid-ring. Two bars, which covers a long pad at a slow tempo.
@@ -325,6 +422,9 @@ pub struct Session {
     selected: usize,
     bundle: Option<PathBuf>,
     dirty: bool,
+    /// The bounce running beside the window, if one is — see
+    /// [`Session::poll_job`].
+    job: Option<RunningJob>,
     /// Bumped whenever anything the window's panels draw has changed. The
     /// window re-reads its lists on a change and not once a frame.
     revision: u64,
@@ -1136,6 +1236,7 @@ impl Session {
             selected: 0,
             bundle,
             dirty: false,
+            job: None,
             revision: 1,
             preset_bank: crate::preset_bank::PresetBank::new(settings.user_preset_dir()),
             preset_device_open: None,
@@ -2033,6 +2134,18 @@ impl Session {
         index: usize,
         span: Option<(Tick, Tick)>,
     ) -> Result<String, String> {
+        let (bounce, then) = self.prepare_render_lane(index, span)?;
+        let path = bounce.path.clone();
+        let clipped = bounce.run(&mut |_| {})?;
+        self.finish_bounce(then, &path, clipped)
+    }
+
+    /// The half of [`render_lane`](Self::render_lane) that needs the session.
+    fn prepare_render_lane(
+        &mut self,
+        index: usize,
+        span: Option<(Tick, Tick)>,
+    ) -> Result<(Bounce, AfterBounce), String> {
         let bundle = self
             .bundle
             .clone()
@@ -2084,8 +2197,7 @@ impl Session {
             quality: crate::RENDER_QUALITY,
             ..self.options
         };
-        let mut realised =
-            realise(&self.project, &self.library, options).map_err(|e| e.to_string())?;
+        let realised = realise(&self.project, &self.library, options).map_err(|e| e.to_string())?;
         let timeline = fontelle_sequencer::compile_with(
             &self.project,
             &fontelle_sequencer::NodeMaps {
@@ -2105,51 +2217,28 @@ impl Session {
         } else {
             0
         };
-        let audio = crate::render_offline(&timeline, &mut realised.graph, to + tail);
-        // Interleaved stereo, so a frame is two samples.
-        let cut: Vec<f32> = audio
-            .iter()
-            .copied()
-            .skip((from as usize).saturating_mul(2))
-            .take(((to + tail - from) as usize).saturating_mul(2))
-            .collect();
-
         let renders = bundle.join("renders");
         std::fs::create_dir_all(&renders).map_err(|e| format!("{}: {e}", renders.display()))?;
-        let taken: Vec<String> = std::fs::read_dir(&renders)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|e| {
-                std::path::Path::new(&e.file_name())
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-            })
-            .collect();
-        let stem = crate::unique_name(&name, &taken.iter().map(String::as_str).collect::<Vec<_>>());
-        let path = renders.join(format!("{stem}.wav"));
-        crate::write_wav16(&path, &cut, 2, self.options.sample_rate)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-
-        // The import makes a row of its own (`AddAudioClip`), **directly
-        // under** the row it is a render of — a bounce at the bottom of a
-        // long arrangement is a bounce you have to go looking for — and what
-        // is left is to **name** it for that row.
+        let path = free_render_path(&renders, &name);
         let at = self.project.tempo_map.tick_to_sample(from_tick);
-        self.import_audio_at(&path, at, None, Landing::NewRow(index + 1))?;
-        let made = self
-            .lane_ids()
-            .into_iter()
-            .find(|id| !before.contains(id))
-            .ok_or("the row for the render was not made")?;
-        if let Some(lane) = self.project.lanes.get_mut(made) {
-            lane.name = format!("{name} (rendered)");
-        }
-        self.history.break_gesture();
-        self.dirty = true;
-        self.republish();
-        self.touch();
-        Ok(format!("Rendered \u{2014} {}", path.display()))
+        Ok((
+            Bounce {
+                timeline,
+                graph: realised.graph,
+                render_to: to + tail,
+                from,
+                end: BounceEnd::At(to + tail),
+                floor: 0,
+                path,
+                sample_rate: self.options.sample_rate,
+            },
+            AfterBounce::Row {
+                index,
+                at,
+                name,
+                before,
+            },
+        ))
     }
 
     /// The whole song, with what rings past its end kept — the export the
@@ -2177,6 +2266,16 @@ impl Session {
     /// ten seconds of silence and a wet one keeps every second of its
     /// reverb.
     pub fn export_wav_with(&mut self, export: ExportOptions) -> Result<String, String> {
+        let (bounce, then) = self.prepare_export(export)?;
+        let path = bounce.path.clone();
+        let clipped = bounce.run(&mut |_| {})?;
+        self.finish_bounce(then, &path, clipped)
+    }
+
+    /// Everything of an export that needs the session: the graph, the
+    /// stretch, and the file's name. What is left, [`Bounce::run`], needs
+    /// nothing of it and can run on another thread.
+    fn prepare_export(&mut self, export: ExportOptions) -> Result<(Bounce, AfterBounce), String> {
         // A render lives inside the bundle, so there has to be a bundle.
         // Guessing at somewhere else would be a write outside anywhere the
         // user named (INVARIANT 10). Every project *made in the window* is on
@@ -2202,8 +2301,7 @@ impl Session {
             quality: crate::RENDER_QUALITY,
             ..self.options
         };
-        let mut realised =
-            realise(&self.project, &self.library, options).map_err(|e| e.to_string())?;
+        let realised = realise(&self.project, &self.library, options).map_err(|e| e.to_string())?;
         let timeline = fontelle_sequencer::compile_with(
             &self.project,
             &fontelle_sequencer::NodeMaps {
@@ -2219,69 +2317,155 @@ impl Session {
             ExportTail::Keep => i64::from(self.options.sample_rate) * EXPORT_TAIL_MAX_S,
             ExportTail::Cut => 0,
         };
-        let rendered = crate::render_offline(
-            &timeline,
-            &mut realised.graph,
-            to + allowance.max(i64::from(self.options.sample_rate) / 10),
-        );
-        // Interleaved stereo, so a frame is two samples.
-        let end = match export.tail {
-            ExportTail::Keep => crate::tail_end(&rendered, to as usize, self.options.sample_rate),
-            ExportTail::Cut => to as usize,
-        }
-        // Never an empty file: a cut export of nothing is its breath of
-        // silence rather than a WAV with no frames in it.
-        .max(from as usize + self.options.sample_rate as usize / 10)
-        .min(rendered.len() / 2);
-        let audio: Vec<f32> = rendered
-            .iter()
-            .copied()
-            .skip((from as usize).saturating_mul(2))
-            .take(end.saturating_sub(from as usize).saturating_mul(2))
-            .collect();
 
         let renders = bundle.join("renders");
         std::fs::create_dir_all(&renders).map_err(|e| format!("{}: {e}", renders.display()))?;
-        // A name nothing in the folder has: bouncing twice to compare them is
-        // the ordinary thing to do, and a render that silently replaced the
-        // one you were comparing against would be the worst possible moment to
-        // find that out.
-        let taken: Vec<String> = std::fs::read_dir(&renders)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|e| {
-                std::path::Path::new(&e.file_name())
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-            })
-            .collect();
         // Named after the **bundle**, not `meta.name`: the folder is the name
         // the user typed and the one they will look for in a file manager,
         // and the two can disagree on a project whose folder was renamed
         // outside Fontelle. `adopt` keeps them together on open; this is
         // right even when nothing has opened yet.
-        let stem = crate::unique_name(
-            &bundle
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| self.project.meta.name.clone()),
-            &taken.iter().map(String::as_str).collect::<Vec<_>>(),
-        );
-        let path = renders.join(format!("{stem}.wav"));
+        let stem = bundle
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.project.meta.name.clone());
+        let path = free_render_path(&renders, &stem);
 
-        let clipped = crate::write_wav16(&path, &audio, 2, self.options.sample_rate)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok((
+            Bounce {
+                timeline,
+                graph: realised.graph,
+                render_to: to + allowance.max(i64::from(self.options.sample_rate) / 10),
+                from,
+                end: match export.tail {
+                    ExportTail::Keep => BounceEnd::Tail(to),
+                    ExportTail::Cut => BounceEnd::At(to),
+                },
+                // Never an empty file: a cut export of nothing is its breath
+                // of silence rather than a WAV with no frames in it.
+                floor: self.options.sample_rate as usize / 10,
+                path,
+                sample_rate: self.options.sample_rate,
+            },
+            AfterBounce::Export,
+        ))
+    }
 
-        self.touch();
-        Ok(match clipped {
-            // Surfaced rather than swallowed, which is what §11 of the plan
-            // asks for: a bounce that clipped is one you want to know about
-            // before you send it anywhere.
-            0 => format!("exported {}", path.display()),
-            1 => format!("exported {} \u{2014} 1 clipped sample", path.display()),
-            n => format!("exported {} \u{2014} {n} clipped samples", path.display()),
-        })
+    /// What is left of a bounce once its file is written, back on the
+    /// session's own thread: the line to show, and for a row render the row.
+    fn finish_bounce(
+        &mut self,
+        then: AfterBounce,
+        path: &Path,
+        clipped: usize,
+    ) -> Result<String, String> {
+        match then {
+            AfterBounce::Export => {
+                self.touch();
+                Ok(match clipped {
+                    // Surfaced rather than swallowed, which is what §11 of the
+                    // plan asks for: a bounce that clipped is one you want to
+                    // know about before you send it anywhere.
+                    0 => format!("exported {}", path.display()),
+                    1 => format!("exported {} \u{2014} 1 clipped sample", path.display()),
+                    n => format!("exported {} \u{2014} {n} clipped samples", path.display()),
+                })
+            }
+            AfterBounce::Row {
+                index,
+                at,
+                name,
+                before,
+            } => {
+                // The import makes a row of its own (`AddAudioClip`),
+                // **directly under** the row it is a render of — a bounce at
+                // the bottom of a long arrangement is a bounce you have to go
+                // looking for — and what is left is to **name** it for that
+                // row.
+                self.import_audio_at(path, at, None, Landing::NewRow(index + 1))?;
+                let made = self
+                    .lane_ids()
+                    .into_iter()
+                    .find(|id| !before.contains(id))
+                    .ok_or("the row for the render was not made")?;
+                if let Some(lane) = self.project.lanes.get_mut(made) {
+                    lane.name = format!("{name} (rendered)");
+                }
+                self.history.break_gesture();
+                self.dirty = true;
+                self.republish();
+                self.touch();
+                Ok(format!("Rendered \u{2014} {}", path.display()))
+            }
+        }
+    }
+
+    /// Sends a prepared bounce to a thread of its own, so the window keeps
+    /// drawing while it renders — see [`StudioHost::poll_job`].
+    ///
+    /// > *"right now the program freezes during actions instead of showing
+    /// > progress bars for example when exporting / rendering things."*
+    ///
+    /// **One at a time.** Two bounces choosing a free name in one folder at
+    /// once could choose the same one.
+    fn start_bounce(
+        &mut self,
+        prepare: impl FnOnce(&mut Self) -> Result<(Bounce, AfterBounce), String>,
+        verb: &str,
+    ) -> Result<String, String> {
+        if self.job.is_some() {
+            return Err("a render is already running \u{2014} wait for it to finish".to_string());
+        }
+        let (bounce, then) = prepare(self)?;
+        let path = bounce.path.clone();
+        let total = bounce.render_to.max(1);
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let counter = std::sync::Arc::clone(&done);
+        let worker = std::thread::Builder::new()
+            .name("fontelle-bounce".to_string())
+            .spawn(move || {
+                bounce
+                    .run(&mut |frames| counter.store(frames, std::sync::atomic::Ordering::Relaxed))
+            })
+            .map_err(|e| format!("could not start the render: {e}"))?;
+        let file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let label = format!("{verb} {file}");
+        self.job = Some(RunningJob {
+            label: label.clone(),
+            total,
+            done,
+            path,
+            then,
+            worker,
+        });
+        Ok(format!("{label}\u{2026}"))
+    }
+
+    /// [`StudioHost::poll_job`]'s answer: how far the running bounce has got,
+    /// or — once, the pass its thread ends — how it went.
+    pub fn poll_job(&mut self) -> JobPoll {
+        let Some(job) = &self.job else {
+            return JobPoll::Idle;
+        };
+        if !job.worker.is_finished() {
+            let done = job.done.load(std::sync::atomic::Ordering::Relaxed);
+            return JobPoll::Running(JobProgress {
+                label: job.label.clone(),
+                fraction: Some((done as f64 / job.total as f64).clamp(0.0, 1.0) as f32),
+            });
+        }
+        let Some(job) = self.job.take() else {
+            return JobPoll::Idle;
+        };
+        let result = match job.worker.join() {
+            Ok(Ok(clipped)) => self.finish_bounce(job.then, &job.path, clipped),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("the render stopped with an error".to_string()),
+        };
+        JobPoll::Finished(result)
     }
 
     /// Saves the song out as a Standard MIDI File the user chooses the place
@@ -6410,7 +6594,7 @@ impl StudioHost for Session {
     }
 
     fn render_lane(&mut self, index: usize, span: Option<(Tick, Tick)>) -> Result<String, String> {
-        Session::render_lane(self, index, span)
+        self.start_bounce(|s| s.prepare_render_lane(index, span), "Rendering")
     }
 
     fn add_lane_at(&mut self, index: usize) {
@@ -6524,12 +6708,23 @@ impl StudioHost for Session {
         self.projects.status().to_string()
     }
 
+    // Through the window, both bounces run beside it — see `poll_job`.
     fn export_wav(&mut self) -> Result<String, String> {
-        Session::export_wav(self)
+        StudioHost::export_wav_with(
+            self,
+            ExportOptions {
+                range: ExportRange::WholeSong,
+                tail: ExportTail::Keep,
+            },
+        )
     }
 
     fn export_wav_with(&mut self, options: ExportOptions) -> Result<String, String> {
-        Session::export_wav_with(self, options)
+        self.start_bounce(|s| s.prepare_export(options), "Exporting")
+    }
+
+    fn poll_job(&mut self) -> JobPoll {
+        Session::poll_job(self)
     }
 
     fn export_midi(&mut self) -> Result<String, String> {

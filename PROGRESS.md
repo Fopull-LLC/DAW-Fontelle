@@ -19,6 +19,41 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-24 — v0.13.0: a bounce beside the window, and a project
+that says whether it is saved.** Ty: *"right now the program freezes during
+actions instead of showing progress bars for example when exporting /
+rendering things. theres also no indication if your project is saved or not
+and also if your project is unsaved you can close it without it asking if
+you want to save first ... when i save it shows a Saved! text that appears in
+the top center and moves upwards as it fades out ... should have a * next to
+the project name when unsaved."*
+
+- **A bounce is prepare → run → finish.** `Session::prepare_export` /
+  `prepare_render_lane` take everything they need from the session (their own
+  graph, timeline, stretch and a free file name) into a `Bounce`, whose `run`
+  needs nothing else and so can run on a thread (`fontelle-bounce`), with
+  `render_offline_reporting` counting frames into an atomic. `finish_bounce`
+  is back on the session's thread: the message, and for a row render the
+  import onto the new row. The **inherent** `export_wav*` / `render_lane`
+  still run all three in line (the CLI and eighty tests want the file when
+  the call returns); the **`StudioHost`** doors start the job and return, and
+  the window reads `poll_job` every pass. One job at a time, because two
+  bounces choosing a free name in one folder could choose the same one.
+  `tests/background_jobs.rs` holds the background file byte-equal to the
+  foreground one.
+- **The window**: a job card above the toast slot with the old update
+  progress bar in it, a toast when it ends; `Name*` in the panel header and
+  the OS title (was a `•` in the title only), re-read every tick against
+  `shown_dirty` so no edit site has to remember; **"Saved!"** on an accent
+  pill at the top centre, rising two rows and fading over 1.2 s
+  (`canvas::saved_flash`); and a **save prompt** (Don't Save / Cancel / Save,
+  Enter and Escape) in front of closing the window, opening another project
+  from the Projects tab, and making a new one. Save on a project with no file
+  goes through the name prompt and then carries on leaving —
+  `NameFor::SaveAs(Option<Leave>)`, so a dismissed name prompt forgets it.
+- Not done: a running job is not cancellable, and quitting while one runs
+  ends it without asking.
+
 **Released as v0.12.0 on 2026-09-23** — DisgustingBeat and the transport tick
 under it, eight commits on top of v0.11.0. All four targets built;
 `v0.10.0` remains local and unpushed.

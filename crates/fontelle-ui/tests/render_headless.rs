@@ -183,6 +183,7 @@ fn shoot_sized(
             status: "",
             toast: None,
             confirm: None,
+            notices: Default::default(),
             tooltip: None,
             menu: None,
             carry: None,
@@ -874,6 +875,7 @@ fn shoot_roll_everything(
             status: "",
             toast: None,
             confirm: None,
+            notices: Default::default(),
             tooltip: None,
             menu: None,
             carry: None,
@@ -1279,6 +1281,7 @@ fn shoot_timeline_recording(
             status: "",
             toast: None,
             confirm: None,
+            notices: Default::default(),
             tooltip: None,
             menu: None,
             carry: None,
@@ -1977,6 +1980,7 @@ fn shoot_mixer_renaming(
             status: "",
             toast: None,
             confirm: None,
+            notices: Default::default(),
             tooltip: None,
             menu: None,
             carry: None,
@@ -2372,6 +2376,7 @@ fn shoot_rack(
             status: "",
             toast: None,
             confirm: None,
+            notices: Default::default(),
             tooltip: None,
             menu: None,
             carry: None,
@@ -4606,6 +4611,7 @@ fn shoot_carry(
             status: "",
             toast: None,
             confirm: None,
+            notices: Default::default(),
             tooltip: None,
             menu: None,
             carry: target.zip(pointer).map(|(target, at)| CarryChrome {
@@ -4859,6 +4865,7 @@ fn shoot_welcome_status(
             status: "",
             toast: None,
             confirm: None,
+            notices: Default::default(),
             tooltip: None,
             menu: None,
             carry: None,
@@ -5150,6 +5157,7 @@ fn shoot_settings_controls() {
             status: "",
             toast: None,
             confirm: None,
+            notices: Default::default(),
             tooltip: None,
             menu: None,
             carry: None,
@@ -5263,6 +5271,7 @@ fn shoot_keybinds(theme: Theme, scroll: f32) -> Option<(Vec<u8>, Theme, u32, u32
             status: "",
             toast: None,
             confirm: None,
+            notices: Default::default(),
             tooltip: None,
             menu: None,
             carry: None,
@@ -5711,5 +5720,157 @@ fn disgusting_beat_draws_its_memory_and_its_curves() {
     assert!(
         accent_below > 200,
         "the freeze should be drawn across the bottom half of the time lane, found {accent_below} lit pixels"
+    );
+}
+
+// --- the save notices and the job card ------------------------------------
+//
+// > *"the program freezes during actions instead of showing progress bars ...
+// > when i save it shows a Saved! text that appears in the top center and
+// > moves upwards as it fades out."*
+
+#[test]
+fn a_job_card_a_save_prompt_and_saved_are_drawn_where_their_layouts_say() {
+    use fontelle_ui::canvas::{
+        SAVE_PROMPT_DISCARD, SAVE_PROMPT_SAVE, SAVED_FLASH_TEXT, job_card_layout,
+        save_prompt_layout, saved_flash,
+    };
+    use fontelle_ui::render::{CONFIRM_CANCEL, Notices};
+
+    let Some(shared) = headless() else {
+        return;
+    };
+    let theme = Theme::dark_default();
+    let layout = window_layout(W as f32, H as f32, &theme.metrics, DEFAULT_TIMELINE_HEIGHT);
+    let mut text = TextContext::new();
+    let title = text.layout("Song*", &theme.font, None);
+    let readout = text.layout("1.1.000", &theme.font, None);
+    let question = "Save changes to Song before closing?";
+    let job = "Exporting Song.wav";
+    let mut labels = Labels::new();
+    for word in [
+        question,
+        job,
+        SAVED_FLASH_TEXT,
+        SAVE_PROMPT_SAVE,
+        SAVE_PROMPT_DISCARD,
+        CONFIRM_CANCEL,
+    ] {
+        labels.ensure(word, &theme.font, &mut text);
+    }
+    let bar = transport_bar_layout(layout.transport, &theme.metrics);
+    let flash = saved_flash(layout.window, &theme.metrics, 0.0).expect("up at once");
+
+    let shoot = |notices: Notices<'_>| {
+        let mut scene = vello::Scene::new();
+        draw_window(
+            &mut scene,
+            &theme,
+            &layout,
+            &Chrome {
+                field: None,
+                panel_title: &title,
+                transport: TransportChrome {
+                    layout: bar,
+                    view: TransportView::unavailable(),
+                    meters: [Meter::new(); 2],
+                    readout: &readout,
+                    tempo: &readout,
+                    signature: &readout,
+                    mode: &readout,
+                    hover: None,
+                    marker_sample: 0,
+                    clip_mode: false,
+                    tempo_field: None,
+                },
+                roll: None,
+                rack: None,
+                prefabs: None,
+                browser: None,
+                timeline: None,
+                mixer: None,
+                tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
+                tab: fontelle_ui::layout::EditorTab::Roll,
+                hover_tab: None,
+                browser_title: "Soundfonts",
+                labels: &labels,
+                status: "",
+                toast: None,
+                confirm: None,
+                notices,
+                tooltip: None,
+                menu: None,
+                carry: None,
+                welcome: None,
+                keybinds: None,
+            },
+        );
+        shared
+            .lock()
+            .expect("the shared renderer")
+            .render(&scene, W, H, theme.palette.window)
+            .expect("rendering")
+    };
+    let at = |pixels: &[u8], x: f32, y: f32| {
+        let i = ((y as u32 * W + x as u32) * 4) as usize;
+        Color([pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]])
+    };
+
+    // The job card, half done: its bar is lit on the left and not the right.
+    let card = shoot(Notices {
+        job: Some((job, Some(0.5))),
+        saved: Some(flash),
+        save_prompt: None,
+    });
+    dump_sized(&card, "notices-job-and-saved", W, H);
+    let l = job_card_layout(layout.window, &theme.metrics);
+    let mid = l.bar.y + l.bar.height / 2.0;
+    assert!(
+        near(
+            at(&card, l.bar.x + l.bar.width * 0.2, mid),
+            theme.palette.accent
+        ),
+        "the done half of the bar is not lit"
+    );
+    assert!(
+        !near(
+            at(&card, l.bar.x + l.bar.width * 0.8, mid),
+            theme.palette.accent
+        ),
+        "the undone half of the bar is lit"
+    );
+    // "Saved!" is ink at the top centre: something other than what is under
+    // it, somewhere in a box around its centre.
+    let bare = shoot(Notices::default());
+    let lit = (-40..40)
+        .flat_map(|dx| (-8..8).map(move |dy| (dx, dy)))
+        .filter(|(dx, dy)| {
+            let (x, y) = (flash.center_x + *dx as f32, flash.center_y + *dy as f32);
+            at(&card, x, y) != at(&bare, x, y)
+        })
+        .count();
+    assert!(
+        lit > 20,
+        "Saved! is not drawn at the top centre ({lit} pixels)"
+    );
+
+    // The save prompt: a scrim, and Save in the accent.
+    let prompt = shoot(Notices {
+        job: None,
+        saved: None,
+        save_prompt: Some(question),
+    });
+    dump_sized(&prompt, "notices-save-prompt", W, H);
+    let l = save_prompt_layout(layout.window, &theme.metrics);
+    assert!(
+        near(
+            at(&prompt, l.save.x + 3.0, l.save.y + 3.0),
+            theme.palette.accent
+        ),
+        "Save is not the weighted button"
+    );
+    assert!(
+        at(&prompt, 2.0, H as f32 - 2.0) != at(&bare, 2.0, H as f32 - 2.0),
+        "no scrim over the window"
     );
 }

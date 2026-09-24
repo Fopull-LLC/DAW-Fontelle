@@ -526,6 +526,19 @@ pub fn render_offline(
     render_offline_with_transport(timeline, graph, total_samples, &transport)
 }
 
+/// [`render_offline`], telling `progress` how many frames are done after
+/// every block — what a bounce running beside the window reads its bar off.
+pub fn render_offline_reporting(
+    timeline: &CompiledTimeline,
+    graph: &mut CompiledGraph,
+    total_samples: i64,
+    progress: &mut dyn FnMut(i64),
+) -> Vec<f32> {
+    let transport = fontelle_engine::Transport::new();
+    transport.set_state(fontelle_engine::TransportState::Rendering);
+    render_offline_driven(timeline, graph, total_samples, &transport, progress)
+}
+
 /// What a bounce is told: the interpolation to render at and how much
 /// audio to produce — see [`render_offline_with_transport`] for why the
 /// latter is not "how far the playhead goes".
@@ -628,6 +641,16 @@ pub fn render_offline_with_transport(
     total_samples: i64,
     transport: &fontelle_engine::Transport,
 ) -> Vec<f32> {
+    render_offline_driven(timeline, graph, total_samples, transport, &mut |_| {})
+}
+
+fn render_offline_driven(
+    timeline: &CompiledTimeline,
+    graph: &mut CompiledGraph,
+    total_samples: i64,
+    transport: &fontelle_engine::Transport,
+    progress: &mut dyn FnMut(i64),
+) -> Vec<f32> {
     let mut reader = fontelle_engine::TransportReader::new();
 
     let mut out = Vec::with_capacity(total_samples as usize * 2);
@@ -661,6 +684,7 @@ pub fn render_offline_with_transport(
             out.extend(std::iter::repeat_n(0.0, frames * 2));
         }
         produced += frames as i64;
+        progress(produced);
     }
 
     out

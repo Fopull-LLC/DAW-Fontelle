@@ -912,6 +912,26 @@ pub struct ExportOptions {
     pub tail: ExportTail,
 }
 
+/// A job running beside the window — see [`StudioHost::poll_job`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum JobPoll {
+    /// Nothing is running.
+    Idle,
+    /// Something is, and this is how far it has got.
+    Running(JobProgress),
+    /// It has just ended, and this is the line worth showing about it.
+    Finished(Result<String, String>),
+}
+
+/// What a running job says about itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JobProgress {
+    /// What it is doing, for the card: *"Exporting Song.wav"*.
+    pub label: String,
+    /// How much is done, 0 to 1, or `None` while that is not known.
+    pub fraction: Option<f32>,
+}
+
 /// Which stretch of the song an export renders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportRange {
@@ -1257,6 +1277,17 @@ pub trait StudioHost: DocumentHost {
     /// window asks these of the person first — see `MenuTarget::Export`.
     fn export_wav_with(&mut self, _options: ExportOptions) -> Result<String, String> {
         Err("this build cannot export".to_string())
+    }
+
+    /// How the bounce running beside the window is getting on.
+    ///
+    /// [`export_wav_with`](Self::export_wav_with) and
+    /// [`render_lane`](Self::render_lane) may *start* their work and return
+    /// at once rather than hold the window until the file is written; the
+    /// window asks this every pass while one is running and draws the
+    /// answer. `Finished` is handed over once — the pass after it is `Idle`.
+    fn poll_job(&mut self) -> JobPoll {
+        JobPoll::Idle
     }
 
     /// Saves the song out as a Standard MIDI File at a place the user picks.
