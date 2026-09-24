@@ -19,6 +19,10 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**Released as v0.14.0 on 2026-09-24** — cuts that keep a loop's phase, a trim that
+follows the edges, the left grip, the engine count-in, automation chase, and
+right-click menus on the mixer's controls.
+
 **As of 2026-09-24 (later) — v0.14.0: cuts, edges, count-ins and automation
 that do what they look like.** Ty: *"when cutting up audio clips it actually
 moves the start of the audio clip to where i cut it ... i cant even drag in
