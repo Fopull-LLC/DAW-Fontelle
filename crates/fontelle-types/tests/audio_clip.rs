@@ -164,11 +164,22 @@ fn a_looping_clip_wraps_back_to_its_own_start() {
 
 #[test]
 fn a_clip_that_does_not_loop_runs_off_the_end_rather_than_wrapping() {
-    // The player reads "past the end" as silence; wrapping a non-looping clip
-    // would repeat its front, which is the wrong sound and a very confusing one.
+    // Past the end is silence; wrapping a non-looping clip would repeat its
+    // front, which is the wrong sound and a very confusing one.
+    //
+    // And past the end of the **trim**, not of the file: this used to keep
+    // counting into the rest of the file, so a clip trimmed at a cut played
+    // on past its edge while its picture showed nothing there — *"it removes
+    // the content of the audio for the section after the cutoff if i try to
+    // expand it again"*. A position below every file is the player's silence.
     let mut c = clip(1000);
     c.source_end = 200;
-    assert!(c.source_position(500.0) >= 200.0);
+    assert_eq!(c.source_position(199.0), 199.0);
+    assert!(
+        c.source_position(200.0) < 0.0,
+        "the trim's end is not silence"
+    );
+    assert!(c.source_position(500.0) < 0.0, "it read on past the trim");
 }
 
 // ------------------------------------------------- pitch, speed, and time ---

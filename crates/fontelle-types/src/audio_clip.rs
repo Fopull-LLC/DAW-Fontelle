@@ -32,7 +32,7 @@
 
 use std::ops::Range;
 
-use crate::{AssetRef, ClipId, FilterConfig, MixerTrackId, NodeId, Sample};
+use crate::{AssetRef, ClipId, FilterConfig, MixerTrackId, NodeId, Sample, Tick};
 
 /// The steepest boost a clip may be given, in dB.
 ///
@@ -297,6 +297,32 @@ pub struct AudioClipData {
     /// `Off`, which is what every clip already did.
     #[serde(default)]
     pub stretch: ClipStretch,
+    /// How many frames the **file** has — the most a trimmed edge can be
+    /// dragged back out to.
+    ///
+    /// > *"if i edit my clips enough and dragging them in after cutting them
+    /// > it removes the content of the audio for the section after the
+    /// > cutoff if i try to expand it again."*
+    ///
+    /// The trim moves with the block's edges (see `fontelle_model`'s
+    /// `fit_window`), and a trim cannot grow past a file it cannot see the
+    /// end of. Zero is "not known", which a project written before this field
+    /// reads as until the session fills it in from the take it opened.
+    #[serde(default)]
+    pub file_frames: Sample,
+    /// Where in its cycle a **repeating** clip begins, in ticks.
+    ///
+    /// > *"when cutting up audio clips it actually moves the start of the
+    /// > audio clip to where i cut it."*
+    ///
+    /// A repeating clip — looped on the arrangement (`Clip::loop_length`) or
+    /// coming round in the file (`ClipLoopMode::Loop`) — has no single place
+    /// in the file its block begins at, so a cut through the middle of a pass
+    /// (or a left edge trimmed in) cannot be written as a trim. It is written
+    /// here instead: the right half of such a cut begins this far into the
+    /// cycle, and plays on from there. Zero for everything else.
+    #[serde(default)]
+    pub loop_phase: Tick,
 }
 
 impl AudioClipData {
@@ -325,6 +351,8 @@ impl AudioClipData {
             normalize: false,
             loop_mode: ClipLoopMode::Once,
             stretch: ClipStretch::Off,
+            file_frames: frames.max(0),
+            loop_phase: 0,
         }
     }
 
@@ -499,10 +527,9 @@ impl AudioClipData {
     /// Fractional, because the player interpolates between two frames — §7.6's
     /// argument, and the reason import does not resample.
     ///
-    /// Past the end of a non-looping clip this deliberately keeps counting
-    /// rather than wrapping: the player reads past-the-end as silence, and a
-    /// clip that wrapped instead would repeat its own front, which is the
-    /// wrong sound and a confusing one to diagnose.
+    /// Past the end of a non-looping clip this is below every file — silence
+    /// — rather than wrapping: a clip that wrapped instead would repeat its
+    /// own front, which is the wrong sound and a confusing one to diagnose.
     pub fn source_position(&self, position: f64) -> f64 {
         self.source_at_offset(position.max(0.0) * self.time_rate())
     }
@@ -518,6 +545,12 @@ impl AudioClipData {
         let mut offset = offset;
         if self.loop_mode == ClipLoopMode::Loop && length > 0 {
             offset = offset.rem_euclid(length as f64);
+        } else if offset >= length as f64 {
+            // **Past the trim is silence**, not the rest of the file. The trim
+            // is what the block's edge shows and where its fade-out ends; a
+            // player that read on past it sounded a part of the take the
+            // picture said was not there. `-1` is below every file.
+            return -1.0;
         }
         if self.reverse {
             // From the last frame *inside* the clip, not from one past it: one
@@ -612,6 +645,10 @@ pub struct AudioPlacement {
     pub crossfade_in: Sample,
     /// The same, from the **back**: the overlap with the clip after it.
     pub crossfade_out: Sample,
+    /// How far into its cycle the block begins, in song samples — the
+    /// compiled form of [`AudioClipData::loop_phase`]. Zero for a clip that
+    /// begins where its content does.
+    pub phase: Sample,
     pub data: AudioClipData,
 }
 
@@ -668,7 +705,7 @@ impl AudioPlacement {
         if at < self.range.start || at >= self.range.end {
             return None;
         }
-        let offset = at - self.range.start;
+        let offset = at - self.range.start + self.phase;
         Some(if self.repeat > 0 {
             offset.rem_euclid(self.repeat)
         } else {

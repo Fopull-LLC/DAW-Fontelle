@@ -240,6 +240,12 @@ impl PluginNode {
             let fontelle_types::EventPayload::ParamValue { target, value } = &event.payload else {
                 continue;
             };
+            // NaN is the window's "back to the knob" (a chase before the
+            // first clip); a plugin keeps its own values, so there is nothing
+            // to go back to and nothing to do.
+            if !value.is_finite() {
+                continue;
+            }
             // The channel's own level and placement, under automation
             // (§12.2). Block-rate, like every other node's, and matched on the
             // tail of the address for the reason `SamplerNode` gives: the

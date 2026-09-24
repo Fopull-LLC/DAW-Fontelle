@@ -241,6 +241,10 @@ pub fn compile_with(
                     }
                     None => 0,
                 },
+                // A block that begins part-way through its cycle — the right
+                // half of a cut through a looping clip.
+                phase: tempo.tick_to_sample(clip.start + data.loop_phase.max(0))
+                    - tempo.tick_to_sample(clip.start),
                 data: data.clone(),
             });
             continue;
@@ -562,6 +566,30 @@ fn compile_automation(
         let Some((from, to)) = automated_span(project, &target, scope) else {
             continue;
         };
+
+        // **An anchor where a loop comes round.** A wrap resets the graph,
+        // and a parameter that is then told nothing falls back to its knob
+        // until the curve next moves — which on a flat stretch is never.
+        // *"it will put it at 100 even though the value at that point ...
+        // should be computing 0."* So the loop's start carries every
+        // automated value, whether or not the curve changes there. The loop
+        // in clip scope is the clip's own bars.
+        let loop_start = match scope {
+            CompileScope::Clip(id) => project.clips.get(id).map(|clip| clip.start),
+            _ => project.loop_range.map(|(start, _)| start),
+        };
+        if let Some(start) = loop_start
+            && let Some(value) = value_in_scope(project, &target, start, scope)
+        {
+            events.push(TimedEvent {
+                sample: tempo.tick_to_sample(start),
+                target: node,
+                payload: EventPayload::ParamValue {
+                    target: target.clone(),
+                    value,
+                },
+            });
+        }
 
         let mut last: Option<f64> = None;
         let mut tick = from;

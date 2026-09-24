@@ -4288,6 +4288,9 @@ pub struct SetClipLoop {
     clip: ClipId,
     loop_length: Option<Tick>,
     previous: Option<Option<Tick>>,
+    /// The whole clip as it was, when stopping the loop also moved where in
+    /// its take it starts — the inverse has to put that back too.
+    folded: Option<Clip>,
 }
 
 impl SetClipLoop {
@@ -4296,6 +4299,7 @@ impl SetClipLoop {
             clip,
             loop_length,
             previous: None,
+            folded: None,
         }
     }
 }
@@ -4309,15 +4313,55 @@ impl Command for SetClipLoop {
                 "a loop has to be some length — a period of zero repeats for ever".into(),
             ));
         }
+        let tempo = &doc.tempo_map;
         let Some(clip) = doc.clips.get_mut(self.clip) else {
             return Err(no_clip(self.clip));
         };
+        let before = clip.clone();
         let previous = std::mem::replace(&mut clip.loop_length, self.loop_length);
         self.previous.get_or_insert(previous);
+        // **A take that stops looping part-way through its pass** — the right
+        // half of a cut through a loop, dragged back inside one pass — goes on
+        // beginning where it did. Its phase has nothing left to be a phase
+        // of, so it becomes where in the take the clip starts.
+        let period = previous.filter(|p| *p > 0);
+        if self.loop_length.is_none()
+            && let (Some(period), ClipSource::Audio(data)) = (period, &clip.source)
+            && data.loop_phase != 0
+            && data.loop_mode == fontelle_types::ClipLoopMode::Once
+        {
+            let phase = data.loop_phase.rem_euclid(period);
+            let frames = match data.stretch {
+                fontelle_types::ClipStretch::Off => {
+                    crate::trim::file_frames_over(tempo, data, clip.start, clip.start + phase)
+                }
+                fontelle_types::ClipStretch::Resample => {
+                    (phase as f64 / period as f64 * data.source_frames() as f64).round()
+                        as fontelle_types::Sample
+                }
+            };
+            if let ClipSource::Audio(data) = &mut clip.source {
+                if data.reverse {
+                    data.source_end = (data.source_end - frames).max(data.source_start);
+                } else {
+                    data.source_start = (data.source_start + frames).min(data.source_end);
+                }
+                data.loop_phase = 0;
+            }
+            crate::trim::fit_window(tempo, clip);
+            self.folded.get_or_insert(before);
+        }
         Ok(())
     }
 
     fn invert(&self) -> Box<dyn Command> {
+        if let Some(before) = &self.folded {
+            return Box::new(ReplaceClip {
+                clip: self.clip,
+                previous: before.clone(),
+                replaced: None,
+            });
+        }
         match self.previous {
             Some(previous) => Box::new(SetClipLoop::new(self.clip, previous)),
             None => Box::new(NotApplied("looping a clip")),
@@ -4368,6 +4412,9 @@ impl Command for ResizeClip {
         };
         let previous = clip.length;
         clip.length = (previous + self.tick_delta).max(MIN_CLIP_LENGTH);
+        // A window onto a take shows more of it, or less — and its trim, and
+        // the fade-out on that edge, go with the edge. See `crate::trim`.
+        crate::trim::fit_window(&doc.tempo_map, clip);
         self.previous.get_or_insert(previous);
         self.applied = Some(clip.length);
         Ok(())
@@ -4406,6 +4453,178 @@ impl Command for ResizeClip {
 
     fn memory_cost(&self) -> usize {
         std::mem::size_of::<Self>()
+    }
+}
+
+/// An audio clip's **front**, dragged by its left-hand edge.
+///
+/// > *"i cant even drag in clips from the left too."*
+///
+/// The block's end stays where it is and its start moves, and the sound under
+/// the rest of the block does not move with it: dragged in, the front of the
+/// take is hidden; dragged back out, it comes back, as far as the take goes
+/// (`crate::trim::clamp_front`). How that is written down depends on what
+/// the block is:
+///
+/// - a **window** onto its take moves where in the file it starts;
+/// - a **stretched** clip moves it by the same share of its trim as of its
+///   block, which is what stretching means;
+/// - a **repeating** one moves where in its cycle it begins
+///   (`AudioClipData::loop_phase`), since it has no one place in the file.
+///
+/// Audio only: a note clip has nowhere to keep the notes an edge dragged in
+/// would uncover.
+pub struct TrimClipStart {
+    clip: ClipId,
+    tick_delta: Tick,
+    /// The clip as it was, so the inverse puts it back exactly.
+    previous: Option<Clip>,
+}
+
+impl TrimClipStart {
+    pub fn new(clip: ClipId, tick_delta: Tick) -> Self {
+        Self {
+            clip,
+            tick_delta,
+            previous: None,
+        }
+    }
+}
+
+impl Command for TrimClipStart {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let Some(original) = doc.clips.get(self.clip).cloned() else {
+            return Err(no_clip(self.clip));
+        };
+        if !matches!(original.source, ClipSource::Audio(_)) {
+            return Err(CommandError(
+                "only an audio clip's front can be trimmed".into(),
+            ));
+        }
+        let tempo = &doc.tempo_map;
+        let front = crate::trim::clamp_front(
+            tempo,
+            &original,
+            original.start + self.tick_delta,
+            MIN_CLIP_LENGTH,
+        );
+        let moved = front - original.start;
+        let mut clip = original.clone();
+        let window = crate::trim::is_window(&original);
+        let repeats = crate::trim::repeats(&original);
+        if let ClipSource::Audio(data) = &mut clip.source {
+            if repeats {
+                data.loop_phase += moved;
+                if let Some(period) = original.loop_length.filter(|p| *p > 0) {
+                    data.loop_phase = data.loop_phase.rem_euclid(period);
+                }
+                data.loop_phase = data.loop_phase.max(0);
+            } else {
+                let frames = if window {
+                    crate::trim::file_frames_over(tempo, data, original.start, front)
+                } else {
+                    crate::trim::proportional_frames(&original, data, moved)
+                };
+                if data.reverse {
+                    let mut end = data.source_end - frames;
+                    if data.file_frames > 0 {
+                        end = end.min(data.file_frames);
+                    }
+                    data.source_end = end.max(data.source_start);
+                } else {
+                    data.source_start = (data.source_start + frames).clamp(0, data.source_end);
+                }
+            }
+        }
+        clip.start = front;
+        clip.length = original.start + original.length - front;
+        self.previous.get_or_insert(original);
+        doc.clips
+            .get_mut(self.clip)
+            .map(|slot| *slot = clip)
+            .ok_or_else(|| no_clip(self.clip))
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => Box::new(ReplaceClip {
+                clip: self.clip,
+                previous: previous.clone(),
+                replaced: None,
+            }),
+            None => Box::new(NotApplied("trimming a clip")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Trim clip"
+    }
+
+    /// One drag, one undo — measured from where the drag began.
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<TrimClipStart>() else {
+            return false;
+        };
+        if next.clip != self.clip {
+            return false;
+        }
+        self.tick_delta += next.tick_delta;
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() + std::mem::size_of::<Clip>()
+    }
+}
+
+/// Puts one clip back exactly as it was — the inverse of an edit that changed
+/// several of its fields at once. Not a user-facing command.
+struct ReplaceClip {
+    clip: ClipId,
+    previous: Clip,
+    /// What it was replaced over, so this is itself undoable.
+    replaced: Option<Clip>,
+}
+
+impl Command for ReplaceClip {
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let Some(slot) = doc.clips.get_mut(self.clip) else {
+            return Err(no_clip(self.clip));
+        };
+        let was = std::mem::replace(slot, self.previous.clone());
+        self.replaced.get_or_insert(was);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.replaced {
+            Some(replaced) => Box::new(ReplaceClip {
+                clip: self.clip,
+                previous: replaced.clone(),
+                replaced: None,
+            }),
+            None => Box::new(NotApplied("restoring a clip")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Trim clip"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() + 2 * std::mem::size_of::<Clip>()
     }
 }
 
@@ -4605,7 +4824,7 @@ impl Command for SplitClip {
             //   player asks, so this asks them too rather than repeating the
             //   arithmetic and drifting from it.
             (ClipSource::Audio(source), ClipSource::Audio(head), ClipSource::Audio(tail)) => {
-                if original.loop_length.is_some_and(|p| p > 0) {
+                if crate::trim::repeats(&original) {
                     // **A loop is cut in the arrangement, not in the file.**
                     // Both halves keep the whole take and go on repeating it,
                     // and each half's own block truncates its last pass.
@@ -4616,10 +4835,18 @@ impl Command for SplitClip {
                     // shortened range and then sit silent for the rest of the
                     // period — one right frame at the blade bought with a hole
                     // in every bar. Exact when the cut lands on a seam, which
-                    // is what the snapped grid gives you; a cut mid-pass
-                    // restarts the loop at the blade, since a clip stores
-                    // where in the *file* it begins and not where in the pass,
-                    // and that phase has nowhere to live.
+                    // is what the snapped grid gives you.
+                    //
+                    // **And a cut mid-pass keeps the pass's phase.** The right
+                    // half begins `offset` further into the cycle than the
+                    // clip did (`AudioClipData::loop_phase`) — it used to
+                    // start the take over at the blade, which is the report's
+                    // *"it actually moves the start of the audio clip to where
+                    // i cut it"*.
+                    tail.loop_phase = source.loop_phase + offset;
+                    if let Some(period) = original.loop_length.filter(|p| *p > 0) {
+                        tail.loop_phase = tail.loop_phase.rem_euclid(period);
+                    }
                 } else {
                     let device_rate = doc.tempo_map.sample_rate_hz().max(1.0);
                     let block_start = doc.tempo_map.tick_to_sample(original.start);
@@ -4632,7 +4859,7 @@ impl Command for SplitClip {
                         .tick_to_sample(original.start + original.length)
                         - block_start;
                     let ratio = source.read_ratio(source.sample_rate, device_rate, pass);
-                    let seam = (into_block as f64 * ratio * source.time_rate()) as Tick;
+                    let seam = (into_block as f64 * ratio * source.time_rate()).round() as Tick;
                     let seam = seam.clamp(0, source.source_frames());
                     if source.reverse {
                         // A reversed clip plays from its far end back, so the

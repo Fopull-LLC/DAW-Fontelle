@@ -19,6 +19,73 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-24 (later) — v0.14.0: cuts, edges, count-ins and automation
+that do what they look like.** Ty: *"when cutting up audio clips it actually
+moves the start of the audio clip to where i cut it ... i cant even drag in
+clips from the left too ... if i try to expand it again [it removes the
+content] ... the count in isnt always the same ... all of your recordings
+will be offset by like a bar ... it immidiately creates the automation clip
+if i right click on a knob ... if i dont start the playhead before the start
+of the automation clip that sets it to 0 it will put it at 100."*
+
+- **A window clip's trim is what its block shows** (`fontelle_model::trim`).
+  For an audio clip that is not stretched, not looping in the file and not
+  looped on the arrangement, `source_start..source_end` now follows its edges:
+  `ResizeClip` refits the far end (up to `AudioClipData::file_frames`, new,
+  filled at import and backfilled from the library), the player reads
+  **silence past the trim** (it used to read on into the file, so a half
+  grown back out after a cut played audio its picture said was gone, and a
+  fade-out stayed at the old end), and `Session::heal_audio_clips` fits every
+  clip before each compile — which also heals projects saved by v0.13 and
+  keeps windows right across a tempo change. `tests/audio_cut.rs` is sixteen
+  rules measured by rendering before and after.
+- **A looping clip cut mid-pass keeps its phase** —
+  `AudioClipData::loop_phase`, compiled to `AudioPlacement::phase`. Both halves
+  used to keep the whole take, so the right half restarted it at the blade:
+  that was the "moves the start to where I cut it". `content_fraction` reads
+  the phase, so the picture agrees.
+- **The left grip** (`ClipPart::LeftEdge`, audio only — a note clip has
+  nowhere to keep notes an edge would uncover): `ArrangeEdit::TrimStart` →
+  `TrimClipStart`, which moves the window's `source_start`, a stretched
+  clip's share, or a looping clip's phase, and stops at the take's first
+  frame (`trim::clamp_front`).
+- **Count-in in the engine**: `Transport::set_count_in(frames)`; the reader
+  holds the playhead on the marker for exactly that many frames, running the
+  graph with `TransportState::CountingIn` and a range that runs *up to* the
+  playhead, and the metronome clicks those beats whether or not it is on.
+  `transport::start_counted_take` arms the count, seeks the marker and rolls,
+  and hands the marker back **unmoved** — the old pre-roll moved it a bar
+  back for good, which is the bar every later take was off by, and clamped at
+  bar one. The tape starts at the tick the engine says the count is over, at
+  the playhead as it is. A stop during the count keeps nothing. The count no
+  longer switches the metronome on.
+- **Automation chases.** Effects cleared their automation on every reset
+  (seek, loop wrap) and a flat stretch of curve emits no events, so a
+  playhead landing in one played the knob. The compiler now anchors every
+  automated value at the loop's start (the clip's, in clip mode), and the
+  window calls `StudioHost::chase_automation` after every play and every
+  seek while rolling, **after** the seek so its reset cannot wipe it. Before
+  the first clip the chase sends NaN, which every `ParamValue` consumer reads
+  as "back to the knob" (or ignores, where there is no knob to go back to).
+- **Found on the way, each with a test**: the preview cast a past-the-trim
+  position (−1) to frame 0, so every clip's **last bucket drew the loud front
+  of its file** once the player stopped at the trim (`stretch_toggle.rs`
+  caught it); `loop_marks` ignored the phase, so a looping cut's seams were a
+  pass late; and a looping cut's right half **unlooped** kept its phase and
+  lost its end — `SetClipLoop` now folds the phase into the trim (and its
+  undo restores the whole clip).
+- **The take's front**: the ring is emptied when play is pressed and, at the
+  count's end, exactly the count's device frames (in the input's own rate)
+  are dropped from the front — `StudioHost::drop_audio_take_front`. Dropping
+  it the frame the window noticed lost 10–30 ms of every take's first beat.
+  Seen on `:99` with a virtual PipeWire mic: two takes from bar 5 both at
+  tick 15360 exactly. (Recording needs a **track** with an input — the
+  master's input does not open a stream.)
+- **A control asks.** Right-click on the mixer's fader, pan, an insert's
+  wet/dry in the rack, or the EQ opens the control's menu
+  (`canvas::mixer_right_click`, `eq_right_click`, `automate_menu`) instead of
+  making a clip; the effect window's knobs already did.
+
 **Released as v0.13.0 on 2026-09-24** — background bounces with a progress
 card, the unsaved `*`, "Saved!", and the save-before-leaving prompt.
 

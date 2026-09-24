@@ -774,3 +774,13 @@ pub fn export_menu_choice(
     };
     Some(ExportOptions { range, tail })
 }
+
+/// The menu a control opens on a right-click: its own name first, greyed —
+/// a menu of one entry with no heading is a menu you have to remember what
+/// you right-clicked to read — then the clip.
+pub fn automate_menu(name: &str) -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::disabled(name.to_string()),
+        MenuEntry::new("Create automation clip").after_rule(),
+    ]
+}

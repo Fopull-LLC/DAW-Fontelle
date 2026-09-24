@@ -118,6 +118,22 @@ pub struct PointerScene<'a> {
 }
 
 /// The cursor for `(x, y)`.
+/// The pointer over one part of the arrangement.
+pub fn timeline_pointer(hit: TimelineHit) -> Pointer {
+    match hit {
+        TimelineHit::Clip(_, ClipPart::RightEdge | ClipPart::LeftEdge) => Pointer::ResizeX,
+        // A fade's handle is dragged along the block, its node up and
+        // down — and the corner has to say so, because a handle that
+        // looks like the rest of the caption is one nobody finds.
+        TimelineHit::Clip(_, ClipPart::FadeHandle(_)) => Pointer::ResizeX,
+        TimelineHit::Clip(_, ClipPart::FadeNode(_)) => Pointer::ResizeY,
+        TimelineHit::Clip(_, ClipPart::Body) => Pointer::Grab,
+        TimelineHit::Ruler(_) => Pointer::Grab,
+        TimelineHit::Lane(_) => Pointer::Hand,
+        _ => Pointer::Default,
+    }
+}
+
 pub fn pointer_at(scene: &PointerScene<'_>, x: f32, y: f32) -> Pointer {
     if let Some(dragging) = scene.dragging {
         return dragging;
@@ -182,18 +198,13 @@ pub fn pointer_at(scene: &PointerScene<'_>, x: f32, y: f32) -> Pointer {
     }
 
     if scene.layout.timeline.frame.contains(x, y) {
-        return match timeline_hit(scene.timeline_view, scene.timeline, scene.clips, x, y) {
-            TimelineHit::Clip(_, ClipPart::RightEdge) => Pointer::ResizeX,
-            // A fade's handle is dragged along the block, its node up and
-            // down — and the corner has to say so, because a handle that
-            // looks like the rest of the caption is one nobody finds.
-            TimelineHit::Clip(_, ClipPart::FadeHandle(_)) => Pointer::ResizeX,
-            TimelineHit::Clip(_, ClipPart::FadeNode(_)) => Pointer::ResizeY,
-            TimelineHit::Clip(_, ClipPart::Body) => Pointer::Grab,
-            TimelineHit::Ruler(_) => Pointer::Grab,
-            TimelineHit::Lane(_) => Pointer::Hand,
-            _ => Pointer::Default,
-        };
+        return timeline_pointer(timeline_hit(
+            scene.timeline_view,
+            scene.timeline,
+            scene.clips,
+            x,
+            y,
+        ));
     }
 
     if editor_tab_at(scene.tabs, x, y).is_some() {

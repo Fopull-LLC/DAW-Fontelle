@@ -20,6 +20,7 @@ mod recording;
 mod storage;
 mod stretch;
 mod tools;
+pub mod trim;
 
 pub use arena::Arena;
 pub use asset_table::AssetTable;
@@ -43,6 +44,7 @@ pub use commands::{
     SetLoopRange, SetNoteLengths, SetNoteProperty, SetNotePropertyEach, SetNoteSlide,
     SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef, SetSendLevel,
     SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes, SplitClip, SwitchChannelAb,
+    TrimClipStart,
 };
 pub use lane::Lane;
 pub use mixer::{EffectSlot, Mixer, MixerTrack, PanLaw, Send};

@@ -582,3 +582,48 @@ fn a_take_in_an_unsaved_studio_makes_the_project_real_and_keeps_the_take() {
     assert!(bundle.join("project.json").is_file());
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ------------------------------------------------------------- count-in ---
+//
+// > *"just put the playhead on the same spot frozen and count in, then play
+// > it from there."*
+//
+// The ring is emptied when play is pressed, the engine counts, and at the end
+// of the count the window drops exactly the count's worth from the front of
+// what arrived — so the take begins on the marker and loses nothing of its
+// first beat. Dropping it the frame the window noticed the count was over
+// lost the first ten or twenty milliseconds of every take.
+
+#[test]
+fn the_count_ins_worth_is_dropped_from_the_front_of_the_take() {
+    let dir = scratch("countfront");
+    let mut session = a_session(&dir);
+    session.add_mixer_track();
+    let strip = session.selected_mixer_track();
+    session.set_track_input(strip, Some("whatever".to_string()));
+    session.set_record_mode(RecordMode::Audio);
+    with_a_take(&mut session, 36_000);
+    StudioHost::drop_audio_take_front(&mut session, 12_000);
+    let frames = session.keep_audio_take(0, 0).expect("kept");
+    assert_eq!(frames, 24_000, "the count was not taken off the front");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_count_is_measured_in_the_inputs_own_frames() {
+    // A count in device frames at 48 kHz, an input running at 24 kHz: half
+    // as many of its frames went by.
+    let dir = scratch("countrate");
+    let mut session = a_session(&dir);
+    session.add_mixer_track();
+    let strip = session.selected_mixer_track();
+    session.set_track_input(strip, Some("whatever".to_string()));
+    session.set_record_mode(RecordMode::Audio);
+    let (mut writer, reader) = input_capture_channel(40_000);
+    assert_eq!(writer.write(&vec![0.25f32; 18_000]), 18_000);
+    session.set_audio_input(reader, 24_000, 1);
+    StudioHost::drop_audio_take_front(&mut session, 24_000);
+    let frames = session.keep_audio_take(0, 0).expect("kept");
+    assert_eq!(frames, 6_000);
+    std::fs::remove_dir_all(&dir).ok();
+}

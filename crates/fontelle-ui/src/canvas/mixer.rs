@@ -833,6 +833,53 @@ pub enum MixerHit {
     Nothing,
 }
 
+/// A mixer control that can become an automation clip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MixerControl {
+    /// A strip's fader.
+    Gain(usize),
+    /// A strip's pan.
+    Pan(usize),
+    /// The wet/dry of one insert in a strip's rack.
+    InsertMix { strip: usize, slot: usize },
+}
+
+/// What a right-click on the mixer does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MixerRightClick {
+    /// Opens the menu that offers an automation clip for this control.
+    Automate(MixerControl),
+    /// Opens the track's own menu.
+    TrackMenu(usize),
+    Nothing,
+}
+
+/// What a right-click on `hit` means, with `selected` the track whose rack
+/// the options column is showing.
+///
+/// > *"in the effect rack for a mixer track it immidiately creates the
+/// > automation clip if i right click on a knob instead of opening a dropdown
+/// > with the option to turn it into an automation clip."*
+///
+/// A control **asks**: the menu is the answer, and the clip is one of its
+/// rows. Never an edit straight from the press — a right-click is how you
+/// find out what a control can do, and one that had already done it is a
+/// clip on the arrangement you then have to go and delete.
+pub fn mixer_right_click(hit: MixerHit, selected: usize) -> MixerRightClick {
+    match hit {
+        MixerHit::Fader(strip) => MixerRightClick::Automate(MixerControl::Gain(strip)),
+        MixerHit::Pan(strip) => MixerRightClick::Automate(MixerControl::Pan(strip)),
+        MixerHit::Options(OptionsHit::InsertMix(slot)) => {
+            MixerRightClick::Automate(MixerControl::InsertMix {
+                strip: selected,
+                slot,
+            })
+        }
+        MixerHit::Strip(strip) | MixerHit::Name(strip) => MixerRightClick::TrackMenu(strip),
+        _ => MixerRightClick::Nothing,
+    }
+}
+
 impl OptionsHit {
     /// What a hover tip says (see [`crate::tooltip`]).
     pub fn tip(self) -> &'static str {

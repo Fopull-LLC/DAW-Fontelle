@@ -33,6 +33,7 @@ fn a_placement(start: i64, length: i64) -> AudioPlacement {
         repeat: 0,
         crossfade_in: 0,
         crossfade_out: 0,
+        phase: 0,
         data: AudioClipData::whole(asset, length, 48_000),
     }
 }

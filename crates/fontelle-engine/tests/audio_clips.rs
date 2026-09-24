@@ -106,6 +106,7 @@ impl Rig {
             repeat: 0,
             crossfade_in: 0,
             crossfade_out: 0,
+            phase: 0,
             data,
         }
     }

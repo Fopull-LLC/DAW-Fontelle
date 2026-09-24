@@ -316,6 +316,11 @@ impl AudioNode for SamplerNode {
                 // compiler already resolved it to *this* node, so the only
                 // question left is which of this channel's two controls it
                 // names.
+                // NaN is the window's "back to the knob" (a chase before the
+                // first clip). A channel's knob is not held here to go back
+                // to, so it is left where automation last put it — never
+                // turned into a NaN gain.
+                fontelle_types::EventPayload::ParamValue { value, .. } if !value.is_finite() => {}
                 fontelle_types::EventPayload::ParamValue { target, value } => {
                     let value = *value as f32;
                     let address = target.as_str();
@@ -1380,7 +1385,9 @@ impl EffectNode {
                 .take(MAX_EFFECT_PARAMS)
                 .position(|spec| spec.id == param)
             {
-                self.automated[index] = Some(*value as f32);
+                // NaN hands the parameter back to its knob: the chase before
+                // an automation clip has started (`chase_automation`).
+                self.automated[index] = value.is_finite().then_some(*value as f32);
             }
         }
     }
@@ -1832,11 +1839,14 @@ impl AudioNode for MixerTrackNode {
             let fontelle_types::EventPayload::ParamValue { target, value } = &event.payload else {
                 continue;
             };
-            let value = *value as f32;
+            // NaN hands the control back to its fader — the chase before an
+            // automation clip has started.
+            let value = value.is_finite().then_some(*value as f32);
             if target.as_str().ends_with("/gain") {
-                self.automated_gain_db = Some(GAIN_MIN_DB + value * (GAIN_MAX_DB - GAIN_MIN_DB));
+                self.automated_gain_db =
+                    value.map(|value| GAIN_MIN_DB + value * (GAIN_MAX_DB - GAIN_MIN_DB));
             } else if target.as_str().ends_with("/pan") {
-                self.automated_pan = Some(value * 2.0 - 1.0);
+                self.automated_pan = value.map(|value| value * 2.0 - 1.0);
             }
         }
         let (gain_db, pan, mute) = self.settings();
@@ -2693,7 +2703,11 @@ impl AudioNode for MetronomeNode {
     fn process(&mut self, ctx: &mut ProcessContext) {
         // Only while something is rolling: a click over a stopped transport is
         // a metronome nobody asked for.
-        if !ctx.transport.state.is_processing() || !self.metronome.is_on() {
+        // A count-in clicks whether or not the switch is on: it is the
+        // count, not the metronome, and a count nobody can hear is a bar of
+        // silence before a take.
+        let counting = ctx.transport.state == crate::TransportState::CountingIn;
+        if !ctx.transport.state.is_processing() || !(counting || self.metronome.is_on()) {
             self.remaining = 0;
             return;
         }
@@ -2706,13 +2720,24 @@ impl AudioNode for MetronomeNode {
         let start = ctx.sample_range.start;
         for frame in 0..frames {
             let at = start + frame as i64;
-            // The beat this sample belongs to. Floor division, so a position
-            // before the start of the song counts backwards rather than
-            // clustering every negative sample onto beat zero.
-            let beat = at.div_euclid(per_beat);
-            if at.rem_euclid(per_beat) == 0 && beat != self.last_beat {
-                self.last_beat = beat;
-                self.start(beat.rem_euclid(per_bar) == 0);
+            if counting {
+                // The range runs up to the standing playhead, so what is
+                // left of the count is how far `at` is short of it: a beat
+                // every `per_beat` of that, the first of the bar accented.
+                let left = ctx.transport.position_sample - at;
+                if left > 0 && left % per_beat == 0 {
+                    self.start((left / per_beat) % per_bar == 0);
+                }
+            } else {
+                // The beat this sample belongs to. Floor division, so a
+                // position before the start of the song counts backwards
+                // rather than clustering every negative sample onto beat
+                // zero.
+                let beat = at.div_euclid(per_beat);
+                if at.rem_euclid(per_beat) == 0 && beat != self.last_beat {
+                    self.last_beat = beat;
+                    self.start(beat.rem_euclid(per_bar) == 0);
+                }
             }
             if self.remaining == 0 {
                 continue;

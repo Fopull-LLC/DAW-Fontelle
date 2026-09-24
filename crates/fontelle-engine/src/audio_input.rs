@@ -135,6 +135,12 @@ impl InputCapture {
         self.samples.clear();
     }
 
+    /// Forgets the first `frames` frames — what arrived during a count-in.
+    pub fn drop_front(&mut self, frames: usize) {
+        let samples = (frames * usize::from(self.channels.max(1))).min(self.samples.len());
+        self.samples.drain(..samples);
+    }
+
     /// Hands the take over, leaving nothing behind.
     pub fn take(&mut self) -> Vec<f32> {
         std::mem::take(&mut self.samples)

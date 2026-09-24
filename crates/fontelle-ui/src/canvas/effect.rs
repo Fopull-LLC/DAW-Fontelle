@@ -306,6 +306,27 @@ pub enum EqHit {
     Nothing,
 }
 
+/// What a right-click on the EQ offers to automate: the parameter's id and
+/// what the menu calls it — or `None` where there is no control.
+///
+/// A band's handle and its chip mean its **gain**: the axis the handle moves
+/// vertically, and the one a sweep is nearly always drawn on.
+pub fn eq_right_click(hit: EqHit, band: usize) -> Option<(String, String)> {
+    let (band, field) = match hit {
+        EqHit::Handle(band) | EqHit::Band(band) => (band, EqField::Gain),
+        EqHit::Field(field) => (band, field),
+        EqHit::Curve | EqHit::Nothing => return None,
+    };
+    let param = field.param(band)?;
+    let caption = if field == EqField::Mix {
+        "wet/dry".to_string()
+    } else {
+        let what = param.rsplit('.').next().unwrap_or(&param);
+        format!("Band {} {what}", band + 1)
+    };
+    Some((param, caption))
+}
+
 /// How tall the chip row and the control row are, as multiples of a text row.
 const CHIP_ROW: f32 = 1.0;
 const FIELD_ROW: f32 = 1.0;

@@ -2950,6 +2950,7 @@ fn an_audio_clip(
         // so what these shots should be of.
         natural_length: length,
         stretched: false,
+        loop_offset: 0,
     };
     clip
 }

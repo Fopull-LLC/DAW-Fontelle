@@ -53,8 +53,8 @@ pub use effect::{
     SPECTRUM_BANDS, SPECTRUM_BOTTOM_DB, SPECTRUM_TOP_DB, band_home_hz, display_of, effect_params,
     effect_view, eq_band_curve_points, eq_curve_points, eq_field_caption, eq_freq_at, eq_gain_at,
     eq_hit, eq_layout, eq_layout_for, eq_nudge_freq, eq_nudge_gain, eq_nudge_mix, eq_nudge_q,
-    eq_x_of_freq, eq_y_of_gain, format_hz, next_band_channel, next_band_type, spectrum_band_hz,
-    spectrum_points,
+    eq_right_click, eq_x_of_freq, eq_y_of_gain, format_hz, next_band_channel, next_band_type,
+    spectrum_band_hz, spectrum_points,
 };
 pub use favorites::{
     EffectRow, FAVORITES_HEADING, InstrumentRow, PickerRow, RESCAN_PLUGINS, effect_menu_rows,
@@ -107,9 +107,10 @@ pub use keybinds::{
 pub use keymap::{Action, Chord, ChordKey, Context, Keymap, Rebind};
 pub use menu::{
     CHOSEN_MARK, ContextMenu, MENU_TEXT_INSET, MenuEntry, NAME_CARET, STAR_WIDTH, THUMB_H, THUMB_W,
-    context_menu_hit, context_menu_layout, context_menu_layout_beside, context_menu_star_hit,
-    export_menu_choice, export_menu_entries, input_menu_choice, input_menu_entries,
-    instrument_menu_entries, menu_matches, name_prompt_entries, thumbnail_points,
+    automate_menu, context_menu_hit, context_menu_layout, context_menu_layout_beside,
+    context_menu_star_hit, export_menu_choice, export_menu_entries, input_menu_choice,
+    input_menu_entries, instrument_menu_entries, menu_matches, name_prompt_entries,
+    thumbnail_points,
 };
 pub use overlays::{
     ConfirmLayout, JobCardLayout, SAVE_PROMPT_DISCARD, SAVE_PROMPT_SAVE, SAVED_FLASH_SECONDS,
@@ -164,11 +165,12 @@ pub use disgusting_beat::{
 pub use glide::{Glide, wheel_travel};
 pub use mixer::{
     CHAIN_DOT, CHAIN_DOT_GAP, FADER_DETENT_PX, InsertRowLayout, MAX_FADER_DB, MAX_SEND_DB,
-    MIN_FADER_DB, MIN_SEND_DB, MixerHit, MixerKey, MixerLayout, MixerStripLayout, NamePress,
-    OPTIONS_WIDTH, OptionsHit, PAN_DETENT_PX, STRIP_WIDTH, SendRowLayout, TrackOptionsLayout,
-    fader_db_at, fader_y_of_db, format_gain_db, format_mix, format_pan, format_send_db,
-    insert_mix_dial, mixer_hit, mixer_key, mixer_layout, mixer_layout_for, name_press, pan_at,
-    pan_x_of, send_level_at, send_x_of_level, unity_fraction,
+    MIN_FADER_DB, MIN_SEND_DB, MixerControl, MixerHit, MixerKey, MixerLayout, MixerRightClick,
+    MixerStripLayout, NamePress, OPTIONS_WIDTH, OptionsHit, PAN_DETENT_PX, STRIP_WIDTH,
+    SendRowLayout, TrackOptionsLayout, fader_db_at, fader_y_of_db, format_gain_db, format_mix,
+    format_pan, format_send_db, insert_mix_dial, mixer_hit, mixer_key, mixer_layout,
+    mixer_layout_for, mixer_right_click, name_press, pan_at, pan_x_of, send_level_at,
+    send_x_of_level, unity_fraction,
 };
 pub use notepad::{
     NOTEPAD_BLANK, NOTEPAD_HINT, NOTEPAD_LEADING, NotepadHit, NotepadLayout, NotepadRow,

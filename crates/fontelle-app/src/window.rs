@@ -144,4 +144,12 @@ impl TransportHost for EngineHost {
             metronome.set_on(on);
         }
     }
+
+    fn count_in(&mut self, frames: i64) {
+        self.transport.set_count_in(frames);
+    }
+
+    fn counting_in(&mut self) -> bool {
+        self.transport.is_counting_in()
+    }
 }

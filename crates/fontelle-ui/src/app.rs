@@ -503,6 +503,13 @@ enum MenuTarget {
     /// The transport bar's tempo box. §12.3 names the tempo as automatable
     /// and it is a control like any other; the menu is how it becomes a lane.
     Tempo,
+    /// A mixer control's right-click: its fader, its pan, or an insert's
+    /// wet/dry in its rack — see `canvas::mixer_right_click`. `name` is the
+    /// menu's heading.
+    AutomateMixer {
+        control: crate::canvas::MixerControl,
+        name: String,
+    },
     /// The transport bar's signature box: which metre, from a list. *"it
     /// should be a dropdown instead of just iterating through pre set list of
     /// options when being clicked."* See `transport::signature_menu_entries`.
@@ -751,7 +758,8 @@ impl MenuTarget {
             | Self::PackActions
             | Self::LoadSound { .. } => Some(EditorKind::Instrument),
             // The mixer is in the main window, so its menus are too.
-            Self::TrackMenu(_)
+            Self::AutomateMixer { .. }
+            | Self::TrackMenu(_)
             | Self::TrackPresetMenu(_)
             | Self::TrackPresetName(_)
             | Self::TrackPresetCategory(_)
@@ -1453,13 +1461,15 @@ pub struct WindowApp {
     /// than the double-click window used to eat the gesture. See
     /// [`crate::pointer::InputClock`] — it carries the report.
     input_clock: crate::pointer::InputClock,
-    /// While an audio take is counting in: the song sample the tape starts at.
+    /// While an audio take is counting in: the marker it will start from.
     ///
-    /// A count-in is **not** a delay before the transport rolls. The transport
-    /// rolls a bar early, the click sounds over it, and the tape starts at the
-    /// marker — which is what makes the first beat of the take land on the
-    /// first beat of the bar rather than a hand's reaction time after it.
-    count_in_until: Option<fontelle_types::Sample>,
+    /// The engine counts (`transport::start_counted_take`): the playhead
+    /// stands on the marker while the click counts, then rolls from it. The
+    /// tape starts the moment the engine says the count is over — which is
+    /// what makes the first beat of the take land on the first beat of the
+    /// bar rather than a hand's reaction time after it.
+    /// The marker, and how many device frames the count runs for.
+    count_in_until: Option<(fontelle_types::Sample, fontelle_types::Sample)>,
     /// Where the tape actually started, so the take lands where it was played.
     take_from: Option<fontelle_types::Sample>,
     /// Which preset chip the pointer is over, in the effect panel. Its own
@@ -2950,21 +2960,24 @@ impl WindowApp {
             self.tree.invalidate_rect(self.tooltip_region());
         }
 
-        let mut view = match &mut self.options.host {
-            Some(host) => host.view(),
-            None => TransportView::unavailable(),
+        let (mut view, counting) = match &mut self.options.host {
+            Some(host) => (host.view(), host.counting_in()),
+            None => (TransportView::unavailable(), false),
         };
-        // The count-in, if one is running: the transport rolled a bar early
-        // over a click, and the tape starts when the playhead reaches where
-        // recording was actually asked for.
-        if let Some(target) = self.count_in_until
+        // The count-in, if one was running and the engine has finished it:
+        // the song is rolling from the marker. The ring was emptied when play
+        // was pressed, so what it holds is the count and then the take — and
+        // dropping exactly the count's worth leaves a take that begins on the
+        // marker, with none of its first beat lost to the frame it took this
+        // window to notice.
+        if let Some((marker, count)) = self.count_in_until
             && view.recording
-            && view.position_sample >= target
+            && !counting
         {
             self.count_in_until = None;
-            self.take_from = Some(target);
+            self.take_from = Some(marker);
             if let Some(doc) = &mut self.options.document {
-                doc.discard_audio_take();
+                doc.drop_audio_take_front(count);
             }
             self.status = "recording".to_string();
             self.tree.invalidate(BROWSER);
@@ -7428,29 +7441,34 @@ impl WindowApp {
                 // the pan are controls like any other, and they get the same
                 // gesture the effects do because they share the addressing
                 // scheme (§8.2) rather than because it was wired twice.
-                MouseButton::Right => match mixer_hit(&self.mixer, x, y) {
-                    MixerHit::Fader(strip) => self.automate_track(strip, true),
-                    MixerHit::Pan(strip) => self.automate_track(strip, false),
-                    // A wet/dry is a control like any other, and sweeping one
-                    // is how an effect is brought in over a bar.
-                    MixerHit::Options(crate::canvas::OptionsHit::InsertMix(slot)) => {
-                        self.automate_insert(
-                            self.selected_track,
-                            slot,
-                            fontelle_types::MIX,
-                            "wet/dry",
-                        );
+                // A control **asks** — a menu whose row makes the clip, the
+                // way the effect window's knobs already did. *"it immidiately
+                // creates the automation clip if i right click on a knob
+                // instead of opening a dropdown."*
+                MouseButton::Right => {
+                    let hit = mixer_hit(&self.mixer, x, y);
+                    match crate::canvas::mixer_right_click(hit, self.selected_track) {
+                        crate::canvas::MixerRightClick::Automate(control) => {
+                            let name = self.mixer_control_name(control);
+                            let bounds = self.layout.window;
+                            self.open_menu(
+                                MenuTarget::AutomateMixer { control, name },
+                                x,
+                                y,
+                                bounds,
+                            );
+                        }
+                        // The strip's own body or its name: the track's menu,
+                        // which is where its chain presets live. *"right click
+                        // a track and there's a presets option."*
+                        crate::canvas::MixerRightClick::TrackMenu(strip) => {
+                            let bounds = self.layout.window;
+                            self.selected_track = strip;
+                            self.open_menu(MenuTarget::TrackMenu(strip), x, y, bounds);
+                        }
+                        crate::canvas::MixerRightClick::Nothing => {}
                     }
-                    // The strip's own body or its name: the track's menu,
-                    // which is where its chain presets live. *"right click a
-                    // track and there's a presets option."*
-                    MixerHit::Strip(strip) | MixerHit::Name(strip) => {
-                        let bounds = self.layout.window;
-                        self.selected_track = strip;
-                        self.open_menu(MenuTarget::TrackMenu(strip), x, y, bounds);
-                    }
-                    _ => {}
-                },
+                }
             }
             return;
         }
@@ -8187,6 +8205,32 @@ impl WindowApp {
         self.tree.invalidate(PANEL);
     }
 
+    /// What the menu for a mixer control is headed: the track, then the
+    /// control — the same words the lane it makes is named.
+    fn mixer_control_name(&self, control: crate::canvas::MixerControl) -> String {
+        use crate::canvas::MixerControl;
+        let strip = match control {
+            MixerControl::Gain(strip) | MixerControl::Pan(strip) => strip,
+            MixerControl::InsertMix { strip, .. } => strip,
+        };
+        let track = self
+            .mixer_strips
+            .get(strip)
+            .map_or_else(|| "Track".to_string(), |track| track.name.clone());
+        match control {
+            MixerControl::Gain(_) => format!("{track} \u{2014} gain"),
+            MixerControl::Pan(_) => format!("{track} \u{2014} pan"),
+            MixerControl::InsertMix { slot, .. } => {
+                let effect = self
+                    .mixer_strips
+                    .get(strip)
+                    .and_then(|t| t.inserts.get(slot))
+                    .map_or_else(String::new, |insert| insert.label.clone());
+                format!("{track} \u{2014} {effect} wet/dry")
+            }
+        }
+    }
+
     /// Makes an automation lane for a track's fader or its pan.
     fn automate_track(&mut self, strip: usize, gain: bool) {
         let name = self
@@ -8227,29 +8271,23 @@ impl WindowApp {
     fn press_effect_editor(&mut self, button: MouseButton, x: f32, y: f32) {
         match button {
             MouseButton::Left => self.press_effect(x, y),
-            MouseButton::Right => match crate::canvas::eq_hit(&self.eq_layout, x, y) {
-                // A band's *gain* is what a right-click on its handle means:
-                // it is the axis the handle moves vertically, and the one a
-                // sweep is nearly always drawn on.
-                crate::canvas::EqHit::Handle(band) | crate::canvas::EqHit::Band(band) => {
-                    self.automate_insert_param(&format!("band{}.gain", band + 1));
+            // §12.4 taken at its word — every control in the EQ is a
+            // parameter — and asked, like every other knob: the menu's row
+            // makes the lane (`canvas::eq_right_click`).
+            MouseButton::Right => {
+                let hit = crate::canvas::eq_hit(&self.eq_layout, x, y);
+                if let Some((param, name)) = crate::canvas::eq_right_click(hit, self.eq_band) {
+                    let bounds = self
+                        .editors
+                        .iter()
+                        .find(|e| e.kind == EditorKind::Effect)
+                        .map(|editor| editor.panel.body)
+                        .unwrap_or(self.insert_layout.body);
+                    self.open_menu(MenuTarget::InsertParam { param, name }, x, y, bounds);
+                    self.redraw_editor(EditorKind::Effect);
                 }
-                // §12.4 taken at its word: every control in the row is a
-                // parameter, so right-clicking any of them makes its lane —
-                // the frequency, the Q, the type, the wet/dry.
-                crate::canvas::EqHit::Field(field) => {
-                    if let Some(param) = field.param(self.eq_band) {
-                        self.automate_insert_param(&param);
-                    }
-                }
-                crate::canvas::EqHit::Curve | crate::canvas::EqHit::Nothing => {}
-            },
+            }
         }
-    }
-
-    /// Makes an automation lane for one parameter of the open insert.
-    fn automate_insert_param(&mut self, param: &str) {
-        self.automate_insert_named(param, param);
     }
 
     /// The same for the insert the effect window has open, which is the only
@@ -13159,19 +13197,19 @@ impl WindowApp {
                     self.arm_recording(false);
                     return;
                 }
-                // Play, while armed to record audio: roll a **bar early** over
-                // the click, and start the tape when the playhead reaches the
-                // marker. *"after the 4 tap metronome count in it starts
-                // recording."*
-                if decision == TransportAction::Play
+                // Play, while armed to record audio: **count in** — the
+                // playhead stands on the marker while the click counts, and
+                // then the song rolls from there with the tape running.
+                // *"after the 4 tap metronome count in it starts recording."*
+                let counted = decision == TransportAction::Play
                     && view.armed
                     && self
                         .options
                         .document
                         .as_ref()
                         .map(|doc| doc.record_mode() == crate::transport::RecordMode::Audio)
-                        .unwrap_or(false)
-                {
+                        .unwrap_or(false);
+                if counted {
                     let beat = self
                         .options
                         .document
@@ -13184,37 +13222,41 @@ impl WindowApp {
                         .map_or(4, |doc| doc.beats_per_bar())
                         .min(crate::transport::COUNT_IN_BEATS);
                     let count = crate::transport::count_in_samples(beat, beats);
-                    let target = self.marker;
-                    if count > 0 {
-                        self.count_in_until = Some(target);
-                        self.take_from = None;
-                        // The click, for the bar it is counting: a count-in
-                        // nobody can hear is a bar of silence.
-                        apply(
-                            host.as_mut(),
-                            TransportAction::SetMetronome(true),
-                            self.marker,
-                        );
-                        self.marker = apply(
-                            host.as_mut(),
-                            TransportAction::Mark((target - count).max(0)),
-                            self.marker,
-                        );
-                    } else {
-                        self.count_in_until = None;
-                        self.take_from = Some(target);
-                        // The tape starts *here*, so whatever monitoring had
-                        // left in the ring is not part of it. The count-in
-                        // branch above discards at the moment it hands over
-                        // for the same reason; a project with no tempo takes
-                        // this one and must not be the one that records the
-                        // minute you spent setting up.
-                        if let Some(doc) = &mut self.options.document {
-                            doc.discard_audio_take();
-                        }
+                    // Waiting for the engine to say the count is over; with
+                    // no tempo there is no count, and the first tick after
+                    // this starts the tape.
+                    self.count_in_until = Some((self.marker, count));
+                    self.take_from = None;
+                    // Emptied now, so the count's worth at the front of the
+                    // ring is exactly the count — see `count_in_until`.
+                    if let Some(doc) = &mut self.options.document {
+                        doc.discard_audio_take();
                     }
+                    self.marker =
+                        crate::transport::start_counted_take(host.as_mut(), self.marker, count);
+                    if let Some(doc) = &mut self.options.document {
+                        doc.chase_automation(self.marker);
+                    }
+                    self.status = if count > 0 {
+                        "counting in\u{2026}".to_string()
+                    } else {
+                        "recording".to_string()
+                    };
+                    self.tree.invalidate(BROWSER);
+                    self.tick();
+                    self.tree.invalidate(TRANSPORT);
+                    self.tree.invalidate(PANEL);
+                    return;
                 }
                 self.marker = apply(host.as_mut(), decision, self.marker);
+                // After the seek, so the reset it causes cannot wipe it: every
+                // automated parameter is told its value where the song starts
+                // playing — see `StudioHost::chase_automation`.
+                if decision == TransportAction::Play
+                    && let Some(doc) = &mut self.options.document
+                {
+                    doc.chase_automation(self.marker);
+                }
             }
         }
         if was_recording && stopping {
@@ -13326,7 +13368,15 @@ impl WindowApp {
             return;
         };
         if doc.record_mode() == crate::transport::RecordMode::Audio {
-            let at = from.unwrap_or(0);
+            // Stopped before the count was over: the tape never started, and
+            // what the input heard during the count is not a take.
+            let Some(at) = from else {
+                doc.discard_audio_take();
+                self.status =
+                    "stopped during the count-in \u{2014} nothing was recorded".to_string();
+                self.tree.invalidate(BROWSER);
+                return;
+            };
             // The device's own rate, not a constant: a take counted in
             // 48 kHz seconds on a 44.1 kHz interface reads nine per cent
             // short, which is exactly wrong enough to be believed.
@@ -14751,16 +14801,10 @@ impl WindowApp {
             // The control's own name first, greyed: a menu of one entry with
             // no heading is a menu you have to remember what you right-clicked
             // to read.
-            MenuTarget::InstrumentParam { name, .. } | MenuTarget::InsertParam { name, .. } => {
-                vec![
-                    MenuEntry::disabled(name.clone()),
-                    MenuEntry::new("Create automation clip").after_rule(),
-                ]
-            }
-            MenuTarget::Tempo => vec![
-                MenuEntry::disabled("Tempo".to_string()),
-                MenuEntry::new("Create automation clip").after_rule(),
-            ],
+            MenuTarget::InstrumentParam { name, .. }
+            | MenuTarget::InsertParam { name, .. }
+            | MenuTarget::AutomateMixer { name, .. } => crate::canvas::automate_menu(name),
+            MenuTarget::Tempo => crate::canvas::automate_menu("Tempo"),
             // The three instruments, in one order, from one list — so the two
             // menus that offer them cannot come to disagree about what there
             // is. A heading, greyed, because a bare list of three words is a
@@ -16241,6 +16285,18 @@ impl WindowApp {
                 self.open_chosen_instrument();
             }
 
+            (MenuTarget::AutomateMixer { control, .. }, 1) => {
+                use crate::canvas::MixerControl;
+                match *control {
+                    MixerControl::Gain(strip) => self.automate_track(strip, true),
+                    MixerControl::Pan(strip) => self.automate_track(strip, false),
+                    // A wet/dry is a control like any other, and sweeping one
+                    // is how an effect is brought in over a bar.
+                    MixerControl::InsertMix { strip, slot } => {
+                        self.automate_insert(strip, slot, fontelle_types::MIX, "wet/dry")
+                    }
+                }
+            }
             (MenuTarget::InsertParam { param, name }, 1) => {
                 let (param, name) = (param.clone(), name.clone());
                 self.automate_insert_named(&param, &name);
@@ -17418,6 +17474,13 @@ impl WindowApp {
         }
         if let Some(host) = &mut self.options.host {
             self.marker = apply(host.as_mut(), TransportAction::Mark(sample), self.marker);
+            // A jump while the song plays lands in the middle of whatever
+            // automation is there; stopped, the next play chases instead.
+            if self.view.playing
+                && let Some(doc) = &mut self.options.document
+            {
+                doc.chase_automation(self.marker);
+            }
         } else {
             self.marker = sample.max(0);
         }

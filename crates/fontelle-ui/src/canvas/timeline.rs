@@ -270,6 +270,8 @@ pub fn content_ticks(clip: &ClipInfo) -> Tick {
 /// waveform is narrower than a tick at some zooms and wider at others.
 pub fn content_fraction(clip: &ClipInfo, along: f32) -> Option<f32> {
     let pass = pass_ticks(clip) as f32;
+    // A block that begins part-way through its cycle is that far along it.
+    let along = along + clip.audio.loop_offset.max(0) as f32;
     let within = if clip.loop_length.is_some_and(|p| p > 0) {
         along.rem_euclid(pass)
     } else {
@@ -1356,6 +1358,10 @@ pub fn timeline_zoom_y(view: &mut TimelineView, factor: f32) {
 pub enum ClipPart {
     Body,
     RightEdge,
+    /// An **audio** block's left edge: dragged, it trims the front of the
+    /// take in or back out (`ArrangeEdit::TrimStart`). A note or automation
+    /// block has none — its left edge is its body.
+    LeftEdge,
     /// The fade handle at one top corner of an audio block — see
     /// [`fade_anatomy`]. Dragged along the block, it sets how long the fade
     /// at that end is.
@@ -1438,6 +1444,8 @@ pub fn timeline_hit(
             part
         } else if x >= block.right() - handle {
             ClipPart::RightEdge
+        } else if clip.kind == ClipKind::Audio && x <= block.x + handle {
+            ClipPart::LeftEdge
         } else if clip.kind == ClipKind::Automation {
             automation_part(block, clip, x, y)
         } else {
@@ -1585,6 +1593,13 @@ pub enum ArrangeEdit {
     /// taking it back should be one press of Ctrl+Z.
     Split {
         cuts: Vec<(ClipId, Tick)>,
+    },
+    /// Move these audio clips' **fronts** by `tick_delta`, their ends staying
+    /// put — the left grip. The take under the rest of the block does not
+    /// move; the host stops the edge at the first frame of the take.
+    TrimStart {
+        ids: Vec<ClipId>,
+        tick_delta: Tick,
     },
     /// Make these clips repeat their content every `loop_length` ticks, or
     /// stop them repeating.
@@ -1748,6 +1763,16 @@ enum Gesture {
         /// `looping` is: flipped halfway through a drag, it must not change
         /// what the drag has been doing.
         stretch: bool,
+    },
+    /// The left grip of the audio clips in the selection.
+    TrimmingStart {
+        applied_tick: Tick,
+        /// The furthest left the fronts may go: the song's start under the
+        /// earliest of them.
+        earliest: Tick,
+        /// The shortest of them when the drag began, which is how far right
+        /// the fronts may go before a block is less than a snap long.
+        shortest: Tick,
     },
     Marquee {
         from: (f32, f32),
@@ -2204,6 +2229,20 @@ impl Timeline {
                     y_to_lane(&self.view, layout.grid, y),
                 );
                 self.gesture = match part {
+                    ClipPart::LeftEdge => {
+                        let audio = self
+                            .selected(clips)
+                            .filter(|clip| clip.kind == ClipKind::Audio);
+                        let (earliest, shortest) =
+                            audio.fold((Tick::MAX, Tick::MAX), |(earliest, shortest), clip| {
+                                (earliest.min(clip.start), shortest.min(clip.length))
+                            });
+                        Gesture::TrimmingStart {
+                            applied_tick: 0,
+                            earliest: if earliest == Tick::MAX { 0 } else { earliest },
+                            shortest: if shortest == Tick::MAX { 1 } else { shortest },
+                        }
+                    }
                     ClipPart::RightEdge => Gesture::Resizing {
                         applied_tick: 0,
                         shortest: self.shortest_selected(clips),
@@ -2576,6 +2615,44 @@ impl Timeline {
                     ids: self.selection.clone(),
                     tick_delta: d_tick,
                     lane_delta: d_lane,
+                }]
+            }
+
+            Gesture::TrimmingStart {
+                applied_tick,
+                earliest,
+                shortest,
+            } => {
+                let ids: Vec<ClipId> = self
+                    .selected(clips)
+                    .filter(|clip| clip.kind == ClipKind::Audio)
+                    .map(|clip| clip.id)
+                    .collect();
+                if ids.is_empty() {
+                    return Vec::new();
+                }
+                let unit = snap_unit(self.view.snap, beats_per_bar);
+                let raw = tick - self.origin.0;
+                let wanted = if unit > 0 {
+                    (raw as f64 / unit as f64).round() as Tick * unit
+                } else {
+                    raw
+                };
+                // Not before the song, and never past the other edge: at
+                // least a snap unit of block is left.
+                let wanted = wanted.max(-earliest).min((shortest - unit.max(1)).max(0));
+                let delta = wanted - applied_tick;
+                if delta == 0 {
+                    return Vec::new();
+                }
+                self.gesture = Gesture::TrimmingStart {
+                    applied_tick: wanted,
+                    earliest,
+                    shortest,
+                };
+                vec![ArrangeEdit::TrimStart {
+                    ids,
+                    tick_delta: delta,
                 }]
             }
 
@@ -3094,7 +3171,10 @@ pub fn loop_marks(view: &TimelineView, grid: Rect, clip: &ClipInfo) -> Vec<f32> 
     }
 
     let mut marks = Vec::new();
-    let mut tick = period;
+    // A block that begins part-way through its cycle — the right half of a
+    // cut through a loop — comes round sooner: what is left of that pass.
+    let phase = clip.audio.loop_offset.max(0).rem_euclid(period);
+    let mut tick = period - phase;
     while tick < clip.length {
         let x = block.x + tick as f32 * view.pixels_per_tick;
         // Clipped to the block rather than to the grid: a seam scrolled off

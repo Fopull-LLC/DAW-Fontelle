@@ -1043,6 +1043,7 @@ impl Session {
             seconds: data.seconds() as f32,
             natural_length: 0,
             stretched: data.stretch == fontelle_types::ClipStretch::Resample,
+            loop_offset: data.loop_phase,
         };
         let frames = data.source_frames();
         if frames > 0 && data.sample_rate > 0 {
@@ -1128,30 +1129,46 @@ impl Session {
         // Which slice of the *file* a bucket covers. Through
         // `source_position`, so trim, speed, reverse and looping are all
         // obeyed by one function rather than four.
+        //
+        // `None` for a bucket that begins past the trim, which is silence —
+        // and a bucket that *ends* past it stops at the trim's last frame.
+        // A position below every file used to be cast to frame zero, so the
+        // last bucket of every clip drew the loud front of its file.
+        let last_frame = if data.reverse {
+            data.source_start as f64
+        } else {
+            (data.source_end - 1).max(data.source_start) as f64
+        };
         let span = |bucket: usize| {
             let from = data.source_position(bucket as f64 * per_bucket);
+            if from < 0.0 {
+                return None;
+            }
             let to = data.source_position((bucket + 1) as f64 * per_bucket);
+            let to = if to < 0.0 { last_frame } else { to };
             let (from, to) = if from <= to { (from, to) } else { (to, from) };
             let a = ((from * scale) as usize).min(level.len() - 1);
             let b = ((to * scale) as usize).min(level.len() - 1);
-            (a, b)
+            Some((a, b))
         };
         preview.peaks = (0..buckets)
-            .map(|bucket| {
-                let (a, b) = span(bucket);
-                level[a..=b].iter().fold((0.0f32, 0.0f32), |acc, (lo, hi)| {
+            .map(|bucket| match span(bucket) {
+                Some((a, b)) => level[a..=b].iter().fold((0.0f32, 0.0f32), |acc, (lo, hi)| {
                     (acc.0.min(*lo), acc.1.max(*hi))
-                })
+                }),
+                None => (0.0, 0.0),
             })
             .collect();
         if let Some(loudness) = loudness {
             // The **power** mean over the run, then the root: the RMS of
             // the frames the bucket covers, not a mean of RMS values.
             preview.rms = (0..buckets)
-                .map(|bucket| {
-                    let (a, b) = span(bucket);
-                    let run = &loudness[a..=b];
-                    (run.iter().map(|v| v * v).sum::<f32>() / run.len() as f32).sqrt()
+                .map(|bucket| match span(bucket) {
+                    Some((a, b)) => {
+                        let run = &loudness[a..=b];
+                        (run.iter().map(|v| v * v).sum::<f32>() / run.len() as f32).sqrt()
+                    }
+                    None => 0.0,
                 })
                 .collect();
         }
@@ -2689,6 +2706,30 @@ impl Session {
         }
     }
 
+    /// Keeps every audio clip's trim what its block shows — see
+    /// `fontelle_model::trim`. Before each compile, so the song that plays
+    /// is the one the arrangement draws: a clip from an older build that was
+    /// grown past a cut, and a clip whose block covers a different stretch of
+    /// its take after a tempo change, are both fitted here.
+    ///
+    /// A clip that does not know how long its file is learns it from the take
+    /// the library holds. A few multiplications per audio clip, which is well
+    /// inside what a revision may cost.
+    fn heal_audio_clips(&mut self) {
+        let library = &self.library;
+        let project = &mut self.project;
+        let tempo = &project.tempo_map;
+        for clip in project.clips.values_mut() {
+            let frames = match &clip.source {
+                ClipSource::Audio(data) => library
+                    .audio_peaks(data.asset.id)
+                    .map(|peaks| peaks.frames as fontelle_types::Sample),
+                _ => continue,
+            };
+            fontelle_model::trim::heal(tempo, clip, frames);
+        }
+    }
+
     fn republish(&mut self) {
         // The tempo first: a tempo lane changes what sample every tick in the
         // pass lands on, and the loop the transport is running is in samples.
@@ -2700,6 +2741,7 @@ impl Session {
         // it out too, or the playhead is drawn in a bar the notes are not in.
         self.effective_tempo = self.tempo_for_scope();
         self.publish_loop();
+        self.heal_audio_clips();
         let timeline = self.compiled();
         self.publisher.publish(timeline);
     }
@@ -6727,6 +6769,39 @@ impl StudioHost for Session {
         Session::poll_job(self)
     }
 
+    fn drop_audio_take_front(&mut self, frames: fontelle_types::Sample) {
+        self.pump();
+        let rate = if self.input_rate == 0 {
+            self.options.sample_rate
+        } else {
+            self.input_rate
+        };
+        let input_frames = (frames.max(0) as f64 * f64::from(rate)
+            / f64::from(self.options.sample_rate.max(1)))
+        .round() as usize;
+        self.input_take.drop_front(input_frames);
+    }
+
+    fn chase_automation(&mut self, sample: fontelle_types::Sample) {
+        let tick = self.playhead_song_tick(sample);
+        let Some(sink) = &mut self.audition else {
+            return;
+        };
+        for target in fontelle_model::automated_targets(&self.project) {
+            let Some(node) = self.param_nodes.get(&target).copied() else {
+                continue; // the tempo, and anything with no node to tell
+            };
+            let value =
+                fontelle_model::automation_at(&self.project, &target, tick).unwrap_or(f64::NAN);
+            sink.send(fontelle_types::TimedEvent {
+                // Stamped by the live drain with where the audio thread is.
+                sample: 0,
+                target: node,
+                payload: EventPayload::ParamValue { target, value },
+            });
+        }
+    }
+
     fn export_midi(&mut self) -> Result<String, String> {
         Session::export_midi(self)
     }
@@ -9859,6 +9934,18 @@ impl StudioHost for Session {
             ArrangeEdit::Resize { ids, tick_delta } => {
                 for id in ids {
                     self.run(Box::new(ResizeClip::new(id, tick_delta)));
+                }
+            }
+            ArrangeEdit::TrimStart { ids, tick_delta } => {
+                for id in ids {
+                    let audio = self
+                        .project
+                        .clips
+                        .get(id)
+                        .is_some_and(|clip| matches!(clip.source, ClipSource::Audio(_)));
+                    if audio {
+                        self.run(Box::new(fontelle_model::TrimClipStart::new(id, tick_delta)));
+                    }
                 }
             }
             ArrangeEdit::Duplicate { ids, tick_offset } => {

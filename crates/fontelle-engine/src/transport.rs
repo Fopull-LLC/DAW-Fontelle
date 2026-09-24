@@ -10,6 +10,11 @@ pub enum TransportState {
     Playing = 1,
     Recording = 2,
     Rendering = 3,
+    /// The click is counting in and the playhead is standing still on the
+    /// marker — see [`Transport::set_count_in`]. Never stored: it is what the
+    /// reader tells the nodes about a step, while the transport itself says
+    /// `Playing` or `Recording`.
+    CountingIn = 4,
 }
 
 impl TransportState {
@@ -18,6 +23,7 @@ impl TransportState {
             1 => Self::Playing,
             2 => Self::Recording,
             3 => Self::Rendering,
+            4 => Self::CountingIn,
             _ => Self::Stopped,
         }
     }
@@ -65,6 +71,9 @@ pub struct Transport {
     /// for [`crate::IdleGate::set_attended`]. On the transport because the
     /// transport is already the shared state the callback is driven by.
     attended: AtomicBool,
+    /// Frames of count-in still to run before the song rolls. Written by the
+    /// window before it starts the transport, counted down by the reader.
+    count_in: AtomicI64,
 }
 
 impl Transport {
@@ -80,7 +89,26 @@ impl Transport {
             loop_end_sample: AtomicI64::new(0),
             looping: AtomicU8::new(0),
             attended: AtomicBool::new(false),
+            count_in: AtomicI64::new(0),
         }
+    }
+
+    /// Counts in for `frames` before the song rolls, the next time it rolls.
+    ///
+    /// > *"just put the playhead on the same spot frozen and count in, then
+    /// > play it from there."*
+    ///
+    /// The playhead stands still on wherever it was put while the reader runs
+    /// the graph for exactly `frames` — the click counting, the input
+    /// monitored, none of the song — and then it rolls **from that same
+    /// place**. Set it before starting the transport; a stop forgets it.
+    pub fn set_count_in(&self, frames: Sample) {
+        self.count_in.store(frames.max(0), Ordering::Release);
+    }
+
+    /// Whether a count-in is still running (or armed and not yet started).
+    pub fn is_counting_in(&self) -> bool {
+        self.count_in.load(Ordering::Acquire) > 0
     }
 
     /// Whether a plugin's own editor is open. See the field.
@@ -106,6 +134,8 @@ impl Transport {
     }
 
     pub fn stop(&self) {
+        // A stop during a count-in calls it off: the next play is a play.
+        self.count_in.store(0, Ordering::Release);
         self.set_state(TransportState::Stopped);
     }
 
@@ -418,6 +448,37 @@ impl TransportReader {
         }
 
         let frames = frames_remaining.min(max_block).max(1);
+
+        // **The count-in.** The graph runs — the click is a node, and so is
+        // whatever the input is being monitored through — but the playhead
+        // stays where it is and the song contributes nothing. Its nodes are
+        // told `CountingIn`, and a range that runs **up to** the playhead,
+        // so the click can count the beats that are left.
+        let left = transport.count_in.load(Ordering::Acquire);
+        if left > 0 {
+            let frames = frames.min(left as usize);
+            transport
+                .count_in
+                .fetch_sub(frames as i64, Ordering::AcqRel);
+            transport.publish_position(self.position);
+            let start = self.position - left;
+            return Step {
+                frames,
+                range: start..start + frames as i64,
+                events: &[],
+                audio: &[],
+                snapshot: TransportSnapshot {
+                    state: TransportState::CountingIn,
+                    position_sample: self.position,
+                    bpm: timeline.bpm_at(self.position),
+                    position_tick: timeline.tick_at_exact(self.position),
+                    ticks_per_sample: timeline.ticks_per_sample_at(self.position),
+                    beats_per_bar: timeline.beats_per_bar,
+                },
+                reset,
+                process: true,
+            };
+        }
 
         // An empty or inverted range is what a half-finished drag produces,
         // and it has no honest interpretation: clamping to it yields

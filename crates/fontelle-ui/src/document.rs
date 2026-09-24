@@ -344,6 +344,10 @@ pub struct AudioPreview {
     /// pass, and so an edge drag knows whether the switch it is under would
     /// change anything.
     pub stretched: bool,
+    /// How far into its cycle a repeating clip's block begins, in ticks —
+    /// `AudioClipData::loop_phase`. The right half of a cut through a loop
+    /// draws from where the pass was, not from the top of the take.
+    pub loop_offset: Tick,
 }
 
 /// One clip, as the arrangement canvas draws it.
@@ -1288,6 +1292,33 @@ pub trait StudioHost: DocumentHost {
     /// answer. `Finished` is handed over once — the pass after it is `Idle`.
     fn poll_job(&mut self) -> JobPoll {
         JobPoll::Idle
+    }
+
+    /// Tells every automated parameter what its automation says at song
+    /// sample `sample` — or, before its first clip, that it is its knob's
+    /// again (a NaN value).
+    ///
+    /// > *"if i dont start the playhead before the start of the automation
+    /// > clip that sets it to 0 it will put it at 100."*
+    ///
+    /// Automation compiles to a value where the curve **changes**, so a
+    /// playhead that lands in a flat stretch hears nothing from it until it
+    /// next moves. The window calls this whenever playback starts or jumps,
+    /// **after** the seek, so the reset the seek causes cannot wipe it.
+    fn chase_automation(&mut self, sample: Sample) {
+        let _ = sample;
+    }
+
+    /// Drops what the input heard during a count-in from the front of the
+    /// take: `frames` of the **device's** frames, however many of the
+    /// input's that is.
+    ///
+    /// The ring is emptied when play is pressed and this is called when the
+    /// engine says the count is over, so the take begins on the marker and
+    /// none of its first beat is lost to the frame it took the window to
+    /// notice.
+    fn drop_audio_take_front(&mut self, frames: Sample) {
+        let _ = frames;
     }
 
     /// Saves the song out as a Standard MIDI File at a place the user picks.

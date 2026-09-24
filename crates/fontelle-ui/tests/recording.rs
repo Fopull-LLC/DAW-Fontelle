@@ -16,7 +16,7 @@ use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
 use fontelle_ui::transport::{
     TransportAction, TransportHit, TransportHost, TransportView, action, apply, hit,
-    transport_bar_layout,
+    start_counted_take, transport_bar_layout,
 };
 
 const RATE: f64 = 48_000.0;
@@ -66,6 +66,9 @@ impl TransportHost for Fake {
     fn set_metronome(&mut self, on: bool) {
         self.view.metronome = on;
         self.commands.push(format!("click {on}"));
+    }
+    fn count_in(&mut self, frames: i64) {
+        self.commands.push(format!("count {frames}"));
     }
 }
 
@@ -199,4 +202,57 @@ fn arming_and_the_click_are_both_the_engines_business() {
         action(TransportHit::ToggleMetronome, &v),
         Some(TransportAction::SetMetronome(true))
     );
+}
+
+// ------------------------------------------------------------- count-in ---
+//
+// > *"instead of playing 4 bars before or whatever just put the playhead on
+// > the same spot frozen and count in, then play it from there ... thats
+// > causing it so when you are recording past the first section that all of
+// > your recordings will be offset by like a bar."*
+//
+// The count-in used to **move the marker** a bar back and roll from there.
+// The marker is where play returns to, so every take after the first counted
+// in from a bar earlier than the last — and landed there.
+
+const BEAT: i64 = 24_000;
+
+#[test]
+fn a_counted_take_starts_from_the_marker_and_leaves_it_where_it_was() {
+    let mut host = fake();
+    host.view.armed = true;
+    let marker = BEAT * 16;
+    let returned = start_counted_take(&mut host, marker, BEAT * 4);
+    assert_eq!(returned, marker, "the count-in moved the marker");
+    assert_eq!(
+        host.commands,
+        vec![
+            format!("count {}", BEAT * 4),
+            format!("seek {marker}"),
+            "record".to_string(),
+        ],
+        "count armed first, then the seek to the marker itself, then roll"
+    );
+}
+
+#[test]
+fn two_takes_in_a_row_count_in_from_the_same_place() {
+    let mut host = fake();
+    host.view.armed = true;
+    let marker = BEAT * 16;
+    let first = start_counted_take(&mut host, marker, BEAT * 4);
+    host.commands.clear();
+    let second = start_counted_take(&mut host, first, BEAT * 4);
+    assert_eq!(second, marker);
+    assert!(host.commands.contains(&format!("seek {marker}")));
+}
+
+#[test]
+fn a_counted_take_does_not_switch_the_metronome_on() {
+    // The count clicks whatever the switch says; the switch is the person's,
+    // and a take that turned it on for good is a setting that changed itself.
+    let mut host = fake();
+    host.view.armed = true;
+    start_counted_take(&mut host, 0, BEAT * 4);
+    assert!(!host.commands.iter().any(|c| c.starts_with("click")));
 }

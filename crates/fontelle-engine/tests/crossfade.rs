@@ -82,6 +82,7 @@ impl Rig {
             repeat: 0,
             crossfade_in,
             crossfade_out,
+            phase: 0,
             data: AudioClipData::whole(an_asset(self.asset), length, 48_000),
         }
     }

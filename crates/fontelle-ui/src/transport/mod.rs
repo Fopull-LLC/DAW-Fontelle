@@ -141,6 +141,18 @@ pub trait TransportHost {
     fn set_metronome(&mut self, on: bool) {
         let _ = on;
     }
+
+    /// Counts in for `frames` the next time the transport rolls: the playhead
+    /// stands on the marker while the click counts, and the song rolls from
+    /// there. See `fontelle_engine::Transport::set_count_in`.
+    fn count_in(&mut self, frames: i64) {
+        let _ = frames;
+    }
+
+    /// Whether a count-in is still running.
+    fn counting_in(&mut self) -> bool {
+        false
+    }
 }
 
 /// Where the bar's pieces are, left to right.
@@ -652,6 +664,32 @@ pub fn apply(host: &mut dyn TransportHost, action: TransportAction, marker: Samp
             sample
         }
     }
+}
+
+/// Starts a take that counts in: arms `frames` of count-in, puts the
+/// playhead on the marker, and rolls — and hands the marker back **as it
+/// was**.
+///
+/// > *"just put the playhead on the same spot frozen and count in, then play
+/// > it from there instead of trying to do some weird calculations because
+/// > thats causing it so when you are recording past the first section that
+/// > all of your recordings will be offset by like a bar."*
+///
+/// The count-in used to be a pre-roll that moved the marker a bar back, and
+/// the marker is where play returns to — so every later take counted in from
+/// a bar earlier, and landed there. It also clamped at the song's start, so a
+/// take from bar one had no count-in at all. The engine counts now, with the
+/// playhead standing still, and nothing here moves.
+///
+/// The count is armed **before** the transport rolls, so the first block the
+/// audio thread runs is already a counted one. The metronome switch is left
+/// alone: the count clicks whatever it says.
+pub fn start_counted_take(host: &mut dyn TransportHost, marker: Sample, frames: Sample) -> Sample {
+    let marker = marker.max(0);
+    host.count_in(frames.max(0));
+    host.seek(marker);
+    host.play();
+    marker
 }
 
 /// Where on the ruler a given sample sits, clamped to the ruler.
