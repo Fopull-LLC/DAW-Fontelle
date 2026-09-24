@@ -19,6 +19,9 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**Released as v0.13.0 on 2026-09-24** — background bounces with a progress
+card, the unsaved `*`, "Saved!", and the save-before-leaving prompt.
+
 **As of 2026-09-24 — v0.13.0: a bounce beside the window, and a project
 that says whether it is saved.** Ty: *"right now the program freezes during
 actions instead of showing progress bars for example when exporting /
