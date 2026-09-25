@@ -19,6 +19,11 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**Released as v0.15.0 on 2026-09-25** — plugin editors on Windows, Fontelle's
+folders under AppData, the system's own dialogs, the session log and the
+start menu's *Logs folder*, native-crash reports, and LFO drawing from its
+picture.
+
 **As of 2026-09-25 — v0.15.0: Fontelle on Windows, and a log somebody can
 send.** From the first person to run it on Windows: *"this is what happens to
 outside vsts in ur daw — it works but it's like only the knobs of like every
