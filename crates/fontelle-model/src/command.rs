@@ -38,23 +38,49 @@ pub trait Command: Send {
     fn to_edit(&self) -> crate::wire::Edit;
 }
 
+/// One edit on its way to whoever is sharing the song, and the history entry
+/// it came from.
+///
+/// The entry is what a joiner's session needs if the host refuses the edit:
+/// the entry goes with it ([`History::forget`]). An undo or a redo names the
+/// entry it undid or redid.
+#[derive(Debug, Clone)]
+pub struct Outgoing {
+    pub entry: u64,
+    pub edit: crate::wire::Edit,
+}
+
+/// One undo entry: the command, and a number that names it for as long as it
+/// lives — across undo and redo, and past entries evicted below it.
+struct Entry {
+    key: u64,
+    command: Box<dyn Command>,
+}
+
 /// Command-pattern undo/redo stack. Default depth 100, with a memory ceiling
 /// (default 256MB) that evicts the oldest entries first once exceeded.
 pub struct History {
-    undo_stack: Vec<Box<dyn Command>>,
-    redo_stack: Vec<Box<dyn Command>>,
+    undo_stack: Vec<Entry>,
+    redo_stack: Vec<Entry>,
+    next_key: u64,
     /// Set by `break_gesture`, and by an undo or a redo — resuming a drag
     /// across an undo is not the same drag.
     gesture_broken: bool,
     /// Every edit that has landed, in order, for whoever is sharing the song
     /// — `None` while nobody is, so a studio with no session open keeps no
     /// copies and behaves exactly as it did (`docs/collab-plan.md` §1, 9).
-    outbox: Option<Vec<crate::wire::Edit>>,
+    outbox: Option<Vec<Outgoing>>,
     /// Whether the entry on top of the undo stack has gone to the outbox. A
     /// gesture still in the hand has not: it goes once, merged, when it
     /// breaks — a drag is one message when the button comes up, not four
     /// hundred.
     head_sent: bool,
+    /// Where what this history applies mints its ids — see
+    /// [`crate::arena::minting_in`]. `None` everywhere but a joiner's studio.
+    mint_space: Option<u16>,
+    /// Moves on every apply, merge, undo and redo — see
+    /// [`generation`](Self::generation).
+    generation: u64,
     pub max_depth: usize,
     pub memory_ceiling_bytes: usize,
 }
@@ -64,9 +90,12 @@ impl History {
         Self {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            next_key: 0,
             gesture_broken: true,
             outbox: None,
             head_sent: true,
+            mint_space: None,
+            generation: 0,
             max_depth: 100,
             memory_ceiling_bytes: 256 * 1024 * 1024,
         }
@@ -83,12 +112,13 @@ impl History {
         mut command: Box<dyn Command>,
         doc: &mut Project,
     ) -> Result<(), CommandError> {
-        command.apply(doc)?;
+        crate::arena::minting_in(self.mint_space, || command.apply(doc))?;
+        self.generation += 1;
         self.redo_stack.clear();
 
         if !self.gesture_broken
             && let Some(previous) = self.undo_stack.last_mut()
-            && previous.merge_with(command.as_ref())
+            && previous.command.merge_with(command.as_ref())
         {
             return Ok(());
         }
@@ -96,10 +126,19 @@ impl History {
         // concerned: it can never be merged into again.
         self.send_head();
         self.gesture_broken = false;
-        self.undo_stack.push(command);
+        let key = self.next_key;
+        self.next_key += 1;
+        self.undo_stack.push(Entry { key, command });
         self.head_sent = false;
         self.evict_if_over_budget();
         Ok(())
+    }
+
+    /// Makes every command this history applies from now on mint its ids in
+    /// `space` — a joiner's own, so nothing it makes can collide with what
+    /// the host or another joiner makes (`docs/collab-plan.md` §18, F55).
+    pub fn set_mint_space(&mut self, space: Option<u16>) {
+        self.mint_space = space;
     }
 
     /// Starts keeping every edit that lands, for a shared session to send.
@@ -119,7 +158,55 @@ impl History {
     /// gestures once, when they break; an undo as the inverse it applied; a
     /// redo as the command again. Empty while no outbox is open.
     pub fn take_outbox(&mut self) -> Vec<crate::wire::Edit> {
+        self.take_outgoing()
+            .into_iter()
+            .map(|outgoing| outgoing.edit)
+            .collect()
+    }
+
+    /// [`take_outbox`](Self::take_outbox), with the entry each edit came from.
+    pub fn take_outgoing(&mut self) -> Vec<Outgoing> {
         self.outbox.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
+    /// Whether the entry on top is a gesture still in the hand — applied
+    /// here, not yet sent, and still able to take the next step of a drag.
+    ///
+    /// A shared session holds everything from outside while this is true: an
+    /// edit from somebody else rebased under a drag in progress would move
+    /// the ground the drag measured its limits on (§5.5, F17).
+    pub fn gesture_in_hand(&self) -> bool {
+        !self.head_sent
+    }
+
+    /// A number that moves every time the history applies anything — a new
+    /// entry, a step merged into the last, an undo, a redo.
+    ///
+    /// How a shared session tells a drag still moving from an edit left in
+    /// the hand with nothing more coming (a key press never has a mouse-up to
+    /// end it): the same number twice, some time apart, is a gesture to let go
+    /// of.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Takes the entry `key` out of the history, wherever it is, as though it
+    /// had never been made.
+    ///
+    /// What a shared session does when the host refuses an edit that has
+    /// already been applied here: the document is put back without it, and
+    /// an undo that tried to take it back again would be undoing nothing
+    /// (§5.5). Anything above it on the undo stack stays.
+    pub fn forget(&mut self, key: u64) {
+        let was_head = self.undo_stack.last().is_some_and(|entry| entry.key == key);
+        self.undo_stack.retain(|entry| entry.key != key);
+        self.redo_stack.retain(|entry| entry.key != key);
+        if was_head {
+            // Whatever is on top now went out when the forgotten one was
+            // made above it.
+            self.head_sent = true;
+            self.gesture_broken = true;
+        }
     }
 
     /// Applies an edit that came from somebody else.
@@ -143,13 +230,19 @@ impl History {
         }
         self.head_sent = true;
         if let (Some(outbox), Some(head)) = (self.outbox.as_mut(), self.undo_stack.last()) {
-            outbox.push(head.to_edit());
+            outbox.push(Outgoing {
+                entry: head.key,
+                edit: head.command.to_edit(),
+            });
         }
     }
 
-    fn send(&mut self, edit: impl FnOnce() -> crate::wire::Edit) {
+    fn send(&mut self, entry: u64, edit: impl FnOnce() -> crate::wire::Edit) {
         if let Some(outbox) = self.outbox.as_mut() {
-            outbox.push(edit());
+            outbox.push(Outgoing {
+                entry,
+                edit: edit(),
+            });
         }
     }
 
@@ -161,6 +254,11 @@ impl History {
     /// nudge a minute later. Only the caller knows the mouse came up. A time
     /// window would be guesswork that either splits a slow drag or swallows an
     /// edit the user meant to keep.
+    pub fn break_gesture(&mut self) {
+        self.gesture_broken = true;
+        self.send_head();
+    }
+
     /// The entry on top of the undo stack — the command just applied, unless
     /// it merged into the one before it.
     ///
@@ -170,12 +268,7 @@ impl History {
     /// the history has owned the command since it was applied. Downcast
     /// through `Command::as_any`.
     pub fn last_applied(&self) -> Option<&dyn Command> {
-        self.undo_stack.last().map(|command| command.as_ref())
-    }
-
-    pub fn break_gesture(&mut self) {
-        self.gesture_broken = true;
-        self.send_head();
+        self.undo_stack.last().map(|entry| entry.command.as_ref())
     }
 
     /// How many entries `undo` could walk back through.
@@ -185,12 +278,12 @@ impl History {
 
     /// The label of the entry `undo` would take back, for the Edit menu.
     pub fn undo_label(&self) -> Option<&str> {
-        self.undo_stack.last().map(|c| c.label())
+        self.undo_stack.last().map(|entry| entry.command.label())
     }
 
     /// The label of the entry `redo` would put back.
     pub fn redo_label(&self) -> Option<&str> {
-        self.redo_stack.last().map(|c| c.label())
+        self.redo_stack.last().map(|entry| entry.command.label())
     }
 
     /// `None` when there is nothing to undo. An inverse that fails puts its
@@ -199,17 +292,18 @@ impl History {
         // A gesture nobody has been sent yet goes first, so the other side
         // never inverts a thing it was never given.
         self.send_head();
-        let command = self.undo_stack.pop()?;
-        let mut inverse = command.invert();
-        match inverse.apply(doc) {
+        let entry = self.undo_stack.pop()?;
+        let mut inverse = entry.command.invert();
+        match crate::arena::minting_in(self.mint_space, || inverse.apply(doc)) {
             Ok(()) => {
-                self.send(|| inverse.to_edit());
-                self.redo_stack.push(command);
+                self.generation += 1;
+                self.send(entry.key, || inverse.to_edit());
+                self.redo_stack.push(entry);
                 self.gesture_broken = true;
                 Some(Ok(()))
             }
             Err(e) => {
-                self.undo_stack.push(command);
+                self.undo_stack.push(entry);
                 Some(Err(e))
             }
         }
@@ -224,16 +318,18 @@ impl History {
     /// note that no longer exists.
     pub fn redo(&mut self, doc: &mut Project) -> Option<Result<(), CommandError>> {
         self.send_head();
-        let mut command = self.redo_stack.pop()?;
-        match command.apply(doc) {
+        let mut entry = self.redo_stack.pop()?;
+        match crate::arena::minting_in(self.mint_space, || entry.command.apply(doc)) {
             Ok(()) => {
-                self.send(|| command.to_edit());
-                self.undo_stack.push(command);
+                self.generation += 1;
+                let edit = entry.command.to_edit();
+                self.send(entry.key, || edit);
+                self.undo_stack.push(entry);
                 self.gesture_broken = true;
                 Some(Ok(()))
             }
             Err(e) => {
-                self.redo_stack.push(command);
+                self.redo_stack.push(entry);
                 Some(Err(e))
             }
         }
@@ -250,9 +346,13 @@ impl History {
         }
         // Always keep one, or a single edit larger than the ceiling would be
         // unundoable the moment it happened.
-        let mut total: usize = self.undo_stack.iter().map(|c| c.memory_cost()).sum();
+        let mut total: usize = self
+            .undo_stack
+            .iter()
+            .map(|entry| entry.command.memory_cost())
+            .sum();
         while self.undo_stack.len() > 1 && total > self.memory_ceiling_bytes {
-            total -= self.undo_stack.remove(0).memory_cost();
+            total -= self.undo_stack.remove(0).command.memory_cost();
         }
     }
 }

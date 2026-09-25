@@ -5,6 +5,7 @@
 pub mod bank;
 mod bundle;
 pub mod captions;
+pub mod collab;
 pub mod crashlog;
 pub mod daw_folders;
 pub mod desktop;

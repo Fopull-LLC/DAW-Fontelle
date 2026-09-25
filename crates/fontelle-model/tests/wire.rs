@@ -1319,3 +1319,205 @@ fn an_override_map_writes_one_way_whatever_order_it_was_filled_in() {
         serde_json::from_str(r#"{"props":{},"added":[],"removed":[]}"#).expect("old files read");
     assert!(old.props.is_empty() && old.removed.is_empty());
 }
+
+// ------------------------------------------------------------ Phase 1
+
+/// §8.2. The session's own messages are postcard, numbered by declaration
+/// order like the relay's `RelayMsg`: a new one goes at the end, and these
+/// tags are what every later build has to read.
+#[test]
+fn msg_variant_order_is_pinned() {
+    use fontelle_model::wire::Msg;
+    let tag = |msg: &Msg| msg.to_bytes()[0];
+    assert_eq!(
+        tag(&Msg::Hello {
+            protocol: 1,
+            fontelle: "0.16.0".into(),
+            name: "Bob".into(),
+            install: PersistentId::new(),
+        }),
+        0
+    );
+    assert_eq!(
+        tag(&Msg::Refuse {
+            reason: "no".into()
+        }),
+        2
+    );
+    assert_eq!(tag(&Msg::ResyncRequest), 8);
+    assert_eq!(tag(&Msg::Left { peer: 3 }), 14);
+    assert_eq!(tag(&Msg::Bye), 15);
+}
+
+/// §8.2 and F52: an edit rides inside a postcard message as the JSON the
+/// document survives, and comes out the edit it went in as.
+#[test]
+fn a_message_carries_an_edit_across() {
+    use fontelle_model::wire::Msg;
+    let studio = a_studio();
+    let mut project = studio.project.clone();
+    let mut command = AddNotes::new(studio.notes_clip, vec![a_note(PPQN * 3, 72)]);
+    command.apply(&mut project).unwrap();
+    let msg = Msg::Applied {
+        seq: 7,
+        author: 2,
+        author_seq: 3,
+        edit: command.to_edit(),
+        hash: Some(project.sync_hash()),
+    };
+    let back = Msg::from_bytes(&msg.to_bytes()).expect("a message reads back");
+    let Msg::Applied {
+        seq, edit, hash, ..
+    } = back
+    else {
+        panic!("the same message");
+    };
+    assert_eq!(seq, 7);
+    let mut there = studio.project.clone();
+    edit.into_command().apply(&mut there).unwrap();
+    assert_eq!(Some(there.sync_hash()), hash);
+}
+
+/// F55. A joiner mints ids in a space of its own, so an edit it makes and
+/// one the host makes at the same moment can never claim the same id — and
+/// the host can take a joiner's edits with the ids they came with, including
+/// a second edit that names what the first one made.
+#[test]
+fn a_joiner_mints_where_nobody_else_can() {
+    let studio = a_studio();
+    let clip = studio.notes_clip;
+    let key_of = |project: &Project, key: u8| match &project.clips[clip].source {
+        ClipSource::Notes(data) => data
+            .notes
+            .iter()
+            .find(|(_, n)| n.key == key)
+            .map(|(id, _)| id),
+        _ => unreachable!(),
+    };
+
+    // At the same moment, each adds a note to the same clip, and a row.
+    let mut host = studio.project.clone();
+    AddNotes::new(clip, vec![a_note(0, 40)])
+        .apply(&mut host)
+        .unwrap();
+    AddLane::new("Host row").apply(&mut host).unwrap();
+
+    let mut joiner = studio.project.clone();
+    let mut mine = History::new();
+    mine.set_mint_space(Some(1));
+    mine.open_outbox();
+    mine.apply(
+        Box::new(AddNotes::new(clip, vec![a_note(0, 80)])),
+        &mut joiner,
+    )
+    .unwrap();
+    mine.apply(Box::new(AddLane::new("Joiner row")), &mut joiner)
+        .unwrap();
+    mine.break_gesture();
+    let drawn = key_of(&joiner, 80).unwrap();
+    assert_ne!(Some(drawn), key_of(&host, 40), "two notes, two ids");
+
+    // Draw, then drag — before anybody has heard of the first.
+    mine.apply(
+        Box::new(MoveNotes::new(clip, vec![drawn], PPQN, 0)),
+        &mut joiner,
+    )
+    .unwrap();
+    mine.break_gesture();
+
+    for edit in mine.take_outbox() {
+        edit.into_command()
+            .apply(&mut host)
+            .expect("a joiner's ids never collide with the host's");
+    }
+    let start = |project: &Project, id| match &project.clips[clip].source {
+        ClipSource::Notes(data) => data.notes[id].start,
+        _ => unreachable!(),
+    };
+    assert_eq!(
+        start(&host, drawn),
+        PPQN,
+        "the host moved the note the joiner drew"
+    );
+    assert!(key_of(&host, 40).is_some(), "and kept its own");
+    assert_eq!(host.lanes.len(), studio.project.lanes.len() + 2);
+}
+
+/// F55. What a mint space makes survives a trip to disk under its own ids,
+/// and the dense range goes on as before.
+#[test]
+fn a_mint_space_survives_save_and_load() {
+    let studio = a_studio();
+    let mut project = studio.project.clone();
+    let mut history = History::new();
+    history.set_mint_space(Some(3));
+    history
+        .apply(Box::new(AddLane::new("Far")), &mut project)
+        .unwrap();
+    let far = project
+        .lane_ids()
+        .into_iter()
+        .find(|id| project.lanes[*id].name == "Far")
+        .unwrap();
+
+    let bundle = scratch("mint-space");
+    save_project(&project, &bundle).unwrap();
+    let mut back = load_project(&bundle).unwrap();
+    std::fs::remove_dir_all(&bundle).ok();
+    assert_eq!(back.lanes[far].name, "Far");
+    assert_eq!(back.sync_hash(), project.sync_hash(), "the same song");
+
+    // Somebody not sharing adds a row: it lands in the ordinary range.
+    let mut near = AddLane::new("Near");
+    near.apply(&mut back).unwrap();
+    assert_ne!(near.id(), Some(far));
+    assert_eq!(back.lanes.len(), project.lanes.len() + 1);
+}
+
+/// The joiner's session needs to know which history entry each edit it sends
+/// came from, so a refused one can be forgotten — and whether a gesture is
+/// still in the hand, so nothing is rebased under it (F17).
+#[test]
+fn the_outbox_names_each_edits_entry_and_an_entry_can_be_forgotten() {
+    let studio = a_studio();
+    let mut project = studio.project.clone();
+    let mut history = History::new();
+    history.open_outbox();
+    assert!(!history.gesture_in_hand());
+    history
+        .apply(
+            Box::new(MoveNotes::new(
+                studio.notes_clip,
+                vec![studio.notes[0]],
+                1,
+                0,
+            )),
+            &mut project,
+        )
+        .unwrap();
+    assert!(history.gesture_in_hand(), "a drag not yet let go");
+    history.break_gesture();
+    assert!(!history.gesture_in_hand());
+    history
+        .apply(
+            Box::new(RenameLane::new(studio.lanes[0], "A")),
+            &mut project,
+        )
+        .unwrap();
+    history.break_gesture();
+
+    let sent = history.take_outgoing();
+    assert_eq!(sent.len(), 2);
+    assert_ne!(sent[0].entry, sent[1].entry);
+    assert_eq!(history.depth(), 2);
+
+    // The move was refused somewhere: its entry goes, the rename's stays.
+    history.forget(sent[0].entry);
+    assert_eq!(history.depth(), 1);
+    assert_eq!(history.undo_label(), Some("Rename lane"));
+
+    // An undo's edit names the entry it undid.
+    history.undo(&mut project).unwrap().unwrap();
+    let undone = history.take_outgoing();
+    assert_eq!(undone[0].entry, sent[1].entry);
+}

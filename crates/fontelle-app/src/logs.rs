@@ -53,7 +53,7 @@ pub fn session_log_name(unix: u64) -> String {
 }
 
 /// `("2026-09-24", "22:05:09")` for `unix` seconds.
-fn utc(unix: u64) -> (String, String) {
+pub(crate) fn utc(unix: u64) -> (String, String) {
     let (year, month, day) = civil_from_days((unix / 86_400) as i64);
     let seconds = unix % 86_400;
     (

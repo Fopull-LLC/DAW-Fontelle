@@ -19,6 +19,48 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-25 (later still) — working on a song together, Phase 1
+built: two studios in one process.** `docs/collab-plan.md` §13's second
+phase; ledger rows F13–F22 and F55 closed. The whole feature works with no
+socket: `fontelle_app::collab` over the engine's own `MemoryHub`.
+
+- **`fontelle-net` exists**, holding the Floptle engine's `transport.rs`
+  lifted at `16481c30` (the `Transport` seam and its in-memory hub, with
+  latency by the tick). The relay's client follows in Phase 3.
+- **Share and join, at the session**: `Session::share`, `join`,
+  `pump_collab` (once a tick — nothing calls it from the window yet),
+  `join_question`/`answer_join`, `leave_session`, `session_peers`,
+  `take_collab_notices`, `collab_live`/`collab_ended`. The host's history is
+  the stream (`Msg::Applied`, numbered, with the song's hash); a joiner's edits
+  are on its screen at once, proposed, and put back in the host's order. A
+  joiner keeps the host's song exactly beside the one on screen and rebuilds
+  *confirmed + pending* rather than unwinding — an edit's remembered
+  "previous" goes stale the moment somebody else changes the same thing.
+- **F55 is built**: a joiner mints ids in a space of its own in every arena,
+  so the host takes a proposal with the ids it came with — draw a note and
+  drag it inside a round trip works, while the host draws in the same clip.
+- **Undo is yours**: a joiner's undo is a proposal; undoing something
+  somebody has since taken away says *"Could not undo … it has changed since
+  you did it"*. An edit the host refuses is taken back off the screen with its
+  undo entry and a toast naming it (*"“Move 3 notes” was taken back — Alice
+  had changed it first."*).
+- **Nothing from outside lands under a drag in the hand**, on either side;
+  an edit left in the hand with nothing more coming (a key press) is let go of
+  after 400 ms.
+- **The join on disk** (`collab/join.rs`): an unknown song is copied into
+  `<projects>/Shared` after one question; a known one asks *Update mine /
+  Keep both / Cancel* with the safe answer first and says which copy moved
+  since the two last parted (each side records the song's hash as they part);
+  an update backs `project.json` up to `backups/before-join-<date>_<time>/`
+  and deletes nothing; *Keep both* makes the local copy its own song. A
+  studio with unsaved work cannot join; a different Fontelle is refused in a
+  sentence naming both versions.
+- `tests/collab.rs` is 23 tests, every one strict about the song's hash.
+  §19 of the plan lists where this departs from the text.
+- **Open for Phase 3/4**: nothing in the window calls any of it; the install
+  id and the name a person is shown come from the options the caller builds
+  (the settings rows and a stored install id are Phase 4's §10.4).
+
 **As of 2026-09-25 (later still) — working on a song together, Phase 0
 built: identity and the wire form, no network.** `docs/collab-plan.md` §13's
 first phase, ledger rows F1–F12 closed and four new rows found and closed

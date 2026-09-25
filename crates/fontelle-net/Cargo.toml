@@ -1,0 +1,12 @@
+[package]
+name = "fontelle-net"
+description = "Working on one song together over the internet: the transport seam, the Floptle relay's client lifted from the engine (docs/collab-plan.md §9.1). Depends on nothing in the workspace but fontelle-types."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]

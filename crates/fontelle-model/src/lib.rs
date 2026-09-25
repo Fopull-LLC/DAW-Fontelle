@@ -28,7 +28,7 @@ pub use asset_table::AssetTable;
 pub use automation::{AutomationData, AutomationPoint, CurveShape, curve_value};
 pub use channel::{Channel, ChannelAb};
 pub use clip::{AudioClipData, Clip, ClipMap, ClipSource};
-pub use command::{Command, CommandError, History};
+pub use command::{Command, CommandError, History, Outgoing};
 pub use commands::{
     AddAudioClip, AddAutomationPoint, AddChannel, AddClip, AddInsert, AddLane, AddMarker,
     AddMixerTrack, AddNotes, AddPluginInsert, AddPrefab, AddPrefabInstance, AddSend, ApplyPreset,

@@ -1,8 +1,49 @@
 //! A keyed arena that can be given back an id it previously minted.
 
+use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
 use slotmap::{Key, KeyData};
+
+/// How many ids one person sharing a song can mint in one arena.
+///
+/// A space is a run of indices this long: the host mints in the ordinary,
+/// dense range below the first, and joiner *k* mints from `k × SPACE_SPAN`
+/// up (`docs/collab-plan.md` §18, F55).
+const SPACE_SPAN: u32 = 1 << 24;
+
+thread_local! {
+    /// The space every [`Arena::insert`] on this thread mints in — `0`, the
+    /// ordinary dense range, unless [`minting_in`] says otherwise.
+    static MINT_SPACE: Cell<u16> = const { Cell::new(0) };
+}
+
+/// Runs `f` with every arena on this thread minting new ids in `space`.
+///
+/// **Why a joiner mints somewhere of its own** (`docs/collab-plan.md` §18,
+/// F55). Two people editing one song both make things — notes, clips, rows —
+/// and an id is a place in an arena. If both minted the next free place they
+/// would claim the same id for two different notes the moment they drew at
+/// once. The plan answered that by having the host re-mint every joiner's
+/// ids, which breaks a joiner's *second* edit that names what the first
+/// made (draw a note, then drag it, inside one round trip). A space of one's
+/// own answers it instead: nothing a joiner mints can be anything the host or
+/// another joiner mints, so the host takes an edit with the ids it came with.
+///
+/// `None` (or `Some(0)`) is the ordinary range. A thread-local, and scoped,
+/// because an id is minted deep inside a command that knows nothing about
+/// who is running it; `History` wraps what it applies in this.
+pub fn minting_in<R>(space: Option<u16>, f: impl FnOnce() -> R) -> R {
+    struct Restore(u16);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            MINT_SPACE.set(self.0);
+        }
+    }
+    let _restore = Restore(MINT_SPACE.replace(space.unwrap_or(0)));
+    f()
+}
 
 /// Storage for every id-addressed collection in the document.
 ///
@@ -30,6 +71,12 @@ pub struct Arena<K: Key, V> {
     slots: Vec<Slot<V>>,
     /// Indices of vacant slots, most recently freed first.
     free: Vec<u32>,
+    /// Everything minted in somebody's own space (see [`minting_in`]), by
+    /// index. Sparse, because a space starts sixteen million places up and a
+    /// `Vec` that long for a clip's eight notes is not a thing to allocate.
+    /// Its indices are all past the dense range's, so iterating the two one
+    /// after the other is still iterating in index order.
+    far: BTreeMap<u32, Slot<V>>,
     len: usize,
     key: PhantomData<fn() -> K>,
 }
@@ -58,6 +105,7 @@ impl<K: Key, V> Default for Arena<K, V> {
         Self {
             slots: Vec::new(),
             free: Vec::new(),
+            far: BTreeMap::new(),
             len: 0,
             key: PhantomData,
         }
@@ -77,7 +125,50 @@ impl<K: Key, V> Arena<K, V> {
         self.len == 0
     }
 
+    fn slot(&self, index: u32) -> Option<&Slot<V>> {
+        if index < SPACE_SPAN {
+            self.slots.get(index as usize)
+        } else {
+            self.far.get(&index)
+        }
+    }
+
+    fn slot_mut(&mut self, index: u32) -> Option<&mut Slot<V>> {
+        if index < SPACE_SPAN {
+            self.slots.get_mut(index as usize)
+        } else {
+            self.far.get_mut(&index)
+        }
+    }
+
     pub fn insert(&mut self, value: V) -> K {
+        let space = MINT_SPACE.get() as u32;
+        if space > 0 {
+            // Past everything this space has ever held, vacated places
+            // included, so a key that named something removed never names
+            // what comes next. A space full to its last place is sixteen
+            // million inserts into one arena in one session; the dense range
+            // is the honest fallback.
+            let first = space * SPACE_SPAN;
+            let last = first.saturating_add(SPACE_SPAN - 1);
+            let index = self
+                .far
+                .range(first..=last)
+                .next_back()
+                .map_or(Some(first), |(index, _)| index.checked_add(1))
+                .filter(|index| *index <= last);
+            if let Some(index) = index {
+                self.far.insert(
+                    index,
+                    Slot {
+                        version: 1,
+                        value: Some(value),
+                    },
+                );
+                self.len += 1;
+                return key_from(index, 1);
+            }
+        }
         let index = match self.free.pop() {
             Some(index) => index,
             None => {
@@ -109,6 +200,21 @@ impl<K: Key, V> Arena<K, V> {
     /// (INVARIANT 9), which is worth surfacing rather than papering over.
     pub fn insert_at(&mut self, key: K, value: V) -> bool {
         let (index, version) = parts(key);
+        if index >= SPACE_SPAN {
+            let slot = self.far.entry(index).or_insert(Slot {
+                version: 0,
+                value: None,
+            });
+            if slot.value.is_some() {
+                return false;
+            }
+            *slot = Slot {
+                version,
+                value: Some(value),
+            };
+            self.len += 1;
+            return true;
+        }
         if self.slots.len() <= index as usize {
             self.slots.resize_with(index as usize + 1, || Slot {
                 version: 0,
@@ -129,7 +235,7 @@ impl<K: Key, V> Arena<K, V> {
 
     pub fn remove(&mut self, key: K) -> Option<V> {
         let (index, version) = parts(key);
-        let slot = self.slots.get_mut(index as usize)?;
+        let slot = self.slot_mut(index)?;
         if slot.version != version {
             return None;
         }
@@ -137,14 +243,18 @@ impl<K: Key, V> Arena<K, V> {
         // Even again: the key just removed will never match this slot, even if
         // the next `insert` reuses it.
         slot.version += 1;
-        self.free.push(index);
+        // A far place is never handed out again (see `insert`), so it is not
+        // a hole to fill.
+        if index < SPACE_SPAN {
+            self.free.push(index);
+        }
         self.len -= 1;
         Some(value)
     }
 
     pub fn get(&self, key: K) -> Option<&V> {
         let (index, version) = parts(key);
-        let slot = self.slots.get(index as usize)?;
+        let slot = self.slot(index)?;
         if slot.version != version {
             return None;
         }
@@ -153,7 +263,7 @@ impl<K: Key, V> Arena<K, V> {
 
     pub fn get_mut(&mut self, key: K) -> Option<&mut V> {
         let (index, version) = parts(key);
-        let slot = self.slots.get_mut(index as usize)?;
+        let slot = self.slot_mut(index)?;
         if slot.version != version {
             return None;
         }
@@ -165,23 +275,32 @@ impl<K: Key, V> Arena<K, V> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (K, &V)> {
-        self.slots.iter().enumerate().filter_map(|(index, slot)| {
+        let near = self
+            .slots
+            .iter()
+            .enumerate()
+            .map(|(index, slot)| (index as u32, slot));
+        let far = self.far.iter().map(|(index, slot)| (*index, slot));
+        near.chain(far).filter_map(|(index, slot)| {
             slot.value
                 .as_ref()
-                .map(|value| (key_from(index as u32, slot.version), value))
+                .map(|value| (key_from(index, slot.version), value))
         })
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (K, &mut V)> {
-        self.slots
+        let near = self
+            .slots
             .iter_mut()
             .enumerate()
-            .filter_map(|(index, slot)| {
-                let version = slot.version;
-                slot.value
-                    .as_mut()
-                    .map(move |value| (key_from(index as u32, version), value))
-            })
+            .map(|(index, slot)| (index as u32, slot));
+        let far = self.far.iter_mut().map(|(index, slot)| (*index, slot));
+        near.chain(far).filter_map(|(index, slot)| {
+            let version = slot.version;
+            slot.value
+                .as_mut()
+                .map(move |value| (key_from(index, version), value))
+        })
     }
 
     pub fn keys(&self) -> impl Iterator<Item = K> + '_ {
@@ -189,11 +308,17 @@ impl<K: Key, V> Arena<K, V> {
     }
 
     pub fn values(&self) -> impl Iterator<Item = &V> {
-        self.slots.iter().filter_map(|slot| slot.value.as_ref())
+        self.slots
+            .iter()
+            .chain(self.far.values())
+            .filter_map(|slot| slot.value.as_ref())
     }
 
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
-        self.slots.iter_mut().filter_map(|slot| slot.value.as_mut())
+        self.slots
+            .iter_mut()
+            .chain(self.far.values_mut())
+            .filter_map(|slot| slot.value.as_mut())
     }
 }
 

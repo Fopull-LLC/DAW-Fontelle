@@ -1329,3 +1329,50 @@ with the reason. The text above is left as it was planned.
   Two loads of one old file then agree about every id in it, not just the
   song's.
 
+
+**Phase 1.**
+
+- **The joiner rebuilds rather than unwinds** (§5.5 steps 1–3). It keeps the
+  host's song exactly (`confirmed`: every `Applied` in order, nothing of its
+  own) beside the one on screen, and on anything from outside makes the
+  screen's again as *confirmed + pending*. Unwinding pending edits through
+  their inverses was the plan; a command's remembered "previous" goes stale
+  the moment somebody else changes the same thing, and the second unwind
+  through a stale one puts back a state that never existed. The cost is a
+  second copy of the song on a joiner, and a clone per foreign edit only
+  while something of its own is pending.
+- **Nobody mints where anybody else can** (F55). A joiner's history mints in
+  its own space of every arena (`arena::minting_in`, from `peer × 2²⁴` up, in
+  a sparse region beside the dense one); the host takes a proposal with the
+  ids it came with and never strips them. Welcome's `peer` is that space.
+- **Nothing from outside lands under a gesture in the hand**, on either side
+  (§5.5's last paragraph). The host holds proposals and joins while it has a
+  drag down — a snapshot of a drag's middle would be a song nobody else could
+  reach — and a joiner holds the host's stream. An edit left in the hand with
+  nothing more coming is let go of after `CollabOptions::idle_break` (400
+  ms): a key press has no mouse-up to end it. While sharing, a drag held
+  perfectly still that long becomes two undo entries.
+- **`shared_revision`'s number is the song's hash at parting**, not a save
+  count (§4.5). Each side counts its own saves, so a count cannot say whether
+  the other side changed; `sync_hash` is what both can compute without
+  talking. The join's copy is written with the record already in it, so a
+  copy never saved after the join is still recognised as *behind*.
+- **The snapshot is the song's JSON**, not postcard (F52).
+- **`Hello` carries `install` and `Welcome` carries `host` and
+  `host_install`** — the record of what two copies agreed on names a studio,
+  and the question names the host. **`Applied.hash` is an `Option`**: when the
+  host sends several of its own edits at once, only the last is on its own in
+  the document to be hashed.
+- **A join copy is named by the tree's own rule** ("Song 2", `unique_name`),
+  not "Song (2)".
+- **`Session::share` saves unsaved changes itself**; the window's name prompt
+  is for a song that has never been saved.
+- **The transport seam came over in Phase 1**: `transport.rs` is the loopback
+  §12.2 asks for (`MemoryHub`, with latency by the tick). `quic.rs` and
+  `relay.rs` follow in Phase 3.
+- **Leaving lets go of an edit in the hand and sends what is waiting before
+  the goodbye**, on both sides, or the last thing done never reaches the
+  other and the two copies part disagreeing about the song.
+- **A refused edit's toast names the edit, not the reason**: *"“Move 3
+  notes” was taken back — Alice had changed it first."* The reason the
+  command gave names ids; it goes to the log.

@@ -11,6 +11,7 @@ members = [
     "crates/fontelle-engine",
     "crates/fontelle-midi",
     "crates/fontelle-assets",
+    "crates/fontelle-net",
     "crates/fontelle-ui",
     "crates/fontelle-plugin",
     "crates/fontelle-testplug",

@@ -225,3 +225,179 @@ pub(crate) mod nested {
         Ok(Option::<(Option<T>,)>::deserialize(deserializer)?.map(|(inner,)| inner))
     }
 }
+
+// ------------------------------------------------------------- the session
+
+/// The version of the conversation below. v1 also requires the same
+/// Fontelle on both ends (§8.3), so this moves only once that is relaxed.
+pub const PROTOCOL: u32 = 1;
+
+/// What a shared song says about itself when somebody joins it — enough for
+/// the joiner to find its own copy and say which is newer (§4.3).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProjectHead {
+    pub id: fontelle_types::PersistentId,
+    pub name: String,
+    pub saved_revision: u64,
+    pub saved_at: String,
+    pub saved_by: String,
+    pub shared_revision: Option<(fontelle_types::PersistentId, u64)>,
+    /// [`crate::Project::sync_hash`] of the song as the host has it now.
+    pub hash: u64,
+}
+
+/// One file a song uses, named by what is in it (§7.1).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AssetEntry {
+    pub hash: u64,
+    pub size: u64,
+    pub file_name: String,
+    pub kind: fontelle_types::AssetKind,
+}
+
+/// One message between the studios in a shared session (§8.2).
+///
+/// **Append-only.** postcard numbers variants by declaration order, the way
+/// the relay's own `RelayMsg` does: a new message goes at the end, and
+/// `tests/wire.rs`'s `msg_variant_order_is_pinned` holds the numbers. An edit
+/// rides inside as JSON bytes, because the document cannot travel in postcard
+/// (F52); everything else here is postcard's own.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub enum Msg {
+    // The handshake.
+    /// Joiner to host, first. `install` names the studio, not the person, for
+    /// the record of what two copies last agreed on (§4.5).
+    Hello {
+        protocol: u32,
+        fontelle: String,
+        name: String,
+        install: fontelle_types::PersistentId,
+    },
+    /// Host to joiner: who you are in this session (your `peer`, which is
+    /// also where you mint — see `crate::arena::minting_in`), and the song.
+    Welcome {
+        peer: u16,
+        protocol: u32,
+        fontelle: String,
+        host: String,
+        host_install: fontelle_types::PersistentId,
+        project: ProjectHead,
+        manifest: Vec<AssetEntry>,
+    },
+    Refuse {
+        reason: String,
+    },
+    // The document.
+    /// The song as JSON, in pieces under the relay's frame cap.
+    SnapshotChunk {
+        index: u32,
+        of: u32,
+        bytes: Vec<u8>,
+    },
+    /// The last piece has gone: the song's hash, and the edit it is at.
+    SnapshotDone {
+        hash: u64,
+        seq: u64,
+    },
+    /// Joiner to host: an edit made and already shown on the joiner's
+    /// screen, numbered by the joiner.
+    Propose {
+        local_seq: u64,
+        #[serde(with = "as_json")]
+        edit: Edit,
+    },
+    /// Host to everybody: the next edit in the one order there is, whose it
+    /// was, and — when it is the last of what the host had to send — the
+    /// song's hash after it.
+    Applied {
+        seq: u64,
+        author: u16,
+        author_seq: u64,
+        #[serde(with = "as_json")]
+        edit: Edit,
+        hash: Option<u64>,
+    },
+    /// Host to a joiner: that proposal did not apply here.
+    Refused {
+        local_seq: u64,
+        reason: String,
+    },
+    ResyncRequest,
+    // Files.
+    AssetRequest {
+        hash: u64,
+    },
+    AssetChunk {
+        hash: u64,
+        index: u32,
+        of: u32,
+        bytes: Vec<u8>,
+    },
+    AssetDone {
+        hash: u64,
+    },
+    AssetMissing {
+        hash: u64,
+    },
+    // People.
+    Joined {
+        peer: u16,
+        name: String,
+        colour: u8,
+    },
+    Left {
+        peer: u16,
+    },
+    Bye,
+}
+
+impl Msg {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        postcard::to_allocvec(self).expect("a message always writes")
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Msg, WireError> {
+        postcard::from_bytes(bytes).map_err(|e| WireError(format!("not a message: {e}")))
+    }
+}
+
+/// An [`Edit`] inside a postcard message, as the JSON it survives (F52).
+mod as_json {
+    use serde::de::{Error, SeqAccess, Visitor};
+    use serde::{Deserializer, Serializer};
+
+    use super::Edit;
+
+    pub fn serialize<S: Serializer>(edit: &Edit, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(&edit.to_bytes())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Edit, D::Error> {
+        struct Bytes;
+        impl<'de> Visitor<'de> for Bytes {
+            type Value = Vec<u8>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an edit's bytes")
+            }
+
+            fn visit_bytes<E: Error>(self, bytes: &[u8]) -> Result<Vec<u8>, E> {
+                Ok(bytes.to_vec())
+            }
+
+            fn visit_byte_buf<E: Error>(self, bytes: Vec<u8>) -> Result<Vec<u8>, E> {
+                Ok(bytes)
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u8>, A::Error> {
+                let mut bytes = Vec::new();
+                while let Some(byte) = seq.next_element()? {
+                    bytes.push(byte);
+                }
+                Ok(bytes)
+            }
+        }
+        let bytes = deserializer.deserialize_byte_buf(Bytes)?;
+        Edit::from_bytes(&bytes).map_err(|e| D::Error::custom(e.0))
+    }
+}

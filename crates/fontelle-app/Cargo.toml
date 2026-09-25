@@ -26,6 +26,7 @@ fontelle-bridge-abi = { path = "../fontelle-bridge-abi" }
 fontelle-midi = { path = "../fontelle-midi" }
 fontelle-assets = { path = "../fontelle-assets" }
 fontelle-ui = { path = "../fontelle-ui" }
+fontelle-net = { path = "../fontelle-net" }
 serde = { version = "1.0.229", features = ["derive"] }
 # `float_roundtrip`: without it serde_json's fast float parser can land a
 # ULP away from the number in the file, so a patch written and read back

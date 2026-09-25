@@ -422,6 +422,10 @@ pub struct Session {
     selected: usize,
     bundle: Option<PathBuf>,
     dirty: bool,
+    /// The shared session this studio is in, hosting or joined
+    /// (`docs/collab-plan.md`) — `None`, and nothing opened, until *Share* or
+    /// *Join* is pressed.
+    collab: Option<crate::collab::Collab>,
     /// The bounce running beside the window, if one is — see
     /// [`Session::poll_job`].
     job: Option<RunningJob>,
@@ -1308,6 +1312,7 @@ impl Session {
             selected: 0,
             bundle,
             dirty: false,
+            collab: None,
             job: None,
             revision: 1,
             preset_bank: crate::preset_bank::PresetBank::new(settings.user_preset_dir()),
@@ -1684,6 +1689,156 @@ impl Session {
             let _ =
                 fontelle_model::RenameProject::new(stem.to_string_lossy()).apply(&mut self.project);
         }
+    }
+
+    /// Shares the open song: this studio becomes the host of a session over
+    /// `transport` (`docs/collab-plan.md` §2, §4.3).
+    ///
+    /// A song has to be a file to be shared — the joiner's copy is a copy of
+    /// a bundle — so a song never saved is refused (the window asks for a
+    /// name first), and unsaved changes are saved.
+    pub fn share(
+        &mut self,
+        transport: Box<dyn fontelle_net::Transport>,
+        options: crate::collab::CollabOptions,
+    ) -> Result<(), String> {
+        if self.collab.as_ref().is_some_and(|c| c.ended().is_none()) {
+            return Err("this studio is in a session already".into());
+        }
+        if self.bundle.is_none() {
+            return Err("save the song before sharing it".into());
+        }
+        if self.dirty {
+            fontelle_ui::document::DocumentHost::save(self)?;
+        }
+        self.history.set_mint_space(None);
+        self.history.open_outbox();
+        self.collab = Some(crate::collab::Collab::host(transport, options));
+        self.touch();
+        Ok(())
+    }
+
+    /// Joins a shared song over `transport`: says hello, and waits for the
+    /// song and for the answer to the question it asks (§4.3).
+    ///
+    /// **Unsaved work is asked about before anything else** (§4.4, rule 3):
+    /// with changes nobody has saved this refuses, and the window runs the
+    /// same save-or-discard question quitting does before it asks again.
+    pub fn join(
+        &mut self,
+        transport: Box<dyn fontelle_net::Transport>,
+        options: crate::collab::CollabOptions,
+    ) -> Result<(), String> {
+        if self.collab.as_ref().is_some_and(|c| c.ended().is_none()) {
+            return Err("this studio is in a session already".into());
+        }
+        if self.dirty {
+            return Err("save or discard the open song before joining another".into());
+        }
+        let projects = self.projects.dir().map(Path::to_path_buf).ok_or_else(|| {
+            "a joined song is copied into your projects folder \u{2014} choose one first"
+                .to_string()
+        })?;
+        self.collab = Some(crate::collab::Collab::join(transport, options, projects));
+        self.touch();
+        Ok(())
+    }
+
+    /// One turn of the shared session, if there is one: this studio's edits
+    /// go out and everybody else's come in. Once a tick, beside `poll_job`.
+    pub fn pump_collab(&mut self) {
+        let Some(collab) = self.collab.as_mut() else {
+            return;
+        };
+        let effects = collab.pump(&mut self.project, &mut self.history);
+        self.collab_effects(effects);
+    }
+
+    fn collab_effects(&mut self, effects: Vec<crate::collab::Effect>) {
+        use crate::collab::Effect;
+        for effect in effects {
+            match effect {
+                Effect::Changed => {
+                    self.dirty = true;
+                    self.patch_cache = None;
+                    self.rebuild_graph();
+                    self.touch();
+                }
+                Effect::Say(line) => {
+                    self.message = Some(line);
+                    self.touch();
+                }
+                Effect::Open(path) => {
+                    let opened = match crate::open_project(&path) {
+                        Ok(opened) => opened,
+                        Err(e) => {
+                            self.message = Some(format!("could not open the copy: {e}"));
+                            continue;
+                        }
+                    };
+                    // Out of the way while the copy is adopted, so nothing
+                    // that ends a session on a document swap ends this one.
+                    let mut collab = self.collab.take();
+                    self.adopt(opened, path);
+                    let more = collab
+                        .as_mut()
+                        .map(|c| c.went_live(&mut self.project, &mut self.history))
+                        .unwrap_or_default();
+                    self.collab = collab;
+                    self.collab_effects(more);
+                }
+            }
+        }
+    }
+
+    /// The join's question, while it is waiting for an answer.
+    pub fn join_question(&self) -> Option<&crate::collab::JoinQuestion> {
+        self.collab.as_ref()?.question()
+    }
+
+    pub fn answer_join(&mut self, answer: crate::collab::JoinAnswer) -> Result<(), String> {
+        let collab = self.collab.as_mut().ok_or("there is no join to answer")?;
+        let effects = collab.answer(answer, &mut self.history)?;
+        self.collab_effects(effects);
+        self.touch();
+        Ok(())
+    }
+
+    /// Stops sharing, or leaves the session and carries on alone with the
+    /// copy (§10.3).
+    pub fn leave_session(&mut self) {
+        if let Some(collab) = self.collab.as_mut() {
+            collab.leave(&mut self.project, &mut self.history);
+            self.touch();
+        }
+    }
+
+    /// Whether this studio is sharing, or has a shared song open.
+    pub fn collab_live(&self) -> bool {
+        self.collab.as_ref().is_some_and(|c| c.is_live())
+    }
+
+    /// Why the session ended, once it has.
+    pub fn collab_ended(&self) -> Option<&str> {
+        self.collab.as_ref()?.ended()
+    }
+
+    /// Who else is in the session.
+    pub fn session_peers(&self) -> Vec<crate::collab::Peer> {
+        self.collab
+            .as_ref()
+            .filter(|c| c.ended().is_none())
+            .map(|c| c.peers())
+            .unwrap_or_default()
+    }
+
+    /// What the session has to tell the person — a refused edit, somebody
+    /// joining — taken once.
+    pub fn take_collab_notices(&mut self) -> Vec<String> {
+        self.collab
+            .as_mut()
+            .map(|c| c.take_notices())
+            .unwrap_or_default()
     }
 
     /// Applies an edit somebody else made to the song
@@ -5116,9 +5271,19 @@ impl DocumentHost for Session {
     }
 
     fn undo(&mut self) {
+        let label = self.history.undo_label().map(str::to_string);
         if let Some(result) = self.history.undo(&mut self.project) {
             if let Err(e) = result {
                 eprintln!("Fontelle: could not undo — {e}");
+                // In a shared song the likeliest reason is somebody else:
+                // what the edit was about has changed or gone since (§5.7).
+                let what = label.unwrap_or_else(|| "that".into());
+                self.message = Some(if self.collab_live() {
+                    format!("Could not undo {what} \u{2014} it has changed since you did it ({e})")
+                } else {
+                    format!("Could not undo {what}: {e}")
+                });
+                self.touch();
                 return;
             }
             self.dirty = true;
